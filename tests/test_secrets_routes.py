@@ -31,6 +31,9 @@ def client(tmp_path, monkeypatch):
     from mc import secrets_store
     from mc.blueprints import secrets_routes
     secrets_store._dispensed.clear()
+    secrets_store._unlocked_key = None
+    secrets_store._lock_notified = False
+    secrets_store._key_mismatch = False
     app = Flask(__name__)
     app.register_blueprint(secrets_routes.bp)
     return app.test_client()
@@ -257,3 +260,47 @@ def test_check_flags_out_of_scope_and_unattended(client):
                            'project_id': 'alpha',
                            'unattended': True}).get_json()
     assert un['referenced'][0]['reason'] == 'unattended_blocked'
+
+
+# ── vault passphrase lock (MC 503edfe4) ──────────────────────────────────────
+
+def test_vault_lock_lifecycle_over_http(client):
+    from mc import secrets_store as vault
+    _create(client)
+
+    state = client.get('/api/secrets/vault-lock').get_json()
+    assert state == {'state': 'unconfigured', 'configured': False}
+
+    res = client.post('/api/secrets/vault-lock/set', json={'passphrase': 'a real passphrase'})
+    assert res.status_code == 200
+    recovery_key = res.get_json()['recovery_key']
+    assert client.get('/api/secrets/vault-lock').get_json()['state'] == 'unlocked'
+
+    # Simulate a restart: the in-memory key is gone.
+    vault._unlocked_key = None
+    assert client.get('/api/secrets/vault-lock').get_json()['state'] == 'locked'
+
+    # Locked list: names still visible (metadata), never a 500, never a value.
+    locked_list = client.get('/api/secrets').get_json()
+    assert locked_list['locked'] is True
+    assert locked_list['secrets'][0]['name'] == 'reddit.password'
+    assert SECRET not in str(locked_list)
+
+    # Wrong passphrase: refused, still locked.
+    bad = client.post('/api/secrets/vault-lock/unlock', json={'passphrase': 'nope'})
+    assert bad.status_code == 403
+    assert client.get('/api/secrets/vault-lock').get_json()['state'] == 'locked'
+
+    # Recovery key unlocks; the list reads clean again.
+    ok = client.post('/api/secrets/vault-lock/unlock', json={'recovery_key': recovery_key})
+    assert ok.status_code == 200
+    assert client.get('/api/secrets/vault-lock').get_json()['state'] == 'unlocked'
+    unlocked_list = client.get('/api/secrets').get_json()
+    assert unlocked_list['locked'] is False
+    assert unlocked_list['secrets'][0]['readable'] is True
+
+
+def test_vault_lock_set_is_refused_a_second_time(client):
+    client.post('/api/secrets/vault-lock/set', json={'passphrase': 'a real passphrase'})
+    res = client.post('/api/secrets/vault-lock/set', json={'passphrase': 'a different one'})
+    assert res.status_code == 400

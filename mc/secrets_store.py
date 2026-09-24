@@ -70,9 +70,12 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import hashlib
+import hmac
 import json
 import os
 import re
+import subprocess
 import threading
 import urllib.parse
 import urllib.request
@@ -99,6 +102,15 @@ class SecretNotFound(SecretsError):
 
 class SecretDenied(SecretsError):
     """The secret exists but this caller may not read it."""
+
+
+class VaultLocked(SecretsUnavailable):
+    """The vault is passphrase-locked (``secrets.key.wrapped`` exists) and no
+    human has unlocked it yet this process lifetime. A subclass of
+    SecretsUnavailable so existing ``except SecretsUnavailable`` call sites
+    keep working unchanged, but callers that want to distinguish "unlock it"
+    from "something's broken" (the dashboard banner, ``tools/with-secret.py``)
+    can catch this specifically."""
 
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -139,6 +151,12 @@ def dpapi_mirror_path() -> Path:
     return clayrune_home() / 'secrets.key.dpapi'
 
 
+def wrapped_key_path() -> Path:
+    """The passphrase-lock file (MC backlog 503edfe4). Its mere presence is
+    what puts the vault in locked-by-default mode — see ``lock_state()``."""
+    return clayrune_home() / 'secrets.key.wrapped'
+
+
 def audit_path() -> Path:
     return clayrune_home() / 'secrets_audit.jsonl'
 
@@ -149,6 +167,18 @@ _lock = threading.RLock()
 # Set by load_master_key() whenever the OS keyring holds a key that decrypts
 # none of the store's records — see key_mismatch() below.
 _key_mismatch = False
+
+# The master key, plaintext, held ONLY in process memory once a human unlocks
+# a passphrase-locked vault (never written to disk unwrapped) — see the
+# "Passphrase lock" section below. None whenever the vault is locked or
+# passphrase-lock isn't configured at all.
+_unlocked_key: bytes | None = None
+
+# True once _notify_vault_locked() has already fired for the CURRENT lock
+# period (since the last successful unlock) — so a burst of jobs hitting the
+# lock sends one notification, not one per job. Reset to False by every
+# successful unlock.
+_lock_notified = False
 
 
 # ── Name validation ──────────────────────────────────────────────────────────
@@ -544,9 +574,26 @@ def load_master_key() -> tuple[bytes, str]:
     opens something. If neither does, raise rather than hand back a key that
     silently can't read anything — the same "found out immediately instead of
     losing data silently" posture as the empty-keyring case above.
+
+    ## Passphrase lock (MC backlog 503edfe4)
+
+    If ``wrapped_key_path()`` exists, the vault is in passphrase-lock mode and
+    NONE of the keyring/DPAPI/plaintext-file logic below runs at all — see the
+    "Passphrase lock" section further down this module. The key lives only in
+    ``_unlocked_key``, set by a human unlock call, and this function either
+    returns it or raises :class:`VaultLocked`. That file's mere presence is
+    the switch: before a human ever sets a passphrase it doesn't exist, so
+    every box that hasn't opted in keeps the exact behavior above, unchanged.
     """
     global _key_mismatch
     with _lock:
+        if wrapped_key_path().is_file():
+            if _unlocked_key is not None:
+                return _unlocked_key, 'passphrase'
+            _notify_vault_locked()
+            raise VaultLocked(
+                "vault is locked — unlock it from the dashboard "
+                "(Settings > Vault) before this can be read")
         store = _load_store()
         n = len(store['secrets'])
 
@@ -613,6 +660,454 @@ def load_master_key() -> tuple[bytes, str]:
         _log(f"[secrets] minted new master key (backend={backend}, "
              f"store was empty)")
         return raw, backend
+
+
+# ── Passphrase lock (MC backlog 503edfe4, Ron's 2026-09-23 decision) ────────
+#
+# Threat model: agents run as the same OS user as the server, so a key the
+# server can read unattended, an agent can read too. So the master key K is
+# never written to disk unwrapped — it exists in plaintext ONLY in
+# `_unlocked_key`, set by a human-only unlock call, for the life of this
+# process. At rest, `secrets.key.wrapped` holds K twice: once wrapped by a KEK
+# derived from a human passphrase (scrypt), once wrapped by a KEK derived from
+# a recovery key Ron holds offline. Either unwrap is verified against the same
+# fingerprint scheme `_key_opens_any` uses for trial decryption, so a wrong
+# passphrase/recovery key is DETECTED, never silently "accepted" as a new key.
+#
+# This file's mere presence is the switch (see load_master_key() above): a
+# box that has never had a passphrase set behaves exactly as before this
+# section existed. Migration happens once, at first `set_passphrase()` call,
+# by reusing load_master_key()'s own (still fully intact) keyring/file-backend
+# logic to find whatever key already protects the store — never destroying
+# that copy.
+
+_WRAP_KDF_N, _WRAP_KDF_R, _WRAP_KDF_P = 2 ** 15, 8, 1
+_WRAP_AAD = b'clayrune-vault-wrap-v1'
+_KEY_FINGERPRINT_CONST = b'clayrune-secrets-vault-fingerprint-v1'
+
+
+def _key_fingerprint(key_bytes: bytes) -> str:
+    """Proves two keys are the same key without a single AES-GCM trial-decrypt
+    against real ciphertext — the store may hold zero secrets (nothing to
+    trial-decrypt against) and this is cheap enough to check on every unlock
+    attempt. An HMAC (not a bare hash) because the input is a fixed, public
+    constant: a bare SHA256 of a constant plus the key bytes invites a
+    length-extension-style shortcut, whereas HMAC's key-then-hash
+    construction is the standard way to key a MAC by something secret without
+    leaking structure about it."""
+    return hmac.new(key_bytes, _KEY_FINGERPRINT_CONST, hashlib.sha256).hexdigest()[:16]
+
+
+def _wrap_leg(secret_text: str, key_bytes: bytes) -> dict[str, Any]:
+    """Wrap ``key_bytes`` (the master key) under a KEK derived from
+    ``secret_text`` (a human passphrase, or a normalized recovery-key
+    string) — a fresh per-leg salt, so the passphrase leg and the recovery
+    leg of the same wrapped file never share a KEK even if the two secrets
+    happened to coincide."""
+    salt = os.urandom(16)
+    kek = _scrypt_key_with_params(secret_text, salt, _WRAP_KDF_N, _WRAP_KDF_R, _WRAP_KDF_P)
+    nonce = os.urandom(12)
+    ct = _aesgcm(kek).encrypt(nonce, key_bytes, _WRAP_AAD)
+    return {
+        'salt': base64.b64encode(salt).decode('ascii'),
+        'n': _WRAP_KDF_N, 'r': _WRAP_KDF_R, 'p': _WRAP_KDF_P,
+        'nonce': base64.b64encode(nonce).decode('ascii'),
+        'ciphertext': base64.b64encode(ct).decode('ascii'),
+    }
+
+
+def _unwrap_leg(secret_text: str, leg: dict[str, Any]) -> bytes:
+    """Reverse of :func:`_wrap_leg`. Raises ``SecretsError`` — never a bare
+    crypto exception — on a wrong passphrase/recovery key or a corrupted
+    file, so callers get one exception type to catch."""
+    try:
+        salt = base64.b64decode(leg['salt'])
+        kek = _scrypt_key_with_params(
+            secret_text, salt, leg.get('n', _WRAP_KDF_N),
+            leg.get('r', _WRAP_KDF_R), leg.get('p', _WRAP_KDF_P))
+        nonce = base64.b64decode(leg['nonce'])
+        ct = base64.b64decode(leg['ciphertext'])
+        return _aesgcm(kek).decrypt(nonce, ct, _WRAP_AAD)
+    except SecretsUnavailable:
+        raise
+    except Exception as e:
+        raise SecretsError(f"could not unwrap the master key: {type(e).__name__}") from e
+
+
+def _scrypt_key_with_params(passphrase: str, salt: bytes, n: int, r: int, p: int) -> bytes:
+    from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+    kdf = Scrypt(salt=salt, length=32, n=n, r=r, p=p)
+    return kdf.derive(passphrase.encode('utf-8'))
+
+
+def _generate_recovery_key() -> str:
+    """160 bits, Base32 (RFC 4648, no padding), grouped in 4s for readability
+    — shown to the human exactly once, at `set_passphrase()` time, and never
+    stored anywhere in this format (only its wrapped leg is persisted)."""
+    raw = os.urandom(20)
+    b32 = base64.b32encode(raw).decode('ascii').rstrip('=')
+    return '-'.join(b32[i:i + 4] for i in range(0, len(b32), 4))
+
+
+def _normalize_recovery_key(value: str) -> str:
+    """Strip everything but the Base32 alphabet and uppercase — so a human
+    can paste the key back in with or without the dashes, in any case,
+    with stray whitespace, and it still matches."""
+    return re.sub(r'[^A-Z2-7]', '', (value or '').upper())
+
+
+def lock_state() -> str:
+    """``'unconfigured'`` (no passphrase ever set — behaves exactly like the
+    pre-503edfe4 vault), ``'locked'`` (configured, not yet unlocked this
+    process lifetime), or ``'unlocked'``."""
+    if _unlocked_key is not None:
+        return 'unlocked'
+    if wrapped_key_path().is_file():
+        return 'locked'
+    return 'unconfigured'
+
+
+def is_locked() -> bool:
+    return lock_state() == 'locked'
+
+
+def _notify_vault_locked() -> None:
+    """Best-effort, ONE notification per lock period (see ``_lock_notified``)
+    — a burst of jobs hitting a locked vault must not spam. Lazy-imports the
+    push blueprint (mirrors how server.py itself reaches `_notify_push`) so
+    this module never depends on the Flask app being wired up, and a
+    notification failure can never turn into a *worse* error than the
+    VaultLocked the caller is already about to raise."""
+    global _lock_notified
+    if _lock_notified:
+        return
+    _lock_notified = True
+    try:
+        from mc.blueprints import push_mobile as _bp_push_mobile
+        _bp_push_mobile._notify_push(
+            'Vault locked',
+            'A job needs the secrets vault unlocked — open the dashboard to '
+            'unlock it.')
+    except Exception as e:
+        _log(f"[secrets] vault-locked notification failed: {e}")
+
+
+def set_passphrase(passphrase: str) -> str:
+    """First-time setup only (refuses if already configured — use
+    :func:`change_passphrase` instead). Migrates whatever key currently
+    protects the store (via the untouched keyring/file-backend logic in
+    :func:`load_master_key`, called BEFORE the wrapped file exists) into the
+    new wrapped format, generates a fresh recovery key, and returns it —
+    the ONLY time it is ever available in this format; the caller must show
+    it to the human now.
+
+    Never destroys the legacy key material (OS keyring entry, DPAPI mirror,
+    plaintext key file) — this is additive only, matching every other
+    migration path in this module. Auto-unlocks: the human who just typed
+    the passphrase should not have to immediately retype it.
+    """
+    passphrase = (passphrase or '').strip()
+    if not passphrase:
+        raise SecretsError("passphrase is required")
+    if len(passphrase) < 8:
+        raise SecretsError("passphrase must be at least 8 characters")
+    global _unlocked_key, _lock_notified
+    with _lock:
+        if wrapped_key_path().is_file():
+            raise SecretsError(
+                "a passphrase is already set — use change-passphrase instead")
+        # Reuses the pre-lock code path in full: mints a key if the store is
+        # genuinely empty, or finds/migrates whatever already protects it.
+        key_bytes, _backend = load_master_key()
+        recovery_key = _generate_recovery_key()
+        data = {
+            'version': 1,
+            'fingerprint': _key_fingerprint(key_bytes),
+            'passphrase': _wrap_leg(passphrase, key_bytes),
+            'recovery': _wrap_leg(_normalize_recovery_key(recovery_key), key_bytes),
+            'created': now_iso(),
+        }
+        # Verify both legs open before this becomes the vault's only story —
+        # never write a wrapped file that turns out to be unopenable.
+        if _unwrap_leg(passphrase, data['passphrase']) != key_bytes:
+            raise SecretsError("passphrase wrap verification failed")
+        if _unwrap_leg(_normalize_recovery_key(recovery_key), data['recovery']) != key_bytes:
+            raise SecretsError("recovery-key wrap verification failed")
+        _write_wrapped_key(data)
+        _unlocked_key = key_bytes
+        _lock_notified = False
+    _audit('vault_passphrase_set')
+    _log("[secrets] passphrase lock configured; vault auto-unlocked "
+         "for this process")
+    return recovery_key
+
+
+def change_passphrase(old_passphrase: str, new_passphrase: str) -> None:
+    """Requires the vault to be configured; verifies ``old_passphrase``
+    against the passphrase leg regardless of current unlock state (so a
+    human can rotate it without a separate unlock step), then rewraps ONLY
+    the passphrase leg — the recovery leg, and the key itself, are
+    unchanged."""
+    new_passphrase = (new_passphrase or '').strip()
+    if not new_passphrase:
+        raise SecretsError("new passphrase is required")
+    if len(new_passphrase) < 8:
+        raise SecretsError("new passphrase must be at least 8 characters")
+    global _unlocked_key
+    with _lock:
+        if not wrapped_key_path().is_file():
+            raise SecretsError("no passphrase is set yet — use set-passphrase")
+        data = _read_wrapped_key()
+        try:
+            key_bytes = _unwrap_leg((old_passphrase or '').strip(), data['passphrase'])
+        except SecretsError:
+            raise SecretDenied("wrong passphrase")
+        if _key_fingerprint(key_bytes) != data['fingerprint']:
+            raise SecretDenied("wrong passphrase")
+        data['passphrase'] = _wrap_leg(new_passphrase, key_bytes)
+        if _unwrap_leg(new_passphrase, data['passphrase']) != key_bytes:
+            raise SecretsError("passphrase wrap verification failed")
+        _write_wrapped_key(data)
+        _unlocked_key = key_bytes
+    _audit('vault_passphrase_changed')
+    _log("[secrets] passphrase changed")
+
+
+def unlock_with_passphrase(passphrase: str) -> None:
+    global _unlocked_key, _lock_notified, _key_mismatch
+    with _lock:
+        if not wrapped_key_path().is_file():
+            raise SecretsError("no passphrase is set yet — use set-passphrase")
+        data = _read_wrapped_key()
+        try:
+            key_bytes = _unwrap_leg((passphrase or '').strip(), data['passphrase'])
+        except SecretsError:
+            _audit('vault_unlock_denied', reason='wrong_passphrase')
+            raise SecretDenied("wrong passphrase")
+        # Belt-and-suspenders: a passphrase that decrypts SOMETHING under
+        # AES-GCM's own tag check but isn't actually this vault's key would
+        # be a coincidence GCM's authentication already rules out — but the
+        # fingerprint compare is what every other mismatch path in this
+        # module uses, so unlock stays consistent with load/migrate/restore.
+        if _key_fingerprint(key_bytes) != data['fingerprint']:
+            _audit('vault_unlock_denied', reason='wrong_passphrase')
+            raise SecretDenied("wrong passphrase")
+        _unlocked_key = key_bytes
+        _lock_notified = False
+        _key_mismatch = False
+    _audit('vault_unlocked', method='passphrase')
+    _log("[secrets] vault unlocked (passphrase)")
+
+
+def unlock_with_recovery_key(recovery_key: str) -> None:
+    global _unlocked_key, _lock_notified, _key_mismatch
+    normalized = _normalize_recovery_key(recovery_key)
+    with _lock:
+        if not wrapped_key_path().is_file():
+            raise SecretsError("no passphrase is set yet — use set-passphrase")
+        data = _read_wrapped_key()
+        try:
+            key_bytes = _unwrap_leg(normalized, data['recovery'])
+        except SecretsError:
+            _audit('vault_unlock_denied', reason='wrong_recovery_key')
+            raise SecretDenied("wrong recovery key")
+        if _key_fingerprint(key_bytes) != data['fingerprint']:
+            _audit('vault_unlock_denied', reason='wrong_recovery_key')
+            raise SecretDenied("wrong recovery key")
+        _unlocked_key = key_bytes
+        _lock_notified = False
+        _key_mismatch = False
+    _audit('vault_unlocked', method='recovery_key')
+    _log("[secrets] vault unlocked (recovery key)")
+
+
+def _read_wrapped_key() -> dict[str, Any]:
+    try:
+        return json.loads(wrapped_key_path().read_text(encoding='utf-8'))
+    except Exception as e:
+        raise SecretsError(f"could not read {wrapped_key_path()}: {e}") from e
+
+
+def _write_wrapped_key(data: dict[str, Any]) -> None:
+    """Write ``secrets.key.wrapped``. Windows takes the fail-closed,
+    SID-based ACL path (ported from Tobin's f6a8159 vault-review-fixes,
+    adapted from the master-key file to this one — same blocker D it fixed:
+    an icacls call AFTER the bytes hit disk, naming the grantee by bare
+    %USERNAME%, fails open on a domain-joined box or silently resolves the
+    wrong account). POSIX keeps the plain 0600-from-creation write — it has
+    none of those failure modes."""
+    path = wrapped_key_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(data, indent=2)
+    if os.name == 'nt':
+        _harden_clayrune_home_windows(path.parent)
+        _write_private_text_fail_closed_windows(path, text)
+    else:
+        _write_private_text(path, text)
+
+
+# ── Windows ACL: SID resolution + fail-closed write (ported from f6a8159) ───
+
+def _current_user_sid_and_name() -> tuple[str, str]:
+    """(sid_string, 'DOMAIN\\name') for the current process token.
+    Windows-only; callers must be on Windows already."""
+    advapi32 = ctypes.windll.advapi32  # type: ignore[attr-defined]
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    advapi32.OpenProcessToken.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.OpenProcessToken.restype = ctypes.c_int
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    advapi32.GetTokenInformation.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_uint32)]
+    advapi32.GetTokenInformation.restype = ctypes.c_int
+    advapi32.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p)]
+    advapi32.ConvertSidToStringSidW.restype = ctypes.c_int
+    advapi32.LookupAccountSidW.argtypes = [
+        ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_wchar_p,
+        ctypes.POINTER(ctypes.c_uint32), ctypes.c_wchar_p,
+        ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
+    advapi32.LookupAccountSidW.restype = ctypes.c_int
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+
+    TOKEN_QUERY = 0x0008
+    TOKEN_USER = 1
+
+    h_token = ctypes.c_void_p()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), TOKEN_QUERY,
+                                     ctypes.byref(h_token)):
+        raise OSError(f'OpenProcessToken failed (error {ctypes.get_last_error()})')
+    try:
+        size = ctypes.c_uint32(0)
+        advapi32.GetTokenInformation(h_token, TOKEN_USER, None, 0, ctypes.byref(size))
+        if size.value == 0:
+            raise OSError('GetTokenInformation size probe returned 0')
+        buf = ctypes.create_string_buffer(size.value)
+        if not advapi32.GetTokenInformation(h_token, TOKEN_USER, buf, size.value,
+                                            ctypes.byref(size)):
+            raise OSError(f'GetTokenInformation failed (error {ctypes.get_last_error()})')
+        psid = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0]
+
+        sid_ptr = ctypes.c_wchar_p()
+        if not advapi32.ConvertSidToStringSidW(psid, ctypes.byref(sid_ptr)):
+            raise OSError(f'ConvertSidToStringSidW failed (error {ctypes.get_last_error()})')
+        try:
+            sid_string = sid_ptr.value or ''
+        finally:
+            kernel32.LocalFree(sid_ptr)
+        if not sid_string:
+            raise OSError('ConvertSidToStringSidW returned an empty SID')
+
+        account = sid_string
+        name_len = ctypes.c_uint32(0)
+        domain_len = ctypes.c_uint32(0)
+        use = ctypes.c_uint32(0)
+        advapi32.LookupAccountSidW(None, psid, None, ctypes.byref(name_len),
+                                   None, ctypes.byref(domain_len), ctypes.byref(use))
+        if name_len.value and domain_len.value:
+            name_buf = ctypes.create_unicode_buffer(name_len.value)
+            domain_buf = ctypes.create_unicode_buffer(domain_len.value)
+            if advapi32.LookupAccountSidW(
+                    None, psid, name_buf, ctypes.byref(name_len),
+                    domain_buf, ctypes.byref(domain_len), ctypes.byref(use)):
+                account = (f'{domain_buf.value}\\{name_buf.value}'
+                          if domain_buf.value else name_buf.value)
+        return sid_string, account
+    finally:
+        kernel32.CloseHandle(h_token)
+
+
+def _icacls_grant_and_verify(path: Path, sid: str, account: str) -> tuple[bool, str]:
+    """Strip inheritance and grant only (owner SID, SYSTEM) full control on
+    `path`, then re-read the ACL to confirm both grants actually landed.
+    Never raises; returns (ok, detail)."""
+    p = str(path)
+    try:
+        grant = subprocess.run(
+            ['icacls', p, '/inheritance:r', '/grant:r', f'*{sid}:F', '*S-1-5-18:F'],
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except Exception as e:
+        return False, f"icacls grant raised: {e}"
+    if grant.returncode != 0:
+        return False, (f"icacls exited {grant.returncode}: "
+                        f"{(grant.stdout or '').strip()} {(grant.stderr or '').strip()}".strip())
+    try:
+        verify = subprocess.run(
+            ['icacls', p], capture_output=True, text=True,
+            encoding='utf-8', errors='replace',
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except Exception as e:
+        return False, f"icacls verify raised: {e}"
+    low = (verify.stdout or '').lower()
+    owner_present = sid.lower() in low or (bool(account) and account.lower() in low)
+    system_present = ('s-1-5-18' in low) or ('system' in low)
+    if not (owner_present and system_present):
+        return False, f"unexpected ACL after icacls grant: {(verify.stdout or '').strip()!r}"
+    return True, ''
+
+
+def _harden_clayrune_home_windows(home: Path) -> None:
+    """Best-effort: strip ACL inheritance on ~/.clayrune itself and grant
+    only (owner, SYSTEM), so a file created under it no longer inherits
+    whatever the parent directory happens to grant. Logged, not raised: the
+    wrapped-key FILE's own ACL is independently verified and fail-closed
+    (see _write_private_text_fail_closed_windows below)."""
+    if os.name != 'nt':
+        return
+    try:
+        sid, account = _current_user_sid_and_name()
+    except Exception as e:
+        _log(f"[secrets] could not resolve current user SID to harden {home}: {e}")
+        return
+    ok, detail = _icacls_grant_and_verify(home, sid, account)
+    if not ok:
+        _log(f"[secrets] could not harden {home}'s ACL: {detail}")
+
+
+def _write_private_text_fail_closed_windows(path: Path, text: str) -> None:
+    """Create an EMPTY temp file, grant+verify its ACL by SID, and only THEN
+    write the real content and atomically rename into place. Any step
+    failing deletes the temp file and raises SecretsError — the wrapped key
+    is never created with an unverified ACL."""
+    tmp = path.with_name(f'.{path.name}.tmp{os.getpid()}')
+    try:
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.close(fd)
+    except OSError as e:
+        raise SecretsError(f"could not create {path.name}: {e}") from e
+    try:
+        try:
+            sid, account = _current_user_sid_and_name()
+        except Exception as e:
+            raise SecretsError(
+                f"could not resolve the current Windows user's SID — "
+                f"refusing to write {path.name} rather than leave it under "
+                f"a default/inherited ACL: {e}") from e
+        ok, detail = _icacls_grant_and_verify(tmp, sid, account)
+        if not ok:
+            raise SecretsError(
+                f"could not secure {path.name}'s permissions — refusing to "
+                f"write it: {detail}")
+        try:
+            tmp.write_text(text, encoding='utf-8')
+        except OSError as e:
+            raise SecretsError(f"could not write {path.name}: {e}") from e
+        try:
+            os.replace(tmp, path)
+        except OSError as e:
+            raise SecretsError(f"could not finalize {path.name}: {e}") from e
+    except BaseException:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 # ── Sealed values ────────────────────────────────────────────────────────────

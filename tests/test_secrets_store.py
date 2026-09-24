@@ -33,6 +33,9 @@ def vault(tmp_path, monkeypatch):
     from mc import secrets_store
     # Module-level caches that must not bleed between tests.
     secrets_store._dispensed.clear()
+    secrets_store._unlocked_key = None
+    secrets_store._lock_notified = False
+    secrets_store._key_mismatch = False
     return secrets_store
 
 
@@ -888,3 +891,165 @@ def test_list_secrets_without_check_readable_omits_the_field(vault):
     vault.set_secret('a.b', 'value-value')
     items = vault.list_secrets()
     assert 'readable' not in items[0]
+
+
+# ── Passphrase lock (MC backlog 503edfe4) ────────────────────────────────────
+
+def _relock(vault):
+    """Simulate a server restart: the in-memory key is gone, only the
+    wrapped file on disk remains."""
+    vault._unlocked_key = None
+    vault._lock_notified = False
+
+
+def test_lock_state_starts_unconfigured(vault):
+    assert vault.lock_state() == 'unconfigured'
+    assert vault.is_locked() is False
+
+
+def test_set_passphrase_migrates_existing_secret_and_auto_unlocks(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    recovery_key = vault.set_passphrase('correct horse battery staple')
+    assert vault.lock_state() == 'unlocked'
+    assert vault.wrapped_key_path().is_file()
+    assert isinstance(recovery_key, str) and len(recovery_key) > 10
+    # Migration never destroyed the pre-lock key material.
+    assert vault.key_file_path().is_file()
+    # The record sealed before the lock existed must still read back clean.
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+
+
+def test_set_passphrase_refuses_short_passphrase(vault):
+    with pytest.raises(vault.SecretsError):
+        vault.set_passphrase('short')
+    assert vault.lock_state() == 'unconfigured'
+
+
+def test_set_passphrase_refuses_when_already_configured(vault):
+    vault.set_passphrase('correct horse battery staple')
+    with pytest.raises(vault.SecretsError):
+        vault.set_passphrase('a different passphrase entirely')
+
+
+def test_load_master_key_raises_vault_locked_after_relock(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    assert vault.lock_state() == 'locked'
+    with pytest.raises(vault.VaultLocked):
+        vault.load_master_key()
+
+
+def test_locked_read_fails_closed(vault):
+    """A locked vault must refuse get_secret_value outright, not return a
+    stale or empty value — the fail-closed posture the read-path rule
+    requires for every read, not just the key-mismatch case."""
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    with pytest.raises(vault.SecretsUnavailable):
+        vault.get_secret_value('reddit.password', consumer='test')
+
+
+def test_unlock_with_correct_passphrase_restores_read_access(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    vault.unlock_with_passphrase('correct horse battery staple')
+    assert vault.lock_state() == 'unlocked'
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+
+
+def test_unlock_with_wrong_passphrase_rejected_via_fingerprint(vault):
+    """The fingerprint check is what turns 'garbage bytes that happen to
+    pass AES-GCM's tag check under a coincidentally-matching KEK' (astronomically
+    unlikely, but so is every other crypto failure mode this module guards)
+    into a deterministic reject — the wrap/unwrap round trip alone isn't
+    what's being asserted here, the fingerprint compare is."""
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    with pytest.raises(vault.SecretDenied):
+        vault.unlock_with_passphrase('wrong passphrase entirely')
+    assert vault.lock_state() == 'locked'
+
+
+def test_unlock_with_recovery_key_works(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    recovery_key = vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    vault.unlock_with_recovery_key(recovery_key)
+    assert vault.lock_state() == 'unlocked'
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+
+
+def test_unlock_with_recovery_key_tolerates_dashes_case_and_whitespace(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    recovery_key = vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    messy = '  ' + recovery_key.lower().replace('-', ' ') + '  '
+    vault.unlock_with_recovery_key(messy)
+    assert vault.lock_state() == 'unlocked'
+
+
+def test_unlock_with_wrong_recovery_key_rejected(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    with pytest.raises(vault.SecretDenied):
+        vault.unlock_with_recovery_key('AAAA-BBBB-CCCC-DDDD-EEEE')
+    assert vault.lock_state() == 'locked'
+
+
+def test_change_passphrase_requires_correct_old_passphrase(vault):
+    vault.set_passphrase('correct horse battery staple')
+    with pytest.raises(vault.SecretDenied):
+        vault.change_passphrase('wrong old passphrase', 'a brand new passphrase')
+
+
+def test_change_passphrase_rotates_without_touching_recovery_leg(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    recovery_key = vault.set_passphrase('correct horse battery staple')
+    vault.change_passphrase('correct horse battery staple', 'a brand new passphrase')
+    _relock(vault)
+    # Old passphrase no longer works.
+    with pytest.raises(vault.SecretDenied):
+        vault.unlock_with_passphrase('correct horse battery staple')
+    # New passphrase does.
+    vault.unlock_with_passphrase('a brand new passphrase')
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+    _relock(vault)
+    # The recovery key from set_passphrase-time is untouched by the rotation.
+    vault.unlock_with_recovery_key(recovery_key)
+    assert vault.lock_state() == 'unlocked'
+
+
+def test_notification_fires_once_per_lock_period(vault, monkeypatch):
+    """A burst of jobs hitting a locked vault must produce ONE notification,
+    not one per job — see `_lock_notified`."""
+    vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    calls = []
+    monkeypatch.setattr(
+        'mc.blueprints.push_mobile._notify_push',
+        lambda title, body, **kw: calls.append((title, body)))
+    for _ in range(3):
+        with pytest.raises(vault.VaultLocked):
+            vault.load_master_key()
+    assert len(calls) == 1
+
+    # A fresh lock period (after an unlock) can notify again.
+    vault.unlock_with_passphrase('correct horse battery staple')
+    _relock(vault)
+    with pytest.raises(vault.VaultLocked):
+        vault.load_master_key()
+    assert len(calls) == 2
+
+
+def test_unconfigured_vault_behaves_exactly_as_before(vault):
+    """The whole point of gating on `wrapped_key_path().is_file()` is that a
+    box which has never called set_passphrase must be unaffected — this is
+    the regression guard for that promise."""
+    vault.set_secret('reddit.password', 'never-locked')
+    assert vault.lock_state() == 'unconfigured'
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'never-locked'

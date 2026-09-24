@@ -56,12 +56,13 @@ async function openSecretsVault() {
         transcript forever.
       </div>
       <div id="secrets-keywarn"></div>
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px">
+      <div id="secrets-lockbar"></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
         <span id="secrets-count" class="memory-hint" style="margin:0">Loading…</span>
-        <div style="display:flex;gap:6px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn-header-action" style="padding:5px 12px;font-size:11px"
                   onclick="toggleSecretsAudit()" id="secrets-audit-btn">Access log</button>
-          <button class="btn-add" style="padding:5px 12px;font-size:11px"
+          <button class="btn-add" style="padding:5px 12px;font-size:11px" id="secrets-add-btn"
                   onclick="openSecretEditor(null)">Add secret</button>
         </div>
       </div>
@@ -85,15 +86,23 @@ async function refreshSecretsList() {
   const countEl = document.getElementById('secrets-count');
   const warnEl = document.getElementById('secrets-keywarn');
   if (!list) return;
-  let data;
+  let data, lockData;
   try {
-    const res = await fetch(API_BASE + '/api/secrets');
+    const [res, lockRes] = await Promise.all([
+      fetch(API_BASE + '/api/secrets'),
+      fetch(API_BASE + '/api/secrets/vault-lock'),
+    ]);
     data = await res.json();
+    lockData = await lockRes.json();
     if (data.error) throw new Error(data.error);
   } catch (e) {
     list.innerHTML = `<div class="process-empty">Could not read the vault: ${esc(e.message)}</div>`;
     return;
   }
+
+  _renderVaultLockbar(lockData && lockData.state);
+  const addBtn = document.getElementById('secrets-add-btn');
+  if (addBtn) addBtn.style.display = data.locked ? 'none' : '';
 
   // A file-backed master key is readable by anything running as this user,
   // whereas the OS keyring is at least gated by the login session. Say so.
@@ -108,8 +117,20 @@ async function refreshSecretsList() {
 
   const secrets = data.secrets || [];
   if (countEl) countEl.textContent = secrets.length
-    ? `${secrets.length} secret${secrets.length === 1 ? '' : 's'}`
+    ? `${secrets.length} secret${secrets.length === 1 ? '' : 's'}${data.locked ? ' (locked)' : ''}`
     : 'No secrets yet';
+
+  if (data.locked) {
+    // Names only, no actions — a locked vault can't decrypt to edit/delete/
+    // copy-ref safely, and this keeps that visibly true rather than showing
+    // buttons that would just 403/lock-error when clicked.
+    list.innerHTML = secrets.length ? secrets.map(s => `
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 0;
+                  border-bottom:1px solid var(--border);opacity:0.6">
+        <code style="font-size:13px;color:var(--text);font-family:var(--mono)">${esc(s.name)}</code>
+      </div>`).join('') : `<div class="process-empty">Vault is locked.</div>`;
+    return;
+  }
 
   if (!secrets.length) {
     list.innerHTML = `<div class="process-empty">
@@ -157,6 +178,273 @@ async function refreshSecretsList() {
         </div>
       </div>`;
   }).join('');
+}
+
+// ── Vault passphrase lock (MC backlog 503edfe4) ─────────────────────────────
+//
+// Three states from GET /api/secrets/vault-lock: 'unconfigured' (no
+// passphrase ever set — an inline offer, easy to ignore), 'locked' (a human
+// must unlock before anything below can be read), 'unlocked' (configured and
+// open — an inline "Change passphrase" link). The unlock form itself is
+// rendered inline in the lockbar rather than a nested modal, since it's one
+// or two fields and needs to work above a phone keyboard.
+
+let _secUseRecoveryKey = false;
+
+function _renderVaultLockbar(state) {
+  const bar = document.getElementById('secrets-lockbar');
+  if (!bar) return;
+  if (state === 'locked') {
+    bar.innerHTML = `
+      <div style="padding:12px;margin-bottom:12px;border:1px solid var(--border);
+                  border-left:3px solid var(--warn,#c9852a);border-radius:4px">
+        <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px">
+          &#x1F512; Vault is locked
+        </div>
+        <div style="font-size:11px;color:var(--text-faint);margin-bottom:10px">
+          Unlock it to read, add, or edit secrets. Metadata (names) is still
+          visible below; values are not.
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <input type="password" id="vault-unlock-input" autocomplete="off"
+            placeholder="${_secUseRecoveryKey ? 'recovery key' : 'passphrase'}"
+            style="flex:1;min-width:160px;padding:7px 10px;font-size:13px;
+                   background:var(--surface2);border:1px solid var(--border);
+                   border-radius:4px;color:var(--text);font-family:var(--mono)"
+            onkeydown="if(event.key==='Enter')submitVaultUnlock()">
+          <button class="btn-add" style="padding:6px 14px;font-size:11px"
+                  onclick="submitVaultUnlock()">Unlock</button>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+          <button class="btn-header-action" style="padding:3px 8px;font-size:10px"
+                  onclick="_secUseRecoveryKey=!_secUseRecoveryKey;refreshSecretsList()">
+            ${_secUseRecoveryKey ? 'Use passphrase instead' : 'Use recovery key instead'}
+          </button>
+          <span id="vault-unlock-status" style="font-size:11px;color:var(--danger,#c94a3a)"></span>
+        </div>
+      </div>`;
+    const input = document.getElementById('vault-unlock-input');
+    if (input) input.focus();
+  } else if (state === 'unconfigured') {
+    bar.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;
+                  flex-wrap:wrap;padding:8px 12px;margin-bottom:12px;border:1px solid var(--border);
+                  border-radius:4px">
+        <div style="font-size:11px;color:var(--text-faint);line-height:1.5;flex:1;min-width:200px">
+          No vault passphrase set — the server can decrypt secrets as soon as it
+          starts. Set one so the vault stays locked until you unlock it by hand.
+        </div>
+        <button class="btn-header-action" style="padding:5px 12px;font-size:11px;flex-shrink:0"
+                onclick="openVaultSetPassphrase()">Set a passphrase</button>
+      </div>`;
+  } else if (state === 'unlocked') {
+    bar.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:6px">
+        <button class="btn-header-action" style="padding:3px 8px;font-size:10px"
+                onclick="openVaultChangePassphrase()">&#x1F513; Vault unlocked — change passphrase</button>
+      </div>`;
+  } else {
+    bar.innerHTML = '';
+  }
+}
+
+async function submitVaultUnlock() {
+  const input = document.getElementById('vault-unlock-input');
+  const statusEl = document.getElementById('vault-unlock-status');
+  const value = (input && input.value || '').trim();
+  if (!value) return;
+  const body = _secUseRecoveryKey ? { recovery_key: value } : { passphrase: value };
+  try {
+    const res = await fetch(API_BASE + '/api/secrets/vault-lock/unlock', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const out = await res.json();
+    if (!res.ok) {
+      if (statusEl) statusEl.textContent = out.error || 'wrong ' + (_secUseRecoveryKey ? 'recovery key' : 'passphrase');
+      if (input) { input.value = ''; input.focus(); }
+      return;
+    }
+    showToast('Vault unlocked');
+    await refreshSecretsList();
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Unlock failed: ' + e.message;
+  }
+}
+
+function openVaultSetPassphrase() {
+  const modalId = '__vault-set-passphrase';
+  if (openModals.has(modalId)) closeModalById(modalId);
+  const win = document.createElement('div');
+  win.className = 'modal-window';
+  win.dataset.modalId = modalId;
+  const content = document.createElement('div');
+  content.className = 'modal-content';
+  _clampModalSize(content, 480);
+  content.innerHTML = `
+    <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
+      <span style="font-size:16px;font-weight:700;color:var(--text)">&#x1F512; Set a vault passphrase</span>
+      <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
+        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+      </div>
+    </div>
+    <div style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
+      <div style="font-size:11px;color:var(--text-faint);line-height:1.55">
+        The server will start locked after every restart until a human unlocks
+        it from this dashboard. You'll also get a one-time recovery key —
+        write it down, it's the only backup if you forget the passphrase.
+      </div>
+      <div>
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">1. Passphrase</label>
+        <input type="password" id="vsp-pass" autocomplete="new-password"
+          style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
+                 border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
+      </div>
+      <div>
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">2. Confirm</label>
+        <input type="password" id="vsp-pass2" autocomplete="new-password"
+          style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
+                 border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
+      </div>
+      <div id="vsp-status" style="font-size:11px;color:var(--danger,#c94a3a);min-height:14px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn-secondary" onclick="closeModalById('${modalId}')">Cancel</button>
+        <button class="btn-add" onclick="submitVaultSetPassphrase('${modalId}')">Set passphrase</button>
+      </div>
+    </div>`;
+  win.appendChild(content);
+  document.getElementById('modal-layer').appendChild(win);
+  const z = nextModalZ++;
+  win.style.zIndex = z;
+  openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
+  centerModalElement(win);
+  focusModal(modalId);
+  document.getElementById('vsp-pass').focus();
+}
+
+async function submitVaultSetPassphrase(modalId) {
+  const pass = document.getElementById('vsp-pass').value;
+  const pass2 = document.getElementById('vsp-pass2').value;
+  const statusEl = document.getElementById('vsp-status');
+  if (pass.length < 8) { statusEl.textContent = 'At least 8 characters.'; return; }
+  if (pass !== pass2) { statusEl.textContent = "Passphrases don't match."; return; }
+  try {
+    const res = await fetch(API_BASE + '/api/secrets/vault-lock/set', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passphrase: pass }),
+    });
+    const out = await res.json();
+    if (!res.ok) { statusEl.textContent = out.error || 'Failed to set passphrase.'; return; }
+    closeModalById(modalId);
+    _showVaultRecoveryKey(out.recovery_key);
+    await refreshSecretsList();
+  } catch (e) {
+    statusEl.textContent = 'Failed: ' + e.message;
+  }
+}
+
+function _showVaultRecoveryKey(recoveryKey) {
+  const modalId = '__vault-recovery-key';
+  if (openModals.has(modalId)) closeModalById(modalId);
+  const win = document.createElement('div');
+  win.className = 'modal-window';
+  win.dataset.modalId = modalId;
+  const content = document.createElement('div');
+  content.className = 'modal-content';
+  _clampModalSize(content, 480);
+  content.innerHTML = `
+    <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
+      <span style="font-size:16px;font-weight:700;color:var(--text)">Save your recovery key</span>
+    </div>
+    <div style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
+      <div style="font-size:11px;color:var(--text-faint);line-height:1.55">
+        This is shown <strong>once</strong>. It unlocks the vault if you ever
+        forget the passphrase — there is no other way in.
+      </div>
+      <code style="display:block;padding:12px;background:var(--surface2);border:1px solid var(--border);
+                   border-radius:4px;font-size:14px;letter-spacing:1px;text-align:center;
+                   word-break:break-all;color:var(--text)">${esc(recoveryKey)}</code>
+      <button class="btn-header-action" style="padding:6px 12px;font-size:11px"
+              onclick="navigator.clipboard.writeText('${esc(recoveryKey)}').then(()=>showToast('Copied'))">Copy</button>
+      <div style="display:flex;justify-content:flex-end">
+        <button class="btn-add" onclick="closeModalById('${modalId}')">I've saved it</button>
+      </div>
+    </div>`;
+  win.appendChild(content);
+  document.getElementById('modal-layer').appendChild(win);
+  const z = nextModalZ++;
+  win.style.zIndex = z;
+  openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
+  centerModalElement(win);
+  focusModal(modalId);
+}
+
+function openVaultChangePassphrase() {
+  const modalId = '__vault-change-passphrase';
+  if (openModals.has(modalId)) closeModalById(modalId);
+  const win = document.createElement('div');
+  win.className = 'modal-window';
+  win.dataset.modalId = modalId;
+  const content = document.createElement('div');
+  content.className = 'modal-content';
+  _clampModalSize(content, 480);
+  content.innerHTML = `
+    <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
+      <span style="font-size:16px;font-weight:700;color:var(--text)">Change vault passphrase</span>
+      <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
+        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+      </div>
+    </div>
+    <div style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
+      <div style="font-size:11px;color:var(--text-faint);line-height:1.55">
+        Your recovery key from setup still works after this — only the
+        passphrase leg changes.
+      </div>
+      <div>
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">1. Current passphrase</label>
+        <input type="password" id="vcp-old" autocomplete="current-password"
+          style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
+                 border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
+      </div>
+      <div>
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">2. New passphrase</label>
+        <input type="password" id="vcp-new" autocomplete="new-password"
+          style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
+                 border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
+      </div>
+      <div id="vcp-status" style="font-size:11px;color:var(--danger,#c94a3a);min-height:14px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn-secondary" onclick="closeModalById('${modalId}')">Cancel</button>
+        <button class="btn-add" onclick="submitVaultChangePassphrase('${modalId}')">Change passphrase</button>
+      </div>
+    </div>`;
+  win.appendChild(content);
+  document.getElementById('modal-layer').appendChild(win);
+  const z = nextModalZ++;
+  win.style.zIndex = z;
+  openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
+  centerModalElement(win);
+  focusModal(modalId);
+  document.getElementById('vcp-old').focus();
+}
+
+async function submitVaultChangePassphrase(modalId) {
+  const oldPass = document.getElementById('vcp-old').value;
+  const newPass = document.getElementById('vcp-new').value;
+  const statusEl = document.getElementById('vcp-status');
+  if (newPass.length < 8) { statusEl.textContent = 'New passphrase: at least 8 characters.'; return; }
+  try {
+    const res = await fetch(API_BASE + '/api/secrets/vault-lock/change', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ old_passphrase: oldPass, new_passphrase: newPass }),
+    });
+    const out = await res.json();
+    if (!res.ok) { statusEl.textContent = out.error || 'Failed to change passphrase.'; return; }
+    closeModalById(modalId);
+    showToast('Passphrase changed');
+  } catch (e) {
+    statusEl.textContent = 'Failed: ' + e.message;
+  }
 }
 
 function copySecretPlaceholder(name) {

@@ -251,6 +251,48 @@ agent-facing write path. This mirrors the learning-system authority guard
 (CLAUDE.md): machinery must never be able to expand the agent's own capability
 set.
 
+## Passphrase lock (MC backlog 503edfe4)
+
+Agents run as the same OS user as the server, so a master key the server can
+read unattended, an agent can read too — the keyring/DPAPI/file backends
+above all share that property. The passphrase lock closes it: the key is
+never written to disk unwrapped. It exists in plaintext only in a
+process-memory variable (`mc.secrets_store._unlocked_key`), set by a
+**human-only** unlock call, for the life of the process. The server starts
+**locked** after every restart until a human unlocks it from the dashboard
+(Settings → Vault).
+
+This is opt-in and additive — a box that has never called `set_passphrase()`
+behaves exactly as every section above describes, unchanged. Setting a
+passphrase for the first time reuses the existing keyring/file-backend lookup
+in `load_master_key()` to find whatever key already protects the store and
+wraps it — the legacy key material is never deleted, only joined by the new
+wrapped copy at `~/.clayrune/secrets.key.wrapped`.
+
+That file holds the master key twice: once wrapped by a KEK derived
+(`scrypt`) from the human's passphrase, once wrapped by a KEK derived from a
+160-bit recovery key shown exactly once, at setup time. Either unwrap is
+checked against an HMAC fingerprint of the key before being trusted — a wrong
+passphrase or recovery key is **detected and refused**, never silently
+accepted as a fresh key (the failure mode that produced the 2026-09-14
+silent-remint incident this fingerprint scheme was built to catch — see
+`docs/_journal/vault-keyring-remint-2026-09-15.md`).
+
+Every read path funnels through `load_master_key()`, so a locked vault fails
+closed everywhere at once: `get_secret_value`, TOTP code generation,
+`list_secrets(check_readable=True)` (each entry reports `readable: false`
+without raising), `GET /api/secrets` (reports `locked: true` and metadata
+only). A locked vault fires **one** push notification per lock period
+(`_lock_notified`), not one per job that hits it.
+
+The unlock, set-passphrase, and change-passphrase routes all refuse an
+unattended caller the same way every other vault write route does (see
+"Policy controls" above) — an agent that could unlock the vault would defeat
+the whole point of a lock it can't read past on its own. The status route
+(`GET /api/secrets/vault-lock`) is the one exception: it reveals only
+`unconfigured` / `locked` / `unlocked`, never a key or a value, so a job that
+hits `VaultLocked` downstream can at least report *why* to a human.
+
 ## HTTP surface
 
 | Verb | Path | Purpose |
@@ -261,6 +303,10 @@ set.
 | DELETE | `/api/secrets/<name>` | delete |
 | GET | `/api/secrets/audit` | recent access records |
 | POST | `/api/secrets/check` | dry-run a template: which secrets does it use, and would each resolve? |
+| GET | `/api/secrets/vault-lock` | lock state (`unconfigured`/`locked`/`unlocked`) — any caller |
+| POST | `/api/secrets/vault-lock/set` | first-time passphrase setup — human-only |
+| POST | `/api/secrets/vault-lock/change` | rotate the passphrase — human-only |
+| POST | `/api/secrets/vault-lock/unlock` | unlock with passphrase or recovery key — human-only |
 
 **There is deliberately no route that returns a plaintext value.** A value only
 ever leaves the process into a child process's environment or a resolved

@@ -17,6 +17,10 @@ Routes:
                                                and are they all resolvable?
     POST   /api/secrets/import-authenticator   Google Authenticator export QR
     POST   /api/secrets/totp/<name>            does this code match? (yes/no)
+    GET    /api/secrets/vault-lock             passphrase-lock state (any caller)
+    POST   /api/secrets/vault-lock/set         first-time passphrase setup (human-only)
+    POST   /api/secrets/vault-lock/change      rotate the passphrase (human-only)
+    POST   /api/secrets/vault-lock/unlock      unlock with passphrase or recovery key (human-only)
 
 The TOTP probe returns a boolean, never our own code — a route that minted live
 second factors would be the plaintext hole this design otherwise refuses.
@@ -53,6 +57,21 @@ def _unattended_refusal():
 @bp.route('/api/secrets')
 def api_secrets_list():
     project_id = request.args.get('project_id') or None
+    if vault.is_locked():
+        # Deliberately short-circuit before list_secrets(check_readable=True):
+        # that path decrypts nothing when locked (is_readable() swallows
+        # VaultLocked and reports False), which would render as EVERY secret
+        # looking permanently broken instead of the vault being locked.
+        # Metadata (names/scope) is still safe to show — only values are gated.
+        items = vault.list_secrets(project_id, check_readable=False)
+        return jsonify({
+            'secrets': items,
+            'key_backend': 'locked',
+            'locked': True,
+            'key_at_rest_warning': '',
+            'unreadable_count': 0,
+            'key_mismatch': False,
+        })
     try:
         # check_readable actually decrypts each entry to prove it, rather
         # than just confirming it exists — the 2026-09-14 silent-remint
@@ -76,6 +95,7 @@ def api_secrets_list():
     return jsonify({
         'secrets': items,
         'key_backend': backend,
+        'locked': False,
         # The UI badges this: a file-backed key is readable by anything running
         # as this user, whereas the OS keyring is at least gated by the login
         # session. Worth telling the operator which one they're on.
@@ -264,6 +284,71 @@ def api_secrets_audit():
     except ValueError:
         limit = 100
     return jsonify({'records': vault.audit_tail(limit)})
+
+
+@bp.route('/api/secrets/vault-lock')
+def api_vault_lock_state():
+    """Read-only status — safe for any caller, including agents: it never
+    reveals the key or a secret, only which of the three states the vault
+    is in (see ``vault.lock_state()``)."""
+    return jsonify({
+        'state': vault.lock_state(),
+        'configured': vault.lock_state() != 'unconfigured',
+    })
+
+
+@bp.route('/api/secrets/vault-lock/set', methods=['POST'])
+def api_vault_lock_set():
+    """First-time passphrase setup. Human-only (MC 503edfe4): an agent that
+    could set the passphrase could just as easily set one only it knows."""
+    if is_unattended_caller():
+        return _unattended_refusal()
+    data = request.get_json(silent=True) or {}
+    passphrase: str = str(data.get('passphrase') or '')
+    try:
+        recovery_key = vault.set_passphrase(passphrase)
+    except vault.SecretsError as e:
+        return _err(e)
+    return jsonify({'ok': True, 'recovery_key': recovery_key})
+
+
+@bp.route('/api/secrets/vault-lock/change', methods=['POST'])
+def api_vault_lock_change():
+    if is_unattended_caller():
+        return _unattended_refusal()
+    data = request.get_json(silent=True) or {}
+    try:
+        vault.change_passphrase(
+            str(data.get('old_passphrase') or ''),
+            str(data.get('new_passphrase') or ''))
+    except vault.SecretDenied as e:
+        return _err(e, 403)
+    except vault.SecretsError as e:
+        return _err(e)
+    return jsonify({'ok': True})
+
+
+@bp.route('/api/secrets/vault-lock/unlock', methods=['POST'])
+def api_vault_lock_unlock():
+    """Passcode-gated unlock. Human-only: an agent calling this would defeat
+    the whole point of a lock an agent can't read past on its own."""
+    if is_unattended_caller():
+        return _unattended_refusal()
+    data = request.get_json(silent=True) or {}
+    passphrase: str = str(data.get('passphrase') or '')
+    recovery_key: str = str(data.get('recovery_key') or '')
+    if not passphrase and not recovery_key:
+        return jsonify({'error': 'passphrase or recovery_key is required'}), 400
+    try:
+        if recovery_key:
+            vault.unlock_with_recovery_key(recovery_key)
+        else:
+            vault.unlock_with_passphrase(passphrase)
+    except vault.SecretDenied as e:
+        return _err(e, 403)
+    except vault.SecretsError as e:
+        return _err(e)
+    return jsonify({'ok': True, 'state': vault.lock_state()})
 
 
 @bp.route('/api/secrets/check', methods=['POST'])
