@@ -152,7 +152,11 @@ def run_contradictions(m, project, pairs, topk, expand):
         hits = m._memory_search(project, p['query'], SEARCH_DEPTH, expand=expand, record=None)
         stale_rank = find_rank(m, hits, p['stale']['match_type'], p['stale']['match_value'])
         corr_rank = find_rank(m, hits, p['corrected']['match_type'], p['corrected']['match_value'])
-        passed = (corr_rank is not None and
+        # The correction must actually be DELIVERED (rank <= depth), not just
+        # outrank the stale record somewhere in the search list. First
+        # baseline (2026-09-23) "passed" with the correction at rank 14 of a
+        # 12-slot delivery, i.e. the agent never saw it.
+        passed = (corr_rank is not None and corr_rank <= depth and
                   (stale_rank is None or corr_rank < stale_rank))
         out.append({'id': p['id'], 'subject': p['subject'], 'query': p['query'],
                     'stale_rank': stale_rank, 'corrected_rank': corr_rank,
