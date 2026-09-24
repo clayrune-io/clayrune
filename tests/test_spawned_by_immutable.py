@@ -96,6 +96,115 @@ def test_row_spawned_by_reads_the_immutable_field_not_notify_session():
     assert ar._row_spawned_by({}, live) == 'real-parent'
 
 
+def test_durable_spawner_of_record_rejects_pollution_on_manual_row():
+    """The exact reported production case (project 'Find Ron a Job',
+    2026-09-24): Delaney's own row is an ordinary user-opened chat
+    (`trigger_type='manual'`, no `dispatched_by_session_id` because it
+    predates that field) whose legacy `spawned_by_session_id` was re-armed to
+    Cutler purely because Cutler messaged Delaney with `notify_session=Cutler`.
+    A row that never carries the durable dispatch marker must NOT have its
+    legacy field trusted as a spawner -- Delaney must resolve to no spawner,
+    not to Cutler.
+    """
+    delaney_row = {
+        'session_id': '5edd10858aec', 'trigger_type': 'manual', 'source': '',
+        'spawned_by_session_id': 'b35bf09c440e', 'dispatched_by_session_id': None,
+    }
+    assert ar._durable_spawner_of_record(delaney_row) == ''
+
+
+def test_durable_spawner_of_record_trusts_legacy_dispatch_marked_row():
+    """A pre-fix row that WAS actually dispatched (`trigger_type='dispatch'`,
+    set once at dispatch time, never touched by send/interrupt) is safe to
+    fall back to its legacy `spawned_by_session_id` when the durable field is
+    missing -- this is Cutler's real row from the same incident, and it must
+    still resolve to Delaney so Cutler's banner stays correct.
+    """
+    cutler_row = {
+        'session_id': 'b35bf09c440e', 'trigger_type': 'dispatch',
+        'spawned_by_session_id': '5edd10858aec', 'dispatched_by_session_id': None,
+    }
+    by_sid = {
+        'b35bf09c440e': cutler_row,
+        '5edd10858aec': {
+            'session_id': '5edd10858aec', 'trigger_type': 'manual', 'source': '',
+            'spawned_by_session_id': 'b35bf09c440e', 'dispatched_by_session_id': None,
+        },
+    }
+    assert ar._durable_spawner_of_record(cutler_row, by_sid) == '5edd10858aec'
+
+
+def test_durable_spawner_of_record_breaks_two_node_cycle():
+    """Two dispatch-marked rows whose legacy fields point at each other is
+    proof of mutual pollution (both re-armed each other's callback target at
+    some point) -- neither side's legacy value is trustworthy, so both must
+    resolve to no spawner rather than each claiming the other dispatched it.
+    """
+    row_a = {'session_id': 'A', 'trigger_type': 'dispatch',
+              'spawned_by_session_id': 'B', 'dispatched_by_session_id': None}
+    row_b = {'session_id': 'B', 'trigger_type': 'dispatch',
+              'spawned_by_session_id': 'A', 'dispatched_by_session_id': None}
+    by_sid = {'A': row_a, 'B': row_b}
+    assert ar._durable_spawner_of_record(row_a, by_sid) == ''
+    assert ar._durable_spawner_of_record(row_b, by_sid) == ''
+
+
+def test_revive_non_claude_does_not_repollute_from_manual_row(monkeypatch):
+    """Defect caught in review of 855d960: reviving a session whose row looks
+    like Delaney's (manual trigger, no durable field, legacy field re-armed to
+    a callback target that was never a real spawner) must not pass that
+    pollution through to `_dispatch_agent_internal`'s `spawned_by=` -- doing
+    so would let `_log_agent_dispatch_pending` write it back as a fresh
+    `dispatched_by_session_id`, making the false banner permanent instead of
+    the one-turn artifact it was before this fix.
+    """
+    entry = {
+        'session_id': '5edd10858aec', 'trigger_type': 'manual', 'source': '',
+        'provider': 'codex', 'project_generation': 1,
+        'spawned_by_session_id': 'b35bf09c440e', 'dispatched_by_session_id': None,
+    }
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [entry])
+    monkeypatch.setattr(ar, '_assert_runtime_project_generation', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_continuation_effort', lambda *a, **k: '')
+    monkeypatch.setattr(ar, '_requested_model_snapshot', lambda *a, **k: '')
+
+    captured = {}
+    def _fake_dispatch(*a, **k):
+        captured.update(k)
+        return {'session_id': entry['session_id']}
+    monkeypatch.setattr(ar, '_dispatch_agent_internal', _fake_dispatch)
+
+    result = ar._revive_non_claude_from_agent_log('p', entry['session_id'], 'hi', {'id': 'p'})
+    assert result == entry['session_id']
+    assert captured.get('spawned_by', '') == ''
+
+
+def test_revive_non_claude_carries_legacy_spawner_for_dispatch_marked_row(monkeypatch):
+    """Counterpart: a row that WAS actually dispatched (Cutler's shape) must
+    still carry its real spawner across a revive -- the fix must reject
+    pollution without also breaking the legitimate legacy-fallback case.
+    """
+    entry = {
+        'session_id': 'b35bf09c440e', 'trigger_type': 'dispatch', 'source': 'agent',
+        'provider': 'codex', 'project_generation': 1,
+        'spawned_by_session_id': '5edd10858aec', 'dispatched_by_session_id': None,
+    }
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [entry])
+    monkeypatch.setattr(ar, '_assert_runtime_project_generation', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_continuation_effort', lambda *a, **k: '')
+    monkeypatch.setattr(ar, '_requested_model_snapshot', lambda *a, **k: '')
+
+    captured = {}
+    def _fake_dispatch(*a, **k):
+        captured.update(k)
+        return {'session_id': entry['session_id']}
+    monkeypatch.setattr(ar, '_dispatch_agent_internal', _fake_dispatch)
+
+    result = ar._revive_non_claude_from_agent_log('p', entry['session_id'], 'hi', {'id': 'p'})
+    assert result == entry['session_id']
+    assert captured.get('spawned_by', '') == '5edd10858aec'
+
+
 def test_agent_status_spawned_by_reads_spawned_by_not_notify_session(monkeypatch, tmp_path):
     """`/agent/status`'s `spawned_by_session_id` field (feeds the chat header
     banner via conversation.js `spawnedBySessionId`) must come from the
