@@ -33,6 +33,7 @@ both names through the server.py shims).
 
 import difflib
 import json
+import mimetypes
 import os
 import re
 import subprocess
@@ -2319,6 +2320,33 @@ def _is_secret_file(real_path):
     return False
 
 
+# Rendered inline, these types execute as a first-party document on
+# Clayrune's own origin — an agent-written .html dropped into an allowlisted
+# root and opened via ?inline=1 gets a real same-origin fetch() against every
+# other Clayrune API (Wren, 2026-09-15 security review, blocker B; carried
+# forward from clayrune/agent/37aaa8c923bb-vault-review-fixes f6a8159's
+# parent c49e61e). That first version applied unconditionally and broke
+# model-web-viewer's per-model HTML pages (they downloaded instead of
+# rendering) — the same shape of agent-writable content the fix targeted, but
+# a sanctioned one. Narrowed here (MC backlog 503edfe4) to only allow inline
+# HTML/SVG/XML for a path actually served from a REGISTERED PROJECT's own
+# working dir — never from UPLOADS_DIR/media (arbitrary uploaded content, more
+# exposed) and never from inside ~/.clayrune (vault state) even if a
+# misconfigured project_path somehow pointed there.
+_INLINE_UNSAFE_TYPES = {
+    'text/html', 'application/xhtml+xml', 'image/svg+xml',
+    'application/xml', 'text/xml',
+}
+
+
+def _clayrune_home_realpath() -> str | None:
+    try:
+        from mc.secrets_store import clayrune_home
+        return os.path.normcase(os.path.realpath(str(clayrune_home())))
+    except Exception:
+        return None
+
+
 @bp.route('/api/serve-file')
 def serve_file():
     """Serve ANY file the agent deep-links, for local + remote consoles.
@@ -2327,7 +2355,8 @@ def serve_file():
     but a PROJECT-SCOPED allowlist (project working dirs + uploads/media — NOT
     the whole data root, so project records/rules stay unreachable) plus a
     secrets denylist. Serves as an attachment (download) by default; ?inline=1
-    lets the browser render it. Query: ?path=<abs>&inline=<0|1>.
+    lets the browser render it, except for HTML/SVG/XML outside a registered
+    project's own dir — see _INLINE_UNSAFE_TYPES. Query: ?path=<abs>&inline=<0|1>.
     """
     raw = (request.args.get('path') or '').strip()
     if not raw:
@@ -2342,8 +2371,11 @@ def serve_file():
         abort(403)
     # Allowlist: uploads + media (siblings under data/), and each project's
     # working dir. Deliberately NOT _DATA_ROOT — that would expose data/projects
-    # JSON, rules, other sidecars as downloadable links.
-    allowed = [str(UPLOADS_DIR), str(Path(_DATA_ROOT) / 'data' / 'media')]
+    # JSON, rules, other sidecars as downloadable links. Kept as two separate
+    # lists (rather than one merged list) so the inline-HTML gate below can
+    # tell which kind of root actually matched.
+    allowed_static = [str(UPLOADS_DIR), str(Path(_DATA_ROOT) / 'data' / 'media')]
+    allowed_projects = []
     try:
         for p in load_projects():
             pp = (p.get('project_path') or '').strip()
@@ -2356,12 +2388,13 @@ def serve_file():
                     continue
             except Exception:
                 continue
-            allowed.append(pp)
+            allowed_projects.append(pp)
     except Exception:
         pass
     rn = os.path.normcase(real)
     ok = False
-    for a in allowed:
+    matched_project = False
+    for a in allowed_static:
         try:
             ar = os.path.normcase(os.path.realpath(a))
         except Exception:
@@ -2370,8 +2403,25 @@ def serve_file():
             ok = True
             break
     if not ok:
+        for a in allowed_projects:
+            try:
+                ar = os.path.normcase(os.path.realpath(a))
+            except Exception:
+                continue
+            if rn == ar or rn.startswith(ar + os.sep):
+                ok = True
+                matched_project = True
+                break
+    if not ok:
         abort(403)
     inline = request.args.get('inline') in ('1', 'true', 'yes')
+    if inline:
+        guessed_type, _ = mimetypes.guess_type(real)
+        if (guessed_type or '').lower() in _INLINE_UNSAFE_TYPES:
+            home = _clayrune_home_realpath()
+            under_clayrune_home = bool(home) and (rn == home or rn.startswith(home + os.sep))
+            if not matched_project or under_clayrune_home:
+                inline = False
     return send_file(real, as_attachment=not inline,
                      download_name=os.path.basename(real), max_age=0)
 

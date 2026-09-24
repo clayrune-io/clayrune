@@ -26,14 +26,21 @@ def client(tmp_path, monkeypatch):
     (proj / '.env').write_text('SECRET=1', encoding='utf-8')
     (proj / 'server.pem').write_text('KEY', encoding='utf-8')
     (proj / 'aws_credentials.json').write_text('{}', encoding='utf-8')
+    (proj / 'viewer.html').write_text('<html>model</html>', encoding='utf-8')
 
     data_root = tmp_path / 'root'
     uploads = data_root / 'data' / 'uploads'
     media = data_root / 'data' / 'media'
     uploads.mkdir(parents=True); media.mkdir(parents=True)
     (uploads / 'shot.png').write_bytes(b'\x89PNG')
+    (uploads / 'upload.html').write_text('<html>upload</html>', encoding='utf-8')
     (data_root / 'data' / 'projects').mkdir(parents=True)
     (data_root / 'data' / 'projects' / 'secret.json').write_text('{"k":1}', encoding='utf-8')
+
+    clayrune_home = tmp_path / 'clayrune-home'
+    clayrune_home.mkdir()
+    (clayrune_home / 'inside.html').write_text('<html>vault</html>', encoding='utf-8')
+    monkeypatch.setenv('CLAYRUNE_HOME', str(clayrune_home))
 
     outside = tmp_path / 'outside'
     outside.mkdir()
@@ -48,6 +55,7 @@ def client(tmp_path, monkeypatch):
     return server.app.test_client(), {
         'proj': proj, 'uploads': uploads, 'media': media,
         'data_root': data_root, 'outside': outside,
+        'clayrune_home': clayrune_home,
     }
 
 
@@ -118,3 +126,37 @@ def test_missing_file_404(client):
 def test_no_path_400(client):
     c, d = client
     assert c.get('/api/serve-file').status_code == 400
+
+
+# ── Inline-HTML gate (MC backlog 503edfe4) ───────────────────────────────────
+# A prior fix forced every ?inline=1 HTML/SVG/XML request to download instead,
+# unconditionally — closing the same-origin-fetch hole (Wren, 2026-09-15) but
+# also breaking model-web-viewer's per-model HTML pages. Narrowed: inline HTML
+# is allowed from a registered project's own dir, never from uploads/media,
+# and never from inside ~/.clayrune even via a project path.
+
+def test_inline_html_renders_from_a_project_dir(client):
+    c, d = client
+    r = _get(c, d['proj'] / 'viewer.html', inline='1')
+    assert r.status_code == 200
+    assert 'attachment' not in r.headers.get('Content-Disposition', '')
+
+
+def test_inline_html_downloads_from_uploads(client):
+    c, d = client
+    r = _get(c, d['uploads'] / 'upload.html', inline='1')
+    assert r.status_code == 200
+    assert 'attachment' in r.headers.get('Content-Disposition', '')
+
+
+def test_inline_html_downloads_from_clayrune_home_even_via_project_path(client, monkeypatch):
+    c, d = client
+    from mc.blueprints import project_routes as pr
+    # A misconfigured project pointed straight at ~/.clayrune — still must not
+    # get same-origin HTML execution against vault state.
+    monkeypatch.setattr(
+        pr, 'load_projects',
+        lambda: [{'id': 'p', 'project_path': str(d['clayrune_home'])}])
+    r = _get(c, d['clayrune_home'] / 'inside.html', inline='1')
+    assert r.status_code == 200
+    assert 'attachment' in r.headers.get('Content-Disposition', '')
