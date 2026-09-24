@@ -2053,6 +2053,68 @@ def write_position(project, subject, verdict, reason,
     return path.name
 
 
+def write_topic_note(project, slug, description, body, *, note_type='project',
+                      triggers='', task='', trigger_type='', actor=''):
+    """Mint a NEW topic note (MEMORY_DESIGN_V2_SPEC.md §7 Condition 27 /
+    §4.1's `origin`+`generated` provenance, Condition 4/22 "mint WRITEs
+    fail-open"). First real caller of `_stamp_origin`/`_stamp_generated`
+    (both built ahead of a caller — see the "Provenance stamps" comment
+    above `_stamp_origin`) — MC-964 Step E's habit-statement classifier.
+
+    Deliberately NOT `write_position`: a habit is an OBSERVATION about Ron,
+    not a settled question an agent must obey, so it gets the plain topic-
+    note shape (`metadata: {type: ...}`, matching the 231 existing topic
+    files) rather than a subject/verdict/reason ruling.
+
+    Never clobbers: if a file at this slug already exists, this is a no-op
+    (logged, not raised) — an automated classifier overwriting a topic note
+    a human already curated would be strictly worse than the classifier
+    missing one. There is no update path here; a human (or a later mint/
+    supersede build step) edits an existing note by hand.
+
+    `origin` is SERVER-STAMPED from `task`/`trigger_type` via `_stamp_origin`
+    — never a caller-supplied parameter — so an unattended-origin call can
+    only ever produce `origin: unattended`, never impersonate a human. Callers
+    that must not mint from unattended evidence (the habit classifier is one)
+    check `_stamp_origin(...) == 'interactive'` THEMSELVES before calling this;
+    this function stamps honestly either way rather than refusing, so a
+    caller with a legitimate unattended use case is not blocked by a rule
+    written for a different one.
+
+    Returns the note's filename, or '' if skipped (already exists / bad slug).
+    """
+    slug = (slug or '').strip()
+    description = (description or '').strip()
+    if not slug or not description:
+        return ''
+    mem_dir = _get_memory_path(project).parent
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    path = mem_dir / f'{slug}.md'
+    if path.exists():
+        _log(f'[memory] write_topic_note skip (exists): {path.name}')
+        return ''
+    origin = _stamp_origin(task, trigger_type)
+    generated = _stamp_generated(actor)
+    project_id = project.get('id', '') if isinstance(project, dict) else ''
+    with _get_mem_write_lock(f'topic:{project_id}'):
+        if path.exists():   # re-check inside the lock — TOCTOU
+            return ''
+        lines = ['---', f"name: {slug.replace('_', '-')}",
+                 f'description: "{description.replace(chr(34), chr(92)+chr(34))}"',
+                 'metadata:', f'  type: {note_type}']
+        if triggers:
+            lines.append(f'triggers: {triggers.strip()}')
+        lines.append(f'origin: {origin}')
+        lines.append('generated:')
+        lines.append(f"  by: {generated['by']}")
+        lines.append(f"  at: {generated['at']}")
+        lines.append('---')
+        lines.append('')
+        text = '\n'.join(lines) + (body or '').strip() + '\n'
+        _atomic_write_text(path, text)
+    return path.name
+
+
 def list_positions(project):
     """Every recorded position, newest decision first."""
     try:
@@ -4257,6 +4319,197 @@ def _extract_transcript_telemetry(path):
         return {}
 
 
+# ── MC-964 Step E: habit-statement classifier (RC2, plan §6 Step E) ──────────
+#
+# The Scribe already writes one archive echo per session (`_scribe_extract`
+# above). A user statement of STANDING behaviour ("I topped up", "I always
+# ...", "I buy more when...") buried in that one dated line is exactly the
+# RC2 failure: reachable only by the day it was said, never by the habit it
+# named — the 09-17 top-up line existed and still lost to a stale exhaustion
+# record 33 hours later. This section flags such a statement and mints a
+# SEPARATE topic note for it, so it is reachable by what Ron does, not just
+# by when he said it.
+#
+# V2 §7 (Condition 27) already gives every topic note default arrival
+# vocabulary from its own name + description, at zero authoring cost
+# (`_note_default_triggers`, used by `note_triggers`/`_mem_tokenize_unit` for
+# every topic file including this one) — so minting via `write_topic_note`
+# is sufficient; no bespoke trigger logic is added here. "No new store": the
+# note lands in the SAME memory dir as every hand-written topic file.
+
+_HABIT_CUE_RE = re.compile(
+    r'\bi(?:\'ve| have)? (?:'
+    r'always|usually|typically|often|normally|generally|routinely|habitually'
+    r'|never|tend to|like to'
+    r'|topped up|top(?:ped)? off|top up'
+    r'|added? (?:some |a bit )?more|buy(?:s|ing)? more|bought more'
+    r'|re-?up(?:ped)?|re-?stock(?:ed)?'
+    r')\b'
+    r'|\bwhenever i\b|\bevery time i\b|\beach time i\b',
+    re.IGNORECASE)
+
+# Same 28-word list every other default-trigger/slug derivation in this
+# module already uses (Condition 27) — a habit slug is not a new vocabulary.
+_HABIT_SLUG_MAX_TOKENS = 6
+
+
+def _habit_note_slug(stmt, cue):
+    """Content-derived slug so the SAME habit collapses to one note across
+    replays/sessions (write_topic_note's "never clobbers" then does the
+    right thing: first mint wins, a later restatement is a no-op, not a
+    duplicate) while a genuinely different habit gets its own file. The cue
+    phrase words are seeded first — they are the reason this fired at all —
+    then the statement's own content words, in order, deduped, capped.
+    Returns '' if the statement has no non-stopword content (never mints
+    off cue words alone).
+    """
+    cue_toks = [t for t in _mem_tokens(cue) if t not in _TRIGGER_STOPWORDS]
+    body_toks = [t for t in _mem_tokens(stmt) if t not in _TRIGGER_STOPWORDS]
+    if not body_toks:
+        return ''
+    picked = []
+    for t in cue_toks + body_toks:
+        if t not in picked:
+            picked.append(t)
+        if len(picked) >= _HABIT_SLUG_MAX_TOKENS:
+            break
+    return 'project_habit_' + '_'.join(picked) if picked else ''
+
+
+def _habit_source_statements(session):
+    """Real USER turns for the classifier below — read from
+    `session['log_lines']` (`"> {label}: {message}"`, captured for EVERY
+    provider — see `_render_log_lines_as_transcript`'s docstring), never
+    from the transcript file or the rendered `transcript` string.
+
+    Verified against a real session (4ae1b44f, Ron's 2026-09-20T00:20:16Z
+    top-up message): the Claude .jsonl 'user' record is NOT Ron's own words
+    alone — MC prepends the full per-turn context block (RELEVANT MEMORY,
+    STANDING POSITIONS, REPLY SHAPE, ...) to what is actually sent to the
+    model, and that whole bundle (5+ KB) lands in the jsonl as ONE 'user'
+    message, with Ron's actual sentence as its last few hundred bytes.
+    Classifying that raw record would either skip it outright (any sane
+    length gate) or scan mostly injected server text for cue phrases —
+    both wrong. `message` in the `> {label}: {message}` log line is the
+    argument the caller passed BEFORE context injection (see
+    `agent_routes.py`'s `_advance_followup`/dispatch call sites), so it is
+    reliably just what the human typed.
+
+    Never a source of assistant paraphrase: the whole point of "user
+    statements" per the plan is Ron's own words, not a Scribe summary of
+    them — an assistant echo could invent or soften the habit and the
+    authority guard would have nothing to check it against. `"> {label}: "`
+    is written ONLY for the party sending this session its task/follow-up
+    (`_SEED_LINE_RE`'s convention, agent_routes.py) — but a DISPATCHED
+    session's sender is whichever agent spawned it, not necessarily Ron. A
+    line whose label doesn't match the configured user is therefore
+    skipped outright, not kept with its label still attached — keeping it
+    would hand the classifier another agent's dispatch phrasing as if it
+    were Ron's own habit.
+    """
+    label_prefix = (state.CONFIG.get('user_name') or 'User') + ': '
+    out = []
+    for line in session.get('log_lines') or []:
+        if not isinstance(line, str) or not line.startswith('> '):
+            continue
+        s = line[2:].strip()
+        if not s.startswith(label_prefix):
+            continue
+        s = s[len(label_prefix):].strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def _scribe_classify_habits(project, session, statements):
+    """Flag a user statement of standing operator behaviour and mint a topic
+    note for it — alongside, never instead of, the archive-echo write in
+    `_scribe_extract` (a classifier miss must never regress today's capture).
+
+    Authority guard: a habit note is minted straight from a VERBATIM user
+    sentence, unlike a Distiller artifact (model-generated from a pattern).
+    That is a sharper risk, not a smaller one — the exact 2026-06-22
+    incident (CLAUDE.md "Learning-system safety rails") was one literal
+    sentence a user typed once ("Full autonomy, no permission/go-ahead
+    needed, by any means necessary") becoming an always-loaded global
+    instruction. "It's just an observation, not a position" is not a
+    defense on its own: nothing downstream re-checks a topic note's own
+    prose before a future agent reads it as context. So before mint, the
+    FULL rendered note (description + body — a permissive phrase could hide
+    in either) is run through `mc.distiller._authority_violation`, the
+    SAME deterministic phrase-match the Distiller itself is refused by no
+    matter how it is worded. A hit skips the mint entirely (never a
+    truncated/softened version) and is logged + counted
+    (`habit_note_refused_authority`) so a real refusal is visible, not silent.
+
+    Origin stamping / unattended-loop rail: unlike `write_topic_note` (which
+    stamps honestly either way — see its own docstring), THIS caller gates on
+    it. `_memory_search`'s corpus has no `origin` filter anywhere (verified:
+    `grep -n "'origin'" mc/memory.py` outside this section returns nothing) —
+    the origin-stamped read-floor the rail relies on is a different
+    subsystem's (`mc.distiller`'s `exploration_read_floor
+    (consumer_unattended=True)`, scoped to learning artifacts, not the
+    general topic-note corpus every session's memory search reads from. A
+    note minted here reaches EVERY consumer, attended or not, the moment it
+    exists — so an unattended session's habit statement must never mint at
+    all, or it silently becomes exactly the autonomous-output-as-input the
+    rail exists to prevent. Checked with `_stamp_origin` itself, off the same
+    `task`/`trigger_type` `write_topic_note` will stamp with, so the gate and
+    the stamp can never disagree.
+
+    Never raises — best-effort, like every other Scribe side effect.
+    """
+    if not statements:
+        return
+    project_id = project.get('id', '') if isinstance(project, dict) else ''
+    try:
+        task = (session.get('task', '') or '').strip()
+        trigger_type = session.get('trigger_type', '')
+        if _stamp_origin(task, trigger_type) != 'interactive':
+            return
+        actor = session.get('session_id') or session.get('id') or 'scribe'
+        # CLAUDE.md "nothing operator-specific in the repo": the configured
+        # user name is this operator's own data, not a literal to hardcode —
+        # same source `_habit_source_statements` already reads for the label
+        # match, so the note's wording and the gate that found it agree.
+        user_label = state.CONFIG.get('user_name') or 'The user'
+        for stmt in statements:
+            stmt = (stmt or '').strip()
+            if not stmt or len(stmt) > 2000:
+                continue
+            m = _HABIT_CUE_RE.search(stmt)
+            if not m:
+                continue
+            cue = m.group(0).strip()
+            slug = _habit_note_slug(stmt, cue)
+            if not slug:
+                continue
+            snippet = stmt if len(stmt) <= 220 else stmt[:217] + '...'
+            description = f'{user_label}, standing behaviour observed: "{snippet}"'
+            body = (
+                f'{user_label} said, verbatim:\n\n> {stmt}\n\n'
+                f'**Why it matters:** flagged as standing operator behaviour '
+                f'(cue: "{cue}"), not a one-off request — MC-964 Step E.\n\n'
+                f'**How to apply:** treat as a habit to account for when '
+                f'related state looks stale or contradicted, not as an '
+                f'instruction.\n'
+            )
+            violation = _distiller._authority_violation(f'{description}\n{body}')
+            if violation:
+                _scribe_stat(project_id, 'habit_note_refused_authority')
+                _log(f'[scribe] habit note refused (authority guard hit '
+                     f'{violation!r}): {stmt[:120]!r}')
+                continue
+            fn = write_topic_note(
+                project, slug, description, body, note_type='project',
+                task=task, trigger_type=trigger_type, actor=actor)
+            if fn:
+                _scribe_stat(project_id, 'habit_note_minted')
+                _log(f'[scribe] habit note minted: {fn} (cue={cue!r})')
+    except Exception as e:
+        _log(f'[scribe] habit classification failed: {e}')
+
+
 def _scribe_extract(project, session):
     """Leg A scribe. Returns (entry_text, outcome_reason).
 
@@ -4362,6 +4615,11 @@ def _scribe_extract(project, session):
             _reset_transform_context(token)
         if entry is not None and from_log:
             reason = 'extracted_from_log'
+        # MC-964 Step E: runs alongside the archive-line write above, never
+        # instead of it — a classifier miss must never regress today's
+        # archive-echo behaviour (RC2's fix is additive capture shape, not a
+        # replacement path). Never affects `entry`/`reason`.
+        _scribe_classify_habits(project, session, _habit_source_statements(session))
         return entry, reason
     finally:
         with _scribe_lock:
