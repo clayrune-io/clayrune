@@ -2880,6 +2880,76 @@ def _allowance_refusal(vendor, *, user_initiated):
     return _allowance_state.refusal_message(vendor)
 
 
+_ALLOWANCE_VENDOR_MENTION_RE_CACHE: dict = {}
+
+
+def _vendor_mention_re(vendor):
+    rx = _ALLOWANCE_VENDOR_MENTION_RE_CACHE.get(vendor)
+    if rx is None:
+        rx = re.compile(r'\b' + re.escape(vendor) + r'\b', re.IGNORECASE)
+        _ALLOWANCE_VENDOR_MENTION_RE_CACHE[vendor] = rx
+    return rx
+
+
+def _allowance_conflict_block(task_text, hits):
+    """MC-964 Step D.2/D.3 — 'a newer memory unit or a user chat assertion on
+    the same vendor triggers ONE re-probe' (§7 decision 2, adopted position
+    mc964memoryoverhaul...). A live exhausted-vendor record whose name is
+    mentioned either in this turn's own message (`task_text`) or in a
+    memory unit the read-floor just delivered (`hits`) is worth asking the
+    vendor about again — the alternative is the 33-hour Codex blackout this
+    plan's journal measured, where nothing could contradict a stale record.
+
+    Re-probes through `_allowance_state.heal()`, which already throttles to
+    one vendor call per 30s — that throttle, not anything here, is what keeps
+    a long chat from turning into a probe loop; this function itself never
+    retries within a call. REPORT MODE only (§16 step 2 posture): the result
+    is rendered as two lines per vendor for the human/agent to read, it never
+    blocks or rewrites the turn. Every render is logged so a day of real
+    turns can be grepped for a false-positive count (§ acceptance).
+    """
+    try:
+        states = _allowance_state.all_states()
+    except Exception as e:
+        _log(f'[allowance-conflict] state read failed: {e}')
+        return ''
+    if not states:
+        return ''
+    lines = []
+    for vendor, _entry in states.items():
+        rx = _vendor_mention_re(vendor)
+        source = ''
+        if task_text and rx.search(task_text):
+            source = 'this message'
+        else:
+            for h in hits:
+                blob = f"{h.get('file', '')} {h.get('snippet', '')}"
+                if rx.search(blob):
+                    source = f"memory unit [{h.get('file', '')}]"
+                    break
+        if not source:
+            continue
+        try:
+            rt = _agent_runtime.get_runtime(vendor)
+            _allowance_state.heal(vendor, rt.probe_allowance)
+        except KeyError:
+            pass
+        still = _allowance_state.get(vendor)
+        if still:
+            age = _allowance_state.record_age_clause(still)
+            outcome = f'still exhausted{f" ({age})" if age else ""}'
+        else:
+            outcome = 'cleared by the re-probe'
+        _log(f'[allowance-conflict] {vendor}: {source} vs live record -> {outcome}')
+        lines.append(f'  • {vendor}: allowance record says exhausted, but '
+                     f'{source} mentions {vendor}')
+        lines.append(f'    -> re-probed: {outcome}')
+    if not lines:
+        return ''
+    return ("--- ALLOWANCE STATE CONFLICT (report mode; MC-964 Step D) ---\n"
+            + "\n".join(lines))
+
+
 @bp.route('/api/agent/<provider>/allowance/recheck', methods=['POST'])
 def agent_allowance_recheck(provider):
     """"I topped up, try again": drop this vendor's out-of-allowance record.
@@ -4108,6 +4178,19 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             parts.append(
                 "--- RELEVANT MEMORY (auto-surfaced for this task; "
                 "use the mc-memory-search skill to dig deeper) ---\n" + rl)
+
+        # MC-964 Step D.2/D.3 — a live vendor-allowance-exhaustion record
+        # whose vendor this turn's message or a delivered memory unit
+        # mentions gets ONE re-probe (heal()'s own throttle bounds repeats)
+        # and a two-line conflict block, rather than sitting unrefuted next
+        # to evidence that may already contradict it.
+        try:
+            _allowance_conflict = _allowance_conflict_block(task, hits)
+        except Exception as e:
+            _log(f"[allowance-conflict] {project.get('id')}: block build failed: {e}")
+            _allowance_conflict = ''
+        if _allowance_conflict:
+            parts.append(_allowance_conflict)
 
     # Exploration read-floor — closes the learning loop by feeding the
     # Distiller's captured EXPLORATION.md proposals back into context. Without
