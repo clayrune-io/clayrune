@@ -1109,6 +1109,13 @@ const modalZoomLevels = {}; // modalId → current font-size in px
 // message written directly into a row/note div before the next tick.
 let _providerInstallMsg = {};            // provider name -> per-row message text
 let _providerInstallPolicyNoteText = ''; // one shared batch note
+// Per-vendor progress from GET .../install-status's `vendors` array (MC-959 +
+// per-vendor progress, 2026-09-24) — provider name -> {result, started_at,
+// running_now}. Same STORE reasoning as _providerInstallMsg above: first-run's
+// install-watch poll rebuilds the connections step from scratch every 4s, so
+// _renderProviderRow reads this back in on every render instead of the poll
+// writing into a DOM node that gets thrown away the next tick.
+let _providerInstallProgress = {};
 // MC-959's GET .../install-status URL for the batch providerInstallSelected
 // (provider-auth.js) just launched — set there, polled by first-run.js's
 // install-watch so it can show per-vendor FAILED and stop the watch the

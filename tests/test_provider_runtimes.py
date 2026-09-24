@@ -505,10 +505,21 @@ class TestCodexRuntime:
         assert session_id in cmd
         assert 'resume' in cmd
 
-    def test_build_command_npx_fallback(self):
-        """When binary not found, uses npx @openai/codex prefix"""
-        self.rt._bin_cache = '__npx__'
-        self.rt._npx_fallback = True
+    def test_build_command_npx_fallback(self, monkeypatch):
+        """When binary not found, uses npx @openai/codex prefix.
+
+        resolve_binary() re-probes every call while sitting on the npx
+        sentinel (2026-09-24 fix), so the probe itself must be mocked here
+        rather than just pre-seeding the cache -- otherwise this test would
+        pass by relying on the exact sticky-cache bug it should catch.
+        """
+        import shutil
+        from pathlib import Path
+        monkeypatch.setattr(shutil, 'which', lambda n: 'npx' if n.startswith('npx') else None)
+        monkeypatch.setattr(agent_runtime, '_npm_global_bin_dirs', lambda: [])
+        monkeypatch.setattr(Path, 'exists', lambda self: False)
+        self.rt._bin_cache = None
+        self.rt._npx_fallback = False
         cmd = self.rt.build_command()
         assert cmd[0] == 'npx'
         assert '@openai/codex' in cmd
@@ -850,9 +861,18 @@ class TestCodexRuntime:
         how a user notices codex was never actually installed. Dispatch is
         unaffected — it calls _cmd_prefix()/resolve_binary() directly, not
         this flag.
+
+        resolve_binary() re-probes every call while sitting on the npx
+        sentinel (2026-09-24 fix), so the probe itself must be mocked here
+        rather than just pre-seeding the cache.
         """
-        self.rt._bin_cache = '__npx__'
-        self.rt._npx_fallback = True
+        import shutil
+        from pathlib import Path
+        monkeypatch.setattr(shutil, 'which', lambda n: 'npx' if n.startswith('npx') else None)
+        monkeypatch.setattr(agent_runtime, '_npm_global_bin_dirs', lambda: [])
+        monkeypatch.setattr(Path, 'exists', lambda self: False)
+        self.rt._bin_cache = None
+        self.rt._npx_fallback = False
         monkeypatch.setattr(
             agent_runtime.subprocess, 'run',
             lambda *a, **k: subprocess.CompletedProcess(
@@ -882,6 +902,56 @@ class TestCodexRuntime:
         assert self.rt.resolve_binary() is None
         assert self.rt._npx_fallback is True
         assert self.rt._cmd_prefix() == [r'C:\npm\npx.cmd', '--yes', '@openai/codex']
+
+    def test_resolve_binary_reprobes_after_npx_fallback_when_binary_appears(self, monkeypatch, tmp_path):
+        """Regression 2026-09-24: '__npx__' must not be a sticky cached miss.
+
+        Root cause (clean-VM run, Ron): npm installs run in the background
+        after health_check() already cached _bin_cache='__npx__' (npx was
+        present, codex wasn't yet). Every later resolve_binary() call
+        short-circuited on that sentinel and returned None forever, even
+        after %APPDATA%\\npm\\codex.cmd existed on disk -- so
+        /api/agent/providers kept reporting installed=False, binary_path=None
+        after a real, successful npm install.
+        """
+        import shutil
+        if sys.platform != 'win32':
+            pytest.skip('windows-only install layout')
+        monkeypatch.setattr(agent_runtime, '_npm_global_bin_dirs', lambda: [])
+        # Isolate every fixed candidate dir resolve_binary() probes so this
+        # test can't see the real dev machine's own codex/npx installs.
+        appdata = tmp_path / 'AppData' / 'Roaming'
+        local_appdata = tmp_path / 'AppData' / 'Local'
+        monkeypatch.setenv('APPDATA', str(appdata))
+        monkeypatch.setenv('LOCALAPPDATA', str(local_appdata))
+        monkeypatch.setenv('USERPROFILE', str(tmp_path))
+
+        # First probe: neither codex nor npx present -> real miss, never cached.
+        monkeypatch.setattr(shutil, 'which', lambda _: None)
+        self.rt._bin_cache = None
+        self.rt._npx_fallback = False
+        assert self.rt.resolve_binary() is None
+        assert self.rt._bin_cache is None
+
+        # npx shows up (npm is installed) -> falls back to the npx sentinel.
+        monkeypatch.setattr(
+            shutil, 'which',
+            lambda n: r'C:\npm\npx.cmd' if n.startswith('npx') else None)
+        assert self.rt.resolve_binary() is None
+        assert self.rt._bin_cache == '__npx__'
+        assert self.rt._npx_fallback is True
+
+        # codex gets installed mid-session via `npm install -g @openai/codex`.
+        npm_dir = appdata / 'npm'
+        npm_dir.mkdir(parents=True)
+        codex_cmd = npm_dir / 'codex.cmd'
+        codex_cmd.write_text('')
+
+        # Must re-probe and find the real binary, not trust the stale sentinel.
+        result = self.rt.resolve_binary()
+        assert result == codex_cmd
+        assert self.rt._bin_cache == str(codex_cmd)
+        assert self.rt._npx_fallback is False
 
     def test_transcript_path_missing_session(self):
         assert self.rt.transcript_path('/some/path', '') is None

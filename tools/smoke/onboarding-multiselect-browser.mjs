@@ -37,6 +37,7 @@ const POLICY_NOTE = 'PowerShell script policy was Restricted; set to RemoteSigne
 const pageHTML = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/css/app.css"><body><main id="app"></main><div class="modal-layer" id="modal-layer"></div><script>
 let API_BASE=''; let _agentProviders=${JSON.stringify(providers)}; let _globalConfig={};
 let _providerInstallMsg={}; let _providerInstallPolicyNoteText=''; let _providerInstallStatusUrl='';
+let _providerInstallProgress={};
 const advancedFlags={}, ADV_FEATURES=[]; function esc(s){return String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]))}
 function showToast(){} function showDesktop(){} function refreshSilent(){} function refreshAuthStatus(){}
 async function saveSetting(k,v){_globalConfig[k]=v;}
@@ -59,7 +60,7 @@ function openTerminalPopout(projectId, sessionId, command, isPty){
   win.innerHTML='<div class="modal-content" style="width:100%;height:100%;background:#0a0c10"></div>';
   document.getElementById('modal-layer').appendChild(win);
 }
-</script><script src="/static/js/first-run.js"></script><script src="/static/js/provider-auth.js"></script><script>window.settingsProviderTerminalLogin=stubTerminalLogin;</script><script>startFirstRun();</script>`;
+</script><script src="/static/js/first-run.js"></script><script src="/static/js/provider-auth.js"></script><script>window._realSettingsProviderTerminalLogin=settingsProviderTerminalLogin;window.settingsProviderTerminalLogin=stubTerminalLogin;</script><script>startFirstRun();</script>`;
 
 let server, browserServer, browser, page;
 try {
@@ -102,6 +103,13 @@ try {
       // smoke-term-1: not tracked here, same shape a server too old to have
       // remembered this session would return — the caller must fall back.
       return res.end(JSON.stringify({ok: false, error: 'unknown install session'}));
+    }
+    // Item 4: Gemini's real settingsProviderTerminalLogin hits this route —
+    // pty:true + session_id is the shape that makes it open a terminal
+    // pop-out (its account-picker needs a TUI) instead of a captured URL.
+    if (path === '/api/agent/gemini/auth-login-remote' && req.method === 'POST') {
+      res.writeHead(200, {'content-type': 'application/json'});
+      return res.end(JSON.stringify({pty: true, session_id: 'smoke-signin-term', command: 'gemini'}));
     }
     // Qwen's only sign-in is a key: the same Settings save route flips it to ok.
     if (path === '/api/agent/provider/qwen/env' && req.method === 'POST') {
@@ -200,10 +208,17 @@ try {
     const noteAfterPoll = await page.locator('#setup-overlay .prov-install-policy-note').innerText();
     if (!noteAfterPoll.includes('PowerShell script policy'))
       throw new Error(`policy note lost after poll tick ${tick + 1}: "${noteAfterPoll}"`);
-    const codexMsgAfterPoll = await page.locator('#prov-install-msg-codex').innerText();
-    if (!codexMsgAfterPoll.includes('A terminal opened'))
-      throw new Error(`per-row install message lost after poll tick ${tick + 1}: "${codexMsgAfterPoll}"`);
   }
+  // Item 2 (Ron's ask, 2026-09-24): the stale "A terminal opened to install
+  // it. Once it finishes, click Check setup status" line must stop showing
+  // once the row itself reports installed — Ron's screenshots showed it
+  // stuck under Claude/Gemini/Qwen rows that were already fully installed.
+  // The mock install-launch above already flipped codex to installed:true;
+  // the poll ticks just refreshed _agentProviders from that server state, so
+  // by now the message must be gone (old code required auth_status==='ok'
+  // too, which an installed-but-not-yet-signed-in row never reaches).
+  const codexMsgAfterPoll = await page.locator('#prov-install-msg-codex').innerText();
+  if (codexMsgAfterPoll.trim()) throw new Error(`stale install message should clear once installed, still shows: "${codexMsgAfterPoll}"`);
   const signIn = page.getByRole('button', {name: 'Sign in'}).first();
   if (await signIn.count()) await page.evaluate(() => document.querySelector('#setup-overlay button[onclick^="settingsProviderTerminalLogin"]').click());
   if (!(await page.evaluate(() => browserLoginCalls.length))) throw new Error(`sign-in action was not wired; body=${await page.locator('#setup-overlay').innerText()}`);
@@ -251,10 +266,142 @@ try {
   await page.waitForFunction(() => (document.querySelector('#setup-overlay .wt-next-reason')?.textContent || '').includes('Codex'));
   await page.getByRole('button', {name: 'Install selected'}).click();
   await page.waitForFunction(() => document.body.classList.contains('setup-terminal-live'));
+  await page.waitForFunction(() => (document.querySelector('#prov-install-msg-codex') || {}).textContent?.includes('Install failed'));
+  // Regression (Ron, 2026-09-24): the OLD code dropped setup-terminal-live the
+  // instant the batch reported "finished", even though MC-959 deliberately
+  // leaves a FAILED install's terminal pop-out OPEN so its output stays
+  // readable — the very next in-card click (any control that triggers
+  // _setupRepaint/setupShow) then re-centered the card right on top of it.
+  // Give the poll loop a full tick past "batch finished" (it must stop
+  // POLLING here) and assert the terminal is STILL open and STILL visible —
+  // visibility now tracks DOM presence, not the poll loop's own lifecycle.
+  await page.waitForTimeout(4200);
+  const stillLiveWithFailedTerminal = await page.evaluate(() => {
+    const termWin = document.querySelector('.modal-window[data-modal-id^="__terminal_"]');
+    return {terminalOpen: !!termWin, bodyLive: document.body.classList.contains('setup-terminal-live')};
+  });
+  if (!stillLiveWithFailedTerminal.terminalOpen) throw new Error('failed-install terminal unexpectedly removed by the smoke stub before the visibility check');
+  if (!stillLiveWithFailedTerminal.bodyLive) throw new Error('setup-terminal-live was dropped while the FAILED install terminal is still open — regression of the 2026-09-24 fix');
+  // The exact repro: click something inside the still-open card ("Check setup
+  // status" is the real control Ron's report names) — this rebuilds
+  // #setup-overlay from scratch via _setupRepaint -> setupShow. The rebuilt
+  // card must still dock left / stay under the raised modal-layer.
+  await page.getByRole('button', {name: 'Check setup status'}).first().click();
+  await page.waitForTimeout(60);
+  if (process.env.MC_SMOKE_SCREENSHOT) await page.screenshot({path: process.env.MC_SMOKE_SCREENSHOT});
+  const afterClickStacking = await page.evaluate(() => {
+    const overlay = document.getElementById('setup-overlay');
+    const modalLayer = document.getElementById('modal-layer');
+    const termWin = document.querySelector('.modal-window[data-modal-id^="__terminal_"]');
+    const rect = termWin.getBoundingClientRect();
+    const topEl = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return {
+      bodyLive: document.body.classList.contains('setup-terminal-live'),
+      modalLayerZ: Number(getComputedStyle(modalLayer).zIndex),
+      overlayZ: Number(getComputedStyle(overlay).zIndex),
+      topElIsTerminal: !!topEl && termWin.contains(topEl),
+    };
+  });
+  if (!afterClickStacking.bodyLive) throw new Error('setup-terminal-live dropped after an in-card click while the failed-install terminal is still open');
+  if (!(afterClickStacking.modalLayerZ > afterClickStacking.overlayZ)) throw new Error('modal layer no longer raised above the overlay after an in-card click');
+  if (!afterClickStacking.topElIsTerminal) throw new Error('setup card re-covered the still-open failed-install terminal after an in-card click — the exact regression Ron hit');
+  // Now the user actually closes the terminal (or it exits) — visibility must
+  // clear once it is genuinely gone, not stay stuck on forever.
+  await page.evaluate(() => document.querySelector('.modal-window[data-modal-id^="__terminal_"]').remove());
   await page.waitForFunction(() => !document.body.classList.contains('setup-terminal-live'), {timeout: 6000});
-  const codexFailMsg = await page.locator('#prov-install-msg-codex').innerText();
-  if (!codexFailMsg.includes('Install failed')) throw new Error(`FAILED vendor's row did not show a failure message: "${codexFailMsg}"`);
   if (installCalls.filter(n => n === 'codex').length < 2) throw new Error(`expected a second install-launch call for codex, got: ${installCalls}`);
+
+  // ── Item 4 (Ron, 2026-09-24): Gemini's "Sign in" opens a real-PTY terminal
+  // (its account-picker needs a TUI, via settingsProviderTerminalLogin's pty
+  // branch) — the SAME visibility/docking mechanism the install path above
+  // was just proven to have must cover a sign-in terminal too. Restore the
+  // REAL sign-in function (stubbed out at page-load for the earlier
+  // wiring-only assertions) and drive Gemini's row for real.
+  // Gemini was never ticked earlier in this run (only codex/claude/qwen were)
+  // — its Sign in button only renders for a selected row (opts.selected gates
+  // showActions in setup mode), so select it first.
+  await page.locator('#setup-overlay input[name="setup-provider"][value="gemini"]').check();
+  await page.waitForSelector('#setup-overlay .prov-row[data-provider="gemini"] button[onclick^="settingsProviderTerminalLogin"]');
+  await page.evaluate(() => { window.settingsProviderTerminalLogin = window._realSettingsProviderTerminalLogin; });
+  await page.evaluate(() => document.querySelector('#setup-overlay .prov-row[data-provider="gemini"] button[onclick^="settingsProviderTerminalLogin"]').click());
+  await page.waitForSelector('.modal-window[data-modal-id="__terminal_smoke-signin-term"]');
+  await page.waitForFunction(() => document.body.classList.contains('setup-terminal-live'));
+  const signinStacking = await page.evaluate(() => {
+    const overlay = document.getElementById('setup-overlay');
+    const modalLayer = document.getElementById('modal-layer');
+    const termWin = document.querySelector('.modal-window[data-modal-id="__terminal_smoke-signin-term"]');
+    const rect = termWin.getBoundingClientRect();
+    const topEl = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return {
+      modalLayerZ: Number(getComputedStyle(modalLayer).zIndex),
+      overlayZ: Number(getComputedStyle(overlay).zIndex),
+      topElIsTerminal: !!topEl && termWin.contains(topEl),
+    };
+  });
+  if (!(signinStacking.modalLayerZ > signinStacking.overlayZ)) throw new Error('sign-in terminal: modal layer not raised above the setup overlay');
+  if (!signinStacking.topElIsTerminal) throw new Error('sign-in terminal pop-out is covered by the setup overlay/card');
+  // Same in-card-click repro as the install case above.
+  await page.getByRole('button', {name: 'Check setup status'}).first().click();
+  await page.waitForTimeout(60);
+  const signinAfterClick = await page.evaluate(() => {
+    const overlay = document.getElementById('setup-overlay');
+    const termWin = document.querySelector('.modal-window[data-modal-id="__terminal_smoke-signin-term"]');
+    if (!termWin) return {gone: true};
+    const rect = termWin.getBoundingClientRect();
+    const topEl = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return {gone: false, bodyLive: document.body.classList.contains('setup-terminal-live'), topElIsTerminal: !!topEl && termWin.contains(topEl)};
+  });
+  if (signinAfterClick.gone) throw new Error('sign-in terminal element unexpectedly removed by the smoke stub');
+  if (!signinAfterClick.bodyLive) throw new Error('setup-terminal-live dropped after an in-card click while the sign-in terminal is still open');
+  if (!signinAfterClick.topElIsTerminal) throw new Error('setup card re-covered the sign-in terminal after an in-card click');
+  await page.evaluate(() => document.querySelector('.modal-window[data-modal-id="__terminal_smoke-signin-term"]').remove());
+  await page.waitForFunction(() => !document.body.classList.contains('setup-terminal-live'), {timeout: 6000});
+
+  // ── Item 2 (Ron's ask, 2026-09-24): per-vendor progress bar — queued ->
+  // installing (indeterminate sweep + elapsed seconds, npm gives no percentage)
+  // -> installed (green) / failed (red), driven ONLY by _providerInstallProgress
+  // (itself populated from GET .../install-status's per-vendor result/started_at/
+  // running_now — see _setupPollInstallStatus), never a client-side timer guess.
+  // _renderProviderRow deletes a vendor's tracked progress once its OWN
+  // installed+auth_status says fully done, so the four rows are reset to an
+  // undone state first — otherwise claude/qwen (already signed in earlier in
+  // this run) would drop their entry before _providerProgressHTML ever runs.
+  await page.evaluate(() => {
+    _agentProviders.forEach(p => { p.installed = false; p.auth_status = 'not_logged_in'; });
+    _providerInstallProgress = {
+      claude: {result: 'pending', started_at: null, running_now: false},                          // queued
+      gemini: {result: 'pending', started_at: Math.floor(Date.now() / 1000) - 7, running_now: true}, // installing, ~7s in
+      qwen: {result: 'ok', started_at: null, running_now: false},                                  // installed
+      codex: {result: 'failed', started_at: null, running_now: false},                             // failed
+    };
+    window._repaintProviderRows();
+  });
+  await page.waitForTimeout(40);
+  const progress = await page.evaluate(() => {
+    const read = (name) => (document.getElementById(`prov-install-progress-${name}`) || {}).innerText || '';
+    return {claude: read('claude'), gemini: read('gemini'), qwen: read('qwen'), codex: read('codex')};
+  });
+  if (!/Queued/.test(progress.claude)) throw new Error(`queued vendor did not render "Queued": "${progress.claude}"`);
+  if (!/Installing.*7s/.test(progress.gemini)) throw new Error(`installing vendor did not render elapsed seconds: "${progress.gemini}"`);
+  if (!/Installed/.test(progress.qwen)) throw new Error(`installed vendor did not render "Installed": "${progress.qwen}"`);
+  if (!/Install failed/.test(progress.codex)) throw new Error(`failed vendor did not render "Install failed": "${progress.codex}"`);
+  const barShapes = await page.evaluate(() => {
+    const shape = (name) => {
+      const fill = document.querySelector(`#prov-install-progress-${name} .prov-install-bar-fill`);
+      return fill ? {color: getComputedStyle(fill).backgroundColor, indeterminate: fill.classList.contains('indeterminate')} : null;
+    };
+    return {gemini: shape('gemini'), qwen: shape('qwen'), codex: shape('codex')};
+  });
+  if (!barShapes.gemini.indeterminate) throw new Error('installing vendor bar is not the indeterminate sweep');
+  if (barShapes.qwen.indeterminate || barShapes.codex.indeterminate) throw new Error('installed/failed bars must be static, not indeterminate');
+  if (barShapes.qwen.color === barShapes.codex.color) throw new Error(`installed and failed bars rendered the same color: ${barShapes.qwen.color}`);
+  // A vendor whose row itself is already fully done (installed AND signed in)
+  // must not keep showing a stale progress sliver forever.
+  await page.evaluate(() => { _agentProviders.find(p => p.name === 'qwen').installed = true; _agentProviders.find(p => p.name === 'qwen').auth_status = 'ok'; window._repaintProviderRows(); });
+  await page.waitForTimeout(40);
+  const qwenAfterDone = await page.evaluate(() => (document.getElementById('prov-install-progress-qwen') || {}).innerText || '');
+  if (qwenAfterDone.trim()) throw new Error(`progress bar did not clear once the row itself reports installed+signed-in: "${qwenAfterDone}"`);
+
   if (pageErrors.length) throw new Error(pageErrors.join('; '));
   console.log(JSON.stringify({ok: true, envCalls, installCalls, singleInstallCalls, loginCalls: await page.evaluate(() => browserLoginCalls), overflow, registrations}));
 } finally {

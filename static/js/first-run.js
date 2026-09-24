@@ -234,18 +234,31 @@ window._setupRepaint = () => {
   if (setupActive && SETUP_STEPS[setupStep] && SETUP_STEPS[setupStep].id === 'connections') setupShow(setupStep);
 };
 
-// ── Install-terminal visibility + live polling (clean-VM run 2026-09-24) ────
-// The setup overlay (.wt-overlay, z-2000) painted over the install terminal
-// pop-out (a .modal-window inside #modal-layer, z-300) — the terminal it just
-// opened was fully hidden behind the card, so a user who clicked "Install
-// selected" had no way to see the install running or tell it apart from a
-// hang. While a terminal is live: raise #modal-layer above the overlay (same
-// mechanism app.css already uses for maximize, body.mc-modal-maximized), dock
-// the setup card to the left so the two don't sit exactly on top of each
-// other, and poll provider status the same way "Check setup status" does so
-// the row flips from "not installed" without the user hunting for a button.
+// ── Setup-terminal visibility + live polling (clean-VM run 2026-09-24) ──────
+// The setup overlay (.wt-overlay, z-2000) painted over ANY terminal pop-out
+// launched from setup (a .modal-window inside #modal-layer, z-300) — install
+// ("Install selected") or sign-in (Gemini's "Sign in" opens a real-PTY
+// terminal for its account-picker TUI, same as install). While one is live:
+// raise #modal-layer above the overlay (same mechanism app.css already uses
+// for maximize, body.mc-modal-maximized), dock the setup card to the left so
+// the two don't sit exactly on top of each other, and poll provider status
+// the same way "Check setup status" does so a row flips without the user
+// hunting for a button.
+//
+// Visibility (the `setup-terminal-live` body class) and polling are two
+// SEPARATE lifecycles, not one — this was the regression Ron hit (2026-09-24):
+// the polling loop used to remove the class the moment it stopped polling,
+// including on a batch reporting "finished" with failures. MC-959 deliberately
+// leaves a FAILED install's terminal open so its output can be read, so the
+// terminal was still on screen with the class (and the card's left dock)
+// already gone — the very next repaint (any click inside the card triggers
+// one via _setupRepaint) put the centered card right back on top of it.
+// Visibility now tracks DOM presence directly via a MutationObserver and is
+// the only thing that ever adds/removes the class; polling only starts/stops
+// its own timer.
 let _setupInstallWatchTimer = null;
 let _setupInstallWatchRunning = false; // separate from the timer ID: setInterval's return value must never be truthiness-tested (0 is a legal id in a synthetic/non-browser host)
+let _setupTerminalObserver = null;
 
 function _setupInstallComplete() {
   const selected = (_agentProviders || []).filter(p => setupSelectedProviders.has(p.name));
@@ -255,10 +268,30 @@ function _setupInstallComplete() {
 // DOM presence, not terminal.js's own lifecycle state — decoupled on purpose
 // so this holds regardless of HOW the terminal went away (user hit its own
 // Close, or it auto-closed on the child process exiting). Checked ONLY as the
-// stop condition, never to gate starting: right after "Install selected" the
-// terminal can take a beat to mount, and the first tick is 4s out — plenty.
+// stop condition, never to gate starting: right after opening one the
+// terminal can take a beat to mount, and the first poll tick is 4s out — plenty.
 function _setupInstallTerminalOpen() {
   return !!document.querySelector('#modal-layer .modal-window[data-modal-id^="__terminal_"]');
+}
+
+// Adds the visibility class and keeps it correct for as long as ANY setup
+// terminal is actually on screen, independent of whether polling is running.
+// Safe to call repeatedly (install then sign-in, or several sign-ins) — the
+// observer is created once and just keeps watching #modal-layer's children.
+function _setupMarkTerminalLive() {
+  document.body.classList.add('setup-terminal-live');
+  if (_setupTerminalObserver) return;
+  const layer = document.getElementById('modal-layer');
+  if (!layer) return;
+  _setupTerminalObserver = new MutationObserver(() => {
+    if (!_setupInstallTerminalOpen()) _setupUnmarkTerminalLive();
+  });
+  _setupTerminalObserver.observe(layer, { childList: true });
+}
+
+function _setupUnmarkTerminalLive() {
+  document.body.classList.remove('setup-terminal-live');
+  if (_setupTerminalObserver) { _setupTerminalObserver.disconnect(); _setupTerminalObserver = null; }
 }
 
 // Polls MC-959's per-batch GET .../install-status (set by providerInstallSelected
@@ -276,6 +309,12 @@ async function _setupPollInstallStatus() {
     const res = await fetch(API_BASE + _providerInstallStatusUrl);
     const data = await res.json().catch(() => null);
     if (!data || !data.ok) return false;
+    // Per-vendor progress (queued/installing/installed/failed) — _renderProviderRow
+    // reads this store back on the very next render, driven by the feed's own
+    // result/started_at/running_now, never a client-side timer guess.
+    for (const v of (data.vendors || [])) {
+      _providerInstallProgress[v.name] = { result: v.result, started_at: v.started_at, running_now: !!v.running_now };
+    }
     for (const name of (data.failed || [])) {
       const text = 'Install failed — see terminal.';
       _providerInstallMsg[name] = text;
@@ -288,26 +327,37 @@ async function _setupPollInstallStatus() {
   }
 }
 
+// Starts (or, if already running, no-ops) the status-polling loop. Callable
+// for install OR sign-in — a sign-in flow never sets _providerInstallStatusUrl,
+// so _setupPollInstallStatus() just always reports "not finished" from that
+// signal and the loop instead stops on _setupInstallComplete() (every selected
+// vendor now installed+signed in) or the terminal closing.
 function _setupStartInstallWatch() {
-  document.body.classList.add('setup-terminal-live');
+  _setupMarkTerminalLive();
   if (_setupInstallWatchRunning) return;
   _setupInstallWatchRunning = true;
   _setupInstallWatchTimer = setInterval(async () => {
     await providerRefreshAll();
     const batchFinished = await _setupPollInstallStatus();
-    // Stop on success (nothing left to watch), OR the batch itself reporting
-    // finished (MC-959 — solves the case below for a FAILED install too, since
-    // its terminal now stays open), OR — fallback for a server too old to
-    // carry status_url — the terminal itself going away (Dave review,
-    // 2026-09-24: a failed/cancelled install used to poll forever with the
-    // live class stuck on, since the old check only fired on full success).
+    // providerRefreshAll() already repainted once, BEFORE this tick's status
+    // poll landed — repaint again so this tick's own progress (queued ->
+    // installing -> installed/failed, elapsed seconds) shows without waiting
+    // another 4s for the next tick to do it. window._repaintProviderRows:
+    // both files are ES modules (static/index.html `type="module"`), so a
+    // top-level `function` in provider-auth.js is NOT global here.
+    if (typeof window._repaintProviderRows === 'function') window._repaintProviderRows();
+    // Stop POLLING on success (nothing left to watch), OR the batch itself
+    // reporting finished (MC-959 — includes a FAILED install, whose terminal
+    // stays open), OR — fallback for a server too old to carry status_url —
+    // the terminal itself going away. This only ever stops the poll timer;
+    // it does NOT touch visibility (see _setupMarkTerminalLive above) — a
+    // failed install's terminal staying open must keep the card docked.
     if (_setupInstallComplete() || batchFinished || !_setupInstallTerminalOpen()) _setupStopInstallWatch();
   }, 4000);
 }
 
 function _setupStopInstallWatch() {
   if (_setupInstallWatchRunning) { clearInterval(_setupInstallWatchTimer); _setupInstallWatchTimer = null; _setupInstallWatchRunning = false; }
-  document.body.classList.remove('setup-terminal-live');
   _providerInstallStatusUrl = '';
 }
 
@@ -320,6 +370,16 @@ function _setupDockLiveTerminals() {
     win.style.top = '24px';
   });
 }
+
+// Interop hook: called by provider-auth.js's settingsProviderTerminalLogin
+// right after it opens a real-PTY sign-in terminal (Gemini's account-picker
+// TUI, the same class of pop-out install uses) — that function is shared with
+// Settings, so it only reaches here when setup is actually the caller.
+window._setupOnTerminalOpened = function () {
+  if (!setupActive) return;
+  _setupStartInstallWatch();
+  _setupDockLiveTerminals();
+};
 
 // Human-readable reason a selected provider is blocking Next — F2 (clean-VM
 // run 2026-09-18): the old message was the step's own static hint repeated
@@ -538,6 +598,7 @@ function setupSkip() { setupFinish(); }
 function setupFinish() {
   setupActive = false;
   _setupStopInstallWatch();
+  _setupUnmarkTerminalLive();
   const el = document.getElementById('setup-overlay');
   if (el) el.remove();
   if (!(_globalConfig && _globalConfig.setup_completed)) _setupPersistCompleted();
