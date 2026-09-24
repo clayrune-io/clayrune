@@ -75,7 +75,7 @@ from mc import obs, state
 from mc import workflows as _workflows  # leaf module (no Flask import); see _notify_workflow_step
 from mc import state as _mc_state  # readers write _mc_state._LAST_SYSTEM_STATUS verbatim
 from mc.atomic_json import read_text_with_retry, write_json_atomic
-from mc.core import _harden_secret_perms, _log, now_iso, time_ago
+from mc.core import _harden_secret_perms, _log, now_iso, time_ago, TimestampedLines
 from mc.state import (
     _backlog_sync_lock,
     _claude_auth_lock,
@@ -3255,7 +3255,7 @@ def _track_stop_hook_boundary(session, msg) -> None:
         blocks = [b for b in (m.get('content') or []) if isinstance(b, dict)]
         last = session.get('_sh_last_msg')
         if last and mid and mid != last['id'] and last['text'] and not last['tool']:
-            lines = session.setdefault('log_lines', [])
+            lines = session.setdefault('log_lines', TimestampedLines())
             already = bool(lines) and lines[-1].strip() == '[stop-hook-redo]'
             if not already and _hook_blocked_before(session, msg.get('uuid')):
                 lines.append('[stop-hook-redo]')
@@ -3347,7 +3347,7 @@ def _record_permission_denials(session, msg):
     if not isinstance(denials, list) or not denials:
         return
     bucket = session.setdefault('permission_denials', [])
-    lines = session.setdefault('log_lines', [])
+    lines = session.setdefault('log_lines', TimestampedLines())
     for d in denials:
         if not isinstance(d, dict):
             continue
@@ -3378,7 +3378,7 @@ def _emit_coverage_advisory(session) -> None:
         line = _artifact_coverage.advisory_line(
             _coverage_last_user_message(session), blobs)
         if line:
-            session.setdefault('log_lines', []).append(line)
+            session.setdefault('log_lines', TimestampedLines()).append(line)
             session['last_output_time'] = _time.time()
     except Exception as e:
         _log(f"[coverage] advisory failed: {e}")
@@ -5024,14 +5024,12 @@ def _read_agent_stream_b(proc, session):
                     _mark_claude_auth_error(_auth_reason, line)
                 session['log_lines'].append(line)
                 session['last_output_time'] = _time.time()
-            # Cap log_lines to prevent unbounded memory growth
+            # Cap log_lines to prevent unbounded memory growth. `log_lines`
+            # is a TimestampedLines (mc/core.py) — slicing it returns another
+            # TimestampedLines with `.ts` sliced in lock-step automatically,
+            # so no separate ts-trim is needed here (MC-954).
             if len(session['log_lines']) > 2000:
                 session['log_lines'] = session['log_lines'][-1500:]
-                # Keep log_line_ts (MC-954) aligned to the same slice — an
-                # out-of-sync length here would misalign every ts lookup by
-                # line_index for the rest of this session's life.
-                if session.get('log_line_ts'):
-                    session['log_line_ts'] = session['log_line_ts'][-1500:]
     except Exception as e:
         if _session_owned_by(session, my_proc):
             if not session.get('waiting_for_question') and session.get('status') not in ('stopped',):
@@ -5752,8 +5750,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
             'proc': proc,
             'status': 'running',
             'task': entry.get('task', ''),
-            'log_lines': list(seed_lines),
-            'log_line_ts': list(seed_ts),
+            'log_lines': TimestampedLines(seed_lines, ts=seed_ts),
             'started_at': now_iso(),
             'session_id': session_id,
             'project_id': project_id,
@@ -5856,8 +5853,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         'proc': proc,
         'status': 'running',
         'task': entry.get('task', ''),
-        'log_lines': list(seed_lines),
-        'log_line_ts': list(seed_ts),
+        'log_lines': TimestampedLines(seed_lines, ts=seed_ts),
         'started_at': now_iso(),
         'session_id': session_id,
         'project_id': project_id,
@@ -7476,7 +7472,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
         session = {
             'status': 'running',
             'task': task,
-            'log_lines': [f"> {user_label}: {_seed_task}"],
+            'log_lines': TimestampedLines([f"> {user_label}: {_seed_task}"]),
             'started_at': now_iso(),
             'session_id': session_id,
             'project_id': project_id,
@@ -8210,7 +8206,7 @@ def _mode_a_token_rollover(pp, project_id, session_id, session, provider, messag
         pp, provider, native_id, project_id, session_id,
         reason='tokens', detail=int(ctx))
     _log_agent_activity(project_id, activity_line)
-    session.setdefault('log_lines', []).append(log_line)
+    session.setdefault('log_lines', TimestampedLines()).append(log_line)
     session.pop('provider_session_id', None)
     session.pop('context_tokens', None)
     return f"{handoff_text}\n\n{message}"
@@ -8914,8 +8910,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 'proc': proc,
                 'status': 'running',
                 'task': task,
-                'log_lines': list(_seed_log_lines),
-                'log_line_ts': list(_seed_log_ts),
+                'log_lines': TimestampedLines(_seed_log_lines, ts=_seed_log_ts),
                 'started_at': now_iso(),
                 'session_id': session_id,
                 'project_id': project_id,
@@ -9048,8 +9043,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 'proc': proc,
                 'status': 'running',
                 'task': task,
-                'log_lines': list(_seed_log_lines),
-                'log_line_ts': list(_seed_log_ts),
+                'log_lines': TimestampedLines(_seed_log_lines, ts=_seed_log_ts),
                 'started_at': now_iso(),
                 'session_id': session_id,
                 'project_id': project_id,
@@ -9678,20 +9672,18 @@ def agent_stream(project_id):
         while True:
             session['_last_sse_poll_time'] = _time.time()
             lines = session['log_lines']
-            # MC-954: log_lines has no per-line timestamp at the source (~90
-            # .append() call sites across agent_runtime.py/agent_routes.py —
-            # instrumenting all of them was judged out of proportion to the
-            # ask). Instead, stamp each line the first time ANY reader
-            # observes it grew, here in the one chokepoint every line passes
-            # through before a client ever sees it. The 0.3s poll below
-            # bounds the error to well under a second of the line's real
-            # production time — accurate enough for a day-boundary divider.
-            # `log_line_ts` may already carry real historical timestamps for
-            # a transcript-seeded prefix (revive/resume-dispatch) — only the
-            # tail beyond that gets backfilled with "now".
-            ts_list = session.setdefault('log_line_ts', [])
-            if len(ts_list) < len(lines):
-                ts_list.extend([now_iso()] * (len(lines) - len(ts_list)))
+            # MC-954: `lines` is a TimestampedLines (mc/core.py) — every
+            # append/extend call site across the codebase already stamped
+            # `.ts` at PRODUCTION time, not observation time. This loop only
+            # reads it; it must never backfill "now" here, or a line produced
+            # by an unattended run with nobody's chat open gets stamped with
+            # whenever a human first connects and reads it (the bug found in
+            # review of d7a2062 — an overnight steward run showed every line
+            # as "Today" at the hour Ron opened the chat). A plain list here
+            # (a session dict built by a path this fix hasn't reached) has no
+            # `.ts` at all — None for every line, per the "no divider rather
+            # than a wrong one" rule, never a fabricated now().
+            ts_list = getattr(lines, 'ts', None) or [None] * len(lines)
             # Cursor-overshoot guard: `sent` can exceed len(lines) whenever
             # log_lines was REBUILT shorter under the same session_id —
             # revive-from-agent-log reseeds from the transcript (40 msgs, no
@@ -10638,7 +10630,7 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
             if session is not None:
                 if write_started:
                     session['_stdin_write_uncertain'] = True
-                session.setdefault('log_lines', []).append(f'[stdin write error: {e}]')
+                session.setdefault('log_lines', TimestampedLines()).append(f'[stdin write error: {e}]')
                 session['status'] = 'error'
                 session['last_status_change_time'] = _time.time()
                 session['process_alive'] = False
@@ -10660,7 +10652,7 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
              f"killing the process so the pipe breaks")
         if session is not None:
             session['_stdin_write_uncertain'] = True
-            session.setdefault('log_lines', []).append(
+            session.setdefault('log_lines', TimestampedLines()).append(
                 '[Agent process stopped responding while receiving your '
                 'message — it has been terminated]')
         _kill_proc_background(proc)
@@ -11430,7 +11422,7 @@ def agent_status(project_id):
             # would desync log_line_ts's indices from the lines the client
             # actually receives.
             _raw_lines = s['log_lines']
-            _raw_ts = s.get('log_line_ts') or []
+            _raw_ts = getattr(_raw_lines, 'ts', None) or []
             _kept_lines = []
             _kept_ts = []
             for _li, _l in enumerate(_raw_lines):

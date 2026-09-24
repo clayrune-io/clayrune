@@ -150,6 +150,101 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
+class TimestampedLines(list):
+    """A list that keeps a parallel `.ts` list of each item's PRODUCTION-time
+    ISO timestamp in lock-step, automatically, through append/extend/+=/
+    insert/slicing/pop/del/clear/slice-assignment.
+
+    Used for `session['log_lines']` (MC-954 day dividers, agent_routes.py /
+    agent_runtime.py). Earlier version stamped a line's timestamp at
+    `/agent/stream`'s SSE chokepoint the first time ANY client happened to
+    poll it — which meant a line produced by an unattended run with nobody's
+    chat open got stamped with whenever a human later opened it, hours or
+    days after it was actually produced (found in review of d7a2062: an
+    overnight steward run showed every line as "Today" at the hour Ron
+    opened the chat, with no day divider for the night it actually ran).
+
+    A list subclass makes correctness structural instead of a matter of
+    remembering to stamp at ~100 scattered `.append()` call sites across two
+    files: every call site keeps working unmodified — `append()`/`extend()`
+    stamp `now_iso()` automatically unless the caller passes a known
+    historical `ts=` (used by the transcript-replay/revive/dispatch-resume
+    paths, which know each line's real source date). `None` in `.ts` means
+    "no date known for this line" (never guessed); it is never silently
+    turned into "now" by a later reader.
+    """
+
+    def __init__(self, iterable=(), ts=None):
+        items = list(iterable)
+        list.__init__(self, items)
+        if ts is not None:
+            ts = list(ts)
+            if len(ts) != len(items):
+                raise ValueError('TimestampedLines: ts length must match items length')
+            self.ts = ts
+        else:
+            self.ts = [now_iso() for _ in items]
+
+    def append(self, item, ts=None):
+        list.append(self, item)
+        self.ts.append(ts if ts is not None else now_iso())
+
+    def extend(self, iterable, ts=None):
+        items = list(iterable)
+        list.extend(self, items)
+        if ts is not None:
+            ts = list(ts)
+            if len(ts) != len(items):
+                raise ValueError('TimestampedLines.extend: ts length must match items length')
+            self.ts.extend(ts)
+        else:
+            self.ts.extend(now_iso() for _ in items)
+
+    def __iadd__(self, other):
+        self.extend(other)
+        return self
+
+    def insert(self, index, item, ts=None):
+        list.insert(self, index, item)
+        norm = index if index >= 0 else max(0, len(self) - 1 + index)
+        self.ts.insert(norm, ts if ts is not None else now_iso())
+
+    def pop(self, index=-1):
+        val = list.pop(self, index)
+        self.ts.pop(index)
+        return val
+
+    def clear(self):
+        list.clear(self)
+        self.ts.clear()
+
+    def __delitem__(self, key):
+        list.__delitem__(self, key)
+        del self.ts[key]
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            return TimestampedLines(list.__getitem__(self, key), ts=self.ts[key])
+        return list.__getitem__(self, key)
+
+    def __setitem__(self, key, value):
+        if isinstance(key, slice):
+            values = list(value)
+            list.__setitem__(self, key, values)
+            # A slice-assign replaces content wholesale with no per-item ts
+            # from the caller (no call site does this today) — stamp as
+            # produced now, same convention as a bare append with no ts.
+            self.ts[key] = [now_iso() for _ in values]
+        else:
+            list.__setitem__(self, key, value)
+            norm = key if key >= 0 else len(self) + key
+            if 0 <= norm < len(self.ts):
+                self.ts[norm] = now_iso()
+
+    def copy(self):
+        return TimestampedLines(self, ts=self.ts)
+
+
 BACKLOG_STATUS_HISTORY_CAP = 100
 
 

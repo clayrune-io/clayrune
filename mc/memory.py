@@ -43,7 +43,7 @@ import mc.skills as _skills                # frontmatter parse for position note
 import mc.distiller as _distiller          # Phase 4 learning observer (best-effort)
 
 from mc import state
-from mc.core import _atomic_write_text, _log, now_iso
+from mc.core import _atomic_write_text, _log, now_iso, TimestampedLines
 from mc.state import (
     _checkpoint_guard,
     _checkpoint_inflight,
@@ -4912,7 +4912,7 @@ def _dispatch_condense(project):
                 'proc': proc,
                 'status': 'running',
                 'task': 'Memory condensation',
-                'log_lines': [],
+                'log_lines': TimestampedLines(),
                 'started_at': now_iso(),
                 'session_id': session_id,
                 'project_id': pid,

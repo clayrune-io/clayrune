@@ -38,6 +38,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, cast, Dict, Iterator, List, Literal, Optional, Tuple
 
+from mc.core import TimestampedLines
+
 # Reused, not re-derived (UNATTENDED_AGENT_PERMISSIONS_AUDIT §4/§3c): the exact
 # set of trigger_types steward/fence.py already treats as "nobody is reading
 # this session's tool calls turn-by-turn". steward/ is stdlib-only and imports
@@ -582,7 +584,7 @@ def apply_mc_tool_blocks(session: Dict[str, Any],
                 session['waiting_for_question'] = True
                 paused = True
             except Exception as e:
-                session.setdefault('log_lines', []).append(
+                session.setdefault('log_lines', TimestampedLines()).append(
                     f'[mc:question ignored — malformed block: {e}]')
         elif tool_type == 'todo':
             try:
@@ -595,10 +597,10 @@ def apply_mc_tool_blocks(session: Dict[str, Any],
                     n = hook(session.get('project_id'),
                              session.get('session_id'), todos)
                     if n:
-                        session.setdefault('log_lines', []).append(
+                        session.setdefault('log_lines', TimestampedLines()).append(
                             f'[backlog: synced {n} item(s) from mc:todo]')
             except Exception as e:
-                session.setdefault('log_lines', []).append(
+                session.setdefault('log_lines', TimestampedLines()).append(
                     f'[mc:todo ignored — malformed block: {e}]')
         # 'plan' is recognised by the scanner but intentionally not wired:
         # MC runs agents headless, where plan-mode approval hangs — the
@@ -4233,7 +4235,7 @@ class GeminiRuntime(AgentRuntime):
             'proc': proc,
             'status': 'running',
             'task': task,
-            'log_lines': session_dict.get('log_lines') or [],
+            'log_lines': session_dict.get('log_lines') or TimestampedLines(),
             'started_at': session_dict.get('started_at') or _now_iso(),
             'session_id': mc_sid,
             'project_id': project_id,
@@ -4579,7 +4581,7 @@ class GeminiRuntime(AgentRuntime):
                     session['log_lines'].append(
                         '[Waiting for your answer — choose above to continue]')
             except Exception as e:
-                session.setdefault('log_lines', []).append(
+                session.setdefault('log_lines', TimestampedLines()).append(
                     f'[mc-tool scan error: {e}]')
             if session.get('proc') is proc:
                 # `_interrupted` → the user killed this turn; the non-zero rc
@@ -4912,7 +4914,7 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
         'proc': proc,
         'status': 'running',
         'task': task,
-        'log_lines': session_dict.get('log_lines') or [],
+        'log_lines': session_dict.get('log_lines') or TimestampedLines(),
         'started_at': session_dict.get('started_at') or _now_iso(),
         'session_id': mc_session_id,
         'project_id': project_id,
@@ -5675,7 +5677,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 capture_failed = True
                 session['_capture_error'] = str(e)
                 session['capture_status'] = 'incomplete'
-                session.setdefault('log_lines', []).append(f'[capture EOF error: {e}]')
+                session.setdefault('log_lines', TimestampedLines()).append(f'[capture EOF error: {e}]')
         if capture_failed:
             session['capture_status'] = 'incomplete'
         # MC Tool Protocol: scan this turn's complete text for mc: blocks
@@ -5701,7 +5703,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 session['log_lines'].append(
                     '[Waiting for your answer — choose above to continue]')
         except Exception as e:
-            session.setdefault('log_lines', []).append(
+            session.setdefault('log_lines', TimestampedLines()).append(
                 f'[mc-tool scan error: {e}]')
         if session.get('proc') is proc:
             if session.get('status') == 'running':
