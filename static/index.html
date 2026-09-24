@@ -1109,6 +1109,13 @@ const modalZoomLevels = {}; // modalId → current font-size in px
 // message written directly into a row/note div before the next tick.
 let _providerInstallMsg = {};            // provider name -> per-row message text
 let _providerInstallPolicyNoteText = ''; // one shared batch note
+// MC-959's GET .../install-status URL for the batch providerInstallSelected
+// (provider-auth.js) just launched — set there, polled by first-run.js's
+// install-watch so it can show per-vendor FAILED and stop the watch the
+// moment the batch itself reports finished, instead of guessing from DOM
+// presence (the pop-out now stays open after a failure so its output stays
+// readable, so "terminal gone" is no longer a reliable finished signal).
+let _providerInstallStatusUrl = '';
 // ── /STORE ──────────────────────────────────────────────────────────────────
 
 

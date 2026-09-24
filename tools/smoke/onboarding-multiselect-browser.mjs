@@ -32,10 +32,11 @@ const providers = [
 ];
 const envCalls = [];
 const installCalls = [], loginCalls = [], singleInstallCalls = [];
+let installLaunchCalls = 0;
 const POLICY_NOTE = 'PowerShell script policy was Restricted; set to RemoteSigned for your user account.';
 const pageHTML = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/css/app.css"><body><main id="app"></main><div class="modal-layer" id="modal-layer"></div><script>
 let API_BASE=''; let _agentProviders=${JSON.stringify(providers)}; let _globalConfig={};
-let _providerInstallMsg={}; let _providerInstallPolicyNoteText='';
+let _providerInstallMsg={}; let _providerInstallPolicyNoteText=''; let _providerInstallStatusUrl='';
 const advancedFlags={}, ADV_FEATURES=[]; function esc(s){return String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]))}
 function showToast(){} function showDesktop(){} function refreshSilent(){} function refreshAuthStatus(){}
 async function saveSetting(k,v){_globalConfig[k]=v;}
@@ -70,16 +71,37 @@ try {
     if (path === '/static/css/app.css') { res.writeHead(200, {'content-type': 'text/css'}); return res.end(readFileSync(resolve(root, 'static/css/app.css'))); }
     if (path === '/api/agent/providers') { res.writeHead(200, {'content-type': 'application/json'}); return res.end(JSON.stringify(providers)); }
     // F7: "Install selected" is ONE batch request for every selected vendor.
+    // MC-959 (Bram, 14547ff): the real route now also returns status_url for
+    // GET .../install-status. First call (session smoke-term-1) matches the
+    // ORIGINAL smoke exactly: an untracked/unknown status feed (ok:false),
+    // same as an older server without the route, so the pre-existing
+    // fallback-to-DOM assertions below are unaffected. The second call
+    // (smoke-term-2) is MC-959's own integration test further down: a real
+    // FAILED-vendor, batch-finished status feed.
     if (path === '/api/agent/providers/install-launch' && req.method === 'POST') {
       let raw = ''; req.on('data', c => { raw += c; }); req.on('end', () => {
         const names = JSON.parse(raw || '{}').names || [];
         installCalls.push(...names);
-        providers.forEach(p => { if (names.includes(p.name)) p.installed = true; });
+        installLaunchCalls += 1;
+        const sessionId = installLaunchCalls === 1 ? 'smoke-term-1' : 'smoke-term-2';
+        if (installLaunchCalls === 1) providers.forEach(p => { if (names.includes(p.name)) p.installed = true; });
         res.writeHead(200, {'content-type': 'application/json'});
-        res.end(JSON.stringify({ok: true, installed: names, unsupported: [], session_id: 'smoke-term-1', command: 'install',
-          execution_policy: {action: 'set', effective: 'Restricted', message: POLICY_NOTE}}));
+        res.end(JSON.stringify({ok: true, installed: names, unsupported: [], session_id: sessionId, command: 'install',
+          execution_policy: installLaunchCalls === 1 ? {action: 'set', effective: 'Restricted', message: POLICY_NOTE} : null,
+          status_url: `/api/agent/providers/install-status?session_id=${sessionId}`}));
       });
       return;
+    }
+    if (path === '/api/agent/providers/install-status') {
+      const sid = new URL(req.url, 'http://x').searchParams.get('session_id');
+      res.writeHead(200, {'content-type': 'application/json'});
+      if (sid === 'smoke-term-2') {
+        return res.end(JSON.stringify({ok: true, session_id: sid, running: false, exit_code: 1,
+          vendors: [{name: 'codex', result: 'failed', installed: false, version: null}], failed: ['codex']}));
+      }
+      // smoke-term-1: not tracked here, same shape a server too old to have
+      // remembered this session would return — the caller must fall back.
+      return res.end(JSON.stringify({ok: false, error: 'unknown install session'}));
     }
     // Qwen's only sign-in is a key: the same Settings save route flips it to ok.
     if (path === '/api/agent/provider/qwen/env' && req.method === 'POST') {
@@ -213,6 +235,26 @@ try {
   await page.evaluate(() => setupBack()); await page.waitForTimeout(30);
   const overflow = await page.evaluate(() => ({scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth}));
   if (overflow.scrollWidth > overflow.clientWidth + 1) throw new Error(`mobile onboarding overflow: ${JSON.stringify(overflow)}`);
+  // ── MC-959 integration (Bram's status feed, branch clayrune/agent/96ca59113cdd,
+  // commit 14547ff — cherry-picked onto this branch to test against it, not
+  // merged into this commit) ──────────────────────────────────────────────────
+  // His route makes a FAILED install's terminal pop-out stay OPEN (not close)
+  // so its output stays readable, so "terminal gone" can no longer signal
+  // "batch is done" on its own — the batch's own GET .../install-status feed
+  // is now that signal. Reset codex to "not installed" and relaunch just it;
+  // the install-status stub above (session smoke-term-2) reports it FAILED
+  // with the batch already finished on the very first poll.
+  await page.setViewportSize({width: 1280, height: 900});
+  providers.find(p => p.name === 'codex').installed = false;
+  providers.find(p => p.name === 'codex').auth_status = 'not_logged_in';
+  await page.evaluate(async () => { _agentProviders = null; await _ensureAgentProviders(); window._setupRepaint(); });
+  await page.waitForFunction(() => (document.querySelector('#setup-overlay .wt-next-reason')?.textContent || '').includes('Codex'));
+  await page.getByRole('button', {name: 'Install selected'}).click();
+  await page.waitForFunction(() => document.body.classList.contains('setup-terminal-live'));
+  await page.waitForFunction(() => !document.body.classList.contains('setup-terminal-live'), {timeout: 6000});
+  const codexFailMsg = await page.locator('#prov-install-msg-codex').innerText();
+  if (!codexFailMsg.includes('Install failed')) throw new Error(`FAILED vendor's row did not show a failure message: "${codexFailMsg}"`);
+  if (installCalls.filter(n => n === 'codex').length < 2) throw new Error(`expected a second install-launch call for codex, got: ${installCalls}`);
   if (pageErrors.length) throw new Error(pageErrors.join('; '));
   console.log(JSON.stringify({ok: true, envCalls, installCalls, singleInstallCalls, loginCalls: await page.evaluate(() => browserLoginCalls), overflow, registrations}));
 } finally {

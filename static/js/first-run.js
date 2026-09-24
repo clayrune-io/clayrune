@@ -261,24 +261,54 @@ function _setupInstallTerminalOpen() {
   return !!document.querySelector('#modal-layer .modal-window[data-modal-id^="__terminal_"]');
 }
 
+// Polls MC-959's per-batch GET .../install-status (set by providerInstallSelected
+// into _providerInstallStatusUrl). Marks any vendor the batch itself reports as
+// failed with a short row message and reports whether the BATCH says it is
+// done — the authoritative signal, since a failed install's terminal now stays
+// open (terminal.js, MC-959) so its output can be read, and the DOM-presence
+// check below can no longer tell "still running" from "failed and left open".
+// Returns false (never finished) on any fetch/shape problem — an older server
+// without the route, a dropped connection — so the caller falls back to the
+// DOM check instead of hanging on a signal that will never arrive.
+async function _setupPollInstallStatus() {
+  if (!_providerInstallStatusUrl) return false;
+  try {
+    const res = await fetch(API_BASE + _providerInstallStatusUrl);
+    const data = await res.json().catch(() => null);
+    if (!data || !data.ok) return false;
+    for (const name of (data.failed || [])) {
+      const text = 'Install failed — see terminal.';
+      _providerInstallMsg[name] = text;
+      const el = document.getElementById(`prov-install-msg-${name}`);
+      if (el) el.textContent = text;
+    }
+    return data.running === false;
+  } catch (e) {
+    return false;
+  }
+}
+
 function _setupStartInstallWatch() {
   document.body.classList.add('setup-terminal-live');
   if (_setupInstallWatchRunning) return;
   _setupInstallWatchRunning = true;
   _setupInstallWatchTimer = setInterval(async () => {
     await providerRefreshAll();
-    // Stop on success (nothing left to watch) OR once the terminal itself is
-    // gone (Dave review, 2026-09-24: a failed/cancelled install — Bram's
-    // Qwen/Codex silent-install-failure fix is separate — used to poll
-    // forever with the live class stuck on, since the old check only fired
-    // on full success).
-    if (_setupInstallComplete() || !_setupInstallTerminalOpen()) _setupStopInstallWatch();
+    const batchFinished = await _setupPollInstallStatus();
+    // Stop on success (nothing left to watch), OR the batch itself reporting
+    // finished (MC-959 — solves the case below for a FAILED install too, since
+    // its terminal now stays open), OR — fallback for a server too old to
+    // carry status_url — the terminal itself going away (Dave review,
+    // 2026-09-24: a failed/cancelled install used to poll forever with the
+    // live class stuck on, since the old check only fired on full success).
+    if (_setupInstallComplete() || batchFinished || !_setupInstallTerminalOpen()) _setupStopInstallWatch();
   }, 4000);
 }
 
 function _setupStopInstallWatch() {
   if (_setupInstallWatchRunning) { clearInterval(_setupInstallWatchTimer); _setupInstallWatchTimer = null; _setupInstallWatchRunning = false; }
   document.body.classList.remove('setup-terminal-live');
+  _providerInstallStatusUrl = '';
 }
 
 // Move any terminal pop-out(s) opened from setup off to the top-right corner

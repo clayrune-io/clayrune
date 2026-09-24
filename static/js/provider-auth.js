@@ -630,6 +630,9 @@ async function providerInstallSelected(button, only) {
     .map((p) => p.name);
   if (!names.length) return;
   if (button) button.disabled = true;
+  // Cleared up front, not just set on success — a stale URL from a PRIOR
+  // batch must never be polled as if it belonged to this one (MC-959).
+  _providerInstallStatusUrl = '';
   // Writes into the persistent state maps (survives the next setupShow
   // rebuild the install-watch poll triggers) AND the live DOM node when one
   // exists, for immediate feedback without waiting on that rebuild.
@@ -657,6 +660,11 @@ async function providerInstallSelected(button, only) {
       if (data.session_id) {
         openTerminalPopout(window.currentProjectId, data.session_id, data.command || 'install', data.pty);
       }
+      // MC-959: this batch's own per-vendor result feed (empty string = none,
+      // e.g. an older server without the route) — first-run's install-watch
+      // polls it to show FAILED vendors and to know when the batch itself is
+      // done, rather than guessing from whether the terminal is still open.
+      _providerInstallStatusUrl = data.status_url || '';
       // The execution-policy note is a property of the ONE batch install, not
       // of each vendor row — showing it per row repeated it once per selected
       // vendor (4x on a clean-VM run with everything ticked, 2026-09-24).
