@@ -75,6 +75,26 @@ _TAIL_TEXT = (
     "irreversible steps."
 )
 
+# Ron, 2026-09-24: a Mode-B live turn re-prepends `_TAIL_TEXT` in FULL on
+# EVERY turn (2-4KB/turn measured on session 87d02846ecc6), which piles up in
+# a long conversation and forces early context rollovers — the same problem
+# memory_turn.py's position full/compact trim fixes for STANDING POSITIONS.
+# This is the shorthand: every binding clause survives, none of the prose.
+# Kept well under 250 bytes on purpose — see `test_compact_tail_stays_under_
+# the_250_byte_budget`.
+_TAIL_COMPACT = (
+    "--- REPLY SHAPE (compact; full at start/respawn) ---\n"
+    "Answer first; <=5 bullets, numbers not adjectives; ~150w cap; no "
+    "recap/narration/promises -- act or ask; task=goal, ends when "
+    "achieved+verified; only irreversible steps pause for confirmation."
+)
+
+# Per-session live-turn counter for the two direct-stdin-write sites (never
+# touched by the once-per-context-build call, which always gets the full
+# block — see render()). Reset at every respawn/rollover that reuses the
+# session dict instead of replacing it (reset_conversation_state).
+_TURN_KEY = '_behavior_tail_turn_index'
+
 
 def _cfg(key, default):
     try:
@@ -95,10 +115,48 @@ def enabled() -> bool:
         return True
 
 
-def render() -> str:
-    """The tail block, or '' when disabled. Never raises."""
+def compact_enabled() -> bool:
+    """Rollback lever for JUST the full/compact trim — independent of
+    `enabled()`. False restores today's behaviour: full `_TAIL_TEXT` on
+    every direct-stdin-write call, same as passing no session. Read live."""
     try:
-        return _TAIL_TEXT if enabled() else ''
+        return bool(_cfg('behavior_tail_compact_enabled', True))
+    except Exception:
+        return True
+
+
+def reset_conversation_state(session) -> None:
+    """Clear the per-conversation turn counter. Call this at every point a
+    session dict is REUSED across a context rebuild (a respawn or mid-turn
+    rollover) rather than replaced — dispatch and revival hand the session a
+    brand-new dict, already 'first turn' with the key absent, so they need
+    no explicit reset. Never raises."""
+    if not isinstance(session, dict):
+        return
+    session.pop(_TURN_KEY, None)
+
+
+def render(session=None) -> str:
+    """The tail block, or '' when disabled.
+
+    With no `session` (the once-per-context-build call inside
+    `_build_agent_context`, which only runs at dispatch, revival, or a full
+    respawn/rollover) this always returns the full block — exactly the
+    moments full text belongs. With a `session` (the two live Mode-B
+    direct-stdin-write sites, which never rebuild context) the FIRST call
+    since the session dict was created or last reset by
+    `reset_conversation_state` returns the full block too; every call after
+    that returns the ~250B `_TAIL_COMPACT` reminder instead — mirrors
+    memory_turn's position full/compact trim, applied to this tail. Never
+    raises."""
+    try:
+        if not enabled():
+            return ''
+        if session is None or not isinstance(session, dict) or not compact_enabled():
+            return _TAIL_TEXT
+        idx = session.get(_TURN_KEY, 0)
+        session[_TURN_KEY] = idx + 1
+        return _TAIL_TEXT if idx == 0 else _TAIL_COMPACT
     except Exception as e:
         _log(f"[behavior-tail] render failed: {e}")
         return ''

@@ -58,7 +58,7 @@ def test_router_off_site_bakes_tail_ahead_of_the_mobile_brief():
     assert fn_end != -1
     body = src[fn_start:fn_end]
     brief_idx = body.find('claude_content = _apply_mobile_brief(message, data)')
-    tail_idx = body.find('_behavior_tail.render()')
+    tail_idx = body.find('_behavior_tail.render(session=existing)')
     bake_idx = body.find("claude_content = _tail_text + '\\n\\n' + claude_content")
     assert -1 not in (brief_idx, tail_idx, bake_idx), body
     assert brief_idx < tail_idx < bake_idx, (
@@ -76,7 +76,7 @@ def test_same_tier_site_bakes_tail_ahead_of_the_mobile_brief():
     assert fn_end != -1
     body = src[fn_start:fn_end]
     brief_idx = body.find('claude_content = _apply_mobile_brief(message, data)')
-    tail_idx = body.find('_behavior_tail.render()')
+    tail_idx = body.find('_behavior_tail.render(session=_rs_existing)')
     bake_idx = body.find("claude_content = _tail_text + '\\n\\n' + claude_content")
     assert -1 not in (brief_idx, tail_idx, bake_idx), body
     assert brief_idx < tail_idx < bake_idx
@@ -86,8 +86,11 @@ def test_the_two_respawn_sites_are_not_touched():
     """Same rationale as memory_turn's own version of this test: the
     model-tier-switch respawn and the interrupt-respawn spawn a brand new
     process via _fresh_context_for (which already calls _build_agent_context,
-    i.e. already gets the tail) — calling behavior_tail here too would
-    double-inject it on that turn."""
+    i.e. already gets the tail) — calling behavior_tail.render() here too
+    would double-inject it on that turn. reset_conversation_state() is a
+    DIFFERENT call (clears turn-counter state, injects no text) and IS
+    expected at both sites — see test_both_respawn_sites_reset_conversation_
+    state below — so this only guards against render()/refresh reappearing."""
     src = _source()
     for marker, label in (
         ("_do_respawn_b():", "model-switch respawn (_do_respawn_b)"),
@@ -96,7 +99,22 @@ def test_the_two_respawn_sites_are_not_touched():
         idx = src.find(marker)
         assert idx != -1, f'{label} marker moved — update this test'
         window = src[idx:idx + 1200]
-        assert '_behavior_tail' not in window, (
-            f'{label} must not call behavior_tail — it already gets a fresh '
-            f'context rebuild (which appends the tail itself), so this '
-            f'would double-inject the block')
+        assert '_behavior_tail.render(' not in window, (
+            f'{label} must not call behavior_tail.render() — it already gets '
+            f'a fresh context rebuild (which appends the tail itself), so '
+            f'this would double-inject the block')
+
+
+def test_both_respawn_sites_reset_conversation_state():
+    """The system prompt a respawn/rollover just built already carries the
+    full tail (via _build_agent_context's own render() call) — without this
+    reset, the session dict's turn counter would carry over from before the
+    respawn, so the FIRST direct-stdin-write turn after it could render
+    compact instead of matching what the fresh system prompt just gave the
+    model. Ron's 2026-09-24 spec: 'reset the per-conversation state wherever
+    the context is rebuilt'."""
+    src = _source()
+    assert "_behavior_tail.reset_conversation_state(rb['existing'])" in src, (
+        'model-switch respawn (_do_respawn_b) no longer resets tail state')
+    assert '_behavior_tail.reset_conversation_state(session)' in src, (
+        'interrupt-respawn no longer resets tail state')

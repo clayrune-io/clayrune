@@ -89,6 +89,76 @@ def test_render_never_raises_even_if_enabled_itself_breaks(monkeypatch):
     assert bt.render() == ''
 
 
+# ── full/compact trim (2026-09-24) ───────────────────────────────────────────
+
+def test_compact_tail_stays_under_the_250_byte_budget():
+    import mc.behavior_tail as bt
+    assert len(bt._TAIL_COMPACT.encode('utf-8')) <= 250
+
+
+def test_no_session_always_returns_full_text(monkeypatch):
+    """The once-per-context-build call site (_build_agent_context) passes no
+    session — it only runs at dispatch/revival/respawn, exactly when full
+    text belongs, so it must never see the compact variant."""
+    import mc.behavior_tail as bt
+    for _ in range(5):
+        assert bt.render() == bt._TAIL_TEXT
+
+
+def test_first_turn_full_then_compact_on_repeat():
+    import mc.behavior_tail as bt
+    session = {}
+    first = bt.render(session=session)
+    assert first == bt._TAIL_TEXT
+    second = bt.render(session=session)
+    assert second == bt._TAIL_COMPACT
+    third = bt.render(session=session)
+    assert third == bt._TAIL_COMPACT
+
+
+def test_reset_conversation_state_restores_full_on_the_next_call():
+    """Mirrors what a respawn/rollover does to the session dict — the next
+    direct-stdin-write turn after a reset must get full text again, same as
+    the just-rebuilt system prompt it rode in on."""
+    import mc.behavior_tail as bt
+    session = {}
+    bt.render(session=session)          # turn 1: full
+    bt.render(session=session)          # turn 2: compact
+    bt.reset_conversation_state(session)
+    assert bt.render(session=session) == bt._TAIL_TEXT
+
+
+def test_compact_flag_off_restores_full_every_turn(monkeypatch):
+    import mc.behavior_tail as bt
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, 'behavior_tail_compact_enabled', False)
+    session = {}
+    bt.render(session=session)
+    assert bt.render(session=session) == bt._TAIL_TEXT
+
+
+def test_compact_flag_registered_in_defaults_and_editable_keys():
+    import ast
+    root = Path(__file__).resolve().parent.parent
+    tree = ast.parse((root / 'server.py').read_text(encoding='utf-8'))
+    defaults = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == '_load_config':
+            for stmt in ast.walk(node):
+                if (isinstance(stmt, ast.Assign)
+                        and any(getattr(t, 'id', '') == 'defaults' for t in stmt.targets)
+                        and isinstance(stmt.value, ast.Dict)):
+                    for k, v in zip(stmt.value.keys, stmt.value.values):
+                        if isinstance(k, ast.Constant):
+                            try:
+                                defaults[k.value] = ast.literal_eval(v)
+                            except Exception:
+                                pass
+    assert defaults.get('behavior_tail_compact_enabled') is True
+    settings_src = (root / 'mc' / 'blueprints' / 'settings_routes.py').read_text(encoding='utf-8')
+    assert "'behavior_tail_compact_enabled'" in settings_src
+
+
 # ── position in the assembled system prompt, across providers ───────────────
 
 @pytest.mark.parametrize('provider', ['claude', 'gemini'])
