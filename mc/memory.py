@@ -868,8 +868,12 @@ def _mem_link_graph(units):
 _ARCH_LINE_RE = re.compile(r'^- \[(\d{4}-\d{2}-\d{2})\] \*\*(.*?)\*\*')
 
 
-def _dedupe_archive_lines(lines):
+def _dedupe_archive_lines_legacy(lines):
     """Keep only the LAST archive entry per (day, task) — read-time only.
+
+    RETIRED as the default 2026-09-24 (MC-964 Step A, RC1) — kept only as the
+    `archive_dedupe_legacy_enabled` rollback lever. See
+    `_dedupe_archive_lines_containment` for why and what replaced it.
 
     The Step-6 checkpointer appends a fresh session-log line every time it
     runs, so one long conversation leaves a trail of near-identical entries
@@ -883,6 +887,13 @@ def _dedupe_archive_lines(lines):
     says "found no /goal command" and the last says it is verified working. The
     ranker had no way to prefer the later one, so a perfectly-matching stale
     line could take every slot on the card.
+
+    RC1 (2026-09-24): grouping by (day, task) alone over-generalised from "same
+    answer, revised" to "same chat title" — a single long chat with 87 lines
+    under one title silently deleted 86 of them, including a fact (the 2026-09-17
+    Codex top-up) that had nothing to do with the line that outlived it. 2,079 of
+    2,702 archive-wide hidden lines had over half their content words absent
+    from the line that "superseded" them.
 
     Dedupe happens HERE, on the way into the corpus — never on the file. The
     archive is append-only cold storage and is never truncated (see the module
@@ -904,6 +915,80 @@ def _dedupe_archive_lines(lines):
         last[key] = len(order)
         order.append(ln)
     return [ln for ln in order if ln is not None]
+
+
+def _archive_line_content(ln, m=None):
+    """The part of an archive line after its bolded `**task**` — the part
+    `_dedupe_archive_lines_containment` measures overlap over. Shared with the
+    (day, task) grouping key's regex so both read the same match.
+    """
+    m = m or _ARCH_LINE_RE.match(ln)
+    return ln[m.end():] if m else ln
+
+
+# Measured 2026-09-24 against the live archive (4,342 lines; see
+# docs/_journal/b2d85e51-memory-overhaul.md). Chain-resolved hidden-but-novel
+# count (RC1's method — a dropped line whose content is over half absent from
+# the line that FINALLY absorbed it, following multi-hop supersession chains
+# to their end, not just the immediate absorber):
+#   T=0.3 -> 1,246   T=0.4 -> 649   T=0.5 -> 137   T=0.6 -> 9   T=0.7 -> 0
+# 0.6 is the chosen cutoff: comfortably under the <200 acceptance bar, while
+# still hiding 1,365 of 4,342 lines archive-wide (0.7 hides only 1,164 for the
+# same 0-novel result). At 0.6 the 2026-07-29 /goal stale-first-guess group
+# (13 near-duplicate progress lines under one chat title) still collapses to
+# 7 survivors — see tests/test_memory_archive_dedupe.py.
+_ARCHIVE_DEDUPE_CONTAINMENT_THRESHOLD = 0.6
+
+
+def _dedupe_archive_lines_containment(lines, threshold=_ARCHIVE_DEDUPE_CONTAINMENT_THRESHOLD):
+    """Drop an earlier archive line only when a later line in the same
+    (day, task) group substantially CONTAINS its content — the RC1 fix
+    (MEMORY_OVERHAUL_PLAN.md #6 Step A) for `_dedupe_archive_lines_legacy`'s
+    "same chat title" over-generalisation.
+
+    Containment of an earlier line's content in a later one = the fraction of
+    the earlier line's content words (the part after `**task**`, tokenized by
+    `_mem_tokens` so both sides use the same vocabulary as the ranker) that
+    also appear in the later line's content words. An earlier line is dropped
+    only when that fraction reaches `threshold` against SOME later,
+    still-surviving line in its (day, task) group — a group of genuinely
+    distinct facts filed under one chat title now survives side by side
+    instead of the newest line silently deleting the others. A line with no
+    content (bare title, no `—` body) is treated as fully contained by
+    anything, matching the legacy rule's behaviour for that edge case.
+
+    Grouping key is unchanged from the legacy rule: (day, task[:120]).
+    """
+    order = list(lines)
+    wordcache: dict = {}
+    groups: dict = {}
+    for idx, ln in enumerate(order):
+        m = _ARCH_LINE_RE.match(ln)
+        key = (m.group(1), m.group(2)[:120]) if m else ('', ln)
+        wordcache[idx] = set(_mem_tokens(_archive_line_content(ln, m)))
+        survivors = groups.setdefault(key, [])
+        kept = []
+        w = wordcache[idx]
+        for j in survivors:
+            wj = wordcache[j]
+            contained = (not wj) or (len(wj & w) / len(wj)) >= threshold
+            if contained:
+                order[j] = None          # substantially contained in the later line
+            else:
+                kept.append(j)
+        kept.append(idx)
+        groups[key] = kept
+    return [ln for ln in order if ln is not None]
+
+
+def _dedupe_archive_lines(lines):
+    """Corpus-build entry point (`_mem_file_units`). Content-containment
+    dedupe is the default (MC-964 Step A); `archive_dedupe_legacy_enabled`
+    is the rollback lever back to the retired last-wins rule.
+    """
+    if state.CONFIG.get('archive_dedupe_legacy_enabled', False):
+        return _dedupe_archive_lines_legacy(lines)
+    return _dedupe_archive_lines_containment(lines)
 
 
 # ── Positions: what we decided NOT to do, and why ───────────────────────────

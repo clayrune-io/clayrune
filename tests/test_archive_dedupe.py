@@ -9,13 +9,23 @@ each other. Measured on mission_control 2026-08-23:
 - archive outnumbered topic notes ~30:1 and took 34% of read-floor slots
 - **17 of 137 real tasks (12%) got SIX archive lines and zero topic notes**
 
-It is not just waste, it is wrong: within a group the early lines are the
-agent's first guess. For "do we have a /goal command?" the first entry said
-"found no /goal command" and the last said it was verified working — and the
-ranker had no way to prefer the later one.
+That measurement justified `_dedupe_archive_lines_legacy`'s "keep only the
+LAST line per (day, task)" rule — the tests below pin ITS behavior, and it is
+still shipped (`archive_dedupe_legacy_enabled`), just no longer the default.
 
-Dedupe is READ-TIME ONLY. The archive file is append-only cold storage and is
-never truncated; this changes what retrieval sees, not what is stored.
+RETIRED as the default 2026-09-24 (MC-964 Step A, RC1,
+docs/MEMORY_OVERHAUL_PLAN.md #6): "same (day, task)" over-generalised from
+"near-identical entries that supersede each other" to "same chat title" — one
+87-line chat on 2026-09-17 silently deleted a fact (a Codex top-up) that had
+nothing to do with the unrelated line that happened to close the chat. The
+default is now content-containment dedupe
+(`_dedupe_archive_lines_containment` / the bare `_dedupe_archive_lines` entry
+point) — see tests/test_memory_archive_dedupe.py for its behavior, including
+the frozen real /goal case this file's docstring refers to.
+
+Dedupe is READ-TIME ONLY, in both rules. The archive file is append-only cold
+storage and is never truncated; dedupe changes what retrieval sees, not what
+is stored.
 """
 import sys
 from pathlib import Path
@@ -29,9 +39,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 @pytest.fixture()
 def dd():
+    """Pinned to the LEGACY rule on purpose — see module docstring. The
+    current default's behavior lives in tests/test_memory_archive_dedupe.py.
+    """
     import server  # noqa: F401  (wires module paths)
-    from mc.memory import _dedupe_archive_lines
-    return _dedupe_archive_lines
+    from mc.memory import _dedupe_archive_lines_legacy
+    return _dedupe_archive_lines_legacy
 
 
 def _line(day, task, tail):
@@ -122,17 +135,37 @@ def test_dedupe_is_idempotent(dd):
     assert dd(dd(lines)) == dd(lines)
 
 
-def test_the_corpus_actually_applies_it(dd, tmp_path, monkeypatch):
+def test_the_corpus_actually_applies_the_default_containment_rule(tmp_path):
     """Guard the wiring, not just the helper — the helper being right is no
-    use if _mem_corpus stops calling it."""
+    use if _mem_corpus stops calling it. Uses the DEFAULT entry point
+    (content-containment, MC-964 Step A), not the `dd` fixture above."""
     from mc import memory as mem
     (tmp_path / 'MEMORY.md').write_text('# idx\n', encoding='utf-8')
     (tmp_path / 'MEMORY_ARCHIVE.md').write_text(
         '\n'.join([
-            _line('2026-07-29', 'the widget question', 'guess one'),
-            _line('2026-07-29', 'the widget question', 'the real answer'),
+            _line('2026-07-29', 'the widget question', 'the answer is blue'),
+            _line('2026-07-29', 'the widget question',
+                  'the answer is blue and now confirmed correct'),
         ]), encoding='utf-8')
     units = mem._mem_corpus(tmp_path, 'MEMORY.md', 'MEMORY_ARCHIVE.md')
     arch = [u for u in units if u['cls'] == 'archive']
     assert len(arch) == 1
-    assert 'the real answer' in arch[0]['text']
+    assert 'confirmed correct' in arch[0]['text']
+
+
+def test_the_corpus_keeps_distinct_facts_under_one_task(tmp_path):
+    """The RC1 regression, exercised through the real corpus builder: two
+    facts that do not restate each other must both survive, even under the
+    same (day, task) key — unlike the legacy last-wins rule."""
+    from mc import memory as mem
+    (tmp_path / 'MEMORY.md').write_text('# idx\n', encoding='utf-8')
+    (tmp_path / 'MEMORY_ARCHIVE.md').write_text(
+        '\n'.join([
+            _line('2026-09-17', 'Where do we stand?',
+                  'the access problem cleared after adding Codex credits'),
+            _line('2026-09-17', 'Where do we stand?',
+                  'vendor-decoupling review found writes bypassing protection'),
+        ]), encoding='utf-8')
+    units = mem._mem_corpus(tmp_path, 'MEMORY.md', 'MEMORY_ARCHIVE.md')
+    arch = [u for u in units if u['cls'] == 'archive']
+    assert len(arch) == 2

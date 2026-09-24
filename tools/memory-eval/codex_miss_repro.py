@@ -21,6 +21,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Archive content routinely carries non-cp1252 characters (—, ≤, …) and
+# Windows' default console codepage is cp1252, not UTF-8 — printing a
+# snippet that happens to contain one crashes with UnicodeEncodeError deep
+# into a run (measured 2026-09-24, MC-964 Step A). Reconfigure instead of
+# requiring callers to remember `PYTHONIOENCODING=utf-8`.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _harness  # noqa: E402
 
