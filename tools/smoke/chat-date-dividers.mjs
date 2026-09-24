@@ -27,6 +27,15 @@
  * historical line renders no divider at all. Section 6 exercises the REAL
  * multi-day case now that per-line dates are wired through.
  *
+ * STICKY (MC-954 follow-up, Ron's phone report 2026-09-24): Telegram/
+ * WhatsApp-style behavior — the current day's label stays pinned at the top
+ * of .agent-output (its own scrolling ancestor) while its messages are on
+ * screen, swapping to the next/previous day's label as you scroll. Pure CSS
+ * (`position: sticky; top: 0` on `.chat-date-divider`, app.css ~4235) — no
+ * scroll-listener JS. Section 8 verifies it by scrolling into the middle of
+ * each day's (15-line) block and confirming that day's label — not an
+ * adjacent one — is the one actually pinned at the container's top.
+ *
  * RUN: node chat-date-dividers.mjs
  */
 import { readFileSync, readdirSync } from 'node:fs';
@@ -279,12 +288,83 @@ try {
   if (uncaughtMobile.length) uncaughtMobile.forEach((e) => fail('uncaught page error on mobile: ' + e));
   await mobileCtx.close();
 
+  // ── 8. STICKY follow-up (MC-954, backlog item 00a65265): each divider is
+  //      `position: sticky; top: 0` inside .agent-output — its own scrolling
+  //      ancestor — so it pins to the top for as long as its day's messages
+  //      are on screen (Telegram/WhatsApp behavior), no scroll-listener JS.
+  //      Multiple dividers can be simultaneously "stuck" at the same pixel
+  //      (they share one containing block — the whole scroll container — so
+  //      CSS doesn't evict an earlier one once a later one also qualifies);
+  //      what the USER sees is only the latest DOM-order one, since it
+  //      paints on top of the earlier ones at the identical spot (confirmed
+  //      against the live server — see docs/_journal for the investigation).
+  //      15 lines/day so each day's block is taller than any viewport,
+  //      giving real "scrolled into the middle of a day" positions.
+  const stickyLines = [];
+  const stickyTs = [];
+  [dayBefore, yesterday, now].forEach((d, di) => {
+    for (let i = 1; i <= 15; i++) { stickyLines.push(`Sticky-check line ${i}, day ${di}.`); stickyTs.push(d.toISOString()); }
+  });
+  const stickyId = 'sess-dividers-sticky';
+  await page.evaluate(({ pid, id, lines, ts, startedAt }) => {
+    agentStatusCache[id] = { status: 'completed', task: 'sticky thread', projectId: pid, startedAt, claudeSessionId: 'csid-dividers-sticky' };
+    agentOutputBuffers[id] = lines;
+    agentOutputTimestamps[id] = ts;
+    const host = document.createElement('div');
+    host.id = `agent-output-${id}`;
+    host.className = 'agent-output';
+    host.style.height = '500px';   // bounded height so overflow-y:auto actually scrolls (no flex parent here to size it)
+    document.body.appendChild(host);
+    window._repaintAgentOutput(id);
+  }, { pid: PID, id: stickyId, lines: stickyLines, ts: stickyTs, startedAt: dayBefore.toISOString() });
+  const outSel8 = `#agent-output-${stickyId}`;
+
+  const cssOk = await page.evaluate((sel) =>
+    [...document.querySelectorAll(sel + ' .chat-date-divider')].every((d) => getComputedStyle(d).position === 'sticky'),
+    outSel8);
+  cssOk ? ok('every divider computes position:sticky') : fail('a divider did not compute position:sticky');
+
+  // Reset to top first: offsetTop on a stuck sticky element reflects its
+  // CURRENT screen position, not its true document position, once scrolled.
+  await page.evaluate((sel) => { document.querySelector(sel).scrollTop = 0; }, outSel8);
+  const staticOffsets = await page.evaluate((sel) =>
+    [...document.querySelectorAll(sel + ' .chat-date-divider')].map((d) => ({ text: d.textContent, offsetTop: d.offsetTop })),
+    outSel8);
+  const yestOff = staticOffsets.find((d) => d.text === 'Yesterday');
+  const todayOff = staticOffsets.find((d) => d.text === 'Today');
+  if (!yestOff || !todayOff) {
+    fail(`sticky check: expected Yesterday/Today dividers, got ${JSON.stringify(staticOffsets)}`);
+  } else {
+    const baseline = await page.evaluate((sel) => {
+      const out = document.querySelector(sel);
+      const first = out.querySelector('.chat-date-divider');
+      return first.getBoundingClientRect().top - out.getBoundingClientRect().top;
+    }, outSel8);
+    async function pinnedLabelAt(scrollTop) {
+      await page.evaluate(({ sel, top }) => { document.querySelector(sel).scrollTop = top; }, { sel: outSel8, top: scrollTop });
+      return page.evaluate(({ sel, baseline }) => {
+        const out = document.querySelector(sel);
+        const divs = [...out.querySelectorAll('.chat-date-divider')];
+        const outRect = out.getBoundingClientRect();
+        const matches = divs.filter((d) => Math.abs((d.getBoundingClientRect().top - outRect.top) - baseline) < 3);
+        const pinned = matches[matches.length - 1];
+        return pinned ? pinned.textContent : null;
+      }, { sel: outSel8, baseline });
+    }
+    const midYesterday = await pinnedLabelAt(yestOff.offsetTop + 300);
+    midYesterday === 'Yesterday' ? ok('scrolled into the middle of "Yesterday": that label stays pinned at the top')
+      : fail(`scrolled mid-Yesterday: expected "Yesterday" pinned, got ${JSON.stringify(midYesterday)}`);
+    const midToday = await pinnedLabelAt(todayOff.offsetTop + 300);
+    midToday === 'Today' ? ok('scrolled into the middle of "Today": that label stays pinned at the top (previous day pushed out)')
+      : fail(`scrolled mid-Today: expected "Today" pinned, got ${JSON.stringify(midToday)}`);
+  }
+
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught.length) uncaught.forEach((e) => fail('uncaught exception during interaction: ' + e));
 
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
-    ? '\n✅ PASS — date dividers render on cold load, cross the day boundary live, dedupe against the DOM, the single-anchor fallback is confirmed, real per-line server timestamps render all 3 dividers for a 3-day buffer, and the mobile drill-down list + real fetch/reconstruct path (not direct object injection) also renders visible dividers.'
+    ? '\n✅ PASS — date dividers render on cold load, cross the day boundary live, dedupe against the DOM, the single-anchor fallback is confirmed, real per-line server timestamps render all 3 dividers for a 3-day buffer, the mobile drill-down list + real fetch/reconstruct path also renders visible dividers, and each day\'s label stays sticky-pinned at the top while scrolling through that day.'
     : `\n❌ FAIL — ${bad} check(s) failed.`);
 } catch (err) {
   console.error('❌ harness error:', err && err.stack ? err.stack : err);
