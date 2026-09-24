@@ -863,7 +863,99 @@ def _mem_link_graph(units):
                 graph[src]['out'].append(dst)
             if src not in graph[dst]['in']:
                 graph[dst]['in'].append(src)
+    # Condition 17 / §16 step 6: a `supersedes:` edge is declared by the
+    # SUCCESSOR and reuses the OUT hop slot — the successor "points at" what
+    # it replaced, the same authored-pointer shape as a `[[wikilink]]`. No new
+    # decay tier, no new slot: `_mem_expand_links` needs no change to reach a
+    # superseded predecessor from its successor (or the successor from the
+    # predecessor, via IN) — that is the "priority expansion in one of the
+    # two existing hop slots" the build sequence calls for.
+    for f, node in _mem_supersede_graph(units).items():
+        dst = node.get('supersedes')
+        if not dst or dst == f or dst not in graph or f not in graph:
+            continue
+        if dst not in graph[f]['out']:
+            graph[f]['out'].append(dst)
+        if f not in graph[dst]['in']:
+            graph[dst]['in'].append(f)
     return graph
+
+
+_SUPERSEDE_HEAD_DEPTH_CAP = 8
+
+
+def _mem_supersede_graph(units):
+    """Build the supersedes/superseded_by graph over topic units (Condition 17,
+    MEMORY_DESIGN_V2_SPEC.md §6.1-6.3, MC-944 step 6).
+
+    `supersedes: <slug>` is written ONLY by the successor at mint/edit time
+    (`write_topic_note`'s `supersedes` kwarg); the back edge
+    (`superseded_by`) is derived HERE, every call, and is never written to
+    disk — matching the in-repo backlog-link precedent §6.1 cites ("only the
+    direction you post is stored; the inverse is rendered automatically").
+
+    A target that doesn't resolve to a real topic file — a typo, or the
+    `unresolved` sentinel §6.5/Condition 22 reserves for MC-944 step 7's
+    mint (not built in this step) — is silently dropped, the same posture
+    `_mem_link_graph` already takes for a dangling `[[wikilink]]`.
+
+    Returns {filename: {'supersedes': predecessor_file_or_None,
+                         'superseded_by': [successor_file, ...]}} for every
+    topic file, so callers can test membership without a `.get(x, {})` guard.
+    """
+    by_key = {}
+    for u in units:
+        if u.get('cls') == 'topic':
+            by_key.setdefault(_mem_link_key(u['file'].rsplit('.', 1)[0]), u['file'])
+    edges = {f: {'supersedes': None, 'superseded_by': []} for f in by_key.values()}
+    for u in units:
+        if u.get('cls') != 'topic':
+            continue
+        src = u['file']
+        raw = str(u.get('supersedes') or '').strip()
+        if not raw or raw == 'unresolved':
+            continue
+        dst = by_key.get(_mem_link_key(raw))
+        if not dst or dst == src:
+            continue
+        edges[src]['supersedes'] = dst
+        edges[dst]['superseded_by'].append(src)
+    return edges
+
+
+def _mem_supersede_head(edges, n):
+    """Follow `superseded_by` edges from `n` to its terminal HEAD (Condition
+    17's `head(x)`) — cycle-guarded by a visited set, depth capped at 8 with
+    a log line on hitting the cap (spec's own words: "cycle-guarded by a
+    visited set, depth capped at 8 with a log line on hitting the cap").
+
+    Two notes both declaring `supersedes: n` resolves deterministically to
+    the lexicographically-first successor — an edge case the spec doesn't
+    rule on (one predecessor is expected to gain one successor); picking
+    deterministically keeps repeated calls agreeing with each other without
+    extra state.
+
+    Returns (head_file, hops_walked). `hops_walked == 0` means `n` is
+    already STANDING or is itself a head.
+    """
+    visited = {n}
+    cur = n
+    depth = 0
+    while depth < _SUPERSEDE_HEAD_DEPTH_CAP:
+        succs = (edges.get(cur) or {}).get('superseded_by') or []
+        if not succs:
+            return cur, depth
+        nxt = sorted(succs)[0]
+        if nxt in visited:
+            _log(f'[supersede] cycle detected walking from {n!r} at '
+                 f'{cur!r} -> {nxt!r}; stopping at {cur!r}')
+            return cur, depth
+        visited.add(nxt)
+        cur = nxt
+        depth += 1
+    _log(f'[supersede] depth cap ({_SUPERSEDE_HEAD_DEPTH_CAP}) hit walking '
+         f'from {n!r}; stopping at {cur!r}')
+    return cur, depth
 
 
 _ARCH_LINE_RE = re.compile(r'^- \[(\d{4}-\d{2}-\d{2})\] \*\*(.*?)\*\*')
@@ -2054,7 +2146,8 @@ def write_position(project, subject, verdict, reason,
 
 
 def write_topic_note(project, slug, description, body, *, note_type='project',
-                      triggers='', task='', trigger_type='', actor=''):
+                      triggers='', task='', trigger_type='', actor='',
+                      supersedes=''):
     """Mint a NEW topic note (MEMORY_DESIGN_V2_SPEC.md §7 Condition 27 /
     §4.1's `origin`+`generated` provenance, Condition 4/22 "mint WRITEs
     fail-open"). First real caller of `_stamp_origin`/`_stamp_generated`
@@ -2081,6 +2174,12 @@ def write_topic_note(project, slug, description, body, *, note_type='project',
     caller with a legitimate unattended use case is not blocked by a rule
     written for a different one.
 
+    `supersedes` (§6.1 Condition 17, MC-944 step 6): the slug of an existing
+    topic note this one replaces. Written verbatim — resolution against the
+    corpus (name/stem/`aka` aliasing) happens at read time in
+    `_mem_supersede_graph`, same split as `[[wikilinks]]`. Never an edit to
+    the predecessor: the back edge (`superseded_by`) is derived, not stored.
+
     Returns the note's filename, or '' if skipped (already exists / bad slug).
     """
     slug = (slug or '').strip()
@@ -2104,6 +2203,8 @@ def write_topic_note(project, slug, description, body, *, note_type='project',
                  'metadata:', f'  type: {note_type}']
         if triggers:
             lines.append(f'triggers: {triggers.strip()}')
+        if supersedes:
+            lines.append(f'supersedes: {supersedes.strip()}')
         lines.append(f'origin: {origin}')
         lines.append('generated:')
         lines.append(f"  by: {generated['by']}")
@@ -2252,12 +2353,24 @@ def _mem_tokenize_unit(label, text, cls):
     tf = {}
     for t in toks:
         tf[t] = tf.get(t, 0) + 1
-    return {'file': label, 'text': text, 'tf': tf,
+    unit = {'file': label, 'text': text, 'tf': tf,
             'len': len(toks), 'cls': cls,
             'uid': _unit_uid(label, text, cls),
             'subject_terms': subject_terms,
             'trigger_explicit': trigger_explicit,
             'links': _mem_link_targets(text) if cls == 'topic' else []}
+    if cls == 'topic':
+        # MC-944 step 6 (Condition 17/20): parsed once here, at tokenize
+        # time, so it rides the same per-file cache (Condition 53) as
+        # everything else — `_memory_search` never re-parses frontmatter
+        # per query. `_note_frontmatter` is the shared parser; see its
+        # docstring for why this stays out of `tf`/BM25 scoring.
+        fm = _note_frontmatter(text)
+        unit['supersedes'] = fm.get('supersedes', '')
+        unit['fm_origin'] = fm.get('origin', '')
+        unit['fm_verified'] = fm.get('verified', '')
+        unit['fm_description'] = fm.get('description', '')
+    return unit
 
 
 def _mem_corpus(mem_dir, mem_name, arch_name, session_log_name=SESSION_LOG_FILE):
@@ -2447,6 +2560,13 @@ def _memory_search(project, query, topk=3, expand=None, record=None,
                        'snippet': _mem_snippet(u['text'], terms)})
     scored.sort(key=lambda r: (-r['score'], r['file']))
 
+    # Head substitution (Condition 19/20, §6.3-6.4, MC-944 step 6). Runs over
+    # the FULL ranked list, before the quota/top-k cut, so a duplicate head
+    # collapsed by dedupe is backfilled from the next-ranked candidate rather
+    # than shrinking the slot budget — see `_mem_apply_supersession`.
+    _by_topic_file = {u['file']: u for u in units if u.get('cls') == 'topic'}
+    scored = _mem_apply_supersession(scored, _mem_supersede_graph(units), _by_topic_file)
+
     # Positions are pulled out BEFORE the quota/top-k cut and re-inserted at the
     # front. A position that matches its own subject must reach the prompt even
     # on a busy query — being present and never surfacing is precisely how the
@@ -2512,6 +2632,141 @@ def _memory_search(project, query, topk=3, expand=None, record=None,
             _h.pop('uid', None)
             _h.pop('head', None)
     return hits
+
+
+_SUPERSEDE_NEGATION_CAP = 7
+_SUPERSEDE_NEGATION_CHARS = 120
+
+
+def _mem_supersede_guard_blocks(predecessor_file, head_file, by_topic_file):
+    """Condition 20 / C2 (§4.3) — two independent refusals, either one blocks
+    substitution. `origin`/`verified` are parsed once at tokenize time (see
+    `_mem_tokenize_unit`) so each check here is a dict lookup, not a re-parse.
+
+    1. **Verified vs. generated.** `generated` is not an `origin` value — per
+       §4.1/Condition 4, EVERY note write carries a `generated: {by, at}`
+       stamp. "A generated note" (Condition 20's phrase) means a note that
+       has NOT separately earned `verified[]` (Condition 5: derived only for
+       a human-witnessed `trigger_type: manual` session with a follow-up
+       message) — i.e. the ordinary state `write_topic_note` mints today,
+       since no caller appends `verified[]` yet (that lands with mint,
+       step 7). So: predecessor carries `verified[]`, head does not.
+    2. **Origin authority (learning-system rail, CLAUDE.md).** An
+       unattended-origin successor must never supersede a predecessor that
+       was not itself unattended — that covers `origin: interactive`,
+       `origin: legacy` (§4.3's "legacy is read as attended-equivalent"),
+       and an unstamped/legacy-import predecessor with no parseable
+       `origin` at all (fail-closed, same posture as
+       `_stamp_origin`/`is_unattended_session`). An interactive successor
+       superseding an unattended predecessor is unaffected — only the
+       unattended-over-attended direction is refused.
+
+    True = substitution is REFUSED; the caller keeps the predecessor's own
+    hit untouched, which is what "reported alongside both rather than
+    performed" means here — the predecessor still surfaces on its own
+    merits, unredirected, so a human sees the older/verified record instead
+    of the other one silently taking its slot.
+    """
+    pred = by_topic_file.get(predecessor_file) or {}
+    head = by_topic_file.get(head_file) or {}
+    if bool(str(pred.get('fm_verified') or '').strip()) and \
+            not str(head.get('fm_verified') or '').strip():
+        return True
+    head_origin = str(head.get('fm_origin') or '').strip()
+    pred_origin = str(pred.get('fm_origin') or '').strip()
+    if head_origin == 'unattended' and pred_origin != 'unattended':
+        return True
+    return False
+
+
+def _mem_negation_entries(head_file, edges, by_topic_file):
+    """Every node whose supersede chain resolves to `head_file` (direct or
+    transitive), rendered one-per-line for the materialised negation block
+    (§6.4). Capped at 7 entries; beyond that, one `(+N more, see <head>)`
+    line — Condition 19's bound, ~120 chars/entry so the whole block stays
+    near the ~900B the spec budgets.
+    """
+    preds = sorted(f for f in edges
+                    if f != head_file and _mem_supersede_head(edges, f)[0] == head_file)
+    lines = []
+    overflow = 0
+    for f in preds:
+        if len(lines) >= _SUPERSEDE_NEGATION_CAP:
+            overflow += 1
+            continue
+        desc = str((by_topic_file.get(f) or {}).get('fm_description') or '').strip()
+        entry = f'{f}: {desc}' if desc else f
+        lines.append(entry[:_SUPERSEDE_NEGATION_CHARS])
+    if overflow:
+        lines.append(f'(+{overflow} more, see {head_file})')
+    return lines
+
+
+def _mem_redirect_hit(r, head_file, edges, by_topic_file):
+    """Build the redirect stub (§6.3) that replaces an OUTPACED hit's
+    delivered snippet. The hit keeps its own score/rank (`r['score']` is
+    untouched by the caller) — only `file`/`snippet`/`uid`/`head` change, plus
+    `substituted_from` so the agent is told which note it actually matched
+    (substitution is "attributed, never silent").
+    """
+    head_u = by_topic_file.get(head_file) or {}
+    head_text = str(head_u.get('text') or '')
+    conclusion = str(head_u.get('fm_description') or '').strip() or _head(head_text)
+    negations = _mem_negation_entries(head_file, edges, by_topic_file)
+    neg_str = ' | '.join(negations) if negations else 'none'
+    stub = (f'SUPERSEDED by {head_file}.\n'
+            f'CONCLUSION: {conclusion}\n'
+            f'NEGATED en route ({len(negations)}): {neg_str}\n'
+            f'FULL: {head_file}')
+    out = dict(r)
+    out['file'] = head_file
+    out['snippet'] = stub
+    out['uid'] = head_u.get('uid') or head_file
+    out['head'] = _head(head_text)
+    out['substituted_from'] = r['file']
+    return out
+
+
+def _mem_apply_supersession(scored, edges, by_topic_file):
+    """Head-substitute OUTPACED topic hits, dedupe by head, backfill from the
+    next-ranked candidate — Condition 19/20 (§6.3-6.4, MC-944 step 6).
+
+    Runs over `scored` in its already-sorted rank order and returns a list in
+    the same order, so the caller's existing quota/top-k cut is unaffected.
+    Non-topic units (archive/managed/position) pass through unchanged and are
+    NEVER deduped by file — every archive line legitimately shares its
+    container's filename (`MEMORY_ARCHIVE.md`) with ~2.5k others; only topic
+    units resolve to a distinct file per note.
+
+    Dedupe is by the EFFECTIVE file identity a topic hit resolves to, not
+    just among substituted entries: a predecessor redirected to head X and
+    X's own natural (unsubstituted) hit are the same delivered identity and
+    must not both take a slot. The best-ranked occurrence wins — whichever
+    reaches this loop first, since `scored` is already sorted — and the
+    dropped duplicate's slot is backfilled for free by simply continuing to
+    the next real candidate further down the same rank-ordered list.
+    """
+    used = set()
+    out = []
+    for r in scored:
+        if r.get('cls') != 'topic':
+            out.append(r)
+            continue
+        head_file = r['file']
+        node = edges.get(r['file'])
+        if node and node.get('superseded_by'):
+            resolved, _hops = _mem_supersede_head(edges, r['file'])
+            if resolved != r['file'] and not _mem_supersede_guard_blocks(
+                    r['file'], resolved, by_topic_file):
+                head_file = resolved
+        if head_file in used:
+            continue  # dedupe: drop, next-ranked candidate fills the slot
+        used.add(head_file)
+        if head_file != r['file']:
+            out.append(_mem_redirect_hit(r, head_file, edges, by_topic_file))
+        else:
+            out.append(r)
+    return out
 
 
 def _mem_snippet(text, terms):
@@ -2640,10 +2895,19 @@ def _df_gate_pass(term, df, n_docs):
 
 
 def _note_frontmatter(text):
-    """Best-effort name/description/triggers read from a topic note's
-    frontmatter, for D0/D1 and audit tooling ONLY. Deliberately NOT used by
-    `_mem_corpus`/`_mem_tokenize_unit` — §10.4 point 1 keeps topic-note
-    frontmatter unparsed by the live ranker/tokenizer, unchanged by this step.
+    """Best-effort name/description/triggers/supersedes read from a topic
+    note's frontmatter, for D0/D1, supersession (§6, MC-944 step 6) and audit
+    tooling. `_mem_tokenize_unit` DOES call this now (MC-944 step 6) to pull
+    `supersedes`/`origin`/`verified`/`description` into the unit dict for
+    supersession bookkeeping — but only that bookkeeping. §10.4 point 1's
+    invariant still holds where it matters: this parse never feeds `tf`/BM25
+    scoring, so topic-note frontmatter stays unparsed by the live ranker.
+
+    `origin`/`verified` are read best-effort for Condition 20's supersession
+    guard. `verified` is §4.1's `[ {by:, at:}, … ]` block sequence, which the
+    frontmatter parser (`mc/skills.py` — "no nested maps, no flow-style") does
+    not structure-parse; a non-empty raw value is treated as a truthy human-
+    witness SIGNAL here, never counted or indexed by entry.
     """
     try:
         meta, _b = _skills.parse_skill_md(text)
@@ -2653,7 +2917,10 @@ def _note_frontmatter(text):
         return {}
     return {'name': str(meta.get('name') or ''),
             'description': str(meta.get('description') or ''),
-            'triggers': str(meta.get('triggers') or '')}
+            'triggers': str(meta.get('triggers') or ''),
+            'supersedes': str(meta.get('supersedes') or '').strip(),
+            'origin': str(meta.get('origin') or '').strip(),
+            'verified': str(meta.get('verified') or '').strip()}
 
 
 def note_triggers(project, name, description, explicit_triggers='', units=None):
