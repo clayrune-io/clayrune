@@ -58,6 +58,7 @@ EXPECTED_ROUTES = {
     '/api/agent/provider/<name>/login-launch',
     '/api/agent/provider/<name>/install-launch',
     '/api/agent/providers/install-launch',
+    '/api/agent/providers/install-status',  # MC-959 per-vendor install outcome
     '/api/claude/auth-probe',
     '/api/claude/auth-status',
     '/api/claude/login-launch',
@@ -312,7 +313,9 @@ def test_install_launch_batch_skips_unsupported_names(monkeypatch, client):
     assert body['ok'] is True
     assert body['unsupported'] == ['evil']
     assert body['installed'] == ['codex']
-    assert calls == ['npm install -g @openai/codex']
+    assert len(calls) == 1
+    assert '(npm install -g @openai/codex)' in calls[0]
+    assert 'curl' not in calls[0] and 'evil' not in calls[0]
 
 
 def test_install_launch_rejects_untrusted_hint_when_npm_missing(monkeypatch, client):
@@ -1493,8 +1496,10 @@ def test_install_launch_opens_a_real_terminal_session(monkeypatch, client):
         assert body['pty'] is False
         assert sid in mc_state.terminal_sessions
         session = mc_state.terminal_sessions[sid]
-        assert session['command'] == \
-            'npm install -g --allow-scripts=@openai/codex @openai/codex'
+        # MC-959: the vendor segment is wrapped with its own pass/fail marker.
+        assert session['command'] == body['command']
+        assert '(npm install -g --allow-scripts=@openai/codex @openai/codex)' in session['command']
+        assert '[clayrune-install] codex ok' in session['command']
         assert bool(session.get('is_pty')) is False
     finally:
         mc_state.terminal_sessions.clear()
@@ -1529,7 +1534,8 @@ def test_install_launch_failure_returns_ok_false_with_command(monkeypatch, clien
     batch = client.post('/api/agent/providers/install-launch',
                         json={'names': ['codex']}).get_json()
     assert batch['ok'] is False
-    assert batch['command'] == 'npm install -g --allow-scripts=@openai/codex @openai/codex'
+    # MC-959: the batch command wraps each vendor with a pass/fail marker.
+    assert '(npm install -g --allow-scripts=@openai/codex @openai/codex)' in batch['command']
     assert batch['unsupported'] == []
     assert 'session_id' not in batch
 
@@ -1594,17 +1600,31 @@ def test_install_launch_batch_still_one_terminal_with_real_launcher(monkeypatch,
 # `subprocess.Popen(command, shell=True, ...)` with NO re-wrapping — but
 # that needs its own pin, or a future refactor could reintroduce wrapping
 # and silently reopen this exact bug.
+# MC-959 (clean-VM run 2026-09-24): the 2026-09-22 VM capture chained every
+# segment with `&&`, so one failing vendor silently skipped the rest. The
+# pinned shape is now the per-vendor-independent one `_compose_install_batch`
+# builds; the pass-through property below (byte-for-byte to Popen, no
+# `start "" cmd /k` re-wrap) is unchanged and still what this pins.
 _VERBATIM_COMPOUND_INSTALL_COMMAND = (
-    'set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%" '
+    'set "CR_INSTALL_FAILED=" & '
+    '(set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%" '
     '&& (where npm >nul 2>&1 || winget install --id OpenJS.NodeJS.LTS '
     '-e --silent --source winget '
-    '--accept-source-agreements --accept-package-agreements) '
-    '&& for /f "tokens=1 delims=." %v in (\'npm -v\') do '
+    '--accept-source-agreements --accept-package-agreements)) '
+    '|| (echo [clayrune-install] node-prerequisite FAILED & set "CR_INSTALL_FAILED=1") & '
+    '(for /f "tokens=1 delims=." %v in (\'npm -v\') do '
     '(if %v GEQ 12 (npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code) '
-    'else (npm install -g @anthropic-ai/claude-code)) '
-    '&& for /f "tokens=1 delims=." %v in (\'npm -v\') do '
+    'else (npm install -g @anthropic-ai/claude-code))) '
+    '&& (echo [clayrune-install] claude ok) '
+    '|| (echo [clayrune-install] claude FAILED & set "CR_INSTALL_FAILED=1") & '
+    '(for /f "tokens=1 delims=." %v in (\'npm -v\') do '
     '(if %v GEQ 12 (npm install -g --allow-scripts=@google/gemini-cli @google/gemini-cli) '
-    'else (npm install -g @google/gemini-cli))'
+    'else (npm install -g @google/gemini-cli))) '
+    '&& (echo [clayrune-install] gemini ok) '
+    '|| (echo [clayrune-install] gemini FAILED & set "CR_INSTALL_FAILED=1") & '
+    'if defined CR_INSTALL_FAILED (echo [clayrune-install] finished - one or more installs '
+    'FAILED, see the error above each FAILED line & exit 1) '
+    'else (echo [clayrune-install] finished - all installs ok & exit 0)'
 )
 
 
@@ -1720,3 +1740,264 @@ def test_launch_terminal_for_binary_allows_ampersand_in_path(monkeypatch):
 
     assert ar._launch_terminal_for_binary(r'C:\Tools\A&B\claude.cmd') is None
     assert len(seen) == 1 and r'A&B' in seen[0]
+
+
+# ── MC-959 (clean-VM run 2026-09-24): "Install selected" ──────────────────────
+# Ron ticked Claude, Gemini, Qwen and Codex; Claude and Gemini installed, Qwen
+# and Codex did not, and nothing said so. Reproduced in a real cmd.exe with a
+# fake npm.cmd: segments joined with `&&` meant the first vendor whose install
+# exited non-zero silently skipped every vendor after it.
+
+_ALL_NPM_VENDORS = ['claude', 'gemini', 'qwen', 'codex']
+
+
+def _fake_npm_dir(tmp_path, fail_pkg=''):
+    """A dir holding an npm.cmd shaped like the real one (batch file whose last
+    line runs an exe, no `exit /b`) that logs each install and exits 1 for
+    ``fail_pkg``. Returns (dir, log_path)."""
+    d = tmp_path / 'fakenpm'
+    d.mkdir()
+    log = tmp_path / 'npm_log.txt'
+    log.write_text('')
+    (d / 'fake_node.py').write_text(
+        'import sys\n'
+        'a = sys.argv[1:]\n'
+        'if a == ["-v"]:\n'
+        '    print("11.6.0"); sys.exit(0)\n'
+        f'open({str(log)!r}, "a").write(a[-1] + "\\n")\n'
+        f'sys.exit(1 if a[-1] == {fail_pkg!r} else 0)\n')
+    (d / 'npm.cmd').write_text(
+        '@ECHO OFF\r\nSETLOCAL\r\n'
+        f'"{sys.executable}" "{d / "fake_node.py"}" %*\r\n')
+    return d, log
+
+
+def _fake_npm_env(d):
+    """Environment in which the ONLY reachable npm is the fake one."""
+    env = {k: v for k, v in os.environ.items() if k.upper() != 'PATH'}
+    system32 = os.path.join(os.environ.get('SystemRoot', 'C:\\Windows'), 'System32')
+    env['PATH'] = os.pathsep.join([str(d), system32])
+    return env
+
+
+def _compose_all_vendors(monkeypatch, npm_bin):
+    from mc.blueprints import agent_routes as ar
+    runtimes = {n: _BatchInstallRuntime('npm install -g ' + ar._PROVIDER_NPM_PACKAGES[n])
+                for n in _ALL_NPM_VENDORS}
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+    monkeypatch.setattr(ar.shutil, 'which',
+                        lambda name, *a, **k: npm_bin if name == 'npm' else None)
+    monkeypatch.setattr(ar, '_npm_major_version', lambda _bin: 11)
+    command, unsupported, prereq = ar._provider_install_command_batch(_ALL_NPM_VENDORS)
+    assert unsupported == [] and prereq is False
+    return command
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='runs the composed cmd.exe command')
+@pytest.mark.parametrize('fail_pkg', ['@google/gemini-cli', '@qwen-code/qwen-code'])
+def test_batch_install_one_failure_does_not_skip_later_vendors(monkeypatch, tmp_path, fail_pkg):
+    """MC-959 regression, executed for real: with one vendor's npm install
+    failing, every OTHER vendor is still attempted, the failure is named by a
+    per-vendor marker, and the shell exits 1. Pre-fix, failing gemini left
+    npm's log at [claude, gemini] and failing qwen at [claude, gemini, qwen]
+    — exactly Ron's "Qwen + Codex not installed"."""
+    import subprocess as sp
+    from mc.blueprints import agent_routes as ar
+    d, log = _fake_npm_dir(tmp_path, fail_pkg)
+    command = _compose_all_vendors(monkeypatch, str(d / 'npm.cmd'))
+    p = sp.run(command, shell=True, env=_fake_npm_env(d), capture_output=True, text=True,
+               stdin=sp.DEVNULL, timeout=120)
+    attempted = log.read_text().split()
+    assert attempted == [ar._PROVIDER_NPM_PACKAGES[n] for n in _ALL_NPM_VENDORS], p.stdout + p.stderr
+    failed_vendor = next(n for n in _ALL_NPM_VENDORS if ar._PROVIDER_NPM_PACKAGES[n] == fail_pkg)
+    assert ar._install_batch_results(p.stdout) == {
+        n: ('FAILED' if n == failed_vendor else 'ok') for n in _ALL_NPM_VENDORS}
+    assert p.returncode == 1
+    assert 'one or more installs FAILED' in p.stdout
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='runs the composed cmd.exe command')
+def test_batch_install_all_ok_exits_zero(monkeypatch, tmp_path):
+    import subprocess as sp
+    from mc.blueprints import agent_routes as ar
+    d, log = _fake_npm_dir(tmp_path)
+    command = _compose_all_vendors(monkeypatch, str(d / 'npm.cmd'))
+    p = sp.run(command, shell=True, env=_fake_npm_env(d), capture_output=True, text=True,
+               stdin=sp.DEVNULL, timeout=120)
+    assert len(log.read_text().split()) == 4
+    assert ar._install_batch_results(p.stdout) == {n: 'ok' for n in _ALL_NPM_VENDORS}
+    assert p.returncode == 0
+
+
+def test_compose_install_batch_posix_runs_each_vendor_independently(monkeypatch):
+    """Same property for the POSIX shape, run under a real sh/bash."""
+    import shutil as real_shutil
+    import subprocess as sp
+    from mc.blueprints import agent_routes as ar
+    sh = real_shutil.which('bash') or real_shutil.which('sh')
+    if not sh:
+        pytest.skip('no POSIX shell')
+    monkeypatch.setattr(ar.sys, 'platform', 'linux')
+    command = ar._compose_install_batch(
+        [('node', 'false')],
+        [('a', 'true'), ('b', 'false'), ('c', 'true')])
+    p = sp.run([sh, '-c', command], capture_output=True, text=True, timeout=30,
+               stdin=sp.DEVNULL)
+    assert ar._install_batch_results(p.stdout) == {
+        'node-prerequisite': 'FAILED', 'a': 'ok', 'b': 'FAILED', 'c': 'ok'}
+    assert p.returncode == 1
+
+
+def test_install_batch_rejects_unsafe_vendor_name(monkeypatch):
+    """The vendor name is echoed into the shell command as a marker, so a
+    name that is not a plain registry key never reaches it."""
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime',
+                        lambda name: _BatchInstallRuntime('npm install -g @openai/codex'))
+    monkeypatch.setattr(ar.shutil, 'which', lambda name, *a, **k: '/x/' + name)
+    monkeypatch.setattr(ar, '_npm_major_version', lambda _bin: 11)
+    command, unsupported, _ = ar._provider_install_command_batch(['codex & calc', 'codex'])
+    assert unsupported == ['codex & calc']
+    assert 'calc' not in command
+
+
+def test_install_batch_results_parses_marker_split_across_chunks():
+    from mc.blueprints import agent_routes as ar
+    chunks = ['...[clayrune-install] claude ok\r\n[clayrune-ins', 'tall] qwen FAILED \r\n']
+    assert ar._install_batch_results(''.join(chunks)) == {'claude': 'ok', 'qwen': 'FAILED'}
+
+
+class _StatusRuntime:
+    def __init__(self, installed, version=None):
+        self._installed, self._version = installed, version
+
+    def health_check(self):
+        h = _InstallHealth()
+        h.installed = self._installed
+        h.version = self._version
+        return h
+
+
+def test_install_status_reports_per_vendor_outcome(monkeypatch, client):
+    """/api/agent/providers/install-status turns the markers into a per-vendor
+    result, cross-checked against a fresh health check, and survives the
+    finished session being purged from terminal_sessions."""
+    from mc import state as mc_state
+    from mc.blueprints import agent_routes as ar
+    session = {'status': 'running', 'exit_code': None,
+               'output_lines': ['[clayrune-install] claude ok\n[clayrune-inst']}
+    monkeypatch.setitem(mc_state.terminal_sessions, 'sess-959', session)
+    monkeypatch.setattr(ar, '_merge_registry_path', lambda: None)
+    monkeypatch.setattr(ar, '_reconcile_claude_cli_not_found', lambda: False)
+    runtimes = {'claude': _StatusRuntime(True, '2.1.281'), 'gemini': _StatusRuntime(True, '0.9'),
+                'qwen': _StatusRuntime(False), 'codex': _StatusRuntime(False)}
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+    ar._remember_install_batch('sess-959', _ALL_NPM_VENDORS)
+
+    body = client.get('/api/agent/providers/install-status?session_id=sess-959').get_json()
+    assert body['running'] is True
+    assert [v['result'] for v in body['vendors']] == ['ok', 'pending', 'pending', 'pending']
+    assert body['failed'] == []
+
+    session['output_lines'].append('all] gemini ok\n[clayrune-install] qwen FAILED\n'
+                                   '[clayrune-install] codex ok\n')
+    session.update(status='error', exit_code=1)
+    mc_state.terminal_sessions.pop('sess-959')  # /api/terminal/sessions purges finished ones
+    body = client.get('/api/agent/providers/install-status?session_id=sess-959').get_json()
+    assert body['running'] is False and body['exit_code'] == 1
+    by = {v['name']: v for v in body['vendors']}
+    assert by['claude'] == {'name': 'claude', 'result': 'ok', 'installed': True, 'version': '2.1.281'}
+    assert by['qwen']['result'] == 'failed'
+    # codex's install exited 0 but left no runnable CLI: still a failure.
+    assert by['codex']['result'] == 'ok' and by['codex']['installed'] is False
+    assert body['failed'] == ['qwen', 'codex']
+
+
+def test_install_status_unknown_session_404(client):
+    assert client.get('/api/agent/providers/install-status?session_id=nope').status_code == 404
+
+
+def test_install_launch_batch_returns_status_url(monkeypatch, client):
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime',
+                        lambda name: _BatchInstallRuntime('npm install -g @openai/codex'))
+    monkeypatch.setattr(ar.shutil, 'which', lambda name, *a, **k: '/x/' + name)
+    monkeypatch.setattr(ar, '_npm_major_version', lambda _bin: 11)
+    monkeypatch.setattr(ar, '_launch_install_terminal', lambda command: ('sess-url', None))
+    body = client.post('/api/agent/providers/install-launch', json={'names': ['codex']}).get_json()
+    assert body['ok'] is True
+    assert body['status_url'] == '/api/agent/providers/install-status?session_id=sess-url'
+
+
+# B: the Providers row showed "installed, v2.1.281" next to "claude CLI not on
+# PATH". The version comes from health_check(), which resolves the binary live
+# on every call; the "not on PATH" text is `_claude_auth_state`, latched
+# reason='cli_not_found' by the startup probe BEFORE first-run installed
+# anything, and nothing cleared it short of another full probe.
+
+@pytest.fixture()
+def _claude_latch(monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    snapshot = dict(ar._claude_auth_state)
+    ar._claude_auth_state.update(ok=False, reason='cli_not_found',
+                                 last_error_text='claude CLI not on PATH',
+                                 detected_at=1.0, last_probe_at=1.0)
+    probes = []
+    monkeypatch.setattr(ar, '_start_background_claude_probe', lambda: probes.append(1))
+    monkeypatch.setattr(ar, '_merge_registry_path', lambda: None)
+    try:
+        yield probes
+    finally:
+        ar._claude_auth_state.clear()
+        ar._claude_auth_state.update(snapshot)
+
+
+def test_stale_cli_not_found_cleared_once_claude_resolves(monkeypatch, client, _claude_latch):
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar._agent_runtime, 'claude_installed', lambda: True)
+    body = client.get('/api/claude/auth-status').get_json()
+    assert body['reason'] is None
+    assert body['last_error_text'] is None
+    assert body['ok'] is True
+    assert _claude_latch == [1], 'must start exactly one real re-probe'
+    client.get('/api/claude/auth-status')
+    assert _claude_latch == [1], 'a cleared latch must not re-probe on every poll'
+
+
+def test_cli_not_found_kept_while_claude_still_missing(monkeypatch, client, _claude_latch):
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar._agent_runtime, 'claude_installed', lambda: False)
+    body = client.get('/api/claude/auth-status').get_json()
+    assert body['reason'] == 'cli_not_found'
+    assert _claude_latch == []
+
+
+def test_health_check_hook_reconciles_stale_latch(monkeypatch, client, _claude_latch):
+    """The Providers row (health_check) and the banner must agree: the same
+    call that finds the version clears the stale latch."""
+    import server
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar._agent_runtime, 'claude_installed', lambda: True)
+    server._claude_health_check_hook()
+    assert ar._claude_auth_state['reason'] is None
+    assert _claude_latch == [1]
+
+
+def test_claude_auth_probe_refreshes_registry_path(monkeypatch):
+    """A probe run after first-run installed claude must see the registry PATH,
+    or it re-latches cli_not_found against a CLI that is there."""
+    from mc.blueprints import agent_routes as ar
+    calls = []
+    monkeypatch.setattr(ar, '_merge_registry_path', lambda: calls.append('merge'))
+
+    def _resolve():
+        calls.append('resolve')
+        raise FileNotFoundError('stop here')
+    monkeypatch.setattr(ar, '_resolve_claude', _resolve)
+    snapshot = dict(ar._claude_auth_state)
+    try:
+        ar._run_claude_auth_probe()
+    finally:
+        ar._claude_auth_state.clear()
+        ar._claude_auth_state.update(snapshot)
+    assert calls[:2] == ['merge', 'resolve']

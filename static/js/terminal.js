@@ -224,9 +224,19 @@ function connectTerminalStream(projectId, sessionId) {
         es.close();
         delete terminalEventSources[sessionId];
       } else if (msg.type === 'error') {
-        // Session doesn't exist on server — close the pop-out
         es.close();
         delete terminalEventSources[sessionId];
+        // MC-959: a pop-out that already shows output (e.g. an install that
+        // FAILED) must stay open so the error can be read — say the session
+        // ended instead of closing it. Only a never-attached one is closed.
+        if ((terminalOutputCount[sessionId] || 0) > 0) {
+          const term = terminalInstances[sessionId];
+          if (term) term.writeln('\r\n\x1b[90m[Session no longer on the server — output above is final]\x1b[0m');
+          const stopBtn = document.getElementById(`term-stop-${sessionId}`);
+          if (stopBtn) stopBtn.style.display = 'none';
+          return;
+        }
+        // Session doesn't exist on server — close the pop-out
         terminalDismissed.add(sessionId);
         const modalId = `__terminal_${sessionId}`;
         if (openModals.has(modalId)) closeModalById(modalId);
