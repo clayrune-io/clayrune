@@ -61,9 +61,11 @@ function showLocalAuthForm(mode) {
   const row = document.getElementById('local-auth-form-row');
   if (!row) return;
   const st = window._localAuthState || {};
-  // The host (loopback) and tunneled callers are exempt and don't need the
-  // current passcode to change it; an authed LAN device does.
-  const needCurrent = (mode === 'change') && st.configured && !st.exempt;
+  // Exemption skips the LOGIN gate, not proof of the existing passcode: the
+  // server now requires `current` from every caller once one is configured,
+  // loopback/tunneled included (a co-resident agent is exempt from the gate
+  // too, and must not be able to overwrite it blind).
+  const needCurrent = (mode === 'change') && st.configured;
   row.innerHTML = `
     ${needCurrent ? `<input class="settings-input" id="la-cur" type="password" placeholder="Current passcode" autocomplete="current-password" style="margin-bottom:8px">` : ''}
     <input class="settings-input" id="la-p1" type="password" placeholder="New passcode (at least 4 characters)" autocomplete="new-password" style="margin-bottom:8px">

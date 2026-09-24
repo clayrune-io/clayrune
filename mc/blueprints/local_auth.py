@@ -225,17 +225,23 @@ def local_auth_set():
     The FIRST passcode can be set ONLY from an exempt context — the host
     (loopback) or a CF-tunneled session — via Settings → Network access. A LAN
     device can never bootstrap a passcode on an unprotected dashboard (otherwise
-    the first stranger to reach it could claim it). A LAN device may *change* an
-    existing passcode only by proving the current one. On success the caller is
-    logged in (cookie set)."""
+    the first stranger to reach it could claim it). Once a passcode is
+    configured, changing it requires proving the current one — from EVERY
+    caller, exempt included. Exemption means "skip the gate", not "skip proof
+    of the existing secret": a co-resident agent (or anything else reaching
+    this port from loopback) is exempt from the gate but must not be able to
+    overwrite the passcode — and from there, the vault-lock passphrase — with
+    no proof of the old value. On success the caller is logged in (cookie
+    set)."""
     body = request.get_json(silent=True) or {}
     new_pass = (body.get('passcode') or '').strip()
     if len(new_pass) < _LOCAL_AUTH_MIN_LEN:
         return jsonify({'error': 'passcode_too_short', 'min': _LOCAL_AUTH_MIN_LEN}), 400
-    if not _local_auth_exempt():
-        if not _local_auth_is_configured():
+    if not _local_auth_is_configured():
+        if not _local_auth_exempt():
             # No LAN bootstrapping — the owner sets the first passcode on the host.
             return jsonify({'error': 'setup_requires_host'}), 403
+    else:
         if not _local_auth_verify_passcode((body.get('current') or '').strip()):
             return jsonify({'error': 'bad_current_passcode'}), 403
     _local_auth_set_passcode(new_pass)
