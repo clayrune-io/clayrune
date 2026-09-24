@@ -636,9 +636,18 @@ async function providerInstallSelected(button, only) {
       if (data.session_id) {
         openTerminalPopout(window.currentProjectId, data.session_id, data.command || 'install', data.pty);
       }
+      // The execution-policy note is a property of the ONE batch install, not
+      // of each vendor row — showing it per row repeated it once per selected
+      // vendor (4x on a clean-VM run with everything ticked, 2026-09-24).
+      // Shown once, in whichever shared note element the calling surface
+      // rendered (setup and Settings each have their own instance of it).
+      const policyNote = _providerPolicyNote(data);
+      if (policyNote) {
+        document.querySelectorAll('.prov-install-policy-note').forEach((el) => { el.textContent = policyNote.trim(); });
+      }
       for (const name of (data.installed || names)) {
         const el = msgFor(name);
-        if (el) el.textContent = 'A terminal opened to install it. Once it finishes, click "Check setup status".' + _providerPolicyNote(data);
+        if (el) el.textContent = 'A terminal opened to install it. Once it finishes, click "Check setup status".';
       }
       for (const name of (data.unsupported || [])) {
         const el = msgFor(name);

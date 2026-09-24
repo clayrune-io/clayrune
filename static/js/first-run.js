@@ -59,7 +59,8 @@ const SETUP_STEPS = [
         })).join('') + `</div><div style="display:flex;gap:8px;margin-top:12px">
           <button type="button" class="btn-add" onclick="setupInstallSelected(this)">Install selected</button>
           <button type="button" class="btn-add" onclick="providerRefreshAll()">Check setup status</button>
-        </div><div id="setup-provider-validation" role="status" style="margin-top:8px;color:var(--amber)"></div>`
+        </div><div class="prov-install-policy-note" style="margin-top:6px;font-size:11px;color:var(--text-faint)"></div>
+        <div id="setup-provider-validation" role="status" style="margin-top:8px;color:var(--amber)"></div>`
         + `<div style="margin-top:16px;text-align:left">
           <div style="font-weight:600;color:var(--text)">Default model</div>
           <div style="font-size:11px;color:var(--text-faint);margin:2px 0 6px">Applies across every agent unless overridden per project or per chat.</div>
@@ -222,8 +223,10 @@ async function setupPickModelTier(tier, btn) {
   await saveSetting('agent_model', 'tier:' + tier);
 }
 
-function setupInstallSelected(btn) {
-  return providerInstallSelected(btn, Array.from(setupSelectedProviders));
+async function setupInstallSelected(btn) {
+  _setupStartInstallWatch();
+  await providerInstallSelected(btn, Array.from(setupSelectedProviders));
+  _setupDockLiveTerminals();
 }
 
 // Repaint hook for provider-auth.js _repaintProviderRows: only the connections
@@ -231,6 +234,49 @@ function setupInstallSelected(btn) {
 window._setupRepaint = () => {
   if (setupActive && SETUP_STEPS[setupStep] && SETUP_STEPS[setupStep].id === 'connections') setupShow(setupStep);
 };
+
+// ── Install-terminal visibility + live polling (clean-VM run 2026-09-24) ────
+// The setup overlay (.wt-overlay, z-2000) painted over the install terminal
+// pop-out (a .modal-window inside #modal-layer, z-300) — the terminal it just
+// opened was fully hidden behind the card, so a user who clicked "Install
+// selected" had no way to see the install running or tell it apart from a
+// hang. While a terminal is live: raise #modal-layer above the overlay (same
+// mechanism app.css already uses for maximize, body.mc-modal-maximized), dock
+// the setup card to the left so the two don't sit exactly on top of each
+// other, and poll provider status the same way "Check setup status" does so
+// the row flips from "not installed" without the user hunting for a button.
+let _setupInstallWatchTimer = null;
+let _setupInstallWatchRunning = false; // separate from the timer ID: setInterval's return value must never be truthiness-tested (0 is a legal id in a synthetic/non-browser host)
+
+function _setupInstallComplete() {
+  const selected = (_agentProviders || []).filter(p => setupSelectedProviders.has(p.name));
+  return selected.length > 0 && selected.every(p => p.installed && p.auth_status === 'ok');
+}
+
+function _setupStartInstallWatch() {
+  document.body.classList.add('setup-terminal-live');
+  if (_setupInstallWatchRunning) return;
+  _setupInstallWatchRunning = true;
+  _setupInstallWatchTimer = setInterval(async () => {
+    await providerRefreshAll();
+    if (_setupInstallComplete()) _setupStopInstallWatch();
+  }, 4000);
+}
+
+function _setupStopInstallWatch() {
+  if (_setupInstallWatchRunning) { clearInterval(_setupInstallWatchTimer); _setupInstallWatchTimer = null; _setupInstallWatchRunning = false; }
+  document.body.classList.remove('setup-terminal-live');
+}
+
+// Move any terminal pop-out(s) opened from setup off to the top-right corner
+// so they don't land exactly under the (now left-docked) setup card. Purely a
+// reposition of the existing element — terminal.js's own centering already ran.
+function _setupDockLiveTerminals() {
+  document.querySelectorAll('#modal-layer .modal-window[data-modal-id^="__terminal_"]').forEach((win) => {
+    win.style.left = Math.max(20, window.innerWidth - win.offsetWidth - 24) + 'px';
+    win.style.top = '24px';
+  });
+}
 
 // Human-readable reason a selected provider is blocking Next — F2 (clean-VM
 // run 2026-09-18): the old message was the step's own static hint repeated
@@ -448,6 +494,7 @@ function setupSkip() { setupFinish(); }
 
 function setupFinish() {
   setupActive = false;
+  _setupStopInstallWatch();
   const el = document.getElementById('setup-overlay');
   if (el) el.remove();
   if (!(_globalConfig && _globalConfig.setup_completed)) _setupPersistCompleted();

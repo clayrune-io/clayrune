@@ -39,6 +39,7 @@ function _renderProviderSettings(cfg) {
                   id="settings-prov-check-status" onclick="providerRefreshAll()">Check setup status</button>
         </div>
       </div>
+      <div class="prov-install-policy-note" style="font-size:11px;color:var(--text-faint);margin-top:6px"></div>
       <div class="prov-rows" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">${rows}</div>
     </div>`;
 }

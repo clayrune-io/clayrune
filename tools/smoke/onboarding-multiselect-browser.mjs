@@ -33,13 +33,30 @@ const providers = [
 const envCalls = [];
 const installCalls = [], loginCalls = [], singleInstallCalls = [];
 const POLICY_NOTE = 'PowerShell script policy was Restricted; set to RemoteSigned for your user account.';
-const pageHTML = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/css/app.css"><body><main id="app"></main><script>
+const pageHTML = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/css/app.css"><body><main id="app"></main><div class="modal-layer" id="modal-layer"></div><script>
 let API_BASE=''; let _agentProviders=${JSON.stringify(providers)}; let _globalConfig={};
 const advancedFlags={}, ADV_FEATURES=[]; function esc(s){return String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]))}
 function showToast(){} function showDesktop(){} function refreshSilent(){} function refreshAuthStatus(){}
 async function saveSetting(k,v){_globalConfig[k]=v;}
 async function _ensureAgentProviders(){const r=await fetch('/api/agent/providers'); _agentProviders=await r.json();}
 const browserLoginCalls=[]; function stubTerminalLogin(name){browserLoginCalls.push(name);} window.browserLoginCalls=browserLoginCalls;
+// Stand-in for terminal.js's real openTerminalPopout: this smoke targets the
+// NEW stacking/docking code first-run.js and app.css added around a live
+// install terminal (clean-VM run 2026-09-24), not xterm.js itself (its CDN
+// load always fails in this sandbox, same as mermaid's in other smokes, and
+// is already covered by the "terminal opened" text assertions elsewhere).
+// Same DOM footprint the real one leaves behind: a .modal-window carrying
+// data-modal-id="__terminal_<id>" inside #modal-layer, positioned where the
+// real centerModalElement() would put an untouched terminal — center of the
+// viewport, which is exactly where the setup card also centers itself.
+function openTerminalPopout(projectId, sessionId, command, isPty){
+  const win=document.createElement('div');
+  win.className='modal-window'; win.dataset.modalId='__terminal_'+sessionId;
+  win.style.position='absolute'; win.style.width='500px'; win.style.height='320px';
+  win.style.left='calc(50% - 250px)'; win.style.top='calc(50% - 160px)';
+  win.innerHTML='<div class="modal-content" style="width:100%;height:100%;background:#0a0c10"></div>';
+  document.getElementById('modal-layer').appendChild(win);
+}
 </script><script src="/static/js/first-run.js"></script><script src="/static/js/provider-auth.js"></script><script>window.settingsProviderTerminalLogin=stubTerminalLogin;</script><script>startFirstRun();</script>`;
 
 let server, browserServer, browser, page;
@@ -58,7 +75,7 @@ try {
         installCalls.push(...names);
         providers.forEach(p => { if (names.includes(p.name)) p.installed = true; });
         res.writeHead(200, {'content-type': 'application/json'});
-        res.end(JSON.stringify({ok: true, installed: names, unsupported: [],
+        res.end(JSON.stringify({ok: true, installed: names, unsupported: [], session_id: 'smoke-term-1', command: 'install',
           execution_policy: {action: 'set', effective: 'Restricted', message: POLICY_NOTE}}));
       });
       return;
@@ -105,10 +122,37 @@ try {
   const reason0 = await page.locator('#setup-overlay .wt-next-reason').innerText();
   if (!reason0.includes('not installed')) throw new Error(`disabled-Next reason did not name an unfinished vendor: ${reason0}`);
   await page.getByRole('button', {name: 'Install selected'}).click();
-  await page.waitForFunction(() => /PowerShell script policy/.test(document.getElementById('prov-install-msg-codex')?.textContent || ''));
-  // F6: the policy note the server returned is shown next to the install message.
-  const note = await page.locator('#prov-install-msg-claude').innerText();
-  if (!note.includes('PowerShell script policy')) throw new Error(`policy note not shown: ${note}`);
+  await page.waitForFunction(() => /PowerShell script policy/.test(document.querySelector('.prov-install-policy-note')?.textContent || ''));
+  // F6, revised 2026-09-24 (clean-VM run: the note repeated once per selected
+  // vendor row, 4x with everything ticked): the policy note the server
+  // returned is shown ONCE for the batch, not duplicated on every row.
+  const sharedNote = await page.locator('#setup-overlay .prov-install-policy-note').innerText();
+  if (!sharedNote.includes('PowerShell script policy')) throw new Error(`policy note not shown once for the batch: ${sharedNote}`);
+  const codexMsg = await page.locator('#prov-install-msg-codex').innerText();
+  const claudeMsg = await page.locator('#prov-install-msg-claude').innerText();
+  if (codexMsg.includes('PowerShell script policy') || claudeMsg.includes('PowerShell script policy'))
+    throw new Error(`policy note still repeated per row: codex="${codexMsg}" claude="${claudeMsg}"`);
+  // Point 1 (clean-VM run 2026-09-24): the setup overlay used to paint over
+  // the install terminal it just opened, so the user couldn't tell the
+  // install was running. Assert the terminal window is ACTUALLY on top —
+  // not just that a CSS rule exists — via elementFromPoint at its own center.
+  await page.waitForSelector('.modal-window[data-modal-id="__terminal_smoke-term-1"]');
+  const stacking = await page.evaluate(() => {
+    const overlay = document.getElementById('setup-overlay');
+    const modalLayer = document.getElementById('modal-layer');
+    const termWin = document.querySelector('.modal-window[data-modal-id="__terminal_smoke-term-1"]');
+    const rect = termWin.getBoundingClientRect();
+    const topEl = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return {
+      bodyLive: document.body.classList.contains('setup-terminal-live'),
+      modalLayerZ: Number(getComputedStyle(modalLayer).zIndex),
+      overlayZ: Number(getComputedStyle(overlay).zIndex),
+      topElIsTerminal: !!topEl && termWin.contains(topEl),
+    };
+  });
+  if (!stacking.bodyLive) throw new Error('body did not gain setup-terminal-live while the install terminal is running');
+  if (!(stacking.modalLayerZ > stacking.overlayZ)) throw new Error(`modal layer (${stacking.modalLayerZ}) is not above the setup overlay (${stacking.overlayZ})`);
+  if (!stacking.topElIsTerminal) throw new Error('setup overlay still covers the live install terminal at its own center point');
   await page.evaluate(() => providerRefreshAll());
   await page.waitForTimeout(40);
   if (installCalls.length !== 2 || new Set(installCalls).size !== 2) throw new Error(`selected install calls incorrect: ${installCalls}`);

@@ -7012,6 +7012,19 @@
     max-width: 520px; width: calc(100vw - 32px);
     max-height: calc(100vh - 32px); overflow-y: auto;
   }
+  /* Install-terminal visibility (clean-VM run 2026-09-24): the setup overlay
+     (z-2000/2001) normally paints over EVERY modal, including the terminal
+     pop-out setup's own "Install selected" just opened — the user could not
+     tell the install was running. While that terminal is live (first-run.js
+     toggles body.setup-terminal-live), raise #modal-layer above the overlay
+     — the same mechanism body.mc-modal-maximized already uses to clear the
+     sidebar — and dock the setup card to the left so it no longer sits
+     exactly under the terminal, which first-run.js repositions to the right. */
+  body.setup-terminal-live .modal-layer { z-index: 2100; }
+  body.setup-terminal-live #setup-overlay .wt-card.centered {
+    left: 24px !important; top: 50% !important;
+    transform: translateY(-50%);
+  }
   .wt-title {
     font-size: 17px; font-weight: 700; color: var(--accent);
     margin-bottom: 10px; letter-spacing: 0.3px;
