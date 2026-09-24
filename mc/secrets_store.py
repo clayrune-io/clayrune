@@ -1030,6 +1030,7 @@ def _icacls_grant_and_verify(path: Path, sid: str, account: str) -> tuple[bool, 
         grant = subprocess.run(
             ['icacls', p, '/inheritance:r', '/grant:r', f'*{sid}:F', '*S-1-5-18:F'],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
+            stdin=subprocess.DEVNULL,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     except Exception as e:
         return False, f"icacls grant raised: {e}"
@@ -1040,6 +1041,7 @@ def _icacls_grant_and_verify(path: Path, sid: str, account: str) -> tuple[bool, 
         verify = subprocess.run(
             ['icacls', p], capture_output=True, text=True,
             encoding='utf-8', errors='replace',
+            stdin=subprocess.DEVNULL,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     except Exception as e:
         return False, f"icacls verify raised: {e}"
