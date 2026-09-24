@@ -205,10 +205,12 @@ class TestResetWording:
         al.record_exhaustion('gemini')
         msg = al.refusal_message('gemini')
         assert 'resets reset' not in msg
-        assert msg == ('gemini is out of allowance (usage limit), reset time unknown'
-                       ' — no fallback to another vendor')
+        # MC-964 Step D appends '(record <age>[, last probed <date>])'.
+        assert msg.startswith('gemini is out of allowance (usage limit), reset time unknown'
+                              ' — no fallback to another vendor (record ')
 
     def test_known_reset_still_reads_resets_at(self):
         al.record_exhaustion('gemini', limit_kind='daily', resets_at_display='Sep 20, 2026 9:00 AM')
-        assert al.refusal_message('gemini') == ('gemini is out of allowance (daily), resets '
-                                               'Sep 20, 2026 9:00 AM — no fallback to another vendor')
+        assert al.refusal_message('gemini').startswith(
+            'gemini is out of allowance (daily), resets '
+            'Sep 20, 2026 9:00 AM — no fallback to another vendor (record ')
