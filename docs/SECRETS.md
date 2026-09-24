@@ -293,6 +293,36 @@ the whole point of a lock it can't read past on its own. The status route
 `unconfigured` / `locked` / `unlocked`, never a key or a value, so a job that
 hits `VaultLocked` downstream can at least report *why* to a human.
 
+### Residual risk — stated plainly
+
+The passphrase lock raises the bar; it does not remove the "same OS user"
+property this document opens with. Two things stay true even with the lock
+in place:
+
+- **A same-user agent with a raw shell can still rewrite the files the fence
+  doesn't see.** `steward/fence.py` only gates tool calls made through *this*
+  process's own tool-use path (Claude Code sessions running here). It has no
+  authority over a different CLI (Codex, another agent runtime, a plain
+  script) invoked with the same OS-user privileges — that process can open
+  and overwrite `secrets.key.wrapped`, `local_auth.json`, or the audit log
+  directly, with no fence in front of it at all. The vault's guarantee is
+  against *this* codebase's own tooled agents, not against every process
+  that could ever run as this user.
+- **The passphrase itself is the real secret now.** Once set, unwrapping the
+  master key is reduced to "does the caller know the passphrase" — nothing
+  else, no state on disk, no file to steal, stands between a shell and the
+  vault. Guard it accordingly: it is not a password to reuse, share, or store
+  in another tool's config.
+
+One window is structural rather than architectural: **the first-time
+`vault-lock/set` call has no prior passphrase to check against** (there is
+nothing to check yet), so whoever calls it first *becomes* the passphrase
+holder. That window is open from server start until Ron sets the passphrase,
+and it closes the moment he does — running `vault-lock/set` immediately after
+deploy, before anything else touches the box, is what closes it. The
+tamper-evidence notification above exists specifically so a hijack of that
+window is visible to him even if he didn't do the setting himself.
+
 ## HTTP surface
 
 | Verb | Path | Purpose |
