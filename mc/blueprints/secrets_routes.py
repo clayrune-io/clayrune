@@ -378,7 +378,7 @@ def api_vault_lock_set():
         return refusal
     passphrase: str = str(data.get('passphrase') or '')
     try:
-        recovery_key = vault.set_passphrase(passphrase)
+        recovery_key = vault.set_passphrase(passphrase, caller_addr=request.remote_addr or '')
     except vault.SecretsError as e:
         return _err(e)
     return jsonify({'ok': True, 'recovery_key': recovery_key})
@@ -397,7 +397,8 @@ def api_vault_lock_change():
     try:
         vault.change_passphrase(
             str(data.get('old_passphrase') or ''),
-            str(data.get('new_passphrase') or ''))
+            str(data.get('new_passphrase') or ''),
+            caller_addr=request.remote_addr or '')
     except vault.SecretDenied as e:
         return _err(e, 403)
     except vault.SecretsError as e:
@@ -423,7 +424,7 @@ def api_vault_lock_unlock():
         return jsonify({'error': 'passphrase or recovery_key is required'}), 400
     try:
         if recovery_key:
-            vault.unlock_with_recovery_key(recovery_key)
+            vault.unlock_with_recovery_key(recovery_key, caller_addr=request.remote_addr or '')
         else:
             vault.unlock_with_passphrase(passphrase)
     except vault.SecretDenied as e:

@@ -1103,6 +1103,82 @@ def test_notification_fires_once_per_lock_period(vault, monkeypatch):
     assert len(calls) == 2
 
 
+class TestTamperEvidence:
+    """Wren's finding on MC 503edfe4: a hijacker who steals the dashboard
+    passcode (see the local-auth fix above) and reaches vault-lock/set or
+    /change would otherwise own the vault silently. Every set / change /
+    recovery-key-unlock must be visible to Ron even if he never opens the
+    dashboard — unlike `_notify_vault_locked`'s once-per-period throttle,
+    this one is NOT deduped: each of the three events fires its own
+    notification and audit line, every time."""
+
+    def test_set_passphrase_notifies_and_audits_caller_addr(self, vault, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            'mc.blueprints.push_mobile._notify_push',
+            lambda title, body, **kw: calls.append((title, body)))
+        vault.set_passphrase('correct horse battery staple', caller_addr='10.0.0.7')
+        assert len(calls) == 1
+        title, body = calls[0]
+        assert 'passphrase' in title.lower()
+        assert '10.0.0.7' in body
+        rec = vault.audit_tail(1)[0]
+        assert rec['event'] == 'vault_passphrase_set'
+        assert rec['caller_addr'] == '10.0.0.7'
+
+    def test_change_passphrase_notifies_and_audits_caller_addr(self, vault, monkeypatch):
+        vault.set_passphrase('correct horse battery staple')
+        calls = []
+        monkeypatch.setattr(
+            'mc.blueprints.push_mobile._notify_push',
+            lambda title, body, **kw: calls.append((title, body)))
+        vault.change_passphrase('correct horse battery staple', 'a brand new passphrase',
+                                caller_addr='10.0.0.7')
+        assert len(calls) == 1
+        assert '10.0.0.7' in calls[0][1]
+        rec = vault.audit_tail(1)[0]
+        assert rec['event'] == 'vault_passphrase_changed'
+        assert rec['caller_addr'] == '10.0.0.7'
+
+    def test_unlock_with_recovery_key_notifies_and_audits_caller_addr(self, vault, monkeypatch):
+        recovery_key = vault.set_passphrase('correct horse battery staple')
+        _relock(vault)
+        calls = []
+        monkeypatch.setattr(
+            'mc.blueprints.push_mobile._notify_push',
+            lambda title, body, **kw: calls.append((title, body)))
+        vault.unlock_with_recovery_key(recovery_key, caller_addr='10.0.0.7')
+        assert len(calls) == 1
+        assert '10.0.0.7' in calls[0][1]
+        rec = vault.audit_tail(1)[0]
+        assert rec['event'] == 'vault_unlocked'
+        assert rec['method'] == 'recovery_key'
+        assert rec['caller_addr'] == '10.0.0.7'
+
+    def test_routine_passphrase_unlock_does_not_notify(self, vault, monkeypatch):
+        """A normal daily unlock is not tamper evidence — must not spam Ron
+        on every restart-then-unlock cycle."""
+        vault.set_passphrase('correct horse battery staple')
+        _relock(vault)
+        calls = []
+        monkeypatch.setattr(
+            'mc.blueprints.push_mobile._notify_push',
+            lambda title, body, **kw: calls.append((title, body)))
+        vault.unlock_with_passphrase('correct horse battery staple')
+        assert calls == []
+
+    def test_notification_failure_does_not_break_the_underlying_action(self, vault, monkeypatch):
+        """Best-effort: a broken notifier must not turn a legitimate
+        set/change/unlock into an error for the human doing it."""
+        monkeypatch.setattr(
+            'mc.blueprints.push_mobile._notify_push',
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('boom')))
+        recovery_key = vault.set_passphrase('correct horse battery staple',
+                                            caller_addr='10.0.0.7')
+        assert vault.lock_state() == 'unlocked'
+        assert recovery_key
+
+
 def test_unconfigured_vault_behaves_exactly_as_before(vault):
     """The whole point of gating on `wrapped_key_path().is_file()` is that a
     box which has never called set_passphrase must be unaffected — this is

@@ -800,6 +800,28 @@ def _notify_vault_locked() -> None:
         _log(f"[secrets] vault-locked notification failed: {e}")
 
 
+def _notify_vault_tamper(action: str, caller_addr: str) -> None:
+    """Fires on every ``set``/``change``/recovery-key ``unlock`` — never on a
+    routine passphrase unlock, which is normal daily use and would just
+    become noise. These three are the ones a hijacker of the bootstrap
+    window (Wren's review of MC 503edfe4: local_auth's passcode could be
+    overwritten blind, then used to reach this endpoint) would call, so each
+    one must be VISIBLE to Ron even if he never opens the dashboard again —
+    always-on, not best-effort-silent like ``_notify_vault_locked``'s
+    once-per-period throttle. Same lazy-import, same never-worse-than-the-
+    caller's-own-error posture."""
+    when = now_iso()
+    addr = caller_addr or 'unknown address'
+    try:
+        from mc.blueprints import push_mobile as _bp_push_mobile
+        _bp_push_mobile._notify_push(
+            'Vault passphrase changed',
+            f'The vault passphrase was {action} from {addr} at {when}. '
+            f'If this was not you, treat every stored secret as compromised.')
+    except Exception as e:
+        _log(f"[secrets] vault-tamper notification failed: {e}")
+
+
 def _quarantine_legacy_key_material() -> None:
     """Retire every pre-passphrase-lock copy of the master key, once the
     wrapped key is durably written AND both its legs have been verified to
@@ -872,7 +894,7 @@ def _quarantine_legacy_key_material() -> None:
                  f"master-key entry: {e}")
 
 
-def set_passphrase(passphrase: str) -> str:
+def set_passphrase(passphrase: str, *, caller_addr: str = '') -> str:
     """First-time setup only (refuses if already configured — use
     :func:`change_passphrase` instead). Migrates whatever key currently
     protects the store (via the untouched keyring/file-backend logic in
@@ -923,13 +945,15 @@ def set_passphrase(passphrase: str) -> str:
         # key load_master_key() just proved protects the store), and the
         # wrapped file is durably on disk. Safe to retire the legacy copies.
         _quarantine_legacy_key_material()
-    _audit('vault_passphrase_set')
+    _audit('vault_passphrase_set', caller_addr=caller_addr)
+    _notify_vault_tamper('set', caller_addr)
     _log("[secrets] passphrase lock configured; vault auto-unlocked "
          "for this process")
     return recovery_key
 
 
-def change_passphrase(old_passphrase: str, new_passphrase: str) -> None:
+def change_passphrase(old_passphrase: str, new_passphrase: str, *,
+                      caller_addr: str = '') -> None:
     """Requires the vault to be configured; verifies ``old_passphrase``
     against the passphrase leg regardless of current unlock state (so a
     human can rotate it without a separate unlock step), then rewraps ONLY
@@ -956,7 +980,8 @@ def change_passphrase(old_passphrase: str, new_passphrase: str) -> None:
             raise SecretsError("passphrase wrap verification failed")
         _write_wrapped_key(data)
         _unlocked_key = key_bytes
-    _audit('vault_passphrase_changed')
+    _audit('vault_passphrase_changed', caller_addr=caller_addr)
+    _notify_vault_tamper('changed', caller_addr)
     _log("[secrets] passphrase changed")
 
 
@@ -986,7 +1011,7 @@ def unlock_with_passphrase(passphrase: str) -> None:
     _log("[secrets] vault unlocked (passphrase)")
 
 
-def unlock_with_recovery_key(recovery_key: str) -> None:
+def unlock_with_recovery_key(recovery_key: str, *, caller_addr: str = '') -> None:
     global _unlocked_key, _lock_notified, _key_mismatch
     normalized = _normalize_recovery_key(recovery_key)
     with _lock:
@@ -1004,7 +1029,8 @@ def unlock_with_recovery_key(recovery_key: str) -> None:
         _unlocked_key = key_bytes
         _lock_notified = False
         _key_mismatch = False
-    _audit('vault_unlocked', method='recovery_key')
+    _audit('vault_unlocked', method='recovery_key', caller_addr=caller_addr)
+    _notify_vault_tamper('unlocked with the recovery key', caller_addr)
     _log("[secrets] vault unlocked (recovery key)")
 
 
