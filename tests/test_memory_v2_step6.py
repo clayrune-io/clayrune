@@ -251,14 +251,27 @@ def test_dedupe_collapses_two_predecessors_of_the_same_head_and_backfills(env):
 
 
 def test_verified_predecessor_blocks_substitution_by_a_generated_head(env):
-    """Condition 20 — a generated successor must not silently outrank a
-    verified predecessor. Substitution is refused; the predecessor's own
-    hit is delivered unredirected."""
+    """Condition 20 — a head with no `verified[]` (the ordinary state
+    `write_topic_note` mints — 'generated' per §4.1 is not an `origin` value,
+    every note carries a `generated:` stamp) must not silently outrank a
+    predecessor that DOES carry `verified[]`. Substitution is refused; the
+    predecessor's own hit is delivered unredirected.
+
+    The head is minted through the real `write_topic_note` (interactive
+    origin, no `verified[]` — nothing appends that field yet, mint is step
+    7), matching Dave's review: exercise the mechanism real code produces,
+    not a hand-typed `origin: generated` that no write path ever emits.
+    `verified[]` itself still has to be hand-written onto the predecessor —
+    there is no writer for it yet either.
+    """
     mem, tmp = env
     _note(tmp, 'verified_pred', 'human confirmed', 'plugh xyzzy verified content',
-          verified="[ {by: 'ron', at: '2026-09-01'} ]")
-    _note(tmp, 'generated_head', 'model guess', 'plugh xyzzy generated content',
-          supersedes='verified_pred', origin='generated')
+          origin='interactive', verified="[ {by: 'ron', at: '2026-09-01'} ]")
+    fn = mem.write_topic_note(P, 'generated_head', 'model guess',
+                               'plugh xyzzy generated content',
+                               supersedes='verified_pred',
+                               task='write a note', trigger_type='manual')
+    assert fn == 'generated_head.md'
     hits = mem._memory_search(P, 'plugh xyzzy', topk=5, keep_internal=True)
     matched = [h for h in hits if h['file'] == 'verified_pred.md']
     assert matched, f'verified predecessor must not be redirected away: {hits}'
@@ -267,15 +280,76 @@ def test_verified_predecessor_blocks_substitution_by_a_generated_head(env):
 
 def test_generated_head_still_substitutes_an_unverified_predecessor(env):
     """The Condition 20 guard is specifically verified-vs-generated — an
-    UNVERIFIED predecessor is fair game for substitution regardless of the
-    head's origin."""
+    UNVERIFIED predecessor is fair game for substitution by a head with no
+    `verified[]` of its own, as long as the origin rail (below) also clears."""
     mem, tmp = env
-    _note(tmp, 'unverified_pred', 'no human witness', 'corge grault content')
-    _note(tmp, 'generated_head', 'model conclusion', 'corge grault successor',
-          supersedes='unverified_pred', origin='generated')
+    _note(tmp, 'unverified_pred', 'no human witness', 'corge grault content',
+          origin='interactive')
+    fn = mem.write_topic_note(P, 'generated_head', 'model conclusion',
+                               'corge grault successor',
+                               supersedes='unverified_pred',
+                               task='write a note', trigger_type='manual')
+    assert fn == 'generated_head.md'
     hits = mem._memory_search(P, 'corge grault', topk=5, keep_internal=True)
     hit = next(h for h in hits if h.get('substituted_from') == 'unverified_pred.md')
     assert hit['file'] == 'generated_head.md'
+
+
+# ── origin authority rail (learning-system safety rail, CLAUDE.md) ──────────
+# An unattended-origin successor must never supersede a predecessor that was
+# not itself unattended — the mirror image of the authority guard that keeps
+# autonomous output from becoming autonomous input on the Distiller side.
+
+def test_unattended_successor_refused_over_interactive_predecessor(env):
+    mem, tmp = env
+    _note(tmp, 'interactive_pred', 'human-session note', 'thelonious monk content',
+          origin='interactive')
+    fn = mem.write_topic_note(P, 'unattended_head', 'scheduled-job note',
+                               'thelonious monk successor',
+                               supersedes='interactive_pred',
+                               task='[Steward cycle] nightly pass', trigger_type='')
+    assert fn == 'unattended_head.md'
+    units = mem._mem_corpus(tmp, 'MEMORY.md', 'MEMORY_ARCHIVE.md')
+    by_topic = {u['file']: u for u in units if u.get('cls') == 'topic'}
+    assert by_topic['unattended_head.md']['fm_origin'] == 'unattended'
+    hits = mem._memory_search(P, 'thelonious monk', topk=5, keep_internal=True)
+    matched = [h for h in hits if h['file'] == 'interactive_pred.md']
+    assert matched, f'interactive predecessor must not be superseded by an unattended head: {hits}'
+    assert 'substituted_from' not in matched[0]
+
+
+def test_unattended_successor_refused_over_unstamped_predecessor(env):
+    """A predecessor with no parseable `origin` at all (unstamped / a
+    legacy import that hasn't migrated) fails CLOSED, same posture as
+    `_stamp_origin`/`is_unattended_session` — treated as not-unattended, so
+    an unattended head still may not claim it."""
+    mem, tmp = env
+    _note(tmp, 'unstamped_pred', 'pre-provenance note', 'rutabaga parsnip content')
+    fn = mem.write_topic_note(P, 'unattended_head', 'scheduled-job note',
+                               'rutabaga parsnip successor',
+                               supersedes='unstamped_pred',
+                               task='[Steward cycle] nightly pass', trigger_type='')
+    assert fn == 'unattended_head.md'
+    hits = mem._memory_search(P, 'rutabaga parsnip', topk=5, keep_internal=True)
+    matched = [h for h in hits if h['file'] == 'unstamped_pred.md']
+    assert matched, f'unstamped predecessor must not be superseded by an unattended head: {hits}'
+    assert 'substituted_from' not in matched[0]
+
+
+def test_interactive_successor_allowed_over_unattended_predecessor(env):
+    """The refusal is one-directional — an interactive successor may
+    supersede an unattended predecessor without issue."""
+    mem, tmp = env
+    _note(tmp, 'unattended_pred', 'scheduled-job note', 'ochre vermillion content',
+          origin='unattended')
+    fn = mem.write_topic_note(P, 'interactive_head', 'human-session note',
+                               'ochre vermillion successor',
+                               supersedes='unattended_pred',
+                               task='write a note', trigger_type='manual')
+    assert fn == 'interactive_head.md'
+    hits = mem._memory_search(P, 'ochre vermillion', topk=5, keep_internal=True)
+    hit = next(h for h in hits if h.get('substituted_from') == 'unattended_pred.md')
+    assert hit['file'] == 'interactive_head.md'
 
 
 # ── materialised negation block (§6.4) ───────────────────────────────────────

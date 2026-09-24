@@ -2639,20 +2639,44 @@ _SUPERSEDE_NEGATION_CHARS = 120
 
 
 def _mem_supersede_guard_blocks(predecessor_file, head_file, by_topic_file):
-    """Condition 20 — a `generated` head may not silently replace a
-    `verified` predecessor. `origin`/`verified` are parsed once at tokenize
-    time (see `_mem_tokenize_unit`) so this is a dict lookup, not a re-parse.
+    """Condition 20 / C2 (§4.3) — two independent refusals, either one blocks
+    substitution. `origin`/`verified` are parsed once at tokenize time (see
+    `_mem_tokenize_unit`) so each check here is a dict lookup, not a re-parse.
+
+    1. **Verified vs. generated.** `generated` is not an `origin` value — per
+       §4.1/Condition 4, EVERY note write carries a `generated: {by, at}`
+       stamp. "A generated note" (Condition 20's phrase) means a note that
+       has NOT separately earned `verified[]` (Condition 5: derived only for
+       a human-witnessed `trigger_type: manual` session with a follow-up
+       message) — i.e. the ordinary state `write_topic_note` mints today,
+       since no caller appends `verified[]` yet (that lands with mint,
+       step 7). So: predecessor carries `verified[]`, head does not.
+    2. **Origin authority (learning-system rail, CLAUDE.md).** An
+       unattended-origin successor must never supersede a predecessor that
+       was not itself unattended — that covers `origin: interactive`,
+       `origin: legacy` (§4.3's "legacy is read as attended-equivalent"),
+       and an unstamped/legacy-import predecessor with no parseable
+       `origin` at all (fail-closed, same posture as
+       `_stamp_origin`/`is_unattended_session`). An interactive successor
+       superseding an unattended predecessor is unaffected — only the
+       unattended-over-attended direction is refused.
 
     True = substitution is REFUSED; the caller keeps the predecessor's own
     hit untouched, which is what "reported alongside both rather than
     performed" means here — the predecessor still surfaces on its own
-    merits, unredirected, so a human sees the older verified record instead
-    of a generated one silently taking its slot.
+    merits, unredirected, so a human sees the older/verified record instead
+    of the other one silently taking its slot.
     """
     pred = by_topic_file.get(predecessor_file) or {}
     head = by_topic_file.get(head_file) or {}
-    return bool(str(pred.get('fm_verified') or '').strip()) and \
-        str(head.get('fm_origin') or '').strip() == 'generated'
+    if bool(str(pred.get('fm_verified') or '').strip()) and \
+            not str(head.get('fm_verified') or '').strip():
+        return True
+    head_origin = str(head.get('fm_origin') or '').strip()
+    pred_origin = str(pred.get('fm_origin') or '').strip()
+    if head_origin == 'unattended' and pred_origin != 'unattended':
+        return True
+    return False
 
 
 def _mem_negation_entries(head_file, edges, by_topic_file):
@@ -2873,9 +2897,11 @@ def _df_gate_pass(term, df, n_docs):
 def _note_frontmatter(text):
     """Best-effort name/description/triggers/supersedes read from a topic
     note's frontmatter, for D0/D1, supersession (§6, MC-944 step 6) and audit
-    tooling ONLY. Deliberately NOT used by `_mem_corpus`/`_mem_tokenize_unit`
-    — §10.4 point 1 keeps topic-note frontmatter unparsed by the live
-    ranker/tokenizer, unchanged by this step.
+    tooling. `_mem_tokenize_unit` DOES call this now (MC-944 step 6) to pull
+    `supersedes`/`origin`/`verified`/`description` into the unit dict for
+    supersession bookkeeping — but only that bookkeeping. §10.4 point 1's
+    invariant still holds where it matters: this parse never feeds `tf`/BM25
+    scoring, so topic-note frontmatter stays unparsed by the live ranker.
 
     `origin`/`verified` are read best-effort for Condition 20's supersession
     guard. `verified` is §4.1's `[ {by:, at:}, … ]` block sequence, which the
