@@ -359,7 +359,10 @@ async function setupShow(idx) {
   let btns = '';
   if (!isFirst) btns += `<button class="wt-btn" onclick="setupBack()">Back</button>`;
   if (isLast) {
-    btns += `<button class="wt-btn wt-btn-skip" onclick="setupFinish()">Not now</button>`;
+    // "Not now" (not "Skip"/wt-btn-skip): this is the tour OFFER, not a setup
+    // control — wt-btn-skip is the tour's own "Skip" look, and reusing it here
+    // was part of what made this final card readable as the tour itself.
+    btns += `<button class="wt-btn setup-btn-secondary" onclick="setupFinish()">Not now</button>`;
     btns += `<button class="wt-btn wt-btn-primary" onclick="setupTakeTour()">Take the tour</button>`;
   } else {
     // First run cannot be skipped: setup_completed is written ONLY from the
@@ -372,21 +375,33 @@ async function setupShow(idx) {
     // for a genuinely vendor-less user is the explicit-confirm link below,
     // which — like the old "Skip setup" — still ends setup and persists
     // setup_completed, so Clayrune stops re-nagging on every load.
-    if (setupForced) btns += `<button class="wt-btn wt-btn-skip" onclick="setupSkip()">Close</button>`;
-    else if (nextBlocked) btns += `<button type="button" class="wt-btn wt-btn-skip" onclick="setupConnectLater()">I'll connect one later</button>`;
+    // Neither secondary action uses wt-btn-skip: that class IS the tour's own
+    // "Skip" look (walkthrough.js), and a setup control wearing it is exactly
+    // the confusion Ron hit on the clean-VM run (2026-09-23).
+    if (setupForced) btns += `<button class="wt-btn setup-btn-secondary" onclick="setupSkip()">Close</button>`;
+    else if (nextBlocked) btns += `<button type="button" class="wt-btn setup-btn-secondary" onclick="setupConnectLater()">I'll connect one later</button>`;
     btns += `<button class="wt-btn wt-btn-primary"${nextBlocked ? ' disabled' : ''} onclick="setupNext()">${isFirst ? 'Get started' : 'Next'}</button>`;
   }
 
+  const pct = Math.round(((pos + 1) / visible.length) * 100);
   const card = document.createElement('div');
-  card.className = 'wt-card centered' + (step.wide ? ' wt-card-wide' : '');
+  // wt-card-setup marks this DOM as setup, not tour, for both CSS (its own
+  // accent band, distinct from the tour's .wt-card look) and smoke tests
+  // (tools/smoke/first-run-setup-gate.mjs asserts on this class).
+  card.className = 'wt-card wt-card-setup centered' + (step.wide ? ' wt-card-wide' : '');
   // Body strings are author-controlled hardcoded text or pre-built component
   // HTML (esc()'d at the source), same contract as walkthrough.js.
   card.innerHTML = `
+    <div class="setup-band">
+      <span class="setup-band-label">Setup</span>
+      <span class="setup-band-track"><span class="setup-band-fill" style="width:${pct}%"></span></span>
+      <span class="setup-band-progress">Step ${pos + 1} of ${visible.length}</span>
+    </div>
     <div class="wt-title">${esc(step.title)}</div>
     <div class="wt-body">${bodyHtml}</div>
     ${nextBlocked ? `<div class="wt-next-reason">${esc(connReason)}</div>` : ''}
     <div class="wt-actions">
-      <span class="wt-progress">Setup — step ${pos + 1} of ${visible.length}</span>
+      <span style="flex:1"></span>
       ${btns}
     </div>`;
   overlay.appendChild(card);
