@@ -103,7 +103,7 @@ can drive a project's agent. Listed for completeness.
 | Verb | Path | Purpose |
 |---|---|---|
 | POST | `/api/project/<project_id>/agent/dispatch` | Start a fresh agent run. |
-| POST | `/api/project/<project_id>/agent/send` | Send a message to the running agent. |
+| POST | `/api/project/<project_id>/agent/send` | Send a message to the running agent. `{"session_id":…,"message":…,"notify_session":"<your sid>"?}` — an agent sending a dispatched child NEW work must pass `notify_session` again to be woken when that turn ends; without it the send is treated as a human follow-up and fires no callback (MC-970). |
 | GET | `/api/project/<project_id>/agent/stream` | SSE stream of agent events. |
 | POST | `/api/project/<project_id>/agent/followup` | Resume after an asked question. |
 | POST | `/api/project/<project_id>/agent/stop` | Stop the running agent (clean). |
