@@ -415,6 +415,138 @@ def check_install_dir_write(tool_name: str, tool_input: dict,
                                 f"agent may not edit the running app's own source")
 
 
+def _vault_home() -> Path:
+    """Mirrors mc.secrets_store.clayrune_home() WITHOUT importing it — this
+    module is stdlib-only by design (module docstring), and secrets_store
+    pulls in the `cryptography` package. tests/test_steward_fence.py pins
+    this against the real implementation so the two can't silently drift."""
+    override = os.environ.get('CLAYRUNE_HOME')
+    if override:
+        return Path(override)
+    home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
+            or str(Path.home()))
+    return Path(home) / '.clayrune'
+
+
+# The vault's master-key file(s) and its ciphertext store (mc/secrets_store.py:
+# key_file_path, store_path, dpapi_mirror_path, wrapped_key_path). Deliberately
+# NOT the whole ~/.clayrune directory — that also holds the audit log, the LAN
+# passcode hash, and named browser profiles, none of which this specific
+# backstop is scoped to (Wren, 2026-09-15, blocker C names the first three;
+# secrets.key.wrapped and legacy_key_quarantine/ added under MC 503edfe4 once
+# the passphrase lock introduced them as new places the key lives).
+_VAULT_FILENAMES = ('secrets.key', 'secrets.json', 'secrets.key.dpapi',
+                     'secrets.key.wrapped')
+
+# Retired master-key copies quarantined by set_passphrase()
+# (mc.secrets_store._quarantine_legacy_key_material) — a directory of
+# timestamped subdirs whose file NAMES vary (they keep the original
+# filename, but under an unpredictable <ts>/ path), so this can't be matched
+# by a fixed filename list the way the live files above are; it has to be
+# matched by directory instead.
+_VAULT_QUARANTINE_DIRNAME = 'legacy_key_quarantine'
+
+
+def _is_vault_filename(raw: str) -> bool:
+    return bool(raw) and os.path.basename(raw.replace('\\', '/')) in _VAULT_FILENAMES
+
+
+def _path_resolves_into_vault(raw: str, cwd: Optional[Path] = None) -> bool:
+    """True if `raw` is a real filesystem path (Read's file_path, Grep/Glob's
+    path) that names one of the vault files, or resolves inside the legacy-key
+    quarantine directory — resolved under ~/.clayrune, or, failing that,
+    matched by bare filename alone (fails toward BLOCK: a relative
+    `secrets.key` the fence can't resolve against the session's real cwd is
+    still worth refusing, same asymmetric-risk bias as the rest of this
+    module)."""
+    is_named_file = _is_vault_filename(raw)
+    is_quarantine_mention = bool(raw) and _VAULT_QUARANTINE_DIRNAME in raw.replace('\\', '/')
+    if not (is_named_file or is_quarantine_mention):
+        return False
+    try:
+        home = _vault_home().resolve()
+        quarantine = home / _VAULT_QUARANTINE_DIRNAME
+        target = Path(raw)
+        if not target.is_absolute():
+            target = (cwd or Path.cwd()) / target
+        target = target.resolve()
+    except Exception:
+        return True
+    if is_named_file:
+        return target == home or _is_within(target, home)
+    return target == quarantine or _is_within(target, quarantine)
+
+
+# Bash: require a vault filename (or a quarantine-dir mention) AND something
+# that suggests an actual READ (a cat/type/Get-Content-shaped verb, or an
+# explicit ~/.clayrune mention) in the SAME shell segment (same per-segment
+# discipline as _touches_nonlocal_network) — a bare `grep -rn "secrets.key"
+# mc/` searching THIS REPO'S OWN SOURCE for the string must keep passing; it
+# names the file but reads no bytes of it and never mentions the vault's
+# directory.
+_VAULT_NAME_RE = re.compile(
+    r'secrets\.key\.wrapped|secrets\.key\.dpapi|secrets\.key\b|secrets\.json\b|'
+    + re.escape(_VAULT_QUARANTINE_DIRNAME), re.I)
+_VAULT_READ_VERB_RE = re.compile(
+    r'\b(cat|type|less|more|head|tail|Get-Content|gc|copy|cp|xxd|od|'
+    r'hexdump|base64|python\w*|node|powershell|pwsh|Select-String|'
+    r'findstr|strings)\b', re.I)
+
+
+def _bash_touches_vault_file(cmd: str) -> bool:
+    for seg in _SHELL_SPLIT_RE.split(cmd):
+        if not _VAULT_NAME_RE.search(seg):
+            continue
+        if _VAULT_READ_VERB_RE.search(seg) or '.clayrune' in seg.lower():
+            return True
+    return False
+
+
+def check_vault_file_access(tool_name: str, tool_input: dict,
+                             session_cwd: Optional[str] = None) -> FenceDecision:
+    """Deny Read/Grep/Glob/Bash access to the secrets vault's master-key
+    file(s) (including the wrapped key and its legacy-key quarantine
+    directory, MC 503edfe4) and ciphertext store, for EVERY agent session —
+    attended or not (Wren, 2026-09-15 security review, blocker C). Called
+    UNCONDITIONALLY from main(), same as check_install_dir_write above and
+    for the same reason: "an agent may not read the file that opens every
+    credential" is a project-boundary-shaped rule, not a judgment call that
+    depends on whether a human is reading each tool call.
+
+    HONESTLY SCOPED (docs/SECRETS.md's own access-model note): this blocks
+    the tool paths an agent reaches for BY NAME — Read a known path,
+    Grep/Glob a pattern, `cat`/`type`/Get-Content in Bash. A same-user
+    process can always read a file the server itself reads unattended;
+    arbitrary code (a Python one-liner computing an obfuscated path, a
+    renamed copy) still gets there. This is the obvious-path backstop, not a
+    sandbox — the vault's own documentation already says so and this does
+    not pretend otherwise.
+    """
+    name = tool_name or ''
+    ti = tool_input or {}
+    cwd = Path(session_cwd) if session_cwd else None
+    refusal = FenceDecision(
+        True, "reads the secrets vault's key/store file directly — use the "
+              "vault API (GET /api/secrets) instead, never the raw file")
+    if name == 'Read':
+        if _path_resolves_into_vault(str(ti.get('file_path', '') or ''), cwd):
+            return refusal
+    elif name in ('Grep', 'Glob'):
+        if _path_resolves_into_vault(str(ti.get('path', '') or ''), cwd):
+            return refusal
+        # Grep's own content-search `pattern` is NOT a path — searching this
+        # repo's source for the literal text "secrets.key" must not trip
+        # this (that is exactly the check the fence itself needed while
+        # being written). Only the file-name-filter fields are path-shaped.
+        filter_key = 'glob' if name == 'Grep' else 'pattern'
+        if _is_vault_filename(str(ti.get(filter_key, '') or '')):
+            return refusal
+    elif name == 'Bash':
+        if _bash_touches_vault_file(str(ti.get('command', '') or '')):
+            return refusal
+    return FenceDecision(False, '')
+
+
 def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
     """Classify any tool call. Bash is where terminal danger lives; other tools
     default to allow (edits/writes are working-tree-reversible). Extend here if a
@@ -665,6 +797,17 @@ def main() -> int:
         boundary = FenceDecision(False, '')
     if boundary.blocked:
         print(f"STEWARD FENCE blocked this action: {boundary.reason}. "
+              f"Do NOT retry it against this path.", file=sys.stderr)
+        return 2
+
+    # Same unconditional posture as the install-dir guard above — see
+    # check_vault_file_access's docstring.
+    try:
+        vault_access = check_vault_file_access(tool_name, tool_input)
+    except Exception:
+        vault_access = FenceDecision(False, '')
+    if vault_access.blocked:
+        print(f"STEWARD FENCE blocked this action: {vault_access.reason}. "
               f"Do NOT retry it against this path.", file=sys.stderr)
         return 2
 

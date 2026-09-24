@@ -12,7 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from steward.fence import FenceDecision, check_install_dir_write, classify_action, classify_bash
+from steward.fence import (
+    FenceDecision, check_install_dir_write, check_vault_file_access,
+    classify_action, classify_bash,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 FENCE = REPO / 'steward' / 'fence.py'
@@ -619,3 +622,185 @@ def test_eval_and_dash_c_on_an_expansion_block(cmd):
 def test_literal_dash_c_programs_still_pass(cmd):
     d = classify_bash(cmd)
     assert not d.blocked, f"false positive: {d.reason!r} for {cmd!r}"
+
+
+# ── Vault key/store fence (Wren, 2026-09-15 security review, blocker C;
+# ported from f6a8159 under MC 503edfe4, extended for the wrapped-key file
+# and its legacy-key quarantine directory the passphrase lock introduced) ──
+# check_vault_file_access, like check_install_dir_write, runs UNCONDITIONALLY
+# from main() — a real Windows same-user process can always read a file the
+# server itself reads unattended, so this is the obvious-tool-path backstop
+# (Read a known path, Grep/Glob a pattern, `cat`/`type` in Bash), not a
+# sandbox; docs/SECRETS.md already says as much.
+
+def test_vault_home_matches_the_real_secrets_store_implementation(tmp_path, monkeypatch):
+    """fence.py duplicates mc.secrets_store.clayrune_home() rather than
+    importing it (this module is stdlib-only by design) — pin the two so a
+    future change to one can't silently drift from the other."""
+    import steward.fence as fence_mod
+    from mc import secrets_store
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    assert fence_mod._vault_home() == secrets_store.clayrune_home()
+    monkeypatch.delenv('CLAYRUNE_HOME', raising=False)
+    assert fence_mod._vault_home() == secrets_store.clayrune_home()
+
+
+def test_read_of_the_key_file_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    d = check_vault_file_access(
+        'Read', {'file_path': str(tmp_path / '.clayrune' / 'secrets.key')})
+    assert d.blocked
+    assert 'vault' in d.reason.lower()
+
+
+def test_read_of_the_store_dpapi_mirror_or_wrapped_key_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    for name in ('secrets.json', 'secrets.key.dpapi', 'secrets.key.wrapped'):
+        d = check_vault_file_access(
+            'Read', {'file_path': str(tmp_path / '.clayrune' / name)})
+        assert d.blocked, name
+
+
+def test_read_of_a_quarantined_legacy_key_copy_is_blocked(tmp_path, monkeypatch):
+    """The quarantine dir (mc.secrets_store._quarantine_legacy_key_material)
+    holds retired key copies under a timestamped subdir, so the filename
+    alone (e.g. secrets.key.dpapi) is not enough to catch a path like
+    legacy_key_quarantine/<ts>/secrets.key.dpapi via the fixed-name list —
+    it has to be caught by directory membership instead."""
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    quarantined = (tmp_path / '.clayrune' / 'legacy_key_quarantine'
+                   / '2026-09-24T000000Z' / 'keyring_secrets-master-key.b64')
+    d = check_vault_file_access('Read', {'file_path': str(quarantined)})
+    assert d.blocked
+
+
+def test_read_of_an_unrelated_file_named_secrets_json_elsewhere_is_allowed(tmp_path, monkeypatch):
+    """secrets.json is a generic enough name that some OTHER project could
+    legitimately have its own — only a path that actually resolves under
+    ~/.clayrune (or an unresolvable bare filename) is blocked."""
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    other = tmp_path / 'some-project' / 'config' / 'secrets.json'
+    d = check_vault_file_access('Read', {'file_path': str(other)})
+    assert not d.blocked
+
+
+def test_read_of_a_legacy_key_quarantine_named_dir_outside_the_vault_is_allowed(tmp_path, monkeypatch):
+    """Same asymmetric-risk shape as the secrets.json case above: a directory
+    that happens to share the quarantine dir's NAME but lives outside
+    ~/.clayrune entirely is not the vault's quarantine dir."""
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    other = tmp_path / 'some-project' / 'legacy_key_quarantine' / 'notes.txt'
+    d = check_vault_file_access('Read', {'file_path': str(other)})
+    assert not d.blocked
+
+
+def test_grep_path_targeting_the_vault_dir_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    d = check_vault_file_access(
+        'Grep', {'pattern': 'anything', 'path': str(tmp_path / '.clayrune' / 'secrets.key')})
+    assert d.blocked
+
+
+def test_grep_glob_filter_naming_the_key_file_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    d = check_vault_file_access(
+        'Grep', {'pattern': 'x', 'path': str(tmp_path), 'glob': 'secrets.key'})
+    assert d.blocked
+
+
+def test_grep_content_search_for_the_word_secrets_key_is_not_blocked(tmp_path):
+    """The fence itself needs to be able to grep this repo's OWN source for
+    the string "secrets.key" (documentation, comments, this very test file)
+    without tripping its own vault guard — `pattern` is a content regex, not
+    a path, and must never be checked as one."""
+    d = check_vault_file_access(
+        'Grep', {'pattern': 'secrets.key', 'path': str(tmp_path)})
+    assert not d.blocked
+
+
+def test_glob_pattern_naming_the_key_file_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    d = check_vault_file_access('Glob', {'pattern': '**/secrets.key'})
+    assert d.blocked
+
+
+def test_bash_cat_of_the_key_file_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    home = tmp_path / '.clayrune'
+    d = check_vault_file_access('Bash', {'command': f'cat {home}/secrets.key'})
+    assert d.blocked
+
+
+def test_bash_windows_type_of_the_key_file_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    home = tmp_path / '.clayrune'
+    d = check_vault_file_access(
+        'Bash', {'command': f'type "{home}\\secrets.key"'})
+    assert d.blocked
+
+
+def test_bash_cat_of_the_wrapped_key_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    home = tmp_path / '.clayrune'
+    d = check_vault_file_access(
+        'Bash', {'command': f'cat {home}/secrets.key.wrapped'})
+    assert d.blocked
+
+
+def test_bash_mention_of_the_quarantine_dir_with_a_read_verb_is_blocked():
+    d = check_vault_file_access(
+        'Bash', {'command': 'cat ~/.clayrune/legacy_key_quarantine/2026-09-24T000000Z/secrets.key'})
+    assert d.blocked
+
+
+def test_bash_mention_of_clayrune_dir_without_a_read_verb_is_still_blocked():
+    """Explicitly mentioning the vault's own directory alongside the
+    filename is enough on its own, even without a recognised read verb —
+    fails toward BLOCK, the fence's stated bias."""
+    d = check_vault_file_access(
+        'Bash', {'command': 'ls -la ~/.clayrune/secrets.key'})
+    assert d.blocked
+
+
+def test_bash_grep_for_the_word_secrets_key_in_source_is_not_blocked():
+    """The exact false positive this design has to avoid: an ordinary
+    codebase search for the term, with no read verb and no .clayrune
+    mention."""
+    d = check_vault_file_access(
+        'Bash', {'command': 'grep -rn "secrets.key" mc/secrets_store.py'})
+    assert not d.blocked
+
+
+def test_bash_unrelated_command_is_not_blocked():
+    d = check_vault_file_access('Bash', {'command': 'git status'})
+    assert not d.blocked
+
+
+def test_glob_of_the_vault_directory_itself_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    d = check_vault_file_access(
+        'Glob', {'pattern': '*', 'path': str(tmp_path / '.clayrune')})
+    # Scoped to the named files/quarantine dir, not the whole ~/.clayrune
+    # directory (Wren named specific files; the quarantine dir is matched by
+    # its own name, not by living under ~/.clayrune) — a bare directory
+    # listing of ~/.clayrune itself with a wildcard pattern and no matching
+    # filename is NOT blocked by this guard. Pinning the (documented)
+    # boundary rather than silently assuming it.
+    assert not d.blocked
+
+
+# ── Same guard, exercised through the real hook subprocess — proves it is
+#    UNCONDITIONAL like check_install_dir_write ────────────────────────────
+
+def test_hook_blocks_vault_key_read_for_ordinary_dev_session(tmp_path):
+    env = dict(os.environ)
+    env.pop('CLAUDE_CODE_SESSION_ID', None)
+    env['CLAYRUNE_HOME'] = str(tmp_path / '.clayrune')
+    key_path = tmp_path / '.clayrune' / 'secrets.key'
+    r = subprocess.run(
+        [sys.executable, str(FENCE)],
+        input=json.dumps({'tool_name': 'Read', 'tool_input': {'file_path': str(key_path)}}),
+        capture_output=True, text=True, env=env, cwd=str(tmp_path),
+    )
+    assert r.returncode == 2
+    assert 'vault' in r.stderr.lower()
