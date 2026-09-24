@@ -261,6 +261,16 @@ async function openClaydo() {
   // at open time, would beat that rule and leave the sheet stuck at its
   // keyboard-open height, unable to expand back when the keyboard is dismissed.
   if (window.innerWidth > 960) _clampModalSize(content, 520, 600);
+  // Mobile only: the button next to X mirrors the Android hardware-back
+  // behaviour for Claydo (closeModalById, same as the _mcSurfaceOpen popstate
+  // branch in index.html unwinds to) instead of minimizing — a minimized
+  // Claydo has no visible affordance to reopen it on mobile's single-surface
+  // layout, so "minimize" read as "vanished". Decided once at open time, same
+  // as the desktop-size check just above; desktop keeps the minimize control.
+  const _claydoMobileHdr = _isMobileDevice || window.innerWidth <= 960;
+  const _claydoSecondBtn = _claydoMobileHdr
+    ? `<button class="modal-minimize" onclick="closeModalById('${modalId}')" title="Back">&#8592;</button>`
+    : `<button class="modal-minimize" onclick="minimizeModal('${modalId}')" title="Minimize">&#x2015;</button>`;
   content.innerHTML = `
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:14px 22px 12px 24px">
       <div style="display:flex;align-items:center;gap:10px;min-width:0;flex:1">
@@ -272,7 +282,7 @@ async function openClaydo() {
       </div>
       <div class="modal-window-controls" style="position:static;display:flex;gap:4px;align-items:center">
         <button id="claydo-home-btn" class="claydo-home-btn" onclick="setClaydoMode('ask')" title="Back to Ask Claydo" style="display:none">&#8592; Home</button>
-        <button class="modal-minimize" onclick="minimizeModal('${modalId}')" title="Minimize">&#x2015;</button>
+        ${_claydoSecondBtn}
         <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
       </div>
     </div>
@@ -428,6 +438,27 @@ async function submitClaydo() {
   const question = input.value.trim();
   if (!question) return;
 
+  // Restore full height BEFORE any other work, mirroring sendFollowup's fix
+  // (conversation.js, 2026-09-14 — see tools/smoke/mobile-send-height-restore.mjs):
+  // Enter dismisses the keyboard but keeps focus on the field, so nothing else
+  // tells mobile.js's watchdog the keyboard is gone until its next poll —
+  // Claydo sat shrunk in the meantime. Blurring first makes apply() see no
+  // focused field and force the inset to 0 on this call instead of waiting.
+  // Desktop keeps typing.
+  const _mobileSend = window.innerWidth <= 960 && document.activeElement === input;
+
+  // Clear the field BEFORE the frame yield below: a second Enter/Send landing
+  // inside that frame would otherwise see the message still there.
+  input.value = '';
+  input.disabled = true;
+  send.disabled = true;
+
+  if (_mobileSend) {
+    try { input.blur(); } catch (e) {}
+    if (typeof window.mcRestoreFullHeight === 'function') window.mcRestoreFullHeight();
+    await new Promise(requestAnimationFrame); // let the browser paint the expanded layout
+  }
+
   _setClaydoState('thinking');
 
   // User's message
@@ -444,10 +475,6 @@ async function submitClaydo() {
   histDiv.appendChild(botMsg);
   histDiv.scrollTop = histDiv.scrollHeight;
 
-  input.value = '';
-  input.disabled = true;
-  send.disabled = true;
-
   // Snapshot prior history (ask: last 6 messages = ~3 exchanges; builder
   // modes carry a longer tail so interview answers survive to the draft —
   // the server caps at 12 either way).
@@ -461,6 +488,30 @@ async function submitClaydo() {
   let assembled = '';
   let firstChunk = true;
   let errored = false;
+
+  // Rendering `assembled` was previously synchronous on EVERY SSE delta —
+  // full innerHTML rebuild (re-parsing the whole reply's markers/markdown
+  // from scratch each time, O(n) growing with the reply), a team-card remount
+  // scan, and a forced-reflow scrollTop read, all on the main thread. A
+  // multi-token-per-second stream turned that into a near-continuous run of
+  // heavy synchronous work, which is what "the whole app lags while Claydo is
+  // thinking, and hardware back is slow" actually was: the main thread was
+  // busy, not blocked by any single long task, so nothing else — including a
+  // popstate handler — got a turn. Collapse to at most one DOM render per
+  // animation frame regardless of chunk rate; `assembled` itself stays cheap
+  // (a string concat) so no text is ever lost between renders.
+  let _renderScheduled = false;
+  function _scheduleDeltaRender() {
+    if (_renderScheduled) return;
+    _renderScheduled = true;
+    requestAnimationFrame(() => {
+      _renderScheduled = false;
+      const {cleanText} = _claydoParseMarkers(assembled);
+      botMsg.innerHTML = _claydoFormatText(cleanText);
+      _claydoMountTeams(botMsg);
+      histDiv.scrollTop = histDiv.scrollHeight;
+    });
+  }
 
   try {
     const res = await fetch(API_BASE + '/api/guide/stream', {
@@ -507,10 +558,8 @@ async function submitClaydo() {
           assembled += payload.text || '';
           // Render the assembled-so-far with markers stripped (they'll be
           // dispatched on `done`). Light formatting matches non-streaming path.
-          const {cleanText} = _claydoParseMarkers(assembled);
-          botMsg.innerHTML = _claydoFormatText(cleanText);
-          _claydoMountTeams(botMsg);
-          histDiv.scrollTop = histDiv.scrollHeight;
+          // Batched to one paint per frame — see _scheduleDeltaRender above.
+          _scheduleDeltaRender();
         } else if (payload.type === 'error') {
           // Older servers discard stdout diagnostics on a nonzero CLI exit.
           // Keep the quota/auth message already streamed instead of hiding it.
