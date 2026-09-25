@@ -1332,9 +1332,20 @@ def _job_on_complete(result):
         _unregister_process(result['pid'])
     except Exception as e:
         _log(f"[agent-jobs] unregister failed for job {result['job_id'][:8]}: {e}")
+    # MC-958 follow-up (b49cf71f), second bug: if the wait-cap interim report
+    # already spent this session's `_notify_session_sent` latch while this job
+    # was still running, the job-finished wake turn's own completion call
+    # would find the latch set and silently skip the real answer -- rearm
+    # here, mirroring `_note_self_started_turn`'s rearm for the Claude
+    # background-task path. Safe unconditionally: the flag is only ever set
+    # by `_release_held_job_notify_if_expired`.
+    sess = agent_sessions.get(result['session_id'])
+    if sess is not None and sess.pop(_JOB_INTERIM_KEY, None):
+        sess.pop('_notify_session_sent', None)
     status = 'timed out' if result['timed_out'] else 'exited'
     message = (
         f"[background job finished] job {result['job_id']} {status} "
+        f"(shell: {result.get('shell', 'bash')}) "
         f"(exit code {result['exit_code']}) after {result['duration_s']:.1f}s.\n"
         f"Command: {result['command']}\n\nLog: {result['log_path']}\n\n"
         f"Last output:\n{result['tail']}\n\nThis is the job you started with "
@@ -1365,6 +1376,13 @@ def agent_job_start(project_id, session_id):
     _build_agent_context). Completion is delivered into THIS session via
     _job_on_complete, reusing the delegation-delivery outbox/inbox rather
     than a new wake mechanism.
+
+    `shell` picks the interpreter ("bash" | "sh" | "powershell" | "cmd",
+    default "bash" on every OS -- see `mc.agent_jobs.resolve_shell`). Runs
+    argv-invoked (`[shell, '-c'/'−Command'/'/c', command]`), not the old
+    `shell=True`, which on Windows was always cmd.exe regardless of what the
+    agent's command was written for -- a POSIX `sleep 90; echo done` failed
+    in 0.03s with "'sleep' is not recognized".
     """
     p = load_project(project_id)
     if not p:
@@ -1402,15 +1420,20 @@ def agent_job_start(project_id, session_id):
     if cap and cap > 0:
         timeout_minutes = min(timeout_minutes, float(cap))
 
-    job = _agent_jobs.start_job(
-        project_id=project_id, session_id=session_id, command=command, cwd=cwd,
-        timeout_minutes=timeout_minutes, log_dir=_job_log_dir(),
-        popen_flags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
-        kill_fn=lambda proc: _kill_pid(proc.pid, tree=True),
-        on_complete=_job_on_complete)
+    raw_shell = data.get('shell')
+    try:
+        job = _agent_jobs.start_job(
+            project_id=project_id, session_id=session_id, command=command, cwd=cwd,
+            timeout_minutes=timeout_minutes, log_dir=_job_log_dir(), shell=raw_shell,
+            popen_flags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+            kill_fn=lambda proc: _kill_pid(proc.pid, tree=True),
+            on_complete=_job_on_complete)
+    except _agent_jobs.ShellResolutionError as e:
+        return jsonify({'error': str(e)}), 400
     _register_process(job['proc'], f"job {job['job_id'][:8]}", 'agent_job',
                       session_id, project_id, command)
-    return jsonify({'job_id': job['job_id'], 'pid': job['pid']})
+    return jsonify({'job_id': job['job_id'], 'pid': job['pid'],
+                    'shell': job['shell'], 'shell_note': job['shell_note']})
 
 
 @bp.route('/api/project/<project_id>/agent/<session_id>/job/<job_id>', methods=['GET'])
@@ -4563,9 +4586,11 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             "command, either run it in the foreground within your tool's own "
             "timeout, or hand it to Clayrune: POST "
             f"http://localhost:{port}/api/project/{pid}/agent/{session_id}/job "
-            '{"command":"...","timeout_minutes":optional} — Clayrune runs it '
-            "and delivers a follow-up turn into this session with the exit "
-            "code, duration and output tail when it finishes.")
+            '{"command":"...","timeout_minutes":optional,"shell":optional} — '
+            "runs on bash by default (any OS; \"powershell\"/\"cmd\"/\"sh\" also "
+            "accepted) — Clayrune runs it and delivers a follow-up turn into "
+            "this session with the exit code, duration and output tail when "
+            "it finishes.")
 
     # Pointer card, not the full 19.9 KB reference — see
     # `_CLAYRUNE_API_POINTER_CARD` for the measured numbers. The full text
@@ -7113,6 +7138,95 @@ def _release_held_notify_if_expired(session, now):
     return True
 
 
+# MC-958 follow-up (b49cf71f), second bug found in the 2026-09-25 live test:
+# Kestrel (session 75382af6c7a3) started an agent job, and the SAME logic
+# that fires `_maybe_notify_spawner` at every Codex/Gemini/Qwen turn's exit
+# (`_log_agent_completion`, called unconditionally per turn — those engines
+# exit and respawn every turn, unlike Claude Mode B) sent Kestrel's spawner
+# turn 1's "started the job, ending this turn" and then latched. The job's
+# real answer landed on turn 2 (delivered through the delegation inbox once
+# the job finished, mc/agent_jobs.py's `_job_on_complete`), but the latch
+# swallowed it. `_hold_notify_for_agent_jobs` mirrors
+# `_hold_notify_for_background` for this engine-agnostic facility: hold the
+# callback at any turn-end while `mc.agent_jobs` still shows a `running` job
+# for this session; the job-finished wake turn's own completion call finds
+# the job list empty and fires normally (with THAT turn's answer) because
+# the latch was never set on turn 1.
+_JOB_DEFERRED_KEY = '_notify_deferred_job_since'
+_JOB_INTERIM_KEY = '_notify_job_interim_sent'
+
+
+def _hold_notify_for_agent_jobs(session):
+    """True when the spawner callback must wait for a still-running agent
+    job instead of firing now. Call sites: both places `_log_agent_completion`
+    would otherwise call `_maybe_notify_spawner` (the primary call in the
+    body and the exception-safety backstop in the wrapper) — see
+    `_notify_spawner_unless_jobs_open`, which both actually call."""
+    sid = session.get('session_id', '')
+    n = _agent_jobs.open_job_count(sid) if sid else 0
+    if n <= 0:
+        session.pop(_JOB_DEFERRED_KEY, None)
+        return False
+    if not session.get(_JOB_DEFERRED_KEY):
+        session[_JOB_DEFERRED_KEY] = _time.time()
+        session['log_lines'].append(
+            f"[turn ended with {n} agent job(s) still running "
+            f"({_agent_jobs.describe_open_jobs(sid)}) — the spawner callback "
+            "is held until the job-finished turn ends]")
+    return True
+
+
+def _notify_spawner_unless_jobs_open(session, summary):
+    """The two `_log_agent_completion`/`_log_agent_completion_body` call
+    sites go through this instead of `_maybe_notify_spawner` directly, so
+    the hold applies uniformly whether the body reached its own call or the
+    wrapper's backstop fired because the body raised first."""
+    if _hold_notify_for_agent_jobs(session):
+        return
+    _maybe_notify_spawner(session, summary)
+
+
+def _release_held_job_notify_if_expired(session, now):
+    """Job-facility mirror of `_release_held_notify_if_expired`: bounds the
+    hold by the same `background_wait_max_minutes` cap (a single job is
+    already bounded by it — see `agent_job_start` — but several jobs chained
+    back-to-back on one session could still hold past it in total). Sends an
+    interim report and marks `_JOB_INTERIM_KEY`; `_job_on_complete` clears
+    both that flag and the `_notify_session_sent` latch it left behind on the
+    next job completion, so the eventual job-finished wake turn's own
+    completion call still reaches the spawner instead of finding the latch
+    set and silently doing nothing — the same failure this whole mechanism
+    exists to close, just one step later."""
+    if not session.get(_JOB_DEFERRED_KEY):
+        return False
+    cap = state.CONFIG.get('background_wait_max_minutes',
+                           _agent_jobs.DEFAULT_TIMEOUT_MINUTES)
+    try:
+        cap_f = float(cap)
+    except (TypeError, ValueError):
+        cap_f = _agent_jobs.DEFAULT_TIMEOUT_MINUTES
+    since = session.get(_JOB_DEFERRED_KEY)
+    if cap_f <= 0 or not since or (now - float(since)) <= cap_f * 60:
+        return False
+    with get_manager(session['project_id']).lock:
+        since2 = session.get(_JOB_DEFERRED_KEY)
+        if not since2 or (now - float(since2)) <= cap_f * 60:
+            return False
+        session.pop(_JOB_DEFERRED_KEY, None)
+        label = _agent_jobs.describe_open_jobs(session.get('session_id', ''))
+        session['log_lines'].append(
+            f"[agent job(s) still running after {cap_f:g} min ({label}) — "
+            "reporting to the spawner now]")
+    was_sent = bool(session.get('_notify_session_sent'))
+    _maybe_notify_spawner(
+        session,
+        f"[interim: still waiting on agent job(s) after {cap_f:g} min: {label}]\n"
+        + _last_reply_text(session))
+    if session.get('_notify_session_sent') and not was_sent:
+        session[_JOB_INTERIM_KEY] = True
+    return True
+
+
 def _advance_delegation_turn(session):
     """Turn-bookkeeping for a new turn on an existing session, WITHOUT
     touching the `_notify_session_sent` latch.
@@ -7462,7 +7576,7 @@ def _log_agent_completion(session):
         _log_agent_completion_body(session)
     finally:
         try:
-            _maybe_notify_spawner(session, _last_reply_text(session))
+            _notify_spawner_unless_jobs_open(session, _last_reply_text(session))
         except Exception as e:
             _log(f"[notify] completion wake backstop failed for "
                  f"{session.get('session_id', '')[:12]}: {e}")
@@ -7539,7 +7653,7 @@ def _log_agent_completion_body(session):
     # routing decision and takes the per-project lock, which THIS function may
     # already hold. Best-effort by design -- a failed callback must never break
     # completion logging for the child that just finished.
-    _maybe_notify_spawner(session, summary)
+    _notify_spawner_unless_jobs_open(session, summary)
 
     # Extract token telemetry from the transcript before building the entry.
     # Best-effort: failures silently produce empty telemetry.
@@ -14744,6 +14858,15 @@ def _guardian_check_session(sid, session, now):
             _release_held_notify_if_expired(session, now)
         except Exception as e:
             _log(f"[guardian] held-notify release failed for {sid[:8]}: {e}")
+
+    # MC-958 follow-up (b49cf71f), second bug: the engine-agnostic mirror of
+    # State 9, for a spawner callback held on `mc.agent_jobs` open jobs
+    # instead of the CLI-native background-task facility.
+    if session.get(_JOB_DEFERRED_KEY):
+        try:
+            _release_held_job_notify_if_expired(session, now)
+        except Exception as e:
+            _log(f"[guardian] held-job-notify release failed for {sid[:8]}: {e}")
 
     _bg_cap = state.CONFIG.get('background_wait_max_minutes',
                                _bg_tasks.DEFAULT_WAIT_MAX_MINUTES)

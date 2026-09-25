@@ -7,6 +7,8 @@ run_in_background tool).
 """
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -144,3 +146,73 @@ def test_tail_returns_last_n_bytes(tmp_path):
 
 def test_tail_missing_file_is_empty_not_an_error(tmp_path):
     assert aj._tail(tmp_path / 'nope.log') == ''
+
+
+# ── shell resolution (MC-958 follow-up, backlog b49cf71f: `shell=True` was
+# always cmd.exe on Windows, which doesn't know POSIX `sleep` -- b49cf71f) ──
+
+def test_resolve_shell_defaults_to_bash():
+    resolved = aj.resolve_shell(None)
+    assert resolved['shell'] == 'bash'
+
+
+def test_resolve_shell_unknown_value_raises():
+    with pytest.raises(aj.ShellResolutionError):
+        aj.resolve_shell('fish')
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason="WSL-launcher rejection is Windows-only")
+def test_resolve_shell_rejects_the_wsl_launcher(monkeypatch):
+    """shutil.which('bash') commonly resolves to the WSL launcher Windows
+    drops at System32\\bash.exe -- it execs into a Linux VM, not a shell that
+    can see this box's cwd. Force `which` to return that exact path (it's a
+    real file on any Windows box with WSL installed) and prove resolution
+    never hands it back, falling through to Git Bash or powershell instead."""
+    wsl_path = str(Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'bash.exe')
+    real_which = shutil.which
+    monkeypatch.setattr(aj.shutil, 'which',
+                        lambda name: wsl_path if name == 'bash' else real_which(name))
+    resolved = aj.resolve_shell('bash')
+    assert resolved['path'] != wsl_path
+    assert resolved['shell'] in ('bash', 'powershell')
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason="fallback-to-powershell is Windows-only")
+def test_resolve_shell_falls_back_to_powershell_when_no_bash_anywhere(monkeypatch):
+    monkeypatch.setattr(aj.shutil, 'which', lambda name: None)
+    resolved = aj.resolve_shell('bash')
+    assert resolved['shell'] == 'powershell'
+    assert resolved['note'] is not None and 'falling back to powershell' in resolved['note']
+
+
+def test_build_argv_uses_dash_c_for_bash():
+    assert aj.build_argv('bash', '/bin/bash', 'echo hi') == ['/bin/bash', '-c', 'echo hi']
+
+
+def test_build_argv_uses_command_flag_for_powershell():
+    assert aj.build_argv('powershell', 'powershell', 'echo hi') == \
+        ['powershell', '-NoProfile', '-Command', 'echo hi']
+
+
+def test_default_shell_runs_a_real_posix_sleep_command(tmp_path):
+    """The exact command shape from the live-test bug report (b49cf71f):
+    `sleep 90; echo BG-OK` failed in 0.03s under the old shell=True (cmd.exe
+    on Windows doesn't know `sleep`). Under the new default (bash, argv-
+    invoked) it must actually run."""
+    done = threading.Event()
+    captured = {}
+
+    def _on_complete(result):
+        captured.update(result)
+        done.set()
+
+    job = aj.start_job(
+        project_id='p1', session_id='s1', command='sleep 1; echo OK',
+        cwd=str(tmp_path), timeout_minutes=1, log_dir=tmp_path / 'logs',
+        on_complete=_on_complete)
+    assert job['shell'] == 'bash'
+
+    assert _wait_for(done.is_set, timeout=15.0), 'sleep-based job never completed'
+    assert captured['exit_code'] == 0
+    assert captured['timed_out'] is False
+    assert 'OK' in captured['tail']
