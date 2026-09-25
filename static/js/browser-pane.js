@@ -315,6 +315,15 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     const c = _bpCoords(img, e);
     _bpSend({ type: 'mouse', action: 'mouseMoved', buttons: _bpPressed ? 1 : 0, ...c });
   });
+  // Right-click: forward to the page as a real right button click instead of
+  // popping Clayrune's own context menu over the frame. Without preventDefault
+  // here the HOST page's menu ("Inspect", "Save image as…" for the <img>
+  // itself) appeared instead of anything the target page could ever show.
+  img.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    const c = _bpCoords(img, e);
+    _bpSend({ type: 'mouse', action: 'click', button: 'right', clickCount: 1, ...c });
+  });
   img.addEventListener('wheel', e => {
     e.preventDefault(); const c = _bpCoords(img, e);
     _bpSend({ type: 'wheel', deltaX: e.deltaX, deltaY: e.deltaY, ...c });

@@ -1139,6 +1139,26 @@ def test_stream_gen_emits_file_chooser_payload_when_one_opens():
     assert '"file_chooser"' in joined and '"mode": "selectMultiple"' in joined
 
 
+# ── /api/browser/input mouse click: B2, gap #3 (right-click buttons bitmask) ─
+
+def test_input_commands_left_click_sets_buttons_bit_1():
+    cmds = br._input_commands({'type': 'mouse', 'action': 'click', 'x': 1, 'y': 2, 'button': 'left'})
+    press = next(p for m, p in cmds if p.get('type') == 'mousePressed')
+    assert press['buttons'] == 1 and press['button'] == 'left'
+
+
+def test_input_commands_right_click_sets_buttons_bit_2_not_1():
+    # Before the B2 fix this was hardcoded to 1 (the left-button bit)
+    # regardless of `button`, so a right-click reached the page as a
+    # left-press with button='right' — CDP/Chromium key off `buttons` for
+    # which button is actually down, so the page never saw a real right-click.
+    cmds = br._input_commands({'type': 'mouse', 'action': 'click', 'x': 1, 'y': 2, 'button': 'right'})
+    press = next(p for m, p in cmds if p.get('type') == 'mousePressed')
+    release = next(p for m, p in cmds if p.get('type') == 'mouseReleased')
+    assert press['buttons'] == 2 and press['button'] == 'right'
+    assert release['buttons'] == 0
+
+
 # ── _stream_gen: tabs + dialog payloads ──────────────────────────────────────
 
 def test_stream_gen_emits_tabs_payload_on_a_real_session():
