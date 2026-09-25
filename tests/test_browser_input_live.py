@@ -78,6 +78,7 @@ def test_unknown_type_is_refused():
 
 PAGE = """<!doctype html><html><body style="margin:0">
 <a id="go" href="/landed" style="position:absolute;left:0;top:0;width:200px;height:100px;display:block">go</a>
+<input id="f" type="file" style="position:absolute;left:0;top:120px">
 <script>
 window.log = [];
 document.addEventListener('keydown', e => window.log.push(
@@ -140,13 +141,28 @@ def chromium():
             return call('Runtime.evaluate', {'expression': expr, 'returnByValue': True}
                         )['result']['result'].get('value')
 
+        def wait_for_event(method, timeout=5):
+            """Drain messages until one with this CDP `method` arrives (an
+            id-less notification, unlike `call`'s id-matched responses) or
+            `timeout` elapses. Messages that don't match are discarded — fine
+            here because nothing else is in flight while a test waits."""
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    msg = json.loads(ws.recv())
+                except Exception:
+                    continue
+                if msg.get('method') == method:
+                    return msg.get('params') or {}
+            return None
+
         call('Page.navigate', {'url': url})  # as _run_cdp does
         for _ in range(50):
             if (evaluate('location.pathname') == '/'
                     and evaluate('document.readyState') == 'complete'):
                 break
             time.sleep(0.1)
-        yield call, evaluate
+        yield call, evaluate, wait_for_event
         ws.close()
     finally:
         proc.kill()  # our own PID only
@@ -160,7 +176,7 @@ def _send(call, data):
 
 
 def test_one_mouse_call_clicks_a_link_and_navigates(chromium):
-    call, evaluate = chromium
+    call, evaluate, _wait = chromium
     assert evaluate('location.pathname') == '/'
     _send(call, {'type': 'mouse', 'x': 50, 'y': 50})
     for _ in range(50):  # a real cross-document navigation, not a hash change
@@ -171,10 +187,39 @@ def test_one_mouse_call_clicks_a_link_and_navigates(chromium):
 
 
 def test_key_combos_reach_the_page_with_modifiers(chromium):
-    call, evaluate = chromium
+    call, evaluate, _wait = chromium
     _send(call, {'type': 'mouse', 'x': 400, 'y': 400})  # focus the page body
     _send(call, {'type': 'key', 'key': 'Ctrl+K'})
     _send(call, {'type': 'key', 'key': 'Alt+ArrowDown'})
     log = evaluate('window.log')
     assert 'Ctrl+k:75' in log
     assert 'Alt+ArrowDown:40' in log
+
+
+# ---- B1 (gap #4): file chooser interception + DOM.setFileInputFiles -------
+
+def test_file_chooser_intercepted_and_attach_sets_real_file(chromium, tmp_path):
+    call, evaluate, wait_for_event = chromium
+    call('Page.enable')  # required for Page.fileChooserOpened to be delivered
+    call('Page.setInterceptFileChooserDialog', {'enabled': True})
+    src = tmp_path / 'upload-me.txt'
+    src.write_text('hello from the live test')
+
+    # Click the <input type=file> at y=120 (see PAGE) — with interception on,
+    # this must NOT open a native OS picker (there is none to open headless;
+    # the real-world bug was that it opened on the SERVER's desktop) and
+    # instead fires Page.fileChooserOpened over this same CDP connection.
+    _send(call, {'type': 'mouse', 'x': 10, 'y': 130})
+    params = wait_for_event('Page.fileChooserOpened', timeout=5)
+    assert params is not None, 'Page.fileChooserOpened never fired — the page blocked on a native picker instead'
+    assert params.get('mode') == 'selectSingle'
+    backend_node_id = params.get('backendNodeId')
+    assert backend_node_id
+
+    resp = call('DOM.setFileInputFiles',
+               {'files': [str(src)], 'backendNodeId': backend_node_id})
+    assert 'error' not in resp
+
+    assert evaluate("document.getElementById('f').files.length") == 1
+    assert evaluate("document.getElementById('f').files[0].name") == 'upload-me.txt'
+    assert evaluate("document.getElementById('f').files[0].size") == len('hello from the live test')
