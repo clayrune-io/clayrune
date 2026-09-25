@@ -368,6 +368,56 @@ def classify_bash(command: str) -> FenceDecision:
     return FenceDecision(False, '')
 
 
+# ── Codex apply_patch (MC-975 follow-up, 2026-09-25) ────────────────────────
+# Codex edits files with its own `apply_patch` tool, not Write/Edit. Measured
+# on codex-cli 0.155.1 with a stdin-dumping probe hook: PreToolUse DOES fire
+# for it, as `"tool_name": "apply_patch"`, `"tool_input": {"command":
+# "*** Begin Patch\n*** Add File: .claude/settings.local.json\n+{}\n***
+# End Patch"}`, paths RELATIVE to the session cwd (also in the payload's `cwd`).
+# Before this the fence let both probe writes through, `.claude/` included.
+# A patch is turned into one Write-shaped call per target path (Add, Update,
+# Delete and Move-to alike), made absolute, and put through the same checks
+# a Claude Write gets. A shell-invoked `apply_patch <<EOF` heredoc carries
+# the same headers inside a Bash command, so Bash is scanned for them too.
+# Over-matching a header is harmless here: a false block only makes the
+# agent ask.
+_PATCH_TOOL_NAMES = ('apply_patch',)
+_PATCH_PATH_RE = re.compile(
+    r'^\s*\*\*\*\s*(?:Add File|Update File|Delete File|Move to)\s*:\s*(.+?)\s*$',
+    re.MULTILINE | re.IGNORECASE)
+
+
+def patch_target_paths(tool_input: dict) -> list:
+    """Every path an apply_patch body adds, updates, deletes or moves to."""
+    ti = tool_input or {}
+    body = ti.get('command') or ti.get('input') or ti.get('patch') or ''
+    if isinstance(body, (list, tuple)):
+        body = '\n'.join(str(x) for x in body)
+    return [m.group(1).strip('"\'') for m in _PATCH_PATH_RE.finditer(str(body))]
+
+
+def as_write_calls(tool_name: str, tool_input: dict,
+                   cwd: Optional[str] = None) -> list:
+    """[(tool_name, tool_input)] with an apply_patch (or a Bash command that
+    carries a patch) expanded into Write calls on absolute paths. Anything
+    else is returned unchanged, as the single call it is."""
+    name = tool_name or ''
+    ti = tool_input or {}
+    calls = [] if name in _PATCH_TOOL_NAMES else [(name, ti)]
+    if name in _PATCH_TOOL_NAMES or (name == 'Bash' and '*** Begin Patch' in
+                                     str(ti.get('command', '') or '')):
+        try:
+            base = Path(cwd) if cwd else Path.cwd()
+        except Exception:
+            base = Path('.')
+        for raw in patch_target_paths(ti):
+            target = Path(raw)
+            if not target.is_absolute():
+                target = base / target
+            calls.append(('Write', {'file_path': str(target)}))
+    return calls
+
+
 def check_install_dir_write(tool_name: str, tool_input: dict,
                              session_cwd: Optional[str] = None) -> FenceDecision:
     """Block a Write/Edit/MultiEdit/NotebookEdit whose target resolves inside
@@ -630,6 +680,12 @@ def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
     non-Bash irreversible surface appears (e.g. an MCP tool that sends email)."""
     name = (tool_name or '')
     ti = tool_input or {}
+    if name in _PATCH_TOOL_NAMES:
+        for sub_name, sub_input in as_write_calls(name, ti):
+            d = classify_action(sub_name, sub_input)
+            if d.blocked:
+                return d
+        return FenceDecision(False, '')
     if name == 'Bash':
         return classify_bash(ti.get('command', '') or '')
     # Writing to global config outside the project is out-of-scope for a
@@ -886,9 +942,17 @@ def main(argv=None) -> int:
     # this one check is not a judgment call the way the irreversibility
     # backstop is.
     try:
-        boundary = check_install_dir_write(tool_name, tool_input)
+        calls = as_write_calls(tool_name, tool_input, payload.get('cwd') or None)
     except Exception:
-        boundary = FenceDecision(False, '')
+        calls = [(tool_name, tool_input)]
+    boundary = FenceDecision(False, '')
+    for call_name, call_input in calls:
+        try:
+            boundary = check_install_dir_write(call_name, call_input)
+        except Exception:
+            boundary = FenceDecision(False, '')
+        if boundary.blocked:
+            break
     if boundary.blocked:
         print(f"STEWARD FENCE blocked this action: {boundary.reason}. "
               f"Do NOT retry it against this path.", file=sys.stderr)
@@ -912,10 +976,14 @@ def main(argv=None) -> int:
         if not _should_arm_for_unattended_trigger():
             return 0
 
-    try:
-        decision = classify_action(tool_name, tool_input)
-    except Exception:
-        return 0  # fail open
+    decision = FenceDecision(False, '')
+    for call_name, call_input in calls:
+        try:
+            decision = classify_action(call_name, call_input)
+        except Exception:
+            return 0  # fail open
+        if decision.blocked:
+            break
 
     if not decision.blocked:
         return 0
