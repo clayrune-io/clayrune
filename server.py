@@ -1209,7 +1209,7 @@ def _worktree_gc_background_run(snapshot):
                 return bool(s) and s.get('project_id') == _pid
             out = _agent_worktree.gc_stale(
                 p, live_session_ids=(), only_session_ids=ids,
-                is_live=_is_live)
+                is_live=_is_live, use_cache=True)
             totals['removed'] += out.get('removed', 0)
             totals['merged'] += out.get('merged', 0)
             totals['preserved'] += len(out.get('preserved', []))

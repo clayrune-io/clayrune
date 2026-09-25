@@ -280,6 +280,50 @@ def test_gc_is_live_skips_id_even_when_snapshot_listed(project):
     w.remove(project, 'resumed1', delete_branch=True, force=True)
 
 
+def test_gc_cache_skips_merge_for_unchanged_preserved_worktree(project, monkeypatch):
+    """A repeat gc pass over a preserved worktree whose HEAD/dirty fingerprint
+    hasn't moved since the last pass must not re-invoke merge_back — that's
+    the exact redundant subprocess cost (23.19s over 267 real orphans,
+    2026-09-25) the cache exists to remove."""
+    _, path = w.create(project, 'cached1')
+    (Path(path) / 'app.py').write_text('unsaved agent work', encoding='utf-8')
+
+    out1 = w.gc_stale(project, live_session_ids=(), use_cache=True)
+    assert 'cached1' in out1['preserved']
+
+    calls = []
+    real_merge_back = w.merge_back
+
+    def spy_merge_back(*a, **k):
+        calls.append('merge_back')
+        return real_merge_back(*a, **k)
+    monkeypatch.setattr(w, 'merge_back', spy_merge_back)
+
+    out2 = w.gc_stale(project, live_session_ids=(), use_cache=True)
+    assert 'cached1' in out2['preserved']
+    assert calls == [], 'unchanged fingerprint must skip merge_back entirely'
+    w.remove(project, 'cached1', delete_branch=True, force=True)
+
+
+def test_gc_cache_reevaluates_when_fingerprint_changes(project):
+    """A cache hit is never a blind skip: once the worktree's HEAD/dirty state
+    actually changes (here: the uncommitted work gets committed), the next
+    pass must re-derive the verdict for real, not keep repeating a stale
+    'preserved' from before."""
+    _, path = w.create(project, 'cached2')
+    (Path(path) / 'app.py').write_text('unsaved agent work', encoding='utf-8')
+
+    out1 = w.gc_stale(project, live_session_ids=(), use_cache=True)
+    assert 'cached2' in out1['preserved']
+
+    _git(path, 'add', '.')
+    _git(path, 'commit', '-q', '-m', 'now committed, cleanly mergeable')
+
+    out2 = w.gc_stale(project, live_session_ids=(), use_cache=True)
+    assert 'cached2' not in out2['preserved']
+    assert out2['removed'] == 1, 'fingerprint changed, so it must be re-evaluated and reaped'
+
+
 def test_conflict_aborts_and_restores_tree(project):
     """Same-line collision: merge aborts, the agent's tree is left EXACTLY as
     it was, and the tree is not left in a conflicted state."""
