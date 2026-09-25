@@ -66,6 +66,12 @@ data/playdo/
 # install was used. Both are post-install runtime artifacts.
 install-launch.log
 install.log
+# mc/vendor_context_sync.py mirrors this repo's own CLAUDE.md into the
+# context filename each non-Claude runtime loads natively -- generated,
+# regenerated on every dispatch when CLAUDE.md's hash changes, never source.
+/AGENTS.md
+/GEMINI.md
+/QWEN.md
 
 # Runtime state written directly under data/ (siblings of DATA_DIR, same
 # precedent as data/desk.json's docstring) that had no suffix/dir rule —

@@ -108,6 +108,7 @@ import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (
 import mc.agent_jobs as _agent_jobs  # MC-958 follow-up: engine-agnostic background command jobs
 import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
 import mc.artifact_coverage as _artifact_coverage  # substitution check: did the turn run what was asked
+import mc.vendor_context_sync as _vendor_context_sync  # mirrors CLAUDE.md into AGENTS.md/GEMINI.md/QWEN.md
 from mc.delegation_delivery import (DeliveryStore, callback_payload,
                                     DeliveryBlocked, DeliveryDeferred,
                                     DeliveryUncertain, drain_once,
@@ -8344,6 +8345,16 @@ def _dispatch_via_runtime(p, task, *, provider_name,
 
     pp = p.get('project_path', '')
     project_id = p.get('id', '')
+    # Refresh this provider's own context file (AGENTS.md/GEMINI.md/QWEN.md)
+    # from CLAUDE.md before it loads a stale copy natively. Cheap hash-gated
+    # no-op once current; see mc/vendor_context_sync.py for the adoption/
+    # hand-authored-file rules.
+    if pp and state.CONFIG.get('vendor_context_sync_enabled', True):
+        try:
+            _vendor_context_sync.sync_vendor_context_file(
+                pp, runtime.capabilities().context_file_name, log=_log)
+        except Exception as e:
+            _log(f'[vendor-context-sync] failed for {provider_name}: {e}', flush=True)
     # A native resume with no recorded model must retain the CLI's saved
     # thread configuration, rather than importing today's project default.
     model = model_override if resume_id else _resolve_runtime_model(

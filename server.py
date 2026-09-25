@@ -320,6 +320,13 @@ def _load_config():
         # (interactive) Codex sessions are unaffected. One of
         # _CONFIG_EDITABLE_KEYS, so only a human can turn it back off.
         'codex_unattended_sandbox': True,
+        # Auto-sync vendor context files (2026-09-25): before a non-Claude
+        # runtime session starts, mirror CLAUDE.md into that runtime's own
+        # natively-loaded context file (AGENTS.md/GEMINI.md/QWEN.md) if it's
+        # stale or missing. mc/vendor_context_sync.py; read at dispatch time
+        # by mc/blueprints/agent_routes.py (_dispatch_via_runtime) -- no
+        # respawn or restart needed. One of _CONFIG_EDITABLE_KEYS.
+        'vendor_context_sync_enabled': True,
         'agent_channels': '',
         'agent_remote_control': False,
         'agent_revive_from_log': True,
