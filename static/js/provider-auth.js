@@ -762,10 +762,18 @@ function _renderProviderRow(p, opts) {
     : (installed ? '' : `<input type="checkbox" class="prov-row-select settings-prov-install-sel" value="${n}"
          aria-label="Select ${esc(p.display_name)} for batch install"
          style="width:15px;height:15px;accent-color:var(--accent)">`);
+  // Setup never shows the filled-accent .btn-add look on anything but the
+  // step's own Next/Get started — Install/Sign in/Check status/Save read as
+  // utility actions there (.setup-btn-utility), same rule as every other
+  // in-step button. Settings keeps its own .btn-add look unchanged.
+  const rowBtnCls = setup ? 'setup-btn-utility' : 'btn-add';
   const installBtn = installed ? '' : `
-              <button type="button" class="btn-add prov-install" style="padding:2px 10px;font-size:11px;flex-shrink:0"
+              <button type="button" class="${rowBtnCls} prov-install" style="padding:2px 10px;font-size:11px;flex-shrink:0"
                 onclick="event.preventDefault();providerInstall('${n}',this)">Install</button>`;
-  const btnCss = 'padding:2px 10px;font-size:11px;background:var(--surface3);color:var(--text)';
+  // Inline background/color would beat the .setup-btn-utility class (inline
+  // always wins over a class), so setup mode drops them and lets the class
+  // supply the look; Settings keeps the explicit surface3 pill it always had.
+  const btnCss = setup ? 'padding:2px 10px;font-size:11px' : 'padding:2px 10px;font-size:11px;background:var(--surface3);color:var(--text)';
   const costs = !!(p.capabilities && p.capabilities.auth_probe_spends_quota);
   const defaultCtl = setup
     ? `<label class="prov-default"><input type="radio" name="setup-provider-default" ${isDefault ? 'checked' : ''}
@@ -782,9 +790,9 @@ function _renderProviderRow(p, opts) {
   // everyone on the tunnel. Keep it on any row that can show a Sign in button.
   const actions = !showActions ? '' : `<div class="prov-row-actions" data-remote-login-anchor="${n}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px">
               ${defaultCtl}
-              ${needSignIn ? `<button type="button" class="btn-add prov-sign-in" style="${btnCss}"
+              ${needSignIn ? `<button type="button" class="${rowBtnCls} prov-sign-in" style="${btnCss}"
                 onclick="settingsProviderTerminalLogin('${n}',this)">Sign in</button>` : ''}
-              ${installed ? `<button type="button" class="btn-add prov-check" style="${btnCss}"
+              ${installed ? `<button type="button" class="${rowBtnCls} prov-check" style="${btnCss}"
                 ${costs ? `title="Spends one live API call against ${esc(p.display_name)} to verify the key can actually serve a request: counts against today's quota."` : ''}
                 onclick="providerCheckStatus('${n}',this)">Check status</button>` : ''}
             </div>`;
@@ -814,11 +822,19 @@ function _renderProviderRow(p, opts) {
               <span style="font-size:11px;color:var(--text-faint);min-width:130px">${esc(envKey)}</span>
               <input id="settings-prov-key-${n}" type="password" class="settings-input" style="flex:1;min-width:140px"
                 placeholder="${authOk ? '(saved, paste to replace)' : 'paste API key'}" autocomplete="off">
-              <button type="button" class="btn-add" onclick="settingsProviderSetEnv('${n}','${esc(envKey)}',this)">Save</button>
+              <button type="button" class="${rowBtnCls}" onclick="settingsProviderSetEnv('${n}','${esc(envKey)}',this)">Save</button>
             </div>` : '';
+  // Setup mode: the outer row itself is the selectable card (border/radius/
+  // padding/selected-state match .setup-preset-card), so the head drops its
+  // own background/padding — the card wrapper already supplies both.
+  // Settings keeps the plain row it always had.
+  const rowClass = setup ? `prov-row prov-row-card${opts.selected ? ' active' : ''}` : 'prov-row';
+  const headStyle = setup
+    ? 'display:flex;align-items:center;gap:10px;cursor:pointer'
+    : 'display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px;border-radius:4px;background:var(--surface2)';
   return `
-          <div class="prov-row" data-provider="${n}">
-            <label class="prov-row-head" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px;border-radius:4px;background:var(--surface2)">
+          <div class="${rowClass}" data-provider="${n}">
+            <label class="prov-row-head" style="${headStyle}">
               ${box}
               <span class="prov-row-name" style="flex:1;font-weight:600;color:var(--text)">${esc(p.display_name)}</span>
               <span class="prov-row-state" id="prov-auth-pill-${n}" style="font-size:11px;font-weight:600;color:${state.color}">${esc(state.label)}</span>

@@ -42,10 +42,12 @@ function localAccessSettingsHTML() {
   // carries the purpose sentence, so this only needs a one-line status plus
   // the action button — no title row, no badge, no locked-out paragraph.
   if (_localAccessInSetup()) {
+    // Setup never shows the filled .btn-dispatch look on anything but the
+    // step's own Next/Get started — same rule as every other in-step button.
     return `<div id="local-access-section">
       <div class="settings-hint" style="margin-bottom:8px">${configured ? 'A passcode is already set.' : 'No passcode set yet.'}</div>
       <div id="local-auth-form-row">
-        <button class="btn-dispatch" onclick="showLocalAuthForm('${configured ? 'change' : 'set'}')">${configured ? 'Change passcode' : 'Set a passcode'}</button>
+        <button class="setup-btn-utility" onclick="showLocalAuthForm('${configured ? 'change' : 'set'}')">${configured ? 'Change passcode' : 'Set a passcode'}</button>
       </div>
     </div>`;
   }
@@ -89,13 +91,14 @@ function showLocalAuthForm(mode) {
   // loopback/tunneled included (a co-resident agent is exempt from the gate
   // too, and must not be able to overwrite it blind).
   const needCurrent = (mode === 'change') && st.configured;
+  const btnCls = _localAccessInSetup() ? 'setup-btn-utility' : 'btn-dispatch';
   row.innerHTML = `
     ${needCurrent ? `<input class="settings-input" id="la-cur" type="password" placeholder="Current passcode" autocomplete="current-password" style="margin-bottom:8px">` : ''}
     <input class="settings-input" id="la-p1" type="password" placeholder="New passcode (at least 4 characters)" autocomplete="new-password" style="margin-bottom:8px">
     <input class="settings-input" id="la-p2" type="password" placeholder="Confirm passcode" autocomplete="new-password" style="margin-bottom:8px">
     <div style="display:flex;gap:8px">
-      <button class="btn-dispatch" onclick="submitLocalAuth('${mode}')">Save passcode</button>
-      <button class="btn-dispatch" style="background:var(--surface3);border-color:var(--border2);color:var(--text)" onclick="refreshLocalAccessSection()">Cancel</button>
+      <button class="${btnCls}" onclick="submitLocalAuth('${mode}')">Save passcode</button>
+      <button class="${btnCls}" style="${btnCls === 'btn-dispatch' ? 'background:var(--surface3);border-color:var(--border2);color:var(--text)' : ''}" onclick="refreshLocalAccessSection()">Cancel</button>
     </div>
     <div class="settings-hint" id="la-err" style="color:var(--red,#c0392b);min-height:16px;margin-top:6px"></div>`;
   const f = document.getElementById('la-p1'); if (f) f.focus();

@@ -5,13 +5,20 @@
  * FLOW (gates, skips, sign-in). None of them assert the thing this task is
  * actually about: does every step look like it belongs to the same product.
  *
- * Two mechanical checks, run against every visible state of every step:
- *   1. Exactly one .wt-btn-primary under #setup-overlay — the "one accent
- *      action per step" rule. A second accent-styled control (or zero, when
- *      Next should be showing) means the button hierarchy has drifted.
+ * Three mechanical checks, run against every visible state of every step:
+ *   1. Exactly one accent-filled button under #setup-overlay — the "one
+ *      accent action per step" rule. Counts any VISIBLE button whose computed
+ *      background is the resolved --accent fill, not just .wt-btn-primary —
+ *      a btn-add/btn-dispatch button (Settings' filled looks) slipping into
+ *      setup is exactly the class of bug pass 1 shipped (Install pill, green
+ *      "Set a passcode") and a class-name check alone would miss a future
+ *      one that used inline style instead. A second accent-styled control (or
+ *      zero, when Next should be showing) means the button hierarchy drifted.
  *   2. No em-dash (U+2014) in the step's visible text — Ron's standing
  *      no-em-dash rule for public copy, checked on rendered innerText so a
  *      hidden/collapsed subtree can't hide a violation from a plain grep.
+ *   3. No "Setting saved" toast visible — every setup click saves a setting,
+ *      and that toast used to stack over the setup card on all of them.
  *
  * RUN
  *   cd tools/smoke && node first-run-step-anatomy.mjs
@@ -99,8 +106,21 @@ async function checkStep(page, label) {
     const overlay = document.getElementById('setup-overlay');
     if (!overlay) return null;
     const title = (overlay.querySelector('.wt-title') || {}).textContent || '(no title)';
-    const primaries = [...overlay.querySelectorAll('.wt-btn-primary')].filter((b) => b.offsetParent !== null);
-    return { title, primaryCount: primaries.length, text: overlay.innerText || '' };
+    // Resolve --accent to the same rgb() string getComputedStyle reports on
+    // backgroundColor, so a button styled via inline style (not just a class)
+    // is caught too.
+    const probe = document.createElement('div');
+    probe.style.background = getComputedStyle(document.body).getPropertyValue('--accent').trim();
+    document.body.appendChild(probe);
+    const accentRgb = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const buttons = [...overlay.querySelectorAll('button')].filter((b) => b.offsetParent !== null);
+    const primaries = buttons.filter((b) =>
+      b.classList.contains('wt-btn-primary') || b.classList.contains('btn-add') || b.classList.contains('btn-dispatch')
+      || getComputedStyle(b).backgroundColor === accentRgb);
+    const toastVisible = [...document.querySelectorAll('.toast:not(.toast-out) .toast-msg')]
+      .some((el) => (el.textContent || '').includes('Setting saved'));
+    return { title, primaryCount: primaries.length, text: overlay.innerText || '', toastVisible };
   });
   if (!info) { fail(`[${label}] #setup-overlay not present`); return; }
   const tag = `${label} ("${info.title}")`;
@@ -108,6 +128,8 @@ async function checkStep(page, label) {
   else ok(`${tag}: exactly 1 primary accent button`);
   if (info.text.includes(EM_DASH)) fail(`${tag}: em-dash found in visible text`);
   else ok(`${tag}: no em-dash in visible text`);
+  if (info.toastVisible) fail(`${tag}: "Setting saved" toast visible during setup`);
+  else ok(`${tag}: no "Setting saved" toast visible`);
 }
 
 try {
