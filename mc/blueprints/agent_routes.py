@@ -1396,6 +1396,23 @@ def agent_job_start(project_id, session_id):
         if sess.get('incognito'):
             return jsonify({'error': 'incognito sessions cannot receive job '
                             'completion delivery'}), 400
+        if sess.get('_codex_unattended_sandbox'):
+            # MC-975 gap 3: this route runs the command as a server-owned
+            # Popen with NO sandbox policy of its own (see start_job below) --
+            # it is the escape hatch the sandbox exists to close. A session
+            # dispatched under codex_unattended_sandbox (the decision
+            # snapshotted once at launch, `codex_unattended_sandbox_decision`)
+            # could otherwise ask for an unsandboxed shell here and reach
+            # anything its sandboxed turns are confined away from, including
+            # localhost:5199 itself. Refuse until jobs can run under the same
+            # sandbox policy as the session that opened them.
+            return jsonify({'error':
+                'this session is running under the Codex unattended sandbox '
+                '(codex_unattended_sandbox); background jobs run as an '
+                'unsandboxed subprocess and would let a sandboxed session '
+                'escape its own confinement, so this endpoint refuses them '
+                'until jobs can be sandboxed the same way. Run the command '
+                'directly in this turn instead.'}), 403
         default_cwd = _session_cwd(sess, pp)
 
     data = request.get_json() or {}
