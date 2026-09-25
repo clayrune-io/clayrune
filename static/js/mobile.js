@@ -41,6 +41,47 @@
   // shrinks correctly; it just can't be assumed true from an untouched
   // pre-background reading.
   let _vvTrusted = true;
+  // A recent keystroke in the composer is the only signal available (in
+  // Chrome's default resizes-visual mode the layout viewport never shrinks
+  // for a keyboard at all, so layoutH() can't tell real-open from
+  // stale-dismissed either) that a focused field's keyboard is genuinely up
+  // RIGHT NOW, rather than a stale-vv leftover with nothing left to disprove
+  // it. Recovery paths below must not yank the inset out from under someone
+  // actively typing a follow-up while the agent finishes (the common case)
+  // — gate every recovery that can fire while a field is still focused on
+  // this, exactly as forceFull()'s bg-resume case is gated on backgrounding
+  // being unconditional proof instead.
+  const RECENT_ACTIVITY_MS = 2000;
+  let _lastFieldActivityAt = 0;
+  // A live keystroke is also itself trust-restoring, same as a vv resize/
+  // scroll event: it's real physical evidence that whatever vv.height reads
+  // RIGHT NOW reflects an actually-present keyboard, not a stale leftover
+  // (a truly-dismissed, inactive field never gets one). This is what makes
+  // the guard below self-correcting rather than a one-way door: if a false
+  // recovery ever forces full height during a genuine typing pause, the
+  // next keystroke re-trusts the real vv reading and reschedules a proper
+  // recompute — it doesn't wait for a vv event that may never come while
+  // the keyboard's own on-screen state never changes.
+  function _onFieldActivity(e) {
+    if (!_isField(e.target)) return;
+    _lastFieldActivityAt = Date.now();
+    _vvTrusted = true;
+    schedule();
+  }
+  document.addEventListener('input', _onFieldActivity, true);
+  document.addEventListener('keydown', _onFieldActivity, true);
+  function _fieldLooksLive() {
+    return _isField(document.activeElement) && (Date.now() - _lastFieldActivityAt) < RECENT_ACTIVITY_MS;
+  }
+  // Recovery for a focused field with no live-typing evidence: same
+  // assume-stale-then-let-a-fresh-vv-reading-correct-it move as forceFull(),
+  // just reached from a different kind of "something happened, the vv might
+  // be lying" moment instead of backgrounding. A field that IS being typed
+  // into is left completely alone — its existing vv-tracked inset is trusted.
+  function _recoverStaleFocusedInset() {
+    if (_fieldLooksLive()) return;
+    forceFull();
+  }
   function apply() {
     _raf = 0;
     const lh = layoutH();
@@ -126,10 +167,34 @@
   // the app stays pinned short. The layout viewport doesn't go stale, so if we
   // have allocated meaningfully less than it and no text field is focused,
   // there is no keyboard and the missing space is ours to take back.
+  //
+  // Deliberately still bails whenever a field is focused, at this 500ms
+  // cadence: `layoutH() - _lastApplied > 6` is true for the ENTIRE duration
+  // of any correctly-tracked open keyboard (that gap IS the inset, not
+  // evidence of staleness), so gating this tight a poll on _fieldLooksLive()
+  // alone force-recovers every ordinary "focused, keyboard up, hasn't typed
+  // in the last 2s yet" moment — including the instant right after a fresh,
+  // legitimate focus — not just the stale-dismiss case. Measured regression
+  // during review (2026-09-25): it broke the plain "focus a field, keyboard
+  // opens" baseline outright. The focused-field self-heal lives in the
+  // slower, deliberately-rare invariant below instead.
   setInterval(() => {
     if (_isField(document.activeElement)) return;
     if (layoutH() - _lastApplied > 6) schedule();
   }, 500);
+  // General self-heal invariant for a focused-but-stale field, on a
+  // deliberately LOW rate so an ordinary open-but-momentarily-quiet keyboard
+  // (a real pause to read or think — RECENT_ACTIVITY_MS can't tell that
+  // apart from a stale dismiss any better here than in the settle hook) is
+  // only ever exposed to one rare check, not a tight 500ms loop — and even
+  // that rare false read self-corrects on the next keystroke (see
+  // _onFieldActivity's schedule() call). This is the standing backstop Dave
+  // asked for: whatever FUTURE path leaves a field stale-focused, not just
+  // updateAgentStatusUI's turn-settle call, heals within one tick of this.
+  setInterval(() => {
+    if (!_isField(document.activeElement)) return;
+    if (layoutH() - _lastApplied > 6) _recoverStaleFocusedInset();
+  }, 8000);
   // A tap/scroll after dismissing the keyboard is another chance to re-read a
   // now-fresh viewport height.
   document.addEventListener('touchend', schedule, { passive: true });
@@ -163,6 +228,24 @@
   // inset=0 once the field is no longer focused, so this doesn't need its
   // own "pretend the keyboard is gone" branch — it just needs to run NOW.
   window.mcRestoreFullHeight = apply;
+  // Exposed for updateAgentStatusUI (index.html): a turn settling (running →
+  // idle/error/completed) deliberately skips the full modal rebuild (MC-940 —
+  // rebuilding the composer every turn cost ~205ms/keystroke on mobile), so
+  // nothing in that lightweight status patch ever touches focus or the
+  // keyboard inset. If the composer still holds focus from a stale-vv dismiss
+  // (down-button or the Android back gesture — same WebView quirk as the
+  // 2c7e42a/931449b cases: no focusout, no vv resize) that predates the turn
+  // ending, the modal is stuck at keyboard height with no keyboard on screen
+  // and NOTHING left to prove it — the layout watchdog explicitly stands down
+  // while a field is focused, and the user may never tap the transcript (they
+  // were just watching the reply finish). Unlike backgrounding, a settled turn
+  // is NOT unconditional proof the keyboard is gone — the common case is
+  // someone actively typing a follow-up while the agent finishes — so this
+  // goes through the guarded recovery, not a raw forceFull(): a field with a
+  // live-typing signal is left alone; a quiet one gets the same
+  // assume-no-keyboard-then-let-a-real-vv-reading-correct-it recovery already
+  // trusted for app backgrounding.
+  window.mcRecoverViewportOnStatusSettle = _recoverStaleFocusedInset;
 })();
 
 // ── Mobile UI: app bar greeting + filter pills (≤960px, warm tone) ──────────
