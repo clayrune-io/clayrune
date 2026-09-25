@@ -52,6 +52,28 @@ async function _bpPasteViaApi() {
   return false;
 }
 
+// Copy the page's current selection to the HOST clipboard via
+// /api/browser/selection — shared by the Ctrl/Cmd+C keydown handler and the
+// toolbar copy button so both paths behave identically.
+async function _bpCopySelection(cut) {
+  try {
+    const r = await fetch((window.API_BASE || '') + '/api/browser/selection', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: _bpSession }),
+    });
+    const d = await r.json();
+    if (d && d.text) {
+      await navigator.clipboard.writeText(d.text);
+      if (cut) _bpSend({ type: 'key', key: 'Delete', code: 'Delete', keyCode: 46 });
+      if (typeof showToast === 'function') showToast(cut ? 'Cut to clipboard' : 'Copied to clipboard');
+    } else if (typeof showToast === 'function') {
+      showToast('Nothing selected in the page');
+    }
+  } catch (err) {
+    if (typeof showToast === 'function') showToast('Copy failed: ' + (err && err.message || err));
+  }
+}
+
 const _bpKeyCodes = {
   Enter: 13, Backspace: 8, Tab: 9, Escape: 27, Delete: 46,
   ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39,
@@ -140,6 +162,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       <button data-bp="fwd"    title="Forward" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 6px">&#8594;</button>
       <button data-bp="reload" title="Reload"  style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px">&#8635;</button>
       <button data-bp="paste"  title="Paste clipboard into the page" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px">&#128203;</button>
+      <button data-bp="copy"   title="Copy page selection to clipboard" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px">&#128196;</button>
       <button data-bp="sessions" title="Browser sessions" style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px;position:relative">&#9776;<span data-bp="sesscount" style="position:absolute;top:-3px;right:-3px;background:#4caf50;color:#000;font-size:9px;font-weight:700;border-radius:8px;padding:0 4px;line-height:14px;display:none"></span></button>
       <input data-bp="url" type="text" spellcheck="false" value="${(url||'').replace(/"/g,'&quot;')}"
         placeholder="Enter URL and press Enter"
@@ -149,10 +172,21 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       <button data-bp="minimize" title="Minimize" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 8px">&#8211;</button>
       <button data-bp="close" title="Close" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 8px">&#10005;</button>
     </div>
+    <div data-bp="tabstrip" style="display:none;flex:0 0 auto;gap:2px;padding:4px 8px 0;background:#242424;overflow-x:auto"></div>
     <div style="flex:1;position:relative;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden">
       <img data-bp="screen" tabindex="0"
         style="max-width:100%;max-height:100%;aspect-ratio:${BP_VIEW_W}/${BP_VIEW_H};outline:none;cursor:default;user-select:none" draggable="false">
       <div data-bp="downloads" style="position:absolute;right:8px;bottom:8px;display:flex;flex-direction:column;gap:4px;max-width:280px;pointer-events:none"></div>
+      <div data-bp="dialog-overlay" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,.55);align-items:center;justify-content:center;z-index:5">
+        <div data-bp="dialog-box" style="background:#2a2a2a;border:1px solid #4a4a4a;border-radius:8px;padding:16px;width:320px;max-width:90%;color:#eee;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.5)">
+          <div data-bp="dialog-msg" style="white-space:pre-wrap;word-break:break-word;margin-bottom:10px;max-height:160px;overflow:auto"></div>
+          <input data-bp="dialog-input" type="text" style="display:none;width:100%;box-sizing:border-box;padding:6px 8px;margin-bottom:10px;background:#111;border:1px solid #444;border-radius:6px;color:#eee">
+          <div style="display:flex;justify-content:flex-end;gap:8px">
+            <button data-bp="dialog-cancel" style="background:none;border:1px solid #555;color:#ddd;border-radius:6px;padding:5px 12px;cursor:pointer">Cancel</button>
+            <button data-bp="dialog-ok" style="background:#3a7ae0;border:none;color:#fff;border-radius:6px;padding:5px 14px;cursor:pointer">OK</button>
+          </div>
+        </div>
+      </div>
     </div>
     <div data-bp="grip" title="Drag to resize"
       style="position:absolute;right:1px;bottom:1px;width:22px;height:22px;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 45%,#777 45%,#777 55%,transparent 55%,transparent 70%,#777 70%,#777 80%,transparent 80%);border-radius:0 0 9px 0"></div>`;
@@ -224,6 +258,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     const t = prompt('Paste here and press OK — this types it into the page:');
     if (t) _bpSend({ type: 'text', text: t });
   };
+  $('copy').onclick = async () => { img.focus(); await _bpCopySelection(false); };
   $('sessions').onclick = (e) => { e.stopPropagation(); _bpToggleSessionMenu(win, pid); };
   urlInput.addEventListener('keydown', e => {
     if (e.key === 'Enter') { _bpSend({ type: 'navigate', url: urlInput.value.trim() }); img.focus(); }
@@ -308,19 +343,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     }
     if (mod && (k === 'c' || k === 'x')) {          // copy / cut: page selection → host
       e.preventDefault();
-      try {
-        const r = await fetch((window.API_BASE || '') + '/api/browser/selection', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: _bpSession }),
-        });
-        const d = await r.json();
-        if (d && d.text) {
-          await navigator.clipboard.writeText(d.text);
-          if (k === 'x') _bpSend({ type: 'key', key: 'Delete', code: 'Delete', keyCode: 46 });
-        }
-      } catch (err) {
-        if (typeof showToast === 'function') showToast('Copy failed: ' + (err && err.message || err));
-      }
+      await _bpCopySelection(k === 'x');
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;  // let other shortcuts through
@@ -405,6 +428,12 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     // browser_routes.py), so this SSE message is the ONLY signal a download
     // happened at all. Without it the pane just sits there looking frozen.
     if (d.downloads) _bpRenderDownloads(win, d.downloads);
+    // 'tabs'/'dialog' membership (not truthiness) matters: an empty tabs array
+    // and a cleared (null) dialog are both real, intentional states the SSE
+    // stream sends deliberately (see _stream_gen) — a falsy check would treat
+    // "dialog just closed" as "no update" and leave the answer box stuck up.
+    if ('tabs' in d) _bpRenderTabs(win, d.tabs, d.active_target_id);
+    if ('dialog' in d) _bpRenderDialog(win, d.dialog);
   };
   _bpES.onerror = () => { if (spin) spin.style.color = '#e57373'; };
   setTimeout(() => img.focus(), 100);
@@ -510,6 +539,83 @@ function _bpRenderDownloads(win, downloads) {
       if (typeof showToast === 'function') showToast(`Download canceled: ${d.error || d.filename}`);
     }
   }
+}
+
+// ── tab strip — window.open()/target=_blank/OAuth popups surfaced as tabs ──
+// `tabs` is the array the `tabs` SSE payload carries (see _stream_gen);
+// `activeId` is session['active_target_id']. Hidden entirely with one tab
+// (the common case) so a plain page doesn't grow a strip nobody needs.
+function _bpRenderTabs(win, tabs, activeId) {
+  const strip = win && win.querySelector('[data-bp="tabstrip"]');
+  if (!strip) return;
+  tabs = tabs || [];
+  if (tabs.length < 2) { strip.style.display = 'none'; strip.innerHTML = ''; return; }
+  strip.style.display = 'flex';
+  strip.innerHTML = tabs.map(t => {
+    const active = t.target_id === activeId;
+    const label = _bpEsc(t.title || t.url || 'New tab').slice(0, 40);
+    return `<div data-bp-tab="${_bpEsc(t.target_id)}" title="${_bpEsc(t.url || '')}"
+      style="display:flex;align-items:center;gap:6px;max-width:180px;padding:5px 8px;border-radius:6px 6px 0 0;
+      cursor:pointer;font-size:11px;color:${active ? '#fff' : '#aaa'};background:${active ? '#111' : '#2f2f2f'};
+      white-space:nowrap;overflow:hidden">
+      <span style="overflow:hidden;text-overflow:ellipsis">${label}</span>
+      <span data-bp-tab-close="${_bpEsc(t.target_id)}" style="opacity:.7;padding:0 2px">&#10005;</span>
+    </div>`;
+  }).join('');
+  strip.querySelectorAll('[data-bp-tab]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-bp-tab-close]')) return;
+      _bpSendTabAction('activate', el.getAttribute('data-bp-tab'));
+    });
+  });
+  strip.querySelectorAll('[data-bp-tab-close]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _bpSendTabAction('close', el.getAttribute('data-bp-tab-close'));
+    });
+  });
+}
+
+function _bpSendTabAction(action, targetId) {
+  if (!_bpSession) return;
+  fetch((window.API_BASE || '') + '/api/browser/tab', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: _bpSession, target_id: targetId, action }),
+  }).catch(() => {});
+}
+
+// ── JS dialogs (alert/confirm/prompt) — Page.javascriptDialogOpening ──
+// `dlg` is null when there is nothing to answer (including "just closed");
+// an unanswered dialog only pauses the PAGE's own JS (see browser_dialog's
+// docstring) so leaving this overlay up costs nothing but does need to be
+// torn down the moment the backend reports the dialog gone.
+function _bpRenderDialog(win, dlg) {
+  const overlay = win && win.querySelector('[data-bp="dialog-overlay"]');
+  if (!overlay) return;
+  if (!dlg) { overlay.style.display = 'none'; return; }
+  const msgEl = win.querySelector('[data-bp="dialog-msg"]');
+  const inputEl = win.querySelector('[data-bp="dialog-input"]');
+  const cancelBtn = win.querySelector('[data-bp="dialog-cancel"]');
+  const okBtn = win.querySelector('[data-bp="dialog-ok"]');
+  const isPrompt = dlg.type === 'prompt';
+  msgEl.textContent = dlg.message || '';
+  inputEl.style.display = isPrompt ? '' : 'none';
+  inputEl.value = dlg.default_prompt || '';
+  // beforeunload has no meaningful Cancel/OK distinction here — the pane isn't
+  // actually navigating away underneath the user, so treat it like a confirm.
+  cancelBtn.style.display = dlg.type === 'alert' ? 'none' : '';
+  overlay.style.display = 'flex';
+  const answer = (accept) => {
+    if (!_bpSession) return;
+    fetch((window.API_BASE || '') + '/api/browser/dialog', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: _bpSession, accept, text: isPrompt ? inputEl.value : '' }),
+    }).catch(() => {});
+    overlay.style.display = 'none';
+  };
+  okBtn.onclick = () => answer(true);
+  cancelBtn.onclick = () => answer(false);
+  if (isPrompt) setTimeout(() => inputEl.focus(), 0);
 }
 
 function closeBrowserPane() {

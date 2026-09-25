@@ -810,3 +810,248 @@ def test_stream_gen_repeats_download_payload_on_progress_updates():
     assert '"state": "completed"' in second and '"received_bytes": 100' in second
     session['status'] = 'stopped'
     next(gen)
+
+
+# ── Tabs (A1: target auto-attach / tab strip / popup focus) ─────────────────
+
+def test_target_id_for_sid_root_and_tab():
+    session = {'root_target_id': 'root',
+              'tabs': {'root': {'session_id': None}, 'popup': {'session_id': 'S1'}}}
+    assert br._target_id_for_sid(session, None) == 'root'
+    assert br._target_id_for_sid(session, 'S1') == 'popup'
+    assert br._target_id_for_sid(session, 'unknown') is None
+
+
+def test_active_session_id_root_vs_tab():
+    session = {'root_target_id': 'root', 'active_target_id': 'root',
+              'tabs': {'root': {'session_id': None}}}
+    assert br._active_session_id(session) is None
+    session['active_target_id'] = 'popup'
+    session['tabs']['popup'] = {'session_id': 'S1'}
+    assert br._active_session_id(session) == 'S1'
+
+
+def test_switch_active_tab_fronts_and_casts_the_new_tab():
+    calls = []
+    session = {'tabs': {'root': {'session_id': None}, 'popup': {'session_id': 'S1'}},
+              'active_target_id': 'root', 'frame': 'stale-jpeg'}
+    br._switch_active_tab(session, lambda m, p=None, session_id=None: calls.append((m, session_id)),
+                          'popup', old_session_id=None)
+    assert session['active_target_id'] == 'popup'
+    assert session['frame'] is None  # stale frame dropped, not shown under the new tab
+    assert ('Page.bringToFront', 'S1') in calls
+    assert ('Page.startScreencast', 'S1') in calls
+    assert not any(m == 'Page.stopScreencast' for m, _ in calls)  # old_session_id=None: nothing to stop
+
+
+def test_switch_active_tab_stops_the_old_tabs_screencast_when_given():
+    calls = []
+    session = {'tabs': {'root': {'session_id': None}, 'popup': {'session_id': 'S1'}},
+              'active_target_id': 'popup'}
+    br._switch_active_tab(session, lambda m, p=None, session_id=None: calls.append((m, session_id)),
+                          'root', old_session_id='S1')
+    assert ('Page.stopScreencast', 'S1') in calls
+    assert session['active_target_id'] == 'root'
+
+
+def test_switch_active_tab_unknown_target_is_a_noop():
+    calls = []
+    session = {'tabs': {'root': {'session_id': None}}, 'active_target_id': 'root'}
+    br._switch_active_tab(session, lambda *a, **k: calls.append((a, k)), 'ghost')
+    assert session['active_target_id'] == 'root'
+    assert calls == []
+
+
+def test_handle_target_closed_returns_focus_to_opener():
+    session = {
+        'root_target_id': 'root', 'active_target_id': 'popup', 'tabs_seq': 1,
+        'tabs': {'root': {'session_id': None, 'opener_id': None},
+                'popup': {'session_id': 'S1', 'opener_id': 'root'}},
+    }
+    br._handle_target_closed(session, lambda *a, **k: None, 'popup')
+    assert 'popup' not in session['tabs']
+    assert session['active_target_id'] == 'root'
+    # +1 for the close itself, +1 more from _switch_active_tab's own bump
+    # when it re-fronts the opener — two real changes, two seq bumps.
+    assert session['tabs_seq'] == 3
+
+
+def test_handle_target_closed_falls_back_to_root_when_opener_already_gone():
+    session = {
+        'root_target_id': 'root', 'active_target_id': 'popup', 'tabs_seq': 1,
+        'tabs': {'root': {'session_id': None, 'opener_id': None},
+                'popup': {'session_id': 'S1', 'opener_id': 'already-closed'}},
+    }
+    br._handle_target_closed(session, lambda *a, **k: None, 'popup')
+    assert session['active_target_id'] == 'root'
+
+
+def test_handle_target_closed_falls_back_to_any_remaining_tab_with_no_root():
+    session = {
+        'root_target_id': None, 'active_target_id': 'popup', 'tabs_seq': 1,
+        'tabs': {'popup': {'session_id': 'S1', 'opener_id': None},
+                'other': {'session_id': 'S2', 'opener_id': None}},
+    }
+    br._handle_target_closed(session, lambda *a, **k: None, 'popup')
+    assert session['active_target_id'] == 'other'
+
+
+def test_handle_target_closed_last_tab_leaves_active_none():
+    session = {'root_target_id': None, 'active_target_id': 'popup', 'tabs_seq': 1,
+              'tabs': {'popup': {'session_id': 'S1', 'opener_id': None}}}
+    br._handle_target_closed(session, lambda *a, **k: None, 'popup')
+    assert session['active_target_id'] is None
+
+
+def test_handle_target_closed_ignores_unknown_target():
+    session = {'tabs': {'root': {'session_id': None}}, 'active_target_id': 'root', 'tabs_seq': 1}
+    br._handle_target_closed(session, lambda *a, **k: None, 'ghost')
+    assert session['tabs_seq'] == 1
+
+
+def test_handle_target_closed_of_a_background_tab_never_touches_active():
+    def boom(*a, **k):
+        raise AssertionError('a background-tab close must not switch the active tab')
+    session = {'root_target_id': 'root', 'active_target_id': 'root', 'tabs_seq': 1,
+              'tabs': {'root': {'session_id': None, 'opener_id': None},
+                      'popup': {'session_id': 'S1', 'opener_id': 'root'}}}
+    br._handle_target_closed(session, boom, 'popup')
+    assert session['active_target_id'] == 'root'
+    assert 'popup' not in session['tabs']
+
+
+def test_handle_target_closed_clears_a_dialog_open_on_that_target():
+    session = {
+        'root_target_id': 'root', 'active_target_id': 'popup', 'tabs_seq': 1,
+        'tabs': {'root': {'session_id': None, 'opener_id': None},
+                'popup': {'session_id': 'S1', 'opener_id': 'root'}},
+        'dialog': {'target_id': 'popup', 'message': 'hi'}, 'dialogs_seq': 1,
+    }
+    br._handle_target_closed(session, lambda *a, **k: None, 'popup')
+    assert session['dialog'] is None
+    assert session['dialogs_seq'] == 2
+
+
+# ── /api/browser/tab route ───────────────────────────────────────────────────
+
+def test_tab_route_unknown_session_404(app_client):
+    resp = app_client.post('/api/browser/tab',
+                           json={'session_id': 'nope', 'target_id': 't1', 'action': 'activate'})
+    assert resp.status_code == 404
+
+
+def test_tab_route_requires_target_id(app_client):
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running', 'cmd_queue': br.queue.Queue()}
+    resp = app_client.post('/api/browser/tab', json={'session_id': 'sid-1', 'action': 'activate'})
+    assert resp.status_code == 400
+
+
+def test_tab_route_rejects_unknown_action(app_client):
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running', 'cmd_queue': br.queue.Queue()}
+    resp = app_client.post('/api/browser/tab',
+                           json={'session_id': 'sid-1', 'target_id': 't1', 'action': 'nope'})
+    assert resp.status_code == 400
+
+
+def test_tab_route_activate_queues_the_activate_command(app_client):
+    q = br.queue.Queue()
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running', 'cmd_queue': q}
+    resp = app_client.post('/api/browser/tab',
+                           json={'session_id': 'sid-1', 'target_id': 't1', 'action': 'activate'})
+    assert resp.status_code == 200
+    method, params = q.get_nowait()
+    assert (method, params) == ('_activate_tab', {'target_id': 't1'})
+
+
+def test_tab_route_close_queues_the_close_command(app_client):
+    q = br.queue.Queue()
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running', 'cmd_queue': q}
+    resp = app_client.post('/api/browser/tab',
+                           json={'session_id': 'sid-1', 'target_id': 't1', 'action': 'close'})
+    assert resp.status_code == 200
+    method, params = q.get_nowait()
+    assert (method, params) == ('_close_tab', {'target_id': 't1'})
+
+
+# ── /api/browser/dialog route (A2: JS alert/confirm/prompt) ─────────────────
+
+def test_dialog_route_unknown_session_404(app_client):
+    resp = app_client.post('/api/browser/dialog', json={'session_id': 'nope', 'accept': True})
+    assert resp.status_code == 404
+
+
+def test_dialog_route_no_dialog_open_is_409(app_client):
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running', 'dialog': None}
+    resp = app_client.post('/api/browser/dialog', json={'session_id': 'sid-1', 'accept': True})
+    assert resp.status_code == 409
+
+
+def test_dialog_route_queues_the_response_with_prompt_text(app_client):
+    q = br.queue.Queue()
+    browser_sessions['sid-1'] = {
+        'session_id': 'sid-1', 'status': 'running', 'cmd_queue': q,
+        'dialog': {'target_id': 'root', 'type': 'prompt', 'message': 'Name?'},
+    }
+    resp = app_client.post('/api/browser/dialog',
+                           json={'session_id': 'sid-1', 'accept': True, 'text': 'Ron'})
+    assert resp.status_code == 200
+    method, params = q.get_nowait()
+    assert method == '_dialog_response'
+    assert params == {'target_id': 'root', 'accept': True, 'text': 'Ron'}
+
+
+def test_dialog_route_dismiss_defaults_accept_false_and_empty_text(app_client):
+    q = br.queue.Queue()
+    browser_sessions['sid-1'] = {
+        'session_id': 'sid-1', 'status': 'running', 'cmd_queue': q,
+        'dialog': {'target_id': 'root', 'type': 'confirm', 'message': 'Leave?'},
+    }
+    resp = app_client.post('/api/browser/dialog', json={'session_id': 'sid-1'})
+    assert resp.status_code == 200
+    method, params = q.get_nowait()
+    assert params == {'target_id': 'root', 'accept': False, 'text': ''}
+
+
+# ── _stream_gen: tabs + dialog payloads ──────────────────────────────────────
+
+def test_stream_gen_emits_tabs_payload_on_a_real_session():
+    session = {
+        'session_id': 'sid-1', 'status': 'running', 'frame': None, 'frame_seq': 0,
+        'downloads_seq': 0, 'downloads': {},
+        'tabs': {'root': {'session_id': None, 'url': 'https://x', 'title': 't', 'opener_id': None}},
+        'tabs_seq': 1, 'active_target_id': 'root', 'dialog': None, 'dialogs_seq': 0,
+    }
+    gen = br._stream_gen(session)
+    # downloads_seq (0) and tabs_seq (1) both differ from the generator's
+    # initial -1 sentinel, so the first while-iteration yields BOTH before
+    # looping back — collect a couple of messages rather than assuming order.
+    chunks = [next(gen), next(gen)]
+    joined = '\n'.join(chunks)
+    assert '"tabs"' in joined and 'https://x' in joined and '"active_target_id": "root"' in joined
+
+
+def test_stream_gen_omits_tabs_and_dialog_when_session_never_set_them():
+    # Every existing test in this file builds a bare session dict — this pins
+    # that shape as still silent on the new payload types, not just the two
+    # download tests above.
+    session = {'session_id': 'sid-1', 'status': 'running', 'frame': None, 'frame_seq': 0,
+              'downloads_seq': 1, 'downloads': {'g1': {'guid': 'g1', 'state': 'in_progress',
+                                                       'received_bytes': 1, 'total_bytes': 10}}}
+    gen = br._stream_gen(session)
+    first = next(gen)
+    assert '"tabs"' not in first and '"dialog"' not in first
+
+
+def test_stream_gen_emits_dialog_payload_when_one_opens():
+    session = {
+        'session_id': 'sid-1', 'status': 'running', 'frame': None, 'frame_seq': 0,
+        'downloads_seq': 0, 'downloads': {}, 'tabs': {}, 'tabs_seq': 0, 'active_target_id': None,
+        'dialog': None, 'dialogs_seq': 0,
+    }
+    gen = br._stream_gen(session)
+    next(gen)  # initial downloads payload (downloads_seq 0 != -1 sentinel)
+    next(gen)  # initial (empty) tabs payload
+    session['dialog'] = {'target_id': 'root', 'type': 'alert', 'message': 'hi'}
+    session['dialogs_seq'] = 1
+    third = next(gen)
+    assert '"dialog"' in third and '"message": "hi"' in third
