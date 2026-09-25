@@ -252,23 +252,19 @@ try {
     await ctx.close();
   }
 
-  // ── E: the general invariant, decoupled from updateAgentStatusUI entirely —
-  // a stale-vv dismiss with NO status change, NO tap, NO background must still
-  // self-heal via the standing low-rate watchdog. Proves the fix is a
-  // standing invariant, not a hook on one caller (Dave's scope-gap note) ─────
+  // ── E: a genuinely open keyboard with a quiet pause (reading, thinking,
+  // voice input) must stay shrunk. Guards against reintroducing a standing
+  // focused-field timer (8d4ca7d had an 8s one; it dropped the composer behind
+  // the keyboard on every 2-8s pause, removed in Dave's review) ─────────────
   {
     const { ctx, page, pageErrors } = await openRunningSession(browser);
     const layout = await page.evaluate(() => document.documentElement.clientHeight);
     await focusAndShrink(page);
     await page.waitForTimeout(900);
     check('setup: keyboard-open baseline', await appVh(page), layout - KB);
-
-    // Stale-vv dismiss with nothing else happening at all — no settleTurn(),
-    // no tap, no background/foreground cycle. Only the standing low-rate
-    // (8s) invariant timer runs; give it one full period plus margin.
-    await page.waitForTimeout(8600);
-    check('no status change, no tap, no background — the standing invariant alone self-heals to full height',
-          await appVh(page), layout);
+    await page.waitForTimeout(9000);   // no keystroke, no status change, no tap
+    check('an open keyboard left quiet for 9s keeps the composer above it',
+          await appVh(page), layout - KB);
 
     const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
     uncaught.forEach((e) => { failures++; console.log('FAIL  uncaught page error: ' + e); });

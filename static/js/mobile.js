@@ -182,19 +182,13 @@
     if (_isField(document.activeElement)) return;
     if (layoutH() - _lastApplied > 6) schedule();
   }, 500);
-  // General self-heal invariant for a focused-but-stale field, on a
-  // deliberately LOW rate so an ordinary open-but-momentarily-quiet keyboard
-  // (a real pause to read or think — RECENT_ACTIVITY_MS can't tell that
-  // apart from a stale dismiss any better here than in the settle hook) is
-  // only ever exposed to one rare check, not a tight 500ms loop — and even
-  // that rare false read self-corrects on the next keystroke (see
-  // _onFieldActivity's schedule() call). This is the standing backstop Dave
-  // asked for: whatever FUTURE path leaves a field stale-focused, not just
-  // updateAgentStatusUI's turn-settle call, heals within one tick of this.
-  setInterval(() => {
-    if (!_isField(document.activeElement)) return;
-    if (layoutH() - _lastApplied > 6) _recoverStaleFocusedInset();
-  }, 8000);
+  // NO standing timer for a focused field (Dave, 2026-09-25 review of 8d4ca7d).
+  // An 8s invariant gated on RECENT_ACTIVITY_MS fires during every ordinary
+  // 2-8s pause with a genuinely open keyboard (reading the reply, thinking,
+  // voice input that fires no keydown) and drops the composer behind the
+  // keyboard until the next keystroke: a recurring visible regression traded
+  // for a rare stale case. Focused-field recovery stays event-driven: turn
+  // settle (mcRecoverViewportOnStatusSettle) and backgrounding (forceFull).
   // A tap/scroll after dismissing the keyboard is another chance to re-read a
   // now-fresh viewport height.
   document.addEventListener('touchend', schedule, { passive: true });
