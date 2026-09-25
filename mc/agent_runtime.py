@@ -57,6 +57,7 @@ from mc.execution_policy import (
 )
 from mc.guardrail_hooks import launch_file_if_exists as _guardrail_launch_file
 from mc.guardrail_hooks import codex_hook_config_args as _guardrail_codex_hook_args
+from mc.guardrail_hooks import codex_fence_self_test as _codex_fence_self_test
 
 # Per-vendor env var each CLI resolves fresh per invocation for a per-launch
 # settings override — verified additive with the user's own config (not a
@@ -126,6 +127,12 @@ class TransformTimeout(TransformFailure, TimeoutError):
 
     def __init__(self, provider: str, detail: str = ''):
         super().__init__(provider, 'timeout', detail)
+
+
+class CodexFenceSelfTestError(RuntimeError):
+    """Raised by CodexRuntime.dispatch() when an unattended launch's steward
+    fence failed its pre-spawn self-test (MC-975). Codex hooks fail OPEN, so
+    launching anyway would run the session with no fence at all."""
 
 
 class CLINotInstalledError(RuntimeError):
@@ -5957,6 +5964,28 @@ assert 'manual' not in _CODEX_UNATTENDED_TRIGGER_TYPES, (
     "codex_unattended_sandbox_decision()'s != 'manual' shortcut assumes it")
 
 
+def codex_fence_armed_decision(session_dict: Optional[Dict[str, Any]],
+                               fence_config_enabled: bool) -> bool:
+    """True when this Codex launch's injected steward fence runs ARMED
+    (`--armed`, fail-closed wrapper, pre-spawn self-test). MC-975.
+
+    Same classification as codex_unattended_sandbox_decision: anything but a
+    confirmed `trigger_type == 'manual'` is unattended. Decided here, server
+    side, because the fence's own detectors cannot see a Codex session
+    (CLAUDE_CODE_SESSION_ID is unset, and the Codex thread id is stored as
+    `provider_session_id`, which /api/session/trigger-type does not match).
+    `fence_unattended_enabled` off disarms it, the same Settings switch the
+    fence honours for Claude.
+    """
+    if not fence_config_enabled:
+        return False
+    try:
+        trigger_type = (session_dict or {}).get('trigger_type')
+    except Exception:
+        return True
+    return trigger_type != 'manual'
+
+
 def codex_unattended_sandbox_decision(session_dict: Optional[Dict[str, Any]],
                                       sandbox_config_enabled: bool) -> bool:
     """True when a Codex launch should run sandbox-confined (`-s workspace-write`,
@@ -7508,7 +7537,8 @@ class CodexRuntime(AgentRuntime):
                       streaming: bool = False, perm_mode: str = '',
                       channels: str = '', remote_control: bool = False,
                       resume_id: str = '', effort: str = '',
-                      unattended_sandbox: bool = False) -> List[str]:
+                      unattended_sandbox: bool = False,
+                      fence_armed: bool = False) -> List[str]:
         """Return the codex exec command for non-interactive use.
 
         Flags verified against codex 0.133.0 `codex exec --help` and
@@ -7616,7 +7646,10 @@ class CodexRuntime(AgentRuntime):
         # argv, that reached `usage_limit_exceeded` — past config parsing,
         # into the real API — rather than a config error; see
         # docs/GUARDRAIL_PARITY_EVIDENCE.md §4 for the exact commands.
-        cmd.extend(_guardrail_codex_hook_args())
+        # MC-975: the steward fence rides in the same inline PreToolUse
+        # group, armed per codex_fence_armed_decision(). See
+        # mc/guardrail_hooks.py's 'Steward fence for Codex' block.
+        cmd.extend(_guardrail_codex_hook_args(fence_armed=fence_armed))
         return cmd
 
     def parse_event(self, raw_line: str, mc_session_id: str = '') -> Optional[AgentEvent]:
@@ -8435,6 +8468,7 @@ class CodexRuntime(AgentRuntime):
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
                  unattended_sandbox_enabled: bool = True,
+                 fence_unattended_enabled: bool = True,
                  effort: str = '',
                  **_extra) -> SessionHandle:
         if not self.resolve_binary() and not self._npx_fallback:
@@ -8450,8 +8484,21 @@ class CodexRuntime(AgentRuntime):
         # "config passed explicitly" convention (see ClaudeRuntime.build_command).
         use_sandbox = codex_unattended_sandbox_decision(
             session_dict, unattended_sandbox_enabled)
+        fence_armed = codex_fence_armed_decision(session_dict, fence_unattended_enabled)
+        if fence_armed:
+            # MC-975: Codex runs a hook that cannot start (PowerShell
+            # 0xC0000142 under a pre-login S4U task) as "PreToolUse Failed"
+            # and then runs the tool. Nothing inside the hook can catch
+            # that, so prove the fence works from this process first.
+            ok, detail = _codex_fence_self_test()
+            if not ok:
+                raise CodexFenceSelfTestError(
+                    'refusing unattended Codex launch: the steward fence '
+                    f'self-test failed ({detail}). Codex hooks fail open, so '
+                    'this run would have had no fence.')
         cmd = self.build_command(model=model, resume_id=resume_id or '',
-                                 effort=effort, unattended_sandbox=use_sandbox)
+                                 effort=effort, unattended_sandbox=use_sandbox,
+                                 fence_armed=fence_armed)
         if session_dict is not None:
             # Same reason the sandbox posture is stashed rather than
             # re-derived: write_followup only receives the handle, and a
@@ -8486,6 +8533,7 @@ class CodexRuntime(AgentRuntime):
         # covers that case.
         if session_dict is not None:
             session_dict['_codex_unattended_sandbox'] = use_sandbox
+            session_dict['_codex_fence_armed'] = fence_armed
 
         return _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
@@ -8567,7 +8615,9 @@ class CodexRuntime(AgentRuntime):
         cmd = self.build_command(
             model=self.session_model(handle), resume_id=resume_id,
             effort=session.get('_codex_effort', '') or '',
-            unattended_sandbox=session.get('_codex_unattended_sandbox', True))
+            unattended_sandbox=session.get('_codex_unattended_sandbox', True),
+            # Read back like the sandbox posture; missing key fails safe to armed.
+            fence_armed=session.get('_codex_fence_armed', True))
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,

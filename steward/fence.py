@@ -822,7 +822,7 @@ def _should_arm_for_unattended_trigger() -> bool:
     return info['fence_unattended_enabled']
 
 
-def main() -> int:
+def main(argv=None) -> int:
     """PreToolUse hook entrypoint. Reads the hook JSON on stdin.
 
     SELF-GATING: the fence is installed repo-wide (project .claude/settings.json)
@@ -854,7 +854,24 @@ def main() -> int:
     server-recorded signal even when the marker can't be read at all.
 
     On a blocked action, exits 2 (stderr reason) — the fail-closed block contract.
-    Fails OPEN on any parse error — a broken fence must never wedge the agent."""
+    Fails OPEN on any parse error — a broken fence must never wedge the agent.
+
+    MC-975 (2026-09-25), two launcher-supplied argv flags, both used only by
+    Clayrune's inline Codex hook (mc/guardrail_hooks.py
+    codex_fence_hook_command). Neither can loosen the fence:
+      --self-test  exit 2 with a fixed token, before reading stdin. Clayrune
+                   runs this before an unattended Codex launch to prove the
+                   hook shell, the interpreter and a block round trip all work.
+      --armed      Clayrune decided at dispatch that this session is
+                   unattended. Codex hooks have no CLAUDE_CODE_SESSION_ID and
+                   no Claude-format transcript, so neither signal below can
+                   ever arm the fence for a Codex run."""
+    argv = list(argv or ())
+    if '--self-test' in argv:
+        print('CLAYRUNE-FENCE-SELF-TEST-OK: fence.py ran and can signal a block',
+              file=sys.stderr)
+        return 2
+    armed_by_launcher = '--armed' in argv
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}
@@ -891,7 +908,7 @@ def main() -> int:
     # Confirmed steward (marker=True) always enforces. Everything else
     # (confirmed non-steward OR genuinely unknown) falls through to the
     # generalized trigger_type signal — see the corrected gate above.
-    if _session_is_steward(payload) is not True:
+    if not armed_by_launcher and _session_is_steward(payload) is not True:
         if not _should_arm_for_unattended_trigger():
             return 0
 
@@ -918,4 +935,4 @@ def main() -> int:
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

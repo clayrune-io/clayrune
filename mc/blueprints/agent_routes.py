@@ -8593,6 +8593,9 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # docstring), so the flag has to cross the seam as a plain bool.
             unattended_sandbox_enabled=bool(
                 state.CONFIG.get('codex_unattended_sandbox', True)),
+            # MC-975: arms Codex's injected steward fence; same seam shape.
+            fence_unattended_enabled=bool(
+                state.CONFIG.get('fence_unattended_enabled', True)),
             # Only CodexRuntime.dispatch declares this kwarg; every other
             # runtime's **_extra catchall makes it a no-op -- same seam shape
             # as unattended_sandbox_enabled above.
