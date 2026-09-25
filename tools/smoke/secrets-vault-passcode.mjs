@@ -19,6 +19,12 @@
  * form's status line — a silent failure here is indistinguishable from the
  * bug being back.
  *
+ * Also covers MC-949 follow-up (2026-09-25): "Lock now" used a native
+ * window.prompt(), which echoes the typed passcode in clear text. Replaced
+ * with a modal matching the other three forms — this smoke pins that the
+ * field is a real password input (masked) and that the lock POST still
+ * carries the passcode.
+ *
  * Hermetic, like boot-smoke.mjs / settings-update-row.mjs: page + static
  * assets served from THIS checkout, /api/secrets* canned, everything else
  * aborted. No running MC server, no real vault.
@@ -41,16 +47,19 @@ const fail = (m) => { console.error('  ✗ ' + m); bad++; };
 
 let lockState = 'unconfigured';          // 'unconfigured' | 'locked' | 'unlocked'
 let secretsLocked = false;
-const calls = { set: [], unlock: [], change: [] };
+const calls = { set: [], unlock: [], change: [], lock: [] };
 let nextSetResponse = { ok: true, recovery_key: 'ABCD-1234-EFGH-5678' };
 let nextUnlockResponse = { ok: true };
 let nextChangeResponse = { ok: true };
+let nextLockResponse = { ok: true };
 
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1000, height: 800 } });
 const page = await ctx.newPage();
 await page.addInitScript(() => localStorage.setItem('walkthrough_done', '1'));
-page.on('dialog', (d) => d.dismiss());   // Lock now uses prompt() — not under test here
+// No form on this panel should ever trigger a native dialog for a
+// passcode/passphrase — one firing here means a prompt() regressed back in.
+page.on('dialog', (d) => { fail('unexpected native dialog: ' + d.message()); d.dismiss(); });
 const pageErrors = [];
 page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
 
@@ -94,6 +103,11 @@ await page.route('**/*', (route) => {
   if (path === '/api/secrets/vault-lock/change') {
     calls.change.push(JSON.parse(route.request().postData() || '{}'));
     const r = nextChangeResponse;
+    return json(r, r.ok === false ? 400 : 200);
+  }
+  if (path === '/api/secrets/vault-lock/lock') {
+    calls.lock.push(JSON.parse(route.request().postData() || '{}'));
+    const r = nextLockResponse;
     return json(r, r.ok === false ? 400 : 200);
   }
   return route.abort();
@@ -188,6 +202,37 @@ try {
     () => (document.getElementById('vcp-status')?.textContent || '').includes('Wrong dashboard passcode.'),
     { timeout: 5000 });
   ok('change-passphrase maps bad_passcode (no server message) to a readable status line');
+
+  // ── 4. Unlocked -> "Lock now" uses a masked field, not window.prompt() ───
+  // The lockbar's own "Lock now" button stays in the DOM behind the modal, so
+  // once the modal is open target its submit button by id, not by text.
+  lockState = 'unlocked';
+  await openSecrets();
+  await page.waitForSelector('#secrets-lockbar button:has-text("Lock now")', { timeout: 5000 });
+  await page.click('#secrets-lockbar button:has-text("Lock now")');
+  await page.waitForSelector('#vln-passcode', { timeout: 5000 });
+  const lockFieldType = await page.getAttribute('#vln-passcode', 'type');
+  lockFieldType === 'password'
+    ? ok('Lock-now passcode field is type=password (masked, not a native prompt())')
+    : fail(`Lock-now passcode field type is "${lockFieldType}", expected "password"`);
+  await page.fill('#vln-passcode', 'my-dash-pass');
+  await page.click('#vln-status ~ div button.btn-add');
+  calls.lock.length === 1 && calls.lock[0].passcode === 'my-dash-pass'
+    ? ok('Lock now POSTs /vault-lock/lock with passcode')
+    : fail(`lock call missing/wrong passcode: ${JSON.stringify(calls.lock)}`);
+
+  // Error surfacing: wrong passcode -> mapped "Wrong dashboard passcode." text.
+  lockState = 'unlocked';
+  nextLockResponse = { ok: false, error: 'bad_passcode' };
+  await openSecrets();
+  await page.click('#secrets-lockbar button:has-text("Lock now")');
+  await page.waitForSelector('#vln-passcode', { timeout: 5000 });
+  await page.fill('#vln-passcode', 'wrong-one');
+  await page.click('#vln-status ~ div button.btn-add');
+  await page.waitForFunction(
+    () => (document.getElementById('vln-status')?.textContent || '').includes('Wrong dashboard passcode.'),
+    { timeout: 5000 });
+  ok('Lock now maps bad_passcode (no server message) to a readable status line');
 
   pageErrors.length === 0 ? ok('no uncaught page errors throughout')
     : pageErrors.forEach(e => fail('uncaught: ' + e));

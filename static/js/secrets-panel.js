@@ -264,7 +264,7 @@ function _renderVaultLockbar(state) {
       <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:6px">
         <span style="font-size:10px;color:var(--text-faint)">&#x1F513; Vault unlocked</span>
         <button class="btn-header-action" style="padding:3px 8px;font-size:10px"
-                onclick="lockVaultNow()">Lock now</button>
+                onclick="openVaultLockNow()">Lock now</button>
         <button class="btn-header-action" style="padding:3px 8px;font-size:10px"
                 onclick="openVaultChangePassphrase()">Change passphrase</button>
       </div>`;
@@ -273,23 +273,68 @@ function _renderVaultLockbar(state) {
   }
 }
 
-async function lockVaultNow() {
+function openVaultLockNow() {
   // Same human-passcode gate as set/change/unlock (_require_human_passcode) —
   // re-entered here rather than trusted from a cookie/session, for the same
   // forged-Origin reason those routes do it (see secrets_routes.py).
-  const passcode = prompt('Re-enter your dashboard passcode to lock the vault now:');
-  if (!passcode) return;
+  const modalId = '__vault-lock-now';
+  if (openModals.has(modalId)) closeModalById(modalId);
+  const win = document.createElement('div');
+  win.className = 'modal-window';
+  win.dataset.modalId = modalId;
+  const content = document.createElement('div');
+  content.className = 'modal-content';
+  _clampModalSize(content, 420);
+  content.innerHTML = `
+    <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
+      <span style="font-size:16px;font-weight:700;color:var(--text)">&#x1F512; Lock the vault</span>
+      <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
+        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+      </div>
+    </div>
+    <div style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
+      <div style="font-size:11px;color:var(--text-faint);line-height:1.55">
+        Re-enter your dashboard passcode to lock the vault now.
+      </div>
+      <div>
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">Dashboard passcode</label>
+        <input type="password" id="vln-passcode" autocomplete="current-password"
+          style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
+                 border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)"
+          onkeydown="if(event.key==='Enter')submitVaultLockNow('${modalId}')">
+      </div>
+      <div id="vln-status" style="font-size:11px;color:var(--danger,#c94a3a);min-height:14px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn-secondary" onclick="closeModalById('${modalId}')">Cancel</button>
+        <button class="btn-add" onclick="submitVaultLockNow('${modalId}')">Lock now</button>
+      </div>
+    </div>`;
+  win.appendChild(content);
+  document.getElementById('modal-layer').appendChild(win);
+  const z = nextModalZ++;
+  win.style.zIndex = z;
+  openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
+  centerModalElement(win);
+  focusModal(modalId);
+  document.getElementById('vln-passcode').focus();
+}
+
+async function submitVaultLockNow(modalId) {
+  const passcode = document.getElementById('vln-passcode').value;
+  const statusEl = document.getElementById('vln-status');
+  if (!passcode) { statusEl.textContent = 'Dashboard passcode required.'; return; }
   try {
     const res = await fetch(API_BASE + '/api/secrets/vault-lock/lock', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ passcode }),
     });
     const out = await res.json();
-    if (!res.ok) { showToast(_vaultLockErrorText(out), 4000); return; }
+    if (!res.ok) { statusEl.textContent = _vaultLockErrorText(out); return; }
+    closeModalById(modalId);
     showToast('Vault locked');
     await refreshSecretsList();
   } catch (e) {
-    showToast('Lock failed: ' + e.message, 4000);
+    statusEl.textContent = 'Lock failed: ' + e.message;
   }
 }
 
@@ -861,5 +906,6 @@ window.openVaultSetPassphrase = openVaultSetPassphrase;
 window.submitVaultSetPassphrase = submitVaultSetPassphrase;
 window.openVaultChangePassphrase = openVaultChangePassphrase;
 window.submitVaultChangePassphrase = submitVaultChangePassphrase;
-window.lockVaultNow = lockVaultNow;
+window.openVaultLockNow = openVaultLockNow;
+window.submitVaultLockNow = submitVaultLockNow;
 window._secToggleUseRecoveryKey = _secToggleUseRecoveryKey;
