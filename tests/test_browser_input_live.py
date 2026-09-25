@@ -83,6 +83,11 @@ PAGE = """<!doctype html><html><body style="margin:0">
 window.log = [];
 document.addEventListener('keydown', e => window.log.push(
   (e.ctrlKey ? 'Ctrl+' : '') + (e.altKey ? 'Alt+' : '') + e.key + ':' + e.keyCode));
+window.mouseLog = [];
+document.addEventListener('mousedown', e => window.mouseLog.push(
+  {type: 'mousedown', button: e.button, buttons: e.buttons}));
+document.addEventListener('contextmenu', e => window.mouseLog.push(
+  {type: 'contextmenu', button: e.button}));
 </script></body></html>"""
 
 
@@ -194,6 +199,25 @@ def test_key_combos_reach_the_page_with_modifiers(chromium):
     log = evaluate('window.log')
     assert 'Ctrl+k:75' in log
     assert 'Alt+ArrowDown:40' in log
+
+
+# ---- B2 (gap #3): right-click reaches the page as a real right button -----
+
+def test_right_click_reaches_the_page_as_button_2_not_0(chromium):
+    call, evaluate, _wait = chromium
+    # Before the B2 fix, `_input_commands` sent buttons=1 (the left-button
+    # bit) on every mousePressed regardless of which button — Chromium/the
+    # page trust `buttons` for which button is actually down, so a
+    # right-click used to report as a LEFT press (e.button/buttons both 0/1)
+    # with only the cosmetic `button: 'right'` field ignored by the page.
+    _send(call, {'type': 'mouse', 'action': 'click', 'button': 'right',
+                'x': 400, 'y': 400})
+    log = evaluate('window.mouseLog')
+    mousedown = next(e for e in log if e['type'] == 'mousedown')
+    contextmenu = next(e for e in log if e['type'] == 'contextmenu')
+    # DOM MouseEvent.button: 0=left, 2=right; .buttons bitmask: 1=left, 2=right.
+    assert mousedown['button'] == 2 and mousedown['buttons'] == 2
+    assert contextmenu['button'] == 2
 
 
 # ---- B1 (gap #4): file chooser interception + DOM.setFileInputFiles -------
