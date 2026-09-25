@@ -32,15 +32,40 @@
  * closing the modal DOES blur the composer — closing and reopening the
  * project modal already recovers full height on unpatched code. Not this bug.)
  *
- * THE FIX (static/js/mobile.js + static/index.html): `updateAgentStatusUI`
- * now calls mobile.js's `mcRecoverViewportOnStatusSettle` (== forceFull, the
- * same assume-no-keyboard-then-let-a-fresh-vv-reading-correct-it recovery
- * 931449b already trusts for app backgrounding) whenever a session's status
- * patch lands on anything other than 'running' — covering every current and
- * future caller of the lightweight status patch, not just this one
- * reproduction. Scenario C below proves this doesn't fight a GENUINELY
- * still-open keyboard: it may flash full for one frame, but the next real vv
- * reading re-shrinks it correctly, exactly like the existing bg-resume case.
+ * THE FIX (static/js/mobile.js + static/index.html), revised after review
+ * (Dave, 2026-09-25): `updateAgentStatusUI` calls mobile.js's
+ * `mcRecoverViewportOnStatusSettle`, which no longer force-recovers
+ * unconditionally. A raw forceFull() on every settle would drop the inset to
+ * 0 even for someone ACTIVELY TYPING a follow-up while the agent finishes
+ * (the common case) — in Chrome's default resizes-visual mode the layout
+ * viewport never shrinks for a keyboard at all, so nothing would tell that
+ * apart from the stale-dismiss case, and nothing would ever re-shrink it
+ * (the keyboard's own state never changes, so no fresh vv event ever
+ * arrives to fix it). The guard: a focused field with a keydown/input event
+ * in the last 2s (RECENT_ACTIVITY_MS) is trusted as a live, correctly-tracked
+ * keyboard and left alone; a focused field that's gone quiet gets the same
+ * assume-no-keyboard-then-let-a-fresh-vv-reading-correct-it recovery 931449b
+ * already trusts for app backgrounding. Scenario D proves the guard holds
+ * for a live typist; Scenario C proves a genuinely still-open (but quiet)
+ * keyboard still re-shrinks correctly after the recovery fires.
+ *
+ * SCOPE (Dave's second note): the same guarded recovery is now also a
+ * STANDING INVARIANT on the existing layout-viewport watchdog (500ms poll),
+ * not just a hook on updateAgentStatusUI — so any other future caller that
+ * leaves a stale-dismissed field focused self-heals too. Scenario E proves
+ * this with no status change, no tap, no background at all.
+ *
+ * Residual trade-off, stated plainly: RECENT_ACTIVITY_MS is a 2s idle
+ * window, not a true "is the OS keyboard shown" signal (the web platform
+ * doesn't expose one in resizes-visual mode). A real pause longer than 2s
+ * while composing — reading, thinking — with the keyboard genuinely still up
+ * will read as "quiet" and trigger the same recovery, which can misfire in
+ * that case. That misfire is a visible but momentary flash to full height;
+ * the very next fresh vv reading (typing resumes and the user's next tap
+ * inside the field, or the keyboard genuinely closing) corrects it the same
+ * way the existing bg-resume path already tolerates. Not eliminated because
+ * no stronger signal exists on this platform; chosen because it is strictly
+ * better than the alternative (bug reproduced verbatim, no recovery at all).
  *
  * Secondary (Ron): Stop stayed visible on a COMPLETED session — read
  * conversation.js: `stopBtn = (isRunning || st === 'idle' || st === 'error')`
@@ -187,6 +212,63 @@ try {
       failures++;
       console.log('FAIL  composer lost focus unexpectedly');
     }
+
+    const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+    uncaught.forEach((e) => { failures++; console.log('FAIL  uncaught page error: ' + e); });
+    await ctx.close();
+  }
+
+  // ── D: Dave's regression risk — the composer is being ACTIVELY TYPED INTO
+  // (real keyboard up, recent input/keydown events, no dismiss at all) when
+  // the turn settles. The settle-hook recovery must NOT force full height out
+  // from under a live typist — that would drop the inset to 0 and land the
+  // composer behind the keyboard until some future vv event fixes it, which
+  // may never come while the keyboard state itself never changes ─────────────
+  {
+    const { ctx, page, pageErrors } = await openRunningSession(browser);
+    const layout = await page.evaluate(() => document.documentElement.clientHeight);
+    await focusAndShrink(page);
+    await page.waitForTimeout(900);
+    check('setup: keyboard-open baseline', await appVh(page), layout - KB);
+
+    // Recent, live typing — the evidence the stale-dismiss case (A) never has.
+    await page.evaluate((sid) => {
+      const el = document.getElementById(`agent-followup-${sid}`);
+      el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'a' }));
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }, SID);
+
+    await settleTurn(page);
+    await page.waitForTimeout(100);
+    check('turn settles WHILE actively typing: composer stays above the (real, unchanged) keyboard immediately',
+          await appVh(page), layout - KB);
+
+    await page.waitForTimeout(900);   // a watchdog tick or two, still inside RECENT_ACTIVITY_MS
+    check('...and stays there across the next watchdog tick, still within the live-typing window',
+          await appVh(page), layout - KB);
+
+    const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+    uncaught.forEach((e) => { failures++; console.log('FAIL  uncaught page error: ' + e); });
+    await ctx.close();
+  }
+
+  // ── E: the general invariant, decoupled from updateAgentStatusUI entirely —
+  // a stale-vv dismiss with NO status change, NO tap, NO background must still
+  // self-heal via the standing low-rate watchdog. Proves the fix is a
+  // standing invariant, not a hook on one caller (Dave's scope-gap note) ─────
+  {
+    const { ctx, page, pageErrors } = await openRunningSession(browser);
+    const layout = await page.evaluate(() => document.documentElement.clientHeight);
+    await focusAndShrink(page);
+    await page.waitForTimeout(900);
+    check('setup: keyboard-open baseline', await appVh(page), layout - KB);
+
+    // Stale-vv dismiss with nothing else happening at all — no settleTurn(),
+    // no tap, no background/foreground cycle. Only the standing low-rate
+    // (8s) invariant timer runs; give it one full period plus margin.
+    await page.waitForTimeout(8600);
+    check('no status change, no tap, no background — the standing invariant alone self-heals to full height',
+          await appVh(page), layout);
 
     const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
     uncaught.forEach((e) => { failures++; console.log('FAIL  uncaught page error: ' + e); });
