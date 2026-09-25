@@ -201,6 +201,10 @@ _CONFIG_EDITABLE_KEYS = {
     # unattended-caller gate as every other key here: an unattended Codex
     # session cannot switch its own sandboxing off.
     'codex_unattended_sandbox',
+    # Vendor context file auto-sync (mc/vendor_context_sync.py). Read at
+    # dispatch time by mc/blueprints/agent_routes.py (_dispatch_via_runtime)
+    # -- no respawn or restart needed.
+    'vendor_context_sync_enabled',
     # Phase 4 Distiller (v2.1 §11 global keys).
     'distiller_enabled_global', 'distiller_cross_project_enabled',
     'distiller_model', 'distiller_window_days',
