@@ -59,6 +59,8 @@ EXPECTED_ROUTES = {
     '/api/agent/provider/<name>/install-launch',
     '/api/agent/providers/install-launch',
     '/api/agent/providers/install-status',  # MC-959 per-vendor install outcome
+    '/api/project/<project_id>/agent/<session_id>/job',           # MC-958 background jobs
+    '/api/project/<project_id>/agent/<session_id>/job/<job_id>',  # MC-958 background jobs
     '/api/claude/auth-probe',
     '/api/claude/auth-status',
     '/api/claude/login-launch',
