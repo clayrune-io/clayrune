@@ -13,6 +13,7 @@ real environment.
 """
 import ast
 import json
+import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -159,3 +160,68 @@ def test_launch_reads_the_same_dir_boot_wrote_under_mc_data_dir(tmp_path, monkey
                         ('qwen', 'QWEN_CODE_SYSTEM_SETTINGS_PATH')):
         env = agent_runtime._inject_guardrail_env(vendor, {})
         assert Path(env[var]) == scoped_data_dir / '.clayrune' / 'hooks' / f'{vendor}-settings.json'
+
+
+def test_frozen_boot_generates_the_app_entry_command_not_a_missing_script(tmp_path, monkeypatch):
+    """MC-975 follow-up (backlog 627a4961): the non-frozen branch passes
+    `_APP_DIR/mc/process_guard.py` and `sys.executable` straight through to
+    `generate_for_boot`. In a frozen build `sys.executable` IS the app binary
+    and `process_guard.py` exists only as bundled bytecode, never a file on
+    disk — passing them anyway would skip hook_invocation_tokens's frozen
+    branch (it only fires when BOTH are left `None`) and generate a command
+    pointing at a script that can never be opened. Frozen must pass
+    `guard_script=None, python_exe=None` so it emits
+    `<app> --clayrune-hook process-guard` instead (mc/hook_entry.py)."""
+    import server
+    from mc import guardrail_hooks as gh
+
+    fake_home = tmp_path / 'fake_home'
+    monkeypatch.setattr(gh.Path, 'home', staticmethod(lambda: fake_home))
+    scoped_data_dir = tmp_path / 'mc_data'
+    monkeypatch.setenv('MC_DATA_DIR', str(scoped_data_dir))
+    monkeypatch.setattr(server, '_DATA_ROOT', scoped_data_dir)
+    monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(sys, 'executable', 'C:/Clayrune/Clayrune.exe')
+
+    class _Installed:
+        def health_check(self):
+            return type('H', (), {'installed': True})()
+    monkeypatch.setattr(server._agent_runtime, 'get_runtime', lambda name: _Installed())
+
+    server._install_guardrail_hooks_on_boot()
+
+    claude_settings = scoped_data_dir / '.clayrune' / 'hooks' / 'claude-settings.json'
+    assert claude_settings.is_file()
+    data = json.loads(claude_settings.read_text(encoding='utf-8'))
+    command = data['hooks']['PreToolUse'][0]['hooks'][0]['command']
+    assert '--clayrune-hook process-guard' in command
+    assert 'process_guard.py' not in command
+
+
+def test_non_frozen_boot_still_points_at_the_real_script(tmp_path, monkeypatch):
+    """Companion to the frozen test above: proves the existing source-install
+    shape (`<python> <repo>/mc/process_guard.py`) is unchanged by the frozen
+    branch added to `_install_guardrail_hooks_on_boot`."""
+    import server
+    from mc import guardrail_hooks as gh
+
+    assert not getattr(sys, 'frozen', False)
+    fake_home = tmp_path / 'fake_home'
+    monkeypatch.setattr(gh.Path, 'home', staticmethod(lambda: fake_home))
+    scoped_data_dir = tmp_path / 'mc_data'
+    monkeypatch.setenv('MC_DATA_DIR', str(scoped_data_dir))
+    monkeypatch.setattr(server, '_DATA_ROOT', scoped_data_dir)
+
+    class _Installed:
+        def health_check(self):
+            return type('H', (), {'installed': True})()
+    monkeypatch.setattr(server._agent_runtime, 'get_runtime', lambda name: _Installed())
+
+    server._install_guardrail_hooks_on_boot()
+
+    claude_settings = scoped_data_dir / '.clayrune' / 'hooks' / 'claude-settings.json'
+    data = json.loads(claude_settings.read_text(encoding='utf-8'))
+    command = data['hooks']['PreToolUse'][0]['hooks'][0]['command']
+    assert '--clayrune-hook' not in command
+    assert 'process_guard.py' in command
+    assert sys.executable.replace('\\', '/') in command

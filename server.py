@@ -3306,10 +3306,19 @@ def _install_guardrail_hooks_on_boot(clayrune_home: Optional[Path] = None) -> No
         spec.loader.exec_module(mod)
         installed = [name for name in mod.VENDOR_CONFIGS
                      if _agent_runtime.get_runtime(name).health_check().installed]
+        # Frozen build (MC-975 follow-up, 2026-09-25): `_APP_DIR/mc/process_guard.py`
+        # and `sys.executable` name real files/interpreters only in a source
+        # checkout. In a PyInstaller build sys.executable IS the app binary and
+        # process_guard.py exists only as bundled bytecode, so passing them
+        # explicitly here would skip hook_invocation_tokens's frozen branch
+        # (it only fires when BOTH are left None) and generate a command
+        # pointing at a script that doesn't exist. Passing None/None instead
+        # lets it emit `<app> --clayrune-hook process-guard` (mc/hook_entry.py).
+        frozen = getattr(sys, 'frozen', False)
         results = mod.generate_for_boot(
             clayrune_home=clayrune_home,
-            guard_script=_APP_DIR / 'mc' / 'process_guard.py',
-            python_exe=sys.executable,
+            guard_script=None if frozen else _APP_DIR / 'mc' / 'process_guard.py',
+            python_exe=None if frozen else sys.executable,
             installed_vendors=installed,
         )
         for r in results:
