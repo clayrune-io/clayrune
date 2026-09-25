@@ -61,11 +61,16 @@ def client(tmp_path, monkeypatch):
         'project_id': 'p1', 'session_id': 's-incog', 'status': 'idle',
         'incognito': True,
     }
+    ar.agent_sessions['s-sandboxed'] = {
+        'project_id': 'p1', 'session_id': 's-sandboxed', 'status': 'idle',
+        'provider': 'codex', '_codex_unattended_sandbox': True,
+    }
     try:
         yield app.test_client()
     finally:
         ar.agent_sessions.pop('s1', None)
         ar.agent_sessions.pop('s-incog', None)
+        ar.agent_sessions.pop('s-sandboxed', None)
 
 
 def _py(code: str) -> str:
@@ -143,6 +148,33 @@ def test_job_start_rejects_incognito_session(client):
     resp = client.post('/api/project/p1/agent/s-incog/job',
                        json={'command': 'echo hi'})
     assert resp.status_code == 400
+
+
+# ── sandboxed sessions cannot use the job endpoint as an escape hatch
+# (MC-975 gap 3): this route runs the command as a server-owned Popen with no
+# sandbox policy of its own, so a session Codex dispatched under
+# codex_unattended_sandbox (`_codex_unattended_sandbox` snapshotted on the
+# session at launch) could otherwise reach anything its sandboxed turns are
+# confined away from, including localhost:5199. ────────────────────────────
+
+def test_job_start_rejects_sandboxed_session(client):
+    resp = client.post('/api/project/p1/agent/s-sandboxed/job',
+                       json={'command': 'echo hi'})
+    assert resp.status_code == 403
+    assert 'sandbox' in resp.get_json()['error'].lower()
+
+
+def test_job_start_allows_non_sandboxed_session_after_flag_cleared(client):
+    # A session that WAS sandboxed but had the flag explicitly cleared (e.g.
+    # a later manual-trigger resume) is not refused -- only a truthy snapshot
+    # blocks the route.
+    session = ar.agent_sessions['s-sandboxed']
+    session['_codex_unattended_sandbox'] = False
+    resp = client.post('/api/project/p1/agent/s-sandboxed/job',
+                       json={'command': _py("print('hi')")})
+    assert resp.status_code == 200
+    job_id = resp.get_json()['job_id']
+    assert _wait_for(lambda: ar._agent_jobs.get_job(job_id)['status'] != 'running')
 
 
 def test_job_start_rejects_missing_command(client):

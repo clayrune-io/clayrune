@@ -108,12 +108,18 @@ def test_build_command_sandbox_flags_when_unattended():
 
 
 def test_build_command_sandbox_flags_on_resume_branch_too():
+    """`exec resume` (codex-cli 0.155.1) has no `-s`/`--sandbox` option --
+    `codex exec resume -s workspace-write --help` exits 2, 'unexpected
+    argument' (MC-975 gap 5). The resume branch must express the same
+    workspace-write policy via `-c sandbox_mode=`, which `exec resume` does
+    accept (verified live: exit 0, prints resume help)."""
     rt = agent_runtime_mod.CodexRuntime()
     rt._bin_cache = 'codex'
     cmd = rt.build_command(resume_id='last', unattended_sandbox=True)
     assert '--dangerously-bypass-approvals-and-sandbox' not in cmd
-    assert '-s' in cmd
-    assert cmd[cmd.index('-s') + 1] == 'workspace-write'
+    assert '-s' not in cmd
+    assert '-c' in cmd
+    assert cmd[cmd.index('-c') + 1] == 'sandbox_mode="workspace-write"'
 
 
 def test_build_command_bypass_on_resume_branch_when_not_unattended():

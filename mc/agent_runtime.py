@@ -7509,30 +7509,55 @@ class CodexRuntime(AgentRuntime):
                                                 §3c) — a write outside cwd is
                                                 denied at the OS layer instead of
                                                 running unconfined
+          -c sandbox_mode="workspace-write" -- same sandbox policy as `-s`, via
+                                                the generic config-override flag;
+                                                REQUIRED on `exec resume` (see
+                                                below) where `-s`/`--sandbox`
+                                                does not exist as a resume arg
           -m / --model MODEL               -- override model
           -C / --cd DIR                    -- working dir (set by Popen cwd, not here)
           exec resume --last               -- resume most recent session
           exec resume SESSION_ID           -- resume specific session by thread_id
 
-        Exactly one of the bypass flag or `-s workspace-write` is added, on
-        BOTH branches (`unattended_sandbox` — see
+        Exactly one of the bypass flag or the workspace-write sandbox is
+        added, on BOTH branches (`unattended_sandbox` — see
         `codex_unattended_sandbox_decision()`, computed once at dispatch time
         from this session's trigger_type and carried into every respawn by
-        `write_followup`). Never both: `-s` and
+        `write_followup`). Never both: the sandbox and
         `--dangerously-bypass-approvals-and-sandbox` are mutually exclusive
         sandbox policies, and every non-resume dispatch runs with no TTY
         either way (`subprocess.Popen(stdin=PIPE)`) — a resumed session needs
-        the same flag its own thread was started with, not a weaker one.
+        the same policy its own thread was started with, not a weaker one.
+
+        The FRESH and RESUME branches express that policy with DIFFERENT
+        flags, and this is load-bearing, not cosmetic. codex-cli 0.155.1's
+        `exec resume` subcommand has no `-s`/`--sandbox` option at all —
+        `codex exec resume -s workspace-write --help` exits 2 ("unexpected
+        argument '-s' found") before it even reaches `--help`, so every
+        sandboxed RESUME (every follow-up turn of a sandboxed unattended
+        session) failed outright (MC-975 gap 5). `exec resume` does accept
+        `-c`, and `-c sandbox_mode="workspace-write"` is the documented
+        config-file equivalent of `-s workspace-write` (same TOML field the
+        CLI's own `-s` flag writes), verified live: `codex exec resume -c
+        sandbox_mode="workspace-write" --skip-git-repo-check --help` exits 0
+        and prints the resume help, where the `-s` form exits 2. `exec`
+        (fresh) still accepts `-s` and keeps using it — no reason to move it
+        off the flag that's actually documented and tested for that branch.
         """
         prefix = self._cmd_prefix()
         # `--skip-git-repo-check` rides with the sandbox: the bypass flag used to
-        # skip codex's trusted-directory check implicitly, and `-s` does not.
-        # Without it every unattended run in a non-git project died at launch
-        # ("Not inside a trusted directory"), e.g. apex_trader's workflow on
-        # 2026-09-14. It relaxes only that check; the OS sandbox is unchanged.
-        sandbox_flags = (['-s', 'workspace-write', '--skip-git-repo-check'] if unattended_sandbox
-                         else ['--dangerously-bypass-approvals-and-sandbox'])
+        # skip codex's trusted-directory check implicitly, and the sandbox does
+        # not. Without it every unattended run in a non-git project died at
+        # launch ("Not inside a trusted directory"), e.g. apex_trader's
+        # workflow on 2026-09-14. It relaxes only that check; the OS sandbox
+        # is unchanged.
         if resume_id:
+            # See the `exec resume` note above: '-s' is not a valid resume
+            # argument on 0.155.1 ('unexpected argument', exit 2) — use the
+            # '-c sandbox_mode=' config-override form instead.
+            sandbox_flags = (['-c', 'sandbox_mode="workspace-write"', '--skip-git-repo-check']
+                             if unattended_sandbox
+                             else ['--dangerously-bypass-approvals-and-sandbox'])
             cmd = prefix + ['exec', 'resume']
             if resume_id.lower() == 'last':
                 cmd.append('--last')
@@ -7541,6 +7566,8 @@ class CodexRuntime(AgentRuntime):
             cmd.append('--json')
             cmd.extend(sandbox_flags)
         else:
+            sandbox_flags = (['-s', 'workspace-write', '--skip-git-repo-check'] if unattended_sandbox
+                             else ['--dangerously-bypass-approvals-and-sandbox'])
             cmd = prefix + ['exec', '--json'] + sandbox_flags
         if model:
             cmd.extend(['-m', model])
