@@ -204,9 +204,9 @@ function _authBannerMessage(state) {
     : ((_agentProviders || []).find(p => p.name === prov) || {}).display_name || prov;
   switch (state && state.reason) {
     case 'not_logged_in':
-      return `Log in to ${provLabel} to get started — agents can't run until you're signed in.`;
+      return `Log in to ${provLabel} to get started: agents can't run until you're signed in.`;
     case 'invalid_api_key':
-      return `${provLabel} credentials are invalid — sign in again to refresh them.`;
+      return `${provLabel} credentials are invalid: sign in again to refresh them.`;
     case 'cli_not_found':
       return `The \`${prov}\` CLI isn't on this machine's PATH.`;
     default:
@@ -397,7 +397,7 @@ async function settingsProviderTerminalLogin(provider, btnEl) {
         _renderRemoteLoginBox(provider, data.url);
         return;
       }
-      showToast(`${provider} didn't print a sign-in link in time — try Sign in again.`, 8000);
+      showToast(`${provider} didn't print a sign-in link in time. Try Sign in again.`, 8000);
       return;
     }
 
@@ -413,7 +413,7 @@ async function settingsProviderTerminalLogin(provider, btnEl) {
     }
     const how = provider === 'claude' ? 'Type /login in it' : 'Complete sign-in there';
     if (launch.verified === false) {
-      showToast(`Couldn't confirm a terminal opened for ${provider} — if you don't see one, run \`${launch.command || provider}\` yourself in a terminal, then click Check status.`, 14000);
+      showToast(`Couldn't confirm a terminal opened for ${provider}. If you don't see one, run \`${launch.command || provider}\` yourself in a terminal, then click Check status.`, 14000);
     } else {
       showToast(`A terminal opened with ${provider}. ${how}, then click Check status.`, 12000);
     }
@@ -492,7 +492,7 @@ async function settingsRemoteLoginSubmitCode(provider) {
     const data = await res.json().catch(() => ({}));
     if (resultEl) {
       resultEl.textContent = (data.output_tail || '').trim().slice(-300)
-        || (res.ok ? 'Submitted — checking sign-in status...' : (data.error || 'Failed.'));
+        || (res.ok ? 'Submitted, checking sign-in status...' : (data.error || 'Failed.'));
     }
     // A wrong code leaves the CLI re-prompting; a right one flips auth_status —
     // reuse the existing check/refresh paths rather than inventing a new one.
@@ -552,11 +552,11 @@ async function settingsProviderAuthProbe(provider, btnEl) {
     if (pillText) pillText.textContent = text;
     if (line) {
       if (state.status === 'quota_exceeded') {
-        line.innerHTML = `<span style="color:var(--red)">Quota exceeded${esc(tierNote)} — ${esc(state.error_text || 'this model will keep failing until it resets.')}</span>`;
+        line.innerHTML = `<span style="color:var(--red)">Quota exceeded${esc(tierNote)}: ${esc(state.error_text || 'this model will keep failing until it resets.')}</span>`;
       } else if (state.status === 'invalid_api_key') {
         line.innerHTML = `<span style="color:var(--red)">${esc(state.error_text || 'Key rejected.')}</span>`;
       } else if (state.ok) {
-        line.innerHTML = `<span style="color:var(--green)">Verified &mdash; live call succeeded${esc(tierNote)}.</span>`;
+        line.innerHTML = `<span style="color:var(--green)">Verified: live call succeeded${esc(tierNote)}.</span>`;
       } else {
         line.innerHTML = `<span style="color:var(--amber)">${esc(state.error_text || ('Probe returned: ' + (state.status || 'unknown')))}</span>`;
       }
@@ -684,11 +684,11 @@ async function providerInstallSelected(button, only) {
         setMsg(name, 'A terminal opened to install it. Once it finishes, click "Check setup status".');
       }
       for (const name of (data.unsupported || [])) {
-        setMsg(name, 'No automatic install available for this vendor — see its own Install button.');
+        setMsg(name, 'No automatic install available for this vendor: see its own Install button.');
       }
     } else if (data.command) {
       for (const name of names) {
-        setMsg(name, `Couldn't start that here (${data.error || 'no runnable install'}) — run this yourself: ${data.command}`);
+        setMsg(name, `Couldn't start that here (${data.error || 'no runnable install'}). Run this yourself: ${data.command}`);
       }
     } else {
       for (const name of names) {
@@ -785,7 +785,7 @@ function _renderProviderRow(p, opts) {
               ${needSignIn ? `<button type="button" class="btn-add prov-sign-in" style="${btnCss}"
                 onclick="settingsProviderTerminalLogin('${n}',this)">Sign in</button>` : ''}
               ${installed ? `<button type="button" class="btn-add prov-check" style="${btnCss}"
-                ${costs ? `title="Spends one live API call against ${esc(p.display_name)} to verify the key can actually serve a request — counts against today's quota."` : ''}
+                ${costs ? `title="Spends one live API call against ${esc(p.display_name)} to verify the key can actually serve a request: counts against today's quota."` : ''}
                 onclick="providerCheckStatus('${n}',this)">Check status</button>` : ''}
             </div>`;
   // Out-of-allowance record: shown here with the way out. The record is one
@@ -813,7 +813,7 @@ function _renderProviderRow(p, opts) {
   const extra = envKey ? `<div class="prov-row-extra" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 8px 0">
               <span style="font-size:11px;color:var(--text-faint);min-width:130px">${esc(envKey)}</span>
               <input id="settings-prov-key-${n}" type="password" class="settings-input" style="flex:1;min-width:140px"
-                placeholder="${authOk ? '(saved — paste to replace)' : 'paste API key'}" autocomplete="off">
+                placeholder="${authOk ? '(saved, paste to replace)' : 'paste API key'}" autocomplete="off">
               <button type="button" class="btn-add" onclick="settingsProviderSetEnv('${n}','${esc(envKey)}',this)">Save</button>
             </div>` : '';
   return `
@@ -877,7 +877,7 @@ async function providerAllowanceRecheck(name, btnEl) {
     if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
     const label = ((_agentProviders || []).find(x => x.name === name) || {}).display_name || name;
     showToast(data.probe === 'usable'
-      ? `${label} reports allowance available — ready to run.`
+      ? `${label} reports allowance available, ready to run.`
       : `${label} allowance re-checked. The next run will confirm; if it is still out, it will say so.`, 6000);
     _agentProviders = null;
     await _ensureAgentProviders();
@@ -949,7 +949,7 @@ async function providerInstall(name, btnEl) {
         btnEl.onclick = (e) => { e.preventDefault(); providerRefreshAll(); };
       }
     } else if (data.command) {
-      if (msgEl) msgEl.textContent = `Couldn't start that here (${data.error || 'no runnable install'}) — run this yourself: ${data.command}`;
+      if (msgEl) msgEl.textContent = `Couldn't start that here (${data.error || 'no runnable install'}). Run this yourself: ${data.command}`;
       if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Install'; }
     } else {
       if (msgEl) msgEl.textContent = data.error || 'Could not start the install.';

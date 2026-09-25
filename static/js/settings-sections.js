@@ -23,9 +23,32 @@ async function refreshLocalAccessSection() {
   try { _applySettingsSectionVisibility(); } catch (_) {}
 }
 
+// True only while first-run setup's own overlay is the visible surface — NOT
+// element-ancestry sniffing, because setupOpenConnectivity hides the setup
+// overlay (display:none) rather than removing it while Settings is open, so
+// a stale #local-access-section can still exist inside it; checking the
+// overlay's own display style instead of the (possibly duplicate-id) child
+// is the one signal that's correct in every case, including "opened
+// Connectivity from setup" where this must read as Settings, not setup.
+function _localAccessInSetup() {
+  const ov = document.getElementById('setup-overlay');
+  return !!(ov && ov.style.display !== 'none');
+}
+
 function localAccessSettingsHTML() {
   const st = window._localAuthState;
   const configured = !!(st && st.configured);
+  // Setup context: the surrounding _setupSec('Passcode', ...) wrapper already
+  // carries the purpose sentence, so this only needs a one-line status plus
+  // the action button — no title row, no badge, no locked-out paragraph.
+  if (_localAccessInSetup()) {
+    return `<div id="local-access-section">
+      <div class="settings-hint" style="margin-bottom:8px">${configured ? 'A passcode is already set.' : 'No passcode set yet.'}</div>
+      <div id="local-auth-form-row">
+        <button class="btn-dispatch" onclick="showLocalAuthForm('${configured ? 'change' : 'set'}')">${configured ? 'Change passcode' : 'Set a passcode'}</button>
+      </div>
+    </div>`;
+  }
   const pill = configured
     ? `<span style="font-size:11px;font-weight:600;padding:3px 8px;border-radius:8px;background:#10b98122;color:#059669;border:1px solid #10b98155;letter-spacing:.3px;margin-left:8px">On</span>`
     : `<span style="font-size:11px;font-weight:600;padding:3px 8px;border-radius:8px;background:#f59e0b22;color:#d97706;border:1px solid #f59e0b55;letter-spacing:.3px;margin-left:8px">Set a passcode</span>`;
