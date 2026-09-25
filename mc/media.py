@@ -57,6 +57,15 @@ _IMG_RE = re.compile(
     r'\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif))(?![A-Za-z0-9])',
     re.IGNORECASE,
 )
+# A `[file:<abs path>]` / `[file:<abs path>|Label]` download marker naming an
+# image. Agents reach for this marker to hand over screenshots (Tobin's ten
+# first-run shots, 2026-09-24) and _IMG_RE can never see them: its lookbehind
+# rejects the `:` in `file:`. They are still pictures an agent produced, so
+# they belong in the gallery.
+_FILE_MARKER_IMG_RE = re.compile(
+    r'\[file:([^\]|\r\n]+?\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif))(?:\|[^\]]*)?\]',
+    re.IGNORECASE,
+)
 # A ```mermaid fenced block. DOTALL so the diagram body spans lines.
 _MERMAID_RE = re.compile(r'```mermaid[ \t]*\r?\n(.*?)```', re.DOTALL | re.IGNORECASE)
 
@@ -99,6 +108,8 @@ def extract(text: str) -> list[dict]:
     without_diagrams = _MERMAID_RE.sub('', text)
     for path in _IMG_RE.findall(without_diagrams):
         out.append({'kind': 'image', 'path': path})
+    for path in _FILE_MARKER_IMG_RE.findall(without_diagrams):
+        out.append({'kind': 'image', 'path': path.strip()})
     return out
 
 

@@ -715,6 +715,9 @@ function modalContentHTML(p) {
             <button class="modal-menu-item${activeTab==='documents'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','documents')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-plan"/></svg></span> Documents
             </button>
+            <button class="modal-menu-item" onclick="_mcMenuClose();openMediaSurface('${esc(p.id)}')">
+              <span class="menu-icon"><svg class="menu-svg"><use href="#ic-media"/></svg></span> Media
+            </button>
             <button class="modal-menu-item${activeTab==='activity'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','activity')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-activity"/></svg></span> Activity
             </button>
@@ -868,9 +871,6 @@ function modalContentHTML(p) {
           </button>
           <button class="modal-menu-item" onclick="openAllPersonasForProject('${esc(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-personas"/></svg></span> Personas
-          </button>
-          <button class="modal-menu-item" onclick="_mcMenuClose();openMediaSurface('${esc(p.id)}')">
-            <span class="menu-icon"><svg class="menu-svg"><use href="#ic-media"/></svg></span> Media
           </button>
           <button class="modal-menu-item" onclick="_mcMenuClose();openAllHivemindsForProject('${esc(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-hivemind"/></svg></span> Hiveminds

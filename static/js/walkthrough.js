@@ -39,7 +39,7 @@ const WT_STEPS = [
   {
     id: 'tabs',
     title: 'Tabs & Menu',
-    body: 'A project modal has seven tabs at the top of its <strong>three-dot menu</strong>: <strong>Agent</strong> (conversation + dispatch), <strong>Backlog</strong>, <strong>Social</strong> (this project’s Desk queue), <strong>Agent Log</strong> (completed sessions — click any to read its transcript), <strong>Documents</strong>, <strong>Activity</strong> and <strong>Workflows</strong>. Below them, the same menu holds Status, Appearance, Edit Profile, Agent Settings, and an <strong>Advanced</strong> group — GitHub &amp; Code Sync, Memory, Rules, Skills, Export, MCP servers, Personas, Media, and this project’s Hiveminds.',
+    body: 'A project modal has seven tabs at the top of its <strong>three-dot menu</strong>: <strong>Agent</strong> (conversation + dispatch), <strong>Backlog</strong>, <strong>Social</strong> (this project’s Desk queue), <strong>Agent Log</strong> (completed sessions — click any to read its transcript), <strong>Documents</strong> (with <strong>Media</strong>, every image and diagram agents produced, right under it), <strong>Activity</strong> and <strong>Workflows</strong>. Below them, the same menu holds Status, Appearance, Edit Profile, Agent Settings, and an <strong>Advanced</strong> group — GitHub &amp; Code Sync, Memory, Rules, Skills, Export, MCP servers, Personas, and this project’s Hiveminds.',
     target: null, pos: 'left', demo: 'modal-menu', demoTarget: '.wt-menu-tabs',
   },
   {

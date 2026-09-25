@@ -41,6 +41,20 @@ def test_extracts_a_rendered_image_path():
     assert out == [{'kind': 'image', 'path': r'C:\Users\levir\Documents\_claude\mission-control\_scratch\mc.png'}]
 
 
+def test_extracts_an_image_named_by_a_file_marker():
+    """Agents hand screenshots over as [file:...] download markers; _IMG_RE's
+    lookbehind rejects the `:` in `file:`, so they never reached the gallery."""
+    text = 'Shots:\n[file:C:\\x\\a.png]\n[file:/tmp/b.webp|Step B]\n[file:C:\\x\\log.txt]'
+    assert media.extract(text) == [{'kind': 'image', 'path': 'C:\\x\\a.png'},
+                                   {'kind': 'image', 'path': '/tmp/b.webp'}]
+
+
+def test_file_marker_image_is_recorded_when_on_disk(wired, img):
+    a = img('marker.png')
+    assert media.record_from_text('p', 's', f"[file:{a}|Label]") == 1
+    assert [m['path'] for m in media.list_media('p')] == [a]
+
+
 def test_extracts_a_mermaid_diagram():
     out = media.extract("Look:\n\n```mermaid\nflowchart TD\n  A --> B\n```\n")
     assert len(out) == 1
