@@ -221,6 +221,12 @@ def _downloads_root():
     return os.path.join(os.path.expanduser('~'), '.clayrune', 'browser_downloads')
 
 
+# A page a pane visits has no other say in how much disk a download burns —
+# without a cap it's unbounded. Enforced in _run_cdp's Browser.downloadProgress
+# handler by canceling the CDP download once receivedBytes crosses this.
+_DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024  # 1 GB
+
+
 def _download_dir_for(session):
     """One subdir per profile (so a signed-in profile's downloads land
     together across sessions); unnamed/throwaway sessions get their own
@@ -270,13 +276,90 @@ def _finalize_download(session, d):
     try:
         os.makedirs(str(_UPLOADS_DIR), exist_ok=True)
         dest = os.path.join(str(_UPLOADS_DIR), stored_name)
-        shutil.copyfile(src, dest)
-        os.remove(src)  # the servable copy now lives in UPLOADS_DIR; don't keep two
+        # move, not copy+remove — a copy briefly doubles a file up to
+        # _DOWNLOAD_MAX_BYTES (1 GB) on the same volume for no reason.
+        shutil.move(src, dest)
     except Exception as e:
         d['error'] = f'could not finalize download: {e}'
         return
     d['uploads_path'] = dest
     d['serve_url'] = f'/api/serve-file?path={_urlquote(dest)}&inline=0'
+
+
+def _delete_partial_download(session, guid):
+    """Remove whatever bytes a canceled download left at
+    <download_dir>/<guid> — a canceled download is never finalized, so
+    nothing else on this path cleans it up."""
+    dl_dir = session.get('download_dir')
+    if not dl_dir or not guid:
+        return
+    path = os.path.join(dl_dir, guid)
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except Exception as e:
+        print(f'[browser] partial download cleanup failed for {path}: {e}', flush=True)
+
+
+def _on_download_will_begin(session, params):
+    """Handle a Browser.downloadWillBegin CDP event (called from _run_cdp).
+
+    Fires on the same page-level ws once Browser.setDownloadBehavior
+    (eventsEnabled=True) has been called — no separate browser-level CDP
+    connection needed. This is also the actual root cause of the historical
+    "frozen pane": Chromium processes the download fine, but a download never
+    repaints the page, so screencastFrame never fires for it and the pane
+    keeps showing whatever was on screen before the click, forever, with no
+    other signal that anything happened.
+
+    A throwaway (no-profile) session had its behaviour set to 'deny' — no
+    bytes are ever written, so there's no partial file to clean up here, just
+    the "why did nothing happen" reason to show instead of silence."""
+    guid = params.get('guid')
+    if not guid:
+        return
+    entry = {
+        'guid': guid, 'url': params.get('url'),
+        'filename': params.get('suggestedFilename') or guid,
+        'state': 'in_progress', 'received_bytes': 0, 'total_bytes': 0,
+    }
+    if not session.get('profile'):
+        entry['state'] = 'canceled'
+        entry['error'] = ('Downloads are off in temp sessions. '
+                          'Open a signed-in profile to download.')
+    session.setdefault('downloads', {})[guid] = entry
+    session['downloads_seq'] = session.get('downloads_seq', 0) + 1
+
+
+def _on_download_progress(session, params, send):
+    """Handle a Browser.downloadProgress CDP event (called from _run_cdp).
+
+    Tracks bytes, finalizes on completion, enforces the _DOWNLOAD_MAX_BYTES
+    cap (a page has no other say in how much disk a download burns through),
+    and deletes a canceled download's partial file — CDP doesn't clean that
+    up on its own. `send` is _run_cdp's CDP-command sender, passed in so the
+    cap can issue Browser.cancelDownload without this module owning a ws."""
+    guid = params.get('guid')
+    d = session.get('downloads', {}).get(guid) if guid else None
+    if d is None:
+        return
+    state = params.get('state')  # 'inProgress' | 'completed' | 'canceled'
+    received = params.get('receivedBytes', 0)
+    if state == 'inProgress' and received > _DOWNLOAD_MAX_BYTES:
+        try:
+            send('Browser.cancelDownload', {'guid': guid})
+        except Exception as e:
+            session['error'] = f'cancel oversized download failed: {e}'
+        state = 'canceled'
+        d['error'] = 'too large (over 1 GB)'
+    d['state'] = 'in_progress' if state == 'inProgress' else (state or d['state'])
+    d['received_bytes'] = received
+    d['total_bytes'] = params.get('totalBytes', 0)
+    if d['state'] == 'completed':
+        _finalize_download(session, d)
+    elif d['state'] == 'canceled':
+        _delete_partial_download(session, guid)
+    session['downloads_seq'] = session.get('downloads_seq', 0) + 1
 
 
 # Same shape as a secret name (mc/secrets_store.py): lowercase, dot-namespaced.
@@ -506,14 +589,28 @@ def _run_cdp(session):
         # the pane gives zero visual sign anything happened at all, because a
         # download never repaints the page (no new screencastFrame is ever
         # generated for it, even though the screencast itself keeps running).
-        dl_dir = _download_dir_for(session)
-        try:
-            os.makedirs(dl_dir, exist_ok=True)
-            send('Browser.setDownloadBehavior',
-                 {'behavior': 'allowAndName', 'downloadPath': dl_dir, 'eventsEnabled': True})
-            session['download_dir'] = dl_dir
-        except Exception as e:
-            session['error'] = f'download behavior setup failed: {e}'
+        #
+        # A THROWAWAY session (no profile) is what an agent gets by default,
+        # and it browses untrusted pages — deny the write outright so an
+        # agent-driven page can never drop a file into data/uploads.
+        # eventsEnabled stays True so Page.downloadWillBegin still fires (it
+        # does even when denied) and the pane can tell the user why nothing
+        # happened, instead of looking frozen the same way the missing-signal
+        # bug above did.
+        if session.get('profile'):
+            dl_dir = _download_dir_for(session)
+            try:
+                os.makedirs(dl_dir, exist_ok=True)
+                send('Browser.setDownloadBehavior',
+                     {'behavior': 'allowAndName', 'downloadPath': dl_dir, 'eventsEnabled': True})
+                session['download_dir'] = dl_dir
+            except Exception as e:
+                session['error'] = f'download behavior setup failed: {e}'
+        else:
+            try:
+                send('Browser.setDownloadBehavior', {'behavior': 'deny', 'eventsEnabled': True})
+            except Exception as e:
+                session['error'] = f'download behavior setup failed: {e}'
         # A background tab renders nothing in headless Chromium, so the tab we
         # attached to must be the frontmost one or every frame is a no-show.
         send('Page.bringToFront')
@@ -637,34 +734,9 @@ def _run_cdp(session):
                     except Exception as e:
                         session['error'] = f'rearm failed: {e}'
             elif method == 'Browser.downloadWillBegin':
-                # Fires on this same page-level ws once Browser.setDownloadBehavior
-                # (eventsEnabled=True) has been called — no separate browser-level
-                # CDP connection needed. This is also the actual root cause of the
-                # "frozen pane": Chromium processes the download fine, but a
-                # download never repaints the page, so screencastFrame never fires
-                # for it and the pane keeps showing whatever was on screen before
-                # the click, forever, with no other signal that anything happened.
-                p = msg.get('params') or {}
-                guid = p.get('guid')
-                if guid:
-                    session.setdefault('downloads', {})[guid] = {
-                        'guid': guid, 'url': p.get('url'),
-                        'filename': p.get('suggestedFilename') or guid,
-                        'state': 'in_progress', 'received_bytes': 0, 'total_bytes': 0,
-                    }
-                    session['downloads_seq'] = session.get('downloads_seq', 0) + 1
+                _on_download_will_begin(session, msg.get('params') or {})
             elif method == 'Browser.downloadProgress':
-                p = msg.get('params') or {}
-                guid = p.get('guid')
-                d = session.get('downloads', {}).get(guid) if guid else None
-                if d is not None:
-                    state = p.get('state')  # 'inProgress' | 'completed' | 'canceled'
-                    d['state'] = 'in_progress' if state == 'inProgress' else (state or d['state'])
-                    d['received_bytes'] = p.get('receivedBytes', 0)
-                    d['total_bytes'] = p.get('totalBytes', 0)
-                    if state == 'completed':
-                        _finalize_download(session, d)
-                    session['downloads_seq'] = session.get('downloads_seq', 0) + 1
+                _on_download_progress(session, msg.get('params') or {}, send)
     except Exception as e:
         session['status'] = 'error'
         session['error'] = str(e)
@@ -878,6 +950,17 @@ def _kill_browser_session(session):
             shutil.rmtree(udd, ignore_errors=True)
         except Exception as e:
             print(f'[browser] profile cleanup failed for {udd}: {e}', flush=True)
+    # Defensive: a throwaway session denies downloads outright (see _run_cdp),
+    # so its per-session _throwaway_<sid> dir under _downloads_root() should
+    # already be empty or never created — but remove it either way so a
+    # setup-race or a future behaviour change can't leak one forever.
+    if session.get('session_id'):
+        dl_dir = _download_dir_for(session)
+        if os.path.isdir(dl_dir):
+            try:
+                shutil.rmtree(dl_dir, ignore_errors=True)
+            except Exception as e:
+                print(f'[browser] download dir cleanup failed for {dl_dir}: {e}', flush=True)
 
 
 @bp.route('/api/browser/launch', methods=['POST'])

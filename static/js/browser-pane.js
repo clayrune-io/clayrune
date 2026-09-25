@@ -469,8 +469,11 @@ let _bpDoneToasted = new Set();
 function _bpRenderDownloads(win, downloads) {
   const box = win && win.querySelector('[data-bp="downloads"]');
   if (!box) return;
-  const active = (downloads || []).filter(d => d.state !== 'canceled');
-  box.innerHTML = active.map(d => {
+  // 'canceled' used to be filtered out here — but a cap-cancel or a
+  // denied-in-a-throwaway-session download IS the outcome, not noise, and
+  // hiding it left the pane looking exactly as frozen as the no-signal-at-all
+  // bug this whole downloads UI exists to fix. Show it with its reason.
+  box.innerHTML = (downloads || []).map(d => {
     const pct = d.total_bytes ? Math.round(100 * d.received_bytes / d.total_bytes) : null;
     const label = _bpEsc(d.filename || d.guid);
     if (d.state === 'completed') {
@@ -479,6 +482,12 @@ function _bpRenderDownloads(win, downloads) {
         <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">&#10003; ${label}</div>
         ${href ? `<a href="${href}" target="_blank" style="color:#8ab4f8">Open / download</a>`
                : `<span style="color:#e57373">${_bpEsc(d.error || 'could not be saved')}</span>`}
+      </div>`;
+    }
+    if (d.state === 'canceled') {
+      return `<div style="pointer-events:auto;background:#242424;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:11px;color:#eee">
+        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">&#10005; ${label}</div>
+        <span style="color:#e57373">${_bpEsc(d.error || 'canceled')}</span>
       </div>`;
     }
     return `<div style="pointer-events:none;background:#242424;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:11px;color:#eee">
@@ -495,6 +504,10 @@ function _bpRenderDownloads(win, downloads) {
         showToast(d.serve_url ? `\u{1F4E5} Downloaded: ${d.filename}`
                                : `Download finished but couldn't be saved: ${d.error || d.filename}`);
       }
+    }
+    if (d.state === 'canceled' && !_bpDoneToasted.has(d.guid)) {
+      _bpDoneToasted.add(d.guid);
+      if (typeof showToast === 'function') showToast(`Download canceled: ${d.error || d.filename}`);
     }
   }
 }
