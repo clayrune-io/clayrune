@@ -388,6 +388,12 @@ FENCE_HOOK_NAME = 'clayrune-steward-fence'
 FENCE_ARMED_ARG = '--armed'
 FENCE_SELF_TEST_ARG = '--self-test'
 FENCE_SELF_TEST_TOKEN = 'CLAYRUNE-FENCE-SELF-TEST-OK'
+# A hook timeout fails OPEN in Codex, so this must sit far above the fence's
+# real runtime. Measured 2026-09-25 through the Codex hook shell (PowerShell
+# + python + fence.py), 20 runs each: armed block max 0.29 s, armed allow
+# max 0.30 s, unarmed max 0.27 s; 8 concurrent, 40 runs: max 0.36 s. About
+# 80x headroom. tests/test_codex_steward_fence.py fails if one armed run
+# takes over a fifth of this.
 CODEX_FENCE_TIMEOUT_SEC = 30
 
 _FENCE_FAIL_REASON = 'STEWARD FENCE failed to run; blocking this tool call fail-closed. Exit: '
