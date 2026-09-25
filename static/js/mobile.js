@@ -163,6 +163,21 @@
   // inset=0 once the field is no longer focused, so this doesn't need its
   // own "pretend the keyboard is gone" branch — it just needs to run NOW.
   window.mcRestoreFullHeight = apply;
+  // Exposed for updateAgentStatusUI (index.html): a turn settling (running →
+  // idle/error/completed) deliberately skips the full modal rebuild (MC-940 —
+  // rebuilding the composer every turn cost ~205ms/keystroke on mobile), so
+  // nothing in that lightweight status patch ever touches focus or the
+  // keyboard inset. If the composer still holds focus from a stale-vv dismiss
+  // (down-button or the Android back gesture — same WebView quirk as the
+  // 2c7e42a/931449b cases: no focusout, no vv resize) that predates the turn
+  // ending, the modal is stuck at keyboard height with no keyboard on screen
+  // and NOTHING left to prove it — the layout watchdog explicitly stands down
+  // while a field is focused, and the user may never tap the transcript (they
+  // were just watching the reply finish). A settled turn is itself proof
+  // there is no more reason to trust an old inset: reuse the same
+  // assume-no-keyboard-then-let-a-real-vv-reading-correct-it recovery already
+  // trusted for app backgrounding.
+  window.mcRecoverViewportOnStatusSettle = forceFull;
 })();
 
 // ── Mobile UI: app bar greeting + filter pills (≤960px, warm tone) ──────────

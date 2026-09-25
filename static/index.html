@@ -1946,6 +1946,13 @@ function updateAgentStatusUI(sessionId, status) {
   if (label) { label.className = `agent-status-label ${dotClass}`; label.textContent = labelText; }
   const tabDot = document.querySelector(`.agent-tab.active .agent-status-dot`);
   if (tabDot) { tabDot.className = `agent-status-dot ${dotClass}`; }
+  // This patch deliberately never touches the composer (see the MC-940 comment
+  // on tabContent in conversation.js), so a turn settling can't itself clear a
+  // stale keyboard inset left over from a stale-vv dismiss. Re-validate mobile's
+  // viewport height now — see mobile.js's mcRecoverViewportOnStatusSettle for why.
+  if (status !== 'running' && typeof window.mcRecoverViewportOnStatusSettle === 'function') {
+    window.mcRecoverViewportOnStatusSettle();
+  }
 }
 
 async function guardianReset(projectId, sessionId, action) {
