@@ -58,6 +58,7 @@ from mc.execution_policy import (
 from mc.guardrail_hooks import launch_file_if_exists as _guardrail_launch_file
 from mc.guardrail_hooks import codex_hook_config_args as _guardrail_codex_hook_args
 from mc.guardrail_hooks import codex_fence_self_test as _codex_fence_self_test
+from mc.guardrail_hooks import hooks_dir as _guardrail_hooks_dir
 
 # Per-vendor env var each CLI resolves fresh per invocation for a per-launch
 # settings override — verified additive with the user's own config (not a
@@ -3339,11 +3340,123 @@ def _log_mcp_sync_result(log_lines: List[str], result: Optional[Dict[str, Any]])
     followup, so a "[mcp-sync] available to Gemini: ..." line appeared in the
     chat on every single turn — pure noise. The sync still happens; it is
     just silent unless something actually went wrong.
+
+    Unused by GeminiRuntime.dispatch()/write_followup() as of vendor-parity
+    gap 3 (docs/VENDOR_HARNESS_MATRIX.md) — see `_gemini_session_settings_path`
+    for why `_sync_mcp_to_gemini_safe` is no longer called from either. Kept,
+    not deleted: tests/test_gemini_cold_resume.py monkeypatches both this and
+    `_sync_mcp_to_gemini_safe` as a no-op guard against real file I/O in a
+    unit test, and removing either name would break that patch for no
+    behavioral gain.
     """
     if not result:
         return
     if result.get('error'):
         log_lines.append(f"[mcp-sync] failed (best-effort): {result['error']}")
+
+
+# Deny-all sentinel matching no real server name. Same value and purpose as
+# QwenRuntime's own `_QWEN_MCP_DENY_SENTINEL` (and the literal
+# `_probe_gemini_cli_call` already hardcodes) — a separate, gemini-scoped
+# constant rather than importing qwen's: the two runtimes are independent
+# CLIs that happen to share this trick, not a shared contract.
+_GEMINI_MCP_DENY_SENTINEL = '__clayrune_none__'
+
+
+def _gemini_mcp_server_names(mcp_config_json: str) -> List[str]:
+    """Server names declared in `mcp_config_json` (a `{"mcpServers": {...}}`
+    JSON string from `_runtime_mcp_config_json`), sorted for determinism, or
+    `[]` if blank/malformed. Malformed input must fail closed (deny-all),
+    never fall through to native discovery — same contract as
+    QwenRuntime.build_command's identical parse."""
+    if not mcp_config_json or not mcp_config_json.strip():
+        return []
+    try:
+        return sorted((json.loads(mcp_config_json).get('mcpServers') or {}).keys())
+    except Exception:
+        return []
+
+
+def _gemini_session_settings_path(mcp_config_json: str) -> Optional[Path]:
+    """A per-dispatch Gemini "system settings" file declaring EXACTLY
+    `mcp_config_json`'s server set, merged with Clayrune's own guardrail
+    hooks file (tools/guards/install_hooks.py) — the ONE file
+    `GEMINI_CLI_SYSTEM_SETTINGS_PATH` can point at per launch, so hooks and
+    MCP can't each claim the env var for themselves.
+
+    Vendor-parity gap 3 (docs/VENDOR_HARNESS_MATRIX.md): the previous
+    mechanism (`_sync_mcp_to_gemini_safe` -> `mc.mcp.sync_to_gemini`) merged
+    MC's servers INTO the user's own `~/.gemini/settings.json` — forbidden
+    (AGENT_RULES: never edit that file directly) and additive-only, so it
+    could add filesystem/engram but never remove the user's own
+    tradingview/mail/sequential-thinking entries. That is exactly the leak
+    measured live 2026-09-25 (`mail` is a server AGENT_RULES forbids agents
+    from reading directly). A per-dispatch file at the SYSTEM layer
+    (highest precedence — the same mechanism the hook installer already
+    uses) plus `--allowed-mcp-server-names` restricting discovery to
+    exactly these names is what actually closes it: gemini has no
+    `--mcp-config` flag to declare servers inline the way Claude/Qwen do
+    (confirmed against the installed CLI's own `--help`), so the settings
+    file is the only channel left to DECLARE a server; the CLI flag is only
+    a FILTER on top of whatever a settings layer declares.
+
+    Content-hashed filename: concurrent projects with different MCP sets
+    never collide or race on the same file, and an unchanged combination is
+    a no-op write — mirrors `GeminiRuntime._transform_policy_path`'s
+    idempotent-write pattern. Returns None when there is nothing to declare
+    AND no hooks file exists either (mirrors `launch_file_if_exists`'s
+    "missing means don't inject" contract); the caller falls back to the
+    plain hooks-only env injection in that case, unchanged from before this
+    fix.
+    """
+    hooks_data: Dict[str, Any] = {}
+    hooks_path = _guardrail_launch_file('gemini')
+    if hooks_path:
+        try:
+            hooks_data = json.loads(hooks_path.read_text(encoding='utf-8'))
+        except Exception as e:
+            print(f'[runtime:gemini] guardrail hooks file unreadable, '
+                  f'omitting from session settings: {e}', flush=True)
+            hooks_data = {}
+    servers: Dict[str, Any] = {}
+    if mcp_config_json and mcp_config_json.strip():
+        try:
+            raw = json.loads(mcp_config_json).get('mcpServers') or {}
+            if isinstance(raw, dict):
+                servers = raw
+        except Exception as e:
+            print(f'[runtime:gemini] malformed mcp_config_json, '
+                  f'declaring no servers: {e}', flush=True)
+    if not hooks_data and not servers:
+        return None
+    merged = dict(hooks_data)
+    merged['mcpServers'] = servers
+    payload = json.dumps(merged, indent=2, sort_keys=True)
+    digest = hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]
+    path = _guardrail_hooks_dir() / f'gemini-mcp-{digest}.json'
+    try:
+        if not path.is_file() or path.read_text(encoding='utf-8') != payload:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(payload, encoding='utf-8')
+    except Exception as e:
+        print(f'[runtime:gemini] session settings write failed, falling back '
+              f'to the shared hooks file: {e}', flush=True)
+        return hooks_path
+    return path
+
+
+def _inject_gemini_env(env: Dict[str, str], mcp_config_json: str = '') -> Dict[str, str]:
+    """Mutate `env` in place: point `GEMINI_CLI_SYSTEM_SETTINGS_PATH` at the
+    merged hooks+MCP file (`_gemini_session_settings_path`) instead of the
+    shared hooks-only file `_inject_guardrail_env` would use. Falls back to
+    that shared injection when there is nothing to merge (no hooks file
+    generated yet and no MCP set declared), so a launch before boot-time
+    hook generation behaves exactly as it did before this gap was fixed."""
+    path = _gemini_session_settings_path(mcp_config_json)
+    if path:
+        env['GEMINI_CLI_SYSTEM_SETTINGS_PATH'] = str(path)
+        return env
+    return _inject_guardrail_env('gemini', env)
 
 
 class GeminiRuntime(AgentRuntime):
@@ -3570,7 +3683,7 @@ class GeminiRuntime(AgentRuntime):
     def build_command(self, *, model: str = '', max_turns: int = 0,
                       streaming: bool = False, perm_mode: str = '',
                       channels: str = '', remote_control: bool = False,
-                      resume_id: str = '',
+                      resume_id: str = '', mcp_config_json: str = '',
                       extra_include_dirs: Optional[List[str]] = None) -> List[str]:
         bin_path = self.resolve_binary()
         cmd = [str(bin_path) if bin_path else 'gemini',
@@ -3587,6 +3700,22 @@ class GeminiRuntime(AgentRuntime):
                # registered, so trusting them for this one process is not a
                # new grant of anything the user didn't already choose.
                '--skip-trust']
+        # `--allowed-mcp-server-names` (vendor-parity gap 3,
+        # docs/VENDOR_HARNESS_MATRIX.md): gemini has no `--mcp-config` flag to
+        # declare servers inline (confirmed against the installed CLI's own
+        # `--help`), so this is a FILTER on top of whatever
+        # `GEMINI_CLI_SYSTEM_SETTINGS_PATH` declares (see
+        # `_gemini_session_settings_path`/`_inject_gemini_env`), not a
+        # declaration by itself — restricting discovery to exactly
+        # `mcp_config_json`'s names is what stops the user's own
+        # `~/.gemini/settings.json` servers (tradingview, the raw `mail` MCP
+        # AGENT_RULES forbids reading directly, ...) from leaking through
+        # alongside MC's own set. Empty/malformed input reaches the deny-all
+        # sentinel, same contract as QwenRuntime.build_command's identical
+        # parse — never fall through to unrestricted native discovery.
+        allowed_names = _gemini_mcp_server_names(mcp_config_json)
+        cmd.extend(['--allowed-mcp-server-names']
+                   + (allowed_names or [_GEMINI_MCP_DENY_SENTINEL]))
         # --resume <id> continues gemini's OWN session by the id captured off
         # its `init` envelope (`_read_stream`'s INIT branch, stashed onto
         # `session['provider_session_id']`) — the same flag `write_followup`
@@ -4267,13 +4396,12 @@ class GeminiRuntime(AgentRuntime):
                  session_dict: Optional[Dict[str, Any]] = None,
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
+                 mcp_config_json: str = '',
                  extra_include_dirs: Optional[List[str]] = None,
                  **_extra) -> SessionHandle:
         bin_path = self.resolve_binary()
         if not bin_path:
             raise CLINotInstalledError("gemini CLI not installed — run: npm install -g @google/gemini-cli")
-
-        mcp_sync = _sync_mcp_to_gemini_safe(project_path)
 
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
         # Slim the Claude-shaped prompt for Gemini, then append the MC Tool
@@ -4304,11 +4432,12 @@ class GeminiRuntime(AgentRuntime):
                            f"{task_text}")
 
         cmd = self.build_command(model=model, resume_id=resume_id,
+                                 mcp_config_json=mcp_config_json,
                                  extra_include_dirs=extra_include_dirs)
         env = os.environ.copy()
         if env_extra:
             env.update(env_extra)
-        _inject_guardrail_env('gemini', env)
+        _inject_gemini_env(env, mcp_config_json)
 
         proc = subprocess.Popen(
             cmd,
@@ -4347,8 +4476,12 @@ class GeminiRuntime(AgentRuntime):
             # persistent process) keeps the same widened workspace root —
             # W4/MC-947, mirrors `_mcp_config_json` on QwenRuntime.
             '_extra_include_dirs': list(extra_include_dirs or []),
+            # Same reason: vendor-parity gap 3 — a per-turn respawn without
+            # this would silently fall back to the deny-all sentinel on every
+            # followup after the first, re-opening the native-discovery leak
+            # this fix closes only for the FIRST turn.
+            '_mcp_config_json': mcp_config_json,
         })
-        _log_mcp_sync_result(session_dict['log_lines'], mcp_sync)
 
         handle = SessionHandle(
             mc_session_id=mc_sid,
@@ -4728,9 +4861,6 @@ class GeminiRuntime(AgentRuntime):
             session['last_status_change_time'] = _time.time()
             return
 
-        mcp_sync = _sync_mcp_to_gemini_safe(handle.project_path)
-        _log_mcp_sync_result(session['log_lines'], mcp_sync)
-
         # Stage 5 — native session resume. Resume THIS session by the id
         # captured from its init event (--resume <id>) — NEVER `latest`:
         # `latest` re-opens whatever gemini session is newest in the project
@@ -4754,8 +4884,14 @@ class GeminiRuntime(AgentRuntime):
         # stash `dispatch()` left so an attachment on turn 2+ still resolves.
         _model = self.session_model(handle)
         _include_dirs = session.get('_extra_include_dirs') or []
+        # Vendor-parity gap 3: the same MCP set `dispatch()` declared for
+        # turn 1, re-read from the stash — Mode A respawns the CLI per turn,
+        # so this has to be re-stated on every followup or turn 2+ silently
+        # falls back to the deny-all sentinel in `build_command`.
+        _mcp_json = session.get('_mcp_config_json') or ''
         if gemini_sid:
             cmd = self.build_command(model=_model, resume_id=gemini_sid,
+                                     mcp_config_json=_mcp_json,
                                      extra_include_dirs=_include_dirs)
             full_prompt = (f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n"
                            f"{self.with_attachment_hint(message)}")
@@ -4763,7 +4899,8 @@ class GeminiRuntime(AgentRuntime):
             # No id captured (session predates this fix, or init never landed)
             # — re-paste context rather than risk `latest` resuming the wrong
             # session. Costs tokens for this one turn but is always correct.
-            cmd = self.build_command(model=_model, extra_include_dirs=_include_dirs)
+            cmd = self.build_command(model=_model, mcp_config_json=_mcp_json,
+                                     extra_include_dirs=_include_dirs)
             session['_system_prompt'] = self.with_mc_tool_protocol(
                 self._slim_system_prompt(session.get('_system_prompt') or ''))
             full_prompt = _compose_respawn_prompt(
@@ -4778,7 +4915,7 @@ class GeminiRuntime(AgentRuntime):
             text=True,
             encoding='utf-8',
             errors='replace',
-            env=_inject_guardrail_env('gemini', os.environ.copy()),
+            env=_inject_gemini_env(os.environ.copy(), _mcp_json),
             creationflags=_POPEN_FLAGS,
             startupinfo=_STARTUPINFO,
         )
