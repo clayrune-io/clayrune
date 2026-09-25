@@ -5193,6 +5193,81 @@ def qwen_turn_context_tokens(transcript: Optional[Path],
     return None
 
 
+def codex_rollout_token_counts(jsonl_text: str) -> List[Dict[str, Any]]:
+    """Per-request token figures from a Codex rollout, oldest first.
+
+    codex-cli 0.155.1 writes one `event_msg` / `token_count` record per model
+    request, with `info.last_token_usage` (that request alone) and
+    `info.total_token_usage` (running sum over the THREAD, carried across
+    `codex exec resume`). `input_tokens` already includes
+    `cached_input_tokens`. Each entry is `{'last', 'total'}`."""
+    out: List[Dict[str, Any]] = []
+    for raw in (jsonl_text or '').splitlines():
+        if '"token_count"' not in raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        p = rec.get('payload') if isinstance(rec, dict) else None
+        if not isinstance(p, dict):
+            continue
+        info = p.get('info') if p.get('type') == 'token_count' else None
+        if not isinstance(info, dict):
+            continue
+        last = info.get('last_token_usage')
+        if isinstance(last, dict):
+            total = info.get('total_token_usage')
+            out.append({'last': last,
+                        'total': total if isinstance(total, dict) else {}})
+    return out
+
+
+def codex_turn_context_tokens(rollout: Optional[Path],
+                              usage: Optional[Dict[str, Any]],
+                              *, attempts: int = 3,
+                              delay: float = 0.2) -> Optional[int]:
+    """Context size of a Codex turn's LAST model request.
+
+    `turn.completed.usage` is not a per-request figure: it is the thread's
+    `total_token_usage` — every request of every turn so far, summed.
+    Measured 2026-09-25 on codex-cli 0.155.1: one 4-request turn reported
+    input 205,936 against a last request of 52,512 (and rolled the chat after
+    its first turn); a 97-request thread reported 11,345,241 against 202,596.
+    So read the rollout: the `token_count` whose running total equals the
+    reported one is this turn's last request. The rollout is written by a
+    separate task in the CLI and can trail stdout, so a miss is re-read a
+    few times; then the newest request on disk is used (stale by at most
+    a turn, never a sum); else None, so an inflated figure never reaches the rollover trigger."""
+    if rollout is None:
+        return None
+    want = usage.get('input_tokens') if isinstance(usage, dict) else None
+    reqs: List[Dict[str, Any]] = []
+    for attempt in range(max(1, attempts)):
+        try:
+            reqs = codex_rollout_token_counts(
+                rollout.read_text(encoding='utf-8', errors='replace'))
+        except OSError as e:
+            print(f'[runtime:codex] rollout read failed: {e}', flush=True)
+            reqs = []
+        if isinstance(want, (int, float)) and want > 0:
+            for r in reversed(reqs):
+                if r['total'].get('input_tokens') == want:
+                    v = r['last'].get('input_tokens')
+                    if isinstance(v, (int, float)) and v > 0:
+                        return int(v)
+                    break
+        else:
+            break
+        if attempt + 1 < attempts and delay > 0:
+            _time.sleep(delay)
+    if reqs:
+        v = reqs[-1]['last'].get('input_tokens')
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+    return None
+
+
 # Qwen settings DEFAULTS layer (lowest precedence: the user's own
 # ~/.qwen/settings.json still wins). `memory.enableManagedAutoMemory`
 # defaults to true in qwen-code 0.23.4, which runs a background model request
@@ -7834,6 +7909,16 @@ class CodexRuntime(AgentRuntime):
                 if _codex_same_path(cwd, project_path):
                     return f
         return matches[-1] if not any_readable_cwd else None
+
+    def turn_context_tokens(self, handle: 'SessionHandle',
+                            usage: Dict[str, Any],
+                            turn: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        """Last request's prompt, from this thread's rollout — see
+        `codex_turn_context_tokens` for why `turn.completed.usage` cannot be
+        used (it is the whole thread's running sum)."""
+        sid = handle.session_dict.get('provider_session_id') or ''
+        path = self.transcript_path(handle.project_path, sid) if sid else None
+        return codex_turn_context_tokens(path, usage)
 
     def list_sessions(self, project_path: str, limit: int = 5) -> List[Dict[str, Any]]:
         """List recent Codex conversations for a project by scanning rollouts.
