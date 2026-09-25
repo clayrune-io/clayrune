@@ -71,9 +71,14 @@ VENDOR_CONFIGS: Dict[str, Dict[str, str]] = {
 }
 
 
-def guard_command(guard_script: Path = GUARD_SCRIPT, python_exe: Optional[str] = None) -> str:
+def guard_command(guard_script: Optional[Path] = GUARD_SCRIPT, python_exe: Optional[str] = None) -> str:
     """Thin wrapper — see `mc.guardrail_hooks.guard_shell_command`'s
-    docstring for the full history (the quoting bug this fixed)."""
+    docstring for the full history (the quoting bug this fixed).
+
+    `guard_script`/`python_exe` are `Optional` (MC-975 follow-up, 2026-09-25):
+    a frozen-build caller passes both as `None` so `hook_invocation_tokens`
+    takes its `--clayrune-hook process-guard` branch instead of pointing at
+    `mc/process_guard.py`, which is bundled bytecode, not a file on disk."""
     return _gh.guard_shell_command(guard_script, python_exe)
 
 
@@ -109,7 +114,7 @@ def _load_json_object(path: Path) -> Dict[str, Any]:
     return data
 
 
-def plan_generate(vendor: str, guard_script: Path = GUARD_SCRIPT,
+def plan_generate(vendor: str, guard_script: Optional[Path] = GUARD_SCRIPT,
                    python_exe: Optional[str] = None,
                    real_home: Optional[Path] = None,
                    clayrune_home: Optional[Path] = None
@@ -161,7 +166,7 @@ def diff_text(before: Dict[str, Any], after: Dict[str, Any]) -> str:
     return ''.join(difflib.unified_diff(b, a, fromfile='before', tofile='after', lineterm='\n', n=0))
 
 
-def generate(vendor: str, apply: bool, guard_script: Path = GUARD_SCRIPT,
+def generate(vendor: str, apply: bool, guard_script: Optional[Path] = GUARD_SCRIPT,
              python_exe: Optional[str] = None, real_home: Optional[Path] = None,
              clayrune_home: Optional[Path] = None) -> Dict[str, Any]:
     before, after, changed = plan_generate(vendor, guard_script, python_exe, real_home, clayrune_home)
@@ -176,7 +181,7 @@ def generate(vendor: str, apply: bool, guard_script: Path = GUARD_SCRIPT,
     return result
 
 
-def generate_for_boot(clayrune_home: Optional[Path] = None, guard_script: Path = GUARD_SCRIPT,
+def generate_for_boot(clayrune_home: Optional[Path] = None, guard_script: Optional[Path] = GUARD_SCRIPT,
                        python_exe: Optional[str] = None,
                        installed_vendors: Optional[List[str]] = None,
                        real_home: Optional[Path] = None) -> List[Dict[str, Any]]:
@@ -186,6 +191,10 @@ def generate_for_boot(clayrune_home: Optional[Path] = None, guard_script: Path =
     Never raises on a single vendor's failure (e.g. a malformed real
     ~/.codex/hooks.json for the codex merge) — one vendor's problem must not
     block boot or the other vendors' generation.
+
+    `guard_script`/`python_exe` are `Optional` so a frozen-build caller can
+    pass both as `None` (MC-975 follow-up) instead of a real repo path that
+    doesn't exist on disk inside the bundle — see `guard_command`.
     """
     vendors = installed_vendors if installed_vendors is not None else sorted(VENDOR_CONFIGS)
     results: List[Dict[str, Any]] = []

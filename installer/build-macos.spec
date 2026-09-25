@@ -79,6 +79,15 @@ datas = [
     # startup (character_routes._install_builtin_characters). Leave it out
     # and a fresh frozen install never gets the base agent.
     (R('data', 'agents', 'builtin'), 'data/agents/builtin'),
+    # server.py's _install_guardrail_hooks_on_boot loads this by FILE PATH
+    # (importlib.util.spec_from_file_location against _APP_DIR), not as a
+    # `mc.*` package import PyInstaller's Analysis would discover on its own —
+    # it is a standalone script under tools/, never imported anywhere in the
+    # app's normal import graph. Without this datas entry the load silently
+    # fails at boot (caught by that function's own try/except) and no
+    # claude/gemini/qwen guard file is ever generated in a frozen build
+    # (MC-975 follow-up, 2026-09-25).
+    (R('tools', 'guards', 'install_hooks.py'), 'tools/guards'),
 ]
 
 # SHARED_RULES.md is deliberately NOT bundled. It is user data — read verbatim
