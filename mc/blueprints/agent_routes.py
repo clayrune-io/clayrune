@@ -9110,9 +9110,38 @@ def _mode_a_token_rollover(pp, project_id, session_id, session, provider, messag
         reason='tokens', detail=int(ctx))
     _log_agent_activity(project_id, activity_line)
     session.setdefault('log_lines', TimestampedLines()).append(log_line)
+    if provider == 'codex':
+        _carry_codex_usage(session)
     session.pop('provider_session_id', None)
     session.pop('context_tokens', None)
     return f"{handoff_text}\n\n{message}"
+
+
+_CODEX_USAGE_FIELDS = ('input_tokens', 'output_tokens', 'cached_input_tokens',
+                       'cache_write_input_tokens', 'reasoning_output_tokens',
+                       'total_tokens')
+
+
+def _carry_codex_usage(session):
+    """Fold the about-to-be-abandoned Codex thread's usage into a durable
+    carry, so a rollover doesn't silently reset the session's reported total.
+
+    `turn.completed.usage` is the THREAD's running total, not a per-turn
+    figure (codex_turn_context_tokens docstring) — it restarts at zero in the
+    fresh thread a rollover starts (`provider_session_id` popped just after
+    this call). Without a carry, `_mode_a_reader`'s straight overwrite of
+    `session['usage']` at the next TURN_END makes the whole session's total
+    drop back to just the new thread's count. Measured 2026-09-25: a Kestrel
+    session that had shown 245,656 input read back as 39,720 after its
+    rollover. Accumulates across repeated rollovers (each call adds onto the
+    existing carry, never replaces it)."""
+    prev_usage = session.get('usage')
+    if not isinstance(prev_usage, dict):
+        return
+    carry = dict(session.get('_codex_usage_carry') or {})
+    for k in _CODEX_USAGE_FIELDS:
+        carry[k] = int(carry.get(k) or 0) + int(prev_usage.get(k) or 0)
+    session['_codex_usage_carry'] = carry
 
 
 def _in_flight_children(project_id, session_id):

@@ -5786,10 +5786,27 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 # and dropped, and the chat's token counter stayed at zero.
                 _usage = ev.payload.get('usage')
                 if isinstance(_usage, dict):
-                    session['usage'] = _usage
+                    # turn_context_tokens (Codex: codex_turn_context_tokens)
+                    # matches _usage's raw figures against the rollout's
+                    # per-request records — it must see the THREAD-only
+                    # numbers the CLI actually reported, not the carry-merged
+                    # total below, or the match against the rollout breaks.
                     _ctx = runtime.turn_context_tokens(handle, _usage, ev.payload)
                     if _ctx is not None:
                         session['context_tokens'] = _ctx
+                    stored_usage = _usage
+                    if runtime.name == 'codex':
+                        # Codex's usage is the THREAD's running total, reset
+                        # to zero by a rollover's fresh thread — add back
+                        # what earlier, now-abandoned threads already spent
+                        # (_carry_codex_usage, set at rollover) so the
+                        # session total keeps reflecting the whole session.
+                        carry = session.get('_codex_usage_carry')
+                        if isinstance(carry, dict) and carry:
+                            stored_usage = dict(_usage)
+                            for k, v in carry.items():
+                                stored_usage[k] = int(stored_usage.get(k) or 0) + int(v or 0)
+                    session['usage'] = stored_usage
                 accumulate_result_cost(session, ev.payload, proc_cost)
                 accumulate_result_turns(session, ev.payload, proc_turns)
                 _allowance_state.clear_exhaustion(runtime.name)
