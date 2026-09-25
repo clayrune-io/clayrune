@@ -50,6 +50,12 @@ hidden += collect_submodules('flask')
 # silent push-failure at runtime, not a build error.
 hidden += collect_submodules('firebase_admin')
 hidden += collect_submodules('google')
+# Hook entry (MC-975): vendor CLIs run safety hooks as
+# `Clayrune --clayrune-hook <name>` because a frozen build has no python to
+# run steward/fence.py or mc/process_guard.py with. app.py imports these
+# inside an `if`; naming them here keeps a missing module a build-time fact,
+# not a fence that silently cannot start (tests/test_frozen_hook_entry.py).
+hidden += ['mc.hook_entry', 'steward.fence', 'mc.process_guard']
 
 # Bundle templates / static / data scaffolding next to app.py so the frozen
 # binary sees the same layout as `python app.py`.
