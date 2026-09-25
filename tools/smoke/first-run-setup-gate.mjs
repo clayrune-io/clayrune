@@ -163,8 +163,20 @@ try {
     await page.click('#setup-overlay .wt-btn-primary'); // "Get started"
     await page.waitForTimeout(150);
     st = await overlayState(page);
-    if (st.title !== 'A few essentials') { fail(`connections step should have auto-skipped (provider already installed+signed-in); expected Essentials, got: ${st.title}`); return null; }
+    if (st.title !== 'Make it yours') { fail(`connections step should have auto-skipped (provider already installed+signed-in); expected essentials step A, got: ${st.title}`); return null; }
     ok('connections step skipped (default provider already installed + signed in)');
+    // Three essentials steps now (A "Make it yours" -> B phone -> C detail).
+    // Unrevealed step B has no generic Next (the body's own "Not now"/"Set it
+    // up" answer the one question in its place) — "Not now" is the default,
+    // the path a user who ignores the phone-setup offer takes.
+    await page.click('#setup-overlay .wt-btn-primary'); // "Next" -> essentials-phone
+    await page.waitForTimeout(150);
+    st = await overlayState(page);
+    if (st.title !== 'Use Clayrune from your phone? (optional)') { fail(`expected essentials step B, got: ${st.title}`); return null; }
+    await page.click('#setup-overlay button:has-text("Not now")'); // essentials-phone's own "Not now" (not a forced re-run's "Close") -> essentials-detail
+    await page.waitForTimeout(150);
+    st = await overlayState(page);
+    if (st.title !== 'How much detail do you want to see?') { fail(`expected essentials step C, got: ${st.title}`); return null; }
     await page.click('#setup-overlay .wt-btn-primary'); // "Next"
     await page.waitForTimeout(150);
     st = await overlayState(page);
@@ -272,10 +284,10 @@ try {
     providers: ONE_PROVIDER_OK, // connections step auto-skips
   }, async (page) => {
     await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
-    await page.click('#setup-overlay .wt-btn-primary'); // Get started -> essentials (connections skipped)
+    await page.click('#setup-overlay .wt-btn-primary'); // Get started -> essentials A (connections skipped)
     await page.waitForTimeout(150);
     const st = await overlayState(page);
-    if (st.title !== 'A few essentials') { fail(`expected Essentials, got: ${st.title}`); return; }
+    if (st.title !== 'Make it yours') { fail(`expected essentials step A, got: ${st.title}`); return; }
     if (await page.locator('#setup-overlay .wt-btn-skip, #setup-overlay .setup-btn-secondary').count()) fail('a skip-style control is present on the essentials step of a first run');
     else ok('no skip control on the essentials step');
     if (/\btour\b/i.test(st.cardText)) fail(`the word "tour" appears on the essentials step: "${st.cardText}"`);
@@ -288,10 +300,10 @@ try {
     providers: ONE_PROVIDER_OK,
   }, async (page) => {
     await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
-    await page.click('#setup-overlay .wt-btn-primary'); // Get started -> essentials
+    await page.click('#setup-overlay .wt-btn-primary'); // Get started -> essentials A
     await page.waitForTimeout(150);
     let st = await overlayState(page);
-    if (st.title !== 'A few essentials') { fail(`expected Essentials before reload, got: ${st.title}`); return; }
+    if (st.title !== 'Make it yours') { fail(`expected essentials step A before reload, got: ${st.title}`); return; }
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
     st = await overlayState(page);
@@ -392,8 +404,8 @@ try {
     await page.waitForSelector('#setup-overlay', { timeout: 5000 });
     st = await overlayState(page);
     if (st.title !== 'Welcome to Clayrune') { fail(`"Run setup again" should start at Welcome, got: ${st.title}`); return; }
-    if (st.progress !== 'Step 1 of 4') fail(`forced re-run should show all 4 steps (none skipped), got progress "${st.progress}"`);
-    else ok('forced re-run shows all 4 steps (progress "Step 1 of 4") despite an already-configured install');
+    if (st.progress !== 'Step 1 of 6') fail(`forced re-run should show all 6 steps (none skipped), got progress "${st.progress}"`);
+    else ok('forced re-run shows all 6 steps (progress "Step 1 of 6") despite an already-configured install');
     if (!st.isMarkedAsSetup) fail('forced re-run card does not carry the wt-card-setup marker');
     else ok('forced re-run card also carries the wt-card-setup marker');
 
@@ -406,13 +418,129 @@ try {
     await page.click('#setup-overlay .wt-btn-primary'); // Next (validation passes: claude selected+default+ok)
     await page.waitForTimeout(150);
     st = await overlayState(page);
-    if (st.title !== 'A few essentials') { fail(`expected Essentials, got: ${st.title}`); return; }
+    if (st.title !== 'Make it yours') { fail(`expected essentials step A, got: ${st.title}`); return; }
+
+    await page.click('#setup-overlay .wt-btn-primary'); // Next -> essentials-phone
+    await page.waitForTimeout(150);
+    st = await overlayState(page);
+    if (st.title !== 'Use Clayrune from your phone? (optional)') { fail(`expected essentials step B, got: ${st.title}`); return; }
+    // Forced re-run also shows a "Close" secondary button here (setupForced) —
+    // distinct from essentials-phone's own "Not now"; text-qualify so the
+    // click can't land on the wrong one.
+    await page.click('#setup-overlay button:has-text("Not now")'); // -> essentials-detail
+    await page.waitForTimeout(150);
+    st = await overlayState(page);
+    if (st.title !== 'How much detail do you want to see?') { fail(`expected essentials step C, got: ${st.title}`); return; }
 
     await page.click('#setup-overlay .wt-btn-primary'); // Next
     await page.waitForTimeout(150);
     st = await overlayState(page);
     if (st.title !== 'Take the tour?') fail(`tour-offer step should NOT be skipped on a forced re-run, got: ${st.title}`);
     else ok('tour-offer step is shown on a forced re-run despite walkthrough_done already being set');
+  });
+
+  // ── 6. Essentials redesign (2026-09-24): step B gates the passcode section
+  // behind an explicit "Set it up", step C's presets actually set the flags.
+  await scenario('essentials step B hides passcode until "Set it up"; step C presets set the flags', {
+    config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' },
+    providers: ONE_PROVIDER_OK, // connections step auto-skips
+  }, async (page) => {
+    await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
+    await page.click('#setup-overlay .wt-btn-primary'); // Get started -> essentials A
+    await page.waitForTimeout(150);
+    await page.click('#setup-overlay .wt-btn-primary'); // Next -> essentials B
+    await page.waitForTimeout(150);
+    let st = await overlayState(page);
+    if (st.title !== 'Use Clayrune from your phone? (optional)') { fail(`expected essentials step B, got: ${st.title}`); return; }
+
+    if (await page.locator('#setup-overlay #local-access-section').count()) fail('the passcode section (#local-access-section) is present before "Set it up" is clicked — the locked-out warning must not appear unprompted');
+    else ok('passcode section absent on step B until "Set it up" is clicked');
+    if (/passcode/i.test(st.cardText)) fail(`passcode text appears on step B before "Set it up": "${st.cardText}"`);
+    else ok('no passcode text on step B before reveal');
+
+    await page.click('#setup-overlay button:has-text("Set it up")');
+    await page.waitForTimeout(150);
+    if (!(await page.locator('#setup-overlay #local-access-section').count())) fail('#local-access-section did not appear after "Set it up"');
+    else ok('#local-access-section appears after "Set it up"');
+    if (!(await page.locator('#setup-overlay button:has-text("Open Connectivity settings")').count())) fail('the Connectivity button did not appear after "Set it up"');
+    else ok('Connectivity button appears after "Set it up"');
+    const passcodeTxt = await page.locator('#setup-overlay').innerText();
+    if (!/passcode/i.test(passcodeTxt)) fail('no plain-language passcode explanation shown after "Set it up"');
+    else ok('plain-language passcode explanation shown after "Set it up"');
+
+    await page.click('#setup-overlay .wt-btn-primary'); // Next -> essentials C
+    await page.waitForTimeout(150);
+    st = await overlayState(page);
+    if (st.title !== 'How much detail do you want to see?') { fail(`expected essentials step C, got: ${st.title}`); return; }
+
+    // advancedFlags/ADV_FEATURES are top-level let/const in index.html's plain
+    // (non-module) inline script — script-global bindings, never window
+    // properties, but resolvable as bare identifiers from evaluate() the same
+    // way first-run.js (a module) itself reads them.
+    const flagsFor = () => page.evaluate(() => ({ ...advancedFlags }));
+    await page.click('#setup-overlay button:has-text("Power user")');
+    await page.waitForTimeout(80);
+    let flags = await flagsFor();
+    const featureKeys = await page.evaluate(() => ADV_FEATURES.map((f) => f.key));
+    if (!featureKeys.every((k) => flags[k] === true)) fail(`"Power user" preset did not set every ADV_FEATURES flag true: ${JSON.stringify(flags)}`);
+    else ok(`"Power user" preset sets every flag true: ${JSON.stringify(flags)}`);
+
+    await page.click('#setup-overlay button:has-text("Simple")');
+    await page.waitForTimeout(80);
+    flags = await flagsFor();
+    if (!featureKeys.every((k) => flags[k] === false)) fail(`"Simple" preset did not set every ADV_FEATURES flag false: ${JSON.stringify(flags)}`);
+    else ok(`"Simple" preset sets every flag false (including memory): ${JSON.stringify(flags)}`);
+
+    if (await page.locator('#setup-adv-list').count()) fail('the individual checkbox list is visible before "Choose individually" is expanded');
+    else ok('individual checkbox list collapsed by default');
+    await page.click('#setup-overlay button:has-text("Choose individually")');
+    await page.waitForTimeout(80);
+    const checkboxCount = await page.locator('#setup-adv-list input[type=checkbox]').count();
+    if (checkboxCount !== featureKeys.length) fail(`expected ${featureKeys.length} checkboxes after expanding, got ${checkboxCount}`);
+    else ok(`"Choose individually" expander reveals all ${checkboxCount} feature checkboxes`);
+  });
+
+  // ── 7. Terminals SETUP opened are closed on Finish; a terminal setup did
+  // NOT open survives. Exercises the real openTerminalPopout/closeModalById
+  // path (terminal.js/modal-manager.js), not a mock — xterm.js itself fails
+  // to load (no CDN reachable under route-mocking) but that only degrades
+  // the in-modal renderer, it does not stop the modal DOM or the close path.
+  await scenario('setup-opened terminals close on Finish; a non-setup terminal survives', {
+    config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' },
+    providers: ONE_PROVIDER_OK,
+  }, async (page) => {
+    await page.route('**/api/terminal/delete', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }));
+    await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
+
+    const deleteCalls = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/terminal/delete') && req.method() === 'POST') {
+        try { deleteCalls.push(JSON.parse(req.postData() || '{}').session_id); } catch (_) {}
+      }
+    });
+
+    await page.evaluate(() => {
+      window.openTerminalPopout(null, 'setup-term-1', 'claude auth login', true);
+      window._setupOnTerminalOpened('setup-term-1'); // tracked as setup-opened
+      window.openTerminalPopout(null, 'user-term-1', 'some other terminal', true);
+      // user-term-1 intentionally NOT reported to _setupOnTerminalOpened.
+    });
+    await page.waitForTimeout(100);
+    const before = await page.evaluate(() => [...document.querySelectorAll('#modal-layer .modal-window[data-modal-id^="__terminal_"]')].map((w) => w.dataset.modalId));
+    if (!before.includes('__terminal_setup-term-1') || !before.includes('__terminal_user-term-1')) fail(`both terminal modals should be open before Finish, got: ${JSON.stringify(before)}`);
+    else ok('both a setup-opened and a non-setup terminal are open before Finish');
+
+    await page.evaluate(() => window.setupFinish());
+    await page.waitForTimeout(100);
+    const after = await page.evaluate(() => [...document.querySelectorAll('#modal-layer .modal-window[data-modal-id^="__terminal_"]')].map((w) => w.dataset.modalId));
+    if (after.includes('__terminal_setup-term-1')) fail('the setup-opened terminal is still open after Finish');
+    else ok('the setup-opened terminal modal is gone after Finish');
+    if (!after.includes('__terminal_user-term-1')) fail('the NON-setup terminal was closed too — setup must only close terminals it opened');
+    else ok('the non-setup terminal survives Finish');
+    if (!deleteCalls.includes('setup-term-1')) fail(`expected /api/terminal/delete for setup-term-1 (real close path, not just DOM removal), got calls: ${JSON.stringify(deleteCalls)}`);
+    else ok('closeModalById -> cleanupTerminalModal actually called /api/terminal/delete for the setup-opened terminal (PTY torn down, not just DOM removed)');
+    if (deleteCalls.includes('user-term-1')) fail('/api/terminal/delete was called for the non-setup terminal — it must never be touched');
+    else ok('/api/terminal/delete never called for the non-setup terminal');
   });
 
   console.log(bad === 0

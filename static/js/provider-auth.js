@@ -377,8 +377,10 @@ async function settingsProviderTerminalLogin(provider, btnEl) {
       openTerminalPopout(window.currentProjectId, data.session_id, data.command || provider, true);
       // Setup's own terminal-visibility/live-polling (first-run.js) covers
       // install already; a sign-in terminal opened from the SAME setup card
-      // painted over just the same way until this hook (2026-09-24).
-      if (typeof window._setupOnTerminalOpened === 'function') window._setupOnTerminalOpened();
+      // painted over just the same way until this hook (2026-09-24). The
+      // session id lets first-run.js track this terminal as SETUP-opened, so
+      // Finish/Skip closes it but never a terminal setup didn't open.
+      if (typeof window._setupOnTerminalOpened === 'function') window._setupOnTerminalOpened(data.session_id);
       showToast(`Sign in to ${provider} in the terminal that just opened.`, 8000);
       return;
     }
