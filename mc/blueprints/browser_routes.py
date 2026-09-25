@@ -625,6 +625,31 @@ def _activate_tab_cmd(session, target_id, send):
     _switch_active_tab(session, send, target_id, old_session_id=old_sid)
 
 
+def _close_stale_sibling_popups(session, send, opener_id, keep_target_id):
+    """A fresh popup from `opener_id` just opened — close any OTHER tab that
+    shares the same opener, e.g. an abandoned `about:blank` window.open() or
+    a "Sign in with Google" attempt the user never finished before clicking
+    the button again. Real browsers leave these piling up because a human
+    can `Alt+Tab`/close them; the pane's tab strip is the only place they'd
+    ever be reachable, so an unfinished OAuth attempt that gets retried would
+    otherwise orphan a tab forever (MC-976: a live session accumulated 9 —
+    3x about:blank, 5x 'Sign in - Google Accounts', across repeated retries).
+    A popup can only sensibly represent the CALLER's most recent attempt, so
+    closing the previous sibling on a new one is safe — it never touches the
+    root tab (`opener_id` is only set on a target CDP reports as opened BY
+    another target) or a tab opened by someone else."""
+    if not opener_id:
+        return
+    tabs = session.get('tabs') or {}
+    for tid, tab in list(tabs.items()):
+        if tid == keep_target_id or tab.get('opener_id') != opener_id:
+            continue
+        try:
+            send('Target.closeTarget', {'targetId': tid})
+        except Exception as e:
+            session['error'] = f'stale popup close failed: {e}'
+
+
 def _handle_target_closed(session, send, target_id):
     """A target went away (`Target.targetDestroyed` or `detachedFromTarget`) —
     drop its tab entry and, if it was the active one, return focus to its
@@ -1017,6 +1042,7 @@ def _run_cdp(session):
                     # requiring a manual tab click to ever see it.
                     _switch_active_tab(session, send, tid,
                                        old_session_id=_active_session_id(session))
+                    _close_stale_sibling_popups(session, send, ti.get('openerId'), tid)
                 elif p.get('waitingForDebugger') and sid:
                     # Not a page (worker, etc.) — we asked for
                     # waitForDebuggerOnStart=False so this should not normally

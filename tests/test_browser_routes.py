@@ -862,6 +862,38 @@ def test_switch_active_tab_unknown_target_is_a_noop():
     assert calls == []
 
 
+def test_close_stale_sibling_popups_closes_earlier_attempt_from_same_opener():
+    calls = []
+    session = {'tabs': {
+        'root': {'session_id': None, 'opener_id': None},
+        'old-popup': {'session_id': 'S1', 'opener_id': 'root'},
+        'new-popup': {'session_id': 'S2', 'opener_id': 'root'},
+    }}
+    br._close_stale_sibling_popups(session, lambda m, p=None: calls.append((m, p)),
+                                   'root', 'new-popup')
+    assert calls == [('Target.closeTarget', {'targetId': 'old-popup'})]
+
+
+def test_close_stale_sibling_popups_leaves_tabs_from_other_openers_alone():
+    calls = []
+    session = {'tabs': {
+        'root': {'session_id': None, 'opener_id': None},
+        'unrelated-popup': {'session_id': 'S1', 'opener_id': 'some-other-tab'},
+        'new-popup': {'session_id': 'S2', 'opener_id': 'root'},
+    }}
+    br._close_stale_sibling_popups(session, lambda *a, **k: calls.append((a, k)),
+                                   'root', 'new-popup')
+    assert calls == []
+
+
+def test_close_stale_sibling_popups_is_a_noop_with_no_opener():
+    calls = []
+    session = {'tabs': {'root': {'session_id': None, 'opener_id': None}}}
+    br._close_stale_sibling_popups(session, lambda *a, **k: calls.append((a, k)),
+                                   None, 'root')
+    assert calls == []
+
+
 def test_handle_target_closed_returns_focus_to_opener():
     session = {
         'root_target_id': 'root', 'active_target_id': 'popup', 'tabs_seq': 1,
