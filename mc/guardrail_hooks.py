@@ -44,8 +44,9 @@ from __future__ import annotations
 
 import sys
 import os
+import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence, Tuple
 
 # {vendor: filename under ~/.clayrune/hooks/} — Codex is deliberately absent,
 # see the module docstring's "NO file here" section.
@@ -245,7 +246,9 @@ def _toml_basic_string(s: str) -> str:
 
 
 def codex_hook_config_args(guard_script: Optional[Path] = None,
-                           python_exe: Optional[str] = None) -> List[str]:
+                           python_exe: Optional[str] = None,
+                           fence_armed: Optional[bool] = None,
+                           fence_script: Optional[Path] = None) -> List[str]:
     """`-c`/flag arguments for CodexRuntime.build_command() — no file,
     nothing written to disk, nothing that could ever hold a copy of the
     user's own hooks (see module docstring for why that matters here).
@@ -309,10 +312,137 @@ def codex_hook_config_args(guard_script: Optional[Path] = None,
        docstring's instruction ("Re-verify live before ever pointing this at
        the shared helper") is what was done: see the evidence doc §9 for the
        before/after live runs.
+
+    MC-975 (2026-09-25): `fence_armed` not None ALSO injects the steward
+    fence as a second handler in the same group; see
+    codex_fence_hook_command(). None keeps the guard-only shape, which the
+    pinned-string tests use.
     """
     command = guard_shell_command(guard_script=guard_script, python_exe=python_exe)
-    hooks_value = (
-        'hooks.PreToolUse=[{hooks=[{type="command",'
-        f'command={_toml_basic_string(command)},name={_toml_basic_string(HOOK_NAME)}}}]}}]'
+    handlers = (
+        '{type="command",'
+        f'command={_toml_basic_string(command)},name={_toml_basic_string(HOOK_NAME)}}}'
     )
+    if fence_armed is not None:
+        fence_cmd = codex_fence_hook_command(armed=fence_armed, fence_script=fence_script,
+                                             python_exe=python_exe)
+        handlers += (
+            ',{type="command",'
+            f'command={_toml_basic_string(fence_cmd)},'
+            f'timeout={CODEX_FENCE_TIMEOUT_SEC},'
+            f'name={_toml_basic_string(FENCE_HOOK_NAME)}}}'
+        )
+    hooks_value = f'hooks.PreToolUse=[{{hooks=[{handlers}]}}]'
     return ['--dangerously-bypass-hook-trust', '-c', hooks_value]
+
+
+# ── Steward fence for Codex (MC-975, 2026-09-25) ────────────────────────────
+# Measured against codex-cli 0.155.1 on this box with a probe PreToolUse hook
+# (docs/_journal/MC-975-codex-unattended-sandbox.md, 2026-09-25 fence entry):
+#   * the hook runs as `powershell.exe -NoProfile -Command "<command>"`;
+#   * exit 2 WITH stderr text, or `permissionDecision: "deny"` JSON on
+#     stdout, blocks the tool call;
+#   * exit 2 with EMPTY stderr, any other non-zero exit, a PowerShell parse
+#     error, and a timeout all print `hook: PreToolUse Failed` and RUN THE
+#     TOOL. Codex hooks fail OPEN; no config field changes that;
+#   * `timeout` is in SECONDS (30 let an 8 s hook block; 5 timed it out).
+# Before this, the only fence a Codex launch saw was Codex's own migrated
+# copy of the Claude hook in <project>/.codex/hooks.json, `"<py>" "<fence>"`:
+# two adjacent quoted strings, which PowerShell rejects (`UnexpectedToken`)
+# before python starts. Every tool call logged `PreToolUse Failed` and ran,
+# logged in or not. Even had it run, the fence arms on CLAUDE_CODE_SESSION_ID
+# or a Claude-format transcript; a Codex hook has neither, so it could never
+# arm for an unattended run.
+#
+# So Clayrune injects the fence itself. Arming is decided at dispatch from the
+# session's trigger_type (`--armed`, in codex's own argv, which the agent
+# cannot alter). An armed fence is wrapped so any exit other than 0/2 (python
+# missing, 0xC0000142, a crash) becomes exit 2 with a stderr reason. Two
+# fail-opens the wrapper cannot see: PowerShell itself failing to start (the
+# S4U 0xC0000142 case) and a hook timeout. codex_fence_self_test() covers
+# the first before an unattended launch; the second is Codex's to fix.
+FENCE_HOOK_NAME = 'clayrune-steward-fence'
+FENCE_ARMED_ARG = '--armed'
+FENCE_SELF_TEST_ARG = '--self-test'
+FENCE_SELF_TEST_TOKEN = 'CLAYRUNE-FENCE-SELF-TEST-OK'
+CODEX_FENCE_TIMEOUT_SEC = 30
+
+_FENCE_FAIL_REASON = 'STEWARD FENCE failed to run; blocking this tool call fail-closed. Exit: '
+# PowerShell: `$LASTEXITCODE` is $null when python could not even be found,
+# and `$null -ne 0` is true, so that case blocks too. Single quotes only, so
+# no embedded double quote for codex's own command-line quoting to mangle.
+_FAIL_CLOSED_SUFFIX_PS = (
+    " ; $c = $LASTEXITCODE ; if ($c -ne 0 -and $c -ne 2) "
+    "{ [Console]::Error.WriteLine('" + _FENCE_FAIL_REASON + "' + $c) } ; "
+    "if ($c -ne 0) { exit 2 } ; exit 0")
+_FAIL_CLOSED_SUFFIX_SH = (
+    " ; c=$? ; if [ $c -ne 0 ] && [ $c -ne 2 ]; "
+    "then echo '" + _FENCE_FAIL_REASON + "'$c >&2; fi ; "
+    "if [ $c -ne 0 ]; then exit 2; fi ; exit 0")
+
+
+def _default_fence_script() -> Path:
+    return Path(__file__).resolve().parent.parent / 'steward' / 'fence.py'
+
+
+def codex_fence_hook_command(*, armed: bool, fence_script: Optional[Path] = None,
+                             python_exe: Optional[str] = None,
+                             extra_args: Sequence[str] = ()) -> str:
+    """The steward-fence command string for Codex's hook runner.
+
+    On Windows it is written for PowerShell only (Codex uses no other shell
+    there, measured). Tokens are quoted only when they contain a space, and
+    a quoted interpreter gets PowerShell's `.` invocation operator, because
+    `"<py>" "<script>"` is a parse error there (the defect this replaces).
+    NOT `&`: the value reaches codex through npm's `codex.CMD`, whose `%*`
+    line cmd.exe re-parses, and an `&` there split the `-c` argument and
+    killed the launch at config load (measured). Keep every cmd.exe
+    metacharacter (& | < > ^ %) out of this string. Armed gets the
+    fail-closed suffix. Unarmed (a human is watching) gets the plain
+    exit-code re-raise, so a broken fence cannot wedge an interactive chat.
+    """
+    script = _shell_neutral_path(str(fence_script or _default_fence_script()))
+    py = _shell_neutral_path(python_exe or sys.executable or 'python')
+    tokens = [f'"{t}"' if ' ' in t else t for t in (py, script)]
+    args = ([FENCE_ARMED_ARG] if armed else []) + list(extra_args)
+    base = ' '.join(tokens + args)
+    if os.name == 'nt':
+        if tokens[0].startswith('"'):
+            base = '. ' + base
+        return base + (_FAIL_CLOSED_SUFFIX_PS if armed else _EXIT_CODE_SUFFIX)
+    return base + (_FAIL_CLOSED_SUFFIX_SH if armed else '')
+
+
+def _codex_hook_shell_argv(command: str) -> List[str]:
+    """The argv Codex runs a hook command with (Windows shape measured)."""
+    if os.name == 'nt':
+        root = os.environ.get('SystemRoot') or r'C:\Windows'
+        ps = os.path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+        return [ps, '-NoProfile', '-Command', command]
+    return ['sh', '-c', command]
+
+
+def codex_fence_self_test(*, fence_script: Optional[Path] = None,
+                          python_exe: Optional[str] = None,
+                          timeout: float = CODEX_FENCE_TIMEOUT_SEC) -> Tuple[bool, str]:
+    """Run the ARMED fence command the way Codex's hook runner would, with
+    `--self-test`, from this process's own token and session. Passes only on
+    exit 2 carrying FENCE_SELF_TEST_TOKEN: the shell started, python started,
+    fence.py ran, and a block survived the round trip. The wrapper's own
+    fail-closed exit 2 carries no token, so it cannot pass by accident.
+    Returns (ok, detail)."""
+    command = codex_fence_hook_command(armed=True, fence_script=fence_script,
+                                       python_exe=python_exe,
+                                       extra_args=[FENCE_SELF_TEST_ARG])
+    kwargs = {}
+    if os.name == 'nt':
+        kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    try:
+        r = subprocess.run(_codex_hook_shell_argv(command), input='{}',
+                           capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', timeout=timeout, **kwargs)
+    except Exception as e:
+        return False, f'could not run the hook shell: {e}'
+    err = (r.stderr or '').strip()
+    ok = r.returncode == 2 and FENCE_SELF_TEST_TOKEN in err
+    return ok, f'exit {r.returncode}; stderr: {err[:300]}'
