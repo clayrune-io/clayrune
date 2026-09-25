@@ -521,11 +521,130 @@ def _pick_page_target(targets, want_url=''):
     return pages[0]
 
 
+def _target_id_for_sid(session, sid):
+    """Map a CDP flat-mode `sessionId` (top-level message field, routes a
+    command/event to one attached target over the shared websocket) back to
+    the tab it belongs to. `None` means the event came off the root
+    connection — i.e. the tab this session started with."""
+    if sid is None:
+        return session.get('root_target_id')
+    for tid, t in (session.get('tabs') or {}).items():
+        if t.get('session_id') == sid:
+            return tid
+    return None
+
+
+def _active_session_id(session):
+    """The flat-mode sessionId to stamp on an outbound command so it reaches
+    whichever tab is currently active — None for the root tab (a plain
+    command with no `sessionId` field targets the connection's own target,
+    which is how every command worked before tabs existed)."""
+    tid = session.get('active_target_id')
+    if not tid or tid == session.get('root_target_id'):
+        return None
+    return (session.get('tabs', {}).get(tid) or {}).get('session_id')
+
+
+def _switch_active_tab(session, send, new_target_id, old_session_id=None):
+    """Make `new_target_id` the tab the pane shows: stop the old tab's
+    screencast (skipped when `old_session_id` is None — the old tab is
+    already gone, e.g. it just closed itself), bring the new one to the
+    front, and re-arm its screencast. Used both for a user-initiated tab
+    click and for the auto-attach/auto-close paths below."""
+    tabs = session.get('tabs') or {}
+    if new_target_id not in tabs:
+        return
+    if old_session_id is not None:
+        try:
+            send('Page.stopScreencast', {}, session_id=old_session_id)
+        except Exception as e:
+            session['error'] = f'stop old tab screencast failed: {e}'
+    session['active_target_id'] = new_target_id
+    # Drop the stale frame immediately rather than let the pane keep showing
+    # the PREVIOUS tab's last frame under the new tab's address/tab-strip
+    # state — a wrong-but-plausible-looking frame is worse than a brief blank.
+    session['frame'] = None
+    new_sid = tabs[new_target_id].get('session_id')
+    try:
+        send('Page.bringToFront', {}, session_id=new_sid)
+        if not session.get('screencast_paused'):
+            send('Page.startScreencast', _SCREENCAST_PARAMS, session_id=new_sid)
+    except Exception as e:
+        session['error'] = f'tab switch failed: {e}'
+    session['tabs_seq'] = session.get('tabs_seq', 0) + 1
+
+
+def _activate_tab_cmd(session, target_id, send):
+    """User (or the pane UI) asked to switch to `target_id` — look up the
+    currently active tab's session so its screencast can be stopped."""
+    if not target_id or target_id == session.get('active_target_id'):
+        return
+    old_id = session.get('active_target_id')
+    old_sid = (session.get('tabs', {}).get(old_id) or {}).get('session_id')
+    _switch_active_tab(session, send, target_id, old_session_id=old_sid)
+
+
+def _handle_target_closed(session, send, target_id):
+    """A target went away (`Target.targetDestroyed` or `detachedFromTarget`) —
+    drop its tab entry and, if it was the active one, return focus to its
+    opener (the acceptance case: an OAuth popup that closes itself after
+    consent must land the pane back on the page that opened it), falling back
+    to the root tab or whatever else is left. `old_session_id=None` in the
+    `_switch_active_tab` call below because the closed tab's session is
+    already gone — there is nothing left to send it a stopScreencast."""
+    tabs = session.get('tabs') or {}
+    if not target_id or target_id not in tabs:
+        return
+    closed = tabs.pop(target_id)
+    session['tabs_seq'] = session.get('tabs_seq', 0) + 1
+    if session.get('dialog', {}) and (session.get('dialog') or {}).get('target_id') == target_id:
+        session['dialog'] = None
+        session['dialogs_seq'] = session.get('dialogs_seq', 0) + 1
+    if session.get('active_target_id') != target_id:
+        return
+    opener_id = closed.get('opener_id')
+    if opener_id in tabs:
+        next_id = opener_id
+    elif session.get('root_target_id') in tabs:
+        next_id = session.get('root_target_id')
+    else:
+        next_id = next(iter(tabs), None)
+    if next_id:
+        _switch_active_tab(session, send, next_id, old_session_id=None)
+    else:
+        session['active_target_id'] = None
+
+
 def _run_cdp(session):
     """Single CDP thread: connect, drive screencast, dispatch queued commands.
 
     Owns the websocket end-to-end so there is exactly one sender — input/nav
-    handlers enqueue onto session['cmd_queue'] and this loop sends them."""
+    handlers enqueue onto session['cmd_queue'] and this loop sends them.
+
+    ## Tabs — one websocket, many targets (multiplexed, not a second connection)
+
+    A `window.open()`/`target=_blank`/OAuth popup creates a new CDP *target*
+    that this connection never sees by default. `Target.setDiscoverTargets`
+    announces it (`Target.targetCreated`, carrying `openerId` when it was
+    opened BY a target we already hold); `Target.attachToTarget({flatten:
+    True})` then attaches to it *without a second websocket* — CDP multiplexes
+    the attached target's commands/events over this SAME connection, tagged
+    with a flat-mode `sessionId` (a different field from `Page.
+    startScreencast`'s own per-frame `sessionId` used for the ack — same name,
+    unrelated concept, easy to conflate). Verified live 2026-09-25 against
+    both a same-origin `window.open()` popup and LinkedIn's real Google
+    Identity Services sign-in popup (reached the Google account chooser).
+
+    `session['tabs']` is the tab strip's source of truth: {target_id: {
+    session_id, url, title, opener_id, attached}}. `session['active_target_id']`
+    is whichever tab the screencast + input are currently bound to — every
+    other tab's screencast stays OFF (the per-frame cost this codebase already
+    treats as the one part of this pipeline worth guarding, see the minimize
+    docstring below). A popup attaches into the foreground automatically (a
+    real browser opens `window.open()` targets in front); when it closes
+    itself (an OAuth callback's `window.close()`), focus returns to its
+    opener — see the `Target.targetDestroyed`/`detachedFromTarget` handling.
+    """
     import urllib.request
     websocket = _import_ws()
     if websocket is None:
@@ -571,16 +690,41 @@ def _run_cdp(session):
         ws.settimeout(0.1)
         session['ws'] = ws
 
-        def send(method, params=None):
-            ws.send(json.dumps({'id': _next_id(), 'method': method, 'params': params or {}}))
+        # Root tab bookkeeping — `session['tabs']` is the tab strip's source
+        # of truth from here on; the root tab's entry uses session_id=None
+        # (a plain command with no `sessionId` field targets the connection's
+        # own target, same as before tabs existed) so `_active_session_id`/
+        # `_target_id_for_sid` need no special-casing between root and popups.
+        root_id = page.get('id')
+        session['root_target_id'] = root_id
+        session['active_target_id'] = root_id
+        session['tabs'] = {root_id: {'session_id': None, 'url': session.get('url') or '',
+                                     'title': '', 'opener_id': None}}
+        session['tabs_seq'] = 1
+        session['dialog'] = None
+        session['dialogs_seq'] = 0
 
-        def start_screencast():
+        def send(method, params=None, session_id=None):
+            m = {'id': _next_id(), 'method': method, 'params': params or {}}
+            if session_id:
+                m['sessionId'] = session_id
+            ws.send(json.dumps(m))
+
+        def start_screencast(session_id=None):
             # The caps only DOWNSCALE an oversized frame; they must stay at
             # or above the real viewport or the image is shrunk and the pane
             # adopts a coordinate space smaller than the page's.
-            send('Page.startScreencast', _SCREENCAST_PARAMS)
+            send('Page.startScreencast', _SCREENCAST_PARAMS, session_id=session_id)
 
         send('Page.enable')
+        # Announce + auto-attach related targets (window.open()/target=_blank/
+        # an OAuth popup) over THIS SAME websocket — see the class docstring
+        # above for the flat-mode shape. waitForDebuggerOnStart=False so a new
+        # target's JS runs immediately; nothing here ever sends
+        # Runtime.runIfWaitingForDebugger because nothing ever needs to.
+        send('Target.setDiscoverTargets', {'discover': True})
+        send('Target.setAutoAttach',
+             {'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True})
         # Route downloads into a per-profile dir OUTSIDE the repo/DATA_DIR
         # instead of leaving Chromium's default behaviour in place. Without
         # this, a download-triggering navigation still "succeeds" from
@@ -652,12 +796,30 @@ def _run_cdp(session):
         q = session['cmd_queue']
         errors = 0  # consecutive non-timeout recv errors before we give up
         while session['status'] == 'running':
-            # 1. drain queued outbound commands (input / navigate)
+            # 1. drain queued outbound commands (input / navigate / tab & dialog
+            #    control). Ordinary input/nav commands are stamped with the
+            #    ACTIVE tab's sessionId so a click always lands on whatever the
+            #    pane is currently showing; the three underscore-prefixed
+            #    methods are sentinels handled here rather than sent verbatim.
             try:
                 while True:
                     method, params = q.get_nowait()
                     try:
-                        send(method, params)
+                        if method == '_activate_tab':
+                            _activate_tab_cmd(session, params.get('target_id'), send)
+                        elif method == '_close_tab':
+                            send('Target.closeTarget', {'targetId': params.get('target_id')})
+                        elif method == '_dialog_response':
+                            tabs = session.get('tabs') or {}
+                            dlg_sid = (tabs.get(params.get('target_id')) or {}).get('session_id')
+                            send('Page.handleJavaScriptDialog',
+                                 {'accept': bool(params.get('accept')),
+                                  'promptText': params.get('text') or ''},
+                                 session_id=dlg_sid)
+                            session['dialog'] = None
+                            session['dialogs_seq'] = session.get('dialogs_seq', 0) + 1
+                        else:
+                            send(method, params, session_id=_active_session_id(session))
                     except Exception as e:
                         session['error'] = f'send failed: {e}'
             except queue.Empty:
@@ -689,25 +851,36 @@ def _run_cdp(session):
             except Exception:
                 continue
             method = msg.get('method')
+            msg_sid = msg.get('sessionId')  # flat-mode target routing (top-level field)
             if method == 'Page.screencastFrame':
                 p = msg['params']
-                session['frame'] = p.get('data')
-                # CDP reports the frame's TRUE viewport in CSS px. It is NOT
-                # VIEW_W x VIEW_H: Emulation.setDeviceMetricsOverride does not
-                # take effect here, so a 1280x800 window yields a 1264x649
-                # content viewport once chrome and the scrollbar come out. The
-                # pane used to map clicks into a hardcoded 1280x800 space, which
-                # put a click at the bottom edge ~150px below where the user
-                # aimed. Ship the real numbers so the client scales to them.
-                md = p.get('metadata') or {}
-                dw, dh = md.get('deviceWidth'), md.get('deviceHeight')
-                if dw and dh:
-                    session['frame_w'], session['frame_h'] = int(dw), int(dh)
-                session['frame_seq'] = session.get('frame_seq', 0) + 1
+                # Only the ACTIVE tab has a screencast running, so in the
+                # steady state this is already scoped — but a switch can leave
+                # one last frame in flight from the tab just left behind
+                # (screencast_seq bumped is still safe to ack, just not shown,
+                # else it repaints the new tab's strip with the old tab's
+                # pixels for one frame). Ack it either way; Chromium expects
+                # one per frame regardless of whether we display it.
+                if msg_sid == _active_session_id(session):
+                    session['frame'] = p.get('data')
+                    # CDP reports the frame's TRUE viewport in CSS px. It is NOT
+                    # VIEW_W x VIEW_H: Emulation.setDeviceMetricsOverride does not
+                    # take effect here, so a 1280x800 window yields a 1264x649
+                    # content viewport once chrome and the scrollbar come out. The
+                    # pane used to map clicks into a hardcoded 1280x800 space, which
+                    # put a click at the bottom edge ~150px below where the user
+                    # aimed. Ship the real numbers so the client scales to them.
+                    md = p.get('metadata') or {}
+                    dw, dh = md.get('deviceWidth'), md.get('deviceHeight')
+                    if dw and dh:
+                        session['frame_w'], session['frame_h'] = int(dw), int(dh)
+                    session['frame_seq'] = session.get('frame_seq', 0) + 1
                 try:
-                    ws.send(json.dumps({'id': _next_id(),
-                                        'method': 'Page.screencastFrameAck',
-                                        'params': {'sessionId': p['sessionId']}}))
+                    ack = {'id': _next_id(), 'method': 'Page.screencastFrameAck',
+                           'params': {'sessionId': p['sessionId']}}
+                    if msg_sid:
+                        ack['sessionId'] = msg_sid
+                    ws.send(json.dumps(ack))
                 except Exception as e:
                     session['status'] = 'error'
                     session['error'] = f'ack failed: {e}'
@@ -717,8 +890,16 @@ def _run_cdp(session):
                 # an SSO page (or attaching to the wrong tab) left the bar showing
                 # a confident, wrong address over a blank pane. Report the truth.
                 fr = (msg.get('params') or {}).get('frame') or {}
-                if not fr.get('parentId') and fr.get('url'):
-                    session['live_url'] = fr['url']
+                if fr.get('parentId') or not fr.get('url'):
+                    pass
+                else:
+                    tid = _target_id_for_sid(session, msg_sid)
+                    tabs = session.get('tabs') or {}
+                    if tid in tabs:
+                        tabs[tid]['url'] = fr['url']
+                        session['tabs_seq'] = session.get('tabs_seq', 0) + 1
+                    if tid == session.get('active_target_id'):
+                        session['live_url'] = fr['url']
             elif method == 'Page.frameStoppedLoading':
                 # A cross-document navigation (typed URL, clicked link, or a
                 # queued Page.navigate) STOPS the active screencast on this ws.
@@ -727,12 +908,91 @@ def _run_cdp(session):
                 # re-arm while minimized (`screencast_paused`) — the pane
                 # asked for the cast to stop precisely so a hidden pane costs
                 # nothing, and a background page navigation must not silently
-                # undo that.
-                if not session.get('screencast_paused'):
+                # undo that. Scoped to the ACTIVE tab's session — a background
+                # tab finishing a load must not re-arm a screencast that was
+                # never running on it.
+                if not session.get('screencast_paused') and msg_sid == _active_session_id(session):
                     try:
-                        start_screencast()
+                        start_screencast(session_id=msg_sid)
                     except Exception as e:
                         session['error'] = f'rearm failed: {e}'
+            elif method == 'Target.targetCreated':
+                # `Target.setAutoAttach` alone does NOT reliably deliver
+                # `Target.attachedToTarget` for a `window.open()`/`target=_blank`
+                # popup on this Chromium build — measured live 2026-09-25: a
+                # raw-CDP probe saw `targetCreated` with `attached: False` and
+                # no follow-up `attachedToTarget` until it issued
+                # `Target.attachToTarget({flatten: True})` itself. Do that here
+                # for every new page target so the tab strip actually sees it.
+                ti = (msg.get('params') or {}).get('targetInfo') or {}
+                if ti.get('type') == 'page' and not ti.get('attached'):
+                    try:
+                        send('Target.attachToTarget',
+                             {'targetId': ti.get('targetId'), 'flatten': True})
+                    except Exception as e:
+                        session['error'] = f'manual attach failed: {e}'
+            elif method == 'Target.attachedToTarget':
+                p = msg.get('params') or {}
+                ti = p.get('targetInfo') or {}
+                sid = p.get('sessionId')
+                tid = ti.get('targetId')
+                if tid and ti.get('type') == 'page':
+                    tabs = session.setdefault('tabs', {})
+                    tabs[tid] = {'session_id': sid, 'url': ti.get('url', ''),
+                                'title': ti.get('title', ''), 'opener_id': ti.get('openerId')}
+                    session['tabs_seq'] = session.get('tabs_seq', 0) + 1
+                    try:
+                        send('Page.enable', {}, session_id=sid)
+                        send('Page.addScriptToEvaluateOnNewDocument',
+                             {'source': 'Object.defineProperty(navigator, "webdriver", '
+                                        '{get: () => undefined});'}, session_id=sid)
+                    except Exception as e:
+                        session['error'] = f'new-tab setup failed: {e}'
+                    # A real browser opens a window.open()/OAuth popup in front
+                    # of the page that spawned it — match that, rather than
+                    # requiring a manual tab click to ever see it.
+                    _switch_active_tab(session, send, tid,
+                                       old_session_id=_active_session_id(session))
+                elif p.get('waitingForDebugger') and sid:
+                    # Not a page (worker, etc.) — we asked for
+                    # waitForDebuggerOnStart=False so this should not normally
+                    # fire, but an unresumed target blocks forever, so resume
+                    # it defensively rather than leaving it wedged.
+                    try:
+                        send('Runtime.runIfWaitingForDebugger', {}, session_id=sid)
+                    except Exception:
+                        pass
+            elif method == 'Target.targetInfoChanged':
+                ti = (msg.get('params') or {}).get('targetInfo') or {}
+                tid = ti.get('targetId')
+                tabs = session.get('tabs') or {}
+                if tid in tabs:
+                    tabs[tid]['url'] = ti.get('url', tabs[tid].get('url', ''))
+                    tabs[tid]['title'] = ti.get('title', tabs[tid].get('title', ''))
+                    session['tabs_seq'] = session.get('tabs_seq', 0) + 1
+            elif method == 'Target.targetDestroyed':
+                _handle_target_closed(session, send, (msg.get('params') or {}).get('targetId'))
+            elif method == 'Target.detachedFromTarget':
+                p = msg.get('params') or {}
+                tid = p.get('targetId') or _target_id_for_sid(session, p.get('sessionId'))
+                _handle_target_closed(session, send, tid)
+            elif method == 'Page.javascriptDialogOpening':
+                p = msg.get('params') or {}
+                session['dialog'] = {
+                    'target_id': _target_id_for_sid(session, msg_sid),
+                    'type': p.get('type'), 'message': p.get('message'),
+                    'default_prompt': p.get('defaultPrompt'),
+                }
+                session['dialogs_seq'] = session.get('dialogs_seq', 0) + 1
+            elif method == 'Page.javascriptDialogClosed':
+                # Cleared by our own _dialog_response already in the normal
+                # case; this covers a dialog dismissed some other way (e.g.
+                # the page navigated out from under it) so state never goes
+                # stale and the pane never shows an answer box for a dialog
+                # that is already gone.
+                if session.get('dialog'):
+                    session['dialog'] = None
+                    session['dialogs_seq'] = session.get('dialogs_seq', 0) + 1
             elif method == 'Browser.downloadWillBegin':
                 _on_download_will_begin(session, msg.get('params') or {})
             elif method == 'Browser.downloadProgress':
@@ -1003,14 +1263,20 @@ def _stream_gen(session):
     channel deliberately: a download never bumps frame_seq (Chromium doesn't
     repaint for one — see Browser.downloadWillBegin in _run_cdp for the full
     story, and it's why the pane used to just freeze), so downloads_seq is
-    the ONLY way progress or completion ever reaches the pane.
+    the ONLY way progress or completion ever reaches the pane. `tabs_seq` and
+    `dialogs_seq` are the same pattern extended to the tab strip and JS
+    dialogs — neither one repaints the frame either.
     """
     last = -1
     last_dl = -1
+    last_tabs = -1
+    last_dialog = -1
     idle = 0
     while session['status'] == 'running':
         seq = session.get('frame_seq', 0)
         dl_seq = session.get('downloads_seq', 0)
+        tabs_seq = session.get('tabs_seq', 0)
+        dialog_seq = session.get('dialogs_seq', 0)
         sent = False
         if seq != last and session.get('frame'):
             last = seq
@@ -1025,6 +1291,24 @@ def _stream_gen(session):
             last_dl = dl_seq
             idle = 0
             yield f'data: {json.dumps({"downloads": list(session.get("downloads", {}).values())})}\n\n'
+            sent = True
+        # Guarded on key presence (not just the `or {}`/`or 0` defaults above)
+        # so a hand-built session dict without tab/dialog state (every
+        # pre-existing test in this file, and any future one testing only
+        # frames/downloads) never sees these payloads at all — only sessions
+        # `_run_cdp` actually initialized (which always sets both) do.
+        if 'tabs' in session and tabs_seq != last_tabs:
+            last_tabs = tabs_seq
+            idle = 0
+            tabs = [{'target_id': tid, 'url': t.get('url', ''), 'title': t.get('title', ''),
+                    'opener_id': t.get('opener_id')}
+                   for tid, t in (session.get('tabs') or {}).items()]
+            yield f'data: {json.dumps({"tabs": tabs, "active_target_id": session.get("active_target_id")})}\n\n'
+            sent = True
+        if 'dialog' in session and dialog_seq != last_dialog:
+            last_dialog = dialog_seq
+            idle = 0
+            yield f'data: {json.dumps({"dialog": session.get("dialog")})}\n\n'
             sent = True
         if not sent:
             idle += 1
@@ -1205,6 +1489,52 @@ def browser_input():
                 q.put(cmd)
     except (KeyError, ValueError, TypeError) as e:
         return jsonify({'error': f'bad input payload: {e}'}), 400
+    return jsonify({'ok': True})
+
+
+@bp.route('/api/browser/tab', methods=['POST'])
+def browser_tab():
+    """Switch to or close one tab in the pane's tab strip. `target_id` is a
+    CDP target id surfaced on the `tabs` SSE payload (see _stream_gen) — the
+    root tab and every auto-attached popup/window.open()/OAuth popup both
+    appear there."""
+    data = request.get_json(silent=True) or {}
+    sid = data.get('session_id')
+    session = browser_sessions.get(sid)
+    if not session or session['status'] != 'running':
+        return jsonify({'error': 'unknown or stopped session'}), 404
+    target_id = data.get('target_id')
+    action = data.get('action')
+    if not target_id:
+        return jsonify({'error': 'target_id required'}), 400
+    if action == 'activate':
+        session['cmd_queue'].put(('_activate_tab', {'target_id': target_id}))
+    elif action == 'close':
+        session['cmd_queue'].put(('_close_tab', {'target_id': target_id}))
+    else:
+        return jsonify({'error': f'unknown action: {action!r}'}), 400
+    return jsonify({'ok': True})
+
+
+@bp.route('/api/browser/dialog', methods=['POST'])
+def browser_dialog():
+    """Answer the JS dialog (alert/confirm/prompt) currently open on this
+    session — see Page.javascriptDialogOpening in _run_cdp. An unanswered
+    dialog only pauses the page's own JS; it never blocks the CDP reader
+    loop or the SSE stream, so the pane stays responsive either way."""
+    data = request.get_json(silent=True) or {}
+    sid = data.get('session_id')
+    session = browser_sessions.get(sid)
+    if not session or session['status'] != 'running':
+        return jsonify({'error': 'unknown or stopped session'}), 404
+    dlg = session.get('dialog')
+    if not dlg:
+        return jsonify({'error': 'no dialog open'}), 409
+    session['cmd_queue'].put(('_dialog_response', {
+        'target_id': dlg.get('target_id'),
+        'accept': bool(data.get('accept')),
+        'text': data.get('text') or '',
+    }))
     return jsonify({'ok': True})
 
 
