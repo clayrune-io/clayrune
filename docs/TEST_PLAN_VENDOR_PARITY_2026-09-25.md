@@ -23,3 +23,4 @@ Every fix below is dead code until then.
 
 Source reports: `docs/VENDOR_HARNESS_MATRIX.md`,
 `docs/CODEX_UNATTENDED_SANDBOX_DESIGN.md`.
+| 9 | Browser file upload, right-click, IME/shortcuts, sharp text (MC-976 batch B, `853505a`..`54ff080`) | merged | In the browser pane open any site with an upload field (e.g. a Gmail compose attach). Click it, pick a file from THIS device (phone works too). Right-click a link. Press Ctrl+F. | Clayrune's own picker opens and the file attaches; the page's context menu/behaviour fires, not Clayrune's; the page's find bar opens; text looks sharp. |
