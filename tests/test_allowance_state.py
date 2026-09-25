@@ -10,10 +10,16 @@ The Codex fixture below is the REAL line captured 2026-09-18 from
 which is why detect_from_claude_rate_limit_event marks verified=False).
 """
 import json
+from datetime import datetime as _real_datetime, timedelta, timezone
 
 import pytest
 
 from mc import allowance_state as al
+
+# Not-yet-expired tomorrow, computed at run time so this test never rots the
+# way a hardcoded 'tomorrow' literal did (MC-965 class: c3b3489 hardcoded
+# '2026-09-24', true when written 2026-09-23, false two days later).
+_TOMORROW_ISO = (_real_datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +39,7 @@ def test_not_exhausted_by_default():
 
 def test_record_and_get_roundtrip():
     al.record_exhaustion('codex', limit_kind='usage_limit',
-                          resets_at='2026-09-24T14:58:00+00:00',
+                          resets_at=_TOMORROW_ISO,
                           raw_ref='hit limit')
     entry = al.get('codex')
     assert entry is not None
@@ -108,7 +114,20 @@ def test_detect_codex_real_captured_usage_limit_event():
     assert 'usage_limit_exceeded' not in hit['raw_ref'] or 'hit your usage limit' in hit['raw_ref']
 
 
-def test_observe_codex_real_event_records_and_refuses():
+def test_observe_codex_real_event_records_and_refuses(monkeypatch):
+    # The fixture's reset time ("Sep 24th, 2026 7:58 AM") is baked into the
+    # real captured payload above and must not be edited — freeze `now` to
+    # just before it instead of letting this test rot as that date recedes
+    # into the past (same class of bug this fixed: MC-965).
+    class _FrozenDatetime(_real_datetime):
+        _now = _real_datetime(2026, 9, 20, tzinfo=timezone.utc)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls._now if tz else cls._now.replace(tzinfo=None)
+
+    monkeypatch.setattr(al, 'datetime', _FrozenDatetime)
+
     result = al.observe('codex', CODEX_REAL_TASK_COMPLETE)
     assert result is not None
     assert al.is_exhausted('codex') is True
