@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from ._config import CFG, now_iso, _log
+from mc.guardrail_hooks import hook_invocation_tokens, FENCE_HOOK, HOOK_ENTRY_FLAG
 
 # ── Config (per-project, stored on the project dict) ──────────────────────────
 CHARTER_PREFIX = 'STEWARD CHARTER: '
@@ -223,14 +224,30 @@ def fence_settings_path() -> Path:
     return d / 'fence-settings.json'
 
 
+def _fence_command() -> str:
+    """The PreToolUse hook command string.
+
+    Source install: unchanged from before this function existed — quote both
+    interpreter and script unconditionally so paths with spaces survive the
+    shell. Frozen build (MC-975 follow-up, 2026-09-25): `sys.executable` is
+    the Clayrune app binary and `fence.py` exists only as bundled bytecode,
+    so the quoted-pair form would boot a second copy of the app instead of
+    running the fence (see mc/hook_entry.py). There it is
+    `<app> --clayrune-hook fence`, built by the same
+    mc.guardrail_hooks.hook_invocation_tokens() the frozen Codex/
+    process-guard hooks already use — see tests/test_frozen_hook_entry.py."""
+    if getattr(sys, 'frozen', False):
+        tokens = hook_invocation_tokens(FENCE_HOOK, None, fence_script_path())
+        return ' '.join(f'"{t}"' if ' ' in t else t for t in tokens)
+    return f'"{sys.executable}" "{fence_script_path().as_posix()}"'
+
+
 def _fence_settings_content() -> dict:
-    # Quote both interpreter and script so paths with spaces survive the shell.
-    cmd = f'"{sys.executable}" "{fence_script_path().as_posix()}"'
     return {
         "hooks": {
             "PreToolUse": [{
                 "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
-                "hooks": [{"type": "command", "command": cmd, "timeout": 10000}],
+                "hooks": [{"type": "command", "command": _fence_command(), "timeout": 10000}],
             }],
         },
     }
@@ -259,6 +276,10 @@ def ensure_fence_settings() -> Path:
 # hook entry by this substring in its command so removal is precise and never
 # touches a user-authored hook.
 STEWARD_HOOK_MARKER = 'fence.py'
+# The frozen-build command (see _fence_command) has no script path at all, so
+# it never contains STEWARD_HOOK_MARKER — removal needs a second marker that
+# does appear in that form.
+_STEWARD_HOOK_FROZEN_MARKER = f'{HOOK_ENTRY_FLAG} {FENCE_HOOK}'
 
 
 def _project_settings_path(project_path: str) -> Path:
@@ -267,7 +288,8 @@ def _project_settings_path(project_path: str) -> Path:
 
 def _is_steward_hook_entry(entry: dict) -> bool:
     for h in (entry.get('hooks') or []):
-        if STEWARD_HOOK_MARKER in str(h.get('command', '')):
+        cmd = str(h.get('command', ''))
+        if STEWARD_HOOK_MARKER in cmd or _STEWARD_HOOK_FROZEN_MARKER in cmd:
             return True
     return False
 

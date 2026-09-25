@@ -238,6 +238,69 @@ def test_remove_fence_leaves_other_hooks_and_settings_alone(tmp_path):
     assert after['permissions'] == {'allow': ['Bash(ls:*)']}
 
 
+# ── _fence_command frozen-build follow-up (MC-975, 627a4961) ────────────────
+# mc/hook_entry.py + guardrail_hooks.hook_invocation_tokens() gave the Codex
+# fence and process-guard a frozen-build path (f3ca2a1); the Claude-side
+# steward fence built here used its own hand-rolled `"<py>" "<script>"`
+# string and had the identical defect: in a PyInstaller build sys.executable
+# IS the app binary, so that command would boot a second copy of the app
+# instead of running fence.py.
+
+def test_fence_command_source_install_is_byte_identical(monkeypatch):
+    """Not frozen: must match the pre-fix expression exactly, unconditionally
+    quoted, no --clayrune-hook token — this is the regression the brief asks
+    to prove, not just "still works"."""
+    monkeypatch.delattr('sys.frozen', raising=False)
+    import sys as _sys
+    expected = f'"{_sys.executable}" "{core.fence_script_path().as_posix()}"'
+    assert core._fence_command() == expected
+    assert '--clayrune-hook' not in expected
+
+
+def test_fence_command_frozen_build_uses_hook_entry_flag(monkeypatch):
+    monkeypatch.setattr('sys.frozen', True, raising=False)
+    monkeypatch.setattr('sys.executable', 'C:/Clayrune/Clayrune.exe')
+    cmd = core._fence_command()
+    assert cmd == 'C:/Clayrune/Clayrune.exe --clayrune-hook fence'
+    assert 'fence.py' not in cmd
+
+
+def test_fence_command_frozen_build_quotes_only_paths_with_spaces(monkeypatch):
+    monkeypatch.setattr('sys.frozen', True, raising=False)
+    monkeypatch.setattr('sys.executable', 'C:/Program Files/Clayrune/Clayrune.exe')
+    cmd = core._fence_command()
+    assert cmd == '"C:/Program Files/Clayrune/Clayrune.exe" --clayrune-hook fence'
+
+
+def test_is_steward_hook_entry_matches_frozen_form_too():
+    """Removal must find the frozen-form command even though it carries no
+    'fence.py' substring at all — the gap the brief flagged by name."""
+    frozen_entry = {'hooks': [{'type': 'command',
+                              'command': 'C:/Clayrune/Clayrune.exe --clayrune-hook fence'}]}
+    assert core._is_steward_hook_entry(frozen_entry) is True
+    source_entry = {'hooks': [{'type': 'command', 'command': '"py" "fence.py"'}]}
+    assert core._is_steward_hook_entry(source_entry) is True
+    other_entry = {'hooks': [{'type': 'command', 'command': 'some-user-hook.py'}]}
+    assert core._is_steward_hook_entry(other_entry) is False
+
+
+def test_remove_fence_leaves_other_hooks_alone_in_frozen_build(tmp_path, monkeypatch):
+    """install/remove round-trip under a frozen sys.executable — the exact
+    path Bram's f3ca2a1 fixed for Codex, applied to the Claude-side fence."""
+    monkeypatch.setattr('sys.frozen', True, raising=False)
+    monkeypatch.setattr('sys.executable', 'C:/Clayrune/Clayrune.exe')
+    core.install_fence_to_project(str(tmp_path))
+    settings_path = tmp_path / '.claude' / 'settings.json'
+    settings = json.loads(settings_path.read_text(encoding='utf-8'))
+    commands = [h['command'] for e in settings['hooks']['PreToolUse'] for h in e['hooks']]
+    assert any('--clayrune-hook fence' in c for c in commands)
+
+    ok = core.remove_fence_from_project(str(tmp_path))
+    assert ok is True
+    after = json.loads(settings_path.read_text(encoding='utf-8'))
+    assert 'hooks' not in after
+
+
 def test_public_api_exports():
     for name in ('steward_enabled', 'ensure_charter', 'build_cycle_task',
                  'steward_notify', 'ensure_fence_settings', 'loop_health',
