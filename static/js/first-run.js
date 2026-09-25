@@ -21,6 +21,8 @@ let setupProviderChoiceVisited = false;
 let setupModelTier = 'balanced';    // default tier pre-selection; provider-neutral
 let setupModelTierVisited = false;
 const MODEL_TIER_LABEL = { best: 'Best', balanced: 'Balanced', fast: 'Fast' };
+let _setupPhoneRevealed = false;    // essentials-phone: "Set it up" clicked this run
+let _setupAdvExpanded = false;      // essentials-detail: "Choose individually" expander
 
 const SETUP_STEPS = [
   {
@@ -101,15 +103,28 @@ const SETUP_STEPS = [
     },
   },
   {
-    id: 'essentials',
-    title: 'A few essentials',
+    id: 'essentials-yours',
+    title: 'Make it yours',
     wide: true,
-    body: () => _setupEssentialsHTML(),
+    body: () => _setupYoursHTML(),
+  },
+  {
+    id: 'essentials-phone',
+    title: 'Use Clayrune from your phone? (optional)',
+    wide: true,
+    body: () => _setupPhoneHTML(),
     onEnter: () => {
       // The LAN-passcode form is the existing Settings component; it renders
-      // into #local-access-section and refreshes itself there after a save.
-      if (typeof window.refreshLocalAccessSection === 'function') window.refreshLocalAccessSection();
+      // into #local-access-section and refreshes itself there after a save —
+      // but only once revealed (the warning must not appear unprompted).
+      if (_setupPhoneRevealed && typeof window.refreshLocalAccessSection === 'function') window.refreshLocalAccessSection();
     },
+  },
+  {
+    id: 'essentials-detail',
+    title: 'How much detail do you want to see?',
+    wide: true,
+    body: () => _setupDetailHTML(),
   },
   {
     id: 'tour',
@@ -121,12 +136,23 @@ const SETUP_STEPS = [
   },
 ];
 
-// ── Essentials ───────────────────────────────────────────────────────────────
-// Each control calls the setter Settings already uses (setTone/setAccent in
-// appearance.js, setChatStyle, setAdvancedFlag, the LAN-passcode section in
-// settings-sections.js). Highlight state is patched in place, not re-rendered:
-// a re-render would wipe a half-typed passcode.
-function _setupEssentialsHTML() {
+// ── Essentials, split into three short steps ─────────────────────────────────
+// Clean-VM run (Ron, 2026-09-24): the old single "A few essentials" step
+// dumped Theme, Conversation flow, Connectivity, the passcode warning and the
+// full power-user checklist on one screen with no explanation of why any of
+// it mattered. Each of A/B/C below opens with a one-sentence purpose and ends
+// with the same footer line. Every control still calls the SAME setter
+// Settings already uses (setTone/setAccent in appearance.js, setChatStyle,
+// setAdvancedFlag, the LAN-passcode section in settings-sections.js) — no new
+// config keys. Highlight state is patched in place where possible, not
+// re-rendered: a re-render would wipe a half-typed passcode or API key.
+const _SETUP_FOOTER = `<div style="margin-top:18px;font-size:11px;color:var(--text-faint)">You can change this any time in Settings.</div>`;
+const _setupSec = (label, hint, inner) => `<div style="margin-top:14px;text-align:left">
+    <div style="font-weight:600;color:var(--text)">${label}</div>
+    <div style="font-size:11px;color:var(--text-faint);margin:2px 0 6px">${hint}</div>${inner}</div>`;
+
+// A. "Make it yours" — theme + conversation style.
+function _setupYoursHTML() {
   const tone = (typeof currentTone !== 'undefined') ? currentTone : 'warm';
   const accent = (typeof currentAccent !== 'undefined') ? currentAccent : '';
   const flow = (typeof _chatStyle !== 'undefined') && _chatStyle === 'flow';
@@ -135,11 +161,8 @@ function _setupEssentialsHTML() {
     ['', 'Default', '#5b9ef5'], ['sunset', 'Sunset', '#e8824a'], ['rose', 'Rose', '#d96480'],
     ['lilac', 'Lilac', '#8a7ce0'], ['lagoon', 'Lagoon', '#4fa89a'], ['ink', 'Ink', '#6b7286'],
   ];
-  const sec = (label, hint, inner) => `<div style="margin-top:14px;text-align:left">
-      <div style="font-weight:600;color:var(--text)">${label}</div>
-      <div style="font-size:11px;color:var(--text-faint);margin:2px 0 6px">${hint}</div>${inner}</div>`;
-  return `All of these can be changed later in Settings.`
-    + sec('Theme', 'Warm and Editorial are light themes.',
+  return `<div style="font-size:13px;color:var(--text-dim);line-height:1.5">Pick a look and a reply style — both are one click to change later.</div>`
+    + _setupSec('Theme', 'Dark is easy at night. Warm and Editorial are light, paper-like themes for daytime.',
         `<div class="mc-seg" id="setup-tone-seg">
           <button type="button" class="${act(tone === 'dark')}" onclick="setupPickTone('dark',this)">Dark</button>
           <button type="button" class="${act(tone === 'warm')}" onclick="setupPickTone('warm',this)">Warm</button>
@@ -148,24 +171,82 @@ function _setupEssentialsHTML() {
         <div class="mc-accent-row" id="setup-accent-row" style="margin-top:8px;justify-content:flex-start;max-width:none">`
         + accents.map(([k, label, color]) => `<button type="button" class="mc-accent-pill ${act(accent === k)}" onclick="setupPickAccent('${k}',this)"><span class="mc-accent-swatch" style="background:${color}"></span>${label}</button>`).join('')
         + `</div>`)
-    + sec('Conversation flow', 'Bubbles show each paragraph of an agent reply as its own card; Flow runs the reply together as one block.',
+    + _setupSec('Conversation flow', 'How an agent’s reply is shown — see it below before you pick.',
         `<div class="mc-seg" id="setup-flow-seg">
           <button type="button" class="${act(!flow)}" onclick="setupPickChatStyle('bubbles',this)">Bubbles</button>
           <button type="button" class="${act(flow)}" onclick="setupPickChatStyle('flow',this)">Flow</button>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
+          <div class="setup-flow-preview ${act(!flow)}" id="setup-flow-preview-bubbles" style="flex:1;min-width:180px">
+            <div class="setup-flow-preview-label">Bubbles</div>
+            <div class="setup-mock-bubble">Found the bug — it’s a race in the SSE reconnect.</div>
+            <div class="setup-mock-bubble">Fixed and pushed to your branch.</div>
+          </div>
+          <div class="setup-flow-preview ${act(flow)}" id="setup-flow-preview-flow" style="flex:1;min-width:180px">
+            <div class="setup-flow-preview-label">Flow</div>
+            <div class="setup-mock-flow">Found the bug — it’s a race in the SSE reconnect. Fixed and pushed to your branch.</div>
+          </div>
         </div>`)
-    + sec('Connectivity', 'Reach Clayrune from your phone or another machine — remote access, push notifications and mobile pairing. Optional.',
+    + _SETUP_FOOTER;
+}
+
+// B. "Use Clayrune from your phone?" — optional. Connectivity and the LAN
+// passcode form (with its locked-out warning) are revealed ONLY after an
+// explicit "Set it up" click; they must never appear unprompted.
+function _setupPhoneHTML() {
+  let html = `<div style="font-size:13px;color:var(--text-dim);line-height:1.5">Reach your agents from your phone or another computer, and get notified when one needs you. Most people set this up later.</div>`;
+  if (!_setupPhoneRevealed) {
+    html += `<div style="display:flex;gap:8px;margin-top:16px">
+      <button type="button" class="wt-btn setup-btn-secondary" onclick="setupSkipPhone()">Not now</button>
+      <button type="button" class="wt-btn wt-btn-primary" onclick="setupRevealPhone()">Set it up</button>
+    </div>`;
+  } else {
+    html += _setupSec('Connectivity', 'Remote access, push notifications and mobile pairing.',
         `<button type="button" class="btn-add" onclick="setupOpenConnectivity()">Open Connectivity settings…</button>`)
-    + `<div id="local-access-section" style="margin-top:14px;text-align:left"></div>`
-    + sec('Choose your level', 'Clayrune starts in a simple view. Turn on any power-user features you want to see.',
-        `<div id="setup-adv-list" style="display:flex;flex-direction:column;gap:8px">`
+      + _setupSec('Passcode', 'A passcode lets your own phone or laptop on the same Wi-Fi sign in. Without one, only this computer can open Clayrune.',
+        `<div id="local-access-section"></div>`);
+  }
+  return html + _SETUP_FOOTER;
+}
+function setupRevealPhone() { _setupPhoneRevealed = true; if (setupActive) setupShow(setupStep); }
+// "Not now" is the default: it just advances like any other Next.
+function setupSkipPhone() { setupNext(); }
+
+// C. "How much detail do you want to see?" — two presets up front, the
+// original per-feature checklist collapsed behind "Choose individually".
+function _setupDetailHTML() {
+  const allOn = ADV_FEATURES.every(f => !!advancedFlags[f.key]);
+  let html = `<div style="font-size:13px;color:var(--text-dim);line-height:1.5">Clayrune starts simple. Power users can turn on extra panels and counters any time.</div>`;
+  html += `<div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap">
+    <button type="button" class="setup-preset-card ${!allOn ? 'active' : ''}" onclick="setupPickPreset('simple',this)">
+      <div class="setup-preset-title">Simple</div>
+      <div class="setup-preset-hint">Just the essentials. Recommended.</div>
+    </button>
+    <button type="button" class="setup-preset-card ${allOn ? 'active' : ''}" onclick="setupPickPreset('power',this)">
+      <div class="setup-preset-title">Power user</div>
+      <div class="setup-preset-hint">Token counters, tool-call lines, GitHub badges and more, all on.</div>
+    </button>
+  </div>`;
+  html += `<div style="margin-top:16px;text-align:left">
+    <button type="button" class="setup-adv-expander" onclick="setupToggleAdvExpander()">${_setupAdvExpanded ? '▾' : '▸'} Choose individually</button>`
+    + (_setupAdvExpanded ? `<div id="setup-adv-list" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">`
         + ADV_FEATURES.map(f => `
         <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;padding:6px;border-radius:4px;background:var(--surface2)">
           <input type="checkbox" ${advancedFlags[f.key] ? 'checked' : ''}
             onchange="setAdvancedFlag('${esc(f.key)}',this.checked)"
             style="margin-top:2px;width:15px;height:15px;accent-color:var(--accent)">
           <span style="flex:1"><span style="font-weight:600;color:var(--text)">${esc(f.label)}</span><br><span style="font-size:11px;color:var(--text-faint)">${esc(f.hint)}</span></span>
-        </label>`).join('') + `</div>`);
+        </label>`).join('') + `</div>` : '')
+    + `</div>`;
+  return html + _SETUP_FOOTER;
 }
+// Presets set every ADV_FEATURES flag via the same setter Settings uses —
+// no new config key, just a batch of the existing per-key one.
+function setupPickPreset(which) {
+  ADV_FEATURES.forEach(f => setAdvancedFlag(f.key, which === 'power'));
+  if (setupActive) setupShow(setupStep);
+}
+function setupToggleAdvExpander() { _setupAdvExpanded = !_setupAdvExpanded; if (setupActive) setupShow(setupStep); }
 
 // Move the .active highlight to the clicked button within its own group.
 function _setupHighlight(btn) {
@@ -175,7 +256,16 @@ function _setupHighlight(btn) {
 }
 function setupPickTone(tone, btn) { setTone(tone); _setupHighlight(btn); }
 function setupPickAccent(accent, btn) { setAccent(accent); _setupHighlight(btn); }
-function setupPickChatStyle(style, btn) { setChatStyle(style); _setupHighlight(btn); }
+function setupPickChatStyle(style, btn) {
+  setChatStyle(style);
+  _setupHighlight(btn);
+  // Patch the live preview's highlight in place too — same "no re-render"
+  // rule as the rest of this file, so a half-typed field elsewhere survives.
+  const bubblesPrev = document.getElementById('setup-flow-preview-bubbles');
+  const flowPrev = document.getElementById('setup-flow-preview-flow');
+  if (bubblesPrev) bubblesPrev.classList.toggle('active', style !== 'flow');
+  if (flowPrev) flowPrev.classList.toggle('active', style === 'flow');
+}
 
 // Connectivity lives in Settings (the `connect` category). The setup overlay
 // sits above every modal, so hide it while Settings is open and bring it back
@@ -224,7 +314,12 @@ async function setupPickModelTier(tier, btn) {
 
 async function setupInstallSelected(btn) {
   _setupStartInstallWatch();
+  const before = _setupCurrentTerminalIds();
   await providerInstallSelected(btn, Array.from(setupSelectedProviders));
+  // Diff, don't assume a fixed number of ids: a batch install can open more
+  // than one terminal. Track only what THIS call actually added, so Finish/
+  // Skip never closes a terminal setup did not open.
+  _setupCurrentTerminalIds().forEach((id) => { if (!before.has(id)) _setupOpenedTerminalIds.add(id); });
   _setupDockLiveTerminals();
 }
 
@@ -256,6 +351,17 @@ window._setupRepaint = () => {
 // Visibility now tracks DOM presence directly via a MutationObserver and is
 // the only thing that ever adds/removes the class; polling only starts/stops
 // its own timer.
+// Modal ids (`__terminal_<sessionId>`) of terminal pop-outs SETUP itself
+// opened this run — populated by setupInstallSelected's before/after diff and
+// window._setupOnTerminalOpened's sessionId argument, never by scanning the
+// DOM wholesale (that would also catch a terminal the user opened some other
+// way). Closed on Finish/Skip via _setupCloseOpenedTerminals; reset in
+// startFirstRun.
+let _setupOpenedTerminalIds = new Set();
+function _setupCurrentTerminalIds() {
+  return new Set(Array.from(document.querySelectorAll('#modal-layer .modal-window[data-modal-id^="__terminal_"]'))
+    .map((w) => w.dataset.modalId));
+}
 let _setupInstallWatchTimer = null;
 let _setupInstallWatchRunning = false; // separate from the timer ID: setInterval's return value must never be truthiness-tested (0 is a legal id in a synthetic/non-browser host)
 let _setupTerminalObserver = null;
@@ -375,11 +481,26 @@ function _setupDockLiveTerminals() {
 // right after it opens a real-PTY sign-in terminal (Gemini's account-picker
 // TUI, the same class of pop-out install uses) — that function is shared with
 // Settings, so it only reaches here when setup is actually the caller.
-window._setupOnTerminalOpened = function () {
+// sessionId is the terminal's own session id (data.session_id at the call
+// site) — recorded so this terminal is closed on Finish/Skip like an install
+// terminal, never left as a permanent gap between the two tracking paths.
+window._setupOnTerminalOpened = function (sessionId) {
   if (!setupActive) return;
+  if (sessionId) _setupOpenedTerminalIds.add('__terminal_' + sessionId);
   _setupStartInstallWatch();
   _setupDockLiveTerminals();
 };
+
+// Close every terminal pop-out SETUP opened this run (install + sign-in) via
+// terminal.js's normal close path (closeModalById -> cleanupTerminalModal),
+// so the PTY session is actually torn down server-side, not just the DOM
+// node removed. Only ids _setupOpenedTerminalIds actually recorded — a
+// terminal the user opened some other way is never touched.
+function _setupCloseOpenedTerminals() {
+  if (typeof window.closeModalById !== 'function') return;
+  _setupOpenedTerminalIds.forEach((id) => { try { window.closeModalById(id); } catch (_) {} });
+  _setupOpenedTerminalIds = new Set();
+}
 
 // Human-readable reason a selected provider is blocking Next — F2 (clean-VM
 // run 2026-09-18): the old message was the step's own static hint repeated
@@ -447,6 +568,9 @@ function startFirstRun(opts) {
   setupModelTier = curModel.startsWith('tier:') ? curModel.slice(5)
     : (curModel ? '' : 'balanced');
   setupModelTierVisited = false;
+  _setupPhoneRevealed = false;
+  _setupAdvExpanded = false;
+  _setupOpenedTerminalIds = new Set();
   showDesktop();
   setupShow(0);
 }
@@ -537,7 +661,12 @@ async function setupShow(idx) {
     // "Skip" look (walkthrough.js), and a setup control wearing it is exactly
     // the confusion Ron hit on the clean-VM run (2026-09-23).
     if (setupForced) btns += `<button class="wt-btn setup-btn-secondary" onclick="setupSkip()">Close</button>`;
-    btns += `<button class="wt-btn wt-btn-primary" onclick="setupNext()">${isFirst ? 'Get started' : 'Next'}</button>`;
+    // essentials-phone, unrevealed: the body already asks the one question
+    // ("Not now" / "Set it up") — a generic Next alongside it would be a
+    // third primary-looking button doing near-the-same thing as "Not now".
+    // Once revealed the body is just informational again, so Next returns.
+    const suppressNext = step.id === 'essentials-phone' && !_setupPhoneRevealed;
+    if (!suppressNext) btns += `<button class="wt-btn wt-btn-primary" onclick="setupNext()">${isFirst ? 'Get started' : 'Next'}</button>`;
   }
 
   const pct = Math.round(((pos + 1) / visible.length) * 100);
@@ -591,6 +720,7 @@ function setupFinish() {
   setupActive = false;
   _setupStopInstallWatch();
   _setupUnmarkTerminalLive();
+  _setupCloseOpenedTerminals();
   const el = document.getElementById('setup-overlay');
   if (el) el.remove();
   if (!(_globalConfig && _globalConfig.setup_completed)) _setupPersistCompleted();
@@ -631,4 +761,8 @@ window.setupPickTone = setupPickTone;
 window.setupPickAccent = setupPickAccent;
 window.setupPickChatStyle = setupPickChatStyle;
 window.setupOpenConnectivity = setupOpenConnectivity;
+window.setupRevealPhone = setupRevealPhone;     // interop: essentials-phone "Set it up" generated onclick
+window.setupSkipPhone = setupSkipPhone;         // interop: essentials-phone "Not now" generated onclick
+window.setupPickPreset = setupPickPreset;       // interop: essentials-detail preset card generated onclick
+window.setupToggleAdvExpander = setupToggleAdvExpander; // interop: essentials-detail "Choose individually" generated onclick
 window.startTourOrSetup = startTourOrSetup;     // interop: header '?' button + command-palette "Take Tour" entry

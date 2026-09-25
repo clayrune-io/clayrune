@@ -222,7 +222,7 @@ try {
   providers.forEach(p => { if (p.name === 'codex' || p.name === 'claude') p.auth_status = 'ok'; });
   await page.evaluate(() => providerRefreshAll()); await page.waitForTimeout(40);
   await page.getByRole('button', {name: 'Next'}).click();
-  if (!(await page.locator('#setup-overlay .wt-title').innerText()).includes('A few essentials')) throw new Error('completed onboarding did not advance');
+  if (!(await page.locator('#setup-overlay .wt-title').innerText()).includes('Make it yours')) throw new Error('completed onboarding did not advance');
   // Clean-VM run 3 (C4): Qwen's only sign-in is DASHSCOPE_API_KEY. The setup row
   // must carry the SAME key field + save path Settings -> Providers uses, or a
   // user who picks Qwen can never get past the gate.
@@ -244,7 +244,7 @@ try {
   await page.waitForFunction(() => /signed in/.test(document.querySelector('#setup-overlay .prov-row[data-provider="qwen"] .prov-row-state')?.textContent || ''));
   if (JSON.stringify(envCalls) !== JSON.stringify([{key: 'DASHSCOPE_API_KEY', hasValue: true}])) throw new Error(`key save did not use the Settings env route: ${JSON.stringify(envCalls)}`);
   await page.getByRole('button', {name: 'Next'}).click();
-  if (!(await page.locator('#setup-overlay .wt-title').innerText()).includes('A few essentials')) throw new Error('signing Qwen in from setup did not clear the gate');
+  if (!(await page.locator('#setup-overlay .wt-title').innerText()).includes('Make it yours')) throw new Error('signing Qwen in from setup did not clear the gate');
   await page.setViewportSize({width: 390, height: 844});
   await page.evaluate(() => setupBack()); await page.waitForTimeout(30);
   const overflow = await page.evaluate(() => ({scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth}));
