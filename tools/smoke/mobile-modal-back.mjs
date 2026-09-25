@@ -111,7 +111,11 @@ async function routeCommon(page) {
 
 function readHeaderBtn(modalId) {
   const b = document.querySelector(`#modal-layer .modal-window[data-modal-id="${modalId}"] .modal-header .modal-minimize`);
-  return b ? { title: b.title, text: b.textContent.trim() } : null;
+  if (!b) return null;
+    const svg = b.querySelector('svg'), br = b.getBoundingClientRect(), sr = svg ? svg.getBoundingClientRect() : null;
+    // Arrow must be the SVG icon and sit vertically centred (a text ← rode the baseline, low).
+    const centred = !!sr && Math.abs((sr.top + sr.height / 2) - (br.top + br.height / 2)) <= 1;
+    return { title: b.title, text: b.dataset.icon === 'back' ? (centred ? '←' : 'back arrow NOT vertically centred') : b.textContent.trim() };
 }
 
 function clickHeaderBtn(modalId) {

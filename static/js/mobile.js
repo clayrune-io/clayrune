@@ -862,7 +862,12 @@ function _mcApplyMobileModalHeader(win) {
   if (btn && !btn.dataset.mcBackWired) {
     btn.dataset.mcBackWired = '1';
     btn.title = 'Back';
-    btn.innerHTML = '&#8592;';
+    // SVG, not the U+2190 glyph: a text arrow sits on the font baseline, so it
+    // rendered visibly low in the 32px button next to a centred ✕ (Ron, phone
+    // screenshot 2026-09-24). An SVG box is centred exactly by the flex rule.
+    btn.setAttribute('aria-label', 'Back');
+    btn.dataset.icon = 'back';
+    btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="display:block" aria-hidden="true"><path d="M15 9H3M8 4L3 9l5 5"/></svg>';
     btn.onclick = () => mcModalHeaderBack(modalId);
   }
   // Non-project (__) surfaces have no back-stack entry of their own unless
