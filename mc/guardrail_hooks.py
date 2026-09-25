@@ -151,6 +151,30 @@ def _shell_neutral_path(p: str) -> str:
 _EXIT_CODE_SUFFIX = ' ; exit $LASTEXITCODE' if os.name == 'nt' else ''
 
 
+# Hook names app.py's `--clayrune-hook` entry serves (mc/hook_entry.py).
+PROCESS_GUARD_HOOK = 'process-guard'
+FENCE_HOOK = 'fence'
+HOOK_ENTRY_FLAG = '--clayrune-hook'
+
+
+def hook_invocation_tokens(hook: str, script: Optional[Path], default_script: Path,
+                           python_exe: Optional[str] = None) -> List[str]:
+    """The leading argv of a hook command, shell-neutral and unquoted.
+
+    Source install: `[<python>, <script>]`. Frozen build (MC-975 follow-up):
+    `sys.executable` is the Clayrune app itself and the hook scripts exist
+    only as bytecode inside the bundle, so `<app> <script>` booted a second
+    copy of the app instead of running the hook. There it is
+    `[<app>, --clayrune-hook, <hook>]`, which app.py hands to
+    mc/hook_entry.py in-process before anything else starts. An explicit
+    `script` or `python_exe` always means the source form: callers that pass
+    them (tests, tools/guards/install_hooks.py) name a real file."""
+    if getattr(sys, 'frozen', False) and script is None and python_exe is None:
+        return [_shell_neutral_path(sys.executable), HOOK_ENTRY_FLAG, hook]
+    py = _shell_neutral_path(python_exe or sys.executable or 'python')
+    return [py, _shell_neutral_path(str(script or default_script))]
+
+
 def guard_shell_command(guard_script: Optional[Path] = None, python_exe: Optional[str] = None) -> str:
     """The command string every vendor's hook config points at — the ONE
     place this is built, shared by `tools/guards/install_hooks.py` (writes
@@ -225,12 +249,11 @@ def guard_shell_command(guard_script: Optional[Path] = None, python_exe: Optiona
     PowerShell reproduced the §8 fail-open: the guard printed its denial and
     PowerShell still exited 1, which Qwen maps to allow.
     """
-    guard_script = guard_script or (Path(__file__).resolve().parent / 'process_guard.py')
-    py = _shell_neutral_path(python_exe or sys.executable or 'python')
-    py_token = f'"{py}"' if ' ' in py else py
-    script_str = _shell_neutral_path(str(guard_script))
-    script_token = f'"{script_str}"' if ' ' in script_str else script_str
-    return f'{py_token} {script_token}{_EXIT_CODE_SUFFIX}'
+    tokens = hook_invocation_tokens(
+        PROCESS_GUARD_HOOK, guard_script,
+        Path(__file__).resolve().parent / 'process_guard.py', python_exe)
+    quoted = [f'"{t}"' if ' ' in t else t for t in tokens]
+    return ' '.join(quoted) + _EXIT_CODE_SUFFIX
 
 
 def _toml_basic_string(s: str) -> str:
@@ -365,6 +388,12 @@ FENCE_HOOK_NAME = 'clayrune-steward-fence'
 FENCE_ARMED_ARG = '--armed'
 FENCE_SELF_TEST_ARG = '--self-test'
 FENCE_SELF_TEST_TOKEN = 'CLAYRUNE-FENCE-SELF-TEST-OK'
+# A hook timeout fails OPEN in Codex, so this must sit far above the fence's
+# real runtime. Measured 2026-09-25 through the Codex hook shell (PowerShell
+# + python + fence.py), 20 runs each: armed block max 0.29 s, armed allow
+# max 0.30 s, unarmed max 0.27 s; 8 concurrent, 40 runs: max 0.36 s. About
+# 80x headroom. tests/test_codex_steward_fence.py fails if one armed run
+# takes over a fifth of this.
 CODEX_FENCE_TIMEOUT_SEC = 30
 
 _FENCE_FAIL_REASON = 'STEWARD FENCE failed to run; blocking this tool call fail-closed. Exit: '
@@ -401,9 +430,8 @@ def codex_fence_hook_command(*, armed: bool, fence_script: Optional[Path] = None
     fail-closed suffix. Unarmed (a human is watching) gets the plain
     exit-code re-raise, so a broken fence cannot wedge an interactive chat.
     """
-    script = _shell_neutral_path(str(fence_script or _default_fence_script()))
-    py = _shell_neutral_path(python_exe or sys.executable or 'python')
-    tokens = [f'"{t}"' if ' ' in t else t for t in (py, script)]
+    tokens = [f'"{t}"' if ' ' in t else t for t in hook_invocation_tokens(
+        FENCE_HOOK, fence_script, _default_fence_script(), python_exe)]
     args = ([FENCE_ARMED_ARG] if armed else []) + list(extra_args)
     base = ' '.join(tokens + args)
     if os.name == 'nt':

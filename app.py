@@ -16,6 +16,14 @@ from mc import preflight  # noqa: F401
 import os
 import sys
 
+# Hook invocation (MC-975): a frozen build has no Python interpreter to run
+# hook scripts with, so vendor CLIs call this binary as
+# `<app> --clayrune-hook <name> ...`. Handle it before anything else runs:
+# no server, no window, no CLI check. See mc/hook_entry.py.
+if len(sys.argv) > 1 and sys.argv[1] == '--clayrune-hook':
+    from mc.hook_entry import run_hook
+    sys.exit(run_hook(sys.argv[2:]))
+
 # Force pythonnet to use CoreCLR (.NET Core / .NET 5+) instead of .NET Framework.
 # MUST be set before ANY pythonnet/clr/webview import — pythonnet reads these at
 # import time. Without this, pythonnet defaults to .NET Framework 4.8, but the

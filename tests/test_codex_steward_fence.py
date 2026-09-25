@@ -93,6 +93,20 @@ def test_self_test_passes_only_on_a_real_fence_round_trip():
     assert not ok and 'exit 2' in detail  # wrapper's exit 2 carries no token
 
 
+@needs_ps
+def test_armed_fence_runs_far_inside_the_fail_open_timeout():
+    """Codex lets the tool run when a hook times out. Measured max 0.36 s
+    under 8-way load against a 30 s timeout; a fifth of it is the alarm."""
+    import time
+    cmd = gh.codex_fence_hook_command(armed=True)
+    worst = 0.0
+    for _ in range(3):
+        t = time.perf_counter()
+        assert _run_hook(cmd, BLOCK).returncode == 2
+        worst = max(worst, time.perf_counter() - t)
+    assert worst < gh.CODEX_FENCE_TIMEOUT_SEC / 5, worst
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='codex.CMD shim is Windows-only')
 @pytest.mark.parametrize('armed', [True, False])
 def test_injected_value_has_no_cmd_metacharacters(armed):
