@@ -1202,3 +1202,90 @@ def test_stream_gen_emits_dialog_payload_when_one_opens():
     session['dialogs_seq'] = 1
     third = next(gen)
     assert '"dialog"' in third and '"message": "hi"' in third
+
+
+# ── HiDPI screencast scaling (B4, MC-976 gap #8) ─────────────────────────────
+# The launch flag is --force-device-scale-factor, never Emulation.
+# setDeviceMetricsOverride — that CDP call is the one the _pump() comment a
+# few hundred lines up forbids, because it decoupled the page's believed
+# viewport from what the screencast actually captured (a real Discord captcha
+# button landed in the resulting dead band). A launch flag only changes the
+# backing pixel density; window.innerWidth/Height is untouched, which is what
+# these tests pin.
+
+@pytest.mark.parametrize('raw, expected', [
+    (None, 1.0), (0, 1.0), (1, 1.0), ('nope', 1.0), (float('nan'), 1.0),
+    (1.5, 1.5), (2, 2.0), (3, 2.0), (10, 2.0),  # capped at _MAX_DPR
+])
+def test_clamp_dpr(raw, expected):
+    assert br._clamp_dpr(raw) == expected
+
+
+def test_screencast_params_for_dpr1_is_the_module_default():
+    assert br._screencast_params_for(1.0) == br._SCREENCAST_PARAMS
+
+
+def test_screencast_params_for_dpr2_scales_the_caps_only():
+    base = br._SCREENCAST_PARAMS
+    scaled = br._screencast_params_for(2.0)
+    assert scaled['maxWidth'] == base['maxWidth'] * 2
+    assert scaled['maxHeight'] == base['maxHeight'] * 2
+    # format/quality/everyNthFrame carry over unchanged.
+    assert scaled['format'] == base['format']
+    assert scaled['quality'] == base['quality']
+    assert scaled['everyNthFrame'] == base['everyNthFrame']
+
+
+class _FakeThread:
+    """Stands in for threading.Thread so _launch_browser's real CDP reader
+    never starts — these tests assert on launch-time state (Popen args,
+    session dict), not on anything the reader loop produces."""
+    def __init__(self, target=None, args=(), daemon=None):
+        self.target, self.args, self.daemon = target, args, daemon
+
+    def start(self):
+        pass
+
+
+def _stub_launch_deps(monkeypatch, profiles):
+    monkeypatch.setattr(br, '_find_chromium', lambda: 'C:/fake/chrome.exe')
+    monkeypatch.setattr(br, '_import_ws', lambda: object())
+    monkeypatch.setattr(br.threading, 'Thread', _FakeThread)
+    captured = {}
+
+    def fake_popen(args, **kwargs):
+        captured['args'] = args
+        return _FakeProc()
+    monkeypatch.setattr(br.subprocess, 'Popen', fake_popen)
+    return captured
+
+
+def test_launch_with_dpr2_passes_the_scale_flag_and_scales_the_frame(profiles, monkeypatch):
+    captured = _stub_launch_deps(monkeypatch, profiles)
+    session, err = br._launch_browser('proj', 'https://example.com', dpr=2)
+    assert err is None
+    assert any(a == '--force-device-scale-factor=2.0' for a in captured['args']), captured['args']
+    assert session['dpr'] == 2.0
+    assert session['screencast_params']['maxWidth'] == br._SCREENCAST_PARAMS['maxWidth'] * 2
+
+
+def test_launch_with_no_dpr_omits_the_flag_entirely(profiles, monkeypatch):
+    """dpr=1 (or absent) must reproduce EXACTLY today's launch args — no flag
+    at all — so an ordinary, non-HiDPI launch is byte-for-byte unchanged."""
+    captured = _stub_launch_deps(monkeypatch, profiles)
+    session, err = br._launch_browser('proj', 'https://example.com')
+    assert err is None
+    assert not any('force-device-scale-factor' in a for a in captured['args'])
+    assert session['dpr'] == 1.0
+    assert session['screencast_params'] == br._SCREENCAST_PARAMS
+
+
+def test_launch_route_forwards_client_dpr_and_reports_it_back(app_client, profiles, monkeypatch):
+    captured = _stub_launch_deps(monkeypatch, profiles)
+    resp = app_client.post('/api/browser/launch', json={
+        'project_id': 'proj', 'url': 'https://example.com', 'dpr': 2,
+    })
+    assert resp.status_code == 201
+    body = resp.get_json()
+    assert body['dpr'] == 2.0
+    assert any('force-device-scale-factor=2.0' in a for a in captured['args'])

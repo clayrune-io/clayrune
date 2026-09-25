@@ -104,9 +104,49 @@ WINDOW_CHROME_W, WINDOW_CHROME_H = 16, 151
 # the re-arm after a navigation (frameStoppedLoading), and the on-demand
 # restart a minimized-then-restored pane asks for (browser_input's
 # `type: screencast, action: start`) can never drift apart.
+# This is the dpr=1 baseline; a HiDPI launch stores its own scaled copy on
+# `session['screencast_params']` (see _launch_browser) and every call site
+# below reads that first, falling back to this dict only for a session that
+# predates the key (e.g. a test building a session by hand).
 _SCREENCAST_PARAMS = {'format': 'jpeg', 'quality': 55,
                       'maxWidth': VIEW_W + WINDOW_CHROME_W,
                       'maxHeight': VIEW_H + WINDOW_CHROME_H, 'everyNthFrame': 1}
+
+# Cap on the client-reported devicePixelRatio we'll honour. Measured
+# 2026-09-25 (_scratch/hidpi_probe2.py): dpr=2 on a near-blank page already
+# triples the JPEG frame size (9322 -> 28912 bytes) because the pixel count
+# is 4x and JPEG only partially amortises that. A phone reporting dpr=3 would
+# roughly 6-7x the SSE stream for a desktop pane it isn't even displaying at
+# native size — cap here rather than trust the client number unbounded.
+_MAX_DPR = 2.0
+
+
+def _clamp_dpr(dpr) -> float:
+    """Client-reported window.devicePixelRatio, clamped to [1, _MAX_DPR] and
+    falling back to 1 (today's behaviour) for anything missing or bogus."""
+    try:
+        dpr = float(dpr)
+    except (TypeError, ValueError):
+        return 1.0
+    if dpr != dpr or dpr < 1:  # NaN or below the floor
+        return 1.0
+    return min(dpr, _MAX_DPR)
+
+
+# Scales the CAPTURE only, via the --force-device-scale-factor launch flag
+# in _launch_browser below — never the CDP viewport-override call the
+# _run_cdp comment a few hundred lines down forbids, for exactly the reason
+# that comment gives.
+def _screencast_params_for(dpr: float) -> dict:
+    """Screencast params scaled for `dpr` — same viewport, more device
+    pixels, so text is sharp on a HiDPI display, without changing the CSS
+    layout viewport Page.frameStoppedLoading/deviceWidth logic relies on."""
+    if dpr == 1:
+        return dict(_SCREENCAST_PARAMS)
+    params = dict(_SCREENCAST_PARAMS)
+    params['maxWidth'] = round(params['maxWidth'] * dpr)
+    params['maxHeight'] = round(params['maxHeight'] * dpr)
+    return params
 
 # ── wired by server.py ───────────────────────────────────────────────────────
 _register_process: Callable[..., Any] = None  # type: ignore[assignment]
@@ -568,7 +608,8 @@ def _switch_active_tab(session, send, new_target_id, old_session_id=None):
     try:
         send('Page.bringToFront', {}, session_id=new_sid)
         if not session.get('screencast_paused'):
-            send('Page.startScreencast', _SCREENCAST_PARAMS, session_id=new_sid)
+            send('Page.startScreencast',
+                 session.get('screencast_params', _SCREENCAST_PARAMS), session_id=new_sid)
     except Exception as e:
         session['error'] = f'tab switch failed: {e}'
     session['tabs_seq'] = session.get('tabs_seq', 0) + 1
@@ -716,7 +757,8 @@ def _run_cdp(session):
             # The caps only DOWNSCALE an oversized frame; they must stay at
             # or above the real viewport or the image is shrunk and the pane
             # adopts a coordinate space smaller than the page's.
-            send('Page.startScreencast', _SCREENCAST_PARAMS, session_id=session_id)
+            send('Page.startScreencast',
+                 session.get('screencast_params', _SCREENCAST_PARAMS), session_id=session_id)
 
         send('Page.enable')
         send('DOM.enable')
@@ -1050,16 +1092,25 @@ def _default_profile():
     return (state.CONFIG.get('browser_default_profile') or '').strip().lower() or None
 
 
-def _launch_browser(project_id, url, profile=None, ephemeral=False):
+def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None):
     """Start a headless Chromium and its CDP reader.
 
     ``profile`` names a persistent user-data-dir that survives teardown; None
     (the default) gets a throwaway one — unless ``browser_default_profile`` is
     configured, which makes unnamed launches persistent so the 🌐 Browser button
     stops signing the user out of everything on every click. ``ephemeral=True``
-    opts a single launch back out of that default. Returns ``(session, err)``;
+    opts a single launch back out of that default. ``dpr`` is the launching
+    client's ``window.devicePixelRatio`` (clamped, see _clamp_dpr) — passed to
+    Chromium as ``--force-device-scale-factor`` so the screencast captures
+    more device pixels per CSS pixel and text reads sharp on a HiDPI display.
+    A launch flag, changing only the backing pixel density — never
+    window.innerWidth/Height, so the CSS layout viewport
+    Page.frameStoppedLoading/deviceWidth logic depends on stays exactly what
+    it was before this landed (see the CDP-override warning further down in
+    _run_cdp for why that distinction matters). Returns ``(session, err)``;
     the session carries ``reused=True`` when an existing one already held that
-    profile.
+    profile (its running Chromium keeps whatever dpr it launched with — this
+    call's ``dpr`` is ignored for a reuse).
     """
     if profile is None and not ephemeral:
         profile = _default_profile()
@@ -1092,13 +1143,16 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False):
     if profile is None:
         udd = os.path.join(_profiles_root(), sid)
     os.makedirs(udd, exist_ok=True)
+    dpr = _clamp_dpr(dpr)
     args = [
         chromium, '--headless=new', f'--remote-debugging-port={port}',
         '--remote-allow-origins=*', f'--user-data-dir={udd}',
         '--no-first-run', '--no-default-browser-check', '--disable-gpu',
         f'--window-size={VIEW_W + WINDOW_CHROME_W},{VIEW_H + WINDOW_CHROME_H}',
-        'about:blank',
     ]
+    if dpr != 1:
+        args.append(f'--force-device-scale-factor={dpr}')
+    args.append('about:blank')
     try:
         proc = subprocess.Popen(args, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
@@ -1120,6 +1174,11 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False):
         # Browser.setDownloadBehavior; None until then.
         'screencast_paused': False, 'downloads': {}, 'downloads_seq': 0,
         'download_dir': None,
+        # dpr this Chromium was launched with (--force-device-scale-factor)
+        # and the screencast params scaled to match — every startScreencast
+        # call site reads screencast_params, never the module-level default,
+        # so a HiDPI launch stays sharp across tab switches and re-arms too.
+        'dpr': dpr, 'screencast_params': _screencast_params_for(dpr),
     }
     with browser_lock:
         browser_sessions[sid] = session
@@ -1265,7 +1324,8 @@ def browser_launch():
                                  "Clayrune's own origin"}), 403
     profile = data.get('profile')
     session, err = _launch_browser(project_id, url, profile=profile or None,
-                                   ephemeral=bool(data.get('ephemeral')))
+                                   ephemeral=bool(data.get('ephemeral')),
+                                   dpr=data.get('dpr'))
     if err or session is None:
         err = err or 'browser failed to start'
         # A bad profile name is the caller's mistake, not a missing dependency —
@@ -1279,6 +1339,7 @@ def browser_launch():
         session['cmd_queue'].put(('Page.navigate', {'url': url}))
     return jsonify({'session_id': session['session_id'], 'url': session['url'],
                     'profile': session.get('profile'), 'reused': reused,
+                    'dpr': session.get('dpr', 1),
                     'view': {'w': VIEW_W, 'h': VIEW_H}}), (200 if reused else 201)
 
 
@@ -1545,7 +1606,7 @@ def browser_input():
                 q.put(('Page.stopScreencast', {}))
             elif action == 'start':
                 session['screencast_paused'] = False
-                q.put(('Page.startScreencast', _SCREENCAST_PARAMS))
+                q.put(('Page.startScreencast', session.get('screencast_params', _SCREENCAST_PARAMS)))
             else:
                 return jsonify({'error': f'unknown screencast action: {action!r}'}), 400
         else:

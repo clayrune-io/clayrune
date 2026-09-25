@@ -130,7 +130,8 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       const res = await fetch((window.API_BASE || '') + '/api/browser/launch', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ project_id: pid, url: url || 'about:blank',
-                               profile: profile || BP_DEFAULT_PROFILE }),
+                               profile: profile || BP_DEFAULT_PROFILE,
+                               dpr: window.devicePixelRatio || 1 }),
       });
       data = await res.json();
       if (!res.ok) throw new Error(data.error || 'launch failed');
