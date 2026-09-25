@@ -434,24 +434,33 @@ def _resolve_conversation_owner(project_id, session_id):
     return pool[0][0]
 
 
-def _resume_cwd_for(project_path, claude_session_id):
+def _resume_cwd_for(project_path, session_id, provider_name='claude'):
     """The directory a conversation's transcript was written from: the project
     tree or one of its agent worktrees; None when neither holds it. A resume goes
     back there instead of into a brand-new worktree, so the agent sees the files
-    it was working on and `-r` reads the transcript under the cwd it is keyed on."""
-    if not project_path or not claude_session_id:
+    it was working on and `-r` reads the transcript under the cwd it is keyed on.
+
+    `provider_name` (vendor-parity gap 1, docs/VENDOR_HARNESS_MATRIX.md): this
+    used to hardcode the claude runtime, so a non-claude resume could never be
+    matched back to its own worktree even where the runtime DOES keep a native
+    transcript store (e.g. Codex's rollout files, keyed on `resume_id` the same
+    way claude's `-r` is). Providers with no transcript store (Gemini, Aider)
+    return None from `transcript_path` unconditionally, so this still yields
+    None for them exactly as before -- the caller's fallback to a fresh
+    isolation decision is unchanged."""
+    if not project_path or not session_id:
         return None
     try:
-        rt = _agent_runtime.get_runtime('claude')
-        if rt.transcript_path(project_path, claude_session_id):  # pyright: ignore[reportAttributeAccessIssue]
+        rt = _agent_runtime.get_runtime(provider_name)
+        if rt.transcript_path(project_path, session_id):  # pyright: ignore[reportAttributeAccessIssue]
             return project_path
         agents_dir = Path(project_path) / '.clayrune' / 'agents'
         if agents_dir.is_dir():
             for wt in agents_dir.iterdir():
-                if wt.is_dir() and rt.transcript_path(str(wt), claude_session_id):  # pyright: ignore[reportAttributeAccessIssue]
+                if wt.is_dir() and rt.transcript_path(str(wt), session_id):  # pyright: ignore[reportAttributeAccessIssue]
                     return str(wt)
     except Exception as e:
-        _log(f"[resume-cwd] transcript lookup failed for {claude_session_id[:12]}: {e}")
+        _log(f"[resume-cwd] transcript lookup failed for {session_id[:12]}: {e}")
     return None
 
 
@@ -8302,8 +8311,26 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                           notify_session='', notify_workflow=None,
                           spawned_by=None,
                           project_generation=1,
-                          lifecycle_bridge_factory=None):
+                          lifecycle_bridge_factory=None,
+                          agent_cwd='', isolated=False, planned_session_id=''):
     """Dispatch a session through the AgentRuntime abstraction (non-claude).
+
+    `agent_cwd`/`isolated`/`planned_session_id` (vendor-parity gap 1,
+    docs/VENDOR_HARNESS_MATRIX.md): the worktree decision the claude path makes
+    for itself further down in `_dispatch_agent_internal` — this function used
+    to be called BEFORE that decision ever ran (the `if provider_name !=
+    'claude': return _dispatch_via_runtime(...)` branch sat above it), so every
+    non-claude agent always ran in the shared main checkout even when a
+    concurrent Claude sibling got its own worktree. The caller now makes the
+    SAME decision (`_maybe_isolate_worktree` / `_resume_cwd_for`, same gates)
+    before this call and hands the result across: `agent_cwd` becomes the
+    subprocess cwd (falling back to the project tree when empty, so every
+    existing direct caller/test that doesn't pass it is unaffected), `isolated`
+    is stamped onto the session dict for `_worktree_merge_back_on_end`, and
+    `planned_session_id` — when the caller pre-created a worktree keyed on it —
+    is REQUIRED to become this session's actual id, or the worktree the caller
+    built and the session dict this function writes would be keyed on two
+    different ids and merge-back would find nothing to merge.
 
     `notify_session` / `notify_workflow` (MC-946 / MC-871): the completion
     callbacks, stored on the session dict under the SAME keys the claude Mode
@@ -8345,14 +8372,22 @@ def _dispatch_via_runtime(p, task, *, provider_name,
 
     pp = p.get('project_path', '')
     project_id = p.get('id', '')
+    # The cwd the CLI actually runs in — a private worktree when the caller
+    # made that decision (vendor-parity gap 1), the shared project tree
+    # otherwise. Every existing direct caller/test that doesn't pass
+    # `agent_cwd` gets exactly today's behavior via this fallback.
+    _run_cwd = agent_cwd or pp
     # Refresh this provider's own context file (AGENTS.md/GEMINI.md/QWEN.md)
     # from CLAUDE.md before it loads a stale copy natively. Cheap hash-gated
     # no-op once current; see mc/vendor_context_sync.py for the adoption/
-    # hand-authored-file rules.
-    if pp and state.CONFIG.get('vendor_context_sync_enabled', True):
+    # hand-authored-file rules. Written into `_run_cwd`, not `pp`: a fresh
+    # worktree is gitignored (b264200a) so it starts with no vendor context
+    # file at all — writing to `pp` would refresh a file the CLI, running in
+    # the worktree, never reads.
+    if _run_cwd and state.CONFIG.get('vendor_context_sync_enabled', True):
         try:
             _vendor_context_sync.sync_vendor_context_file(
-                pp, runtime.capabilities().context_file_name, log=_log)
+                _run_cwd, runtime.capabilities().context_file_name, log=_log)
         except Exception as e:
             _log(f'[vendor-context-sync] failed for {provider_name}: {e}', flush=True)
     # A native resume with no recorded model must retain the CLI's saved
@@ -8366,6 +8401,13 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     with mgr.lock:
         if reuse_session_id and reuse_session_id not in agent_sessions:
             session_id = reuse_session_id
+        elif planned_session_id:
+            # The caller pre-created (or pre-decided against) a worktree keyed
+            # on this id (vendor-parity gap 1) — minting a different id here
+            # would leave that worktree and this session dict pointing at two
+            # different ids, and `_worktree_merge_back_on_end` (keyed on
+            # `session['session_id']`) would find nothing to merge.
+            session_id = planned_session_id
         else:
             session_id = uuid.uuid4().hex[:12]
 
@@ -8384,6 +8426,12 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             'session_id': session_id,
             'project_id': project_id,
             'mode': 'A',
+            # Worktree isolation (b264200a, vendor-parity gap 1): same keys
+            # the claude path's session dicts carry — read generically by
+            # `_worktree_merge_back_on_end` and by respawns so a resumed turn
+            # stays in the SAME tree it started in.
+            '_agent_cwd': _run_cwd,
+            '_worktree_isolated': isolated,
             'process_alive': True,
             'last_output_time': _time.time(),
             'last_status_change_time': _time.time(),
@@ -8499,7 +8547,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     bridge = None  # optional injected lifecycle bridge
     callbacks = _RUNTIME_CALLBACKS
     if lifecycle_bridge_factory is not None:
-        facts = DispatchFacts(project_id=project_id, project_path=pp,
+        facts = DispatchFacts(project_id=project_id, project_path=_run_cwd,
             mc_session_id=session_id, provider=provider_name, model=model,
             effort=session.get('requested_effort'), resume_id=resume_id,
             task=task, incognito=incognito,
@@ -8547,7 +8595,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                     if not isinstance(native_id, str) or not native_id:
                         raise RuntimeError('native identity missing from init')
                     bridged_session['_lifecycle_native_source'] = runtime.transcript_path(
-                        pp, native_id)
+                        _run_cwd, native_id)
                     bridge.on_init(event, bridged_session)
                 except Exception as exc:
                     bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
@@ -8559,18 +8607,18 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                         bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
                 try:
                     native_id = bridged_session.get('provider_session_id')
-                    native_source = runtime.transcript_path(pp, native_id) if native_id else None
+                    native_source = runtime.transcript_path(_run_cwd, native_id) if native_id else None
                     bridge.on_exit(event, bridged_session, native_source)
                 except Exception as exc:
                     bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
             callbacks.update(on_init=_bridge_init, on_process_exit=_bridge_exit)
 
     runtime_task = _bridge_images_for_blind_model(
-        task, session, provider=provider_name, model=model, project_path=pp)
+        task, session, provider=provider_name, model=model, project_path=_run_cwd)
 
     def _spawn_runtime():
         return runtime.dispatch(
-            project_path=pp,
+            project_path=_run_cwd,
             task=runtime_task,
             system_prompt=system_prompt,
             resume_id=resume_id,
@@ -9559,6 +9607,24 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         if _quota_block:
             raise ValueError(_quota_block)
     if provider_name != 'claude':
+        # Per-agent worktree isolation for non-claude runtimes (vendor-parity
+        # gap 1, docs/VENDOR_HARNESS_MATRIX.md): this branch returns before the
+        # claude path's own worktree decision further down ever runs, so every
+        # non-claude agent used to dispatch into the shared main checkout even
+        # with a concurrent sibling in its own tree. Same decision, made here
+        # instead — `_maybe_isolate_worktree`/`_resume_cwd_for`, same gates —
+        # and the id is minted here (not left to `_dispatch_via_runtime`'s own
+        # `uuid.uuid4()` mint) so a worktree created for THIS dispatch is
+        # guaranteed to be keyed on the session id that function ends up using;
+        # `planned_session_id` below is what forces that.
+        _rt_planned_sid = (reuse_session_id
+                           if (reuse_session_id and reuse_session_id not in agent_sessions)
+                           else uuid.uuid4().hex[:12])
+        _rt_resume_tree = _resume_cwd_for(pp, resume_id, provider_name) if resume_id else None
+        if _rt_resume_tree:
+            _rt_agent_cwd, _rt_isolated = _rt_resume_tree, False
+        else:
+            _rt_agent_cwd, _rt_isolated = _maybe_isolate_worktree(p, _rt_planned_sid, incognito)
         try:
             return _dispatch_via_runtime(p, task, provider_name=provider_name,
                                          incognito=incognito,
@@ -9576,6 +9642,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          notify_workflow=notify_workflow,
                                          spawned_by=spawned_by,
                                          project_generation=canonical_project_generation,
+                                         agent_cwd=_rt_agent_cwd,
+                                         isolated=_rt_isolated,
+                                         planned_session_id=_rt_planned_sid,
                                          lifecycle_bridge_factory=(
                                              _runtime_lifecycle_service.bridge_factory
                                              if _runtime_lifecycle_service is not None else None))
@@ -10987,12 +11056,18 @@ def agent_followup(project_id):
                 except Exception as e:
                     _log(f"[followup] context refresh failed: {e}")
             try:
+                # Same tree the dispatch turn ran in (vendor-parity gap 1):
+                # `existing['_agent_cwd']` is the worktree `_dispatch_via_runtime`
+                # recorded, when this conversation was isolated. Respawning into
+                # `pp` instead would silently move an isolated agent's later
+                # turns into the shared main checkout mid-conversation.
+                _followup_cwd = existing.get('_agent_cwd') or pp
                 runtime = _agent_runtime.get_runtime(session_provider)
                 handle = _agent_runtime.SessionHandle(
                     mc_session_id=session_id,
                     provider=session_provider,
                     mode=existing.get('mode', 'A'),
-                    project_path=pp,
+                    project_path=_followup_cwd,
                     project_id=project_id,
                     session_dict=existing,
                     # MC-930: this rebuilds the handle from scratch rather than
@@ -11003,10 +11078,10 @@ def agent_followup(project_id):
                     meta={'callbacks': _RUNTIME_CALLBACKS},
                 )
                 message = _mode_a_token_rollover(
-                    pp, project_id, session_id, existing, session_provider, message)
+                    _followup_cwd, project_id, session_id, existing, session_provider, message)
                 runtime.write_followup(handle, _bridge_images_for_blind_model(
                     message, existing, provider=session_provider,
-                    model=existing.get('agent_model') or '', project_path=pp))
+                    model=existing.get('agent_model') or '', project_path=_followup_cwd))
             except Exception as e:
                 existing['log_lines'].append(f"[{session_provider} followup error: {e}]")
                 existing['status'] = 'error'
@@ -11853,12 +11928,15 @@ def agent_interrupt(project_id, *, _internal=None):
                 except Exception as e:
                     _log(f"[interrupt] context refresh failed: {e}")
             try:
+                # Same tree the dispatch turn ran in — see the followup path's
+                # identical `_followup_cwd` for why `pp` alone is wrong here.
+                _followup_cwd = session.get('_agent_cwd') or pp
                 runtime = _agent_runtime.get_runtime(session_provider)
                 handle = _agent_runtime.SessionHandle(
                     mc_session_id=session_id,
                     provider=session_provider,
                     mode=session.get('mode', 'A'),
-                    project_path=pp,
+                    project_path=_followup_cwd,
                     project_id=project_id,
                     session_dict=session,
                     # MC-930: this rebuilds the handle from scratch rather than
@@ -11869,10 +11947,10 @@ def agent_interrupt(project_id, *, _internal=None):
                     meta={'callbacks': _RUNTIME_CALLBACKS},
                 )
                 message = _mode_a_token_rollover(
-                    pp, project_id, session_id, session, session_provider, message)
+                    _followup_cwd, project_id, session_id, session, session_provider, message)
                 runtime.write_followup(handle, _bridge_images_for_blind_model(
                     message, session, provider=session_provider,
-                    model=session.get('agent_model') or '', project_path=pp))
+                    model=session.get('agent_model') or '', project_path=_followup_cwd))
             except Exception as e:
                 session['log_lines'].append(f"[{session_provider} interrupt error: {e}]")
                 session['status'] = 'error'
