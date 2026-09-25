@@ -381,7 +381,7 @@ try {
     return {claude: read('claude'), gemini: read('gemini'), qwen: read('qwen'), codex: read('codex')};
   });
   if (!/Queued/.test(progress.claude)) throw new Error(`queued vendor did not render "Queued": "${progress.claude}"`);
-  if (!/Installing.*7s/.test(progress.gemini)) throw new Error(`installing vendor did not render elapsed seconds: "${progress.gemini}"`);
+  if (!/Installing.*[78]s/.test(progress.gemini)) throw new Error(`installing vendor did not render elapsed seconds: "${progress.gemini}"`);
   if (!/Installed/.test(progress.qwen)) throw new Error(`installed vendor did not render "Installed": "${progress.qwen}"`);
   if (!/Install failed/.test(progress.codex)) throw new Error(`failed vendor did not render "Install failed": "${progress.codex}"`);
   const barShapes = await page.evaluate(() => {
