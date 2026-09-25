@@ -172,3 +172,44 @@ class TestCodexTurnContext:
         assert session['context_tokens'] == 52512
         # Usage itself is untouched: it is the thread's real billed input.
         assert session['usage']['input_tokens'] == 205936
+
+    def test_shared_reader_adds_carried_usage_from_an_earlier_rolled_thread(
+            self, tmp_path, monkeypatch):
+        # Regression, 2026-09-25: a rollover pops provider_session_id and the
+        # fresh thread's turn.completed.usage starts back at its own total,
+        # so without the carry the session's reported usage would drop from
+        # (carry + this thread) back down to just this thread's figure.
+        f = _write(tmp_path, ONE_TURN)
+        monkeypatch.setattr(CodexRuntime, 'transcript_path',
+                            lambda self, pp, sid: f if sid == TID else None)
+
+        class _P:
+            stdout = iter([
+                json.dumps({'type': 'thread.started', 'thread_id': TID}) + '\n',
+                json.dumps({'type': 'turn.completed', 'usage': ONE_TURN_USAGE}) + '\n'])
+            pid = 4242
+
+            def wait(self):
+                return 0
+
+            def poll(self):
+                return 0
+
+        proc = _P()
+        carry = {'input_tokens': 39720, 'output_tokens': 100,
+                 'cached_input_tokens': 0, 'cache_write_input_tokens': 0,
+                 'reasoning_output_tokens': 0, 'total_tokens': 39820}
+        session = {'log_lines': [], 'proc': proc, 'status': 'running',
+                  '_codex_usage_carry': dict(carry)}
+        handle = SessionHandle(mc_session_id='m1', provider='codex', mode='A',
+                               project_path='/p', project_id='p', session_dict=session,
+                               meta={'callbacks': {}})
+        art._mode_a_reader(proc, handle, CodexRuntime())
+        # Context-size detection still matches on the RAW thread figure —
+        # the carry must never leak into the rollout-matching lookup.
+        assert session['context_tokens'] == 52512
+        assert session['usage']['input_tokens'] == 205936 + 39720
+        assert session['usage']['output_tokens'] == 509 + 100
+        # The carry itself is untouched by the reader (only the rollover
+        # site in agent_routes.py updates it).
+        assert session['_codex_usage_carry'] == carry
