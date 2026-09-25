@@ -704,8 +704,14 @@ class TestCodexRuntime:
         assert 'Hello from Codex!' in ev.payload['text']
 
     def test_parse_event_plain_text_fallback(self):
-        """Non-JSON lines → ASSISTANT_TEXT"""
-        ev = self.rt.parse_event('Reading prompt from stdin...')
+        """Non-JSON lines → ASSISTANT_TEXT.
+
+        Not 'Reading prompt from stdin...' -- that exact string is codex's
+        own stdin-read banner (stderr, merged via stderr=subprocess.STDOUT)
+        and must now be suppressed rather than surfaced; see
+        tests/test_codex_stdin_banner_suppression.py.
+        """
+        ev = self.rt.parse_event('some non-JSON stray output line')
         assert ev is not None
         assert ev.type == EventType.ASSISTANT_TEXT
 
