@@ -687,20 +687,35 @@ def _runtime_mcp_config_json(project, provider_name):
 
     Claude needs nothing when a project has not opted into trimming
     (`_resolve_project_mcp_config` -> None): with no flags it loads the full
-    fleet itself. Qwen cannot. It only reaches servers named on its
-    `--allowed-mcp-server-names`, and '' meant the deny-all sentinel, so a
-    project that never touched trimming got NO MCP on Qwen while Claude and
-    Gemini (via `sync_to_gemini`) got every server. Live 2026-09-19: the
-    fixture server registered through POST /api/mcp, Claude and Gemini called
-    it, Qwen answered "MCP server 'clayrune_fixture' is not configured".
+    fleet itself. Qwen and Gemini cannot rely on that. Qwen only reaches
+    servers named on its `--allowed-mcp-server-names`, and '' meant the
+    deny-all sentinel, so a project that never touched trimming got NO MCP on
+    Qwen. Live 2026-09-19: the fixture server registered through POST
+    /api/mcp, Claude and Gemini called it, Qwen answered "MCP server
+    'clayrune_fixture' is not configured".
 
-    For qwen, None becomes the same set Gemini receives
+    Gemini joined this branch for vendor-parity gap 3
+    (docs/VENDOR_HARNESS_MATRIX.md): it used to get its servers from
+    `mc.mcp.sync_to_gemini`, which MERGED MC's set INTO the user's own
+    `~/.gemini/settings.json` — additive-only (AGENT_RULES forbids editing
+    that file directly), so it could add filesystem/engram but never
+    remove whatever the user already had there. Live-measured 2026-09-25:
+    a Gemini dispatch saw tradingview, sequential-thinking and the raw
+    `mail` MCP server (AGENT_RULES forbids agents reading `mail` directly)
+    alongside MC's own set. `GeminiRuntime.build_command` now takes this
+    same explicit JSON and turns it into `--allowed-mcp-server-names`
+    restricted to exactly these names, backed by a per-dispatch settings
+    file (`_gemini_session_settings_path`) instead of the global one — so
+    an unfiltered native discovery can no longer leak through.
+
+    For qwen and gemini, None becomes the same set
     (`mcp.collect_effective_servers_for_project`), and an opted-in set is
-    converted to that shape too: qwen-code is a gemini-cli fork and reads a
-    bare `url` as SSE (createTransport), so Claude's `{"type":"http","url"}`
-    would connect with the wrong transport. Other runtimes: unchanged."""
+    converted to that shape too: both are gemini-cli-shaped consumers and
+    read a bare `url` as SSE (createTransport), so Claude's
+    `{"type":"http","url"}` would connect with the wrong transport. Other
+    runtimes: unchanged."""
     resolved = _resolve_project_mcp_config(project)
-    if provider_name != 'qwen':
+    if provider_name not in ('qwen', 'gemini'):
         return resolved or ''
     try:
         from mc import mcp as _mcp_mod
@@ -714,7 +729,7 @@ def _runtime_mcp_config_json(project, provider_name):
                 if isinstance(cfg, dict)}
         return json.dumps({'mcpServers': servers})
     except Exception as e:
-        _log(f"[mcp] qwen MCP set failed ({e!r}); dispatching with none",
+        _log(f"[mcp] {provider_name} MCP set failed ({e!r}); dispatching with none",
              level='warn')
         return resolved or ''
 

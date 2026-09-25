@@ -260,11 +260,100 @@ class TestQwenMcp:
         assert out == {'mcpServers': {'web': {'httpUrl': 'https://h/mcp'}}}
 
     def test_other_providers_unchanged(self, ar):
-        assert ar._runtime_mcp_config_json({'project_path': '/p'}, 'gemini') == ''
+        # claude/codex read the project's MCP config natively — this resolver
+        # is only consulted for the gemini-cli-shaped providers (qwen and, as
+        # of vendor-parity gap 3, gemini itself). See TestGeminiMcp below.
+        assert ar._runtime_mcp_config_json({'project_path': '/p'}, 'claude') == ''
+        assert ar._runtime_mcp_config_json({'project_path': '/p'}, 'codex') == ''
 
     def test_dispatch_site_uses_it(self, ar):
         src = inspect.getsource(ar._dispatch_via_runtime)
         assert '_runtime_mcp_config_json(p, provider_name)' in src
+
+
+# ── 3b. MCP reaches Gemini (vendor-parity gap 3, docs/VENDOR_HARNESS_MATRIX.md)
+
+class TestGeminiMcp:
+    """Gemini used to get its servers from `mc.mcp.sync_to_gemini`, which
+    MERGES into the user's own `~/.gemini/settings.json` (additive-only,
+    AGENT_RULES forbids editing that file) — so a Gemini dispatch saw MC's
+    fleet PLUS whatever the user already had there (tradingview,
+    sequential-thinking, the raw `mail` server AGENT_RULES forbids agents
+    reading directly), live-measured 2026-09-25. Gemini now joins the same
+    resolver qwen already used (`_runtime_mcp_config_json`), and
+    `GeminiRuntime.build_command` turns that into `--allowed-mcp-server-names`
+    restricted to EXACTLY those names."""
+
+    @pytest.fixture()
+    def ar(self, monkeypatch):
+        from mc.blueprints import agent_routes
+        from mc import mcp as mcp_mod
+        monkeypatch.setattr(mcp_mod, '_read_global_servers',
+                            lambda: {'clayrune_fixture': dict(FIXTURE),
+                                     'web': {'type': 'http', 'url': 'https://h/mcp'}})
+        monkeypatch.setattr(mcp_mod, '_read_project_servers', lambda pp: {})
+        return agent_routes
+
+    def test_not_opted_in_gets_the_trimmed_fleet(self, ar):
+        out = json.loads(ar._runtime_mcp_config_json({'project_path': '/p'}, 'gemini'))
+        assert out['mcpServers']['clayrune_fixture'] == FIXTURE
+
+    def test_build_command_restricts_to_exactly_those_names(self, ar):
+        from mc.agent_runtime import GeminiRuntime
+        out = ar._runtime_mcp_config_json({'project_path': '/p'}, 'gemini')
+        cmd = GeminiRuntime().build_command(mcp_config_json=out)
+        i = cmd.index('--allowed-mcp-server-names')
+        names = cmd[i + 1:]
+        assert 'clayrune_fixture' in names
+        assert 'web' in names
+        assert '__clayrune_none__' not in names
+        # The leak this fix closes: neither tradingview nor the raw `mail`
+        # server (both live only in the user's own ~/.gemini/settings.json,
+        # never touched by this resolver) may appear in the restricted set.
+        assert 'tradingview' not in names
+        assert 'mail' not in names
+
+    def test_empty_config_reaches_the_deny_all_sentinel(self):
+        from mc.agent_runtime import GeminiRuntime
+        cmd = GeminiRuntime().build_command(mcp_config_json='')
+        i = cmd.index('--allowed-mcp-server-names')
+        assert cmd[i + 1:i + 2] == ['__clayrune_none__']
+
+    def test_malformed_config_fails_closed_not_open(self):
+        from mc.agent_runtime import GeminiRuntime
+        cmd = GeminiRuntime().build_command(mcp_config_json='{not json')
+        i = cmd.index('--allowed-mcp-server-names')
+        assert cmd[i + 1:i + 2] == ['__clayrune_none__']
+
+    def test_session_settings_path_declares_exactly_the_servers(self, tmp_path, monkeypatch):
+        from mc import agent_runtime as ar_mod
+        monkeypatch.setattr(ar_mod, '_guardrail_hooks_dir', lambda: tmp_path)
+        monkeypatch.setattr(ar_mod, '_guardrail_launch_file', lambda vendor: None)
+        cfg = json.dumps({'mcpServers': {'clayrune_fixture': dict(FIXTURE)}})
+        path = ar_mod._gemini_session_settings_path(cfg)
+        assert path is not None and path.is_file()
+        written = json.loads(path.read_text(encoding='utf-8'))
+        assert written['mcpServers'] == {'clayrune_fixture': dict(FIXTURE)}
+
+    def test_inject_gemini_env_points_at_the_session_settings_file(self, tmp_path, monkeypatch):
+        from mc import agent_runtime as ar_mod
+        monkeypatch.setattr(ar_mod, '_guardrail_hooks_dir', lambda: tmp_path)
+        monkeypatch.setattr(ar_mod, '_guardrail_launch_file', lambda vendor: None)
+        cfg = json.dumps({'mcpServers': {'clayrune_fixture': dict(FIXTURE)}})
+        env = ar_mod._inject_gemini_env({}, cfg)
+        assert env['GEMINI_CLI_SYSTEM_SETTINGS_PATH'].endswith('.json')
+        assert Path(env['GEMINI_CLI_SYSTEM_SETTINGS_PATH']).is_file()
+
+    def test_dispatch_never_edits_the_users_global_settings_file(self):
+        """Do NOT edit ~/.gemini/settings.json — the whole point of this
+        fix. dispatch()/write_followup() must not call sync_to_gemini or
+        anything that writes there."""
+        import inspect as _inspect
+        from mc.agent_runtime import GeminiRuntime
+        for src in (_inspect.getsource(GeminiRuntime.dispatch),
+                    _inspect.getsource(GeminiRuntime.write_followup)):
+            assert 'sync_to_gemini' not in src
+            assert '.gemini/settings.json' not in src
 
 
 # ── 4. token rollover on the non-Claude follow-up path ──────────────────────
