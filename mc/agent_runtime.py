@@ -5616,6 +5616,22 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                     session['capture_status'] = 'incomplete'
                     session['log_lines'].append(f'[capture error: {e}]')
                 raw_sequence += 1
+            # Codex's stdin-read banner (see _CODEX_STDIN_BANNER) glues onto
+            # the front of whatever this line actually is with no newline of
+            # its own — most often `turn.started` on a resumed follow-up
+            # (thread.started only announces once, on the very first dispatch
+            # of a thread). Stripped here, ahead of BOTH `parse_event` (so the
+            # JSON — or lack of it — underneath parses normally) and the
+            # `_is_protocol_json` fallback check below (which only inspects
+            # this same `line`, and would otherwise see a banner-prefixed
+            # non-JSON string and log the whole glued line as stray output).
+            # `raw_record` above already ran on the untouched raw line, so
+            # the full-fidelity transcript capture is unaffected. Gated to
+            # codex by name — every other Mode-A vendor's line is untouched.
+            if runtime.name == 'codex' and line.startswith(_CODEX_STDIN_BANNER):
+                line = line[len(_CODEX_STDIN_BANNER):]
+                if not line:
+                    continue
             ev = runtime.parse_event(line, handle.mc_session_id)
             if ev is None:
                 # None means "this runtime declined to surface it". For a line
@@ -7103,6 +7119,24 @@ def codex_error_is_notice(text: str) -> bool:
 # reaches `session['log_lines']` (mirrors _mode_a_reader's WARN branch).
 _CODEX_HOOK_TRUST_NOTICE_SHOWN: set = set()
 
+# `codex exec` writes this to stderr before it starts reading the prompt off
+# stdin. We spawn Codex with stderr=subprocess.STDOUT (Popen calls above), and
+# the banner is flushed with no trailing newline before the real output
+# begins, so it either (a) arrives as its own line ahead of the JSONL stream,
+# or (b) is GLUED, byte-for-byte, to the front of whatever the process writes
+# next -- observed both as a bare banner line and as
+# "Reading prompt from stdin...{"type":"thread.started",...}" glued to a real
+# JSON event, and (measured in data/projects/*_agent_log.json 2026-09-25) as
+# "Reading prompt from stdin...**Format approved, Ron.**" glued to the turn's
+# final plain-text answer. Stripped in `parse_event` -- the one place every
+# Codex output line (live stream via `_mode_a_reader`, and the replayed
+# `oneshot()` stdout) is read before it becomes an AgentEvent, so this single
+# strip reaches the chat log, the agent_log final message, and any
+# notify_session callback without touching the raw full-fidelity capture
+# (`on_raw_record`, which intentionally keeps the untouched transport bytes)
+# or any other vendor's runtime.
+_CODEX_STDIN_BANNER = 'Reading prompt from stdin...'
+
 
 class CodexRuntime(AgentRuntime):
     """Driver for OpenAI's `codex` CLI.
@@ -7493,6 +7527,8 @@ class CodexRuntime(AgentRuntime):
         never to raw JSON on the user's screen.
         """
         line = raw_line.rstrip('\n\r') if raw_line else ''
+        if line.startswith(_CODEX_STDIN_BANNER):
+            line = line[len(_CODEX_STDIN_BANNER):]
         if not line:
             return None
 
