@@ -1012,6 +1012,153 @@ def test_dialog_route_dismiss_defaults_accept_false_and_empty_text(app_client):
     assert params == {'target_id': 'root', 'accept': False, 'text': ''}
 
 
+# ── /api/browser/file-chooser: B1, gap #4 ────────────────────────────────────
+
+def test_file_chooser_route_unknown_session_404(app_client):
+    resp = app_client.post('/api/browser/file-chooser',
+                           data={'session_id': 'nope'})
+    assert resp.status_code == 404
+
+
+def test_file_chooser_route_no_chooser_open_is_409(app_client):
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running', 'file_chooser': None}
+    resp = app_client.post('/api/browser/file-chooser',
+                           data={'session_id': 'sid-1'})
+    assert resp.status_code == 409
+
+
+def test_file_chooser_route_cancel_queues_empty_files_and_no_upload_needed(app_client):
+    q = br.queue.Queue()
+    browser_sessions['sid-1'] = {
+        'session_id': 'sid-1', 'status': 'running', 'cmd_queue': q,
+        'file_chooser': {'target_id': 'root', 'mode': 'selectSingle', 'backend_node_id': 7},
+    }
+    resp = app_client.post('/api/browser/file-chooser',
+                           data={'session_id': 'sid-1', 'action': 'cancel'})
+    assert resp.status_code == 200
+    assert resp.get_json() == {'ok': True, 'cancelled': True}
+    method, params = q.get_nowait()
+    assert method == '_file_chooser_response'
+    assert params == {'target_id': 'root', 'files': []}
+
+
+def test_file_chooser_route_no_file_provided_is_400(app_client):
+    browser_sessions['sid-1'] = {
+        'session_id': 'sid-1', 'status': 'running',
+        'file_chooser': {'target_id': 'root', 'mode': 'selectSingle', 'backend_node_id': 1},
+    }
+    resp = app_client.post('/api/browser/file-chooser', data={'session_id': 'sid-1'})
+    assert resp.status_code == 400
+
+
+def test_file_chooser_route_rejects_multiple_files_when_mode_is_single(app_client, tmp_path, monkeypatch):
+    import io
+    up_dir = tmp_path / 'uploads'
+    up_dir.mkdir()
+    monkeypatch.setattr(br, '_UPLOADS_DIR', up_dir)
+    browser_sessions['sid-1'] = {
+        'session_id': 'sid-1', 'status': 'running',
+        'file_chooser': {'target_id': 'root', 'mode': 'selectSingle', 'backend_node_id': 1},
+    }
+    resp = app_client.post('/api/browser/file-chooser', data={
+        'session_id': 'sid-1',
+        'file': [(io.BytesIO(b'a'), 'a.txt'), (io.BytesIO(b'b'), 'b.txt')],
+    }, content_type='multipart/form-data')
+    assert resp.status_code == 400
+    assert 'single file' in resp.get_json()['error']
+    # nothing was written to disk for the rejected multi-file attempt
+    assert list(up_dir.iterdir()) == []
+
+
+def test_file_chooser_route_saves_upload_writes_only_new_bytes_and_queues_path(app_client, tmp_path, monkeypatch):
+    import io
+    up_dir = tmp_path / 'uploads'
+    up_dir.mkdir()
+    monkeypatch.setattr(br, '_UPLOADS_DIR', up_dir)
+    q = br.queue.Queue()
+    browser_sessions['sid-1'] = {
+        'session_id': 'sid-1', 'status': 'running', 'cmd_queue': q,
+        'file_chooser': {'target_id': 'root', 'mode': 'selectSingle', 'backend_node_id': 42},
+    }
+    resp = app_client.post('/api/browser/file-chooser', data={
+        'session_id': 'sid-1',
+        'file': (io.BytesIO(b'hello world'), 'notes.txt'),
+    }, content_type='multipart/form-data')
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body == {'ok': True, 'count': 1}
+    method, params = q.get_nowait()
+    assert method == '_file_chooser_response'
+    assert params['target_id'] == 'root'
+    assert params['backend_node_id'] == 42
+    [saved_path] = params['files']
+    # The ONLY path ever handed to DOM.setFileInputFiles is one this request
+    # itself just wrote — never a caller-supplied path (the exfiltration risk
+    # the route's docstring calls out).
+    assert os.path.dirname(saved_path) == str(up_dir)
+    assert open(saved_path, 'rb').read() == b'hello world'
+    # Clearing session['file_chooser'] happens when the reader thread drains
+    # this queued command (see the `_file_chooser_response` branch in
+    # _run_cdp) — same split as `_dialog_response`, not this route's job.
+
+
+def test_file_chooser_route_rejects_oversized_upload(app_client, tmp_path, monkeypatch):
+    import io
+    up_dir = tmp_path / 'uploads'
+    up_dir.mkdir()
+    monkeypatch.setattr(br, '_UPLOADS_DIR', up_dir)
+    monkeypatch.setattr(br, '_FILE_CHOOSER_MAX_BYTES', 4)
+    browser_sessions['sid-1'] = {
+        'session_id': 'sid-1', 'status': 'running',
+        'file_chooser': {'target_id': 'root', 'mode': 'selectSingle', 'backend_node_id': 1},
+    }
+    resp = app_client.post('/api/browser/file-chooser', data={
+        'session_id': 'sid-1',
+        'file': (io.BytesIO(b'way too many bytes'), 'big.bin'),
+    }, content_type='multipart/form-data')
+    assert resp.status_code == 413
+    assert list(up_dir.iterdir()) == []  # rejected before ever landing on disk
+
+
+# ── Page.fileChooserOpened -> session['file_chooser'] (B1) ──────────────────
+
+def test_stream_gen_emits_file_chooser_payload_when_one_opens():
+    session = {
+        'session_id': 'sid-1', 'status': 'running', 'frame': None, 'frame_seq': 0,
+        'downloads_seq': 0, 'downloads': {}, 'dialog': None, 'dialogs_seq': 0,
+        'file_chooser': {'target_id': 'root', 'mode': 'selectMultiple', 'backend_node_id': 9},
+        'file_chooser_seq': 1,
+    }
+    gen = br._stream_gen(session)
+    # downloads_seq (0) and dialog_seq (0) also differ from the generator's
+    # initial -1 sentinel, so the first loop iteration yields both of those
+    # too, ahead of file_chooser — collect all three rather than assuming
+    # order (same reasoning as the tabs payload test above).
+    chunks = [next(gen), next(gen), next(gen)]
+    joined = '\n'.join(chunks)
+    assert '"file_chooser"' in joined and '"mode": "selectMultiple"' in joined
+
+
+# ── /api/browser/input mouse click: B2, gap #3 (right-click buttons bitmask) ─
+
+def test_input_commands_left_click_sets_buttons_bit_1():
+    cmds = br._input_commands({'type': 'mouse', 'action': 'click', 'x': 1, 'y': 2, 'button': 'left'})
+    press = next(p for m, p in cmds if p.get('type') == 'mousePressed')
+    assert press['buttons'] == 1 and press['button'] == 'left'
+
+
+def test_input_commands_right_click_sets_buttons_bit_2_not_1():
+    # Before the B2 fix this was hardcoded to 1 (the left-button bit)
+    # regardless of `button`, so a right-click reached the page as a
+    # left-press with button='right' — CDP/Chromium key off `buttons` for
+    # which button is actually down, so the page never saw a real right-click.
+    cmds = br._input_commands({'type': 'mouse', 'action': 'click', 'x': 1, 'y': 2, 'button': 'right'})
+    press = next(p for m, p in cmds if p.get('type') == 'mousePressed')
+    release = next(p for m, p in cmds if p.get('type') == 'mouseReleased')
+    assert press['buttons'] == 2 and press['button'] == 'right'
+    assert release['buttons'] == 0
+
+
 # ── _stream_gen: tabs + dialog payloads ──────────────────────────────────────
 
 def test_stream_gen_emits_tabs_payload_on_a_real_session():
@@ -1055,3 +1202,90 @@ def test_stream_gen_emits_dialog_payload_when_one_opens():
     session['dialogs_seq'] = 1
     third = next(gen)
     assert '"dialog"' in third and '"message": "hi"' in third
+
+
+# ── HiDPI screencast scaling (B4, MC-976 gap #8) ─────────────────────────────
+# The launch flag is --force-device-scale-factor, never Emulation.
+# setDeviceMetricsOverride — that CDP call is the one the _pump() comment a
+# few hundred lines up forbids, because it decoupled the page's believed
+# viewport from what the screencast actually captured (a real Discord captcha
+# button landed in the resulting dead band). A launch flag only changes the
+# backing pixel density; window.innerWidth/Height is untouched, which is what
+# these tests pin.
+
+@pytest.mark.parametrize('raw, expected', [
+    (None, 1.0), (0, 1.0), (1, 1.0), ('nope', 1.0), (float('nan'), 1.0),
+    (1.5, 1.5), (2, 2.0), (3, 2.0), (10, 2.0),  # capped at _MAX_DPR
+])
+def test_clamp_dpr(raw, expected):
+    assert br._clamp_dpr(raw) == expected
+
+
+def test_screencast_params_for_dpr1_is_the_module_default():
+    assert br._screencast_params_for(1.0) == br._SCREENCAST_PARAMS
+
+
+def test_screencast_params_for_dpr2_scales_the_caps_only():
+    base = br._SCREENCAST_PARAMS
+    scaled = br._screencast_params_for(2.0)
+    assert scaled['maxWidth'] == base['maxWidth'] * 2
+    assert scaled['maxHeight'] == base['maxHeight'] * 2
+    # format/quality/everyNthFrame carry over unchanged.
+    assert scaled['format'] == base['format']
+    assert scaled['quality'] == base['quality']
+    assert scaled['everyNthFrame'] == base['everyNthFrame']
+
+
+class _FakeThread:
+    """Stands in for threading.Thread so _launch_browser's real CDP reader
+    never starts — these tests assert on launch-time state (Popen args,
+    session dict), not on anything the reader loop produces."""
+    def __init__(self, target=None, args=(), daemon=None):
+        self.target, self.args, self.daemon = target, args, daemon
+
+    def start(self):
+        pass
+
+
+def _stub_launch_deps(monkeypatch, profiles):
+    monkeypatch.setattr(br, '_find_chromium', lambda: 'C:/fake/chrome.exe')
+    monkeypatch.setattr(br, '_import_ws', lambda: object())
+    monkeypatch.setattr(br.threading, 'Thread', _FakeThread)
+    captured = {}
+
+    def fake_popen(args, **kwargs):
+        captured['args'] = args
+        return _FakeProc()
+    monkeypatch.setattr(br.subprocess, 'Popen', fake_popen)
+    return captured
+
+
+def test_launch_with_dpr2_passes_the_scale_flag_and_scales_the_frame(profiles, monkeypatch):
+    captured = _stub_launch_deps(monkeypatch, profiles)
+    session, err = br._launch_browser('proj', 'https://example.com', dpr=2)
+    assert err is None
+    assert any(a == '--force-device-scale-factor=2.0' for a in captured['args']), captured['args']
+    assert session['dpr'] == 2.0
+    assert session['screencast_params']['maxWidth'] == br._SCREENCAST_PARAMS['maxWidth'] * 2
+
+
+def test_launch_with_no_dpr_omits_the_flag_entirely(profiles, monkeypatch):
+    """dpr=1 (or absent) must reproduce EXACTLY today's launch args — no flag
+    at all — so an ordinary, non-HiDPI launch is byte-for-byte unchanged."""
+    captured = _stub_launch_deps(monkeypatch, profiles)
+    session, err = br._launch_browser('proj', 'https://example.com')
+    assert err is None
+    assert not any('force-device-scale-factor' in a for a in captured['args'])
+    assert session['dpr'] == 1.0
+    assert session['screencast_params'] == br._SCREENCAST_PARAMS
+
+
+def test_launch_route_forwards_client_dpr_and_reports_it_back(app_client, profiles, monkeypatch):
+    captured = _stub_launch_deps(monkeypatch, profiles)
+    resp = app_client.post('/api/browser/launch', json={
+        'project_id': 'proj', 'url': 'https://example.com', 'dpr': 2,
+    })
+    assert resp.status_code == 201
+    body = resp.get_json()
+    assert body['dpr'] == 2.0
+    assert any('force-device-scale-factor=2.0' in a for a in captured['args'])

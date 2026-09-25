@@ -184,7 +184,130 @@ finally:
     proc.kill()
     shutil.rmtree(udd, ignore_errors=True)
 
+
+# ── 3. HiDPI (MC-976 gap #8): the scale flag must NOT reopen check 2 ────────
+#
+# --force-device-scale-factor is a Chromium LAUNCH flag, not the CDP
+# Emulation.setDeviceMetricsOverride check 1 above forbids — it changes only
+# the backing pixel density, so the page's believed viewport (innerWidth/
+# innerHeight, in CSS px) must still equal what the screencast reports
+# (deviceWidth/deviceHeight, also CSS px) exactly as it does at dpr=1. What
+# changes is the DECODED bitmap: same CSS-pixel frame, ~dpr-times the actual
+# pixels, so text reads sharp. This also gives the frame-bytes-before/after
+# measurement MC-976 B4 asked for.
+try:
+    from PIL import Image
+    import io, base64
+    HAVE_PIL = True
+except ImportError:
+    HAVE_PIL = False
+    print('SKIP HiDPI bitmap-size check — Pillow not installed '
+          '(frame-size numbers below still print from raw byte counts).')
+
+
+def capture_one_frame(dpr):
+    """Launch a fresh Chromium at `dpr` (production _clamp_dpr/
+    _screencast_params_for, not a hand-rolled copy) and return
+    (believes, cast, jpeg_bytes) for the same fixed page."""
+    port = free_port()
+    udd = tempfile.mkdtemp(prefix=f'pane-hidpi-guard-{dpr}-')
+    scale = br._clamp_dpr(dpr)
+    args = [CHROMIUM, '--headless=new', f'--remote-debugging-port={port}',
+            '--remote-allow-origins=*', f'--user-data-dir={udd}', '--no-first-run',
+            '--no-default-browser-check', '--disable-gpu',
+            f'--window-size={win_w},{win_h}']
+    if scale != 1:
+        args.append(f'--force-device-scale-factor={scale}')
+    args.append('about:blank')
+    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        tabs = None
+        for _ in range(40):
+            try:
+                tabs = json.loads(urllib.request.urlopen(
+                    f'http://127.0.0.1:{port}/json/list', timeout=2).read())
+                if tabs:
+                    break
+            except Exception:
+                time.sleep(0.25)
+        page = next((t for t in (tabs or []) if t.get('type') == 'page'), None)
+        if not page:
+            return None, None, None
+        ws = websocket.create_connection(page['webSocketDebuggerUrl'],
+                                         suppress_origin=True, timeout=10)
+        seq = [0]
+
+        def send(method, params=None):
+            seq[0] += 1
+            ws.send(json.dumps({'id': seq[0], 'method': method, 'params': params or {}}))
+            return seq[0]
+
+        send('Page.enable')
+        send('Runtime.enable')
+        send('Page.navigate', {'url': 'data:text/html,<body style="margin:0;'
+                                      'font:16px sans-serif"><h1>Hello HiDPI '
+                                      '0123456789</h1></body>'})
+        time.sleep(1.5)
+        # The real production scaling function — _SCREENCAST_PARAMS' own
+        # maxWidth/maxHeight already equal win_w/win_h (VIEW_W/H + chrome),
+        # so this is exactly what a live launch at this dpr would send.
+        send('Page.startScreencast', br._screencast_params_for(scale))
+        jpeg = None
+        cast = None
+        deadline = time.time() + 10
+        while time.time() < deadline and jpeg is None:
+            try:
+                m = json.loads(ws.recv())
+            except Exception:
+                break
+            if m.get('method') == 'Page.screencastFrame':
+                p = m['params']
+                md = p.get('metadata') or {}
+                cast = (md.get('deviceWidth'), md.get('deviceHeight'))
+                jpeg = base64.b64decode(p['data'])
+                send('Page.screencastFrameAck', {'sessionId': p['sessionId']})
+
+        eid = send('Runtime.evaluate', {
+            'expression': '({w: innerWidth, h: innerHeight})', 'returnByValue': True})
+        believes = None
+        deadline = time.time() + 8
+        while time.time() < deadline and believes is None:
+            try:
+                m = json.loads(ws.recv())
+            except Exception:
+                break
+            if m.get('id') == eid:
+                believes = m.get('result', {}).get('result', {}).get('value')
+        ws.close()
+        return believes, cast, jpeg
+    finally:
+        proc.kill()
+        shutil.rmtree(udd, ignore_errors=True)
+
+
+believes1, cast1, jpeg1 = capture_one_frame(1)
+believes2, cast2, jpeg2 = capture_one_frame(2)
+
+check('dpr=2 frame captured', jpeg2 is not None, 'no screencast frame arrived at dpr=2')
+if jpeg1 is not None and jpeg2 is not None:
+    believes1_wh = (believes1 or {}).get('w'), (believes1 or {}).get('h')
+    believes2_wh = (believes2 or {}).get('w'), (believes2 or {}).get('h')
+    check('dpr=1 and dpr=2 report the SAME CSS viewport',
+          believes1_wh == cast1 and believes2_wh == cast2 and believes1_wh == believes2_wh,
+          f'dpr=1 believes={believes1} cast={cast1}; '
+          f'dpr=2 believes={believes2} cast={cast2} — a HiDPI launch must not '
+          're-create the CDP-override viewport mismatch check 2 guards against')
+    print(f'    frame bytes: dpr=1 -> {len(jpeg1)}, dpr=2 -> {len(jpeg2)}  '
+          f'ratio={len(jpeg2)/len(jpeg1):.2f}x')
+    if HAVE_PIL:
+        size1 = Image.open(io.BytesIO(jpeg1)).size
+        size2 = Image.open(io.BytesIO(jpeg2)).size
+        print(f'    decoded bitmap: dpr=1 -> {size1}, dpr=2 -> {size2}')
+        check('dpr=2 bitmap is ~2x the dpr=1 bitmap (text actually sharper)',
+              size2[0] >= size1[0] * 1.8 and size2[1] >= size1[1] * 1.8,
+              f'{size1} -> {size2} did not scale with the dpr flag')
+
 if FAILS:
     print(f'\nFAIL — {len(FAILS)} check(s) broken: {", ".join(FAILS)}')
     sys.exit(1)
-print('\nPASS — the page and the picture agree.')
+print('\nPASS — the page and the picture agree, at dpr=1 and dpr=2.')

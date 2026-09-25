@@ -74,14 +74,42 @@ def test_unknown_type_is_refused():
         br._input_commands({'type': 'teleport'})
 
 
+def test_ime_update_sets_composition_not_a_commit():
+    cmds = br._input_commands({'type': 'ime', 'phase': 'update', 'text': 'n'})
+    assert cmds == [('Input.imeSetComposition',
+                     {'text': 'n', 'selectionStart': 1, 'selectionEnd': 1})]
+
+
+def test_ime_end_commits_via_insert_text():
+    cmds = br._input_commands({'type': 'ime', 'phase': 'end', 'text': '你好'})
+    assert cmds == [('Input.insertText', {'text': '你好'})]
+
+
+def test_ime_end_with_no_text_is_a_no_op():
+    # A composition the user cancelled (e.g. Escape) commits nothing — must not
+    # insertText('') and clobber whatever the page already had.
+    assert br._input_commands({'type': 'ime', 'phase': 'end', 'text': ''}) == []
+
+
+def test_ime_unknown_phase_is_refused():
+    with pytest.raises(ValueError):
+        br._input_commands({'type': 'ime', 'phase': 'start', 'text': 'x'})
+
+
 # ---- live: a real Chromium, a local page ------------------------------------
 
 PAGE = """<!doctype html><html><body style="margin:0">
 <a id="go" href="/landed" style="position:absolute;left:0;top:0;width:200px;height:100px;display:block">go</a>
+<input id="f" type="file" style="position:absolute;left:0;top:120px">
 <script>
 window.log = [];
 document.addEventListener('keydown', e => window.log.push(
   (e.ctrlKey ? 'Ctrl+' : '') + (e.altKey ? 'Alt+' : '') + e.key + ':' + e.keyCode));
+window.mouseLog = [];
+document.addEventListener('mousedown', e => window.mouseLog.push(
+  {type: 'mousedown', button: e.button, buttons: e.buttons}));
+document.addEventListener('contextmenu', e => window.mouseLog.push(
+  {type: 'contextmenu', button: e.button}));
 </script></body></html>"""
 
 
@@ -140,13 +168,28 @@ def chromium():
             return call('Runtime.evaluate', {'expression': expr, 'returnByValue': True}
                         )['result']['result'].get('value')
 
+        def wait_for_event(method, timeout=5):
+            """Drain messages until one with this CDP `method` arrives (an
+            id-less notification, unlike `call`'s id-matched responses) or
+            `timeout` elapses. Messages that don't match are discarded — fine
+            here because nothing else is in flight while a test waits."""
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    msg = json.loads(ws.recv())
+                except Exception:
+                    continue
+                if msg.get('method') == method:
+                    return msg.get('params') or {}
+            return None
+
         call('Page.navigate', {'url': url})  # as _run_cdp does
         for _ in range(50):
             if (evaluate('location.pathname') == '/'
                     and evaluate('document.readyState') == 'complete'):
                 break
             time.sleep(0.1)
-        yield call, evaluate
+        yield call, evaluate, wait_for_event
         ws.close()
     finally:
         proc.kill()  # our own PID only
@@ -160,7 +203,7 @@ def _send(call, data):
 
 
 def test_one_mouse_call_clicks_a_link_and_navigates(chromium):
-    call, evaluate = chromium
+    call, evaluate, _wait = chromium
     assert evaluate('location.pathname') == '/'
     _send(call, {'type': 'mouse', 'x': 50, 'y': 50})
     for _ in range(50):  # a real cross-document navigation, not a hash change
@@ -171,10 +214,58 @@ def test_one_mouse_call_clicks_a_link_and_navigates(chromium):
 
 
 def test_key_combos_reach_the_page_with_modifiers(chromium):
-    call, evaluate = chromium
+    call, evaluate, _wait = chromium
     _send(call, {'type': 'mouse', 'x': 400, 'y': 400})  # focus the page body
     _send(call, {'type': 'key', 'key': 'Ctrl+K'})
     _send(call, {'type': 'key', 'key': 'Alt+ArrowDown'})
     log = evaluate('window.log')
     assert 'Ctrl+k:75' in log
     assert 'Alt+ArrowDown:40' in log
+
+
+# ---- B2 (gap #3): right-click reaches the page as a real right button -----
+
+def test_right_click_reaches_the_page_as_button_2_not_0(chromium):
+    call, evaluate, _wait = chromium
+    # Before the B2 fix, `_input_commands` sent buttons=1 (the left-button
+    # bit) on every mousePressed regardless of which button — Chromium/the
+    # page trust `buttons` for which button is actually down, so a
+    # right-click used to report as a LEFT press (e.button/buttons both 0/1)
+    # with only the cosmetic `button: 'right'` field ignored by the page.
+    _send(call, {'type': 'mouse', 'action': 'click', 'button': 'right',
+                'x': 400, 'y': 400})
+    log = evaluate('window.mouseLog')
+    mousedown = next(e for e in log if e['type'] == 'mousedown')
+    contextmenu = next(e for e in log if e['type'] == 'contextmenu')
+    # DOM MouseEvent.button: 0=left, 2=right; .buttons bitmask: 1=left, 2=right.
+    assert mousedown['button'] == 2 and mousedown['buttons'] == 2
+    assert contextmenu['button'] == 2
+
+
+# ---- B1 (gap #4): file chooser interception + DOM.setFileInputFiles -------
+
+def test_file_chooser_intercepted_and_attach_sets_real_file(chromium, tmp_path):
+    call, evaluate, wait_for_event = chromium
+    call('Page.enable')  # required for Page.fileChooserOpened to be delivered
+    call('Page.setInterceptFileChooserDialog', {'enabled': True})
+    src = tmp_path / 'upload-me.txt'
+    src.write_text('hello from the live test')
+
+    # Click the <input type=file> at y=120 (see PAGE) — with interception on,
+    # this must NOT open a native OS picker (there is none to open headless;
+    # the real-world bug was that it opened on the SERVER's desktop) and
+    # instead fires Page.fileChooserOpened over this same CDP connection.
+    _send(call, {'type': 'mouse', 'x': 10, 'y': 130})
+    params = wait_for_event('Page.fileChooserOpened', timeout=5)
+    assert params is not None, 'Page.fileChooserOpened never fired — the page blocked on a native picker instead'
+    assert params.get('mode') == 'selectSingle'
+    backend_node_id = params.get('backendNodeId')
+    assert backend_node_id
+
+    resp = call('DOM.setFileInputFiles',
+               {'files': [str(src)], 'backendNodeId': backend_node_id})
+    assert 'error' not in resp
+
+    assert evaluate("document.getElementById('f').files.length") == 1
+    assert evaluate("document.getElementById('f').files[0].name") == 'upload-me.txt'
+    assert evaluate("document.getElementById('f').files[0].size") == len('hello from the live test')
