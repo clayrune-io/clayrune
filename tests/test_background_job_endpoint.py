@@ -179,3 +179,96 @@ def test_job_status_rejects_wrong_owning_session(client):
     finally:
         ar.agent_sessions.pop('s2', None)
     assert _wait_for(lambda: ar._agent_jobs.get_job(job_id)['status'] != 'running')
+
+
+# ── shell field (MC-958 follow-up, backlog b49cf71f, bug 1) ────────────────
+
+def test_job_start_rejects_unknown_shell(client):
+    resp = client.post('/api/project/p1/agent/s1/job',
+                       json={'command': 'echo hi', 'shell': 'fish'})
+    assert resp.status_code == 400
+    assert 'fish' in resp.get_json()['error']
+
+
+def test_job_start_returns_and_persists_the_resolved_shell(client):
+    resp = client.post('/api/project/p1/agent/s1/job',
+                       json={'command': _py("print('hi')")})
+    body = resp.get_json()
+    assert body['shell'] == 'bash'
+    assert 'shell_note' in body
+    job_id = body['job_id']
+    assert _wait_for(lambda: ar._agent_jobs.get_job(job_id)['status'] != 'running')
+    status = client.get(f'/api/project/p1/agent/s1/job/{job_id}')
+    assert status.get_json()['shell'] == 'bash'
+
+
+def test_job_finished_message_names_the_resolved_shell(client):
+    resp = client.post('/api/project/p1/agent/s1/job',
+                       json={'command': _py("print('deliver-me')")})
+    job_id = resp.get_json()['job_id']
+    assert _wait_for(lambda: ar._agent_jobs.get_job(job_id)['status'] != 'running')
+    assert _wait_for(lambda: ar._delivery_store.status('outbox', f'job:{job_id}', 'p1') is not None)
+    row = ar._delivery_store.status('outbox', f'job:{job_id}', 'p1')
+    assert 'shell: bash' in row['payload']
+
+
+# ── spawner-callback hold while a job is open (bug 2, same b49cf71f live
+# test): the same latch (`_notify_session_sent`) that MC-958's Claude-side
+# fix (7b82905) guards for `run_in_background` must also hold for this
+# engine-agnostic job facility, or a Codex/Gemini/Qwen spawner only ever
+# sees "started the job" and never the real answer. ──────────────────────
+
+def _capture_notify(monkeypatch):
+    sent = []
+    monkeypatch.setattr(ar, '_notify_agent_spawner',
+                        lambda pid, nsid, child, summary: sent.append(summary))
+    return sent
+
+
+def test_turn_end_holds_spawner_callback_while_job_runs(client, monkeypatch):
+    sent = _capture_notify(monkeypatch)
+    session = ar.agent_sessions['s1']
+    session['_notify_session'] = 'spawner-sid'
+    session['log_lines'] = []
+
+    resp = client.post('/api/project/p1/agent/s1/job',
+                       json={'command': _py('import time; time.sleep(1.5)')})
+    job_id = resp.get_json()['job_id']
+
+    ar._notify_spawner_unless_jobs_open(session, 'STARTED - turn 1')
+    assert sent == []
+    assert session.get(ar._JOB_DEFERRED_KEY)
+    assert any('agent job(s) still running' in l for l in session['log_lines'])
+
+    assert _wait_for(lambda: ar._agent_jobs.get_job(job_id)['status'] != 'running',
+                     timeout=10.0)
+    ar._notify_spawner_unless_jobs_open(session, 'FINISHED - turn 2')
+    assert sent == ['FINISHED - turn 2']
+
+
+def test_wait_cap_sends_interim_then_rearms_for_the_job_path(client, monkeypatch, tmp_path):
+    sent = _capture_notify(monkeypatch)
+    monkeypatch.setitem(ar.state.CONFIG, 'background_wait_max_minutes', 120)
+    session = ar.agent_sessions['s1']
+    session['_notify_session'] = 'spawner-sid'
+    session['log_lines'] = ['STARTED']
+    now = time.time()
+    session[ar._JOB_DEFERRED_KEY] = now - 121 * 60
+
+    assert ar._release_held_job_notify_if_expired(session, now) is True
+    assert len(sent) == 1 and sent[0].startswith('[interim: still waiting')
+    assert session.get(ar._JOB_INTERIM_KEY) is True
+    assert session.get('_notify_session_sent') is True
+
+    # The job finally ends -- _job_on_complete must rearm the latch the
+    # interim report spent, so the wake turn's own callback still fires.
+    result = {'job_id': 'fake-job', 'project_id': 'p1', 'session_id': 's1',
+             'pid': 999999, 'command': 'echo hi', 'cwd': '.', 'shell': 'bash',
+             'shell_note': None, 'exit_code': 0, 'timed_out': False,
+             'duration_s': 1.0, 'log_path': str(tmp_path / 'x.log'), 'tail': 'hi'}
+    ar._job_on_complete(result)
+    assert session.get(ar._JOB_INTERIM_KEY) is None
+    assert session.get('_notify_session_sent') is None
+
+    ar._notify_spawner_unless_jobs_open(session, 'FINISHED - turn 2')
+    assert sent == [sent[0], 'FINISHED - turn 2']

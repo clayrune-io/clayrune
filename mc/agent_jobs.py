@@ -16,12 +16,15 @@ back on it.
 """
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
+import sys
 import threading
 import time as _time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from mc.core import _log
 
@@ -31,8 +34,14 @@ from mc.core import _log
 DEFAULT_TIMEOUT_MINUTES = 120
 TAIL_BYTES = 4096
 
+VALID_SHELLS = ('bash', 'sh', 'powershell', 'cmd')
+
 _jobs: Dict[str, Dict[str, Any]] = {}
 _lock = threading.Lock()
+
+
+class ShellResolutionError(ValueError):
+    """Raised for a `shell` request value outside VALID_SHELLS."""
 
 
 def _tail(path: Path, n: int = TAIL_BYTES) -> str:
@@ -43,8 +52,113 @@ def _tail(path: Path, n: int = TAIL_BYTES) -> str:
     return data[-n:].decode('utf-8', errors='replace')
 
 
+def _is_wsl_launcher(path: str, name: str) -> bool:
+    """True when `path` is the WSL launcher Windows drops at
+    System32\\<name>.exe -- it execs into a Linux VM, not a shell that can
+    see this box's cwd or run a Windows-side command; a job invoked through
+    it hangs or fails opaquely rather than running."""
+    try:
+        wsl_path = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / f'{name}.exe'
+        return Path(path).resolve() == wsl_path.resolve()
+    except OSError:
+        return False
+
+
+def _resolve_git_bash_root(name: str) -> Optional[str]:
+    """Git for Windows ships `bash.exe`/`sh.exe` at <git root>/bin/ -- derive
+    the root from `git`'s own resolved location (found via PATH) rather than
+    assuming the default 'C:\\Program Files\\Git', since installs vary."""
+    git_path = shutil.which('git')
+    if not git_path:
+        return None
+    git_dir = Path(git_path).resolve().parent  # .../Git/cmd or .../Git/mingw64/bin
+    for root in (git_dir.parent, git_dir.parent.parent):
+        candidate = root / 'bin' / f'{name}.exe'
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def resolve_shell(requested: Optional[str]) -> Dict[str, Any]:
+    """Resolve a job's `shell` request field to an executable.
+
+    Returns `{'shell': <name actually used>, 'path': <resolved executable>,
+    'note': <str|None>}`. Raises `ShellResolutionError` for a value outside
+    VALID_SHELLS.
+
+    Default is 'bash' on every OS -- agents write POSIX commands
+    (`sleep 90; echo done`), and the old `shell=True` on Windows ran them
+    through cmd.exe, which doesn't know `sleep` (backlog b49cf71f). On
+    Windows, `shutil.which('bash')` commonly resolves to the WSL launcher at
+    System32\\bash.exe; that hit is rejected in favour of Git Bash. If no
+    bash/sh exists anywhere on a Windows host, falls back to powershell and
+    says so in `note` rather than failing the job outright.
+    """
+    name = (requested or 'bash').strip().lower()
+    if name not in VALID_SHELLS:
+        raise ShellResolutionError(
+            f"unknown shell '{requested}' -- must be one of {', '.join(VALID_SHELLS)}")
+
+    if name in ('bash', 'sh'):
+        path = shutil.which(name)
+        if path and sys.platform == 'win32' and _is_wsl_launcher(path, name):
+            path = None
+        if not path and sys.platform == 'win32':
+            path = _resolve_git_bash_root(name)
+        if not path:
+            if sys.platform == 'win32':
+                ps_path = shutil.which('powershell') or 'powershell'
+                note = (f"no usable '{name}' found on this Windows host "
+                        "(PATH resolved to the WSL launcher or nothing, and no "
+                        "Git for Windows install was found) -- falling back to "
+                        "powershell")
+                return {'shell': 'powershell', 'path': ps_path, 'note': note}
+            path = name  # non-Windows: trust PATH resolution at exec time
+        return {'shell': name, 'path': path, 'note': None}
+
+    if name == 'powershell':
+        return {'shell': name, 'path': shutil.which('powershell') or 'powershell', 'note': None}
+
+    # cmd
+    return {'shell': name, 'path': shutil.which('cmd') or 'cmd', 'note': None}
+
+
+def build_argv(shell: str, path: str, command: str) -> List[str]:
+    """argv for `shell` running `command` as a single statement -- replaces
+    the old `shell=True` string invocation (which on Windows is always
+    cmd.exe regardless of what the command was written for)."""
+    if shell in ('bash', 'sh'):
+        return [path, '-c', command]
+    if shell == 'powershell':
+        return [path, '-NoProfile', '-Command', command]
+    if shell == 'cmd':
+        return [path, '/c', command]
+    raise ShellResolutionError(f"unknown shell '{shell}'")
+
+
+def open_job_count(session_id: str) -> int:
+    """Jobs still `running` for this session -- lets the caller hold a
+    turn-end callback until a job-finished wake turn actually happens
+    (MC-958 follow-up, b49cf71f second bug)."""
+    with _lock:
+        return sum(1 for j in _jobs.values()
+                   if j.get('session_id') == session_id and j.get('status') == 'running')
+
+
+def describe_open_jobs(session_id: str, limit: int = 3) -> str:
+    """Short human label for a session's open jobs, mirroring
+    background_tasks.describe for the CLI-native facility."""
+    with _lock:
+        items = [j for j in _jobs.values()
+                if j.get('session_id') == session_id and j.get('status') == 'running']
+    parts = [(j.get('command') or j.get('job_id') or '')[:80] for j in items[:limit]]
+    if len(items) > limit:
+        parts.append(f'+{len(items) - limit} more')
+    return '; '.join(parts)
+
+
 def start_job(*, project_id: str, session_id: str, command: str, cwd: str,
-              timeout_minutes: float, log_dir: Path,
+              timeout_minutes: float, log_dir: Path, shell: Optional[str] = None,
               popen_flags: int = 0, startupinfo: Any = None,
               kill_fn: Optional[Callable[[subprocess.Popen], Any]] = None,
               on_complete: Optional[Callable[[Dict[str, Any]], None]] = None,
@@ -52,14 +166,24 @@ def start_job(*, project_id: str, session_id: str, command: str, cwd: str,
               ) -> Dict[str, Any]:
     """Start `command` as a subprocess, log its output, watch for exit.
 
+    `shell` picks the interpreter (`resolve_shell` -- default 'bash' on
+    every OS, argv-invoked via `build_argv` rather than the old
+    `shell=True` string form, which on Windows is always cmd.exe no matter
+    what the command was written for). Raises `ShellResolutionError` for an
+    unrecognized `shell` value -- raised before any process is spawned.
+
     Returns immediately with the job record (includes `job_id`, `pid`,
     `proc` -- the live Popen, for the caller to register with the process
-    tracker). `on_complete(result)` fires from a background thread once the
-    process exits or the timeout kills it; `result` is a plain dict (job_id,
-    project_id, session_id, pid, command, cwd, exit_code, timed_out,
-    duration_s, log_path, tail) so the callback never needs to reach back
-    into this module's own state.
+    tracker; `shell`/`shell_note` -- what was actually resolved and used).
+    `on_complete(result)` fires from a background thread once the process
+    exits or the timeout kills it; `result` is a plain dict (job_id,
+    project_id, session_id, pid, command, cwd, shell, shell_note, exit_code,
+    timed_out, duration_s, log_path, tail) so the callback never needs to
+    reach back into this module's own state.
     """
+    resolved = resolve_shell(shell)
+    argv = build_argv(resolved['shell'], resolved['path'], command)
+
     job_id = uuid.uuid4().hex
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -72,7 +196,7 @@ def start_job(*, project_id: str, session_id: str, command: str, cwd: str,
         # parent's stdin handle raises WinError 6 whenever that handle isn't
         # itself valid for inheritance (headless/service-style parents hit
         # this even outside tests).
-        proc = popen(command, shell=True, cwd=cwd or None, stdin=subprocess.DEVNULL,
+        proc = popen(argv, shell=False, cwd=cwd or None, stdin=subprocess.DEVNULL,
                      stdout=log_file, stderr=subprocess.STDOUT,
                      creationflags=popen_flags, startupinfo=startupinfo)
     except Exception:
@@ -81,6 +205,7 @@ def start_job(*, project_id: str, session_id: str, command: str, cwd: str,
     job: Dict[str, Any] = {
         'job_id': job_id, 'project_id': project_id, 'session_id': session_id,
         'command': command, 'cwd': cwd, 'pid': proc.pid, 'proc': proc,
+        'shell': resolved['shell'], 'shell_note': resolved['note'],
         'log_path': str(log_path), 'status': 'running', 'started_at': started,
         'timeout_minutes': timeout_minutes, 'exit_code': None,
         'timed_out': False, 'finished_at': None,
@@ -123,6 +248,7 @@ def start_job(*, project_id: str, session_id: str, command: str, cwd: str,
         result = {
             'job_id': job_id, 'project_id': project_id, 'session_id': session_id,
             'pid': proc.pid, 'command': command, 'cwd': cwd,
+            'shell': resolved['shell'], 'shell_note': resolved['note'],
             'exit_code': exit_code, 'timed_out': timed_out,
             'duration_s': finished - started, 'log_path': str(log_path),
             'tail': _tail(log_path),
