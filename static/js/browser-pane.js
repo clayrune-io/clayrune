@@ -176,7 +176,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     <div data-bp="tabstrip" style="display:none;flex:0 0 auto;gap:2px;padding:4px 8px 0;background:#242424;overflow-x:auto"></div>
     <div style="flex:1;position:relative;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden">
       <img data-bp="screen" tabindex="0"
-        style="max-width:100%;max-height:100%;aspect-ratio:${BP_VIEW_W}/${BP_VIEW_H};outline:none;cursor:default;user-select:none" draggable="false">
+        style="width:100%;height:100%;object-fit:contain;aspect-ratio:${BP_VIEW_W}/${BP_VIEW_H};outline:none;cursor:default;user-select:none" draggable="false">
       <!-- Real, editable keyboard-focus target (gap #7, IME). A plain
            tabindex <img> can receive keydown but browsers only ever engage an
            OS IME (Pinyin/Japanese/Korean input) over an editable element — a
