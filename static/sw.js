@@ -111,9 +111,39 @@ self.addEventListener('activate', (event) => {
 // anything (the SPA is online-first), so we intercept navigation requests
 // only and pass them straight to the network. Other requests fall through
 // to the browser's default handling.
+//
+// When the network fetch fails (server mid-restart), answer with a small
+// "Restarting" page that polls the heartbeat and reloads itself, instead of
+// letting the rejection surface as Chromium's dead ERR_FAILED page, which
+// never retries and sat there until the user reloaded by hand.
+const _RESTART_WAIT_PAGE = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Clayrune - restarting</title>
+<style>html,body{height:100%;margin:0;background:#202124;color:#e8e6e3;
+font:13px system-ui,-apple-system,Segoe UI,sans-serif}
+body{display:flex;align-items:center;justify-content:center}
+.b{text-align:center}.t{font-size:15px;font-weight:700;margin-bottom:8px}
+.s{opacity:.7;font-size:12px}.sp{width:24px;height:24px;margin:14px auto 0;
+border:3px solid #444;border-top-color:#d97757;border-radius:50%;
+animation:r .8s linear infinite}@keyframes r{to{transform:rotate(360deg)}}</style>
+</head><body><div class="b"><div class="t">Clayrune is restarting...</div>
+<div class="s" id="s">Waiting for the server to come back online.</div>
+<div class="sp"></div></div><script>
+var n=0;(function p(){n++;fetch('/api/system/heartbeat',{cache:'no-store'})
+.then(function(r){if(r.ok){location.reload();}else{throw 0;}})
+.catch(function(){if(n>30){document.getElementById('s').textContent=
+'Still waiting ('+n+'s). If this persists, start the server manually.';}
+setTimeout(p,1000);});})();
+</script></body></html>`;
+
 self.addEventListener('fetch', (event) => {
   if (event.request.mode === 'navigate') {
-    event.respondWith(fetch(event.request));
+    event.respondWith(
+      fetch(event.request).catch(() => new Response(_RESTART_WAIT_PAGE, {
+        status: 503,
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+      }))
+    );
   }
 });
 
