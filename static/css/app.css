@@ -7133,6 +7133,24 @@
     font-weight: 600; cursor: pointer; padding: 4px 0; font-family: 'Inter', sans-serif;
   }
   .setup-adv-expander:hover { color: var(--text); }
+  /* Shared step anatomy (2026-09-25 holistic pass): one intro sentence, one
+     section-wrapper shape, one footer note — used by every step that has
+     controls, so they read as one system instead of six one-off screens.
+     Replaces inline style="" repeated across first-run.js's step bodies. */
+  .setup-lead { font-size: 13px; color: var(--text-dim); line-height: 1.5; text-align: left; }
+  .setup-section { margin-top: 14px; text-align: left; }
+  .setup-section-label { font-weight: 600; color: var(--text); }
+  .setup-section-hint { font-size: 11px; color: var(--text-faint); margin: 2px 0 6px; }
+  .setup-footer-note { margin-top: 18px; font-size: 11px; color: var(--text-faint); text-align: left; }
+  /* Utility actions inside a step body (Install selected, Check setup status,
+     Open Connectivity settings) — never accent-colored: the ONE accent button
+     per step is always the footer's Next/Get started/Finish. */
+  .setup-btn-utility {
+    background: transparent; border: 1px solid var(--border); color: var(--text-dim);
+    font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 600;
+    padding: 7px 14px; border-radius: 6px; cursor: pointer; transition: all 0.15s;
+  }
+  .setup-btn-utility:hover { color: var(--text); border-color: var(--text-faint); }
   .wt-dismiss {
     display: flex; align-items: center; gap: 6px;
     margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);

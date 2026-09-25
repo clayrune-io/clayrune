@@ -28,7 +28,7 @@ const SETUP_STEPS = [
   {
     id: 'welcome',
     title: 'Welcome to Clayrune',
-    body: () => 'Clayrune is your operator console for long-running coding agents — a multi-project dashboard where you dispatch, monitor, and coordinate AI work across many parallel streams. Two quick things first: connect the AI vendors you use, then pick a few essentials. About a minute.',
+    body: () => 'Clayrune is your operator console for long-running coding agents: a multi-project dashboard where you dispatch, monitor, and coordinate AI work across many parallel streams. Two quick things first: connect the AI vendors you use, then pick a few essentials. About a minute.',
   },
   {
     id: 'connections',
@@ -52,24 +52,26 @@ const SETUP_STEPS = [
         provs.forEach(p => { if (p.installed && p.auth_status === 'ok') setupSelectedProviders.add(p.name); });
       }
       setupProviderChoiceVisited = true;
-      return `Choose one or more vendors to set up. Pick one default; every selected vendor stays available per agent and per chat.<div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;text-align:left">` +
+      return `<div class="setup-lead">Choose one or more vendors to set up. Pick one default: every selected vendor stays available per agent and per chat.</div>`
+        + `<div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;text-align:left">` +
         provs.map(p => _renderProviderRow(p, {
           mode: 'setup',
           selected: setupSelectedProviders.has(p.name),
           defaultName: cur,
           keyEntry: true,   // clean-VM run 3 (C4): Qwen's only sign-in is a key, so the row needs the same key field Settings shows
         })).join('') + `</div><div style="display:flex;gap:8px;margin-top:12px">
-          <button type="button" class="btn-add" onclick="setupInstallSelected(this)">Install selected</button>
-          <button type="button" class="btn-add" onclick="providerRefreshAll()">Check setup status</button>
+          <button type="button" class="setup-btn-utility" onclick="setupInstallSelected(this)">Install selected</button>
+          <button type="button" class="setup-btn-utility" onclick="providerRefreshAll()">Check setup status</button>
         </div><div class="prov-install-policy-note" style="margin-top:6px;font-size:11px;color:var(--text-faint)">${esc(_providerInstallPolicyNoteText || '')}</div>`
-        + `<div style="margin-top:16px;text-align:left">
-          <div style="font-weight:600;color:var(--text)">Default model</div>
-          <div style="font-size:11px;color:var(--text-faint);margin:2px 0 6px">Applies across every agent unless overridden per project or per chat.</div>
+        + `<div class="setup-section">
+          <div class="setup-section-label">Default model</div>
+          <div class="setup-section-hint">Applies across every agent unless overridden per project or per chat.</div>
           <div class="mc-seg" id="setup-model-tier-seg">`
         + Object.keys(MODEL_TIER_LABEL).map(t => `<button type="button" class="${setupModelTier === t ? 'active' : ''}" data-tier="${t}" onclick="setupPickModelTier('${t}',this)">${MODEL_TIER_LABEL[t]}</button>`).join('')
         + `</div>
-          <div style="font-size:11px;color:var(--text-faint);margin-top:6px">Balanced is recommended — you can change it later in Settings.</div>
-        </div>`;
+          <div style="font-size:11px;color:var(--text-faint);margin-top:6px">Balanced is recommended: you can change it later in Settings.</div>
+        </div>`
+        + _SETUP_FOOTER;
     },
     onEnter: () => {
       // Balanced is pre-selected: persist it the moment the step is first
@@ -110,7 +112,7 @@ const SETUP_STEPS = [
   },
   {
     id: 'essentials-phone',
-    title: 'Use Clayrune from your phone? (optional)',
+    title: 'Use Clayrune from your phone?',
     wide: true,
     body: () => _setupPhoneHTML(),
     onEnter: () => {
@@ -129,7 +131,7 @@ const SETUP_STEPS = [
   {
     id: 'tour',
     title: 'Take the tour?',
-    body: () => 'You’re set up. Want a quick walkthrough of the dashboard — the sidebar, project tiles, the Floor, the Desk, Hivemind and Automation? About 10 steps, 2 minutes. You can also take it any time from Settings, the Command Palette (Ctrl+K), or the <strong>?</strong> button in the header.',
+    body: () => 'You’re set up. Want a quick walkthrough of the dashboard: the sidebar, project tiles, the Floor, the Desk, Hivemind and Automation? About 10 steps, 2 minutes. You can also take it any time from Settings, the Command Palette (Ctrl+K), or the <strong>?</strong> button in the header.',
     // Already toured in this browser: don't re-offer what they've done. A re-run
     // from Settings always offers it.
     skip: () => !setupForced && !!localStorage.getItem('walkthrough_done'),
@@ -146,10 +148,10 @@ const SETUP_STEPS = [
 // setAdvancedFlag, the LAN-passcode section in settings-sections.js) — no new
 // config keys. Highlight state is patched in place where possible, not
 // re-rendered: a re-render would wipe a half-typed passcode or API key.
-const _SETUP_FOOTER = `<div style="margin-top:18px;font-size:11px;color:var(--text-faint)">You can change this any time in Settings.</div>`;
-const _setupSec = (label, hint, inner) => `<div style="margin-top:14px;text-align:left">
-    <div style="font-weight:600;color:var(--text)">${label}</div>
-    <div style="font-size:11px;color:var(--text-faint);margin:2px 0 6px">${hint}</div>${inner}</div>`;
+const _SETUP_FOOTER = `<div class="setup-footer-note">You can change this any time in Settings.</div>`;
+const _setupSec = (label, hint, inner) => `<div class="setup-section">
+    <div class="setup-section-label">${label}</div>
+    <div class="setup-section-hint">${hint}</div>${inner}</div>`;
 
 // A. "Make it yours" — theme + conversation style.
 function _setupYoursHTML() {
@@ -161,7 +163,7 @@ function _setupYoursHTML() {
     ['', 'Default', '#5b9ef5'], ['sunset', 'Sunset', '#e8824a'], ['rose', 'Rose', '#d96480'],
     ['lilac', 'Lilac', '#8a7ce0'], ['lagoon', 'Lagoon', '#4fa89a'], ['ink', 'Ink', '#6b7286'],
   ];
-  return `<div style="font-size:13px;color:var(--text-dim);line-height:1.5">Pick a look and a reply style — both are one click to change later.</div>`
+  return `<div class="setup-lead">Pick a look and a reply style: both are one click to change later.</div>`
     + _setupSec('Theme', 'Dark is easy at night. Warm and Editorial are light, paper-like themes for daytime.',
         `<div class="mc-seg" id="setup-tone-seg">
           <button type="button" class="${act(tone === 'dark')}" onclick="setupPickTone('dark',this)">Dark</button>
@@ -171,7 +173,7 @@ function _setupYoursHTML() {
         <div class="mc-accent-row" id="setup-accent-row" style="margin-top:8px;justify-content:flex-start;max-width:none">`
         + accents.map(([k, label, color]) => `<button type="button" class="mc-accent-pill ${act(accent === k)}" onclick="setupPickAccent('${k}',this)"><span class="mc-accent-swatch" style="background:${color}"></span>${label}</button>`).join('')
         + `</div>`)
-    + _setupSec('Conversation flow', 'How an agent’s reply is shown — see it below before you pick.',
+    + _setupSec('Conversation flow', 'How an agent’s reply is shown: see it below before you pick.',
         `<div class="mc-seg" id="setup-flow-seg">
           <button type="button" class="${act(!flow)}" onclick="setupPickChatStyle('bubbles',this)">Bubbles</button>
           <button type="button" class="${act(flow)}" onclick="setupPickChatStyle('flow',this)">Flow</button>
@@ -179,12 +181,12 @@ function _setupYoursHTML() {
         <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
           <div class="setup-flow-preview ${act(!flow)}" id="setup-flow-preview-bubbles" style="flex:1;min-width:180px">
             <div class="setup-flow-preview-label">Bubbles</div>
-            <div class="setup-mock-bubble">Found the bug — it’s a race in the SSE reconnect.</div>
+            <div class="setup-mock-bubble">Found the bug: it’s a race in the SSE reconnect.</div>
             <div class="setup-mock-bubble">Fixed and pushed to your branch.</div>
           </div>
           <div class="setup-flow-preview ${act(flow)}" id="setup-flow-preview-flow" style="flex:1;min-width:180px">
             <div class="setup-flow-preview-label">Flow</div>
-            <div class="setup-mock-flow">Found the bug — it’s a race in the SSE reconnect. Fixed and pushed to your branch.</div>
+            <div class="setup-mock-flow">Found the bug: it’s a race in the SSE reconnect. Fixed and pushed to your branch.</div>
           </div>
         </div>`)
     + _SETUP_FOOTER;
@@ -194,7 +196,7 @@ function _setupYoursHTML() {
 // passcode form (with its locked-out warning) are revealed ONLY after an
 // explicit "Set it up" click; they must never appear unprompted.
 function _setupPhoneHTML() {
-  let html = `<div style="font-size:13px;color:var(--text-dim);line-height:1.5">Reach your agents from your phone or another computer, and get notified when one needs you. Most people set this up later.</div>`;
+  let html = `<div class="setup-lead">Reach your agents from your phone or another computer, and get notified when one needs you. Most people set this up later.</div>`;
   if (!_setupPhoneRevealed) {
     html += `<div style="display:flex;gap:8px;margin-top:16px">
       <button type="button" class="wt-btn setup-btn-secondary" onclick="setupSkipPhone()">Not now</button>
@@ -202,7 +204,7 @@ function _setupPhoneHTML() {
     </div>`;
   } else {
     html += _setupSec('Connectivity', 'Remote access, push notifications and mobile pairing.',
-        `<button type="button" class="btn-add" onclick="setupOpenConnectivity()">Open Connectivity settings…</button>`)
+        `<button type="button" class="setup-btn-utility" onclick="setupOpenConnectivity()">Open Connectivity settings</button>`)
       + _setupSec('Passcode', 'A passcode lets your own phone or laptop on the same Wi-Fi sign in. Without one, only this computer can open Clayrune.',
         `<div id="local-access-section"></div>`);
   }
@@ -216,7 +218,7 @@ function setupSkipPhone() { setupNext(); }
 // original per-feature checklist collapsed behind "Choose individually".
 function _setupDetailHTML() {
   const allOn = ADV_FEATURES.every(f => !!advancedFlags[f.key]);
-  let html = `<div style="font-size:13px;color:var(--text-dim);line-height:1.5">Clayrune starts simple. Power users can turn on extra panels and counters any time.</div>`;
+  let html = `<div class="setup-lead">Clayrune starts simple. Power users can turn on extra panels and counters any time.</div>`;
   html += `<div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap">
     <button type="button" class="setup-preset-card ${!allOn ? 'active' : ''}" onclick="setupPickPreset('simple',this)">
       <div class="setup-preset-title">Simple</div>
@@ -422,7 +424,7 @@ async function _setupPollInstallStatus() {
       _providerInstallProgress[v.name] = { result: v.result, started_at: v.started_at, running_now: !!v.running_now };
     }
     for (const name of (data.failed || [])) {
-      const text = 'Install failed — see terminal.';
+      const text = 'Install failed, see terminal.';
       _providerInstallMsg[name] = text;
       const el = document.getElementById(`prov-install-msg-${name}`);
       if (el) el.textContent = text;
@@ -512,9 +514,9 @@ function _setupProviderBlockReason(p) {
     case 'not_logged_in': return 'not signed in';
     case 'invalid_api_key': return 'invalid API key';
     case 'quota_exceeded': return 'quota exceeded';
-    case 'unverified': return 'sign-in unverified — see note below';
+    case 'unverified': return 'sign-in unverified, see note below';
     case 'oauth_rejected': return 'sign-in rejected by Google';
-    case 'unknown': return 'status unknown — click Check setup status';
+    case 'unknown': return 'status unknown, click Check setup status';
     default: return 'not signed in';
   }
 }

@@ -172,7 +172,7 @@ try {
     await page.click('#setup-overlay .wt-btn-primary'); // "Next" -> essentials-phone
     await page.waitForTimeout(150);
     st = await overlayState(page);
-    if (st.title !== 'Use Clayrune from your phone? (optional)') { fail(`expected essentials step B, got: ${st.title}`); return null; }
+    if (st.title !== 'Use Clayrune from your phone?') { fail(`expected essentials step B, got: ${st.title}`); return null; }
     await page.click('#setup-overlay button:has-text("Not now")'); // essentials-phone's own "Not now" (not a forced re-run's "Close") -> essentials-detail
     await page.waitForTimeout(150);
     st = await overlayState(page);
@@ -423,7 +423,7 @@ try {
     await page.click('#setup-overlay .wt-btn-primary'); // Next -> essentials-phone
     await page.waitForTimeout(150);
     st = await overlayState(page);
-    if (st.title !== 'Use Clayrune from your phone? (optional)') { fail(`expected essentials step B, got: ${st.title}`); return; }
+    if (st.title !== 'Use Clayrune from your phone?') { fail(`expected essentials step B, got: ${st.title}`); return; }
     // Forced re-run also shows a "Close" secondary button here (setupForced) —
     // distinct from essentials-phone's own "Not now"; text-qualify so the
     // click can't land on the wrong one.
@@ -451,7 +451,7 @@ try {
     await page.click('#setup-overlay .wt-btn-primary'); // Next -> essentials B
     await page.waitForTimeout(150);
     let st = await overlayState(page);
-    if (st.title !== 'Use Clayrune from your phone? (optional)') { fail(`expected essentials step B, got: ${st.title}`); return; }
+    if (st.title !== 'Use Clayrune from your phone?') { fail(`expected essentials step B, got: ${st.title}`); return; }
 
     if (await page.locator('#setup-overlay #local-access-section').count()) fail('the passcode section (#local-access-section) is present before "Set it up" is clicked — the locked-out warning must not appear unprompted');
     else ok('passcode section absent on step B until "Set it up" is clicked');
