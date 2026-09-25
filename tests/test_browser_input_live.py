@@ -74,6 +74,28 @@ def test_unknown_type_is_refused():
         br._input_commands({'type': 'teleport'})
 
 
+def test_ime_update_sets_composition_not_a_commit():
+    cmds = br._input_commands({'type': 'ime', 'phase': 'update', 'text': 'n'})
+    assert cmds == [('Input.imeSetComposition',
+                     {'text': 'n', 'selectionStart': 1, 'selectionEnd': 1})]
+
+
+def test_ime_end_commits_via_insert_text():
+    cmds = br._input_commands({'type': 'ime', 'phase': 'end', 'text': '你好'})
+    assert cmds == [('Input.insertText', {'text': '你好'})]
+
+
+def test_ime_end_with_no_text_is_a_no_op():
+    # A composition the user cancelled (e.g. Escape) commits nothing — must not
+    # insertText('') and clobber whatever the page already had.
+    assert br._input_commands({'type': 'ime', 'phase': 'end', 'text': ''}) == []
+
+
+def test_ime_unknown_phase_is_refused():
+    with pytest.raises(ValueError):
+        br._input_commands({'type': 'ime', 'phase': 'start', 'text': 'x'})
+
+
 # ---- live: a real Chromium, a local page ------------------------------------
 
 PAGE = """<!doctype html><html><body style="margin:0">

@@ -1487,6 +1487,23 @@ def _input_commands(data):
         down = 'keyDown' if 'text' in p else 'rawKeyDown'
         return [('Input.dispatchKeyEvent', {'type': down, **p}),
                 ('Input.dispatchKeyEvent', {'type': 'keyUp', **up})]
+    if kind == 'ime':
+        # IME composition (Chinese/Japanese/Korean input etc.): the pane's own
+        # keydown-per-character forwarding (see 'key' above) cannot carry this
+        # — a composed character is never a single keydown, and the interim
+        # (underlined, not-yet-committed) text has no keyCode at all. 'update'
+        # mirrors the in-progress composition so the PAGE'S OWN candidate/
+        # underline UI tracks what the user is typing; 'end' commits the final
+        # text the same way a real IME's commit does, via insertText (which
+        # also implicitly clears any composition Chromium was tracking).
+        phase = data.get('phase')
+        text = data.get('text', '')
+        if phase == 'update':
+            return [('Input.imeSetComposition',
+                     {'text': text, 'selectionStart': len(text), 'selectionEnd': len(text)})]
+        if phase == 'end':
+            return [('Input.insertText', {'text': text})] if text else []
+        raise ValueError(f'unknown ime phase: {phase!r}')
     if kind == 'back':
         # navigate history: use Page.goBack via CDP (needs the entry id) —
         # simplest is JS history.back through Runtime.evaluate.

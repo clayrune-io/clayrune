@@ -48,12 +48,16 @@ await page.evaluate(() => window.openBrowserPane('about:blank', 'p1'));
 // it has zero size and Playwright would call it hidden.
 await page.waitForSelector('#mc-browser-pane [data-bp="screen"]', { state: 'attached' });
 
-// Seed the real clipboard, then focus the pane image and press Ctrl+V.
+// Seed the real clipboard, then focus the pane's keyboard target and press
+// Ctrl+V. That target is the ime-shadow input, not the <img> itself (MC-976
+// gap #7): only a real editable element ever gets an OS IME's composition
+// events, so keyboard focus moved there for CJK input and every other
+// keyboard path — paste included — moved with it.
 await page.evaluate(secret => {
   const ta = document.createElement('textarea');
   ta.value = secret; document.body.appendChild(ta);
   ta.select(); document.execCommand('copy'); ta.remove();
-  document.querySelector('#mc-browser-pane [data-bp="screen"]').focus();
+  document.querySelector('#mc-browser-pane [data-bp="ime-shadow"]').focus();
 }, SECRET);
 posts.length = 0;
 await page.keyboard.press('Control+V');

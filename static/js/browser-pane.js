@@ -176,6 +176,15 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     <div style="flex:1;position:relative;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden">
       <img data-bp="screen" tabindex="0"
         style="max-width:100%;max-height:100%;aspect-ratio:${BP_VIEW_W}/${BP_VIEW_H};outline:none;cursor:default;user-select:none" draggable="false">
+      <!-- Real, editable keyboard-focus target (gap #7, IME). A plain
+           tabindex <img> can receive keydown but browsers only ever engage an
+           OS IME (Pinyin/Japanese/Korean input) over an editable element — a
+           bare img never gets a compositionstart no matter how it's focused.
+           This input takes over keyboard focus in its place; kept 1x1 and
+           positioned at the last click so its native candidate window still
+           tracks the caret roughly where the user is looking. -->
+      <input data-bp="ime-shadow" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+        style="position:absolute;left:0;top:0;width:1px;height:1px;padding:0;border:0;opacity:0;pointer-events:none">
       <div data-bp="downloads" style="position:absolute;right:8px;bottom:8px;display:flex;flex-direction:column;gap:4px;max-width:280px;pointer-events:none"></div>
       <div data-bp="dialog-overlay" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,.55);align-items:center;justify-content:center;z-index:5">
         <div data-bp="dialog-box" style="background:#2a2a2a;border:1px solid #4a4a4a;border-radius:8px;padding:16px;width:320px;max-width:90%;color:#eee;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.5)">
@@ -231,6 +240,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
 
   const $ = sel => win.querySelector(`[data-bp="${sel}"]`);
   const img = $('screen'), urlInput = $('url'), spin = $('spin');
+  const imeShadow = $('ime-shadow');
 
   // Profile indicator — the sessions menu already lets you SWITCH profile,
   // but gave no ambient sign of which one a pane is currently on. A signed-in
@@ -263,15 +273,15 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   // prompt box is itself a native paste target, which is what makes this work
   // on a phone (long-press → Paste) and wherever readText() is unavailable.
   $('paste').onclick = async () => {
-    img.focus();
+    imeShadow.focus();
     if (await _bpPasteViaApi()) return;
     const t = prompt('Paste here and press OK — this types it into the page:');
     if (t) _bpSend({ type: 'text', text: t });
   };
-  $('copy').onclick = async () => { img.focus(); await _bpCopySelection(false); };
+  $('copy').onclick = async () => { imeShadow.focus(); await _bpCopySelection(false); };
   $('sessions').onclick = (e) => { e.stopPropagation(); _bpToggleSessionMenu(win, pid); };
   urlInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { _bpSend({ type: 'navigate', url: urlInput.value.trim() }); img.focus(); }
+    if (e.key === 'Enter') { _bpSend({ type: 'navigate', url: urlInput.value.trim() }); imeShadow.focus(); }
   });
 
   // ── move (drag the toolbar) + resize (corner grip) — pointer events cover
@@ -308,7 +318,11 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
 
   // ── input forwarding ──
   img.addEventListener('mousedown', e => {
-    e.preventDefault(); img.focus(); _bpPressed = true;
+    e.preventDefault(); _bpPressed = true;
+    // Keyboard focus goes to imeShadow, not img (see its declaration) — parked
+    // at the click point so an OS IME's candidate window follows the caret.
+    imeShadow.style.left = e.offsetX + 'px'; imeShadow.style.top = e.offsetY + 'px';
+    imeShadow.focus();
     const c = _bpCoords(img, e);
     _bpSend({ type: 'mouse', action: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...c });
   });
@@ -338,7 +352,13 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     e.preventDefault(); const c = _bpCoords(img, e);
     _bpSend({ type: 'wheel', deltaX: e.deltaX, deltaY: e.deltaY, ...c });
   }, { passive: false });
-  img.addEventListener('keydown', async e => {
+  imeShadow.addEventListener('keydown', async e => {
+    // While an IME composition is in progress, the browser also fires keydown
+    // for each keystroke that builds it (e.g. every Latin letter typed toward
+    // a Pinyin candidate) with e.isComposing true. Forwarding those as text
+    // too would double-send: the composed characters arrive again, correctly,
+    // on compositionend below.
+    if (e.isComposing) return;
     const mod = (e.ctrlKey || e.metaKey) && !e.altKey;
     const k = (e.key || '').toLowerCase();
     // ── clipboard bridge (host clipboard <-> the page in the pane) ──
@@ -365,17 +385,58 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       await _bpCopySelection(k === 'x');
       return;
     }
-    if (e.ctrlKey || e.metaKey || e.altKey) return;  // let other shortcuts through
+    if ((e.ctrlKey || e.metaKey || e.altKey) &&
+        !['Control', 'Alt', 'Meta', 'Shift'].includes(e.key)) {
+      // Forward every other modified combo (Ctrl+F, Ctrl+A, Alt+ArrowDown, …)
+      // to the PAGE instead of letting it through to the host (gap #7) —
+      // before this, `return` here left the keydown unhandled and Clayrune's
+      // own browser chrome caught it (Ctrl+F opened the host's Find, not the
+      // pane's). _key_event_params (browser_routes.py) already parses this
+      // "Ctrl+f"-style combo string, same convention _bpKeyCodes/{v,c,x} above
+      // don't need since those are pane-local shortcuts, not page ones.
+      // The e.key exclusion matters: pressing Ctrl alone fires its OWN keydown
+      // (key:'Control', ctrlKey:true) before the letter's — without it every
+      // Ctrl-anything chord sent a bogus leading "Ctrl+Control" first.
+      e.preventDefault();
+      let combo = '';
+      if (e.ctrlKey) combo += 'Ctrl+';
+      if (e.altKey) combo += 'Alt+';
+      if (e.metaKey) combo += 'Meta+';
+      combo += e.key;
+      _bpSend({ type: 'key', key: combo, code: e.code, keyCode: e.keyCode });
+      return;
+    }
+    // A bare modifier press (Ctrl/Alt/Meta/Shift alone, no other key yet) is
+    // not a shortcut and forwards nothing — but IS the host's own chord in
+    // progress, so let it through rather than preventDefault-ing it for no
+    // reason.
+    if (['Control', 'Alt', 'Meta', 'Shift'].includes(e.key)) return;
     e.preventDefault();
     if (e.key.length === 1) _bpSend({ type: 'text', text: e.key });
     else if (_bpKeyCodes[e.key] != null)
       _bpSend({ type: 'key', key: e.key, code: e.code, keyCode: _bpKeyCodes[e.key] });
   });
 
-  // The primary paste path. Fires on the focused <img> (verified in Chromium)
-  // and carries the text directly, so it needs no clipboard permission, works
-  // over plain http on the LAN, and works where readText() does not exist.
-  img.addEventListener('paste', e => {
+  // ── IME composition (gap #7) — CJK and other composed input. imeShadow is a
+  // real editable <input> (see its declaration) because Chromium only ever
+  // engages an OS IME over an editable element; a bare tabindex <img> never
+  // gets a compositionstart no matter how it's focused. 'update' mirrors the
+  // in-progress (underlined, uncommitted) text so the PAGE's own composition
+  // UI tracks it; 'end' commits the final text via insertText. imeShadow's
+  // own value is cleared after commit so it never accumulates text the pane
+  // has already forwarded.
+  imeShadow.addEventListener('compositionupdate', e => {
+    _bpSend({ type: 'ime', phase: 'update', text: e.data || '' });
+  });
+  imeShadow.addEventListener('compositionend', e => {
+    _bpSend({ type: 'ime', phase: 'end', text: e.data || '' });
+    imeShadow.value = '';
+  });
+
+  // The primary paste path. Fires on the focused imeShadow input and carries
+  // the text directly, so it needs no clipboard permission, works over plain
+  // http on the LAN, and works where readText() does not exist.
+  imeShadow.addEventListener('paste', e => {
     e.preventDefault();
     _bpPasteAt = 0;                   // handled — cancel the keydown fallback
     const cd = e.clipboardData || window.clipboardData;
@@ -391,7 +452,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     if (e.touches.length !== 1) { touch = null; return; }
     const t = e.touches[0];
     touch = { x: t.clientX, y: t.clientY, sx: t.clientX, sy: t.clientY, moved: false };
-    img.focus();
+    imeShadow.focus();
   }, { passive: true });
   img.addEventListener('touchmove', e => {
     if (!touch || e.touches.length !== 1) return;
@@ -456,7 +517,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     if ('file_chooser' in d) _bpRenderFileChooser(win, d.file_chooser);
   };
   _bpES.onerror = () => { if (spin) spin.style.color = '#e57373'; };
-  setTimeout(() => img.focus(), 100);
+  setTimeout(() => imeShadow.focus(), 100);
   // Remember the open session so a page refresh (which wipes the SPA DOM but
   // leaves the backend Chromium running) can re-attach instead of orphaning it.
   try { localStorage.setItem('mc_browser_pane_open', JSON.stringify({ sid: _bpSession, pid })); } catch (e) {}
@@ -509,8 +570,8 @@ function _bpRestorePane(win) {
   _bpSend({ type: 'screencast', action: 'start' });
   if (_bpMinimizedChip) { try { _bpMinimizedChip.remove(); } catch (e) {} _bpMinimizedChip = null; }
   try { win.style.zIndex = nextModalZ++; } catch (e) {}
-  const img = win.querySelector('[data-bp="screen"]');
-  if (img) img.focus();
+  const imeShadow = win.querySelector('[data-bp="ime-shadow"]');
+  if (imeShadow) imeShadow.focus();
 }
 
 let _bpDoneToasted = new Set();
