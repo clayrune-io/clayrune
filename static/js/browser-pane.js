@@ -18,6 +18,15 @@
 // only in this human-facing file is what keeps the two paths separate.
 const BP_DEFAULT_PROFILE = 'main';
 
+// A page-shaped emoji (\u{1F4C4}) here used to read as "new tab" (Ron,
+// 2026-09-25) rather than "copy" -- an unambiguous two-overlapping-sheets
+// glyph (the same shape most toolbars use for a copy action) replaces it.
+const _BP_COPY_ICON_SVG =
+  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+  'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+  '<rect x="9" y="9" width="13" height="13" rx="2"></rect>' +
+  '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+
 const BP_VIEW_W = 1280, BP_VIEW_H = 800;
 // The page coordinate space clicks are mapped into. NOT a constant: CDP's
 // Emulation.setDeviceMetricsOverride does not take effect, so a 1280x800
@@ -88,11 +97,23 @@ function _bpSend(body) {
   }).catch(() => {});
 }
 
-function _bpCoords(img, e) {
+// The <img> is width:100%;height:100% (fills the pane) with object-fit:contain
+// (letterboxes the frame inside it) -- so img.getBoundingClientRect() is the
+// WHOLE pane, not the picture. Every coordinate/delta must map through the
+// CONTENT rect (the letterboxed picture itself), not the element box, or a
+// click on the frame's edge lands in a letterbox bar instead.
+function _bpContentRect(img) {
   const r = img.getBoundingClientRect();
+  const scale = Math.min(r.width / _bpViewW, r.height / _bpViewH) || 1;
+  const w = _bpViewW * scale, h = _bpViewH * scale;
+  return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, width: w, height: h, scale };
+}
+
+function _bpCoords(img, e) {
+  const c = _bpContentRect(img);
   return {
-    x: Math.max(0, Math.min(_bpViewW, (e.clientX - r.left) / r.width * _bpViewW)),
-    y: Math.max(0, Math.min(_bpViewH, (e.clientY - r.top) / r.height * _bpViewH)),
+    x: Math.max(0, Math.min(_bpViewW, (e.clientX - c.left) / c.scale)),
+    y: Math.max(0, Math.min(_bpViewH, (e.clientY - c.top) / c.scale)),
   };
 }
 
@@ -163,7 +184,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       <button data-bp="fwd"    title="Forward" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 6px">&#8594;</button>
       <button data-bp="reload" title="Reload"  style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px">&#8635;</button>
       <button data-bp="paste"  title="Paste clipboard into the page" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px">&#128203;</button>
-      <button data-bp="copy"   title="Copy page selection to clipboard" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px">&#128196;</button>
+      <button data-bp="copy"   title="Copy page selection to clipboard" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px;display:flex;align-items:center">${_BP_COPY_ICON_SVG}</button>
       <button data-bp="sessions" title="Browser sessions" style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px;position:relative">&#9776;<span data-bp="sesscount" style="position:absolute;top:-3px;right:-3px;background:#4caf50;color:#000;font-size:9px;font-weight:700;border-radius:8px;padding:0 4px;line-height:14px;display:none"></span></button>
       <input data-bp="url" type="text" spellcheck="false" value="${(url||'').replace(/"/g,'&quot;')}"
         placeholder="Enter URL and press Enter"
@@ -176,7 +197,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     <div data-bp="tabstrip" style="display:none;flex:0 0 auto;gap:2px;padding:4px 8px 0;background:#242424;overflow-x:auto"></div>
     <div style="flex:1;position:relative;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden">
       <img data-bp="screen" tabindex="0"
-        style="max-width:100%;max-height:100%;aspect-ratio:${BP_VIEW_W}/${BP_VIEW_H};outline:none;cursor:default;user-select:none" draggable="false">
+        style="width:100%;height:100%;object-fit:contain;aspect-ratio:${BP_VIEW_W}/${BP_VIEW_H};outline:none;cursor:default;user-select:none" draggable="false">
       <!-- Real, editable keyboard-focus target (gap #7, IME). A plain
            tabindex <img> can receive keydown but browsers only ever engage an
            OS IME (Pinyin/Japanese/Korean input) over an editable element — a
@@ -458,13 +479,15 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   img.addEventListener('touchmove', e => {
     if (!touch || e.touches.length !== 1) return;
     e.preventDefault();
-    const t = e.touches[0], r = img.getBoundingClientRect();
+    const t = e.touches[0], c = _bpContentRect(img);
     if (Math.abs(t.clientX - touch.sx) > 6 || Math.abs(t.clientY - touch.sy) > 6) touch.moved = true;
-    // finger up → content scrolls down: deltaY = (prev - current), scaled to page px
+    // finger up → content scrolls down: deltaY = (prev - current), scaled to page px.
+    // One uniform scale (not separate w/h ratios) -- the content rect never
+    // distorts the frame's aspect, so x and y scale by the same factor.
     _bpSend({
       type: 'wheel', ..._bpCoords(img, t),
-      deltaX: (touch.x - t.clientX) * (_bpViewW / r.width),
-      deltaY: (touch.y - t.clientY) * (_bpViewH / r.height),
+      deltaX: (touch.x - t.clientX) / c.scale,
+      deltaY: (touch.y - t.clientY) / c.scale,
     });
     touch.x = t.clientX; touch.y = t.clientY;
   }, { passive: false });
@@ -623,16 +646,19 @@ function _bpRenderDownloads(win, downloads) {
   }
 }
 
-// ── tab strip — window.open()/target=_blank/OAuth popups surfaced as tabs ──
+// ── tab strip — window.open()/target=_blank/OAuth popups surfaced as tabs,
+// plus a real "+" new-tab control at the end (the standard browser place) ──
 // `tabs` is the array the `tabs` SSE payload carries (see _stream_gen);
-// `activeId` is session['active_target_id']. Hidden entirely with one tab
-// (the common case) so a plain page doesn't grow a strip nobody needs.
+// `activeId` is session['active_target_id']. Stays visible even with a single
+// tab (Ron, 2026-09-25) so "+" has somewhere to live -- hiding the whole strip
+// until a SECOND tab existed meant there was no way to ever open one.
 function _bpRenderTabs(win, tabs, activeId) {
   const strip = win && win.querySelector('[data-bp="tabstrip"]');
   if (!strip) return;
   tabs = tabs || [];
-  if (tabs.length < 2) { strip.style.display = 'none'; strip.innerHTML = ''; return; }
+  if (!tabs.length) { strip.style.display = 'none'; strip.innerHTML = ''; return; }
   strip.style.display = 'flex';
+  const closeable = tabs.length > 1;  // the pane's own [x] already closes a lone tab
   strip.innerHTML = tabs.map(t => {
     const active = t.target_id === activeId;
     const label = _bpEsc(t.title || t.url || 'New tab').slice(0, 40);
@@ -641,9 +667,11 @@ function _bpRenderTabs(win, tabs, activeId) {
       cursor:pointer;font-size:11px;color:${active ? '#fff' : '#aaa'};background:${active ? '#111' : '#2f2f2f'};
       white-space:nowrap;overflow:hidden">
       <span style="overflow:hidden;text-overflow:ellipsis">${label}</span>
-      <span data-bp-tab-close="${_bpEsc(t.target_id)}" style="opacity:.7;padding:0 2px">&#10005;</span>
+      ${closeable ? `<span data-bp-tab-close="${_bpEsc(t.target_id)}" style="opacity:.7;padding:0 2px">&#10005;</span>` : ''}
     </div>`;
-  }).join('');
+  }).join('') + `<div data-bp="tab-new" title="New tab" style="display:flex;align-items:center;
+    justify-content:center;width:24px;padding:5px 0;border-radius:6px 6px 0 0;cursor:pointer;
+    font-size:14px;color:#aaa;flex:0 0 auto">+</div>`;
   strip.querySelectorAll('[data-bp-tab]').forEach(el => {
     el.addEventListener('click', (e) => {
       if (e.target.closest('[data-bp-tab-close]')) return;
@@ -655,6 +683,17 @@ function _bpRenderTabs(win, tabs, activeId) {
       e.stopPropagation();
       _bpSendTabAction('close', el.getAttribute('data-bp-tab-close'));
     });
+  });
+  const newBtn = strip.querySelector('[data-bp="tab-new"]');
+  if (newBtn) newBtn.addEventListener('click', () => {
+    _bpSend({ type: 'new_tab' });
+    // Optimistic: the new tab starts on about:blank, so there is nothing an
+    // incoming SSE frame would clobber -- focusing now (rather than waiting
+    // for the tab to actually attach) is what makes typing feel instant. The
+    // SSE handler's `document.activeElement !== urlInput` guard (~line 519)
+    // keeps this focus from being fought once frames for the new tab arrive.
+    const urlInput = win.querySelector('[data-bp="url"]');
+    if (urlInput) { urlInput.value = ''; urlInput.focus(); }
   });
 }
 

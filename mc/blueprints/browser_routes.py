@@ -625,6 +625,45 @@ def _activate_tab_cmd(session, target_id, send):
     _switch_active_tab(session, send, target_id, old_session_id=old_sid)
 
 
+def _close_stale_sibling_popups(session, send, opener_id, keep_target_id):
+    """A fresh popup from `opener_id` just opened — close any OTHER tab that
+    shares the same opener, e.g. an abandoned `about:blank` window.open() or
+    a "Sign in with Google" attempt the user never finished before clicking
+    the button again. Real browsers leave these piling up because a human
+    can `Alt+Tab`/close them; the pane's tab strip is the only place they'd
+    ever be reachable, so an unfinished OAuth attempt that gets retried would
+    otherwise orphan a tab forever (MC-976: a live session accumulated 9 —
+    3x about:blank, 5x 'Sign in - Google Accounts', across repeated retries).
+    A popup can only sensibly represent the CALLER's most recent attempt, so
+    closing the previous sibling on a new one is safe — it never touches the
+    root tab (`opener_id` is only set on a target CDP reports as opened BY
+    another target) or a tab opened by someone else.
+
+    `opener_id` alone is too broad: plain `target=_blank` links share it too
+    (e.g. two search results opened from the same page), and those are
+    independent tabs the user meant to keep, not retries. `canAccessOpener`
+    is the CDP-reported signal that actually separates the cases — a real
+    `window.open()`/OAuth popup needs `window.opener` to post its result back
+    and keeps it `true`; sites that want plain new tabs (Google search
+    results included) mark their links `rel=noopener`, which CDP reports as
+    `canAccessOpener: false`. So only close a sibling that either (a) can
+    still talk to its opener, or (b) never left `about:blank` — nothing of
+    the user's to lose there either way. A noopener tab that has already
+    navigated to real content is left alone."""
+    if not opener_id:
+        return
+    tabs = session.get('tabs') or {}
+    for tid, tab in list(tabs.items()):
+        if tid == keep_target_id or tab.get('opener_id') != opener_id:
+            continue
+        if not (tab.get('can_access_opener') or (tab.get('url') or '') in ('', 'about:blank')):
+            continue
+        try:
+            send('Target.closeTarget', {'targetId': tid})
+        except Exception as e:
+            session['error'] = f'stale popup close failed: {e}'
+
+
 def _handle_target_closed(session, send, target_id):
     """A target went away (`Target.targetDestroyed` or `detachedFromTarget`) —
     drop its tab entry and, if it was the active one, return focus to its
@@ -862,6 +901,12 @@ def _run_cdp(session):
                             _activate_tab_cmd(session, params.get('target_id'), send)
                         elif method == '_close_tab':
                             send('Target.closeTarget', {'targetId': params.get('target_id')})
+                        elif method == '_new_tab':
+                            # Target.createTarget is a browser-level (not
+                            # per-target) command -- sent with NO session_id,
+                            # unlike the generic `else` branch below which
+                            # always stamps the active tab's session_id.
+                            send('Target.createTarget', {'url': params.get('url') or 'about:blank'})
                         elif method == '_dialog_response':
                             tabs = session.get('tabs') or {}
                             dlg_sid = (tabs.get(params.get('target_id')) or {}).get('session_id')
@@ -1003,7 +1048,8 @@ def _run_cdp(session):
                 if tid and ti.get('type') == 'page':
                     tabs = session.setdefault('tabs', {})
                     tabs[tid] = {'session_id': sid, 'url': ti.get('url', ''),
-                                'title': ti.get('title', ''), 'opener_id': ti.get('openerId')}
+                                'title': ti.get('title', ''), 'opener_id': ti.get('openerId'),
+                                'can_access_opener': bool(ti.get('canAccessOpener'))}
                     session['tabs_seq'] = session.get('tabs_seq', 0) + 1
                     try:
                         send('Page.enable', {}, session_id=sid)
@@ -1017,6 +1063,7 @@ def _run_cdp(session):
                     # requiring a manual tab click to ever see it.
                     _switch_active_tab(session, send, tid,
                                        old_session_id=_active_session_id(session))
+                    _close_stale_sibling_popups(session, send, ti.get('openerId'), tid)
                 elif p.get('waitingForDebugger') and sid:
                     # Not a page (worker, etc.) — we asked for
                     # waitForDebuggerOnStart=False so this should not normally
@@ -1595,6 +1642,21 @@ def browser_input():
                                          "to Clayrune's own origin"}), 403
             session['url'] = url
             q.put(('Page.navigate', {'url': url}))
+        elif kind == 'new_tab':
+            # A real '+' control (Ron, 2026-09-25): open a fresh tab in the
+            # SAME session/profile via Target.createTarget rather than a
+            # second /api/browser/launch. It has no openerId, so
+            # _close_stale_sibling_popups never touches it, and the existing
+            # Target.attachedToTarget handler both surfaces it in the tab
+            # strip and switches the pane to it automatically -- no separate
+            # activate call needed here.
+            url = (data.get('url') or 'about:blank').strip() or 'about:blank'
+            if url != 'about:blank' and not url.startswith(('http://', 'https://', 'about:')):
+                url = 'https://' + url
+            if _is_clayrune_own_origin(url):
+                return jsonify({'error': "the browser pane may not navigate "
+                                         "to Clayrune's own origin"}), 403
+            q.put(('_new_tab', {'url': url}))
         elif kind == 'screencast':
             # Not routed through _input_commands: unlike every other input
             # type, this one mutates session state (screencast_paused) rather

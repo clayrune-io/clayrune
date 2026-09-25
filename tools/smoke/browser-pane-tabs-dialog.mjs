@@ -75,8 +75,10 @@ async function newPage({ sseBody, selectionText } = {}) {
   return { page, posts };
 }
 
-// ── A1: tab strip — hidden with 1 tab, shown with 2+, click switches,
-//       × closes; both actions POST /api/browser/tab with the right target. ──
+// ── A1: tab strip — shown with 1+ tabs (so "+" is always reachable, Ron
+//       2026-09-25), click switches, × closes (but only when there's a
+//       second tab to fall back to), "+" opens a new one and focuses the URL
+//       bar. Actions POST /api/browser/tab or /api/browser/input as noted. ──
 async function testTabStrip() {
   const oneTab = JSON.stringify({ tabs: [{ target_id: 'root', url: 'https://a.example', title: 'Root' }],
     active_target_id: 'root' });
@@ -94,6 +96,8 @@ async function testTabStrip() {
   if (await tabs.count() !== 2) fail(`tab strip: expected 2 tab entries, found ${await tabs.count()}`);
   const stripDisplay = await strip.evaluate(el => getComputedStyle(el).display);
   if (stripDisplay === 'none') fail('tab strip: hidden even though 2 tabs are open');
+  if (await strip.locator('[data-bp="tab-new"]').count() !== 1)
+    fail('tab strip: no "+" new-tab control with 2 tabs open');
 
   await page.locator('[data-bp-tab="root"]').click();
   await page.waitForTimeout(50);
@@ -109,16 +113,38 @@ async function testTabStrip() {
 
   await page.close();
 
-  // Single-tab case: the strip must not clutter a plain page.
-  const { page: page2 } = await newPage({ sseBody: `data: ${oneTab}\n\n` });
+  // Single-tab case: the strip must STAY VISIBLE (regression: it used to hide
+  // entirely, which meant there was never a way to reach "+" at all) but the
+  // lone tab shows no × of its own — the pane's own close button is the way
+  // to end a single-tab session, not a tab-strip control with no fallback tab.
+  const { page: page2, posts: posts2 } = await newPage({ sseBody: `data: ${oneTab}\n\n` });
   await page2.evaluate(() => window.openBrowserPane('about:blank', 'p1'));
   await page2.locator('#mc-browser-pane').waitFor({ state: 'attached' });
   await page2.waitForTimeout(200);
-  const strip2Display = await page2.locator('[data-bp="tabstrip"]').evaluate(el => getComputedStyle(el).display);
-  if (strip2Display !== 'none') fail('tab strip: shown for a single tab — should stay hidden for the common case');
+  const strip2 = page2.locator('[data-bp="tabstrip"]');
+  const strip2Display = await strip2.evaluate(el => getComputedStyle(el).display);
+  if (strip2Display === 'none') fail('tab strip: hidden with a single tab — "+" would be unreachable');
+  if (await strip2.locator('[data-bp-tab-close]').count() !== 0)
+    fail('tab strip: a lone tab should not show its own × (nothing to fall back to)');
+  const newBtn = strip2.locator('[data-bp="tab-new"]');
+  if (await newBtn.count() !== 1) fail('tab strip: no "+" new-tab control with a single tab open');
+
+  // Clicking "+" POSTs /api/browser/input {type:'new_tab'} and focuses the URL
+  // bar so typing a destination feels instant — matches the standard browser
+  // "click + then type" flow.
+  await page2.locator('[data-bp="url"]').fill('should be cleared');
+  await newBtn.click();
+  await page2.waitForTimeout(50);
+  const newTabPost = posts2.find(p => p.kind === 'input' && p.body.type === 'new_tab');
+  if (!newTabPost) fail('tab strip: clicking "+" did not POST /api/browser/input {type: "new_tab"}');
+  const urlFocused = await page2.locator('[data-bp="url"]').evaluate(el => document.activeElement === el);
+  if (!urlFocused) fail('tab strip: clicking "+" did not focus the URL bar');
+  const urlVal = await page2.locator('[data-bp="url"]').inputValue();
+  if (urlVal !== '') fail(`tab strip: URL bar should clear for the new about:blank tab, still shows "${urlVal}"`);
+
   await page2.close();
 
-  if (!fails.length) console.log('✅ tab strip: renders new targets (window.open()/OAuth popups), switches and closes POST the right target_id, hidden with one tab.');
+  if (!fails.length) console.log('✅ tab strip: renders new targets (window.open()/OAuth popups), switches and closes POST the right target_id, stays visible with one tab so "+" opens a new tab and focuses the URL bar.');
 }
 
 // ── A2: JS dialogs — alert/confirm/prompt render, OK/Cancel POST the right
@@ -191,7 +217,17 @@ async function testCopyButton() {
   await page.evaluate(() => window.openBrowserPane('about:blank', 'p1'));
   await page.locator('#mc-browser-pane').waitFor({ state: 'attached' });
 
-  await page.locator('[data-bp="copy"]').click();
+  // Regression: the glyph used to be a page-facing-up emoji that read as
+  // "new tab" (Ron, 2026-09-25) rather than copy. An unambiguous copy icon
+  // (an inline SVG, not another emoji that could misread the same way) is
+  // required now.
+  const copyBtn = page.locator('[data-bp="copy"]');
+  const svgCount = await copyBtn.locator('svg').count();
+  if (svgCount !== 1) fail('copy button: expected an unambiguous SVG copy icon, found none');
+  const btnText = (await copyBtn.evaluate(el => el.textContent) || '').trim();
+  if (btnText) fail(`copy button: leftover text/emoji content "${btnText}" alongside the icon`);
+
+  await copyBtn.click();
   await page.waitForTimeout(80);
   const sel = posts.find(p => p.kind === 'selection');
   if (!sel) fail('copy button: click did not POST /api/browser/selection');

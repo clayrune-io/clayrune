@@ -499,6 +499,40 @@ def test_input_navigate_refuses_clayrunes_own_origin(app_client):
     assert browser_sessions['sid-1']['cmd_queue'].empty()
 
 
+def test_input_new_tab_queues_target_create_with_default_blank_url(app_client):
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running',
+                                 'url': 'https://example.com',
+                                 'cmd_queue': __import__('queue').Queue()}
+    resp = app_client.post('/api/browser/input',
+                           json={'session_id': 'sid-1', 'type': 'new_tab'})
+    assert resp.status_code == 200
+    method, params = browser_sessions['sid-1']['cmd_queue'].get_nowait()
+    assert (method, params) == ('_new_tab', {'url': 'about:blank'})
+
+
+def test_input_new_tab_accepts_a_start_url(app_client):
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running',
+                                 'url': 'https://example.com',
+                                 'cmd_queue': __import__('queue').Queue()}
+    resp = app_client.post('/api/browser/input',
+                           json={'session_id': 'sid-1', 'type': 'new_tab', 'url': 'example.org'})
+    assert resp.status_code == 200
+    method, params = browser_sessions['sid-1']['cmd_queue'].get_nowait()
+    assert (method, params) == ('_new_tab', {'url': 'https://example.org'})
+
+
+def test_input_new_tab_refuses_clayrunes_own_origin(app_client):
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running',
+                                 'url': 'https://example.com',
+                                 'cmd_queue': __import__('queue').Queue()}
+    resp = app_client.post('/api/browser/input',
+                           json={'session_id': 'sid-1', 'type': 'new_tab',
+                                 'url': 'http://127.0.0.1:5199/api/secrets'})
+    assert resp.status_code == 403
+    assert 'own origin' in resp.get_json()['error']
+    assert browser_sessions['sid-1']['cmd_queue'].empty()
+
+
 def test_read_route_refuses_when_the_live_page_is_clayrunes_own_origin(app_client):
     """Covers a page that reached Clayrune's origin some way OTHER than our
     own navigate command (an in-page link, window.location) — the launch and
@@ -860,6 +894,92 @@ def test_switch_active_tab_unknown_target_is_a_noop():
     br._switch_active_tab(session, lambda *a, **k: calls.append((a, k)), 'ghost')
     assert session['active_target_id'] == 'root'
     assert calls == []
+
+
+def test_close_stale_sibling_popups_closes_earlier_attempt_from_same_opener():
+    calls = []
+    session = {'tabs': {
+        'root': {'session_id': None, 'opener_id': None},
+        'old-popup': {'session_id': 'S1', 'opener_id': 'root'},
+        'new-popup': {'session_id': 'S2', 'opener_id': 'root'},
+    }}
+    br._close_stale_sibling_popups(session, lambda m, p=None: calls.append((m, p)),
+                                   'root', 'new-popup')
+    assert calls == [('Target.closeTarget', {'targetId': 'old-popup'})]
+
+
+def test_close_stale_sibling_popups_leaves_tabs_from_other_openers_alone():
+    calls = []
+    session = {'tabs': {
+        'root': {'session_id': None, 'opener_id': None},
+        'unrelated-popup': {'session_id': 'S1', 'opener_id': 'some-other-tab'},
+        'new-popup': {'session_id': 'S2', 'opener_id': 'root'},
+    }}
+    br._close_stale_sibling_popups(session, lambda *a, **k: calls.append((a, k)),
+                                   'root', 'new-popup')
+    assert calls == []
+
+
+def test_close_stale_sibling_popups_is_a_noop_with_no_opener():
+    calls = []
+    session = {'tabs': {'root': {'session_id': None, 'opener_id': None}}}
+    br._close_stale_sibling_popups(session, lambda *a, **k: calls.append((a, k)),
+                                   None, 'root')
+    assert calls == []
+
+
+def test_close_stale_sibling_popups_leaves_noopener_tab_with_real_content_alone():
+    # Two target=_blank rel=noopener links from the same page (e.g. two
+    # Google search results) share an opener_id but CDP reports
+    # canAccessOpener: false for each and they've already navigated past
+    # about:blank -- neither is a stale OAuth retry, so opening the second
+    # must not close the first.
+    calls = []
+    session = {'tabs': {
+        'root': {'session_id': None, 'opener_id': None},
+        'result-1': {'session_id': 'S1', 'opener_id': 'root',
+                     'can_access_opener': False, 'url': 'https://example.com/a'},
+        'result-2': {'session_id': 'S2', 'opener_id': 'root',
+                     'can_access_opener': False, 'url': 'https://example.com/b'},
+    }}
+    br._close_stale_sibling_popups(session, lambda *a, **k: calls.append((a, k)),
+                                   'root', 'result-2')
+    assert calls == []
+
+
+def test_close_stale_sibling_popups_closes_real_popup_even_after_it_navigated():
+    # A genuine window.open() OAuth popup keeps canAccessOpener true for its
+    # whole life (it still needs window.opener to post the result back), so
+    # a retry must still close it even once it has left about:blank for the
+    # real sign-in page.
+    calls = []
+    session = {'tabs': {
+        'root': {'session_id': None, 'opener_id': None},
+        'old-popup': {'session_id': 'S1', 'opener_id': 'root',
+                      'can_access_opener': True,
+                      'url': 'https://accounts.google.com/signin'},
+        'new-popup': {'session_id': 'S2', 'opener_id': 'root',
+                      'can_access_opener': True, 'url': 'about:blank'},
+    }}
+    br._close_stale_sibling_popups(session, lambda m, p=None: calls.append((m, p)),
+                                   'root', 'new-popup')
+    assert calls == [('Target.closeTarget', {'targetId': 'old-popup'})]
+
+
+def test_close_stale_sibling_popups_closes_noopener_tab_stuck_on_about_blank():
+    # Even a noopener sibling is safe to prune if it never left about:blank --
+    # there is no real content there to lose.
+    calls = []
+    session = {'tabs': {
+        'root': {'session_id': None, 'opener_id': None},
+        'stalled': {'session_id': 'S1', 'opener_id': 'root',
+                    'can_access_opener': False, 'url': 'about:blank'},
+        'new-popup': {'session_id': 'S2', 'opener_id': 'root',
+                      'can_access_opener': False, 'url': 'about:blank'},
+    }}
+    br._close_stale_sibling_popups(session, lambda m, p=None: calls.append((m, p)),
+                                   'root', 'new-popup')
+    assert calls == [('Target.closeTarget', {'targetId': 'stalled'})]
 
 
 def test_handle_target_closed_returns_focus_to_opener():
