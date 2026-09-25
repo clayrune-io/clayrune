@@ -341,6 +341,13 @@ function closeModalById(modalId) {
   if (modalId === '__beacon' && typeof window._beaconTeardown === 'function') {
     window._beaconTeardown();
   }
+  // The Floor: stop its 30s /api/floor poll on any close path. Needed here
+  // (not just closeFloor's own X handler) now that mobile back/hardware-back
+  // route __-surfaces through this function directly (popstate's
+  // _mcSurfaceOpen branch) — without this, a poll interval outlived the modal.
+  if (modalId === '__floor' && typeof window._floorTeardown === 'function') {
+    window._floorTeardown();
+  }
   // Clean up terminal pop-out resources
   cleanupTerminalModal(modalId);
   if (entry._statusBarObserver) { entry._statusBarObserver.disconnect(); delete entry._statusBarObserver; }

@@ -1053,6 +1053,10 @@ function _mcInitModalResize() {
   const attach = (win) => {
     const content = win.querySelector(':scope > .modal-content') || win.querySelector('.modal-content');
     if (content) makeResizable(content, win);
+    // Mobile: swap the header's second button (Minimize) for Back and wire it
+    // to the hardware-back sentinel stack. One hook for every modal, since
+    // they all land here regardless of which module built them.
+    if (typeof _mcApplyMobileModalHeader === 'function') _mcApplyMobileModalHeader(win);
   };
   layer.querySelectorAll(':scope > .modal-window').forEach(attach);
   new MutationObserver((muts) => {
