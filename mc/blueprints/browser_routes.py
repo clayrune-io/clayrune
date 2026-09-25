@@ -64,7 +64,7 @@ vault makes about its file key backend.
 """
 
 import glob
-from urllib.parse import urlsplit as _urlsplit
+from urllib.parse import urlsplit as _urlsplit, quote as _urlquote
 import json
 import os
 import queue
@@ -100,6 +100,14 @@ VIEW_W, VIEW_H = 1280, 800
 # See the setDeviceMetricsOverride note in _pump() for what that cost us.
 WINDOW_CHROME_W, WINDOW_CHROME_H = 16, 151
 
+# Params for Page.startScreencast — one place, so the initial arm (_run_cdp),
+# the re-arm after a navigation (frameStoppedLoading), and the on-demand
+# restart a minimized-then-restored pane asks for (browser_input's
+# `type: screencast, action: start`) can never drift apart.
+_SCREENCAST_PARAMS = {'format': 'jpeg', 'quality': 55,
+                      'maxWidth': VIEW_W + WINDOW_CHROME_W,
+                      'maxHeight': VIEW_H + WINDOW_CHROME_H, 'everyNthFrame': 1}
+
 # ── wired by server.py ───────────────────────────────────────────────────────
 _register_process: Callable[..., Any] = None  # type: ignore[assignment]
 _unregister_process: Callable[..., Any] = None  # type: ignore[assignment]
@@ -110,6 +118,12 @@ _STARTUPINFO: Any = None
 # wired means "unknown", which the check below treats as "block every
 # loopback URL" rather than silently skipping the guard.
 _SERVER_PORT: int | None = None
+# Where a completed download is copied so it becomes reachable through the
+# SAME allowlist /api/serve-file already serves from (UPLOADS_DIR) — see
+# _finalize_download. None until wired means downloads can still happen but
+# can't be handed back to the user; _finalize_download reports that plainly
+# instead of guessing a path.
+_UPLOADS_DIR: Any = None
 # One-shot guard: the orphan-profile sweep runs on first real browser launch.
 _swept_orphans: bool = False
 # Second guard: the sweep decides what is an orphan by diffing the throwaway
@@ -124,13 +138,15 @@ SWEEP_ENABLED: bool = False
 
 
 def wire(*, register_process_fn, unregister_process_fn, popen_flags, startupinfo,
-         server_port=None):
+         server_port=None, uploads_dir=None):
     global _register_process, _unregister_process, _POPEN_FLAGS, _STARTUPINFO, _SERVER_PORT
+    global _UPLOADS_DIR
     _register_process = register_process_fn
     _unregister_process = unregister_process_fn
     _POPEN_FLAGS = popen_flags
     _STARTUPINFO = startupinfo
     _SERVER_PORT = server_port
+    _UPLOADS_DIR = uploads_dir
 
 
 _LOOPBACK_HOSTS = ('localhost', '127.0.0.1', '::1')
@@ -195,6 +211,155 @@ def _named_profiles_root():
     nothing that walk can reach may hold a login."""
     return os.path.join(os.path.expanduser('~'), '.clayrune',
                         'browser_profiles_named')
+
+
+def _downloads_root():
+    """Landing dir for files a page inside the pane downloads. OUTSIDE the
+    repo and outside DATA_DIR on purpose — same reasoning as the profile
+    roots above: nothing under here is a Clayrune project record, and a
+    project-record scan (load_projects()) must never trip over it."""
+    return os.path.join(os.path.expanduser('~'), '.clayrune', 'browser_downloads')
+
+
+# A page a pane visits has no other say in how much disk a download burns —
+# without a cap it's unbounded. Enforced in _run_cdp's Browser.downloadProgress
+# handler by canceling the CDP download once receivedBytes crosses this.
+_DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024  # 1 GB
+
+
+def _download_dir_for(session):
+    """One subdir per profile (so a signed-in profile's downloads land
+    together across sessions); unnamed/throwaway sessions get their own
+    session-id subdir instead, since they share no other identity."""
+    name = session.get('profile') or f"_throwaway_{session['session_id']}"
+    return os.path.join(_downloads_root(), name)
+
+
+_SAFE_DOWNLOAD_CHARS = re.compile(r'[^A-Za-z0-9._-]+')
+
+
+def _safe_download_name(name):
+    """Basename-only, ASCII-safe filename — this is about to become a real
+    file on disk under UPLOADS_DIR, so it gets the same treatment as any
+    other untrusted filename from the network."""
+    base = os.path.basename(str(name or 'download').strip()) or 'download'
+    base = _SAFE_DOWNLOAD_CHARS.sub('_', base).strip('._') or 'download'
+    return base[:120]
+
+
+def _finalize_download(session, d):
+    """Move a completed CDP download into UPLOADS_DIR under a real filename.
+
+    `Browser.setDownloadBehavior(behavior='allowAndName')` saves the file as
+    `<download_dir>/<guid>` — a name with no extension and no meaning to a
+    human. Renaming-in-place would still leave it under
+    ~/.clayrune/browser_downloads, which is outside every root
+    /api/serve-file is allowed to read from. Copying it into UPLOADS_DIR
+    reuses that EXISTING allowlist (already covers uploads for the [file:]
+    marker / attachments) instead of adding a new allowed root — see the
+    module docstring on the browser-pane brief for why that's the chosen
+    route over a new route."""
+    dl_dir = session.get('download_dir')
+    guid = d.get('guid')
+    if not dl_dir or not guid:
+        d['error'] = 'no download directory for this session'
+        return
+    src = os.path.join(dl_dir, guid)
+    if not os.path.isfile(src):
+        d['error'] = 'downloaded file missing on disk'
+        return
+    if _UPLOADS_DIR is None:
+        d['error'] = 'uploads dir not wired (server started without it)'
+        return
+    safe_name = _safe_download_name(d.get('filename'))
+    stored_name = f"bpdl_{session['session_id']}_{guid[:8]}_{safe_name}"
+    try:
+        os.makedirs(str(_UPLOADS_DIR), exist_ok=True)
+        dest = os.path.join(str(_UPLOADS_DIR), stored_name)
+        # move, not copy+remove — a copy briefly doubles a file up to
+        # _DOWNLOAD_MAX_BYTES (1 GB) on the same volume for no reason.
+        shutil.move(src, dest)
+    except Exception as e:
+        d['error'] = f'could not finalize download: {e}'
+        return
+    d['uploads_path'] = dest
+    d['serve_url'] = f'/api/serve-file?path={_urlquote(dest)}&inline=0'
+
+
+def _delete_partial_download(session, guid):
+    """Remove whatever bytes a canceled download left at
+    <download_dir>/<guid> — a canceled download is never finalized, so
+    nothing else on this path cleans it up."""
+    dl_dir = session.get('download_dir')
+    if not dl_dir or not guid:
+        return
+    path = os.path.join(dl_dir, guid)
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except Exception as e:
+        print(f'[browser] partial download cleanup failed for {path}: {e}', flush=True)
+
+
+def _on_download_will_begin(session, params):
+    """Handle a Browser.downloadWillBegin CDP event (called from _run_cdp).
+
+    Fires on the same page-level ws once Browser.setDownloadBehavior
+    (eventsEnabled=True) has been called — no separate browser-level CDP
+    connection needed. This is also the actual root cause of the historical
+    "frozen pane": Chromium processes the download fine, but a download never
+    repaints the page, so screencastFrame never fires for it and the pane
+    keeps showing whatever was on screen before the click, forever, with no
+    other signal that anything happened.
+
+    A throwaway (no-profile) session had its behaviour set to 'deny' — no
+    bytes are ever written, so there's no partial file to clean up here, just
+    the "why did nothing happen" reason to show instead of silence."""
+    guid = params.get('guid')
+    if not guid:
+        return
+    entry = {
+        'guid': guid, 'url': params.get('url'),
+        'filename': params.get('suggestedFilename') or guid,
+        'state': 'in_progress', 'received_bytes': 0, 'total_bytes': 0,
+    }
+    if not session.get('profile'):
+        entry['state'] = 'canceled'
+        entry['error'] = ('Downloads are off in temp sessions. '
+                          'Open a signed-in profile to download.')
+    session.setdefault('downloads', {})[guid] = entry
+    session['downloads_seq'] = session.get('downloads_seq', 0) + 1
+
+
+def _on_download_progress(session, params, send):
+    """Handle a Browser.downloadProgress CDP event (called from _run_cdp).
+
+    Tracks bytes, finalizes on completion, enforces the _DOWNLOAD_MAX_BYTES
+    cap (a page has no other say in how much disk a download burns through),
+    and deletes a canceled download's partial file — CDP doesn't clean that
+    up on its own. `send` is _run_cdp's CDP-command sender, passed in so the
+    cap can issue Browser.cancelDownload without this module owning a ws."""
+    guid = params.get('guid')
+    d = session.get('downloads', {}).get(guid) if guid else None
+    if d is None:
+        return
+    state = params.get('state')  # 'inProgress' | 'completed' | 'canceled'
+    received = params.get('receivedBytes', 0)
+    if state == 'inProgress' and received > _DOWNLOAD_MAX_BYTES:
+        try:
+            send('Browser.cancelDownload', {'guid': guid})
+        except Exception as e:
+            session['error'] = f'cancel oversized download failed: {e}'
+        state = 'canceled'
+        d['error'] = 'too large (over 1 GB)'
+    d['state'] = 'in_progress' if state == 'inProgress' else (state or d['state'])
+    d['received_bytes'] = received
+    d['total_bytes'] = params.get('totalBytes', 0)
+    if d['state'] == 'completed':
+        _finalize_download(session, d)
+    elif d['state'] == 'canceled':
+        _delete_partial_download(session, guid)
+    session['downloads_seq'] = session.get('downloads_seq', 0) + 1
 
 
 # Same shape as a secret name (mc/secrets_store.py): lowercase, dot-namespaced.
@@ -413,12 +578,39 @@ def _run_cdp(session):
             # The caps only DOWNSCALE an oversized frame; they must stay at
             # or above the real viewport or the image is shrunk and the pane
             # adopts a coordinate space smaller than the page's.
-            send('Page.startScreencast',
-                 {'format': 'jpeg', 'quality': 55,
-                  'maxWidth': VIEW_W + WINDOW_CHROME_W,
-                  'maxHeight': VIEW_H + WINDOW_CHROME_H, 'everyNthFrame': 1})
+            send('Page.startScreencast', _SCREENCAST_PARAMS)
 
         send('Page.enable')
+        # Route downloads into a per-profile dir OUTSIDE the repo/DATA_DIR
+        # instead of leaving Chromium's default behaviour in place. Without
+        # this, a download-triggering navigation still "succeeds" from
+        # Chromium's point of view (see Page.downloadWillBegin below) but the
+        # bytes land nowhere the user can reach, and — the actual freeze —
+        # the pane gives zero visual sign anything happened at all, because a
+        # download never repaints the page (no new screencastFrame is ever
+        # generated for it, even though the screencast itself keeps running).
+        #
+        # A THROWAWAY session (no profile) is what an agent gets by default,
+        # and it browses untrusted pages — deny the write outright so an
+        # agent-driven page can never drop a file into data/uploads.
+        # eventsEnabled stays True so Page.downloadWillBegin still fires (it
+        # does even when denied) and the pane can tell the user why nothing
+        # happened, instead of looking frozen the same way the missing-signal
+        # bug above did.
+        if session.get('profile'):
+            dl_dir = _download_dir_for(session)
+            try:
+                os.makedirs(dl_dir, exist_ok=True)
+                send('Browser.setDownloadBehavior',
+                     {'behavior': 'allowAndName', 'downloadPath': dl_dir, 'eventsEnabled': True})
+                session['download_dir'] = dl_dir
+            except Exception as e:
+                session['error'] = f'download behavior setup failed: {e}'
+        else:
+            try:
+                send('Browser.setDownloadBehavior', {'behavior': 'deny', 'eventsEnabled': True})
+            except Exception as e:
+                session['error'] = f'download behavior setup failed: {e}'
         # A background tab renders nothing in headless Chromium, so the tab we
         # attached to must be the frontmost one or every frame is a no-show.
         send('Page.bringToFront')
@@ -531,11 +723,20 @@ def _run_cdp(session):
                 # A cross-document navigation (typed URL, clicked link, or a
                 # queued Page.navigate) STOPS the active screencast on this ws.
                 # Re-arm it on every load, else the pane freezes/blacks after
-                # the first navigation away from the launch page.
-                try:
-                    start_screencast()
-                except Exception as e:
-                    session['error'] = f'rearm failed: {e}'
+                # the first navigation away from the launch page. Skip the
+                # re-arm while minimized (`screencast_paused`) — the pane
+                # asked for the cast to stop precisely so a hidden pane costs
+                # nothing, and a background page navigation must not silently
+                # undo that.
+                if not session.get('screencast_paused'):
+                    try:
+                        start_screencast()
+                    except Exception as e:
+                        session['error'] = f'rearm failed: {e}'
+            elif method == 'Browser.downloadWillBegin':
+                _on_download_will_begin(session, msg.get('params') or {})
+            elif method == 'Browser.downloadProgress':
+                _on_download_progress(session, msg.get('params') or {}, send)
     except Exception as e:
         session['status'] = 'error'
         session['error'] = str(e)
@@ -624,6 +825,11 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False):
         'user_data_dir': udd,
         # A named profile is kept; teardown deletes only throwaway dirs.
         'profile': profile,
+        # Screencast + downloads state (see _run_cdp / browser_input /
+        # _finalize_download). download_dir is set once _run_cdp calls
+        # Browser.setDownloadBehavior; None until then.
+        'screencast_paused': False, 'downloads': {}, 'downloads_seq': 0,
+        'download_dir': None,
     }
     with browser_lock:
         browser_sessions[sid] = session
@@ -744,6 +950,17 @@ def _kill_browser_session(session):
             shutil.rmtree(udd, ignore_errors=True)
         except Exception as e:
             print(f'[browser] profile cleanup failed for {udd}: {e}', flush=True)
+    # Defensive: a throwaway session denies downloads outright (see _run_cdp),
+    # so its per-session _throwaway_<sid> dir under _downloads_root() should
+    # already be empty or never created — but remove it either way so a
+    # setup-race or a future behaviour change can't leak one forever.
+    if session.get('session_id'):
+        dl_dir = _download_dir_for(session)
+        if os.path.isdir(dl_dir):
+            try:
+                shutil.rmtree(dl_dir, ignore_errors=True)
+            except Exception as e:
+                print(f'[browser] download dir cleanup failed for {dl_dir}: {e}', flush=True)
 
 
 @bp.route('/api/browser/launch', methods=['POST'])
@@ -775,35 +992,56 @@ def browser_launch():
                     'view': {'w': VIEW_W, 'h': VIEW_H}}), (200 if reused else 201)
 
 
+def _stream_gen(session):
+    """The SSE body for one /api/browser/stream connection. Module-level (not
+    a closure inside the route) so it can be driven directly in tests without
+    going through Flask's test client and its own buffering of a streaming
+    response — a real risk here since this generator only ever returns once
+    session['status'] stops being 'running'.
+
+    Two independent triggers, `frame_seq` and `downloads_seq`, share one
+    channel deliberately: a download never bumps frame_seq (Chromium doesn't
+    repaint for one — see Browser.downloadWillBegin in _run_cdp for the full
+    story, and it's why the pane used to just freeze), so downloads_seq is
+    the ONLY way progress or completion ever reaches the pane.
+    """
+    last = -1
+    last_dl = -1
+    idle = 0
+    while session['status'] == 'running':
+        seq = session.get('frame_seq', 0)
+        dl_seq = session.get('downloads_seq', 0)
+        sent = False
+        if seq != last and session.get('frame'):
+            last = seq
+            idle = 0
+            payload = json.dumps({'seq': seq, 'img': session['frame'],
+                                  'url': session.get('live_url') or session.get('url'),
+                                  'w': session.get('frame_w'),
+                                  'h': session.get('frame_h')})
+            yield f'data: {payload}\n\n'
+            sent = True
+        if dl_seq != last_dl:
+            last_dl = dl_seq
+            idle = 0
+            yield f'data: {json.dumps({"downloads": list(session.get("downloads", {}).values())})}\n\n'
+            sent = True
+        if not sent:
+            idle += 1
+            if idle % 60 == 0:  # ~2s heartbeat keeps the SSE open
+                yield ': ping\n\n'
+            _time.sleep(0.033)  # ~30fps delivery cap (was 20fps at 0.05s)
+    # final status frame
+    yield f'data: {json.dumps({"status": session["status"], "error": session.get("error")})}\n\n'
+
+
 @bp.route('/api/browser/stream')
 def browser_stream():
     sid = request.args.get('session_id')
     session = browser_sessions.get(sid)
     if not session:
         return jsonify({'error': 'unknown session'}), 404
-
-    def gen():
-        last = -1
-        idle = 0
-        while session['status'] == 'running':
-            seq = session.get('frame_seq', 0)
-            if seq != last and session.get('frame'):
-                last = seq
-                idle = 0
-                payload = json.dumps({'seq': seq, 'img': session['frame'],
-                                      'url': session.get('live_url') or session.get('url'),
-                                      'w': session.get('frame_w'),
-                                      'h': session.get('frame_h')})
-                yield f'data: {payload}\n\n'
-            else:
-                idle += 1
-                if idle % 60 == 0:  # ~2s heartbeat keeps the SSE open
-                    yield ': ping\n\n'
-                _time.sleep(0.033)  # ~30fps delivery cap (was 20fps at 0.05s)
-        # final status frame
-        yield f'data: {json.dumps({"status": session["status"], "error": session.get("error")})}\n\n'
-
-    return Response(gen(), mimetype='text/event-stream',
+    return Response(_stream_gen(session), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
@@ -948,6 +1186,20 @@ def browser_input():
                                          "to Clayrune's own origin"}), 403
             session['url'] = url
             q.put(('Page.navigate', {'url': url}))
+        elif kind == 'screencast':
+            # Not routed through _input_commands: unlike every other input
+            # type, this one mutates session state (screencast_paused) rather
+            # than just queuing a CDP call — see the frameStoppedLoading guard
+            # in _run_cdp that checks it before re-arming.
+            action = data.get('action')
+            if action == 'stop':
+                session['screencast_paused'] = True
+                q.put(('Page.stopScreencast', {}))
+            elif action == 'start':
+                session['screencast_paused'] = False
+                q.put(('Page.startScreencast', _SCREENCAST_PARAMS))
+            else:
+                return jsonify({'error': f'unknown screencast action: {action!r}'}), 400
         else:
             for cmd in _input_commands(data):
                 q.put(cmd)

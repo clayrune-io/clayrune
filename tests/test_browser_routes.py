@@ -512,3 +512,301 @@ def test_read_route_refuses_when_the_live_page_is_clayrunes_own_origin(app_clien
     body = resp.get_json()
     assert body['error'] == 'own_origin_blocked'
     assert body['guidance'] == br._NO_DOWNGRADE_GUIDANCE
+
+
+# ── Downloads (Browser.setDownloadBehavior / downloadWillBegin / progress) ───
+#
+# Root-cause of the "frozen pane" (reproduced manually against a real headless
+# Chromium and a local Content-Disposition:attachment server, see the session
+# journal): a download never produces a Page.screencastFrame — Chromium simply
+# doesn't repaint for one — so before this change the pane gave literally zero
+# signal that anything had happened, forever. The fix is (a) route downloads
+# into a directory outside the repo/DATA_DIR via Browser.setDownloadBehavior,
+# and (b) treat Browser.downloadWillBegin/downloadProgress as an independent
+# signal, piggybacked on the SAME SSE channel as frames (browser_stream's
+# gen(), keyed off `downloads_seq` rather than `frame_seq`) since a download
+# never bumps the frame counter. These tests cover the pure, no-Chromium half
+# of that: the finalize step that turns a completed CDP download into a file
+# reachable through /api/serve-file's existing UPLOADS_DIR allowlist, and the
+# SSE generator actually emitting a downloads payload when only downloads_seq
+# (not frame_seq) has moved.
+
+def test_safe_download_name_strips_path_and_unsafe_chars():
+    assert br._safe_download_name('../../etc/passwd') == 'passwd'
+    assert br._safe_download_name('report (final)!.pdf') == 'report_final_.pdf'
+    assert br._safe_download_name('') == 'download'
+    assert br._safe_download_name(None) == 'download'
+
+
+def test_safe_download_name_caps_length():
+    assert len(br._safe_download_name('x' * 500 + '.txt')) <= 120
+
+
+def test_download_dir_for_named_profile_is_stable_across_sessions():
+    s1 = {'session_id': 'sid-1', 'profile': 'reddit'}
+    s2 = {'session_id': 'sid-2', 'profile': 'reddit'}
+    assert br._download_dir_for(s1) == br._download_dir_for(s2), \
+        'same profile should land downloads in the same place across sessions'
+
+
+def test_download_dir_for_throwaway_session_is_per_session():
+    s1 = {'session_id': 'sid-1', 'profile': None}
+    s2 = {'session_id': 'sid-2', 'profile': None}
+    assert br._download_dir_for(s1) != br._download_dir_for(s2)
+
+
+def test_download_dir_is_outside_the_repo_and_data_dir():
+    d = br._download_dir_for({'session_id': 'sid-1', 'profile': None})
+    assert '.clayrune' in d and 'browser_downloads' in d
+    assert 'data' + os.sep + 'projects' not in d
+
+
+def test_finalize_download_copies_into_uploads_dir_and_builds_serve_url(tmp_path, monkeypatch):
+    dl_dir = tmp_path / 'dl'
+    dl_dir.mkdir()
+    (dl_dir / 'guid-abc123').write_bytes(b'file contents')
+    uploads = tmp_path / 'uploads'
+    monkeypatch.setattr(br, '_UPLOADS_DIR', uploads)
+    session = {'session_id': 'sid-1', 'download_dir': str(dl_dir)}
+    d = {'guid': 'guid-abc123', 'filename': 'report.pdf'}
+    br._finalize_download(session, d)
+    assert 'error' not in d
+    assert d['uploads_path'] and os.path.isfile(d['uploads_path'])
+    assert os.path.dirname(d['uploads_path']) == str(uploads)
+    with open(d['uploads_path'], 'rb') as f:
+        assert f.read() == b'file contents'
+    # The CDP-side copy is removed once it's safely under UPLOADS_DIR — don't
+    # leave the same bytes reachable from two places.
+    assert not (dl_dir / 'guid-abc123').exists()
+    assert d['serve_url'].startswith('/api/serve-file?path=')
+    assert 'inline=0' in d['serve_url']
+
+
+def test_finalize_download_reports_missing_file_instead_of_crashing(tmp_path, monkeypatch):
+    monkeypatch.setattr(br, '_UPLOADS_DIR', tmp_path / 'uploads')
+    session = {'session_id': 'sid-1', 'download_dir': str(tmp_path / 'dl')}
+    d = {'guid': 'ghost', 'filename': 'x.pdf'}
+    br._finalize_download(session, d)
+    assert 'error' in d and 'uploads_path' not in d
+
+
+def test_finalize_download_reports_when_uploads_dir_not_wired(tmp_path, monkeypatch):
+    dl_dir = tmp_path / 'dl'
+    dl_dir.mkdir()
+    (dl_dir / 'g1').write_bytes(b'x')
+    monkeypatch.setattr(br, '_UPLOADS_DIR', None)
+    session = {'session_id': 'sid-1', 'download_dir': str(dl_dir)}
+    d = {'guid': 'g1', 'filename': 'x.pdf'}
+    br._finalize_download(session, d)
+    assert 'error' in d and 'not wired' in d['error']
+
+
+def test_finalize_download_moves_not_copies(tmp_path, monkeypatch):
+    """Harden #4: a copy+remove briefly doubles a (potentially ~1GB) file on
+    the same volume for no reason. Assert copyfile is never called — only
+    shutil.move — so a regression back to copy+remove fails loudly."""
+    dl_dir = tmp_path / 'dl'
+    dl_dir.mkdir()
+    (dl_dir / 'g1').write_bytes(b'file contents')
+    uploads = tmp_path / 'uploads'
+    monkeypatch.setattr(br, '_UPLOADS_DIR', uploads)
+
+    def _boom(*a, **k):
+        raise AssertionError('_finalize_download must use shutil.move, not copyfile')
+    monkeypatch.setattr(br.shutil, 'copyfile', _boom)
+
+    session = {'session_id': 'sid-1', 'download_dir': str(dl_dir)}
+    d = {'guid': 'g1', 'filename': 'report.pdf'}
+    br._finalize_download(session, d)
+    assert 'error' not in d
+    assert os.path.isfile(d['uploads_path'])
+    assert not (dl_dir / 'g1').exists()
+
+
+def test_delete_partial_download_removes_the_guid_file(tmp_path):
+    dl_dir = tmp_path / 'dl'
+    dl_dir.mkdir()
+    (dl_dir / 'g1').write_bytes(b'partial bytes')
+    session = {'download_dir': str(dl_dir)}
+    br._delete_partial_download(session, 'g1')
+    assert not (dl_dir / 'g1').exists()
+
+
+def test_delete_partial_download_is_a_noop_with_no_download_dir():
+    br._delete_partial_download({'download_dir': None}, 'g1')  # must not raise
+    br._delete_partial_download({}, None)  # must not raise
+
+
+def test_delete_partial_download_missing_file_is_a_noop(tmp_path):
+    session = {'download_dir': str(tmp_path / 'dl')}
+    br._delete_partial_download(session, 'ghost')  # dir/file don't exist — must not raise
+
+
+# ── Hardening: size cap, deny-on-throwaway, leftover cleanup ─────────────────
+
+def test_on_download_will_begin_registers_a_named_profile_download():
+    session = {'profile': 'reddit', 'downloads_seq': 0}
+    br._on_download_will_begin(session, {'guid': 'g1', 'url': 'https://x/y.pdf',
+                                          'suggestedFilename': 'y.pdf'})
+    d = session['downloads']['g1']
+    assert d['state'] == 'in_progress'
+    assert d['filename'] == 'y.pdf'
+    assert session['downloads_seq'] == 1
+
+
+def test_on_download_will_begin_denies_a_throwaway_session_with_a_reason():
+    """Deny-on-throwaway (#2): a session with no profile gets its download
+    marked canceled immediately, with the reason the pane must show — since
+    Browser.setDownloadBehavior({'behavior': 'deny'}) means no
+    Browser.downloadProgress ever follows to report it otherwise."""
+    session = {'profile': None, 'downloads_seq': 0}
+    br._on_download_will_begin(session, {'guid': 'g1', 'suggestedFilename': 'y.pdf'})
+    d = session['downloads']['g1']
+    assert d['state'] == 'canceled'
+    assert 'temp session' in d['error']
+    assert 'signed-in profile' in d['error']
+
+
+def test_on_download_will_begin_ignores_event_with_no_guid():
+    session = {'profile': 'reddit'}
+    br._on_download_will_begin(session, {})
+    assert session.get('downloads', {}) == {}
+
+
+def test_on_download_progress_enforces_the_1gb_cap(tmp_path, monkeypatch):
+    """Cap-cancel (#1): crossing _DOWNLOAD_MAX_BYTES sends
+    Browser.cancelDownload, marks the entry canceled with the exact reason
+    the pane must render, and deletes the partial file already on disk (#3)."""
+    dl_dir = tmp_path / 'dl'
+    dl_dir.mkdir()
+    (dl_dir / 'g1').write_bytes(b'x' * 10)  # stand-in for the oversized partial
+    session = {'downloads_seq': 0, 'download_dir': str(dl_dir),
+              'downloads': {'g1': {'guid': 'g1', 'state': 'in_progress',
+                                   'received_bytes': 0, 'total_bytes': 0}}}
+    sent = []
+    br._on_download_progress(session, {'guid': 'g1', 'state': 'inProgress',
+                                       'receivedBytes': br._DOWNLOAD_MAX_BYTES + 1,
+                                       'totalBytes': br._DOWNLOAD_MAX_BYTES * 2},
+                             send=lambda method, params: sent.append((method, params)))
+    d = session['downloads']['g1']
+    assert d['state'] == 'canceled'
+    assert d['error'] == 'too large (over 1 GB)'
+    assert sent == [('Browser.cancelDownload', {'guid': 'g1'})]
+    assert not (dl_dir / 'g1').exists(), 'partial file must be deleted on cap-cancel'
+    assert session['downloads_seq'] == 1
+
+
+def test_on_download_progress_under_the_cap_is_untouched(tmp_path):
+    session = {'downloads_seq': 0, 'download_dir': str(tmp_path),
+              'downloads': {'g1': {'guid': 'g1', 'state': 'in_progress',
+                                   'received_bytes': 0, 'total_bytes': 0}}}
+    br._on_download_progress(session, {'guid': 'g1', 'state': 'inProgress',
+                                       'receivedBytes': 100, 'totalBytes': br._DOWNLOAD_MAX_BYTES},
+                             send=lambda m, p: (_ for _ in ()).throw(AssertionError('must not cancel under the cap')))
+    d = session['downloads']['g1']
+    assert d['state'] == 'in_progress'
+    assert d['received_bytes'] == 100
+
+
+def test_on_download_progress_finalizes_on_completed(tmp_path, monkeypatch):
+    dl_dir = tmp_path / 'dl'
+    dl_dir.mkdir()
+    (dl_dir / 'g1').write_bytes(b'done')
+    uploads = tmp_path / 'uploads'
+    monkeypatch.setattr(br, '_UPLOADS_DIR', uploads)
+    session = {'session_id': 'sid-1', 'downloads_seq': 0, 'download_dir': str(dl_dir),
+              'downloads': {'g1': {'guid': 'g1', 'filename': 'r.pdf', 'state': 'in_progress',
+                                   'received_bytes': 4, 'total_bytes': 4}}}
+    br._on_download_progress(session, {'guid': 'g1', 'state': 'completed',
+                                       'receivedBytes': 4, 'totalBytes': 4}, send=lambda m, p: None)
+    d = session['downloads']['g1']
+    assert d['state'] == 'completed'
+    assert os.path.isfile(d['uploads_path'])
+
+
+def test_on_download_progress_cleans_up_a_plain_cancel(tmp_path):
+    """Not every cancel comes from the cap — Chromium (or a navigation away)
+    can cancel a download on its own. The partial file must still be removed."""
+    dl_dir = tmp_path / 'dl'
+    dl_dir.mkdir()
+    (dl_dir / 'g1').write_bytes(b'partial')
+    session = {'downloads_seq': 0, 'download_dir': str(dl_dir),
+              'downloads': {'g1': {'guid': 'g1', 'state': 'in_progress',
+                                   'received_bytes': 3, 'total_bytes': 10}}}
+    br._on_download_progress(session, {'guid': 'g1', 'state': 'canceled',
+                                       'receivedBytes': 3, 'totalBytes': 10}, send=lambda m, p: None)
+    assert not (dl_dir / 'g1').exists()
+
+
+def test_on_download_progress_ignores_unknown_guid():
+    session = {'downloads_seq': 0, 'downloads': {}}
+    br._on_download_progress(session, {'guid': 'ghost', 'state': 'inProgress',
+                                       'receivedBytes': 1}, send=lambda m, p: None)
+    assert session['downloads_seq'] == 0
+
+
+def test_kill_browser_session_removes_a_throwaway_download_dir(tmp_path, monkeypatch):
+    """Leftover cleanup (#3): teardown must remove a throwaway session's
+    per-session _throwaway_<sid> download dir even though deny-by-default
+    should normally leave it empty or unmade."""
+    monkeypatch.setattr(br, '_downloads_root', lambda: str(tmp_path / 'downloads'))
+    session = {'session_id': 'sid-1', 'profile': None, 'proc': None,
+              'user_data_dir': None}
+    dl_dir = br._download_dir_for(session)
+    os.makedirs(dl_dir, exist_ok=True)
+    with open(os.path.join(dl_dir, 'leftover'), 'wb') as f:
+        f.write(b'x')
+    br._kill_browser_session(session)
+    assert not os.path.isdir(dl_dir)
+
+
+def test_kill_browser_session_leaves_a_named_profiles_download_dir_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(br, '_downloads_root', lambda: str(tmp_path / 'downloads'))
+    session = {'session_id': 'sid-1', 'profile': 'reddit', 'proc': None}
+    dl_dir = br._download_dir_for(session)
+    os.makedirs(dl_dir, exist_ok=True)
+    with open(os.path.join(dl_dir, 'keep-me'), 'wb') as f:
+        f.write(b'x')
+    br._kill_browser_session(session)
+    assert os.path.isdir(dl_dir), 'a named profile download dir must survive teardown'
+
+
+def test_stream_gen_fires_on_downloads_seq_alone_with_no_new_frame():
+    """A download never bumps frame_seq (see _stream_gen's docstring) — the
+    generator must still emit when ONLY downloads_seq has moved, or the pane
+    has no way to learn a download even started. Driven directly (not via
+    Flask's test client, which would try to fully consume a response whose
+    generator only terminates when session['status'] leaves 'running')."""
+    session = {
+        'session_id': 'sid-1', 'status': 'running', 'frame': None, 'frame_seq': 0,
+        'downloads_seq': 1,  # already 1 vs. the generator's initial last_dl=-1
+        'downloads': {'g1': {'guid': 'g1', 'state': 'in_progress',
+                             'received_bytes': 10, 'total_bytes': 100}},
+    }
+    gen = br._stream_gen(session)
+    chunk = next(gen)
+    assert 'downloads' in chunk and 'g1' in chunk
+    session['status'] = 'stopped'
+    final = next(gen)  # the trailing status frame
+    assert '"status": "stopped"' in final
+    with pytest.raises(StopIteration):
+        next(gen)
+
+
+def test_stream_gen_repeats_download_payload_on_progress_updates():
+    session = {
+        'session_id': 'sid-1', 'status': 'running', 'frame': None, 'frame_seq': 0,
+        'downloads_seq': 1,
+        'downloads': {'g1': {'guid': 'g1', 'state': 'in_progress',
+                             'received_bytes': 10, 'total_bytes': 100}},
+    }
+    gen = br._stream_gen(session)
+    first = next(gen)
+    assert '"received_bytes": 10' in first
+    session['downloads']['g1']['received_bytes'] = 100
+    session['downloads']['g1']['state'] = 'completed'
+    session['downloads_seq'] = 2
+    second = next(gen)
+    assert '"state": "completed"' in second and '"received_bytes": 100' in second
+    session['status'] = 'stopped'
+    next(gen)
