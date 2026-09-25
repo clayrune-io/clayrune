@@ -2358,6 +2358,15 @@ function _toastSwipeable(el) {
 function showToast(message, durationMs = 5000) {
   const container = document.getElementById('toast-container');
   if (!container) return;
+  // First-run setup fires a save on nearly every click (theme, accent, model
+  // tier, preset...) — a "Setting saved" toast stacking over the setup card
+  // on every one of those is pure noise, not a confirmation the user needs;
+  // the step itself already shows the picked state. Errors still toast: this
+  // only swallows the one success message, and only while setup is showing.
+  if (message === 'Setting saved') {
+    const setupOverlay = document.getElementById('setup-overlay');
+    if (setupOverlay && setupOverlay.style.display !== 'none') return;
+  }
   const el = document.createElement('div');
   el.className = 'toast';
   el.innerHTML = `<span class="toast-icon">i</span><span class="toast-msg">${esc(message)}</span>`;

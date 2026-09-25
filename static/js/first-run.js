@@ -28,7 +28,7 @@ const SETUP_STEPS = [
   {
     id: 'welcome',
     title: 'Welcome to Clayrune',
-    body: () => 'Clayrune is your operator console for long-running coding agents: a multi-project dashboard where you dispatch, monitor, and coordinate AI work across many parallel streams. Two quick things first: connect the AI vendors you use, then pick a few essentials. About a minute.',
+    body: () => 'Clayrune runs your AI coding agents for you, across all your projects, and tells you when one needs you. A few quick questions to set it up, about two minutes.',
   },
   {
     id: 'connections',
@@ -65,13 +65,14 @@ const SETUP_STEPS = [
         </div><div class="prov-install-policy-note" style="margin-top:6px;font-size:11px;color:var(--text-faint)">${esc(_providerInstallPolicyNoteText || '')}</div>`
         + `<div class="setup-section">
           <div class="setup-section-label">Default model</div>
-          <div class="setup-section-hint">Applies across every agent unless overridden per project or per chat.</div>
+          <div class="setup-section-hint">Applies across every agent unless overridden per project or per chat. Balanced is recommended.</div>
           <div class="mc-seg" id="setup-model-tier-seg">`
         + Object.keys(MODEL_TIER_LABEL).map(t => `<button type="button" class="${setupModelTier === t ? 'active' : ''}" data-tier="${t}" onclick="setupPickModelTier('${t}',this)">${MODEL_TIER_LABEL[t]}</button>`).join('')
         + `</div>
-          <div style="font-size:11px;color:var(--text-faint);margin-top:6px">Balanced is recommended: you can change it later in Settings.</div>
-        </div>`
-        + _SETUP_FOOTER;
+        </div>`;
+      // No _SETUP_FOOTER here: the connections step's "No AI vendor selected"
+      // callout must sit ABOVE the footer note, not below it — setupShow
+      // appends both in that order for this step only (see isConnStep below).
     },
     onEnter: () => {
       // Balanced is pre-selected: persist it the moment the step is first
@@ -688,6 +689,7 @@ async function setupShow(idx) {
     <div class="wt-title">${esc(step.title)}</div>
     <div class="wt-body">${bodyHtml}</div>
     ${connWarning ? `<div class="wt-next-reason" id="wt-next-reason" role="status">${esc(connWarning)}</div>` : ''}
+    ${isConnStep ? _SETUP_FOOTER : ''}
     <div class="wt-actions">
       <span style="flex:1"></span>
       ${btns}

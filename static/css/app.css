@@ -7082,17 +7082,22 @@
      control that read like the tour's "Skip" (Ron, 2026-09-23). Setup gets its
      own accent band + progress meter + secondary-button look; the tour's own
      .wt-card/.wt-btn-skip appearance is unchanged. */
-  .wt-card-setup { border-color: var(--amber); padding-top: 0; }
+  /* One variable for the whole setup shell: --accent, not --amber — amber is
+     fixed, so it would be the only thing in setup NOT tracking the user's
+     chosen accent theme (Default/Sunset/Rose/Lilac/Lagoon/Ink). Band, title,
+     progress fill and the primary button (.wt-btn-primary, already accent)
+     all read the same variable so setup never shows two "app colors" at once. */
+  .wt-card-setup { border-color: var(--accent); padding-top: 0; }
   .setup-band {
     display: flex; align-items: center; gap: 10px;
     margin: 0 -28px 18px -28px; padding: 10px 20px;
-    background: var(--amber); border-radius: 11px 11px 0 0;
+    background: var(--accent); border-radius: 11px 11px 0 0;
   }
-  .setup-band-label { font-size: 11px; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; color: #241a02; white-space: nowrap; }
-  .setup-band-progress { font-size: 11px; color: #241a02; opacity: 0.8; white-space: nowrap; }
+  .setup-band-label { font-size: 11px; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; color: var(--bg); white-space: nowrap; }
+  .setup-band-progress { font-size: 11px; color: var(--bg); opacity: 0.8; white-space: nowrap; }
   .setup-band-track { flex: 1; height: 4px; background: rgba(0,0,0,0.18); border-radius: 2px; overflow: hidden; }
-  .setup-band-fill { height: 100%; background: #241a02; border-radius: 2px; transition: width 0.25s; }
-  .wt-card-setup .wt-title { color: var(--amber); }
+  .setup-band-fill { height: 100%; background: var(--bg); border-radius: 2px; transition: width 0.25s; }
+  .wt-card-setup .wt-title { color: var(--accent); }
   .setup-btn-secondary {
     background: transparent; border: 1px solid var(--border); color: var(--text-dim);
     font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 600;
@@ -7126,6 +7131,18 @@
   }
   .setup-preset-card:hover { border-color: var(--text-faint); }
   .setup-preset-card.active { border-color: var(--accent); background: var(--accent-dim); }
+  /* Setup-mode provider rows (connections step): same card shape as
+     .setup-preset-card above (border, radius, padding, selected treatment) so
+     picking a vendor reads like picking Simple/Power — one selectable-card
+     language for the whole step, not a checkbox list next to two big cards.
+     Settings -> Providers renders the same _renderProviderRow but never gets
+     this class, so its plain row look is untouched. */
+  .prov-row-card {
+    border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+    background: var(--surface2); transition: all 0.15s;
+  }
+  .prov-row-card:hover { border-color: var(--text-faint); }
+  .prov-row-card.active { border-color: var(--accent); background: var(--accent-dim); }
   .setup-preset-title { font-size: 13.5px; font-weight: 700; color: var(--text); }
   .setup-preset-hint { font-size: 11px; color: var(--text-faint); margin-top: 4px; line-height: 1.4; }
   .setup-adv-expander {
