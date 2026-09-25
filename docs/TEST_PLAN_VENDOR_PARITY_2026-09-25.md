@@ -13,8 +13,8 @@ Every fix below is dead code until then.
 | 2 | Codex usage total survives rollover (`abe0338`) | merged | Nothing to click; covered by tests. Optional: note Kestrel's token count on the chat header before and after a long chat rolls over. | Count never drops back toward zero after a rollover. |
 | 3 | AGENTS.md auto-synced from CLAUDE.md (`74a54ad`) | merged | Ask Kestrel: "print the first line of AGENTS.md". | Reply shows `<!-- clayrune:generated-from CLAUDE.md sha256=...`. |
 | 4 | Background jobs refused on sandboxed sessions (MC-975 gap 3) | merged | Nothing to click; unattended-only path, covered by tests. | n/a |
-| 5 | Non-Claude agents get their own worktree (matrix gap 1) | PENDING Tobin | Dispatch Kestrel: "run `git branch --show-current` and print your working directory". | Branch is `clayrune/agent/<id>`; path is under `.clayrune/agents/`. |
-| 6 | Gemini sees only the project's MCP servers (matrix gap 3) | PENDING Tobin | Open a Gemini chat: "list every MCP server and tool you can call". | No `mail` server in the list. |
+| 5 | Non-Claude agents get their own worktree (matrix gap 1, `7355a6c`) | merged | Dispatch Kestrel: "run `git branch --show-current` and print your working directory". | Branch is `clayrune/agent/<id>`; path is under `.clayrune/agents/`. |
+| 6 | Gemini sees only the project's MCP servers (matrix gap 3, `a12524d`) | merged | Open a Gemini chat: "list every MCP server and tool you can call". | No `mail` server in the list. |
 | 7 | Steward fence gates Codex (MC-975, `4c43454`) | merged; packaged-app fix PENDING Bram (blocks push) | Nothing to click; unattended-only. Covered by 21 tests and a live self-test (`exit 2 ... CLAYRUNE-FENCE-SELF-TEST-OK`). | n/a |
 
 **After all rows pass:** `git push origin master`, then confirm
