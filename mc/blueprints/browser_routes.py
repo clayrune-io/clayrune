@@ -901,6 +901,12 @@ def _run_cdp(session):
                             _activate_tab_cmd(session, params.get('target_id'), send)
                         elif method == '_close_tab':
                             send('Target.closeTarget', {'targetId': params.get('target_id')})
+                        elif method == '_new_tab':
+                            # Target.createTarget is a browser-level (not
+                            # per-target) command -- sent with NO session_id,
+                            # unlike the generic `else` branch below which
+                            # always stamps the active tab's session_id.
+                            send('Target.createTarget', {'url': params.get('url') or 'about:blank'})
                         elif method == '_dialog_response':
                             tabs = session.get('tabs') or {}
                             dlg_sid = (tabs.get(params.get('target_id')) or {}).get('session_id')
@@ -1636,6 +1642,21 @@ def browser_input():
                                          "to Clayrune's own origin"}), 403
             session['url'] = url
             q.put(('Page.navigate', {'url': url}))
+        elif kind == 'new_tab':
+            # A real '+' control (Ron, 2026-09-25): open a fresh tab in the
+            # SAME session/profile via Target.createTarget rather than a
+            # second /api/browser/launch. It has no openerId, so
+            # _close_stale_sibling_popups never touches it, and the existing
+            # Target.attachedToTarget handler both surfaces it in the tab
+            # strip and switches the pane to it automatically -- no separate
+            # activate call needed here.
+            url = (data.get('url') or 'about:blank').strip() or 'about:blank'
+            if url != 'about:blank' and not url.startswith(('http://', 'https://', 'about:')):
+                url = 'https://' + url
+            if _is_clayrune_own_origin(url):
+                return jsonify({'error': "the browser pane may not navigate "
+                                         "to Clayrune's own origin"}), 403
+            q.put(('_new_tab', {'url': url}))
         elif kind == 'screencast':
             # Not routed through _input_commands: unlike every other input
             # type, this one mutates session state (screencast_paused) rather

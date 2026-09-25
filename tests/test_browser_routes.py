@@ -499,6 +499,40 @@ def test_input_navigate_refuses_clayrunes_own_origin(app_client):
     assert browser_sessions['sid-1']['cmd_queue'].empty()
 
 
+def test_input_new_tab_queues_target_create_with_default_blank_url(app_client):
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running',
+                                 'url': 'https://example.com',
+                                 'cmd_queue': __import__('queue').Queue()}
+    resp = app_client.post('/api/browser/input',
+                           json={'session_id': 'sid-1', 'type': 'new_tab'})
+    assert resp.status_code == 200
+    method, params = browser_sessions['sid-1']['cmd_queue'].get_nowait()
+    assert (method, params) == ('_new_tab', {'url': 'about:blank'})
+
+
+def test_input_new_tab_accepts_a_start_url(app_client):
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running',
+                                 'url': 'https://example.com',
+                                 'cmd_queue': __import__('queue').Queue()}
+    resp = app_client.post('/api/browser/input',
+                           json={'session_id': 'sid-1', 'type': 'new_tab', 'url': 'example.org'})
+    assert resp.status_code == 200
+    method, params = browser_sessions['sid-1']['cmd_queue'].get_nowait()
+    assert (method, params) == ('_new_tab', {'url': 'https://example.org'})
+
+
+def test_input_new_tab_refuses_clayrunes_own_origin(app_client):
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running',
+                                 'url': 'https://example.com',
+                                 'cmd_queue': __import__('queue').Queue()}
+    resp = app_client.post('/api/browser/input',
+                           json={'session_id': 'sid-1', 'type': 'new_tab',
+                                 'url': 'http://127.0.0.1:5199/api/secrets'})
+    assert resp.status_code == 403
+    assert 'own origin' in resp.get_json()['error']
+    assert browser_sessions['sid-1']['cmd_queue'].empty()
+
+
 def test_read_route_refuses_when_the_live_page_is_clayrunes_own_origin(app_client):
     """Covers a page that reached Clayrune's origin some way OTHER than our
     own navigate command (an in-page link, window.location) — the launch and
