@@ -500,11 +500,20 @@ async function submitClaydo() {
   // popstate handler — got a turn. Collapse to at most one DOM render per
   // animation frame regardless of chunk rate; `assembled` itself stays cheap
   // (a string concat) so no text is ever lost between renders.
+  // The last delta and `done` (or `error`) usually arrive in the SAME network
+  // read, so a frame queued by that delta would fire AFTER the terminal
+  // handler and overwrite its output (the ready card, the error bubble + Retry)
+  // with the raw partial render. Every terminal path cancels it first.
   let _renderScheduled = false;
+  let _renderRaf = 0;
+  function _cancelDeltaRender() {
+    if (_renderScheduled) cancelAnimationFrame(_renderRaf);
+    _renderScheduled = false;
+  }
   function _scheduleDeltaRender() {
     if (_renderScheduled) return;
     _renderScheduled = true;
-    requestAnimationFrame(() => {
+    _renderRaf = requestAnimationFrame(() => {
       _renderScheduled = false;
       const {cleanText} = _claydoParseMarkers(assembled);
       botMsg.innerHTML = _claydoFormatText(cleanText);
@@ -561,6 +570,7 @@ async function submitClaydo() {
           // Batched to one paint per frame — see _scheduleDeltaRender above.
           _scheduleDeltaRender();
         } else if (payload.type === 'error') {
+          _cancelDeltaRender();
           // Older servers discard stdout diagnostics on a nonzero CLI exit.
           // Keep the quota/auth message already streamed instead of hiding it.
           const message = /^claude exit \d+$/.test(payload.message || '') && assembled.trim()
@@ -569,6 +579,7 @@ async function submitClaydo() {
           errored = true;
           return;
         } else if (payload.type === 'done') {
+          _cancelDeltaRender();
           // Final assembled answer — use it as ground truth in case any
           // delta got dropped. Then parse markers and dispatch.
           const finalText = (payload.answer || assembled).trim();
@@ -595,6 +606,7 @@ async function submitClaydo() {
       }
     }
   } catch (e) {
+    _cancelDeltaRender();
     _claydoRenderError(botMsg, 'Network error: ' + (e.message || e), question);
     errored = true;
   } finally {

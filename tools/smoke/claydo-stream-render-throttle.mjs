@@ -66,6 +66,7 @@ const BURST_INTERVAL_MS = 40; // gap between bursts (well under this harness's
 const WORDS = 'the quick brown fox jumps over a lazy dog and keeps going for a while '.split(' ');
 
 let sentChunks = 0;
+let raceMode = false;
 const server = http.createServer((req, res) => {
   const path = (req.url || '').split('?')[0];
   if (path === '/' || path === '/index.html') {
@@ -77,6 +78,18 @@ const server = http.createServer((req, res) => {
   if (path === '/api/projects') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('[]'); }
   if (path === '/api/config') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{}'); }
   if (path === '/api/characters') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('[]'); }
+  if (path === '/api/guide/stream' && raceMode) {
+    // Race case: the last delta and the terminal event land in ONE network
+    // read, so the delta's queued render frame fires after the error handler.
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+    res.write(`data: ${JSON.stringify({ type: 'delta', text: 'partial answer ' })}
+
+`
+      + `data: ${JSON.stringify({ type: 'error', message: 'RACE_ERROR_SENTINEL' })}
+
+`);
+    return res.end();
+  }
   if (path === '/api/guide/stream') {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
     let i = 0, full = '';
@@ -170,6 +183,25 @@ try {
   (mutations > 0 && mutations < sentChunks * 0.5)
     ? ok(`renders (${mutations}) are batched well below chunk count (${sentChunks}) — throttling is working`)
     : fail(`renders (${mutations}) are NOT meaningfully batched vs chunk count (${sentChunks}) — one render per chunk regressed`);
+
+  // Terminal event must win over a render frame queued by a delta in the
+  // same read — otherwise the error bubble + Retry is wiped by partial text.
+  raceMode = true;
+  await page.evaluate(() => {
+    document.getElementById('claydo-input').value = 'race';
+    submitClaydo();
+  });
+  await page.waitForFunction(() => !document.getElementById('claydo-send').disabled, { timeout: 10000 });
+  // Let any stale rAF callback run before judging.
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  const last = await page.evaluate(() => {
+    const msgs = document.querySelectorAll('#claydo-history > *');
+    const m = msgs[msgs.length - 1];
+    return { text: m ? m.textContent : '', retry: !!(m && m.querySelector('.claydo-retry-btn')) };
+  });
+  (last.retry && last.text.includes('RACE_ERROR_SENTINEL'))
+    ? ok('delta + error in one read: error bubble and Retry survive the queued render frame')
+    : fail(`delta + error in one read: terminal output was overwritten (text="${last.text.slice(0, 80)}", retry=${last.retry})`);
 
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   uncaught.forEach((e) => fail('uncaught page error: ' + e));
