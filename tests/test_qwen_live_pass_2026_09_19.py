@@ -128,11 +128,13 @@ class TestTurnContext:
         assert art.qwen_turn_context_tokens(None, RESULT_USAGE, 2) is None
 
     def test_other_runtimes_keep_normalization(self):
-        from mc.agent_runtime import CodexRuntime
-        h = SessionHandle(mc_session_id='m', provider='codex', mode='A',
+        # Codex used to be the example here; it now overrides too
+        # (tests/test_codex_turn_context_tokens.py).
+        from mc.agent_runtime import OpenCodeRuntime
+        h = SessionHandle(mc_session_id='m', provider='opencode', mode='A',
                           project_path='/p', project_id='p', session_dict={})
-        assert CodexRuntime().turn_context_tokens(h, {'input_tokens': 10,
-                                                      'cache_read_input_tokens': 5}) == 15
+        assert OpenCodeRuntime().turn_context_tokens(h, {'input_tokens': 10,
+                                                         'cache_read_input_tokens': 5}) == 15
 
 
 class TestAutoMemoryExtractorOff:
