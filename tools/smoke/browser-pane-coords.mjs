@@ -98,8 +98,105 @@ async function run(sendWH) {
   await page.close();
 }
 
+// The <img> is width:100%;height:100%;object-fit:contain (MC-976): it fills
+// the pane, not the picture, so a pane whose aspect ratio DIFFERS from the
+// frame's letterboxes the frame inside the img's own box. img.boundingBox()
+// is now the WHOLE pane -- clicking its literal corner must still land on
+// the FRAME's corner (0,0 / FWxFH), not in a letterbox bar, or every click
+// near an edge is off by however wide the bar is.
+async function runMismatchedPaneRatio() {
+  const posts = [];
+  // Bigger than the default 1280x720 -- the pane gets drag-resized to
+  // 1400x1200 below, and a resized-but-off-viewport pane can't be clicked at
+  // all (elementFromPoint returns nothing past the visible area).
+  const page = await (await browser.newContext({ viewport: { width: 1600, height: 1400 } })).newPage();
+  await page.route('**/*', async route => {
+    const url = route.request().url();
+    if (url.endsWith('/browser-pane.js'))
+      return route.fulfill({ contentType: 'application/javascript', body: JS });
+    if (url.includes('/api/browser/launch'))
+      return route.fulfill({ status: 201, contentType: 'application/json',
+        body: JSON.stringify({ session_id: 'sid', url: 'about:blank', view: { w: 1280, h: 800 } }) });
+    if (url.includes('/api/browser/input')) {
+      posts.push(JSON.parse(route.request().postData() || '{}'));
+      return route.fulfill({ contentType: 'application/json', body: '{"ok":true}' });
+    }
+    if (url.includes('/browser/status'))
+      return route.fulfill({ contentType: 'application/json', body: '{"sessions":[]}' });
+    if (url.includes('/api/browser/stream')) {
+      const f = { seq: 1, img: JPEG, url: 'about:blank', w: FW, h: FH };
+      return route.fulfill({ contentType: 'text/event-stream', body: `data: ${JSON.stringify(f)}\n\n` });
+    }
+    return route.fulfill({ contentType: 'text/html', body:
+      `<body><div id="modal-layer"></div><div id="toast-container"></div>
+       <script>window.nextModalZ=100;window.showToast=m=>window.__toast=m;</script>
+       <script type="module" src="/static/js/browser-pane.js"></script></body>` });
+  });
+  await page.goto('http://localhost:9/');
+  await page.waitForFunction(() => typeof window.openBrowserPane === 'function');
+  await page.evaluate(() => window.openBrowserPane('about:blank', 'p1'));
+  const img = page.locator('#mc-browser-pane [data-bp="screen"]');
+  await img.waitFor({ state: 'attached' });
+  await page.waitForFunction(() => {
+    const i = document.querySelector('#mc-browser-pane [data-bp="screen"]');
+    return i && i.naturalWidth > 0;
+  }, null, { timeout: 5000 });
+
+  // Drag-resize the pane to a ratio far from the frame's 1264/649 (1.95) --
+  // near-square, so the letterbox bars are big and unmissable. Pinned to the
+  // viewport's top-left too (a real grip-drag only changes width/height, but
+  // this decouples the test from wherever the pane happened to auto-center).
+  await page.evaluate(() => {
+    const win = document.getElementById('mc-browser-pane');
+    win.style.left = '10px'; win.style.top = '10px';
+    win.style.width = '1400px'; win.style.height = '1200px';
+  });
+  await page.waitForTimeout(100);
+
+  const label = 'pane ratio != frame ratio (letterboxed)';
+  const box = await img.boundingBox();
+  if (Math.abs(box.width / box.height - FW / FH) < 0.05)
+    fail(`[${label}] test setup did not actually letterbox -- img box ${box.width}x${box.height} already matches the frame's own ratio`);
+
+  // The <img>'s OWN box is the WHOLE pane; object-fit:contain paints the
+  // frame inside it with letterbox bars. Compute where the PICTURE actually
+  // sits (same formula _bpContentRect uses) so this test targets the
+  // picture's true corner, not the pane's -- clicking the pane's raw corner
+  // maps close to 0/viewMax under EITHER the old or new formula (division by
+  // ~0 either way), so it can't tell a correct mapping from a broken one.
+  const scale = Math.min(box.width / FW, box.height / FH);
+  const cw = FW * scale, ch = FH * scale;
+  const cx = box.x + (box.width - cw) / 2, cy = box.y + (box.height - ch) / 2;
+  console.log(`   [${label}] pane box ${box.width.toFixed(0)}x${box.height.toFixed(0)}, picture ${cw.toFixed(0)}x${ch.toFixed(0)} at offset (${(cx - box.x).toFixed(0)},${(cy - box.y).toFixed(0)})`);
+
+  // just inside the picture's true top-left -> must map to ~(0,0).
+  posts.length = 0;
+  await page.mouse.move(cx + 3, cy + 3);
+  await page.mouse.down(); await page.mouse.up();
+  await page.waitForTimeout(150);
+  let press = posts.find(p => p.action === 'mousePressed');
+  if (!press) fail(`[${label}] no mousePressed reached the API (picture top-left)`);
+  else if (press.x > 20 || press.y > 20)
+    fail(`[${label}] picture's top-left mapped to x=${press.x.toFixed(0)} y=${press.y.toFixed(0)}, expected ~0,0`);
+  else console.log(`   [${label}] picture top-left click -> x=${press.x.toFixed(0)} y=${press.y.toFixed(0)} (want ~0,0)`);
+
+  // just inside the picture's true bottom-right -> must map to ~(FW,FH).
+  posts.length = 0;
+  await page.mouse.move(cx + cw - 3, cy + ch - 3);
+  await page.mouse.down(); await page.mouse.up();
+  await page.waitForTimeout(150);
+  press = posts.find(p => p.action === 'mousePressed');
+  if (!press) fail(`[${label}] no mousePressed reached the API (picture bottom-right)`);
+  else if (press.x < FW * 0.95 || press.y < FH * 0.95)
+    fail(`[${label}] picture's bottom-right mapped to x=${press.x.toFixed(0)} y=${press.y.toFixed(0)}, expected ~${FW},${FH}`);
+  else console.log(`   [${label}] picture bottom-right click -> x=${press.x.toFixed(0)} y=${press.y.toFixed(0)} (want ~${FW},${FH})`);
+
+  await page.close();
+}
+
 await run(true);
 await run(false);
+await runMismatchedPaneRatio();
 await browser.close();
 if (!process.exitCode && !fails.length)
   console.log('✅ browser pane coords: clicks map into the real frame viewport, via server w/h AND the naturalWidth fallback.');

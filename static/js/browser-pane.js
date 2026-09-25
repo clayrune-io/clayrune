@@ -88,11 +88,23 @@ function _bpSend(body) {
   }).catch(() => {});
 }
 
-function _bpCoords(img, e) {
+// The <img> is width:100%;height:100% (fills the pane) with object-fit:contain
+// (letterboxes the frame inside it) -- so img.getBoundingClientRect() is the
+// WHOLE pane, not the picture. Every coordinate/delta must map through the
+// CONTENT rect (the letterboxed picture itself), not the element box, or a
+// click on the frame's edge lands in a letterbox bar instead.
+function _bpContentRect(img) {
   const r = img.getBoundingClientRect();
+  const scale = Math.min(r.width / _bpViewW, r.height / _bpViewH) || 1;
+  const w = _bpViewW * scale, h = _bpViewH * scale;
+  return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, width: w, height: h, scale };
+}
+
+function _bpCoords(img, e) {
+  const c = _bpContentRect(img);
   return {
-    x: Math.max(0, Math.min(_bpViewW, (e.clientX - r.left) / r.width * _bpViewW)),
-    y: Math.max(0, Math.min(_bpViewH, (e.clientY - r.top) / r.height * _bpViewH)),
+    x: Math.max(0, Math.min(_bpViewW, (e.clientX - c.left) / c.scale)),
+    y: Math.max(0, Math.min(_bpViewH, (e.clientY - c.top) / c.scale)),
   };
 }
 
@@ -458,13 +470,15 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   img.addEventListener('touchmove', e => {
     if (!touch || e.touches.length !== 1) return;
     e.preventDefault();
-    const t = e.touches[0], r = img.getBoundingClientRect();
+    const t = e.touches[0], c = _bpContentRect(img);
     if (Math.abs(t.clientX - touch.sx) > 6 || Math.abs(t.clientY - touch.sy) > 6) touch.moved = true;
-    // finger up → content scrolls down: deltaY = (prev - current), scaled to page px
+    // finger up → content scrolls down: deltaY = (prev - current), scaled to page px.
+    // One uniform scale (not separate w/h ratios) -- the content rect never
+    // distorts the frame's aspect, so x and y scale by the same factor.
     _bpSend({
       type: 'wheel', ..._bpCoords(img, t),
-      deltaX: (touch.x - t.clientX) * (_bpViewW / r.width),
-      deltaY: (touch.y - t.clientY) * (_bpViewH / r.height),
+      deltaX: (touch.x - t.clientX) / c.scale,
+      deltaY: (touch.y - t.clientY) / c.scale,
     });
     touch.x = t.clientX; touch.y = t.clientY;
   }, { passive: false });
