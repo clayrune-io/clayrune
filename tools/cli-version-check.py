@@ -210,6 +210,15 @@ def check_one(cli, apply_updates=False):
         row['updated'] = (rc == 0 and _cmp(after, inst) > 0)
         if not row['updated']:
             row['update_error'] = out[-400:]
+            # A failed npm in-place upgrade can leave the package PARTIALLY
+            # replaced, so what runs afterwards is OLDER than what we started
+            # with -- a regression this job itself caused. Measured 2026-09-25:
+            # codex 0.156.1 -> 0.155.1 when a live codex process held the .exe
+            # and npm's rename hit EPERM. It must never read as plain
+            # "outdated", which is indistinguishable from "we did nothing".
+            if _cmp(after, inst) < 0:
+                row['status'] = 'downgraded_by_failed_update'
+                row['downgraded_from'] = inst
         elif _cmp(latest, after) <= 0:
             row['status'] = 'shadowed' if shadows else 'ok'
     return row
