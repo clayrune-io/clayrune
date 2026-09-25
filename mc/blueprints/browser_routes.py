@@ -703,6 +703,8 @@ def _run_cdp(session):
         session['tabs_seq'] = 1
         session['dialog'] = None
         session['dialogs_seq'] = 0
+        session['file_chooser'] = None
+        session['file_chooser_seq'] = 0
 
         def send(method, params=None, session_id=None):
             m = {'id': _next_id(), 'method': method, 'params': params or {}}
@@ -717,6 +719,15 @@ def _run_cdp(session):
             send('Page.startScreencast', _SCREENCAST_PARAMS, session_id=session_id)
 
         send('Page.enable')
+        send('DOM.enable')
+        # Intercept <input type=file> instead of letting Chromium open its own
+        # native OS picker — that picker opens on the SERVER's desktop, not the
+        # user's device, so it was invisible to whoever is looking at the pane
+        # and blocked the page until something (nothing, usually) dismissed it.
+        # With interception on, Chromium instead fires Page.fileChooserOpened
+        # (handled below) and waits — no native dialog, no block — until we
+        # answer with DOM.setFileInputFiles over THIS websocket.
+        send('Page.setInterceptFileChooserDialog', {'enabled': True})
         # Announce + auto-attach related targets (window.open()/target=_blank/
         # an OAuth popup) over THIS SAME websocket — see the class docstring
         # above for the flat-mode shape. waitForDebuggerOnStart=False so a new
@@ -818,6 +829,17 @@ def _run_cdp(session):
                                  session_id=dlg_sid)
                             session['dialog'] = None
                             session['dialogs_seq'] = session.get('dialogs_seq', 0) + 1
+                        elif method == '_file_chooser_response':
+                            tabs = session.get('tabs') or {}
+                            fc_sid = (tabs.get(params.get('target_id')) or {}).get('session_id')
+                            files = params.get('files') or []
+                            if files:
+                                send('DOM.setFileInputFiles',
+                                     {'files': files,
+                                      'backendNodeId': params.get('backend_node_id')},
+                                     session_id=fc_sid)
+                            session['file_chooser'] = None
+                            session['file_chooser_seq'] = session.get('file_chooser_seq', 0) + 1
                         else:
                             send(method, params, session_id=_active_session_id(session))
                     except Exception as e:
@@ -993,6 +1015,14 @@ def _run_cdp(session):
                 if session.get('dialog'):
                     session['dialog'] = None
                     session['dialogs_seq'] = session.get('dialogs_seq', 0) + 1
+            elif method == 'Page.fileChooserOpened':
+                p = msg.get('params') or {}
+                session['file_chooser'] = {
+                    'target_id': _target_id_for_sid(session, msg_sid),
+                    'mode': p.get('mode'),  # 'selectSingle' | 'selectMultiple'
+                    'backend_node_id': p.get('backendNodeId'),
+                }
+                session['file_chooser_seq'] = session.get('file_chooser_seq', 0) + 1
             elif method == 'Browser.downloadWillBegin':
                 _on_download_will_begin(session, msg.get('params') or {})
             elif method == 'Browser.downloadProgress':
@@ -1271,12 +1301,14 @@ def _stream_gen(session):
     last_dl = -1
     last_tabs = -1
     last_dialog = -1
+    last_file_chooser = -1
     idle = 0
     while session['status'] == 'running':
         seq = session.get('frame_seq', 0)
         dl_seq = session.get('downloads_seq', 0)
         tabs_seq = session.get('tabs_seq', 0)
         dialog_seq = session.get('dialogs_seq', 0)
+        file_chooser_seq = session.get('file_chooser_seq', 0)
         sent = False
         if seq != last and session.get('frame'):
             last = seq
@@ -1310,6 +1342,12 @@ def _stream_gen(session):
             idle = 0
             yield f'data: {json.dumps({"dialog": session.get("dialog")})}\n\n'
             sent = True
+        if 'file_chooser' in session and file_chooser_seq != last_file_chooser:
+            last_file_chooser = file_chooser_seq
+            idle = 0
+            fc = session.get('file_chooser')
+            yield f'data: {json.dumps({"file_chooser": {"mode": fc.get("mode")} if fc else None})}\n\n'
+            sent = True
         if not sent:
             idle += 1
             if idle % 60 == 0:  # ~2s heartbeat keeps the SSE open
@@ -1332,6 +1370,14 @@ def browser_stream():
 # CDP modifier bitfield (Input.dispatchKeyEvent / dispatchMouseEvent).
 _MODIFIER_BITS = {'alt': 1, 'ctrl': 2, 'control': 2, 'meta': 4, 'cmd': 4,
                   'command': 4, 'shift': 8}
+
+# CDP's `buttons` bitmask (Input.dispatchMouseEvent) — which buttons are
+# DOWN, distinct from the single `button` field naming which one changed.
+# Before this, mousePressed always sent buttons=1 (the left-button bit)
+# regardless of which button was actually pressed, so a right-click landed on
+# the page as a left-click with button='right' — Chromium trusts `buttons`
+# for held-state, not `button`, so the page never saw a real right-press.
+_MOUSE_BUTTON_BITS = {'left': 1, 'right': 2, 'middle': 4, 'back': 8, 'forward': 16}
 
 # Windows virtual-key codes for named keys. Apps that bind shortcuts read
 # event.keyCode (Discord's keybinds do), and CDP leaves it 0 unless told.
@@ -1413,10 +1459,11 @@ def _input_commands(data):
             # for the missing `action`, or only a press, and nothing clicked.
             n = int(data.get('clickCount', 1))
             base = {'x': x, 'y': y, 'button': button, 'clickCount': n}
+            press_bits = _MOUSE_BUTTON_BITS.get(button, 1)
             return [
                 ('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': x, 'y': y,
                                               'button': 'none', 'buttons': 0}),
-                ('Input.dispatchMouseEvent', {'type': 'mousePressed', 'buttons': 1, **base}),
+                ('Input.dispatchMouseEvent', {'type': 'mousePressed', 'buttons': press_bits, **base}),
                 ('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'buttons': 0, **base}),
             ]
         if action not in ('mousePressed', 'mouseReleased', 'mouseMoved'):
@@ -1536,6 +1583,84 @@ def browser_dialog():
         'text': data.get('text') or '',
     }))
     return jsonify({'ok': True})
+
+
+# Cap a single file-chooser upload — this lands on local disk and gets handed
+# straight to Chromium; not a place to accept an unbounded body.
+_FILE_CHOOSER_MAX_BYTES = 200 * 1024 * 1024
+
+
+@bp.route('/api/browser/file-chooser', methods=['POST'])
+def browser_file_chooser():
+    """Answer the file chooser currently open on this session — see
+    Page.fileChooserOpened in _run_cdp (armed by
+    Page.setInterceptFileChooserDialog so the native OS picker never opens on
+    the SERVER's desktop in the first place).
+
+    SECURITY: this route takes file BYTES ONLY (multipart `file` parts), never
+    a path. The only files DOM.setFileInputFiles is ever told about are ones
+    this route just wrote to disk from the human's own upload in this same
+    request — there is no parameter here or anywhere else that lets a caller
+    name an existing server path to attach, which is what would let a page's
+    <input type=file> be used to exfiltrate arbitrary files off this box.
+    `action=cancel` releases the chooser with no files, same as a human
+    closing a real file picker without choosing anything."""
+    sid = request.form.get('session_id') or request.args.get('session_id')
+    session = browser_sessions.get(sid)
+    if not session or session['status'] != 'running':
+        return jsonify({'error': 'unknown or stopped session'}), 404
+    fc = session.get('file_chooser')
+    if not fc:
+        return jsonify({'error': 'no file chooser open'}), 409
+
+    if (request.form.get('action') or '').lower() == 'cancel':
+        session['cmd_queue'].put(('_file_chooser_response', {
+            'target_id': fc.get('target_id'), 'files': []}))
+        return jsonify({'ok': True, 'cancelled': True})
+
+    incoming = request.files.getlist('file')
+    if not incoming:
+        return jsonify({'error': 'no file provided'}), 400
+    if fc.get('mode') != 'selectMultiple' and len(incoming) > 1:
+        return jsonify({'error': 'this chooser accepts a single file, '
+                                  f'got {len(incoming)}'}), 400
+    if _UPLOADS_DIR is None:
+        return jsonify({'error': 'uploads directory not configured'}), 500
+
+    saved_paths = []
+    try:
+        for f in incoming:
+            if not f.filename:
+                continue
+            size = _incoming_file_size(f)
+            if size > _FILE_CHOOSER_MAX_BYTES:
+                return jsonify({'error': 'file too large',
+                                'limit_bytes': _FILE_CHOOSER_MAX_BYTES,
+                                'file_bytes': size}), 413
+            ext = os.path.splitext(f.filename)[1][:16]
+            stored_name = f'browser_upload_{uuid.uuid4().hex[:10]}{ext}'
+            dest = os.path.join(str(_UPLOADS_DIR), stored_name)
+            f.save(dest)
+            saved_paths.append(os.path.abspath(dest))
+    except Exception as e:
+        return jsonify({'error': f'save failed: {e}'}), 500
+    if not saved_paths:
+        return jsonify({'error': 'no file provided'}), 400
+
+    session['cmd_queue'].put(('_file_chooser_response', {
+        'target_id': fc.get('target_id'),
+        'backend_node_id': fc.get('backend_node_id'),
+        'files': saved_paths,
+    }))
+    return jsonify({'ok': True, 'count': len(saved_paths)})
+
+
+def _incoming_file_size(f):
+    """Byte size of a Werkzeug FileStorage without loading it into memory."""
+    f.stream.seek(0, os.SEEK_END)
+    size = f.stream.tell()
+    f.stream.seek(0)
+    return size
 
 
 def _cdp_evaluate(session, expression, timeout=3, recv_rounds=20):

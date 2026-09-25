@@ -1012,6 +1012,133 @@ def test_dialog_route_dismiss_defaults_accept_false_and_empty_text(app_client):
     assert params == {'target_id': 'root', 'accept': False, 'text': ''}
 
 
+# ── /api/browser/file-chooser: B1, gap #4 ────────────────────────────────────
+
+def test_file_chooser_route_unknown_session_404(app_client):
+    resp = app_client.post('/api/browser/file-chooser',
+                           data={'session_id': 'nope'})
+    assert resp.status_code == 404
+
+
+def test_file_chooser_route_no_chooser_open_is_409(app_client):
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running', 'file_chooser': None}
+    resp = app_client.post('/api/browser/file-chooser',
+                           data={'session_id': 'sid-1'})
+    assert resp.status_code == 409
+
+
+def test_file_chooser_route_cancel_queues_empty_files_and_no_upload_needed(app_client):
+    q = br.queue.Queue()
+    browser_sessions['sid-1'] = {
+        'session_id': 'sid-1', 'status': 'running', 'cmd_queue': q,
+        'file_chooser': {'target_id': 'root', 'mode': 'selectSingle', 'backend_node_id': 7},
+    }
+    resp = app_client.post('/api/browser/file-chooser',
+                           data={'session_id': 'sid-1', 'action': 'cancel'})
+    assert resp.status_code == 200
+    assert resp.get_json() == {'ok': True, 'cancelled': True}
+    method, params = q.get_nowait()
+    assert method == '_file_chooser_response'
+    assert params == {'target_id': 'root', 'files': []}
+
+
+def test_file_chooser_route_no_file_provided_is_400(app_client):
+    browser_sessions['sid-1'] = {
+        'session_id': 'sid-1', 'status': 'running',
+        'file_chooser': {'target_id': 'root', 'mode': 'selectSingle', 'backend_node_id': 1},
+    }
+    resp = app_client.post('/api/browser/file-chooser', data={'session_id': 'sid-1'})
+    assert resp.status_code == 400
+
+
+def test_file_chooser_route_rejects_multiple_files_when_mode_is_single(app_client, tmp_path, monkeypatch):
+    import io
+    up_dir = tmp_path / 'uploads'
+    up_dir.mkdir()
+    monkeypatch.setattr(br, '_UPLOADS_DIR', up_dir)
+    browser_sessions['sid-1'] = {
+        'session_id': 'sid-1', 'status': 'running',
+        'file_chooser': {'target_id': 'root', 'mode': 'selectSingle', 'backend_node_id': 1},
+    }
+    resp = app_client.post('/api/browser/file-chooser', data={
+        'session_id': 'sid-1',
+        'file': [(io.BytesIO(b'a'), 'a.txt'), (io.BytesIO(b'b'), 'b.txt')],
+    }, content_type='multipart/form-data')
+    assert resp.status_code == 400
+    assert 'single file' in resp.get_json()['error']
+    # nothing was written to disk for the rejected multi-file attempt
+    assert list(up_dir.iterdir()) == []
+
+
+def test_file_chooser_route_saves_upload_writes_only_new_bytes_and_queues_path(app_client, tmp_path, monkeypatch):
+    import io
+    up_dir = tmp_path / 'uploads'
+    up_dir.mkdir()
+    monkeypatch.setattr(br, '_UPLOADS_DIR', up_dir)
+    q = br.queue.Queue()
+    browser_sessions['sid-1'] = {
+        'session_id': 'sid-1', 'status': 'running', 'cmd_queue': q,
+        'file_chooser': {'target_id': 'root', 'mode': 'selectSingle', 'backend_node_id': 42},
+    }
+    resp = app_client.post('/api/browser/file-chooser', data={
+        'session_id': 'sid-1',
+        'file': (io.BytesIO(b'hello world'), 'notes.txt'),
+    }, content_type='multipart/form-data')
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body == {'ok': True, 'count': 1}
+    method, params = q.get_nowait()
+    assert method == '_file_chooser_response'
+    assert params['target_id'] == 'root'
+    assert params['backend_node_id'] == 42
+    [saved_path] = params['files']
+    # The ONLY path ever handed to DOM.setFileInputFiles is one this request
+    # itself just wrote — never a caller-supplied path (the exfiltration risk
+    # the route's docstring calls out).
+    assert os.path.dirname(saved_path) == str(up_dir)
+    assert open(saved_path, 'rb').read() == b'hello world'
+    # Clearing session['file_chooser'] happens when the reader thread drains
+    # this queued command (see the `_file_chooser_response` branch in
+    # _run_cdp) — same split as `_dialog_response`, not this route's job.
+
+
+def test_file_chooser_route_rejects_oversized_upload(app_client, tmp_path, monkeypatch):
+    import io
+    up_dir = tmp_path / 'uploads'
+    up_dir.mkdir()
+    monkeypatch.setattr(br, '_UPLOADS_DIR', up_dir)
+    monkeypatch.setattr(br, '_FILE_CHOOSER_MAX_BYTES', 4)
+    browser_sessions['sid-1'] = {
+        'session_id': 'sid-1', 'status': 'running',
+        'file_chooser': {'target_id': 'root', 'mode': 'selectSingle', 'backend_node_id': 1},
+    }
+    resp = app_client.post('/api/browser/file-chooser', data={
+        'session_id': 'sid-1',
+        'file': (io.BytesIO(b'way too many bytes'), 'big.bin'),
+    }, content_type='multipart/form-data')
+    assert resp.status_code == 413
+    assert list(up_dir.iterdir()) == []  # rejected before ever landing on disk
+
+
+# ── Page.fileChooserOpened -> session['file_chooser'] (B1) ──────────────────
+
+def test_stream_gen_emits_file_chooser_payload_when_one_opens():
+    session = {
+        'session_id': 'sid-1', 'status': 'running', 'frame': None, 'frame_seq': 0,
+        'downloads_seq': 0, 'downloads': {}, 'dialog': None, 'dialogs_seq': 0,
+        'file_chooser': {'target_id': 'root', 'mode': 'selectMultiple', 'backend_node_id': 9},
+        'file_chooser_seq': 1,
+    }
+    gen = br._stream_gen(session)
+    # downloads_seq (0) and dialog_seq (0) also differ from the generator's
+    # initial -1 sentinel, so the first loop iteration yields both of those
+    # too, ahead of file_chooser — collect all three rather than assuming
+    # order (same reasoning as the tabs payload test above).
+    chunks = [next(gen), next(gen), next(gen)]
+    joined = '\n'.join(chunks)
+    assert '"file_chooser"' in joined and '"mode": "selectMultiple"' in joined
+
+
 # ── _stream_gen: tabs + dialog payloads ──────────────────────────────────────
 
 def test_stream_gen_emits_tabs_payload_on_a_real_session():
