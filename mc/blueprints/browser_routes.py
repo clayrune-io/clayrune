@@ -637,12 +637,26 @@ def _close_stale_sibling_popups(session, send, opener_id, keep_target_id):
     A popup can only sensibly represent the CALLER's most recent attempt, so
     closing the previous sibling on a new one is safe — it never touches the
     root tab (`opener_id` is only set on a target CDP reports as opened BY
-    another target) or a tab opened by someone else."""
+    another target) or a tab opened by someone else.
+
+    `opener_id` alone is too broad: plain `target=_blank` links share it too
+    (e.g. two search results opened from the same page), and those are
+    independent tabs the user meant to keep, not retries. `canAccessOpener`
+    is the CDP-reported signal that actually separates the cases — a real
+    `window.open()`/OAuth popup needs `window.opener` to post its result back
+    and keeps it `true`; sites that want plain new tabs (Google search
+    results included) mark their links `rel=noopener`, which CDP reports as
+    `canAccessOpener: false`. So only close a sibling that either (a) can
+    still talk to its opener, or (b) never left `about:blank` — nothing of
+    the user's to lose there either way. A noopener tab that has already
+    navigated to real content is left alone."""
     if not opener_id:
         return
     tabs = session.get('tabs') or {}
     for tid, tab in list(tabs.items()):
         if tid == keep_target_id or tab.get('opener_id') != opener_id:
+            continue
+        if not (tab.get('can_access_opener') or (tab.get('url') or '') in ('', 'about:blank')):
             continue
         try:
             send('Target.closeTarget', {'targetId': tid})
@@ -1028,7 +1042,8 @@ def _run_cdp(session):
                 if tid and ti.get('type') == 'page':
                     tabs = session.setdefault('tabs', {})
                     tabs[tid] = {'session_id': sid, 'url': ti.get('url', ''),
-                                'title': ti.get('title', ''), 'opener_id': ti.get('openerId')}
+                                'title': ti.get('title', ''), 'opener_id': ti.get('openerId'),
+                                'can_access_opener': bool(ti.get('canAccessOpener'))}
                     session['tabs_seq'] = session.get('tabs_seq', 0) + 1
                     try:
                         send('Page.enable', {}, session_id=sid)

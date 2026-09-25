@@ -894,6 +894,60 @@ def test_close_stale_sibling_popups_is_a_noop_with_no_opener():
     assert calls == []
 
 
+def test_close_stale_sibling_popups_leaves_noopener_tab_with_real_content_alone():
+    # Two target=_blank rel=noopener links from the same page (e.g. two
+    # Google search results) share an opener_id but CDP reports
+    # canAccessOpener: false for each and they've already navigated past
+    # about:blank -- neither is a stale OAuth retry, so opening the second
+    # must not close the first.
+    calls = []
+    session = {'tabs': {
+        'root': {'session_id': None, 'opener_id': None},
+        'result-1': {'session_id': 'S1', 'opener_id': 'root',
+                     'can_access_opener': False, 'url': 'https://example.com/a'},
+        'result-2': {'session_id': 'S2', 'opener_id': 'root',
+                     'can_access_opener': False, 'url': 'https://example.com/b'},
+    }}
+    br._close_stale_sibling_popups(session, lambda *a, **k: calls.append((a, k)),
+                                   'root', 'result-2')
+    assert calls == []
+
+
+def test_close_stale_sibling_popups_closes_real_popup_even_after_it_navigated():
+    # A genuine window.open() OAuth popup keeps canAccessOpener true for its
+    # whole life (it still needs window.opener to post the result back), so
+    # a retry must still close it even once it has left about:blank for the
+    # real sign-in page.
+    calls = []
+    session = {'tabs': {
+        'root': {'session_id': None, 'opener_id': None},
+        'old-popup': {'session_id': 'S1', 'opener_id': 'root',
+                      'can_access_opener': True,
+                      'url': 'https://accounts.google.com/signin'},
+        'new-popup': {'session_id': 'S2', 'opener_id': 'root',
+                      'can_access_opener': True, 'url': 'about:blank'},
+    }}
+    br._close_stale_sibling_popups(session, lambda m, p=None: calls.append((m, p)),
+                                   'root', 'new-popup')
+    assert calls == [('Target.closeTarget', {'targetId': 'old-popup'})]
+
+
+def test_close_stale_sibling_popups_closes_noopener_tab_stuck_on_about_blank():
+    # Even a noopener sibling is safe to prune if it never left about:blank --
+    # there is no real content there to lose.
+    calls = []
+    session = {'tabs': {
+        'root': {'session_id': None, 'opener_id': None},
+        'stalled': {'session_id': 'S1', 'opener_id': 'root',
+                    'can_access_opener': False, 'url': 'about:blank'},
+        'new-popup': {'session_id': 'S2', 'opener_id': 'root',
+                      'can_access_opener': False, 'url': 'about:blank'},
+    }}
+    br._close_stale_sibling_popups(session, lambda m, p=None: calls.append((m, p)),
+                                   'root', 'new-popup')
+    assert calls == [('Target.closeTarget', {'targetId': 'stalled'})]
+
+
 def test_handle_target_closed_returns_focus_to_opener():
     session = {
         'root_target_id': 'root', 'active_target_id': 'popup', 'tabs_seq': 1,
