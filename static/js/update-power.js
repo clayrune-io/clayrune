@@ -450,7 +450,11 @@ function showRestartingOverlay() {
       // expected during the gap — the old process is gone, new one not yet up
       if (statusEl) statusEl.textContent = 'Connection dropped. Waiting for the new instance...';
     }
-    if (attempts > 15 && actionsEl) {
+    // 30s, not 15s: a real, measured boot took 26.32s on 2026-09-25
+    // (data/logs/clayrune.log), so 15 was flagging a normal restart as
+    // "stuck" long before it had a chance to finish. Still well under the
+    // 45s hard-timeout below.
+    if (attempts > 30 && actionsEl) {
       if (statusEl) statusEl.textContent = 'Restart appears stuck. The old process may still be running.';
       actionsEl.style.display = '';
     }
