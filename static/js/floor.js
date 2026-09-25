@@ -68,10 +68,23 @@ async function openFloor() {
   await refreshFloor();
 }
 
-function closeFloor() {
-  // The poll is tied to the window, not to the page. A board nobody is looking
-  // at should not keep waking the server every 30 seconds.
+// The poll is tied to the window, not to the page. A board nobody is looking
+// at should not keep waking the server every 30 seconds. Exposed on window so
+// closeModalById (modal-manager.js, a separate module) can call it on every
+// close path, not just the X handler below — mobile back/hardware-back close
+// __-surfaces via closeModalById directly (popstate's _mcSurfaceOpen branch).
+function _floorTeardown() {
   if (floorTimer) { clearInterval(floorTimer); floorTimer = null; }
+}
+window._floorTeardown = _floorTeardown;
+// `floorTimer` is module-scoped (static/js/*.js are `type="module"` — a
+// top-level `let` is NOT a page global), so smoke tests driving the real page
+// via page.evaluate can't read it directly. Expose a getter alongside the
+// teardown fn for the same cross-boundary reason.
+window._floorTimerArmed = () => floorTimer !== null;
+
+function closeFloor() {
+  _floorTeardown();
   closeModalById(FLOOR_MODAL);
 }
 

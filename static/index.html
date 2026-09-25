@@ -2244,6 +2244,13 @@ function refreshModalById(modalId) {
   if (curTab === 'documents' && documentsCache[entry.projectId]) {
     renderDocumentsTab(entry.projectId);
   }
+  // The innerHTML rebuild above replaced the header's .modal-minimize button
+  // with a fresh, un-wired one — the #modal-layer MutationObserver that swaps
+  // it to Back on mobile only fires when a whole .modal-window is MOUNTED, not
+  // when one's content is rebuilt in place. Re-apply here so a poll-driven
+  // refresh (this runs every few seconds while an agent streams) doesn't
+  // silently revert the header back to Minimize.
+  if (typeof _mcApplyMobileModalHeader === 'function') _mcApplyMobileModalHeader(entry.element);
 }
 
 function refreshModal() {

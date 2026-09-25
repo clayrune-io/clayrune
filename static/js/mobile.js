@@ -824,6 +824,60 @@ function mcPushSurfaceHistory() {
   if (!isMobileChatList() || _mcSurfaceOpen) return;
   try { history.pushState({ mc: 'surface' }, ''); _mcSurfaceOpen = true; } catch (e) {}
 }
+
+// ── Mobile modal header: Minimize → Back (2026-09-24) ───────────────────────
+// Ron's call: on mobile every modal's header button next to X does what the
+// Android hardware back button does for that surface, not "minimize" (mobile
+// has no way to reveal a minimized modal, so it just vanished). One shared
+// implementation instead of ~20 hand-built headers: _mcApplyMobileModalHeader
+// is invoked from interactions.js's existing #modal-layer MutationObserver
+// (_mcInitModalResize), which already fires for every .modal-window mounted
+// by any of the ~25 modules that build one, regardless of call site.
+//
+// mcModalHeaderBack walks the SAME sentinel stack the popstate handler reads
+// (index.html ~1391), in the same priority order, so the on-screen button
+// does exactly what a hardware back press would do right now: drill up one
+// level (conv → list, settings detail → subs → list) or close, never more.
+// history.back() lets popstate do that unwind; if no sentinel is live (the
+// modal's opener never pushed one — a bug, or a modal opened by a path this
+// doesn't cover yet) closeModalById is the safe fallback, same as the X.
+function mcModalHeaderBack(modalId) {
+  const hasSentinel = _mcDrawerHistoryActive || _mcSettingsNavDepth > 0
+    || _mcSettingsHistoryActive || _mcSurfaceOpen || _mcResumeHistoryActive
+    || _mcConvHistoryActive || _mcModalHistoryActive || _mcInboxOpen
+    || _mcGlobalSearchOpen;
+  if (hasSentinel) { history.back(); return; }
+  if (typeof closeModalById === 'function') closeModalById(modalId);
+}
+window.mcModalHeaderBack = mcModalHeaderBack;
+
+// Applied once per mounted .modal-window (see interactions.js _mcInitModalResize).
+// Desktop is untouched: the existing Minimize button and its onclick stay as
+// the template rendered them.
+function _mcApplyMobileModalHeader(win) {
+  if (!win || !(_isMobileDevice || window.innerWidth <= 960)) return;
+  const modalId = win.dataset && win.dataset.modalId;
+  if (!modalId) return;
+  const btn = win.querySelector('.modal-minimize');
+  if (btn && !btn.dataset.mcBackWired) {
+    btn.dataset.mcBackWired = '1';
+    btn.title = 'Back';
+    btn.innerHTML = '&#8592;';
+    btn.onclick = () => mcModalHeaderBack(modalId);
+  }
+  // Non-project (__) surfaces have no back-stack entry of their own unless
+  // their opener explicitly pushes one (historically only Claydo + the
+  // new-project form did) — push it here so EVERY __-surface participates,
+  // both for hardware back and for the button above. __settings manages its
+  // own dedicated push (mcPushSettingsHistory/mcPushSettingsNav) and must not
+  // get a second, conflicting sentinel. Project modals push their own L1
+  // entry from openProjectModal; idempotent guard inside mcPushSurfaceHistory
+  // covers Claydo/new-project calling it a second time here.
+  if (modalId.startsWith('__') && modalId !== '__settings') {
+    mcPushSurfaceHistory();
+  }
+}
+window._mcApplyMobileModalHeader = _mcApplyMobileModalHeader;
 function mcPushDrawerHistory() {
   if (_mcDrawerHistoryActive) return;
   try { history.pushState({ mc: 'drawer' }, ''); _mcDrawerHistoryActive = true; } catch (e) {}

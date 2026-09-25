@@ -261,16 +261,11 @@ async function openClaydo() {
   // at open time, would beat that rule and leave the sheet stuck at its
   // keyboard-open height, unable to expand back when the keyboard is dismissed.
   if (window.innerWidth > 960) _clampModalSize(content, 520, 600);
-  // Mobile only: the button next to X mirrors the Android hardware-back
-  // behaviour for Claydo (closeModalById, same as the _mcSurfaceOpen popstate
-  // branch in index.html unwinds to) instead of minimizing — a minimized
-  // Claydo has no visible affordance to reopen it on mobile's single-surface
-  // layout, so "minimize" read as "vanished". Decided once at open time, same
-  // as the desktop-size check just above; desktop keeps the minimize control.
-  const _claydoMobileHdr = _isMobileDevice || window.innerWidth <= 960;
-  const _claydoSecondBtn = _claydoMobileHdr
-    ? `<button class="modal-minimize" onclick="closeModalById('${modalId}')" title="Back">&#8592;</button>`
-    : `<button class="modal-minimize" onclick="minimizeModal('${modalId}')" title="Minimize">&#x2015;</button>`;
+  // The header's second button renders as plain Minimize here; on mobile,
+  // interactions.js's #modal-layer observer (_mcApplyMobileModalHeader, see
+  // mobile.js) swaps it to Back and wires it to the hardware-back sentinel
+  // stack once this window is mounted below — same mechanism every other
+  // modal uses, not a Claydo-only special case.
   content.innerHTML = `
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:14px 22px 12px 24px">
       <div style="display:flex;align-items:center;gap:10px;min-width:0;flex:1">
@@ -282,7 +277,7 @@ async function openClaydo() {
       </div>
       <div class="modal-window-controls" style="position:static;display:flex;gap:4px;align-items:center">
         <button id="claydo-home-btn" class="claydo-home-btn" onclick="setClaydoMode('ask')" title="Back to Ask Claydo" style="display:none">&#8592; Home</button>
-        ${_claydoSecondBtn}
+        <button class="modal-minimize" onclick="minimizeModal('${modalId}')" title="Minimize">&#x2015;</button>
         <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
       </div>
     </div>
@@ -298,11 +293,10 @@ async function openClaydo() {
   const z = nextModalZ++;
   win.style.zIndex = z;
   openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
-  // Register with the mobile back stack (same mechanism the other __-surfaces
-  // use). Without this, hardware back did nothing while Claydo was open — it
-  // fell through to whatever entry was underneath. The popstate _mcSurfaceOpen
-  // branch closes __-modals; mcPushSurfaceHistory is mobile-only + idempotent.
-  if (typeof mcPushSurfaceHistory === 'function') mcPushSurfaceHistory();
+  // Mobile back-stack registration (mcPushSurfaceHistory) now happens
+  // centrally in _mcApplyMobileModalHeader (mobile.js), triggered by the
+  // #modal-layer mount observer in interactions.js — every __-surface gets
+  // it, not just Claydo.
   centerModalElement(win);
   focusModal(modalId);
   _claydoResetConversation('ask');
