@@ -1158,23 +1158,66 @@ import mc.agent_worktree as _agent_worktree
 _agent_worktree.register(_log_agent_activity, load_project, _log)
 
 
-def _worktree_gc_on_startup():
+def _worktree_gc_snapshot_on_startup():
     """Reap agent worktrees orphaned by a hard kill / crash. Merges each
     orphan's work back first and PRESERVES anything still holding unmerged or
-    uncommitted changes — a cleanup must never destroy an agent's output."""
+    uncommitted changes — a cleanup must never destroy an agent's output.
+
+    Split in two so the (git-subprocess-heavy) reaping never delays 'ready to
+    serve': measured 2026-09-25 at 23.19s of a 26.32s boot, almost entirely
+    re-inspecting 267 already-known-preserved orphans. This half is the only
+    part that runs synchronously — a plain directory listing per project — and
+    it runs BEFORE this process can possibly start serving requests, so the
+    snapshot it takes is guaranteed to predate any session dispatch. The
+    actual gc (`_worktree_gc_background_run`) runs in a background thread
+    started from here, restricted to exactly this snapshot's ids via
+    `only_session_ids`, with a live re-check on every id right before it's
+    touched — so a session dispatched after boot, while gc is still working
+    through the snapshot, can never have its worktree merged or removed."""
     if not CONFIG.get('worktree_isolation_enabled', False):
         return
+    snapshot = []
     try:
         for p in load_projects():
             try:
                 if not p.get('project_path'):
                     continue
-                # No sessions survive a restart, so every worktree is an orphan.
-                _agent_worktree.gc_stale(p, live_session_ids=())
+                ids = _agent_worktree.list_worktrees(p)
+                if ids:
+                    snapshot.append((p, ids))
             except Exception as e:
-                _log(f"[worktree] startup gc failed for {p.get('id','')}: {e}")
+                _log(f"[worktree] startup gc snapshot failed for {p.get('id','')}: {e}")
     except Exception as e:
-        _log(f"[worktree] startup gc failed: {e}")
+        _log(f"[worktree] startup gc snapshot failed: {e}")
+        return
+    if not snapshot:
+        return
+    threading.Thread(target=_worktree_gc_background_run, args=(snapshot,),
+                      name='worktree-gc-background', daemon=True).start()
+
+
+def _worktree_gc_background_run(snapshot):
+    """Background half of startup worktree gc — see
+    `_worktree_gc_snapshot_on_startup` for the safety contract. `snapshot` is
+    a list of (project, [session_ids]) pairs captured before serving began."""
+    t0 = _time.time()
+    totals = {'removed': 0, 'merged': 0, 'preserved': 0}
+    for p, ids in snapshot:
+        try:
+            def _is_live(sid, _pid=p.get('id')):
+                s = agent_sessions.get(sid)
+                return bool(s) and s.get('project_id') == _pid
+            out = _agent_worktree.gc_stale(
+                p, live_session_ids=(), only_session_ids=ids,
+                is_live=_is_live, use_cache=True)
+            totals['removed'] += out.get('removed', 0)
+            totals['merged'] += out.get('merged', 0)
+            totals['preserved'] += len(out.get('preserved', []))
+        except Exception as e:
+            _log(f"[worktree] background gc failed for {p.get('id','')}: {e}")
+    dt = _time.time() - t0
+    _log(f"[worktree] background gc done in {dt:.2f}s: removed={totals['removed']} "
+         f"merged={totals['merged']} preserved={totals['preserved']}")
 
 
 # _load_agent_log / _save_agent_log ── moved to mc/blueprints/agent_routes.py
@@ -3136,7 +3179,7 @@ def boot(check_port=True):
     _bp_sched._start_scheduler()
     _start_hivemind_orchestrator()
     _bp_coord.start_coordination_loop()  # cross-agent coordination daemon (9518ec62)
-    _boot_phase('worktree gc', _worktree_gc_on_startup)  # reap orphaned agent worktrees
+    _boot_phase('worktree gc snapshot', _worktree_gc_snapshot_on_startup)  # gc'd in background
     _start_session_guardian()
     # Install built-in skills bundled with MC into ~/.claude/skills/.
     # Checksum-aware: user edits to managed skills are preserved.

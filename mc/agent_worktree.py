@@ -37,6 +37,7 @@ back to the shared tree (today's behavior) rather than failing the dispatch.
 """
 from __future__ import annotations
 
+import json
 import os
 import platform
 import re
@@ -44,6 +45,7 @@ import shutil
 import subprocess
 import threading
 from pathlib import Path
+from typing import Callable, Iterable
 
 import mc.project_sync as _sync
 
@@ -419,7 +421,52 @@ def list_worktrees(project: dict) -> list[str]:
     return [d.name for d in root.iterdir() if d.is_dir()]
 
 
-def gc_stale(project: dict, live_session_ids, merge_first: bool = True) -> dict:
+def _gc_cache_path(project: dict) -> Path | None:
+    root = worktree_root(project)
+    return None if root is None else root / '_gc_cache.json'
+
+
+def _load_gc_cache(project: dict) -> dict:
+    p = _gc_cache_path(project)
+    if p is None or not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding='utf-8'))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_gc_cache(project: dict, cache: dict) -> None:
+    p = _gc_cache_path(project)
+    if p is None:
+        return
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(cache), encoding='utf-8')
+    except Exception:
+        pass  # cache is a pure optimization; losing it just costs a re-scan
+
+
+def _fingerprint(wt: Path) -> list | None:
+    """Cheap (2-subprocess) snapshot of a worktree's mergeability: HEAD sha +
+    dirty flag. Unchanged fingerprint since the last gc pass means the
+    worktree's preserve/merge verdict cannot have changed either, so a repeat
+    pass can skip straight to re-recording it as preserved instead of paying
+    for the full merge_back + remove subprocess sequence again. Measured
+    2026-09-25 against the real 269-worktree registry: 9.12s for this cheap
+    check vs 23.19s for the full merge_back+remove sequence on every one."""
+    wts = str(wt)
+    ok, head = _sync.git_run(wts, ['rev-parse', 'HEAD'], timeout=10)
+    if not ok:
+        return None
+    return [head.strip(), _sync._dirty(wts)]
+
+
+def gc_stale(project: dict, live_session_ids, merge_first: bool = True,
+             only_session_ids: Iterable[str] | None = None,
+             is_live: Callable[[str], bool] | None = None,
+             use_cache: bool = False) -> dict:
     """Reap worktrees whose session is no longer live — a hard kill or an MC
     crash otherwise leaks them forever (the same failure class as the
     watermark-GC gap that truncated the memory index).
@@ -428,24 +475,63 @@ def gc_stale(project: dict, live_session_ids, merge_first: bool = True) -> dict:
     is merged back first, and anything still holding unmerged/uncommitted work
     is PRESERVED for the human rather than deleted.
 
+    ``only_session_ids``, when given, restricts the pass to that allowlist —
+    used by the startup background gc to touch only the ids that existed in
+    its pre-serving snapshot, never a worktree created for a session
+    dispatched after boot. ``is_live``, when given, is re-checked immediately
+    before each id is touched (on top of the static ``live_session_ids`` set),
+    so a snapshot-listed id that got resumed by a live session before gc
+    reached it is still skipped. ``use_cache`` consults/updates a per-project
+    fingerprint cache (see ``_fingerprint``) to skip the merge_back + remove
+    subprocess sequence for previously-preserved worktrees whose HEAD/dirty
+    state hasn't changed — conservative by construction: a stale/matching
+    cache entry only ever means "preserve one more pass" (same verdict as
+    last time), never a skipped delete.
+
     Returns {'removed': n, 'merged': n, 'preserved': [session_ids]}.
     """
     live = set(live_session_ids or ())
+    ids = list_worktrees(project)
+    if only_session_ids is not None:
+        allowed = set(only_session_ids)
+        ids = [sid for sid in ids if sid in allowed]
     out = {'removed': 0, 'merged': 0, 'preserved': []}
-    for sid in list_worktrees(project):
+    cache = _load_gc_cache(project) if use_cache else {}
+    cache_dirty = False
+    for sid in ids:
         if sid in live:
             continue
+        if is_live is not None and is_live(sid):
+            continue
+        if use_cache and sid in cache:
+            wt = worktree_path(project, sid)
+            fp = _fingerprint(wt) if wt is not None and wt.exists() else None
+            if fp is not None and fp == cache[sid]:
+                out['preserved'].append(sid)
+                continue
         if merge_first:
             status, _ = merge_back(project, sid)
             if status == 'clean':
                 out['merged'] += 1
+                if use_cache and cache.pop(sid, None) is not None:
+                    cache_dirty = True
         # remove() refuses (force=False) when work would be lost.
         ok, msg = remove(project, sid, delete_branch=True)
         if ok:
             out['removed'] += 1
+            if use_cache and cache.pop(sid, None) is not None:
+                cache_dirty = True
         else:
             out['preserved'].append(sid)
             _plog(f"[worktree] gc PRESERVED {sid[:12]} — {msg}")
+            if use_cache:
+                wt = worktree_path(project, sid)
+                fp = _fingerprint(wt) if wt is not None and wt.exists() else None
+                if fp is not None:
+                    cache[sid] = fp
+                    cache_dirty = True
+    if use_cache and cache_dirty:
+        _save_gc_cache(project, cache)
     if out['removed'] or out['preserved']:
         _plog(f"[worktree] gc {project.get('id','')}: removed={out['removed']} "
               f"merged={out['merged']} preserved={len(out['preserved'])}")

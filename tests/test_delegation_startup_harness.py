@@ -79,7 +79,7 @@ def traced(name):
 server._bp_sched._start_scheduler = traced("scheduler")
 server._start_hivemind_orchestrator = traced("hivemind")
 server._bp_coord.start_coordination_loop = traced("coordination")
-server._worktree_gc_on_startup = traced("worktree-gc")
+server._worktree_gc_snapshot_on_startup = traced("worktree-gc")
 server._start_session_guardian = traced("guardian")
 server._install_builtin_skills = traced("install-skills")
 server._install_builtin_mcps = traced("install-mcps")
