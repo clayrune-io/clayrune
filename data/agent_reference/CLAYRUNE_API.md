@@ -112,6 +112,8 @@ can drive a project's agent. Listed for completeness.
 | GET | `/api/project/<project_id>/agent/status` | Current run state (status, claude_session_id, queued msgs). |
 | POST | `/api/project/<project_id>/agent/guardian-reset` | Clear stuck-guardian flag if the agent is wedged. |
 | GET | `/api/project/<project_id>/agent/plan-file` | Read the live plan file for the running agent. |
+| POST | `/api/project/<project_id>/agent/<session_id>/job` | MC-958 follow-up (b49cf71f): run `{"command":...,"cwd":optional,"timeout_minutes":optional}` as a real OS subprocess Clayrune owns, for engines with no background-job facility of their own (Codex/Gemini/Qwen — one process per turn, exits at turn end). Returns `{job_id, pid}`. On exit, delivers a follow-up turn into the SAME session (exit code, duration, output tail, log path) via the delegation-delivery outbox/inbox — works even if the session's own process has already exited. 404 if the session doesn't exist or belongs to another project; 400 for incognito sessions. `timeout_minutes` defaults to and is capped by `background_wait_max_minutes` (120). |
+| GET | `/api/project/<project_id>/agent/<session_id>/job/<job_id>` | Job status: `status` (`running`/`completed`/`timeout`), `exit_code`, `pid`, `log_path`, etc. |
 
 ## History / transcripts / runs
 

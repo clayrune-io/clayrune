@@ -105,6 +105,7 @@ import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
 import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (Mode B)
+import mc.agent_jobs as _agent_jobs  # MC-958 follow-up: engine-agnostic background command jobs
 import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
 import mc.artifact_coverage as _artifact_coverage  # substitution check: did the turn run what was asked
 from mc.delegation_delivery import (DeliveryStore, callback_payload,
@@ -1308,6 +1309,118 @@ def _unregister_process(pid):
     with process_tracker_lock:
         tracked_processes.pop(pid, None)
     _persist_pid_ledger()
+
+
+def _job_log_dir() -> Path:
+    # Sibling of data/projects, same as _delivery_path -- DATA_DIR is
+    # suffix-scanned for *.json "projects" (CLAUDE.md's DATA_DIR pollution
+    # rule); job logs are neither JSON nor a project record.
+    return Path(DATA_DIR).parent / 'agent_job_logs'
+
+
+def _job_on_complete(result):
+    """MC-958 follow-up: deliver a finished job's outcome into the session
+    that started it, through the SAME durable outbox/inbox path
+    _notify_agent_spawner uses for a dispatched child's completion -- the
+    only difference is the notified session IS the job's own owner, so
+    `_process_inbox`'s revive branch (`_revive_parent_for_delegation`) covers
+    a Codex/Gemini/Qwen session whose one-shot process has already exited:
+    it resumes/re-dispatches by native session id exactly as it does for an
+    ordinary delegated-child wake.
+    """
+    try:
+        _unregister_process(result['pid'])
+    except Exception as e:
+        _log(f"[agent-jobs] unregister failed for job {result['job_id'][:8]}: {e}")
+    status = 'timed out' if result['timed_out'] else 'exited'
+    message = (
+        f"[background job finished] job {result['job_id']} {status} "
+        f"(exit code {result['exit_code']}) after {result['duration_s']:.1f}s.\n"
+        f"Command: {result['command']}\n\nLog: {result['log_path']}\n\n"
+        f"Last output:\n{result['tail']}\n\nThis is the job you started with "
+        "POST .../agent/<session_id>/job. Continue the work it was part of.")
+    if _delivery_store is None:
+        _log(f"[agent-jobs] delivery store unavailable; job "
+             f"{result['job_id'][:8]} completion was not delivered")
+        return
+    event_id = f"job:{result['job_id']}"
+    payload = {'message': message}
+    try:
+        # Same two-step commit _notify_agent_spawner uses: the exact source is
+        # durable before the outbox row, so a crash between the two can still
+        # be rebuilt rather than losing the only notification.
+        _delivery_store.record_completion_source(
+            event_id, result['project_id'], result['session_id'], payload)
+        _delivery_store.enqueue(
+            event_id, result['project_id'], result['session_id'], payload)
+    except Exception as e:
+        _log(f"[agent-jobs] enqueue failed for job {result['job_id'][:8]}: {e}")
+
+
+@bp.route('/api/project/<project_id>/agent/<session_id>/job', methods=['POST'])
+def agent_job_start(project_id, session_id):
+    """MC-958 follow-up (backlog b49cf71f): run a command as a real OS
+    subprocess Clayrune owns, for engines with no background-job facility of
+    their own (Codex/Gemini/Qwen -- see the context note in
+    _build_agent_context). Completion is delivered into THIS session via
+    _job_on_complete, reusing the delegation-delivery outbox/inbox rather
+    than a new wake mechanism.
+    """
+    p = load_project(project_id)
+    if not p:
+        return jsonify({'error': 'project not found'}), 404
+    pp = p.get('project_path', '')
+
+    with get_manager(project_id).lock:
+        sess = agent_sessions.get(session_id)
+        if not sess or sess.get('project_id') != project_id:
+            return jsonify({'error': 'session not found'}), 404
+        if sess.get('incognito'):
+            return jsonify({'error': 'incognito sessions cannot receive job '
+                            'completion delivery'}), 400
+        default_cwd = _session_cwd(sess, pp)
+
+    data = request.get_json() or {}
+    command = (data.get('command') or '').strip()
+    if not command:
+        return jsonify({'error': 'command required'}), 400
+
+    cwd = (data.get('cwd') or '').strip() or default_cwd
+    if not cwd or not Path(cwd).is_dir():
+        return jsonify({'error': 'cwd is not a directory'}), 400
+
+    cap = state.CONFIG.get('background_wait_max_minutes',
+                           _agent_jobs.DEFAULT_TIMEOUT_MINUTES)
+    raw_timeout = data.get('timeout_minutes')
+    try:
+        timeout_minutes = (float(raw_timeout) if raw_timeout not in (None, '')
+                           else min(_agent_jobs.DEFAULT_TIMEOUT_MINUTES, cap or _agent_jobs.DEFAULT_TIMEOUT_MINUTES))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'timeout_minutes must be a number'}), 400
+    if timeout_minutes <= 0:
+        return jsonify({'error': 'timeout_minutes must be positive'}), 400
+    if cap and cap > 0:
+        timeout_minutes = min(timeout_minutes, float(cap))
+
+    job = _agent_jobs.start_job(
+        project_id=project_id, session_id=session_id, command=command, cwd=cwd,
+        timeout_minutes=timeout_minutes, log_dir=_job_log_dir(),
+        popen_flags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+        kill_fn=lambda proc: _kill_pid(proc.pid, tree=True),
+        on_complete=_job_on_complete)
+    _register_process(job['proc'], f"job {job['job_id'][:8]}", 'agent_job',
+                      session_id, project_id, command)
+    return jsonify({'job_id': job['job_id'], 'pid': job['pid']})
+
+
+@bp.route('/api/project/<project_id>/agent/<session_id>/job/<job_id>', methods=['GET'])
+def agent_job_status(project_id, session_id, job_id):
+    job = _agent_jobs.public_job(job_id)
+    if (not job or job.get('project_id') != project_id
+            or job.get('session_id') != session_id):
+        return jsonify({'error': 'job not found'}), 404
+    return jsonify(job)
+
 
 @bp.route('/api/router/stats', methods=['GET'])
 def get_router_stats_aggregate():
@@ -4435,6 +4548,24 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             parts.append(
                 "--- PROJECT MEMORY INDEX (curated notes; standing facts about "
                 "this project, NOT a task list) ---\n" + _idx)
+
+    # MC-958 follow-up (b49cf71f): CodexRuntime/GeminiRuntime/QwenRuntime run
+    # one process per turn and exit at turn end (no run_in_background tool),
+    # so a shell `&` job is orphaned with nothing to wake the session -- tell
+    # the agent the real options instead of letting it discover the silent
+    # failure by trying to background a command itself. Needs a session_id to
+    # address, and incognito sessions can't take a job endpoint response.
+    if not _is_claude and session_id and not incognito:
+        parts.append(
+            "You have no background-job facility of your own -- your process "
+            "exits when this turn ends, so backgrounding a command with `&` "
+            "orphans it and nothing wakes you when it finishes. For a long "
+            "command, either run it in the foreground within your tool's own "
+            "timeout, or hand it to Clayrune: POST "
+            f"http://localhost:{port}/api/project/{pid}/agent/{session_id}/job "
+            '{"command":"...","timeout_minutes":optional} — Clayrune runs it '
+            "and delivers a follow-up turn into this session with the exit "
+            "code, duration and output tail when it finishes.")
 
     # Pointer card, not the full 19.9 KB reference — see
     # `_CLAYRUNE_API_POINTER_CARD` for the measured numbers. The full text
