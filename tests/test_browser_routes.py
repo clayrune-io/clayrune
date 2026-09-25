@@ -512,3 +512,131 @@ def test_read_route_refuses_when_the_live_page_is_clayrunes_own_origin(app_clien
     body = resp.get_json()
     assert body['error'] == 'own_origin_blocked'
     assert body['guidance'] == br._NO_DOWNGRADE_GUIDANCE
+
+
+# ── Downloads (Browser.setDownloadBehavior / downloadWillBegin / progress) ───
+#
+# Root-cause of the "frozen pane" (reproduced manually against a real headless
+# Chromium and a local Content-Disposition:attachment server, see the session
+# journal): a download never produces a Page.screencastFrame — Chromium simply
+# doesn't repaint for one — so before this change the pane gave literally zero
+# signal that anything had happened, forever. The fix is (a) route downloads
+# into a directory outside the repo/DATA_DIR via Browser.setDownloadBehavior,
+# and (b) treat Browser.downloadWillBegin/downloadProgress as an independent
+# signal, piggybacked on the SAME SSE channel as frames (browser_stream's
+# gen(), keyed off `downloads_seq` rather than `frame_seq`) since a download
+# never bumps the frame counter. These tests cover the pure, no-Chromium half
+# of that: the finalize step that turns a completed CDP download into a file
+# reachable through /api/serve-file's existing UPLOADS_DIR allowlist, and the
+# SSE generator actually emitting a downloads payload when only downloads_seq
+# (not frame_seq) has moved.
+
+def test_safe_download_name_strips_path_and_unsafe_chars():
+    assert br._safe_download_name('../../etc/passwd') == 'passwd'
+    assert br._safe_download_name('report (final)!.pdf') == 'report_final_.pdf'
+    assert br._safe_download_name('') == 'download'
+    assert br._safe_download_name(None) == 'download'
+
+
+def test_safe_download_name_caps_length():
+    assert len(br._safe_download_name('x' * 500 + '.txt')) <= 120
+
+
+def test_download_dir_for_named_profile_is_stable_across_sessions():
+    s1 = {'session_id': 'sid-1', 'profile': 'reddit'}
+    s2 = {'session_id': 'sid-2', 'profile': 'reddit'}
+    assert br._download_dir_for(s1) == br._download_dir_for(s2), \
+        'same profile should land downloads in the same place across sessions'
+
+
+def test_download_dir_for_throwaway_session_is_per_session():
+    s1 = {'session_id': 'sid-1', 'profile': None}
+    s2 = {'session_id': 'sid-2', 'profile': None}
+    assert br._download_dir_for(s1) != br._download_dir_for(s2)
+
+
+def test_download_dir_is_outside_the_repo_and_data_dir():
+    d = br._download_dir_for({'session_id': 'sid-1', 'profile': None})
+    assert '.clayrune' in d and 'browser_downloads' in d
+    assert 'data' + os.sep + 'projects' not in d
+
+
+def test_finalize_download_copies_into_uploads_dir_and_builds_serve_url(tmp_path, monkeypatch):
+    dl_dir = tmp_path / 'dl'
+    dl_dir.mkdir()
+    (dl_dir / 'guid-abc123').write_bytes(b'file contents')
+    uploads = tmp_path / 'uploads'
+    monkeypatch.setattr(br, '_UPLOADS_DIR', uploads)
+    session = {'session_id': 'sid-1', 'download_dir': str(dl_dir)}
+    d = {'guid': 'guid-abc123', 'filename': 'report.pdf'}
+    br._finalize_download(session, d)
+    assert 'error' not in d
+    assert d['uploads_path'] and os.path.isfile(d['uploads_path'])
+    assert os.path.dirname(d['uploads_path']) == str(uploads)
+    with open(d['uploads_path'], 'rb') as f:
+        assert f.read() == b'file contents'
+    # The CDP-side copy is removed once it's safely under UPLOADS_DIR — don't
+    # leave the same bytes reachable from two places.
+    assert not (dl_dir / 'guid-abc123').exists()
+    assert d['serve_url'].startswith('/api/serve-file?path=')
+    assert 'inline=0' in d['serve_url']
+
+
+def test_finalize_download_reports_missing_file_instead_of_crashing(tmp_path, monkeypatch):
+    monkeypatch.setattr(br, '_UPLOADS_DIR', tmp_path / 'uploads')
+    session = {'session_id': 'sid-1', 'download_dir': str(tmp_path / 'dl')}
+    d = {'guid': 'ghost', 'filename': 'x.pdf'}
+    br._finalize_download(session, d)
+    assert 'error' in d and 'uploads_path' not in d
+
+
+def test_finalize_download_reports_when_uploads_dir_not_wired(tmp_path, monkeypatch):
+    dl_dir = tmp_path / 'dl'
+    dl_dir.mkdir()
+    (dl_dir / 'g1').write_bytes(b'x')
+    monkeypatch.setattr(br, '_UPLOADS_DIR', None)
+    session = {'session_id': 'sid-1', 'download_dir': str(dl_dir)}
+    d = {'guid': 'g1', 'filename': 'x.pdf'}
+    br._finalize_download(session, d)
+    assert 'error' in d and 'not wired' in d['error']
+
+
+def test_stream_gen_fires_on_downloads_seq_alone_with_no_new_frame():
+    """A download never bumps frame_seq (see _stream_gen's docstring) — the
+    generator must still emit when ONLY downloads_seq has moved, or the pane
+    has no way to learn a download even started. Driven directly (not via
+    Flask's test client, which would try to fully consume a response whose
+    generator only terminates when session['status'] leaves 'running')."""
+    session = {
+        'session_id': 'sid-1', 'status': 'running', 'frame': None, 'frame_seq': 0,
+        'downloads_seq': 1,  # already 1 vs. the generator's initial last_dl=-1
+        'downloads': {'g1': {'guid': 'g1', 'state': 'in_progress',
+                             'received_bytes': 10, 'total_bytes': 100}},
+    }
+    gen = br._stream_gen(session)
+    chunk = next(gen)
+    assert 'downloads' in chunk and 'g1' in chunk
+    session['status'] = 'stopped'
+    final = next(gen)  # the trailing status frame
+    assert '"status": "stopped"' in final
+    with pytest.raises(StopIteration):
+        next(gen)
+
+
+def test_stream_gen_repeats_download_payload_on_progress_updates():
+    session = {
+        'session_id': 'sid-1', 'status': 'running', 'frame': None, 'frame_seq': 0,
+        'downloads_seq': 1,
+        'downloads': {'g1': {'guid': 'g1', 'state': 'in_progress',
+                             'received_bytes': 10, 'total_bytes': 100}},
+    }
+    gen = br._stream_gen(session)
+    first = next(gen)
+    assert '"received_bytes": 10' in first
+    session['downloads']['g1']['received_bytes'] = 100
+    session['downloads']['g1']['state'] = 'completed'
+    session['downloads_seq'] = 2
+    second = next(gen)
+    assert '"state": "completed"' in second and '"received_bytes": 100' in second
+    session['status'] = 'stopped'
+    next(gen)

@@ -6,6 +6,18 @@
 // fixed VIEW_W×VIEW_H render viewport). ES module → everything shared via
 // window.* (see discovery_es_module_cross_boundary_globals).
 
+// Human-opened panes default to this persistent profile instead of a
+// throwaway one — before this, every login typed into a hand-opened pane was
+// gone on the next open (Ron, 2026-09-24). Agent launches never go through
+// this file (they POST /api/browser/launch directly), so they are untouched
+// and stay throwaway unless an agent names a profile itself. Deliberately a
+// constant here rather than `browser_default_profile` in config.json: that
+// config key feeds the BACKEND's unnamed-launch default
+// (browser_routes._default_profile), which — if set — would apply to every
+// unnamed launch including agent ones. Keeping config empty and defaulting
+// only in this human-facing file is what keeps the two paths separate.
+const BP_DEFAULT_PROFILE = 'main';
+
 const BP_VIEW_W = 1280, BP_VIEW_H = 800;
 // The page coordinate space clicks are mapped into. NOT a constant: CDP's
 // Emulation.setDeviceMetricsOverride does not take effect, so a 1280x800
@@ -80,24 +92,23 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   _bpDetachView();
   const pid = projectId || window.currentProjectId ||
     (typeof activeProjectId !== 'undefined' ? activeProjectId : null) || 'mission_control';
+  let curProfile = null;
   if (sessionId) {
     // Attach mode: adopt the existing session, read its current URL for the bar.
     _bpSession = sessionId;
-    if (!url) {
-      try {
-        const st = await fetch((window.API_BASE || '') +
-          `/api/project/${encodeURIComponent(pid)}/browser/status`).then(r => r.json());
-        const s = (st.sessions || []).find(x => x.session_id === sessionId);
-        if (s) url = s.url;
-      } catch (e) {}
-    }
+    try {
+      const st = await fetch((window.API_BASE || '') +
+        `/api/project/${encodeURIComponent(pid)}/browser/status`).then(r => r.json());
+      const s = (st.sessions || []).find(x => x.session_id === sessionId);
+      if (s) { curProfile = s.profile || null; if (!url) url = s.url; }
+    } catch (e) {}
   } else {
     let data;
     try {
       const res = await fetch((window.API_BASE || '') + '/api/browser/launch', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ project_id: pid, url: url || 'about:blank',
-                               profile: profile || undefined }),
+                               profile: profile || BP_DEFAULT_PROFILE }),
       });
       data = await res.json();
       if (!res.ok) throw new Error(data.error || 'launch failed');
@@ -106,6 +117,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       return;
     }
     _bpSession = data.session_id;
+    curProfile = data.profile || null;
   }
 
   // ── DOM ──
@@ -132,12 +144,15 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       <input data-bp="url" type="text" spellcheck="false" value="${(url||'').replace(/"/g,'&quot;')}"
         placeholder="Enter URL and press Enter"
         style="flex:1;min-width:60px;padding:6px 10px;font-size:13px;background:#111;border:1px solid #444;border-radius:6px;color:#eee;outline:none">
+      <span data-bp="profile" title="" style="font-size:10px;padding:0 6px;border:1px solid #4a4a4a;border-radius:99px;color:#9ecb9e;flex:0 0 auto;cursor:pointer;display:none"></span>
       <span data-bp="spin" style="color:#888;font-size:12px;width:14px">&#9679;</span>
+      <button data-bp="minimize" title="Minimize" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 8px">&#8211;</button>
       <button data-bp="close" title="Close" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 8px">&#10005;</button>
     </div>
-    <div style="flex:1;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden">
+    <div style="flex:1;position:relative;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden">
       <img data-bp="screen" tabindex="0"
         style="max-width:100%;max-height:100%;aspect-ratio:${BP_VIEW_W}/${BP_VIEW_H};outline:none;cursor:default;user-select:none" draggable="false">
+      <div data-bp="downloads" style="position:absolute;right:8px;bottom:8px;display:flex;flex-direction:column;gap:4px;max-width:280px;pointer-events:none"></div>
     </div>
     <div data-bp="grip" title="Drag to resize"
       style="position:absolute;right:1px;bottom:1px;width:22px;height:22px;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 45%,#777 45%,#777 55%,transparent 55%,transparent 70%,#777 70%,#777 80%,transparent 80%);border-radius:0 0 9px 0"></div>`;
@@ -173,7 +188,30 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   const $ = sel => win.querySelector(`[data-bp="${sel}"]`);
   const img = $('screen'), urlInput = $('url'), spin = $('spin');
 
+  // Profile indicator — the sessions menu already lets you SWITCH profile,
+  // but gave no ambient sign of which one a pane is currently on. A signed-in
+  // ('main' or a named saved login) badge is green; a throwaway session (only
+  // reachable today via an agent launch with no profile) is dim so a
+  // just-typed login is visibly at risk of being lost on close.
+  const profileBadge = $('profile');
+  const _bpSetProfileBadge = (name) => {
+    if (name) {
+      profileBadge.textContent = name;
+      profileBadge.title = `Signed-in profile: ${name} — click for sessions/profiles`;
+      profileBadge.style.display = '';
+      profileBadge.style.color = '#9ecb9e'; profileBadge.style.borderColor = '#4a4a4a';
+    } else {
+      profileBadge.textContent = 'temp';
+      profileBadge.title = 'Throwaway session — closing it loses any login (click for sessions/profiles)';
+      profileBadge.style.display = '';
+      profileBadge.style.color = '#e0b366'; profileBadge.style.borderColor = '#5a4a30';
+    }
+  };
+  _bpSetProfileBadge(curProfile);
+  profileBadge.onclick = (e) => { e.stopPropagation(); _bpToggleSessionMenu(win, pid); };
+
   $('close').onclick = closeBrowserPane;
+  $('minimize').onclick = () => _bpMinimizePane(win, pid);
   $('back').onclick = () => _bpSend({ type: 'back' });
   $('fwd').onclick = () => _bpSend({ type: 'forward' });
   $('reload').onclick = () => _bpSend({ type: 'reload' });
@@ -362,6 +400,11 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     if (d.img) { img.src = 'data:image/jpeg;base64,' + d.img; spin.style.color = '#4caf50'; }
     if (d.url && document.activeElement !== urlInput) urlInput.value = d.url;
     if (d.status && d.status !== 'running') { spin.textContent = '×'; spin.style.color = '#e57373'; }
+    // A download never repaints the page (Chromium generates no screencast
+    // frame for it — see the root-cause note on Browser.downloadWillBegin in
+    // browser_routes.py), so this SSE message is the ONLY signal a download
+    // happened at all. Without it the pane just sits there looking frozen.
+    if (d.downloads) _bpRenderDownloads(win, d.downloads);
   };
   _bpES.onerror = () => { if (spin) spin.style.color = '#e57373'; };
   setTimeout(() => img.focus(), 100);
@@ -370,7 +413,94 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   try { localStorage.setItem('mc_browser_pane_open', JSON.stringify({ sid: _bpSession, pid })); } catch (e) {}
 }
 
+// ── minimize/restore ────────────────────────────────────────────────────────
+// Reuses the SAME dock (#minimized-tray) and chip styling (.minimized-chip)
+// every other modal minimizes into (modal-manager.js: minimizeModal /
+// restoreModal) for visual consistency, but the pane isn't registered in
+// modal-manager's `openModals` map — it's a standalone element, not a
+// project modal — so this is a parallel, self-contained implementation
+// rather than a call into minimizeModal/restoreModal.
+//
+// What "costs nothing hidden" means here: the backend Chromium session and
+// the SSE connection both stay alive (so a download finishing while
+// minimized still reaches the pane and shows a toast — see the `downloads`
+// branch in the SSE handler above), but Page.startScreencast is explicitly
+// stopped, which is the one part of this pipeline with a real per-frame
+// cost (JPEG capture + base64 + transfer at up to 30fps). Restoring re-arms
+// it, same as a fresh navigation does server-side.
+let _bpMinimizedChip = null;
+
+function _bpMinimizePane(win, pid) {
+  if (!win || !win.isConnected) return;
+  const tray = document.getElementById('minimized-tray');
+  if (!tray) return;  // no dock on this surface — nothing to minimize into
+  win.style.display = 'none';
+  _bpSend({ type: 'screencast', action: 'stop' });
+  if (_bpMinimizedChip) { try { _bpMinimizedChip.remove(); } catch (e) {} }
+  const chip = document.createElement('div');
+  chip.className = 'minimized-chip';
+  chip.id = 'chip-bp-' + _bpSession;
+  const urlInput = win.querySelector('[data-bp="url"]');
+  const label = ((urlInput && urlInput.value) || 'Browser').replace(/^https?:\/\//, '');
+  chip.innerHTML = `
+    <span class="chip-status" style="background:#4caf50"></span>
+    <span>&#127760; ${_bpEsc(label)}</span>
+    <span class="chip-close" title="Close">&#10005;</span>`;
+  chip.addEventListener('click', (e) => {
+    if (e.target.closest('.chip-close')) { closeBrowserPane(); return; }
+    _bpRestorePane(win);
+  });
+  tray.appendChild(chip);
+  _bpMinimizedChip = chip;
+}
+
+function _bpRestorePane(win) {
+  if (!win) return;
+  win.style.display = 'flex';
+  _bpSend({ type: 'screencast', action: 'start' });
+  if (_bpMinimizedChip) { try { _bpMinimizedChip.remove(); } catch (e) {} _bpMinimizedChip = null; }
+  try { win.style.zIndex = nextModalZ++; } catch (e) {}
+  const img = win.querySelector('[data-bp="screen"]');
+  if (img) img.focus();
+}
+
+let _bpDoneToasted = new Set();
+
+function _bpRenderDownloads(win, downloads) {
+  const box = win && win.querySelector('[data-bp="downloads"]');
+  if (!box) return;
+  const active = (downloads || []).filter(d => d.state !== 'canceled');
+  box.innerHTML = active.map(d => {
+    const pct = d.total_bytes ? Math.round(100 * d.received_bytes / d.total_bytes) : null;
+    const label = _bpEsc(d.filename || d.guid);
+    if (d.state === 'completed') {
+      const href = d.serve_url ? (window.API_BASE || '') + d.serve_url : null;
+      return `<div style="pointer-events:auto;background:#242424;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:11px;color:#eee">
+        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">&#10003; ${label}</div>
+        ${href ? `<a href="${href}" target="_blank" style="color:#8ab4f8">Open / download</a>`
+               : `<span style="color:#e57373">${_bpEsc(d.error || 'could not be saved')}</span>`}
+      </div>`;
+    }
+    return `<div style="pointer-events:none;background:#242424;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:11px;color:#eee">
+      <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">&#8681; ${label}</div>
+      <div style="height:3px;background:#111;border-radius:2px;margin-top:4px;overflow:hidden">
+        <div style="height:100%;background:#4caf50;width:${pct != null ? pct : 30}%"></div>
+      </div>
+    </div>`;
+  }).join('');
+  for (const d of (downloads || [])) {
+    if (d.state === 'completed' && !_bpDoneToasted.has(d.guid)) {
+      _bpDoneToasted.add(d.guid);
+      if (typeof showToast === 'function') {
+        showToast(d.serve_url ? `\u{1F4E5} Downloaded: ${d.filename}`
+                               : `Download finished but couldn't be saved: ${d.error || d.filename}`);
+      }
+    }
+  }
+}
+
 function closeBrowserPane() {
+  if (_bpMinimizedChip) { try { _bpMinimizedChip.remove(); } catch (e) {} _bpMinimizedChip = null; }
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
   if (_bpUpHandler) { window.removeEventListener('mouseup', _bpUpHandler); _bpUpHandler = null; }
   _bpPressed = false;
@@ -417,6 +547,7 @@ async function _bpFetchSessions(pid) {
 // Detach the pane VIEW (close the stream, remove the window) WITHOUT stopping
 // the backend session or clearing the restore flag. Used on switch/re-open.
 function _bpDetachView() {
+  if (_bpMinimizedChip) { try { _bpMinimizedChip.remove(); } catch (e) {} _bpMinimizedChip = null; }
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
   if (_bpUpHandler) { window.removeEventListener('mouseup', _bpUpHandler); _bpUpHandler = null; }
   _bpPressed = false;

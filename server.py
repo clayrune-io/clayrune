@@ -2774,6 +2774,7 @@ _bp_browser.wire(
     popen_flags=_POPEN_FLAGS,
     startupinfo=_STARTUPINFO,
     server_port=PORT,
+    uploads_dir=UPLOADS_DIR,
 )
 app.register_blueprint(_bp_browser.bp)
 # Only the server process may sweep orphaned Chromium profile dirs: it is the
