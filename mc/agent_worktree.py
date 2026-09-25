@@ -44,6 +44,7 @@ import shutil
 import subprocess
 import threading
 from pathlib import Path
+from typing import Callable, Iterable
 
 import mc.project_sync as _sync
 
@@ -419,7 +420,9 @@ def list_worktrees(project: dict) -> list[str]:
     return [d.name for d in root.iterdir() if d.is_dir()]
 
 
-def gc_stale(project: dict, live_session_ids, merge_first: bool = True) -> dict:
+def gc_stale(project: dict, live_session_ids, merge_first: bool = True,
+             only_session_ids: Iterable[str] | None = None,
+             is_live: Callable[[str], bool] | None = None) -> dict:
     """Reap worktrees whose session is no longer live — a hard kill or an MC
     crash otherwise leaks them forever (the same failure class as the
     watermark-GC gap that truncated the memory index).
@@ -428,12 +431,26 @@ def gc_stale(project: dict, live_session_ids, merge_first: bool = True) -> dict:
     is merged back first, and anything still holding unmerged/uncommitted work
     is PRESERVED for the human rather than deleted.
 
+    ``only_session_ids``, when given, restricts the pass to that allowlist —
+    used by the startup background gc to touch only the ids that existed in
+    its pre-serving snapshot, never a worktree created for a session
+    dispatched after boot. ``is_live``, when given, is re-checked immediately
+    before each id is touched (on top of the static ``live_session_ids`` set),
+    so a snapshot-listed id that got resumed by a live session before gc
+    reached it is still skipped.
+
     Returns {'removed': n, 'merged': n, 'preserved': [session_ids]}.
     """
     live = set(live_session_ids or ())
+    ids = list_worktrees(project)
+    if only_session_ids is not None:
+        allowed = set(only_session_ids)
+        ids = [sid for sid in ids if sid in allowed]
     out = {'removed': 0, 'merged': 0, 'preserved': []}
-    for sid in list_worktrees(project):
+    for sid in ids:
         if sid in live:
+            continue
+        if is_live is not None and is_live(sid):
             continue
         if merge_first:
             status, _ = merge_back(project, sid)

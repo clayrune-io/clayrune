@@ -242,6 +242,44 @@ def test_gc_never_touches_a_live_session(project):
     w.remove(project, 'live1', delete_branch=True, force=True)
 
 
+def test_gc_only_session_ids_ignores_worktree_created_after_snapshot(project):
+    """MC boot-time gc snapshots which worktrees exist BEFORE it can start
+    serving requests, then restricts the background reap pass to that
+    snapshot (`only_session_ids`). A worktree for a session dispatched after
+    boot — while the background pass is still working through the snapshot —
+    must never be merged or removed just because it's a clean, live-looking
+    orphan session id gc doesn't know about."""
+    w.create(project, 'presnap1')  # existed at snapshot time
+    snapshot_ids = w.list_worktrees(project)
+    assert 'presnap1' in snapshot_ids
+
+    # A session dispatched AFTER the snapshot was taken — not in it.
+    _, late_path = w.create(project, 'postsnap1')
+
+    out = w.gc_stale(project, live_session_ids=(), only_session_ids=snapshot_ids)
+
+    # presnap1 was in the snapshot and is a clean orphan, so it's reaped normally.
+    assert out['removed'] == 1
+    assert 'postsnap1' not in out['preserved']
+    assert Path(late_path).exists(), 'worktree created after the snapshot must survive gc'
+    w.remove(project, 'postsnap1', delete_branch=True, force=True)
+
+
+def test_gc_is_live_skips_id_even_when_snapshot_listed(project):
+    """Belt-and-suspenders: even a snapshot-listed id must be skipped if a
+    live session claims it before gc reaches it (e.g. session resumed onto
+    an existing worktree id) — `is_live` is re-checked per id, not just the
+    static `live_session_ids` set computed once up front."""
+    _, path = w.create(project, 'resumed1')
+    out = w.gc_stale(project, live_session_ids=(),
+                      only_session_ids=('resumed1',),
+                      is_live=lambda sid: sid == 'resumed1')
+    assert out['removed'] == 0
+    assert out['preserved'] == []
+    assert Path(path).exists()
+    w.remove(project, 'resumed1', delete_branch=True, force=True)
+
+
 def test_conflict_aborts_and_restores_tree(project):
     """Same-line collision: merge aborts, the agent's tree is left EXACTLY as
     it was, and the tree is not left in a conflicted state."""
