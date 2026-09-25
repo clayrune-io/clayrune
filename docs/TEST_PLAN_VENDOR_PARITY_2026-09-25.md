@@ -24,3 +24,5 @@ Every fix below is dead code until then.
 Source reports: `docs/VENDOR_HARNESS_MATRIX.md`,
 `docs/CODEX_UNATTENDED_SANDBOX_DESIGN.md`.
 | 9 | Browser file upload, right-click, IME/shortcuts, sharp text (MC-976 batch B, `853505a`..`54ff080`) | merged | In the browser pane open any site with an upload field (e.g. a Gmail compose attach). Click it, pick a file from THIS device (phone works too). Right-click a link. Press Ctrl+F. | Clayrune's own picker opens and the file attaches; the page's context menu/behaviour fires, not Clayrune's; the page's find bar opens; text looks sharp. |
+| 10 | Browser page fills the pane, clicks land, + new tab, copy icon (`da58ae0`/`cd8587c`/`8b106e9`) | merged | Open google.com in the pane. Click the search box. Click `+` at the end of the tab strip. Open two search results in new tabs. | Page fills the pane; the click lands in the box; `+` opens a blank tab with the URL bar focused; both result tabs stay open. |
+| 11 | Restart answers in seconds (`365febc`/`9b9268c`/`35f9421`) | merged | Power -> Restart. | Dashboard back in under ~10s; no "Restart appears stuck"; no Chromium error page. |
