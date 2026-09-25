@@ -187,6 +187,16 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
           </div>
         </div>
       </div>
+      <div data-bp="filechooser-overlay" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,.55);align-items:center;justify-content:center;z-index:5">
+        <div data-bp="filechooser-box" style="background:#2a2a2a;border:1px solid #4a4a4a;border-radius:8px;padding:16px;width:320px;max-width:90%;color:#eee;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.5)">
+          <div style="margin-bottom:10px">The page wants a file<span data-bp="filechooser-multi" style="display:none">s</span>.</div>
+          <input data-bp="filechooser-input" type="file" style="width:100%;margin-bottom:10px;color:#eee">
+          <div style="display:flex;justify-content:flex-end;gap:8px">
+            <button data-bp="filechooser-cancel" style="background:none;border:1px solid #555;color:#ddd;border-radius:6px;padding:5px 12px;cursor:pointer">Cancel</button>
+            <button data-bp="filechooser-ok" style="background:#3a7ae0;border:none;color:#fff;border-radius:6px;padding:5px 14px;cursor:pointer">Upload</button>
+          </div>
+        </div>
+      </div>
     </div>
     <div data-bp="grip" title="Drag to resize"
       style="position:absolute;right:1px;bottom:1px;width:22px;height:22px;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 45%,#777 45%,#777 55%,transparent 55%,transparent 70%,#777 70%,#777 80%,transparent 80%);border-radius:0 0 9px 0"></div>`;
@@ -443,6 +453,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     // "dialog just closed" as "no update" and leave the answer box stuck up.
     if ('tabs' in d) _bpRenderTabs(win, d.tabs, d.active_target_id);
     if ('dialog' in d) _bpRenderDialog(win, d.dialog);
+    if ('file_chooser' in d) _bpRenderFileChooser(win, d.file_chooser);
   };
   _bpES.onerror = () => { if (spin) spin.style.color = '#e57373'; };
   setTimeout(() => img.focus(), 100);
@@ -625,6 +636,51 @@ function _bpRenderDialog(win, dlg) {
   okBtn.onclick = () => answer(true);
   cancelBtn.onclick = () => answer(false);
   if (isPrompt) setTimeout(() => inputEl.focus(), 0);
+}
+
+// ── file chooser (Page.fileChooserOpened) — a picker on the USER's device ──
+// Before this, <input type=file> inside the pane opened Chromium's native
+// picker on the SERVER's desktop (invisible to whoever is looking at the
+// pane, and blocking the page until someone at the server dismissed it — see
+// browser_file_chooser's docstring). The backend intercepts it and reports
+// `mode` here instead; this overlay is what actually lets the human pick a
+// file from THEIR OWN device (works over the phone/remote console too,
+// same as the rest of the pane) and uploads it through the multipart route,
+// which is the only path that ever reaches DOM.setFileInputFiles — there is
+// no field anywhere a caller can put a server path in its place.
+function _bpRenderFileChooser(win, fc) {
+  const overlay = win && win.querySelector('[data-bp="filechooser-overlay"]');
+  if (!overlay) return;
+  if (!fc) { overlay.style.display = 'none'; return; }
+  const inputEl = win.querySelector('[data-bp="filechooser-input"]');
+  const multiEl = win.querySelector('[data-bp="filechooser-multi"]');
+  const cancelBtn = win.querySelector('[data-bp="filechooser-cancel"]');
+  const okBtn = win.querySelector('[data-bp="filechooser-ok"]');
+  const multi = fc.mode === 'selectMultiple';
+  inputEl.multiple = multi;
+  inputEl.value = '';
+  multiEl.style.display = multi ? '' : 'none';
+  overlay.style.display = 'flex';
+  const cancel = () => {
+    if (!_bpSession) return;
+    const fd = new FormData();
+    fd.append('session_id', _bpSession);
+    fd.append('action', 'cancel');
+    fetch((window.API_BASE || '') + '/api/browser/file-chooser', { method: 'POST', body: fd }).catch(() => {});
+    overlay.style.display = 'none';
+  };
+  cancelBtn.onclick = cancel;
+  okBtn.onclick = () => {
+    if (!_bpSession || !inputEl.files.length) return;
+    const fd = new FormData();
+    fd.append('session_id', _bpSession);
+    for (const f of inputEl.files) fd.append('file', f);
+    fetch((window.API_BASE || '') + '/api/browser/file-chooser', { method: 'POST', body: fd })
+      .then(r => r.json()).then(d => {
+        if (d && d.error && typeof showToast === 'function') showToast('Upload failed: ' + d.error);
+      }).catch(() => {});
+    overlay.style.display = 'none';
+  };
 }
 
 function closeBrowserPane() {
