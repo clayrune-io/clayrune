@@ -1244,7 +1244,7 @@ function agentPanelHTML(p) {
         const _dDate = new Date(activeSession.startedAt);
         if (!isNaN(_dDate.getTime())) {
           _lastDividerKey = _dateKeyLocal(_dDate);
-          result += `<div class="chat-date-divider" data-date="${esc(_lastDividerKey)}">${esc(_formatDateDivider(_dDate))}</div>`;
+          result += `<div class="chat-date-divider" data-date="${esc(_lastDividerKey)}"><span class="chat-date-divider-pill">${esc(_formatDateDivider(_dDate))}</span></div>`;
         }
       }
       let tableLines = [];
@@ -1274,7 +1274,7 @@ function agentPanelHTML(p) {
             const _lKey = _dateKeyLocal(_lDate);
             if (_lKey !== _lastDividerKey) {
               _lastDividerKey = _lKey;
-              result += `<div class="chat-date-divider" data-date="${esc(_lKey)}">${esc(_formatDateDivider(_lDate))}</div>`;
+              result += `<div class="chat-date-divider" data-date="${esc(_lKey)}"><span class="chat-date-divider-pill">${esc(_formatDateDivider(_lDate))}</span></div>`;
             }
           }
         }
@@ -4447,7 +4447,10 @@ function _maybeInsertDateDivider(container, dateHint) {
   const div = document.createElement('div');
   div.className = 'chat-date-divider';
   div.dataset.date = key;
-  div.textContent = _formatDateDivider(d);
+  const pill = document.createElement('span');
+  pill.className = 'chat-date-divider-pill';
+  pill.textContent = _formatDateDivider(d);
+  div.appendChild(pill);
   container.appendChild(div);
 }
 

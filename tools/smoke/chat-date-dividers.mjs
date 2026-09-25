@@ -357,6 +357,44 @@ try {
     const midToday = await pinnedLabelAt(todayOff.offsetTop + 300);
     midToday === 'Today' ? ok('scrolled into the middle of "Today": that label stays pinned at the top (previous day pushed out)')
       : fail(`scrolled mid-Today: expected "Today" pinned, got ${JSON.stringify(midToday)}`);
+
+    // ── DOUBLED-PILL REGRESSION (Ron, 2026-09-25, screenshot data/uploads/
+    //    agent_5e1bfe76d2.png): CSS sticky does NOT evict an earlier divider
+    //    once a later one also qualifies — scrolled into "Today", the
+    //    "Yesterday"/"Wed ..." dividers above it are STILL simultaneously
+    //    stuck at the identical top:0 rect, just hidden behind. The bug was
+    //    that each divider's own visible pill sized to its TEXT (align-self:
+    //    center on the outer, styled element), so a wider earlier pill's
+    //    edges peeked out from behind a narrower current one as a
+    //    concentric ring. Fixed by making the STICKY element itself a
+    //    full-width opaque backdrop (`.chat-date-divider`) with the visible
+    //    chip moved to a child `.chat-date-divider-pill` — assert every
+    //    simultaneously-stuck divider's outer rect is full-width and
+    //    identical, so one fully occludes the rest with nothing to ring.
+    await page.evaluate(({ sel, top }) => { document.querySelector(sel).scrollTop = top; }, { sel: outSel8, top: todayOff.offsetTop + 300 });
+    const ringCheck = await page.evaluate(({ sel, baseline }) => {
+      const out = document.querySelector(sel);
+      const outRect = out.getBoundingClientRect();
+      const divs = [...out.querySelectorAll('.chat-date-divider')];
+      const stuck = divs.filter((d) => Math.abs((d.getBoundingClientRect().top - outRect.top) - baseline) < 3);
+      const widths = stuck.map((d) => Math.round(d.getBoundingClientRect().width));
+      const containerWidth = Math.round(outRect.width);
+      const pillsExist = stuck.every((d) => d.querySelector('.chat-date-divider-pill'));
+      return { stuckCount: stuck.length, widths, containerWidth, pillsExist };
+    }, { sel: outSel8, baseline });
+    (ringCheck.stuckCount >= 2)
+      ? ok(`${ringCheck.stuckCount} dividers are simultaneously stuck at the same spot (expected — CSS doesn't evict old ones)`)
+      : fail(`expected >=2 simultaneously-stuck dividers to exercise the occlusion fix, got ${ringCheck.stuckCount}`);
+    ringCheck.pillsExist ? ok('every stuck divider has a .chat-date-divider-pill child (visible chip moved off the sticky element)')
+      : fail('a stuck divider is missing its .chat-date-divider-pill child');
+    // Widths only need to match EACH OTHER, not the container's own
+    // getBoundingClientRect (that includes the scrollbar gutter the
+    // dividers, as children, don't extend into) — what actually prevents
+    // the ring is every stuck backdrop being the same size as its
+    // neighbours, so the top one in DOM order fully covers the rest.
+    (ringCheck.widths.every((w) => w === ringCheck.widths[0]) && ringCheck.widths[0] > 0)
+      ? ok(`all stuck dividers are identically full-width backdrops (${ringCheck.widths.join(', ')}, container ${ringCheck.containerWidth}) — nothing can ring behind the top one`)
+      : fail(`stuck dividers are not uniformly full-width — a narrower one on top would let a wider one ring behind it: ${JSON.stringify(ringCheck)}`);
   }
 
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));

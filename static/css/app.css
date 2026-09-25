@@ -4233,15 +4233,34 @@
      `position: sticky` (no scroll-listener JS) pins each divider to the top
      of .agent-output — its OWN scrolling ancestor (flex:1, overflow-y:auto,
      no intermediate scroll container) — for as long as its day's messages
-     are on screen; the next divider in DOM order naturally pushes the
-     current one out when it reaches the top. This is the standard
-     "sticky list section header" pattern and needs a background (not the
-     original transparent chip) since bubbles now scroll underneath it. */
+     are on screen. CSS does NOT evict an earlier divider once a later one
+     also qualifies (both remain simultaneously "stuck" at top:0 whenever the
+     scroll offset is past both) — see the full-width-backdrop fix directly
+     below for how the LATEST one ends up the only one visible. */
+  /* REGRESSION FIX (MC-954 follow-up, doubled pill): `position: sticky` pins
+     a divider whenever ITS OWN static flow position is above the current
+     scroll offset — nothing evicts an earlier one once a later one also
+     qualifies, so scrolling past several day boundaries leaves ALL of them
+     stuck at top:0 simultaneously, not just the newest. A bare centered pill
+     only covered its own chip's footprint, so a wider earlier divider (e.g.
+     "Wed, Sep 23") peeked out from behind a narrower current one ("Today")
+     as a concentric ring. Fix: the sticky element itself now stretches full
+     width with an opaque background matching .agent-output, so it fully
+     occludes whatever else is stacked behind it — only the last DOM-order
+     (current) divider's pill ends up visible. Still zero scroll-listener JS.
+     The visible chip moved to a child span, `.chat-date-divider-pill`. */
   .agent-output .chat-date-divider {
-    align-self: center;
+    align-self: stretch;
+    display: flex;
+    justify-content: center;
     position: sticky;
     top: 0;
     z-index: 5;
+    background: var(--bg);
+    margin: 2px 0 8px;
+    padding: 2px 0;
+  }
+  .agent-output .chat-date-divider-pill {
     font-family: 'Inter', -apple-system, system-ui, sans-serif;
     font-size: 11px;
     font-weight: 600;
@@ -4252,7 +4271,7 @@
     border-radius: 999px;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
     padding: 4px 12px;
-    margin: 2px 0 8px;
+    max-width: 92%;
   }
   /* Wide blocks stretch full width so they remain readable.
      flex-shrink:0 is LOAD-BEARING: .agent-output is a flex column with a
