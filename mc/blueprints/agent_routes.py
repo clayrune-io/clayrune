@@ -4671,6 +4671,27 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
         except Exception as e:
             _log(f"[positions] render failed for {project.get('id')}: {e}")
 
+    # MC-944 step 7 (Condition 22 RESOLVE) — a mint left `supersedes:
+    # unresolved` needs exactly one attended human turn to answer its
+    # one-word question; `unresolved_mint_block` refuses on its own for
+    # steward/schedule/incognito, but only if it is TOLD the truth about
+    # this turn. `_build_agent_context` isn't itself passed trigger_type, so
+    # this reads the session's own provenance stamp back out of
+    # `agent_sessions` by `session_id` — the same ground-truth field
+    # `_write_session_memory`'s Distiller dispatch and `fence.py` both key
+    # off, never a value this call's own arguments could fake.
+    if not incognito and state.CONFIG.get('memory_mint_triggers_enabled', False):
+        try:
+            from mc.memory import unresolved_mint_block as _render_mint
+            _mint_trigger_type = ((agent_sessions.get(session_id) or {}).get('trigger_type', '')
+                                   if session_id else '')
+            _mint_block = _render_mint(
+                project, task=task, trigger_type=_mint_trigger_type, incognito=incognito)
+            if _mint_block:
+                parts.append(_mint_block)
+        except Exception as e:
+            _log(f"[mint] unresolved-block render failed for {project.get('id')}: {e}")
+
     # Leg B.3 — deterministic read floor (no model; ranked grep). The agent
     # already auto-loads the curated index; this surfaces relevant topic-file /
     # archive / session-log detail for THIS task so the read side never depends

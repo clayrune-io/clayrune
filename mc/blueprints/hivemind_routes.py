@@ -1874,6 +1874,30 @@ def _hivemind_orchestrator_loop():
                     # Trigger final synthesis
                     if outcome == 'completed':
                         _hm_dispatch_orchestrator(hivemind_id, 'synthesize')
+                    # MC-944 step 7 (Condition 21, trigger 1) — hivemind close
+                    # mints a thin topic node. WRITE is fail-open by design
+                    # (§6.5): fires on 'failed' too, never a Scribe judgement
+                    # of whether the run was worth remembering. trigger_type
+                    # is pinned to 'hivemind_orchestrator' — fence.py already
+                    # classifies every hivemind session as unattended
+                    # (_UNATTENDED_TRIGGER_TYPES: no human reads each
+                    # workstream's tool calls), so origin is 'unattended'
+                    # here regardless of who created the hivemind; there is
+                    # no session/trigger_type recorded against the CREATING
+                    # request to do better than that.
+                    try:
+                        from mc import memory as _mem
+                        hm_project = load_project(manifest.get('project_id', ''))
+                        if hm_project:
+                            _mem.mint_topic_node(
+                                hm_project, trigger_kind='hivemind_close',
+                                subject=f"{manifest.get('title', '') or manifest.get('goal', '')} ({outcome})",
+                                artifact_path=f'hivemind:{hivemind_id}',
+                                task=manifest.get('goal', ''),
+                                trigger_type='hivemind_orchestrator',
+                                actor=f'hivemind:{hivemind_id}')
+                    except Exception as _mint_err:
+                        _log(f"[mint] hivemind_close mint failed for {hivemind_id}: {_mint_err}")
 
         except Exception as e:
             _log(f"[hivemind-orchestrator] Error: {e}")

@@ -3008,7 +3008,8 @@ def mint_topic_node(project, *, trigger_kind, subject, artifact_path='',
         return ''
 
 
-def scan_docs_artifacts_for_mint(project, since_ts, until_ts, *, docs_dir=None):
+def scan_docs_artifacts_for_mint(project, since_ts, until_ts, *, docs_dir=None,
+                                  task='', trigger_type=''):
     """Condition 21's fourth deterministic trigger: "a docs/ artifact above a
     size threshold created in the session". Filesystem-only and mtime-gated
     — no transcript/tool-call parsing, so this stays a fact about disk state,
@@ -3019,6 +3020,12 @@ def scan_docs_artifacts_for_mint(project, since_ts, until_ts, *, docs_dir=None):
     `memory_mint_docs_size_threshold` bytes. `since_ts`/`until_ts` are epoch
     seconds; the caller (the Scribe session-end call site) supplies the
     session's own start/end.
+
+    `task`/`trigger_type` are the CALLING session's own provenance (forwarded
+    verbatim to `mint_topic_node` -> `_stamp_origin`) — this is the one mint
+    trigger with a real session in hand, unlike hivemind close or a bare
+    backlog PATCH, so it is the one that can stamp origin honestly instead
+    of failing safe to 'unattended'.
 
     Mints one thin node per qualifying file via `mint_topic_node` — that
     call is itself idempotent-on-replay (`_mint_slug` keys off the file
@@ -3046,7 +3053,8 @@ def scan_docs_artifacts_for_mint(project, since_ts, until_ts, *, docs_dir=None):
             rel = str(f.relative_to(Path(pp))) if pp else str(f)
             fn = mint_topic_node(
                 project, trigger_kind='docs_artifact',
-                subject=f'{rel} ({st.st_size} bytes)', artifact_path=rel)
+                subject=f'{rel} ({st.st_size} bytes)', artifact_path=rel,
+                task=task, trigger_type=trigger_type)
             if fn:
                 minted.append(fn)
         return minted
@@ -4284,6 +4292,24 @@ def _write_session_memory(p, session, status, summary_fallback, ts_date):
     except Exception as _topics_err:
         _log(f"[topics] dispatch EXCEPTION project_id={project_id}: "
              f"{type(_topics_err).__name__}: {_topics_err!r}")
+    # MC-944 step 7 (Condition 21, trigger 4) — a docs/ artifact created or
+    # grown above the size threshold during this session mints a thin topic
+    # node. This is the one mint trigger with a real session in hand, so
+    # task/trigger_type ride along unchanged (same values the Distiller
+    # dispatch above just used) rather than failing safe to unknown, same as
+    # every other best-effort hook in this function: never blocks Scribe /
+    # MEMORY.md / completion.
+    try:
+        started_at = session.get('started_at') or ''
+        since_ts = (datetime.fromisoformat(started_at.replace('Z', '+00:00')).timestamp()
+                    if started_at else None)
+        if since_ts is not None:
+            scan_docs_artifacts_for_mint(
+                p, since_ts, _time.time(),
+                task=task, trigger_type=session.get('trigger_type'))
+    except Exception as _mint_scan_err:
+        _log(f"[mint] docs-artifact session-end scan EXCEPTION project_id={project_id}: "
+             f"{type(_mint_scan_err).__name__}: {_mint_scan_err!r}")
     return True
 
 
