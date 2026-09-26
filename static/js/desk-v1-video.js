@@ -303,7 +303,11 @@
     // "Channel exports" (§5) only appears once more than one export exists —
     // no export object exists anywhere in R0 fixtures, so that condition is
     // never true here; omitted rather than stubbed dead (see final report).
-    return `<div class="desk-v1-video-director">
+    // "desk-v1-video" (bare, no CSS rule of its own) is pre-existing contract:
+    // desk-v1-home.mjs's A12 deep-link check (written when this route was
+    // still a stub) waits on ".desk-v1-stub-title:has-text('Video'),
+    // .desk-v1-video" — dropping it silently broke that smoke on merge.
+    return `<div class="desk-v1-video-director desk-v1-video">
       <div class="desk-v1-video-tabstrip" role="tablist" aria-label="Source, storyboard or renders">
         ${VIDEO_TABS.map(([id, label]) => `<button type="button" data-video-tab="${id}" aria-pressed="${_st.tab === id}">${label}</button>`).join('')}
       </div>
@@ -354,8 +358,9 @@
       const pct = total ? (s.durationSec / total * 100) : (100 / Math.max(1, (detail.scenes || []).length));
       return `
         ${i > 0 ? `<button type="button" class="desk-v1-video-insertgap" data-insert-at="${i}" aria-label="Insert a scene here" title="Insert a scene here">+</button>` : ''}
-        <div class="desk-v1-video-scene" data-scene-id="${esc(s.id)}" style="flex-basis:${pct}%" tabindex="0">
+        <div class="desk-v1-video-scene${s.edited ? ' desk-v1-video-scene-edited' : ''}" data-scene-id="${esc(s.id)}" style="flex-basis:${pct}%" tabindex="0">
           <span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-l" data-trim-edge="l" data-scene-id="${esc(s.id)}"></span>
+          <div class="desk-v1-video-scene-thumb" aria-hidden="true"></div>
           <span class="desk-v1-video-scene-label">${i + 1} &middot; ${esc(s.label)}${s.edited ? ' <span class="desk-v1-video-scene-dot">&#8226;</span>' : ''}</span>
           <span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-r" data-trim-edge="r" data-scene-id="${esc(s.id)}"></span>
         </div>`;
@@ -376,8 +381,8 @@
     return `
       <div class="desk-v1-video-layout">
         <div class="desk-v1-video-main">
-          ${statusBadge}
           <div class="desk-v1-video-player">
+            ${statusBadge}
             <span class="desk-v1-video-playicon" aria-hidden="true">&#9658;</span>
           </div>
           <div class="desk-v1-video-watchrow">

@@ -413,6 +413,10 @@ async function runPhoneLayout(browser) {
   if (tileHeights.every((h) => h >= 44)) ok(`§11: scene tiles hit target >= 44px (${tileHeights.map((h) => h.toFixed(0)).join(',')})`);
   else fail(`§11: scene tiles below 44px: ${JSON.stringify(tileHeights)}`);
 
+  const widths = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));
+  if (widths.scrollWidth <= widths.innerWidth) ok(`§11: director never exceeds the phone viewport (scrollWidth ${widths.scrollWidth} <= innerWidth ${widths.innerWidth})`);
+  else fail(`§11: director overflows the phone viewport: scrollWidth ${widths.scrollWidth} > innerWidth ${widths.innerWidth}`);
+
   reportUncaught(pageErrors, '[phone]');
   await ctx.close();
 }

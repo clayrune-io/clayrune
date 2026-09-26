@@ -846,16 +846,22 @@
 .desk-v1-video-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .desk-v1-video-rail { flex: 0 0 300px; }
 
+/* 12d draws this as a small pill overlaid inside the player's top-left
+   corner, not a full-width bar above it — absolutely positioned against the
+   player's own `position: relative`. */
 .desk-v1-video-stalebadge {
-  background: var(--amber-text); color: var(--bg); border-radius: 8px 8px 0 0;
-  font-size: 12px; font-weight: 600; padding: 7px 12px; margin-bottom: -1px;
+  position: absolute; top: 10px; left: 10px; z-index: 1;
+  background: var(--amber-text); color: var(--bg); border-radius: 999px;
+  font-size: 11px; font-weight: 600; padding: 5px 11px;
 }
 
 .desk-v1-video-player {
   position: relative; background: #1a1712; border-radius: 10px; aspect-ratio: 16 / 9;
+  max-height: 460px; /* 12d keeps badge + strip + Posy in the same view as the
+  cost card at 1440x900 — an unconstrained 16:9 at the main column's full
+  width (~1068px) is ~601px tall and pushes both below the fold. */
   display: flex; align-items: center; justify-content: center;
 }
-.desk-v1-video-stalebadge + .desk-v1-video-player { border-radius: 0 0 10px 10px; }
 .desk-v1-video-playicon {
   width: 56px; height: 56px; border-radius: 50%; background: rgba(255,255,255,0.92);
   color: #1a1712; font-size: 20px; display: flex; align-items: center; justify-content: center;
@@ -870,15 +876,24 @@
   border: 1px solid var(--border2); border-radius: 8px; overflow: hidden; background: var(--surface2);
 }
 .desk-v1-video-scene {
-  position: relative; display: flex; align-items: center; justify-content: center;
-  min-width: 60px; border-right: 1px solid var(--border2); background: var(--surface2);
-  font-size: 11px; color: var(--text-dim); text-align: center; padding: 4px 14px; cursor: grab;
+  position: relative; display: flex; flex-direction: column; align-items: stretch; justify-content: center;
+  gap: 4px; min-width: 60px; border-right: 1px solid var(--border2); background: var(--surface2);
+  font-size: 11px; color: var(--text-dim); text-align: center; padding: 6px 8px; cursor: grab;
 }
 .desk-v1-video-scene:last-child { border-right: none; }
 .desk-v1-video-scene:hover, .desk-v1-video-scene:focus { background: var(--surface3); outline: none; }
 .desk-v1-video-scene-target { background: var(--accent-dim); }
 .desk-v1-video-scene-dragging { opacity: 0.4; }
 .desk-v1-video-scene-dot { color: var(--accent); font-size: 8px; }
+/* Empty placeholder box, never a fabricated preview (U11) — 12d shows a
+   thumbnail-shaped slot above each label, not a real frame. */
+.desk-v1-video-scene-thumb {
+  flex: 1 1 auto; min-height: 28px; border-radius: 4px;
+  background: var(--surface3); border: 1px solid var(--border2);
+}
+/* 12d outlines the just-edited scene in accent (fixture's edited:true scene
+   is the one the frame's caption calls "3 · trimmed"). */
+.desk-v1-video-scene-edited { box-shadow: inset 0 0 0 2px var(--accent); }
 .desk-v1-video-scene-edge {
   position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; touch-action: none;
 }
@@ -924,13 +939,16 @@
 .desk-v1-video-jobrow[data-job-status="ready"] .desk-v1-video-jobglyph { color: var(--green-text); }
 
 /* Render card (rail) — same box shape as T3's rail cards (desk-v1-review-notice
-   et al.), with its own orange "what this costs" header strip (frame 12d). */
+   et al.), but 12d gives it its own light warm-tint body (var(--amber-dim),
+   same token the rest of the app uses for a pale amber background) instead
+   of the neutral surface — the RENDER line reads as orange caps text on that
+   tint, not a solid header bar. */
 .desk-v1-video-rendercard {
-  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface); overflow: hidden;
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--amber-dim); overflow: hidden;
 }
 .desk-v1-video-rendercard-head {
-  background: var(--amber-text); color: var(--bg); font-size: 11.5px; font-weight: 700;
-  letter-spacing: 0.02em; text-transform: uppercase; padding: 8px 13px;
+  color: var(--amber-text); font-size: 11.5px; font-weight: 700;
+  letter-spacing: 0.02em; text-transform: uppercase; padding: 12px 13px 4px;
 }
 .desk-v1-video-renderrow {
   display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--text);
@@ -948,7 +966,13 @@
 /* Phone (ground rule 7, §11): same stack-the-rail pattern as T3/T4 — the
    scene strip scrolls horizontally instead of shrinking every tile unreadably. */
 @media (max-width: 960px) {
-  .desk-v1-video-layout { flex-direction: column; }
+  /* align-items: flex-start (desktop) swaps its cross-axis from vertical to
+     horizontal once flex-direction flips to column here — left un-reset it
+     sizes main/rail to their own max-content width (fit-content) instead of
+     the container's, which is what let the whole layout ride off the right
+     edge of the phone viewport. Stretch is what desktop's stack-the-rail
+     siblings (T3/T4) already get implicitly (no align-items override there). */
+  .desk-v1-video-layout { flex-direction: column; align-items: stretch; }
   .desk-v1-video-rail { flex: 0 0 auto; width: 100%; }
   .desk-v1-video-scenestrip { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .desk-v1-video-scene { min-width: 76px; min-height: 44px; }
