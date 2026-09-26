@@ -1593,20 +1593,48 @@ def test_device_mode_commands_switches_to_mobile_and_sets_touch_and_ua():
 
 
 def test_device_mode_commands_switches_to_desktop_restores_desktop_ua():
-    session = {'view': (1280, 800), 'device_mode': 'mobile',
+    """Returning to desktop CLEARS the override rather than setting one more
+    with mobile=False -- a live override a later desktop-only path never
+    expects to see is the thing that goes stale (Dave's review, MC-980)."""
+    session = {'view': (1280, 800), 'device_mode': 'mobile', 'device_mode_view': (390, 780),
               'ua_override': {'userAgent': 'Chrome/153.0.0.0 desktop-ua'}}
     cmds = br._device_mode_commands(session, False)
-    metrics = cmds[0][1]
-    assert metrics['mobile'] is False
+    methods = [m for m, _ in cmds]
+    assert methods == ['Emulation.clearDeviceMetricsOverride',
+                       'Emulation.setTouchEmulationEnabled',
+                       'Network.setUserAgentOverride']
     assert cmds[1][1] == {'enabled': False, 'maxTouchPoints': 0}
     assert cmds[2][1]['userAgent'] == 'Chrome/153.0.0.0 desktop-ua'
     assert session['device_mode'] == 'desktop'
+    assert session['device_mode_view'] is None
 
 
-def test_device_mode_commands_is_a_noop_when_already_in_that_mode():
-    session = {'view': (390, 780), 'device_mode': 'mobile'}
+def test_device_mode_commands_is_a_noop_when_already_in_that_mode_and_view():
+    session = {'view': (390, 780), 'device_mode': 'mobile', 'device_mode_view': (390, 780)}
     assert br._device_mode_commands(session, True) == []
     assert session['device_mode'] == 'mobile'
+
+
+def test_device_mode_commands_reissues_override_on_same_mode_resize():
+    """The bug Dave's review caught: mode-only idempotency left a STALE
+    override declaring the OLD size across a same-mode resize (phone
+    rotation, sheet resize under a soft keyboard). Must re-issue the metrics
+    override -- but not re-send touch/UA, which stay mode-idempotent."""
+    session = {'view': (390, 780), 'device_mode': 'mobile', 'device_mode_view': (390, 780),
+              'ua_override': {'userAgent': 'Chrome/153.0.0.0 desktop-ua'}}
+    cmds = br._device_mode_commands(session, True, view=(412, 915))
+    methods = [m for m, _ in cmds]
+    assert methods == ['Emulation.setDeviceMetricsOverride']
+    metrics = cmds[0][1]
+    assert (metrics['width'], metrics['height']) == (412, 915)
+    assert session['device_mode_view'] == (412, 915)
+
+
+def test_device_mode_commands_noop_when_already_desktop():
+    session = {'view': (1280, 800), 'device_mode': 'desktop', 'device_mode_view': None}
+    assert br._device_mode_commands(session, False) == []
+    session_never_mobile = {'view': (1280, 800)}
+    assert br._device_mode_commands(session_never_mobile, False) == []
 
 
 def test_device_mode_commands_uses_the_passed_view_over_the_session_view():

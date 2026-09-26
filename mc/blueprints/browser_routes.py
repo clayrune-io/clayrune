@@ -906,7 +906,6 @@ def _mobile_ua_override(session):
 def _device_mode_commands(session, mobile: bool, view=None):
     """CDP commands (method, params) that switch a session between desktop
     and mobile presentation: viewport metrics, touch emulation, User-Agent.
-    Idempotent via session['device_mode'] -- returns [] if already there.
 
     `view` (CSS px) MUST be what the real window/page already reports --
     same numbers session['view'] was just fit to (_fit_windows /
@@ -917,24 +916,60 @@ def _device_mode_commands(session, mobile: bool, view=None):
     a mismatch there re-creates a band of the page that renders but can
     neither be seen nor scrolled to. Passing the SAME numbers the window was
     just sized to (rather than some other requested size) is what keeps this
-    call safe."""
-    mode = 'mobile' if mobile else 'desktop'
-    if session.get('device_mode') == mode:
-        return []
-    session['device_mode'] = mode
+    call safe.
+
+    Two idempotency tracks, not one (Dave's review of the first cut caught
+    this): `device_mode` alone made a MODE change idempotent but left a STALE
+    override live across a same-mode size change -- a phone rotation or the
+    sheet resizing under a soft keyboard sent {mobile:true} again, matched
+    the mode already recorded, returned [], and the override kept declaring
+    the OLD size while _fit_and_rearm resized the window underneath it. That
+    is the exact MC-976 mismatch this call exists to prevent, just re-created
+    by staying in mode instead of switching out of it. So the metrics call is
+    idempotent on (mode, view) via `device_mode_view`; touch/UA stay
+    idempotent on mode alone -- no reason to resend those on every resize.
+
+    Returning to desktop CLEARS the override (Emulation.
+    clearDeviceMetricsOverride) rather than setting one more override with
+    mobile=False -- a live override, even one presently correct, is the thing
+    a later desktop-only code path (that never expects one) can leave stale.
+    A desktop session that has never been mobile carries no override at all,
+    matching pre-MC-980 behaviour exactly; one that WAS mobile is left with
+    none either, once it returns."""
     vw, vh = view or session.get('view') or (VIEW_W, VIEW_H)
     dpr = session.get('dpr', 1)
-    cmds = [
-        ('Emulation.setDeviceMetricsOverride',
-         {'width': vw, 'height': vh, 'deviceScaleFactor': dpr, 'mobile': mobile,
-          'screenWidth': vw, 'screenHeight': vh}),
-        ('Emulation.setTouchEmulationEnabled',
-         {'enabled': mobile, 'maxTouchPoints': 5 if mobile else 0}),
-    ]
-    ua = _mobile_ua_override(session) if mobile else session.get('ua_override')
-    if ua:
-        cmds.append(('Network.setUserAgentOverride', ua))
-    return cmds
+    prev_mode = session.get('device_mode')
+    if mobile:
+        if prev_mode == 'mobile' and session.get('device_mode_view') == (vw, vh):
+            return []
+        first_entry = prev_mode != 'mobile'
+        session['device_mode'] = 'mobile'
+        session['device_mode_view'] = (vw, vh)
+        cmds = [
+            ('Emulation.setDeviceMetricsOverride',
+             {'width': vw, 'height': vh, 'deviceScaleFactor': dpr, 'mobile': True,
+              'screenWidth': vw, 'screenHeight': vh}),
+        ]
+        if first_entry:
+            cmds.append(('Emulation.setTouchEmulationEnabled',
+                        {'enabled': True, 'maxTouchPoints': 5}))
+            ua = _mobile_ua_override(session)
+            if ua:
+                cmds.append(('Network.setUserAgentOverride', ua))
+        return cmds
+    else:
+        if prev_mode in (None, 'desktop'):
+            return []
+        session['device_mode'] = 'desktop'
+        session['device_mode_view'] = None
+        cmds = [
+            ('Emulation.clearDeviceMetricsOverride', {}),
+            ('Emulation.setTouchEmulationEnabled', {'enabled': False, 'maxTouchPoints': 0}),
+        ]
+        ua = session.get('ua_override')
+        if ua:
+            cmds.append(('Network.setUserAgentOverride', ua))
+        return cmds
 
 
 def _fit_windows(session, target_ids=None):
@@ -1777,7 +1812,12 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
         # the first time this was left at None for every launch. A mobile
         # launch is left at None (pending) since _run_cdp's launch-time switch
         # below is that session's real first transition and must still fire.
+        # device_mode_view (Dave's review): the (w,h) the live override, if
+        # any, currently declares -- lets _device_mode_commands tell "still
+        # mobile, same size" (no-op) from "still mobile, resized" (must
+        # re-issue), which `device_mode` alone could not.
         'mobile': bool(mobile), 'device_mode': None if mobile else 'desktop',
+        'device_mode_view': None,
     }
     with browser_lock:
         browser_sessions[sid] = session
