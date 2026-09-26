@@ -660,6 +660,24 @@ async function _renderSettings() {
         </select>
       </div>
     </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Experimental</div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-label">Desk v1</div>
+          <div class="settings-hint">New Desk UI (Home &rarr; campaign &rarr; item), running on fixtures only &mdash; no live posting yet. The legacy Desk stays read-only while this is on. MC-977.</div>
+        </div>
+        ${toggle('desk_v1', cfg.desk_v1)}
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-label">Your timezone</div>
+          <div class="settings-hint">Used for Desk v1 schedule times. Blank uses this computer's timezone. Example: America/New_York.</div>
+        </div>
+        ${textInput('user_timezone', cfg.user_timezone, 'placeholder="e.g. America/New_York" spellcheck="false"')}
+      </div>
+    </div>
       </div>
 
       <div class="settings-detail-pane settings-hidden" data-cat="connect">
