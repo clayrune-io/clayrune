@@ -126,7 +126,9 @@ async function runToneRenderChecks(browser, tone) {
 
   // Needs you: 1 piece (fam-restore-points), 1 video (fam-install-video),
   // 1 reply (conv-1), plus the held ch-li-page hold row and the offline
-  // worker-heartbeat hold row (A13).
+  // worker-heartbeat hold row (A13). Held count is 3, not 2 (MC-977 T2b,
+  // Dave's review pass 2): camp-2's fam-launch-li put a second piece on the
+  // same globally-disconnected ch-li-page, so the count is real, not stale.
   const needsYouText = (await page.textContent('#desk-v1-home-needsyou').catch(() => '') || '');
   if (/1 piece to approve/.test(needsYouText)) ok(`[${tone.name}] Needs you: "1 piece to approve"`);
   else fail(`[${tone.name}] Needs you missing piece row: ${JSON.stringify(needsYouText)}`);
@@ -134,8 +136,8 @@ async function runToneRenderChecks(browser, tone) {
   else fail(`[${tone.name}] Needs you missing video row: ${JSON.stringify(needsYouText)}`);
   if (/1 reply waiting/.test(needsYouText)) ok(`[${tone.name}] Needs you: "1 reply waiting"`);
   else fail(`[${tone.name}] Needs you missing reply row: ${JSON.stringify(needsYouText)}`);
-  if (/LinkedIn page disconnected/.test(needsYouText) && /2 held/.test(needsYouText)) {
-    ok(`[${tone.name}] A13: held-channel hold row tinted in the same card: "LinkedIn page disconnected · 2 held"`);
+  if (/LinkedIn page disconnected/.test(needsYouText) && /3 held/.test(needsYouText)) {
+    ok(`[${tone.name}] A13: held-channel hold row tinted in the same card: "LinkedIn page disconnected · 3 held"`);
   } else {
     fail(`[${tone.name}] A13: held-channel hold row missing/wrong: ${JSON.stringify(needsYouText)}`);
   }
