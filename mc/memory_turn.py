@@ -40,10 +40,17 @@ WHAT THIS DOES vs WHAT IT DELIBERATELY DOES NOT DO (MC-944 scope):
               turn per Condition 42).
   DOES      — enforce a hard per-turn byte budget, logging when it truncates
               (P4: "a bound that bites silently gets worked around").
-  DOES NOT  — the negation ledger, `supersedes`/head-substitution, minting,
-              the index/journal split, or any embedding/semantic layer. Those
-              are later build-sequence steps (§16 steps 6-10) and MC-944 is
-              step 5 only.
+  DOES      — (MC-944 step 8 addendum) recompute the resident Negation
+              Ledger (Condition 13) per turn, behind `negation_ledger_enabled`
+              (default off — unchanged behaviour when off, same as every
+              other lever in this module). Added whole or not at all (never
+              split line-by-line like the two sections above) — see
+              `_fit_lines`'s `ledger_block` param.
+  DOES NOT  — `supersedes`/head-substitution, minting, the index/journal
+              split, or any embedding/semantic layer. Those are later
+              build-sequence steps (§16 steps 6, 7, 10) and MC-944 step 5
+              covered only per-turn positions/notes; step 8 (this addendum)
+              added the ledger on top without revisiting the rest.
   DOES NOT  — block or refuse anything. Report mode only (§16 step 9): every
               call logs what it delivered, what it suppressed, and the byte
               cost, so a later step can measure before any gate is flipped to
@@ -288,13 +295,20 @@ def seed_delivered(project, session, task, *, topk=None, expand=None) -> None:
         _log(f"[mem-turn] seed failed for {(project or {}).get('id')}: {e}")
 
 
-def _fit_lines(pos_lines, note_lines, budget):
+def _fit_lines(pos_lines, note_lines, budget, ledger_block=''):
     """Assemble the block within `budget` bytes, positions first.
 
     Adds a section's header only if at least one of its lines fits, and stops
     adding lines within an over-long section rather than truncating mid-line
     — the remaining (lower-ranked, since callers pre-sort by score) lines are
-    simply dropped, which is what "hard budget" has to mean for a text block."""
+    simply dropped, which is what "hard budget" has to mean for a text block.
+
+    `ledger_block` (MC-944 step 8, Condition 13) is a single pre-rendered,
+    pre-capped string (already <= its own ~1.5KB cap) — it is added whole or
+    not at all, never split line-by-line like the two sections above: a
+    partial Negation Ledger (some slugs shown, others silently cut) would
+    look complete while quietly hiding entries, which is worse than the
+    lowest-priority section being dropped outright on a tight turn budget."""
     out: list[str] = []
     total = 0
 
@@ -322,6 +336,11 @@ def _fit_lines(pos_lines, note_lines, budget):
             for line in note_lines:
                 if not _add(line):
                     break
+    if ledger_block:
+        lb = len(ledger_block.encode('utf-8')) + 1
+        if total + lb <= budget:
+            out.append(ledger_block)
+            total += lb
     return "\n".join(out), total
 
 
@@ -439,7 +458,24 @@ def _refresh_for_turn(project, session, message, *, topk, expand, context):
         via = f" (linked from {h['via']})" if h.get('via') else ''
         note_lines.append(f"  • [{h.get('file')}]{via}{tag} {h.get('snippet', '')}")
 
-    block, cost = _fit_lines(pos_lines, note_lines, budget)
+    # MC-944 step 8 (Condition 13) — resident Negation Ledger, recomputed
+    # per turn same as the two sections above. Unlike them, never
+    # query-gated on `message` — `render_negation_ledger` returns '' by
+    # itself when `negation_ledger_enabled` is off, so this call is a no-op
+    # (one flag check, no ranking work) on every install that hasn't
+    # flipped it, matching this module's "flag off = unchanged behaviour"
+    # contract for the other two sections.
+    try:
+        from mc import distiller as _distiller
+        ledger_block = _mem.render_negation_ledger(
+            project, task=message, trigger_type=session.get('trigger_type', ''),
+            consumer_unattended=_distiller.is_unattended_session(
+                session.get('task', ''), session.get('trigger_type', '')))
+    except Exception as e:
+        _log(f"[mem-turn] {pid}: negation ledger render failed: {e}")
+        ledger_block = ''
+
+    block, cost = _fit_lines(pos_lines, note_lines, budget, ledger_block)
     if block:
         raw_bytes = sum(len(l.encode('utf-8')) + 1 for l in pos_lines + note_lines)
         if raw_bytes > cost:

@@ -4692,6 +4692,24 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
         except Exception as e:
             _log(f"[mint] unresolved-block render failed for {project.get('id')}: {e}")
 
+    # MC-944 step 8 (Condition 13) — resident Negation Ledger. Unlike the
+    # STANDING POSITIONS block below (query-gated on `_memory_search` hits),
+    # Condition 13 requires this ALWAYS present when enabled, independent of
+    # whether the task string matches any position's terms — so it renders
+    # here, alongside the mint block, outside the `if task:` gate below.
+    if not incognito and state.CONFIG.get('negation_ledger_enabled', False):
+        try:
+            from mc.memory import render_negation_ledger as _render_ledger
+            _ledger_trigger_type = ((agent_sessions.get(session_id) or {}).get('trigger_type', '')
+                                     if session_id else '')
+            _ledger_block = _render_ledger(
+                project, task=task, trigger_type=_ledger_trigger_type,
+                consumer_unattended=_distiller.is_unattended_task(task))
+            if _ledger_block:
+                parts.append(_ledger_block)
+        except Exception as e:
+            _log(f"[negation-ledger] render failed for {project.get('id')}: {e}")
+
     # Leg B.3 — deterministic read floor (no model; ranked grep). The agent
     # already auto-loads the curated index; this surfaces relevant topic-file /
     # archive / session-log detail for THIS task so the read side never depends
