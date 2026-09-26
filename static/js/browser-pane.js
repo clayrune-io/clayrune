@@ -25,6 +25,12 @@ const BP_DEFAULT_PROFILE = 'main';
 // browser DevTools) should be as authoritative as the value at open time.
 function _bpIsMobile() { return window.innerWidth <= 960; }
 
+// A fresh/blank tab's real url is the literal string 'about:blank' — showing
+// that text in the address bar (Ron, 2026-09-26: had to delete it by hand
+// before typing) is not what any phone browser does. Every place that writes
+// a URL into the bar goes through this so none of them can regress it back.
+function _bpDisplayUrl(u) { return (!u || u === 'about:blank') ? '' : u; }
+
 // A page-shaped emoji (\u{1F4C4}) here used to read as "new tab" (Ron,
 // 2026-09-25) rather than "copy" -- an unambiguous two-overlapping-sheets
 // glyph (the same shape most toolbars use for a copy action) replaces it.
@@ -279,9 +285,12 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     win.innerHTML = `
     <div data-bp="bar" style="display:flex;align-items:center;gap:8px;padding:calc(8px + env(safe-area-inset-top)) 10px 8px;background:#2a2a2a;flex:0 0 auto">
       <button data-bp="close" title="Back to chat" aria-label="Back to chat" style="background:none;border:none;color:#ddd;font-size:22px;line-height:1;cursor:pointer;padding:4px 8px;flex:0 0 auto">&#8592;</button>
-      <input data-bp="url" type="text" spellcheck="false" value="${(url||'').replace(/"/g,'&quot;')}"
-        placeholder="Enter URL and press Enter"
+      <form data-bp="urlform" style="display:contents">
+      <input data-bp="url" type="text" inputmode="url" enterkeyhint="go" spellcheck="false" autocapitalize="off"
+        value="${_bpDisplayUrl(url).replace(/"/g,'&quot;')}"
+        placeholder="Search or type URL"
         style="flex:1;min-width:0;padding:10px 12px;font-size:14px;background:#111;border:1px solid #444;border-radius:8px;color:#eee;outline:none">
+      </form>
       <span data-bp="spin" style="display:none;color:#888;font-size:12px;width:14px">&#9679;</span>
     </div>
     <div data-bp="tabstrip" style="display:none"></div>
@@ -315,9 +324,12 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       <button data-bp="paste"  title="Paste clipboard into the page" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px">&#128203;</button>
       <button data-bp="copy"   title="Copy page selection to clipboard" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px;display:flex;align-items:center">${_BP_COPY_ICON_SVG}</button>
       <button data-bp="sessions" title="Browser sessions" style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px;position:relative">&#9776;<span data-bp="sesscount" style="position:absolute;top:-3px;right:-3px;background:#4caf50;color:#000;font-size:9px;font-weight:700;border-radius:8px;padding:0 4px;line-height:14px;display:none"></span></button>
-      <input data-bp="url" type="text" spellcheck="false" value="${(url||'').replace(/"/g,'&quot;')}"
-        placeholder="Enter URL and press Enter"
+      <form data-bp="urlform" style="display:contents">
+      <input data-bp="url" type="text" inputmode="url" enterkeyhint="go" spellcheck="false" autocapitalize="off"
+        value="${_bpDisplayUrl(url).replace(/"/g,'&quot;')}"
+        placeholder="Search or type URL"
         style="flex:1;min-width:60px;padding:6px 10px;font-size:13px;background:#111;border:1px solid #444;border-radius:6px;color:#eee;outline:none">
+      </form>
       <span data-bp="profile" title="" style="font-size:10px;padding:0 6px;border:1px solid #4a4a4a;border-radius:99px;color:#9ecb9e;flex:0 0 auto;cursor:pointer;display:none"></span>
       <span data-bp="spin" style="color:#888;font-size:12px;width:14px">&#9679;</span>
       <button data-bp="minimize" title="Minimize" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 8px">&#8211;</button>
@@ -390,9 +402,23 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   $('back').onclick = () => _bpSend({ type: 'back' });
   $('fwd').onclick = () => _bpSend({ type: 'forward' });
   $('reload').onclick = () => _bpSend({ type: 'reload' });
-  urlInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { _bpSend({ type: 'navigate', url: urlInput.value.trim() }); imeShadow.focus(); }
+  // A real <form> + 'submit', not a keydown('Enter') check: Android's virtual
+  // keyboard "Go"/search action frequently delivers keydown as keyCode 229 /
+  // key:"Unidentified" instead of a real Enter (Ron, 2026-09-26 — typed a URL
+  // on the mobile pane, tapped Go, nothing happened). Submitting a <form> is
+  // the one thing every mobile keyboard's action button reliably triggers
+  // regardless of what keydown reports for it; a real Enter key still works
+  // the same way, since pressing Enter in a form field submits the form.
+  const urlForm = $('urlform');
+  (urlForm || urlInput).addEventListener('submit', e => {
+    e.preventDefault();
+    _bpSend({ type: 'navigate', url: urlInput.value.trim() });
+    imeShadow.focus();
   });
+  // Tap-to-select, like every browser's own address bar: focusing the field
+  // selects the existing URL (or does nothing to an already-empty
+  // about:blank field) so typing replaces it instead of editing in place.
+  urlInput.addEventListener('focus', () => urlInput.select());
 
   if (mobile) {
     // ── mobile: bottom-bar menu (clipboard/copy/profile) — same handlers the
@@ -672,7 +698,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       img.style.aspectRatio = d.w + '/' + d.h;
     }
     if (d.img) { img.src = 'data:image/jpeg;base64,' + d.img; spin.style.color = '#4caf50'; }
-    if (d.url && document.activeElement !== urlInput) urlInput.value = d.url;
+    if (d.url && document.activeElement !== urlInput) urlInput.value = _bpDisplayUrl(d.url);
     if (d.status && d.status !== 'running') {
       spin.textContent = '×'; spin.style.color = '#e57373';
       // A session that died before its first tab attached never sends `tabs`,
