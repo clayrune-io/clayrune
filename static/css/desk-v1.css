@@ -1007,7 +1007,11 @@
   border-radius: 8px; padding: 9px 10px; cursor: pointer; font-family: inherit;
 }
 .desk-v1-conv-row:hover { background: var(--surface2); }
-.desk-v1-conv-row.is-selected { background: var(--accent-soft); border-color: var(--accent); }
+.desk-v1-conv-row.is-selected { background: var(--accent-dim); border-color: var(--accent); }
+.desk-v1-conv-row.is-selected .desk-v1-conv-author,
+.desk-v1-conv-row.is-selected .desk-v1-conv-age,
+.desk-v1-conv-row.is-selected .desk-v1-conv-snippet,
+.desk-v1-conv-row.is-selected .desk-v1-conv-reason { color: var(--text); }
 .desk-v1-conv-row-camp { font-size: 10.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .03em; }
 .desk-v1-conv-row-head { display: flex; align-items: baseline; gap: 6px; }
 .desk-v1-conv-author { font-size: 13px; font-weight: 700; color: var(--text); }
@@ -1075,8 +1079,7 @@
 }
 
 .desk-v1-conv-actions {
-  display: flex; align-items: center; gap: 8px; justify-content: flex-end; flex-wrap: wrap;
-  border-top: 1px solid var(--border2); padding-top: 12px; margin-top: auto;
+  display: flex; align-items: center; gap: 8px; justify-content: flex-start; flex-wrap: wrap;
 }
 .desk-v1-conv-actions button {
   background: var(--surface2); border: 1px solid var(--border2); border-radius: 7px; color: var(--text);
@@ -1085,7 +1088,9 @@
 .desk-v1-conv-actions button:disabled { color: var(--text-faint); cursor: not-allowed; opacity: .6; }
 .desk-v1-conv-actions button.desk-v1-conv-send { background: var(--green); border-color: var(--green); color: var(--bg); }
 .desk-v1-conv-actions button.desk-v1-conv-send:disabled { background: var(--green-dim); border-color: var(--green-dim); color: var(--text-faint); }
-.desk-v1-conv-actions button.desk-v1-conv-takeover { background: var(--amber-dim); border-color: var(--amber-text); color: var(--amber-text); }
+.desk-v1-conv-actions button.desk-v1-conv-revise { background: var(--surface); border-color: var(--accent); color: var(--accent); }
+.desk-v1-conv-actions button.desk-v1-conv-revise:disabled { border-color: var(--border2); color: var(--text-faint); }
+.desk-v1-conv-actions button.desk-v1-conv-takeover { background: var(--amber-dim); border-color: var(--amber-text); color: var(--amber-text); margin-left: auto; }
 
 /* Phone (ground rule 7, §11: no view drawn specifically for Conversations —
    applies the same "list, then a full-screen destination with a bottom

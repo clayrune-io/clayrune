@@ -220,7 +220,7 @@
         ${replyHTML}
         <div class="desk-v1-conv-actions">
           <button type="button" class="desk-v1-conv-send" data-conv-send ${canSend ? '' : `disabled title="${esc(sendReason)}"`}>Send</button>
-          <button type="button" data-conv-revise ${(reply && !takenOver) ? '' : 'disabled'}>Ask Posy to revise</button>
+          <button type="button" class="desk-v1-conv-revise" data-conv-revise ${(reply && !takenOver) ? '' : 'disabled'}>Ask Posy to revise</button>
           <button type="button" data-conv-ignore ${takenOver ? 'disabled' : ''}>Ignore</button>
           <button type="button" data-conv-assign ${takenOver ? 'disabled' : ''}>Assign ▾</button>
           <button type="button" class="desk-v1-conv-takeover" data-conv-takeover>${takenOver ? '✅ Resume' : '✋ Take over'}</button>

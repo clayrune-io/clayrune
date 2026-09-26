@@ -207,6 +207,35 @@ async function runDeepLink(browser) {
   await ctx.close();
 }
 
+// ── a row can't promise one question and open on another (Dave's review
+// pass, MC-977 T6): every fixture conversation whose thread carries a first
+// comment must show that EXACT text as its list-row excerpt. Checked at the
+// fixture-data level (not the DOM) so it holds for every conversation, not
+// just the one conv-1 case that regressed. ─────────────────────────────────
+async function runRowMatchesThread(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToConversations(page, 'conv-1');
+  await page.waitForSelector('.desk-v1-conv-layout', { timeout: 8000 });
+
+  const mismatches = await page.evaluate(() => {
+    const fx = window.DeskV1Fixtures || {};
+    const detail = fx.conversationDetail || {};
+    const bad = [];
+    for (const c of (fx.conversations || [])) {
+      const comments = (detail[c.id] || {}).thread && (detail[c.id] || {}).thread.comments;
+      if (!comments || !comments.length) continue;
+      if (c.excerpt !== comments[0].text) bad.push({ id: c.id, excerpt: c.excerpt, comment: comments[0].text });
+    }
+    return bad;
+  });
+  mismatches.length === 0
+    ? ok('every conversation with a first comment shows that exact text as its row excerpt')
+    : fail(`row/thread text mismatch: ${JSON.stringify(mismatches)}`);
+
+  reportUncaught(pageErrors, '[row-matches-thread]');
+  await ctx.close();
+}
+
 // ── Send is simulated (ticket brief + §6): no network call, just a local
 // state flip through the commandBus (toast + Undo), and Send disables once
 // there's nothing left to send. ─────────────────────────────────────────────
@@ -356,6 +385,7 @@ let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
   for (const tone of TONES) await runToneRenderChecks(browser, tone);
+  await runRowMatchesThread(browser);
   await runDeepLink(browser);
   await runSimulatedSend(browser);
   await runStaleHold(browser);

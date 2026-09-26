@@ -91,8 +91,13 @@
   // 3 conversations across the source switch (CON-01): our posts, mentions,
   // discussions — one of each, one deliberately stale (U14 hold).
   const CONVERSATIONS = [
+    // excerpt is T6's own fix (Dave's review pass): must equal the comment
+    // its own thread shows below (CONVERSATION_DETAIL['conv-1'].thread.
+    // comments[0].text) — a row can't promise one question and open on
+    // another. T0a's placeholder text ('Does this work on ARM laptops?')
+    // predates T6's thread content and never matched it.
     { id: 'conv-1', campaignId: 'camp-1', source: 'our_posts', channelId: 'ch-x-ron',
-      excerpt: 'Does this work on ARM laptops?', state: 'needs_reply' },
+      excerpt: 'Does the restore include the agent’s memory or just files?', state: 'needs_reply' },
     { id: 'conv-2', campaignId: 'camp-1', source: 'mentions', channelId: 'ch-li-page',
       excerpt: 'Someone linked the restore-points post in a thread about backups.', state: 'reviewed' },
     { id: 'conv-3', campaignId: 'camp-1', source: 'discussions', channelId: null,
@@ -351,8 +356,12 @@
       thread: {
         parentPost: { label: 'Your post', platform: 'x', identity: '@ron', ageLabel: 'Tue 09:00',
           text: 'Every agent run now starts with a restore point…', link: '#' },
+        // comment author is the person's display name ('Kat'), not the row's
+        // account handle ('@devnull_kat') — the comment avatar (rendering
+        // code already derives its initial from THIS field, unchanged) is
+        // frame 12c's 'K', not the row's 'D' (Dave's review pass).
         comments: [
-          { author: '@devnull_kat', platform: 'x', ageLabel: '12m',
+          { author: 'Kat', platform: 'x', ageLabel: '12m',
             text: 'Does the restore include the agent’s memory or just files?' },
         ],
         reply: { identity: '@ron', platform: 'x',
