@@ -8,6 +8,12 @@
   display: flex; flex-direction: column; height: 100%;
   padding: 0 24px 20px 28px;
 }
+/* app.css's .agent-line is styled for terminal-style agent transcripts
+   (JetBrains Mono) — everywhere the Desk reuses it (kit's Posy box, T7's
+   Results read, any future caller) it's product copy, not a log line (12a:
+   body font). One rule at the Desk v1 root instead of patching each
+   surface — Dave's review, T2a pass 2/4. */
+.desk-v1-shell .agent-line { font-family: 'Inter', -apple-system, system-ui, sans-serif; }
 .desk-v1-crumb {
   display: flex; align-items: center; gap: 10px;
   padding: 2px 0 12px 0; flex: 0 0 auto;
@@ -88,18 +94,6 @@
 @media (max-width: 960px) {
   .desk-v1-camp-main { flex-direction: column; }
   .desk-v1-camp-rightcol { flex: 0 0 auto; }
-  /* §11 phone: "summary collapses to name + goal line + state" — name
-     already lives in the crumb (not duplicated here per the comment above
-     _ruleChips), so drop the Channels/Rules groups and keep state+goal. */
-  .desk-v1-camp-summary-group[data-summary-group="channels"],
-  .desk-v1-camp-summary-group[data-summary-group="rules"] { display: none; }
-  /* §11 phone: "the Posy box becomes a composer docked at the bottom" —
-     pin it to the bottom of the page's own scroll (T0a's body
-     overflow-y:auto), same sticky-in-flow pattern as .desk-v1-review-actions,
-     rather than a page-level fixed overlay that would have to know the
-     shell's bottom tab bar height (that bar lives outside this ticket's
-     files). */
-  .desk-v1-camp-rightcol { position: sticky; bottom: 0; z-index: 5; background: var(--bg); padding-top: 8px; }
 }
 
 /* ── T0b: shared kit (vocabulary, state label, channel badge, toast+Undo,
@@ -168,10 +162,6 @@
 }
 .desk-v1-posy-scope:hover { color: var(--accent); }
 .desk-v1-posy-output { min-height: 0; padding: 0; background: transparent; }
-/* app.css's .agent-line is styled for terminal-style agent transcripts
-   (JetBrains Mono) — Posy is product copy, not a log line (12a: body
-   font). Scoped to this wrapper only; every Desk v1 Posy box shares it. */
-.desk-v1-posy-output .agent-line { font-family: 'Inter', -apple-system, system-ui, sans-serif; }
 .desk-v1-posy-chips { margin: 0; }
 
 /* compact:true (frame 12b) — no avatar/name to push away from, so the scope
@@ -582,6 +572,33 @@
   .desk-v1-camp-tab, .desk-v1-camp-filter-btn, .desk-v1-camp-newpiece, .desk-v1-camp-card-primary,
   .desk-v1-camp-card-morebtn, .desk-v1-camp-rules-edit, .desk-v1-camp-group-show, .desk-v1-camp-pause-btn,
   .desk-v1-camp-viewtoggle button, .desk-v1-camp-addtray-summary { min-height: 44px; }
+
+  /* §11 phone: "summary collapses to name + goal line + state" — name
+     already lives in the crumb (not duplicated here per the comment above
+     _ruleChips), so drop the Channels/Rules groups and keep state+goal. */
+  .desk-v1-camp-summary-group[data-summary-group="channels"],
+  .desk-v1-camp-summary-group[data-summary-group="rules"] { display: none; }
+
+  /* T0a's own phone rule (top of file) makes .desk-v1-camp-main a column
+     flex box, but leaves BOTH children flex:1 1 auto (tabbody) / 0 0 auto
+     (rightcol) fighting over one fixed-height box — rightcol's full Posy
+     card (message+chips+input) is tall enough to squeeze tabbody down to a
+     sliver with its OWN overflow-y:auto scrollport, so the first content
+     card renders far below what that sliver can show (Dave's review: no
+     card visible at 390x844). Same fix class as T1's .desk-v1-home-main
+     (see that block's comment): let this item take its natural height and
+     let the page's own overflow-y:auto (T0a) do the one, real scroll.
+     Ticket-local override — the T0a block above is untouched. */
+  .desk-v1-camp-main { flex: 0 0 auto; overflow: visible; }
+  .desk-v1-camp-tabbody { flex: 0 0 auto; overflow-y: visible; }
+
+  /* §11: "the Posy box becomes a composer docked at the bottom" — only
+     the input row pins to the viewport; the message + chips stay in flow
+     (right after the content list) so they never cover a card. */
+  .desk-v1-camp-rightcol .agent-input-row {
+    position: sticky; bottom: 0; z-index: 5; background: var(--bg);
+    padding: 8px 0 2px; margin-top: 8px;
+  }
 }
 
 /* ── T2b: Proposed state, Start sheet, rules popover, Posy instructions ─── */

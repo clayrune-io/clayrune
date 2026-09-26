@@ -141,13 +141,15 @@ async function runToneRenderChecks(browser, tone) {
   editBtn ? ok(`[${tone.name}] Rules "Edit" hook renders (popover itself is T2b)`) : fail(`[${tone.name}] Rules Edit hook missing`);
 
   // Tab strip: Content's badge is needs-you-only (2 families: restore-points,
-  // install-video), Conversations' is a total (3 fixture rows).
+  // install-video), Conversations' is a total (camp-1's fixture row count —
+  // T6, merged from master after this test was written, added conv-4/5/6,
+  // so the total is 6, not the 3 this ticket originally shipped against).
   const tabText = await page.textContent('[data-tab="content"]').catch(() => '');
   const convText = await page.textContent('[data-tab="conversations"]').catch(() => '');
   /Content\s*2/.test(tabText.replace(/\s+/g, ' '))
     ? ok(`[${tone.name}] Content tab badge is needs-you-only: "${tabText.trim()}"`)
     : fail(`[${tone.name}] Content tab badge wrong: ${JSON.stringify(tabText)}`);
-  /Conversations\s*3/.test(convText.replace(/\s+/g, ' '))
+  /Conversations\s*6/.test(convText.replace(/\s+/g, ' '))
     ? ok(`[${tone.name}] Conversations tab badge is the total: "${convText.trim()}"`)
     : fail(`[${tone.name}] Conversations tab badge wrong: ${JSON.stringify(convText)}`);
 
@@ -391,6 +393,18 @@ async function runPhoneLayout(browser) {
   primaryHeight >= 44
     ? ok(`§11: primary action button is touch-sized (${primaryHeight.toFixed(0)}px)`)
     : fail(`§11: primary action too short for touch: ${primaryHeight}px`);
+
+  // Dave's review (T2a pass 2/4): the docked Posy composer used to be the
+  // whole card (message + chips + input), tall enough to squeeze the tab
+  // body down to a sliver with its own scroll pocket — no content card
+  // was visible at rest. Only the input row docks now; this pins it down.
+  const firstCardVisible = await page.$eval('.desk-v1-camp-card', (el) => {
+    const r = el.getBoundingClientRect();
+    return r.top < window.innerHeight && r.bottom > 0 && r.height > 0;
+  }).catch(() => false);
+  firstCardVisible
+    ? ok('§11: first content card is visible at rest (not hidden behind the docked Posy composer)')
+    : fail('§11: first content card is NOT visible at 390x844 at rest');
 
   reportUncaught(pageErrors, '[phone]');
   await ctx.close();

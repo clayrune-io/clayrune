@@ -143,6 +143,15 @@ async function runTone(browser, tone) {
   if (campToolsEmpty) ok(`[${tone.name}] campaign: #desk-v1-crumb-tools stays empty (one-row crumb)`);
   else fail(`[${tone.name}] campaign: #desk-v1-crumb-tools is not empty: ${JSON.stringify(campToolsEmpty)}`);
 
+  // Dave's review (T2a pass 2/4): app.css's .agent-line is styled for
+  // terminal-style agent transcripts (JetBrains Mono) — every Desk v1
+  // caller that reuses it (kit's Posy box, T7's Results read) is product
+  // copy, not a log line, so desk-v1.css's `.desk-v1-shell .agent-line`
+  // rule must win. Checked once, here, rather than per-surface.
+  const posyLineFont = await page.$eval('.desk-v1-shell .agent-line', (el) => getComputedStyle(el).fontFamily).catch(() => null);
+  if (posyLineFont && !/mono/i.test(posyLineFont)) ok(`[${tone.name}] Desk v1 .agent-line uses the body font, not monospace: "${posyLineFont}"`);
+  else fail(`[${tone.name}] Desk v1 .agent-line font-family: ${JSON.stringify(posyLineFont)}`);
+
   // Back from campaign returns to Home.
   await page.click('.desk-v1-back');
   await page.waitForFunction(() => (document.querySelector('.desk-v1-crumb-title') || {}).textContent === 'Home', null, { timeout: 5000 });
