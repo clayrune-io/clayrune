@@ -603,6 +603,109 @@
 
 /* ── T2b: Proposed state, Start sheet, rules popover, Posy instructions ─── */
 
+/* §3.5 Proposed summary — same group/label vocabulary as T2a's
+   .desk-v1-camp-summary-* (reused, not restyled) plus the state-row/button
+   and the editable goal sentence this variant owns. */
+.desk-v1-camp-summary-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.desk-v1-rules-start-btn {
+  background: var(--accent); color: var(--bg); border: none; border-radius: 8px;
+  font-size: 13px; font-weight: 700; padding: 7px 14px; cursor: pointer;
+}
+.desk-v1-rules-start-btn:hover { opacity: 0.9; }
+.desk-v1-rules-goal-sentence { font-size: 14.5px; color: var(--text); line-height: 1.6; }
+.desk-v1-rules-dashed {
+  display: inline-block; min-width: 24px; padding: 0 2px; border-bottom: 1px dashed var(--border2);
+  color: var(--text); cursor: text;
+}
+.desk-v1-rules-dashed:focus { outline: none; border-bottom-color: var(--accent); }
+.desk-v1-rules-goal-warning { display: inline-block; margin-left: 8px; font-size: 12px; color: var(--amber-text); font-weight: 600; }
+
+/* §3.5 Proposed content — blocker card + Posy's proposed pieces. */
+.desk-v1-rules-proposed { display: flex; flex-direction: column; gap: 14px; }
+.desk-v1-rules-blocker {
+  background: var(--amber-dim); border: 1px solid var(--amber-text); border-radius: 10px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.desk-v1-rules-blocker-head { font-size: 13px; font-weight: 700; color: var(--amber-text); }
+.desk-v1-rules-blocker-q { font-size: 14px; color: var(--text); }
+.desk-v1-rules-blocker-answers { display: flex; gap: 8px; flex-wrap: wrap; }
+.desk-v1-rules-blocker-answer {
+  background: var(--bg); border: 1px solid var(--border2); border-radius: 7px; color: var(--text);
+  font-size: 12.5px; font-weight: 600; padding: 6px 12px; cursor: pointer;
+}
+.desk-v1-rules-blocker-answer:hover { background: var(--accent-dim); }
+.desk-v1-rules-proposed-card { position: relative; }
+.desk-v1-rules-assumed { margin-top: 6px; font-size: 12px; }
+.desk-v1-rules-assumed summary { color: var(--text-dim); cursor: pointer; font-weight: 600; }
+.desk-v1-rules-assumed-body { margin-top: 4px; color: var(--text-dim); line-height: 1.5; }
+
+/* Start sheet (CMP-05) — a scrim + panel appended to the shell itself
+   (§3.5/§8 own this as a one-time confirmation, not a route). z-index sits
+   above the Claydo FAB (app.css, z-index 1500 — see the T3 rail comment
+   below) since it can open from any Desk page. */
+.desk-v1-rules-overlay { position: fixed; inset: 0; z-index: 1600; display: flex; align-items: center; justify-content: center; }
+.desk-v1-rules-scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.45); }
+.desk-v1-rules-sheet {
+  position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 20px 22px; width: 420px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px);
+  overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+.desk-v1-rules-sheet-title { font-size: 17px; font-weight: 800; color: var(--text); }
+.desk-v1-rules-sheet-body { display: flex; flex-direction: column; gap: 8px; }
+.desk-v1-rules-authrow { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--border2); }
+.desk-v1-rules-authrow:last-child { border-bottom: none; }
+.desk-v1-rules-authrow-label { color: var(--text-dim); font-weight: 600; }
+.desk-v1-rules-authrow-val { color: var(--text); text-align: right; }
+.desk-v1-rules-sheet-note { font-size: 12.5px; color: var(--text-faint); font-style: italic; }
+.desk-v1-rules-sheet-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.desk-v1-rules-sheet-cancel {
+  background: transparent; border: 1px solid var(--border2); border-radius: 8px; color: var(--text);
+  font-size: 13px; font-weight: 600; padding: 7px 14px; cursor: pointer;
+}
+.desk-v1-rules-sheet-confirm {
+  background: var(--accent); border: none; border-radius: 8px; color: var(--bg);
+  font-size: 13px; font-weight: 700; padding: 7px 14px; cursor: pointer;
+}
+.desk-v1-rules-sheet-confirm:hover { opacity: 0.9; }
+
+/* §8 Rules page — a full `‹ <campaign>` page (see desk-v1-rules.js comment:
+   the doc's "popover" is the entry link, not a floating layer here). */
+.desk-v1-rules-page { display: flex; flex-direction: column; gap: 18px; max-width: 560px; }
+.desk-v1-rules-group { display: flex; flex-direction: column; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid var(--border2); }
+.desk-v1-rules-group:last-of-type { border-bottom: none; }
+.desk-v1-rules-group-title { font-size: 13px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 6px; }
+.desk-v1-rules-radio, .desk-v1-rules-checkrow {
+  display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--text); cursor: pointer;
+}
+.desk-v1-rules-excluded { color: var(--text-faint); font-size: 12px; }
+.desk-v1-rules-inlinerow { display: flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--text); }
+.desk-v1-rules-numinput {
+  width: 64px; background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px;
+  color: var(--text); font-size: 13.5px; padding: 4px 8px;
+}
+.desk-v1-rules-hint { font-size: 12px; color: var(--text-faint); }
+.desk-v1-rules-effect { min-height: 18px; font-size: 12.5px; color: var(--green-text); font-weight: 600; }
+
+/* §3.4 Posy instruction reply — before/after + affected, in the Posy box's
+   own output slot (kit's posyBoxHTML), not a new bubble type. */
+.desk-v1-rules-posyreply { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text); }
+.desk-v1-rules-posyreply-row { line-height: 1.5; }
+.desk-v1-rules-posyreply-label { color: var(--text-dim); font-weight: 700; margin-right: 6px; }
+.desk-v1-rules-posyreply-affected { font-size: 12px; color: var(--text-faint); margin-top: 2px; }
+
+@media (max-width: 960px) {
+  /* §11: phone sheets dock to the bottom edge full-width rather than
+     floating centered (same "pin to the edge" rule the rest of Desk v1
+     mobile CSS already follows for its own overlays). */
+  .desk-v1-rules-overlay { align-items: flex-end; }
+  .desk-v1-rules-sheet { width: 100%; max-width: 100%; max-height: 80vh; border-radius: 14px 14px 0 0; }
+  .desk-v1-rules-authrow { flex-direction: column; gap: 2px; }
+  .desk-v1-rules-authrow-val { text-align: left; }
+  .desk-v1-rules-sheet-cancel, .desk-v1-rules-sheet-confirm, .desk-v1-rules-blocker-answer,
+  .desk-v1-rules-start-btn { min-height: 44px; }
+}
+
 /* ── T3: Full-width review (frame 12b) ───────────────────────────────────── */
 
 .desk-v1-review { display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 0; }

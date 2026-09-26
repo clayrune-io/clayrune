@@ -480,6 +480,87 @@
     },
   };
 
+  // ── T2b: Proposed state, Start sheet, rules popover, Posy instructions
+  // (docs/desk_v1_r0_plan.md; THE_DESK_V1_UI.md §3.5, §8). New rows only
+  // (ground rule 3) — camp-1 and its channels/families above are untouched.
+  //
+  // §8's worked example is "in · Ron (personal) excluded" — an included/
+  // excluded row needs a channel that exists but isn't on the campaign's
+  // channelIds. Adding a 4th global channel for this broke
+  // desk-v1-campaign.mjs's Add-tray "channel shelf" check, which assumes
+  // every existing channel is already attached to camp-1 (T0a's own
+  // invariant). Fixed by using camp-2 below instead: its channelIds is only
+  // ['ch-x-ron'], so the two pre-existing channels it doesn't hold
+  // (ch-li-page, ch-blog) are naturally "excluded" for it — no new channel,
+  // no touching camp-1's shelf count.
+
+  // A second campaign, in Proposed state, so §3.5 has something real to
+  // render (camp-1 is Active and stays that way — T2a/T3/T4 fixtures already
+  // depend on it). `goal.tracked: false` deliberately demonstrates CMP-03's
+  // "untracked goal is a warning, not a blocker".
+  CAMPAIGNS.push({
+    id: 'camp-2',
+    name: 'Reddit AMA push',
+    state: 'proposed', // proposed | active | paused | completed | archived | draft
+    goal: {
+      metric: 'AMA signups', target: 50, current: 0,
+      deadline: '2026-10-15', audience: 'r/SideProject', tracked: false,
+    },
+    channelIds: ['ch-x-ron'],
+    rules: {
+      reviewMode: 'each_piece', frequencyPerWeek: 2,
+      repliesMode: 'drafts', paid: false,
+    },
+  });
+
+  // Posy's proposed pieces (§3.5: "planned or drafting") for camp-2.
+  FAMILIES.push(
+    { id: 'fam-reddit-announce', campaignId: 'camp-2', kind: 'post',
+      title: 'We’re doing a Reddit AMA — ask us anything',
+      versions: [{ id: 'v-reddit-announce-x', channelId: 'ch-x-ron', state: 'drafting', revision: 0 }] },
+    { id: 'fam-reddit-recap', campaignId: 'camp-2', kind: 'post',
+      title: 'AMA recap: what testers asked most',
+      versions: [{ id: 'v-reddit-recap-x', channelId: 'ch-x-ron', state: 'planned', revision: 0 }] },
+  );
+
+  // Proposed-state detail, keyed by campaignId (same "own key, own section"
+  // convention as REVIEW_DETAIL/VIDEO_DETAIL/CONVERSATION_DETAIL above).
+  const PROPOSED_DETAIL = {
+    'camp-2': {
+      // The goal sentence's editable parts (§3.5: "dashed underlines on the
+      // editable parts: target, date, audience"). `metric` is fixed prose,
+      // not one of the three dashed slots.
+      goalSentence: { target: 50, metric: 'AMA signups', date: '2026-10-15', audience: 'r/SideProject' },
+      // "Only a real blocker gets a card... ⛔ Posy's one question" (CMP-03).
+      blocker: {
+        id: 'blocker-subreddit',
+        question: 'Which subreddit should the AMA run in?',
+        answers: [
+          { id: 'a-sideproject', label: 'r/SideProject' },
+          { id: 'a-programming', label: 'r/programming' },
+        ],
+      },
+      // "? Assumed" popovers, keyed by familyId — shown on the relevant card.
+      assumptions: {
+        'fam-reddit-announce': 'Assumed this posts from @ron, not a separate AMA account.',
+        'fam-reddit-recap': 'Assumed the recap goes out the day after the AMA ends.',
+      },
+      // The Start-sheet's authority list (CMP-05: "accounts, frequency
+      // ceiling, dates, review mode, replies, paid, generation limits, stop
+      // conditions", in plain language).
+      authority: {
+        accounts: ['𝕏 @ron'],
+        frequencyPerWeek: 2,
+        dates: 'Now through Oct 15, 2026',
+        reviewMode: 'You approve each piece',
+        replies: 'Drafts for review',
+        paid: 'Off',
+        generationLimits: 'No video generation planned for this campaign',
+        stopConditions: 'Pause automatically once the goal is reached or Oct 15 passes',
+      },
+    },
+  };
+
   window.DeskV1Fixtures = {
     campaigns: CAMPAIGNS,
     channels: CHANNELS,
@@ -498,5 +579,6 @@
     conversationDetail: CONVERSATION_DETAIL,
     conversationCoverageGaps: CONVERSATION_COVERAGE_GAPS,
     resultsInsight: RESULTS_INSIGHT,
+    proposedDetail: PROPOSED_DETAIL,
   };
 })();
