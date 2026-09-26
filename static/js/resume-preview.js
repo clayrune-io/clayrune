@@ -575,6 +575,7 @@ async function _reconcileAgentBuffer(projectId, sessionId) {
       // Re-anchor the cursor so the slice recovery below can fire again, but
       // keep the rendered history when it is longer (_mergeShorterHistory).
       if (!_mergeShorterHistory(sessionId, serverLines, 'reconcile', serverTs)) {
+        delete rolloverLoadedCounts[sessionId];  // MC-978: see _settleHistoryReplay
         agentOutputBuffers[sessionId] = serverLines.slice();
         agentOutputTimestamps[sessionId] = serverTs.slice();
         _repaintAgentOutput(sessionId);
@@ -675,6 +676,9 @@ function _settleHistoryReplay(sessionId) {
   if (!rp) return;
   delete _historyReplay[sessionId];
   if (_mergeShorterHistory(sessionId, rp.lines, 'stream-reset', rp.ts)) return;
+  // Wholesale replace drops any prepended rollover parts (MC-978) — reset the
+  // count so the "Load earlier conversation" control offers them again.
+  delete rolloverLoadedCounts[sessionId];
   agentOutputBuffers[sessionId] = rp.lines;
   agentOutputTimestamps[sessionId] = rp.ts;
   _repaintAgentOutput(sessionId);
@@ -826,8 +830,11 @@ function connectAgentStream(projectId, sessionId) {
         if (!agentOutputTimestamps[sessionId]) agentOutputTimestamps[sessionId] = [];
         agentOutputBuffers[sessionId].push(msg.text);
         agentOutputTimestamps[sessionId].push(msg.ts || null);
-        // Cap buffer to prevent unbounded memory growth
-        if (agentOutputBuffers[sessionId].length > 2000) {
+        // Cap buffer to prevent unbounded memory growth. Waived once the human
+        // has pulled earlier rollover parts in (MC-978): the cap would drop
+        // exactly the history they asked for, and rolloverLoadedCounts would
+        // still say it is on screen, so the button would not come back.
+        if (agentOutputBuffers[sessionId].length > 2000 && !(rolloverLoadedCounts[sessionId] > 0)) {
           agentOutputBuffers[sessionId] = agentOutputBuffers[sessionId].slice(-1500);
           agentOutputTimestamps[sessionId] = agentOutputTimestamps[sessionId].slice(-1500);
         }
