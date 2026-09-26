@@ -170,6 +170,14 @@ try {
       const f = window.fetch;
       window.fetch = (u, o) => { if (String(u).includes('/api/browser/input')) window.__inputs.push(JSON.parse(o.body)); return f(u, o); };
     });
+    // The first frames come before the page is fitted to the pane (MC-976);
+    // a click then maps correctly into THAT frame, but the frame read after
+    // it would be the fitted one. Click once the page is the pane's size.
+    await page.waitForFunction(() => { const i = document.querySelector('#mc-browser-pane [data-bp="screen"]');
+      const r = i && i.parentElement.getBoundingClientRect();
+      return i && i.naturalWidth && Math.abs(i.naturalWidth / 2 - r.width) < 3 && Math.abs(i.naturalHeight / 2 - r.height) < 3; },
+      null, { timeout: 15000 }).catch(() => fail('dpr 2: page never fitted the pane'));
+    await page.waitForTimeout(300);
     const box = await page.locator('#mc-browser-pane [data-bp="screen"]').boundingBox();
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
     await page.waitForTimeout(300);
