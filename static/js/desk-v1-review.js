@@ -68,9 +68,9 @@
       rephrase: 'An agent that "tidied" a migration folder cost me an afternoon. Not a smarter agent’s fault — a cheaper mistake.',
     },
     'p-closer': {
-      shorter: 'Free for Windows beta testers.',
-      less_technical: 'Windows beta testers get this at no cost.',
-      rephrase: 'Windows beta testers can join at no charge.',
+      shorter: 'Open to Windows beta testers.',
+      less_technical: 'If you run Windows, you can join the beta.',
+      rephrase: 'Windows beta testers can join now.',
     },
   };
   function _rewriteFor(paraId, style, fallback) {

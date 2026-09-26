@@ -174,7 +174,7 @@
         // family's already-rendered video rather than inventing a second
         // video fixture.
         { id: 'p-embed', embedFamilyId: 'fam-install-video' },
-        { id: 'p-closer', text: 'Free for Windows beta testers. ', linkText: 'Join the beta.', linkHref: '#' },
+        { id: 'p-closer', text: 'Open to Windows beta testers. ', linkText: 'Join the beta.', linkHref: '#' },
       ],
       claims: [
         { id: 'claim-1', anchorParagraphId: 'p-claim', label: 'Restore time',
@@ -183,7 +183,7 @@
       where: 'Clayrune blog', whenISO: '2026-09-30T12:00:00-07:00', link: 'clayrune.dev/beta',
       whyChecks: [
         { label: '2.1 is public', ok: true },
-        { label: 'Free for testers', ok: true },
+        { label: 'Open to testers', ok: true },
         // Suffix is NOT baked in here — desk-v1-review.js appends "·
         // revision waiting" only once the claim is actually 'checked'; a
         // still-blocked claim (the baseline above) has no revision yet.
