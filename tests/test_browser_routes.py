@@ -1148,6 +1148,39 @@ def test_pin_root_window_leaves_a_correct_window_alone():
     assert [m['method'] for m in ws.sent] == ['Browser.getWindowForTarget']
 
 
+def test_release_held_profile_free_dir_is_a_noop(monkeypatch):
+    monkeypatch.setattr(br, '_profile_dir_locked', lambda udd: False)
+    monkeypatch.setattr(br, '_profile_holder', lambda udd: (_ for _ in ()).throw(AssertionError('no scan')))
+    assert br._release_held_profile('main', '/p/main') is None
+
+
+def test_release_held_profile_refuses_a_foreign_holder(monkeypatch):
+    # A holder that is not a headless pane Chromium (e.g. the user's own
+    # Chrome pointed at the dir) is never touched — the launch is refused.
+    monkeypatch.setattr(br, '_profile_dir_locked', lambda udd: True)
+    monkeypatch.setattr(br, '_profile_holder', lambda udd: (4242, 'chrome.exe --user-data-dir=/p/main'))
+    monkeypatch.setattr(br, '_browser_ws_url', lambda *a, **k: (_ for _ in ()).throw(AssertionError('no CDP')))
+    err = br._release_held_profile('main', '/p/main')
+    assert 'pid 4242' in err
+
+
+class _DeadProc:
+    def __init__(self, rc):
+        self.rc = rc
+
+    def poll(self):
+        return self.rc
+
+
+def test_run_cdp_reports_chromium_that_died_on_arrival_at_once():
+    # MC-976: rc 21 = the singleton hand-off to whatever already holds the
+    # profile dir. The reader used to poll the dead port for 15s as 'running'.
+    session = {'status': 'running', 'port': 1, 'proc': _DeadProc(21), 'url': 'about:blank'}
+    br._run_cdp(session)
+    assert session['status'] == 'error'
+    assert 'rc=21' in session['error'] and 'held by another Chromium' in session['error']
+
+
 # ── /api/browser/tab route ───────────────────────────────────────────────────
 
 def test_tab_route_unknown_session_404(app_client):

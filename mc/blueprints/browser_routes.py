@@ -72,6 +72,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time as _time
 import uuid
@@ -823,6 +824,16 @@ def _run_cdp(session):
         for _ in range(75):
             if session['status'] != 'running':
                 return
+            # Chromium that died on arrival will never open its port: say so
+            # now instead of polling a dead port for 15s with status still
+            # 'running' (a black pane with no explanation). rc 21 is the
+            # process-singleton hand-off: another Chromium holds the dir.
+            rc = session['proc'].poll() if session.get('proc') is not None else None
+            if rc is not None:
+                session['status'] = 'error'
+                session['error'] = (f'Chromium exited (rc={rc}) before its devtools endpoint came up'
+                                    + (' - the profile dir is held by another Chromium' if rc == 21 else ''))
+                return
             try:
                 targets = json.load(urllib.request.urlopen(
                     f'http://127.0.0.1:{port}/json/list', timeout=1))
@@ -1274,6 +1285,9 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None):
         if live:
             live['reused'] = True
             return live, None
+        err = _release_held_profile(profile, udd)
+        if err:
+            return None, err
     global _swept_orphans
     if not _swept_orphans:
         # Lazy, once per process, and only when the pane is actually used —
@@ -1342,6 +1356,120 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None):
     session['thread'] = t
     t.start()
     return session, None
+
+
+def _profile_dir_locked(udd):
+    """True while some Chromium holds this user-data-dir. Windows: Chromium
+    keeps `lockfile` open with no sharing, so opening it fails. POSIX:
+    `SingletonLock` is a symlink to `<host>-<pid>` of a live process."""
+    if sys.platform == 'win32':
+        lf = os.path.join(udd, 'lockfile')
+        if not os.path.exists(lf):
+            return False
+        try:
+            with open(lf, 'a'):
+                return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+    try:
+        pid = int(os.readlink(os.path.join(udd, 'SingletonLock')).rsplit('-', 1)[1])
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _profile_holder(udd):
+    """``(pid, cmdline)`` of the browser process holding ``udd``, or None.
+
+    Only called once _profile_dir_locked has said the dir IS held, so the
+    process-table scan (~0.8s via CIM on Windows) is paid on the failure
+    path alone. Child processes (`--type=renderer` etc.) carry the same
+    --user-data-dir, so they are excluded to land on the browser process.
+    """
+    image = os.path.basename(_find_chromium() or 'chrome.exe')
+    rows = []
+    try:
+        if sys.platform == 'win32':
+            ps = ("Get-CimInstance Win32_Process -Filter \"Name='%s'\" | "
+                  "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress" % image)
+            out = subprocess.run(['powershell', '-NoProfile', '-Command', ps],
+                                 capture_output=True, text=True, timeout=15,
+                                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO).stdout
+            data = json.loads(out) if out.strip() else []
+            for r in (data if isinstance(data, list) else [data]):
+                rows.append((int(r.get('ProcessId') or 0), r.get('CommandLine') or ''))
+        else:
+            out = subprocess.run(['ps', '-eo', 'pid=,args='], capture_output=True,
+                                 text=True, timeout=15).stdout
+            for line in out.splitlines():
+                pid, _, args = line.strip().partition(' ')
+                if pid.isdigit():
+                    rows.append((int(pid), args))
+    except Exception as e:
+        print(f'[browser] profile holder scan failed: {e}', flush=True)
+        return None
+    flag = f'--user-data-dir={udd}'
+    for pid, cmd in rows:
+        if '--type=' in cmd:
+            continue
+        i = cmd.find(flag)
+        if i >= 0 and cmd[i + len(flag):i + len(flag) + 1] in ('', ' ', '"'):
+            return pid, cmd
+    return None
+
+
+def _release_held_profile(profile, udd, timeout=10):
+    """Free a named profile's dir held by a Chromium we are not tracking, or
+    return an error string saying why it cannot be.
+
+    What holds it in practice is a pane Chromium orphaned by a server restart
+    (the restart path os._exit()s past the atexit browser cleanup). Chromium
+    allows one process per user-data-dir: a second launch hands its command
+    line to the holder and exits rc=21 in ~0.1s, so the new session's port
+    never opened and the pane stayed black until the reader gave up 15s
+    later (MC-976, 2026-09-25: Ron's 'main' sessions cfc90fe9ab84/f53c7f773b99
+    against an orphan whose parent server was already gone). A holder that
+    is a headless Chromium with a debugging port is one of ours: close it
+    over CDP (Browser.close flushes cookies — never a kill, see
+    _graceful_close) and wait for the dir to free. Anything else is left
+    alone and the launch is refused with the holder's pid.
+    """
+    with browser_lock:
+        stale = [s for s in browser_sessions.values()
+                 if s.get('profile') == profile and s.get('status') != 'running'
+                 and s.get('proc') is not None and s['proc'].poll() is None]
+    for s in stale:  # our own session whose reader died but Chromium did not
+        _kill_browser_session(s)
+    if not _profile_dir_locked(udd):
+        return None
+    holder = _profile_holder(udd)
+    if not holder:
+        return (f"profile '{profile}' is in use by another browser process "
+                f"(could not identify it) — close it and try again")
+    pid, cmd = holder
+    m = re.search(r'--remote-debugging-port=(\d+)', cmd)
+    url = _browser_ws_url(int(m.group(1))) if (m and '--headless' in cmd) else None
+    if not url:
+        return (f"profile '{profile}' is in use by another browser process "
+                f"(pid {pid}) — close it and try again")
+    try:
+        ws = _import_ws().create_connection(url, max_size=None, timeout=3)
+        try:
+            ws.send(json.dumps({'id': 1, 'method': 'Browser.close', 'params': {}}))
+        finally:
+            ws.close()
+    except Exception as e:
+        return f"profile '{profile}' is held by a leftover pane browser (pid {pid}) that did not respond: {e}"
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        if not _profile_dir_locked(udd):
+            print(f'[browser] closed leftover pane Chromium pid {pid} holding profile {profile!r}', flush=True)
+            return None
+        _time.sleep(0.2)
+    return f"profile '{profile}' is still held by pid {pid} {timeout}s after asking it to close"
 
 
 def _browser_ws_url(port, timeout=2):
