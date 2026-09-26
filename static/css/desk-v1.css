@@ -256,8 +256,8 @@
 .desk-v1-claimbar-checking { color: var(--text-dim); font-size: 12.5px; margin-top: 8px; }
 
 /* Selection toolbar (A6: below the selection; covers neither it nor the next
-   line — the 10px top offset in JS plus this bar's own compact height keeps
-   a real gap rather than relying on chance). */
+   line — desk-v1-review.js pushes the anchor paragraph down by the overlap
+   when the normal paragraph gap isn't tall enough for the bar). */
 .desk-v1-review-seltoolbar {
   position: absolute; z-index: 15; display: flex; align-items: center; gap: 4px;
   background: var(--text); border-radius: 8px; padding: 5px; box-shadow: 0 8px 20px rgba(0,0,0,0.3);

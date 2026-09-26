@@ -359,6 +359,7 @@
       <div class="desk-v1-review-actions">
         <div class="desk-v1-review-actions-row">
           <button type="button" class="desk-v1-review-primary" data-act-primary ${info.disabled ? 'disabled' : ''}>${esc(info.label)}</button>
+          ${window.DeskV1Kit ? window.DeskV1Kit.infoIconHTML('review-approve-binding') : ''}
           <div class="desk-v1-review-more">
             <button type="button" class="desk-v1-review-morebtn" data-more-btn aria-haspopup="menu" aria-label="More actions">⋯</button>
           </div>
@@ -428,6 +429,10 @@
     if (window.DeskV1Kit) {
       window.DeskV1Kit.bindPosyBox(el.querySelector('#desk-v1-review-posy'), 'desk-v1-review-posy-input', (text) => {
         window.DeskV1Kit.toast('Sent to Posy: "' + text + '"', {});
+      });
+      // §4: "Say this once in an ⓘ tooltip; don't print it permanently."
+      window.DeskV1Kit.bindInfoIcons(el, {
+        'review-approve-binding': 'Approving binds this revision, destination, link, schedule and policy version together — changing any of them invalidates the approval.',
       });
     }
 
@@ -610,9 +615,13 @@
   // selection nor the next line). Bound once per mount on the article
   // container; imperative DOM only, no full re-render (would collapse the
   // browser selection). ─────────────────────────────────────────────────────
+  let _reflowEl = null;
+  let _reflowOrigMargin = '';
+
   function _closeSelToolbar() {
     if (_selToolbarEl && _selToolbarEl.parentNode) _selToolbarEl.parentNode.removeChild(_selToolbarEl);
     _selToolbarEl = null;
+    if (_reflowEl) { _reflowEl.style.marginBottom = _reflowOrigMargin; _reflowEl = null; _reflowOrigMargin = ''; }
   }
 
   function _wireSelectionToolbar(articleEl) {
@@ -658,6 +667,22 @@
     bar.style.top = (rect.bottom - hostRect.top + 10) + 'px';
     bar.style.left = Math.max(0, rect.left - hostRect.left) + 'px';
     _selToolbarEl = bar;
+
+    // A6 (cont.): a selection on a paragraph's last line leaves only the
+    // normal paragraph gap (14px) below it — not enough room for the bar's
+    // own height. Rather than let it cover the next paragraph, push that
+    // paragraph down by exactly the overlap, restored in _closeSelToolbar.
+    const nextEl = para.nextElementSibling;
+    if (nextEl) {
+      const barRect = bar.getBoundingClientRect();
+      const overlap = barRect.bottom - nextEl.getBoundingClientRect().top;
+      if (overlap > -4) {
+        _reflowEl = para;
+        _reflowOrigMargin = para.style.marginBottom;
+        const extra = (parseFloat(getComputedStyle(para).marginBottom) || 0) + overlap + 8;
+        para.style.marginBottom = extra + 'px';
+      }
+    }
 
     const selectedText = sel.toString();
     bar.querySelector('[data-sel-askposy]').onclick = (e) => {
