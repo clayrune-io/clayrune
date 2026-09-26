@@ -3212,6 +3212,213 @@ def unresolved_mint_block(project, *, task='', trigger_type='', incognito=False)
         '{"verdict":"supersedes|unrelated_to","candidate":"<slug>"}')
 
 
+# ── Negation obligation + waiver (MEMORY_DESIGN_V2_SPEC.md §5.2, MC-944 step 8) ──
+#
+# Condition 11: when an artifact of declared weight closes — the SAME three
+# deterministic triggers step 7's mint already fires from (hivemind close,
+# backlog->done, docs artifact scan) — any heading in it matching
+# rejected|declined|negated|not doing|alternatives considered produces one
+# negation record per row, via the EXISTING positions store (`write_position`),
+# OR a waiver (Condition 12: "a waiver that costs the same as a POST is not
+# an escape hatch" — a waiver is a counted, subject/reason/artifact record,
+# never a silent skip).
+#
+# Gated OFF by default (`negation_obligation_enabled`) — report-mode-first,
+# same posture as step 7's mint flag; no caller in this repo flips it on.
+
+_NEGATION_HEADING_RE = re.compile(
+    r'^#{1,6}[ \t]*.*\b(?:rejected|declined|negated|not doing|'
+    r'alternatives considered)\b.*$', re.I | re.M)
+_NEGATION_ROW_RE = re.compile(r'^[ \t]*[-*][ \t]+(.+\S)[ \t]*$', re.M)
+_NEGATION_ROW_SPLIT_RE = re.compile(r'\s+[—-]{1,2}\s+')  # ' - ' or ' — '
+_NEGATION_BOLD_ROW_RE = re.compile(r'^\*\*(.+?)\*\*[:—-]*\s*(.*)$')
+
+
+def _negation_obligation_enabled():
+    return bool(state.CONFIG.get('negation_obligation_enabled', False))
+
+
+def _negation_ledger_enabled():
+    return bool(state.CONFIG.get('negation_ledger_enabled', False))
+
+
+def _negation_ledger_max():
+    try:
+        return max(1, int(state.CONFIG.get('negation_ledger_max', 20) or 20))
+    except (TypeError, ValueError):
+        return 20
+
+
+def _negation_pin_max():
+    try:
+        return max(0, int(state.CONFIG.get('negation_pin_max', 5) or 5))
+    except (TypeError, ValueError):
+        return 5
+
+
+_NEGATION_LEDGER_BYTE_CAP = 1536  # ~1.5 KB, Condition 13
+_NEGATION_LEDGER_RECENCY_RESERVE = 5  # Condition 14: >=5 of 20 slots on recency alone
+_NEGATION_LEDGER_INTERRUPT_WINDOW_DAYS = 180  # Condition 13: "over the last 180 days"
+
+
+def _negation_slug(trigger_kind, artifact_key, row_text):
+    """Deterministic per-ROW slug — a replayed trigger over the SAME artifact
+    must produce the SAME position filename for the SAME row (idempotent-on-
+    replay, mirrors `_mint_slug`), so a re-scan of an unchanged artifact never
+    re-writes (and never re-supersedes) an obligation already recorded.
+    """
+    h = hashlib.sha1(f'{artifact_key}|{row_text}'.encode('utf-8')).hexdigest()[:10]
+    kind = re.sub(r'[^a-z0-9]+', '_', (trigger_kind or 'neg').lower()).strip('_')
+    return f'neg_{kind}_{h}'
+
+
+def _negation_sections(text):
+    """Every heading in `text` matching Condition 11's phrase set -> the
+    section body up to the next heading of ANY level (or EOF)."""
+    body = text or ''
+    heads = list(_NEGATION_HEADING_RE.finditer(body))
+    sections = []
+    for i, m in enumerate(heads):
+        start = m.end()
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(body)
+        sections.append(body[start:end])
+    return sections
+
+
+def _negation_rows(text):
+    """Bullet-list rows under a matching heading -> raw row strings."""
+    rows = []
+    for section in _negation_sections(text):
+        for m in _NEGATION_ROW_RE.finditer(section):
+            row = m.group(1).strip()
+            if row:
+                rows.append(row)
+    return rows
+
+
+def _parse_negation_row(row_text):
+    """One bullet row -> (subject, reason), or None if the row is not
+    subject/reason-shaped. Recognizes `**Subject**: reason`, `Subject —
+    reason`, `Subject - reason`, and `Subject: reason` — the shapes the
+    corpus's own STANDING POSITIONS rows already use (see
+    `_render_position_line`). A row that fits none of these becomes a
+    waiver (Condition 12), never a guess dressed as a parse.
+    """
+    row_text = (row_text or '').strip().lstrip('-*').strip()
+    m = _NEGATION_BOLD_ROW_RE.match(row_text)
+    if m and m.group(1).strip() and m.group(2).strip():
+        return m.group(1).strip(), m.group(2).strip()
+    parts = _NEGATION_ROW_SPLIT_RE.split(row_text, maxsplit=1)
+    if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+        return parts[0].strip(), parts[1].strip()
+    if ':' in row_text:
+        subject, _, reason = row_text.partition(':')
+        if subject.strip() and reason.strip():
+            return subject.strip(), reason.strip()
+    return None
+
+
+def _negation_waiver_log_path(project_id):
+    """Sibling to `DATA_DIR` (`data/projects/`), never inside it (CLAUDE.md's
+    DATA_DIR-pollution rule) — same placement as `negation_interrupt_log`."""
+    safe = ''.join(c for c in str(project_id or 'unknown')
+                   if c.isalnum() or c in ('-', '_')) or 'unknown'
+    return DATA_DIR.parent / 'negation_waiver_log' / f'{safe}.jsonl'
+
+
+def _record_negation_waiver(project_id, trigger_kind, artifact_path, subject, reason):
+    """Condition 12 — a waiver is itself a record: subject, reason, artifact,
+    counted. Appended to a JSONL log (mirrors `negation_interrupt_log`'s
+    placement/shape) rather than the positions store — a waiver is NOT a
+    ruling an agent must obey, so it does not belong in the same object that
+    supersedes-in-place; it is bookkeeping for §16 step 9's measurement.
+    Returns the record dict (also used to build the combined report).
+    """
+    record = {
+        'ts': now_iso(), 'project_id': project_id, 'trigger_kind': trigger_kind,
+        'artifact_path': artifact_path, 'subject': subject[:200], 'reason': reason,
+    }
+    try:
+        p = _negation_waiver_log_path(project_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+    except Exception as e:
+        _log(f'[negation] waiver log write failed for {project_id}: {e}')
+    return record
+
+
+def scan_for_negation_obligations(project, *, trigger_kind, artifact_text,
+                                   artifact_path='', task='', trigger_type=''):
+    """Condition 11/12 — the ONE entry point every close trigger calls
+    ALONGSIDE `mint_topic_node` (same trigger_kind vocabulary: 'hivemind_close'
+    | 'backlog_done' | 'docs_artifact'). Scans `artifact_text` for headings
+    matching Condition 11's phrase set; each row under one becomes either an
+    OBLIGATION (a new position, via the existing `write_position`) or a
+    WAIVER (Condition 12) — never silently dropped.
+
+    Idempotent-on-replay: the position filename is a deterministic hash of
+    (trigger_kind, artifact_path or artifact_text, row_text) — mirrors
+    `_mint_slug` — and a replay that finds the file ALREADY EXISTS is counted
+    as an obligation again (the row still has a live ruling) but never
+    re-written, so replaying an unchanged artifact twice never grows a
+    `## Previously` chain that was never actually superseded.
+
+    Authority guard: the SAME `mc.distiller._authority_violation` check
+    `mint_topic_node` runs, per row, before write — a deterministic trigger
+    is not exempt just because a human never phrased the sentence.
+
+    Gated OFF entirely unless `negation_obligation_enabled`. Never raises.
+    Returns {'obligations': [filename,...], 'waivers': [record,...]} — always
+    both keys, so a caller building a report never has to check for a
+    missing side.
+    """
+    report = {'obligations': [], 'waivers': []}
+    if not _negation_obligation_enabled():
+        return report
+    try:
+        rows = _negation_rows(artifact_text)
+        if not rows:
+            return report
+        project_id = project.get('id', '') if isinstance(project, dict) else ''
+        artifact_key = artifact_path or (artifact_text or '')[:80]
+        mem_dir = _get_memory_path(project).parent
+        for row_text in rows:
+            violation = _distiller._authority_violation(row_text)
+            if violation:
+                report['waivers'].append(_record_negation_waiver(
+                    project_id, trigger_kind, artifact_path, row_text,
+                    f'authority guard refused ({violation})'))
+                _scribe_stat(project_id, 'negation_waiver_authority')
+                continue
+            parsed = _parse_negation_row(row_text)
+            if not parsed:
+                report['waivers'].append(_record_negation_waiver(
+                    project_id, trigger_kind, artifact_path, row_text,
+                    'row not subject/reason-shaped'))
+                _scribe_stat(project_id, 'negation_waiver_unparsed')
+                continue
+            subject, reason = parsed
+            slug = _negation_slug(trigger_kind, artifact_key, row_text)
+            path = mem_dir / f'{POSITION_PREFIX}{slug}.md'
+            if path.exists():
+                report['obligations'].append(path.name)
+                continue
+            fn = write_position(project, subject, 'declined', reason,
+                                 slug=slug, task=task, trigger_type=trigger_type)
+            if fn:
+                report['obligations'].append(fn)
+                _scribe_stat(project_id, f'negation_obligation_{trigger_kind}')
+        if report['waivers']:
+            _log(f"[negation] {trigger_kind}: {len(report['obligations'])} "
+                 f"obligation(s), {len(report['waivers'])} waiver(s) — "
+                 f"{artifact_path or '(no artifact path)'}")
+        return report
+    except Exception as e:
+        _log(f'[negation] {trigger_kind} obligation scan failed: {e}')
+        return report
+
+
 def _mem_snippet(text, terms):
     """A ~400-char window around the first query term, else the note's head."""
     low = (text or '').lower()
