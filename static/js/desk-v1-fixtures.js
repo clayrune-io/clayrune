@@ -37,7 +37,16 @@
   // mode, 'manual' = "You publish it", and `health: 'held'` overrides either
   // with "Held — <reason>".
   const CHANNELS = [
-    { id: 'ch-x-ron', platform: 'x', identity: '@ron', label: '𝕏 @ron',
+    // T8 R0 exit cosmetic fix (MC-977): a bare space between the glyph and
+    // identity read as no gap at all ("𝕏@ron", T2b review screenshot) —
+    // 𝕏 (U+1D54F) carries almost no right-side bearing at badge font sizes,
+    // unlike the `in` two-letter glyph below. The middle-dot separator
+    // already used for LinkedIn reads correctly regardless of glyph
+    // metrics, so match it here instead of widening the space (font- and
+    // zoom-level-dependent) or adding CSS letter-spacing (would apply to
+    // every badge, including "Clayrune blog" below, which deliberately has
+    // no platform glyph to space from).
+    { id: 'ch-x-ron', platform: 'x', identity: '@ron', label: '𝕏 · @ron',
       capability: 'direct', health: 'ok' },
     // "in · Clayrune page direct + held" (ground rule 3): its normal
     // capability is direct, but it is CURRENTLY held — the Home/campaign

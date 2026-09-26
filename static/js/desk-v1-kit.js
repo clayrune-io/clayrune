@@ -4,6 +4,27 @@
 // off `window.DeskV1Kit`, replacing the T0a stub whole (that stub's own
 // comment: "callers must not depend on this shape past T0a").
 (function () {
+  // ── Posy's face for posyBoxHTML() below (T8, MC-977 R0 exit cosmetic fix).
+  // desk.js resolves this the same way for the LEGACY Queue thread
+  // (_deskPosyAvatar, desk.js:116-119: /api/floor's bench, the global
+  // 'social-media-strategist' entry's `avatar` field, e.g. "fig:courier") —
+  // but that resolution runs from _loadDeskShell(), which openDesk() never
+  // reaches once desk_v1 is on (it returns via deskV1Open() first). Without
+  // a v1 copy of the same lookup, every posyBoxHTML() call fell through
+  // avatarHTML()'s "absence" branch and drew the neutral dashed circle
+  // instead of Posy's face. Fetched once, cached; failure leaves '' (same
+  // neutral-dot fallback as before this fix, never a guessed face).
+  let _posyAvatar = '';
+  fetch('/api/floor').then((r) => r.json()).then((floor) => {
+    const posy = ((floor && floor.bench) || []).find(
+      (b) => (b.scope || 'global') === 'global' && b.name === 'social-media-strategist');
+    _posyAvatar = posy ? (posy.avatar || '') : '';
+    if (typeof window.avatarHTML !== 'function') return;
+    document.querySelectorAll('.desk-v1-posy-box:not(.desk-v1-posy-box-compact) .desk-thread-head').forEach((head) => {
+      if (head.firstElementChild) head.firstElementChild.outerHTML = window.avatarHTML(_posyAvatar, 24);
+    });
+  }).catch(() => {});
+
   // ── §9 vocabulary: 15 version states + 6 campaign states, glyph + word ───
   // (LIF-01/02/03). Never a kind-local string — every surface renders status
   // through stateLabel()/stateLabelHTML() below so A12/A15 are testable once,
@@ -298,7 +319,7 @@
     opts = opts || {};
     const inputId = opts.inputId || ('desk-v1-posy-input-' + Math.random().toString(36).slice(2));
     const compact = !!opts.compact;
-    const avatar = (!compact && typeof window.avatarHTML === 'function') ? window.avatarHTML(opts.avatar || 'posy', 24) : '';
+    const avatar = (!compact && typeof window.avatarHTML === 'function') ? window.avatarHTML(opts.avatar || _posyAvatar, 24) : '';
     const nameHTML = compact ? '' : '<span class="desk-thread-name">Posy</span>';
     const scope = opts.scopeLabel
       ? `<button type="button" class="desk-v1-posy-scope" data-scope-trigger="1">About: ${esc(opts.scopeLabel)} &#9662;</button>`
