@@ -105,6 +105,27 @@ function reportUncaught(pageErrors, tag) {
   if (uncaught.length) uncaught.forEach((e) => fail(`${tag} uncaught page error: ${e}`));
 }
 
+// ── Dave's review pass 3: window.confirm() was replaced with the Desk kit's
+// in-page sheet (`.desk-v1-rules-confirm-overlay`, `_openWideningConfirm` in
+// desk-v1-rules.js) — async by necessity, since a DOM dialog can't return
+// synchronously the way window.confirm did. `waitForWideningSheet` polls for
+// the overlay instead of mocking `window.confirm`; `respondToWideningSheet`
+// drives the confirm or decline button. ────────────────────────────────────
+async function waitForWideningSheet(page, timeout = 2000) {
+  await page.waitForSelector('.desk-v1-rules-confirm-overlay', { timeout });
+  return (await page.textContent('.desk-v1-rules-confirmtext').catch(() => '') || '').trim();
+}
+
+async function respondToWideningSheet(page, accept) {
+  await page.click(accept ? '[data-confirm-accept]' : '[data-confirm-decline]');
+  await page.waitForSelector('.desk-v1-rules-confirm-overlay', { state: 'detached', timeout: 2000 });
+}
+
+async function noWideningSheetAppears(page, wait = 150) {
+  await page.waitForTimeout(wait);
+  return (await page.$('.desk-v1-rules-confirm-overlay')) === null;
+}
+
 // ── §3.5 Proposed state render checks, one per tone: state pill, editable
 // goal sentence, untracked-goal warning (CMP-03), the blocker card, and
 // Posy's proposed pieces with "? Assumed" popovers. ─────────────────────────
@@ -320,13 +341,12 @@ async function runReviewModeToggle(browser) {
     ? ok('the fixture is NOT mutated until Apply is clicked')
     : fail(`fixture mutated before Apply: reviewMode=${JSON.stringify(unappliedYet)}`);
 
-  await page.evaluate(() => { window.__confirms = []; window.confirm = (msg) => { window.__confirms.push(msg); return true; }; });
   await page.click('[data-pop-preview-apply]');
-  await page.waitForTimeout(30);
-  const confirms = await page.evaluate(() => window.__confirms);
-  confirms.length > 0
-    ? ok(`Apply on "Approve themes, then run" (widening) asks for confirmation: "${confirms[0]}"`)
-    : fail('Apply on a widening choice should have called window.confirm');
+  const confirmText = await waitForWideningSheet(page).catch(() => null);
+  confirmText
+    ? ok(`Apply on "Approve themes, then run" (widening) opens the confirm sheet: "${confirmText}"`)
+    : fail('Apply on a widening choice should have opened the confirm sheet');
+  await respondToWideningSheet(page, true);
 
   const appliedNow = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').rules.reviewMode);
   appliedNow === 'themes'
@@ -348,15 +368,13 @@ async function runReviewModeToggle(browser) {
   // Narrowing back applies with no confirmation.
   await page.click('[data-rules-edit]');
   await page.waitForSelector('.desk-v1-rules-pop', { timeout: 4000 });
-  await page.evaluate(() => { window.__confirms = []; });
   await page.check('input[name="reviewMode"][value="each_piece"]');
   await page.waitForTimeout(30);
   await page.click('[data-pop-preview-apply]');
-  await page.waitForTimeout(30);
-  const confirmsOnNarrow = await page.evaluate(() => window.__confirms.length);
-  confirmsOnNarrow === 0
+  const noSheetOnNarrow = await noWideningSheetAppears(page);
+  noSheetOnNarrow
     ? ok('narrowing back to "each piece" applies without confirmation')
-    : fail(`narrowing should not confirm, got ${confirmsOnNarrow} call(s)`);
+    : fail('narrowing should not open the confirm sheet');
 
   await page.keyboard.press('Escape');
   reportUncaught(pageErrors, '[review-mode]');
@@ -391,13 +409,12 @@ async function runPerJobBudget(browser) {
     ? ok(`raising the per-job cap shows a visible effect preview: "${previewText.trim()}"`)
     : fail(`per-job cap preview missing/wrong: ${JSON.stringify(previewText)}`);
 
-  await page.evaluate(() => { window.__confirms = []; window.confirm = (m) => { window.__confirms.push(m); return true; }; });
   await page.click('[data-pop-preview-apply]');
-  await page.waitForTimeout(30);
-  const confirmed = await page.evaluate(() => window.__confirms.length > 0);
-  confirmed
-    ? ok('raising the per-job cap (widening) asks for confirmation')
-    : fail('raising the per-job cap should have confirmed');
+  const perJobConfirmText = await waitForWideningSheet(page).catch(() => null);
+  perJobConfirmText
+    ? ok('raising the per-job cap (widening) opens the confirm sheet')
+    : fail('raising the per-job cap should have opened the confirm sheet');
+  await respondToWideningSheet(page, true);
 
   const applied = await page.evaluate(() => window.DeskV1Fixtures.renderBudget.perJobLimit);
   applied === 30
@@ -446,12 +463,12 @@ async function runDeclineWidening(browser) {
 
   // check(), not a plain click: staging a pending change (the popover's
   // preview/Apply step) leaves the radio checked until Apply runs — only
-  // declining inside the confirm() prompt reverts it back to Off.
-  await page.evaluate(() => { window.confirm = () => false; });
+  // declining inside the confirm sheet reverts it back to Off.
   await page.check('input[name="paid"][value="on"]');
   await page.waitForTimeout(30);
   await page.click('[data-pop-preview-apply]');
-  await page.waitForTimeout(30);
+  await waitForWideningSheet(page);
+  await respondToWideningSheet(page, false);
 
   const stillOff = await page.$eval('input[name="paid"][value="off"]', (el) => el.checked);
   const fixtureStillOff = await page.evaluate(() => !window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').rules.paid);
@@ -487,15 +504,14 @@ async function runChannelsExcluded(browser) {
     ? ok(`§8's included/excluded worked example: "Clayrune blog" shows unchecked + "excluded": "${excludedLabel.trim()}"`)
     : fail(`ch-blog row wrong: checked=${blogChecked}, label=${JSON.stringify(excludedLabel)}`);
 
-  await page.evaluate(() => { window.__confirms = []; window.confirm = (m) => { window.__confirms.push(m); return true; }; });
   await page.check('[data-channel-toggle="ch-blog"]');
   await page.waitForTimeout(30);
   await page.click('[data-pop-preview-apply]');
-  await page.waitForTimeout(30);
-  const includingConfirmed = await page.evaluate(() => window.__confirms.length);
-  includingConfirmed > 0
-    ? ok('attaching a new channel (widening) asks for confirmation')
-    : fail('attaching a channel should have confirmed');
+  const attachConfirmText = await waitForWideningSheet(page).catch(() => null);
+  attachConfirmText
+    ? ok('attaching a new channel (widening) opens the confirm sheet')
+    : fail('attaching a channel should have opened the confirm sheet');
+  await respondToWideningSheet(page, true);
   const nowIncluded = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2').channelIds.includes('ch-blog'));
   nowIncluded ? ok('confirmed attach adds the channel to campaign.channelIds') : fail('channel not added after confirm');
 
@@ -544,15 +560,14 @@ async function runPosyInstructions(browser) {
     ? fail(`Undo should have removed the durable chip: ${JSON.stringify(chipsAfterUndo)}`)
     : ok('Undo removes the durable rule chip again');
 
-  // Widening instruction → confirm first.
-  await page.evaluate(() => { window.__confirms = []; window.confirm = (m) => { window.__confirms.push(m); return true; }; });
+  // Widening instruction → confirm sheet first.
   await page.fill(input, 'Turn on paid promotion for this');
   await page.keyboard.press('Enter');
-  await page.waitForTimeout(30);
-  const widenConfirms = await page.evaluate(() => window.__confirms.length);
-  widenConfirms > 0
-    ? ok('a widening Posy instruction asks for confirmation before applying')
-    : fail('widening instruction should have confirmed');
+  const posyConfirmText = await waitForWideningSheet(page).catch(() => null);
+  posyConfirmText
+    ? ok('a widening Posy instruction opens the confirm sheet before applying')
+    : fail('widening instruction should have opened the confirm sheet');
+  await respondToWideningSheet(page, true);
 
   reportUncaught(pageErrors, '[posy-instructions]');
   await ctx.close();

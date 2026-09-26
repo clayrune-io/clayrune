@@ -287,8 +287,20 @@
     const panel = wrap.querySelector('.desk-v1-rules-pop');
     _positionRulesPopover(panel, anchorEl);
 
-    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); _closeRulesPopover(); } };
-    const onOutsideClick = (e) => { if (!panel.contains(e.target) && e.target !== anchorEl) _closeRulesPopover(); };
+    // Both handlers bail while a widening-confirm sheet is open on top of
+    // this popover (setPending's Apply -> _openWideningConfirm): that
+    // sheet's own scrim/Escape live outside `panel`, so without this guard
+    // clicking its scrim or pressing Escape to decline would ALSO close the
+    // popover underneath — same capture-phase document listener, registered
+    // first, so it would otherwise run before the confirm sheet even sees it.
+    const onKey = (e) => {
+      if (e.key !== 'Escape' || document.querySelector('.desk-v1-rules-confirm-overlay')) return;
+      e.stopPropagation(); _closeRulesPopover();
+    };
+    const onOutsideClick = (e) => {
+      if (document.querySelector('.desk-v1-rules-confirm-overlay')) return;
+      if (!panel.contains(e.target) && e.target !== anchorEl) _closeRulesPopover();
+    };
     document.addEventListener('keydown', onKey, true);
     // Deferred one tick so the click that opened the popover (the Edit
     // button itself) isn't also the click that immediately closes it.
@@ -299,8 +311,50 @@
     _fillRulesPopoverBody(panel.querySelector('.desk-v1-rules-pop-body'), camp);
   };
 
-  function _confirmWidening(effectText) {
-    return window.confirm(`This widens what Posy can do:\n${effectText}\nAn authorized user must confirm. Continue?`);
+  // Dave's review pass 3: a native window.confirm() blocks the render
+  // thread and can't be styled — replaced with an in-page sheet using the
+  // same overlay/scrim/panel markup as deskV1OpenStartSheet above, just a
+  // higher z-index (.desk-v1-rules-confirm-overlay, desk-v1.css) since this
+  // one can open ON TOP of the still-showing rules POPOVER. Async by
+  // necessity (a DOM dialog can't return synchronously like window.confirm
+  // did) — callers pass onConfirm/onDecline instead of branching on a
+  // return value.
+  function _openWideningConfirm(title, body, note, onConfirm, onDecline) {
+    if (!document.querySelector('.desk-v1-shell')) { if (onDecline) onDecline(); return; }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'desk-v1-rules-confirm-overlay';
+    wrap.innerHTML = `
+      <div class="desk-v1-rules-scrim" data-confirm-scrim></div>
+      <div class="desk-v1-rules-sheet" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+        <div class="desk-v1-rules-sheet-title">${esc(title)}</div>
+        <div class="desk-v1-rules-sheet-body"><p class="desk-v1-rules-confirmtext">${esc(body)}</p></div>
+        <div class="desk-v1-rules-sheet-note">${esc(note)}</div>
+        <div class="desk-v1-rules-sheet-actions">
+          <button type="button" class="desk-v1-rules-sheet-cancel" data-confirm-decline>Cancel</button>
+          <button type="button" class="desk-v1-rules-sheet-confirm" data-confirm-accept>Confirm</button>
+        </div>
+      </div>`;
+    // Appended to body, not `.desk-v1-shell`: the shell lives inside the
+    // Desk's `.modal-window`, which sets its own `style.zIndex` and so forms
+    // its own (low-numbered) stacking context — any z-index inside it, no
+    // matter how high, can never out-rank the rules POPOVER's overlay, which
+    // is itself appended straight to body (deskV1OpenRulesPopover, above).
+    document.body.appendChild(wrap);
+
+    // Capture phase, same reason (and same risk) as the Start sheet's own
+    // Escape handler above — plus this one must WIN against the rules
+    // popover's own capture-phase Escape/outside-click listeners when both
+    // are open, which the popover's own handlers now check for below
+    // (`.desk-v1-rules-confirm-overlay` guard in deskV1OpenRulesPopover).
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); decline(); } };
+    function cleanup() { wrap.remove(); document.removeEventListener('keydown', onKey, true); }
+    function decline() { cleanup(); if (onDecline) onDecline(); }
+    function accept() { cleanup(); if (onConfirm) onConfirm(); }
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('[data-confirm-scrim]').onclick = decline;
+    wrap.querySelector('[data-confirm-decline]').onclick = decline;
+    wrap.querySelector('[data-confirm-accept]').onclick = accept;
   }
 
   function _refreshRuleChips(camp) {
@@ -381,11 +435,12 @@
       const clear = () => { previewEl.hidden = true; previewEl.innerHTML = ''; if (_rulesPop) _rulesPop.pending = null; };
       previewEl.querySelector('[data-pop-preview-cancel]').onclick = () => { revert(); clear(); };
       previewEl.querySelector('[data-pop-preview-apply]').onclick = () => {
-        if (widening && !_confirmWidening(effectText)) { revert(); clear(); return; }
-        mutate();
-        clear();
-        DeskV1Kit.toast(effectText);
-        _refreshRuleChips(camp);
+        const commit = () => { mutate(); clear(); DeskV1Kit.toast(effectText); _refreshRuleChips(camp); };
+        if (!widening) { commit(); return; }
+        _openWideningConfirm(
+          'This widens what Posy can do', effectText, 'An authorized user must confirm. Continue?',
+          commit, () => { revert(); clear(); },
+        );
       };
       if (_rulesPop) _rulesPop.pending = { revert };
     }
@@ -520,38 +575,45 @@
     const widening = _WIDENING_RE.test(text);
     const durable = _DURABLE_RE.test(text);
 
+    const apply = () => {
+      const after = `“${text}” applied to ${scopeLabel}.`;
+      let addedChip = null;
+      DeskV1Kit.commandBus.run({
+        label: `Posy: ${text}`,
+        do: () => {
+          if (durable) {
+            camp.rules = camp.rules || {};
+            camp.rules.customChips = camp.rules.customChips || [];
+            addedChip = text.length > 40 ? text.slice(0, 37) + '…' : text;
+            camp.rules.customChips.push(addedChip);
+            const summaryHost = document.getElementById('desk-v1-camp-summary');
+            if (summaryHost && typeof window.deskV1FillCampaignSummary === 'function') window.deskV1FillCampaignSummary(summaryHost, { campaignId: camp.id });
+          }
+          _renderPosyReply(posyBoxEl, before, after, [scopeLabel]);
+        },
+        undo: () => {
+          if (durable && addedChip && camp.rules.customChips) {
+            camp.rules.customChips = camp.rules.customChips.filter((c) => c !== addedChip);
+            const summaryHost = document.getElementById('desk-v1-camp-summary');
+            if (summaryHost && typeof window.deskV1FillCampaignSummary === 'function') window.deskV1FillCampaignSummary(summaryHost, { campaignId: camp.id });
+          }
+          _renderPosyReply(posyBoxEl, after, 'Reverted.', [scopeLabel]);
+        },
+      });
+    };
+
     if (widening) {
-      const proceed = window.confirm(`This instruction would widen what Posy can do:\n“${text}”\nAn authorized user must confirm before it applies. Continue?`);
-      if (!proceed) {
-        _renderPosyReply(posyBoxEl, before, 'Not applied — needs an authorized user to confirm.', [scopeLabel]);
-        return;
-      }
+      _openWideningConfirm(
+        'Widen what Posy can do?',
+        `This instruction would widen what Posy can do:\n“${text}”`,
+        'An authorized user must confirm before it applies.',
+        apply,
+        () => _renderPosyReply(posyBoxEl, before, 'Not applied — needs an authorized user to confirm.', [scopeLabel]),
+      );
+      return;
     }
 
-    const after = `“${text}” applied to ${scopeLabel}.`;
-    let addedChip = null;
-    DeskV1Kit.commandBus.run({
-      label: `Posy: ${text}`,
-      do: () => {
-        if (durable) {
-          camp.rules = camp.rules || {};
-          camp.rules.customChips = camp.rules.customChips || [];
-          addedChip = text.length > 40 ? text.slice(0, 37) + '…' : text;
-          camp.rules.customChips.push(addedChip);
-          const summaryHost = document.getElementById('desk-v1-camp-summary');
-          if (summaryHost && typeof window.deskV1FillCampaignSummary === 'function') window.deskV1FillCampaignSummary(summaryHost, { campaignId: camp.id });
-        }
-        _renderPosyReply(posyBoxEl, before, after, [scopeLabel]);
-      },
-      undo: () => {
-        if (durable && addedChip && camp.rules.customChips) {
-          camp.rules.customChips = camp.rules.customChips.filter((c) => c !== addedChip);
-          const summaryHost = document.getElementById('desk-v1-camp-summary');
-          if (summaryHost && typeof window.deskV1FillCampaignSummary === 'function') window.deskV1FillCampaignSummary(summaryHost, { campaignId: camp.id });
-        }
-        _renderPosyReply(posyBoxEl, after, 'Reverted.', [scopeLabel]);
-      },
-    });
+    apply();
   };
 
   window.deskV1FillProposedSummary = deskV1FillProposedSummary;

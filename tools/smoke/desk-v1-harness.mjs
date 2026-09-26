@@ -56,7 +56,13 @@ const PROJECTS = [{
 // are reached through real navigation below; the rest are item-level surfaces
 // normally reached FROM a campaign, so they are entered directly via
 // `deskV1Nav`, which is exactly how a later ticket's own UI will reach them.
-const ITEM_ROUTES = ['rules', 'review', 'calendar', 'video', 'conversations', 'results'];
+// 'rules' is deliberately excluded (Dave's review pass 3): ROUTES['rules']
+// still exists in desk-v1-shell.js so old deep links resolve (T5's "Raise
+// budget…"), but deskV1RenderRules immediately deskV1PopTo('campaign') and
+// opens the real rules POPOVER instead of painting a stub under a
+// "‹ <campaign>" crumb — it never has the page shape this loop asserts, so
+// it gets its own check below instead.
+const ITEM_ROUTES = ['review', 'calendar', 'video', 'conversations', 'results'];
 const TONES = [
   { name: 'default/dark', ls: {} },
   { name: 'tone-warm', ls: { mc_tone: 'warm' } },
@@ -201,6 +207,31 @@ async function runTone(browser, tone) {
     await page.click('.desk-v1-back'); // campaign -> home, reset for the next route
     await page.waitForTimeout(30);
   }
+
+  // ── 'rules' is not a page (Dave's review pass 3): navigating to it must
+  // bounce straight back to the campaign page and open the real popover, with
+  // Back reading the campaign's actual parent (Home) — never a "‹ Rules"
+  // crumb or a bare stub. ───────────────────────────────────────────────────
+  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
+  await page.waitForTimeout(30);
+  await page.evaluate(() => window.deskV1Nav('rules', { campaignId: 'camp-1' }));
+  await page.waitForSelector('.desk-v1-rules-pop', { timeout: 4000 }).catch(() => {});
+  const rulesTitle = (await page.textContent('.desk-v1-crumb-title').catch(() => '') || '').trim();
+  const rulesPopOpen = !!(await page.$('.desk-v1-rules-pop'));
+  if (rulesPopOpen && rulesTitle.includes('Windows beta testers')) {
+    ok(`[${tone.name}] "rules" bounces back to the campaign page and opens the popover, not a page`);
+  } else {
+    fail(`[${tone.name}] "rules" did not land on the campaign page + popover: popoverOpen=${rulesPopOpen}, title=${JSON.stringify(rulesTitle)}`);
+  }
+  const rulesBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
+  if (rulesBack.includes('Home')) {
+    ok(`[${tone.name}] "rules" Back crumb names the campaign's real parent: "${rulesBack}"`);
+  } else {
+    fail(`[${tone.name}] "rules" Back crumb wrong: ${JSON.stringify(rulesBack)}`);
+  }
+  await page.keyboard.press('Escape');
+  await page.click('.desk-v1-back'); // campaign -> home, reset for the A1 sweep below
+  await page.waitForTimeout(30);
 
   // ── A1: no SVG connector paths on ANY v1 route, in this tone ─────────────
   // Re-visit every route (home already current after the loop's last Back)

@@ -669,6 +669,14 @@
 }
 .desk-v1-rules-sheet-confirm:hover { opacity: 0.9; }
 
+/* Widening-confirm sheet (Dave's review pass 3, replaces window.confirm) —
+   reuses the Start sheet's .desk-v1-rules-sheet/-title/-body/-note/-actions/
+   -cancel/-confirm classes for the same look, but needs its OWN overlay
+   z-index: it can open while the rules POPOVER (z-index 1650, below) is
+   still showing, since setPending's Apply button lives inside that popover. */
+.desk-v1-rules-confirm-overlay { position: fixed; inset: 0; z-index: 1700; display: flex; align-items: center; justify-content: center; }
+.desk-v1-rules-confirmtext { font-size: 13.5px; color: var(--text); white-space: pre-line; line-height: 1.5; margin: 0; }
+
 /* §8 Rules popover, anchored to the summary bar's rule chips (never a full
    page — Dave's review pass corrected an earlier draft that kept the
    full-`‹ <campaign>`-page route desk-v1-rules.js's own comment used to
@@ -730,7 +738,7 @@
   /* §11: phone sheets dock to the bottom edge full-width rather than
      floating centered (same "pin to the edge" rule the rest of Desk v1
      mobile CSS already follows for its own overlays). */
-  .desk-v1-rules-overlay { align-items: flex-end; }
+  .desk-v1-rules-overlay, .desk-v1-rules-confirm-overlay { align-items: flex-end; }
   .desk-v1-rules-sheet { width: 100%; max-width: 100%; max-height: 80vh; border-radius: 14px 14px 0 0; }
   .desk-v1-rules-authrow { flex-direction: column; gap: 2px; }
   .desk-v1-rules-authrow-val { text-align: left; }
