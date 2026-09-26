@@ -1082,12 +1082,19 @@ def test_change_passphrase_rotates_without_touching_recovery_leg(vault):
     assert vault.lock_state() == 'unlocked'
 
 
-def test_notification_fires_once_per_lock_period(vault, monkeypatch):
+def test_notification_fires_once_per_lock_period(vault, monkeypatch, tmp_path):
     """A burst of jobs hitting a locked vault must produce ONE notification,
     not one per job — see `_lock_notified`."""
     vault.set_passphrase('correct horse battery staple')
     _relock(vault)
     calls = []
+    # MC-979: _notify_vault_locked() calls _notify_push directly only when
+    # push_mobile.wire() has already run in THIS process (PUSH_VAPID_PATH
+    # set) — otherwise it assumes it's a bare CLI/test process and relays
+    # over loopback instead. Simulate "we are the server" so this test still
+    # exercises the direct in-process call it's named for.
+    monkeypatch.setattr('mc.blueprints.push_mobile.PUSH_VAPID_PATH',
+                        tmp_path / 'push_vapid.json')
     monkeypatch.setattr(
         'mc.blueprints.push_mobile._notify_push',
         lambda title, body, **kw: calls.append((title, body)))
@@ -1187,13 +1194,17 @@ def test_lock_now_is_a_no_op_when_already_locked(vault):
     assert vault.lock_state() == 'unconfigured'
 
 
-def test_notification_fires_once_after_idle_relock(vault, monkeypatch):
+def test_notification_fires_once_after_idle_relock(vault, monkeypatch, tmp_path):
     from mc import state
     monkeypatch.setitem(state.CONFIG, 'vault_idle_lock_minutes', 10)
     clock = [0.0]
     monkeypatch.setattr(vault, '_monotonic', lambda: clock[0])
     vault.set_passphrase('correct horse battery staple')
     calls = []
+    # See test_notification_fires_once_per_lock_period — simulate the
+    # server-process branch of _notify_vault_locked (MC-979).
+    monkeypatch.setattr('mc.blueprints.push_mobile.PUSH_VAPID_PATH',
+                        tmp_path / 'push_vapid.json')
     monkeypatch.setattr(
         'mc.blueprints.push_mobile._notify_push',
         lambda title, body, **kw: calls.append((title, body)))

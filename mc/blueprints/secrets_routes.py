@@ -22,13 +22,22 @@ Routes:
     POST   /api/secrets/vault-lock/change      rotate the passphrase (human-only)
     POST   /api/secrets/vault-lock/unlock      unlock with passphrase or recovery key (human-only)
     POST   /api/secrets/vault-lock/lock        lock now, immediately (human-only)
+    POST   /api/secrets/exec                   run a command with secrets injected,
+                                               entirely server-side (loopback+token only)
+    POST   /api/secrets/notify-vault-locked    relay a 'vault locked' push for an
+                                               out-of-process caller (loopback+token only)
 
 The TOTP probe returns a boolean, never our own code — a route that minted live
 second factors would be the plaintext hole this design otherwise refuses.
+
+``/api/secrets/exec`` is the one deliberate exception to "no route returns a
+plaintext value" — see its docstring below for why that's still safe (MC-979).
 """
 
 import hmac
+import os
 import re
+import subprocess
 import time
 
 from flask import Blueprint, jsonify, request
@@ -36,10 +45,68 @@ from flask import Blueprint, jsonify, request
 from mc import secrets_store as vault
 from mc import totp as _totp
 from mc.blueprints import local_auth
-from mc.core import _log
+from mc.core import _is_loopback_request, _log
 from mc.unattended import is_unattended_caller
 
 bp = Blueprint('secrets_routes', __name__)
+
+# ── /api/secrets/exec gates (MC-979) ────────────────────────────────────────
+#
+# This route lets the SERVER run a command with real secret values injected
+# into its environment, on an agent's behalf, so the caller never needs the
+# unwrapped master key itself (see mc/secrets_store.py's passphrase-lock
+# section: that key lives only in whichever process's memory unlocked it,
+# which after a human unlock is the server's, never a separately-spawned CLI
+# invocation's). That makes this the one place in the vault surface that DOES
+# run with a plaintext secret in scope — so unlike every other route here, it
+# is gated hard and fails closed, on three independent axes, all of which
+# must hold:
+
+_EXEC_DEFAULT_TIMEOUT = 600
+_EXEC_MAX_TIMEOUT = 1800
+_EXEC_MAX_OUTPUT_BYTES = 2_000_000
+
+
+def _cf_header_present() -> bool:
+    """True if this request carries ANY Cloudflare header — ``Cf-Ray``,
+    ``Cf-Connecting-Ip``, or any ``Cf-Access-*``. Tunnel traffic terminates
+    at ``cloudflared`` on THIS host and is forwarded to the origin over
+    loopback (see ``mc/blueprints/local_auth.py``'s docstring and
+    ``remote_routes.py``'s ``_cf_tunneled_and_verified``), so it satisfies
+    `_is_loopback_request()` too — loopback alone cannot tell a genuine local
+    CLI call from a phone reaching in over the tunnel. Checked broadly
+    (any header name starting with ``cf-``, case-insensitive) rather than
+    naming only the three examples, since a legitimate local caller
+    (``with-secret.py``'s fallback) never sends ANY Cloudflare header at all.
+    """
+    return any(name.lower().startswith('cf-') for name in request.headers.keys())
+
+
+def _exec_token_ok() -> bool:
+    supplied = request.headers.get('X-Clayrune-Exec-Token', '')
+    if not supplied:
+        return False
+    return hmac.compare_digest(supplied, vault.ensure_exec_token())
+
+
+def _exec_gate_refusal():
+    """The fail-closed gates shared by ``/api/secrets/exec`` and
+    ``/api/secrets/notify-vault-locked`` — both are "make the server do a
+    privileged thing on my behalf" calls reachable only by a same-box CLI
+    process that already knows the per-boot token. Returns a Flask response
+    tuple to return immediately on refusal, or ``None`` to proceed. Order:
+    cheapest and most decisive first.
+    """
+    if not _is_loopback_request():
+        return jsonify({'error': 'loopback_required',
+                        'message': 'this endpoint only answers to this machine'}), 403
+    if _cf_header_present():
+        return jsonify({'error': 'tunnel_refused',
+                        'message': 'tunneled/CF-Access requests may not use this '
+                                   'endpoint even though they also look like loopback'}), 403
+    if not _exec_token_ok():
+        return jsonify({'error': 'bad_exec_token'}), 403
+    return None
 
 # Per-source-IP throttle on vault-lock passcode attempts (set/change/unlock) —
 # same shape as local_auth's own login throttle and f6a8159's recovery-key
@@ -485,3 +552,188 @@ def api_secrets_check():
             report.append({'name': n, 'ok': True})
     return jsonify({'referenced': report,
                     'resolvable': all(r['ok'] for r in report)})
+
+
+def _parse_pairs(raw, field_name: str) -> list[tuple[str, str]]:
+    """Parse a list of ``[VAR, secret.name]`` pairs (or ``{"var":…,"name":…}``
+    objects) from the JSON body — the wire shape of ``tools/with-secret.py``'s
+    ``--env``/``--user``/``--totp``, which parses the same pairs off argv."""
+    out = []
+    for item in (raw or []):
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            var, name = item
+        elif isinstance(item, dict):
+            var, name = item.get('var'), item.get('name')
+        else:
+            raise ValueError(f"{field_name}: expected [VAR, secret.name] pairs")
+        var, name = str(var or '').strip(), str(name or '').strip()
+        if not var or not name:
+            raise ValueError(f"{field_name}: expected [VAR, secret.name] pairs")
+        out.append((var, name))
+    return out
+
+
+def _decode_and_scrub(raw_bytes: bytes) -> str:
+    """Decode child output and redact every value this process has dispensed
+    — the same ``vault.redact`` scrub ``tools/with-secret.py`` applies to its
+    own passthrough. Truncated BEFORE decode so the cap is exact bytes, and
+    before redaction so a secret value never gets left half-truncated (a
+    partial match wouldn't scrub)."""
+    truncated = len(raw_bytes) > _EXEC_MAX_OUTPUT_BYTES
+    if truncated:
+        raw_bytes = raw_bytes[:_EXEC_MAX_OUTPUT_BYTES]
+    text = raw_bytes.decode('utf-8', errors='replace')
+    if truncated:
+        text += '\n...[truncated]'
+    return vault.redact(text)
+
+
+@bp.route('/api/secrets/exec', methods=['POST'])
+def api_secrets_exec():
+    """Run a command with real secret values injected into its environment,
+    entirely server-side. The ONE deliberate exception to "no route returns a
+    plaintext value" (CLAUDE.md vault rule 2) — but it does not actually
+    violate that rule: this route never returns a *secret*, only the CHILD's
+    own (redacted) output, exactly what an in-process ``tools/with-secret.py``
+    call already prints to the agent's own stdout today.
+
+    MC-979: after a human unlocks the passphrase-locked vault from the
+    dashboard, the unwrapped master key lives ONLY in the server process's
+    memory (see the passphrase-lock section of ``mc/secrets_store.py``) — a
+    separately-spawned ``with-secret.py`` invocation can never read it, so
+    every agent-side secret use failed with "vault is locked" even though a
+    human had just unlocked it. This route lets the process that DOES hold
+    the key run the command instead; ``with-secret.py`` falls back to it only
+    when its own in-process attempt raises ``VaultLocked``.
+
+    Gated hard, fails closed — see ``_exec_gate_refusal()`` above: loopback
+    only, no Cloudflare/tunnel header (tunnel traffic also looks like
+    loopback), and the per-boot token (blocks a forged browser-pane POST).
+    Unattended detection and the per-secret ``allow_unattended`` gate apply
+    exactly as they do for an in-process ``with-secret.py`` call — this route
+    does not loosen or bypass either."""
+    refusal = _exec_gate_refusal()
+    if refusal is not None:
+        return refusal
+
+    data = request.get_json(silent=True) or {}
+    command = data.get('command')
+    if not isinstance(command, list) or not command or not all(
+            isinstance(a, str) for a in command):
+        return jsonify({'error': 'command must be a non-empty list of strings'}), 400
+    if data.get('raw'):
+        return jsonify({'error': 'raw is not supported over this route — '
+                                 'interactive commands must stay in-process'}), 400
+
+    project_id = data.get('project_id') or None
+    claude_session_id = data.get('claude_session_id') or None
+    unattended, _reason = vault.detect_effective_unattended(
+        bool(data.get('unattended', False)), claude_session_id)
+
+    try:
+        env_pairs = _parse_pairs(data.get('env'), 'env')
+        user_pairs = _parse_pairs(data.get('user'), 'user')
+        totp_pairs = _parse_pairs(data.get('totp'), 'totp')
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    stdin_name = data.get('stdin') or None
+
+    try:
+        env = dict(os.environ)
+        env.update(vault.env_for(env_pairs, consumer='server-exec',
+                                 project_id=project_id, unattended=unattended))
+        for var, sec in user_pairs:
+            env[var] = vault.get_username(sec, project_id=project_id)
+        for var, sec in totp_pairs:
+            code, remaining = vault.generate_totp_code(
+                sec, consumer='server-exec', project_id=project_id,
+                unattended=unattended)
+            # See tools/with-secret.py: don't hand out a code that will
+            # expire before the child finishes using it.
+            if remaining < 5:
+                time.sleep(remaining + 1)
+                code, remaining = vault.generate_totp_code(
+                    sec, consumer='server-exec', project_id=project_id,
+                    unattended=unattended)
+            env[var] = code
+        command = [vault.resolve_placeholders(a, consumer='server-exec',
+                                              project_id=project_id,
+                                              unattended=unattended)[0]
+                  for a in command]
+        stdin_value = (vault.get_secret_value(stdin_name, consumer='server-exec',
+                                              project_id=project_id,
+                                              unattended=unattended)
+                      if stdin_name else None)
+    except vault.VaultLocked:
+        return jsonify({'error': 'vault_locked',
+                        'message': 'the vault is locked — unlock it from '
+                                   'Settings > Vault'}), 423
+    except vault.SecretsError as e:
+        return _err(e)
+
+    try:
+        timeout = int(data.get('timeout') or _EXEC_DEFAULT_TIMEOUT)
+    except (TypeError, ValueError):
+        timeout = _EXEC_DEFAULT_TIMEOUT
+    timeout = max(1, min(timeout, _EXEC_MAX_TIMEOUT))
+    cwd = data.get('cwd') or None
+    # Windows children writing to a pipe default to cp1252 without this,
+    # which corrupts non-ASCII output before we ever get to decode it.
+    env.setdefault('PYTHONIOENCODING', 'utf-8')
+
+    # Never let the child inherit THIS process's stdin — `stdin=None` here
+    # would mean "inherit", and the server's own stdin is not something an
+    # exec'd command should ever see (and, under a test harness that
+    # replaces stdin with a non-inheritable handle, inheriting it fails
+    # process creation outright on Windows). `subprocess.run`'s `input=`
+    # already implies `stdin=PIPE`; DEVNULL only when there's no stdin_value.
+    try:
+        if stdin_value is not None:
+            proc = subprocess.run(
+                command, env=env, cwd=cwd, input=stdin_value.encode('utf-8'),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        else:
+            proc = subprocess.run(
+                command, env=env, cwd=cwd, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        exit_code = proc.returncode
+        stdout_bytes, stderr_bytes = proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired as e:
+        exit_code = None
+        stdout_bytes, stderr_bytes = (e.stdout or b''), (e.stderr or b'')
+    except OSError as e:
+        return jsonify({'error': f'failed to start command: {e}'}), 400
+
+    stdout_text = _decode_and_scrub(stdout_bytes)
+    stderr_text = _decode_and_scrub(stderr_bytes)
+
+    if exit_code is None:
+        _log(f"[secrets] server-exec timed out after {timeout}s")
+        return jsonify({'error': 'timeout', 'exit_code': None,
+                        'stdout': stdout_text, 'stderr': stderr_text}), 504
+    return jsonify({'exit_code': exit_code, 'stdout': stdout_text,
+                    'stderr': stderr_text})
+
+
+@bp.route('/api/secrets/notify-vault-locked', methods=['POST'])
+def api_secrets_notify_vault_locked():
+    """Loopback relay target for ``mc.secrets_store._notify_vault_locked()``
+    when it fires OUTSIDE the server process (a bare ``with-secret.py`` run,
+    a standalone script) — see that function's MC-979 docstring for why it
+    can't call ``push_mobile._notify_push`` directly from there (its config
+    paths are only wired by ``push_mobile.wire()``, which only the server
+    process calls). Same gate as ``/api/secrets/exec``: this is the same
+    shape of "make the server do a privileged thing on my behalf" call, just
+    a push notification instead of a subprocess."""
+    refusal = _exec_gate_refusal()
+    if refusal is not None:
+        return refusal
+    try:
+        from mc.blueprints import push_mobile as _bp_push_mobile
+        _bp_push_mobile._notify_push(
+            'Vault locked',
+            'A job needs the secrets vault unlocked — open the dashboard to '
+            'unlock it.')
+    except Exception as e:
+        _log(f"[secrets] vault-locked notification relay failed: {e}")
+    return jsonify({'ok': True})

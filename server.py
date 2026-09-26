@@ -1979,8 +1979,14 @@ app.register_blueprint(_bp_mcp.bp)
 # own paths under ~/.clayrune/ (deliberately outside the repo) and takes no
 # server-family deps. Note there is no plaintext-returning route by design.
 from mc.blueprints import secrets_routes as _bp_secrets  # noqa: E402
+from mc import secrets_store as _secrets_store_boot  # noqa: E402
 
 app.register_blueprint(_bp_secrets.bp)
+# MC-979: mint the per-boot /api/secrets/exec token NOW, not lazily on first
+# request — a locked-vault CLI's with-secret.py fallback reads this file to
+# build its very first request to that route, so the file must already exist
+# before that request can be sent, not get created by handling it.
+_secrets_store_boot.ensure_exec_token()
 
 # ── Backup / restore (Phase 1, docs/BACKUP_EXPORT_SPEC.md). No wire() — like
 # secrets_routes, mc/backup.py resolves every path itself (MC_DATA_DIR / repo
