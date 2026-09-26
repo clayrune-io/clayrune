@@ -300,6 +300,129 @@
     },
   };
 
+  // ── T6: Conversations (docs/desk_v1_r0_plan.md; THE_DESK_V1_UI.md §6,
+  // frame 12c). New rows only (ground rule 3) — conv-1/2/3 above (T0a) are
+  // left exactly as written; CONVERSATION_DETAIL below is a side table
+  // keyed by id, same "own key, never touches the base row" convention as
+  // T3's REVIEW_DETAIL and T5's VIDEO_DETAIL, carrying the author/platform/
+  // age/reason and thread content the base CONVERSATIONS rows never needed.
+  //
+  // Three new rows push the per-source badge counts to the frame's own
+  // numbers (verified against a 930px crop of 12c, not eyeballed): the
+  // badge counts CONVERSATIONS with state 'needs_reply' or 'needs_you' only
+  // — 'reviewed'/'stale'/'no_reply' don't count, which is what makes
+  // "On our posts · 2" land on exactly devnull_kat + Mira Okafor while
+  // sam_builds's "No reply suggested" row still LISTS but doesn't count,
+  // "Mentions · 1" lands on the new conv-6 while conv-2 (reviewed) doesn't,
+  // and "Discussions" carries no number because conv-3's 'stale' isn't in
+  // the countable set either — all three read straight off the frame.
+  CONVERSATIONS.push(
+    { id: 'conv-4', campaignId: 'camp-1', source: 'our_posts', channelId: 'ch-li-page',
+      excerpt: 'Installer failed twice and my key is gone.', state: 'needs_you' },
+    { id: 'conv-5', campaignId: 'camp-1', source: 'our_posts', channelId: 'ch-x-ron',
+      excerpt: 'signed up \u{1F64C}', state: 'no_reply' },
+    // state is 'needs_you' rather than 'needs_reply' on purpose: the
+    // Conversations badge counts by CONVERSATION_DETAIL's own `reasonKind`
+    // ('question', set below) not this field, but T1's Home aggregates
+    // "N replies waiting" straight off state==='needs_reply' (desk-v1-
+    // home.js:40) across ALL conversations, not just this source — using
+    // 'needs_reply' here would silently bump Home's own "1 reply waiting"
+    // fixture (conv-1) to 2 and break its smoke. 'needs_you' keeps this row
+    // out of that unrelated aggregate while still counting for THIS badge.
+    { id: 'conv-6', campaignId: 'camp-1', source: 'mentions', channelId: 'ch-x-ron',
+      excerpt: 'Quoted the restore-points post while comparing backup tools.', state: 'needs_you' },
+  );
+
+  // reasonKind drives the local (ticket-only, not kit — see desk-v1-
+  // conversations.js's own file banner for why) glyph+word reason line;
+  // reasonDetail is the free-text second half §6's own examples show
+  // ("? Question · reply drafted", "⚑ Needs you · account problem").
+  // `thread.parentPost` is what the conversation is ABOUT — for `our_posts`
+  // that's OUR post being commented on, reusing REVIEW_DETAIL's own
+  // restore-points lede verbatim (frame 12c's parent-post text) rather than
+  // inventing a second copy of the same sentence; for `mentions` it's the
+  // third-party post that named us. `thread.reply` is the proposed reply
+  // AS IT WILL BE SENT (§6) — absent where none is drafted (needs_you,
+  // no_reply) or already resolved (reviewed).
+  const CONVERSATION_DETAIL = {
+    'conv-1': {
+      author: '@devnull_kat', platform: 'x', ageLabel: '12m',
+      reasonKind: 'question', reasonDetail: 'reply drafted',
+      thread: {
+        parentPost: { label: 'Your post', platform: 'x', identity: '@ron', ageLabel: 'Tue 09:00',
+          text: 'Every agent run now starts with a restore point…', link: '#' },
+        comments: [
+          { author: '@devnull_kat', platform: 'x', ageLabel: '12m',
+            text: 'Does the restore include the agent’s memory or just files?' },
+        ],
+        reply: { identity: '@ron', platform: 'x',
+          text: 'Both — files, memory and the backlog roll back together, so the agent doesn’t "remember" the run you undid.' },
+      },
+    },
+    'conv-2': {
+      author: 'Someone', platform: 'linkedin', ageLabel: '1d',
+      reasonKind: 'reviewed',
+      thread: {
+        parentPost: { label: 'Mentioned in a thread', platform: 'linkedin', identity: 'a backups discussion', ageLabel: '1d',
+          text: 'Someone linked the restore-points post in a thread about backups.', link: '#' },
+        comments: [], reply: null,
+      },
+    },
+    'conv-3': {
+      author: 'a forum thread', platform: 'web', ageLabel: '2d',
+      reasonKind: 'stale',
+      thread: {
+        parentPost: { label: 'Discussion', platform: 'web', identity: 'a beta-programs forum', ageLabel: '2d',
+          text: 'A forum thread comparing beta programs mentions Clayrune in passing.', link: '#' },
+        comments: [], reply: { identity: '@ron', platform: 'web', text: 'Thanks for the mention — happy to answer questions about the beta.' },
+        // U14: thread changed since the draft → hold bar, Send disabled.
+        hold: 'This thread has new replies since the draft below was written.',
+      },
+    },
+    'conv-4': {
+      author: 'Mira Okafor', platform: 'linkedin', ageLabel: '1h',
+      reasonKind: 'needs_you', reasonDetail: 'account problem',
+      thread: {
+        parentPost: { label: 'Comment on', platform: 'linkedin', identity: 'Clayrune page', ageLabel: '1h',
+          text: 'Installer failed twice and my key is gone.', link: '#' },
+        comments: [], reply: null,
+        // Escalated per reply policy (§6) — no draft exists to send.
+        hold: 'Escalated per reply policy — account problems need a person, not a drafted reply.',
+      },
+    },
+    'conv-5': {
+      author: '@sam_builds', platform: 'x', ageLabel: '3h',
+      reasonKind: 'no_reply',
+      thread: {
+        parentPost: { label: 'Comment on', platform: 'x', identity: '@sam_builds', ageLabel: '3h',
+          text: 'signed up \u{1F64C}', link: '#' },
+        comments: [], reply: null,
+      },
+    },
+    'conv-6': {
+      author: '@backup_bee', platform: 'x', ageLabel: '40m',
+      reasonKind: 'question', reasonDetail: 'reply drafted',
+      thread: {
+        parentPost: { label: 'Mentioned by', platform: 'x', identity: '@backup_bee', ageLabel: '40m',
+          text: 'Quoted the restore-points post while comparing backup tools.', link: '#' },
+        comments: [],
+        reply: { identity: '@ron', platform: 'x', text: 'Good comparison — happy to answer specifics if useful!' },
+      },
+    },
+  };
+
+  // LinkedIn has no public mentions/search API (a platform limit, not a
+  // held channel — ch-li-page's own 'held' is about POSTING, a separate
+  // gap) — §6's own worked example ("LinkedIn mentions not available")
+  // reused verbatim as the one coverage gap R0 needs to demonstrate the
+  // footer with (§6: "an empty list must never read as 'no one is
+  // talking'" — this is that honest gap note, not an empty state).
+  const CONVERSATION_COVERAGE_GAPS = {
+    'camp-1': [
+      { label: 'LinkedIn mentions not available', detail: 'LinkedIn does not offer a public mentions/search API — only comments on our own posts are covered there.' },
+    ],
+  };
+
   window.DeskV1Fixtures = {
     campaigns: CAMPAIGNS,
     channels: CHANNELS,
@@ -313,5 +436,7 @@
     recentAssets: RECENT_ASSETS,
     homeSuggestions: HOME_SUGGESTIONS,
     calendarSchedule: CALENDAR_SCHEDULE,
+    conversationDetail: CONVERSATION_DETAIL,
+    conversationCoverageGaps: CONVERSATION_COVERAGE_GAPS,
   };
 })();
