@@ -70,9 +70,25 @@ Legend: **exists** = usable as-is behind a v1 view. **partial** = the concept is
 
 ---
 
-## 3. Reconciliation with in-flight work
+## 3. Reconciliation with in-flight work: backlog e3eb8cb3 (Desk simplification)
 
-(Added in the next commit.)
+`docs/THE_DESK_SIMPLIFICATION_PLAN.md` §5. Where it disagrees with v1, **v1 (and the spec, when it lands) wins**. Step state is from master's git log and `docs/_journal/e3eb8cb3-desk-simplification.md`.
+
+| Step | State on master | Under v1 | Why |
+|---|---|---|---|
+| 0 Lost-update fix + `pending_drafts` | ✅ `349cc26` | **Survives** (backend, done) | Any v1 store that keeps writing the project record depends on it. |
+| 1 Retire dead weight (remove the Calendar tab, story buttons, Insert ▾, Social tab…) | not started | **Cancel.** Superseded by MIG-04 | v1 brings a Calendar back (12f) and keeps the legacy Desk **read-only behind the flag**, so deleting the legacy tabs now would break MIG-04. The legacy UI gets retired at R1 cutover, not before. |
+| 2 X publisher `mc/desk_publish.py` | ✅ `29f5538`, unwired | **Survives** as the X adapter inside the R1 worker | Its signature takes a queue row (`:189`). For R1 it has to take a version plus its approval binding. Idempotency and fail-closed carry over unchanged. |
+| 2b Post it yourself | ✅ `1efca79` | **Logic survives, UI superseded** | It becomes the **manual-handoff capability** ("✋ You publish it", "Approve and create publishing task", `✋ You reported`). The intent-URL builders and the permalink receipt get reused. The buttons in the legacy review pane (`desk.js:1771`) are replaced by the 12b right rail. |
+| 3 Accounts panel + X OAuth | not started; open question in the journal: OAuth 2.0 (2h expiry, needs refresh) vs 1.0a | **Backend survives, UI moves** | Connection state becomes the channel record's capability/health (#10). The UI splits into the Channels shelf `＋ Connect` and **Settings → Connections** (the heartbeat lives there, §2). There is no standalone Accounts panel. Ron's action is unchanged: create the X developer app. |
+| 4 Campaign approval model (`bounds_hash`, human-only approve, nonce) | not started | **Survives as the policy record (#4) + the CMP-05 "Start campaign" sheet** | Widen voids and narrow keeps maps directly onto INS-03/AUT. The **default review mode conflicts** (C1): the plan makes campaign approval the release, while v1 defaults to "You approve each piece" and states "Starting doesn't approve any piece". |
+| 5 Campaign screen (plan editor, 3 samples, Upcoming, Approve) | not started | **Superseded** by 12a + §3.5 (Proposed state) | Upcoming/samples become planned versions on the Content list. Approve becomes `Start campaign`. |
+| 6 Desk tick (30 min, publish at `publish_at`, error → auto-pause campaign) | not started | **Survives as the R1 publication worker** | Add the heartbeat and the offline hold (E13), keep "only one worker active", and recheck approval validity at dispatch. The **error behaviour differs**: the plan auto-pauses the whole campaign, while v1 has per-version `✕ Failed` / `⚠ Held`. The spec decides; flagged as C5. |
+| 7 Posy proposes campaigns (triage → plan) | not started | **Survives**, reshaped | The output becomes a Proposed campaign (goal sentence, planned pieces, `? Assumed` items, ≤1 blocker) created by the promote box's `ProposeCampaign`. |
+| 8 LinkedIn Company Page | blocked on Ron's LinkedIn app review | **Survives** (backend) | Until it clears, the Company Page is a manual-handoff channel (✋). |
+| 9 Outcomes | not started | **Survives**, feeds Results (#15/#16) | It has to honour MET-01: `delayed`/`n/a`, never a fake 0. The plan's `suppressed?` flag has no v1 home yet (needs spec). |
+
+**Net:** steps 0, 2, 2b, 3 (backend), 4 (as policy), 6, 7, 8 and 9 feed **R1**. Steps 1 and 5 and every legacy-Desk UI change stop now. **R0 depends on none of them**, because it runs on fixtures.
 
 ---
 
