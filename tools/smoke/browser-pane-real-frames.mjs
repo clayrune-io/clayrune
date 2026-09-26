@@ -170,14 +170,26 @@ try {
       const f = window.fetch;
       window.fetch = (u, o) => { if (String(u).includes('/api/browser/input')) window.__inputs.push(JSON.parse(o.body)); return f(u, o); };
     });
+    // The first frames come before the page is fitted to the pane (MC-976);
+    // a click then maps correctly into THAT frame, but the frame read after
+    // it would be the fitted one. Click once the page is the pane's size.
+    await page.waitForFunction(() => { const i = document.querySelector('#mc-browser-pane [data-bp="screen"]');
+      const r = i && i.parentElement.getBoundingClientRect();
+      return i && i.naturalWidth && Math.abs(i.naturalWidth / 2 - r.width) < 3 && Math.abs(i.naturalHeight / 2 - r.height) < 3; },
+      null, { timeout: 15000 }).catch(() => fail('dpr 2: page never fitted the pane'));
+    await page.waitForTimeout(300);
     const box = await page.locator('#mc-browser-pane [data-bp="screen"]').boundingBox();
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
     await page.waitForTimeout(300);
     const press = (await page.evaluate(() => window.__inputs)).find(i => i.action === 'mousePressed');
     const nat = await page.evaluate(() => { const i = document.querySelector('#mc-browser-pane [data-bp="screen"]'); return [i.naturalWidth, i.naturalHeight]; });
-    if (press && Math.abs(press.x - 640) < 30 && Math.abs(press.y - 400) < 30)
+    // The page is the pane's size since MC-976, not a fixed 1280x800: its
+    // centre is half the CSS frame, i.e. a quarter of the 2x JPEG. Mapping in
+    // JPEG px instead would land at half the JPEG, twice as far out.
+    const want = [nat[0] / 4, nat[1] / 4];
+    if (press && Math.abs(press.x - want[0]) < 30 && Math.abs(press.y - want[1]) < 30)
       ok(`dpr 2: centre click sent at (${Math.round(press.x)},${Math.round(press.y)}) CSS px (JPEG ${nat.join('x')})`);
-    else fail(`dpr 2: centre click sent at ${press ? `(${Math.round(press.x)},${Math.round(press.y)})` : 'nothing'}, want ~(640,400); JPEG ${nat.join('x')}`);
+    else fail(`dpr 2: centre click sent at ${press ? `(${Math.round(press.x)},${Math.round(press.y)})` : 'nothing'}, want ~(${want.map(Math.round).join(',')}); JPEG ${nat.join('x')}`);
     await stopAll(page);
     await page.close();
   }

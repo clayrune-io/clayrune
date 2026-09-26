@@ -71,6 +71,18 @@ def _crash(sid):
     return {'ok': True}
 
 
+@app.route('/_harness/session/<sid>')
+def _session_state(sid):
+    # What a failing smoke needs to say WHY: the view the server is fitting
+    # to, what it measured, and the last error it swallowed.
+    s = browser_sessions.get(sid)
+    if not s:
+        return {'error': 'unknown session'}, 404
+    return {'view': s.get('view'), 'frame': [s.get('frame_w'), s.get('frame_h')],
+            'window_chrome': {str(k): v for k, v in (s.get('window_chrome') or {}).items()},
+            'error': s.get('error'), 'dpr': s.get('dpr')}
+
+
 @app.route('/_harness/registered')
 def _registered():
     return {'registered': [dict(v, pid=k) for k, v in registered.items()]}
