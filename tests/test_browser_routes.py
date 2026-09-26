@@ -1506,6 +1506,44 @@ def test_screencast_params_for_dpr2_scales_the_caps_only():
     assert scaled['everyNthFrame'] == base['everyNthFrame']
 
 
+# ── MC-976 zoom: the page is laid out at the pane's own size ─────────────────
+# The page used to be a fixed 1280x800 (and a window.open() popup whatever
+# headless picked: 784x470 CSS at dpr 1, 384x181 at dpr 2), stretched to fill
+# the pane. The pane now reports its size and the window is sized to it. The
+# live resize itself is covered end to end by tools/smoke/browser-pane-fit.mjs.
+
+@pytest.mark.parametrize('w, h, expected', [
+    (1120, 685, (1120, 685)), ('900', '545.7', (900, 545)),
+    (10, 10, br._MIN_VIEW), (99999, 99999, br._MAX_VIEW),
+    (None, 600, None), ('x', 600, None), (float('inf'), 600, None),
+])
+def test_clamp_view(w, h, expected):
+    assert br._clamp_view(w, h) == expected
+
+
+def test_screencast_caps_cover_the_whole_window_of_the_view():
+    p = br._screencast_params_for(2.0, (1000, 600))
+    assert p['maxWidth'] == (1000 + br.WINDOW_CHROME_W) * 2
+    assert p['maxHeight'] == (600 + br.WINDOW_CHROME_H) * 2
+
+
+def test_input_viewport_resizes_to_the_clamped_pane_size(app_client, monkeypatch):
+    applied = []
+    monkeypatch.setattr(br, '_apply_view', lambda s, v: applied.append(v))
+    monkeypatch.setattr(br.threading, 'Thread', lambda target, args, daemon: type(
+        'T', (), {'start': lambda self: target(*args)})())
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running',
+                                 'url': 'https://x', 'cmd_queue': __import__('queue').Queue()}
+    resp = app_client.post('/api/browser/input', json={'session_id': 'sid-1', 'type': 'viewport',
+                                                        'w': 1120, 'h': 99999})
+    assert resp.status_code == 200
+    assert applied == [(1120, br._MAX_VIEW[1])]
+    resp = app_client.post('/api/browser/input', json={'session_id': 'sid-1', 'type': 'viewport',
+                                                        'w': 'wide', 'h': 600})
+    assert resp.status_code == 400
+    assert applied == [(1120, br._MAX_VIEW[1])]
+
+
 class _FakeThread:
     """Stands in for threading.Thread so _launch_browser's real CDP reader
     never starts — these tests assert on launch-time state (Popen args,
@@ -1548,6 +1586,14 @@ def test_launch_with_no_dpr_omits_the_flag_entirely(profiles, monkeypatch):
     assert not any('force-device-scale-factor' in a for a in captured['args'])
     assert session['dpr'] == 1.0
     assert session['screencast_params'] == br._SCREENCAST_PARAMS
+
+
+def test_launch_with_a_view_sizes_the_window_to_it(profiles, monkeypatch):
+    captured = _stub_launch_deps(monkeypatch, profiles)
+    session, err = br._launch_browser('proj', 'https://example.com', view=(1000, 600))
+    assert err is None
+    assert f'--window-size={1000 + br.WINDOW_CHROME_W},{600 + br.WINDOW_CHROME_H}' in captured['args']
+    assert session['view'] == (1000, 600)
 
 
 def test_launch_route_forwards_client_dpr_and_reports_it_back(app_client, profiles, monkeypatch):

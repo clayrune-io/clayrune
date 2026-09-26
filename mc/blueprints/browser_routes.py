@@ -134,19 +134,39 @@ def _clamp_dpr(dpr) -> float:
     return min(dpr, _MAX_DPR)
 
 
+# Bounds on the CSS viewport a pane may ask for (see _clamp_view). The pane
+# asks for its own on-screen size so the page renders 1:1 instead of being
+# stretched to fit (MC-976 zoom, 2026-09-26). The ceiling bounds frame cost:
+# 2560x1600 at dpr 2 is already ~16 MP per frame.
+_MIN_VIEW = (320, 200)
+_MAX_VIEW = (2560, 1600)
+
+
+def _clamp_view(w, h):
+    """Client-reported pane size in CSS px, clamped to [_MIN_VIEW, _MAX_VIEW].
+    None for anything missing or bogus (the caller keeps what it had)."""
+    try:
+        w, h = int(float(w)), int(float(h))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return (max(_MIN_VIEW[0], min(w, _MAX_VIEW[0])),
+            max(_MIN_VIEW[1], min(h, _MAX_VIEW[1])))
+
+
 # Scales the CAPTURE only, via the --force-device-scale-factor launch flag
 # in _launch_browser below — never the CDP viewport-override call the
 # _run_cdp comment a few hundred lines down forbids, for exactly the reason
 # that comment gives.
-def _screencast_params_for(dpr: float) -> dict:
-    """Screencast params scaled for `dpr` — same viewport, more device
-    pixels, so text is sharp on a HiDPI display, without changing the CSS
-    layout viewport Page.frameStoppedLoading/deviceWidth logic relies on."""
-    if dpr == 1:
-        return dict(_SCREENCAST_PARAMS)
+def _screencast_params_for(dpr: float, view=None) -> dict:
+    """Screencast params for a `view` (CSS px, default VIEW_W x VIEW_H) at
+    `dpr` — same viewport, more device pixels, so text is sharp on a HiDPI
+    display, without changing the CSS layout viewport
+    Page.frameStoppedLoading/deviceWidth logic relies on. The caps only ever
+    DOWNSCALE, so they are sized to the whole window, not just the page."""
+    vw, vh = view or (VIEW_W, VIEW_H)
     params = dict(_SCREENCAST_PARAMS)
-    params['maxWidth'] = round(params['maxWidth'] * dpr)
-    params['maxHeight'] = round(params['maxHeight'] * dpr)
+    params['maxWidth'] = round((vw + WINDOW_CHROME_W) * dpr)
+    params['maxHeight'] = round((vh + WINDOW_CHROME_H) * dpr)
     return params
 
 # ── wired by server.py ───────────────────────────────────────────────────────
@@ -694,7 +714,8 @@ def _pin_root_window(session, ws, next_id):
     try:
         win = call('Browser.getWindowForTarget')
         session['window_bounds_at_connect'] = win.get('bounds')
-        want = {'width': VIEW_W + WINDOW_CHROME_W, 'height': VIEW_H + WINDOW_CHROME_H}
+        vw, vh = session.get('view') or (VIEW_W, VIEW_H)
+        want = {'width': vw + WINDOW_CHROME_W, 'height': vh + WINDOW_CHROME_H}
         b = win.get('bounds') or {}
         if b.get('windowState', 'normal') != 'normal':
             call('Browser.setWindowBounds',
@@ -703,6 +724,162 @@ def _pin_root_window(session, ws, next_id):
             call('Browser.setWindowBounds', {'windowId': win['windowId'], 'bounds': want})
     except Exception as e:
         session['error'] = f'window size pin failed: {e}'
+
+
+def _fit_windows(session, target_ids=None):
+    """Size each tab's window so its PAGE viewport is exactly session['view']
+    CSS px -- the pane's own on-screen size -- so the pane shows it 1:1.
+
+    MC-976 zoom (Ron, 2026-09-26: "why can't we preserve original size?"). The
+    viewport used to be a fixed 1280x800 scaled to whatever the pane was, and a
+    window.open() popup got the size headless Chromium picks for it: measured
+    800x600 (784x470 CSS) at dpr 1, 400x300 (384x181 CSS) at dpr 2, because
+    headless reports a fake 800x600 screen. The pane stretched that ~2.2x to
+    fill itself: huge blurry text, black bars above and below.
+
+    Resizes the WINDOW (Browser.setWindowBounds), never the page's idea of it
+    (see the setDeviceMetricsOverride note in _run_cdp), so the page and the
+    screencast agree by construction. Window chrome differs by window type (a
+    popup has less than a tab window's 151px), so each window is measured
+    (innerWidth/innerHeight) after the resize and corrected once; the measured
+    chrome is remembered per window.
+
+    Runs over its OWN browser-level websocket, synchronously, in the caller's
+    thread -- never on the reader's socket, whose recv loop would swallow the
+    replies. Serialised per session; each call sizes to the CURRENT view, so a
+    burst of pane resizes converges on the last one. Best-effort: a failure is
+    recorded on the session and the tab keeps its old size."""
+    import urllib.request
+    websocket = _import_ws()
+    lock = session.get('fit_lock')
+    if websocket is None or lock is None:
+        return
+    with lock:
+        view = tuple(session.get('view') or (VIEW_W, VIEW_H))
+        ids = list(target_ids or (session.get('tabs') or {}).keys())
+        if not ids or session.get('status') != 'running':
+            return
+        try:
+            ver = json.load(urllib.request.urlopen(
+                f"http://127.0.0.1:{session['port']}/json/version", timeout=2))
+            ws = websocket.create_connection(ver['webSocketDebuggerUrl'],
+                                             max_size=None, timeout=3)
+        except Exception as e:
+            session['error'] = f'viewport fit connect failed: {e}'
+            return
+        n = [0]
+
+        def call(method, params=None, sid=None):
+            n[0] += 1
+            m = {'id': n[0], 'method': method, 'params': params or {}}
+            if sid:
+                m['sessionId'] = sid
+            ws.send(json.dumps(m))
+            deadline = _time.time() + 3
+            while _time.time() < deadline:
+                msg = json.loads(ws.recv() or '{}')
+                if msg.get('id') == n[0]:
+                    if 'error' in msg:
+                        raise RuntimeError(msg['error'].get('message'))
+                    return msg.get('result') or {}
+            raise TimeoutError(f'{method}: no response in 3s')
+
+        def inner(sid):
+            r = call('Runtime.evaluate', {'expression': '[innerWidth, innerHeight]',
+                                          'returnByValue': True}, sid)
+            return tuple((r.get('result') or {}).get('value') or ())
+
+        def settled(sid):
+            # The renderer resizes asynchronously after setWindowBounds
+            # returns. Done the moment it reaches the view; otherwise only a
+            # size that has held still for the whole wait counts as the
+            # answer. Returning early on "it moved" let a SECOND resize read
+            # the first one still landing and learn a chrome height 32px off
+            # (measured in the fit smoke at dpr 2: 119 instead of 151).
+            reads, t_end = [], _time.time() + 1.5
+            while _time.time() < t_end:
+                cur = inner(sid)
+                if cur == view:
+                    return cur
+                reads.append(cur)
+                _time.sleep(0.05)
+            return reads[-1] if len(reads) >= 3 and len(set(reads[-3:])) == 1 else None
+
+        try:
+            chrome = session.setdefault('window_chrome', {})
+            done = set()
+            for tid in ids:
+                try:
+                    win = call('Browser.getWindowForTarget', {'targetId': tid})
+                    wid = win['windowId']
+                    if wid in done:
+                        continue
+                    done.add(wid)
+                    b = win.get('bounds') or {}
+                    if b.get('windowState', 'normal') != 'normal':
+                        call('Browser.setWindowBounds',
+                             {'windowId': wid, 'bounds': {'windowState': 'normal'}})
+                    sid = call('Target.attachToTarget',
+                               {'targetId': tid, 'flatten': True})['sessionId']
+                    try:
+                        before = inner(sid)
+                        if before == view:
+                            continue
+                        # Best first guess at this window's chrome: what it
+                        # has right now (a popup's differs from a tab
+                        # window's). The previous resize held the lock until
+                        # it settled, so this reading is not mid-flight.
+                        cw, ch = WINDOW_CHROME_W, WINDOW_CHROME_H
+                        if wid in chrome:
+                            cw, ch = chrome[wid]
+                        elif len(before) == 2 and b.get('width') and b.get('height'):
+                            ew, eh = b['width'] - before[0], b['height'] - before[1]
+                            if 0 <= ew <= 100 and 0 <= eh <= 300:
+                                cw, ch = ew, eh
+                        for _ in range(2):   # size, measure, correct once
+                            want = {'width': view[0] + cw, 'height': view[1] + ch}
+                            call('Browser.setWindowBounds', {'windowId': wid, 'bounds': want})
+                            got = settled(sid)
+                            if got == view:
+                                chrome[wid] = (cw, ch)
+                                break
+                            if not got or len(got) != 2:
+                                break
+                            cw, ch = want['width'] - got[0], want['height'] - got[1]
+                    finally:
+                        call('Target.detachFromTarget', {'sessionId': sid})
+                except Exception as e:
+                    session['error'] = f'viewport fit failed for {tid}: {e}'
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+
+def _fit_and_rearm(session, target_ids=None):
+    """_fit_windows, then restart the active tab's screencast.
+
+    A window resize alone produces NO screencast frame in headless Chromium:
+    measured 2026-09-26, window and innerHeight both at the new size, and not
+    one frame in the next 6s on a static page -- the pane kept showing the
+    old-size frame, letterboxed, indefinitely. A stop+start emits a
+    new-size frame within ~50ms. (A bare second startScreencast is not
+    enough: same stall.) Skipped while minimized, same as every re-arm."""
+    _fit_windows(session, target_ids)
+    if session.get('status') == 'running' and not session.get('screencast_paused'):
+        session['cmd_queue'].put(('Page.stopScreencast', {}))
+        session['cmd_queue'].put(('Page.startScreencast',
+                                  session.get('screencast_params', _SCREENCAST_PARAMS)))
+
+
+def _apply_view(session, view):
+    """The pane is `view` CSS px on screen now: size every tab to it, and
+    raise the screencast caps to match (they only downscale, so caps left at
+    a smaller, older size would shrink every frame of a bigger pane)."""
+    session['view'] = view
+    session['screencast_params'] = _screencast_params_for(session.get('dpr', 1), view)
+    _fit_and_rearm(session)
 
 
 def _page_disposition(session, target_info):
@@ -1170,6 +1347,11 @@ def _run_cdp(session):
                     _switch_active_tab(session, send, tid,
                                        old_session_id=_active_session_id(session))
                     _close_stale_sibling_popups(session, send, ti.get('openerId'), tid)
+                    # A popup opens at whatever size headless Chromium picks
+                    # (784x470 CSS measured) -- size it to the pane, like the
+                    # tab that opened it. Own thread: _fit_windows blocks.
+                    threading.Thread(target=_fit_and_rearm, args=(session, [tid]),
+                                     daemon=True).start()
                 elif p.get('waitingForDebugger') and sid:
                     # Not a page (worker, etc.) — we asked for
                     # waitForDebuggerOnStart=False so this should not normally
@@ -1245,7 +1427,7 @@ def _default_profile():
     return (state.CONFIG.get('browser_default_profile') or '').strip().lower() or None
 
 
-def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None):
+def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, view=None):
     """Start a headless Chromium and its CDP reader.
 
     ``profile`` names a persistent user-data-dir that survives teardown; None
@@ -1300,11 +1482,12 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None):
         udd = os.path.join(_profiles_root(), sid)
     os.makedirs(udd, exist_ok=True)
     dpr = _clamp_dpr(dpr)
+    view = (_clamp_view(*view) if view else None) or (VIEW_W, VIEW_H)
     args = [
         chromium, '--headless=new', f'--remote-debugging-port={port}',
         '--remote-allow-origins=*', f'--user-data-dir={udd}',
         '--no-first-run', '--no-default-browser-check', '--disable-gpu',
-        f'--window-size={VIEW_W + WINDOW_CHROME_W},{VIEW_H + WINDOW_CHROME_H}',
+        f'--window-size={view[0] + WINDOW_CHROME_W},{view[1] + WINDOW_CHROME_H}',
     ]
     if dpr != 1:
         args.append(f'--force-device-scale-factor={dpr}')
@@ -1334,7 +1517,10 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None):
         # and the screencast params scaled to match — every startScreencast
         # call site reads screencast_params, never the module-level default,
         # so a HiDPI launch stays sharp across tab switches and re-arms too.
-        'dpr': dpr, 'screencast_params': _screencast_params_for(dpr),
+        'dpr': dpr, 'screencast_params': _screencast_params_for(dpr, view),
+        # The page's CSS viewport: the pane's on-screen size once it reports
+        # one (type: viewport -> _apply_view). fit_lock serialises resizes.
+        'view': view, 'fit_lock': threading.Lock(),
     }
     with browser_lock:
         browser_sessions[sid] = session
@@ -1625,7 +1811,8 @@ def browser_launch():
     profile = data.get('profile')
     session, err = _launch_browser(project_id, url, profile=profile or None,
                                    ephemeral=bool(data.get('ephemeral')),
-                                   dpr=data.get('dpr'))
+                                   dpr=data.get('dpr'),
+                                   view=_view_from(data.get('view')))
     if err or session is None:
         err = err or 'browser failed to start'
         # A bad profile name is the caller's mistake, not a missing dependency —
@@ -1637,10 +1824,18 @@ def browser_launch():
         # asked to go, or `profile` would silently ignore the URL.
         session['url'] = url
         session['cmd_queue'].put(('Page.navigate', {'url': url}))
+    vw, vh = session.get('view') or (VIEW_W, VIEW_H)
     return jsonify({'session_id': session['session_id'], 'url': session['url'],
                     'profile': session.get('profile'), 'reused': reused,
                     'dpr': session.get('dpr', 1),
-                    'view': {'w': VIEW_W, 'h': VIEW_H}}), (200 if reused else 201)
+                    'view': {'w': vw, 'h': vh}}), (200 if reused else 201)
+
+
+def _view_from(v):
+    """`{"w": .., "h": ..}` off a request body -> a clamped (w, h), or None."""
+    if not isinstance(v, dict):
+        return None
+    return _clamp_view(v.get('w'), v.get('h'))
 
 
 def _stream_gen(session):
@@ -1924,6 +2119,15 @@ def browser_input():
                 q.put(('Page.startScreencast', session.get('screencast_params', _SCREENCAST_PARAMS)))
             else:
                 return jsonify({'error': f'unknown screencast action: {action!r}'}), 400
+        elif kind == 'viewport':
+            # The pane's on-screen size changed (opened, resized, tab strip
+            # appeared): make the page that size so it renders 1:1. Sized in
+            # a thread -- _fit_windows blocks on CDP round-trips and waits
+            # for the renderer, and the pane does not need to wait with it.
+            view = _clamp_view(data['w'], data['h'])
+            if view is None:
+                return jsonify({'error': 'viewport needs numeric w and h'}), 400
+            threading.Thread(target=_apply_view, args=(session, view), daemon=True).start()
         else:
             for cmd in _input_commands(data):
                 q.put(cmd)

@@ -50,6 +50,12 @@ let _bpSession = null, _bpES = null, _bpMoveTs = 0, _bpPressed = false;
 // shared _bpPressed flag and reports the release at a detached-rect corner, so
 // clicks land in the corner instead of where the user clicked (feels dead).
 let _bpUpHandler = null;
+// Watches the pane's picture area and tells the server its size, so the page
+// is laid out at exactly the size it is shown at (MC-976 zoom: a fixed
+// 1280x800 page, or a popup's own tiny window, was stretched to fill the pane
+// -- huge blurry text and black bars). Disconnected on teardown like the
+// mouseup handler above.
+let _bpViewObserver = null;
 // Set when a Ctrl/Cmd+V is let through to the browser, cleared by the `paste`
 // event it should produce. Still set after the grace period => no paste event
 // arrived, so fall back to the clipboard API. See the keydown handler.
@@ -557,6 +563,23 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     if ('file_chooser' in d) _bpRenderFileChooser(win, d.file_chooser);
   };
   _bpES.onerror = () => { if (spin) spin.style.color = '#e57373'; };
+
+  // ── the page is the pane's size ──
+  // ResizeObserver fires once on observe() and again on every change (corner
+  // grip, window resize, the tab strip appearing), debounced so a drag sends
+  // one request at the end, not one per pointermove. A zero-ish box is a
+  // minimized/hidden pane -- keep the page at its last real size.
+  const screenBox = img.parentElement;
+  let viewTimer = null, lastView = '';
+  const sendView = () => {
+    const w = Math.floor(screenBox.clientWidth), h = Math.floor(screenBox.clientHeight);
+    if (w < 50 || h < 50 || lastView === w + 'x' + h) return;
+    lastView = w + 'x' + h;
+    _bpSend({ type: 'viewport', w, h });
+  };
+  if (_bpViewObserver) _bpViewObserver.disconnect();
+  _bpViewObserver = new ResizeObserver(() => { clearTimeout(viewTimer); viewTimer = setTimeout(sendView, 150); });
+  _bpViewObserver.observe(screenBox);
   setTimeout(() => imeShadow.focus(), 100);
   // Remember the open session so a page refresh (which wipes the SPA DOM but
   // leaves the backend Chromium running) can re-attach instead of orphaning it.
@@ -816,6 +839,7 @@ function closeBrowserPane() {
   if (_bpMinimizedChip) { try { _bpMinimizedChip.remove(); } catch (e) {} _bpMinimizedChip = null; }
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
   if (_bpUpHandler) { window.removeEventListener('mouseup', _bpUpHandler); _bpUpHandler = null; }
+  if (_bpViewObserver) { _bpViewObserver.disconnect(); _bpViewObserver = null; }
   _bpPressed = false;
   // Reset the viewport guess: the next session may render at a different
   // size, and a stale value would mis-map every click before its first frame.
@@ -863,6 +887,7 @@ function _bpDetachView() {
   if (_bpMinimizedChip) { try { _bpMinimizedChip.remove(); } catch (e) {} _bpMinimizedChip = null; }
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
   if (_bpUpHandler) { window.removeEventListener('mouseup', _bpUpHandler); _bpUpHandler = null; }
+  if (_bpViewObserver) { _bpViewObserver.disconnect(); _bpViewObserver = null; }
   _bpPressed = false;
   // Reset the viewport guess: the next session may render at a different
   // size, and a stale value would mis-map every click before its first frame.
