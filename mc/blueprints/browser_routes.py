@@ -72,6 +72,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time as _time
 import uuid
@@ -664,6 +665,85 @@ def _close_stale_sibling_popups(session, send, opener_id, keep_target_id):
             session['error'] = f'stale popup close failed: {e}'
 
 
+def _pin_root_window(session, ws, next_id):
+    """Size the root tab's window to the launch --window-size, whatever the
+    profile restored.
+
+    --window-size only sizes a window Chromium creates fresh. A named
+    profile's relaunch re-opens its windows with the placement it saved, and
+    after a run that ended on an OAuth-style popup the tab we attach to came
+    up in a 384x181 CSS window (MC-976, measured 2026-09-25 in the
+    real-frames smoke: frames 768x362 at dpr 2, the page a postage stamp in
+    the pane). Runs on the fresh connection BEFORE any domain is enabled, so
+    the only messages on the wire are responses to these two commands and a
+    plain synchronous request/response cannot swallow an event. Best-effort:
+    a failure is recorded on the session and the launch carries on.
+    """
+    def call(method, params=None):
+        mid = next_id()
+        ws.send(json.dumps({'id': mid, 'method': method, 'params': params or {}}))
+        deadline = _time.time() + 3
+        while _time.time() < deadline:
+            msg = json.loads(ws.recv() or '{}')
+            if msg.get('id') == mid:
+                if 'error' in msg:
+                    raise RuntimeError(msg['error'].get('message'))
+                return msg.get('result') or {}
+        raise TimeoutError(f'{method}: no response in 3s')
+
+    try:
+        win = call('Browser.getWindowForTarget')
+        session['window_bounds_at_connect'] = win.get('bounds')
+        want = {'width': VIEW_W + WINDOW_CHROME_W, 'height': VIEW_H + WINDOW_CHROME_H}
+        b = win.get('bounds') or {}
+        if b.get('windowState', 'normal') != 'normal':
+            call('Browser.setWindowBounds',
+                 {'windowId': win['windowId'], 'bounds': {'windowState': 'normal'}})
+        if (b.get('width'), b.get('height')) != (want['width'], want['height']):
+            call('Browser.setWindowBounds', {'windowId': win['windowId'], 'bounds': want})
+    except Exception as e:
+        session['error'] = f'window size pin failed: {e}'
+
+
+def _page_disposition(session, target_info):
+    """What to do with a page target this connection has just learned about:
+    'focus' (show it), 'close', or None (not a page we manage — the root tab
+    itself, or not a page at all). Decided once per target and remembered, so
+    Target.targetCreated and the later Target.attachedToTarget agree.
+
+    A page is ours only if something THIS session did produced it: a popup or
+    link opened by a tab we hold (it carries an `openerId`, even a
+    rel=noopener one — measured 2026-09-25, canAccessOpener=False but openerId
+    set), or a tab the pane's "+" requested (`requested_tabs`). Anything else
+    is a tab the named profile RESTORED from its last run, plus our own
+    command-line about:blank once the restored tab has taken the URL we asked
+    for. Target.setDiscoverTargets announces those exactly like a new popup,
+    and they used to be auto-attached AND switched to — stopping the real
+    page's screencast and leaving the pane on a blank background tab (MC-976,
+    Ron's black pane with tabs 'about:blank','about:blank','Microsoft
+    Authentication'). Measured: every relaunch of a profile restored all of
+    the previous run's tabs plus one more blank; they arrive up to ~1s after
+    the devtools endpoint opens, so a snapshot at connect time misses some.
+    They hold nothing of the user's (cookies live in the profile, not the
+    tab), so they are closed rather than kept to pile up.
+    """
+    if target_info.get('type') != 'page':
+        return None
+    tid = target_info.get('targetId')
+    if not tid or tid == session.get('root_target_id'):
+        return None
+    known = session.setdefault('page_disposition', {})
+    if tid not in known:
+        if target_info.get('openerId'):
+            known[tid] = 'focus'
+        elif session.get('requested_tabs', 0) > 0:
+            session['requested_tabs'] -= 1
+            known[tid] = 'focus'
+        else:
+            known[tid] = 'close'
+    return known[tid]
+
+
 def _handle_target_closed(session, send, target_id):
     """A target went away (`Target.targetDestroyed` or `detachedFromTarget`) —
     drop its tab entry and, if it was the active one, return focus to its
@@ -744,6 +824,16 @@ def _run_cdp(session):
         for _ in range(75):
             if session['status'] != 'running':
                 return
+            # Chromium that died on arrival will never open its port: say so
+            # now instead of polling a dead port for 15s with status still
+            # 'running' (a black pane with no explanation). rc 21 is the
+            # process-singleton hand-off: another Chromium holds the dir.
+            rc = session['proc'].poll() if session.get('proc') is not None else None
+            if rc is not None:
+                session['status'] = 'error'
+                session['error'] = (f'Chromium exited (rc={rc}) before its devtools endpoint came up'
+                                    + (' - the profile dir is held by another Chromium' if rc == 21 else ''))
+                return
             try:
                 targets = json.load(urllib.request.urlopen(
                     f'http://127.0.0.1:{port}/json/list', timeout=1))
@@ -767,6 +857,7 @@ def _run_cdp(session):
         # timeout firing mid-frame, corrupting the ws and silently killing the
         # thread) is now covered by the consecutive-error tolerance below, and
         # measured safe: a 0.1s reader sustains 50fps with 0 recv errors.
+        _pin_root_window(session, ws, _next_id)
         ws.settimeout(0.1)
         session['ws'] = ws
 
@@ -781,6 +872,11 @@ def _run_cdp(session):
         session['tabs'] = {root_id: {'session_id': None, 'url': session.get('url') or '',
                                      'title': '', 'opener_id': None}}
         session['tabs_seq'] = 1
+        # Tabs asked for through the pane's "+" (Target.createTarget) that have
+        # not attached yet — the only opener-less pages that are ours; see
+        # _page_disposition.
+        session['requested_tabs'] = 0
+        session['page_disposition'] = {}
         session['dialog'] = None
         session['dialogs_seq'] = 0
         session['file_chooser'] = None
@@ -906,6 +1002,7 @@ def _run_cdp(session):
                             # per-target) command -- sent with NO session_id,
                             # unlike the generic `else` branch below which
                             # always stamps the active tab's session_id.
+                            session['requested_tabs'] = session.get('requested_tabs', 0) + 1
                             send('Target.createTarget', {'url': params.get('url') or 'about:blank'})
                         elif method == '_dialog_response':
                             tabs = session.get('tabs') or {}
@@ -1034,7 +1131,13 @@ def _run_cdp(session):
                 # `Target.attachToTarget({flatten: True})` itself. Do that here
                 # for every new page target so the tab strip actually sees it.
                 ti = (msg.get('params') or {}).get('targetInfo') or {}
-                if ti.get('type') == 'page' and not ti.get('attached'):
+                disposition = _page_disposition(session, ti)
+                if disposition == 'close':
+                    try:
+                        send('Target.closeTarget', {'targetId': ti.get('targetId')})
+                    except Exception as e:
+                        session['error'] = f'restored tab close failed: {e}'
+                elif disposition == 'focus' and not ti.get('attached'):
                     try:
                         send('Target.attachToTarget',
                              {'targetId': ti.get('targetId'), 'flatten': True})
@@ -1045,7 +1148,10 @@ def _run_cdp(session):
                 ti = p.get('targetInfo') or {}
                 sid = p.get('sessionId')
                 tid = ti.get('targetId')
-                if tid and ti.get('type') == 'page':
+                disposition = _page_disposition(session, ti)
+                if disposition == 'close':
+                    pass  # Target.closeTarget already sent on targetCreated
+                elif disposition == 'focus':
                     tabs = session.setdefault('tabs', {})
                     tabs[tid] = {'session_id': sid, 'url': ti.get('url', ''),
                                 'title': ti.get('title', ''), 'opener_id': ti.get('openerId'),
@@ -1179,6 +1285,9 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None):
         if live:
             live['reused'] = True
             return live, None
+        err = _release_held_profile(profile, udd)
+        if err:
+            return None, err
     global _swept_orphans
     if not _swept_orphans:
         # Lazy, once per process, and only when the pane is actually used —
@@ -1230,17 +1339,137 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None):
     with browser_lock:
         browser_sessions[sid] = session
     if _register_process:
+        # Matches agent_routes._register_process(proc, name, proc_type,
+        # session_id, project_id, command_preview). Until 2026-09-25 this
+        # passed (proc.pid, type=..., proc=proc) — a TypeError swallowed by a
+        # bare `except: pass`, so no pane Chromium was EVER tracked, never
+        # reached the PID ledger, and the startup reaper could not see one
+        # orphaned by a restart. The orphan kept its profile dir locked and
+        # every later launch on that profile died on arrival (black pane).
         try:
-            _register_process(proc.pid, name=f'browser pane ({url or "about:blank"})',
-                              type='browser', session_id=sid, project_id=project_id,
-                              command_preview=f'chromium --headless (browser pane) :{port}',
-                              proc=proc)
-        except Exception:
-            pass
+            _register_process(proc, name=f'browser pane ({url or "about:blank"})',
+                              proc_type='browser', session_id=sid, project_id=project_id,
+                              command_preview=f'chromium --headless (browser pane) :{port}')
+        except Exception as e:
+            print(f'[browser] process registration failed for {sid}: {e}', flush=True)
     t = threading.Thread(target=_run_cdp, args=(session,), daemon=True)
     session['thread'] = t
     t.start()
     return session, None
+
+
+def _profile_dir_locked(udd):
+    """True while some Chromium holds this user-data-dir. Windows: Chromium
+    keeps `lockfile` open with no sharing, so opening it fails. POSIX:
+    `SingletonLock` is a symlink to `<host>-<pid>` of a live process."""
+    if sys.platform == 'win32':
+        lf = os.path.join(udd, 'lockfile')
+        if not os.path.exists(lf):
+            return False
+        try:
+            with open(lf, 'a'):
+                return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+    try:
+        pid = int(os.readlink(os.path.join(udd, 'SingletonLock')).rsplit('-', 1)[1])
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _profile_holder(udd):
+    """``(pid, cmdline)`` of the browser process holding ``udd``, or None.
+
+    Only called once _profile_dir_locked has said the dir IS held, so the
+    process-table scan (~0.8s via CIM on Windows) is paid on the failure
+    path alone. Child processes (`--type=renderer` etc.) carry the same
+    --user-data-dir, so they are excluded to land on the browser process.
+    """
+    image = os.path.basename(_find_chromium() or 'chrome.exe')
+    rows = []
+    try:
+        if sys.platform == 'win32':
+            ps = ("Get-CimInstance Win32_Process -Filter \"Name='%s'\" | "
+                  "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress" % image)
+            out = subprocess.run(['powershell', '-NoProfile', '-Command', ps],
+                                 capture_output=True, text=True, timeout=15,
+                                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO).stdout
+            data = json.loads(out) if out.strip() else []
+            for r in (data if isinstance(data, list) else [data]):
+                rows.append((int(r.get('ProcessId') or 0), r.get('CommandLine') or ''))
+        else:
+            out = subprocess.run(['ps', '-eo', 'pid=,args='], capture_output=True,
+                                 text=True, timeout=15).stdout
+            for line in out.splitlines():
+                pid, _, args = line.strip().partition(' ')
+                if pid.isdigit():
+                    rows.append((int(pid), args))
+    except Exception as e:
+        print(f'[browser] profile holder scan failed: {e}', flush=True)
+        return None
+    flag = f'--user-data-dir={udd}'
+    for pid, cmd in rows:
+        if '--type=' in cmd:
+            continue
+        i = cmd.find(flag)
+        if i >= 0 and cmd[i + len(flag):i + len(flag) + 1] in ('', ' ', '"'):
+            return pid, cmd
+    return None
+
+
+def _release_held_profile(profile, udd, timeout=10):
+    """Free a named profile's dir held by a Chromium we are not tracking, or
+    return an error string saying why it cannot be.
+
+    What holds it in practice is a pane Chromium orphaned by a server restart
+    (the restart path os._exit()s past the atexit browser cleanup). Chromium
+    allows one process per user-data-dir: a second launch hands its command
+    line to the holder and exits rc=21 in ~0.1s, so the new session's port
+    never opened and the pane stayed black until the reader gave up 15s
+    later (MC-976, 2026-09-25: Ron's 'main' sessions cfc90fe9ab84/f53c7f773b99
+    against an orphan whose parent server was already gone). A holder that
+    is a headless Chromium with a debugging port is one of ours: close it
+    over CDP (Browser.close flushes cookies — never a kill, see
+    _graceful_close) and wait for the dir to free. Anything else is left
+    alone and the launch is refused with the holder's pid.
+    """
+    with browser_lock:
+        stale = [s for s in browser_sessions.values()
+                 if s.get('profile') == profile and s.get('status') != 'running'
+                 and s.get('proc') is not None and s['proc'].poll() is None]
+    for s in stale:  # our own session whose reader died but Chromium did not
+        _kill_browser_session(s)
+    if not _profile_dir_locked(udd):
+        return None
+    holder = _profile_holder(udd)
+    if not holder:
+        return (f"profile '{profile}' is in use by another browser process "
+                f"(could not identify it) — close it and try again")
+    pid, cmd = holder
+    m = re.search(r'--remote-debugging-port=(\d+)', cmd)
+    url = _browser_ws_url(int(m.group(1))) if (m and '--headless' in cmd) else None
+    if not url:
+        return (f"profile '{profile}' is in use by another browser process "
+                f"(pid {pid}) — close it and try again")
+    try:
+        ws = _import_ws().create_connection(url, max_size=None, timeout=3)
+        try:
+            ws.send(json.dumps({'id': 1, 'method': 'Browser.close', 'params': {}}))
+        finally:
+            ws.close()
+    except Exception as e:
+        return f"profile '{profile}' is held by a leftover pane browser (pid {pid}) that did not respond: {e}"
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        if not _profile_dir_locked(udd):
+            print(f'[browser] closed leftover pane Chromium pid {pid} holding profile {profile!r}', flush=True)
+            return None
+        _time.sleep(0.2)
+    return f"profile '{profile}' is still held by pid {pid} {timeout}s after asking it to close"
 
 
 def _browser_ws_url(port, timeout=2):
@@ -1304,6 +1533,30 @@ def _graceful_close(session, timeout=10):
         print(f'[browser] Chromium did not exit within {timeout}s after '
               f'Browser.close; falling back to kill', flush=True)
         return False
+
+
+def close_all_sessions(timeout=2.5):
+    """Close every pane Chromium, in parallel, within ``timeout`` seconds.
+
+    For the restart/shutdown path, which os._exit()s and so never reaches
+    the atexit browser cleanup in server.py. Before this, every restart
+    orphaned each open pane's Chromium with its profile dir still locked,
+    and the next launch of that profile died rc=21 (MC-976). Named profiles
+    get Browser.close (flushes cookies, ~0.1s each); a close still running
+    at the deadline was already asked to exit and finishes on its own.
+    Returns how many sessions were asked to close.
+    """
+    with browser_lock:
+        sessions = list(browser_sessions.values())
+    threads = []
+    for s in sessions:
+        t = threading.Thread(target=_kill_browser_session, args=(s,), daemon=True)
+        t.start()
+        threads.append(t)
+    deadline = _time.time() + timeout
+    for t in threads:
+        t.join(max(0.0, deadline - _time.time()))
+    return len(threads)
 
 
 def _kill_browser_session(session):

@@ -2,6 +2,7 @@
 
 Cover the pure helpers and the optional/lazy feature-gate without launching a
 real Chromium (that's integration territory, exercised manually)."""
+import json
 import os
 
 import pytest
@@ -128,6 +129,42 @@ def test_a_stopped_session_does_not_block_relaunching_its_profile(profiles, monk
                                  'status': 'stopped'}
     session, err = br._launch_browser('proj', 'x', profile='reddit')
     assert session is None and 'Chromium not found' in err
+
+
+def test_launch_registers_chromium_with_the_real_tracker_signature(profiles, monkeypatch):
+    """The call used to be (proc.pid, type=..., proc=proc) against
+    agent_routes._register_process(proc, name, proc_type, ...) — a TypeError
+    a bare `except: pass` swallowed, so no pane Chromium was ever tracked,
+    none reached the PID ledger, and a restart's orphan held its profile dir
+    locked forever (MC-976 black pane). Bind against the REAL signature."""
+    import inspect
+    from mc.blueprints import agent_routes
+    sig = inspect.signature(agent_routes._register_process)
+    calls = []
+
+    def _register(*a, **k):
+        bound = sig.bind(*a, **k)   # raises TypeError exactly like production
+        calls.append(bound.arguments)
+
+    class _Proc:
+        pid = 777
+
+    class _NoThread:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(br, '_find_chromium', lambda: 'C:/fake/chrome.exe')
+    monkeypatch.setattr(br, '_import_ws', lambda: object())
+    monkeypatch.setattr(br.subprocess, 'Popen', lambda *a, **k: _Proc())
+    monkeypatch.setattr(br.threading, 'Thread', _NoThread)
+    monkeypatch.setattr(br, '_register_process', _register)
+    session, err = br._launch_browser('proj', 'https://example.com', ephemeral=True)
+    assert err is None
+    assert len(calls) == 1
+    assert calls[0]['proc'] is session['proc'] and calls[0]['proc_type'] == 'browser'
 
 
 def test_invalid_profile_is_rejected_before_anything_launches(profiles, monkeypatch):
@@ -1050,6 +1087,119 @@ def test_handle_target_closed_clears_a_dialog_open_on_that_target():
     br._handle_target_closed(session, lambda *a, **k: None, 'popup')
     assert session['dialog'] is None
     assert session['dialogs_seq'] == 2
+
+
+def test_page_disposition_closes_restored_tabs_and_focuses_popups():
+    # MC-976: a named profile's relaunch restores the last run's tabs (plus our
+    # command-line about:blank). Target.setDiscoverTargets announced them like
+    # popups and the pane switched to one — black. Only pages THIS session
+    # produced (an opener, or a "+" request) may take focus.
+    session = {'root_target_id': 'root', 'requested_tabs': 0}
+    page = lambda tid, **kw: dict({'type': 'page', 'targetId': tid, 'url': 'about:blank'}, **kw)
+    assert br._page_disposition(session, page('root')) is None
+    assert br._page_disposition(session, {'type': 'iframe', 'targetId': 'f'}) is None
+    assert br._page_disposition(session, page('restored', url='https://www.linkedin.com/')) == 'close'
+    assert br._page_disposition(session, page('blank')) == 'close'
+    # A rel=noopener link still carries openerId (canAccessOpener False).
+    assert br._page_disposition(session, page('popup', openerId='root')) == 'focus'
+
+
+def test_page_disposition_plus_button_tab_takes_focus_once():
+    session = {'root_target_id': 'root', 'requested_tabs': 1}
+    assert br._page_disposition(session, page_ := {'type': 'page', 'targetId': 'new'}) == 'focus'
+    assert session['requested_tabs'] == 0
+    # Remembered: targetCreated and attachedToTarget for the same tab agree.
+    assert br._page_disposition(session, page_) == 'focus'
+    assert br._page_disposition(session, {'type': 'page', 'targetId': 'other'}) == 'close'
+
+
+class _PinWs:
+    """Answers the two Browser.* calls _pin_root_window makes, like CDP."""
+    def __init__(self, bounds):
+        self.bounds, self.sent, self._out = bounds, [], []
+
+    def send(self, raw):
+        m = json.loads(raw)
+        self.sent.append(m)
+        result = {'windowId': 7, 'bounds': self.bounds} if m['method'] == 'Browser.getWindowForTarget' else {}
+        self._out.append(json.dumps({'id': m['id'], 'result': result}))
+
+    def recv(self):
+        return self._out.pop(0)
+
+
+def test_pin_root_window_resizes_a_restored_small_window():
+    # MC-976: a relaunch after a popup run attached to a 400x300 window, so
+    # the pane showed a 768x362 postage stamp at dpr 2.
+    ws, session, ids = _PinWs({'width': 400, 'height': 300, 'windowState': 'normal'}), {}, iter(range(1, 99))
+    br._pin_root_window(session, ws, lambda: next(ids))
+    sets = [m['params'] for m in ws.sent if m['method'] == 'Browser.setWindowBounds']
+    assert sets == [{'windowId': 7, 'bounds': {'width': br.VIEW_W + br.WINDOW_CHROME_W,
+                                               'height': br.VIEW_H + br.WINDOW_CHROME_H}}]
+    assert session['window_bounds_at_connect']['width'] == 400
+    assert 'error' not in session
+
+
+def test_pin_root_window_leaves_a_correct_window_alone():
+    want = {'width': br.VIEW_W + br.WINDOW_CHROME_W, 'height': br.VIEW_H + br.WINDOW_CHROME_H,
+            'windowState': 'normal'}
+    ws, session, ids = _PinWs(want), {}, iter(range(1, 99))
+    br._pin_root_window(session, ws, lambda: next(ids))
+    assert [m['method'] for m in ws.sent] == ['Browser.getWindowForTarget']
+
+
+def test_release_held_profile_free_dir_is_a_noop(monkeypatch):
+    monkeypatch.setattr(br, '_profile_dir_locked', lambda udd: False)
+    monkeypatch.setattr(br, '_profile_holder', lambda udd: (_ for _ in ()).throw(AssertionError('no scan')))
+    assert br._release_held_profile('main', '/p/main') is None
+
+
+def test_release_held_profile_refuses_a_foreign_holder(monkeypatch):
+    # A holder that is not a headless pane Chromium (e.g. the user's own
+    # Chrome pointed at the dir) is never touched — the launch is refused.
+    monkeypatch.setattr(br, '_profile_dir_locked', lambda udd: True)
+    monkeypatch.setattr(br, '_profile_holder', lambda udd: (4242, 'chrome.exe --user-data-dir=/p/main'))
+    monkeypatch.setattr(br, '_browser_ws_url', lambda *a, **k: (_ for _ in ()).throw(AssertionError('no CDP')))
+    err = br._release_held_profile('main', '/p/main')
+    assert 'pid 4242' in err
+
+
+class _DeadProc:
+    def __init__(self, rc):
+        self.rc = rc
+
+    def poll(self):
+        return self.rc
+
+
+def test_run_cdp_reports_chromium_that_died_on_arrival_at_once():
+    # MC-976: rc 21 = the singleton hand-off to whatever already holds the
+    # profile dir. The reader used to poll the dead port for 15s as 'running'.
+    session = {'status': 'running', 'port': 1, 'proc': _DeadProc(21), 'url': 'about:blank'}
+    br._run_cdp(session)
+    assert session['status'] == 'error'
+    assert 'rc=21' in session['error'] and 'held by another Chromium' in session['error']
+
+
+def test_close_all_sessions_closes_every_pane_within_the_deadline(monkeypatch):
+    # MC-976: the restart path os._exit()s past the atexit cleanup, so it must
+    # close panes itself — and a hung close must not hold the restart up.
+    import threading as _th
+    import time as _t
+    closed, hang = [], _th.Event()
+
+    def fake_kill(s):
+        if s['session_id'] == 'hung':
+            hang.wait(5)
+        closed.append(s['session_id'])
+    monkeypatch.setattr(br, '_kill_browser_session', fake_kill)
+    monkeypatch.setitem(browser_sessions, 'a', {'session_id': 'a'})
+    monkeypatch.setitem(browser_sessions, 'hung', {'session_id': 'hung'})
+    t0 = _t.time()
+    assert br.close_all_sessions(timeout=0.5) == 2
+    assert _t.time() - t0 < 1.5
+    assert 'a' in closed
+    hang.set()
 
 
 # ── /api/browser/tab route ───────────────────────────────────────────────────

@@ -37,6 +37,12 @@ const BP_VIEW_W = 1280, BP_VIEW_H = 800;
 // deviceWidth/deviceHeight and we scale to that; the constants are only a
 // first-frame fallback.
 let _bpViewW = BP_VIEW_W, _bpViewH = BP_VIEW_H;
+// True once the server has sent the frame's CSS-px size (w/h). From then on
+// the decoded JPEG's own size is NOT the coordinate space: at a HiDPI launch
+// (--force-device-scale-factor, MC-976) the JPEG is dpr x the CSS viewport, so
+// adopting naturalWidth mapped a centre click at dpr 2 to (1280,799) -- the
+// page's bottom-right corner -- instead of (640,400).
+let _bpServerDims = false;
 let _bpSession = null, _bpES = null, _bpMoveTs = 0, _bpPressed = false;
 // The mouseup handler lives on `window` (a drag can end off the image), so it
 // must be tracked and removed on teardown — otherwise every re-open stacks
@@ -509,6 +515,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   // coordinate space. Without this, clicks map into a 1280x800 space that does
   // not exist and land up to ~150px low.
   img.addEventListener('load', () => {
+    if (_bpServerDims) return;
     const w = img.naturalWidth, h = img.naturalHeight;
     if (w && h && (w !== _bpViewW || h !== _bpViewH)) {
       _bpViewW = w; _bpViewH = h;
@@ -517,6 +524,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   });
   _bpES.onmessage = ev => {
     let d; try { d = JSON.parse(ev.data); } catch { return; }
+    if (d.w && d.h) _bpServerDims = true;
     if (d.w && d.h && (d.w !== _bpViewW || d.h !== _bpViewH)) {
       // Adopt the frame's real viewport for BOTH hit-testing and layout. Setting
       // aspect-ratio from the frame also kills the vertical stretch the fixed
@@ -526,7 +534,15 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     }
     if (d.img) { img.src = 'data:image/jpeg;base64,' + d.img; spin.style.color = '#4caf50'; }
     if (d.url && document.activeElement !== urlInput) urlInput.value = d.url;
-    if (d.status && d.status !== 'running') { spin.textContent = '×'; spin.style.color = '#e57373'; }
+    if (d.status && d.status !== 'running') {
+      spin.textContent = '×'; spin.style.color = '#e57373';
+      // A session that died before its first tab attached never sends `tabs`,
+      // so the strip (and its "+") never appears and the screen stays black
+      // with nothing but this red x (MC-976: Ron's 'main' pane, Chromium
+      // exited rc=21 on a profile dir a leftover Chromium still held). Say
+      // why, on the screen itself.
+      if (d.status === 'error') _bpShowEnded(win, d.error || 'the browser session ended');
+    }
     // A download never repaints the page (Chromium generates no screencast
     // frame for it — see the root-cause note on Browser.downloadWillBegin in
     // browser_routes.py), so this SSE message is the ONLY signal a download
@@ -697,6 +713,18 @@ function _bpRenderTabs(win, tabs, activeId) {
   });
 }
 
+function _bpShowEnded(win, reason) {
+  const img = win && win.querySelector('[data-bp="screen"]');
+  const box = img && img.parentElement;
+  if (!box || box.querySelector('[data-bp="ended"]')) return;
+  const el = document.createElement('div');
+  el.setAttribute('data-bp', 'ended');
+  el.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;' +
+    'padding:24px;text-align:center;color:#e0e0e0;font-size:13px;line-height:1.5;background:rgba(0,0,0,.6)';
+  el.textContent = 'Browser session ended: ' + reason + '. Close the pane and open it again.';
+  box.appendChild(el);
+}
+
 function _bpSendTabAction(action, targetId) {
   if (!_bpSession) return;
   fetch((window.API_BASE || '') + '/api/browser/tab', {
@@ -791,7 +819,7 @@ function closeBrowserPane() {
   _bpPressed = false;
   // Reset the viewport guess: the next session may render at a different
   // size, and a stale value would mis-map every click before its first frame.
-  _bpViewW = BP_VIEW_W; _bpViewH = BP_VIEW_H;
+  _bpViewW = BP_VIEW_W; _bpViewH = BP_VIEW_H; _bpServerDims = false;
   // Explicit close ends the backend session — so don't restore it on next load.
   try { localStorage.removeItem('mc_browser_pane_open'); } catch (e) {}
   if (_bpSession) {
@@ -838,7 +866,7 @@ function _bpDetachView() {
   _bpPressed = false;
   // Reset the viewport guess: the next session may render at a different
   // size, and a stale value would mis-map every click before its first frame.
-  _bpViewW = BP_VIEW_W; _bpViewH = BP_VIEW_H;
+  _bpViewW = BP_VIEW_W; _bpViewH = BP_VIEW_H; _bpServerDims = false;
   const w = document.getElementById('mc-browser-pane');
   if (w) w.remove();
 }
