@@ -720,6 +720,14 @@ async function deskCampaignState(id, state) {
 // ── open ────────────────────────────────────────────────────────────────────
 
 async function openDesk() {
+  // Desk v1 (MC-977, flag `desk_v1`, default off): while it's on, the v1
+  // shell owns the whole modal instead of legacy Board/Queue/Calendar/Ledger
+  // — see desk-v1-shell.js. This branch is desk.js's ONLY v1 edit in R0 plan
+  // T0a; T0d adds the other one (legacy views go read-only once this is on).
+  const _cfg = (typeof _globalConfig !== 'undefined' && _globalConfig) || {};
+  if (_cfg.desk_v1 && typeof window.deskV1Open === 'function') {
+    return window.deskV1Open();
+  }
   if (openModals.has(DESK_MODAL_ID)) {
     const entry = openModals.get(DESK_MODAL_ID);
     if (entry.minimized) restoreModal(DESK_MODAL_ID);

@@ -240,6 +240,7 @@
 </script>
 <link rel="stylesheet" href="/static/css/app.css">
 <link rel="stylesheet" href="/static/css/beacon.css">
+<link rel="stylesheet" href="/static/css/desk-v1.css">
 </head>
 <body>
 <script>
@@ -3823,6 +3824,22 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/cross-backlog.js"></script>
 <script type="module" src="/static/js/cross-social.js"></script>
 <script type="module" src="/static/js/desk.js"></script>
+<!-- Desk v1 (MC-977, R0 plan T0a). Behind the `desk_v1` flag (default off);
+     every desk-v1-*.js/.css tag is added here, up front, so no later ticket
+     touches index.html (ground rule 2). Fixtures/kit before the shell before
+     the surface stubs — load order only matters for readability here, since
+     the shell resolves each surface's render function lazily at nav time. -->
+<script type="module" src="/static/js/desk-v1-fixtures.js"></script>
+<script type="module" src="/static/js/desk-v1-kit.js"></script>
+<script type="module" src="/static/js/desk-v1-shell.js"></script>
+<script type="module" src="/static/js/desk-v1-home.js"></script>
+<script type="module" src="/static/js/desk-v1-campaign.js"></script>
+<script type="module" src="/static/js/desk-v1-rules.js"></script>
+<script type="module" src="/static/js/desk-v1-review.js"></script>
+<script type="module" src="/static/js/desk-v1-calendar.js"></script>
+<script type="module" src="/static/js/desk-v1-video.js"></script>
+<script type="module" src="/static/js/desk-v1-conversations.js"></script>
+<script type="module" src="/static/js/desk-v1-results.js"></script>
 <script type="module" src="/static/js/scheduler.js"></script>
 <script type="module" src="/static/js/workflow-builder.js"></script>
 <script type="module" src="/static/js/schedule-calendar.js"></script>

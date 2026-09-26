@@ -245,6 +245,10 @@ _CONFIG_EDITABLE_KEYS = {
     # knob like the rest of this set: an unattended agent must not be able to
     # grant itself write access to the app's own source by flipping this on.
     'allow_project_in_install_dir',
+    # Desk v1 (MC-977, R0 plan T0a). Read live by the Settings toggle and by
+    # static/js/desk.js's openDesk() branch at the next open — no respawn or
+    # restart needed. `user_timezone` is read by the v1 shell's time helper.
+    'desk_v1', 'user_timezone',
 }
 
 # Respawn-trigger ("Tier-1") settings: baked into the spawn (CLI flags or the

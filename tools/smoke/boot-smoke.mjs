@@ -141,6 +141,11 @@ const SCENARIOS = [
   { name: 'image bg, with dims + framing', ls: { mc_bg_mode: 'image', mc_bg_image: PNG, mc_bg_imgw: '4', mc_bg_imgh: '4', mc_bg_zoom: '140', mc_bg_posx: '30', mc_bg_posy: '70' } },
   { name: 'solid color bg', ls: { mc_bg_mode: 'color', mc_bg_color: '#123456' } },
   { name: 'warm tone', ls: { mc_tone: 'warm' } },
+  // Desk v1 (MC-977, R0 plan ground rule 5) needs all three tones green, not
+  // just warm+dark — 'default theme (no bg)' above renders warm too (the
+  // fallback when mc_tone is unset), so editorial had no coverage at all.
+  { name: 'editorial tone', ls: { mc_tone: 'editorial' } },
+  { name: 'dark tone', ls: { mc_tone: 'dark' } },
 ];
 
 // Static asset map (path → [contentType, body]) shared by the boot scenarios

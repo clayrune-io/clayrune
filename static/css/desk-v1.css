@@ -1,0 +1,87 @@
+/* Desk v1 (MC-977, docs/desk_v1_r0_plan.md) — one section per ticket, in
+   ticket order, so git merges non-adjacent hunks cleanly (ground rule 2).
+   Theme tokens only (ground rule 5) — every rule here must hold in the
+   default tone, tone-warm and tone-editorial with no per-tone override. */
+
+/* ── T0a: shell + router + stubs ─────────────────────────────────────────── */
+.desk-v1-shell {
+  display: flex; flex-direction: column; height: 100%;
+  padding: 0 24px 20px 28px;
+}
+.desk-v1-crumb {
+  display: flex; align-items: center; gap: 10px;
+  padding: 2px 0 12px 0; flex: 0 0 auto;
+}
+.desk-v1-back {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px;
+  color: var(--text-dim); font-size: 12px; font-weight: 600; cursor: pointer;
+  padding: 5px 10px; transition: background 0.15s, color 0.15s;
+}
+.desk-v1-back:hover { background: var(--surface3); color: var(--text); }
+.desk-v1-crumb-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.desk-v1-body { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+
+.desk-v1-stub {
+  border: 1px dashed var(--border2); border-radius: 10px;
+  padding: 20px; background: var(--surface);
+}
+.desk-v1-stub-title { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.desk-v1-stub-body { font-size: 13px; color: var(--text-dim); }
+.desk-v1-stub-inline { font-size: 13px; color: var(--text-dim); padding: 10px 0; }
+.desk-v1-stub-list { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.desk-v1-stub-row {
+  font-size: 12px; color: var(--text-dim);
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface2);
+}
+.desk-v1-stub-empty { font-size: 12px; color: var(--text-faint); }
+.desk-v1-stub-link {
+  align-self: flex-start;
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 7px;
+  color: var(--accent); font-size: 13px; font-weight: 600; cursor: pointer;
+  padding: 8px 12px; text-align: left; transition: background 0.15s;
+}
+.desk-v1-stub-link:hover { background: var(--surface3); }
+
+/* Campaign-page skeleton (5 fixed slots — see desk-v1-shell.js
+   _renderCampaignSkeleton). The skeleton itself never grows past T0a; only
+   the content each slot's fill hook renders does. */
+.desk-v1-campaign { display: flex; flex-direction: column; gap: 14px; height: 100%; min-height: 0; }
+.desk-v1-camp-summary { flex: 0 0 auto; }
+.desk-v1-camp-tabstrip { flex: 0 0 auto; }
+.desk-v1-camp-main {
+  flex: 1 1 auto; min-height: 0; display: flex; gap: 16px;
+}
+.desk-v1-camp-tabbody { flex: 1 1 auto; min-width: 0; overflow-y: auto; }
+.desk-v1-camp-rightcol { flex: 0 0 320px; overflow-y: auto; }
+.desk-v1-camp-addtray { flex: 0 0 auto; }
+
+/* Mobile (≤960px, ground rule 7): the fixed 320px right column would push
+   the tab body off-screen — stack it below instead. Hit targets ≥44px are
+   each surface ticket's own job; the shell only owns this reflow. */
+@media (max-width: 960px) {
+  .desk-v1-camp-main { flex-direction: column; }
+  .desk-v1-camp-rightcol { flex: 0 0 auto; }
+}
+
+/* ── T0b: shared kit (vocabulary, state label, channel badge, toast+Undo,
+   Add to… menu, ⓘ popover, Posy box) ───────────────────────────────────── */
+
+/* ── T0c: pointer-drag extraction ────────────────────────────────────────── */
+
+/* ── T0d: legacy read-only banner ────────────────────────────────────────── */
+
+/* ── T1: Desk Home ────────────────────────────────────────────────────────── */
+
+/* ── T2a: Campaign page + Content list ───────────────────────────────────── */
+
+/* ── T2b: Proposed state, Start sheet, rules popover, Posy instructions ─── */
+
+/* ── T3: Full-width review ───────────────────────────────────────────────── */
+
+/* ── T4: Calendar view ───────────────────────────────────────────────────── */
+
+/* ── T5: Video intake + director ─────────────────────────────────────────── */
+
+/* ── T6: Conversations ───────────────────────────────────────────────────── */
+
+/* ── T7: Results ──────────────────────────────────────────────────────────── */

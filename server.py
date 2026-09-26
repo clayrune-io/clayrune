@@ -541,6 +541,19 @@ def _load_config():
         # `_dedupe_archive_lines_containment`) is the default now; this flag
         # is the rollback lever back to last-wins, not a feature to reach for.
         'archive_dedupe_legacy_enabled': False,
+
+        # Desk v1 (MC-977, R0 plan T0a). OFF by default — the new Desk UI
+        # (Home -> campaign -> item, docs/THE_DESK_V1_UI.md) lives entirely
+        # behind this flag so the legacy Desk (static/js/desk.js) is
+        # byte-identical in behaviour while it's off. When on, legacy Desk
+        # views go read-only (T0d) and v1 runs against fixtures only: no new
+        # backend store, no publishing, no spend (docs/desk_v1_r0_plan.md).
+        'desk_v1': False,
+        # Desk v1 renders schedule/publish times in this IANA zone (e.g.
+        # 'America/New_York'). '' = fall back to the host's local timezone —
+        # the same behaviour every other time surface in the app has today.
+        # Closes gap map #17 (no user-configurable timezone existed before).
+        'user_timezone': '',
     }
     if CONFIG_PATH.exists():
         try:
