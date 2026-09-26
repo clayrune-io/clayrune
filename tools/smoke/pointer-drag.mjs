@@ -275,6 +275,90 @@ async function main() {
     revived ? ok('a fresh drag still starts after an Esc cancel') : fail('a fresh drag did not start after an Esc cancel');
     await page.mouse.up();
 
+    // ── pointercancel: a real cancel signal (the OS reassigning the gesture,
+    // e.g. an incoming scroll/zoom takeover) must tear down exactly like Esc
+    // does, not just the mouseup/Esc paths already covered above.
+    handle = await page.$('#pd-handle');
+    box = await handle.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 20, box.y + box.height / 2, { steps: 3 });
+    await page.waitForSelector('body.pd-fixture-active', { timeout: 2000 });
+    await page.evaluate(() => {
+      window.dispatchEvent(new PointerEvent('pointercancel', { pointerId: window.__pdState.pointerId }));
+    });
+    const afterCancel = await page.evaluate(() => ({
+      active: document.body.classList.contains('pd-fixture-active'),
+      ghosts: document.querySelectorAll('.pd-ghost').length,
+      state: window.__pdState,
+    }));
+    (!afterCancel.active && afterCancel.ghosts === 0 && afterCancel.state === null)
+      ? ok('a real pointercancel event tears down the drag')
+      : fail(`pointercancel left state behind: ${JSON.stringify(afterCancel)}`);
+    await page.mouse.up();   // already torn down app-side; resets Playwright's own button state
+
+    // ── window blur: the PASS line below has claimed "Esc/blur teardown" since
+    // this file's first version, but nothing actually fired a blur event —
+    // only Esc was exercised. Releasing focus to another window/app is the
+    // ONLY signal a real drag-off-into-the-OS gesture sends (no pointerup
+    // reaches the page at all), so it needs its own case, not an implication.
+    handle = await page.$('#pd-handle');
+    box = await handle.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 20, box.y + box.height / 2, { steps: 3 });
+    await page.waitForSelector('body.pd-fixture-active', { timeout: 2000 });
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    const afterBlur = await page.evaluate(() => ({
+      active: document.body.classList.contains('pd-fixture-active'),
+      ghosts: document.querySelectorAll('.pd-ghost').length,
+      state: window.__pdState,
+    }));
+    (!afterBlur.active && afterBlur.ghosts === 0 && afterBlur.state === null)
+      ? ok('a real window blur event tears down the drag')
+      : fail(`window blur left state behind: ${JSON.stringify(afterBlur)}`);
+    await page.mouse.up();
+
+    // ── A modal open elsewhere in the app must survive Escape mid-drag too —
+    // not just Floor's own hire-active drag. Before code review the global
+    // Escape-closes-modal handler (index.html) checked floor.js's `hire-active`
+    // class by name, so ANY OTHER pointer-drag caller's Escape closed whatever
+    // modal sat on top of it instead of just cancelling the drag. Uses this
+    // fixture's own project modal (PID) rather than the Desk specifically —
+    // the fix pointer-drag.js now publishes (the generic `pd-drag-active` body
+    // class) is caller-agnostic, so proving it here proves it for the Desk's
+    // own future drag too.
+    const modalState = await page.evaluate((pid) => {
+      openProjectModal(pid);
+      return { opened: openModals.has(pid), focused: focusedModalId === pid };
+    }, PID);
+    (modalState.opened && modalState.focused)
+      ? ok('setup: the project modal opens and takes focus')
+      : fail(`setup failed to open the modal: ${JSON.stringify(modalState)}`);
+
+    handle = await page.$('#pd-handle');
+    box = await handle.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 20, box.y + box.height / 2, { steps: 3 });
+    await page.waitForSelector('body.pd-fixture-active', { timeout: 2000 });
+    await page.keyboard.press('Escape');
+    const afterEscWithModal = await page.evaluate((pid) => ({
+      modalStillOpen: openModals.has(pid),
+      stillFocused: focusedModalId === pid,
+      dragActive: document.body.classList.contains('pd-fixture-active'),
+      genericDragClass: document.body.classList.contains('pd-drag-active'),
+      ghosts: document.querySelectorAll('.pd-ghost').length,
+    }), PID);
+    (afterEscWithModal.modalStillOpen && afterEscWithModal.stillFocused)
+      ? ok('Escape mid-drag with a modal open cancels the drag, not the modal (pd-drag-active guard)')
+      : fail(`Escape mid-drag closed the modal instead of the drag: ${JSON.stringify(afterEscWithModal)}`);
+    (!afterEscWithModal.dragActive && !afterEscWithModal.genericDragClass && afterEscWithModal.ghosts === 0)
+      ? ok('...and the drag itself still tore down cleanly alongside it')
+      : fail(`drag did not tear down alongside the modal-open Escape: ${JSON.stringify(afterEscWithModal)}`);
+    await page.mouse.up();
+    await page.evaluate((pid) => { if (typeof closeModalById === 'function') closeModalById(pid); }, PID);
+
     await ctx.close();
   }
 
@@ -337,6 +421,33 @@ async function main() {
     await dispatchTouch('touchEnd', hx, hy);
     await mpage.waitForTimeout(50);
 
+    // Case 3: a COMPLETED touch drag onto a target. Cases 1/2 only prove
+    // activation (or the lack of it) — neither ever moves onto a zone and
+    // releases there, so the touch path's onDrop resolution was unverified.
+    await mpage.waitForTimeout(100);
+    await dispatchTouch('touchStart', hx, hy);
+    await mpage.waitForTimeout(500);   // past the long-press threshold
+    const okZoneBox = await mpage.$eval('#pd-zone-ok', (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
+    });
+    const ox = okZoneBox.x + okZoneBox.width / 2, oy = okZoneBox.y + okZoneBox.height / 2;
+    await dispatchTouch('touchMove', ox, oy);
+    await mpage.waitForTimeout(30);
+    await dispatchTouch('touchEnd', ox, oy);
+    await mpage.waitForTimeout(50);
+    const touchResult = await mpage.evaluate(() => ({
+      dropped: window.__pd.dropped,
+      active: document.body.classList.contains('pd-fixture-active'),
+      state: window.__pdState,
+    }));
+    touchResult.dropped === 'ok'
+      ? ok('touch: a completed long-press drag onto a target resolves through onDrop, same as mouse')
+      : fail(`touch: expected drop result "ok", got ${touchResult.dropped}`);
+    (!touchResult.active && touchResult.state === null)
+      ? ok('touch: the completed drag tears down cleanly (no lingering active class or state)')
+      : fail(`touch: teardown incomplete after a completed drop: ${JSON.stringify(touchResult)}`);
+
     mErrors.length === 0 ? ok('no uncaught exceptions during the touch pass') : fail('uncaught: ' + mErrors.join(' | '));
     await mctx.close();
   }
@@ -347,8 +458,9 @@ async function main() {
     console.error(`\n❌ FAIL — ${bad} check(s) failed.`);
     process.exit(1);
   }
-  console.log('\n✅ PASS — pointer-drag: activation threshold, touch long-press, ghost rotation/offset, '
-    + 'drop resolution, Esc/blur teardown, touch-action gating and focus-return all hold.');
+  console.log('\n✅ PASS — pointer-drag: activation threshold, touch long-press, completed touch drop, '
+    + 'ghost rotation/offset, drop resolution, Esc/pointercancel/blur teardown, a modal surviving '
+    + 'Escape mid-drag, touch-action gating and focus-return all hold.');
 }
 
 main().catch((e) => { console.error('HARNESS ERROR:', e); process.exit(1); });
