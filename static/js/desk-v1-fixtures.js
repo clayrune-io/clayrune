@@ -210,6 +210,31 @@
     '3 posts this week is the rule; two are already used.',
   ];
 
+  // ── T2a: Campaign page + Content list (docs/desk_v1_r0_plan.md;
+  // THE_DESK_V1_UI.md §3.4) — the Posy box's current suggestion + up to 3
+  // one-tap chips (frame 12a), keyed by campaignId so a later campaign can
+  // add its own row without touching camp-1's. Verbatim from the frame
+  // rather than invented (ground rule 3's own precedent, WORKER_HEARTBEAT
+  // above): "Signups are coming from the X clip. A LinkedIn cut of the same
+  // clip is the cheapest next piece." + "Make the LinkedIn cut" / "Draft a
+  // follow-up post".
+  const CAMPAIGN_SUGGESTIONS = {
+    'camp-1': {
+      suggestion: 'Signups are coming from the X clip. A LinkedIn cut of the same clip is the cheapest next piece.',
+      chips: ['Make the LinkedIn cut', 'Draft a follow-up post'],
+    },
+  };
+
+  // Content-card left preview (frame 12a): a short excerpt for article/post
+  // kinds (the article/post families carry no body text anywhere else in
+  // this file — T0a's FAMILIES rows are title + meta only). Video kind needs
+  // no entry here; its preview reads format + duration off the existing
+  // version/VIDEO_DETAIL rows below instead of new text.
+  const CONTENT_PREVIEW = {
+    'fam-restore-points': 'Undo anything: restore points in Clayrune 2.1',
+    'fam-30-testers': "We're looking for 30 Windows testers who run coding agents…",
+  };
+
   // ── T4: calendar view (docs/desk_v1_r0_plan.md; THE_DESK_V1_UI.md §3.3) ────
   // Calendar places a chip only for a version with a real date (never invents
   // one — same MET-01 "never fake it" spirit as T3's null `whenISO` for
@@ -312,6 +337,8 @@
     workerHeartbeat: WORKER_HEARTBEAT,
     recentAssets: RECENT_ASSETS,
     homeSuggestions: HOME_SUGGESTIONS,
+    campaignSuggestions: CAMPAIGN_SUGGESTIONS,
+    contentPreview: CONTENT_PREVIEW,
     calendarSchedule: CALENDAR_SCHEDULE,
   };
 })();
