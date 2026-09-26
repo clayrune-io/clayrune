@@ -705,7 +705,14 @@ function getProjectSessions(projectId) {
 function getProjectTabSessions(projectId) {
   const TERMINAL = new Set(['completed', 'stopped', 'error']);
   const HIDDEN_TRIGGERS = new Set(['schedule', 'hivemind_worker']);
+  // Never hide the tab the user explicitly selected (primary or split pane),
+  // even if it's a terminal automated run the hidden-trigger rule would
+  // otherwise drop. Filtering it out here deleted it from agentPanelHTML's
+  // stale-selection guard, which then auto-selected a DIFFERENT session's
+  // tab — clicking a finished scheduled run's row opened someone else's chat.
+  const pinned = new Set([activeAgentTab[projectId], splitAgentTab[projectId]].filter(Boolean));
   return getProjectSessions(projectId).filter(h => {
+    if (pinned.has(h.sessionId)) return true;
     if (!HIDDEN_TRIGGERS.has(h.triggerType)) return true;  // manual + orchestrator always visible
     return !TERMINAL.has(h.status);  // automated: only while active
   });
@@ -3554,7 +3561,14 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
   // through to the csid-keyed transcript reconstruct below.
   if (mcSessionId && agentStatusCache[mcSessionId]) {
     const _cachedCsid = agentStatusCache[mcSessionId].claudeSessionId || '';
-    if (!csid || !_cachedCsid || _cachedCsid === csid) {
+    // A detached/stale tab (fetchAgentStatus keeps the cache entry but tears
+    // down the live stream — see the [keep-window-open] comment there) can
+    // have NO rendered buffer at all if its content never reached this client
+    // before it dropped off /agent/status. Opening it would show an empty
+    // pane even though a real transcript exists. Only take the fast path when
+    // there's something to show, or no csid to reconstruct from instead.
+    const _hasBuffer = (agentOutputBuffers[mcSessionId] || []).length > 0;
+    if ((!csid || !_cachedCsid || _cachedCsid === csid) && (_hasBuffer || !csid)) {
       switchAgentTab(projectId, mcSessionId);
       return;
     }
