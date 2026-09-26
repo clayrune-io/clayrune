@@ -871,6 +871,72 @@ def _ua_metadata(low, high):
     return md
 
 
+# Chrome-version extracted from whatever desktop UA _start_ua_guard already
+# resolved, so the mobile UA tracks Chromium updates instead of a
+# hand-pinned version string going stale.
+_CHROME_VER_RE = re.compile(r'Chrome/(\d+\.\d+\.\d+\.\d+)')
+
+
+def _mobile_ua_override(session):
+    """A phone-Chrome User-Agent (string + client hints) for MC-980's mobile
+    browser pane, built off the same session['ua_override'] _start_ua_guard
+    already computed -- so it carries the same Headless-stripped Chrome
+    version rather than a second hardcoded one that drifts out of step.
+    Falls back to the desktop override unchanged if none is available yet
+    (never worse than staying on desktop presentation)."""
+    base = session.get('ua_override')
+    if not base or not base.get('userAgent'):
+        return base
+    m = _CHROME_VER_RE.search(base['userAgent'])
+    ver = m.group(1) if m else '131.0.0.0'
+    override: dict = {'userAgent': (
+        f'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
+        f'(KHTML, like Gecko) Chrome/{ver} Mobile Safari/537.36')}
+    meta = base.get('userAgentMetadata')
+    if meta:
+        mobile_meta = dict(meta)
+        mobile_meta.update(mobile=True, platform='Android',
+                           platformVersion='13.0.0', model='Pixel 7')
+        mobile_meta.pop('bitness', None)
+        mobile_meta.pop('wow64', None)
+        override['userAgentMetadata'] = mobile_meta
+    return override
+
+
+def _device_mode_commands(session, mobile: bool, view=None):
+    """CDP commands (method, params) that switch a session between desktop
+    and mobile presentation: viewport metrics, touch emulation, User-Agent.
+    Idempotent via session['device_mode'] -- returns [] if already there.
+
+    `view` (CSS px) MUST be what the real window/page already reports --
+    same numbers session['view'] was just fit to (_fit_windows /
+    _launch_browser's --window-size). The override is declarative: Chromium
+    believes whatever width/height it is told regardless of the physical
+    window, which is exactly the MC-976 bug the 'NO Emulation.
+    setDeviceMetricsOverride' note above _run_cdp's navigate warns about --
+    a mismatch there re-creates a band of the page that renders but can
+    neither be seen nor scrolled to. Passing the SAME numbers the window was
+    just sized to (rather than some other requested size) is what keeps this
+    call safe."""
+    mode = 'mobile' if mobile else 'desktop'
+    if session.get('device_mode') == mode:
+        return []
+    session['device_mode'] = mode
+    vw, vh = view or session.get('view') or (VIEW_W, VIEW_H)
+    dpr = session.get('dpr', 1)
+    cmds = [
+        ('Emulation.setDeviceMetricsOverride',
+         {'width': vw, 'height': vh, 'deviceScaleFactor': dpr, 'mobile': mobile,
+          'screenWidth': vw, 'screenHeight': vh}),
+        ('Emulation.setTouchEmulationEnabled',
+         {'enabled': mobile, 'maxTouchPoints': 5 if mobile else 0}),
+    ]
+    ua = _mobile_ua_override(session) if mobile else session.get('ua_override')
+    if ua:
+        cmds.append(('Network.setUserAgentOverride', ua))
+    return cmds
+
+
 def _fit_windows(session, target_ids=None):
     """Size each tab's window so its PAGE viewport is exactly session['view']
     CSS px -- the pane's own on-screen size -- so the pane shows it 1:1.
@@ -1018,13 +1084,23 @@ def _fit_and_rearm(session, target_ids=None):
                                   session.get('screencast_params', _SCREENCAST_PARAMS)))
 
 
-def _apply_view(session, view):
+def _apply_view(session, view, mobile=None):
     """The pane is `view` CSS px on screen now: size every tab to it, and
     raise the screencast caps to match (they only downscale, so caps left at
-    a smaller, older size would shrink every frame of a bigger pane)."""
+    a smaller, older size would shrink every frame of a bigger pane).
+
+    `mobile` (MC-980) is None for an ordinary desktop-pane resize -- no
+    device-mode change. When the caller states one (the mobile pane's
+    ResizeObserver always does), queue the CDP switch through the session's
+    single-writer cmd_queue -- same channel ordinary input uses -- AFTER
+    _fit_and_rearm so the window is already the size the override declares."""
     session['view'] = view
     session['screencast_params'] = _screencast_params_for(session.get('dpr', 1), view)
     _fit_and_rearm(session)
+    if mobile is not None:
+        q = session['cmd_queue']
+        for cmd in _device_mode_commands(session, bool(mobile), view):
+            q.put(cmd)
 
 
 def _page_disposition(session, target_info):
@@ -1290,7 +1366,15 @@ def _run_cdp(session):
         # BEFORE navigate so the first request already carries it. No
         # navigator.webdriver script: it used to force `undefined`, where
         # Chromium reports false natively -- the patch was itself the tell.
-        if session.get('ua_override'):
+        # MC-980: a mobile-pane launch switches device mode (metrics, touch,
+        # mobile UA) here too, BEFORE navigate -- same reason the desktop UA
+        # override above always has been. `view` is exactly what --window-size
+        # just launched Chromium at, so the override's declared size matches
+        # the real window from the first frame (see _device_mode_commands).
+        if session.get('mobile'):
+            for method, params in _device_mode_commands(session, True):
+                send(method, params)
+        elif session.get('ua_override'):
             send('Network.setUserAgentOverride', session['ua_override'])
         send('Page.navigate', {'url': session['url']})
         start_screencast()
@@ -1484,10 +1568,15 @@ def _run_cdp(session):
                         send('Page.enable', {}, session_id=sid)
                         # Same UA as the root tab. A popup without it said
                         # HeadlessChrome and Google's sign-in popup went to
-                        # /signin/rejected (MC-976).
-                        if session.get('ua_override'):
-                            send('Network.setUserAgentOverride', session['ua_override'],
-                                 session_id=sid)
+                        # /signin/rejected (MC-976). MC-980: if the session is
+                        # currently in mobile device-mode, its popups present
+                        # as mobile too, or an OAuth popup opened off a mobile
+                        # pane would look like the one tab that gave itself away.
+                        popup_ua = (_mobile_ua_override(session)
+                                   if session.get('device_mode') == 'mobile'
+                                   else session.get('ua_override'))
+                        if popup_ua:
+                            send('Network.setUserAgentOverride', popup_ua, session_id=sid)
                     except Exception as e:
                         session['error'] = f'new-tab setup failed: {e}'
                     # A real browser opens a window.open()/OAuth popup in front
@@ -1577,7 +1666,8 @@ def _default_profile():
     return (state.CONFIG.get('browser_default_profile') or '').strip().lower() or None
 
 
-def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, view=None):
+def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, view=None,
+                    mobile=False):
     """Start a headless Chromium and its CDP reader.
 
     ``profile`` names a persistent user-data-dir that survives teardown; None
@@ -1592,7 +1682,10 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
     window.innerWidth/Height, so the CSS layout viewport
     Page.frameStoppedLoading/deviceWidth logic depends on stays exactly what
     it was before this landed (see the CDP-override warning further down in
-    _run_cdp for why that distinction matters). Returns ``(session, err)``;
+    _run_cdp for why that distinction matters). ``mobile`` (MC-980) applies
+    the mobile device-mode switch (_device_mode_commands) before the first
+    navigate, same as the desktop UA override always has, so the very first
+    request already presents as a phone. Returns ``(session, err)``;
     the session carries ``reused=True`` when an existing one already held that
     profile (its running Chromium keeps whatever dpr it launched with — this
     call's ``dpr`` is ignored for a reuse).
@@ -1671,6 +1764,20 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
         # The page's CSS viewport: the pane's on-screen size once it reports
         # one (type: viewport -> _apply_view). fit_lock serialises resizes.
         'view': view, 'fit_lock': threading.Lock(),
+        # MC-980 mobile pane: applied once (before the first navigate, in
+        # _run_cdp) if True at launch. device_mode is the idempotency guard
+        # _device_mode_commands checks -- seeded to 'desktop' (not None) for
+        # an ordinary desktop launch so a later {type:viewport, mobile:false}
+        # from an all-desktop session's own resize is ALSO a no-op, not a
+        # first-time transition that fires Emulation.setDeviceMetricsOverride
+        # on a session that was never in mobile mode. That override is exactly
+        # what the "NO Emulation.setDeviceMetricsOverride" warning in _run_cdp
+        # forbids for ordinary desktop panes (MC-976) -- caught by
+        # browser-pane-fit.mjs, which regressed (scale 1.324, a real letterbox)
+        # the first time this was left at None for every launch. A mobile
+        # launch is left at None (pending) since _run_cdp's launch-time switch
+        # below is that session's real first transition and must still fire.
+        'mobile': bool(mobile), 'device_mode': None if mobile else 'desktop',
     }
     with browser_lock:
         browser_sessions[sid] = session
@@ -1962,7 +2069,8 @@ def browser_launch():
     session, err = _launch_browser(project_id, url, profile=profile or None,
                                    ephemeral=bool(data.get('ephemeral')),
                                    dpr=data.get('dpr'),
-                                   view=_view_from(data.get('view')))
+                                   view=_view_from(data.get('view')),
+                                   mobile=bool(data.get('mobile')))
     if err or session is None:
         err = err or 'browser failed to start'
         # A bad profile name is the caller's mistake, not a missing dependency —
@@ -2277,7 +2385,13 @@ def browser_input():
             view = _clamp_view(data['w'], data['h'])
             if view is None:
                 return jsonify({'error': 'viewport needs numeric w and h'}), 400
-            threading.Thread(target=_apply_view, args=(session, view), daemon=True).start()
+            # MC-980: the mobile pane's ResizeObserver states its device mode
+            # on every viewport report (true/false), so a session followed
+            # from a phone then a desktop (or back) restores the other one's
+            # metrics/UA. Absent (desktop panes that predate this) => no
+            # device-mode change, same as before.
+            mobile = data.get('mobile') if 'mobile' in data else None
+            threading.Thread(target=_apply_view, args=(session, view, mobile), daemon=True).start()
         else:
             for cmd in _input_commands(data):
                 q.put(cmd)

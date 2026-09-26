@@ -1453,7 +1453,7 @@ def test_screencast_caps_cover_the_whole_window_of_the_view():
 
 def test_input_viewport_resizes_to_the_clamped_pane_size(app_client, monkeypatch):
     applied = []
-    monkeypatch.setattr(br, '_apply_view', lambda s, v: applied.append(v))
+    monkeypatch.setattr(br, '_apply_view', lambda s, v, mobile=None: applied.append(v))
     monkeypatch.setattr(br.threading, 'Thread', lambda target, args, daemon: type(
         'T', (), {'start': lambda self: target(*args)})())
     browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running',
@@ -1551,3 +1551,68 @@ def test_ua_metadata_passes_native_client_hints_through():
 def test_ua_metadata_strips_a_headless_brand():
     md = br._ua_metadata({'brands': [{'brand': 'HeadlessChrome', 'version': '153'}]}, {})
     assert md['brands'] == [{'brand': 'Chrome', 'version': '153'}]
+
+
+# ── MC-980 mobile pane: CDP device-mode switch ───────────────────────────────
+
+def test_mobile_ua_override_builds_phone_ua_from_desktop_chrome_version():
+    session = {'ua_override': {
+        'userAgent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/153.0.8010.12 Safari/537.36',
+        'userAgentMetadata': {'brands': [{'brand': 'Chromium', 'version': '153'}],
+                              'mobile': False, 'platform': 'Windows',
+                              'bitness': '64', 'wow64': False},
+    }}
+    ua = br._mobile_ua_override(session)
+    assert 'Chrome/153.0.8010.12' in ua['userAgent']
+    assert 'Android' in ua['userAgent'] and 'Mobile Safari' in ua['userAgent']
+    meta = ua['userAgentMetadata']
+    assert meta['mobile'] is True
+    assert meta['platform'] == 'Android'
+    assert 'bitness' not in meta and 'wow64' not in meta
+
+
+def test_mobile_ua_override_falls_back_when_no_desktop_override():
+    assert br._mobile_ua_override({}) is None
+    assert br._mobile_ua_override({'ua_override': None}) is None
+
+
+def test_device_mode_commands_switches_to_mobile_and_sets_touch_and_ua():
+    session = {'view': (390, 780), 'dpr': 2,
+              'ua_override': {'userAgent': 'Chrome/153.0.0.0 desktop-ua'}}
+    cmds = br._device_mode_commands(session, True)
+    methods = [m for m, _ in cmds]
+    assert methods == ['Emulation.setDeviceMetricsOverride',
+                       'Emulation.setTouchEmulationEnabled',
+                       'Network.setUserAgentOverride']
+    metrics = cmds[0][1]
+    assert (metrics['width'], metrics['height']) == (390, 780)
+    assert metrics['mobile'] is True and metrics['deviceScaleFactor'] == 2
+    assert cmds[1][1] == {'enabled': True, 'maxTouchPoints': 5}
+    assert 'Mobile Safari' in cmds[2][1]['userAgent']
+    assert session['device_mode'] == 'mobile'
+
+
+def test_device_mode_commands_switches_to_desktop_restores_desktop_ua():
+    session = {'view': (1280, 800), 'device_mode': 'mobile',
+              'ua_override': {'userAgent': 'Chrome/153.0.0.0 desktop-ua'}}
+    cmds = br._device_mode_commands(session, False)
+    metrics = cmds[0][1]
+    assert metrics['mobile'] is False
+    assert cmds[1][1] == {'enabled': False, 'maxTouchPoints': 0}
+    assert cmds[2][1]['userAgent'] == 'Chrome/153.0.0.0 desktop-ua'
+    assert session['device_mode'] == 'desktop'
+
+
+def test_device_mode_commands_is_a_noop_when_already_in_that_mode():
+    session = {'view': (390, 780), 'device_mode': 'mobile'}
+    assert br._device_mode_commands(session, True) == []
+    assert session['device_mode'] == 'mobile'
+
+
+def test_device_mode_commands_uses_the_passed_view_over_the_session_view():
+    """_apply_view passes the just-fitted `view` explicitly -- it must win
+    over session['view'] in case of a race, since a mismatch between the
+    declared override and the real window recreates the MC-976 black band."""
+    session = {'view': (1280, 800)}
+    cmds = br._device_mode_commands(session, True, view=(412, 915))
+    assert (cmds[0][1]['width'], cmds[0][1]['height']) == (412, 915)
