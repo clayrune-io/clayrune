@@ -67,12 +67,25 @@
     chips.push(r.reviewMode === 'themes' ? 'Approve themes, then run' : 'You approve each piece');
     if (r.frequencyPerWeek != null) chips.push(`≤${esc(r.frequencyPerWeek)}/wk`);
     if (r.repliesMode) chips.push(r.repliesMode === 'auto_faq' ? 'Auto-answer FAQ' : 'Replies: drafts');
+    // INS-02 (T2b): "a durable instruction appears as a new rule chip" —
+    // additive-only (`customChips` is undefined until a Posy instruction
+    // handler writes one, so today's camp-1 renders byte-identically).
+    (r.customChips || []).forEach((c) => chips.push(c));
     return chips;
   }
 
   function deskV1FillCampaignSummary(el, params) {
     const camp = _campaign(params.campaignId);
     if (!camp) { el.innerHTML = '<div class="desk-v1-stub-inline">Campaign not found.</div>'; return; }
+    // §3.5: "Same page, with state ◇ Proposed" — T2b owns that whole variant
+    // (editable goal sentence, Start campaign button) rather than this file
+    // branching internally on every group below. Backward-compatible seam
+    // (same pattern as the rules-edit hook further down): undefined until
+    // desk-v1-rules.js loads, at which point every proposed campaign uses it.
+    if (camp.state === 'proposed' && typeof window.deskV1FillProposedSummary === 'function') {
+      window.deskV1FillProposedSummary(el, params, camp);
+      return;
+    }
     const stateHTML = DeskV1Kit.stateLabelHTML(camp.state, { className: 'desk-v1-camp-state-pill' });
     const pct = camp.goal && camp.goal.tracked && camp.goal.target
       ? Math.max(0, Math.min(100, Math.round((camp.goal.current / camp.goal.target) * 100))) : 0;
@@ -182,6 +195,15 @@
   const FILTER_ORDER = ['all', 'needs_you', 'scheduled', 'published', 'blocked', 'archived'];
 
   function deskV1FillCampaignTabBody(el, params) {
+    const camp = _campaign(params.campaignId);
+    // Same backward-compatible seam as deskV1FillCampaignSummary above: a
+    // Proposed campaign's Content tab shows Posy's proposed pieces plus a
+    // blocker card and "? Assumed" popovers (§3.5), not the ordinary grouped
+    // list — T2b's own renderer, undefined until desk-v1-rules.js loads.
+    if (camp && camp.state === 'proposed' && typeof window.deskV1FillProposedContent === 'function') {
+      window.deskV1FillProposedContent(el, params, camp);
+      return;
+    }
     const st = _ensureState(params.campaignId);
     st.el = el;
     _renderTabBody();
@@ -666,8 +688,16 @@
     el.innerHTML = `<div class="desk-v1-camp-posy">${DeskV1Kit.posyBoxHTML({
       inputId: 'desk-v1-camp-posy-input', scopeLabel, suggestion: sugg.suggestion, chips: sugg.chips,
     })}</div>`;
+    // §3.4 INS-01/02/03/04 (before → after, widening confirm, durable rule
+    // chips) is T2b's Posy-instruction handler — backward-compatible seam,
+    // same shape as the two hooks above: falls back to the plain toast T2a
+    // shipped with until desk-v1-rules.js defines the real handler.
     DeskV1Kit.bindPosyBox(el.querySelector('.desk-v1-camp-posy'), 'desk-v1-camp-posy-input', (text) => {
-      DeskV1Kit.toast('Sent to Posy: “' + text + '”');
+      if (typeof window.deskV1HandlePosyInstruction === 'function') {
+        window.deskV1HandlePosyInstruction(camp, text, el.querySelector('.desk-v1-camp-posy'), st.selection);
+      } else {
+        DeskV1Kit.toast('Sent to Posy: “' + text + '”');
+      }
     }, {
       onScopeClick: () => _setSelection('campaign', null),
     });
