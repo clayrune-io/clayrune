@@ -1317,3 +1317,97 @@
 }
 
 /* ── T7: Results ──────────────────────────────────────────────────────────── */
+
+/* No frame is drawn for this surface (gap map C6) — layout built from §7's
+   text alone: single column, top-to-bottom in the doc's own order (goal,
+   Posy's read, what went out, costs, diagnostics last and small). See the
+   ticket's final report for every call made without a frame to check
+   against. */
+.desk-v1-results { display: flex; flex-direction: column; gap: 18px; max-width: 680px; }
+
+.desk-v1-results-goal {
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface);
+  padding: 16px 18px;
+}
+.desk-v1-results-goal-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.desk-v1-results-goal-number { font-size: 34px; font-weight: 800; color: var(--text); }
+.desk-v1-results-goal-target { font-size: 13px; color: var(--text-dim); margin-left: 6px; }
+.desk-v1-results-goal-meta {
+  display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--text-faint);
+  position: relative;
+}
+.desk-v1-results-goal-bar {
+  height: 6px; border-radius: 3px; background: var(--surface3); overflow: hidden; margin-top: 10px;
+}
+.desk-v1-results-goal-fill { height: 100%; background: var(--accent-soft); border-radius: 3px; }
+.desk-v1-results-forecast { font-size: 12.5px; color: var(--text-dim); margin-top: 10px; position: relative; }
+.desk-v1-results-forecast[data-forecast="below-target"] { color: var(--amber-text); }
+.desk-v1-results-forecast[data-forecast="on-target"] { color: var(--green-text); }
+.desk-v1-results-forecast-est { color: var(--text-faint); font-size: 11px; margin-left: 4px; }
+
+/* Posy's read — same bordered-card shape as T5's pending-edits card
+   (desk-v1-video-pending), not the full scoped posyBoxHTML() chat widget:
+   §7 asks for a one-shot read + a single accept/decline pair, not an open
+   instruction box a user types back into. */
+.desk-v1-results-posy {
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface2);
+  padding: 13px 15px; display: flex; flex-direction: column; gap: 8px;
+}
+.desk-v1-results-posy-head { font-size: 12px; font-weight: 700; color: var(--text-dim); }
+.desk-v1-results-posy-text .agent-line { font-size: 13.5px; color: var(--text); line-height: 1.5; }
+.desk-v1-results-posy-experiment { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
+.desk-v1-results-posy-actions { display: flex; gap: 8px; margin-top: 2px; }
+.desk-v1-results-primary {
+  background: var(--accent); border: none; border-radius: 8px; color: #fff;
+  font-size: 12.5px; font-weight: 700; padding: 8px 13px; cursor: pointer; font-family: inherit;
+}
+.desk-v1-results-primary:hover { background: var(--accent-soft); }
+.desk-v1-results-secondary {
+  background: none; border: 1px solid var(--border2); border-radius: 8px; color: var(--text-dim);
+  font-size: 12.5px; font-weight: 600; padding: 8px 13px; cursor: pointer; font-family: inherit;
+}
+.desk-v1-results-secondary:hover { background: var(--surface3); }
+.desk-v1-results-posy-confirm { font-size: 12.5px; color: var(--green-text); }
+
+.desk-v1-results-section-title {
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase;
+  color: var(--text-faint); margin-bottom: 8px;
+}
+.desk-v1-results-versions { display: flex; flex-direction: column; gap: 6px; }
+.desk-v1-results-version-row {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  border: 1px solid var(--border2); border-radius: 8px; background: var(--surface2);
+  padding: 9px 12px; font-size: 12.5px; color: var(--text);
+}
+.desk-v1-results-version-main { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }
+.desk-v1-results-version-title { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk-v1-results-version-nochannel { color: var(--text-faint); font-style: italic; font-size: 11.5px; }
+.desk-v1-results-outcome { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
+.desk-v1-results-outcome[data-outcome="verified_published"] { color: var(--green-text); }
+.desk-v1-results-outcome[data-outcome="submitted_verifying"] { color: var(--amber-text); }
+.desk-v1-results-outcome[data-outcome="unknown"] { color: var(--text-faint); }
+.desk-v1-results-version-metric { color: var(--text-dim); white-space: nowrap; }
+.desk-v1-results-version-contrib { color: var(--accent); font-weight: 600; white-space: nowrap; }
+.desk-v1-results-version-contrib-dim { color: var(--text-faint); font-weight: 400; }
+.desk-v1-results-empty { color: var(--text-faint); font-size: 12.5px; font-style: italic; }
+
+.desk-v1-results-costs { display: flex; flex-direction: column; gap: 4px; }
+.desk-v1-results-cost-row {
+  display: flex; justify-content: space-between; font-size: 12.5px; color: var(--text);
+  padding: 6px 0; border-bottom: 1px solid var(--border2);
+}
+.desk-v1-results-cost-row:last-child { border-bottom: none; }
+.desk-v1-results-cost-row-total { font-weight: 700; color: var(--text); border-top: 1px solid var(--border2); margin-top: 2px; padding-top: 8px; }
+.desk-v1-results-cost-note { font-size: 11.5px; color: var(--text-faint); padding-top: 6px; }
+
+/* Diagnostics — deliberately the least visually weighted element on the
+   page (§7: "small, last... never a goal or gate"), plain text with no
+   card/border so it can't be mistaken for another metric. */
+.desk-v1-results-diagnostics { font-size: 11px; color: var(--text-faint); }
+
+@media (max-width: 960px) {
+  .desk-v1-results { max-width: none; }
+  .desk-v1-results-goal-number { font-size: 28px; }
+  .desk-v1-results-version-row { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .desk-v1-results-primary, .desk-v1-results-secondary { min-height: 44px; }
+}

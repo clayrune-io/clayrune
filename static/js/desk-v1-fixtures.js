@@ -457,6 +457,29 @@
     ],
   };
 
+  // ── T7: Results (docs/desk_v1_r0_plan.md; THE_DESK_V1_UI.md §7) ────────────
+  // RESULTS (T0a, above) already carries goal/forecast/versions/costs/
+  // diagnostics in full — nothing there needed adding to. The one thing §7
+  // needs that T0a's RESULTS didn't model is Posy's read: "what worked, and
+  // ONE proposed next experiment with one variable" — a separate small
+  // fixture, own section, own key, same convention REVIEW_DETAIL/VIDEO_DETAIL/
+  // CONVERSATION_DETAIL above already established. `experiment.channelId`
+  // points at the campaign's existing best-performing channel (ch-x-ron,
+  // the one measured signup source in RESULTS.versions) rather than
+  // inventing a new one, so "Set up experiment" creates a piece on a channel
+  // that's actually attached to the campaign.
+  const RESULTS_INSIGHT = {
+    'camp-1': {
+      read: 'The install video on X is the only channel with a verified signup count so far (8). The LinkedIn cut and the testers post haven’t reported back yet.',
+      experiment: {
+        variable: 'send time',
+        title: 'Follow-up post — 9am send-time test',
+        description: 'Try posting the next X update at 9am instead of the usual mid-day slot, and compare signups.',
+        channelId: 'ch-x-ron',
+      },
+    },
+  };
+
   window.DeskV1Fixtures = {
     campaigns: CAMPAIGNS,
     channels: CHANNELS,
@@ -474,5 +497,6 @@
     calendarSchedule: CALENDAR_SCHEDULE,
     conversationDetail: CONVERSATION_DETAIL,
     conversationCoverageGaps: CONVERSATION_COVERAGE_GAPS,
+    resultsInsight: RESULTS_INSIGHT,
   };
 })();
