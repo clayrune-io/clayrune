@@ -1,5 +1,7 @@
 # The Desk: audit and simplification plan
 
+> **UI half superseded 2026-09-25 by Desk v1** (`docs/THE_DESK_V1_UI.md`, MC-977). Steps 1 (retire dead weight) and 5 (campaign screen) are cancelled: v1 keeps the legacy Desk read-only behind the `desk_v1` flag (MIG-04) and replaces the surfaces. Steps 0, 2, 2b and 8 stand as built or blocked. Steps 3, 4, 6, 7 and 9 survive as R1 backend, reshaped. Per-step verdicts and the conflicts: `docs/desk_v1_gap_map.md` §3 and §5 (C1: the default review mode vs per-campaign release needs Ron).
+
 **Status:** plan, 2026-09-22. Author: Merrin (ui-program-manager). No product code changed.
 **Trigger:** Ron, 2026-09-22: *"The Desk as it stands right now is still unusable. It needs
 further simplification and a holistic approach to allow easy publishing and fully autonomous
