@@ -631,6 +631,17 @@ def _switch_active_tab(session, send, new_target_id, old_session_id=None):
     new_sid = tabs[new_target_id].get('session_id')
     try:
         send('Page.bringToFront', {}, session_id=new_sid)
+        # MC-980 defect 4 (tab switcher tap looked like it did nothing): a
+        # tab attached BEFORE the session entered mobile mode never got the
+        # metrics override either -- same gap as the attachedToTarget fix
+        # above, just reached by switching instead of creating. Resending on
+        # every activation is idempotent CDP-side and cheap, and removes the
+        # need to track per-target "is this one synced" state.
+        if session.get('device_mode') == 'mobile':
+            vw, vh = session.get('view') or (VIEW_W, VIEW_H)
+            send(*_mobile_metrics_cmd(vw, vh, session.get('dpr', 1)), session_id=new_sid)
+            send('Emulation.setTouchEmulationEnabled',
+                 {'enabled': True, 'maxTouchPoints': 5}, session_id=new_sid)
         if not session.get('screencast_paused'):
             send('Page.startScreencast',
                  session.get('screencast_params', _SCREENCAST_PARAMS), session_id=new_sid)
@@ -903,6 +914,19 @@ def _mobile_ua_override(session):
     return override
 
 
+def _mobile_metrics_cmd(vw, vh, dpr) -> tuple:
+    """The one CDP call that actually makes a page believe it is a phone --
+    shared by `_device_mode_commands` (mode switch / resize on the ACTIVE
+    tab) and the `Target.attachedToTarget` handler (a tab that attaches
+    AFTER the session is already mobile, which never went through a mode
+    switch and so never got the override otherwise -- MC-980 defect: new
+    tabs opened while mobile got the mobile UA there already, but not
+    this, so they rendered their desktop layout shrunk)."""
+    return ('Emulation.setDeviceMetricsOverride',
+            {'width': vw, 'height': vh, 'deviceScaleFactor': dpr, 'mobile': True,
+             'screenWidth': vw, 'screenHeight': vh})
+
+
 def _device_mode_commands(session, mobile: bool, view=None):
     """CDP commands (method, params) that switch a session between desktop
     and mobile presentation: viewport metrics, touch emulation, User-Agent.
@@ -945,11 +969,7 @@ def _device_mode_commands(session, mobile: bool, view=None):
         first_entry = prev_mode != 'mobile'
         session['device_mode'] = 'mobile'
         session['device_mode_view'] = (vw, vh)
-        cmds = [
-            ('Emulation.setDeviceMetricsOverride',
-             {'width': vw, 'height': vh, 'deviceScaleFactor': dpr, 'mobile': True,
-              'screenWidth': vw, 'screenHeight': vh}),
-        ]
+        cmds: list = [_mobile_metrics_cmd(vw, vh, dpr)]
         if first_entry:
             cmds.append(('Emulation.setTouchEmulationEnabled',
                         {'enabled': True, 'maxTouchPoints': 5}))
@@ -1125,17 +1145,40 @@ def _apply_view(session, view, mobile=None):
     a smaller, older size would shrink every frame of a bigger pane).
 
     `mobile` (MC-980) is None for an ordinary desktop-pane resize -- no
-    device-mode change. When the caller states one (the mobile pane's
-    ResizeObserver always does), queue the CDP switch through the session's
-    single-writer cmd_queue -- same channel ordinary input uses -- AFTER
-    _fit_and_rearm so the window is already the size the override declares."""
+    device-mode change; queues the CDP switch AFTER _fit_and_rearm so the
+    window is already the size the override declares -- that ordering is
+    correct down to ~500 CSS px, Chromium's own real-window floor (measured
+    2026-09-26: `--window-size=412,915` still reports innerWidth 500 before
+    any override lands).
+
+    A phone pane is narrower than that floor, so when `mobile` is true this
+    skips `_fit_and_rearm`'s real-`Browser.setWindowBounds` fitting entirely
+    -- below the floor it cannot converge, and the "size, measure, correct
+    once" loop in `_fit_windows` mis-solves for window chrome from a
+    settled-but-wrong reading and leaves that wrong number cached for next
+    time. The Emulation override is declarative: it sizes the page and the
+    screencast frame exactly, independent of the real window (verified via a
+    raw screencastFrame capture at real window floored to 500 but override
+    set to 412 -- frame came back 412x915, pixel-exact). So mobile mode
+    relies on the override alone, sent BEFORE the screencast restart rather
+    than after -- the previous order restarted the cast against pre-override
+    window state, capturing one or more letterboxed frames every time the
+    pane resized (MC-980 defect 1)."""
     session['view'] = view
     session['screencast_params'] = _screencast_params_for(session.get('dpr', 1), view)
-    _fit_and_rearm(session)
-    if mobile is not None:
-        q = session['cmd_queue']
-        for cmd in _device_mode_commands(session, bool(mobile), view):
+    is_mobile = bool(mobile) if mobile is not None else session.get('device_mode') == 'mobile'
+    q = session['cmd_queue']
+    if is_mobile:
+        for cmd in _device_mode_commands(session, True, view):
             q.put(cmd)
+        if session.get('status') == 'running' and not session.get('screencast_paused'):
+            q.put(('Page.stopScreencast', {}))
+            q.put(('Page.startScreencast', session['screencast_params']))
+    else:
+        _fit_and_rearm(session)
+        if mobile is not None:
+            for cmd in _device_mode_commands(session, False, view):
+                q.put(cmd)
 
 
 def _page_disposition(session, target_info):
@@ -1612,6 +1655,19 @@ def _run_cdp(session):
                                    else session.get('ua_override'))
                         if popup_ua:
                             send('Network.setUserAgentOverride', popup_ua, session_id=sid)
+                        # MC-980 defect 3: this new target never went through
+                        # a mode switch, so _device_mode_commands' one-time
+                        # send (stamped with the ACTIVE tab's session_id at
+                        # the time) never reached it -- it got the mobile UA
+                        # above but rendered its real (desktop-sized) window
+                        # at no override at all, i.e. its desktop layout,
+                        # shrunk. Bring it up to the session's current mode.
+                        if session.get('device_mode') == 'mobile':
+                            vw, vh = session.get('view') or (VIEW_W, VIEW_H)
+                            send(*_mobile_metrics_cmd(vw, vh, session.get('dpr', 1)),
+                                 session_id=sid)
+                            send('Emulation.setTouchEmulationEnabled',
+                                 {'enabled': True, 'maxTouchPoints': 5}, session_id=sid)
                     except Exception as e:
                         session['error'] = f'new-tab setup failed: {e}'
                     # A real browser opens a window.open()/OAuth popup in front

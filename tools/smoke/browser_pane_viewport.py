@@ -19,13 +19,17 @@ behaviour.
 
 Four checks:
   1. setDeviceMetricsOverride is issued from exactly ONE place --
-     _device_mode_commands, MC-980's mobile-pane device-mode switch -- and
-     there its width/height are the CURRENT view (the `vw, vh` derived from
-     `view or session['view']`, i.e. what the window was just fit to), never
-     a literal. Anything telling the page a size other than the one it has
-     re-creates this class of bug; MC-980 needed a live override to make the
-     REMOTE PAGE present as a phone, so the old "none anywhere" ban narrowed
-     to "only from the one call site whose whole job is keeping it in sync."
+     `_mobile_metrics_cmd`, the shared formula MC-980 round 3 factored out of
+     _device_mode_commands so a tab that ATTACHES or gets SWITCHED TO after
+     the session already went mobile (a new tab, or one that predates mobile
+     mode) can get the same override without re-deriving it by hand -- and
+     every call site must derive its `vw, vh` from the CURRENT view
+     (`session.get('view')`, i.e. what the window was just fit to) right
+     before calling it, never a literal. Anything telling the page a size
+     other than the one it has re-creates this class of bug; MC-980 needed a
+     live override to make the REMOTE PAGE present as a phone, so the old
+     "none anywhere" ban narrowed to "only from the one formula, and only
+     ever fed the live view."
   2. Empirically, with the SHIPPED window sizing, innerWidth/innerHeight equal
      the screencast's deviceWidth/deviceHeight (desktop / no override).
   3. HiDPI: the scale flag alone must not reopen check 2.
@@ -73,38 +77,67 @@ src = (REPO / 'mc' / 'blueprints' / 'browser_routes.py').read_text(encoding='utf
 tree = ast.parse(src)
 top_funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
 device_fn = top_funcs.get('_device_mode_commands')
+metrics_fn = top_funcs.get('_mobile_metrics_cmd')
 check('_device_mode_commands exists', device_fn is not None)
+check('_mobile_metrics_cmd exists', metrics_fn is not None)
 
-if device_fn is not None:
-    device_src = ast.get_source_segment(src, device_fn) or ''
+if device_fn is not None and metrics_fn is not None:
+    metrics_src = ast.get_source_segment(src, metrics_fn) or ''
     # The CDP method as an actual string literal (a real call site), not the
     # bare word showing up in a comment/docstring cross-reference to this
     # function -- _fit_windows and _run_cdp both mention it in prose.
+    # `_mobile_metrics_cmd` is the ONLY place allowed to hold it: MC-980
+    # round 3 factored it out of `_device_mode_commands` so a tab that
+    # ATTACHES or gets SWITCHED TO after the session is already mobile can
+    # reuse the exact same formula instead of a second call site re-deriving
+    # (and risking drifting from) the override.
     method_literal = re.compile(r"""['"]Emulation\.setDeviceMetricsOverride['"]""")
     outside_calls = []
     for name, fn in top_funcs.items():
-        if name == '_device_mode_commands':
+        if name == '_mobile_metrics_cmd':
             continue
         body = ast.get_source_segment(src, fn) or ''
         for ln in body.split('\n'):
             if method_literal.search(ln):
                 outside_calls.append(f'{name}: {ln.strip()}')
-    check('setDeviceMetricsOverride is only ever issued from _device_mode_commands',
+    check('setDeviceMetricsOverride is only ever issued from _mobile_metrics_cmd',
           not outside_calls,
           'a second call site can drift out of sync with the window it describes: '
           + '; '.join(outside_calls))
 
-    # The override's width/height must be the `vw, vh` this call just derived
-    # from the CURRENT view, not a literal -- that derivation IS the fix.
-    derives_from_view = bool(re.search(
-        r"vw,\s*vh\s*=\s*view\s+or\s+session\.get\(\s*'view'\s*\)", device_src))
+    # The helper itself must build the override from ITS OWN params, never a
+    # baked-in size -- that parameterization is what makes reuse across
+    # multiple call sites (mode switch, new-tab attach, tab-switch) safe.
     uses_vw_vh = bool(re.search(
-        r"'width':\s*vw\s*,\s*'height':\s*vh\b", device_src))
-    check('the override width/height come from the current view, not a literal',
-          derives_from_view and uses_vw_vh,
-          f'derives_from_view={derives_from_view} uses_vw_vh={uses_vw_vh} -- '
-          'setDeviceMetricsOverride must declare exactly what the window was '
-          'just fit to, or a mismatch reopens MC-976')
+        r"'width':\s*vw\s*,\s*'height':\s*vh\b", metrics_src))
+    check("_mobile_metrics_cmd's override width/height are its own vw/vh params, not a literal",
+          uses_vw_vh, f'source:\n{metrics_src}')
+
+    # Every call site must derive vw, vh from the CURRENT view in its own
+    # scope right before calling it -- never a stray literal a caller
+    # invented on its own. Covers _device_mode_commands (the mode-switch/
+    # resize path) plus MC-980 round 3's two new call sites: the
+    # Target.attachedToTarget handler (new tab attaches after mobile mode is
+    # already on) and _switch_active_tab (tab predates mobile mode, reached
+    # by switching to it instead of creating it).
+    view_derivation = re.compile(r"vw,\s*vh\s*=\s*(view\s+or\s+)?session\.get\(\s*'view'\s*\)")
+    call_site = re.compile(r'_mobile_metrics_cmd\(')
+    checked_any = False
+    bad_callers = []
+    for name, fn in top_funcs.items():
+        if name == '_mobile_metrics_cmd':
+            continue
+        body = ast.get_source_segment(src, fn) or ''
+        if not call_site.search(body):
+            continue
+        checked_any = True
+        if not view_derivation.search(body):
+            bad_callers.append(name)
+    check('_mobile_metrics_cmd is actually called somewhere', checked_any)
+    check('every _mobile_metrics_cmd call site derives vw, vh from the current view, not a literal',
+          not bad_callers,
+          'these functions call it without a `vw, vh = view or session.get(\'view\')`-shaped '
+          'derivation in scope: ' + ', '.join(bad_callers))
 
 
 # ── 2. the page and the picture must agree ──────────────────────────────────
