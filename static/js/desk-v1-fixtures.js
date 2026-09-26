@@ -184,6 +184,21 @@
     },
   };
 
+  // ── T4: calendar view (docs/desk_v1_r0_plan.md; THE_DESK_V1_UI.md §3.3) ────
+  // Calendar places a chip only for a version with a real date (never invents
+  // one — same MET-01 "never fake it" spirit as T3's null `whenISO` for
+  // v-install-li, which this section deliberately leaves alone so that case
+  // still demonstrates an honestly-unscheduled item on the grid). Most
+  // versions already carry one (FAMILIES' publishedAt/publishAt, or T3's
+  // REVIEW_DETAIL whenISO for v-restore-blog); the one gap this section
+  // fills is v-install-blog, whose `state: 'planned'` (FAMILIES above) has no
+  // date anywhere yet — a soft target time is exactly what the frame's
+  // dashed `◇ Planned` chip needs, and adding it here doesn't touch or
+  // contradict any existing row.
+  const CALENDAR_SCHEDULE = {
+    'v-install-blog': '2026-10-01T15:00:00-07:00',
+  };
+
   window.DeskV1Fixtures = {
     campaigns: CAMPAIGNS,
     channels: CHANNELS,
@@ -192,5 +207,6 @@
     renderBudget: RENDER_BUDGET,
     results: RESULTS,
     reviewDetail: REVIEW_DETAIL,
+    calendarSchedule: CALENDAR_SCHEDULE,
   };
 })();
