@@ -26,12 +26,24 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const JS_DIR = resolve(REPO_ROOT, 'static', 'js');
 const CSS_DIR = resolve(REPO_ROOT, 'static', 'css');
+const ASSETS_DIR = resolve(REPO_ROOT, 'assets');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const ORIGIN = 'http://mc.smoke.test';
+
+const MIME = { '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
 
 const STATIC = {};
 for (const f of readdirSync(JS_DIR)) if (f.endsWith('.js')) STATIC[`/static/js/${f}`] = ['text/javascript; charset=utf-8', readFileSync(resolve(JS_DIR, f), 'utf8')];
 for (const f of readdirSync(CSS_DIR)) if (f.endsWith('.css')) STATIC[`/static/css/${f}`] = ['text/css; charset=utf-8', readFileSync(resolve(CSS_DIR, f), 'utf8')];
+// The Claydo FAB (app chrome, unrelated to this ticket) requests
+// /assets/claydo-*.webp; without this the smoke's network stub aborts it and
+// every screenshot near the FAB shows a broken-image glyph instead of the
+// real mascot icon (reported against T3, root cause is this stub, not the
+// product — the server's real /assets/<path> route serves these fine).
+for (const f of readdirSync(ASSETS_DIR)) {
+  const ext = f.slice(f.lastIndexOf('.'));
+  if (MIME[ext]) STATIC[`/assets/${f}`] = [MIME[ext], readFileSync(resolve(ASSETS_DIR, f))];
+}
 
 const PID = 'smoke_deskv1review';
 const PROJECTS = [{
@@ -93,6 +105,14 @@ async function newBootedPage(browser, tone, viewport) {
   return { ctx, page, pageErrors };
 }
 
+// Through the campaign page first, matching the real navigation path (Back
+// then names the campaign, not "Home" — reported against T3; direct-to-
+// review was a smoke-only shortcut that hid it).
+async function navToReview(page, versionId) {
+  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
+  await page.evaluate((vid) => window.deskV1Nav('review', { campaignId: 'camp-1', versionId: vid }), versionId);
+}
+
 function reportUncaught(pageErrors, tag) {
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught.length) uncaught.forEach((e) => fail(`${tag} uncaught page error: ${e}`));
@@ -102,7 +122,7 @@ function reportUncaught(pageErrors, tag) {
 // A8's primary-label-never-"Approve and schedule"-for-manual, ⋯ gating. ─────
 async function runToneRenderChecks(browser, tone) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, tone);
-  await page.evaluate(() => window.deskV1Nav('review', { campaignId: 'camp-1', versionId: 'v-restore-blog' }));
+  await navToReview(page, 'v-restore-blog');
   await page.waitForSelector('.desk-v1-review', { timeout: 8000 });
 
   const header = (await page.textContent('.desk-v1-review-kind').catch(() => '') || '').trim();
@@ -172,7 +192,7 @@ async function runToneRenderChecks(browser, tone) {
 // the selection itself nor the paragraph after it. ──────────────────────────
 async function runA6SelectionToolbar(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
-  await page.evaluate(() => window.deskV1Nav('review', { campaignId: 'camp-1', versionId: 'v-restore-blog' }));
+  await navToReview(page, 'v-restore-blog');
   await page.waitForSelector('.desk-v1-review-article', { timeout: 8000 });
 
   const rects = await page.evaluate(() => {
@@ -230,7 +250,7 @@ async function runA6SelectionToolbar(browser) {
 // accepting a revision; rN increments each step. ────────────────────────────
 async function runA7ClaimFlow(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
-  await page.evaluate(() => window.deskV1Nav('review', { campaignId: 'camp-1', versionId: 'v-restore-blog' }));
+  await navToReview(page, 'v-restore-blog');
   await page.waitForSelector('.desk-v1-review', { timeout: 8000 });
 
   // Adding a source does NOT itself clear the block (§4) — the block bar
@@ -325,7 +345,7 @@ async function runA8Matrix(browser) {
 
   for (const c of cases) {
     await page.evaluate(c.setup);
-    await page.evaluate(() => window.deskV1Nav('review', { campaignId: 'camp-1', versionId: 'v-restore-blog' }));
+    await navToReview(page, 'v-restore-blog');
     await page.waitForSelector('.desk-v1-review', { timeout: 8000 });
     const primary = await page.$eval('[data-act-primary]', (b) => ({ label: b.textContent.trim(), disabled: b.disabled }));
     if (primary.label === c.expectLabel && primary.disabled === c.expectDisabled) {
@@ -359,7 +379,7 @@ async function runA8Matrix(browser) {
     ch.health = 'ok'; // isolate the render gate from the held gate
     fam.versions.find(v => v.id === 'v-install-li').revision = 4; // != render.revision (3)
   });
-  await page.evaluate(() => window.deskV1Nav('review', { campaignId: 'camp-1', versionId: 'v-install-li' }));
+  await navToReview(page, 'v-install-li');
   await page.waitForSelector('.desk-v1-review-video', { timeout: 8000 });
   const videoPrimary = await page.$eval('[data-act-primary]', (b) => b.disabled);
   const videoReason = (await page.textContent('.desk-v1-review-reason').catch(() => '') || '');
@@ -376,7 +396,7 @@ async function runA8Matrix(browser) {
 // ── Phone (§11): actions in a bottom bar, >=44px hit targets. ───────────────
 async function runPhoneLayout(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} }, { width: 390, height: 844 });
-  await page.evaluate(() => window.deskV1Nav('review', { campaignId: 'camp-1', versionId: 'v-restore-blog' }));
+  await navToReview(page, 'v-restore-blog');
   await page.waitForSelector('.desk-v1-review', { timeout: 8000 });
 
   const layout = await page.evaluate(() => {

@@ -165,7 +165,10 @@
       whyChecks: [
         { label: '2.1 is public', ok: true },
         { label: 'Free for testers', ok: true },
-        { label: 'Restore time · revision waiting', claimId: 'claim-1' },
+        // Suffix is NOT baked in here — desk-v1-review.js appends "·
+        // revision waiting" only once the claim is actually 'checked'; a
+        // still-blocked claim (the baseline above) has no revision yet.
+        { label: 'Restore time', claimId: 'claim-1' },
       ],
       comments: [],
     },

@@ -209,9 +209,13 @@
   function _embedHTML(familyId) {
     const fam = (_fx().families || []).find((f) => f.id === familyId);
     if (!fam) return '';
-    // Pick the widest-reach rendered version for the caption (decorative —
-    // CNT-02 "embedded media", not a second player to interact with).
-    const v = fam.versions.find((x) => x.format) || fam.versions[0];
+    // Pick the version actually awaiting review (falls back to any version
+    // with a format, then the first) — the caption must describe the SAME
+    // version whose format drives the box's shape below it, or the caption
+    // and the rendered aspect ratio disagree (frame 12b: "16:9 · r3" on a
+    // landscape box, not the published 9:16 cut).
+    const v = fam.versions.find((x) => x.state === 'needs_review' && x.format)
+      || fam.versions.find((x) => x.format) || fam.versions[0];
     const rev = (fam.render && fam.render.revision) || v.revision;
     return `<div class="desk-v1-review-embed" data-para-id="p-embed" contenteditable="false">
       ${_videoPlaceholderHTML(fam.title, v.format || '16:9', rev, { small: true })}
@@ -220,9 +224,16 @@
 
   function _videoPlaceholderHTML(title, format, revision, opts) {
     opts = opts || {};
-    return `<div class="desk-v1-review-videobox${opts.small ? ' desk-v1-review-videobox-sm' : ''}">
-      <span class="desk-v1-review-playicon" aria-hidden="true">▶</span>
-      <span class="desk-v1-review-videocaption">[ ${esc(title)} · ${esc(format)} · r${esc(revision)} ]</span>
+    // aspect-ratio follows the format being captioned — a 9:16 caption on a
+    // fixed 16:9 box (or vice versa) is the shape/label mismatch frame 12b
+    // never shows.
+    const portrait = /^\s*9\s*:\s*16\s*$/.test(format || '');
+    const ratio = portrait ? '9 / 16' : '16 / 9';
+    return `<div class="desk-v1-review-videobox${opts.small ? ' desk-v1-review-videobox-sm' : ''}" style="aspect-ratio:${ratio}">
+      <div class="desk-v1-review-videoinner">
+        <span class="desk-v1-review-playicon" aria-hidden="true">▶</span>
+        <span class="desk-v1-review-videocaption">[ ${esc(title)} · ${esc(format)} · r${esc(revision)} ]</span>
+      </div>
     </div>`;
   }
 
@@ -340,7 +351,11 @@
       return `<div class="desk-v1-review-check" data-ok="${!!ok}">${glyph} ${esc(label)}</div>`;
     }).join('');
 
-    const claimsList = (detail.claims || []).map((c) => {
+    // A claim already surfaced in the "why" checks (above) is not repeated
+    // here — frame 12b's rail has ONE row per reason, never a claim listed
+    // twice with two different (and here, contradictory) statuses.
+    const checkedClaimIds = new Set((detail.whyChecks || []).map((c) => c.claimId).filter(Boolean));
+    const claimsList = (detail.claims || []).filter((c) => !checkedClaimIds.has(c.id)).map((c) => {
       const s = _st.claims[c.id] || { status: c.state };
       const copy = CLAIM_COPY[s.status] || CLAIM_COPY.blocked;
       return `<div class="desk-v1-review-claimrow">${copy.glyph} ${esc(c.label)}</div>`;
