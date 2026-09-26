@@ -933,6 +933,77 @@ try {
   // regression this file introduced.
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught.length) uncaught.forEach((e) => fail('uncaught page error: ' + e));
+
+  // ── FLAG ON: legacy Desk goes read-only (T0d, docs/desk_v1_r0_plan.md,
+  // MIG-04) ─────────────────────────────────────────────────────────────────
+  // Normally openDesk() routes to v1 exclusively once `desk_v1` is on
+  // (desk.js's own T0a branch), so the legacy view above is unreachable in
+  // real use. It stays in the codebase read-only rather than deleted (gap
+  // map MIG-04) for the case where it WAS already open, or v1's own shell
+  // script failed to load — simulated here by serving desk-v1-shell.js empty,
+  // so `window.deskV1Open` never exists and openDesk() falls through to
+  // building the legacy modal even with the flag on. A fresh context/page so
+  // this can't interact with the mutated queueState above.
+  const roCtx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+  const roPage = await roCtx.newPage();
+  const roErrors = [];
+  roPage.on('pageerror', (e) => roErrors.push(e.message || String(e)));
+  const roHarvestCalls = [];
+  const roApproveCalls = [];
+  const roPatchCalls = [];
+  await roPage.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    const J = (body) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    if (path === '/static/js/desk-v1-shell.js') return route.fulfill({ status: 200, contentType: 'text/javascript; charset=utf-8', body: '' });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return J(PROJECTS);
+    if (path === '/api/config') return J({ desk_v1: true });
+    if (path === '/api/characters') return J([]);
+    if (path === '/api/desk/overview') return J(OVERVIEW);
+    if (path === '/api/desk/signals') return J(SIGNALS);
+    if (path === `/api/project/${PID}/social/queue`) return J(QUEUE);
+    if (path.endsWith('/social/queue')) return J([]);
+    if (path === '/api/desk/signals/harvest' && req.method() === 'POST') { roHarvestCalls.push(1); return J({ commits: 0, backlog: 0 }); }
+    if (/\/social\/queue\/[^/]+\/approve$/.test(path) && req.method() === 'POST') { roApproveCalls.push(path); return J({ ok: true }); }
+    if (/\/social\/queue\/[^/]+$/.test(path) && req.method() === 'PATCH') { roPatchCalls.push(path); return J({ ok: true }); }
+    if (path === '/api/workflows') return J(WORKFLOWS);
+    if (path === '/api/schedules') return J(SCHEDULES);
+    if (path === '/api/floor') return J(FLOOR);
+    if (path === '/api/desk/ledger') return J(LEDGER);
+    return route.abort();
+  });
+  await roPage.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await roPage.waitForSelector('#projects-col .card', { timeout: 15000 });
+
+  await roPage.click('.sidebar-item[data-nav="social"]');
+  await roPage.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-tabs', { timeout: 8000 });
+  const v1ShellPresent = await roPage.$('.desk-v1-shell');
+  if (!v1ShellPresent) ok('flag on, v1 shell unavailable: openDesk() still falls through to the legacy modal (the case T0d covers)');
+  else fail('the v1 shell rendered even though desk-v1-shell.js was served empty — this case is not testing what it claims');
+
+  const banner = await roPage.textContent('#desk-legacy-ro-banner').catch(() => '');
+  if (/read-only/i.test(banner || '')) ok(`read-only banner renders: "${(banner || '').trim()}"`);
+  else fail(`expected a read-only banner, got ${JSON.stringify(banner)}`);
+
+  await roPage.click('.desk-tab:has-text("Queue")');
+  await roPage.waitForSelector('.desk-post-row, .social-item', { timeout: 8000 }).catch(() => {});
+  await roPage.evaluate(() => { window.deskHarvest(); window.deskCampaignState('camp-1', 'paused'); });
+  await roPage.waitForTimeout(150);
+  if (roHarvestCalls.length === 0) ok('deskHarvest() no-ops while read-only (no POST /signals/harvest)');
+  else fail(`deskHarvest() should have been blocked, fired ${roHarvestCalls.length} call(s)`);
+
+  await roPage.evaluate((pid) => { window.deskQueueRelease(pid, 'd1'); }, PID);
+  await roPage.waitForTimeout(150);
+  if (roApproveCalls.length === 0) ok('deskQueueRelease() no-ops while read-only (no POST .../approve)');
+  else fail(`deskQueueRelease() should have been blocked, fired ${roApproveCalls.length} call(s)`);
+
+  const roUncaught = roErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (roUncaught.length) roUncaught.forEach((e) => fail('flag-on case: uncaught page error: ' + e));
+  await roCtx.close().catch(() => {});
+
   exitCode = bad ? 1 : 0;
 } catch (e) {
   console.error('❌ FAIL — smoke harness error: ' + (e && e.message ? e.message : e));
