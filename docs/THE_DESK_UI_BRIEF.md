@@ -1,5 +1,7 @@
 # The Desk — UI implementation brief
 
+> **SUPERSEDED 2026-09-25 by `docs/THE_DESK_V1_UI.md` (Desk v1, Turn 12, MC-977).** Do not build from this file. It is kept for history only. Turn 9 (Board / Queue / Ledger, the Release soft-lock, the workflow chip) is explicitly on v1's "superseded, don't build" list. The gap between what this brief produced and v1 is mapped in `docs/desk_v1_gap_map.md`.
+
 > **Partly superseded 2026-09-22.** Ron set the release policy to
 > **per-campaign**. The per-post release rail (§3 Release, soft-lock, Schedule),
 > the Calendar tab (§5) and the Board's per-signal Draft buttons are replaced by
