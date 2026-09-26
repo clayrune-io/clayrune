@@ -6,6 +6,17 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-26] — Preserve live popup siblings and restore the opener address (MC-976)
+
+- Removed automatic sibling-popup pruning: opening a second window could
+  destroy a still-live auth/helper window that shared its opener.
+- Tab switches and popup completion now restore the selected tab's address,
+  instead of labeling fresh opener frames with the closed popup's URL.
+- Added a real-Chromium, ephemeral-profile regression for cross-origin and
+  iframe postMessage, self-close, callback navigation and concurrent popups.
+  Authenticated Google/LinkedIn completion remains unverified; see
+  `docs/BROWSER_PANE_GAPS.md` for the measured evidence and limits.
+
 ## [2026-09-24] — "Install selected" installs every vendor and says which failed; stale "claude CLI not on PATH" cleared
 
 - **One failing vendor silently skipped the rest.** The batch install joined
