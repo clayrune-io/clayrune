@@ -184,6 +184,32 @@
     },
   };
 
+  // ── T1: Desk Home (docs/desk_v1_r0_plan.md; THE_DESK_V1_UI.md §2) ──────────
+  // Simulated worker heartbeat (INT availability, E13). The doc's own worked
+  // example text ("Scheduling paused — worker offline since 14:02 · 2 posts
+  // missed") is reused verbatim rather than invented, so the fixture and the
+  // acceptance check agree by construction. Offline by default, same spirit
+  // as ch-li-page's own hold and the results file's delayed/n/a rows — R0's
+  // fixtures show the gap case, not an all-green happy path.
+  const WORKER_HEARTBEAT = { status: 'offline', sinceLabel: '14:02', missed: 2 };
+
+  // Recent assets on the Material shelf (MED-01/02) — thumbnails of material
+  // already in the project. Reuses the existing families' titles rather than
+  // inventing new content (ground rule 3 still applies inside a ticket's own
+  // section: don't multiply fixture content beyond what the surface needs).
+  const RECENT_ASSETS = [
+    { id: 'asset-install-video', kind: 'video', title: 'Install in two minutes' },
+    { id: 'asset-restore-points', kind: 'article', title: 'Undo anything: restore points in Clayrune 2.1' },
+  ];
+
+  // Up to 3 Posy suggestion chips (KNW) below the promote box — tapping one
+  // fills the box, never sends (§2).
+  const HOME_SUGGESTIONS = [
+    'A LinkedIn cut of the install video would reach testers who missed the X post.',
+    'The restore-points article has one blocked claim — add a source to unblock it.',
+    '3 posts this week is the rule; two are already used.',
+  ];
+
   window.DeskV1Fixtures = {
     campaigns: CAMPAIGNS,
     channels: CHANNELS,
@@ -192,5 +218,8 @@
     renderBudget: RENDER_BUDGET,
     results: RESULTS,
     reviewDetail: REVIEW_DETAIL,
+    workerHeartbeat: WORKER_HEARTBEAT,
+    recentAssets: RECENT_ASSETS,
+    homeSuggestions: HOME_SUGGESTIONS,
   };
 })();
