@@ -524,6 +524,20 @@ async function _renderSettings() {
         <div><div class="settings-label">Follow linked notes</div><div class="settings-hint">Also surface notes reached by one [[wikilink]] hop from a match — the companion note a past session pointed at. Added on top of the count above; 0 turns it off.</div></div>
         ${numInput('read_floor_link_expand', cfg.read_floor_link_expand)}
       </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-label">Mint notes at close</div>
+          <div class="settings-hint">When a hivemind closes, a backlog item goes done, or a session ends, the Scribe writes what was decided as a memory note. MC-964 step 7. Takes effect on the next message; no restart.</div>
+        </div>
+        ${toggle('memory_mint_triggers_enabled', cfg.memory_mint_triggers_enabled)}
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-label">Declined-ideas ledger</div>
+          <div class="settings-hint">Shows agents the most recent things we decided NOT to do, and reports (never blocks) when one starts writing something already declined. MC-964 step 8. Takes effect on the next message; no restart.</div>
+        </div>
+        ${toggle('negation_ledger_enabled', cfg.negation_ledger_enabled)}
+      </div>
     </div>
 
     <div class="settings-section">

@@ -249,6 +249,10 @@ _CONFIG_EDITABLE_KEYS = {
     # static/js/desk.js's openDesk() branch at the next open — no respawn or
     # restart needed. `user_timezone` is read by the v1 shell's time helper.
     'desk_v1', 'user_timezone',
+    # MC-964 steps 7 + 8 (Settings > Agent > Retrieval). Both read live off
+    # state.CONFIG per turn (mc/memory.py _mint_enabled / negation ledger),
+    # default False; human-only like the rest of this set.
+    'memory_mint_triggers_enabled', 'negation_ledger_enabled',
 }
 
 # Respawn-trigger ("Tier-1") settings: baked into the spawn (CLI flags or the
