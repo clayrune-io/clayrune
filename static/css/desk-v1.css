@@ -168,6 +168,10 @@
 }
 .desk-v1-posy-scope:hover { color: var(--accent); }
 .desk-v1-posy-output { min-height: 0; padding: 0; background: transparent; }
+/* app.css's .agent-line is styled for terminal-style agent transcripts
+   (JetBrains Mono) — Posy is product copy, not a log line (12a: body
+   font). Scoped to this wrapper only; every Desk v1 Posy box shares it. */
+.desk-v1-posy-output .agent-line { font-family: 'Inter', -apple-system, system-ui, sans-serif; }
 .desk-v1-posy-chips { margin: 0; }
 
 /* compact:true (frame 12b) — no avatar/name to push away from, so the scope

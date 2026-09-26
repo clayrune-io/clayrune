@@ -294,7 +294,10 @@
       bodyHTML = `<div class="desk-v1-camp-cards">${items.map((f) => _familyCardHTML(f, camp)).join('') || '<div class="desk-v1-camp-empty">Nothing matches this filter.</div>'}</div>`;
     }
 
-    host.innerHTML = `<div class="pd-drop-target desk-v1-camp-listarea" id="desk-v1-camp-listarea" data-listarea>${bodyHTML}</div>`;
+    // pd-drop-target is NOT statically present (Dave's review: 12a has no
+    // container outline at rest) — onActivate/onTeardown below toggle it
+    // for the duration of a drag only.
+    host.innerHTML = `<div class="desk-v1-camp-listarea" id="desk-v1-camp-listarea" data-listarea>${bodyHTML}</div>`;
     host.querySelectorAll('[data-group-show]').forEach((b) => b.onclick = () => { _expandedGroups.add(b.dataset.groupShow); _renderList(camp); });
     _wireCards(host, camp);
   }
@@ -347,7 +350,9 @@
   function _familyCardHTML(fam, camp) {
     const meta = _kindMeta(fam);
     const action = _primaryAction(fam);
-    return `<div class="desk-v1-camp-card pd-drop-target" data-family-id="${esc(fam.id)}">
+    // pd-drop-target likewise applied only during an active drag (see
+    // _contentTargetAdapter.onActivate/onTeardown), not at rest.
+    return `<div class="desk-v1-camp-card" data-family-id="${esc(fam.id)}">
       ${_previewHTML(fam)}
       <div class="desk-v1-camp-card-body">
         ${meta ? `<div class="desk-v1-camp-card-meta">${meta}</div>` : ''}
@@ -607,7 +612,7 @@
       onTeardown: () => {
         document.querySelectorAll('.desk-v1-camp-card').forEach((c) => { c.classList.remove('pd-drop-target', 'pd-drop-hover'); _setCardResultText(c, ''); });
         const la = document.getElementById('desk-v1-camp-listarea');
-        if (la) la.classList.remove('pd-drop-hover');
+        if (la) la.classList.remove('pd-drop-target', 'pd-drop-hover');
         _listAreaResultText('');
       },
       addToItems: () => _familiesFor(camp.id).map((f) => ({ id: f.id, label: f.title })),

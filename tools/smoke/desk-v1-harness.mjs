@@ -133,8 +133,11 @@ async function runTone(browser, tone) {
   } else {
     fail(`[${tone.name}] campaign crumb wrong: back=${JSON.stringify(campBack)}, title=${JSON.stringify(campTitle)}`);
   }
+  // T2a (frame 12a): the name is not duplicated in the summary — it's
+  // already the crumb title above — so resolve against the goal text
+  // instead, which IS rendered there.
   const summaryText = await page.textContent('#desk-v1-camp-summary');
-  if ((summaryText || '').includes('Windows beta testers')) ok(`[${tone.name}] summary slot resolves the fixture campaign`);
+  if ((summaryText || '').includes('tester signups')) ok(`[${tone.name}] summary slot resolves the fixture campaign`);
   else fail(`[${tone.name}] summary slot did not resolve the campaign: ${JSON.stringify(summaryText)}`);
   const campToolsEmpty = await page.$eval('#desk-v1-crumb-tools', (el) => el.children.length === 0).catch(() => null);
   if (campToolsEmpty) ok(`[${tone.name}] campaign: #desk-v1-crumb-tools stays empty (one-row crumb)`);
