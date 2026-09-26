@@ -18,6 +18,13 @@
 // only in this human-facing file is what keeps the two paths separate.
 const BP_DEFAULT_PROFILE = 'main';
 
+// MC-980: below this the pane is a full-screen phone-browser sheet, not the
+// desktop floating window shrunk to fit — same breakpoint every other mobile
+// surface in this app uses (mobile.js isMobileChatList). A live check, not a
+// captured flag: resizing the HOST window across 960px (rotating a tablet,
+// browser DevTools) should be as authoritative as the value at open time.
+function _bpIsMobile() { return window.innerWidth <= 960; }
+
 // A page-shaped emoji (\u{1F4C4}) here used to read as "new tab" (Ron,
 // 2026-09-25) rather than "copy" -- an unambiguous two-overlapping-sheets
 // glyph (the same shape most toolbars use for a copy action) replaces it.
@@ -61,6 +68,12 @@ let _bpViewObserver = null;
 // handler above, for the same reason — a stale one bound to a detached `win`
 // would keep resizing an element no longer on the page.
 let _bpResizeHandler = null;
+// MC-980 mobile menu's outside-click-closes listener — lives on `document`
+// (the menu itself is a small popover, a click anywhere else should dismiss
+// it), so like _bpUpHandler above it must be tracked and removed on
+// teardown or every open/close cycle stacks another one bound to a detached
+// menu forever.
+let _bpMobMenuOffHandler = null;
 // Set when a Ctrl/Cmd+V is let through to the browser, cleared by the `paste`
 // event it should produce. Still set after the grace period => no paste event
 // arrived, so fall back to the clipboard API. See the keydown handler.
@@ -169,7 +182,8 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ project_id: pid, url: url || 'about:blank',
                                profile: profile || BP_DEFAULT_PROFILE,
-                               dpr: window.devicePixelRatio || 1 }),
+                               dpr: window.devicePixelRatio || 1,
+                               mobile: _bpIsMobile() }),
       });
       data = await res.json();
       if (!res.ok) throw new Error(data.error || 'launch failed');
@@ -182,37 +196,51 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   }
 
   // ── DOM ──
+  // MC-980: below 960px the pane is a full-screen phone-browser sheet — its
+  // own layout, not the desktop floating window squeezed into a small box
+  // (no drag, no resize, no minimize/maximize; tabs are a switcher screen,
+  // not a strip; toolbar buttons that don't fit a phone's one-thumb reach
+  // move into the bottom-bar menu). `mobile` is captured once for this open
+  // (matches the `mobile` sent on /api/browser/launch above) so a HOST
+  // resize mid-session doesn't half-migrate the DOM; the CDP device-mode
+  // switch that actually matters for how the remote PAGE renders is separate
+  // and DOES re-evaluate live, in `sendView` below.
+  const mobile = _bpIsMobile();
   const win = document.createElement('div');
   win.id = 'mc-browser-pane';
-  const W = Math.min(window.innerWidth * 0.96, 1120);
-  const H = Math.min(window.innerHeight * 0.92, 760);
-  win.style.cssText =
-    `position:fixed;left:${Math.max(4, (window.innerWidth - W) / 2)}px;` +
-    `top:${Math.max(4, (window.innerHeight - H) / 2)}px;width:${W}px;height:${H}px;` +
-    // No hard-coded z-index: the pane joins the shared modal stacking order
-    // (nextModalZ) below, so it behaves like every other pop-up instead of
-    // pinning itself above everything. pointer-events:auto is required because
-    // the #modal-layer host is pointer-events:none.
-    'background:#1e1e1e;border:1px solid var(--border,#444);border-radius:10px;pointer-events:auto;' +
-    'display:flex;flex-direction:column;box-shadow:0 12px 48px rgba(0,0,0,.5);overflow:hidden';
-  win.innerHTML = `
-    <div data-bp="bar" style="display:flex;align-items:center;gap:6px;padding:8px 10px;background:#2a2a2a;flex:0 0 auto;cursor:move;touch-action:none;user-select:none">
-      <button data-bp="back"   title="Back"    style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 6px">&#8592;</button>
-      <button data-bp="fwd"    title="Forward" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 6px">&#8594;</button>
-      <button data-bp="reload" title="Reload"  style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px">&#8635;</button>
-      <button data-bp="paste"  title="Paste clipboard into the page" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px">&#128203;</button>
-      <button data-bp="copy"   title="Copy page selection to clipboard" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px;display:flex;align-items:center">${_BP_COPY_ICON_SVG}</button>
-      <button data-bp="sessions" title="Browser sessions" style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px;position:relative">&#9776;<span data-bp="sesscount" style="position:absolute;top:-3px;right:-3px;background:#4caf50;color:#000;font-size:9px;font-weight:700;border-radius:8px;padding:0 4px;line-height:14px;display:none"></span></button>
-      <input data-bp="url" type="text" spellcheck="false" value="${(url||'').replace(/"/g,'&quot;')}"
-        placeholder="Enter URL and press Enter"
-        style="flex:1;min-width:60px;padding:6px 10px;font-size:13px;background:#111;border:1px solid #444;border-radius:6px;color:#eee;outline:none">
-      <span data-bp="profile" title="" style="font-size:10px;padding:0 6px;border:1px solid #4a4a4a;border-radius:99px;color:#9ecb9e;flex:0 0 auto;cursor:pointer;display:none"></span>
-      <span data-bp="spin" style="color:#888;font-size:12px;width:14px">&#9679;</span>
-      <button data-bp="minimize" title="Minimize" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 8px">&#8211;</button>
-      <button data-bp="maximize" title="Maximize" aria-label="Maximize" style="background:none;border:none;color:#ddd;cursor:pointer;padding:2px 8px;display:flex;align-items:center">${_bpMaxIcon(false)}</button>
-      <button data-bp="close" title="Close" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 8px">&#10005;</button>
-    </div>
-    <div data-bp="tabstrip" style="display:none;flex:0 0 auto;gap:2px;padding:4px 8px 0;background:#242424;overflow-x:auto"></div>
+  win.dataset.mobile = mobile ? '1' : '0';
+  if (mobile) {
+    win.style.cssText =
+      // var(--mc-app-vh, 100dvh): same convention .mc-settings-modal uses
+      // (mobile.js sets the var from the VISUAL viewport) rather than a raw
+      // 100dvh — Android WebView doesn't reliably recompute dvh after the
+      // soft keyboard shows/hides. This IS the black-band fix: the old pane
+      // was window.innerHeight*0.92 fixed at open time, so the address bar
+      // (or its own screencast) ended up sized to a viewport the phone
+      // browser chrome had already changed by the time it painted. Filling
+      // the real live height and letting the middle area be flex:1 means
+      // there is no gap left over for a band to appear in.
+      'position:fixed;inset:0;width:100vw;height:var(--mc-app-vh, 100dvh);' +
+      'background:#1e1e1e;border:none;border-radius:0;pointer-events:auto;' +
+      'display:flex;flex-direction:column;overflow:hidden';
+  } else {
+    const W = Math.min(window.innerWidth * 0.96, 1120);
+    const H = Math.min(window.innerHeight * 0.92, 760);
+    win.style.cssText =
+      `position:fixed;left:${Math.max(4, (window.innerWidth - W) / 2)}px;` +
+      `top:${Math.max(4, (window.innerHeight - H) / 2)}px;width:${W}px;height:${H}px;` +
+      // No hard-coded z-index: the pane joins the shared modal stacking order
+      // (nextModalZ) below, so it behaves like every other pop-up instead of
+      // pinning itself above everything. pointer-events:auto is required because
+      // the #modal-layer host is pointer-events:none.
+      'background:#1e1e1e;border:1px solid var(--border,#444);border-radius:10px;pointer-events:auto;' +
+      'display:flex;flex-direction:column;box-shadow:0 12px 48px rgba(0,0,0,.5);overflow:hidden';
+  }
+  // Shared by both layouts: the picture area, IME shadow, downloads, and the
+  // dialog/file-chooser overlays are identical on a phone and a desktop — a
+  // phone browser doesn't need a different screencast surface, only a
+  // different frame around it.
+  const _bpMiddleHtml = `
     <div style="flex:1;position:relative;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden">
       <img data-bp="screen" tabindex="0"
         style="width:100%;height:100%;object-fit:contain;aspect-ratio:${BP_VIEW_W}/${BP_VIEW_H};outline:none;cursor:default;user-select:none" draggable="false">
@@ -246,9 +274,61 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
           </div>
         </div>
       </div>
+    </div>`;
+  if (mobile) {
+    win.innerHTML = `
+    <div data-bp="bar" style="display:flex;align-items:center;gap:8px;padding:calc(8px + env(safe-area-inset-top)) 10px 8px;background:#2a2a2a;flex:0 0 auto">
+      <button data-bp="close" title="Back to chat" aria-label="Back to chat" style="background:none;border:none;color:#ddd;font-size:22px;line-height:1;cursor:pointer;padding:4px 8px;flex:0 0 auto">&#8592;</button>
+      <input data-bp="url" type="text" spellcheck="false" value="${(url||'').replace(/"/g,'&quot;')}"
+        placeholder="Enter URL and press Enter"
+        style="flex:1;min-width:0;padding:10px 12px;font-size:14px;background:#111;border:1px solid #444;border-radius:8px;color:#eee;outline:none">
+      <span data-bp="spin" style="display:none;color:#888;font-size:12px;width:14px">&#9679;</span>
     </div>
+    <div data-bp="tabstrip" style="display:none"></div>
+    ${_bpMiddleHtml}
+    <div data-bp="bbar" style="display:flex;align-items:center;justify-content:space-around;padding:6px 6px calc(6px + env(safe-area-inset-bottom));background:#242424;flex:0 0 auto;position:relative">
+      <button data-bp="back"   title="Back"    style="background:none;border:none;color:#ddd;font-size:20px;cursor:pointer;padding:8px 14px">&#8592;</button>
+      <button data-bp="fwd"    title="Forward" style="background:none;border:none;color:#ddd;font-size:20px;cursor:pointer;padding:8px 14px">&#8594;</button>
+      <button data-bp="reload" title="Reload"  style="background:none;border:none;color:#ddd;font-size:18px;cursor:pointer;padding:8px 14px">&#8635;</button>
+      <button data-bp="tabsbtn" title="Tabs" aria-label="Tabs" style="background:none;border:1px solid #666;border-radius:5px;color:#ddd;font-size:12px;font-weight:700;cursor:pointer;padding:6px 10px;min-width:26px">${1}</button>
+      <button data-bp="menu"    title="Menu" aria-label="Menu" style="background:none;border:none;color:#ddd;font-size:20px;cursor:pointer;padding:8px 14px">&#8942;</button>
+      <div data-bp="mobmenu" style="display:none;flex-direction:column;position:absolute;right:6px;bottom:calc(100% + 6px);min-width:200px;background:#2a2a2a;border:1px solid #444;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.5);overflow:hidden;z-index:6;font-size:13px;color:#eee">
+        <button data-bp="mm-paste" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px">&#128203; Paste clipboard</button>
+        <button data-bp="mm-copy" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px">${_BP_COPY_ICON_SVG} Copy selection</button>
+        <button data-bp="mm-profile" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;border-top:1px solid #3a3a3a">Profile: <span data-bp="profile" style="color:#9ecb9e"></span></button>
+      </div>
+    </div>
+    <div data-bp="tabswitch" style="display:none;flex-direction:column;position:absolute;inset:0;background:#1e1e1e;z-index:7">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:calc(10px + env(safe-area-inset-top)) 16px 10px;background:#2a2a2a;flex:0 0 auto">
+        <span style="color:#eee;font-size:15px;font-weight:600">Tabs</span>
+        <button data-bp="tabswitch-close" title="Close" style="background:none;border:none;color:#ddd;font-size:20px;cursor:pointer;padding:2px 8px">&#10005;</button>
+      </div>
+      <div data-bp="tabswitch-list" style="flex:1;overflow-y:auto;padding:8px 0"></div>
+      <button data-bp="tabswitch-new" style="margin:10px 16px calc(16px + env(safe-area-inset-bottom));padding:12px;background:#3a7ae0;border:none;color:#fff;border-radius:8px;font-size:14px;cursor:pointer;flex:0 0 auto">+ New tab</button>
+    </div>`;
+  } else {
+    win.innerHTML = `
+    <div data-bp="bar" style="display:flex;align-items:center;gap:6px;padding:8px 10px;background:#2a2a2a;flex:0 0 auto;cursor:move;touch-action:none;user-select:none">
+      <button data-bp="back"   title="Back"    style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 6px">&#8592;</button>
+      <button data-bp="fwd"    title="Forward" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 6px">&#8594;</button>
+      <button data-bp="reload" title="Reload"  style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px">&#8635;</button>
+      <button data-bp="paste"  title="Paste clipboard into the page" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px">&#128203;</button>
+      <button data-bp="copy"   title="Copy page selection to clipboard" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px;display:flex;align-items:center">${_BP_COPY_ICON_SVG}</button>
+      <button data-bp="sessions" title="Browser sessions" style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px;position:relative">&#9776;<span data-bp="sesscount" style="position:absolute;top:-3px;right:-3px;background:#4caf50;color:#000;font-size:9px;font-weight:700;border-radius:8px;padding:0 4px;line-height:14px;display:none"></span></button>
+      <input data-bp="url" type="text" spellcheck="false" value="${(url||'').replace(/"/g,'&quot;')}"
+        placeholder="Enter URL and press Enter"
+        style="flex:1;min-width:60px;padding:6px 10px;font-size:13px;background:#111;border:1px solid #444;border-radius:6px;color:#eee;outline:none">
+      <span data-bp="profile" title="" style="font-size:10px;padding:0 6px;border:1px solid #4a4a4a;border-radius:99px;color:#9ecb9e;flex:0 0 auto;cursor:pointer;display:none"></span>
+      <span data-bp="spin" style="color:#888;font-size:12px;width:14px">&#9679;</span>
+      <button data-bp="minimize" title="Minimize" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 8px">&#8211;</button>
+      <button data-bp="maximize" title="Maximize" aria-label="Maximize" style="background:none;border:none;color:#ddd;cursor:pointer;padding:2px 8px;display:flex;align-items:center">${_bpMaxIcon(false)}</button>
+      <button data-bp="close" title="Close" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 8px">&#10005;</button>
+    </div>
+    <div data-bp="tabstrip" style="display:none;flex:0 0 auto;gap:2px;padding:4px 8px 0;background:#242424;overflow-x:auto"></div>
+    ${_bpMiddleHtml}
     <div data-bp="grip" title="Drag to resize"
       style="position:absolute;right:1px;bottom:1px;width:22px;height:22px;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 45%,#777 45%,#777 55%,transparent 55%,transparent 70%,#777 70%,#777 80%,transparent 80%);border-radius:0 0 9px 0"></div>`;
+  }
   // Live inside #modal-layer (z-300 stacking context) alongside terminals and
   // other pop-ups, and take the next slot in the shared modal z-order so it
   // opens on top but does NOT stay pinned above later-focused windows.
@@ -261,8 +341,9 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   }, true);
 
   // Restore the last size/position the user left the pane at (clamped so a
-  // resized-down window can't strand it off-screen).
-  try {
+  // resized-down window can't strand it off-screen). Not a mobile concept —
+  // the sheet is always the full screen, nothing to remember between opens.
+  if (!mobile) try {
     const g = JSON.parse(localStorage.getItem('mc_browser_pane_geom') || 'null');
     if (g && g.w > 240 && g.h > 180) {
       win.style.width = Math.min(g.w, window.innerWidth) + 'px';
@@ -272,6 +353,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     }
   } catch (e) {}
   const _bpSaveGeom = () => {
+    if (mobile) return;
     try {
       localStorage.setItem('mc_browser_pane_geom', JSON.stringify(
         { l: win.offsetLeft, t: win.offsetTop, w: win.offsetWidth, h: win.offsetHeight }));
@@ -305,57 +387,101 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   profileBadge.onclick = (e) => { e.stopPropagation(); _bpToggleSessionMenu(win, pid); };
 
   $('close').onclick = closeBrowserPane;
-  $('minimize').onclick = () => _bpMinimizePane(win, pid);
   $('back').onclick = () => _bpSend({ type: 'back' });
   $('fwd').onclick = () => _bpSend({ type: 'forward' });
   $('reload').onclick = () => _bpSend({ type: 'reload' });
-  // Touch has no Ctrl+V, so the keyboard path can't be the only way in. The
-  // prompt box is itself a native paste target, which is what makes this work
-  // on a phone (long-press → Paste) and wherever readText() is unavailable.
-  $('paste').onclick = async () => {
-    imeShadow.focus();
-    if (await _bpPasteViaApi()) return;
-    const t = prompt('Paste here and press OK — this types it into the page:');
-    if (t) _bpSend({ type: 'text', text: t });
-  };
-  $('copy').onclick = async () => { imeShadow.focus(); await _bpCopySelection(false); };
-  $('sessions').onclick = (e) => { e.stopPropagation(); _bpToggleSessionMenu(win, pid); };
   urlInput.addEventListener('keydown', e => {
     if (e.key === 'Enter') { _bpSend({ type: 'navigate', url: urlInput.value.trim() }); imeShadow.focus(); }
   });
 
+  if (mobile) {
+    // ── mobile: bottom-bar menu (clipboard/copy/profile) — same handlers the
+    // desktop toolbar buttons use, just reached through one "⋮" instead of
+    // three buttons a thumb has no room for next to a full-width address bar.
+    const menu = $('mobmenu');
+    $('menu').onclick = (e) => {
+      e.stopPropagation();
+      menu.style.display = menu.style.display === 'none' ? 'flex' : 'none';
+    };
+    if (_bpMobMenuOffHandler) document.removeEventListener('mousedown', _bpMobMenuOffHandler, true);
+    _bpMobMenuOffHandler = (e) => {
+      if (menu.style.display !== 'none' && !menu.contains(e.target) && !e.target.closest('[data-bp="menu"]'))
+        menu.style.display = 'none';
+    };
+    document.addEventListener('mousedown', _bpMobMenuOffHandler, true);
+    $('mm-paste').onclick = async () => {
+      menu.style.display = 'none';
+      imeShadow.focus();
+      if (await _bpPasteViaApi()) return;
+      const t = prompt('Paste here and press OK — this types it into the page:');
+      if (t) _bpSend({ type: 'text', text: t });
+    };
+    $('mm-copy').onclick = async () => { menu.style.display = 'none'; imeShadow.focus(); await _bpCopySelection(false); };
+    $('mm-profile').onclick = (e) => { e.stopPropagation(); menu.style.display = 'none'; _bpToggleSessionMenu(win, pid); };
+
+    // ── mobile: tab switcher screen, not a strip — see _bpRenderMobileTabSwitcher.
+    const switcher = $('tabswitch');
+    $('tabsbtn').onclick = () => { switcher.style.display = 'flex'; _bpRenderMobileTabSwitcher(win); };
+    $('tabswitch-close').onclick = () => { switcher.style.display = 'none'; };
+    $('tabswitch-new').onclick = () => {
+      _bpSend({ type: 'new_tab' });
+      switcher.style.display = 'none';
+      urlInput.value = ''; urlInput.focus();
+    };
+  } else {
+    $('minimize').onclick = () => _bpMinimizePane(win, pid);
+    // Touch has no Ctrl+V, so the keyboard path can't be the only way in. The
+    // prompt box is itself a native paste target, which is what makes this work
+    // on a phone (long-press → Paste) and wherever readText() is unavailable.
+    $('paste').onclick = async () => {
+      imeShadow.focus();
+      if (await _bpPasteViaApi()) return;
+      const t = prompt('Paste here and press OK — this types it into the page:');
+      if (t) _bpSend({ type: 'text', text: t });
+    };
+    $('copy').onclick = async () => { imeShadow.focus(); await _bpCopySelection(false); };
+    $('sessions').onclick = (e) => { e.stopPropagation(); _bpToggleSessionMenu(win, pid); };
+  }
+
   // ── move (drag the toolbar) + resize (corner grip) — pointer events cover
   //    mouse and touch alike; setPointerCapture keeps the gesture even off-element.
+  //    Not wired at all on mobile: the sheet is fixed full-screen, no window
+  //    geometry to drag or resize (item 3 of MC-980's report — a draggable
+  //    floating window is exactly what a phone pane must NOT be). `grip`
+  //    itself doesn't exist in the mobile markup, so `bar`/`grip` are only
+  //    used past this point when `!mobile`.
   const bar = $('bar'), grip = $('grip');
   let drag = null, rz = null;
-  bar.addEventListener('pointerdown', e => {
-    if (e.target.closest('button') || e.target.tagName === 'INPUT') return;  // let controls work
-    if (_bpMaxState) return;  // dragging a maximized pane would strand it mid-move, half-restored
-    drag = { sx: e.clientX, sy: e.clientY, l: win.offsetLeft, t: win.offsetTop };
-    bar.setPointerCapture(e.pointerId);
-  });
-  bar.addEventListener('pointermove', e => {
-    if (!drag) return;
-    const nl = Math.max(80 - win.offsetWidth, Math.min(window.innerWidth - 60, drag.l + e.clientX - drag.sx));
-    const nt = Math.max(0, Math.min(window.innerHeight - 40, drag.t + e.clientY - drag.sy));
-    win.style.left = nl + 'px'; win.style.top = nt + 'px';
-  });
-  const _endDrag = () => { if (drag) { drag = null; _bpSaveGeom(); } };
-  bar.addEventListener('pointerup', _endDrag);
-  bar.addEventListener('pointercancel', _endDrag);
-  grip.addEventListener('pointerdown', e => {
-    e.preventDefault();
-    rz = { sx: e.clientX, sy: e.clientY, w: win.offsetWidth, h: win.offsetHeight };
-    grip.setPointerCapture(e.pointerId);
-  });
-  grip.addEventListener('pointermove', e => {
-    if (!rz) return;
-    win.style.width = Math.max(320, Math.min(window.innerWidth, rz.w + e.clientX - rz.sx)) + 'px';
-    win.style.height = Math.max(240, Math.min(window.innerHeight, rz.h + e.clientY - rz.sy)) + 'px';
-  });
-  const _endRz = () => { if (rz) { rz = null; _bpSaveGeom(); } };
-  grip.addEventListener('pointerup', _endRz);
-  grip.addEventListener('pointercancel', _endRz);
+  if (!mobile) {
+    bar.addEventListener('pointerdown', e => {
+      if (e.target.closest('button') || e.target.tagName === 'INPUT') return;  // let controls work
+      if (_bpMaxState) return;  // dragging a maximized pane would strand it mid-move, half-restored
+      drag = { sx: e.clientX, sy: e.clientY, l: win.offsetLeft, t: win.offsetTop };
+      bar.setPointerCapture(e.pointerId);
+    });
+    bar.addEventListener('pointermove', e => {
+      if (!drag) return;
+      const nl = Math.max(80 - win.offsetWidth, Math.min(window.innerWidth - 60, drag.l + e.clientX - drag.sx));
+      const nt = Math.max(0, Math.min(window.innerHeight - 40, drag.t + e.clientY - drag.sy));
+      win.style.left = nl + 'px'; win.style.top = nt + 'px';
+    });
+    const _endDrag = () => { if (drag) { drag = null; _bpSaveGeom(); } };
+    bar.addEventListener('pointerup', _endDrag);
+    bar.addEventListener('pointercancel', _endDrag);
+    grip.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      rz = { sx: e.clientX, sy: e.clientY, w: win.offsetWidth, h: win.offsetHeight };
+      grip.setPointerCapture(e.pointerId);
+    });
+    grip.addEventListener('pointermove', e => {
+      if (!rz) return;
+      win.style.width = Math.max(320, Math.min(window.innerWidth, rz.w + e.clientX - rz.sx)) + 'px';
+      win.style.height = Math.max(240, Math.min(window.innerHeight, rz.h + e.clientY - rz.sy)) + 'px';
+    });
+    const _endRz = () => { if (rz) { rz = null; _bpSaveGeom(); } };
+    grip.addEventListener('pointerup', _endRz);
+    grip.addEventListener('pointercancel', _endRz);
+  }
 
   // ── input forwarding ──
   img.addEventListener('mousedown', e => {
@@ -582,7 +708,12 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     const w = Math.floor(screenBox.clientWidth), h = Math.floor(screenBox.clientHeight);
     if (w < 50 || h < 50 || lastView === w + 'x' + h) return;
     lastView = w + 'x' + h;
-    _bpSend({ type: 'viewport', w, h });
+    // `mobile` (MC-980) tells the backend which CDP device-mode this report
+    // should put the session in — re-evaluated live (not the `mobile` this
+    // open captured) so an attach from the other kind of client, or the host
+    // window crossing 960px, switches the remote page's presentation to match
+    // rather than leaving it stuck in whichever mode first launched it.
+    _bpSend({ type: 'viewport', w, h, mobile: _bpIsMobile() });
   };
   if (_bpViewObserver) _bpViewObserver.disconnect();
   _bpViewObserver = new ResizeObserver(() => { clearTimeout(viewTimer); viewTimer = setTimeout(sendView, 150); });
@@ -593,16 +724,19 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   // 150ms debounce: a toggle should re-fit the remote page immediately, the
   // same "existing fit-to-pane path" a corner-grip drag relies on the debounce
   // for. `grip` is hidden while maximized -- free-resizing a filled viewport
-  // makes no sense, same as a maximized OS window.
-  const maxBtn = $('maximize');
-  maxBtn.onclick = () => _bpToggleMaximize(win, grip, maxBtn, sendView);
-  bar.addEventListener('dblclick', e => {
-    if (e.target.closest('button') || e.target.tagName === 'INPUT') return;
-    _bpToggleMaximize(win, grip, maxBtn, sendView);
-  });
-  if (_bpResizeHandler) window.removeEventListener('resize', _bpResizeHandler);
-  _bpResizeHandler = () => { if (_bpMaxState) _bpApplyMaximizedRect(win); };
-  window.addEventListener('resize', _bpResizeHandler);
+  // makes no sense, same as a maximized OS window. None of this exists on
+  // mobile: the sheet has no maximize button and is already full-screen.
+  if (!mobile) {
+    const maxBtn = $('maximize');
+    maxBtn.onclick = () => _bpToggleMaximize(win, grip, maxBtn, sendView);
+    bar.addEventListener('dblclick', e => {
+      if (e.target.closest('button') || e.target.tagName === 'INPUT') return;
+      _bpToggleMaximize(win, grip, maxBtn, sendView);
+    });
+    if (_bpResizeHandler) window.removeEventListener('resize', _bpResizeHandler);
+    _bpResizeHandler = () => { if (_bpMaxState) _bpApplyMaximizedRect(win); };
+    window.addEventListener('resize', _bpResizeHandler);
+  }
 
   setTimeout(() => imeShadow.focus(), 100);
   // Remember the open session so a page refresh (which wipes the SPA DOM but
@@ -797,9 +931,24 @@ function _bpRenderDownloads(win, downloads) {
 // tab (Ron, 2026-09-25) so "+" has somewhere to live -- hiding the whole strip
 // until a SECOND tab existed meant there was no way to ever open one.
 function _bpRenderTabs(win, tabs, activeId) {
-  const strip = win && win.querySelector('[data-bp="tabstrip"]');
-  if (!strip) return;
+  if (!win) return;
   tabs = tabs || [];
+  // MC-980: the mobile sheet has no tab STRIP at all — tabs are a full-screen
+  // switcher (_bpRenderMobileTabSwitcher) opened from the bottom bar's count
+  // button. Stash the data on `win` either way (the switcher, opened later
+  // from a click, has no SSE payload of its own to read) and just keep the
+  // count button's badge current; re-render the switcher live only if it's
+  // the screen currently on top.
+  if (win.dataset.mobile === '1') {
+    win._bpTabs = tabs; win._bpActiveTab = activeId;
+    const btn = win.querySelector('[data-bp="tabsbtn"]');
+    if (btn) btn.textContent = String(tabs.length || 1);
+    const switcher = win.querySelector('[data-bp="tabswitch"]');
+    if (switcher && switcher.style.display !== 'none') _bpRenderMobileTabSwitcher(win);
+    return;
+  }
+  const strip = win.querySelector('[data-bp="tabstrip"]');
+  if (!strip) return;
   if (!tabs.length) { strip.style.display = 'none'; strip.innerHTML = ''; return; }
   strip.style.display = 'flex';
   const closeable = tabs.length > 1;  // the pane's own [x] already closes a lone tab
@@ -838,6 +987,42 @@ function _bpRenderTabs(win, tabs, activeId) {
     // keeps this focus from being fought once frames for the new tab arrive.
     const urlInput = win.querySelector('[data-bp="url"]');
     if (urlInput) { urlInput.value = ''; urlInput.focus(); }
+  });
+}
+
+// ── mobile tab switcher — a full screen (data-bp="tabswitch"), not a strip;
+// same data _bpRenderTabs already stashed on `win`. Opened from the bottom
+// bar's tabs-count button, closed by its own × or by picking/creating a tab.
+function _bpRenderMobileTabSwitcher(win) {
+  const overlay = win && win.querySelector('[data-bp="tabswitch"]');
+  const list = overlay && overlay.querySelector('[data-bp="tabswitch-list"]');
+  if (!list) return;
+  const tabs = win._bpTabs || [];
+  const activeId = win._bpActiveTab;
+  list.innerHTML = tabs.map(t => {
+    const active = t.target_id === activeId;
+    const label = _bpEsc(t.title || t.url || 'New tab');
+    const closeable = tabs.length > 1;
+    return `<div data-bp-tab="${_bpEsc(t.target_id)}" title="${_bpEsc(t.url || '')}"
+      style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px;
+      border-radius:10px;margin:6px 10px;background:${active ? '#2f3a2f' : '#242424'};
+      border:1px solid ${active ? '#4caf50' : '#3a3a3a'}">
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#eee;font-size:14px;flex:1">${label}</span>
+      ${closeable ? `<span data-bp-tab-close="${_bpEsc(t.target_id)}" style="color:#aaa;font-size:18px;padding:2px 8px;flex:0 0 auto">&#10005;</span>` : ''}
+    </div>`;
+  }).join('') || '<div style="padding:16px;color:#888;font-size:13px;text-align:center">No tabs</div>';
+  list.querySelectorAll('[data-bp-tab]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-bp-tab-close]')) return;
+      _bpSendTabAction('activate', el.getAttribute('data-bp-tab'));
+      overlay.style.display = 'none';
+    });
+  });
+  list.querySelectorAll('[data-bp-tab-close]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _bpSendTabAction('close', el.getAttribute('data-bp-tab-close'));
+    });
   });
 }
 
@@ -944,6 +1129,7 @@ function closeBrowserPane() {
   if (_bpMinimizedChip) { try { _bpMinimizedChip.remove(); } catch (e) {} _bpMinimizedChip = null; }
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
   if (_bpUpHandler) { window.removeEventListener('mouseup', _bpUpHandler); _bpUpHandler = null; }
+  if (_bpMobMenuOffHandler) { document.removeEventListener('mousedown', _bpMobMenuOffHandler, true); _bpMobMenuOffHandler = null; }
   if (_bpViewObserver) { _bpViewObserver.disconnect(); _bpViewObserver = null; }
   if (_bpResizeHandler) { window.removeEventListener('resize', _bpResizeHandler); _bpResizeHandler = null; }
   _bpMaxState = null;
@@ -994,6 +1180,7 @@ function _bpDetachView() {
   if (_bpMinimizedChip) { try { _bpMinimizedChip.remove(); } catch (e) {} _bpMinimizedChip = null; }
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
   if (_bpUpHandler) { window.removeEventListener('mouseup', _bpUpHandler); _bpUpHandler = null; }
+  if (_bpMobMenuOffHandler) { document.removeEventListener('mousedown', _bpMobMenuOffHandler, true); _bpMobMenuOffHandler = null; }
   if (_bpViewObserver) { _bpViewObserver.disconnect(); _bpViewObserver = null; }
   if (_bpResizeHandler) { window.removeEventListener('resize', _bpResizeHandler); _bpResizeHandler = null; }
   _bpMaxState = null;

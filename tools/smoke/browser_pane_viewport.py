@@ -17,14 +17,29 @@ clicks map correctly into the frame — the missing strip simply never existed a
 far as any code is concerned. So it needs a measurement, not an assertion about
 behaviour.
 
-Two checks:
-  1. No live setDeviceMetricsOverride in browser_routes. Anything that tells the
-     page a size other than the one it has re-creates this class of bug.
+Four checks:
+  1. setDeviceMetricsOverride is issued from exactly ONE place --
+     _device_mode_commands, MC-980's mobile-pane device-mode switch -- and
+     there its width/height are the CURRENT view (the `vw, vh` derived from
+     `view or session['view']`, i.e. what the window was just fit to), never
+     a literal. Anything telling the page a size other than the one it has
+     re-creates this class of bug; MC-980 needed a live override to make the
+     REMOTE PAGE present as a phone, so the old "none anywhere" ban narrowed
+     to "only from the one call site whose whole job is keeping it in sync."
   2. Empirically, with the SHIPPED window sizing, innerWidth/innerHeight equal
-     the screencast's deviceWidth/deviceHeight.
+     the screencast's deviceWidth/deviceHeight (desktop / no override).
+  3. HiDPI: the scale flag alone must not reopen check 2.
+  4. Empirically, in MOBILE device-mode: the override makes the page agree
+     with the frame at the phone size; a resize inside mobile mode re-issues
+     it (an earlier cut of _device_mode_commands was idempotent on MODE only,
+     so a same-mode resize left a STALE override declaring the old size while
+     the window moved on -- exactly this bug, caught by Dave's review before
+     it shipped); and returning to desktop leaves NO live override, proven by
+     a subsequent desktop resize landing at the new size, not the old
+     mobile one.
 
 RUN:  python tools/smoke/browser_pane_viewport.py
-Exit 0 = the page and the picture agree.
+Exit 0 = the page and the picture agree, in every mode.
 """
 import json
 import re
@@ -52,12 +67,44 @@ def check(name, ok, detail=''):
 
 
 # ── 1. the source must not tell the page a size it does not have ────────────
+import ast
+
 src = (REPO / 'mc' / 'blueprints' / 'browser_routes.py').read_text(encoding='utf-8')
-live_override = [ln.strip() for ln in src.split('\n')
-                 if 'setDeviceMetricsOverride' in ln and not ln.strip().startswith('#')]
-check('no live setDeviceMetricsOverride', not live_override,
-      'an override must MATCH what the screencast captures, or it re-creates a '
-      'band of the page nobody can see or reach: ' + '; '.join(live_override))
+tree = ast.parse(src)
+top_funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+device_fn = top_funcs.get('_device_mode_commands')
+check('_device_mode_commands exists', device_fn is not None)
+
+if device_fn is not None:
+    device_src = ast.get_source_segment(src, device_fn) or ''
+    # The CDP method as an actual string literal (a real call site), not the
+    # bare word showing up in a comment/docstring cross-reference to this
+    # function -- _fit_windows and _run_cdp both mention it in prose.
+    method_literal = re.compile(r"""['"]Emulation\.setDeviceMetricsOverride['"]""")
+    outside_calls = []
+    for name, fn in top_funcs.items():
+        if name == '_device_mode_commands':
+            continue
+        body = ast.get_source_segment(src, fn) or ''
+        for ln in body.split('\n'):
+            if method_literal.search(ln):
+                outside_calls.append(f'{name}: {ln.strip()}')
+    check('setDeviceMetricsOverride is only ever issued from _device_mode_commands',
+          not outside_calls,
+          'a second call site can drift out of sync with the window it describes: '
+          + '; '.join(outside_calls))
+
+    # The override's width/height must be the `vw, vh` this call just derived
+    # from the CURRENT view, not a literal -- that derivation IS the fix.
+    derives_from_view = bool(re.search(
+        r"vw,\s*vh\s*=\s*view\s+or\s+session\.get\(\s*'view'\s*\)", device_src))
+    uses_vw_vh = bool(re.search(
+        r"'width':\s*vw\s*,\s*'height':\s*vh\b", device_src))
+    check('the override width/height come from the current view, not a literal',
+          derives_from_view and uses_vw_vh,
+          f'derives_from_view={derives_from_view} uses_vw_vh={uses_vw_vh} -- '
+          'setDeviceMetricsOverride must declare exactly what the window was '
+          'just fit to, or a mismatch reopens MC-976')
 
 
 # ── 2. the page and the picture must agree ──────────────────────────────────
@@ -307,7 +354,149 @@ if jpeg1 is not None and jpeg2 is not None:
               size2[0] >= size1[0] * 1.8 and size2[1] >= size1[1] * 1.8,
               f'{size1} -> {size2} did not scale with the dpr flag')
 
+# ── 4. mobile device-mode: override syncs on resize, clears on return ───────
+#
+# MC-980's own regression, caught in Dave's review before it shipped: the
+# first cut of _device_mode_commands was idempotent on MODE alone, so a
+# same-mode resize (phone rotation, the sheet resizing under a soft
+# keyboard) matched the mode already recorded and returned [] -- the
+# override kept declaring the OLD size while the window moved on. Same shape
+# as the original MC-976 bug, just re-entered from the mobile side. This
+# drives the real function's commands against a real Chromium and checks
+# what the page believes AND what gets captured at each step, not just that
+# some command was returned.
+def mobile_device_mode_check():
+    port = free_port()
+    udd = tempfile.mkdtemp(prefix='pane-mobile-guard-')
+    proc = subprocess.Popen(
+        [CHROMIUM, '--headless=new', f'--remote-debugging-port={port}',
+         '--remote-allow-origins=*', f'--user-data-dir={udd}', '--no-first-run',
+         '--no-default-browser-check', '--disable-gpu',
+         f'--window-size={win_w},{win_h}', 'about:blank'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        tabs = None
+        for _ in range(40):
+            try:
+                tabs = json.loads(urllib.request.urlopen(
+                    f'http://127.0.0.1:{port}/json/list', timeout=2).read())
+                if tabs:
+                    break
+            except Exception:
+                time.sleep(0.25)
+        page = next((t for t in (tabs or []) if t.get('type') == 'page'), None)
+        if not page:
+            check('mobile device-mode: chromium exposed a page target', False,
+                  'no page in /json/list')
+            return
+
+        ws = websocket.create_connection(page['webSocketDebuggerUrl'],
+                                         suppress_origin=True, timeout=10)
+        seq = [0]
+
+        def send(method, params=None):
+            seq[0] += 1
+            ws.send(json.dumps({'id': seq[0], 'method': method, 'params': params or {}}))
+            return seq[0]
+
+        def wait_for(mid):
+            deadline = time.time() + 8
+            while time.time() < deadline:
+                try:
+                    m = json.loads(ws.recv())
+                except Exception:
+                    break
+                if m.get('id') == mid:
+                    return m
+            return None
+
+        def believes():
+            eid = send('Runtime.evaluate', {
+                'expression': '({w: innerWidth, h: innerHeight})', 'returnByValue': True})
+            m = wait_for(eid)
+            v = ((m or {}).get('result') or {}).get('result', {}).get('value') or {}
+            return v.get('w'), v.get('h')
+
+        def captured_size():
+            # A synchronous screenshot rather than a screencast frame -- it
+            # reflects state right now, with no ack/streaming timing to race.
+            if not HAVE_PIL:
+                return None
+            cid = send('Page.captureScreenshot', {'format': 'png'})
+            m = wait_for(cid)
+            data = ((m or {}).get('result') or {}).get('data')
+            if not data:
+                return None
+            return Image.open(io.BytesIO(base64.b64decode(data))).size
+
+        send('Page.enable')
+        send('Runtime.enable')
+        # A real `<meta name=viewport>` tag, same as virtually every mobile-
+        # optimized site (and what MC-980's UA/touch/mobile overrides mean to
+        # be detected by) -- without it, mobile:true falls back to Chrome's
+        # ~980px "assume a desktop page shrunk to fit" heuristic for
+        # non-responsive content, which is a real quirk of mobile browsers
+        # generally (a real phone does the same on a page missing this tag),
+        # not something _device_mode_commands' job is to paper over.
+        send('Page.navigate', {'url': 'data:text/html,'
+                                      '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                                      '<body style="margin:0"><div style="height:3000px">tall</div></body>'})
+        time.sleep(1.5)
+
+        # Minimal fake session -- _device_mode_commands only reads/writes
+        # these five keys.
+        session = {'view': (br.VIEW_W, br.VIEW_H), 'dpr': 1, 'ua_override': None,
+                  'device_mode': 'desktop', 'device_mode_view': None}
+        desktop_view = (br.VIEW_W, br.VIEW_H)
+
+        v1 = (412, 915)
+        for method, params in br._device_mode_commands(session, True, view=v1):
+            send(method, params)
+        time.sleep(0.6)
+        b1, c1 = believes(), captured_size()
+        check('mobile mode: page reports the phone view', b1 == v1, f'{b1} != {v1}')
+        if HAVE_PIL:
+            check('mobile mode: captured frame matches the phone view', c1 == v1, f'{c1} != {v1}')
+
+        v2 = (390, 844)
+        cmds2 = br._device_mode_commands(session, True, view=v2)
+        check('mobile resize re-issues the override (not a same-mode no-op)', bool(cmds2),
+              "a resize inside mobile mode returned no commands -- this is the exact "
+              "stale-override bug Dave's review caught: the page would stay at the OLD "
+              "size while the pane moved on")
+        for method, params in cmds2:
+            send(method, params)
+        time.sleep(0.6)
+        b2, c2 = believes(), captured_size()
+        check('mobile resize: page follows the NEW phone view, not the stale one',
+              b2 == v2, f'{b2} != {v2} (previous {v1})')
+        if HAVE_PIL:
+            check('mobile resize: captured frame follows the NEW phone view', c2 == v2, f'{c2} != {v2}')
+
+        cmds3 = br._device_mode_commands(session, False)
+        check('return to desktop clears the override (clearDeviceMetricsOverride)',
+              any(m == 'Emulation.clearDeviceMetricsOverride' for m, _ in cmds3), str(cmds3))
+        for method, params in cmds3:
+            send(method, params)
+        time.sleep(0.6)
+        b3, c3 = believes(), captured_size()
+        check('back to desktop: page reverts to the real window size, not stuck on mobile',
+              b3 == desktop_view,
+              f'{b3} != {desktop_view} (mobile was {v2}) -- a live override left over from '
+              f'mobile mode would leave it pinned to the mobile size')
+        if HAVE_PIL:
+            check('back to desktop: captured frame reverts too', c3 == desktop_view,
+                  f'{c3} != {desktop_view}')
+
+        ws.close()
+    finally:
+        proc.kill()
+        shutil.rmtree(udd, ignore_errors=True)
+
+
+mobile_device_mode_check()
+
 if FAILS:
     print(f'\nFAIL — {len(FAILS)} check(s) broken: {", ".join(FAILS)}')
     sys.exit(1)
-print('\nPASS — the page and the picture agree, at dpr=1 and dpr=2.')
+print('\nPASS — the page and the picture agree, at dpr=1 and dpr=2, and across mobile <-> desktop.')
