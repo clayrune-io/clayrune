@@ -576,16 +576,22 @@ def _parse_pairs(raw, field_name: str) -> list[tuple[str, str]]:
 def _decode_and_scrub(raw_bytes: bytes) -> str:
     """Decode child output and redact every value this process has dispensed
     — the same ``vault.redact`` scrub ``tools/with-secret.py`` applies to its
-    own passthrough. Truncated BEFORE decode so the cap is exact bytes, and
-    before redaction so a secret value never gets left half-truncated (a
-    partial match wouldn't scrub)."""
-    truncated = len(raw_bytes) > _EXEC_MAX_OUTPUT_BYTES
-    if truncated:
-        raw_bytes = raw_bytes[:_EXEC_MAX_OUTPUT_BYTES]
-    text = raw_bytes.decode('utf-8', errors='replace')
-    if truncated:
+    own passthrough. Redact BEFORE truncating: ``subprocess.run`` already
+    holds all of ``raw_bytes`` in memory (no streaming cap upstream), so
+    truncating first buys nothing, and it used to leave a secret that
+    straddled the cut point reduced to a prefix — ``vault.redact`` matches
+    the full dispensed value, so a partial match wasn't scrubbed and the
+    fragment reached the caller in cleartext (MC-979 audit finding,
+    confirmed 2026-09-26: a 130-byte secret with a 110-byte cap leaked its
+    first 110 bytes unredacted). Truncated by encoded byte length so the cap
+    still means what it says once redaction markers have changed the
+    string's length."""
+    text = vault.redact(raw_bytes.decode('utf-8', errors='replace'))
+    encoded = text.encode('utf-8')
+    if len(encoded) > _EXEC_MAX_OUTPUT_BYTES:
+        text = encoded[:_EXEC_MAX_OUTPUT_BYTES].decode('utf-8', errors='ignore')
         text += '\n...[truncated]'
-    return vault.redact(text)
+    return text
 
 
 @bp.route('/api/secrets/exec', methods=['POST'])

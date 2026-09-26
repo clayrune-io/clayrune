@@ -200,6 +200,40 @@ def test_output_is_scrubbed_of_the_secret_value(client):
     assert '[redacted:demo.token]' in data['stderr']
 
 
+def test_secret_straddling_the_truncation_boundary_is_not_leaked(client, monkeypatch):
+    """MC-979 audit finding (confirmed 2026-09-26): `_decode_and_scrub` used
+    to truncate the raw bytes to the output cap BEFORE redacting. A secret
+    value that straddled the cut point was reduced to a prefix that
+    `vault.redact`'s full-string match couldn't scrub, so that prefix reached
+    the caller in cleartext — with a 130-byte secret and a 110-byte cap, the
+    first 110 bytes leaked unredacted. Redaction now runs on the full text
+    before the cap is applied.
+    """
+    from mc.blueprints import secrets_routes as sr
+    # 100 'A's + the secret (would straddle a byte-110 cap pre-redaction) +
+    # 50 'B's after it, so the cap still has to truncate something even once
+    # the secret is safely replaced by its (fixed-length) marker first.
+    monkeypatch.setattr(sr, '_EXEC_MAX_OUTPUT_BYTES', 130)
+    straddling_secret = 'S' * 130
+    _create(client, name='big.token', value=straddling_secret)
+    filler_then_secret_cmd = [
+        sys.executable, '-c',
+        'import os, sys; sys.stdout.write("A" * 100 + os.environ["X"] + "B" * 50)']
+    res = _exec(client, env=[['X', 'big.token']], command=filler_then_secret_cmd)
+    assert res.status_code == 200
+    data = res.get_json()
+    body_text = res.get_data(as_text=True)
+    assert straddling_secret not in data['stdout']
+    assert straddling_secret not in body_text
+    # No recognizable fragment of the secret (the old bug's leaked prefix)
+    # may survive either.
+    assert 'S' * 20 not in data['stdout']
+    assert 'S' * 20 not in body_text
+    assert '[redacted:big.token]' in data['stdout']
+    assert '...[truncated]' in data['stdout']
+    assert 'B' * 50 not in data['stdout']
+
+
 def test_raw_flag_is_rejected(client):
     _create(client)
     res = _exec(client, env=[['X', 'demo.token']], command=PRINT_ENV_CMD, raw=True)
