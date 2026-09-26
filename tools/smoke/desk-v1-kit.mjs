@@ -330,6 +330,37 @@ async function runInteractionChecks(browser) {
   if (posyResult.clearedAfterSend === '') ok('Posy box: input clears after Send');
   else fail(`Posy box: input not cleared after Send: ${JSON.stringify(posyResult.clearedAfterSend)}`);
 
+  // ── Posy box compact/arrow options (T3 shell polish): defaults stay
+  // byte-identical; the new options are opt-in and additive. ─────────────
+  const posyOptsResult = await page.evaluate(() => {
+    const K = window.DeskV1Kit;
+    const defaultHTML = K.posyBoxHTML({ inputId: 'posy-default-probe', scopeLabel: 'This article' });
+    const compactHTML = K.posyBoxHTML({ inputId: 'posy-compact-probe', scopeLabel: 'This article', compact: true, sendStyle: 'arrow' });
+    const before = document.createElement('div');
+    before.innerHTML = defaultHTML;
+    const after = document.createElement('div');
+    after.innerHTML = compactHTML;
+    return {
+      defaultHasName: !!before.querySelector('.desk-thread-name'),
+      defaultHasTextSend: !!before.querySelector('.btn-dispatch[data-posy-send]'),
+      defaultHasArrow: !!before.querySelector('.desk-v1-posy-send-arrow'),
+      compactHasName: !!after.querySelector('.desk-thread-name'),
+      compactHasScope: !!after.querySelector('.desk-v1-posy-scope'),
+      compactArrowLabel: (after.querySelector('.desk-v1-posy-send-arrow') || {}).getAttribute
+        ? after.querySelector('.desk-v1-posy-send-arrow').getAttribute('aria-label') : null,
+      compactHasTextSend: !!after.querySelector('.btn-dispatch[data-posy-send]'),
+    };
+  });
+  if (posyOptsResult.defaultHasName && posyOptsResult.defaultHasTextSend && !posyOptsResult.defaultHasArrow) {
+    ok('Posy box: default (no compact/sendStyle) still shows the name row and text Send button');
+  } else fail(`Posy box: default markup changed: ${JSON.stringify(posyOptsResult)}`);
+  if (!posyOptsResult.compactHasName && posyOptsResult.compactHasScope) {
+    ok('Posy box: compact:true drops the name row but keeps the scope chip');
+  } else fail(`Posy box: compact:true did not hide the name row / lost the scope chip: ${JSON.stringify(posyOptsResult)}`);
+  if (posyOptsResult.compactArrowLabel === 'Send' && !posyOptsResult.compactHasTextSend) {
+    ok(`Posy box: sendStyle:'arrow' renders a round icon button labelled "Send", not the text pill`);
+  } else fail(`Posy box: sendStyle:'arrow' did not render the expected icon button: ${JSON.stringify(posyOptsResult)}`);
+
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught.length) uncaught.forEach((e) => fail('uncaught page error: ' + e));
   await ctx.close();

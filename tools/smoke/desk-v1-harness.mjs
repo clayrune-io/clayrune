@@ -111,6 +111,9 @@ async function runTone(browser, tone) {
   } else {
     fail(`[${tone.name}] Home crumb wrong: title=${JSON.stringify(homeTitle)}, hasBack=${!!homeBack}`);
   }
+  const homeToolsEmpty = await page.$eval('#desk-v1-crumb-tools', (el) => el.children.length === 0).catch(() => null);
+  if (homeToolsEmpty) ok(`[${tone.name}] Home: #desk-v1-crumb-tools stays empty (one-row crumb, T3's optional slot unused)`);
+  else fail(`[${tone.name}] Home: #desk-v1-crumb-tools is not empty: ${JSON.stringify(homeToolsEmpty)}`);
   const homeLink = await page.$('.desk-v1-stub-link');
   if (homeLink) ok(`[${tone.name}] Home renders the fixture campaign as a link`);
   else fail(`[${tone.name}] Home did not render the fixture campaign`);
@@ -133,6 +136,9 @@ async function runTone(browser, tone) {
   const summaryText = await page.textContent('#desk-v1-camp-summary');
   if ((summaryText || '').includes('Windows beta testers')) ok(`[${tone.name}] summary slot resolves the fixture campaign`);
   else fail(`[${tone.name}] summary slot did not resolve the campaign: ${JSON.stringify(summaryText)}`);
+  const campToolsEmpty = await page.$eval('#desk-v1-crumb-tools', (el) => el.children.length === 0).catch(() => null);
+  if (campToolsEmpty) ok(`[${tone.name}] campaign: #desk-v1-crumb-tools stays empty (one-row crumb)`);
+  else fail(`[${tone.name}] campaign: #desk-v1-crumb-tools is not empty: ${JSON.stringify(campToolsEmpty)}`);
 
   // Back from campaign returns to Home.
   await page.click('.desk-v1-back');
@@ -153,8 +159,22 @@ async function runTone(browser, tone) {
     const title = (await page.textContent('.desk-v1-crumb-title').catch(() => '') || '').trim();
     const bodyText = await page.textContent('#desk-v1-body').catch(() => '');
     const notBuilt = /is not built yet/.test(bodyText || '');
-    if (title.toLowerCase() === route && !notBuilt) {
+    if (route === 'review') {
+      // T3 shell polish: review's own crumb-title is intentionally empty —
+      // its doc label/count + controls render into the shell's
+      // #desk-v1-crumb-tools slot instead (frame 12b's one row). See the
+      // ROUTES.review comment in desk-v1-shell.js.
+      const toolsText = (await page.textContent('#desk-v1-crumb-tools').catch(() => '') || '');
+      if (title === '' && /to review/.test(toolsText) && !notBuilt) {
+        ok(`[${tone.name}] route "review" renders its own stub, crumb-title intentionally empty, doc label/count lives in #desk-v1-crumb-tools`);
+      } else {
+        fail(`[${tone.name}] route "review" did not render correctly: title=${JSON.stringify(title)}, toolsText=${JSON.stringify(toolsText)}, fellBackToShellStub=${notBuilt}`);
+      }
+    } else if (title.toLowerCase() === route && !notBuilt) {
       ok(`[${tone.name}] route "${route}" renders its own stub (not the shell's fallback)`);
+      const toolsEmpty = await page.$eval('#desk-v1-crumb-tools', (el) => el.children.length === 0).catch(() => null);
+      if (toolsEmpty) ok(`[${tone.name}] route "${route}": #desk-v1-crumb-tools stays empty (one-row crumb)`);
+      else fail(`[${tone.name}] route "${route}": #desk-v1-crumb-tools is not empty: ${JSON.stringify(toolsEmpty)}`);
     } else {
       fail(`[${tone.name}] route "${route}" did not render correctly: title=${JSON.stringify(title)}, fellBackToShellStub=${notBuilt}`);
     }

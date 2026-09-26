@@ -124,6 +124,11 @@
   function _pair() { return _st && _st.versionId ? _findFamilyVersion(_st.versionId) : null; }
 
   // ── render ─────────────────────────────────────────────────────────────
+  function _clearCrumbTools() {
+    const host = document.getElementById('desk-v1-crumb-tools');
+    if (host) host.innerHTML = '';
+  }
+
   function _renderAll() {
     const el = _st.el;
     _closeSelToolbar();
@@ -135,10 +140,15 @@
           <div class="desk-v1-review-empty-body">Every piece in this campaign is scheduled, published, skipped or archived.</div>
           <button type="button" class="desk-v1-stub-link" onclick="deskV1Back()">‹ Back to campaign</button>
         </div>`;
+      _clearCrumbTools();
       return;
     }
     const pair = _pair();
-    if (!pair) { el.innerHTML = `<div class="desk-v1-stub"><div class="desk-v1-stub-body">This version no longer exists.</div></div>`; return; }
+    if (!pair) {
+      el.innerHTML = `<div class="desk-v1-stub"><div class="desk-v1-stub-body">This version no longer exists.</div></div>`;
+      _clearCrumbTools();
+      return;
+    }
     const { family, version } = pair;
     const channel = _channel(version.channelId);
     const detail = _detail(version.id);
@@ -147,7 +157,8 @@
 
     el.innerHTML = `
       <div class="desk-v1-review">
-        ${_headerHTML(family, idx, list.length, isVideo)}
+        <div class="desk-v1-review-savestatus" id="desk-v1-review-savestatus"></div>
+        <div id="desk-v1-review-conflict"></div>
         <div class="desk-v1-review-layout">
           <div class="desk-v1-review-main" id="desk-v1-review-main">
             ${isVideo ? _videoBodyHTML(family, version) : _articleBodyHTML(family, version, detail)}
@@ -157,29 +168,38 @@
           </div>
         </div>
       </div>`;
+    _renderCrumbTools(idx, list.length, isVideo);
     _wireAll(el, family, version, channel, detail, isVideo);
   }
 
-  function _headerHTML(family, idx, total, isVideo) {
+  // Frame 12b's one row (back link · doc label/count · controls): rendered
+  // straight into the shell's own #desk-v1-crumb-tools slot (desk-v1-
+  // shell.js) instead of a second header row inside `el`, so it survives
+  // every _renderAll() the same way the crumb itself does. Shell rebuilds
+  // this slot fresh on every navigation (deskV1Render), so no teardown is
+  // needed when leaving the review route.
+  function _renderCrumbTools(idx, total, isVideo) {
+    const host = document.getElementById('desk-v1-crumb-tools');
+    if (!host) return;
     const kindGlyph = isVideo ? '🎥' : '📄';
     const kindWord = isVideo ? 'Video' : 'Article';
-    return `
-      <div class="desk-v1-review-header">
-        <div class="desk-v1-review-kind">${kindGlyph} ${kindWord} · ${idx + 1} of ${total} to review</div>
-        <div class="desk-v1-review-controls">
-          <div class="desk-v1-review-modetoggle" role="tablist" aria-label="Review or edit">
-            <button type="button" data-mode-btn="review" aria-pressed="${_st.mode === 'review'}">👁 Review</button>
-            <button type="button" data-mode-btn="edit" aria-pressed="${_st.mode === 'edit'}">✎ Edit text</button>
-          </div>
-          <button type="button" class="desk-v1-review-showchanges" data-show-changes aria-pressed="${_st.showChanges}">Show changes${_st.showChanges ? ' ✓' : ''}</button>
-          <div class="desk-v1-review-stepper">
-            <button type="button" data-step="-1" aria-label="Previous needs-you item" ${idx <= 0 ? 'disabled' : ''}>‹</button>
-            <button type="button" data-step="1" aria-label="Next needs-you item" ${idx >= total - 1 ? 'disabled' : ''}>›</button>
-          </div>
+    host.innerHTML = `
+      <div class="desk-v1-review-kind">${kindGlyph} ${kindWord} · ${idx + 1} of ${total} to review</div>
+      <div class="desk-v1-review-controls">
+        <div class="desk-v1-review-modetoggle" role="tablist" aria-label="Review or edit">
+          <button type="button" data-mode-btn="review" aria-pressed="${_st.mode === 'review'}">👁 Review</button>
+          <button type="button" data-mode-btn="edit" aria-pressed="${_st.mode === 'edit'}">✎ Edit text</button>
         </div>
-      </div>
-      <div class="desk-v1-review-savestatus" id="desk-v1-review-savestatus"></div>
-      <div id="desk-v1-review-conflict"></div>`;
+        <button type="button" class="desk-v1-review-showchanges" data-show-changes aria-pressed="${_st.showChanges}">Show changes${_st.showChanges ? ' ✓' : ''}</button>
+        <div class="desk-v1-review-stepper">
+          <button type="button" data-step="-1" aria-label="Previous needs-you item" ${idx <= 0 ? 'disabled' : ''}>‹</button>
+          <button type="button" data-step="1" aria-label="Next needs-you item" ${idx >= total - 1 ? 'disabled' : ''}>›</button>
+        </div>
+      </div>`;
+    host.querySelectorAll('[data-mode-btn]').forEach((b) => b.onclick = () => _setMode(b.dataset.modeBtn));
+    const scEl = host.querySelector('[data-show-changes]');
+    if (scEl) scEl.onclick = () => { _st.showChanges = !_st.showChanges; _renderAll(); };
+    host.querySelectorAll('[data-step]').forEach((b) => b.onclick = () => _step(parseInt(b.dataset.step, 10)));
   }
 
   // ── article body ───────────────────────────────────────────────────────
@@ -363,6 +383,7 @@
 
     const posyHTML = window.DeskV1Kit ? window.DeskV1Kit.posyBoxHTML({
       inputId: 'desk-v1-review-posy-input', scopeLabel: 'This article',
+      compact: true, sendStyle: 'arrow',
     }) : '';
 
     return `
@@ -412,11 +433,6 @@
 
   // ── wiring ─────────────────────────────────────────────────────────────
   function _wireAll(el, family, version, channel, detail, isVideo) {
-    el.querySelectorAll('[data-mode-btn]').forEach((b) => b.onclick = () => _setMode(b.dataset.modeBtn));
-    const scEl = el.querySelector('[data-show-changes]');
-    if (scEl) scEl.onclick = () => { _st.showChanges = !_st.showChanges; _renderAll(); };
-    el.querySelectorAll('[data-step]').forEach((b) => b.onclick = () => _step(parseInt(b.dataset.step, 10)));
-
     el.querySelectorAll('[data-claim-addsource]').forEach((b) => b.onclick = () => { _st.claims[b.dataset.claimAddsource].addingSource = true; _renderAll(); });
     el.querySelectorAll('[data-source-cancel]').forEach((b) => b.onclick = () => { _st.claims[b.dataset.sourceCancel].addingSource = false; _renderAll(); });
     el.querySelectorAll('[data-source-input]').forEach((inp) => inp.oninput = () => { _st.claims[inp.dataset.sourceInput].sourceDraft = inp.value; });
