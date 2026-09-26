@@ -59,6 +59,18 @@ app = Flask(__name__, static_folder=str(REPO / 'static'), static_url_path='/stat
 app.register_blueprint(br.bp)
 
 
+@app.route('/_harness/crash/<sid>', methods=['POST'])
+def _crash(sid):
+    # Simulates a pane Chromium dying under a live session (what a lost
+    # profile lock or a crash looks like to the pane). Only ever a process
+    # this harness itself launched.
+    s = browser_sessions.get(sid)
+    if not s:
+        return {'error': 'unknown session'}, 404
+    s['proc'].kill()
+    return {'ok': True}
+
+
 @app.route('/_harness/registered')
 def _registered():
     return {'registered': [dict(v, pid=k) for k, v in registered.items()]}

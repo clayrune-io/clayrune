@@ -18,6 +18,8 @@
 //      and then the popup, never a restored blank tab.
 //   6. HiDPI (devicePixelRatio 2): the JPEG is 2x the CSS viewport, and a
 //      click on the middle of the picture must reach the page's middle.
+//   7. The session's Chromium dies: the pane explains it on screen instead
+//      of sitting black behind a red x.
 //
 // RUN: node tools/smoke/browser-pane-real-frames.mjs   (exit 0 = all pass)
 import { chromium } from 'playwright';
@@ -176,6 +178,23 @@ try {
     if (press && Math.abs(press.x - 640) < 30 && Math.abs(press.y - 400) < 30)
       ok(`dpr 2: centre click sent at (${Math.round(press.x)},${Math.round(press.y)}) CSS px (JPEG ${nat.join('x')})`);
     else fail(`dpr 2: centre click sent at ${press ? `(${Math.round(press.x)},${Math.round(press.y)})` : 'nothing'}, want ~(640,400); JPEG ${nat.join('x')}`);
+    await stopAll(page);
+    await page.close();
+  }
+
+  // ── 7: the session's Chromium dies — the pane must say so on screen, not
+  //       sit black with only a red x (MC-976: Ron's dead 'main' session) ──
+  {
+    const page = await openPane();
+    await typeUrlAndExpectFrames(page, 'before crash');
+    const sid = await page.evaluate(() => fetch('/api/project/smoke/browser/status').then(r => r.json())
+      .then(d => d.sessions.find(s => s.status === 'running').session_id));
+    await page.evaluate(sid => fetch('/_harness/crash/' + sid, { method: 'POST' }), sid);
+    try {
+      await page.waitForSelector('#mc-browser-pane [data-bp="ended"]', { timeout: 15000 });
+      const txt = await page.locator('#mc-browser-pane [data-bp="ended"]').innerText();
+      ok(`dead session explained on screen: "${txt.slice(0, 70)}"`);
+    } catch (e) { fail('dead session: pane shows no explanation within 15s'); }
     await stopAll(page);
     await page.close();
   }

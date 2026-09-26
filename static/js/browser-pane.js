@@ -534,7 +534,15 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     }
     if (d.img) { img.src = 'data:image/jpeg;base64,' + d.img; spin.style.color = '#4caf50'; }
     if (d.url && document.activeElement !== urlInput) urlInput.value = d.url;
-    if (d.status && d.status !== 'running') { spin.textContent = '×'; spin.style.color = '#e57373'; }
+    if (d.status && d.status !== 'running') {
+      spin.textContent = '×'; spin.style.color = '#e57373';
+      // A session that died before its first tab attached never sends `tabs`,
+      // so the strip (and its "+") never appears and the screen stays black
+      // with nothing but this red x (MC-976: Ron's 'main' pane, Chromium
+      // exited rc=21 on a profile dir a leftover Chromium still held). Say
+      // why, on the screen itself.
+      if (d.status === 'error') _bpShowEnded(win, d.error || 'the browser session ended');
+    }
     // A download never repaints the page (Chromium generates no screencast
     // frame for it — see the root-cause note on Browser.downloadWillBegin in
     // browser_routes.py), so this SSE message is the ONLY signal a download
@@ -703,6 +711,18 @@ function _bpRenderTabs(win, tabs, activeId) {
     const urlInput = win.querySelector('[data-bp="url"]');
     if (urlInput) { urlInput.value = ''; urlInput.focus(); }
   });
+}
+
+function _bpShowEnded(win, reason) {
+  const img = win && win.querySelector('[data-bp="screen"]');
+  const box = img && img.parentElement;
+  if (!box || box.querySelector('[data-bp="ended"]')) return;
+  const el = document.createElement('div');
+  el.setAttribute('data-bp', 'ended');
+  el.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;' +
+    'padding:24px;text-align:center;color:#e0e0e0;font-size:13px;line-height:1.5;background:rgba(0,0,0,.6)';
+  el.textContent = 'Browser session ended: ' + reason + '. Close the pane and open it again.';
+  box.appendChild(el);
 }
 
 function _bpSendTabAction(action, targetId) {
