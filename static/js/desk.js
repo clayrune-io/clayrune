@@ -272,6 +272,7 @@ function deskReplyToPosy() {
 // Harvest is idempotent by `ref` (mc/desk_harvest.py), so a double-click costs
 // a round trip and nothing else — no confirm, no disabled-state gymnastics.
 async function deskHarvest() {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   if (_deskHarvesting) return;
   _deskHarvesting = true;
   renderDesk();
@@ -295,6 +296,7 @@ async function deskHarvest() {
 // generate — it briefs. The draft lands PENDING on the Queue; nothing here can
 // publish it, and nothing here should ever grow the ability to.
 async function deskDraft(signalId, voice, campaignId) {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   if (_deskDrafting.has(signalId)) return;
   _deskDrafting.add(signalId);
   renderDesk();
@@ -417,6 +419,7 @@ async function deskNewCampaign() {
 // Submit WITHOUT tearing the form down on failure — the whole point of replacing
 // the prompt chain. The modal only closes on success.
 async function deskSubmitCampaign() {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   const err = document.getElementById('camp-error');
   const show = (m) => { if (err) { err.textContent = m; err.style.display = 'block'; } };
 
@@ -526,6 +529,7 @@ async function deskVoices() {
 // keyword score. The agent is briefed to describe a register and never to quote,
 // because a transcript can contain anything that was pasted into it.
 async function deskSeedVoice(name) {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   const err = document.getElementById('desk-voice-error');
   const show = (m) => { if (err) { err.textContent = m; err.style.display = 'block'; } };
   const btn = document.querySelector(`.desk-voice-row[data-voice="${name}"] .desk-seed-btn`);
@@ -602,6 +606,7 @@ async function deskVoiceDestination(name) {
 }
 
 async function deskSaveVoiceDestination(name) {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   const modalId = '__desk_destination_' + name;
   const err = document.getElementById('dest-error');
   const show = (m) => { if (err) { err.textContent = m; err.style.display = 'block'; } };
@@ -683,6 +688,7 @@ async function deskPlatformRules(platform) {
 }
 
 async function deskSavePlatformRules(platform) {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   const modalId = '__desk_platform_' + platform;
   const err = document.getElementById('plat-error');
   const show = (m) => { if (err) { err.textContent = m; err.style.display = 'block'; } };
@@ -706,6 +712,7 @@ async function deskSavePlatformRules(platform) {
 // one that matters; the rest exist so a campaign can be stopped without being
 // deleted, because a dropped campaign is still evidence of a decision.
 async function deskCampaignState(id, state) {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   try {
     await _deskFetch(`/api/desk/campaigns/${encodeURIComponent(id)}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -715,6 +722,25 @@ async function deskCampaignState(id, state) {
     if (typeof showToast === 'function') showToast('Could not update it: ' + e.message, 4000);
   }
   await _loadDesk();
+}
+
+// ── read-only while Desk v1 is on (T0d, docs/desk_v1_r0_plan.md, MIG-04) ────
+// openDesk() already routes to v1 exclusively while the flag is on, so this
+// legacy view is normally never even opened. It stays reachable anyway (a
+// modal opened before the flag was toggled, or a keyboard shortcut/deep link
+// that calls a handler directly) — every write handler below checks this
+// first, because a stale legacy view writing underneath v1's fixtures/future
+// store would corrupt state nothing on screen shows you touched.
+function _deskReadOnly() {
+  const _cfg = (typeof _globalConfig !== 'undefined' && _globalConfig) || {};
+  return !!_cfg.desk_v1;
+}
+
+function _deskReadOnlyBlock() {
+  if (typeof showToast === 'function') {
+    showToast('Desk v1 is on — this legacy view is read-only. Open the new Desk to make changes.', 4500);
+  }
+  return true;
 }
 
 // ── open ────────────────────────────────────────────────────────────────────
@@ -755,6 +781,7 @@ async function openDesk() {
       </div>
     </div>
     <div style="padding:0 24px 20px 28px">
+      <div id="desk-legacy-ro-banner"></div>
       <div class="desk-tabs" id="desk-tabs"></div>
       <div id="desk-body" style="max-height:66vh;overflow-y:auto"></div>
     </div>`;
@@ -820,6 +847,21 @@ function renderDesk() {
   if (window.deferRepaintWhileTyping
       && window.deferRepaintWhileTyping(bodyEl, renderDesk)) return;
 
+  // T0d (MIG-04): legacy write handlers all check _deskReadOnly() themselves,
+  // so this banner is a heads-up, not the enforcement — kept to inline styles
+  // rather than a new desk-v1.css class, since this ticket's file list is
+  // desk.js only (the shared kit's own visual language lands with T0b).
+  const roBanner = document.getElementById('desk-legacy-ro-banner');
+  if (roBanner) {
+    roBanner.innerHTML = _deskReadOnly()
+      ? `<div style="margin-bottom:10px;padding:8px 12px;border:1px solid var(--border2);
+           border-radius:8px;background:var(--surface2);color:var(--text-dim);font-size:13px">
+           Desk v1 is on — this view is read-only.
+           <a style="color:var(--accent);cursor:pointer" onclick="closeModalById('${DESK_MODAL_ID}');deskV1Open();">Open the new Desk &rsaquo;</a>
+         </div>`
+      : '';
+  }
+
   const pending = _deskPendingCount();
   const labels = {
     board: 'Board', queue: 'Queue', calendar: 'Calendar', ledger: 'Ledger',
@@ -859,6 +901,7 @@ function renderDesk() {
 // word "shipped", and it cannot explain itself. So Posy reads the feed and
 // proposes; each proposal cites its signal and says WHY in her words.
 async function deskTriage() {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   if (_deskTriaging) return;
   _deskTriaging = true;
   renderDesk();
@@ -952,6 +995,7 @@ function _deskDraftedSignalIds() {
 // Accepting IS the instruction to write — one gate here ("worth saying?"), then
 // the Queue's separate gate ("said right?"). Never merged.
 async function deskDecideProposal(id, decision) {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   try {
     const out = await _deskFetch(`/api/desk/proposals/${encodeURIComponent(id)}/${decision}`,
                                  { method: 'POST' });
@@ -1552,11 +1596,13 @@ function _deskUpdateCharCounter(el) {
 // so this is not a second write path, just a desk-aware wrapper that also
 // refreshes the soft-lock/char-counter/checks state the review pane shows.
 async function deskQueueSaveBody(e, projectId, itemId) {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   await saveSocialBody(e, projectId, itemId);
   renderDesk();
 }
 
 async function deskQueueRelease(projectId, itemId) {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   const res = await fetch(API_BASE + `/api/project/${projectId}/social/queue/${itemId}/approve`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ decided_by: 'user' }),
@@ -1582,6 +1628,7 @@ async function deskQueueRelease(projectId, itemId) {
 // approve_social_queue_item (project_routes.py), which sets it to
 // `not item.get('edited')` regardless of what the request claims.
 function deskQueueReleaseUnedited(projectId, itemId) {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   if (!confirm('Release this draft without ever editing it?\n\nThis is the single '
     + 'highest-risk artifact the system can produce — it will be flagged on the receipt.')) return;
   deskQueueRelease(projectId, itemId);
@@ -1689,6 +1736,7 @@ function deskPostViaApi() {
 // That function still serves the pre-Desk Social tab (cross-social.js,
 // render-core.js) unchanged.
 async function deskQueueRecordPermalink(projectId, itemId, skip) {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   const input = document.getElementById(`desk-permalink-${itemId}`);
   const url = skip ? '' : ((input && input.value) || '').trim();
   if (!skip && !url) {
@@ -1715,6 +1763,7 @@ async function deskQueueRecordPermalink(projectId, itemId, skip) {
 }
 
 async function deskQueueKill(projectId, itemId) {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   if (!confirm('Kill this draft? This cannot be undone.')) return;
   await patchSocialItem(projectId, itemId, { status: 'rejected' });
   if (_deskQueueSelectedId === projectId + ':' + itemId) _deskQueueSelectedId = null;
@@ -1732,6 +1781,7 @@ function deskQueueSchedule() {
 }
 
 async function deskQueueAttachAsset(projectId, itemId) {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   const path = (prompt('Path to the media file (under data/media/):') || '').trim();
   if (!path) return;
   await patchSocialItem(projectId, itemId, { media: [path] });
@@ -2027,6 +2077,7 @@ function _deskThreadComposerHTML(item, disabled) {
 // pushback note" into "and dispatches Posy to revise" — both already true of
 // that route before this pass touched anything.
 async function deskThreadSendPushback(projectId, itemId) {
+  if (_deskReadOnly()) return _deskReadOnlyBlock();
   const ta = document.getElementById('desk-thread-input-' + itemId);
   const note = ta ? ta.value.trim() : '';
   if (!note) return;
