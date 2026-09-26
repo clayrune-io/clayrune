@@ -27,7 +27,10 @@
     // future child of review would need a real label again.
     review:        { parent: 'campaign', label: '',             render: () => window.deskV1RenderReview },
     calendar:      { parent: 'campaign', label: 'Calendar',     render: () => window.deskV1RenderCalendar },
-    video:         { parent: 'campaign', label: 'Video',        render: () => window.deskV1RenderVideo },
+    // Dynamic like _campaignLabel above: frame 12d's crumb title is the video
+    // family's own title ("Install in two minutes"), not the static word
+    // "Video" — falls back to it during intake (no family picked yet).
+    video:         { parent: 'campaign', label: _videoLabel,   render: () => window.deskV1RenderVideo },
     conversations: { parent: 'campaign', label: 'Conversations', render: () => window.deskV1RenderConversations },
     results:       { parent: 'campaign', label: 'Results',      render: () => window.deskV1RenderResults },
   };
@@ -36,6 +39,12 @@
     const camps = (window.DeskV1Fixtures && window.DeskV1Fixtures.campaigns) || [];
     const c = camps.find(x => x.id === (params || {}).campaignId);
     return c ? c.name : 'Campaign';
+  }
+
+  function _videoLabel(params) {
+    const families = (window.DeskV1Fixtures && window.DeskV1Fixtures.families) || [];
+    const f = families.find(x => x.id === (params || {}).familyId);
+    return f ? f.title : 'Video';
   }
 
   function _routeLabel(entry) {
@@ -61,13 +70,9 @@
     deskV1Render();
   }
 
-  function deskV1Render() {
-    if (!_stack.length) _stack.push({ route: 'home', params: {} });
-    const entry = _stack[_stack.length - 1];
+  function _renderCrumb(entry) {
     const crumb = document.getElementById('desk-v1-crumb');
-    const body = document.getElementById('desk-v1-body');
-    if (!crumb || !body) return;
-
+    if (!crumb) return false;
     const parentEntry = _stack.length > 1 ? _stack[_stack.length - 2] : null;
     crumb.innerHTML = `
       ${parentEntry
@@ -75,6 +80,27 @@
         : ''}
       <span class="desk-v1-crumb-title">${esc(_routeLabel(entry))}</span>
       <div class="desk-v1-crumb-tools" id="desk-v1-crumb-tools"></div>`;
+    return true;
+  }
+
+  // Lets a route patch its OWN current-entry params in place and refresh just
+  // the crumb title off them — no stack push. T5 needs this jumping straight
+  // from the video intake sheet to a freshly-created family's Director: the
+  // params-based crumb title (_videoLabel, mirroring _campaignLabel above)
+  // would otherwise keep reading the stale pre-creation params (no familyId
+  // yet) until the next real navigation, and a stack push here would make
+  // Back land on the intake sheet it replaced instead of the campaign.
+  function deskV1PatchParams(patch) {
+    if (!_stack.length) return;
+    Object.assign(_stack[_stack.length - 1].params, patch || {});
+    _renderCrumb(_stack[_stack.length - 1]);
+  }
+
+  function deskV1Render() {
+    if (!_stack.length) _stack.push({ route: 'home', params: {} });
+    const entry = _stack[_stack.length - 1];
+    const body = document.getElementById('desk-v1-body');
+    if (!_renderCrumb(entry) || !body) return;
 
     const routeDef = ROUTES[entry.route];
     const renderFn = routeDef && routeDef.render();
@@ -167,4 +193,5 @@
   window.deskV1Nav = deskV1Nav;
   window.deskV1Back = deskV1Back;
   window.deskV1Render = deskV1Render;
+  window.deskV1PatchParams = deskV1PatchParams;
 })();

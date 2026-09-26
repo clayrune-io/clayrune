@@ -185,13 +185,18 @@
 
   // items: [{id, label}] (e.g. running campaigns). "+ New campaign" is
   // appended automatically — every Add to… menu offers it (UX-05).
-  function addToMenu(triggerEl, items, onPick) {
+  // opts.noAppendNew (T5): a plain choice menu (e.g. the Posy scope picker)
+  // has no "+ New campaign" concept — opt out rather than filter it out
+  // after the fact. Defaults to appending, so every existing 3-arg caller is
+  // byte-identical.
+  function addToMenu(triggerEl, items, onPick, opts) {
     if (!triggerEl) return;
+    opts = opts || {};
     _closeAddToMenu();
     const menu = document.createElement('div');
     menu.className = 'desk-v1-addto-menu';
     menu.setAttribute('role', 'menu');
-    const all = (items || []).concat([{ id: '__new__', label: '+ New campaign' }]);
+    const all = opts.noAppendNew ? (items || []) : (items || []).concat([{ id: '__new__', label: '+ New campaign' }]);
     all.forEach((item, i) => {
       const b = document.createElement('button');
       b.type = 'button';
@@ -319,8 +324,16 @@
   // Wires a mounted posyBoxHTML() instance: chips FILL the input (never
   // auto-send — same fixed-set convention as the Queue thread's quick
   // replies), Send/Enter calls onSend(text) and clears the box.
-  function bindPosyBox(containerEl, inputId, onSend) {
+  //
+  // opts.onScopeClick (T5): the `data-scope-trigger` button posyBoxHTML()
+  // already renders (whenever `scopeLabel` is set) has never been wired to
+  // anything — T3's static "About: This article" never needed a dropdown.
+  // T5's scope genuinely changes (Scene N / Whole video / a version), so it
+  // needs a click hook; passing nothing leaves the button exactly as inert
+  // as it's always been (existing 3-arg callers are unaffected).
+  function bindPosyBox(containerEl, inputId, onSend, opts) {
     if (!containerEl) return;
+    opts = opts || {};
     containerEl.querySelectorAll('.desk-v1-posy-chips .agent-question-chip').forEach((btn) => {
       btn.onclick = () => {
         const ta = document.getElementById(inputId);
@@ -339,6 +352,10 @@
     if (ta) ta.addEventListener('keydown', (e) => {
       if (typeof window.handleInputEnter === 'function') window.handleInputEnter(e, send, null);
     });
+    const scopeBtn = containerEl.querySelector('[data-scope-trigger]');
+    if (scopeBtn && typeof opts.onScopeClick === 'function') {
+      scopeBtn.onclick = () => opts.onScopeClick(scopeBtn);
+    }
   }
 
   window.DeskV1Kit = {
