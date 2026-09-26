@@ -277,10 +277,18 @@
   // already established for the Queue's push-back thread. This renders
   // markup only — a surface ticket supplies the real scope/suggestion/chips
   // and wires `onSend`; the kit doesn't invent a suggestion source. ────────
+  //
+  // opts.compact / opts.sendStyle are opt-in (frame 12b): compact drops the
+  // avatar+"Posy" name row so the scope chip is the box's only top-row
+  // content; sendStyle:'arrow' swaps the text Send button for a round icon
+  // one. Both default OFF, producing byte-identical markup to before either
+  // option existed — callers that don't pass them are unaffected.
   function posyBoxHTML(opts) {
     opts = opts || {};
     const inputId = opts.inputId || ('desk-v1-posy-input-' + Math.random().toString(36).slice(2));
-    const avatar = (typeof window.avatarHTML === 'function') ? window.avatarHTML(opts.avatar || 'posy', 24) : '';
+    const compact = !!opts.compact;
+    const avatar = (!compact && typeof window.avatarHTML === 'function') ? window.avatarHTML(opts.avatar || 'posy', 24) : '';
+    const nameHTML = compact ? '' : '<span class="desk-thread-name">Posy</span>';
     const scope = opts.scopeLabel
       ? `<button type="button" class="desk-v1-posy-scope" data-scope-trigger="1">About: ${esc(opts.scopeLabel)} &#9662;</button>`
       : '';
@@ -293,14 +301,17 @@
           chips.map(c => `<button type="button" class="agent-question-chip" data-chip="${esc(c)}">${esc(c)}</button>`).join('')
         }</div>`
       : '';
+    const sendBtnHTML = opts.sendStyle === 'arrow'
+      ? `<button type="button" class="desk-v1-posy-send-arrow" data-posy-send="${esc(inputId)}" aria-label="Send">&#10148;</button>`
+      : `<button class="btn-dispatch" data-posy-send="${esc(inputId)}">Send</button>`;
     return `
-      <div class="desk-v1-posy-box">
-        <div class="desk-thread-head">${avatar}<span class="desk-thread-name">Posy</span>${scope}</div>
+      <div class="desk-v1-posy-box${compact ? ' desk-v1-posy-box-compact' : ''}">
+        <div class="desk-thread-head">${avatar}${nameHTML}${scope}</div>
         <div class="agent-output desk-v1-posy-output">${suggestionHTML}</div>
         ${chipsHTML}
         <div class="agent-input-row">
           <textarea class="agent-task-input" id="${esc(inputId)}" rows="1" placeholder="Tell Posy what to change…"></textarea>
-          <button class="btn-dispatch" data-posy-send="${esc(inputId)}">Send</button>
+          ${sendBtnHTML}
         </div>
       </div>`;
   }

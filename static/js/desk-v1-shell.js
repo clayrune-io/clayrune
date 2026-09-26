@@ -20,7 +20,12 @@
     home:          { parent: null,      label: 'Home',          render: () => window.deskV1RenderHome },
     campaign:      { parent: 'home',    label: _campaignLabel,  render: () => _renderCampaignSkeleton },
     rules:         { parent: 'campaign', label: 'Rules',        render: () => window.deskV1RenderRules },
-    review:        { parent: 'campaign', label: 'Review',       render: () => window.deskV1RenderReview },
+    // Empty label: T3 renders its own doc-label/count into the crumb-tools
+    // slot below instead (frame 12b, one row). Safe only because no route's
+    // `parent` is 'review' today — the SAME label also becomes a child
+    // route's back-button text (see _routeLabel/deskV1Render above), so a
+    // future child of review would need a real label again.
+    review:        { parent: 'campaign', label: '',             render: () => window.deskV1RenderReview },
     calendar:      { parent: 'campaign', label: 'Calendar',     render: () => window.deskV1RenderCalendar },
     video:         { parent: 'campaign', label: 'Video',        render: () => window.deskV1RenderVideo },
     conversations: { parent: 'campaign', label: 'Conversations', render: () => window.deskV1RenderConversations },
@@ -68,7 +73,8 @@
       ${parentEntry
         ? `<button type="button" class="desk-v1-back" onclick="deskV1Back()">&lsaquo; ${esc(_routeLabel(parentEntry))}</button>`
         : ''}
-      <span class="desk-v1-crumb-title">${esc(_routeLabel(entry))}</span>`;
+      <span class="desk-v1-crumb-title">${esc(_routeLabel(entry))}</span>
+      <div class="desk-v1-crumb-tools" id="desk-v1-crumb-tools"></div>`;
 
     const routeDef = ROUTES[entry.route];
     const renderFn = routeDef && routeDef.render();
@@ -77,8 +83,10 @@
       renderFn(body, entry.params);
     } else {
       // Stub file hasn't loaded (or its ticket hasn't landed yet) — an honest
-      // placeholder, never a silent blank pane.
-      body.innerHTML = `<div class="desk-v1-stub"><div class="desk-v1-stub-body">${esc(_routeLabel(entry))} is not built yet.</div></div>`;
+      // placeholder, never a silent blank pane. review's route label is ''
+      // (T3 renders its own doc-label into crumb-tools instead), so fall
+      // back to a name here or a missing renderer reads " is not built yet.".
+      body.innerHTML = `<div class="desk-v1-stub"><div class="desk-v1-stub-body">${esc(_routeLabel(entry) || 'This page')} is not built yet.</div></div>`;
     }
   }
 
