@@ -1508,6 +1508,11 @@ def _parse_position(text):
         'revisit_if': revisit_if,
         'supersedes': str(meta.get('supersedes') or ''),
         'pin': str(meta.get('pin') or '').strip().lower() == 'true',
+        # MC-944 step 8 (Cond 11/12): absent on every pre-existing position
+        # file (all 15+ predate this stamp) — '' reads as "unknown
+        # provenance", never as "interactive", matching `_stamp_origin`'s own
+        # fail-safe default everywhere else in this module.
+        'origin': str(meta.get('origin') or ''),
     }
     warnings = _validate_position_record(rec)
     if warnings:
@@ -2037,7 +2042,8 @@ def _extract_continuity(project, delta, model, owner=None, *, provider=None,
 def write_position(project, subject, verdict, reason,
                    expires_when='', decided='', body='', slug='', triggers='',
                    claim='', evidence=None, durability='', holds_while='',
-                   revisit_if='', supersedes='', pin=False):
+                   revisit_if='', supersedes='', pin=False,
+                   task='', trigger_type=''):
     """Record a decision — usually a decision NOT to do something.
 
     Returns the note's filename. Supersedes in place: recording a position on a
@@ -2064,6 +2070,17 @@ def write_position(project, subject, verdict, reason,
     note, distinct from the in-place same-subject supersession below); `pin`
     (ledger override, capped at 5 — the cap is enforced by the ledger reader
     in a later build step, not here).
+
+    `task`/`trigger_type` (MC-944 step 8): `origin` is SERVER-STAMPED via
+    `_stamp_origin` (same helper `write_topic_note` uses), never a
+    caller-supplied value. Every pre-existing caller omits both, so
+    `_stamp_origin('', '')` stamps `unattended` (fail-safe: unknown
+    provenance defaults to the more restrictive class, same posture
+    `write_topic_note` and the `backlog_done` mint call site already use).
+    The negation obligation scan (§5.2, Cond 11/12) is the first caller that
+    passes real values. No `generated` stamp here (unlike `write_topic_note`)
+    — positions already carry `decided`, and Cond 11/12 need only `origin`
+    for the consumer_unattended read-floor gate.
 
     Leaf-locked (MEMORY_DESIGN_V2_SPEC.md §16 step 1 / §10.3 G4): the
     read-prior / compose / write sequence below is a read-modify-write over
@@ -2139,6 +2156,7 @@ def write_position(project, subject, verdict, reason,
             front['supersedes'] = supersedes
         if pin:
             front['pin'] = 'true'
+        front['origin'] = _stamp_origin(task, trigger_type)
         front['decided'] = (decided or '').strip() or now_iso()[:10]
         text = _skills.dump_skill_md(front, (body or '').strip() + prior + '\n')
         _atomic_write_text(path, text)
@@ -2562,7 +2580,15 @@ def _memory_search(project, query, topk=3, expand=None, record=None,
             score += idf[t] * (f * (_BM25_K1 + 1.0)) / (f + denom_len)
         if not matched:
             continue
-        if consumer_unattended and u.get('cls') == 'topic':
+        if consumer_unattended and u.get('cls') in ('topic', 'position'):
+            # MC-944 step 8 (Condition 11/12) — the negation obligation scan
+            # can write a position from the SAME unattended triggers mint
+            # already fires from (hivemind close, backlog->done, docs
+            # artifact scan). CLAUDE.md's learning-safety rail ("a human
+            # must be on at least one side of every learning loop") makes no
+            # exception for cls: this gate is a property of `origin`, not of
+            # which write path produced the file, so it must cover positions
+            # exactly as it already covers topic mints below.
             if _note_frontmatter(u['text']).get('origin') == 'unattended':
                 continue
         _trig = u.get('subject_terms') or set()
