@@ -2147,7 +2147,7 @@ def write_position(project, subject, verdict, reason,
 
 def write_topic_note(project, slug, description, body, *, note_type='project',
                       triggers='', task='', trigger_type='', actor='',
-                      supersedes=''):
+                      supersedes='', mint_candidates=''):
     """Mint a NEW topic note (MEMORY_DESIGN_V2_SPEC.md §7 Condition 27 /
     §4.1's `origin`+`generated` provenance, Condition 4/22 "mint WRITEs
     fail-open"). First real caller of `_stamp_origin`/`_stamp_generated`
@@ -2180,6 +2180,13 @@ def write_topic_note(project, slug, description, body, *, note_type='project',
     `_mem_supersede_graph`, same split as `[[wikilinks]]`. Never an edit to
     the predecessor: the back edge (`superseded_by`) is derived, not stored.
 
+    `mint_candidates` (§6.5 Condition 22, MC-944 step 7): comma-joined
+    predecessor slugs the overlap detector flagged when `supersedes` is the
+    literal sentinel `'unresolved'` — the top-3 the RESOLVE question offers.
+    Written verbatim, never parsed back into a real edge (`_mem_supersede_
+    graph` already drops `unresolved` as a no-edge case); ignored entirely
+    when `supersedes` is not `'unresolved'`.
+
     Returns the note's filename, or '' if skipped (already exists / bad slug).
     """
     slug = (slug or '').strip()
@@ -2205,6 +2212,8 @@ def write_topic_note(project, slug, description, body, *, note_type='project',
             lines.append(f'triggers: {triggers.strip()}')
         if supersedes:
             lines.append(f'supersedes: {supersedes.strip()}')
+        if supersedes.strip() == 'unresolved' and mint_candidates:
+            lines.append(f'mint_candidates: {mint_candidates.strip()}')
         lines.append(f'origin: {origin}')
         lines.append('generated:')
         lines.append(f"  by: {generated['by']}")
@@ -2908,6 +2917,11 @@ def _note_frontmatter(text):
     frontmatter parser (`mc/skills.py` — "no nested maps, no flow-style") does
     not structure-parse; a non-empty raw value is treated as a truthy human-
     witness SIGNAL here, never counted or indexed by entry.
+
+    `mint_candidates`/`unrelated_to` (§6.5 Condition 22, MC-944 step 7): read
+    for `resolve_mint`/`unresolved_mint_block` only — a comma-joined slug
+    list and RESOLVE's own negative answer, respectively. Neither feeds
+    scoring or the supersede graph.
     """
     try:
         meta, _b = _skills.parse_skill_md(text)
@@ -2920,7 +2934,9 @@ def _note_frontmatter(text):
             'triggers': str(meta.get('triggers') or ''),
             'supersedes': str(meta.get('supersedes') or '').strip(),
             'origin': str(meta.get('origin') or '').strip(),
-            'verified': str(meta.get('verified') or '').strip()}
+            'verified': str(meta.get('verified') or '').strip(),
+            'mint_candidates': str(meta.get('mint_candidates') or '').strip(),
+            'unrelated_to': str(meta.get('unrelated_to') or '').strip()}
 
 
 def note_triggers(project, name, description, explicit_triggers='', units=None):
