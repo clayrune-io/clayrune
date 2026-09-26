@@ -22,6 +22,15 @@
 (function () {
   const DEFAULT_SLOP_PX = 8;
   const DEFAULT_LONG_PRESS_MS = 400;
+  // Published on <body> for every activated drag regardless of caller —
+  // `activeBodyClass` above is the caller's OWN visual hook (floor.js's
+  // `hire-active` drives its dimming CSS) and callers won't all share one.
+  // The global Escape-closes-modal handler (index.html) needs a single,
+  // caller-agnostic "a drag is in flight" signal so Desk's own drags (once
+  // it grows one) get the same Esc-cancels-drag-not-modal exemption Floor's
+  // hire drag already had — checking a Floor-specific class there meant any
+  // OTHER caller's drag closed the modal underneath it on Escape.
+  const DRAG_ACTIVE_BODY_CLASS = 'pd-drag-active';
 
   // `opts` contract (all but the state-slot accessors are optional):
   //   isDragActive()          -> true if the caller already has a drag running
@@ -73,6 +82,7 @@
       // must never risk being retargeted away from whatever it actually hit.
       try { st.el.setPointerCapture(st.pointerId); } catch (err) { /* best-effort */ }
       if (navigator.vibrate) { try { navigator.vibrate(15); } catch (err) { /* not every device */ } }
+      document.body.classList.add(DRAG_ACTIVE_BODY_CLASS);
       if (opts.activeBodyClass) document.body.classList.add(opts.activeBodyClass);
       if (opts.draggingClass) st.el.classList.add(opts.draggingClass);
       const ghost = document.createElement('div');
@@ -135,6 +145,7 @@
 
     function teardown(wasDrag) {
       if (opts.onTeardown) opts.onTeardown(st, wasDrag);
+      document.body.classList.remove(DRAG_ACTIVE_BODY_CLASS);
       if (opts.activeBodyClass) document.body.classList.remove(opts.activeBodyClass);
       if (opts.draggingClass) st.el.classList.remove(opts.draggingClass);
       if (st.ghost) { st.ghost.remove(); st.ghost = null; }
