@@ -1088,6 +1088,30 @@ def test_handle_target_closed_clears_a_dialog_open_on_that_target():
     assert session['dialogs_seq'] == 2
 
 
+def test_page_disposition_closes_restored_tabs_and_focuses_popups():
+    # MC-976: a named profile's relaunch restores the last run's tabs (plus our
+    # command-line about:blank). Target.setDiscoverTargets announced them like
+    # popups and the pane switched to one — black. Only pages THIS session
+    # produced (an opener, or a "+" request) may take focus.
+    session = {'root_target_id': 'root', 'requested_tabs': 0}
+    page = lambda tid, **kw: dict({'type': 'page', 'targetId': tid, 'url': 'about:blank'}, **kw)
+    assert br._page_disposition(session, page('root')) is None
+    assert br._page_disposition(session, {'type': 'iframe', 'targetId': 'f'}) is None
+    assert br._page_disposition(session, page('restored', url='https://www.linkedin.com/')) == 'close'
+    assert br._page_disposition(session, page('blank')) == 'close'
+    # A rel=noopener link still carries openerId (canAccessOpener False).
+    assert br._page_disposition(session, page('popup', openerId='root')) == 'focus'
+
+
+def test_page_disposition_plus_button_tab_takes_focus_once():
+    session = {'root_target_id': 'root', 'requested_tabs': 1}
+    assert br._page_disposition(session, page_ := {'type': 'page', 'targetId': 'new'}) == 'focus'
+    assert session['requested_tabs'] == 0
+    # Remembered: targetCreated and attachedToTarget for the same tab agree.
+    assert br._page_disposition(session, page_) == 'focus'
+    assert br._page_disposition(session, {'type': 'page', 'targetId': 'other'}) == 'close'
+
+
 # ── /api/browser/tab route ───────────────────────────────────────────────────
 
 def test_tab_route_unknown_session_404(app_client):

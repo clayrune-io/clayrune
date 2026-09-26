@@ -664,6 +664,45 @@ def _close_stale_sibling_popups(session, send, opener_id, keep_target_id):
             session['error'] = f'stale popup close failed: {e}'
 
 
+def _page_disposition(session, target_info):
+    """What to do with a page target this connection has just learned about:
+    'focus' (show it), 'close', or None (not a page we manage — the root tab
+    itself, or not a page at all). Decided once per target and remembered, so
+    Target.targetCreated and the later Target.attachedToTarget agree.
+
+    A page is ours only if something THIS session did produced it: a popup or
+    link opened by a tab we hold (it carries an `openerId`, even a
+    rel=noopener one — measured 2026-09-25, canAccessOpener=False but openerId
+    set), or a tab the pane's "+" requested (`requested_tabs`). Anything else
+    is a tab the named profile RESTORED from its last run, plus our own
+    command-line about:blank once the restored tab has taken the URL we asked
+    for. Target.setDiscoverTargets announces those exactly like a new popup,
+    and they used to be auto-attached AND switched to — stopping the real
+    page's screencast and leaving the pane on a blank background tab (MC-976,
+    Ron's black pane with tabs 'about:blank','about:blank','Microsoft
+    Authentication'). Measured: every relaunch of a profile restored all of
+    the previous run's tabs plus one more blank; they arrive up to ~1s after
+    the devtools endpoint opens, so a snapshot at connect time misses some.
+    They hold nothing of the user's (cookies live in the profile, not the
+    tab), so they are closed rather than kept to pile up.
+    """
+    if target_info.get('type') != 'page':
+        return None
+    tid = target_info.get('targetId')
+    if not tid or tid == session.get('root_target_id'):
+        return None
+    known = session.setdefault('page_disposition', {})
+    if tid not in known:
+        if target_info.get('openerId'):
+            known[tid] = 'focus'
+        elif session.get('requested_tabs', 0) > 0:
+            session['requested_tabs'] -= 1
+            known[tid] = 'focus'
+        else:
+            known[tid] = 'close'
+    return known[tid]
+
+
 def _handle_target_closed(session, send, target_id):
     """A target went away (`Target.targetDestroyed` or `detachedFromTarget`) —
     drop its tab entry and, if it was the active one, return focus to its
@@ -781,6 +820,11 @@ def _run_cdp(session):
         session['tabs'] = {root_id: {'session_id': None, 'url': session.get('url') or '',
                                      'title': '', 'opener_id': None}}
         session['tabs_seq'] = 1
+        # Tabs asked for through the pane's "+" (Target.createTarget) that have
+        # not attached yet — the only opener-less pages that are ours; see
+        # _page_disposition.
+        session['requested_tabs'] = 0
+        session['page_disposition'] = {}
         session['dialog'] = None
         session['dialogs_seq'] = 0
         session['file_chooser'] = None
@@ -906,6 +950,7 @@ def _run_cdp(session):
                             # per-target) command -- sent with NO session_id,
                             # unlike the generic `else` branch below which
                             # always stamps the active tab's session_id.
+                            session['requested_tabs'] = session.get('requested_tabs', 0) + 1
                             send('Target.createTarget', {'url': params.get('url') or 'about:blank'})
                         elif method == '_dialog_response':
                             tabs = session.get('tabs') or {}
@@ -1034,7 +1079,13 @@ def _run_cdp(session):
                 # `Target.attachToTarget({flatten: True})` itself. Do that here
                 # for every new page target so the tab strip actually sees it.
                 ti = (msg.get('params') or {}).get('targetInfo') or {}
-                if ti.get('type') == 'page' and not ti.get('attached'):
+                disposition = _page_disposition(session, ti)
+                if disposition == 'close':
+                    try:
+                        send('Target.closeTarget', {'targetId': ti.get('targetId')})
+                    except Exception as e:
+                        session['error'] = f'restored tab close failed: {e}'
+                elif disposition == 'focus' and not ti.get('attached'):
                     try:
                         send('Target.attachToTarget',
                              {'targetId': ti.get('targetId'), 'flatten': True})
@@ -1045,7 +1096,10 @@ def _run_cdp(session):
                 ti = p.get('targetInfo') or {}
                 sid = p.get('sessionId')
                 tid = ti.get('targetId')
-                if tid and ti.get('type') == 'page':
+                disposition = _page_disposition(session, ti)
+                if disposition == 'close':
+                    pass  # Target.closeTarget already sent on targetCreated
+                elif disposition == 'focus':
                     tabs = session.setdefault('tabs', {})
                     tabs[tid] = {'session_id': sid, 'url': ti.get('url', ''),
                                 'title': ti.get('title', ''), 'opener_id': ti.get('openerId'),
