@@ -242,6 +242,10 @@ async function _loadConversationsInner(projectId) {
     const fresh = await res.json();
     conversationsCache[projectId] = fresh;
     refreshModal();
+    // refreshModal keeps an already-mounted output node, so a chain that only
+    // becomes known now (cold open raced this fetch) needs the control added.
+    const _openSid = activeAgentTab[projectId];
+    if (_openSid) window._restoreRolloverButton?.(_openSid);
   } catch(e) {
     // Same reasoning as _loadAgentLogInner above: leave the previous list
     // standing on failure instead of silently going blank (f_6506aeb9).

@@ -2668,7 +2668,8 @@ class ClaudeRuntime(AgentRuntime):
         return out
 
     def parse_transcript_file(self, path: Path,
-                              max_messages: int = 2000) -> List[Dict[str, Any]]:
+                              max_messages: int = 2000,
+                              user_text_cap: Optional[int] = 5000) -> List[Dict[str, Any]]:
         """Parse a Claude JSONL transcript file into message dicts for display.
 
         Mirrors _parse_transcript_messages() in server.py. Uses parse_event()
@@ -2683,6 +2684,12 @@ class ClaudeRuntime(AgentRuntime):
         TAIL — most-recent messages are what users care about for read-only
         display of a finished conversation; head-truncation would hide the
         actual work product behind the opening prompt.
+
+        `user_text_cap=None` returns user turns uncapped. The chat renderer
+        needs that: a rollover/handoff turn is routinely longer than 5000
+        chars, and capping it BEFORE strip_injected_preamble cuts off the
+        footer that strip anchors on, so the whole replayed handoff rendered
+        as one "> Ron:" bubble (drop_shipping_company 55d11a4a, 7726 chars).
         """
         messages: List[Dict[str, Any]] = []
         try:
@@ -2717,7 +2724,8 @@ class ClaudeRuntime(AgentRuntime):
                         else:
                             text = str(content).strip() if content else ''
                         if text:
-                            messages.append({'role': 'user', 'text': text[:5000],
+                            messages.append({'role': 'user',
+                                             'text': text if user_text_cap is None else text[:user_text_cap],
                                              'timestamp': ts})
                     elif ev.type in (EventType.ASSISTANT_TEXT, EventType.TOOL_USE,
                                      EventType.THINKING):

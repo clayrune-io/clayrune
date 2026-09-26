@@ -621,6 +621,9 @@ def _switch_active_tab(session, send, new_target_id, old_session_id=None):
         except Exception as e:
             session['error'] = f'stop old tab screencast failed: {e}'
     session['active_target_id'] = new_target_id
+    # The opener may not navigate when an OAuth popup closes. Without this,
+    # fresh opener frames still carry the closed popup's URL in the SSE.
+    session['live_url'] = tabs[new_target_id].get('url') or 'about:blank'
     # Drop the stale frame immediately rather than let the pane keep showing
     # the PREVIOUS tab's last frame under the new tab's address/tab-strip
     # state — a wrong-but-plausible-looking frame is worse than a brief blank.
@@ -644,45 +647,6 @@ def _activate_tab_cmd(session, target_id, send):
     old_id = session.get('active_target_id')
     old_sid = (session.get('tabs', {}).get(old_id) or {}).get('session_id')
     _switch_active_tab(session, send, target_id, old_session_id=old_sid)
-
-
-def _close_stale_sibling_popups(session, send, opener_id, keep_target_id):
-    """A fresh popup from `opener_id` just opened — close any OTHER tab that
-    shares the same opener, e.g. an abandoned `about:blank` window.open() or
-    a "Sign in with Google" attempt the user never finished before clicking
-    the button again. Real browsers leave these piling up because a human
-    can `Alt+Tab`/close them; the pane's tab strip is the only place they'd
-    ever be reachable, so an unfinished OAuth attempt that gets retried would
-    otherwise orphan a tab forever (MC-976: a live session accumulated 9 —
-    3x about:blank, 5x 'Sign in - Google Accounts', across repeated retries).
-    A popup can only sensibly represent the CALLER's most recent attempt, so
-    closing the previous sibling on a new one is safe — it never touches the
-    root tab (`opener_id` is only set on a target CDP reports as opened BY
-    another target) or a tab opened by someone else.
-
-    `opener_id` alone is too broad: plain `target=_blank` links share it too
-    (e.g. two search results opened from the same page), and those are
-    independent tabs the user meant to keep, not retries. `canAccessOpener`
-    is the CDP-reported signal that actually separates the cases — a real
-    `window.open()`/OAuth popup needs `window.opener` to post its result back
-    and keeps it `true`; sites that want plain new tabs (Google search
-    results included) mark their links `rel=noopener`, which CDP reports as
-    `canAccessOpener: false`. So only close a sibling that either (a) can
-    still talk to its opener, or (b) never left `about:blank` — nothing of
-    the user's to lose there either way. A noopener tab that has already
-    navigated to real content is left alone."""
-    if not opener_id:
-        return
-    tabs = session.get('tabs') or {}
-    for tid, tab in list(tabs.items()):
-        if tid == keep_target_id or tab.get('opener_id') != opener_id:
-            continue
-        if not (tab.get('can_access_opener') or (tab.get('url') or '') in ('', 'about:blank')):
-            continue
-        try:
-            send('Target.closeTarget', {'targetId': tid})
-        except Exception as e:
-            session['error'] = f'stale popup close failed: {e}'
 
 
 def _pin_root_window(session, ws, next_id):
@@ -1531,7 +1495,8 @@ def _run_cdp(session):
                     # requiring a manual tab click to ever see it.
                     _switch_active_tab(session, send, tid,
                                        old_session_id=_active_session_id(session))
-                    _close_stale_sibling_popups(session, send, ti.get('openerId'), tid)
+                    # Shared opener does not mean stale: concurrent OAuth/helper
+                    # windows may still need each other. Let the site or user close them.
                     # A popup opens at whatever size headless Chromium picks
                     # (784x470 CSS measured) -- size it to the pane, like the
                     # tab that opened it. Own thread: _fit_windows blocks.

@@ -141,3 +141,42 @@ def test_every_link_csid_in_the_chain_is_individually_fetchable(client):
         resp = test_client.get(f'/api/project/proj1/transcript/{csid}/full-buffer')
         assert resp.status_code == 200, csid
         assert resp.get_json()['log_lines'], csid
+
+
+def test_handoff_longer_than_the_5000_char_user_cap_is_still_stripped(client):
+    """A real handoff turn is routinely longer than 5000 chars (Dave's
+    drop_shipping_company head 55d11a4a: 7726). parse_transcript_file capped
+    user text at 5000 BEFORE the renderer's strip, cutting off the footer the
+    strip anchors on, so the whole replayed handoff rendered as a "> Ron:"
+    bubble and the head's own first line read "=== Prior conversation...".
+    The row must still chain to its predecessor, and the head must render
+    only its own turns."""
+    test_client, project_path = client
+    _write(project_path, 'prior', 1_000_000_000,
+           [('user', 'first question'), ('assistant', 'first answer')])
+    long_body = 'User: first question\n\nAssistant: ' + ('first answer padding ' * 400)
+    handoff = _handoff(long_body, native_id='prior')
+    assert len(handoff) > 5000 and handoff.find(art.HANDOFF_FOOTER) > 5000
+    _write(project_path, 'head', 1_000_000_100,
+           [('user', handoff), ('assistant', 'answer after the handoff'),
+            ('user', 'next real question')])
+    rows = test_client.get('/api/project/proj1/conversations?limit=50').get_json()
+    assert next(r for r in rows if r['claude_session_id'] == 'head')['rolled_from'] == ['prior']
+    lines = test_client.get('/api/project/proj1/transcript/head/full-buffer').get_json()['log_lines']
+    joined = '\n'.join(lines)
+    assert '=== Prior conversation' not in joined
+    assert 'padding' not in joined
+    assert 'answer after the handoff' in joined
+    assert 'next real question' in joined
+
+
+def test_user_text_cap_still_applies_to_the_rendered_turn_and_other_callers(tmp_path):
+    """Only the renderer opts out of the pre-strip cap; it re-caps after the
+    strip, and the default for every other caller (handoff builder, FTS) is
+    unchanged."""
+    f = tmp_path / 't.jsonl'
+    f.write_text(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': 'x' * 9000}}),
+                 encoding='utf-8')
+    rt = art.ClaudeRuntime()
+    assert len(rt.parse_transcript_file(f)[0]['text']) == 5000
+    assert len(rt.parse_transcript_file(f, user_text_cap=None)[0]['text']) == 9000

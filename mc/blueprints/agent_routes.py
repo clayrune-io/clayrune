@@ -6208,7 +6208,10 @@ def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_me
         f = _find_transcript_file(project_path, claude_sid)
         if not f:
             return [], []
-        msgs = _parse_transcript_messages(f, max_messages=max_messages)
+        # Uncapped, then strip, then cap: the strip anchors on the handoff
+        # FOOTER, which a pre-strip 5000-char cap cuts off (see
+        # parse_transcript_file's user_text_cap).
+        msgs = _parse_transcript_messages(f, max_messages=max_messages, user_text_cap=None)
         lines = []
         ts = []
         for m in msgs:
@@ -6224,7 +6227,7 @@ def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_me
                 # Same two helpers the conversation-label path already uses:
                 # strip closed blocks, then drop a turn that is nothing but an
                 # unclosed/truncated one.
-                txt = _agent_runtime.strip_injected_preamble(m.get('text') or '')
+                txt = _agent_runtime.strip_injected_preamble(m.get('text') or '')[:5000]
                 if txt and not _agent_runtime.is_nonuser_message(txt):
                     lines.append(f"\n> {user_label}: {txt}\n")
                     ts.append(m.get('timestamp') or None)

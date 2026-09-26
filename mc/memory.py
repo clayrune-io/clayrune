@@ -499,14 +499,14 @@ def persona_ref_for_session(project_path, claude_session_id):
         return None
 
 
-def _parse_transcript_messages(f, max_messages=2000):
+def _parse_transcript_messages(f, max_messages=2000, **kw):
     """Parse a Claude Code JSONL transcript into [{role, text, tool, timestamp}] for read-only display.
 
     role: 'user' | 'assistant' | 'tool_call'
     Returns at most max_messages entries; on overflow, keeps the TAIL (most
     recent) — see ClaudeRuntime.parse_transcript_file() for the rationale.
     """
-    return _agent_runtime.get_runtime('claude').parse_transcript_file(f, max_messages=max_messages)  # pyright: ignore[reportAttributeAccessIssue]  # moved-verbatim typing debt (mop)
+    return _agent_runtime.get_runtime('claude').parse_transcript_file(f, max_messages=max_messages, **kw)  # pyright: ignore[reportAttributeAccessIssue]  # moved-verbatim typing debt (mop)
 
 
 def _native_memory_path(project_path):

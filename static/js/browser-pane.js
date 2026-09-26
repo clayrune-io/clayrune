@@ -56,6 +56,11 @@ let _bpUpHandler = null;
 // -- huge blurry text and black bars). Disconnected on teardown like the
 // mouseup handler above.
 let _bpViewObserver = null;
+// Keeps a maximized pane filling the viewport across a browser-window resize
+// (item 4 of the maximize spec). Tracked/removed on teardown like the mouseup
+// handler above, for the same reason — a stale one bound to a detached `win`
+// would keep resizing an element no longer on the page.
+let _bpResizeHandler = null;
 // Set when a Ctrl/Cmd+V is let through to the browser, cleared by the `paste`
 // event it should produce. Still set after the grace period => no paste event
 // arrived, so fall back to the clipboard API. See the keydown handler.
@@ -204,6 +209,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       <span data-bp="profile" title="" style="font-size:10px;padding:0 6px;border:1px solid #4a4a4a;border-radius:99px;color:#9ecb9e;flex:0 0 auto;cursor:pointer;display:none"></span>
       <span data-bp="spin" style="color:#888;font-size:12px;width:14px">&#9679;</span>
       <button data-bp="minimize" title="Minimize" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 8px">&#8211;</button>
+      <button data-bp="maximize" title="Maximize" aria-label="Maximize" style="background:none;border:none;color:#ddd;cursor:pointer;padding:2px 8px;display:flex;align-items:center">${_bpMaxIcon(false)}</button>
       <button data-bp="close" title="Close" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 8px">&#10005;</button>
     </div>
     <div data-bp="tabstrip" style="display:none;flex:0 0 auto;gap:2px;padding:4px 8px 0;background:#242424;overflow-x:auto"></div>
@@ -324,6 +330,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   let drag = null, rz = null;
   bar.addEventListener('pointerdown', e => {
     if (e.target.closest('button') || e.target.tagName === 'INPUT') return;  // let controls work
+    if (_bpMaxState) return;  // dragging a maximized pane would strand it mid-move, half-restored
     drag = { sx: e.clientX, sy: e.clientY, l: win.offsetLeft, t: win.offsetTop };
     bar.setPointerCapture(e.pointerId);
   });
@@ -580,6 +587,23 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   if (_bpViewObserver) _bpViewObserver.disconnect();
   _bpViewObserver = new ResizeObserver(() => { clearTimeout(viewTimer); viewTimer = setTimeout(sendView, 150); });
   _bpViewObserver.observe(screenBox);
+
+  // ── maximize/restore — wired here (not with the other buttons above) so it
+  // can call `sendView` directly instead of waiting on the ResizeObserver's
+  // 150ms debounce: a toggle should re-fit the remote page immediately, the
+  // same "existing fit-to-pane path" a corner-grip drag relies on the debounce
+  // for. `grip` is hidden while maximized -- free-resizing a filled viewport
+  // makes no sense, same as a maximized OS window.
+  const maxBtn = $('maximize');
+  maxBtn.onclick = () => _bpToggleMaximize(win, grip, maxBtn, sendView);
+  bar.addEventListener('dblclick', e => {
+    if (e.target.closest('button') || e.target.tagName === 'INPUT') return;
+    _bpToggleMaximize(win, grip, maxBtn, sendView);
+  });
+  if (_bpResizeHandler) window.removeEventListener('resize', _bpResizeHandler);
+  _bpResizeHandler = () => { if (_bpMaxState) _bpApplyMaximizedRect(win); };
+  window.addEventListener('resize', _bpResizeHandler);
+
   setTimeout(() => imeShadow.focus(), 100);
   // Remember the open session so a page refresh (which wipes the SPA DOM but
   // leaves the backend Chromium running) can re-attach instead of orphaning it.
@@ -635,6 +659,87 @@ function _bpRestorePane(win) {
   try { win.style.zIndex = nextModalZ++; } catch (e) {}
   const imeShadow = win.querySelector('[data-bp="ime-shadow"]');
   if (imeShadow) imeShadow.focus();
+  // win's geometry (including a maximized rect — see _bpMaxState) was left
+  // untouched by minimize, so restoring from the dock chip comes back exactly
+  // as it was, maximized or not. Re-fit now rather than waiting on the
+  // ResizeObserver debounce: display:none -> flex does retrigger it, but this
+  // makes the re-fit deterministic instead of racing a 150ms timer.
+  const screenBox = win.querySelector('[data-bp="screen"]');
+  const box = screenBox && screenBox.parentElement;
+  if (box) {
+    const w = Math.floor(box.clientWidth), h = Math.floor(box.clientHeight);
+    if (w >= 50 && h >= 50) _bpSend({ type: 'viewport', w, h });
+  }
+}
+
+// ── maximize/restore ─────────────────────────────────────────────────────────
+// Mirrors the project modal's maximize control (render-core.js .modal-maximize
+// / interactions.js toggleModalMaximize): same glyph pair, same 'Maximize' /
+// 'Restore' title. The pane isn't a registered modal (openModals doesn't know
+// about it — see the minimize/restore comment above), so this can't ride
+// applySnap/unSnap; it reimplements just the geometry-capture/restore contract
+// against the pane's own inline-styled `win` element instead.
+let _bpMaxState = null;  // {l,t,w,h} pre-maximize geometry, or null when not maximized
+
+function _bpMaxIcon(isFull) {
+  // window._maxBtnInner (interactions.js) draws the identical glyph the modal
+  // maximize button uses; call it live rather than duplicating the two SVGs,
+  // with an inline fallback for the one call site (the pane's initial HTML)
+  // that can run before interactions.js has finished loading.
+  if (typeof window._maxBtnInner === 'function') return window._maxBtnInner(isFull);
+  return isFull
+    ? '<svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">' +
+      '<rect x="1.5" y="4.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3"/>' +
+      '<path d="M4.7 4.3V2.8a1.3 1.3 0 0 1 1.3-1.3h5.2a1.3 1.3 0 0 1 1.3 1.3V8a1.3 1.3 0 0 1-1.3 1.3H9.8" ' +
+      'stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>'
+    : '<svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">' +
+      '<rect x="2" y="2" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.3"/></svg>';
+}
+
+// Maximized = fills the whole Clayrune viewport (not just the workspace rect
+// the modal snap system carves out around the sidebar/header — the pane has
+// no such chrome to avoid). Border/radius are cleared too, matching
+// .modal-window.is-maximized .modal-content (render-core.js) — leaving the
+// 1px border on would make the box 2px wider/taller than the viewport it's
+// meant to exactly fill.
+function _bpApplyMaximizedRect(win) {
+  win.style.left = '0px';
+  win.style.top = '0px';
+  win.style.width = window.innerWidth + 'px';
+  win.style.height = window.innerHeight + 'px';
+  win.style.border = 'none';
+  win.style.borderRadius = '0';
+}
+
+function _bpToggleMaximize(win, grip, btn, sendView) {
+  if (!win || !win.isConnected) return;
+  if (_bpMaxState) {
+    const g = _bpMaxState; _bpMaxState = null;
+    win.style.left = g.left; win.style.top = g.top;
+    win.style.width = g.width; win.style.height = g.height;
+    win.style.border = g.border; win.style.borderRadius = g.borderRadius;
+    if (grip) grip.style.display = '';
+  } else {
+    // Captured as the exact CSS strings already on `win` (not offsetWidth/
+    // offsetHeight, which include the border and would inflate the box by
+    // 2x the border width if reapplied straight to style.width/height on
+    // restore).
+    _bpMaxState = {
+      left: win.style.left, top: win.style.top,
+      width: win.style.width, height: win.style.height,
+      border: win.style.border, borderRadius: win.style.borderRadius,
+    };
+    _bpApplyMaximizedRect(win);
+    // Free-resizing a maximized (viewport-filling) window makes no sense —
+    // same reason a maximized OS window's edges aren't draggable.
+    if (grip) grip.style.display = 'none';
+  }
+  if (btn) {
+    btn.innerHTML = _bpMaxIcon(!!_bpMaxState);
+    btn.title = _bpMaxState ? 'Restore' : 'Maximize';
+    btn.setAttribute('aria-label', btn.title);
+  }
+  if (typeof sendView === 'function') sendView();
 }
 
 let _bpDoneToasted = new Set();
@@ -840,6 +945,8 @@ function closeBrowserPane() {
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
   if (_bpUpHandler) { window.removeEventListener('mouseup', _bpUpHandler); _bpUpHandler = null; }
   if (_bpViewObserver) { _bpViewObserver.disconnect(); _bpViewObserver = null; }
+  if (_bpResizeHandler) { window.removeEventListener('resize', _bpResizeHandler); _bpResizeHandler = null; }
+  _bpMaxState = null;
   _bpPressed = false;
   // Reset the viewport guess: the next session may render at a different
   // size, and a stale value would mis-map every click before its first frame.
@@ -888,6 +995,8 @@ function _bpDetachView() {
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
   if (_bpUpHandler) { window.removeEventListener('mouseup', _bpUpHandler); _bpUpHandler = null; }
   if (_bpViewObserver) { _bpViewObserver.disconnect(); _bpViewObserver = null; }
+  if (_bpResizeHandler) { window.removeEventListener('resize', _bpResizeHandler); _bpResizeHandler = null; }
+  _bpMaxState = null;
   _bpPressed = false;
   // Reset the viewport guess: the next session may render at a different
   // size, and a stale value would mis-map every click before its first frame.
