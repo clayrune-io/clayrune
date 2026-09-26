@@ -109,8 +109,10 @@ async function runToneRenderChecks(browser, tone) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, tone);
 
   const cardCount = await page.$$eval('.desk-v1-home-camp-card', (els) => els.length);
-  if (cardCount === 1) ok(`[${tone.name}] one fixture campaign card renders`);
-  else fail(`[${tone.name}] expected 1 campaign card, got ${cardCount}`);
+  // §2: cards show every campaign with its state — camp-1 (Active) and,
+  // since T2b, camp-2 (Proposed).
+  if (cardCount === 2) ok(`[${tone.name}] both fixture campaign cards render (Active + Proposed)`);
+  else fail(`[${tone.name}] expected 2 campaign cards, got ${cardCount}`);
 
   const cardText = (await page.textContent('.desk-v1-home-camp-card').catch(() => '') || '');
   if (/Windows beta testers/.test(cardText) && /11\/30 tester signups/.test(cardText)) {
@@ -118,7 +120,7 @@ async function runToneRenderChecks(browser, tone) {
   } else {
     fail(`[${tone.name}] campaign card content wrong: ${JSON.stringify(cardText)}`);
   }
-  const badgeCount = await page.$$eval('.desk-v1-home-camp-card .desk-v1-channel-badge', (els) => els.length);
+  const badgeCount = await page.$eval('.desk-v1-home-camp-card', (el) => el.querySelectorAll('.desk-v1-channel-badge').length);
   if (badgeCount === 3) ok(`[${tone.name}] campaign card shows all 3 fixture channel badges`);
   else fail(`[${tone.name}] expected 3 channel badges, got ${badgeCount}`);
 
@@ -268,21 +270,13 @@ async function runChannelDropOnCard(browser) {
   await ctx.close();
 }
 
-// ── UX-03 "Which campaign?" on an ambiguous drop — exercised by adding a
-// second campaign at runtime (R0's own fixture only ships one). ────────────
+// ── UX-03 "Which campaign?" on an ambiguous drop — the fixture ships two
+// campaigns since T2b (camp-1 Active, camp-2 Proposed), so no runtime push. ─
 async function runAmbiguousDropChoosesCampaign(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
-  await page.evaluate(() => {
-    window.DeskV1Fixtures.campaigns.push({
-      id: 'camp-2', name: 'Second campaign', state: 'active',
-      goal: { metric: '', target: null, current: 0, deadline: null, tracked: false },
-      channelIds: [], rules: { reviewMode: 'each_piece', frequencyPerWeek: null, repliesMode: 'drafts', paid: false },
-    });
-    window.deskV1Nav('home', {});
-  });
   await page.waitForSelector('.desk-v1-home-camp-card', { timeout: 8000 });
   const cardCount = await page.$$eval('.desk-v1-home-camp-card', (els) => els.length);
-  if (cardCount === 2) ok('UX-03 setup: a second campaign card renders once added');
+  if (cardCount === 2) ok('UX-03 setup: two campaign cards render');
   else fail(`UX-03 setup: expected 2 cards, got ${cardCount}`);
 
   const shelfItem = await page.$('#desk-v1-home-shelf-channels .desk-v1-shelf-item[data-channel-id="ch-blog"]');
