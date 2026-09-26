@@ -15,6 +15,12 @@
  * a mocked /conversations fetch: the render reads conversationsCache live, so
  * seeding it is equivalent and keeps the fixture small.
  *
+ * NOT IN THE FIRST PAGE (2026-09-26): /conversations?limit=20 returned 18
+ * Scribe/condense transform transcripts for drop_shipping_company, so a chat
+ * older than the 20 freshest had no row, no `rolled_from`, and no button. The
+ * mock serves 20 filler rows WITHOUT the head unless the request carries
+ * `include=csid-head`; the open chat must fetch its own row that way.
+ *
  * Fixture chain: oldest -> middle -> head (2 older links). Walks BOTH clicks:
  *   click 1 (part 2 of 3) loads 'middle' (nearest-to-head), prepended above
  *            the head's own lines already in the buffer;
@@ -73,6 +79,10 @@ try {
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   const fetched = [];
+  const convRequests = [];
+  const FILLER = Array.from({ length: 20 }, (_, i) => ({
+    claude_session_id: `csid-filler-${i}`, mc_session_id: `sess-filler-${i}`, turns: 2,
+    label: `filler chat ${i}`, rolled_from: [] }));
   await page.route('**/*', (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -93,15 +103,19 @@ try {
         body: JSON.stringify({ claude_session_id: 'csid-oldest', log_lines: OLDEST_LINES, log_line_ts: [null, null] }) });
     }
     if (path === `/api/project/${PID}/conversations`) {
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{
-        claude_session_id: 'csid-head', mc_session_id: 'sess-head', turns: 3,
-        rolled_from: ['csid-oldest', 'csid-middle'] }]) });
+      const inc = (url.searchParams.get('include') || '').split(',');
+      convRequests.push(url.search);
+      const head = { claude_session_id: 'csid-head', mc_session_id: 'sess-head', turns: 3,
+        rolled_from: ['csid-oldest', 'csid-middle'] };
+      return route.fulfill({ status: 200, contentType: 'application/json',
+        body: JSON.stringify(inc.includes('csid-head') ? [head, ...FILLER] : FILLER) });
     }
     if (path.endsWith('/full-buffer')) {
       return route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"transcript not found or empty"}' });
     }
     return route.abort();
   });
+  await page.addInitScript((f) => { window.__FILLER = f; }, FILLER);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
 
@@ -153,17 +167,28 @@ try {
     ? ok('button survives _repaintAgentOutput (the switchAgentTab path), exactly once, still "part 2 of 3"')
     : fail(`after _repaintAgentOutput expected 1 button "part 2 of 3", got ${JSON.stringify(afterRepaint)}`);
 
-  // A cold open can mount the output node before /conversations lands; the
-  // late fetch's refreshModal keeps the mounted node, so the control must be
-  // added by the fetch itself.
-  await page.evaluate(({ pid, s }) => { conversationsCache[pid] = []; window._repaintAgentOutput(s); }, { pid: PID, s: sid });
-  const goneWithoutRow = await page.evaluate((s) => !document.getElementById(`rollover-load-${s}`), sid);
-  goneWithoutRow ? ok('no row in conversationsCache yet -> no button (nothing to offer)')
+  // NOT in the first page: the cached list is 20 fresher chats, none of them
+  // the open one. The repaint finds no row, so no button yet; it must then
+  // fetch its own row (`include=`) and add the button when that lands,
+  // through the late-fetch path that keeps the already-mounted output node.
+  const openState = await page.evaluate(({ pid, s }) => {
+    conversationsCache[pid] = JSON.parse(JSON.stringify(window.__FILLER));
+    window._repaintAgentOutput(s);
+    return { noBtn: !document.getElementById(`rollover-load-${s}`), tab: activeAgentTab[pid] };
+  }, { pid: PID, s: sid, });
+  openState.noBtn ? ok('open chat absent from a 20-row first page -> no row yet, no button yet')
     : fail('button rendered with no rolled_from row to back it');
-  await page.evaluate((pid) => window.loadConversations(pid), PID);
+  openState.tab === sid ? ok('the chat is the project active tab (activeAgentTab)')
+    : fail(`activeAgentTab is ${JSON.stringify(openState.tab)}, expected ${sid}`);
   await page.waitForFunction((s) => !!document.getElementById(`rollover-load-${s}`), sid, { timeout: 5000 })
-    .then(() => ok('button appears once the late /conversations fetch brings the rolled_from row'))
-    .catch(() => fail('late /conversations fetch did not add the button to the already-mounted chat'));
+    .then(() => ok('button appears after the chat fetches its own row, with no user action'))
+    .catch(() => fail('open chat outside the first page never got its row, so never got the button'));
+  convRequests.some((q) => q.includes('include=csid-head'))
+    ? ok(`/conversations was asked to include the open chat's csid (${convRequests.filter((q) => q.includes('include=')).join(' ')})`)
+    : fail(`no /conversations request carried include=csid-head: ${JSON.stringify(convRequests)}`);
+  const inCache = await page.evaluate((pid) => (conversationsCache[pid] || []).some((c) => c.claude_session_id === 'csid-head'), PID);
+  inCache ? ok('the open chat row is now in conversationsCache')
+    : fail('the open chat row never reached conversationsCache');
 
   // ── Click 1: loads 'middle' (nearest-to-head), prepended above head lines ──
   await page.click(btnSel);
