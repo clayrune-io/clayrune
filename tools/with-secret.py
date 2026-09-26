@@ -50,15 +50,88 @@ login attempt).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mc import secrets_store as vault  # noqa: E402
+
+# How long the HTTP call to the exec-fallback route may take, end to end —
+# a little over the server route's own default command timeout
+# (`_EXEC_DEFAULT_TIMEOUT` in mc/blueprints/secrets_routes.py) so the route's
+# own timeout response always arrives before this client gives up first.
+_SERVER_EXEC_HTTP_TIMEOUT = 630
+
+
+def _run_via_server_exec(args: argparse.Namespace, cmd: list[str],
+                         project: str | None, unattended: bool,
+                         locked_message: str) -> int:
+    """MC-979 fallback: the vault is locked IN THIS PROCESS, but the
+    unwrapped master key lives only in whichever process a human unlocked
+    it in — after a dashboard unlock, that's the server's, never a freshly
+    spawned CLI (see mc/secrets_store.py's passphrase-lock section). Ask the
+    server, over the same loopback+token gate `POST /api/secrets/exec`
+    enforces, to run the command instead. Falls back to the original clear
+    'vault is locked' message — never a stack trace or a hang — if the
+    server is unreachable or also locked.
+    """
+    try:
+        token = vault.exec_token_path().read_text(encoding='utf-8').strip()
+    except OSError:
+        token = ''
+    if not token:
+        print(f"with-secret: {locked_message}", file=sys.stderr)
+        return 2
+
+    body = {
+        'env': [list(p) for p in args.env],
+        'user': [list(p) for p in args.user],
+        'totp': [list(p) for p in args.totp],
+        'stdin': args.stdin,
+        'project_id': project,
+        'unattended': unattended,
+        'command': cmd,
+        'cwd': os.getcwd(),
+        'claude_session_id': os.environ.get('CLAUDE_CODE_SESSION_ID', ''),
+    }
+    url = f'http://127.0.0.1:{vault.exec_route_port()}/api/secrets/exec'
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode('utf-8'), method='POST',
+        headers={'Content-Type': 'application/json',
+                'X-Clayrune-Exec-Token': token})
+    try:
+        with urllib.request.urlopen(req, timeout=_SERVER_EXEC_HTTP_TIMEOUT) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        try:
+            result = json.loads(e.read().decode('utf-8'))
+        except Exception:
+            print(f"with-secret: {locked_message}", file=sys.stderr)
+            return 2
+        if result.get('error') == 'vault_locked':
+            print(f"with-secret: {locked_message}", file=sys.stderr)
+        else:
+            print(f"with-secret: server-exec refused: "
+                 f"{result.get('message') or result.get('error')}",
+                 file=sys.stderr)
+        return 2
+    except (urllib.error.URLError, OSError, ValueError):
+        # Server unreachable, or a malformed/empty response — treat exactly
+        # like "also locked" rather than a distinct failure mode: either way
+        # the agent's only actionable next step is the same.
+        print(f"with-secret: {locked_message}", file=sys.stderr)
+        return 2
+
+    sys.stdout.write(result.get('stdout') or '')
+    sys.stderr.write(result.get('stderr') or '')
+    return int(result.get('exit_code') if result.get('exit_code') is not None else 2)
 
 
 def _pair(text: str) -> tuple[str, str]:
@@ -149,6 +222,21 @@ def main(argv: list[str] | None = None) -> int:
                                               project_id=project,
                                               unattended=unattended)
                        if args.stdin else None)
+    except vault.VaultLocked as e:
+        # MC-979: the vault may be unlocked in the SERVER's memory even
+        # though it's locked in THIS freshly-spawned process (the unwrapped
+        # key never crosses processes). --raw exists for interactive
+        # commands that need to stream live, which the exec-fallback route
+        # can't do, so it stays in-process only and surfaces the plain
+        # locked message rather than silently degrading to a non-interactive
+        # run.
+        if args.raw:
+            print(f"with-secret: {e}", file=sys.stderr)
+            print("with-secret: --raw cannot use the server-exec fallback "
+                 "(it needs live streaming) — unlock the vault, or drop "
+                 "--raw to let this run through the server.", file=sys.stderr)
+            return 2
+        return _run_via_server_exec(args, cmd, project, unattended, str(e))
     except vault.SecretsError as e:
         print(f"with-secret: {e}", file=sys.stderr)
         return 2

@@ -170,6 +170,78 @@ def audit_path() -> Path:
     return clayrune_home() / 'secrets_audit.jsonl'
 
 
+def exec_token_path() -> Path:
+    """Per-boot random token gating ``POST /api/secrets/exec`` (MC-979,
+    ``mc/blueprints/secrets_routes.py``). ``tools/with-secret.py`` falls back
+    to that route when the vault is passphrase-locked in this process but was
+    unlocked in the server's — the unwrapped master key lives only in the
+    unlocking process's memory (see the passphrase-lock section below), so a
+    separate CLI invocation can never read it directly and must ask the
+    server to run the command instead. The token file is how that CLI proves
+    its request is a legitimate loopback call and not a forged browser POST;
+    never under the repo, never DATA_DIR, same as every other path here."""
+    return clayrune_home() / 'secrets_exec_token'
+
+
+# The per-boot exec token, cached in memory once minted — see
+# `ensure_exec_token()`. `None` until first requested by this process.
+_exec_token: str | None = None
+
+
+def ensure_exec_token() -> str:
+    """The per-boot random token gating ``POST /api/secrets/exec`` and
+    ``POST /api/secrets/notify-vault-locked`` (MC-979).
+
+    Minted fresh every time this process starts — never reused across a
+    restart, so a token leaked from a previous boot (a stale log line, a
+    crashed process's leftover file permissions) stops working the moment
+    the server restarts. Persisted to `exec_token_path()` (0600) so a
+    same-box CLI process started AFTER this one (``tools/with-secret.py``'s
+    fallback) can read the CURRENT server's token off disk; cached in
+    `_exec_token` so repeated calls within THIS process (every request to
+    the gated routes) don't re-read the file.
+
+    Call once from server.py's boot(), right after registering
+    `secrets_routes.bp`, so the token exists before any request can reach
+    the routes it gates. Idempotent within a process lifetime either way.
+    """
+    global _exec_token
+    if _exec_token is not None:
+        return _exec_token
+    _exec_token = os.urandom(32).hex()
+    _write_private_text(exec_token_path(), _exec_token)
+    return _exec_token
+
+
+def _read_exec_token_file() -> str:
+    """Best-effort read of whatever token the CURRENTLY RUNNING server last
+    wrote — used only by `_notify_vault_locked`'s out-of-process relay
+    below. Never raises: a missing/unreadable file just means the relay
+    can't authenticate, which is treated as "server unreachable", not an
+    error of its own."""
+    try:
+        return exec_token_path().read_text(encoding='utf-8').strip()
+    except OSError:
+        return ''
+
+
+def exec_route_port() -> int:
+    """Best-effort guess at the port the server's Flask app is bound to, for
+    the handful of loopback-only calls made FROM a separate process
+    (``tools/with-secret.py``'s exec fallback, `_notify_vault_locked`'s
+    out-of-process relay below). Mirrors server.py's own ``PORT``
+    computation (``MC_PORT`` env, else config.json's ``port``, else 5199)
+    for the common case without importing server.py itself — a standalone
+    script must not trigger the whole server's import-time side effects
+    just to find a port number. Deliberately does not also read
+    config.json: an operator who changed only the config file's `port`
+    without also setting `MC_PORT` is already outside the common case these
+    two callers exist to serve, same tradeoff `_TRIGGER_TYPE_URL` above
+    already makes by hardcoding 5199.
+    """
+    return int(os.environ.get('MC_PORT', 5199))
+
+
 # Serializes read-modify-write of the store and appends to the audit log.
 _lock = threading.RLock()
 
@@ -909,19 +981,57 @@ def _notify_vault_locked() -> None:
     push blueprint (mirrors how server.py itself reaches `_notify_push`) so
     this module never depends on the Flask app being wired up, and a
     notification failure can never turn into a *worse* error than the
-    VaultLocked the caller is already about to raise."""
+    VaultLocked the caller is already about to raise.
+
+    MC-979: this fires from `load_master_key()`, which runs in EVERY process
+    that imports this module — including `tools/with-secret.py` run as a
+    bare CLI, standalone scripts, and tests. Only the actual server process
+    ever calls `push_mobile.wire()`; everywhere else, `PUSH_VAPID_PATH` (and
+    every other path constant `_notify_push` reads) is still `None`, and
+    calling it directly used to crash deep inside `open(None, ...)`
+    (``expected str, bytes or os.PathLike object, not NoneType``) — silently
+    swallowed by the `except Exception` below, so Ron never got the push at
+    all. Detect which side of that we're on via `PUSH_VAPID_PATH` itself
+    (set only by `wire()`) and, when we're not the server, ask the server to
+    relay the push instead — over the same loopback+token gate
+    `/api/secrets/exec` uses, since this is the same shape of "make the
+    server do a privileged thing on my behalf" call.
+    """
     global _lock_notified
     if _lock_notified:
         return
     _lock_notified = True
     try:
         from mc.blueprints import push_mobile as _bp_push_mobile
-        _bp_push_mobile._notify_push(
-            'Vault locked',
-            'A job needs the secrets vault unlocked — open the dashboard to '
-            'unlock it.')
     except Exception as e:
         _log(f"[secrets] vault-locked notification failed: {e}")
+        return
+    if _bp_push_mobile.PUSH_VAPID_PATH is not None:
+        # wire() has already run in THIS process — we ARE the server.
+        try:
+            _bp_push_mobile._notify_push(
+                'Vault locked',
+                'A job needs the secrets vault unlocked — open the dashboard to '
+                'unlock it.')
+        except Exception as e:
+            _log(f"[secrets] vault-locked notification failed: {e}")
+        return
+    # Not the server process. Relay via loopback instead of calling
+    # _notify_push directly (see docstring above) — best-effort, and this
+    # must never raise or block past this point: a notification is strictly
+    # secondary to the VaultLocked the caller is already about to see.
+    try:
+        token = _read_exec_token_file()
+        if not token:
+            return
+        req = urllib.request.Request(
+            f'http://127.0.0.1:{exec_route_port()}/api/secrets/notify-vault-locked',
+            data=b'{}', method='POST',
+            headers={'Content-Type': 'application/json',
+                     'X-Clayrune-Exec-Token': token})
+        urllib.request.urlopen(req, timeout=3).close()
+    except Exception as e:
+        _log(f"[secrets] vault-locked notification (out-of-process relay) failed: {e}")
 
 
 def _notify_vault_tamper(action: str, caller_addr: str) -> None:
@@ -1806,6 +1916,27 @@ def delete_secret(name: str) -> bool:
 
 _TRIGGER_TYPE_URL = 'http://127.0.0.1:5199/api/session/trigger-type'
 
+# Sentinel distinguishing "caller didn't pass claude_session_id at all" (the
+# with-secret.py in-process shape, where falling back to THIS process's own
+# CLAUDE_CODE_SESSION_ID is correct because this process IS the CLI) from
+# "caller passed None/empty explicitly" (the /api/secrets/exec route, MC-979
+# — where THIS process is the SERVER, and its own os.environ has nothing to
+# do with the actual HTTP caller). `None` cannot serve as that "not given"
+# marker: the route always passes an argument, and it is `None` whenever the
+# JSON body simply omits `claude_session_id` — using `None` for both meanings
+# let an exec-route caller who omits the field fall through to reading the
+# SERVER's own environment instead of failing closed. If the server process
+# happens to have been started from inside a Claude Code session (routine in
+# dev — a Bash tool starting `python server.py` inherits the var), that
+# lookup can resolve to trigger_type=manual and report unattended=False for
+# ANY caller, regardless of what the real caller is — bypassing
+# allow_unattended=False. Confirmed via a PoC 2026-09-26 (MC-979 audit).
+class _NotGiven:
+    pass
+
+
+_NOT_GIVEN = _NotGiven()
+
 
 def _session_id_from_env() -> str:
     return (os.environ.get('CLAUDE_CODE_SESSION_ID') or '').strip()
@@ -1830,12 +1961,38 @@ def _lookup_trigger_type(claude_session_id: str) -> str | None:
     return str(data.get('trigger_type') or 'manual')
 
 
-def detect_unattended_context() -> tuple[bool, str]:
+def detect_unattended_context(
+        claude_session_id: str | None | _NotGiven = _NOT_GIVEN) -> tuple[bool, str]:
     """(is_unattended, reason) purely from server-side signals — no caller
-    input. See module comment above for the fail-closed rationale. Public:
-    meant to be called by CLI-spawned consumers (with-secret.py) to compute
-    what they should pass as `unattended=`, not by `get_secret_value` itself."""
-    sid = _session_id_from_env()
+    input, UNLESS ``claude_session_id`` is passed explicitly.
+
+    Not given at all (default): reads ``CLAUDE_CODE_SESSION_ID`` from THIS
+    process's own environment — the shape ``with-secret.py``'s in-process
+    path uses, since it inherits the CLI's env directly.
+
+    Explicitly passed (even ``None`` or ``''``): for ``POST
+    /api/secrets/exec`` (MC-979, ``mc/blueprints/secrets_routes.py``), which
+    runs inside the SERVER process — the caller's env var lives in a
+    different process entirely, so the server can't read it off its own
+    ``os.environ`` and the caller must send it in the request body instead.
+    An explicitly-passed-but-empty value fails closed directly and NEVER
+    falls back to this process's own environment — that fallback is only
+    correct for the "not given at all" case above, where this process really
+    is the CLI. Collapsing the two (as an earlier version of this function
+    did, using `None` as both "not given" and "given empty") let an exec-route
+    caller who simply omits `claude_session_id` fall through to the SERVER's
+    own os.environ, which may carry an unrelated attended session's id if the
+    server itself was started from inside a Claude Code session — reporting
+    unattended=False for a caller that never proved anything of the kind.
+
+    See module comment above for the fail-closed rationale. Public: meant to
+    be called by CLI-spawned consumers (with-secret.py) and the exec route to
+    compute what they should pass as `unattended=`, not by `get_secret_value`
+    itself."""
+    if isinstance(claude_session_id, _NotGiven):
+        sid = _session_id_from_env()
+    else:
+        sid = (claude_session_id or '').strip()
     if not sid:
         return True, 'no CLAUDE_CODE_SESSION_ID (fail-closed)'
     trigger_type = _lookup_trigger_type(sid)
@@ -1846,13 +2003,20 @@ def detect_unattended_context() -> tuple[bool, str]:
     return True, f'trigger_type={trigger_type}'
 
 
-def detect_effective_unattended(unattended: bool) -> tuple[bool, str]:
+def detect_effective_unattended(
+        unattended: bool,
+        claude_session_id: str | None | _NotGiven = _NOT_GIVEN) -> tuple[bool, str]:
     """OR a caller-supplied flag with auto-detection. The flag can only ADD
     strictness (a caller opting into unattended treatment on purpose); it can
-    never remove strictness that detection found on its own."""
+    never remove strictness that detection found on its own.
+
+    ``claude_session_id``: see `detect_unattended_context` — pass it (even if
+    it's ``None``/``''``) when the caller (the exec route) can't rely on its
+    own process environment; leave it unset only for the in-process
+    with-secret.py shape."""
     if unattended:
         return True, 'flag'
-    return detect_unattended_context()
+    return detect_unattended_context(claude_session_id)
 
 
 def get_secret_value(name: str,
