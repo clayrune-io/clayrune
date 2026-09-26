@@ -426,6 +426,39 @@ async function runPhoneLayout(browser) {
   if (rowsStacked) ok('§11: article + rail stack vertically on phone width');
   else fail('§11: article + rail did not stack on phone width');
 
+  // Crumb (Dave's phone regression fix): Back never wraps to multiple
+  // lines, and the review controls (toggle/Show changes/stepper) occupy
+  // exactly one row of their own instead of a ragged 2x2 wrap.
+  const crumb = await page.evaluate(() => {
+    const back = document.querySelector('.desk-v1-back');
+    const backCS = getComputedStyle(back);
+    const backLineH = parseFloat(backCS.lineHeight) || (parseFloat(backCS.fontSize) * 1.2);
+    // A single-line button's box also carries its own padding + border, on
+    // top of the text's line-height — compare against THAT, not bare
+    // line-height, or a correctly one-line button reads as "wrapped".
+    const oneLineBox = backLineH
+      + parseFloat(backCS.paddingTop) + parseFloat(backCS.paddingBottom)
+      + parseFloat(backCS.borderTopWidth) + parseFloat(backCS.borderBottomWidth);
+    const controls = document.querySelector('.desk-v1-review-controls');
+    const kids = Array.from(controls.children);
+    const tops = kids.map((k) => k.getBoundingClientRect().top);
+    return {
+      backHeight: back.getBoundingClientRect().height,
+      oneLineBox,
+      controlsRowSpread: Math.max(...tops) - Math.min(...tops),
+    };
+  });
+  if (crumb.backHeight <= crumb.oneLineBox + 2) {
+    ok(`§11: Back button is one line (${crumb.backHeight.toFixed(1)}px <= ${crumb.oneLineBox.toFixed(1)}px expected one-line box)`);
+  } else {
+    fail(`§11: Back button wrapped to multiple lines: ${crumb.backHeight.toFixed(1)}px vs ${crumb.oneLineBox.toFixed(1)}px expected one-line box`);
+  }
+  if (crumb.controlsRowSpread <= 4) {
+    ok('§11: review controls (toggle, Show changes, stepper) occupy exactly one row at 390px');
+  } else {
+    fail(`§11: review controls wrapped across rows: top spread ${crumb.controlsRowSpread.toFixed(1)}px`);
+  }
+
   reportUncaught(pageErrors, '[phone]');
   await ctx.close();
 }

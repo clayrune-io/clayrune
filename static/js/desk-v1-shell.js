@@ -83,8 +83,10 @@
       renderFn(body, entry.params);
     } else {
       // Stub file hasn't loaded (or its ticket hasn't landed yet) — an honest
-      // placeholder, never a silent blank pane.
-      body.innerHTML = `<div class="desk-v1-stub"><div class="desk-v1-stub-body">${esc(_routeLabel(entry))} is not built yet.</div></div>`;
+      // placeholder, never a silent blank pane. review's route label is ''
+      // (T3 renders its own doc-label into crumb-tools instead), so fall
+      // back to a name here or a missing renderer reads " is not built yet.".
+      body.innerHTML = `<div class="desk-v1-stub"><div class="desk-v1-stub-body">${esc(_routeLabel(entry) || 'This page')} is not built yet.</div></div>`;
     }
   }
 

@@ -16,6 +16,10 @@
   background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px;
   color: var(--text-dim); font-size: 12px; font-weight: 600; cursor: pointer;
   padding: 5px 10px; transition: background 0.15s, color 0.15s;
+  /* Never wrap to a multi-line button (long campaign names) — flex items
+     default to a content-based min-width, but overflow:hidden switches that
+     to 0 (spec), so max-width can actually bite and the label ellipsizes. */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px;
 }
 .desk-v1-back:hover { background: var(--surface3); color: var(--text); }
 .desk-v1-crumb-title { font-size: 15px; font-weight: 700; color: var(--text); }
@@ -29,6 +33,20 @@
 }
 .desk-v1-crumb-tools:empty { display: none; }
 .desk-v1-body { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+
+/* Phone (≤960px): a non-empty crumb-tools slot (currently only T3's review)
+   no longer shares row 1 with the back link — its own doc-label sits beside
+   Back instead, and its remaining content becomes a full second row. Only
+   bites when the slot is non-empty (the `:empty` rule above always wins on
+   specificity for the other 7 routes, so their one-row crumb is untouched).
+   `display: contents` lifts the slot's own children (doc-label, controls)
+   into THIS flex flow so they can be placed independently of each other. */
+@media (max-width: 960px) {
+  .desk-v1-crumb { flex-wrap: wrap; row-gap: 8px; }
+  .desk-v1-crumb-tools:not(:empty) {
+    display: contents;
+  }
+}
 
 .desk-v1-stub {
   border: 1px dashed var(--border2); border-radius: 10px;
@@ -393,6 +411,29 @@
   .desk-v1-review-modetoggle button, .desk-v1-review-showchanges,
   .desk-v1-review-stepper button, .desk-v1-review-secondary button,
   .desk-v1-claimbar-actions button, .desk-v1-review-seltoolbar button { min-height: 44px; }
+
+  /* The crumb-tools slot is `display:contents` here (shell rule above), so
+     its two children — doc-label and controls — are placed directly as
+     this row's flex items, not as a group. Doc-label joins row 1 next to
+     Back and truncates instead of pushing Back off; controls becomes its
+     own full-width row 2 (flex-basis 100% forces the wrap), matching frame
+     12b's one-row-of-controls without wrapping into a ragged 2x2 grid. */
+  .desk-v1-review-kind {
+    flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  }
+  .desk-v1-review-controls {
+    flex: 0 0 100%; justify-content: space-between; flex-wrap: nowrap;
+    /* Belt-and-suspenders: the compact sizes below fit 390/360px in
+       practice, but a scrollbar (not a wrap) is the fallback if a theme's
+       font metrics ever run wider than measured. */
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+  }
+  .desk-v1-review-modetoggle { flex: 0 0 auto; }
+  .desk-v1-review-showchanges { flex: 0 0 auto; white-space: nowrap; }
+  .desk-v1-review-stepper { flex: 0 0 auto; }
+  .desk-v1-review-modetoggle button, .desk-v1-review-showchanges {
+    font-size: 11px; padding-left: 8px; padding-right: 8px;
+  }
 }
 
 /* ── T4: Calendar view ───────────────────────────────────────────────────── */
