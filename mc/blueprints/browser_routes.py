@@ -726,6 +726,187 @@ def _pin_root_window(session, ws, next_id):
         session['error'] = f'window size pin failed: {e}'
 
 
+# What navigator.userAgentData reports natively, to be handed back unchanged in
+# the UA override. Names are the CDP UserAgentMetadata fields.
+_UA_LOW_ENTROPY_JS = (
+    "navigator.userAgentData ? JSON.stringify({brands: navigator.userAgentData.brands,"
+    " mobile: navigator.userAgentData.mobile, platform: navigator.userAgentData.platform})"
+    " : null")
+_UA_HIGH_ENTROPY_JS = (
+    "navigator.userAgentData ? navigator.userAgentData.getHighEntropyValues(["
+    "'architecture','bitness','model','platformVersion','fullVersionList','wow64'"
+    "]).then(v => JSON.stringify(v)) : null")
+
+
+def _start_ua_guard(session, port):
+    """Make every tab present as the ordinary Chromium it is -- from its FIRST
+    request -- and store the override on session['ua_override'].
+
+    MC-976 (Ron, 2026-09-26): Google's "Sign in with Google" popup answered
+    "Couldn't sign you in - This browser or app may not be secure". Measured
+    on Chromium 153 --headless=new, before this fix:
+      * a popup said "HeadlessChrome/153.0.0.0" -- the override was only ever
+        set on the ROOT tab;
+      * even with the override set on the popup the moment the reader
+        attached, Google still went to /signin/rejected: the popup's first
+        request (the sign-in page itself) had already gone out as
+        HeadlessChrome. The same popup opened on a local page first, THEN
+        sent to Google: accepted. The first request is the tell;
+      * the override was set WITHOUT userAgentMetadata, which switches client
+        hints off: navigator.userAgentData.brands was [] and no Sec-CH-UA
+        header went out, where a real browser always sends both;
+      * navigator.webdriver was undefined, via our own init script. Chromium
+        not launched for automation reports false natively.
+    The native client hints are already clean (brands Chromium/153 +
+    Not_A Brand, no "Headless"), so the override is the UA string with the
+    Headless marker removed plus the NATIVE metadata verbatim. The
+    --user-agent launch flag is no alternative: it turns
+    navigator.userAgentData off entirely (measured).
+
+    How the first request is covered: a browser-level connection auto-attaches
+    to every new page with waitForDebuggerOnStart, so Chromium holds the page
+    -- navigation included -- until we answer; we set the override, then
+    release it. That connection lives on a daemon thread for the session's
+    life. If it ever drops, Chromium releases every held page itself, so a
+    dead guard costs the override, never a hung tab.
+
+    The metadata is read off a throwaway tab on Chromium's own devtools HTTP
+    page (http://127.0.0.1 is a secure context; the root tab's about:blank is
+    not, and has no navigator.userAgentData). Runs on the reader thread
+    BEFORE target discovery is on, so the reader never sees that tab.
+    Best-effort: on failure the reader falls back to a bare string override."""
+    import urllib.request
+    websocket = _import_ws()
+    if websocket is None:
+        return
+    try:
+        ver = json.load(urllib.request.urlopen(
+            f'http://127.0.0.1:{port}/json/version', timeout=2))
+        ws = websocket.create_connection(ver['webSocketDebuggerUrl'], max_size=None, timeout=3)
+    except Exception as e:
+        session['error'] = f'UA guard connect failed: {e}'
+        return
+    n, held = [0], []
+
+    def call(method, params=None, sid=None):
+        n[0] += 1
+        m = {'id': n[0], 'method': method, 'params': params or {}}
+        if sid:
+            m['sessionId'] = sid
+        ws.send(json.dumps(m))
+        deadline = _time.time() + 3
+        while _time.time() < deadline:
+            msg = json.loads(ws.recv() or '{}')
+            if msg.get('id') == n[0]:
+                if 'error' in msg:
+                    raise RuntimeError(msg['error'].get('message'))
+                return msg.get('result') or {}
+            if msg.get('method') == 'Target.attachedToTarget':
+                held.append(msg)   # handled by the loop below, never dropped
+        raise TimeoutError(f'{method}: no response in 3s')
+
+    try:
+        ua = (ver.get('User-Agent') or '').replace('HeadlessChrome', 'Chrome')
+        override = {'userAgent': ua}
+        tid = None
+        try:
+            tid = call('Target.createTarget', {'url': f'http://127.0.0.1:{port}/json/version',
+                                               'background': True})['targetId']
+            sid = call('Target.attachToTarget', {'targetId': tid, 'flatten': True})['sessionId']
+            lo, t_end = None, _time.time() + 3
+            while not lo and _time.time() < t_end:
+                r = call('Runtime.evaluate', {'expression': _UA_LOW_ENTROPY_JS,
+                                              'returnByValue': True}, sid)
+                lo = json.loads((r.get('result') or {}).get('value') or 'null')
+                if not lo:
+                    _time.sleep(0.1)
+            r = call('Runtime.evaluate', {'expression': _UA_HIGH_ENTROPY_JS, 'awaitPromise': True,
+                                          'returnByValue': True}, sid)
+            hi = json.loads((r.get('result') or {}).get('value') or 'null') or {}
+            if lo and lo.get('brands'):
+                override['userAgentMetadata'] = _ua_metadata(lo, hi)
+            else:
+                session['error'] = 'UA client hints unavailable, string-only override'
+        except Exception as e:
+            session['error'] = f'UA client hints unavailable, string-only override: {e}'
+        finally:
+            if tid:
+                try:
+                    call('Target.closeTarget', {'targetId': tid})
+                except Exception:
+                    pass
+        session['ua_override'] = override
+        call('Target.setAutoAttach', {'autoAttach': True, 'waitForDebuggerOnStart': True,
+                                      'flatten': True, 'filter': [{'type': 'page'}]})
+    except Exception as e:
+        session['error'] = f'UA guard setup failed: {e}'
+        try:
+            ws.close()
+        except Exception:
+            pass
+        return
+
+    def guard():
+        ws.settimeout(0.5)
+        try:
+            while session.get('status') == 'running':
+                if held:
+                    msg = held.pop(0)
+                else:
+                    try:
+                        msg = json.loads(ws.recv() or '{}')
+                    except websocket.WebSocketTimeoutException:
+                        continue
+                if msg.get('method') != 'Target.attachedToTarget':
+                    continue
+                p = msg.get('params') or {}
+                sid = p.get('sessionId')
+                try:
+                    # Same connection, same session: Chromium runs these in
+                    # order, so the override is in place before the release.
+                    ws.send(json.dumps({'id': 0, 'sessionId': sid,
+                                        'method': 'Network.setUserAgentOverride',
+                                        'params': session['ua_override']}))
+                finally:
+                    if p.get('waitingForDebugger'):
+                        ws.send(json.dumps({'id': 0, 'sessionId': sid,
+                                            'method': 'Runtime.runIfWaitingForDebugger',
+                                            'params': {}}))
+        except Exception as e:
+            if session.get('status') == 'running':
+                session['error'] = f'UA guard stopped: {e}'
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    threading.Thread(target=guard, daemon=True,
+                     name=f"ua-guard-{session.get('session_id')}").start()
+
+
+def _ua_metadata(low, high):
+    """navigator.userAgentData values -> CDP Emulation.UserAgentMetadata.
+    Brand names are stripped of any Headless marker too, in case a future
+    build starts putting one there."""
+    def brands(lst):
+        return [{'brand': (b.get('brand') or '').replace('HeadlessChrome', 'Chrome'),
+                 'version': str(b.get('version') or '')} for b in (lst or [])]
+    md = {'brands': brands(low.get('brands')),
+          'platform': low.get('platform') or '',
+          'platformVersion': high.get('platformVersion') or '',
+          'architecture': high.get('architecture') or '',
+          'model': high.get('model') or '',
+          'mobile': bool(low.get('mobile'))}
+    if high.get('fullVersionList'):
+        md['fullVersionList'] = brands(high['fullVersionList'])
+    if high.get('bitness'):
+        md['bitness'] = high['bitness']
+    if 'wow64' in high:
+        md['wow64'] = bool(high['wow64'])
+    return md
+
+
 def _fit_windows(session, target_ids=None):
     """Size each tab's window so its PAGE viewport is exactly session['view']
     CSS px -- the pane's own on-screen size -- so the pane shows it 1:1.
@@ -1035,6 +1216,7 @@ def _run_cdp(session):
         # thread) is now covered by the consecutive-error tolerance below, and
         # measured safe: a 0.1s reader sustains 50fps with 0 recv errors.
         _pin_root_window(session, ws, _next_id)
+        _start_ua_guard(session, port)
         ws.settimeout(0.1)
         session['ws'] = ws
 
@@ -1139,22 +1321,13 @@ def _run_cdp(session):
         # If you reintroduce an override, it MUST match what the screencast
         # actually captures, or you are re-creating a band of the page that
         # cannot be seen or reached.
-        # Present a normal (non-headless) User-Agent. Chromium's --headless=new
-        # advertises "HeadlessChrome/…", which sites like Hacker News block with
-        # a "Sorry." page. Derive from the real browser UA (so the Chrome version
-        # always matches) and just strip the Headless marker; also drop the
-        # navigator.webdriver bot flag on every new document. Set BEFORE navigate
-        # so the first request already carries the clean UA.
-        try:
-            ver = json.load(urllib.request.urlopen(
-                f'http://127.0.0.1:{port}/json/version', timeout=2))
-            ua = (ver.get('User-Agent') or '').replace('HeadlessChrome', 'Chrome')
-            if ua:
-                send('Network.setUserAgentOverride', {'userAgent': ua})
-        except Exception as e:
-            session['error'] = f'UA override failed: {e}'
-        send('Page.addScriptToEvaluateOnNewDocument',
-             {'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined});'})
+        # Present a normal (non-headless) User-Agent -- string AND client
+        # hints, on every tab (popups below); see _start_ua_guard. Set
+        # BEFORE navigate so the first request already carries it. No
+        # navigator.webdriver script: it used to force `undefined`, where
+        # Chromium reports false natively -- the patch was itself the tell.
+        if session.get('ua_override'):
+            send('Network.setUserAgentOverride', session['ua_override'])
         send('Page.navigate', {'url': session['url']})
         start_screencast()
 
@@ -1314,7 +1487,11 @@ def _run_cdp(session):
                         send('Target.closeTarget', {'targetId': ti.get('targetId')})
                     except Exception as e:
                         session['error'] = f'restored tab close failed: {e}'
-                elif disposition == 'focus' and not ti.get('attached'):
+                # NOT `ti['attached']`: _start_ua_guard's browser-level
+                # connection attaches to every new page first, so that flag
+                # is always true now and would hide every popup from the
+                # tab strip. Whether THIS reader has it is what counts.
+                elif disposition == 'focus' and ti.get('targetId') not in (session.get('tabs') or {}):
                     try:
                         send('Target.attachToTarget',
                              {'targetId': ti.get('targetId'), 'flatten': True})
@@ -1328,6 +1505,11 @@ def _run_cdp(session):
                 disposition = _page_disposition(session, ti)
                 if disposition == 'close':
                     pass  # Target.closeTarget already sent on targetCreated
+                elif disposition == 'focus' and tid in (session.get('tabs') or {}):
+                    # A second session onto a tab we already hold (auto-attach
+                    # and the manual attach above both landing). Keep the
+                    # first; this one has no domains enabled and stays idle.
+                    pass
                 elif disposition == 'focus':
                     tabs = session.setdefault('tabs', {})
                     tabs[tid] = {'session_id': sid, 'url': ti.get('url', ''),
@@ -1336,9 +1518,12 @@ def _run_cdp(session):
                     session['tabs_seq'] = session.get('tabs_seq', 0) + 1
                     try:
                         send('Page.enable', {}, session_id=sid)
-                        send('Page.addScriptToEvaluateOnNewDocument',
-                             {'source': 'Object.defineProperty(navigator, "webdriver", '
-                                        '{get: () => undefined});'}, session_id=sid)
+                        # Same UA as the root tab. A popup without it said
+                        # HeadlessChrome and Google's sign-in popup went to
+                        # /signin/rejected (MC-976).
+                        if session.get('ua_override'):
+                            send('Network.setUserAgentOverride', session['ua_override'],
+                                 session_id=sid)
                     except Exception as e:
                         session['error'] = f'new-tab setup failed: {e}'
                     # A real browser opens a window.open()/OAuth popup in front

@@ -1605,3 +1605,25 @@ def test_launch_route_forwards_client_dpr_and_reports_it_back(app_client, profil
     body = resp.get_json()
     assert body['dpr'] == 2.0
     assert any('force-device-scale-factor=2.0' in a for a in captured['args'])
+
+
+# ── MC-976 Google sign-in: every tab presents as the Chromium it is ──────────
+# End to end (popup's first request included) in tools/smoke/browser_pane_ua.py.
+
+def test_ua_metadata_passes_native_client_hints_through():
+    low = {'brands': [{'brand': 'Chromium', 'version': '153'},
+                      {'brand': 'Not_A Brand', 'version': '8'}],
+           'mobile': False, 'platform': 'Windows'}
+    high = {'architecture': 'x86', 'bitness': '64', 'model': '', 'platformVersion': '19.0.0',
+            'wow64': False, 'fullVersionList': [{'brand': 'Chromium', 'version': '153.0.8010.12'}]}
+    md = br._ua_metadata(low, high)
+    assert md['brands'] == low['brands']
+    assert md['fullVersionList'] == [{'brand': 'Chromium', 'version': '153.0.8010.12'}]
+    assert (md['platform'], md['platformVersion'], md['architecture'], md['bitness']) == \
+        ('Windows', '19.0.0', 'x86', '64')
+    assert md['mobile'] is False and md['wow64'] is False
+
+
+def test_ua_metadata_strips_a_headless_brand():
+    md = br._ua_metadata({'brands': [{'brand': 'HeadlessChrome', 'version': '153'}]}, {})
+    assert md['brands'] == [{'brand': 'Chrome', 'version': '153'}]
