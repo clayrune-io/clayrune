@@ -66,6 +66,76 @@
 /* ── T0b: shared kit (vocabulary, state label, channel badge, toast+Undo,
    Add to… menu, ⓘ popover, Posy box) ───────────────────────────────────── */
 
+/* Glyph + word together (A15: status must read in greyscale — color is a
+   second signal here, never the only one). */
+.desk-v1-state-label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-dim); }
+.desk-v1-state-glyph { font-size: 12px; line-height: 1; }
+.desk-v1-state-word { font-weight: 600; }
+.desk-v1-state-label[data-state="blocked"] .desk-v1-state-glyph,
+.desk-v1-state-label[data-state="failed"] .desk-v1-state-glyph { color: var(--red-text); }
+.desk-v1-state-label[data-state="held"] .desk-v1-state-glyph { color: var(--amber-text); }
+.desk-v1-state-label[data-state="verified_published"] .desk-v1-state-glyph,
+.desk-v1-state-label[data-state="approved"] .desk-v1-state-glyph,
+.desk-v1-state-label[data-state="scheduled"] .desk-v1-state-glyph,
+.desk-v1-state-label[data-state="completed"] .desk-v1-state-glyph { color: var(--accent-soft); }
+
+/* Identity first (UX-02) — a suffix glyph only for held/manual, per
+   desk-v1-kit.js's channelBadge() comment on why the default stays quiet. */
+.desk-v1-channel-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+  background: var(--surface3); border: 1px solid var(--border2); color: var(--text);
+}
+.desk-v1-channel-badge[data-health="held"] { border-color: var(--amber-text); color: var(--amber-text); }
+.desk-v1-channel-badge[data-capability="manual"] { color: var(--text-dim); }
+
+/* Add to… ▾ menu (UX-05) — same dropdown shape as the Queue's insert menu
+   (app.css .desk-insert-menu), not a new visual language. */
+.desk-v1-addto-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 20;
+  background: var(--surface3); border: 1px solid var(--border); border-radius: 8px;
+  padding: 4px; min-width: 180px; box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+}
+.desk-v1-addto-menu button {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--text); font-size: 12px; padding: 7px 9px; border-radius: 5px; cursor: pointer;
+  font-family: inherit;
+}
+.desk-v1-addto-menu button:hover,
+.desk-v1-addto-menu button:focus { background: var(--accent-dim); outline: none; }
+
+/* ⓘ popover (§9: explanations behind ⓘ, nothing else on screen for it). */
+.desk-v1-info-btn {
+  background: none; border: none; color: var(--text-faint); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0 2px; vertical-align: middle;
+}
+.desk-v1-info-btn:hover { color: var(--accent); }
+.desk-v1-info-popover {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; max-width: 260px;
+  background: var(--surface3); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font-size: 12px; color: var(--text-dim); line-height: 1.4;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+}
+
+/* Posy box — reuses .agent-output/.agent-question-chip/.agent-input-row
+   verbatim (app.css); only this wrapper's own chrome is new. */
+.desk-v1-posy-box {
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface);
+  padding: 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.desk-v1-posy-scope {
+  margin-left: auto; background: none; border: none; color: var(--text-dim);
+  font-size: 11.5px; cursor: pointer; font-family: inherit; padding: 2px 4px;
+}
+.desk-v1-posy-scope:hover { color: var(--accent); }
+.desk-v1-posy-output { min-height: 0; padding: 0; background: transparent; }
+.desk-v1-posy-chips { margin: 0; }
+
+@media (max-width: 960px) {
+  .desk-v1-addto-menu button,
+  .desk-v1-info-btn { min-height: 44px; }
+}
+
 /* ── T0c: pointer-drag extraction ────────────────────────────────────────── */
 
 /* ── T0d: legacy read-only banner ────────────────────────────────────────── */
