@@ -669,15 +669,34 @@
 }
 .desk-v1-rules-sheet-confirm:hover { opacity: 0.9; }
 
-/* §8 Rules page — a full `‹ <campaign>` page (see desk-v1-rules.js comment:
-   the doc's "popover" is the entry link, not a floating layer here). */
-.desk-v1-rules-page { display: flex; flex-direction: column; gap: 18px; max-width: 560px; }
+/* §8 Rules popover, anchored to the summary bar's rule chips (never a full
+   page — Dave's review pass corrected an earlier draft that kept the
+   full-`‹ <campaign>`-page route desk-v1-rules.js's own comment used to
+   justify off the doc's "popover" heading). Desktop: positioned from the
+   Edit button's rect (desk-v1-rules.js `_positionRulesPopover`), no scrim
+   dimming (`.desk-v1-rules-pop-scrim` is transparent, it just catches the
+   outside click). Phone: the media query below re-docks it as a bottom
+   sheet, same "pin to the edge" precedent as `.desk-v1-rules-overlay`. */
+.desk-v1-rules-pop-overlay { position: fixed; inset: 0; z-index: 1650; }
+.desk-v1-rules-pop-scrim { position: absolute; inset: 0; background: transparent; }
+.desk-v1-rules-pop {
+  position: fixed; top: 90px; right: 32px; width: 380px; max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 64px); overflow-y: auto; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px;
+  display: flex; flex-direction: column; gap: 14px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+}
+.desk-v1-rules-pop-title { font-size: 15px; font-weight: 800; color: var(--text); }
 .desk-v1-rules-group { display: flex; flex-direction: column; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid var(--border2); }
 .desk-v1-rules-group:last-of-type { border-bottom: none; }
 .desk-v1-rules-group-title { font-size: 13px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 6px; }
 .desk-v1-rules-radio, .desk-v1-rules-checkrow {
   display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--text); cursor: pointer;
 }
+/* §8 item 4: native controls, not custom-built pseudo-inputs — tinted to
+   the theme accent via the standard `accent-color` property so the OS/
+   browser default color doesn't clash, while the control itself, its
+   focus ring and its click target stay entirely native. */
+.desk-v1-rules-radio input, .desk-v1-rules-checkrow input { accent-color: var(--accent); }
 .desk-v1-rules-excluded { color: var(--text-faint); font-size: 12px; }
 .desk-v1-rules-inlinerow { display: flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--text); }
 .desk-v1-rules-numinput {
@@ -685,7 +704,20 @@
   color: var(--text); font-size: 13.5px; padding: 4px 8px;
 }
 .desk-v1-rules-hint { font-size: 12px; color: var(--text-faint); }
-.desk-v1-rules-effect { min-height: 18px; font-size: 12.5px; color: var(--green-text); font-weight: 600; }
+.desk-v1-rules-pop-preview {
+  display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border2);
+}
+.desk-v1-rules-pop-previewtext { font-size: 12.5px; color: var(--green-text); font-weight: 600; line-height: 1.5; }
+.desk-v1-rules-pop-previewbtns { display: flex; justify-content: flex-end; gap: 8px; }
+.desk-v1-rules-pop-cancel {
+  background: transparent; border: 1px solid var(--border2); border-radius: 8px; color: var(--text);
+  font-size: 12.5px; font-weight: 600; padding: 5px 12px; cursor: pointer;
+}
+.desk-v1-rules-pop-apply {
+  background: var(--accent); border: none; border-radius: 8px; color: var(--bg);
+  font-size: 12.5px; font-weight: 700; padding: 5px 12px; cursor: pointer;
+}
+.desk-v1-rules-pop-apply:hover { opacity: 0.9; }
 
 /* §3.4 Posy instruction reply — before/after + affected, in the Posy box's
    own output slot (kit's posyBoxHTML), not a new bubble type. */
@@ -704,6 +736,16 @@
   .desk-v1-rules-authrow-val { text-align: left; }
   .desk-v1-rules-sheet-cancel, .desk-v1-rules-sheet-confirm, .desk-v1-rules-blocker-answer,
   .desk-v1-rules-start-btn { min-height: 44px; }
+
+  /* §8 + §11: the same anchored-popover markup re-docks as a full-width
+     bottom sheet, scrim restored (a bottom sheet needs one; a desktop
+     popover anchored to a visible button doesn't). */
+  .desk-v1-rules-pop-scrim { background: rgba(0, 0, 0, 0.45); }
+  .desk-v1-rules-pop {
+    position: fixed; left: 0; right: 0; bottom: 0; top: auto; width: 100%; max-width: 100%;
+    max-height: 80vh; border-radius: 14px 14px 0 0;
+  }
+  .desk-v1-rules-pop-cancel, .desk-v1-rules-pop-apply { min-height: 44px; }
 }
 
 /* ── T3: Full-width review (frame 12b) ───────────────────────────────────── */

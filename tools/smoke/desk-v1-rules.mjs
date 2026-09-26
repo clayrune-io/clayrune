@@ -152,6 +152,15 @@ async function runProposedRenderChecks(browser, tone) {
     ? ok(`[${tone.name}] both proposed cards carry a "? Assumed" popover`)
     : fail(`[${tone.name}] expected 2 "? Assumed" popovers, got ${assumedCount}`);
 
+  // §3.5: "the same page... shows the same chips" as T2a's Active summary —
+  // the Proposed variant must carry its own Rules group + Edit hook, not
+  // just Goal/Channels.
+  const proposedChips = await page.$$eval('[data-summary-group="rules"] .desk-v1-camp-rule-chip', (els) => els.map((e) => e.textContent));
+  const proposedEditBtn = await page.$('[data-summary-group="rules"] [data-rules-edit]');
+  proposedChips.length > 0 && proposedEditBtn
+    ? ok(`[${tone.name}] §3.5: Proposed summary carries the same Rules chips + Edit hook: ${JSON.stringify(proposedChips)}`)
+    : fail(`[${tone.name}] Proposed summary missing Rules chips/Edit hook: chips=${JSON.stringify(proposedChips)}, editBtn=${!!proposedEditBtn}`);
+
   reportUncaught(pageErrors, `[${tone.name}]`);
   await ctx.close();
 }
@@ -271,38 +280,60 @@ async function runStartSheet(browser) {
   await ctx.close();
 }
 
-// ── §8 Rules page (C1: both review modes) via the REAL entry point — T2a's
-// Edit hook ([data-rules-edit]) on camp-1's (Active) summary, matching how a
-// user actually gets here rather than a direct nav shortcut. Runs each_piece
-// -> themes (widening, confirm) -> each_piece (narrowing, no confirm), then
-// verifies the change round-trips into the campaign summary's rule chip AND
+// ── §8 Rules popover (C1: both review modes) via the REAL entry point —
+// T2a's Edit hook ([data-rules-edit]) on camp-1's (Active) summary, matching
+// how a user actually gets here rather than a direct nav shortcut. Verifies
+// it opens a floating popover (not a `‹ <campaign>` page/breadcrumb), that
+// changing a control shows a visible effect preview + Apply step (no
+// mutation until Apply — the fixture must still read the OLD value right
+// after `change`), that Apply on a widening choice still confirms, and that
+// the applied change round-trips into the campaign summary's rule chip AND
 // the A12 channel-badge copy. ────────────────────────────────────────────────
 async function runReviewModeToggle(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToCampaign(page, 'camp-1');
 
   await page.click('[data-rules-edit]');
-  await page.waitForSelector('.desk-v1-rules-page', { timeout: 4000 });
-  ok('the campaign summary\'s Edit link (T2a hook) opens the rules page');
+  await page.waitForSelector('.desk-v1-rules-pop', { timeout: 4000 });
+  ok('the campaign summary\'s Edit link (T2a hook) opens the rules POPOVER, not a page');
+
+  const breadcrumbHasRules = await page.$$eval('.desk-v1-crumb, .modal-crumb', (els) => els.some((e) => /Rules/i.test(e.textContent))).catch(() => false);
+  !breadcrumbHasRules
+    ? ok('opening the popover does not add a "Rules" breadcrumb — the campaign page stays underneath')
+    : fail('a "Rules" breadcrumb appeared — the popover regressed to a full-page route');
 
   const checkedDefault = await page.$eval('input[name="reviewMode"]:checked', (el) => el.value);
   checkedDefault === 'each_piece'
     ? ok('C1: fixture default review mode is "You approve each piece"')
     : fail(`default review mode wrong: ${JSON.stringify(checkedDefault)}`);
 
-  await page.evaluate(() => { window.__confirms = []; window.confirm = (msg) => { window.__confirms.push(msg); return true; }; });
   await page.check('input[name="reviewMode"][value="themes"]');
+  await page.waitForTimeout(30);
+
+  const previewText = (await page.textContent('.desk-v1-rules-pop-previewtext').catch(() => '') || '');
+  /themes/i.test(previewText)
+    ? ok(`§8: changing a control shows a visible effect preview before applying: "${previewText.trim()}"`)
+    : fail(`effect preview missing/wrong: ${JSON.stringify(previewText)}`);
+
+  const unappliedYet = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').rules.reviewMode);
+  unappliedYet !== 'themes'
+    ? ok('the fixture is NOT mutated until Apply is clicked')
+    : fail(`fixture mutated before Apply: reviewMode=${JSON.stringify(unappliedYet)}`);
+
+  await page.evaluate(() => { window.__confirms = []; window.confirm = (msg) => { window.__confirms.push(msg); return true; }; });
+  await page.click('[data-pop-preview-apply]');
   await page.waitForTimeout(30);
   const confirms = await page.evaluate(() => window.__confirms);
   confirms.length > 0
-    ? ok(`switching to "Approve themes, then run" (widening) asks for confirmation: "${confirms[0]}"`)
-    : fail('switching to themes mode should have called window.confirm');
+    ? ok(`Apply on "Approve themes, then run" (widening) asks for confirmation: "${confirms[0]}"`)
+    : fail('Apply on a widening choice should have called window.confirm');
 
-  const effectAfterWiden = (await page.textContent('#desk-v1-rules-effect').catch(() => '') || '');
-  /themes/i.test(effectAfterWiden)
-    ? ok(`effect line explains the change: "${effectAfterWiden.trim()}"`)
-    : fail(`effect line missing/wrong: ${JSON.stringify(effectAfterWiden)}`);
+  const appliedNow = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').rules.reviewMode);
+  appliedNow === 'themes'
+    ? ok('confirming Apply commits the mutation')
+    : fail(`Apply did not commit: reviewMode=${JSON.stringify(appliedNow)}`);
 
+  await page.keyboard.press('Escape');
   await navToCampaign(page, 'camp-1');
   const chipsAfterWiden = await page.$$eval('.desk-v1-camp-rule-chip', (els) => els.map((e) => e.textContent));
   chipsAfterWiden.some((c) => /Approve themes, then run/.test(c))
@@ -314,17 +345,20 @@ async function runReviewModeToggle(browser) {
     ? ok(`A12: themes review mode → channel badge flips to "Publishes automatically": ${JSON.stringify(badgeAfterWiden)}`)
     : fail(`channel badge did not flip for themes mode: ${JSON.stringify(badgeAfterWiden)}`);
 
-  // Narrowing back needs no confirmation.
+  // Narrowing back applies with no confirmation.
   await page.click('[data-rules-edit]');
-  await page.waitForSelector('.desk-v1-rules-page', { timeout: 4000 });
+  await page.waitForSelector('.desk-v1-rules-pop', { timeout: 4000 });
   await page.evaluate(() => { window.__confirms = []; });
   await page.check('input[name="reviewMode"][value="each_piece"]');
+  await page.waitForTimeout(30);
+  await page.click('[data-pop-preview-apply]');
   await page.waitForTimeout(30);
   const confirmsOnNarrow = await page.evaluate(() => window.__confirms.length);
   confirmsOnNarrow === 0
     ? ok('narrowing back to "each piece" applies without confirmation')
     : fail(`narrowing should not confirm, got ${confirmsOnNarrow} call(s)`);
 
+  await page.keyboard.press('Escape');
   reportUncaught(pageErrors, '[review-mode]');
   await ctx.close();
 }
@@ -335,21 +369,24 @@ async function runDeclineWidening(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToCampaign(page, 'camp-1');
   await page.click('[data-rules-edit]');
-  await page.waitForSelector('.desk-v1-rules-page', { timeout: 4000 });
+  await page.waitForSelector('.desk-v1-rules-pop', { timeout: 4000 });
 
-  // A plain click, not page.check(): check() waits for the box to end up
-  // checked, which never happens here on purpose — declining re-renders the
-  // whole page and the radio comes back unchecked.
+  // check(), not a plain click: staging a pending change (the popover's
+  // preview/Apply step) leaves the radio checked until Apply runs — only
+  // declining inside the confirm() prompt reverts it back to Off.
   await page.evaluate(() => { window.confirm = () => false; });
-  await page.click('input[name="paid"][value="on"]');
+  await page.check('input[name="paid"][value="on"]');
+  await page.waitForTimeout(30);
+  await page.click('[data-pop-preview-apply]');
   await page.waitForTimeout(30);
 
   const stillOff = await page.$eval('input[name="paid"][value="off"]', (el) => el.checked);
   const fixtureStillOff = await page.evaluate(() => !window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').rules.paid);
   stillOff && fixtureStillOff
-    ? ok('declining the Paid-on widening confirm re-renders back to Off, and the fixture is untouched')
+    ? ok('declining the Paid-on widening confirm reverts the radio to Off, and the fixture is untouched')
     : fail(`decline did not revert cleanly: radioOff=${stillOff}, fixtureOff=${fixtureStillOff}`);
 
+  await page.keyboard.press('Escape');
   reportUncaught(pageErrors, '[decline-widening]');
   await ctx.close();
 }
@@ -359,13 +396,14 @@ async function runDeclineWidening(browser) {
 // ch-li-page ("in · Clayrune page") is a pre-existing channel that's
 // naturally unattached to it; no 4th global channel needed (see the fixture
 // comment — one broke desk-v1-campaign.mjs's channel-shelf assumption for
-// camp-1). Direct nav, not [data-rules-edit]: that hook lives on T2a's
-// Active-campaign summary, and camp-2 is Proposed. ──────────────────────────
+// camp-1). Via [data-rules-edit]: the Proposed summary carries the same Edit
+// hook as T2a's Active one (deskV1FillProposedSummary), so camp-2 opens the
+// popover the same real way a user would. ──────────────────────────────────
 async function runChannelsExcluded(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToCampaign(page, 'camp-2');
-  await page.evaluate(() => window.deskV1Nav('rules', { campaignId: 'camp-2' }));
-  await page.waitForSelector('.desk-v1-rules-page', { timeout: 4000 });
+  await page.click('[data-rules-edit]');
+  await page.waitForSelector('.desk-v1-rules-pop', { timeout: 4000 });
 
   const pageRow = await page.$('[data-channel-toggle="ch-li-page"]');
   pageRow ? ok('the unattached channel (Clayrune LinkedIn page) appears in the Channels list') : fail('ch-li-page row missing');
@@ -378,6 +416,8 @@ async function runChannelsExcluded(browser) {
   await page.evaluate(() => { window.__confirms = []; window.confirm = (m) => { window.__confirms.push(m); return true; }; });
   await page.check('[data-channel-toggle="ch-li-page"]');
   await page.waitForTimeout(30);
+  await page.click('[data-pop-preview-apply]');
+  await page.waitForTimeout(30);
   const includingConfirmed = await page.evaluate(() => window.__confirms.length);
   includingConfirmed > 0
     ? ok('attaching a new channel (widening) asks for confirmation')
@@ -385,6 +425,7 @@ async function runChannelsExcluded(browser) {
   const nowIncluded = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2').channelIds.includes('ch-li-page'));
   nowIncluded ? ok('confirmed attach adds the channel to campaign.channelIds') : fail('channel not added after confirm');
 
+  await page.keyboard.press('Escape');
   reportUncaught(pageErrors, '[channels]');
   await ctx.close();
 }
@@ -471,13 +512,17 @@ async function runPhoneLayout(browser) {
   // Direct nav, not the [data-rules-edit] hook: §11's own "summary collapses"
   // rule (T2a's existing phone CSS) hides the whole Rules summary group —
   // Edit included — on a 390px viewport, same as the Channels group above.
+  // `deskV1RenderRules`'s kept-for-compat shim still resolves this to the
+  // real popover, now re-docked full-width bottom sheet by the §11 media
+  // query (`.desk-v1-rules-pop` in the 960px block).
   await navToCampaign(page, 'camp-1');
   await page.evaluate(() => window.deskV1Nav('rules', { campaignId: 'camp-1' }));
-  await page.waitForSelector('.desk-v1-rules-page', { timeout: 4000 });
-  const pageWidth = await page.$eval('.desk-v1-rules-page', (el) => el.getBoundingClientRect().width);
-  pageWidth <= 390
-    ? ok(`§11: rules page fits the phone viewport (${pageWidth.toFixed(0)}px)`)
-    : fail(`§11: rules page overflows the phone viewport: ${pageWidth}px`);
+  await page.waitForSelector('.desk-v1-rules-pop', { timeout: 4000 });
+  const popBox = await page.$eval('.desk-v1-rules-pop', (el) => el.getBoundingClientRect());
+  Math.abs(popBox.width - 390) < 2
+    ? ok(`§11: rules popover docks full-width bottom sheet on phone (${popBox.width.toFixed(0)}px)`)
+    : fail(`§11: rules popover not full-width on phone: ${popBox.width}px`);
+  await page.keyboard.press('Escape');
 
   reportUncaught(pageErrors, '[phone]');
   await ctx.close();
@@ -506,7 +551,7 @@ async function captureScreenshots(browser) {
     // excluded row — see the fixture comment on why camp-2 carries that demo).
     await navToCampaign(page, 'camp-2');
     await page.evaluate(() => window.deskV1Nav('rules', { campaignId: 'camp-2' }));
-    await page.waitForSelector('.desk-v1-rules-page', { timeout: 4000 });
+    await page.waitForSelector('.desk-v1-rules-pop', { timeout: 4000 });
     await page.screenshot({ path: resolve(SHOT_DIR, `t2b_rules_${tag}.png`) });
     ok(`screenshot saved: t2b_rules_${tag}.png`);
     await ctx.close();

@@ -741,4 +741,8 @@
   window.deskV1FillCampaignTabBody = deskV1FillCampaignTabBody;
   window.deskV1FillCampaignRightColumn = deskV1FillCampaignRightColumn;
   window.deskV1FillCampaignAddTray = deskV1FillCampaignAddTray;
+  // T2b needs the exact same chip list for the Proposed-state summary bar
+  // (§3.5: "the same page... shows the same chips") — a small backward-
+  // compatible export of this file's existing, unchanged `_ruleChips`.
+  window.deskV1RuleChips = _ruleChips;
 })();
