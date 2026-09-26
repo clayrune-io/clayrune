@@ -624,6 +624,13 @@ function _floorSchedulePoll(pollSeconds) {
 // would fail the phone requirement (Ron uses Clayrune from his phone)
 // structurally rather than just clumsily.
 //
+// The generic activation/ghost/teardown mechanics live in pointer-drag.js
+// (MC-977 T0c) — window.PointerDrag.begin() — extracted so a later drag
+// gesture (the Desk) doesn't reimplement the touch-long-press/8px-slop/
+// Esc-cancel rules from scratch. What stays HERE is everything that is
+// drag-to-hire's own domain: which elements are valid drop targets, what a
+// drop actually does, and the one-drag-at-a-time state slot.
+//
 // One state object, not per-figure state: only one drag can be in flight at
 // a time, and keeping it in a single `_hireDrag` makes "is a drag active"
 // and "cancel whatever is active" both a single null-check, no scanning.
@@ -633,9 +640,6 @@ let _hireDrag = null;
 // floorOpenFigure reads this to swallow the click a mouse-up still fires on
 // the same element; see the comment there.
 let _lastHireDragEnd = 0;
-
-const HIRE_LONG_PRESS_MS = 400;   // spec §8: "long-press (~400ms)"
-const HIRE_DRAG_SLOP_PX = 8;      // spec §9.3: "a real drag (8px pointer travel)"
 
 // The drop target markup differs by layout: desktop renders `.card` tiles
 // into #projects-col, mobile (isMobileChatList, <=960px) replaces the whole
@@ -653,94 +657,48 @@ function _hireTileSel(suffix) {
 }
 
 function floorFigDown(e, pid, scope, name, display, avatar) {
-  if (typeof e.button === 'number' && e.button !== 0) return;   // left/primary only
   // A second pointer going down mid-drag (a stray second finger) must not
   // start a SECOND drag on top of the first — only one figure can be "picked
-  // up" at once, and the first one wins.
-  if (_hireDrag) return;
-  const el = e.currentTarget;
-  const st = {
-    pid, scope, name, display, avatar,
-    pointerId: e.pointerId, pointerType: e.pointerType || 'mouse',
-    startX: e.clientX, startY: e.clientY,
-    active: false, el, ghost: null, longPressTimer: null,
-  };
-  _hireDrag = st;
-  if (st.pointerType === 'touch') {
-    st.longPressTimer = setTimeout(() => {
-      if (_hireDrag === st && !st.active) _floorHireActivate(st, st.startX, st.startY);
-    }, HIRE_LONG_PRESS_MS);
-  }
-  // Capture is NOT taken here. Chromium retargets `click` to whichever element
-  // holds pointer capture — so grabbing it on every pointerdown silently ate
-  // every click on a card's children (the edit pencil, "put in a room", the
-  // figure itself) even for a plain click that was never a drag, because the
-  // click landed on the capturing card instead of the button underneath it.
-  // Capture only starts in _floorHireActivate(), the same moment
-  // `.fl-hire-dragging` is added — a plain click never reaches either.
-  // On WINDOW, not on `el`. The gesture outlives the node: the Floor re-renders
-  // its whole body on every poll, the modal can close, a room can empty — and a
-  // listener bound to the card dies with the card, taking the pointerup that
-  // would have dropped (or cleaned up) with it. Window sees the release no
-  // matter what happened to the thing being dragged.
-  window.addEventListener('pointermove', _floorHireMove);
-  window.addEventListener('pointerup', _floorHireUp);
-  window.addEventListener('pointercancel', _floorHireCancel);
-  // Releasing over another app never sends us a pointerup at all.
-  window.addEventListener('blur', _floorHireCancel);
-}
-
-function _floorHireMove(e) {
-  const st = _hireDrag;
-  if (!st || e.pointerId !== st.pointerId) return;
-  const dx = e.clientX - st.startX, dy = e.clientY - st.startY;
-  if (!st.active) {
-    // Mouse/pen: 8px of travel is itself the activation gesture. Touch waits
-    // for the long-press timer instead — real finger movement before it
-    // fires reads as an attempt to scroll the figure list, not a drag, so it
-    // cancels the timer rather than activating (§9.3: no accidental entry).
-    if (st.pointerType !== 'touch' && Math.hypot(dx, dy) > HIRE_DRAG_SLOP_PX) {
-      _floorHireActivate(st, e.clientX, e.clientY);
-    } else if (st.pointerType === 'touch' && Math.hypot(dx, dy) > HIRE_DRAG_SLOP_PX * 1.5) {
-      clearTimeout(st.longPressTimer);
-      _floorHireTeardown(st, false);
-    }
-    return;
-  }
-  e.preventDefault();
-  if (st.ghost) { st.ghost.style.left = e.clientX + 'px'; st.ghost.style.top = e.clientY + 'px'; }
-  _floorHireHoverAt(e.clientX, e.clientY);
-}
-
-function _floorHireActivate(st, x, y) {
-  st.active = true;
-  clearTimeout(st.longPressTimer);
-  // Capture belongs here, not at pointerdown (see floorFigDown) — only a real
-  // drag needs pointerup/pointermove to keep targeting `el` once the pointer
-  // leaves it; a plain click must never be at risk of being retargeted away
-  // from the element the user actually clicked.
-  try { st.el.setPointerCapture(st.pointerId); } catch (err) { /* best-effort */ }
-  if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) { /* not every device */ } }
-  document.body.classList.add('hire-active');
-  // Only NOW does the card stop panning (app.css :7715) — before activation
-  // the card must stay a plain scrollable list item so a touch that isn't a
-  // long-press still scrolls the bench (Ron, mobile, 2026-09-10).
-  st.el.classList.add('fl-hire-dragging');
-  const ghost = document.createElement('div');
-  ghost.className = 'hire-ghost';
-  ghost.innerHTML = _floorAvatarHTML(st.avatar, FLOOR_FACE_PX);
-  ghost.style.left = x + 'px';
-  ghost.style.top = y + 'px';
-  document.body.appendChild(ghost);
-  st.ghost = ghost;
-  // Mark every project tile as a valid target or a visibly dead one, up
-  // front — "dead targets look dead before the drop, not after" (§7). A
-  // project-scoped character can only ever hire into its own project; a
-  // global one can hire into any of them.
-  document.querySelectorAll(HIRE_TILE_SEL).forEach((card) => {
-    const ok = st.scope !== 'project' || card.dataset.id === st.pid;
-    card.classList.toggle('hire-target', ok);
-    card.classList.toggle('hire-refused', !ok);
+  // up" at once, and the first one wins (pointer-drag.js checks this via
+  // isDragActive before it does anything else).
+  window.PointerDrag.begin(e.currentTarget, e, {
+    isDragActive: () => !!_hireDrag,
+    getDragState: () => _hireDrag,
+    setDragState: (s) => { _hireDrag = s; },
+    data: { pid, scope, name, display, avatar },
+    draggingClass: 'fl-hire-dragging',   // only NOW does the card stop panning
+    activeBodyClass: 'hire-active',      // (app.css :7715) — see that rule's comment
+    ghostClass: 'hire-ghost',
+    ghostHTML: (st) => _floorAvatarHTML(st.data.avatar, FLOOR_FACE_PX),
+    returnFocus: false,   // no prior focus-return behaviour to preserve here
+    onActivate: (st) => {
+      // Mark every project tile as a valid target or a visibly dead one, up
+      // front — "dead targets look dead before the drop, not after" (§7). A
+      // project-scoped character can only ever hire into its own project; a
+      // global one can hire into any of them.
+      document.querySelectorAll(HIRE_TILE_SEL).forEach((card) => {
+        const ok = st.data.scope !== 'project' || card.dataset.id === st.data.pid;
+        card.classList.toggle('hire-target', ok);
+        card.classList.toggle('hire-refused', !ok);
+      });
+    },
+    onMove: (st, x, y) => _floorHireHoverAt(x, y),
+    onDrop: (st, x, y) => {
+      const el = document.elementFromPoint(x, y);
+      const card = el && el.closest && el.closest(HIRE_TILE_SEL);
+      const allowed = !!(card && (st.data.scope !== 'project' || card.dataset.id === st.data.pid));
+      return allowed ? card.dataset.id : null;
+    },
+    afterDrop: (st, projectId) => {
+      // A refused or off-target release writes nothing and opens nothing —
+      // Esc and "release outside any tile" are the same cancel per spec §7.
+      if (projectId) _hireDrop(projectId, st.data);
+    },
+    onTeardown: () => {
+      document.querySelectorAll(_hireTileSel('.hire-target') + ',' + _hireTileSel('.hire-refused') + ',' + _hireTileSel('.hire-hover'))
+        .forEach((c) => c.classList.remove('hire-target', 'hire-refused', 'hire-hover'));
+    },
+    onEnd: (st, wasDrag) => { if (wasDrag) _lastHireDragEnd = Date.now(); },
   });
 }
 
@@ -752,57 +710,6 @@ function _floorHireHoverAt(x, y) {
   });
   if (card) card.classList.add('hire-hover');
 }
-
-function _floorHireUp(e) {
-  const st = _hireDrag;
-  if (!st || e.pointerId !== st.pointerId) return;
-  clearTimeout(st.longPressTimer);
-  if (!st.active) { _floorHireTeardown(st, false); return; }
-  const el = document.elementFromPoint(e.clientX, e.clientY);
-  const card = el && el.closest && el.closest(HIRE_TILE_SEL);
-  const allowed = !!(card && (st.scope !== 'project' || card.dataset.id === st.pid));
-  _floorHireTeardown(st, true);
-  if (allowed) _hireDrop(card.dataset.id, st);
-  // A refused or off-target release writes nothing and opens nothing — Esc
-  // and "release outside any tile" are the same cancel per spec §7.
-}
-
-function _floorHireCancel(e) {
-  const st = _hireDrag;
-  if (!st) return;
-  // `blur` carries no pointerId, so only a real PointerEvent gets filtered by
-  // it — comparing unconditionally made the blur cancel a silent no-op.
-  if (e && e.pointerId !== undefined && e.pointerId !== st.pointerId) return;
-  clearTimeout(st.longPressTimer);
-  _floorHireTeardown(st, st.active);
-}
-
-function _floorHireTeardown(st, wasDrag) {
-  document.body.classList.remove('hire-active');
-  st.el.classList.remove('fl-hire-dragging');
-  document.querySelectorAll(_hireTileSel('.hire-target') + ',' + _hireTileSel('.hire-refused') + ',' + _hireTileSel('.hire-hover'))
-    .forEach((c) => c.classList.remove('hire-target', 'hire-refused', 'hire-hover'));
-  if (st.ghost) { st.ghost.remove(); st.ghost = null; }
-  // Belt as well as braces: the ghost is appended to <body>, so a stale one
-  // from any path that somehow skipped this teardown would sit on the board
-  // until a reload. Sweep by class, not only by handle.
-  document.querySelectorAll('.hire-ghost').forEach((g) => g.remove());
-  window.removeEventListener('pointermove', _floorHireMove);
-  window.removeEventListener('pointerup', _floorHireUp);
-  window.removeEventListener('pointercancel', _floorHireCancel);
-  window.removeEventListener('blur', _floorHireCancel);
-  try { st.el.releasePointerCapture(st.pointerId); } catch (e) { /* already released, or the node is gone */ }
-  if (wasDrag) _lastHireDragEnd = Date.now();
-  _hireDrag = null;
-}
-
-// Esc cancels a drag in progress (§7) — writes nothing, opens nothing,
-// restores everything by tearing down the one class + the marker classes.
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && _hireDrag) {
-    _floorHireTeardown(_hireDrag, _hireDrag.active);
-  }
-});
 
 // POST the hire, or report why not. Shared by the drag drop and the no-drag
 // "Hire to project…" menu (floorHireMenu) — both outcomes in §6 route
