@@ -2147,7 +2147,7 @@ def write_position(project, subject, verdict, reason,
 
 def write_topic_note(project, slug, description, body, *, note_type='project',
                       triggers='', task='', trigger_type='', actor='',
-                      supersedes=''):
+                      supersedes='', mint_candidates=''):
     """Mint a NEW topic note (MEMORY_DESIGN_V2_SPEC.md §7 Condition 27 /
     §4.1's `origin`+`generated` provenance, Condition 4/22 "mint WRITEs
     fail-open"). First real caller of `_stamp_origin`/`_stamp_generated`
@@ -2180,6 +2180,13 @@ def write_topic_note(project, slug, description, body, *, note_type='project',
     `_mem_supersede_graph`, same split as `[[wikilinks]]`. Never an edit to
     the predecessor: the back edge (`superseded_by`) is derived, not stored.
 
+    `mint_candidates` (§6.5 Condition 22, MC-944 step 7): comma-joined
+    predecessor slugs the overlap detector flagged when `supersedes` is the
+    literal sentinel `'unresolved'` — the top-3 the RESOLVE question offers.
+    Written verbatim, never parsed back into a real edge (`_mem_supersede_
+    graph` already drops `unresolved` as a no-edge case); ignored entirely
+    when `supersedes` is not `'unresolved'`.
+
     Returns the note's filename, or '' if skipped (already exists / bad slug).
     """
     slug = (slug or '').strip()
@@ -2205,6 +2212,8 @@ def write_topic_note(project, slug, description, body, *, note_type='project',
             lines.append(f'triggers: {triggers.strip()}')
         if supersedes:
             lines.append(f'supersedes: {supersedes.strip()}')
+        if supersedes.strip() == 'unresolved' and mint_candidates:
+            lines.append(f'mint_candidates: {mint_candidates.strip()}')
         lines.append(f'origin: {origin}')
         lines.append('generated:')
         lines.append(f"  by: {generated['by']}")
@@ -2442,8 +2451,21 @@ def corpus_uids(project):
 
 
 def _memory_search(project, query, topk=3, expand=None, record=None,
-                    keep_internal=False):
+                    keep_internal=False, consumer_unattended=False):
     """BM25 ranking over the project's memory corpus (SPEC §3 Leg B).
+
+    `consumer_unattended` (§6.5, MC-944 step 7's hard constraint; mirrors
+    `mc.distiller.exploration_read_floor`'s identically-named parameter):
+    when True, a topic unit stamped `origin: unattended` is dropped from the
+    scored candidates entirely — never delivered, never redirected to, never
+    counted toward a slot. Deterministic mints (`mint_topic_node`) can fire
+    from an unattended trigger (a scheduled hivemind closing, a steward
+    closing a backlog item), and CLAUDE.md's learning-system safety rail
+    ("a human must be on at least one side of every learning loop") applies
+    here exactly as it does to the Distiller's own artifacts: autonomous
+    output must never become autonomous input. Default False preserves every
+    existing caller's behaviour unchanged — only a caller building a
+    STEWARD/unattended read-floor opts in.
 
     Corpus = the memory dir's topic *.md files + MEMORY_ARCHIVE.md entries +
     the MANAGED region of MEMORY.md. The curated MEMORY.md index is excluded
@@ -2540,6 +2562,9 @@ def _memory_search(project, query, topk=3, expand=None, record=None,
             score += idf[t] * (f * (_BM25_K1 + 1.0)) / (f + denom_len)
         if not matched:
             continue
+        if consumer_unattended and u.get('cls') == 'topic':
+            if _note_frontmatter(u['text']).get('origin') == 'unattended':
+                continue
         _trig = u.get('subject_terms') or set()
         _hit_trig = _trig & set(terms)
         if _hit_trig and not u.get('trigger_explicit'):
@@ -2769,6 +2794,398 @@ def _mem_apply_supersession(scored, edges, by_topic_file):
     return out
 
 
+# ── Minting — WRITE/RESOLVE split (§6.5 Condition 21/22/23, build step 7) ───
+#
+# WRITE is deterministic and fail-open: a trigger (`mint_topic_node`'s
+# caller) fires unconditionally, never a Scribe judgement call — the spec's
+# own reason is that Scribe already ran in the traced 2026-09-06 incident and
+# produced nothing (§6.5). RESOLVE is the one place a caller waits: the
+# binary question posed on the project's next ATTENDED turn
+# (`unresolved_mint_block`), answered through `resolve_mint`.
+#
+# Whole feature gated OFF by default (`memory_mint_triggers_enabled`) —
+# report-mode-first per the build brief; no caller in this repo flips it on.
+
+_MINT_OVERLAP_MIN_TERMS = 2   # floor: a single shared word is not overlap
+_MINT_OVERLAP_TOP_N = 3       # Condition 22/23's "top 3"
+_MINT_DOCS_SIZE_THRESHOLD_DEFAULT = 4096  # bytes; §16 step 7's "size threshold"
+
+
+def _mint_enabled():
+    """Condition 21's deterministic triggers are inert unless this is ON.
+    Default OFF — report-mode-first, per the build brief's hard constraint.
+    """
+    return bool(state.CONFIG.get('memory_mint_triggers_enabled', False))
+
+
+def _mint_docs_size_threshold():
+    try:
+        return max(1, int(state.CONFIG.get(
+            'memory_mint_docs_size_threshold', _MINT_DOCS_SIZE_THRESHOLD_DEFAULT)))
+    except (TypeError, ValueError):
+        return _MINT_DOCS_SIZE_THRESHOLD_DEFAULT
+
+
+def _mint_overlap_terms(name, description, triggers):
+    """Term set for Condition 23's overlap test — subject/trigger vocabulary
+    ONLY. Deliberately excludes anything popularity-shaped (delivery count,
+    recency, corpus rank): §6.5's own incident is a cold predecessor that
+    never triggers a popularity-gated check and stays cold forever, so this
+    detector must never accept one.
+    """
+    toks = set(_mem_tokens(name)) | set(_mem_tokens(description)) | \
+        set(_mem_tokens((triggers or '').replace(',', ' ')))
+    return {t for t in toks if t not in _TRIGGER_STOPWORDS}
+
+
+def detect_mint_overlap(project, name, description, triggers='', *,
+                         top_n=_MINT_OVERLAP_TOP_N,
+                         min_overlap=_MINT_OVERLAP_MIN_TERMS, units=None):
+    """Condition 23: does an existing topic note already cover roughly the
+    same ground as a note about to be minted? Subject/trigger overlap ALONE
+    — no delivery count, no popularity term of any kind — scored as the raw
+    intersection size between the incoming note's own vocabulary (its own
+    `name`+`description`+`triggers`, never anyone else's usage of it) and
+    each existing topic note's identical fields.
+
+    Returns up to `top_n` `(file, overlap_count)` pairs, highest first,
+    ties broken by filename for determinism. Never mutates anything — this
+    is the same function both the inline per-mint WRITE check (§6.5) and a
+    standalone corpus-wide report (`mint_overlap_report`, M4) call.
+    """
+    query_terms = _mint_overlap_terms(name, description, triggers)
+    if not query_terms:
+        return []
+    if units is None:
+        mem_path = _get_memory_path(project)
+        units = _mem_corpus(mem_path.parent, mem_path.name,
+                             _get_archive_path(project).name)
+    scored = []
+    for u in units:
+        if u.get('cls') != 'topic':
+            continue
+        fm = _note_frontmatter(u.get('text') or '')
+        cand_terms = _mint_overlap_terms(
+            u['file'].rsplit('.', 1)[0], fm.get('description', ''),
+            fm.get('triggers', ''))
+        overlap = len(query_terms & cand_terms)
+        if overlap >= min_overlap:
+            scored.append((u['file'], overlap))
+    scored.sort(key=lambda pair: (-pair[1], pair[0]))
+    return scored[:top_n]
+
+
+def mint_overlap_report(project, *, min_overlap=_MINT_OVERLAP_MIN_TERMS):
+    """Condition 23's standalone M4 deliverable: a report-only, corpus-wide
+    sweep flagging every PAIR of existing topic notes whose subject/trigger
+    vocabulary overlaps at or above `min_overlap` — independent of any mint
+    event. Never writes anything; feeds a human decision (M5), not built
+    here. O(N^2) unit-scorings, same cost class as `retrievability_sweep`
+    (D1) — run on demand, not per-write.
+
+    Returns a list of {a, b, overlap} sorted by overlap desc, each pair
+    reported once (a < b lexicographically).
+    """
+    try:
+        mem_path = _get_memory_path(project)
+        units = _mem_corpus(mem_path.parent, mem_path.name,
+                             _get_archive_path(project).name)
+    except Exception:
+        return []
+    topics = [u for u in units if u.get('cls') == 'topic']
+    fm_terms = {}
+    for u in topics:
+        fm = _note_frontmatter(u.get('text') or '')
+        fm_terms[u['file']] = _mint_overlap_terms(
+            u['file'].rsplit('.', 1)[0], fm.get('description', ''),
+            fm.get('triggers', ''))
+    pairs = []
+    files = sorted(fm_terms.keys())
+    for i, a in enumerate(files):
+        for b in files[i + 1:]:
+            overlap = len(fm_terms[a] & fm_terms[b])
+            if overlap >= min_overlap:
+                pairs.append({'a': a, 'b': b, 'overlap': overlap})
+    pairs.sort(key=lambda r: (-r['overlap'], r['a'], r['b']))
+    return pairs
+
+
+def _mint_slug(trigger_kind, artifact_key):
+    """Deterministic slug so a replayed trigger (the same hivemind_id/
+    backlog item_id/doc path firing twice) resolves to the SAME filename —
+    idempotent-on-replay via `write_topic_note`'s existing never-clobber
+    behaviour, with no separate dedupe table to keep in sync.
+    """
+    h = hashlib.sha1(str(artifact_key or '').encode('utf-8')).hexdigest()[:10]
+    kind = re.sub(r'[^a-z0-9]+', '_', (trigger_kind or 'mint').lower()).strip('_')
+    return f'mint_{kind}_{h}'
+
+
+_MINT_TRIGGER_LABELS = {
+    'hivemind_close': 'Hivemind closed',
+    'backlog_done': 'Backlog item closed',
+    'docs_artifact': 'Docs artifact minted',
+}
+
+
+def mint_topic_node(project, *, trigger_kind, subject, artifact_path='',
+                     task='', trigger_type='', actor=''):
+    """Condition 21/22 — the ONE deterministic mint entry point every WRITE
+    trigger (hivemind close, backlog item -> done, an oversized docs/
+    artifact) calls. Thin by design: subject, date, artifact path, and — when
+    the overlap detector finds a candidate — `supersedes: unresolved` plus
+    `mint_candidates`, never a resolved edge (that is RESOLVE's job, not
+    WRITE's).
+
+    Gated OFF entirely unless `_mint_enabled()` — report-mode-first.
+
+    Authority guard: the SAME `mc.distiller._authority_violation` check
+    Step E's habit classifier runs, on the full rendered description+body,
+    before mint — a deterministic trigger is not exempt just because a
+    human never phrased the sentence; the artifact's own subject text is
+    caller-controlled (a hivemind goal, a backlog item's title) and could
+    still contain an authority-violating phrase.
+
+    Never raises — best-effort, like every other Scribe-adjacent side effect
+    in this module (`_scribe_classify_habits`'s posture, verbatim).
+
+    Returns the minted filename — including on a replay of the same
+    (trigger_kind, artifact_key), where it hands back the EXISTING file
+    rather than re-minting or clobbering it. Returns '' only when skipped
+    outright: disabled, empty subject, or authority-refused.
+    """
+    if not _mint_enabled():
+        return ''
+    try:
+        subject = (subject or '').strip()
+        if not subject:
+            return ''
+        project_id = project.get('id', '') if isinstance(project, dict) else ''
+        slug = _mint_slug(trigger_kind, artifact_path or subject)
+        label = _MINT_TRIGGER_LABELS.get(trigger_kind, trigger_kind or 'Mint')
+        snippet = subject if len(subject) <= 160 else subject[:157] + '...'
+        description = f'{label}: {snippet}'
+        body_lines = [f'**Trigger:** {trigger_kind}', f'**Date:** {now_iso()}']
+        if artifact_path:
+            body_lines.append(f'**Artifact:** {artifact_path}')
+        body_lines.append('')
+        body_lines.append(subject)
+        body = '\n'.join(body_lines) + '\n'
+        violation = _distiller._authority_violation(f'{description}\n{body}')
+        if violation:
+            _scribe_stat(project_id, 'mint_refused_authority')
+            _log(f'[mint] {trigger_kind} mint refused (authority guard hit '
+                 f'{violation!r}): {subject[:120]!r}')
+            return ''
+        candidates = detect_mint_overlap(project, slug.replace('_', '-'),
+                                          description)
+        supersedes = ''
+        mint_candidates = ''
+        if candidates:
+            supersedes = 'unresolved'
+            mint_candidates = ', '.join(c for c, _score in candidates)
+        fn = write_topic_note(
+            project, slug, description, body, note_type='project',
+            task=task, trigger_type=trigger_type, actor=actor or trigger_kind,
+            supersedes=supersedes, mint_candidates=mint_candidates)
+        if fn:
+            _scribe_stat(project_id, f'mint_{trigger_kind}')
+            if supersedes:
+                _scribe_stat(project_id, 'mint_unresolved')
+            _log(f'[mint] {trigger_kind} minted: {fn}'
+                 + (f' (unresolved vs {mint_candidates})' if supersedes else ''))
+            return fn
+        # write_topic_note returns '' both for "bad slug" and "already exists
+        # at this deterministic path" — `_mint_slug` guarantees the latter
+        # means an EARLIER call for this same (trigger_kind, artifact_key)
+        # already minted it, so replaying the trigger must hand back that
+        # same filename, not ''. This is what makes the trigger idempotent
+        # rather than merely non-clobbering.
+        existing = _get_memory_path(project).parent / f'{slug}.md'
+        return slug + '.md' if existing.is_file() else ''
+    except Exception as e:
+        _log(f'[mint] {trigger_kind} mint failed: {e}')
+        return ''
+
+
+def scan_docs_artifacts_for_mint(project, since_ts, until_ts, *, docs_dir=None,
+                                  task='', trigger_type=''):
+    """Condition 21's fourth deterministic trigger: "a docs/ artifact above a
+    size threshold created in the session". Filesystem-only and mtime-gated
+    — no transcript/tool-call parsing, so this stays a fact about disk state,
+    never a judgement about what an agent meant to do.
+
+    A file counts when its mtime falls inside `[since_ts, until_ts]` (the
+    calling session's own window) AND its size exceeds
+    `memory_mint_docs_size_threshold` bytes. `since_ts`/`until_ts` are epoch
+    seconds; the caller (the Scribe session-end call site) supplies the
+    session's own start/end.
+
+    `task`/`trigger_type` are the CALLING session's own provenance (forwarded
+    verbatim to `mint_topic_node` -> `_stamp_origin`) — this is the one mint
+    trigger with a real session in hand, unlike hivemind close or a bare
+    backlog PATCH, so it is the one that can stamp origin honestly instead
+    of failing safe to 'unattended'.
+
+    Mints one thin node per qualifying file via `mint_topic_node` — that
+    call is itself idempotent-on-replay (`_mint_slug` keys off the file
+    path), so re-scanning the same session twice mints nothing twice.
+    Returns the list of minted filenames (possibly empty).
+    """
+    if not _mint_enabled():
+        return []
+    try:
+        pp = project.get('project_path', '') if isinstance(project, dict) else ''
+        base = Path(docs_dir) if docs_dir else (Path(pp) / 'docs' if pp else None)
+        if not base or not base.is_dir():
+            return []
+        threshold = _mint_docs_size_threshold()
+        minted = []
+        for f in sorted(base.rglob('*.md')):
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            if st.st_size < threshold:
+                continue
+            if not (since_ts <= st.st_mtime <= until_ts):
+                continue
+            rel = str(f.relative_to(Path(pp))) if pp else str(f)
+            fn = mint_topic_node(
+                project, trigger_kind='docs_artifact',
+                subject=f'{rel} ({st.st_size} bytes)', artifact_path=rel,
+                task=task, trigger_type=trigger_type)
+            if fn:
+                minted.append(fn)
+        return minted
+    except Exception as e:
+        _log(f'[mint] docs-artifact scan failed: {e}')
+        return []
+
+
+_FRONTMATTER_BLOCK_RE = re.compile(r'\A---\n(.*?\n)---\n', re.S)
+
+
+def _rewrite_frontmatter_field(text, field, value):
+    """Set (or, when `value` is falsy, remove) one top-level `field: value`
+    scalar line inside a note's frontmatter block, leaving everything else
+    — including the body and nested blocks like `generated:` — untouched.
+    Matching is anchored to line-start so `generated:`'s indented `by`/`at`
+    children (which also contain ':') are never mistaken for a top-level key.
+    No-op (returns `text` unchanged) if the file has no frontmatter block.
+    """
+    m = _FRONTMATTER_BLOCK_RE.match(text)
+    if not m:
+        return text
+    block = m.group(1)
+    key_re = re.compile(rf'^{re.escape(field)}:.*\n', re.M)
+    block = key_re.sub('', block)
+    if value:
+        block += f'{field}: {value}\n'
+    return text[:m.start(1)] + block + text[m.end(1):]
+
+
+def resolve_mint(project, filename, verdict, candidate=''):
+    """RESOLVE half of Condition 22 (§6.5) — answers the one-word question
+    `unresolved_mint_block` posed. `verdict` is `'supersedes'` (the mint
+    really does replace `candidate`, so the sentinel is rewritten into the
+    real edge `_mem_supersede_graph` reads) or `'unrelated_to'` (the cheap
+    answer: `supersedes: unresolved` is removed entirely, so the node reverts
+    to a plain STANDING mint with no predecessor claim). Either way
+    `mint_candidates` is cleared — its only job was carrying the question.
+
+    Refuses (returns False, no write) unless the note's CURRENT frontmatter
+    still reads `supersedes: unresolved` — answering an already-resolved or
+    never-unresolved note is a no-op, not a way to fabricate an edge on an
+    arbitrary note by filename.
+
+    Takes the same per-project topic write lock `write_topic_note` uses, and
+    re-checks the sentinel inside it (TOCTOU — two answers racing the same
+    question must not both apply).
+    """
+    if verdict not in ('supersedes', 'unrelated_to'):
+        raise ValueError("verdict must be 'supersedes' or 'unrelated_to'")
+    name = str(filename or '').strip()
+    if not name or '/' in name or '\\' in name or not name.endswith('.md'):
+        raise ValueError('not a topic note filename')
+    mem_dir = _get_memory_path(project).parent
+    path = mem_dir / name
+    if path.resolve().parent != mem_dir.resolve():
+        raise ValueError('not a topic note filename')
+    project_id = project.get('id', '') if isinstance(project, dict) else ''
+    with _get_mem_write_lock(f'topic:{project_id}'):
+        if not path.is_file():
+            return False
+        text = path.read_text(encoding='utf-8', errors='replace')
+        if _note_frontmatter(text).get('supersedes') != 'unresolved':
+            return False
+        if verdict == 'supersedes':
+            text = _rewrite_frontmatter_field(text, 'supersedes', candidate)
+        else:
+            text = _rewrite_frontmatter_field(text, 'supersedes', '')
+            text = _rewrite_frontmatter_field(text, 'unrelated_to', candidate)
+        text = _rewrite_frontmatter_field(text, 'mint_candidates', '')
+        _atomic_write_text(path, text)
+    return True
+
+
+def unresolved_mint_block(project, *, task='', trigger_type='', incognito=False):
+    """The RESOLVE side's delivery: one reserved-slot, one-word question,
+    surfaced ONLY on an ATTENDED turn (§6.5 — "the only place a caller is
+    genuinely waiting"). An unattended/scheduled/steward turn gets nothing
+    here, same gate `_stamp_origin` uses everywhere else, so an autonomous
+    cycle can never be the one that answers (or silently ignores) it.
+
+    Picks at most ONE pending unresolved mint per call (oldest by mtime) —
+    this is a question, not a feed; surfacing several at once trains the
+    same "prompt furniture" failure the position reserve gate exists to
+    avoid. Returns '' when incognito, unattended, disabled, or nothing is
+    pending.
+    """
+    if incognito or not _mint_enabled():
+        return ''
+    if _distiller.is_unattended_session(task, trigger_type):
+        return ''
+    try:
+        mem_dir = _get_memory_path(project).parent
+    except Exception:
+        return ''
+    if not mem_dir.is_dir():
+        return ''
+    pending = []
+    for f in mem_dir.glob('*.md'):
+        if _is_position_file(f.name) or f.name == CONTINUITY_FILE:
+            continue
+        try:
+            text = f.read_text(encoding='utf-8', errors='replace')
+        except Exception:
+            continue
+        fm = _note_frontmatter(text)
+        if fm.get('supersedes') != 'unresolved':
+            continue
+        try:
+            mtime = f.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        pending.append((mtime, f.name, fm))
+    if not pending:
+        return ''
+    pending.sort(key=lambda r: r[0])
+    _mtime, fname, fm = pending[0]
+    candidates = [c.strip() for c in fm.get('mint_candidates', '').split(',') if c.strip()]
+    cand_line = ', '.join(candidates) if candidates else '(none recorded)'
+    project_id = project.get('id', '') if isinstance(project, dict) else ''
+    return (
+        "--- MEMORY MINT NEEDS ONE WORD (this project only) ---\n"
+        f"  {fname} — \"{fm.get('description', '')}\"\n"
+        f"  mint_candidates: {cand_line}\n"
+        "  Answer with exactly one, verbatim, in your reply:\n"
+        "    supersedes:<candidate-slug>   (this note really does replace that one)\n"
+        "    unrelated_to:<candidate-slug> (no relation — pick the closest candidate)\n"
+        f"  Recorded via: POST /api/project/{project_id}/memory/mints/{fname}/resolve "
+        '{"verdict":"supersedes|unrelated_to","candidate":"<slug>"}')
+
+
 def _mem_snippet(text, terms):
     """A ~400-char window around the first query term, else the note's head."""
     low = (text or '').lower()
@@ -2908,6 +3325,11 @@ def _note_frontmatter(text):
     frontmatter parser (`mc/skills.py` — "no nested maps, no flow-style") does
     not structure-parse; a non-empty raw value is treated as a truthy human-
     witness SIGNAL here, never counted or indexed by entry.
+
+    `mint_candidates`/`unrelated_to` (§6.5 Condition 22, MC-944 step 7): read
+    for `resolve_mint`/`unresolved_mint_block` only — a comma-joined slug
+    list and RESOLVE's own negative answer, respectively. Neither feeds
+    scoring or the supersede graph.
     """
     try:
         meta, _b = _skills.parse_skill_md(text)
@@ -2920,7 +3342,9 @@ def _note_frontmatter(text):
             'triggers': str(meta.get('triggers') or ''),
             'supersedes': str(meta.get('supersedes') or '').strip(),
             'origin': str(meta.get('origin') or '').strip(),
-            'verified': str(meta.get('verified') or '').strip()}
+            'verified': str(meta.get('verified') or '').strip(),
+            'mint_candidates': str(meta.get('mint_candidates') or '').strip(),
+            'unrelated_to': str(meta.get('unrelated_to') or '').strip()}
 
 
 def note_triggers(project, name, description, explicit_triggers='', units=None):
@@ -3868,6 +4292,24 @@ def _write_session_memory(p, session, status, summary_fallback, ts_date):
     except Exception as _topics_err:
         _log(f"[topics] dispatch EXCEPTION project_id={project_id}: "
              f"{type(_topics_err).__name__}: {_topics_err!r}")
+    # MC-944 step 7 (Condition 21, trigger 4) — a docs/ artifact created or
+    # grown above the size threshold during this session mints a thin topic
+    # node. This is the one mint trigger with a real session in hand, so
+    # task/trigger_type ride along unchanged (same values the Distiller
+    # dispatch above just used) rather than failing safe to unknown, same as
+    # every other best-effort hook in this function: never blocks Scribe /
+    # MEMORY.md / completion.
+    try:
+        started_at = session.get('started_at') or ''
+        since_ts = (datetime.fromisoformat(started_at.replace('Z', '+00:00')).timestamp()
+                    if started_at else None)
+        if since_ts is not None:
+            scan_docs_artifacts_for_mint(
+                p, since_ts, _time.time(),
+                task=task, trigger_type=session.get('trigger_type'))
+    except Exception as _mint_scan_err:
+        _log(f"[mint] docs-artifact session-end scan EXCEPTION project_id={project_id}: "
+             f"{type(_mint_scan_err).__name__}: {_mint_scan_err!r}")
     return True
 
 

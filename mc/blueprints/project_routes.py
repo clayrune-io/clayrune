@@ -1293,7 +1293,8 @@ def update_backlog_item(project_id, item_id):
     if 'status' in data:
         now = now_iso()
         by = str(data.get('by') or 'user')[:80]
-        if record_backlog_status_change(item, data['status'], by=by, ts=now):
+        status_changed = record_backlog_status_change(item, data['status'], by=by, ts=now)
+        if status_changed:
             item['updated_at'] = now
         item['status'] = data['status']
         # done_at tracks CLOSURE, not the literal 'done' string — a wontdo item
@@ -1305,6 +1306,24 @@ def update_backlog_item(project_id, item_id):
                 item['done_at'] = now_iso()
         else:
             item['done_at'] = None
+        # MC-944 step 7 (Condition 21, trigger 2) — an item transitioning
+        # INTO 'done' (not already done, and not 'wontdo' — a declined item
+        # is a position, not new ground truth) mints a thin topic node.
+        # trigger_type is deliberately left '' (unknown): this route has no
+        # session/trigger_type of its own — an attended human closing a card
+        # in the UI and an unattended steward closing the same item over
+        # curl hit byte-identical JSON here — so origin fails SAFE to
+        # 'unattended' per _stamp_origin's own documented default, same
+        # posture used everywhere else in mc/memory.py when provenance is
+        # unknown.
+        if status_changed and data['status'] == 'done':
+            try:
+                from mc import memory as _mem
+                _mem.mint_topic_node(
+                    p, trigger_kind='backlog_done', subject=item.get('text', ''),
+                    artifact_path=f'backlog:{item_id}', actor=f'backlog:{item_id}')
+            except Exception as _mint_err:
+                _log(f"[mint] backlog_done mint failed for {project_id}/{item_id}: {_mint_err}")
     # Wholesale notes replacement — the only way to REMOVE a note. Added 2026-08-15
     # for the journal migration: unattended cycles had been using notes as their
     # running log, so items carried 8x more log than task. There is deliberately no

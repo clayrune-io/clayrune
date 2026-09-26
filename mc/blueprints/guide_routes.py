@@ -585,6 +585,33 @@ def delete_position_route(project_id, filename):
     return jsonify({'ok': True})
 
 
+@bp.route('/api/project/<project_id>/memory/mints/<path:filename>/resolve',
+          methods=['POST'])
+def resolve_mint_route(project_id, filename):
+    """Answer the one-word question `unresolved_mint_block` posed (MC-944
+    step 7, §6.5 Condition 22 RESOLVE) — the route its own rendered text
+    already names. Body: {verdict: "supersedes"|"unrelated_to", candidate}.
+
+    `resolve_mint` does its own filename/sentinel validation (rejects path
+    traversal, refuses a note that isn't currently `supersedes: unresolved`)
+    under the same per-project topic write lock WRITE uses, so this route is
+    a thin dispatch — no duplicate checks here.
+    """
+    p = load_project(project_id)
+    if not p:
+        return jsonify({'error': 'project not found'}), 404
+    d = request.get_json(silent=True) or {}
+    from mc import memory as _mem
+    try:
+        ok = _mem.resolve_mint(p, filename, d.get('verdict', ''),
+                                candidate=d.get('candidate', ''))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if not ok:
+        return jsonify({'error': 'not found or not unresolved'}), 404
+    return jsonify({'ok': True})
+
+
 @bp.route('/api/project/<project_id>/memory/search', methods=['GET'])
 def memory_search(project_id):
     """Ranked-grep over the project memory corpus (SPEC §3 Leg B), PLUS a cold
