@@ -140,17 +140,16 @@ async function runToneRenderChecks(browser, tone) {
   const editBtn = await page.$('[data-rules-edit]');
   editBtn ? ok(`[${tone.name}] Rules "Edit" hook renders (popover itself is T2b)`) : fail(`[${tone.name}] Rules Edit hook missing`);
 
-  // Tab strip: Content's badge is needs-you-only (2 families: restore-points,
-  // install-video), Conversations' is a total (camp-1's fixture row count —
-  // T6, merged from master after this test was written, added conv-4/5/6,
-  // so the total is 6, not the 3 this ticket originally shipped against).
+  // Tab strip: both badges are needs-you-only (§3.1). Content: 2 families
+  // (restore-points, install-video). Conversations: conv-1 needs_reply +
+  // conv-4/conv-6 needs_you = 3 of camp-1's 6 rows (frame 12a also says 3).
   const tabText = await page.textContent('[data-tab="content"]').catch(() => '');
   const convText = await page.textContent('[data-tab="conversations"]').catch(() => '');
   /Content\s*2/.test(tabText.replace(/\s+/g, ' '))
     ? ok(`[${tone.name}] Content tab badge is needs-you-only: "${tabText.trim()}"`)
     : fail(`[${tone.name}] Content tab badge wrong: ${JSON.stringify(tabText)}`);
-  /Conversations\s*6/.test(convText.replace(/\s+/g, ' '))
-    ? ok(`[${tone.name}] Conversations tab badge is the total: "${convText.trim()}"`)
+  /Conversations\s*3/.test(convText.replace(/\s+/g, ' '))
+    ? ok(`[${tone.name}] Conversations tab badge is needs-you-only: "${convText.trim()}"`)
     : fail(`[${tone.name}] Conversations tab badge wrong: ${JSON.stringify(convText)}`);
 
   // A2/A3: grouped "All content" — needs-you group holds both multi-claim

@@ -150,12 +150,12 @@
   function deskV1FillCampaignTabStrip(el, params) {
     const campaignId = params.campaignId;
     const contentCount = _needsYouCount(campaignId);
-    // Conversations' own badge is a total count, not needs-you-only — the
-    // frame's "Conversations 3" is exactly `_conversationsFor().length` (3 of
-    // 3 fixture rows), while only 1 is 'needs_reply'; §3.1's "Badge counts
-    // are needs-you items only" reads as Content's own rule, not a blanket
-    // one, since a literal needs-you count here (1) wouldn't match the frame.
-    const convCount = _conversationsFor(campaignId).length;
+    // §3.1: "Badge counts are needs-you items only" — for BOTH tabs. A reply
+    // waiting ('needs_reply') or a row flagged for you ('needs_you'); stale,
+    // reviewed and no-reply rows don't count. A total count read 6 once T6
+    // added rows; this reads 3, which is also frame 12a's number.
+    const convCount = _conversationsFor(campaignId)
+      .filter((c) => c.state === 'needs_reply' || c.state === 'needs_you').length;
     el.innerHTML = `
       <div class="desk-v1-camp-tabs" role="tablist">
         <button type="button" class="desk-v1-camp-tab" aria-selected="true" data-tab="content">Content${contentCount ? ` <span class="desk-v1-camp-tab-badge">${esc(contentCount)}</span>` : ''}</button>
