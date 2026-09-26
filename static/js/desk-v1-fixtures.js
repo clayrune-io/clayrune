@@ -126,6 +126,64 @@
     diagnostics: { edited: 5, reviewed: 7 },
   };
 
+  // ── T3: full-width review (docs/desk_v1_r0_plan.md; THE_DESK_V1_UI.md §4) ──
+  // The campaign list only needs a family/version's summary shape (title,
+  // state, revision) — review needs the full body, per-paragraph selection
+  // targets, the claim's validation detail and the right rail's Where/When/
+  // Link. Keyed by versionId so this NEVER edits the FAMILIES rows above
+  // (ground rule 3: a ticket that needs more adds rows in its own section).
+  // Frame 12b is fam-restore-points/v-restore-blog (title match); its base
+  // claim text ("keeps ten snapshots automatically", claim-1, blocked) is
+  // kept as T0a wrote it — the paragraph below is authored around that
+  // claim rather than the frame's own illustrative "under ten seconds"
+  // wording, so the fixture doesn't carry two conflicting claim sentences.
+  const REVIEW_DETAIL = {
+    'v-restore-blog': {
+      paragraphs: [
+        { id: 'p-lede', text: 'Every agent run now starts with a restore point. If a run goes sideways, pick the moment before it and the project comes back — files, memory and backlog together.' },
+        { id: 'p-heading-why', heading: 'Why I built it' },
+        { id: 'p-why', text: 'I lost an afternoon to an agent that "tidied" a migration folder. The fix wasn’t a smarter agent; it was a cheaper mistake.' },
+        // The claim sentence — the only paragraph the validator/diff touch.
+        // `before`/`after` are the claim's proposed revision (§4: "a
+        // proposed revision as an inline diff"); `text` is what renders
+        // before any revision is accepted.
+        { id: 'p-claim', claimId: 'claim-1',
+          text: 'Restoring keeps ten snapshots automatically on a mid-size project.',
+          before: 'keeps ten snapshots automatically',
+          after: 'keeps the last ten snapshots automatically — older ones roll off' },
+        // Embedded media (CNT-02): the article references the OTHER
+        // family's already-rendered video rather than inventing a second
+        // video fixture.
+        { id: 'p-embed', embedFamilyId: 'fam-install-video' },
+        { id: 'p-closer', text: 'Free for Windows beta testers. ', linkText: 'Join the beta.', linkHref: '#' },
+      ],
+      claims: [
+        { id: 'claim-1', anchorParagraphId: 'p-claim', label: 'Restore time',
+          state: 'blocked', source: null, revision: 1 },
+      ],
+      where: 'Clayrune blog', whenISO: '2026-09-30T12:00:00-07:00', link: 'clayrune.dev/beta',
+      whyChecks: [
+        { label: '2.1 is public', ok: true },
+        { label: 'Free for testers', ok: true },
+        // Suffix is NOT baked in here — desk-v1-review.js appends "·
+        // revision waiting" only once the claim is actually 'checked'; a
+        // still-blocked claim (the baseline above) has no revision yet.
+        { label: 'Restore time', claimId: 'claim-1' },
+      ],
+      comments: [],
+    },
+    'v-install-li': {
+      // Held channel (ch-li-page) — demonstrates the video review variant
+      // (§4 "same layout, with a player") plus the held-destination case
+      // (§9 "Held overrides either"), which the plan's own R0 fixtures
+      // deliberately set up ("in · Clayrune page direct + held").
+      posterCaption: 'Install in two minutes',
+      where: 'in · Clayrune page', whenISO: null, link: null,
+      claims: [],
+      comments: [],
+    },
+  };
+
   window.DeskV1Fixtures = {
     campaigns: CAMPAIGNS,
     channels: CHANNELS,
@@ -133,5 +191,6 @@
     conversations: CONVERSATIONS,
     renderBudget: RENDER_BUDGET,
     results: RESULTS,
+    reviewDetail: REVIEW_DETAIL,
   };
 })();
