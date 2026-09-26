@@ -1,5 +1,66 @@
 # Browser pane — gap list vs. a real browser
 
+## 2026-09-26: popup completion follow-up (MC-976)
+
+The older gap table below is the pre-tabs baseline, not current status.
+Popup tabs now attach to the original Chromium target. No replacement
+window is created by the pane. `Target.targetDestroyed` and
+`Target.detachedFromTarget` remove closed tabs and return focus to their
+opener (`_handle_target_closed` in `mc/blueprints/browser_routes.py`). The
+frontend renders that tab list from SSE (`static/js/browser-pane.js`).
+
+**Confirmed defects and fixes:**
+
+- Opening a second popup forcibly closed an existing live sibling. The
+  pruning introduced in merge `748be4f` treated shared `openerId` plus
+  `canAccessOpener` (or a blank URL) as proof of an abandoned attempt. It
+  is not: independent windows and auth helper windows can share an opener.
+  Removed automatic sibling pruning. Chromium still reuses named windows,
+  pages can close their own windows, and users can close pane tabs.
+- Returning to an opener without navigation left `session['live_url']`
+  pointing to the popup. Fresh opener frames then carried the wrong address
+  in SSE. `_switch_active_tab` now restores the selected tab's URL, including
+  `about:blank` when appropriate.
+
+**Reproduction and validation:**
+
+`python tools/smoke/browser_pane_handoff.py` runs the real blueprint and
+Chromium in an explicitly ephemeral profile against a local two-origin
+fixture. On the pre-fix code, it passed the ordinary postMessage/self-close
+flow but failed with `opening a sibling destroyed the first live popup`.
+It also observed the popup address on fresh opener frames. With the fixes:
+
+- Cross-origin postMessage and acknowledgement arrive; `window.close()`
+  removes the popup, focus returns, and fresh opener frames arrive.
+- A cross-origin iframe opens its own popup, forwards its result, and
+  navigates the parent across origins to a `COOP: same-origin` page.
+- Concurrent popups survive; the first can still deliver its result and
+  close without destroying its independent sibling.
+- `python -m pytest tests/test_browser_routes.py -o addopts='' -q`:
+  **157 passed**. The obsolete tests requiring destructive sibling pruning
+  were replaced by the real-browser overlap regression.
+
+**Limit:** this does not establish the cause of the reported blank Google
+popup after LinkedIn authentication. Authentication reportedly succeeded
+and a manual LinkedIn refresh revealed it. The ordinary and iframe handoff
+worked before these fixes. No authenticated Google flow was executed, no
+existing profile was inspected or changed, and this local fixture is not a
+substitute for a successful GSI sign-in test. Google's
+[GSI setup documentation](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid#cross_origin_opener_policy)
+also identifies COOP as a possible communication failure; that is a
+provider/site hypothesis here, not a measured diagnosis. Do not bypass
+COOP or force reloads/close windows based on a blank screen.
+
+For a later user-authorized integration retry: load the patched backend,
+close and reopen the pane normally with the same named profile (never
+delete it). Existing authentication should be checked by visiting LinkedIn,
+without signing out just to exercise this fix. On the next legitimate
+Google login, expect the popup to close and its opener to regain focus. If
+it remains blank, capture console/network/lifecycle evidence during that
+attempt before refreshing; the provider-specific failure remains open.
+
+## Original baseline (historical)
+
 Tested live against the running Clayrune server (port 5199) via
 `/api/browser/launch` + `/api/browser/input` + `/api/browser/read`, driving a
 throwaway pane session against a local test page
