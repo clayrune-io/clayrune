@@ -76,7 +76,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(ar, 'DATA_DIR', data_dir)
     monkeypatch.setattr(ar, 'load_project', lambda pid: (
         {'id': pid, 'project_path': str(project_path)} if pid == 'proj1' else None))
-    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda project_path, limit=10, must_include_csids=None: [])
+    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda project_path, limit=10, must_include_csids=None, **kw: [])
     # This file exercises rollout parsing and routing seams only. Any provider
     # process launch is a test failure, even if the child would exit quickly.
     def _forbid_provider_launch(*args, **kwargs):

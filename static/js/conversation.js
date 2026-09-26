@@ -3702,10 +3702,24 @@ function _rolloverButtonHTML(projectId, sessionId, remaining, total) {
 // engine/session HANDOFF: the server chains a "=== Prior conversation ...
 // handed off here ===" transcript to its predecessor the same way it chains a
 // token rollover (agent_runtime.handoff_lineage), so one mechanism serves both.
+// A csid with no row in the cache (older than the page's 20 freshest chats)
+// triggers ONE refetch, which `include`s the open chat's csid (agent-log.js
+// _loadConversationsInner) and re-runs _restoreRolloverButton when it lands.
+const _rolloverRowRequested = new Set();
 function _rolloverChainFor(projectId, sessionId) {
   const csid = (agentStatusCache[sessionId] || {}).claudeSessionId;
   if (!projectId || !csid) return [];
-  const row = (conversationsCache[projectId] || []).find(c => c.claude_session_id === csid);
+  const list = conversationsCache[projectId];
+  const row = (list || []).find(c => c.claude_session_id === csid);
+  if (!row && list && !_rolloverRowRequested.has(csid)
+      && activeAgentTab[projectId] === sessionId) {
+    _rolloverRowRequested.add(csid);
+    // A fetch already in flight was sent without this csid; loadConversations
+    // hands back that same promise, so ask once more after it lands.
+    const _has = () => (conversationsCache[projectId] || []).some(c => c.claude_session_id === csid);
+    setTimeout(() => loadConversations(projectId)
+      .then(() => { if (!_has()) return loadConversations(projectId); }), 0);
+  }
   return (row && row.rolled_from) || [];
 }
 

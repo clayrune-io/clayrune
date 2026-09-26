@@ -4829,7 +4829,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # and actively harmful — it reads them as "our last chat" and tries to
     # continue tasks from them.
     project_path = project.get('project_path', '')
-    convos = (_recent_claude_transcripts(project_path, limit=5)
+    convos = (_recent_claude_transcripts(project_path, limit=5, exclude_transforms=True)
               if (project_path and _is_claude) else [])
     if convos:
         live_by_csid = {}
@@ -14106,8 +14106,11 @@ def _conversation_lineage(project_path, must_include_csids=None):
         if n <= 0 or not project_path:
             return {}, {}
         must = set(must_include_csids or ())
+        # exclude_transforms: a Scribe/condense one-shot is never a chain
+        # link, and counting them let 214 of 265 transcripts eat the window.
         transcripts = _recent_claude_transcripts(
-            project_path, limit=n + len(must), must_include_csids=must or None) or []
+            project_path, limit=n + len(must), must_include_csids=must or None,
+            exclude_transforms=True) or []
         return ({t['session_id']: t for t in transcripts if t.get('session_id')},
                 _rollover_lineage(transcripts))
     except Exception as e:
@@ -14148,6 +14151,13 @@ def get_project_conversations(project_id):
     except Exception:
         limit = 10
     limit = max(1, min(limit, 50))
+    # `include`: claude_session_ids the caller needs listed regardless of the
+    # mtime cut — the OPEN chat's own row, whose `rolled_from` drives its "Load
+    # earlier conversation" button (MC-978). Without it an open chat older than
+    # the newest `limit` had no row and so no button. Capped: it bypasses limit.
+    include_csids = {c.strip() for c in (request.args.get('include') or '').split(',')
+                     if c.strip()}
+    include_csids = set(sorted(include_csids)[:5])
 
     p = load_project(project_id)
     if not p:
@@ -14185,8 +14195,14 @@ def get_project_conversations(project_id):
                 'spawned_by': (s.get('_spawned_by') or '').strip(),
             }
 
+    # exclude_transforms: Scribe/condense/Distiller one-shots write a transcript
+    # here too (they run with cwd=project_path). Measured 2026-09-26: 18 of the
+    # 20 rows this returned for drop_shipping_company were those, so the chat
+    # a "Load earlier" button needs fell off the page. The sidebar already
+    # hid them client-side (_isNoiseConvoRow), which could not give back the slots.
     convos = _recent_claude_transcripts(project_path, limit=limit,
-                                         must_include_csids=set(live_by_csid.keys()))
+                                         must_include_csids=set(live_by_csid) | include_csids,
+                                         exclude_transforms=True)
 
     _full_log = _load_agent_log(project_id)
     log_by_csid = {}
@@ -14357,8 +14373,10 @@ def get_project_conversations(project_id):
     # keep all of those, then fill the remaining slots with the freshest
     # non-live rows.
     if len(out) > limit:
-        live_rows = [r for r in out if r.get('live')]
-        non_live = [r for r in out if not r.get('live')]
+        live_rows = [r for r in out if r.get('live')
+                     or r.get('claude_session_id') in include_csids]
+        non_live = [r for r in out if not (r.get('live')
+                    or r.get('claude_session_id') in include_csids)]
         keep = max(0, limit - len(live_rows))
         out = live_rows + non_live[:keep]
         out.sort(key=lambda r: r['mtime'], reverse=True)

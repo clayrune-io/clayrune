@@ -237,7 +237,12 @@ async function loadConversations(projectId) {
 
 async function _loadConversationsInner(projectId) {
   try {
-    const res = await fetch(API_BASE + `/api/project/${projectId}/conversations?limit=20`);
+    // `include` the OPEN chat's claude_session_id: its row carries the
+    // `rolled_from` chain behind "Load earlier conversation" (MC-978), and it
+    // must be listed even when 20 fresher chats push it off the first page.
+    const _openCsid = (agentStatusCache[activeAgentTab[projectId]] || {}).claudeSessionId || '';
+    const _inc = _openCsid ? `&include=${encodeURIComponent(_openCsid)}` : '';
+    const res = await fetch(API_BASE + `/api/project/${projectId}/conversations?limit=20${_inc}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const fresh = await res.json();
     conversationsCache[projectId] = fresh;
