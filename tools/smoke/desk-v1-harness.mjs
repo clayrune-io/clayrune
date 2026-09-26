@@ -133,12 +133,24 @@ async function runTone(browser, tone) {
   } else {
     fail(`[${tone.name}] campaign crumb wrong: back=${JSON.stringify(campBack)}, title=${JSON.stringify(campTitle)}`);
   }
+  // T2a (frame 12a): the name is not duplicated in the summary — it's
+  // already the crumb title above — so resolve against the goal text
+  // instead, which IS rendered there.
   const summaryText = await page.textContent('#desk-v1-camp-summary');
-  if ((summaryText || '').includes('Windows beta testers')) ok(`[${tone.name}] summary slot resolves the fixture campaign`);
+  if ((summaryText || '').includes('tester signups')) ok(`[${tone.name}] summary slot resolves the fixture campaign`);
   else fail(`[${tone.name}] summary slot did not resolve the campaign: ${JSON.stringify(summaryText)}`);
   const campToolsEmpty = await page.$eval('#desk-v1-crumb-tools', (el) => el.children.length === 0).catch(() => null);
   if (campToolsEmpty) ok(`[${tone.name}] campaign: #desk-v1-crumb-tools stays empty (one-row crumb)`);
   else fail(`[${tone.name}] campaign: #desk-v1-crumb-tools is not empty: ${JSON.stringify(campToolsEmpty)}`);
+
+  // Dave's review (T2a pass 2/4): app.css's .agent-line is styled for
+  // terminal-style agent transcripts (JetBrains Mono) — every Desk v1
+  // caller that reuses it (kit's Posy box, T7's Results read) is product
+  // copy, not a log line, so desk-v1.css's `.desk-v1-shell .agent-line`
+  // rule must win. Checked once, here, rather than per-surface.
+  const posyLineFont = await page.$eval('.desk-v1-shell .agent-line', (el) => getComputedStyle(el).fontFamily).catch(() => null);
+  if (posyLineFont && !/mono/i.test(posyLineFont)) ok(`[${tone.name}] Desk v1 .agent-line uses the body font, not monospace: "${posyLineFont}"`);
+  else fail(`[${tone.name}] Desk v1 .agent-line font-family: ${JSON.stringify(posyLineFont)}`);
 
   // Back from campaign returns to Home.
   await page.click('.desk-v1-back');

@@ -196,8 +196,28 @@
     else if (resolved.type === 'ambiguous') _chooseCampaign(resolved.x, resolved.y, (id) => _onCampaignPicked(id, dragData));
   }
 
-  function _wireShelfItem(wrapperEl, dragData) {
+  // Default target behaviour: Home's own campaign cards. T2a's Add tray
+  // (desk-v1-campaign.js) passes its own adapter into the exported
+  // deskV1RenderShelfPair/_wireShelfItem below instead — see that export's
+  // comment for why this had to become a parameter rather than staying
+  // hardcoded here.
+  function _homeShelfAdapter() {
+    return {
+      onActivate: () => { document.querySelectorAll('.desk-v1-home-camp-card').forEach((c) => c.classList.add('pd-drop-target')); },
+      onMove: (x, y, dragData) => _hoverCampaignCardsAt(x, y, dragData),
+      onDrop: (x, y) => _resolveDropAt(x, y),
+      afterDrop: (resolved, dragData) => { if (resolved) _handleDrop(resolved, dragData); },
+      onTeardown: () => {
+        document.querySelectorAll('.desk-v1-home-camp-card').forEach((c) => { c.classList.remove('pd-drop-target', 'pd-drop-hover'); _setCardResultText(c, ''); });
+      },
+      addToItems: () => _campaigns().map((c) => ({ id: c.id, label: c.name })),
+      onPick: (pickedId, dragData) => _onCampaignPicked(pickedId, dragData),
+    };
+  }
+
+  function _wireShelfItem(wrapperEl, dragData, adapter) {
     if (!wrapperEl) return;
+    adapter = adapter || _homeShelfAdapter();
     // Swallow the click a mouse-up still fires on the source element right
     // after a real drag release (floor.js's _lastHireDragEnd comment) — a
     // capture-phase listener runs before bindAddToTrigger's own bubble-phase
@@ -220,13 +240,11 @@
         // own result text (§10's explicit "position it offset... so it
         // never covers the target's result text").
         ghostOffsetX: 18, ghostOffsetY: 18,
-        onActivate: () => { document.querySelectorAll('.desk-v1-home-camp-card').forEach((c) => c.classList.add('pd-drop-target')); },
-        onMove: (st, x, y) => _hoverCampaignCardsAt(x, y, dragData),
-        onDrop: (st, x, y) => _resolveDropAt(x, y),
-        afterDrop: (st, resolved) => { if (resolved) _handleDrop(resolved, dragData); },
-        onTeardown: () => {
-          document.querySelectorAll('.desk-v1-home-camp-card').forEach((c) => { c.classList.remove('pd-drop-target', 'pd-drop-hover'); _setCardResultText(c, ''); });
-        },
+        onActivate: adapter.onActivate,
+        onMove: (st, x, y) => adapter.onMove(x, y, dragData),
+        onDrop: (st, x, y) => adapter.onDrop(x, y, dragData),
+        afterDrop: (st, resolved) => adapter.afterDrop(resolved, dragData),
+        onTeardown: adapter.onTeardown,
         onEnd: (st, wasDrag) => { if (wasDrag) _lastShelfDragEnd = Date.now(); },
       });
     });
@@ -234,7 +252,45 @@
     // Add to… — the SAME wrapper works for both the drag and this, exactly
     // as §2 requires ("Every shelf item is draggable and has a click/
     // keyboard path").
-    DeskV1Kit.bindAddToTrigger(wrapperEl, () => _campaigns().map((c) => ({ id: c.id, label: c.name })), (pickedId) => _onCampaignPicked(pickedId, dragData));
+    DeskV1Kit.bindAddToTrigger(wrapperEl, () => adapter.addToItems(), (pickedId) => adapter.onPick(pickedId, dragData));
+  }
+
+  // ── reusable shelf pair (T2a's Add tray, docs/desk_v1_r0_plan.md: "the Add
+  // tray reuses T1's shelf renderer (desk-v1-home.js) - reuse, don't fork").
+  // Home's own _renderShelves below is now a thin call into this with its
+  // existing adapter/data — byte-identical output, nothing behavioural
+  // changes for Home. A caller on another surface supplies its own
+  // `targetAdapter` (what a drop target IS there) and may narrow which
+  // channels/assets show (`hideChannelIds`, `channels`, `assets`) and which
+  // action a tile/Connect button runs (`onMaterialAction`, `onConnect`).
+  function deskV1RenderShelfPair(hosts, opts) {
+    hosts = hosts || {};
+    opts = opts || {};
+    const adapter = opts.targetAdapter || _homeShelfAdapter();
+    if (hosts.channelsHost) {
+      const hide = new Set(opts.hideChannelIds || []);
+      const visible = (opts.channels || _channels()).filter((ch) => !hide.has(ch.id));
+      hosts.channelsHost.innerHTML = visible.map(_channelShelfItemHTML).join('') +
+        (opts.hideConnect ? '' : '<button type="button" class="desk-v1-home-shelf-connect">＋ Connect</button>');
+      visible.forEach((ch) => _wireShelfItem(hosts.channelsHost.querySelector(`[data-channel-id="${ch.id}"]`), { type: 'channel', channelId: ch.id, label: ch.label }, adapter));
+      const connectBtn = hosts.channelsHost.querySelector('.desk-v1-home-shelf-connect');
+      if (connectBtn) connectBtn.onclick = opts.onConnect || (() => DeskV1Kit.toast('Connecting a new destination lands with real accounts (R1).'));
+    }
+    if (hosts.materialHost) {
+      const tiles = [
+        { action: 'create-video', glyph: '✦', label: 'Create video' },
+        { action: 'upload', glyph: '⬆', label: 'Upload' },
+        { action: 'connect', glyph: '🔗', label: 'Connect' },
+        { action: 'record', glyph: '⏺', label: 'Record' },
+      ];
+      const assets = opts.assets != null ? opts.assets : (_fx().recentAssets || []);
+      hosts.materialHost.innerHTML =
+        `<div class="desk-v1-home-material-tiles">${tiles.map((t) => `<button type="button" class="desk-v1-home-material-tile" data-material-action="${t.action}"><span aria-hidden="true">${t.glyph}</span> ${esc(t.label)}</button>`).join('')}</div>` +
+        `<div class="desk-v1-home-material-assets">${assets.map(_assetShelfItemHTML).join('')}</div>`;
+      const onMaterialAction = opts.onMaterialAction || _handleMaterialAction;
+      hosts.materialHost.querySelectorAll('[data-material-action]').forEach((btn) => { btn.onclick = () => onMaterialAction(btn.dataset.materialAction); });
+      assets.forEach((asset) => _wireShelfItem(hosts.materialHost.querySelector(`[data-asset-id="${asset.id}"]`), { type: 'asset', asset, label: asset.title }, adapter));
+    }
   }
 
   // ── render: campaign cards (3-up grid, drop targets) ─────────────────────
@@ -364,29 +420,10 @@
   }
 
   function _renderShelves() {
-    const chHost = document.getElementById('desk-v1-home-shelf-channels');
-    if (chHost) {
-      chHost.innerHTML = _channels().map(_channelShelfItemHTML).join('') +
-        '<button type="button" class="desk-v1-home-shelf-connect">＋ Connect</button>';
-      _channels().forEach((ch) => _wireShelfItem(chHost.querySelector(`[data-channel-id="${ch.id}"]`), { type: 'channel', channelId: ch.id, label: ch.label }));
-      const connectBtn = chHost.querySelector('.desk-v1-home-shelf-connect');
-      if (connectBtn) connectBtn.onclick = () => DeskV1Kit.toast('Connecting a new destination lands with real accounts (R1).');
-    }
-    const matHost = document.getElementById('desk-v1-home-shelf-material');
-    if (matHost) {
-      const tiles = [
-        { action: 'create-video', glyph: '✦', label: 'Create video' },
-        { action: 'upload', glyph: '⬆', label: 'Upload' },
-        { action: 'connect', glyph: '🔗', label: 'Connect' },
-        { action: 'record', glyph: '⏺', label: 'Record' },
-      ];
-      const assets = _fx().recentAssets || [];
-      matHost.innerHTML =
-        `<div class="desk-v1-home-material-tiles">${tiles.map((t) => `<button type="button" class="desk-v1-home-material-tile" data-material-action="${t.action}"><span aria-hidden="true">${t.glyph}</span> ${esc(t.label)}</button>`).join('')}</div>` +
-        `<div class="desk-v1-home-material-assets">${assets.map(_assetShelfItemHTML).join('')}</div>`;
-      matHost.querySelectorAll('[data-material-action]').forEach((btn) => { btn.onclick = () => _handleMaterialAction(btn.dataset.materialAction); });
-      assets.forEach((asset) => _wireShelfItem(matHost.querySelector(`[data-asset-id="${asset.id}"]`), { type: 'asset', asset, label: asset.title }));
-    }
+    deskV1RenderShelfPair({
+      channelsHost: document.getElementById('desk-v1-home-shelf-channels'),
+      materialHost: document.getElementById('desk-v1-home-shelf-material'),
+    });
   }
 
   // ── render: promote box + suggestions ───────────────────────────────────
@@ -565,4 +602,8 @@
   }
 
   window.deskV1RenderHome = deskV1RenderHome;
+  // T2a (docs/desk_v1_r0_plan.md) reuses this shelf pair for its Add tray —
+  // "reuse, don't fork" — instead of duplicating the channel/material shelf
+  // markup and drag wiring on desk-v1-campaign.js.
+  window.deskV1RenderShelfPair = deskV1RenderShelfPair;
 })();

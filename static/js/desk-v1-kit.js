@@ -224,10 +224,16 @@
   // Wires a trigger element (a shelf item's ＋, or the item itself) to open
   // addToMenu() on click OR on Enter/Space while focused — the keyboard path
   // UX-05 requires alongside drag.
-  function bindAddToTrigger(triggerEl, getItems, onPick) {
+  //
+  // opts (T2a): forwarded to addToMenu() as-is — e.g. `{noAppendNew: true}`
+  // for a caller whose own item list already covers every destination (the
+  // campaign page's Add tray offers "attach to this piece" per family, not
+  // "+ New campaign"). Undefined for every existing 3-arg caller, so
+  // addToMenu sees exactly what it always has.
+  function bindAddToTrigger(triggerEl, getItems, onPick, opts) {
     if (!triggerEl) return;
     triggerEl.setAttribute('aria-haspopup', 'menu');
-    const open = (e) => { e.preventDefault(); addToMenu(triggerEl, getItems(), onPick); };
+    const open = (e) => { e.preventDefault(); addToMenu(triggerEl, getItems(), onPick, opts); };
     triggerEl.addEventListener('click', open);
     triggerEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') open(e);
