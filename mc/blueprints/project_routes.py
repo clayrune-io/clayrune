@@ -1324,6 +1324,23 @@ def update_backlog_item(project_id, item_id):
                     artifact_path=f'backlog:{item_id}', actor=f'backlog:{item_id}')
             except Exception as _mint_err:
                 _log(f"[mint] backlog_done mint failed for {project_id}/{item_id}: {_mint_err}")
+            # MC-944 step 8 (Condition 11/12) — same close point, same
+            # fail-safe-unattended origin as the mint above (this route has
+            # no session/trigger_type of its own). Scans the item's own
+            # text AND its notes — a closed item's "why we're not doing X"
+            # commonly lives in a note added right before the status flip,
+            # not in the task text itself.
+            try:
+                from mc import memory as _mem
+                _artifact_text = '\n'.join(
+                    [item.get('text', '')] +
+                    [str(n.get('text', '')) for n in (item.get('notes') or [])
+                     if isinstance(n, dict)])
+                _mem.scan_for_negation_obligations(
+                    p, trigger_kind='backlog_done', artifact_text=_artifact_text,
+                    artifact_path=f'backlog:{item_id}')
+            except Exception as _neg_err:
+                _log(f"[negation] backlog_done scan failed for {project_id}/{item_id}: {_neg_err}")
     # Wholesale notes replacement — the only way to REMOVE a note. Added 2026-08-15
     # for the journal migration: unattended cycles had been using notes as their
     # running log, so items carried 8x more log than task. There is deliberately no

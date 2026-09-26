@@ -23,7 +23,7 @@ Cross-family deps (dispatch helpers + path/config roots) arrive via wire(),
 called once by server.py before the blueprints' own wire() stanzas resolve the
 memory values they pass on.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 import hashlib
@@ -1508,6 +1508,11 @@ def _parse_position(text):
         'revisit_if': revisit_if,
         'supersedes': str(meta.get('supersedes') or ''),
         'pin': str(meta.get('pin') or '').strip().lower() == 'true',
+        # MC-944 step 8 (Cond 11/12): absent on every pre-existing position
+        # file (all 15+ predate this stamp) — '' reads as "unknown
+        # provenance", never as "interactive", matching `_stamp_origin`'s own
+        # fail-safe default everywhere else in this module.
+        'origin': str(meta.get('origin') or ''),
     }
     warnings = _validate_position_record(rec)
     if warnings:
@@ -2037,7 +2042,8 @@ def _extract_continuity(project, delta, model, owner=None, *, provider=None,
 def write_position(project, subject, verdict, reason,
                    expires_when='', decided='', body='', slug='', triggers='',
                    claim='', evidence=None, durability='', holds_while='',
-                   revisit_if='', supersedes='', pin=False):
+                   revisit_if='', supersedes='', pin=False,
+                   task='', trigger_type=''):
     """Record a decision — usually a decision NOT to do something.
 
     Returns the note's filename. Supersedes in place: recording a position on a
@@ -2064,6 +2070,17 @@ def write_position(project, subject, verdict, reason,
     note, distinct from the in-place same-subject supersession below); `pin`
     (ledger override, capped at 5 — the cap is enforced by the ledger reader
     in a later build step, not here).
+
+    `task`/`trigger_type` (MC-944 step 8): `origin` is SERVER-STAMPED via
+    `_stamp_origin` (same helper `write_topic_note` uses), never a
+    caller-supplied value. Every pre-existing caller omits both, so
+    `_stamp_origin('', '')` stamps `unattended` (fail-safe: unknown
+    provenance defaults to the more restrictive class, same posture
+    `write_topic_note` and the `backlog_done` mint call site already use).
+    The negation obligation scan (§5.2, Cond 11/12) is the first caller that
+    passes real values. No `generated` stamp here (unlike `write_topic_note`)
+    — positions already carry `decided`, and Cond 11/12 need only `origin`
+    for the consumer_unattended read-floor gate.
 
     Leaf-locked (MEMORY_DESIGN_V2_SPEC.md §16 step 1 / §10.3 G4): the
     read-prior / compose / write sequence below is a read-modify-write over
@@ -2139,6 +2156,7 @@ def write_position(project, subject, verdict, reason,
             front['supersedes'] = supersedes
         if pin:
             front['pin'] = 'true'
+        front['origin'] = _stamp_origin(task, trigger_type)
         front['decided'] = (decided or '').strip() or now_iso()[:10]
         text = _skills.dump_skill_md(front, (body or '').strip() + prior + '\n')
         _atomic_write_text(path, text)
@@ -2562,7 +2580,15 @@ def _memory_search(project, query, topk=3, expand=None, record=None,
             score += idf[t] * (f * (_BM25_K1 + 1.0)) / (f + denom_len)
         if not matched:
             continue
-        if consumer_unattended and u.get('cls') == 'topic':
+        if consumer_unattended and u.get('cls') in ('topic', 'position'):
+            # MC-944 step 8 (Condition 11/12) — the negation obligation scan
+            # can write a position from the SAME unattended triggers mint
+            # already fires from (hivemind close, backlog->done, docs
+            # artifact scan). CLAUDE.md's learning-safety rail ("a human
+            # must be on at least one side of every learning loop") makes no
+            # exception for cls: this gate is a property of `origin`, not of
+            # which write path produced the file, so it must cover positions
+            # exactly as it already covers topic mints below.
             if _note_frontmatter(u['text']).get('origin') == 'unattended':
                 continue
         _trig = u.get('subject_terms') or set()
@@ -3031,8 +3057,15 @@ def scan_docs_artifacts_for_mint(project, since_ts, until_ts, *, docs_dir=None,
     call is itself idempotent-on-replay (`_mint_slug` keys off the file
     path), so re-scanning the same session twice mints nothing twice.
     Returns the list of minted filenames (possibly empty).
+
+    MC-944 step 8 (Condition 11/12): the SAME qualifying-file walk also runs
+    `scan_for_negation_obligations` over each file's body, independently
+    gated by `negation_obligation_enabled` — a caller with mint OFF and
+    negation ON (or vice versa) still gets exactly one enabled feature, not
+    neither, so the top-level guard is "at least one of the two is on", not
+    `_mint_enabled()` alone.
     """
-    if not _mint_enabled():
+    if not _mint_enabled() and not _negation_obligation_enabled():
         return []
     try:
         pp = project.get('project_path', '') if isinstance(project, dict) else ''
@@ -3051,12 +3084,23 @@ def scan_docs_artifacts_for_mint(project, since_ts, until_ts, *, docs_dir=None,
             if not (since_ts <= st.st_mtime <= until_ts):
                 continue
             rel = str(f.relative_to(Path(pp))) if pp else str(f)
-            fn = mint_topic_node(
-                project, trigger_kind='docs_artifact',
-                subject=f'{rel} ({st.st_size} bytes)', artifact_path=rel,
-                task=task, trigger_type=trigger_type)
-            if fn:
-                minted.append(fn)
+            if _mint_enabled():
+                fn = mint_topic_node(
+                    project, trigger_kind='docs_artifact',
+                    subject=f'{rel} ({st.st_size} bytes)', artifact_path=rel,
+                    task=task, trigger_type=trigger_type)
+                if fn:
+                    minted.append(fn)
+            if _negation_obligation_enabled():
+                try:
+                    body = f.read_text(encoding='utf-8', errors='replace')
+                except OSError as e:
+                    _log(f'[negation] docs-artifact read failed for {rel}: {e}')
+                    body = ''
+                if body:
+                    scan_for_negation_obligations(
+                        project, trigger_kind='docs_artifact', artifact_text=body,
+                        artifact_path=rel, task=task, trigger_type=trigger_type)
         return minted
     except Exception as e:
         _log(f'[mint] docs-artifact scan failed: {e}')
@@ -3184,6 +3228,462 @@ def unresolved_mint_block(project, *, task='', trigger_type='', incognito=False)
         "    unrelated_to:<candidate-slug> (no relation — pick the closest candidate)\n"
         f"  Recorded via: POST /api/project/{project_id}/memory/mints/{fname}/resolve "
         '{"verdict":"supersedes|unrelated_to","candidate":"<slug>"}')
+
+
+# ── Negation obligation + waiver (MEMORY_DESIGN_V2_SPEC.md §5.2, MC-944 step 8) ──
+#
+# Condition 11: when an artifact of declared weight closes — the SAME three
+# deterministic triggers step 7's mint already fires from (hivemind close,
+# backlog->done, docs artifact scan) — any heading in it matching
+# rejected|declined|negated|not doing|alternatives considered produces one
+# negation record per row, via the EXISTING positions store (`write_position`),
+# OR a waiver (Condition 12: "a waiver that costs the same as a POST is not
+# an escape hatch" — a waiver is a counted, subject/reason/artifact record,
+# never a silent skip).
+#
+# Gated OFF by default (`negation_obligation_enabled`) — report-mode-first,
+# same posture as step 7's mint flag; no caller in this repo flips it on.
+
+_NEGATION_HEADING_RE = re.compile(
+    r'^#{1,6}[ \t]*.*\b(?:rejected|declined|negated|not doing|'
+    r'alternatives considered)\b.*$', re.I | re.M)
+_NEGATION_ROW_RE = re.compile(r'^[ \t]*[-*][ \t]+(.+\S)[ \t]*$', re.M)
+_NEGATION_ROW_SPLIT_RE = re.compile(r'\s+[—-]{1,2}\s+')  # ' - ' or ' — '
+_NEGATION_BOLD_ROW_RE = re.compile(r'^\*\*(.+?)\*\*[:—-]*\s*(.*)$')
+
+
+def _negation_obligation_enabled():
+    return bool(state.CONFIG.get('negation_obligation_enabled', False))
+
+
+def _negation_ledger_enabled():
+    return bool(state.CONFIG.get('negation_ledger_enabled', False))
+
+
+def _negation_ledger_max():
+    try:
+        return max(1, int(state.CONFIG.get('negation_ledger_max', 20) or 20))
+    except (TypeError, ValueError):
+        return 20
+
+
+def _negation_pin_max():
+    try:
+        return max(0, int(state.CONFIG.get('negation_pin_max', 5) or 5))
+    except (TypeError, ValueError):
+        return 5
+
+
+_NEGATION_LEDGER_BYTE_CAP = 1536  # ~1.5 KB, Condition 13
+_NEGATION_LEDGER_RECENCY_RESERVE = 5  # Condition 14: >=5 of 20 slots on recency alone
+_NEGATION_LEDGER_INTERRUPT_WINDOW_DAYS = 180  # Condition 13: "over the last 180 days"
+
+
+def _negation_slug(trigger_kind, artifact_key, row_text):
+    """Deterministic per-ROW slug — a replayed trigger over the SAME artifact
+    must produce the SAME position filename for the SAME row (idempotent-on-
+    replay, mirrors `_mint_slug`), so a re-scan of an unchanged artifact never
+    re-writes (and never re-supersedes) an obligation already recorded.
+    """
+    h = hashlib.sha1(f'{artifact_key}|{row_text}'.encode('utf-8')).hexdigest()[:10]
+    kind = re.sub(r'[^a-z0-9]+', '_', (trigger_kind or 'neg').lower()).strip('_')
+    return f'neg_{kind}_{h}'
+
+
+def _negation_sections(text):
+    """Every heading in `text` matching Condition 11's phrase set -> the
+    section body up to the next heading of ANY level (or EOF)."""
+    body = text or ''
+    heads = list(_NEGATION_HEADING_RE.finditer(body))
+    sections = []
+    for i, m in enumerate(heads):
+        start = m.end()
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(body)
+        sections.append(body[start:end])
+    return sections
+
+
+def _negation_rows(text):
+    """Bullet-list rows under a matching heading -> raw row strings."""
+    rows = []
+    for section in _negation_sections(text):
+        for m in _NEGATION_ROW_RE.finditer(section):
+            row = m.group(1).strip()
+            if row:
+                rows.append(row)
+    return rows
+
+
+def _parse_negation_row(row_text):
+    """One bullet row -> (subject, reason), or None if the row is not
+    subject/reason-shaped. Recognizes `**Subject**: reason`, `Subject —
+    reason`, `Subject - reason`, and `Subject: reason` — the shapes the
+    corpus's own STANDING POSITIONS rows already use (see
+    `_render_position_line`). A row that fits none of these becomes a
+    waiver (Condition 12), never a guess dressed as a parse.
+    """
+    row_text = (row_text or '').strip().lstrip('-*').strip()
+    m = _NEGATION_BOLD_ROW_RE.match(row_text)
+    if m and m.group(1).strip() and m.group(2).strip():
+        return m.group(1).strip(), m.group(2).strip()
+    parts = _NEGATION_ROW_SPLIT_RE.split(row_text, maxsplit=1)
+    if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+        return parts[0].strip(), parts[1].strip()
+    if ':' in row_text:
+        subject, _, reason = row_text.partition(':')
+        if subject.strip() and reason.strip():
+            return subject.strip(), reason.strip()
+    return None
+
+
+def _negation_waiver_log_path(project_id):
+    """Sibling to `DATA_DIR` (`data/projects/`), never inside it (CLAUDE.md's
+    DATA_DIR-pollution rule) — same placement as `negation_interrupt_log`."""
+    safe = ''.join(c for c in str(project_id or 'unknown')
+                   if c.isalnum() or c in ('-', '_')) or 'unknown'
+    return DATA_DIR.parent / 'negation_waiver_log' / f'{safe}.jsonl'
+
+
+def _record_negation_waiver(project_id, trigger_kind, artifact_path, subject, reason):
+    """Condition 12 — a waiver is itself a record: subject, reason, artifact,
+    counted. Appended to a JSONL log (mirrors `negation_interrupt_log`'s
+    placement/shape) rather than the positions store — a waiver is NOT a
+    ruling an agent must obey, so it does not belong in the same object that
+    supersedes-in-place; it is bookkeeping for §16 step 9's measurement.
+    Returns the record dict (also used to build the combined report).
+    """
+    record = {
+        'ts': now_iso(), 'project_id': project_id, 'trigger_kind': trigger_kind,
+        'artifact_path': artifact_path, 'subject': subject[:200], 'reason': reason,
+    }
+    try:
+        p = _negation_waiver_log_path(project_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+    except Exception as e:
+        _log(f'[negation] waiver log write failed for {project_id}: {e}')
+    return record
+
+
+def scan_for_negation_obligations(project, *, trigger_kind, artifact_text,
+                                   artifact_path='', task='', trigger_type=''):
+    """Condition 11/12 — the ONE entry point every close trigger calls
+    ALONGSIDE `mint_topic_node` (same trigger_kind vocabulary: 'hivemind_close'
+    | 'backlog_done' | 'docs_artifact'). Scans `artifact_text` for headings
+    matching Condition 11's phrase set; each row under one becomes either an
+    OBLIGATION (a new position, via the existing `write_position`) or a
+    WAIVER (Condition 12) — never silently dropped.
+
+    Idempotent-on-replay: the position filename is a deterministic hash of
+    (trigger_kind, artifact_path or artifact_text, row_text) — mirrors
+    `_mint_slug` — and a replay that finds the file ALREADY EXISTS is counted
+    as an obligation again (the row still has a live ruling) but never
+    re-written, so replaying an unchanged artifact twice never grows a
+    `## Previously` chain that was never actually superseded.
+
+    Authority guard: the SAME `mc.distiller._authority_violation` check
+    `mint_topic_node` runs, per row, before write — a deterministic trigger
+    is not exempt just because a human never phrased the sentence.
+
+    Gated OFF entirely unless `negation_obligation_enabled`. Never raises.
+    Returns {'obligations': [filename,...], 'waivers': [record,...]} — always
+    both keys, so a caller building a report never has to check for a
+    missing side.
+    """
+    report = {'obligations': [], 'waivers': []}
+    if not _negation_obligation_enabled():
+        return report
+    try:
+        rows = _negation_rows(artifact_text)
+        if not rows:
+            return report
+        project_id = project.get('id', '') if isinstance(project, dict) else ''
+        artifact_key = artifact_path or (artifact_text or '')[:80]
+        mem_dir = _get_memory_path(project).parent
+        for row_text in rows:
+            violation = _distiller._authority_violation(row_text)
+            if violation:
+                report['waivers'].append(_record_negation_waiver(
+                    project_id, trigger_kind, artifact_path, row_text,
+                    f'authority guard refused ({violation})'))
+                _scribe_stat(project_id, 'negation_waiver_authority')
+                continue
+            parsed = _parse_negation_row(row_text)
+            if not parsed:
+                report['waivers'].append(_record_negation_waiver(
+                    project_id, trigger_kind, artifact_path, row_text,
+                    'row not subject/reason-shaped'))
+                _scribe_stat(project_id, 'negation_waiver_unparsed')
+                continue
+            subject, reason = parsed
+            slug = _negation_slug(trigger_kind, artifact_key, row_text)
+            path = mem_dir / f'{POSITION_PREFIX}{slug}.md'
+            if path.exists():
+                report['obligations'].append(path.name)
+                continue
+            fn = write_position(project, subject, 'declined', reason,
+                                 slug=slug, task=task, trigger_type=trigger_type)
+            if fn:
+                report['obligations'].append(fn)
+                _scribe_stat(project_id, f'negation_obligation_{trigger_kind}')
+        if report['waivers']:
+            _log(f"[negation] {trigger_kind}: {len(report['obligations'])} "
+                 f"obligation(s), {len(report['waivers'])} waiver(s) — "
+                 f"{artifact_path or '(no artifact path)'}")
+        return report
+    except Exception as e:
+        _log(f'[negation] {trigger_kind} obligation scan failed: {e}')
+        return report
+
+
+# ── Negation Ledger — resident, bounded, O(1) forever (§5.3, Condition 13) ──
+#
+# The STANDING POSITIONS block above is retrieval-based: it only shows a
+# position when the task string's own terms happen to hit it, which is
+# exactly the shape that let the MC-898 position sit unseen once, and is
+# WHY the query-gated reserve (`_position_reserve`) exists as a second-chance
+# top-k slot rather than a guarantee. The ledger is the opposite shape —
+# NOT query-gated at all, always rendered (subject to its own byte cap),
+# a fixed ~1.5 KB no matter how many positions the vault accumulates.
+#
+# Condition 13 also says the ledger becomes "the ONLY resident negation
+# surface" and that `## Standing positions — subjects only` is deleted from
+# MEMORY.md. That section was never built in THIS repo (confirmed by grep
+# before writing this code) — only the query-gated STANDING POSITIONS reserve
+# exists, and the spec explicitly KEEPS that surface ("Keep the ledger... and
+# the query-gated reserve. Two surfaces, not three."). So there is nothing to
+# delete; this build is purely additive, and per Ron's explicit instruction on
+# this build step, the STANDING POSITIONS block a caller already renders is
+# left completely alone here — the ledger is a SEPARATE block a caller must
+# choose to render alongside it, both behind `negation_ledger_enabled`
+# (default False) until measured.
+
+def _negation_ledger_line_budget():
+    return _NEGATION_LEDGER_BYTE_CAP
+
+
+def _negation_ledger_interrupt_log_path(project_id):
+    """Sibling to `DATA_DIR`, matching `negation_interrupt.py`'s own
+    `_log_path` byte-for-byte. Duplicated rather than imported: this module
+    (`mc.memory`) is a leaf `negation_interrupt.py` itself imports, so it
+    cannot import back without a cycle — same reasoning `negation_interrupt.py`
+    already documents for duplicating `_is_plan_path` instead of importing
+    `agent_routes`."""
+    safe = ''.join(c for c in str(project_id or 'unknown')
+                   if c.isalnum() or c in ('-', '_')) or 'unknown'
+    return DATA_DIR.parent / 'negation_interrupt_log' / f'{safe}.jsonl'
+
+
+def _negation_ledger_read_fires(project_id):
+    """-> {position_file: [fire_ts, ...]}. Best-effort, never raises; a
+    missing or unreadable log just yields an empty pressure signal for every
+    position (falls through to Condition 14's cold-start rule, recency)."""
+    out: dict = {}
+    try:
+        p = _negation_ledger_interrupt_log_path(project_id)
+        if not p.is_file():
+            return out
+        with open(p, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if row.get('result') != 'fire':
+                    continue
+                fn = str(row.get('position_file') or '')
+                ts = str(row.get('ts') or '')
+                if fn and ts:
+                    out.setdefault(fn, []).append(ts)
+    except Exception as e:
+        _log(f'[negation-ledger] fire log read failed for {project_id}: {e}')
+    return out
+
+
+def _negation_ledger_parse_date(datestr):
+    """`YYYY-MM-DD` prefix (a position's `decided` field) -> naive UTC
+    `datetime`, or None. Mirrors the `holds_while` `days_since_decided`
+    parse (this module, ~line 1386) rather than inventing a second format."""
+    try:
+        return datetime.strptime((datestr or '')[:10], '%Y-%m-%d')
+    except (ValueError, TypeError):
+        return None
+
+
+def _negation_ledger_parse_ts(tsstr):
+    """An interrupt-log row's `ts` (`now_iso()` shape, `...Z` suffix) ->
+    naive UTC `datetime`, or None."""
+    try:
+        return datetime.fromisoformat((tsstr or '').replace('Z', '+00:00')).replace(tzinfo=None)
+    except (ValueError, TypeError):
+        return None
+
+
+def _negation_ledger_confirmed_pressure(fire_ts_list, decided_str, now_dt, window_days):
+    """Condition 14 — rank by CONFIRMED interrupts, never raw hit count.
+
+    A fire the agent visibly wrote past — the position's `decided` date never
+    moved afterward — logged an event but produced no re-proposal PRESSURE; a
+    fire that PRECEDES a later supersession (the ruling's `decided` date is
+    after the fire) is confirmed: the interrupt fired, and the ruling was
+    reconsidered afterward. Only fires within the last `window_days` count at
+    all (Condition 13: "over the last 180 days").
+    """
+    decided_dt = _negation_ledger_parse_date(decided_str)
+    if decided_dt is None or not fire_ts_list:
+        return 0
+    cutoff = now_dt - timedelta(days=window_days)
+    count = 0
+    for ts in fire_ts_list:
+        fire_dt = _negation_ledger_parse_ts(ts)
+        if fire_dt is None or fire_dt < cutoff:
+            continue
+        if fire_dt < decided_dt:
+            count += 1
+    return count
+
+
+def _negation_ledger_slug(filename):
+    """`position_<slug>.md` -> `<slug>`, the bracketed tag the ledger line
+    example in the spec uses (`[twolevellazyindex]`)."""
+    name = str(filename or '')
+    if name.startswith(POSITION_PREFIX):
+        name = name[len(POSITION_PREFIX):]
+    return name[:-3] if name.endswith('.md') else name
+
+
+def _negation_ledger_render_line(rec):
+    """One ~70 B stub line, no reason (Condition 13's whole point — the
+    reason lives behind the interrupt or an explicit read, never here)."""
+    subject = (rec.get('subject') or '').strip()
+    verdict = (rec.get('verdict') or 'declined').strip()
+    decided = (rec.get('decided') or '').strip()
+    slug = _negation_ledger_slug(rec.get('file'))
+    bits = f"x  {subject} — {verdict}"
+    if decided:
+        bits += f" {decided}"
+    return f"{bits}  [{slug}]"
+
+
+def rank_negation_ledger(project, *, consumer_unattended=False, now=None):
+    """Condition 13/14 — the ranked, capped candidate list (pre-render), so
+    tests can assert on ranking without parsing rendered text back apart.
+
+    `consumer_unattended`: withholds `origin: unattended` positions from an
+    unattended consumer (steward read floor) — the same learning-safety rail
+    `_memory_search`'s `consumer_unattended` gate already enforces for topic
+    notes and positions (CLAUDE.md: "unattended-origin records ... withheld
+    from steward read-floors"). An attended session sees every position
+    regardless of how it was recorded.
+
+    Never raises; returns `[]` on any failure.
+    """
+    try:
+        now_dt = now or datetime.now(timezone.utc).replace(tzinfo=None)
+        positions = list_positions(project)
+        if consumer_unattended:
+            positions = [r for r in positions if r.get('origin') != 'unattended']
+        if not positions:
+            return []
+        project_id = project.get('id', '') if isinstance(project, dict) else ''
+        fires_by_file = _negation_ledger_read_fires(project_id)
+        window = _NEGATION_LEDGER_INTERRUPT_WINDOW_DAYS
+        for rec in positions:
+            rec['_pressure'] = _negation_ledger_confirmed_pressure(
+                fires_by_file.get(rec.get('file'), []), rec.get('decided', ''),
+                now_dt, window)
+
+        total_cap = _negation_ledger_max()
+        pin_cap = _negation_pin_max()
+        reserve = min(_NEGATION_LEDGER_RECENCY_RESERVE, total_cap)
+
+        pinned = sorted((r for r in positions if r.get('pin')),
+                         key=lambda r: (r.get('decided', ''), r.get('subject', '')),
+                         reverse=True)[:pin_cap]
+        pinned_files = {r['file'] for r in pinned}
+        selected = list(pinned)
+
+        pool = [r for r in positions if r['file'] not in pinned_files]
+        slots_left = max(0, total_cap - len(selected))
+        recency_slots = min(reserve, slots_left)
+        pressure_slots = slots_left - recency_slots
+
+        # Pressure descends, decided descends (within equal pressure), subject
+        # ascends (final tie-break) -- three different directions in one key,
+        # so `decided` goes through `_negation_ledger_sort_key_desc` to make
+        # its own ascending-sort behave like a descending one, rather than
+        # splitting this into multiple sorts or relying on `reverse=`, which
+        # can only flip ALL fields of a tuple key at once.
+        pressure_ranked = sorted(
+            pool, key=lambda r: (-r['_pressure'], _negation_ledger_sort_key_desc(r.get('decided', '')),
+                                  r.get('subject', '')))
+        take_pressure = pressure_ranked[:pressure_slots]
+        take_pressure_files = {r['file'] for r in take_pressure}
+        selected += take_pressure
+
+        remaining_pool = [r for r in pool if r['file'] not in take_pressure_files]
+        recency_ranked = sorted(
+            remaining_pool,
+            key=lambda r: (_negation_ledger_sort_key_desc(r.get('decided', '')), r.get('subject', '')))
+        selected += recency_ranked[:recency_slots]
+        return selected
+    except Exception as e:
+        _log(f'[negation-ledger] ranking failed for '
+             f'{(project or {}).get("id") if isinstance(project, dict) else ""}: {e}')
+        return []
+
+
+def _negation_ledger_sort_key_desc(decided_str):
+    """A string sort key that puts the NEWEST `decided` date first when used
+    in an ascending `sorted(...)` — i.e. the inverse of `decided`'s own
+    lexical order. `decided` is `YYYY-MM-DD` (or empty), so inverting each
+    digit against '9' is a cheap, allocation-free descending transform that
+    keeps empty-string last (maps to all-'9's, the lexical max)."""
+    s = (decided_str or '').strip() or '00000000'
+    digits = ''.join(c for c in s if c.isdigit()) or '00000000'
+    return ''.join(str(9 - int(c)) for c in digits[:8].ljust(8, '0'))
+
+
+def render_negation_ledger(project, *, task='', trigger_type='', consumer_unattended=False):
+    """Condition 13 — the resident negation ledger block. Returns '' when the
+    flag is off, there is nothing to show, or on any failure — never raises.
+
+    ADDITIVE, not a replacement: this is a SEPARATE block from the existing
+    STANDING POSITIONS render (dispatch-time `agent_routes.py`'s
+    `_render_position` block, per-turn `memory_turn.py`'s `_render_position_
+    line` block) — neither of those is touched by this function. A caller
+    wanting both renders both; wiring that choice is the caller's, done at
+    the same call sites step 7's mint uses (next commit).
+    """
+    if not _negation_ledger_enabled():
+        return ''
+    try:
+        ranked = rank_negation_ledger(project, consumer_unattended=consumer_unattended)
+        if not ranked:
+            return ''
+        budget = _negation_ledger_line_budget()
+        lines = []
+        total = 0
+        for rec in ranked:
+            line = _negation_ledger_render_line(rec)
+            lb = len(line.encode('utf-8')) + 1
+            if total + lb > budget:
+                break
+            lines.append(line)
+            total += lb
+        if not lines:
+            return ''
+        header = ("--- NEGATION LEDGER (decisions already made — a slug here means "
+                   "the full ruling exists; check it before re-proposing) ---")
+        return header + "\n" + "\n".join(lines)
+    except Exception as e:
+        _log(f'[negation-ledger] render failed for '
+             f'{(project or {}).get("id") if isinstance(project, dict) else ""}: {e}')
+        return ''
 
 
 def _mem_snippet(text, terms):
