@@ -92,6 +92,11 @@ try {
       return route.fulfill({ status: 200, contentType: 'application/json',
         body: JSON.stringify({ claude_session_id: 'csid-oldest', log_lines: OLDEST_LINES, log_line_ts: [null, null] }) });
     }
+    if (path === `/api/project/${PID}/conversations`) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{
+        claude_session_id: 'csid-head', mc_session_id: 'sess-head', turns: 3,
+        rolled_from: ['csid-oldest', 'csid-middle'] }]) });
+    }
     if (path.endsWith('/full-buffer')) {
       return route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"transcript not found or empty"}' });
     }
@@ -135,6 +140,30 @@ try {
   !headBodyBefore.includes(MIDDLE_NEEDLE) && !headBodyBefore.includes(OLDEST_NEEDLE)
     ? ok('neither older link\'s content is on screen before loading it')
     : fail('older-link content already visible before the button was clicked');
+
+  // ── Every other repaint path keeps the control (the 2026-09-26 regression) ──
+  // switchAgentTab repaints via _repaintAgentOutput right after fetchAgentStatus
+  // on EVERY rail open; before the fix that wiped the button within ~300ms.
+  await page.evaluate((s) => { window._repaintAgentOutput(s); window._repaintAgentOutput(s); }, sid);
+  const afterRepaint = await page.evaluate((s) => ({
+    n: document.querySelectorAll(`#rollover-load-${s}`).length,
+    text: document.getElementById(`rollover-load-${s}`)?.textContent || '',
+  }), sid);
+  afterRepaint.n === 1 && afterRepaint.text.includes('part 2 of 3')
+    ? ok('button survives _repaintAgentOutput (the switchAgentTab path), exactly once, still "part 2 of 3"')
+    : fail(`after _repaintAgentOutput expected 1 button "part 2 of 3", got ${JSON.stringify(afterRepaint)}`);
+
+  // A cold open can mount the output node before /conversations lands; the
+  // late fetch's refreshModal keeps the mounted node, so the control must be
+  // added by the fetch itself.
+  await page.evaluate(({ pid, s }) => { conversationsCache[pid] = []; window._repaintAgentOutput(s); }, { pid: PID, s: sid });
+  const goneWithoutRow = await page.evaluate((s) => !document.getElementById(`rollover-load-${s}`), sid);
+  goneWithoutRow ? ok('no row in conversationsCache yet -> no button (nothing to offer)')
+    : fail('button rendered with no rolled_from row to back it');
+  await page.evaluate((pid) => window.loadConversations(pid), PID);
+  await page.waitForFunction((s) => !!document.getElementById(`rollover-load-${s}`), sid, { timeout: 5000 })
+    .then(() => ok('button appears once the late /conversations fetch brings the rolled_from row'))
+    .catch(() => fail('late /conversations fetch did not add the button to the already-mounted chat'));
 
   // ── Click 1: loads 'middle' (nearest-to-head), prepended above head lines ──
   await page.click(btnSel);
