@@ -2,6 +2,7 @@
 
 Cover the pure helpers and the optional/lazy feature-gate without launching a
 real Chromium (that's integration territory, exercised manually)."""
+import json
 import os
 
 import pytest
@@ -1110,6 +1111,41 @@ def test_page_disposition_plus_button_tab_takes_focus_once():
     # Remembered: targetCreated and attachedToTarget for the same tab agree.
     assert br._page_disposition(session, page_) == 'focus'
     assert br._page_disposition(session, {'type': 'page', 'targetId': 'other'}) == 'close'
+
+
+class _PinWs:
+    """Answers the two Browser.* calls _pin_root_window makes, like CDP."""
+    def __init__(self, bounds):
+        self.bounds, self.sent, self._out = bounds, [], []
+
+    def send(self, raw):
+        m = json.loads(raw)
+        self.sent.append(m)
+        result = {'windowId': 7, 'bounds': self.bounds} if m['method'] == 'Browser.getWindowForTarget' else {}
+        self._out.append(json.dumps({'id': m['id'], 'result': result}))
+
+    def recv(self):
+        return self._out.pop(0)
+
+
+def test_pin_root_window_resizes_a_restored_small_window():
+    # MC-976: a relaunch after a popup run attached to a 400x300 window, so
+    # the pane showed a 768x362 postage stamp at dpr 2.
+    ws, session, ids = _PinWs({'width': 400, 'height': 300, 'windowState': 'normal'}), {}, iter(range(1, 99))
+    br._pin_root_window(session, ws, lambda: next(ids))
+    sets = [m['params'] for m in ws.sent if m['method'] == 'Browser.setWindowBounds']
+    assert sets == [{'windowId': 7, 'bounds': {'width': br.VIEW_W + br.WINDOW_CHROME_W,
+                                               'height': br.VIEW_H + br.WINDOW_CHROME_H}}]
+    assert session['window_bounds_at_connect']['width'] == 400
+    assert 'error' not in session
+
+
+def test_pin_root_window_leaves_a_correct_window_alone():
+    want = {'width': br.VIEW_W + br.WINDOW_CHROME_W, 'height': br.VIEW_H + br.WINDOW_CHROME_H,
+            'windowState': 'normal'}
+    ws, session, ids = _PinWs(want), {}, iter(range(1, 99))
+    br._pin_root_window(session, ws, lambda: next(ids))
+    assert [m['method'] for m in ws.sent] == ['Browser.getWindowForTarget']
 
 
 # ── /api/browser/tab route ───────────────────────────────────────────────────

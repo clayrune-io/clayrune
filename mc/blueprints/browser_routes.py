@@ -664,6 +664,46 @@ def _close_stale_sibling_popups(session, send, opener_id, keep_target_id):
             session['error'] = f'stale popup close failed: {e}'
 
 
+def _pin_root_window(session, ws, next_id):
+    """Size the root tab's window to the launch --window-size, whatever the
+    profile restored.
+
+    --window-size only sizes a window Chromium creates fresh. A named
+    profile's relaunch re-opens its windows with the placement it saved, and
+    after a run that ended on an OAuth-style popup the tab we attach to came
+    up in a 384x181 CSS window (MC-976, measured 2026-09-25 in the
+    real-frames smoke: frames 768x362 at dpr 2, the page a postage stamp in
+    the pane). Runs on the fresh connection BEFORE any domain is enabled, so
+    the only messages on the wire are responses to these two commands and a
+    plain synchronous request/response cannot swallow an event. Best-effort:
+    a failure is recorded on the session and the launch carries on.
+    """
+    def call(method, params=None):
+        mid = next_id()
+        ws.send(json.dumps({'id': mid, 'method': method, 'params': params or {}}))
+        deadline = _time.time() + 3
+        while _time.time() < deadline:
+            msg = json.loads(ws.recv() or '{}')
+            if msg.get('id') == mid:
+                if 'error' in msg:
+                    raise RuntimeError(msg['error'].get('message'))
+                return msg.get('result') or {}
+        raise TimeoutError(f'{method}: no response in 3s')
+
+    try:
+        win = call('Browser.getWindowForTarget')
+        session['window_bounds_at_connect'] = win.get('bounds')
+        want = {'width': VIEW_W + WINDOW_CHROME_W, 'height': VIEW_H + WINDOW_CHROME_H}
+        b = win.get('bounds') or {}
+        if b.get('windowState', 'normal') != 'normal':
+            call('Browser.setWindowBounds',
+                 {'windowId': win['windowId'], 'bounds': {'windowState': 'normal'}})
+        if (b.get('width'), b.get('height')) != (want['width'], want['height']):
+            call('Browser.setWindowBounds', {'windowId': win['windowId'], 'bounds': want})
+    except Exception as e:
+        session['error'] = f'window size pin failed: {e}'
+
+
 def _page_disposition(session, target_info):
     """What to do with a page target this connection has just learned about:
     'focus' (show it), 'close', or None (not a page we manage — the root tab
@@ -806,6 +846,7 @@ def _run_cdp(session):
         # timeout firing mid-frame, corrupting the ws and silently killing the
         # thread) is now covered by the consecutive-error tolerance below, and
         # measured safe: a 0.1s reader sustains 50fps with 0 recv errors.
+        _pin_root_window(session, ws, _next_id)
         ws.settimeout(0.1)
         session['ws'] = ws
 
