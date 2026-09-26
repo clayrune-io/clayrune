@@ -71,7 +71,7 @@
       title: 'Install in two minutes',
       versions: [
         { id: 'v-install-x', channelId: 'ch-x-ron', state: 'verified_published', revision: 3,
-          format: '9:16', publishedAt: '2026-09-22T09:00:00Z' },
+          format: '9:16', publishedAt: '2026-09-22T09:00:00-07:00' },
         { id: 'v-install-li', channelId: 'ch-li-page', state: 'needs_review', revision: 3, format: '16:9' },
         { id: 'v-install-blog', channelId: 'ch-blog', state: 'planned', revision: 0 },
       ],
@@ -83,7 +83,7 @@
       title: '30 Windows testers wanted',
       versions: [
         { id: 'v-testers-li', channelId: 'ch-li-page', state: 'scheduled', revision: 1,
-          publishAt: '2026-09-30T10:00:00Z' },
+          publishAt: '2026-09-30T10:00:00-07:00' },
       ],
     },
   ];
@@ -195,9 +195,46 @@
   // date anywhere yet — a soft target time is exactly what the frame's
   // dashed `◇ Planned` chip needs, and adding it here doesn't touch or
   // contradict any existing row.
+  // v-install-li stays deliberately undated (T3's whenISO: null, left as-is)
+  // — MET-01's "never invented" case the harness already asserts. Blocked
+  // and Needs-review are each covered by a different, already-dated version
+  // below, so nothing needs this one to also carry a date.
+  //
+  // Dave's review (2026-09-26) also flagged two of T0a/T3's own timestamps:
+  // 'v-install-x' publishedAt and 'v-testers-li' publishAt were authored
+  // with a bare `Z` (UTC) suffix, so in the host's America/Los_Angeles tz
+  // they displayed as 2:00 AM / 3:00 AM instead of the frame's intended
+  // 9:00 / 10:00 local — fixed in place above to `-07:00` (same instant's
+  // correct local-time authoring, not a new row).
   const CALENDAR_SCHEDULE = {
     'v-install-blog': '2026-10-01T15:00:00-07:00',
+    'v-followup-x': '2026-10-01T11:00:00-07:00',
+    'v-arm-blocked': '2026-10-01T14:00:00-07:00',
   };
+
+  // Two new families, additive (ground rule 3 — this file is not
+  // re-derived; a ticket needing more data adds its own rows). Dave's
+  // review point 3: frame 12f shows all 5 chip states at once (Published,
+  // Planned, Held, Needs review, Blocked); T0a/T3's existing versions cover
+  // Published/Needs review/Planned/Scheduled(->Held via the held channel),
+  // but nothing carries state 'blocked', and the x-ron row had only one
+  // version (Published) — no Planned entry to show a second chip in that
+  // row the way frame 12f's "Follow-up post" does.
+  FAMILIES.push(
+    { id: 'fam-followup-post', campaignId: 'camp-1', kind: 'post',
+      title: 'Follow-up post',
+      versions: [
+        { id: 'v-followup-x', channelId: 'ch-x-ron', state: 'planned', revision: 0 },
+      ] },
+    { id: 'fam-arm-faq', campaignId: 'camp-1', kind: 'article',
+      title: 'Windows ARM support FAQ',
+      versions: [
+        { id: 'v-arm-blocked', channelId: 'ch-blog', state: 'blocked', revision: 1,
+          claims: [
+            { id: 'claim-arm-1', text: 'runs natively on ARM64', source: null, verdict: 'blocked' },
+          ] },
+      ] },
+  );
 
   window.DeskV1Fixtures = {
     campaigns: CAMPAIGNS,

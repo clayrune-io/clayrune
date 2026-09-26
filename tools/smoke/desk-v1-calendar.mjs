@@ -126,8 +126,20 @@ async function runToneRenderChecks(browser, tone) {
   const toolbar = await page.$('.desk-v1-cal-toolbar');
   toolbar ? ok(`[${tone.name}] toolbar renders`) : fail(`[${tone.name}] toolbar missing`);
 
-  const scopeOn = (await page.textContent('.desk-v1-cal-pill.on').catch(() => '') || '').trim();
-  scopeOn === 'This campaign'
+  // Dave's review point 6: one row (§3.3: "This campaign ▾ | All campaigns,
+  // ‹ week ›, Week ▾ | Month"), scope as a dropdown, T2a's toggle slot
+  // marked with a placeholder since T2a doesn't exist yet.
+  const toolbarHeight = await page.$eval('.desk-v1-cal-toolbar', (el) => el.getBoundingClientRect().height).catch(() => 0);
+  toolbarHeight > 0 && toolbarHeight < 50
+    ? ok(`[${tone.name}] toolbar is a single row (${toolbarHeight.toFixed(0)}px tall)`)
+    : fail(`[${tone.name}] toolbar taller than one row: ${toolbarHeight}px`);
+  const togglePlaceholder = await page.$('.desk-v1-cal-viewtoggle-placeholder');
+  togglePlaceholder
+    ? ok(`[${tone.name}] T2a's List/Calendar toggle slot has a placeholder`)
+    : fail(`[${tone.name}] toggle placeholder missing`);
+
+  const scopeOn = await page.$eval('[data-cal-scope-select]', (el) => el.value).catch(() => '');
+  scopeOn === 'campaign'
     ? ok(`[${tone.name}] default scope is "This campaign"`)
     : fail(`[${tone.name}] default scope wrong: ${JSON.stringify(scopeOn)}`);
 
@@ -146,16 +158,56 @@ async function runToneRenderChecks(browser, tone) {
     ? ok(`[${tone.name}] held channel's row shows the hold reason: "${holdLine.trim()}"`)
     : fail(`[${tone.name}] held channel's row missing its hold reason`);
 
+  // Dave's review point 8: the shared channel badge has no nowrap of its
+  // own — narrow enough in this 150px rowhead column that "in · Clayrune
+  // page ⚠" used to wrap onto two lines. Line count, not height, is the
+  // real signal: the badge's border-box height for a genuine single line
+  // is ~25px (17.25px line-height + 6px padding + 2px border), not <22 —
+  // a wrapped badge instead produces >1 client rect.
+  const badgeLines = await page.$eval('.desk-v1-cal-rowhead-held .desk-v1-channel-badge', (el) => el.getClientRects().length).catch(() => 0);
+  badgeLines === 1
+    ? ok(`[${tone.name}] the held channel badge stays one line`)
+    : fail(`[${tone.name}] held channel badge wrapped or missing: ${badgeLines} line(s)`);
+
   // Switch to month view (select), which for "today" in this fixture set's
   // window always covers v-install-x (Sep 22, published) and v-testers-li +
-  // v-restore-blog (Sep 30, scheduled / needs_review) in the same grid.
+  // v-restore-blog (Sep 30, needs_review) in the same grid.
   await page.selectOption('[data-cal-view]', 'month');
   await page.waitForTimeout(50);
   const chipStates = await page.$$eval('.desk-v1-cal-chip', (els) => els.map((e) => e.dataset.state));
-  const wantStates = ['verified_published', 'scheduled', 'needs_review'];
+  const wantStates = ['verified_published', 'held', 'needs_review'];
   wantStates.every((s) => chipStates.includes(s))
-    ? ok(`[${tone.name}] month view surfaces the 3 dated fixture chips with their real per-version states: ${JSON.stringify(chipStates)}`)
+    ? ok(`[${tone.name}] month view surfaces the 3 dated September chips with their real per-version states: ${JSON.stringify(chipStates)}`)
     : fail(`[${tone.name}] month view chip states wrong: ${JSON.stringify(chipStates)}`);
+
+  // Dave's review point 1: a chip on a HELD channel must display Held, not
+  // its own underlying state — v-testers-li's real version.state stays
+  // 'scheduled' (never mutated), only the chip's DISPLAY is overridden.
+  const testersState = await page.$eval('[data-chip-version="v-testers-li"]', (el) => el.dataset.state).catch(() => null);
+  testersState === 'held'
+    ? ok(`[${tone.name}] a chip on the held LinkedIn channel displays "Held", not "Scheduled"`)
+    : fail(`[${tone.name}] held-channel chip should read data-state="held", got ${JSON.stringify(testersState)}`);
+  const testersRealState = await page.evaluate(() => {
+    const fam = (window.DeskV1Fixtures.families || []).find((f) => (f.versions || []).some((v) => v.id === 'v-testers-li'));
+    return fam.versions.find((v) => v.id === 'v-testers-li').state;
+  });
+  testersRealState === 'scheduled'
+    ? ok(`[${tone.name}] the underlying version state is untouched by the display override ("scheduled")`)
+    : fail(`[${tone.name}] held display must not mutate the real state, got ${JSON.stringify(testersRealState)}`);
+
+  // Dave's review point 2: a fixture authored for 10:00 local must display
+  // 10:00, not a `Z`-suffixed UTC instant shifted into the small hours.
+  const testersTime = (await page.textContent('[data-chip-version="v-testers-li"] .desk-v1-cal-chip-time').catch(() => '') || '').trim();
+  /^10:00/.test(testersTime)
+    ? ok(`[${tone.name}] a fixture authored for 10:00 local displays 10:00: "${testersTime}"`)
+    : fail(`[${tone.name}] expected the chip time to read 10:00 local, got ${JSON.stringify(testersTime)}`);
+
+  // Dave's review point 5: the grid's own hairlines are solid — only a
+  // Planned CHIP is dashed (checked with October's fixtures below).
+  const cellBorderStyle = await page.$eval('.desk-v1-cal-cell.pd-drop-target', (el) => getComputedStyle(el).borderRightStyle).catch(() => '');
+  cellBorderStyle === 'solid'
+    ? ok(`[${tone.name}] grid cells use solid hairlines, not dashed`)
+    : fail(`[${tone.name}] grid cell border should be solid, got ${JSON.stringify(cellBorderStyle)}`);
 
   const undatedChip = await page.$('[data-chip-version="v-install-li"]');
   !undatedChip
@@ -172,22 +224,89 @@ async function runToneRenderChecks(browser, tone) {
   await ctx.close();
 }
 
-// ── scope toggle: "All campaigns" pill switches which families/channels
-// populate the grid. camp-1 is currently the only campaign in fixtures, so
-// this checks the pill's own on/off state flips and re-renders rather than
-// a row-count change (that needs a second campaign fixture, out of scope). ──
+// ── scope dropdown: "All campaigns" option switches which families/channels
+// populate the grid (Dave's review point 6: a dropdown, not two pills).
+// camp-1 is currently the only campaign in fixtures, so this checks the
+// select's own value flips and re-renders rather than a row-count change
+// (that needs a second campaign fixture, out of scope). ────────────────────
 async function runScopeToggle(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToCalendar(page);
   await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
 
-  await page.click('[data-cal-scope="all"]');
-  const onLabel = (await page.textContent('.desk-v1-cal-pill.on').catch(() => '') || '').trim();
-  onLabel === 'All campaigns'
-    ? ok('scope pill: clicking "All campaigns" flips the on-state')
-    : fail(`scope pill did not flip: ${JSON.stringify(onLabel)}`);
+  await page.selectOption('[data-cal-scope-select]', 'all');
+  const val = await page.$eval('[data-cal-scope-select]', (el) => el.value).catch(() => '');
+  val === 'all'
+    ? ok('scope dropdown: selecting "All campaigns" flips the state')
+    : fail(`scope dropdown did not flip: ${JSON.stringify(val)}`);
 
   reportUncaught(pageErrors, '[scope]');
+  await ctx.close();
+}
+
+// ── week layout (Dave's review point 4): Monday-start, today highlighted,
+// weekends muted. Runs on the default (unnavigated) week so "today" is
+// always whatever day this actually runs on. ───────────────────────────────
+async function runWeekLayout(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCalendar(page);
+  await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
+
+  const dayNames = await page.$$eval('.desk-v1-cal-daycol .desk-v1-cal-dayname', (els) => els.map((e) => e.textContent.trim()));
+  dayNames[0] === 'Mon' && dayNames[dayNames.length - 1] === 'Sun'
+    ? ok(`week starts Monday, ends Sunday: ${JSON.stringify(dayNames)}`)
+    : fail(`week should run Mon..Sun, got ${JSON.stringify(dayNames)}`);
+
+  const todayCol = await page.$('.desk-v1-cal-daycol-today');
+  todayCol ? ok('the real today column is highlighted') : fail('no column carries the today highlight');
+
+  const weekendCols = await page.$$eval('.desk-v1-cal-daycol-weekend', (els) => els.length);
+  weekendCols >= 1
+    ? ok(`${weekendCols} weekend day column(s) are muted`)
+    : fail('no weekend columns muted');
+
+  reportUncaught(pageErrors, '[week-layout]');
+  await ctx.close();
+}
+
+// ── fixture coverage (Dave's review point 3): every §9 state in frame 12f
+// appears somewhere on the grid, plus the ▶ video glyph (point 7). The
+// T4-added Follow-up post (planned) and the new Blocked article live in
+// October, alongside September's Published/Held/Needs-review already
+// covered in runToneRenderChecks. Also re-checks point 5 (only a Planned
+// CHIP is dashed) against a real Blocked neighbor. ──────────────────────────
+async function runFixtureCoverage(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCalendar(page);
+  await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
+  await page.selectOption('[data-cal-view]', 'month');
+  await page.waitForTimeout(50);
+
+  const videoChip = await page.$('.desk-v1-cal-chip .desk-v1-cal-chip-video');
+  videoChip ? ok('a video-kind version (v-install-x) shows the ▶ glyph on its title line') : fail('no ▶ video glyph found on the video chip');
+
+  await page.click('[data-cal-shift="1"]'); // September -> October
+  await page.waitForTimeout(50);
+
+  const chips = await page.$$eval('.desk-v1-cal-chip', (els) => els.map((e) => ({
+    state: e.dataset.state,
+    borderStyle: getComputedStyle(e).borderStyle,
+  })));
+  const states = chips.map((c) => c.state);
+  ['planned', 'blocked'].every((s) => states.includes(s))
+    ? ok(`October carries the Planned + Blocked chips: ${JSON.stringify(states)}`)
+    : fail(`October missing expected states: ${JSON.stringify(states)}`);
+
+  const plannedChip = chips.find((c) => c.state === 'planned');
+  const blockedChip = chips.find((c) => c.state === 'blocked');
+  plannedChip && plannedChip.borderStyle === 'dashed'
+    ? ok('the Planned chip is dashed')
+    : fail(`Planned chip should be dashed: ${JSON.stringify(plannedChip)}`);
+  blockedChip && blockedChip.borderStyle !== 'dashed'
+    ? ok('the Blocked chip is solid (only Planned is dashed)')
+    : fail(`Blocked chip should not be dashed: ${JSON.stringify(blockedChip)}`);
+
+  reportUncaught(pageErrors, '[fixture-coverage]');
   await ctx.close();
 }
 

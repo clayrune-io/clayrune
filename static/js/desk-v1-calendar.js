@@ -105,9 +105,12 @@
     const count = st.view === 'month'
       ? new Date(st.anchor.getFullYear(), st.anchor.getMonth() + 1, 0).getDate()
       : 7;
+    // Week starts Monday (§3.3 frame 12f: "Mon 29 ... Sun 5") — Sunday's
+    // getDay()===0 needs a 6-day pullback, every other day pulls back
+    // (day - 1) to reach that week's Monday.
     const start = st.view === 'month'
       ? new Date(st.anchor.getFullYear(), st.anchor.getMonth(), 1)
-      : (() => { const d = new Date(st.anchor); d.setDate(d.getDate() - d.getDay()); return d; })();
+      : (() => { const d = new Date(st.anchor); const wd = d.getDay(); d.setDate(d.getDate() - (wd === 0 ? 6 : wd - 1)); return d; })();
     if (typeof window.scalBuildRange === 'function') return window.scalBuildRange([], start, count).days;
     const days = [];
     for (let i = 0; i < count; i++) { const d = new Date(start); d.setDate(d.getDate() + i); days.push({ date: d, items: [] }); }
@@ -196,16 +199,29 @@
     return cells;
   }
 
-  function _chipHTML(item) {
+  // A chip on a HELD channel must read Held regardless of the version's own
+  // state (Dave's review, point 1) — the channel being unreachable overrides
+  // whatever the content's own workflow state is, same "held overrides
+  // either" rule channelCapabilityCopy already applies to the row header.
+  function _effectiveState(item, channel) {
+    return (channel && channel.health === 'held') ? 'held' : item.version.state;
+  }
+
+  function _chipHTML(item, channel) {
     const kit = window.DeskV1Kit;
-    const stateHTML = kit ? kit.stateLabelHTML(item.version.state) : esc(item.version.state);
-    const dashed = item.version.state === 'planned' ? ' desk-v1-cal-chip-dashed' : '';
+    const state = _effectiveState(item, channel);
+    const stateHTML = kit ? kit.stateLabelHTML(state) : esc(state);
+    const dashed = state === 'planned' ? ' desk-v1-cal-chip-dashed' : '';
+    const videoGlyph = item.family.kind === 'video'
+      ? '<span class="desk-v1-cal-chip-video" aria-hidden="true">▶</span> ' : '';
     return `
       <button type="button" class="desk-v1-cal-chip${dashed}" data-chip-version="${esc(item.version.id)}"
-          data-state="${esc(item.version.state)}" title="${esc(item.family.title)}">
-        <span class="desk-v1-cal-chip-time">${esc(_fmtTime(item.when))}</span>
-        ${stateHTML}
-        <span class="desk-v1-cal-chip-title">${esc(item.family.title)}</span>
+          data-state="${esc(state)}" title="${esc(item.family.title)}">
+        <span class="desk-v1-cal-chip-line1">
+          <span class="desk-v1-cal-chip-time">${esc(_fmtTime(item.when))}</span>
+          ${stateHTML}
+        </span>
+        <span class="desk-v1-cal-chip-title">${videoGlyph}${esc(item.family.title)}</span>
       </button>`;
   }
 
@@ -248,7 +264,7 @@
         if (_isWeekend(d.date)) cls.push('desk-v1-cal-cell-weekend');
         return `<div class="${cls.join(' ')}" data-channel-id="${esc(ch.id)}" data-day-key="${esc(key)}">
           <span class="desk-v1-cal-cell-preview"></span>
-          ${items.map(_chipHTML).join('')}
+          ${items.map((it) => _chipHTML(it, ch)).join('')}
         </div>`;
       }).join('');
       return `<div class="desk-v1-cal-row">${_rowHeaderHTML(ch, campaign.rules && campaign.rules.reviewMode)}${cellsHTML}</div>`;
@@ -272,35 +288,53 @@
       const label = new Intl.DateTimeFormat(undefined, { timeZone: _userTz(), weekday: 'long', month: 'short', day: 'numeric' }).format(d.date);
       return `<div class="desk-v1-cal-agenda-day${key === todayKey ? ' desk-v1-cal-agenda-day-today' : ''}">
         <div class="desk-v1-cal-agenda-daylabel">${esc(label)}</div>
-        ${items.map((it) => `
+        ${items.map((it) => {
+          const state = _effectiveState(it, it.channel);
+          const videoGlyph = it.family.kind === 'video' ? '▶ ' : '';
+          return `
           <button type="button" class="desk-v1-cal-agenda-item" data-chip-version="${esc(it.version.id)}">
             <span class="desk-v1-cal-agenda-time">${esc(_fmtTime(it.when))}</span>
             <span class="desk-v1-cal-agenda-channel">${esc(it.channel.label || '')}</span>
-            ${window.DeskV1Kit ? window.DeskV1Kit.stateLabelHTML(it.version.state) : ''}
-            <span class="desk-v1-cal-agenda-title">${esc(it.family.title)}</span>
-          </button>`).join('')}
+            ${window.DeskV1Kit ? window.DeskV1Kit.stateLabelHTML(state) : ''}
+            <span class="desk-v1-cal-agenda-title">${videoGlyph}${esc(it.family.title)}</span>
+          </button>`;
+        }).join('')}
       </div>`;
     }).filter(Boolean).join('');
     return `<div class="desk-v1-cal-agenda">${dayBlocks || '<div class="desk-v1-stub-empty">Nothing on the calendar this range.</div>'}</div>`;
   }
 
+  // §3.3: "This campaign ▾ | All campaigns, ‹ week ›, Week ▾ | Month" — one
+  // row, scope as a single dropdown (not two pills; Dave's review point 6).
+  // The List/Calendar toggle in frame 12f's same row belongs to T2a's
+  // Content-tab slot (this view renders INTO that slot per the T0a contract
+  // — see the file banner comment). T2a doesn't exist yet, so this is a
+  // non-interactive placeholder marking where it goes; T2a's own toggle
+  // replaces it wholesale, nothing here to rewire when it lands.
   function _toolbarHTML(st, days) {
     return `
       <div class="desk-v1-cal-toolbar">
-        <div class="desk-v1-cal-scope">
-          <button type="button" class="desk-v1-cal-pill${st.scope === 'campaign' ? ' on' : ''}" data-cal-scope="campaign">This campaign</button>
-          <span class="desk-v1-cal-sep">|</span>
-          <button type="button" class="desk-v1-cal-pill${st.scope === 'all' ? ' on' : ''}" data-cal-scope="all">All campaigns</button>
+        <div class="desk-v1-cal-toolbar-left">
+          <div class="desk-v1-cal-viewtoggle-placeholder" aria-hidden="true" title="List/Calendar toggle — owned by T2a's Content-tab slot, not built yet">
+            <span class="desk-v1-cal-viewtoggle-btn">&#9776; List</span>
+            <span class="desk-v1-cal-viewtoggle-btn on">&#9638; Calendar</span>
+          </div>
+          <select class="desk-v1-cal-viewselect" data-cal-scope-select>
+            <option value="campaign"${st.scope === 'campaign' ? ' selected' : ''}>This campaign</option>
+            <option value="all"${st.scope === 'all' ? ' selected' : ''}>All campaigns</option>
+          </select>
         </div>
-        <div class="desk-v1-cal-nav">
-          <button type="button" class="desk-v1-cal-navbtn" data-cal-shift="-1" aria-label="Previous">&lsaquo;</button>
-          <span class="desk-v1-cal-rangelabel">${esc(_rangeLabel(days, st.view))}</span>
-          <button type="button" class="desk-v1-cal-navbtn" data-cal-shift="1" aria-label="Next">&rsaquo;</button>
+        <div class="desk-v1-cal-toolbar-right">
+          <div class="desk-v1-cal-nav">
+            <button type="button" class="desk-v1-cal-navbtn" data-cal-shift="-1" aria-label="Previous">&lsaquo;</button>
+            <span class="desk-v1-cal-rangelabel">${esc(_rangeLabel(days, st.view))}</span>
+            <button type="button" class="desk-v1-cal-navbtn" data-cal-shift="1" aria-label="Next">&rsaquo;</button>
+          </div>
+          <select class="desk-v1-cal-viewselect" data-cal-view>
+            <option value="week"${st.view === 'week' ? ' selected' : ''}>Week</option>
+            <option value="month"${st.view === 'month' ? ' selected' : ''}>Month</option>
+          </select>
         </div>
-        <select class="desk-v1-cal-viewselect" data-cal-view>
-          <option value="week"${st.view === 'week' ? ' selected' : ''}>Week</option>
-          <option value="month"${st.view === 'month' ? ' selected' : ''}>Month</option>
-        </select>
       </div>`;
   }
 
@@ -327,7 +361,8 @@
   function _bind(el, campaign, days, rows, cells) {
     const st = _state;
 
-    el.querySelectorAll('[data-cal-scope]').forEach((b) => b.onclick = () => { st.scope = b.dataset.calScope; _render(campaign); });
+    const scopeSel = el.querySelector('[data-cal-scope-select]');
+    if (scopeSel) scopeSel.onchange = () => { st.scope = scopeSel.value; _render(campaign); };
     el.querySelectorAll('[data-cal-shift]').forEach((b) => b.onclick = () => {
       const dir = parseInt(b.dataset.calShift, 10);
       const a = new Date(st.anchor);
