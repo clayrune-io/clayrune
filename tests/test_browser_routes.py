@@ -1181,6 +1181,27 @@ def test_run_cdp_reports_chromium_that_died_on_arrival_at_once():
     assert 'rc=21' in session['error'] and 'held by another Chromium' in session['error']
 
 
+def test_close_all_sessions_closes_every_pane_within_the_deadline(monkeypatch):
+    # MC-976: the restart path os._exit()s past the atexit cleanup, so it must
+    # close panes itself — and a hung close must not hold the restart up.
+    import threading as _th
+    import time as _t
+    closed, hang = [], _th.Event()
+
+    def fake_kill(s):
+        if s['session_id'] == 'hung':
+            hang.wait(5)
+        closed.append(s['session_id'])
+    monkeypatch.setattr(br, '_kill_browser_session', fake_kill)
+    monkeypatch.setitem(browser_sessions, 'a', {'session_id': 'a'})
+    monkeypatch.setitem(browser_sessions, 'hung', {'session_id': 'hung'})
+    t0 = _t.time()
+    assert br.close_all_sessions(timeout=0.5) == 2
+    assert _t.time() - t0 < 1.5
+    assert 'a' in closed
+    hang.set()
+
+
 # ── /api/browser/tab route ───────────────────────────────────────────────────
 
 def test_tab_route_unknown_session_404(app_client):

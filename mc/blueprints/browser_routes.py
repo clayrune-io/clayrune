@@ -1535,6 +1535,30 @@ def _graceful_close(session, timeout=10):
         return False
 
 
+def close_all_sessions(timeout=2.5):
+    """Close every pane Chromium, in parallel, within ``timeout`` seconds.
+
+    For the restart/shutdown path, which os._exit()s and so never reaches
+    the atexit browser cleanup in server.py. Before this, every restart
+    orphaned each open pane's Chromium with its profile dir still locked,
+    and the next launch of that profile died rc=21 (MC-976). Named profiles
+    get Browser.close (flushes cookies, ~0.1s each); a close still running
+    at the deadline was already asked to exit and finishes on its own.
+    Returns how many sessions were asked to close.
+    """
+    with browser_lock:
+        sessions = list(browser_sessions.values())
+    threads = []
+    for s in sessions:
+        t = threading.Thread(target=_kill_browser_session, args=(s,), daemon=True)
+        t.start()
+        threads.append(t)
+    deadline = _time.time() + timeout
+    for t in threads:
+        t.join(max(0.0, deadline - _time.time()))
+    return len(threads)
+
+
 def _kill_browser_session(session):
     session['status'] = 'stopped'
     proc = session.get('proc')

@@ -866,6 +866,20 @@ def _stop_all_sessions_for_restart(grace_seconds=3.0):
         try: _log(f"[restart] tunnel stop skipped: {e}")
         except Exception: pass
 
+    # Close browser-pane Chromiums. The caller os._exit()s, so server.py's
+    # atexit _cleanup_browsers never runs: each open pane's Chromium used to
+    # outlive the restart holding its profile dir, and the next launch of that
+    # profile died rc=21 -- a black pane (MC-976, 2026-09-25). After the
+    # tunnel so a hung close can't push the tunnel stop past the caller's 4s.
+    try:
+        from mc.blueprints import browser_routes as _browser
+        _n = _browser.close_all_sessions(timeout=2.0)
+        if _n:
+            _log(f"[restart] closed {_n} browser pane session(s)")
+    except Exception as e:
+        try: _log(f"[restart] browser close skipped: {e}")
+        except Exception: pass
+
     # Brief wait so the children get a chance to die before exec replaces us.
     deadline = _time.time() + grace_seconds
     while _time.time() < deadline:
