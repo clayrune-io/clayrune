@@ -157,6 +157,33 @@ def test_unattended_and_allow_unattended_false_is_refused(client):
     assert 'attended-only' in res.get_json()['error']
 
 
+def test_omitted_claude_session_id_fails_closed_even_if_server_env_looks_attended(
+        client, monkeypatch):
+    """MC-979 audit finding (confirmed by PoC 2026-09-26): the route used to
+    resolve a missing `claude_session_id` by falling back to
+    `detect_unattended_context`'s "not given" branch, which reads THIS
+    process's own `CLAUDE_CODE_SESSION_ID` — but THIS process is the SERVER,
+    not the caller, so that env var (if the server itself happens to have
+    inherited one, e.g. started from inside a Claude Code Bash/terminal call)
+    has nothing to do with who is actually calling the route. That let ANY
+    caller who simply omits `claude_session_id` (and doesn't set
+    `unattended=True`) get treated as attended whenever the server process's
+    own environment resolved to trigger_type=manual — bypassing
+    `allow_unattended=False` for a caller that proved nothing. Omitting the
+    field must fail closed regardless of what the server's own env holds.
+    """
+    monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'server-boot-session-attended')
+    from mc import secrets_store as vault
+    monkeypatch.setattr(vault, '_lookup_trigger_type', lambda _sid: 'manual')
+
+    _create(client, allow_unattended=False)
+    body = {'env': [['X', 'demo.token']], 'command': PRINT_ENV_CMD}
+    # Deliberately omit both `claude_session_id` and `unattended`.
+    res = _exec(client, **body)
+    assert res.status_code == 400, res.get_data(as_text=True)
+    assert 'attended-only' in res.get_json()['error']
+
+
 def test_output_is_scrubbed_of_the_secret_value(client):
     _create(client, value=SECRET)
     print_secret_cmd = [sys.executable, '-c',

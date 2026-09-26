@@ -1916,6 +1916,27 @@ def delete_secret(name: str) -> bool:
 
 _TRIGGER_TYPE_URL = 'http://127.0.0.1:5199/api/session/trigger-type'
 
+# Sentinel distinguishing "caller didn't pass claude_session_id at all" (the
+# with-secret.py in-process shape, where falling back to THIS process's own
+# CLAUDE_CODE_SESSION_ID is correct because this process IS the CLI) from
+# "caller passed None/empty explicitly" (the /api/secrets/exec route, MC-979
+# — where THIS process is the SERVER, and its own os.environ has nothing to
+# do with the actual HTTP caller). `None` cannot serve as that "not given"
+# marker: the route always passes an argument, and it is `None` whenever the
+# JSON body simply omits `claude_session_id` — using `None` for both meanings
+# let an exec-route caller who omits the field fall through to reading the
+# SERVER's own environment instead of failing closed. If the server process
+# happens to have been started from inside a Claude Code session (routine in
+# dev — a Bash tool starting `python server.py` inherits the var), that
+# lookup can resolve to trigger_type=manual and report unattended=False for
+# ANY caller, regardless of what the real caller is — bypassing
+# allow_unattended=False. Confirmed via a PoC 2026-09-26 (MC-979 audit).
+class _NotGiven:
+    pass
+
+
+_NOT_GIVEN = _NotGiven()
+
 
 def _session_id_from_env() -> str:
     return (os.environ.get('CLAUDE_CODE_SESSION_ID') or '').strip()
@@ -1940,27 +1961,38 @@ def _lookup_trigger_type(claude_session_id: str) -> str | None:
     return str(data.get('trigger_type') or 'manual')
 
 
-def detect_unattended_context(claude_session_id: str | None = None) -> tuple[bool, str]:
+def detect_unattended_context(
+        claude_session_id: str | None | _NotGiven = _NOT_GIVEN) -> tuple[bool, str]:
     """(is_unattended, reason) purely from server-side signals — no caller
     input, UNLESS ``claude_session_id`` is passed explicitly.
 
-    Default (``None``): reads ``CLAUDE_CODE_SESSION_ID`` from THIS process's
-    own environment — the shape ``with-secret.py``'s in-process path uses,
-    since it inherits the CLI's env directly.
+    Not given at all (default): reads ``CLAUDE_CODE_SESSION_ID`` from THIS
+    process's own environment — the shape ``with-secret.py``'s in-process
+    path uses, since it inherits the CLI's env directly.
 
-    Explicit ``claude_session_id``: for ``POST /api/secrets/exec``
-    (MC-979, ``mc/blueprints/secrets_routes.py``), which runs inside the
-    SERVER process — the caller's env var lives in a different process
-    entirely, so the server can't read it off its own ``os.environ`` and the
-    caller must send it in the request body instead. Same fail-closed
-    lookup either way; only where the id comes from differs.
+    Explicitly passed (even ``None`` or ``''``): for ``POST
+    /api/secrets/exec`` (MC-979, ``mc/blueprints/secrets_routes.py``), which
+    runs inside the SERVER process — the caller's env var lives in a
+    different process entirely, so the server can't read it off its own
+    ``os.environ`` and the caller must send it in the request body instead.
+    An explicitly-passed-but-empty value fails closed directly and NEVER
+    falls back to this process's own environment — that fallback is only
+    correct for the "not given at all" case above, where this process really
+    is the CLI. Collapsing the two (as an earlier version of this function
+    did, using `None` as both "not given" and "given empty") let an exec-route
+    caller who simply omits `claude_session_id` fall through to the SERVER's
+    own os.environ, which may carry an unrelated attended session's id if the
+    server itself was started from inside a Claude Code session — reporting
+    unattended=False for a caller that never proved anything of the kind.
 
     See module comment above for the fail-closed rationale. Public: meant to
     be called by CLI-spawned consumers (with-secret.py) and the exec route to
     compute what they should pass as `unattended=`, not by `get_secret_value`
     itself."""
-    sid = claude_session_id if claude_session_id is not None else _session_id_from_env()
-    sid = (sid or '').strip()
+    if isinstance(claude_session_id, _NotGiven):
+        sid = _session_id_from_env()
+    else:
+        sid = (claude_session_id or '').strip()
     if not sid:
         return True, 'no CLAUDE_CODE_SESSION_ID (fail-closed)'
     trigger_type = _lookup_trigger_type(sid)
@@ -1971,14 +2003,17 @@ def detect_unattended_context(claude_session_id: str | None = None) -> tuple[boo
     return True, f'trigger_type={trigger_type}'
 
 
-def detect_effective_unattended(unattended: bool,
-                                claude_session_id: str | None = None) -> tuple[bool, str]:
+def detect_effective_unattended(
+        unattended: bool,
+        claude_session_id: str | None | _NotGiven = _NOT_GIVEN) -> tuple[bool, str]:
     """OR a caller-supplied flag with auto-detection. The flag can only ADD
     strictness (a caller opting into unattended treatment on purpose); it can
     never remove strictness that detection found on its own.
 
-    ``claude_session_id``: see `detect_unattended_context` — pass it when the
-    caller (the exec route) can't rely on its own process environment."""
+    ``claude_session_id``: see `detect_unattended_context` — pass it (even if
+    it's ``None``/``''``) when the caller (the exec route) can't rely on its
+    own process environment; leave it unset only for the in-process
+    with-secret.py shape."""
     if unattended:
         return True, 'flag'
     return detect_unattended_context(claude_session_id)
