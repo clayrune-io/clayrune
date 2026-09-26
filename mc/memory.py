@@ -2451,8 +2451,21 @@ def corpus_uids(project):
 
 
 def _memory_search(project, query, topk=3, expand=None, record=None,
-                    keep_internal=False):
+                    keep_internal=False, consumer_unattended=False):
     """BM25 ranking over the project's memory corpus (SPEC §3 Leg B).
+
+    `consumer_unattended` (§6.5, MC-944 step 7's hard constraint; mirrors
+    `mc.distiller.exploration_read_floor`'s identically-named parameter):
+    when True, a topic unit stamped `origin: unattended` is dropped from the
+    scored candidates entirely — never delivered, never redirected to, never
+    counted toward a slot. Deterministic mints (`mint_topic_node`) can fire
+    from an unattended trigger (a scheduled hivemind closing, a steward
+    closing a backlog item), and CLAUDE.md's learning-system safety rail
+    ("a human must be on at least one side of every learning loop") applies
+    here exactly as it does to the Distiller's own artifacts: autonomous
+    output must never become autonomous input. Default False preserves every
+    existing caller's behaviour unchanged — only a caller building a
+    STEWARD/unattended read-floor opts in.
 
     Corpus = the memory dir's topic *.md files + MEMORY_ARCHIVE.md entries +
     the MANAGED region of MEMORY.md. The curated MEMORY.md index is excluded
@@ -2549,6 +2562,9 @@ def _memory_search(project, query, topk=3, expand=None, record=None,
             score += idf[t] * (f * (_BM25_K1 + 1.0)) / (f + denom_len)
         if not matched:
             continue
+        if consumer_unattended and u.get('cls') == 'topic':
+            if _note_frontmatter(u['text']).get('origin') == 'unattended':
+                continue
         _trig = u.get('subject_terms') or set()
         _hit_trig = _trig & set(terms)
         if _hit_trig and not u.get('trigger_explicit'):
