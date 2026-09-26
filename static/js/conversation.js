@@ -1212,12 +1212,7 @@ function agentPanelHTML(p) {
       // seeding only ever replays the HEAD transcript. Look the chain up
       // fresh off conversationsCache (not off agentStatusCache, which a
       // status poll overwrites wholesale) so it survives live refreshes.
-      const _rolloverChain = (() => {
-        const csid = activeSession && activeSession.claudeSessionId;
-        if (!csid) return [];
-        const row = (conversationsCache[p.id] || []).find(c => c.claude_session_id === csid);
-        return (row && row.rolled_from) || [];
-      })();
+      const _rolloverChain = _rolloverChainFor(p.id, activeSessionId);
       const _rolloverLoaded = rolloverLoadedCounts[activeSessionId] || 0;
       const _rolloverRemaining = Math.max(0, _rolloverChain.length - _rolloverLoaded);
       const fullBuf = (agentOutputBuffers[activeSessionId] || []).flatMap(l => l.trimStart().startsWith('> ') ? [l] : l.split('\n'));
@@ -3702,12 +3697,37 @@ function _rolloverButtonHTML(projectId, sessionId, remaining, total) {
 // ANY given csid, head or link, with the same preamble/handoff stripping
 // (agent_runtime.strip_injected_preamble) — a link's own first turn is
 // exactly a handoff block when it isn't the chain's oldest link.
-async function loadEarlierConversationPart(projectId, sessionId) {
-  const cached = agentStatusCache[sessionId];
-  const csid = cached && cached.claudeSessionId;
-  if (!csid) return;
+// The open session's rollover chain (its /conversations row's `rolled_from`,
+// oldest first), keyed by claude_session_id. That row also covers an
+// engine/session HANDOFF: the server chains a "=== Prior conversation ...
+// handed off here ===" transcript to its predecessor the same way it chains a
+// token rollover (agent_runtime.handoff_lineage), so one mechanism serves both.
+function _rolloverChainFor(projectId, sessionId) {
+  const csid = (agentStatusCache[sessionId] || {}).claudeSessionId;
+  if (!projectId || !csid) return [];
   const row = (conversationsCache[projectId] || []).find(c => c.claude_session_id === csid);
-  const chain = (row && row.rolled_from) || [];
+  return (row && row.rolled_from) || [];
+}
+
+// Put the control back after anything that rebuilt the output node without
+// going through the tabContent render — _repaintAgentOutput calls this, the way
+// it already restores question forms. Before this lived there, only
+// loadEarlierConversationPart reinserted it, so every other repaint wiped it:
+// switchAgentTab repaints after fetchAgentStatus, which is every rail open.
+// Measured on a 9-link Dave chat: button in the DOM at 50ms, gone by 300ms.
+function _restoreRolloverButton(sessionId) {
+  const el = document.getElementById(`agent-output-${sessionId}`);
+  if (!el || document.getElementById(`rollover-load-${sessionId}`)) return;
+  const projectId = (agentStatusCache[sessionId] || {}).projectId
+    || (agentHistory.find(h => h.sessionId === sessionId) || {}).projectId;
+  const chain = _rolloverChainFor(projectId, sessionId);
+  const remaining = chain.length - (rolloverLoadedCounts[sessionId] || 0);
+  if (remaining > 0) el.insertAdjacentHTML('afterbegin', _rolloverButtonHTML(projectId, sessionId, remaining, chain.length + 1));
+}
+window._restoreRolloverButton = _restoreRolloverButton;
+
+async function loadEarlierConversationPart(projectId, sessionId) {
+  const chain = _rolloverChainFor(projectId, sessionId);
   const loaded = rolloverLoadedCounts[sessionId] || 0;
   const idx = chain.length - 1 - loaded;
   if (idx < 0) return;
@@ -3730,17 +3750,9 @@ async function loadEarlierConversationPart(projectId, sessionId) {
     // refreshModal() alone does not repaint an already-mounted agent-output
     // node (it preserves it for scroll/perf — see _repaintAgentOutput's own
     // docstring); _repaintAgentOutput is what actually replays the grown
-    // buffer. It clears-and-rebuilds unconditionally though, so the rollover
-    // button (not a buffer line — it lives outside this render path) has to
-    // be reinserted by hand afterward, using the same markup the cold render
-    // uses (_rolloverButtonHTML).
+    // buffer, and restores the rollover button itself (_restoreRolloverButton).
     refreshModal();
     window._repaintAgentOutput?.(sessionId);
-    const remaining = chain.length - (loaded + 1);
-    if (remaining > 0) {
-      const outEl = document.getElementById(`agent-output-${sessionId}`);
-      if (outEl) outEl.insertAdjacentHTML('afterbegin', _rolloverButtonHTML(projectId, sessionId, remaining, chain.length + 1));
-    }
     // Keep the reader's viewport anchored to the content they were looking at
     // instead of the freshly-taller pane jumping them back to the old top.
     requestAnimationFrame(() => {

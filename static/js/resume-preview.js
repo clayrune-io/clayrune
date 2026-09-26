@@ -737,6 +737,8 @@ function _repaintAgentOutput(sessionId) {
   if (window._renderSubagentCards) {
     try { window._renderSubagentCards(sessionId); } catch (_) {}
   }
+  // "Load earlier conversation" (MC-978) is not a buffered line either; same fix.
+  window._restoreRolloverButton?.(sessionId);
   // In-chat search (chat-search.js) highlights by wrapping rendered text nodes
   // in <mark>; the clear-and-rebuild above just wiped every one of those without
   // going through a template re-render (chatSearchBarHTML never ran), so its own

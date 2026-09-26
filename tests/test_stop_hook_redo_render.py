@@ -140,7 +140,7 @@ def test_parse_transcript_file_turn_without_hook_is_unaffected(tmp_path):
 
 def test_transcript_buffer_lines_collapses_stop_hook_draft(monkeypatch):
     monkeypatch.setattr(ar, '_find_transcript_file', lambda pp, cs: Path('x.jsonl'))
-    monkeypatch.setattr(ar, '_parse_transcript_messages', lambda f, max_messages=0: [
+    monkeypatch.setattr(ar, '_parse_transcript_messages', lambda f, max_messages=0, **kw: [
         {'role': 'user', 'text': 'Summarize the changes.'},
         {'role': 'assistant', 'text': 'A very long draft reply.'},
         {'role': 'stop_hook_redo', 'text': ''},
