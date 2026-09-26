@@ -184,6 +184,44 @@
     },
   };
 
+  // ── T5: video intake + director (docs/desk_v1_r0_plan.md; THE_DESK_V1_UI.md
+  // §5). Keyed by familyId, same "own section, own key, never touches T0a's
+  // rows" convention T3's REVIEW_DETAIL established above — the storyboard
+  // (scenes, materials, pending edits, render jobs) is detail ONLY the
+  // director needs, layered onto the existing fam-install-video/RENDER_BUDGET
+  // rows rather than duplicating a second video fixture.
+  //
+  // Scene durations are arbitrary but sum to a plausible 40s walkthrough
+  // (matches the intake brief's own "40-second install walkthrough" text).
+  // Scene 3 is pre-marked `edited` so the director's `•` marker and the
+  // player's "edits not rendered yet" status label are both visible on
+  // first render, without requiring an interaction first.
+  const VIDEO_DETAIL = {
+    'fam-install-video': {
+      brief: 'A 40-second install walkthrough for Windows testers, ending on Join the beta.',
+      materials: ['install.mp4 · source', 'clayrune-logo.png'],
+      scenes: [
+        { id: 'sc-1', label: 'Download', durationSec: 6 },
+        { id: 'sc-2', label: 'Installer', durationSec: 14 },
+        { id: 'sc-3', label: 'Restore demo', durationSec: 12, edited: true },
+        { id: 'sc-4', label: 'Restore', durationSec: 5 },
+        { id: 'sc-5', label: 'Join', durationSec: 5 },
+      ],
+      pendingEdits: [
+        { id: 'pe-1', label: 'Trimmed "Restore demo" to 12s' },
+      ],
+      // Render jobs are keyed to family.render (T0a) by revision — 'ready'
+      // job r3 is the SAME render T3's review reads via family.render.
+      // `durationSec` is r3's OWN total at render time (scene 3 was 9s, not
+      // yet trimmed to 12s) — a snapshot, so the storyboard's stale badge
+      // ("Previous render · r3 · 0:39") reads what r3 actually contains
+      // rather than recomputing from scenes edited since.
+      jobs: [
+        { id: 'render-r3', revision: 3, status: 'ready', formats: ['16:9', '9:16'], durationSec: 39 },
+      ],
+    },
+  };
+
   window.DeskV1Fixtures = {
     campaigns: CAMPAIGNS,
     channels: CHANNELS,
@@ -192,5 +230,6 @@
     renderBudget: RENDER_BUDGET,
     results: RESULTS,
     reviewDetail: REVIEW_DETAIL,
+    videoDetail: VIDEO_DETAIL,
   };
 })();

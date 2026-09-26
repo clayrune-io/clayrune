@@ -438,7 +438,190 @@
 
 /* ── T4: Calendar view ───────────────────────────────────────────────────── */
 
-/* ── T5: Video intake + director ─────────────────────────────────────────── */
+/* ── T5: Video intake + director (frames 11d text, 12d) ──────────────────── */
+
+/* Intake sheet (frame 11d not in repo — built from §5 text; see the ticket
+   report for every layout call made without a frame). */
+.desk-v1-video-intake {
+  max-width: 360px; display: flex; flex-direction: column; gap: 12px;
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface);
+  padding: 16px;
+}
+.desk-v1-video-intake-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.desk-v1-video-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.desk-v1-video-tile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px;
+  padding: 12px; cursor: pointer; font-family: inherit; text-align: left;
+}
+.desk-v1-video-tile:hover { background: var(--surface3); }
+.desk-v1-video-tile-active { background: var(--accent-dim); border-color: var(--accent); }
+.desk-v1-video-tile-glyph { font-size: 15px; color: var(--text-dim); }
+.desk-v1-video-tile-active .desk-v1-video-tile-glyph { color: var(--accent); }
+.desk-v1-video-tile-label { font-size: 12.5px; font-weight: 600; color: var(--text); }
+
+.desk-v1-video-intake-body { display: flex; flex-direction: column; gap: 10px; }
+.desk-v1-video-brief {
+  background: var(--surface); border: 1px dashed var(--border2); border-radius: 8px;
+  color: var(--text); font-size: 13px; padding: 10px; font-family: inherit; resize: vertical;
+}
+.desk-v1-video-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.desk-v1-video-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--surface3); border: 1px solid var(--border2); border-radius: 999px;
+  color: var(--text); font-size: 11.5px; padding: 4px 6px 4px 10px;
+}
+.desk-v1-video-chip button { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 13px; line-height: 1; }
+.desk-v1-video-chip button:hover { color: var(--red-text); }
+
+.desk-v1-video-primary {
+  background: var(--accent); border: none; border-radius: 8px; color: #fff;
+  font-size: 13px; font-weight: 700; padding: 10px 14px; cursor: pointer; font-family: inherit;
+}
+.desk-v1-video-primary:hover { background: var(--accent-soft); }
+.desk-v1-video-costline { font-size: 11.5px; color: var(--text-faint); line-height: 1.4; }
+.desk-v1-video-notice { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
+.desk-v1-video-reject { font-size: 12.5px; color: var(--red-text); line-height: 1.5; margin-bottom: 4px; }
+
+.desk-v1-video-filelist { display: flex; flex-direction: column; gap: 6px; }
+.desk-v1-video-filerow {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 7px;
+  color: var(--text); font-size: 12.5px; padding: 9px 11px; text-align: left; cursor: pointer; font-family: inherit;
+}
+.desk-v1-video-filerow:hover { background: var(--surface3); }
+
+.desk-v1-video-connectinput {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 7px;
+  color: var(--text); font-size: 12.5px; padding: 8px 10px; font-family: inherit; width: 100%;
+}
+.desk-v1-video-notice[data-connect-mode="link"] { color: var(--amber-text); }
+
+/* Director */
+.desk-v1-video-director { height: 100%; min-height: 0; }
+/* Same dark-track/light-pill shape as T3's mode toggle (desk-v1-review-modetoggle)
+   — one segmented-control visual language across the Desk, not a second one
+   invented for T5's own Source/Storyboard/Renders control. */
+.desk-v1-video-tabstrip { display: inline-flex; background: var(--text); border-radius: 7px; overflow: hidden; padding: 2px; gap: 2px; margin-bottom: 12px; }
+.desk-v1-video-tabstrip button {
+  background: transparent; border: none; color: var(--bg); font-size: 12px; font-weight: 600;
+  padding: 6px 12px; cursor: pointer; font-family: inherit; border-radius: 5px;
+}
+.desk-v1-video-tabstrip button[aria-pressed="true"] { background: var(--surface); color: var(--text); }
+
+.desk-v1-video-layout { display: flex; gap: 20px; height: 100%; min-height: 0; align-items: flex-start; }
+.desk-v1-video-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.desk-v1-video-rail { flex: 0 0 300px; }
+
+.desk-v1-video-stalebadge {
+  background: var(--amber-text); color: var(--bg); border-radius: 8px 8px 0 0;
+  font-size: 12px; font-weight: 600; padding: 7px 12px; margin-bottom: -1px;
+}
+
+.desk-v1-video-player {
+  position: relative; background: #1a1712; border-radius: 10px; aspect-ratio: 16 / 9;
+  display: flex; align-items: center; justify-content: center;
+}
+.desk-v1-video-stalebadge + .desk-v1-video-player { border-radius: 0 0 10px 10px; }
+.desk-v1-video-playicon {
+  width: 56px; height: 56px; border-radius: 50%; background: rgba(255,255,255,0.92);
+  color: #1a1712; font-size: 20px; display: flex; align-items: center; justify-content: center;
+  padding-left: 3px; /* optical center for a right-pointing glyph */
+}
+
+.desk-v1-video-watchrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.desk-v1-video-watchreason { font-size: 12px; color: var(--text-faint); }
+
+.desk-v1-video-scenestrip {
+  display: flex; align-items: stretch; gap: 0; min-height: 52px;
+  border: 1px solid var(--border2); border-radius: 8px; overflow: hidden; background: var(--surface2);
+}
+.desk-v1-video-scene {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  min-width: 60px; border-right: 1px solid var(--border2); background: var(--surface2);
+  font-size: 11px; color: var(--text-dim); text-align: center; padding: 4px 14px; cursor: grab;
+}
+.desk-v1-video-scene:last-child { border-right: none; }
+.desk-v1-video-scene:hover, .desk-v1-video-scene:focus { background: var(--surface3); outline: none; }
+.desk-v1-video-scene-target { background: var(--accent-dim); }
+.desk-v1-video-scene-dragging { opacity: 0.4; }
+.desk-v1-video-scene-dot { color: var(--accent); font-size: 8px; }
+.desk-v1-video-scene-edge {
+  position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; touch-action: none;
+}
+.desk-v1-video-scene-edge-l { left: 0; }
+.desk-v1-video-scene-edge-r { right: 0; }
+.desk-v1-video-scene-ghost {
+  background: var(--surface3); border: 1px solid var(--accent); border-radius: 6px;
+  padding: 6px 12px; font-size: 11px; color: var(--text); box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+}
+.desk-v1-video-insertgap {
+  flex: 0 0 auto; width: 16px; margin: 0 -8px; z-index: 2; align-self: stretch;
+  background: none; border: none; color: var(--text-faint); font-size: 13px; cursor: pointer;
+  opacity: 0; transition: opacity 0.15s;
+}
+.desk-v1-video-scenestrip:hover .desk-v1-video-insertgap { opacity: 1; }
+.desk-v1-video-insertgap:hover { color: var(--accent); }
+
+.desk-v1-video-posy {}
+
+.desk-v1-video-pending {
+  border: 1px solid var(--border2); border-radius: 9px; padding: 11px 13px; background: var(--surface2);
+}
+.desk-v1-video-pending-title { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.desk-v1-video-pending-row { font-size: 12px; color: var(--text-dim); padding: 2px 0; }
+.desk-v1-video-pending-total { font-size: 12px; color: var(--text); font-weight: 600; margin-top: 6px; }
+
+/* Source / Renders tabs */
+.desk-v1-video-source { display: flex; flex-direction: column; gap: 10px; }
+.desk-v1-video-brief-readout { font-size: 13.5px; color: var(--text); line-height: 1.5; }
+.desk-v1-video-sourcerow {
+  font-size: 12.5px; color: var(--text); padding: 8px 10px; border: 1px solid var(--border2);
+  border-radius: 7px; background: var(--surface2);
+}
+.desk-v1-video-sourcerow-empty { color: var(--text-faint); border-style: dashed; }
+.desk-v1-video-renders { display: flex; flex-direction: column; gap: 6px; }
+.desk-v1-video-jobrow {
+  display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text);
+  padding: 9px 11px; border: 1px solid var(--border2); border-radius: 7px; background: var(--surface2);
+}
+.desk-v1-video-jobglyph { font-size: 12px; }
+.desk-v1-video-jobrow[data-job-status="failed"] .desk-v1-video-jobglyph { color: var(--red-text); }
+.desk-v1-video-jobrow[data-job-status="rendering"] .desk-v1-video-jobglyph { color: var(--amber-text); }
+.desk-v1-video-jobrow[data-job-status="ready"] .desk-v1-video-jobglyph { color: var(--green-text); }
+
+/* Render card (rail) — same box shape as T3's rail cards (desk-v1-review-notice
+   et al.), with its own orange "what this costs" header strip (frame 12d). */
+.desk-v1-video-rendercard {
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface); overflow: hidden;
+}
+.desk-v1-video-rendercard-head {
+  background: var(--amber-text); color: var(--bg); font-size: 11.5px; font-weight: 700;
+  letter-spacing: 0.02em; text-transform: uppercase; padding: 8px 13px;
+}
+.desk-v1-video-renderrow {
+  display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--text);
+  padding: 8px 13px 0;
+}
+.desk-v1-video-renderrow:first-of-type { padding-top: 12px; }
+.desk-v1-video-renderrow-dim { color: var(--text-dim); }
+.desk-v1-video-rendernote { font-size: 11.5px; color: var(--text-faint); line-height: 1.4; padding: 6px 13px 0; }
+.desk-v1-video-renderreason { font-size: 11.5px; color: var(--red-text); line-height: 1.4; padding: 0 13px 12px; }
+.desk-v1-video-rendercard .desk-v1-video-primary {
+  display: block; width: calc(100% - 26px); margin: 12px 13px 0; text-align: center;
+}
+.desk-v1-video-watchline { font-size: 11.5px; color: var(--text-faint); text-align: center; padding: 8px 13px 13px; }
+
+/* Phone (ground rule 7, §11): same stack-the-rail pattern as T3/T4 — the
+   scene strip scrolls horizontally instead of shrinking every tile unreadably. */
+@media (max-width: 960px) {
+  .desk-v1-video-layout { flex-direction: column; }
+  .desk-v1-video-rail { flex: 0 0 auto; width: 100%; }
+  .desk-v1-video-scenestrip { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .desk-v1-video-scene { min-width: 76px; min-height: 44px; }
+  .desk-v1-video-tile { min-height: 44px; }
+  .desk-v1-video-primary, .desk-v1-video-filerow, .desk-v1-video-tabstrip button { min-height: 44px; }
+  .desk-v1-video-insertgap { opacity: 1; width: 22px; }
+}
 
 /* ── T6: Conversations ───────────────────────────────────────────────────── */
 
