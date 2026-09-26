@@ -3057,8 +3057,15 @@ def scan_docs_artifacts_for_mint(project, since_ts, until_ts, *, docs_dir=None,
     call is itself idempotent-on-replay (`_mint_slug` keys off the file
     path), so re-scanning the same session twice mints nothing twice.
     Returns the list of minted filenames (possibly empty).
+
+    MC-944 step 8 (Condition 11/12): the SAME qualifying-file walk also runs
+    `scan_for_negation_obligations` over each file's body, independently
+    gated by `negation_obligation_enabled` — a caller with mint OFF and
+    negation ON (or vice versa) still gets exactly one enabled feature, not
+    neither, so the top-level guard is "at least one of the two is on", not
+    `_mint_enabled()` alone.
     """
-    if not _mint_enabled():
+    if not _mint_enabled() and not _negation_obligation_enabled():
         return []
     try:
         pp = project.get('project_path', '') if isinstance(project, dict) else ''
@@ -3077,12 +3084,23 @@ def scan_docs_artifacts_for_mint(project, since_ts, until_ts, *, docs_dir=None,
             if not (since_ts <= st.st_mtime <= until_ts):
                 continue
             rel = str(f.relative_to(Path(pp))) if pp else str(f)
-            fn = mint_topic_node(
-                project, trigger_kind='docs_artifact',
-                subject=f'{rel} ({st.st_size} bytes)', artifact_path=rel,
-                task=task, trigger_type=trigger_type)
-            if fn:
-                minted.append(fn)
+            if _mint_enabled():
+                fn = mint_topic_node(
+                    project, trigger_kind='docs_artifact',
+                    subject=f'{rel} ({st.st_size} bytes)', artifact_path=rel,
+                    task=task, trigger_type=trigger_type)
+                if fn:
+                    minted.append(fn)
+            if _negation_obligation_enabled():
+                try:
+                    body = f.read_text(encoding='utf-8', errors='replace')
+                except OSError as e:
+                    _log(f'[negation] docs-artifact read failed for {rel}: {e}')
+                    body = ''
+                if body:
+                    scan_for_negation_obligations(
+                        project, trigger_kind='docs_artifact', artifact_text=body,
+                        artifact_path=rel, task=task, trigger_type=trigger_type)
         return minted
     except Exception as e:
         _log(f'[mint] docs-artifact scan failed: {e}')

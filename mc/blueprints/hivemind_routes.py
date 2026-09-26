@@ -1898,6 +1898,25 @@ def _hivemind_orchestrator_loop():
                                 actor=f'hivemind:{hivemind_id}')
                     except Exception as _mint_err:
                         _log(f"[mint] hivemind_close mint failed for {hivemind_id}: {_mint_err}")
+                    # MC-944 step 8 (Condition 11/12) — same close point, same
+                    # fail-open posture as the mint above: scan the synthesis
+                    # body (not just the short mint `subject`) for negation
+                    # headings, since a hivemind's "rejected/declined
+                    # alternatives" live in the synthesis prose, never in the
+                    # one-line title/goal the mint call uses.
+                    try:
+                        from mc import memory as _mem
+                        hm_project = load_project(manifest.get('project_id', ''))
+                        synthesis_text = _hm_read_synthesis(hivemind_id)
+                        if hm_project and synthesis_text:
+                            _mem.scan_for_negation_obligations(
+                                hm_project, trigger_kind='hivemind_close',
+                                artifact_text=synthesis_text,
+                                artifact_path=f'hivemind:{hivemind_id}',
+                                task=manifest.get('goal', ''),
+                                trigger_type='hivemind_orchestrator')
+                    except Exception as _neg_err:
+                        _log(f"[negation] hivemind_close scan failed for {hivemind_id}: {_neg_err}")
 
         except Exception as e:
             _log(f"[hivemind-orchestrator] Error: {e}")
