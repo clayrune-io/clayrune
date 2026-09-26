@@ -279,7 +279,7 @@
 }
 
 .desk-v1-home-needsyou {
-  flex: 0 0 320px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border2);
+  flex: 0 0 320px; align-self: start; overflow-y: auto; background: var(--surface); border: 1px solid var(--border2);
   border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px;
 }
 .desk-v1-home-needsyou-title { font-size: 13px; font-weight: 700; color: var(--text); }
@@ -322,6 +322,12 @@
 .desk-v1-shelf-item-dragging { opacity: 0.4; }
 .desk-v1-shelf-grip { color: var(--text-faint); font-size: 11px; }
 .desk-v1-shelf-add { color: var(--text-faint); font-size: 12px; }
+/* Channel shelf items nest a channelBadge inside the shelf-item wrapper,
+   which is itself pill-shaped (line above) — without this, the badge's own
+   border/background (desk-v1-kit.js channelBadge, used bare on campaign
+   cards where IT is the only pill) drew a second nested pill here. Scoped
+   to shelf items only, so campaign-card badges keep their own outline. */
+.desk-v1-shelf-item .desk-v1-channel-badge { background: none; border: none; padding: 0; border-radius: 0; }
 .desk-v1-home-asset-thumb { font-size: 12px; }
 .desk-v1-home-asset-title {
   font-size: 12px; color: var(--text); max-width: 140px; overflow: hidden;
@@ -364,8 +370,11 @@
      section below. flex:0 0 auto + the body's own overflow-y:auto (T0a)
      makes the whole page scroll instead. */
   .desk-v1-home-main { flex: 0 0 auto; flex-direction: column; overflow-y: visible; }
-  .desk-v1-home-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .desk-v1-home-needsyou { flex: 0 0 auto; overflow-y: visible; }
+  /* §11 phone order: promote, Needs you, THEN campaign cards — reordered
+     visually via `order` rather than the DOM (JS renders cards first, into
+     the same #desk-v1-home-cards/-needsyou hosts desktop uses). */
+  .desk-v1-home-cards { order: 2; grid-template-columns: 1fr; }
+  .desk-v1-home-needsyou { order: 1; flex: 0 0 auto; align-self: stretch; overflow-y: visible; }
   .desk-v1-home-shelves { grid-template-columns: 1fr; }
   .desk-v1-home-needsyou-row, .desk-v1-shelf-item, .desk-v1-home-material-tile,
   .desk-v1-home-settings-btn, .desk-v1-home-pause-btn, .desk-v1-home-hold-fix { min-height: 44px; }

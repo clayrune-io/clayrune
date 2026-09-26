@@ -282,8 +282,13 @@
 
   // ── render: Needs you (right column) ────────────────────────────────────
   function _needsYouRowHTML(glyph, text, firstItem) {
+    // Each kind deep-links to its own review surface (§2: "12b, 12c, or
+    // 12d, not to a list") — video rows go to the director (12d/T5), never
+    // the piece-review surface, even though both carry campaignId+versionId.
     const onclick = firstItem.kind === 'reply'
       ? `deskV1Nav('conversations',{campaignId:'${esc(firstItem.campaignId)}',conversationId:'${esc(firstItem.conversationId)}'})`
+      : firstItem.kind === 'video'
+      ? `deskV1Nav('video',{campaignId:'${esc(firstItem.campaignId)}',versionId:'${esc(firstItem.versionId)}'})`
       : `deskV1Nav('review',{campaignId:'${esc(firstItem.campaignId)}',versionId:'${esc(firstItem.versionId)}'})`;
     return `<button type="button" class="desk-v1-home-needsyou-row" onclick="${onclick}">
       <span class="desk-v1-home-needsyou-glyph" aria-hidden="true">${esc(glyph)}</span>

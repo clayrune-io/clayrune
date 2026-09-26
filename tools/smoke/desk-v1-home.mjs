@@ -184,8 +184,15 @@ async function runNeedsYouDeepLinks(browser) {
   await page.evaluate(() => window.deskV1Nav('home', {}));
   await page.waitForSelector('.desk-v1-home', { timeout: 8000 });
   await page.click('#desk-v1-home-needsyou .desk-v1-home-needsyou-row:has-text("video to watch")');
-  await page.waitForSelector('.desk-v1-review-video', { timeout: 8000 });
-  ok('A12: "1 video to watch" deep-links into the video variant of review (v-install-li)');
+  await page.waitForSelector('.desk-v1-stub-title:has-text("Video"), .desk-v1-video', { timeout: 8000 });
+  // Route-name assertion (Dave's review): a video row must land on the
+  // 'video' route (12d, T5's surface — still a stub in this ticket's tree),
+  // never 'review' (12b) — §2's "12b, 12c, or 12d, not to a list" names them
+  // as three distinct surfaces. The crumb title is ROUTES.video's own label
+  // ('Video'), so it's the route-table entry talking, not a guess.
+  const crumbAfterVideo = (await page.textContent('#desk-v1-crumb .desk-v1-crumb-title').catch(() => '') || '');
+  if (/^Video$/.test(crumbAfterVideo.trim())) ok(`A12: "1 video to watch" deep-links to route 'video' (12d), not 'review': crumb "${crumbAfterVideo.trim()}"`);
+  else fail(`A12: video row landed on the wrong route: crumb ${JSON.stringify(crumbAfterVideo)}`);
 
   await page.evaluate(() => window.deskV1Nav('home', {}));
   await page.waitForSelector('.desk-v1-home', { timeout: 8000 });
@@ -300,6 +307,39 @@ async function runAmbiguousDropChoosesCampaign(browser) {
   await ctx.close();
 }
 
+// ── Desktop layout (Dave's review): Needs you sizes to its own content
+// instead of stretching to match the cards column, and a channel shelf item
+// renders as ONE pill (grip + badge + add inside a single outline), not a
+// badge-pill nested inside the shelf-item's own pill. ──────────────────────
+async function runDesktopLayoutChecks(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+
+  const needsyouFit = await page.evaluate(() => {
+    const needsyou = document.querySelector('.desk-v1-home-needsyou');
+    const main = document.querySelector('.desk-v1-home-main');
+    return { cardHeight: needsyou.getBoundingClientRect().height, mainHeight: main.getBoundingClientRect().height };
+  });
+  if (needsyouFit.cardHeight < needsyouFit.mainHeight - 40) {
+    ok(`Needs you sizes to its own content, not the cards column's height (${needsyouFit.cardHeight.toFixed(0)}px vs ${needsyouFit.mainHeight.toFixed(0)}px main)`);
+  } else {
+    fail(`Needs you stretched to match the main row's height: ${needsyouFit.cardHeight.toFixed(0)}px vs ${needsyouFit.mainHeight.toFixed(0)}px`);
+  }
+
+  const badgeBorders = await page.evaluate(() => {
+    const item = document.querySelector('#desk-v1-home-shelf-channels .desk-v1-shelf-item');
+    const badge = item.querySelector('.desk-v1-channel-badge');
+    return { itemBorder: getComputedStyle(item).borderStyle, badgeBorder: getComputedStyle(badge).borderStyle };
+  });
+  if (badgeBorders.itemBorder !== 'none' && badgeBorders.badgeBorder === 'none') {
+    ok('Channel shelf item is one pill (badge nested inside carries no border of its own)');
+  } else {
+    fail(`Channel shelf item double-pills: item border ${badgeBorders.itemBorder}, badge border ${badgeBorders.badgeBorder}`);
+  }
+
+  reportUncaught(pageErrors, '[desktop-layout]');
+  await ctx.close();
+}
+
 // ── Phone (§11): promote box shows the icon row (no drag), cards/needsyou/
 // shelves stack, hit targets >=44px. ────────────────────────────────────────
 async function runPhoneLayout(browser) {
@@ -309,10 +349,21 @@ async function runPhoneLayout(browser) {
     const phoneActions = document.querySelector('.desk-v1-home-promote-phone-actions');
     const main = document.querySelector('.desk-v1-home-main');
     const shelves = document.querySelector('.desk-v1-home-shelves');
+    const promote = document.querySelector('.desk-v1-home-promote');
+    const needsyou = document.querySelector('.desk-v1-home-needsyou');
+    const cards = document.querySelector('.desk-v1-home-cards');
+    const card = document.querySelector('.desk-v1-home-camp-card');
     return {
       phoneActionsDisplay: getComputedStyle(phoneActions).display,
       mainDirection: getComputedStyle(main).flexDirection,
       shelvesColumns: getComputedStyle(shelves).gridTemplateColumns.split(' ').length,
+      // Visual (top-to-bottom) order, not DOM order — §11: promote, Needs
+      // you, THEN campaign cards.
+      promoteTop: promote.getBoundingClientRect().top,
+      needsyouTop: needsyou.getBoundingClientRect().top,
+      cardsTop: cards.getBoundingClientRect().top,
+      cardWidth: card.getBoundingClientRect().width,
+      cardsHostWidth: cards.getBoundingClientRect().width,
     };
   });
   if (layout.phoneActionsDisplay !== 'none') ok('§11: promote box icon row (📎 🔗 🎙) visible at phone width');
@@ -321,6 +372,13 @@ async function runPhoneLayout(browser) {
   else fail(`§11: cards/Needs you did not stack: flex-direction ${layout.mainDirection}`);
   if (layout.shelvesColumns === 1) ok('§11: Channels + Material shelves stack to a single column');
   else fail(`§11: shelves did not stack to one column: ${layout.shelvesColumns} columns`);
+  if (layout.promoteTop < layout.needsyouTop && layout.needsyouTop < layout.cardsTop) {
+    ok('§11: phone stack order is promote, Needs you, then campaign cards');
+  } else {
+    fail(`§11: phone stack order wrong — promote@${layout.promoteTop} needsyou@${layout.needsyouTop} cards@${layout.cardsTop}`);
+  }
+  if (Math.abs(layout.cardWidth - layout.cardsHostWidth) < 2) ok(`§11: campaign card is full width on phone (${layout.cardWidth.toFixed(0)}px)`);
+  else fail(`§11: campaign card is not full width: card ${layout.cardWidth}px vs host ${layout.cardsHostWidth}px`);
 
   const hitTargets = await page.evaluate(() => {
     const els = [
@@ -346,6 +404,7 @@ try {
   await runNeedsYouDeepLinks(browser);
   await runChannelDropOnCard(browser);
   await runAmbiguousDropChoosesCampaign(browser);
+  await runDesktopLayoutChecks(browser);
   await runPhoneLayout(browser);
   exitCode = bad ? 1 : 0;
 } catch (e) {
