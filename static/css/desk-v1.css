@@ -137,6 +137,21 @@
 }
 
 /* ── T0c: pointer-drag extraction ────────────────────────────────────────── */
+/* Generic building blocks for callers of static/js/pointer-drag.js (frame
+   12a: the ghost, the dashed target, the result line). Drag-to-hire
+   (floor.js) keeps its own `.hire-*` classes and app.css styling unchanged —
+   these are for the NEXT caller (T1's promote box), not a restyle of the
+   existing one. */
+.pd-ghost {
+  position: fixed; z-index: 99999; opacity: 0.9; pointer-events: none;
+  transform: translate(-50%, -50%) rotate(var(--pd-rotate, -3deg));
+}
+.pd-drop-target {
+  border: 1px dashed var(--border2); border-radius: 10px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.pd-drop-target.pd-drop-hover { border-color: var(--accent); background: var(--accent-dim); }
+.pd-drop-target.pd-drop-refused { border-color: var(--border); opacity: 0.5; cursor: not-allowed; }
 
 /* ── T0d: legacy read-only banner ────────────────────────────────────────── */
 
