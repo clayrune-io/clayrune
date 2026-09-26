@@ -1079,6 +1079,10 @@ let _sendInFlight = {};
 // Reset to false at send time; set true at turn_start.
 let _turnStartAcked = {};
 const expandedOutputSessions = new Set();  // sessions where user clicked "load all"
+// session_id → count of rollover-chain predecessor transcripts loaded via
+// "Load earlier conversation" (MC-978). Indexed from the END of that
+// session's `rolled_from` chain (nearest-to-head first), oldest link last.
+let rolloverLoadedCounts = {};
 // Question_ids the user has answered THIS turn. The server keeps mirroring the
 // question until it processes the follow-up, so a poll/reconnect can land in
 // the gap between answering and turn_start; this stops the re-render path from

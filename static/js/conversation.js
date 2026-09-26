@@ -1207,6 +1207,19 @@ function agentPanelHTML(p) {
       // narration bubble of the visible buffer, same as a fresh open.
       _msgAttrResetPending(activeSessionId);
       const _attrChar = activeSession && activeSession.character;
+      // MC-978: a rolled-over chat's older links (`rolled_from` on its
+      // /conversations row, oldest first) never made it into this buffer —
+      // seeding only ever replays the HEAD transcript. Look the chain up
+      // fresh off conversationsCache (not off agentStatusCache, which a
+      // status poll overwrites wholesale) so it survives live refreshes.
+      const _rolloverChain = (() => {
+        const csid = activeSession && activeSession.claudeSessionId;
+        if (!csid) return [];
+        const row = (conversationsCache[p.id] || []).find(c => c.claude_session_id === csid);
+        return (row && row.rolled_from) || [];
+      })();
+      const _rolloverLoaded = rolloverLoadedCounts[activeSessionId] || 0;
+      const _rolloverRemaining = Math.max(0, _rolloverChain.length - _rolloverLoaded);
       const fullBuf = (agentOutputBuffers[activeSessionId] || []).flatMap(l => l.trimStart().startsWith('> ') ? [l] : l.split('\n'));
       // Parallel per-line ts (MC-954), same flatMap shape as fullBuf — a raw
       // buffer line split into several sub-lines shares its single source
@@ -1390,6 +1403,13 @@ function agentPanelHTML(p) {
       result += planBlock; // flush any remaining non-plan text
       if (truncated) {
         result = `<div class="agent-line" style="text-align:center;padding:8px;opacity:0.6;cursor:pointer" onclick="expandAgentOutput('${esc(activeSessionId)}')">&#x25B2; ${fullBuf.length - MAX_RENDER_LINES} earlier lines — click to load all &#x25B2;</div>` + result;
+      }
+      // MC-978: the outermost control — reveals an entire earlier ROLLOVER
+      // LINK (a whole prior transcript), one at a time, oldest loaded last.
+      // Placed above the truncated-lines button: that one only re-reveals
+      // buffer already fetched, this one goes to the server for more.
+      if (_rolloverRemaining > 0) {
+        result = _rolloverButtonHTML(p.id, activeSessionId, _rolloverRemaining, _rolloverChain.length + 1) + result;
       }
       return result;
     })();
@@ -3663,6 +3683,75 @@ async function _openConversationByCsid(projectId, csid) {
   selectResumeSession(projectId, csid);
 }
 window._openConversationByCsid = _openConversationByCsid;
+
+// Shared markup for the "Load earlier conversation" control — used by the
+// cold tabContent render (above) AND by loadEarlierConversationPart's own
+// incremental repaint (below), which cannot go through that render path (see
+// the comment on the _repaintAgentOutput call there) and must reinsert it by hand.
+function _rolloverButtonHTML(projectId, sessionId, remaining, total) {
+  return `<div class="agent-line rollover-load-part" id="rollover-load-${esc(sessionId)}" style="text-align:center;padding:8px;opacity:0.7;cursor:pointer" onclick="loadEarlierConversationPart('${esc(projectId)}','${esc(sessionId)}')">&#x25B2; Load earlier conversation (part ${remaining} of ${total}) &#x25B2;</div>`;
+}
+
+// MC-978: fetch ONE earlier rollover-chain link (a whole prior transcript,
+// nearest-to-head first) and prepend it to the open chat's buffer. The
+// button that calls this only renders when conversationsCache's row for the
+// open session's claude_session_id still carries `rolled_from` entries this
+// session hasn't loaded yet (rolloverLoadedCounts) — see the render site in
+// the tabContent IIFE above. Reuses GET .../transcript/<csid>/full-buffer
+// (chat-search's "complete history" route) unmodified: it already renders
+// ANY given csid, head or link, with the same preamble/handoff stripping
+// (agent_runtime.strip_injected_preamble) — a link's own first turn is
+// exactly a handoff block when it isn't the chain's oldest link.
+async function loadEarlierConversationPart(projectId, sessionId) {
+  const cached = agentStatusCache[sessionId];
+  const csid = cached && cached.claudeSessionId;
+  if (!csid) return;
+  const row = (conversationsCache[projectId] || []).find(c => c.claude_session_id === csid);
+  const chain = (row && row.rolled_from) || [];
+  const loaded = rolloverLoadedCounts[sessionId] || 0;
+  const idx = chain.length - 1 - loaded;
+  if (idx < 0) return;
+  const linkCsid = chain[idx];
+  const btn = document.getElementById(`rollover-load-${sessionId}`);
+  if (btn) { btn.style.pointerEvents = 'none'; btn.style.opacity = '0.4'; }
+  const el = document.getElementById(`agent-output-${sessionId}`);
+  const prevScrollHeight = el ? el.scrollHeight : 0;
+  const prevScrollTop = el ? el.scrollTop : 0;
+  try {
+    const r = await fetch(API_BASE + `/api/project/${encodeURIComponent(projectId)}/transcript/${encodeURIComponent(linkCsid)}/full-buffer`);
+    if (!r.ok) { showToast('Could not load earlier conversation', 3000); return; }
+    const rd = await r.json();
+    agentOutputBuffers[sessionId] = (rd.log_lines || []).concat(agentOutputBuffers[sessionId] || []);
+    agentOutputTimestamps[sessionId] = (rd.log_line_ts || []).concat(agentOutputTimestamps[sessionId] || []);
+    rolloverLoadedCounts[sessionId] = loaded + 1;
+    // A newly-revealed link is itself full-length — the MAX_RENDER_LINES
+    // truncation button would otherwise hide it again right after loading it.
+    expandedOutputSessions.add(sessionId);
+    // refreshModal() alone does not repaint an already-mounted agent-output
+    // node (it preserves it for scroll/perf — see _repaintAgentOutput's own
+    // docstring); _repaintAgentOutput is what actually replays the grown
+    // buffer. It clears-and-rebuilds unconditionally though, so the rollover
+    // button (not a buffer line — it lives outside this render path) has to
+    // be reinserted by hand afterward, using the same markup the cold render
+    // uses (_rolloverButtonHTML).
+    refreshModal();
+    window._repaintAgentOutput?.(sessionId);
+    const remaining = chain.length - (loaded + 1);
+    if (remaining > 0) {
+      const outEl = document.getElementById(`agent-output-${sessionId}`);
+      if (outEl) outEl.insertAdjacentHTML('afterbegin', _rolloverButtonHTML(projectId, sessionId, remaining, chain.length + 1));
+    }
+    // Keep the reader's viewport anchored to the content they were looking at
+    // instead of the freshly-taller pane jumping them back to the old top.
+    requestAnimationFrame(() => {
+      const el2 = document.getElementById(`agent-output-${sessionId}`);
+      if (el2) el2.scrollTop = prevScrollTop + (el2.scrollHeight - prevScrollHeight);
+    });
+  } catch (e) {
+    showToast('Could not load earlier conversation', 3000);
+  }
+}
+window.loadEarlierConversationPart = loadEarlierConversationPart;
 
 function conversationListHTML(p, sessions) {
   // Pinned chats (keyed on the durable claude_session_id) lead the list.
