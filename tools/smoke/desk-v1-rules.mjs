@@ -134,7 +134,7 @@ async function runProposedRenderChecks(browser, tone) {
     : fail(`[${tone.name}] channel badge copy wrong for each_piece: ${JSON.stringify(badgeTitle)}`);
 
   const blockerQ = (await page.textContent('.desk-v1-rules-blocker-q').catch(() => '') || '').trim();
-  /subreddit/i.test(blockerQ)
+  /X post or the LinkedIn post/i.test(blockerQ)
     ? ok(`[${tone.name}] "⛔ Posy's one question" blocker card renders: "${blockerQ}"`)
     : fail(`[${tone.name}] blocker card missing/wrong: ${JSON.stringify(blockerQ)}`);
   const answerCount = await page.$$eval('.desk-v1-rules-blocker-answer', (els) => els.length);
@@ -196,7 +196,7 @@ async function runBlockerAnswer(browser) {
   await navToCampaign(page, 'camp-2');
   await page.waitForSelector('.desk-v1-rules-blocker', { timeout: 4000 });
 
-  await page.click('[data-answer-id="a-sideproject"]');
+  await page.click('[data-answer-id="a-x-first"]');
   const goneCard = await page.$('.desk-v1-rules-blocker');
   !goneCard ? ok('answering the blocker removes its card') : fail('blocker card still present after answering');
 
@@ -222,7 +222,7 @@ async function runStartSheet(browser) {
   ok('"Start campaign" opens the review sheet');
 
   const title = (await page.textContent('.desk-v1-rules-sheet-title').catch(() => '') || '');
-  /Reddit AMA push/.test(title)
+  /Restore points launch/.test(title)
     ? ok(`sheet title names the campaign: "${title.trim()}"`)
     : fail(`sheet title wrong: ${JSON.stringify(title)}`);
 
@@ -363,6 +363,79 @@ async function runReviewModeToggle(browser) {
   await ctx.close();
 }
 
+// ── §8's per-job production budget cap (Dave's review pass 2) — the OTHER
+// number in "Production budget", separate from the existing per-period
+// limit above it. Same setPending/Apply flow as the period field: raising
+// the cap widens spend and must confirm. Blur via a real Tab keypress
+// (not a synthetic dispatchEvent) to fire 'change' exactly once — firing it
+// twice on a still-focused field re-enters setPending a second time mid-
+// gesture and swaps the Apply button's DOM node between the click's
+// mousedown and mouseup, which silently drops the click entirely. ─────────
+async function runPerJobBudget(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCampaign(page, 'camp-1');
+  await page.click('[data-rules-edit]');
+  await page.waitForSelector('.desk-v1-rules-pop', { timeout: 4000 });
+
+  const perJobValue = await page.$eval('[data-budget-perjob-input]', (el) => el.value).catch(() => null);
+  perJobValue === '20'
+    ? ok(`§8: per-job production budget cap renders the fixture value: ${perJobValue}`)
+    : fail(`per-job budget input missing/wrong: ${JSON.stringify(perJobValue)}`);
+
+  await page.fill('[data-budget-perjob-input]', '30');
+  await page.keyboard.press('Tab'); // blur fires the real 'change' exactly once (see below)
+  await page.waitForTimeout(30);
+
+  const previewText = (await page.textContent('.desk-v1-rules-pop-previewtext').catch(() => '') || '');
+  /30/.test(previewText)
+    ? ok(`raising the per-job cap shows a visible effect preview: "${previewText.trim()}"`)
+    : fail(`per-job cap preview missing/wrong: ${JSON.stringify(previewText)}`);
+
+  await page.evaluate(() => { window.__confirms = []; window.confirm = (m) => { window.__confirms.push(m); return true; }; });
+  await page.click('[data-pop-preview-apply]');
+  await page.waitForTimeout(30);
+  const confirmed = await page.evaluate(() => window.__confirms.length > 0);
+  confirmed
+    ? ok('raising the per-job cap (widening) asks for confirmation')
+    : fail('raising the per-job cap should have confirmed');
+
+  const applied = await page.evaluate(() => window.DeskV1Fixtures.renderBudget.perJobLimit);
+  applied === 30
+    ? ok('confirmed Apply commits the new per-job cap')
+    : fail(`per-job cap not committed: ${JSON.stringify(applied)}`);
+
+  await page.keyboard.press('Escape');
+  reportUncaught(pageErrors, '[per-job-budget]');
+  await ctx.close();
+}
+
+// ── crumb regression (Dave's review pass 2): the "Raise budget…" deep link
+// from T5's video page pushes 'video' onto the stack on TOP of 'campaign',
+// so by the time deskV1RenderRules runs, the stack is [campaign, video,
+// rules]. `deskV1Nav('campaign', ...)` there would have PUSHED a 4th entry,
+// making Back read the stack's real 2nd-to-last entry — 'rules' — as
+// "‹ Rules" instead of the actual previous page. `deskV1PopTo('campaign')`
+// must instead pop BOTH 'video' and 'rules' and land on the campaign entry
+// already on the stack. Driven via direct nav (matching navToVideo's own
+// pattern above) since no current fixture's render cost exceeds its period
+// budget enough to show the real "Raise budget…" button. ───────────────────
+async function runRaiseBudgetCrumb(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
+  await page.evaluate(() => window.deskV1Nav('video', { campaignId: 'camp-1', familyId: 'fam-install-video' }));
+  await page.evaluate(() => window.deskV1Nav('rules', { campaignId: 'camp-1' }));
+  await page.waitForSelector('.desk-v1-rules-pop', { timeout: 4000 });
+
+  const crumbTitle = (await page.textContent('.desk-v1-crumb-title').catch(() => '') || '').trim();
+  crumbTitle === 'Windows beta testers'
+    ? ok(`deep-linking rules from the video page lands the crumb back on the campaign, not "Rules": "${crumbTitle}"`)
+    : fail(`crumb wrong after video->rules deep link: ${JSON.stringify(crumbTitle)}`);
+
+  await page.keyboard.press('Escape');
+  reportUncaught(pageErrors, '[raise-budget-crumb]');
+  await ctx.close();
+}
+
 // ── declining a widening confirm reverts the UI to the real (unchanged)
 // value by re-rendering, rather than tracking each control's prior state. ──
 async function runDeclineWidening(browser) {
@@ -392,29 +465,30 @@ async function runDeclineWidening(browser) {
 }
 
 // ── Channels row (§8: "included / excluded accounts, e.g. 'in · Ron
-// (personal) excluded'") — camp-2's channelIds is only ['ch-x-ron'], so
-// ch-li-page ("in · Clayrune page") is a pre-existing channel that's
-// naturally unattached to it; no 4th global channel needed (see the fixture
-// comment — one broke desk-v1-campaign.mjs's channel-shelf assumption for
-// camp-1). Via [data-rules-edit]: the Proposed summary carries the same Edit
-// hook as T2a's Active one (deskV1FillProposedSummary), so camp-2 opens the
-// popover the same real way a user would. ──────────────────────────────────
+// (personal) excluded'") — camp-2's channelIds is ['ch-x-ron', 'ch-li-page']
+// (Dave's review pass 2: v1 is X + LinkedIn, X = Ron's voice, LinkedIn =
+// the Clayrune page's own voice), so the 3rd pre-existing global channel,
+// ch-blog, is naturally unattached; no 4th global channel needed (see the
+// fixture comment — one broke desk-v1-campaign.mjs's channel-shelf
+// assumption for camp-1). Via [data-rules-edit]: the Proposed summary
+// carries the same Edit hook as T2a's Active one (deskV1FillProposedSummary),
+// so camp-2 opens the popover the same real way a user would. ─────────────
 async function runChannelsExcluded(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToCampaign(page, 'camp-2');
   await page.click('[data-rules-edit]');
   await page.waitForSelector('.desk-v1-rules-pop', { timeout: 4000 });
 
-  const pageRow = await page.$('[data-channel-toggle="ch-li-page"]');
-  pageRow ? ok('the unattached channel (Clayrune LinkedIn page) appears in the Channels list') : fail('ch-li-page row missing');
-  const pageChecked = await page.$eval('[data-channel-toggle="ch-li-page"]', (el) => el.checked).catch(() => true);
-  const excludedLabel = await page.$eval('[data-channel-toggle="ch-li-page"]', (el) => el.closest('label').textContent).catch(() => '');
-  !pageChecked && /excluded/.test(excludedLabel)
-    ? ok(`§8's worked example: "in · Clayrune page" shows unchecked + "excluded": "${excludedLabel.trim()}"`)
-    : fail(`ch-li-page row wrong: checked=${pageChecked}, label=${JSON.stringify(excludedLabel)}`);
+  const blogRow = await page.$('[data-channel-toggle="ch-blog"]');
+  blogRow ? ok('the unattached channel (Clayrune blog) appears in the Channels list') : fail('ch-blog row missing');
+  const blogChecked = await page.$eval('[data-channel-toggle="ch-blog"]', (el) => el.checked).catch(() => true);
+  const excludedLabel = await page.$eval('[data-channel-toggle="ch-blog"]', (el) => el.closest('label').textContent).catch(() => '');
+  !blogChecked && /excluded/.test(excludedLabel)
+    ? ok(`§8's included/excluded worked example: "Clayrune blog" shows unchecked + "excluded": "${excludedLabel.trim()}"`)
+    : fail(`ch-blog row wrong: checked=${blogChecked}, label=${JSON.stringify(excludedLabel)}`);
 
   await page.evaluate(() => { window.__confirms = []; window.confirm = (m) => { window.__confirms.push(m); return true; }; });
-  await page.check('[data-channel-toggle="ch-li-page"]');
+  await page.check('[data-channel-toggle="ch-blog"]');
   await page.waitForTimeout(30);
   await page.click('[data-pop-preview-apply]');
   await page.waitForTimeout(30);
@@ -422,7 +496,7 @@ async function runChannelsExcluded(browser) {
   includingConfirmed > 0
     ? ok('attaching a new channel (widening) asks for confirmation')
     : fail('attaching a channel should have confirmed');
-  const nowIncluded = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2').channelIds.includes('ch-li-page'));
+  const nowIncluded = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2').channelIds.includes('ch-blog'));
   nowIncluded ? ok('confirmed attach adds the channel to campaign.channelIds') : fail('channel not added after confirm');
 
   await page.keyboard.press('Escape');
@@ -566,6 +640,8 @@ try {
   await runBlockerAnswer(browser);
   await runStartSheet(browser);
   await runReviewModeToggle(browser);
+  await runPerJobBudget(browser);
+  await runRaiseBudgetCrumb(browser);
   await runDeclineWidening(browser);
   await runChannelsExcluded(browser);
   await runPosyInstructions(browser);

@@ -96,6 +96,19 @@
     _renderCrumb(_stack[_stack.length - 1]);
   }
 
+  // Pops the stack until the top entry's route is `route` (or only the root
+  // remains), then renders once. For a deep-link route whose OWN render
+  // function immediately bounces back to an ancestor page (T2b's `rules`:
+  // it never paints anything under its own breadcrumb, see
+  // deskV1RenderRules) — a plain deskV1Nav there would PUSH the ancestor on
+  // top of the deep-link entry instead of landing on the one already below
+  // it, so Back read '‹ Rules' instead of the real previous page (MC-977
+  // Dave review pass 2, T2b popover from T5's "Raise budget…" link).
+  function deskV1PopTo(route) {
+    while (_stack.length > 1 && _stack[_stack.length - 1].route !== route) _stack.pop();
+    deskV1Render();
+  }
+
   function deskV1Render() {
     if (!_stack.length) _stack.push({ route: 'home', params: {} });
     const entry = _stack[_stack.length - 1];
@@ -194,4 +207,5 @@
   window.deskV1Back = deskV1Back;
   window.deskV1Render = deskV1Render;
   window.deskV1PatchParams = deskV1PatchParams;
+  window.deskV1PopTo = deskV1PopTo;
 })();

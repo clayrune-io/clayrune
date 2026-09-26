@@ -107,8 +107,13 @@
 
   // The render job + budget (MED-04/06): rate, spend, and the period limit
   // the T5 render card's "maximum" and "Raise budget…" disable read from.
+  // `perJobLimit` is the §8 rules popover's OTHER cap ("Production budget:
+  // per job and per period") — a ceiling on any single render's own
+  // "Maximum" (desk-v1-video.js's `estimate * 2`), separate from `limit`'s
+  // rolling per-period total. T5 doesn't read it (out of that ticket's
+  // scope); it exists so §8 has a real per-job number to show and edit.
   const RENDER_BUDGET = {
-    period: 'month', currency: 'USD', rate: 0.40, spent: 16, limit: 150,
+    period: 'month', currency: 'USD', rate: 0.40, spent: 16, limit: 150, perJobLimit: 20,
   };
 
   // Results with deliberate delayed/n/a gaps (MET-01: never a fake 0; MET-02:
@@ -484,43 +489,51 @@
   // (docs/desk_v1_r0_plan.md; THE_DESK_V1_UI.md §3.5, §8). New rows only
   // (ground rule 3) — camp-1 and its channels/families above are untouched.
   //
+  // Dave's review pass 2 replaced the original Reddit fixture: v1 is X +
+  // LinkedIn only (Reddit deferred — position_whichidentityandwhichplatform
+  // sthedesksocialworks), and the split is by VOICE, not just platform: X
+  // carries Ron's own first-person builder voice (`ch-x-ron`), LinkedIn
+  // carries the Clayrune company page's own distinct voice (`ch-li-page`).
+  // Ron's personal LinkedIn is never a Desk destination.
+  //
   // §8's worked example is "in · Ron (personal) excluded" — an included/
   // excluded row needs a channel that exists but isn't on the campaign's
-  // channelIds. Adding a 4th global channel for this broke
-  // desk-v1-campaign.mjs's Add-tray "channel shelf" check, which assumes
-  // every existing channel is already attached to camp-1 (T0a's own
-  // invariant). Fixed by using camp-2 below instead: its channelIds is only
-  // ['ch-x-ron'], so the two pre-existing channels it doesn't hold
-  // (ch-li-page, ch-blog) are naturally "excluded" for it — no new channel,
-  // no touching camp-1's shelf count.
+  // channelIds. camp-2 below uses 2 of the 3 pre-existing global channels
+  // (ch-x-ron, ch-li-page), leaving the 3rd (ch-blog) naturally "excluded"
+  // for it — no new channel, no touching camp-1's Add-tray shelf count
+  // (camp-1 already holds all 3, T0a's own invariant).
 
   // A second campaign, in Proposed state, so §3.5 has something real to
   // render (camp-1 is Active and stays that way — T2a/T3/T4 fixtures already
   // depend on it). `goal.tracked: false` deliberately demonstrates CMP-03's
-  // "untracked goal is a warning, not a blocker".
+  // "untracked goal is a warning, not a blocker". Reuses the restore-points
+  // feature (fam-restore-points, T0a) as its subject rather than inventing a
+  // new product surface (ground rule 3's own precedent).
   CAMPAIGNS.push({
     id: 'camp-2',
-    name: 'Reddit AMA push',
+    name: 'Restore points launch',
     state: 'proposed', // proposed | active | paused | completed | archived | draft
     goal: {
-      metric: 'AMA signups', target: 50, current: 0,
-      deadline: '2026-10-15', audience: 'r/SideProject', tracked: false,
+      metric: 'beta signups', target: 60, current: 0,
+      deadline: '2026-10-20', audience: 'the developer audience', tracked: false,
     },
-    channelIds: ['ch-x-ron'],
+    channelIds: ['ch-x-ron', 'ch-li-page'],
     rules: {
       reviewMode: 'each_piece', frequencyPerWeek: 2,
       repliesMode: 'drafts', paid: false,
     },
   });
 
-  // Posy's proposed pieces (§3.5: "planned or drafting") for camp-2.
+  // Posy's proposed pieces (§3.5: "planned or drafting") for camp-2 — one
+  // per voice, so the campaign's two channels each have their own piece
+  // rather than sharing a version.
   FAMILIES.push(
-    { id: 'fam-reddit-announce', campaignId: 'camp-2', kind: 'post',
-      title: 'We’re doing a Reddit AMA — ask us anything',
-      versions: [{ id: 'v-reddit-announce-x', channelId: 'ch-x-ron', state: 'drafting', revision: 0 }] },
-    { id: 'fam-reddit-recap', campaignId: 'camp-2', kind: 'post',
-      title: 'AMA recap: what testers asked most',
-      versions: [{ id: 'v-reddit-recap-x', channelId: 'ch-x-ron', state: 'planned', revision: 0 }] },
+    { id: 'fam-launch-x', campaignId: 'camp-2', kind: 'post',
+      title: 'Restore points is live — undo any agent mistake',
+      versions: [{ id: 'v-launch-x', channelId: 'ch-x-ron', state: 'drafting', revision: 0 }] },
+    { id: 'fam-launch-li', campaignId: 'camp-2', kind: 'post',
+      title: 'Introducing restore points in Clayrune 2.1',
+      versions: [{ id: 'v-launch-li', channelId: 'ch-li-page', state: 'planned', revision: 0 }] },
   );
 
   // Proposed-state detail, keyed by campaignId (same "own key, own section"
@@ -530,33 +543,35 @@
       // The goal sentence's editable parts (§3.5: "dashed underlines on the
       // editable parts: target, date, audience"). `metric` is fixed prose,
       // not one of the three dashed slots.
-      goalSentence: { target: 50, metric: 'AMA signups', date: '2026-10-15', audience: 'r/SideProject' },
-      // "Only a real blocker gets a card... ⛔ Posy's one question" (CMP-03).
+      goalSentence: { target: 60, metric: 'beta signups', date: '2026-10-20', audience: 'the developer audience' },
+      // "Only a real blocker gets a card... ⛔ Posy's one question" (CMP-03)
+      // — a real sequencing call between the two voices, not something Posy
+      // can decide alone.
       blocker: {
-        id: 'blocker-subreddit',
-        question: 'Which subreddit should the AMA run in?',
+        id: 'blocker-sequence',
+        question: 'Should the X post or the LinkedIn post go out first?',
         answers: [
-          { id: 'a-sideproject', label: 'r/SideProject' },
-          { id: 'a-programming', label: 'r/programming' },
+          { id: 'a-x-first', label: 'X first' },
+          { id: 'a-li-first', label: 'LinkedIn first' },
         ],
       },
       // "? Assumed" popovers, keyed by familyId — shown on the relevant card.
       assumptions: {
-        'fam-reddit-announce': 'Assumed this posts from @ron, not a separate AMA account.',
-        'fam-reddit-recap': 'Assumed the recap goes out the day after the AMA ends.',
+        'fam-launch-x': 'Assumed this posts from @ron in first person, not the Clayrune page.',
+        'fam-launch-li': 'Assumed the Clayrune page post uses its own voice, distinct from Ron’s.',
       },
       // The Start-sheet's authority list (CMP-05: "accounts, frequency
       // ceiling, dates, review mode, replies, paid, generation limits, stop
       // conditions", in plain language).
       authority: {
-        accounts: ['𝕏 @ron'],
+        accounts: ['𝕏 @ron', 'in · Clayrune page'],
         frequencyPerWeek: 2,
-        dates: 'Now through Oct 15, 2026',
+        dates: 'Now through Oct 20, 2026',
         reviewMode: 'You approve each piece',
         replies: 'Drafts for review',
         paid: 'Off',
         generationLimits: 'No video generation planned for this campaign',
-        stopConditions: 'Pause automatically once the goal is reached or Oct 15 passes',
+        stopConditions: 'Pause automatically once the goal is reached or Oct 20 passes',
       },
     },
   };

@@ -353,6 +353,7 @@
       </div>
       <div class="desk-v1-rules-group">
         <div class="desk-v1-rules-group-title">Production budget</div>
+        <div class="desk-v1-rules-inlinerow">${esc(currency)}<input type="number" min="0" class="desk-v1-rules-numinput" data-budget-perjob-input value="${esc(budget.perJobLimit != null ? budget.perJobLimit : 0)}"> per job</div>
         <div class="desk-v1-rules-inlinerow">${esc(currency)}<input type="number" min="0" class="desk-v1-rules-numinput" data-budget-input value="${esc(budget.limit != null ? budget.limit : 0)}"> per ${esc(budget.period || 'month')}</div>
         <div class="desk-v1-rules-hint">${esc(currency)}${esc(budget.spent != null ? budget.spent : 0)} spent so far this ${esc(budget.period || 'month')}.</div>
       </div>
@@ -463,6 +464,14 @@
       if (next === prev) return;
       setPending(() => { budget.limit = next; }, `Video budget set to ${currency}${next} per ${budget.period || 'month'} — was ${currency}${prev}.`, next > prev, () => { budgetInput.value = String(prev); });
     });
+
+    const budgetPerJobInput = bodyEl.querySelector('[data-budget-perjob-input]');
+    if (budgetPerJobInput) budgetPerJobInput.addEventListener('change', () => {
+      const prev = budget.perJobLimit || 0;
+      const next = parseFloat(budgetPerJobInput.value) || 0;
+      if (next === prev) return;
+      setPending(() => { budget.perJobLimit = next; }, `Per-job render cap set to ${currency}${next} — was ${currency}${prev}.`, next > prev, () => { budgetPerJobInput.value = String(prev); });
+    });
   }
 
   // Kept exported only so desk-v1-shell.js's pre-existing ROUTES['rules']
@@ -470,8 +479,16 @@
   // {campaignId})` "Raise budget…" deep link still resolve to something —
   // neither ever paints a page under a `‹ <campaign>` breadcrumb now: this
   // bounces straight back to the campaign page and opens the real popover.
+  //
+  // `deskV1PopTo('campaign')`, not `deskV1Nav('campaign', ...)` (Dave's
+  // review pass 2): Nav PUSHES a new campaign entry on top of the 'rules'
+  // entry this function is already rendering as, so the back button read
+  // the stack's new second-to-last entry — 'rules' — as '‹ Rules' instead
+  // of the real previous page. PopTo pops 'rules' (and 'video', when the
+  // deep link came from T5) off the stack instead, landing back on the
+  // campaign entry already underneath it.
   window.deskV1RenderRules = function (el, params) {
-    if (typeof window.deskV1Nav === 'function') window.deskV1Nav('campaign', { campaignId: params.campaignId });
+    if (typeof window.deskV1PopTo === 'function') window.deskV1PopTo('campaign');
     window.deskV1OpenRulesPopover(params.campaignId);
   };
 
