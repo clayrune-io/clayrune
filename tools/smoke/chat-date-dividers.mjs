@@ -393,8 +393,13 @@ try {
     // the ring is every stuck backdrop being the same size as its
     // neighbours, so the top one in DOM order fully covers the rest.
     (ringCheck.widths.every((w) => w === ringCheck.widths[0]) && ringCheck.widths[0] > 0)
-      ? ok(`all stuck dividers are identically full-width backdrops (${ringCheck.widths.join(', ')}, container ${ringCheck.containerWidth}) — nothing can ring behind the top one`)
-      : fail(`stuck dividers are not uniformly full-width — a narrower one on top would let a wider one ring behind it: ${JSON.stringify(ringCheck)}`);
+      ? ok(`all stuck dividers share one footprint (${ringCheck.widths.join(', ')}, container ${ringCheck.containerWidth}) — nothing can ring behind the top one`)
+      : fail(`stuck dividers differ in width — a narrower one on top would let a wider one ring behind it: ${JSON.stringify(ringCheck)}`);
+    // 2026-09-26 (Ron, agent_b4038962b4.png): the old full-width opaque band
+    // floated over message text. The stuck divider must be pill-sized now.
+    (ringCheck.widths[0] > 0 && ringCheck.widths[0] < ringCheck.containerWidth / 2)
+      ? ok(`stuck divider is pill-sized (${ringCheck.widths[0]}px of ${ringCheck.containerWidth}px), no full-width band`)
+      : fail(`stuck divider spans ${ringCheck.widths[0]}px of ${ringCheck.containerWidth}px — the full-width band is back`);
   }
 
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));

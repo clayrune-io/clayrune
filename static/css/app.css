@@ -4249,18 +4249,29 @@
      occludes whatever else is stacked behind it — only the last DOM-order
      (current) divider's pill ends up visible. Still zero scroll-listener JS.
      The visible chip moved to a child span, `.chat-date-divider-pill`. */
+  /* 2026-09-26 (Ron, data/uploads/agent_b4038962b4.png): the full-width
+     opaque band read as a floating bar over the message text. The sticky
+     element is now only as wide as its pill, and every pill has the SAME
+     fixed width, so simultaneously-stuck dividers still stack on an
+     identical footprint and the newest (last in DOM order) fully covers the
+     rest. No band, no ring. The widest label ("Wed, Sep 23, 2025") fits. */
   .agent-output .chat-date-divider {
-    align-self: stretch;
+    align-self: center;
     display: flex;
     justify-content: center;
     position: sticky;
-    top: 0;
+    top: 4px;
     z-index: 5;
-    background: var(--bg);
     margin: 2px 0 8px;
-    padding: 2px 0;
+    padding: 0;
   }
   .agent-output .chat-date-divider-pill {
+    box-sizing: border-box;
+    width: 136px;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
     font-family: 'Inter', -apple-system, system-ui, sans-serif;
     font-size: 11px;
     font-weight: 600;
@@ -4270,7 +4281,7 @@
     border: 1px solid var(--border);
     border-radius: 999px;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-    padding: 4px 12px;
+    padding: 4px 8px;
     max-width: 92%;
   }
   /* Wide blocks stretch full width so they remain readable.
