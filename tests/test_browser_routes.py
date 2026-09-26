@@ -130,6 +130,42 @@ def test_a_stopped_session_does_not_block_relaunching_its_profile(profiles, monk
     assert session is None and 'Chromium not found' in err
 
 
+def test_launch_registers_chromium_with_the_real_tracker_signature(profiles, monkeypatch):
+    """The call used to be (proc.pid, type=..., proc=proc) against
+    agent_routes._register_process(proc, name, proc_type, ...) — a TypeError
+    a bare `except: pass` swallowed, so no pane Chromium was ever tracked,
+    none reached the PID ledger, and a restart's orphan held its profile dir
+    locked forever (MC-976 black pane). Bind against the REAL signature."""
+    import inspect
+    from mc.blueprints import agent_routes
+    sig = inspect.signature(agent_routes._register_process)
+    calls = []
+
+    def _register(*a, **k):
+        bound = sig.bind(*a, **k)   # raises TypeError exactly like production
+        calls.append(bound.arguments)
+
+    class _Proc:
+        pid = 777
+
+    class _NoThread:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(br, '_find_chromium', lambda: 'C:/fake/chrome.exe')
+    monkeypatch.setattr(br, '_import_ws', lambda: object())
+    monkeypatch.setattr(br.subprocess, 'Popen', lambda *a, **k: _Proc())
+    monkeypatch.setattr(br.threading, 'Thread', _NoThread)
+    monkeypatch.setattr(br, '_register_process', _register)
+    session, err = br._launch_browser('proj', 'https://example.com', ephemeral=True)
+    assert err is None
+    assert len(calls) == 1
+    assert calls[0]['proc'] is session['proc'] and calls[0]['proc_type'] == 'browser'
+
+
 def test_invalid_profile_is_rejected_before_anything_launches(profiles, monkeypatch):
     monkeypatch.setattr(br, '_find_chromium', lambda: 'C:/fake/chrome.exe')
     monkeypatch.setattr(br, '_import_ws', lambda: object())

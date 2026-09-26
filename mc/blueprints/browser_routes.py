@@ -1230,13 +1230,19 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None):
     with browser_lock:
         browser_sessions[sid] = session
     if _register_process:
+        # Matches agent_routes._register_process(proc, name, proc_type,
+        # session_id, project_id, command_preview). Until 2026-09-25 this
+        # passed (proc.pid, type=..., proc=proc) — a TypeError swallowed by a
+        # bare `except: pass`, so no pane Chromium was EVER tracked, never
+        # reached the PID ledger, and the startup reaper could not see one
+        # orphaned by a restart. The orphan kept its profile dir locked and
+        # every later launch on that profile died on arrival (black pane).
         try:
-            _register_process(proc.pid, name=f'browser pane ({url or "about:blank"})',
-                              type='browser', session_id=sid, project_id=project_id,
-                              command_preview=f'chromium --headless (browser pane) :{port}',
-                              proc=proc)
-        except Exception:
-            pass
+            _register_process(proc, name=f'browser pane ({url or "about:blank"})',
+                              proc_type='browser', session_id=sid, project_id=project_id,
+                              command_preview=f'chromium --headless (browser pane) :{port}')
+        except Exception as e:
+            print(f'[browser] process registration failed for {sid}: {e}', flush=True)
     t = threading.Thread(target=_run_cdp, args=(session,), daemon=True)
     session['thread'] = t
     t.start()
