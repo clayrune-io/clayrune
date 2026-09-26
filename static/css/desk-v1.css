@@ -619,7 +619,158 @@
   }
 }
 
-/* ── T4: Calendar view ───────────────────────────────────────────────────── */
+/* ── T4: Calendar view (frame 12f) ───────────────────────────────────────── */
+.desk-v1-calendar { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; }
+
+.desk-v1-cal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; flex: 0 0 auto; }
+.desk-v1-cal-toolbar-left { display: flex; align-items: center; gap: 10px; }
+.desk-v1-cal-toolbar-right { display: flex; align-items: center; gap: 10px; }
+/* T2a placeholder (Dave's review point 6) — visual marker only, not wired;
+   T2a's own List/Calendar toggle replaces this wholesale. */
+.desk-v1-cal-viewtoggle-placeholder {
+  display: inline-flex; align-items: center; border: 1px solid var(--border2); border-radius: 7px; overflow: hidden;
+}
+.desk-v1-cal-viewtoggle-btn { font-size: 12px; font-weight: 600; padding: 6px 10px; color: var(--text-faint); }
+.desk-v1-cal-viewtoggle-btn.on { background: var(--surface2); color: var(--text); }
+.desk-v1-cal-nav { display: flex; align-items: center; gap: 8px; }
+.desk-v1-cal-navbtn {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px;
+  color: var(--text); font-size: 14px; padding: 4px 10px; cursor: pointer; line-height: 1;
+}
+.desk-v1-cal-navbtn:hover { background: var(--surface3); }
+.desk-v1-cal-rangelabel { font-size: 13px; font-weight: 600; color: var(--text); min-width: 130px; text-align: center; }
+.desk-v1-cal-viewselect {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 7px;
+  color: var(--text); font-size: 12px; font-weight: 600; padding: 6px 8px; cursor: pointer;
+}
+
+/* Grid — each row is its own CSS grid sharing `--desk-v1-cal-cols` (set on
+   the wrap, inherited down) so a fixed rowhead column plus N equal day
+   columns stay aligned across rows without one giant grid needing to know
+   every row's markup. */
+/* flex-grow: 0 — a short week/campaign shouldn't stretch the bordered grid
+   box open to fill unused modal height (frame 12f's card sizes to its rows);
+   flex-shrink + min-height: 0 still let it yield to the footnote and scroll
+   internally on a tall All-campaigns row count instead of overflowing. */
+.desk-v1-cal-grid-wrap { flex: 0 1 auto; overflow: auto; min-height: 0; max-height: 100%; border: 1px solid var(--border2); border-radius: 10px; background: var(--surface); }
+.desk-v1-cal-grid { display: flex; flex-direction: column; min-width: calc(150px + var(--desk-v1-cal-cols, 7) * 110px); }
+.desk-v1-cal-row { display: grid; grid-template-columns: 150px repeat(var(--desk-v1-cal-cols, 7), minmax(110px, 1fr)); border-bottom: 1px solid var(--border); }
+.desk-v1-cal-row:last-child { border-bottom: none; }
+.desk-v1-cal-row-header { position: sticky; top: 0; z-index: 1; background: var(--surface2); border-bottom: 1px solid var(--border2); }
+
+.desk-v1-cal-rowhead {
+  padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; justify-content: center;
+  border-right: 1px solid var(--border2); background: var(--surface2);
+}
+.desk-v1-cal-rowhead-corner { background: var(--surface2); }
+.desk-v1-cal-rowhead-held { background: color-mix(in srgb, var(--amber-text) 10%, var(--surface2)); }
+.desk-v1-cal-row-hold { font-size: 10.5px; color: var(--amber-text); line-height: 1.3; }
+/* Dave's review point 8: the kit's channel badge (static/css/desk-v1.css
+   .desk-v1-channel-badge, shared with every other surface) has no nowrap of
+   its own — fine at full width elsewhere, but the calendar's 150px rowhead
+   column is narrow enough to wrap "in · Clayrune page ⚠" onto two lines.
+   Scoped to this rowhead only, so the shared badge default is untouched. */
+.desk-v1-cal-rowhead .desk-v1-channel-badge { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+.desk-v1-cal-daycol { padding: 8px 6px; display: flex; align-items: baseline; gap: 6px; justify-content: center; border-right: 1px solid var(--border); }
+.desk-v1-cal-daynum { font-size: 13px; font-weight: 700; color: var(--text); }
+.desk-v1-cal-dayname { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.02em; }
+.desk-v1-cal-daycol-today { background: var(--accent-dim); }
+.desk-v1-cal-daycol-today .desk-v1-cal-daynum, .desk-v1-cal-daycol-today .desk-v1-cal-dayname { color: var(--accent-soft); }
+.desk-v1-cal-daycol-weekend:not(.desk-v1-cal-daycol-today) { background: var(--surface2); }
+
+.desk-v1-cal-cell { position: relative; padding: 6px; display: flex; flex-direction: column; gap: 4px; border-right: 1px solid var(--border); min-height: 64px; }
+.desk-v1-cal-cell-today { background: color-mix(in srgb, var(--accent-dim) 40%, transparent); }
+.desk-v1-cal-cell-weekend:not(.desk-v1-cal-cell-today) { background: color-mix(in srgb, var(--surface2) 60%, transparent); }
+/* .pd-drop-target's shared default (T0c, other callers e.g. T1's promote
+   box) is `border: 1px dashed` on all four sides — fine for a standalone
+   drop target, wrong for a grid cell that already carries its own solid
+   hairlines (this rule + the row's border-bottom). Dave's review point 5:
+   every cell read as dashed because only the right/bottom sides were
+   overridden above; reset all four explicitly so none of the shared
+   dashed default survives. Only a Planned CHIP is dashed (data-state
+   driven, below) — the grid itself is solid hairlines throughout. */
+.desk-v1-cal-cell.pd-drop-target { border: none; border-right: 1px solid var(--border); border-radius: 0; }
+.desk-v1-cal-cell.pd-drop-target.pd-drop-hover { border: 1px solid var(--accent); background: var(--accent-dim); }
+.desk-v1-cal-cell-preview:empty { display: none; }
+.desk-v1-cal-cell-preview { font-size: 10.5px; color: var(--accent-soft); font-weight: 600; }
+
+.desk-v1-cal-chip {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left;
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 7px; padding: 5px 7px;
+  cursor: grab; font: inherit;
+}
+.desk-v1-cal-chip:hover { background: var(--surface3); }
+.desk-v1-cal-chip:active { cursor: grabbing; }
+.desk-v1-cal-chip-dashed { border-style: dashed; }
+/* Dave's review point 7: line 1 is time + state glyph + word together,
+   coloured by state; line 2 is the title. `.desk-v1-cal-chip-line1` inherits
+   the state colour so the glyph and word (kit's own .desk-v1-state-label,
+   normally coloured only on the glyph per A15) read in the same tone as the
+   time, without recolouring the shared kit component's default elsewhere. */
+.desk-v1-cal-chip-line1 { display: flex; align-items: center; gap: 5px; color: var(--text-dim); }
+.desk-v1-cal-chip-line1 .desk-v1-state-label,
+.desk-v1-cal-chip-line1 .desk-v1-state-glyph { color: inherit; }
+.desk-v1-cal-chip[data-state="blocked"] .desk-v1-cal-chip-line1,
+.desk-v1-cal-chip[data-state="failed"] .desk-v1-cal-chip-line1 { color: var(--red-text); }
+.desk-v1-cal-chip[data-state="held"] .desk-v1-cal-chip-line1 { color: var(--amber-text); }
+.desk-v1-cal-chip[data-state="verified_published"] .desk-v1-cal-chip-line1,
+.desk-v1-cal-chip[data-state="approved"] .desk-v1-cal-chip-line1,
+.desk-v1-cal-chip[data-state="scheduled"] .desk-v1-cal-chip-line1 { color: var(--accent-soft); }
+.desk-v1-cal-chip-time { font-size: 10px; font-weight: 600; }
+.desk-v1-cal-chip .desk-v1-state-label { font-size: 10.5px; }
+.desk-v1-cal-chip-video { font-size: 9px; }
+.desk-v1-cal-chip-title {
+  font-size: 11.5px; color: var(--text); line-height: 1.3; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.desk-v1-cal-chip-dragging { opacity: 0.35; }
+.desk-v1-cal-chip-ghost { box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); pointer-events: none; }
+
+.desk-v1-cal-kbd-reschedule {
+  position: absolute; z-index: 5; top: 100%; left: 0; margin-top: 4px;
+  background: var(--surface3); border: 1px solid var(--border2); border-radius: 8px; padding: 8px;
+  display: flex; flex-direction: column; gap: 6px; font-size: 12px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+}
+.desk-v1-cal-kbd-reschedule label { display: flex; flex-direction: column; gap: 4px; color: var(--text-dim); }
+.desk-v1-cal-kbd-reschedule input {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px; color: var(--text);
+  padding: 5px 7px; font: inherit;
+}
+.desk-v1-cal-kbd-reschedule button {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px; color: var(--text);
+  padding: 5px 9px; cursor: pointer; font-size: 12px;
+}
+.desk-v1-cal-kbd-reschedule button[data-kbd-move] { background: var(--accent-dim); border-color: var(--accent); color: var(--accent-soft); font-weight: 600; }
+
+.desk-v1-cal-footnote { font-size: 11.5px; color: var(--text-faint); line-height: 1.5; flex: 0 0 auto; }
+
+/* Agenda (§11 phone default) — hidden on desktop; the media query below
+   swaps it in for the grid, which becomes the hidden one. */
+.desk-v1-cal-agenda { display: none; flex-direction: column; gap: 14px; overflow-y: auto; }
+.desk-v1-cal-agenda-day { display: flex; flex-direction: column; gap: 6px; }
+.desk-v1-cal-agenda-daylabel {
+  font-size: 12px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em;
+  padding-bottom: 4px; border-bottom: 1px solid var(--border);
+}
+.desk-v1-cal-agenda-day-today .desk-v1-cal-agenda-daylabel { color: var(--accent-soft); border-color: var(--accent); }
+.desk-v1-cal-agenda-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px; padding: 8px 10px;
+  cursor: pointer; font: inherit;
+}
+.desk-v1-cal-agenda-item:hover { background: var(--surface3); }
+.desk-v1-cal-agenda-time { font-size: 11px; color: var(--text-faint); font-weight: 600; flex: 0 0 auto; min-width: 52px; }
+.desk-v1-cal-agenda-channel { font-size: 11px; color: var(--text-dim); flex: 0 0 auto; }
+.desk-v1-cal-agenda-title { flex: 1 1 auto; font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 960px) {
+  .desk-v1-cal-grid-wrap { display: none; }
+  .desk-v1-cal-agenda { display: flex; }
+  .desk-v1-cal-toolbar { gap: 8px; }
+  .desk-v1-cal-rangelabel { min-width: 0; }
+}
 
 /* ── T5: Video intake + director ─────────────────────────────────────────── */
 
