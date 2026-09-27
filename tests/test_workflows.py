@@ -1105,3 +1105,200 @@ def test_unhonourable_pin_fails_the_step_loudly(wf, monkeypatch):
     run = wf.m.start_run(record['id'])
     assert run['status'] == 'failed'
     assert 'gemini-3-pro' in (run.get('error') or '')
+
+
+# ── MC-962: agent-assisted draft + review ────────────────────────────────────
+#
+# `_run_toolless` is the one seam that leaves this module for a model call
+# (`mc.agent_runtime.run_text_transform`, the same toolless primitive
+# `mc/mail_launder.py` uses) -- monkeypatching it here keeps every test
+# hermetic, the same discipline `_dispatch_agent_internal`/`_DispatchRecorder`
+# already give the runner tests above. `default_runtime_name()` itself is
+# NOT mocked: it only reads `state.CONFIG` and never spawns anything, so
+# calling the real one (falls back to 'claude') is fine.
+
+_VALID_DRAFT_JSON = json.dumps({
+    'format': 2, 'name': 'Triage new items', 'description': 'one sentence',
+    'trigger': {'type': 'manual'}, 'enabled': True,  # model saying enabled -- must be ignored
+    'nodes': [{'name': 'triage', 'type': 'agent', 'project_id': 'p1',
+              'prompt': 'look at things', 'x': 0, 'y': 0}],
+    'edges': [],
+})
+
+_MISSING_PROMPT_DRAFT_JSON = json.dumps({
+    'format': 2, 'name': 'Triage new items', 'description': '',
+    'trigger': {'type': 'manual'},
+    'nodes': [{'name': 'triage', 'type': 'agent', 'project_id': 'p1',
+              'prompt': '', 'x': 0, 'y': 0}],
+    'edges': [],
+})
+
+_DISALLOWED_VERB_DRAFT_JSON = json.dumps({
+    'format': 2, 'name': 'bad', 'description': '',
+    'trigger': {'type': 'manual'},
+    'nodes': [{'name': 'shell', 'type': 'action', 'action': 'shell_exec',
+              'config': {'cmd': 'rm -rf /'}}],
+    'edges': [],
+})
+
+
+class _ToollessRecorder:
+    """Stand-in for `mc.workflows._run_toolless`: returns queued responses in
+    order (repeating the last one once exhausted), records every call."""
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def __call__(self, provider, prompt, *, timeout):
+        self.calls.append({'provider': provider, 'prompt': prompt, 'timeout': timeout})
+        idx = min(len(self.calls) - 1, len(self.responses) - 1)
+        return self.responses[idx]
+
+
+def _raising_toolless(*exc_args):
+    def _fn(provider, prompt, *, timeout):
+        raise RuntimeError('engine unavailable')
+    return _fn
+
+
+def test_draft_workflow_valid_on_first_attempt(wf, monkeypatch):
+    rec = _ToollessRecorder(_VALID_DRAFT_JSON)
+    monkeypatch.setattr(wf.m, '_run_toolless', rec)
+    result = wf.m.draft_workflow('triage new backlog items', 'p1')
+    assert result['ok'] is True
+    assert result['valid'] is True
+    assert result['errors'] == []
+    assert len(rec.calls) == 1
+    definition = result['definition']
+    assert definition['format'] == 2
+    assert definition['enabled'] is False  # forced, even though the model said True
+    assert definition['nodes'][0]['project_id'] == 'p1'
+    # never persisted -- draft_workflow never touches the store
+    assert wf.m.list_workflows() == []
+
+
+def test_draft_workflow_repairs_after_validator_error(wf, monkeypatch):
+    rec = _ToollessRecorder(_MISSING_PROMPT_DRAFT_JSON, _VALID_DRAFT_JSON)
+    monkeypatch.setattr(wf.m, '_run_toolless', rec)
+    result = wf.m.draft_workflow('triage new backlog items', 'p1')
+    assert len(rec.calls) == 2
+    assert 'missing prompt' in rec.calls[1]['prompt']  # validator errors fed back verbatim
+    assert result['ok'] is True
+    assert result['valid'] is True
+    assert result['errors'] == []
+
+
+def test_draft_workflow_unparseable_output_returns_ok_false(wf, monkeypatch):
+    rec = _ToollessRecorder('Sure, here is a workflow for you: no JSON at all here.')
+    monkeypatch.setattr(wf.m, '_run_toolless', rec)
+    result = wf.m.draft_workflow('triage new backlog items', 'p1')
+    assert len(rec.calls) == 2  # retried once, still garbage
+    assert result['ok'] is False
+    assert result['error'] == 'draft_parse_failed'
+    assert wf.m.list_workflows() == []
+
+
+def test_draft_workflow_disallowed_verb_rejected_after_retry(wf, monkeypatch):
+    """A verb outside ACTION_ALLOWLIST is not a shape error -- it parses fine
+    -- so `validate_workflow` is what refuses it, both attempts, and the
+    caller gets the draft back WITH its remaining errors rather than a bare
+    ok:False (there IS a parseable draft, it's just invalid)."""
+    rec = _ToollessRecorder(_DISALLOWED_VERB_DRAFT_JSON)
+    monkeypatch.setattr(wf.m, '_run_toolless', rec)
+    result = wf.m.draft_workflow('run a shell command', 'p1')
+    assert len(rec.calls) == 2
+    assert result['ok'] is True
+    assert result['valid'] is False
+    assert any('shell_exec' in e or 'action must be one of' in e for e in result['errors'])
+    assert result['definition']['enabled'] is False
+
+
+def test_draft_workflow_engine_call_failure_returns_ok_false(wf, monkeypatch):
+    monkeypatch.setattr(wf.m, '_run_toolless', _raising_toolless())
+    result = wf.m.draft_workflow('triage new backlog items', 'p1')
+    assert result['ok'] is False
+    assert result['error'] == 'draft_call_failed'
+
+
+def test_draft_workflow_requires_description(wf):
+    with pytest.raises(ValueError):
+        wf.m.draft_workflow('   ', 'p1')
+
+
+def test_draft_route_refused_without_origin_header(wf, monkeypatch):
+    rec = _ToollessRecorder(_VALID_DRAFT_JSON)
+    monkeypatch.setattr(wf.m, '_run_toolless', rec)
+    resp = wf.client.post('/api/workflows/draft',
+                          json={'description': 'triage new items', 'project_id': 'p1'})
+    assert resp.status_code == 403
+    assert rec.calls == []  # never even called the model
+
+
+def test_draft_route_succeeds_with_origin_header_and_is_not_persisted(wf, monkeypatch):
+    rec = _ToollessRecorder(_VALID_DRAFT_JSON)
+    monkeypatch.setattr(wf.m, '_run_toolless', rec)
+    resp = wf.client.post('/api/workflows/draft', headers=UI_HEADERS,
+                          json={'description': 'triage new items', 'project_id': 'p1'})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body['ok'] is True
+    assert body['definition']['enabled'] is False
+    assert wf.m.list_workflows() == []  # the route never calls create_workflow
+
+
+def test_draft_route_missing_description_is_400(wf):
+    resp = wf.client.post('/api/workflows/draft', headers=UI_HEADERS,
+                          json={'project_id': 'p1'})
+    assert resp.status_code == 400
+
+
+def test_review_workflow_combines_deterministic_and_model_findings(wf, monkeypatch):
+    doc = _doc('half-broken', [_agent('triage', prompt='')])  # missing prompt -> deterministic error
+    findings_json = json.dumps([
+        {'node': 'triage', 'severity': 'warning',
+        'message': 'prompt is vague', 'suggestion': 'say what "things" means'},
+        {'node': 'ghost-node-not-in-doc', 'severity': 'error', 'message': 'should be dropped'},
+    ])
+    rec = _ToollessRecorder(findings_json)
+    monkeypatch.setattr(wf.m, '_run_toolless', rec)
+    result = wf.m.review_workflow(doc=doc)
+    assert result['ok'] is True
+    assert result['valid'] is False
+    assert any(f['message'] for f in result['findings'] if 'missing prompt' in f['message'])
+    model_findings = [f for f in result['findings'] if f['severity'] == 'warning']
+    assert model_findings and model_findings[0]['node'] == 'triage'
+    # a node name the model invented (not in the doc) is dropped to null, not trusted verbatim
+    dropped = [f for f in result['findings'] if f['message'] == 'should be dropped']
+    assert dropped and dropped[0]['node'] is None
+
+
+def test_review_workflow_model_failure_still_returns_deterministic_errors(wf, monkeypatch):
+    doc = _doc('half-broken', [_agent('triage', prompt='')])
+    monkeypatch.setattr(wf.m, '_run_toolless', _raising_toolless())
+    result = wf.m.review_workflow(doc=doc)
+    assert result['ok'] is True
+    assert result['valid'] is False
+    assert result['model_error']
+    assert any('missing prompt' in f['message'] for f in result['findings'])
+
+
+def test_review_workflow_by_id(wf, monkeypatch):
+    record = wf.m.create_workflow(_doc('saved', [_agent('only')]))
+    monkeypatch.setattr(wf.m, '_run_toolless', _ToollessRecorder('[]'))
+    result = wf.m.review_workflow(workflow_id=record['id'])
+    assert result['ok'] is True
+    assert result['valid'] is True
+
+
+def test_review_workflow_unknown_id_raises(wf):
+    with pytest.raises(KeyError):
+        wf.m.review_workflow(workflow_id='wf-nope')
+
+
+def test_review_route_open_without_origin_header(wf, monkeypatch):
+    """Read-only -- not gated like draft/CRUD/decision."""
+    monkeypatch.setattr(wf.m, '_run_toolless', _ToollessRecorder('[]'))
+    doc = _doc('ok', [_agent('only')])
+    resp = wf.client.post('/api/workflows/review', json={'definition': doc})  # no Origin
+    assert resp.status_code == 200
+    assert resp.get_json()['valid'] is True
