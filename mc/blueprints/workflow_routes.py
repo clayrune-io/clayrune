@@ -118,6 +118,50 @@ def delete_workflow(workflow_id):
     return jsonify({'ok': True})
 
 
+@bp.route('/api/workflows/draft', methods=['POST'])
+def draft_workflow():
+    """Human-only, same reason as CRUD above (MC-962): the model's proposal
+    dispatches agents with characters on a schedule, same as anything else
+    definition CRUD would save -- it is never persisted here (`_wf.draft_workflow`
+    always returns `enabled: False` and never touches the store), but the ask
+    that produces it is still an authorship act, so it is gated the same way."""
+    refusal = _refuse_if_agent_caller()
+    if refusal:
+        return refusal
+    data = request.get_json(silent=True) or {}
+    description = (data.get('description') or '').strip()
+    project_id = (data.get('project_id') or '').strip()
+    if not description:
+        return jsonify({'error': 'description is required'}), 400
+    try:
+        result = _wf.draft_workflow(description, project_id)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if not result.get('ok'):
+        return jsonify(result), 502
+    return jsonify(result)
+
+
+@bp.route('/api/workflows/review', methods=['POST'])
+def review_workflow():
+    """Read-only: never mutates anything, so unlike the routes above this is
+    not gated behind `_refuse_if_agent_caller` -- there is nothing here an
+    agent caller could use to author or approve on its own behalf, only to
+    read back what a human-authored (or human-requested draft) definition's
+    problems are."""
+    data = request.get_json(silent=True) or {}
+    doc = data.get('definition')
+    workflow_id = (data.get('workflow_id') or '').strip()
+    try:
+        result = _wf.review_workflow(doc=doc if isinstance(doc, dict) else None,
+                                     workflow_id=workflow_id or None)
+    except KeyError:
+        return jsonify({'error': 'workflow not found'}), 404
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify(result)
+
+
 # ── Runs ──────────────────────────────────────────────────────────────────────
 
 @bp.route('/api/workflows/<workflow_id>/run', methods=['POST'])

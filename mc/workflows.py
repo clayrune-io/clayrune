@@ -558,6 +558,445 @@ def validate_workflow(doc: dict) -> list:
     return errors
 
 
+# ── Agent-assisted draft + review (MC-962) ───────────────────────────────────
+#
+# Human-only at the route layer (`workflow_routes.py::_refuse_if_agent_caller`
+# gates `/draft`; the authority guard is enforced there, not here). This
+# section only ever PRODUCES a proposal or an ANALYSIS -- neither writes to
+# WORKFLOWS_PATH, and `draft_workflow` forces `enabled: False` on every
+# result regardless of what the model returned, so the human is always the
+# one who calls `create_workflow` (position
+# `whetheranagentsessionmaycreateoreditworkflowdefi`, 2026-09-18: agents may
+# draft, only a human enables/schedules/runs).
+#
+# The model call is a TOOLLESS oneshot -- same primitive as `mc/mail_launder.py`
+# (`run_text_transform`, `--allowedTools ''`/`--strict-mcp-config` under the
+# hood) -- on whichever engine `default_runtime_name()` resolves, never
+# hardcoded to Claude. A provider not yet certified tool-free
+# (`tool_free_transform_enforced=False`, e.g. Codex as of 2026-09) is refused
+# loudly rather than silently substituted for Claude -- mail_launder's own
+# precedent: "a Codex/Gemini-only install just doesn't get [this], rather
+# than getting it through an unverified runtime."
+#
+# Everything the model returns is untrusted: parsed strictly (a JSON object/
+# array or nothing -- no partial-credit salvage), size-capped before it ever
+# reaches `validate_workflow`, and re-checked against the real node/action
+# vocabulary by `validate_workflow` itself. `draft_workflow` retries once,
+# feeding the validator's own errors back verbatim; `review_workflow`'s model
+# findings are advisory only and never gate anything -- a human reads them.
+
+_DRAFT_MAX_NODES = 25
+_DRAFT_MAX_EDGES = 80
+_DRAFT_MAX_FIELD_CHARS = 4000
+_DRAFT_MAX_DESCRIPTION_CHARS = 4000
+_DRAFT_MAX_RAW_CHARS = 60_000
+_DRAFT_TIMEOUT = 90
+
+_REVIEW_MAX_DEFINITION_BYTES = 80_000
+_REVIEW_MAX_FINDINGS = 40
+_REVIEW_MAX_FINDING_CHARS = 600
+_REVIEW_TIMEOUT = 90
+_REVIEW_SEVERITIES = ('info', 'warning', 'error')
+
+_DRAFT_NODE_FIELDS = {
+    'agent': {'project_id', 'prompt', 'character', 'outcomes', 'model', 'effort'},
+    'approval': {'options'},
+    'action': {'action', 'config'},
+    'wait': {'config'},
+}
+_DRAFT_NODE_COMMON_FIELDS = {'name', 'type', 'x', 'y'}
+_DRAFT_EDGE_FIELDS = {'from', 'to', 'when'}
+
+_NODE_VOCAB_DOC = f"""WORKFLOW DEFINITION FORMAT (format: 2) -- the only shape you may output:
+
+{{
+  "format": 2,
+  "name": "short title",
+  "description": "one sentence",
+  "trigger": {{"type": "manual"}},
+  "nodes": [ ... ],
+  "edges": [ {{"from": "<node name>", "to": "<node name>", "when": "<optional outcome/option label, or omit for unconditional>"}} ]
+}}
+
+NODE TYPES (put exactly one of these shapes in each entry of "nodes"; every
+node needs a unique "name" and a "type" from this list -- no others exist):
+
+1. "agent" -- dispatches a real agent session.
+   Fields: project_id (required, string), prompt (required, string -- the
+   task text), character (optional, "{{scope}}:{{name}}" e.g. "global:builder",
+   from the roster below -- omit to run personaless), outcomes (optional
+   list of short labels this step may end in, e.g. ["worth_it", "skip"] --
+   only declare these if a downstream edge needs to branch on the result),
+   model/effort (optional, leave empty to inherit the project default).
+   A prompt may reference an earlier step's output with
+   "{{{{steps.<name>.output}}}}" or its declared result field with
+   "{{{{steps.<name>.result.<key>}}}}", or its single direct parent with
+   "{{{{prev.output}}}}" (only valid when the node has exactly one parent).
+   A trigger-time value is "{{{{trigger.fired_at}}}}".
+
+2. "approval" -- pauses the run for a human decision.
+   Fields: options (required, non-empty list of choice labels, e.g.
+   ["approve", "decline"]).
+
+3. "action" -- a single deterministic, inward-facing side effect. No other
+   verb exists; do not invent one.
+   Fields: action (required, one of: {', '.join(ACTION_ALLOWLIST)}), config
+   (object, string values may use the same {{{{...}}}} slots as a prompt):
+     - backlog_create: config.project_id, config.text, config.priority (optional)
+     - backlog_patch: config.project_id, config.item_id, config.status and/or config.text
+     - desk_harvest: config.project_id (optional)
+     - journal_append: config.item_id (required), config.text (required), config.title (optional)
+     - notify_operator: config.message (required) -- recipient is never authorable, do not add one
+     - restore_point_create: config.project_id, config.label (optional)
+
+4. "wait" -- pauses before continuing.
+   Fields: config.mode = "delay" (+ config.minutes, a positive number) or
+   config.mode = "until" (+ config.at, an ISO-8601 timestamp).
+
+EDGES connect nodes by name. "when" is optional: omit it for an
+unconditional edge; set it to one of the FROM node's declared
+outcomes/options to make a branch; the literal "otherwise" is reserved for a
+fallback edge. "action" and "wait" steps cannot have a conditional outgoing
+edge. A node with multiple incoming edges runs once every parent has
+finished (completed or skipped) and at least one led here -- an outcome or
+option with no edge is a deliberate, visible stop, not an error.
+
+No other node type, action verb, trigger type, or top-level key exists.
+Trigger type is "manual" or "schedule" -- always write "manual" here; a
+human decides scheduling later. Never set "enabled" -- it is always false on
+a draft, decided by whoever reviews and saves it."""
+
+
+def _draft_roster_text(project_path: str, project_id: str) -> str:
+    """Bench roster (persona ref + who it's for) for the "character" field,
+    from the SAME source the picker/dispatch use (`mc.characters`) -- never
+    a hardcoded list that could drift from what actually resolves."""
+    from mc import characters as _characters
+    try:
+        chars = _characters.list_characters(
+            project_path=project_path or None, project_id=project_id or None)
+    except Exception:
+        chars = []
+    lines: list = []
+    for c in chars:
+        ref = f"{c.get('scope')}:{c.get('name')}"
+        agent_name = (c.get('agent_name') or '').strip()
+        role = (c.get('description') or '').strip()
+        label = f"{ref} ({agent_name})" if agent_name else ref
+        lines.append(f"- {label}: {role}" if role else f"- {label}")
+    if not lines:
+        return ('(no characters are defined on this box -- leave every agent '
+               'step\'s "character" field empty)')
+    return '\n'.join(lines)
+
+
+def _load_project_path(project_id: str) -> str:
+    """Lazy import: `project_routes` imports `workflow_routes`, which imports
+    THIS module -- importing it at module scope would be circular. Deferred
+    to call time, after both modules have finished loading, avoids it."""
+    if not project_id:
+        return ''
+    try:
+        from mc.blueprints.project_routes import load_project
+        p = load_project(project_id)
+    except Exception:
+        return ''
+    return (p or {}).get('project_path') or ''
+
+
+def _parse_json_value(raw: Optional[str], open_ch: str, close_ch: str,
+                      expect: type, *, max_chars: int) -> Any:
+    """Tolerant-but-strict extraction, same discipline as
+    `mail_launder._parse_digest_json`: strip markdown fences/leading prose by
+    taking the outermost bracket pair, but the interior must parse as clean
+    JSON of exactly the expected shape -- no partial-credit salvage. Returns
+    None on anything else, which every caller here treats as a hard failure,
+    never a fallback to raw text."""
+    if not raw:
+        return None
+    raw = raw[:max_chars]
+    i, j = raw.find(open_ch), raw.rfind(close_ch)
+    if i < 0 or j < 0 or j < i:
+        return None
+    try:
+        data = json.loads(raw[i:j + 1])
+    except Exception:
+        return None
+    return data if isinstance(data, expect) else None
+
+
+def _shape_errors(data: Any) -> list:
+    """Pre-`validate_workflow` size/shape caps on the model's raw draft --
+    'reject unknown node types/verbs, cap sizes' (MC-962 brief). Type/verb
+    correctness is `validate_workflow`'s job (it already refuses an unknown
+    node type or disallowed action); this only bounds what could otherwise
+    make that call expensive or the returned proposal unreviewable."""
+    if not isinstance(data, dict):
+        return ['top-level response must be a JSON object']
+    errors: list = []
+    nodes = data.get('nodes')
+    if not isinstance(nodes, list):
+        errors.append("'nodes' must be a list")
+    elif len(nodes) > _DRAFT_MAX_NODES:
+        errors.append(f"too many nodes ({len(nodes)}); cap is {_DRAFT_MAX_NODES}")
+    edges = data.get('edges')
+    if edges is not None and not isinstance(edges, list):
+        errors.append("'edges' must be a list")
+    elif isinstance(edges, list) and len(edges) > _DRAFT_MAX_EDGES:
+        errors.append(f"too many edges ({len(edges)}); cap is {_DRAFT_MAX_EDGES}")
+
+    seen_long_field = False
+
+    def _walk(v):
+        nonlocal seen_long_field
+        if isinstance(v, str):
+            if not seen_long_field and len(v) > _DRAFT_MAX_FIELD_CHARS:
+                seen_long_field = True
+        elif isinstance(v, dict):
+            for vv in v.values():
+                _walk(vv)
+        elif isinstance(v, list):
+            for vv in v:
+                _walk(vv)
+    _walk(nodes if isinstance(nodes, list) else [])
+    _walk(edges if isinstance(edges, list) else [])
+    if seen_long_field:
+        errors.append(f"a text field exceeds {_DRAFT_MAX_FIELD_CHARS} chars")
+    return errors
+
+
+def _normalize_draft_doc(data: dict, *, default_project_id: str) -> dict:
+    """Rebuild a clean doc from only recognised keys -- the model's raw JSON
+    is untrusted, so this is an allowlist copy, not a filter. `format` and
+    `enabled` are never taken from the model: format is always the current
+    store format, and a draft is always unsaved/disabled regardless of what
+    the model wrote."""
+    out: dict = {
+        'format': CURRENT_FORMAT,
+        'enabled': False,
+        'name': str(data.get('name') or '').strip()[:_DRAFT_MAX_FIELD_CHARS] or 'Untitled workflow',
+        'description': str(data.get('description') or '').strip()[:_DRAFT_MAX_FIELD_CHARS],
+        'trigger': {'type': 'manual'},
+    }
+    nodes_out: list = []
+    for node in (data.get('nodes') or []):
+        if not isinstance(node, dict):
+            continue
+        raw_type = node.get('type')
+        t: str = raw_type if isinstance(raw_type, str) else ''
+        clean: dict = {k: node.get(k) for k in _DRAFT_NODE_COMMON_FIELDS if k in node}
+        for k in _DRAFT_NODE_FIELDS.get(t, ()):
+            if k in node:
+                clean[k] = node.get(k)
+        if t == 'agent':
+            pid = clean.get('project_id')
+            if not (isinstance(pid, str) and pid.strip()):
+                clean['project_id'] = default_project_id
+        nodes_out.append(clean)
+    out['nodes'] = nodes_out
+    edges_out = []
+    for edge in (data.get('edges') or []):
+        if not isinstance(edge, dict):
+            continue
+        edges_out.append({k: edge.get(k) for k in _DRAFT_EDGE_FIELDS if k in edge})
+    out['edges'] = edges_out
+    return out
+
+
+def _run_toolless(provider: str, prompt: str, *, timeout: int) -> str:
+    """The one seam that talks to a model in this module -- always
+    tool-free, always through the registry (`run_text_transform`), never a
+    hardcoded provider. Raises on any failure; callers turn that into an
+    `ok: False` envelope, matching `mail_launder`'s fail-closed contract."""
+    import mc.agent_runtime as _agent_runtime
+    return _agent_runtime.run_text_transform(
+        provider, prompt=prompt, model='', timeout=timeout)
+
+
+def draft_workflow(description: str, project_id: str) -> dict:
+    """Turn a plain-English description into a format-2 workflow proposal.
+    Never writes to the store -- returns `{'definition': ..., 'errors': [...],
+    'valid': bool}` (or `{'ok': False, 'error': ..., 'detail': ...}` if no
+    usable draft could be produced at all) for the caller (the human-only
+    `/api/workflows/draft` route) to show and let a human decide whether to
+    save via the existing `create_workflow`.
+    """
+    description = (description or '').strip()
+    if not description:
+        raise ValueError('description is required')
+    if len(description) > _DRAFT_MAX_DESCRIPTION_CHARS:
+        raise ValueError(f'description too long (max {_DRAFT_MAX_DESCRIPTION_CHARS} chars)')
+    project_id = (project_id or '').strip()
+
+    import mc.agent_runtime as _agent_runtime
+    provider = _agent_runtime.default_runtime_name()
+
+    project_path = _load_project_path(project_id)
+    roster = _draft_roster_text(project_path, project_id)
+    base_prompt = (
+        "You are drafting a Clayrune WORKFLOW definition from a human's plain-"
+        "English description. Output ONLY the JSON object described below -- "
+        "no prose, no markdown code fence, nothing before or after it.\n\n"
+        f"DESCRIPTION FROM THE HUMAN:\n{description}\n\n"
+        f"TARGET PROJECT (use this project_id on agent/action steps unless the "
+        f"description clearly names another): {project_id or '(none given -- pick one from context or leave steps generic)'}\n\n"
+        f"AVAILABLE AGENT CHARACTERS (for an agent step's optional \"character\" field):\n{roster}\n\n"
+        f"{_NODE_VOCAB_DOC}"
+    )
+
+    doc: Optional[dict] = None
+    errors: list = ['no attempt made']
+    for attempt in range(2):
+        prompt = base_prompt
+        if attempt > 0:
+            prompt += (
+                "\n\nYour previous attempt was INVALID. Fix every one of these "
+                "problems and return the corrected JSON object only, nothing "
+                "else:\n- " + "\n- ".join(errors)
+            )
+        try:
+            text = _run_toolless(provider, prompt, timeout=_DRAFT_TIMEOUT)
+        except Exception as e:
+            return {'ok': False, 'error': 'draft_call_failed', 'detail': str(e)}
+        data = _parse_json_value(text, '{', '}', dict, max_chars=_DRAFT_MAX_RAW_CHARS)
+        if data is None:
+            errors = ['response was not a single valid JSON object']
+            doc = None
+            continue
+        shape_errs = _shape_errors(data)
+        if shape_errs:
+            errors = shape_errs
+            doc = None
+            continue
+        doc = _normalize_draft_doc(data, default_project_id=project_id)
+        errors = validate_workflow(doc)
+        if not errors:
+            break
+
+    if doc is None:
+        return {'ok': False, 'error': 'draft_parse_failed', 'detail': '; '.join(errors)}
+    return {'ok': True, 'definition': doc, 'errors': errors, 'valid': not errors}
+
+
+def _review_roster_text(doc: dict) -> str:
+    project_ids: list = []
+    for node in (doc.get('nodes') or []):
+        if isinstance(node, dict) and node.get('type') == 'agent':
+            pid = node.get('project_id')
+            if isinstance(pid, str) and pid and pid not in project_ids:
+                project_ids.append(pid)
+    if not project_ids:
+        return _draft_roster_text('', '')
+    seen_refs: set = set()
+    lines: list = []
+    for pid in project_ids:
+        text = _draft_roster_text(_load_project_path(pid), pid)
+        for line in text.splitlines():
+            if line not in seen_refs:
+                seen_refs.add(line)
+                lines.append(line)
+    return '\n'.join(lines) if lines else _draft_roster_text('', '')
+
+
+def _sanitize_review_findings(data: Any, node_names: set) -> list:
+    if not isinstance(data, list):
+        return []
+    out: list = []
+    for item in data[:_REVIEW_MAX_FINDINGS]:
+        if not isinstance(item, dict):
+            continue
+        message = str(item.get('message') or '').strip()[:_REVIEW_MAX_FINDING_CHARS]
+        if not message:
+            continue
+        node = item.get('node')
+        if not (isinstance(node, str) and node in node_names):
+            node = None
+        severity = item.get('severity')
+        if severity not in _REVIEW_SEVERITIES:
+            severity = 'info'
+        suggestion = item.get('suggestion')
+        suggestion = (str(suggestion).strip()[:_REVIEW_MAX_FINDING_CHARS]
+                     if isinstance(suggestion, str) and suggestion.strip() else None)
+        out.append({'node': node, 'severity': severity, 'message': message,
+                   'suggestion': suggestion})
+    return out
+
+
+def _model_review_findings(doc: dict) -> tuple:
+    """(findings, error). Best-effort: a failed/unparseable model call
+    returns ([], <reason>) -- the caller still has `validate_workflow`'s
+    deterministic errors, so a model outage degrades review, it doesn't
+    block it (unlike `draft_workflow`, this never produces something meant
+    to be saved -- there is no fail-closed obligation here)."""
+    try:
+        serialized = json.dumps(doc, ensure_ascii=False)
+    except Exception as e:
+        return [], f'definition not serializable: {e}'
+    if len(serialized.encode('utf-8')) > _REVIEW_MAX_DEFINITION_BYTES:
+        return [], f'definition exceeds {_REVIEW_MAX_DEFINITION_BYTES} bytes for review'
+
+    import mc.agent_runtime as _agent_runtime
+    provider = _agent_runtime.default_runtime_name()
+    roster = _review_roster_text(doc)
+    prompt = (
+        "You are reviewing a Clayrune WORKFLOW definition for logic problems "
+        "a human author would want flagged before saving/enabling it -- you "
+        "are NOT validating its JSON shape (that is already checked "
+        "separately). Output ONLY a JSON array, no prose, no markdown fence, "
+        "each element exactly:\n"
+        '{"node": "<node name from the definition, or null if it applies to '
+        'the whole workflow>", "severity": "info|warning|error", "message": '
+        '"<the problem, one or two sentences>", "suggestion": "<a concrete '
+        'fix, or null>"}\n\n'
+        "Look specifically for: unreachable or dead-end nodes (a node no "
+        "edge can ever reach, or a branch that quietly goes nowhere when "
+        "that looks unintentional); steps with no failure handling for "
+        "something that plausibly fails (this format has no fenced "
+        "on_failure yet -- flag it as a suggestion, not an error); approval "
+        "gates placed somewhere that delays a decision that didn't need "
+        "one, or missing before something irreversible; vague, contradictory, "
+        "or underspecified agent prompts; a step's \"character\" pin that "
+        "doesn't match what that persona is described as being for. Return "
+        "an empty array if you find nothing worth flagging -- do not invent "
+        "findings to have something to say.\n\n"
+        f"AGENT CHARACTERS ON THIS BOX (for judging a persona/role mismatch):\n{roster}\n\n"
+        f"THE DEFINITION:\n{serialized}"
+    )
+    try:
+        text = _run_toolless(provider, prompt, timeout=_REVIEW_TIMEOUT)
+    except Exception as e:
+        return [], str(e)
+    data = _parse_json_value(text, '[', ']', list, max_chars=_DRAFT_MAX_RAW_CHARS)
+    if data is None:
+        return [], 'review call did not return a valid JSON array'
+    node_names = {n.get('name') for n in (doc.get('nodes') or [])
+                 if isinstance(n, dict) and isinstance(n.get('name'), str)}
+    return _sanitize_review_findings(data, node_names), None
+
+
+def review_workflow(doc: Optional[dict] = None, workflow_id: Optional[str] = None) -> dict:
+    """Read-only: `validate_workflow`'s deterministic errors plus advisory
+    model findings on logic (never mutates anything, never gates anything --
+    the caller decides what to do with the result). Raises KeyError if
+    `workflow_id` doesn't resolve, ValueError if neither argument names a
+    definition."""
+    if workflow_id:
+        record = get_workflow(workflow_id)
+        if record is None:
+            raise KeyError('workflow not found')
+        doc = record
+    if not isinstance(doc, dict):
+        raise ValueError('definition or workflow_id is required')
+
+    errors = validate_workflow(doc)
+    findings = [{'node': None, 'severity': 'error', 'message': e, 'suggestion': None}
+               for e in errors]
+    model_findings, model_error = _model_review_findings(doc)
+    findings.extend(model_findings)
+    return {'ok': True, 'valid': not errors, 'errors': errors,
+           'findings': findings, 'model_error': model_error}
+
+
 def compile_workflow(workflow: dict) -> tuple:
     """(nodes_by_name, order). Re-validates -- R2-D3's run-time cycle layer,
     and defence in depth against a hand-edited store file generally -- and
