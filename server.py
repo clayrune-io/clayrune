@@ -1982,11 +1982,15 @@ from mc.blueprints import secrets_routes as _bp_secrets  # noqa: E402
 from mc import secrets_store as _secrets_store_boot  # noqa: E402
 
 app.register_blueprint(_bp_secrets.bp)
-# MC-979: mint the per-boot /api/secrets/exec token NOW, not lazily on first
-# request — a locked-vault CLI's with-secret.py fallback reads this file to
-# build its very first request to that route, so the file must already exist
-# before that request can be sent, not get created by handling it.
-_secrets_store_boot.ensure_exec_token()
+# MC-979: the per-boot /api/secrets/exec token is minted in `boot()` below,
+# not here — this module-level stanza runs on ANY `import server` (including
+# a bare `import server` from a non-pytest script, or pytest collecting this
+# module), which used to call `ensure_exec_token()` right here and mint+persist
+# a FRESH token to disk every time, silently overwriting the real running
+# server's token file. A same-box `with-secret.py` fallback call made after
+# that read the new (wrong) token off disk and got a 403 from the actual
+# server, which still held the old one in memory — until the server was
+# restarted (MC-981 follow-up finding, confirmed 2026-09-26).
 
 # ── Backup / restore (Phase 1, docs/BACKUP_EXPORT_SPEC.md). No wire() — like
 # secrets_routes, mc/backup.py resolves every path itself (MC_DATA_DIR / repo
@@ -3188,6 +3192,14 @@ def boot(check_port=True):
     global _BOOT_T0
     _BOOT_T0 = _time.time()
     _register_claude_runtime_hooks()
+    # MC-979: mint the per-boot /api/secrets/exec token NOW, not lazily on
+    # first request — a locked-vault CLI's with-secret.py fallback reads this
+    # file to build its very first request to that route, so the file must
+    # already exist before that request can be sent, not get created by
+    # handling it. Belongs in boot(), not module scope (see the comment where
+    # secrets_routes.bp is registered above) — a bare `import server` must
+    # never mint a token, only an actual server starting up may.
+    _secrets_store_boot.ensure_exec_token()
     if check_port:
         _boot_phase('port-conflict wait', _check_port_conflict)
     # Reap child process trees orphaned by a prior MC instance that exited

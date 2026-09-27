@@ -37,6 +37,7 @@ plaintext value" — see its docstring below for why that's still safe (MC-979).
 import hmac
 import os
 import re
+import signal
 import subprocess
 import time
 
@@ -594,6 +595,28 @@ def _decode_and_scrub(raw_bytes: bytes) -> str:
     return text
 
 
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """Kill ``proc`` AND every process it spawned, on timeout (MC-981 follow-up
+    to MC-979). ``proc.kill()`` — what a bare ``timeout=`` on ``subprocess.run``
+    plumbs into — only signals the direct child; a resolved command that forks
+    its own grandchild (a daemon, a long sleeper) outlived the timeout because
+    nothing ever reaped it. Requires the child to have been started in its own
+    group (Windows: ``CREATE_NEW_PROCESS_GROUP``; POSIX: ``start_new_session``)
+    — see the ``Popen`` call below. Kills by the PID this process itself
+    started, never by image name (see AGENT_RULES.md process hygiene)."""
+    if os.name == 'nt':
+        try:
+            subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)],
+                           stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+        except Exception as e:
+            _log(f"[secrets] taskkill on server-exec pid {proc.pid} failed: {e}")
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception as e:
+            _log(f"[secrets] killpg on server-exec pid {proc.pid} failed: {e}")
+
+
 @bp.route('/api/secrets/exec', methods=['POST'])
 def api_secrets_exec():
     """Run a command with real secret values injected into its environment,
@@ -691,24 +714,42 @@ def api_secrets_exec():
     # would mean "inherit", and the server's own stdin is not something an
     # exec'd command should ever see (and, under a test harness that
     # replaces stdin with a non-inheritable handle, inheriting it fails
-    # process creation outright on Windows). `subprocess.run`'s `input=`
-    # already implies `stdin=PIPE`; DEVNULL only when there's no stdin_value.
+    # process creation outright on Windows).
+    #
+    # Started in its own process group/session (never inherited from this
+    # server) so a timeout can take out the whole tree, not just this direct
+    # child — see `_kill_process_tree` above (MC-981: a grandchild the child
+    # spawned used to survive `subprocess.run(..., timeout=)`, which only
+    # kills the process it started).
+    stdin_kw = subprocess.PIPE if stdin_value is not None else subprocess.DEVNULL
     try:
-        if stdin_value is not None:
-            proc = subprocess.run(
-                command, env=env, cwd=cwd, input=stdin_value.encode('utf-8'),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        if os.name == 'nt':
+            proc = subprocess.Popen(
+                command, env=env, cwd=cwd, stdin=stdin_kw,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
         else:
-            proc = subprocess.run(
-                command, env=env, cwd=cwd, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
-        exit_code = proc.returncode
-        stdout_bytes, stderr_bytes = proc.stdout, proc.stderr
-    except subprocess.TimeoutExpired as e:
-        exit_code = None
-        stdout_bytes, stderr_bytes = (e.stdout or b''), (e.stderr or b'')
+            proc = subprocess.Popen(
+                command, env=env, cwd=cwd, stdin=stdin_kw,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=True)
     except OSError as e:
         return jsonify({'error': f'failed to start command: {e}'}), 400
+
+    try:
+        stdout_bytes, stderr_bytes = proc.communicate(
+            input=stdin_value.encode('utf-8') if stdin_value is not None else None,
+            timeout=timeout)
+        exit_code = proc.returncode
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(proc)
+        # Drain whatever the tree had already written before it died —
+        # best-effort, bounded so a wedged pipe can't hang the request.
+        try:
+            stdout_bytes, stderr_bytes = proc.communicate(timeout=10)
+        except Exception:
+            stdout_bytes, stderr_bytes = b'', b''
+        exit_code = None
 
     stdout_text = _decode_and_scrub(stdout_bytes)
     stderr_text = _decode_and_scrub(stderr_bytes)
