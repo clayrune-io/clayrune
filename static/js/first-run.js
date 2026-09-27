@@ -32,7 +32,7 @@ let _setupAdvExpanded = false;      // essentials-detail: "Choose individually" 
 // untick/size-cap control" anyway, so this step has no checklist to render —
 // "Back up now" always runs the full default (no `categories` key sent).
 let _setupBackupDest = { loaded: false, configured: null, effective: null, override: '', saving: false, saveError: null };
-let _setupBackupSchedule = 'weekly';  // pre-selected per Ron's 2026-09-26 cadence approval; key backup_schedule (MC-983 builds the scheduler that reads it)
+let _setupBackupSchedule = 'weekly';  // pre-selected per Ron's 2026-09-26 cadence approval; key backup_schedule (read by MC-983's scheduler daemon)
 let _setupBackupScheduleVisited = false;  // same auto-persist-once guard as setupModelTierVisited below
 let _setupBackupScheduleError = null;
 let _setupBackupJob = null;           // async create job, polled the same way backup-panel.js polls its own
@@ -317,7 +317,7 @@ function _setupProtectHTML() {
         ${_setupBackupError ? `<div style="margin-top:8px;font-size:11px;color:var(--red-text)">${esc(_setupBackupError)}</div>` : ''}
         ${_setupBackupResult ? `<div style="margin-top:8px;font-size:11px;color:#22c55e">&#x2713; Backed up ${_setupBackupResult.files_written} file${_setupBackupResult.files_written === 1 ? '' : 's'}${_setupBackupResult.warnings && _setupBackupResult.warnings.length ? `, ${_setupBackupResult.warnings.length} warning${_setupBackupResult.warnings.length === 1 ? '' : 's'}` : ''}.</div>` : ''}`)
     + _setupSec('Automatic backups',
-        'How often Clayrune backs up on its own, in addition to anything you run by hand.',
+        `How often Clayrune backs up on its own, in addition to anything you run by hand. The newest ${Math.max(1, parseInt((_globalConfig && _globalConfig.backup_keep) || 3, 10) || 3)} scheduled backups are kept; older scheduled ones are deleted, and backups you run yourself are never touched.`,
         `<div class="mc-seg" id="setup-backup-schedule-seg">`
         + Object.keys(_BACKUP_CADENCE_LABEL).map(k => `<button type="button" class="${_setupBackupSchedule === k ? 'active' : ''}" data-cadence="${k}" onclick="_setupPickBackupSchedule('${k}',this)">${_BACKUP_CADENCE_LABEL[k]}</button>`).join('')
         + `</div>`
@@ -474,15 +474,11 @@ async function _setupPollBackupJob(jobId) {
   setTimeout(() => _setupPollBackupJob(jobId), 700);
 }
 
-// Persisted through the same config path as the destination above. The
-// scheduler that reads this key is MC-983, built in parallel and not yet on
-// this branch — update_config (settings_routes.py _CONFIG_EDITABLE_KEYS)
-// silently drops any key not on its allowlist, so until MC-983 lands this
-// call round-trips ok:true without actually persisting. That silent no-op is
-// not treated as an error (cadence is a preference the user can also set
-// later once the scheduler ships, not a gate on finishing setup) — but a
-// genuine failure (network error, non-2xx) is surfaced inline rather than
-// swallowed, same as the destination field's saveError above.
+// Persisted through the same config path as the destination above
+// (backup_schedule is on settings_routes.py _CONFIG_EDITABLE_KEYS; MC-983's
+// scheduler daemon reads it). A failure (network error, non-2xx) is surfaced
+// inline, same as the destination field's saveError above; it does not gate
+// finishing setup, since cadence can also be set later in Settings > Backup.
 async function _setupPickBackupSchedule(v, btn) {
   _setupBackupSchedule = v;
   _setupBackupScheduleError = null;
