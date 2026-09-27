@@ -1935,14 +1935,14 @@ def _profile_holder(udd):
             ps = ("Get-CimInstance Win32_Process -Filter \"Name='%s'\" | "
                   "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress" % image)
             out = subprocess.run(['powershell', '-NoProfile', '-Command', ps],
-                                 capture_output=True, text=True, timeout=15,
-                                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO).stdout
+                                 capture_output=True, text=True, encoding='utf-8', errors='replace',
+                                 timeout=15, creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO).stdout
             data = json.loads(out) if out.strip() else []
             for r in (data if isinstance(data, list) else [data]):
                 rows.append((int(r.get('ProcessId') or 0), r.get('CommandLine') or ''))
         else:
             out = subprocess.run(['ps', '-eo', 'pid=,args='], capture_output=True,
-                                 text=True, timeout=15).stdout
+                                 text=True, encoding='utf-8', errors='replace', timeout=15).stdout
             for line in out.splitlines():
                 pid, _, args = line.strip().partition(' ')
                 if pid.isdigit():

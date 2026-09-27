@@ -443,7 +443,8 @@ def _save_gc_cache(project: dict, cache: dict) -> None:
         return
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(cache), encoding='utf-8')
+        from mc.atomic_json import write_json_atomic
+        write_json_atomic(p, cache)
     except Exception:
         pass  # cache is a pure optimization; losing it just costs a re-scan
 
