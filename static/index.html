@@ -1087,6 +1087,16 @@ let _sendInFlight = {};
 // the server actually did receive the message (turn_start proves it did).
 // Reset to false at send time; set true at turn_start.
 let _turnStartAcked = {};
+// sessionId → the cached status at the moment this send began (e.g. 'stopped'
+// for a resumed chat, 'idle' for a plain follow-up). MC-985: a `status`/
+// `turn_complete` event received before `turn_start` is only genuinely STALE
+// (an echo of the state we opened SSE on) if it reports that SAME status —
+// not merely because a send is in flight. A revive-from-stopped can complete
+// fast enough that the reconnect after POST never observes the 'running'
+// window at all, so `turn_start` never fires; without this, that real
+// completion/'stopped' event was indistinguishable from the stale echo and
+// got silently dropped forever (stuck "Thinking" + frozen pill until reopen).
+let _preSendStatus = {};
 const expandedOutputSessions = new Set();  // sessions where user clicked "load all"
 // session_id → count of rollover-chain predecessor transcripts loaded via
 // "Load earlier conversation" (MC-978). Indexed from the END of that

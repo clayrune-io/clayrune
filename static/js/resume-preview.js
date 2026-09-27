@@ -963,6 +963,7 @@ function connectAgentStream(projectId, sessionId) {
         // turn_start is what we're waiting for in _sendInFlight — clear it
         // here so subsequent terminal events can flow normally.
         delete _sendInFlight[sessionId];
+        delete _preSendStatus[sessionId];
         _turnStartAcked[sessionId] = true;
         if (agentStatusCache[sessionId]) {
           agentStatusCache[sessionId].status = 'running';
@@ -1003,10 +1004,15 @@ function connectAgentStream(projectId, sessionId) {
         // ("Interrupt…" vs "Send follow-up…") — cosmetic, worth it.
         renderAgentConsole();
       } else if (msg.type === 'turn_complete') {
-        if (_sendInFlight[sessionId]) {
-          // Stale turn_complete from the prior idle state — the new turn has
-          // not yet started server-side. Ignore so we don't close SSE early
-          // (which would prevent us from seeing the imminent turn_start).
+        // MC-985: turn_complete always implies status 'idle'. Only treat it as
+        // a stale echo of the PRIOR state (ignore, keep SSE open, wait for the
+        // real turn_start) when that prior state actually WAS 'idle' — i.e.
+        // this event reports nothing this send doesn't already know. A revive
+        // of a STOPPED (or running-interrupted) session can complete fast
+        // enough that this reconnect never observes the 'running' window —
+        // turn_start never fires — but the event is still genuine, and must
+        // not be swallowed or the chat hangs on "Thinking" forever (MC-985).
+        if (_sendInFlight[sessionId] && !_turnStartAcked[sessionId] && _preSendStatus[sessionId] === 'idle') {
           return;
         }
         // Blocked-on-user guard: if this session is waiting on an
@@ -1021,6 +1027,11 @@ function connectAgentStream(projectId, sessionId) {
           const _qc = agentStatusCache[sessionId];
           if (_qc && (_qc.waitingForQuestion || _qc.waitingForPlanApproval)) return;
         }
+        // A real completion reached this point despite _sendInFlight still
+        // being set (turn_start raced past us — MC-985) — clear the gate so
+        // it doesn't linger and suppress a later, unrelated event.
+        delete _sendInFlight[sessionId];
+        delete _preSendStatus[sessionId];
         // §4: after the blocked-on-user guard so a turn_complete masking a
         // pending question doesn't wrongly hide (that path hides via
         // renderAgentQuestion). Genuine completion → dots gone.
@@ -1058,11 +1069,30 @@ function connectAgentStream(projectId, sessionId) {
         // already updated in place above.
         renderAgentConsole();
       } else if (msg.type === 'status') {
-        // 'stopped' is user-initiated and always authoritative even mid-send.
-        // For other statuses, suppress while a send is in flight (same
-        // staleness reasoning as turn_complete above).
-        if (_sendInFlight[sessionId] && msg.status !== 'stopped') {
+        // MC-985: a `status` event during an in-flight send is stale — an
+        // echo of whatever this session already was BEFORE we sent — only
+        // when it reports that SAME status and no turn_start has arrived
+        // yet. The old rule ("'stopped' is always authoritative even
+        // mid-send") was itself the bug: the eager SSE that sendFollowup
+        // opens before its POST resolves can connect while the server still
+        // reports the OLD 'stopped' state (revival hasn't run yet) — that
+        // stale 'stopped' was let through unconditionally, closing the
+        // eager stream and repainting the STOPPED pill while _sendInFlight
+        // stayed set with nothing left to clear it. Comparing against the
+        // pre-send status catches that case (msg.status === _preSendStatus)
+        // while still passing through a genuinely NEW terminal state — e.g.
+        // a fast revive-from-stopped that completes before this reconnect
+        // ever observes 'running', so turn_start never fires but the status
+        // (idle/completed/error/a fresh stop) differs from what we started
+        // with and must not be swallowed.
+        if (_sendInFlight[sessionId] && !_turnStartAcked[sessionId] && msg.status === _preSendStatus[sessionId]) {
           return;
+        }
+        if (_sendInFlight[sessionId]) {
+          // Real event reached us despite the gate still being up (turn_start
+          // raced past us) — clear it so it doesn't linger.
+          delete _sendInFlight[sessionId];
+          delete _preSendStatus[sessionId];
         }
         // A non-terminal 'idle' must not tear down a session that's blocked on
         // a question / plan approval (would close SSE + clear asking-state and
