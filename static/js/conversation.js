@@ -5163,6 +5163,23 @@ async function sendFollowup(projectId, sessionId) {
     echoEl.scrollTop = echoEl.scrollHeight;
   }
 
+  // MC-973: paint dots the instant the user sends, instead of waiting for the
+  // server's `turn_start` SSE event. That event can't arrive until the round
+  // trip below completes, and for a PARKED chat that round trip is the full
+  // synchronous revival (agent_send -> _revive_from_agent_log: rebuild
+  // context, replay transcript history, spawn `claude -r`) plus the eager
+  // SSE opened a few lines down erroring out immediately ("no active
+  // session" — the session doesn't exist yet) and going silent by design
+  // (see the `_sendInFlight` guard in the stream's `error` handler). Net
+  // effect measured against a throwaway project: a live follow-up shows dots
+  // in ~0.1s, but a revived one showed nothing at all for the entire
+  // revival window (hundreds of ms here; scales with context/transcript size
+  // on a real project) until the POST resolved. showTypingIndicator is a
+  // pure DOM paint (no status-cache write), so this doesn't touch the
+  // Phase-2 "server picks the route" invariant below — turn_start/turn_complete
+  // still own the real state, this only avoids a silent gap before they fire.
+  showTypingIndicator(sessionId);
+
   // Zero-gap picker update: reflect the newest user message in conversationsCache
   // so when this session later becomes non-running (stops / ends), the picker
   // already shows the real last line without waiting for a reload.
@@ -5258,6 +5275,10 @@ async function sendFollowup(projectId, sessionId) {
   }).then(r => { clearTimeout(_sendTID); return r.json(); }).then(data => {
     if (!data.ok && !data.queued) {
       console.error('Send failed:', data.error);
+      // The eager dots painted above have nothing left to wait for — no
+      // turn_start is coming for a send the server itself rejected.
+      hideTypingIndicator(sessionId);
+      delete _sendInFlight[sessionId];
     }
     // A successful send makes this session server-live again (followup /
     // revive / dispatch alike) — drop the read-only marker so the freshness
@@ -5341,6 +5362,9 @@ async function sendFollowup(projectId, sessionId) {
     clearTimeout(_sendTID);
     console.error('Send error:', e);
     delete _sendInFlight[sessionId];
+    // Same reasoning as the !data.ok branch above: the eager dots have
+    // nothing left to wait for once the POST itself failed.
+    hideTypingIndicator(sessionId);
     const aborted = (e && (e.name === 'AbortError' || /aborted/i.test(String(e))));
     // Mark the local echo as failed so it stays visible (otherwise the next
     // reconcile pass wipes any `.agent-echo` the moment it sees an unrelated
