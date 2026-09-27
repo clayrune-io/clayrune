@@ -318,6 +318,8 @@ def test_agent_worktree_root_detects_worktree_paths(tmp_path):
     wt = tmp_path / 'repo' / '.clayrune' / 'agents' / 'abc123' / 'steward' / 'fence.py'
     assert core._agent_worktree_root(wt) == tmp_path / 'repo'
     assert core._agent_worktree_root(tmp_path / 'repo' / 'steward' / 'fence.py') is None
+    cc = tmp_path / 'repo' / '.claude' / 'worktrees' / 'agent-x' / 'steward' / 'fence.py'
+    assert core._agent_worktree_root(cc) == tmp_path / 'repo'
 
 
 def test_fence_script_path_redirects_worktree_to_canonical(tmp_path, monkeypatch):

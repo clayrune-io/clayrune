@@ -210,15 +210,16 @@ def steward_notify(project_id: str, kind: str, body: str, action: str = '') -> b
 
 
 # ── Fence settings file (the PreToolUse hook, passed via --settings) ──────────
-_AGENT_WORKTREE_PARTS = ('.clayrune', 'agents')
+# Clayrune agent worktrees and Claude Code's own subagent worktrees.
+_AGENT_WORKTREE_PARTS = (('.clayrune', 'agents'), ('.claude', 'worktrees'))
 
 
 def _agent_worktree_root(path: Path) -> Optional[Path]:
-    """If `path` sits inside an agent worktree (<repo>/.clayrune/agents/<id>/...),
-    return <repo>; else None."""
+    """If `path` sits inside an agent worktree (<repo>/.clayrune/agents/<id>/...
+    or <repo>/.claude/worktrees/<id>/...), return <repo>; else None."""
     parts = path.parts
     for i in range(len(parts) - 2):
-        if tuple(p.lower() for p in parts[i:i + 2]) == _AGENT_WORKTREE_PARTS:
+        if tuple(p.lower() for p in parts[i:i + 2]) in _AGENT_WORKTREE_PARTS:
             return Path(*parts[:i])
     return None
 
