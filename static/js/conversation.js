@@ -1416,8 +1416,15 @@ function agentPanelHTML(p) {
       return result;
     })();
 
+    // MC-987: wrapped in a stable slot so updateStopButtonUI (index.html) can
+    // patch it in place from turn_start/turn_complete/status/reconciler — those
+    // paths deliberately skip the refreshModal rebuild that (re)computes
+    // `stopBtn` here (see the MC-940 comment below), so a session mounted on a
+    // terminal cached status (a revived/parked chat) rendered NO Stop button
+    // for the whole running turn without this slot to patch.
     const stopBtn = (isRunning || st === 'idle' || st === 'error')
       ? `<button class="btn-stop" onclick="stopAgent('${esc(p.id)}','${esc(activeSessionId)}')">Stop</button>` : '';
+    const stopBtnSlot = `<span id="stop-btn-${esc(activeSessionId)}">${stopBtn}</span>`;
 
     // §4 cold-render: derive the typing indicator declaratively from run-state
     // so it survives a refreshModal rebuild (turn_start/turn_complete skip
@@ -1624,7 +1631,7 @@ function agentPanelHTML(p) {
         ${_charBadge}
         ${_apkBadge}
         ${isActiveOrch ? '<span class="hm-orch-label">&#x2B21; Hivemind</span>' : ''}
-        ${stopBtn}
+        ${stopBtnSlot}
         <!-- Always rendered (not gated on _pcaps.emits_usage): the live
              context counter (docs/CONTEXT_ECONOMY_SPEC.md §5) is available
              even for providers with no usage/cost telemetry, e.g. Gemini —
@@ -3974,8 +3981,12 @@ function splitPaneHTML(p, sid, isPrimary) {
   const label = (s.task || '').substring(0, 44) || 'Conversation';
   const dot = `<span class="agent-status-dot ${esc(st)}"></span>`;
   const statusLbl = `<span class="agent-status-label ${esc(st)}">${esc(consoleStatusLabel(st, s))}</span>`;
+  // MC-987: same stable-slot discipline as agentPanelHTML's stopBtnSlot — the
+  // split pane's status is patched in place too (updateStopButtonUI targets
+  // both ids), so it must not go stale for the running-turn window either.
   const stopBtn = (isRunning || st === 'idle' || st === 'error')
     ? `<button class="btn-stop" onclick="stopAgent('${esc(p.id)}','${esc(sid)}')">Stop</button>` : '';
+  const stopBtnSlot = `<span id="stop-btn-split-${esc(sid)}">${stopBtn}</span>`;
   // ✕ closes THIS pane and keeps the other as the single view.
   const closeBtn = `<button class="agent-split-close" onclick="closeSplitPane('${esc(p.id)}','${esc(sid)}')" title="Close this pane">&#10005;</button>`;
   const composeEnabled = (st === 'running' || st === 'completed' || st === 'stopped' || st === 'idle' || st === 'error');
@@ -4015,7 +4026,7 @@ function splitPaneHTML(p, sid, isPrimary) {
   return `<div class="agent-split-pane${isPrimary ? ' primary' : ''}" data-sid="${esc(sid)}">
     <div class="agent-split-head">
       ${dot}<span class="agent-split-label" title="${esc(s.task || '')}">${esc(label)}</span>
-      ${statusLbl}${stopBtn}${closeBtn}
+      ${statusLbl}${stopBtnSlot}${closeBtn}
     </div>
     <div class="agent-chat">
       ${_dispatchedByBannerHTML(sid)}

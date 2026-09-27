@@ -1970,6 +1970,7 @@ function updateAgentStatusUI(sessionId, status) {
   if (label) { label.className = `agent-status-label ${dotClass}`; label.textContent = labelText; }
   const tabDot = document.querySelector(`.agent-tab.active .agent-status-dot`);
   if (tabDot) { tabDot.className = `agent-status-dot ${dotClass}`; }
+  updateStopButtonUI(sessionId, status);
   // This patch deliberately never touches the composer (see the MC-940 comment
   // on tabContent in conversation.js), so a turn settling can't itself clear a
   // stale keyboard inset left over from a stale-vv dismiss. Re-validate mobile's
@@ -1977,6 +1978,30 @@ function updateAgentStatusUI(sessionId, status) {
   if (status !== 'running' && typeof window.mcRecoverViewportOnStatusSettle === 'function') {
     window.mcRecoverViewportOnStatusSettle();
   }
+}
+
+// MC-987: the Stop button lives inside `stopBtn`/`stopBtnSlot` in
+// agentPanelHTML/splitPaneHTML (conversation.js), computed once at mount from
+// the cached status at that moment. turn_start/turn_complete/status/the
+// freshness reconciler all call updateAgentStatusUI to patch the dot/label in
+// place WITHOUT a refreshModal rebuild (see the MC-940 comment above) — a
+// session mounted on a terminal cached status (a revived/parked chat opened,
+// then Send tapped) never got a rebuild for the whole running turn, so the
+// button that "isRunning" would have rendered simply never existed. Same
+// in-place-patch discipline as the dot/label just above: fill or clear the
+// stable `#stop-btn-<sid>` / `#stop-btn-split-<sid>` slots the templates now
+// always render, keyed off the SAME status this function already received.
+function updateStopButtonUI(sessionId, status) {
+  const cached = agentStatusCache[sessionId];
+  const pid = cached && cached.projectId;
+  const show = pid && (status === 'running' || status === 'idle' || status === 'error');
+  const html = show
+    ? `<button class="btn-stop" onclick="stopAgent('${esc(pid)}','${esc(sessionId)}')">Stop</button>`
+    : '';
+  const main = document.getElementById(`stop-btn-${sessionId}`);
+  if (main) main.innerHTML = html;
+  const split = document.getElementById(`stop-btn-split-${sessionId}`);
+  if (split) split.innerHTML = html;
 }
 
 async function guardianReset(projectId, sessionId, action) {
