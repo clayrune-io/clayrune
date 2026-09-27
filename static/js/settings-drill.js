@@ -607,6 +607,10 @@ async function _renderSettings() {
           <button class="${typeof _chatStyle!=='undefined'&&_chatStyle==='flow'?'active':''}" onclick="setChatStyle('flow')">Flow</button>
         </div>
       </div>
+      <div class="settings-row">
+        <div><div class="settings-label">Show usage bar</div><div class="settings-hint">A slim strip pinned to the bottom of the dashboard with each provider's weekly quota use. Hidden on mobile. Takes effect immediately; no restart.</div></div>
+        ${toggle('usage_bar_enabled', cfg.usage_bar_enabled !== false)}
+      </div>
     </div>
 
     <div class="settings-section">

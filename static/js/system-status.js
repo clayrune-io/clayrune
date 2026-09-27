@@ -580,7 +580,71 @@ function _rerenderSysStatusSurfaces() {
   }
   const surface = document.getElementById('sys-status-surface');
   if (surface) surface.innerHTML = renderSysStatusPanel();
+  _renderUsageBarStrip();
 }
+
+// ── Bottom usage strip (MC-966) ──────────────────────────────────────────
+// One compact colored bar per provider's WEEKLY utilization %, pinned to the
+// bottom of the desktop main area. Real numbers only: `systemUsageCache
+// .provider_weekly_usage` (from /api/system/usage) is built server-side to
+// contain ONLY providers with a real weekly % source — Claude's OAuth usage
+// endpoint, Codex's own on-disk rate_limits — so there is nothing to filter
+// or guess here; a provider simply absent from that dict gets no bar.
+function _ubColorClass(pct) {
+  if (pct >= 90) return 'red';
+  if (pct >= 70) return 'amber';
+  return 'green';
+}
+
+function _ubProviderLabel(name) {
+  const p = (_agentProviders || []).find(x => (x.name || '').toLowerCase() === name);
+  return (p && p.display_name) || (name.charAt(0).toUpperCase() + name.slice(1));
+}
+
+// Opens (never toggles-closed) the system-status popover on its Usage tab —
+// the strip is a shortcut INTO the existing surface, not a second one.
+function _ubOpenUsagePopover(ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  const pop = document.getElementById('sys-status-popover');
+  if (!pop) return;
+  _sysStatusActiveTab = 'usage';
+  if (!pop.classList.contains('open')) {
+    _sysStatusPopoverOpen = true;
+    pop.classList.add('open');
+    _positionSysStatusPopover();
+    fetchSystemStatus();
+  }
+  if (!systemUsageCache && !_sysUsageFetching) fetchSystemUsage();
+  renderSysStatusPopover();
+}
+window._ubOpenUsagePopover = _ubOpenUsagePopover;
+
+function _renderUsageBarStrip() {
+  const el = document.getElementById('usage-bar-strip');
+  if (!el) return;
+  const enabled = typeof _globalConfig === 'undefined' || _globalConfig.usage_bar_enabled !== false;
+  const usage = systemUsageCache && systemUsageCache.provider_weekly_usage;
+  if (!enabled || !usage || Object.keys(usage).length === 0) {
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = Object.entries(usage).map(([name, win]) => {
+    const exhausted = !!win.exhausted;
+    const pct = exhausted ? 100 : Math.max(0, Math.min(100, Number(win.utilization) || 0));
+    const cls = exhausted ? 'red' : _ubColorClass(pct);
+    const until = _ssUntil(win.resets_at);
+    const title = exhausted
+      ? `${_ubProviderLabel(name)} — ${win.exhausted_display || 'exhausted'}`
+      : `${_ubProviderLabel(name)} — ${pct.toFixed(0)}% of weekly quota${until ? ' · ' + until : ''}`;
+    return `
+      <div class="usage-bar-item" title="${esc(title)}" onclick="_ubOpenUsagePopover(event)">
+        <span class="usage-bar-label">${esc(_ubProviderLabel(name))}</span>
+        <div class="usage-bar-track"><div class="usage-bar-fill ${cls}" style="width:${pct}%"></div></div>
+        <span class="usage-bar-pct">${exhausted ? 'full' : pct.toFixed(0) + '%'}</span>
+      </div>`;
+  }).join('');
+}
+window._renderUsageBarStrip = _renderUsageBarStrip;
 
 // Keep the popover pixel-snapped if the window is resized while it's open.
 window.addEventListener('resize', () => {
@@ -607,8 +671,14 @@ document.addEventListener('click', (e) => {
 // System status pill: initial fetch + periodic re-fetch (60s cadence matches
 // the schedule banner). Cache is also auto-refreshed server-side by any
 // agent activity, so the pill stays current without active polling.
+//
+// The bottom usage strip (MC-966) hangs off this SAME tick rather than
+// starting a second polling loop: fetchSystemUsage() already backs the Usage
+// tab (lazy-fetched there), and /api/system/usage caches server-side for 60s
+// anyway, so polling it here at the same cadence costs nothing extra.
 fetchSystemStatus();
-setInterval(fetchSystemStatus, 60000);
+fetchSystemUsage();
+setInterval(() => { fetchSystemStatus(); fetchSystemUsage(); }, 60000);
 
 // ── Interop: re-expose for inline / cross-module + region-generated on*=
 //    handler callers. All runtime-only (resolve against window — incl. the

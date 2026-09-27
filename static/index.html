@@ -714,6 +714,15 @@
     <div class="agent-console-body" id="ac-body"></div>
   </div>
 
+  <!-- Bottom usage strip (MC-966): one bar per provider's weekly quota %.
+       A real flex child of .main-area (not fixed) so it reserves its own
+       row instead of overlaying content; empty and collapses to nothing
+       when no provider has real data or the feature is off. #minimized-tray
+       is a separate fixed overlay for minimized modal chips — the CSS
+       nudges it up by this strip's height only while the strip is non-empty,
+       so the two coexist without one covering the other. -->
+  <div class="usage-bar-strip" id="usage-bar-strip"></div>
+
 </div><!-- end .main-area -->
 
 <!-- Overlays (outside main-area for fixed positioning) -->
@@ -2933,6 +2942,9 @@ async function saveSetting(key, value) {
 function toggleSetting(el, key) {
   const isOn = el.classList.toggle('on');
   saveSetting(key, isOn);
+  // Bottom usage strip (MC-966) has no other trigger to repaint on — it isn't
+  // tied to a respawn or a poll tick the way most settings are.
+  if (key === 'usage_bar_enabled' && typeof _renderUsageBarStrip === 'function') _renderUsageBarStrip();
 }
 
 // Brief-replies scope: one 3-way control writes both server bools so exactly

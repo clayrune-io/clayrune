@@ -253,6 +253,11 @@ _CONFIG_EDITABLE_KEYS = {
     # state.CONFIG per turn (mc/memory.py _mint_enabled / negation ledger),
     # default False; human-only like the rest of this set.
     'memory_mint_triggers_enabled', 'negation_ledger_enabled',
+    # MC-966 (Settings > Appearance). Bottom usage strip visibility; read live
+    # by static/js/system-status.js's render gate off `_globalConfig` — no
+    # respawn needed. Default ON (unset/None reads as enabled client-side, the
+    # same "absent key = default" convention as `desk_v1`).
+    'usage_bar_enabled',
 }
 
 # Respawn-trigger ("Tier-1") settings: baked into the spawn (CLI flags or the
