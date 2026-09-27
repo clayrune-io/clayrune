@@ -6932,10 +6932,16 @@ def _note_call_context_tokens(session, message, parent_tool_use_id=None):
     size and roll far too early, so the Claude readers take the LAST
     assistant message's usage instead. Streamed assistant events repeat the
     same usage per content block, so overwriting is idempotent.
+
+    Also clears `_rolled_from` (2026-09-27 double-roll fix, `_mark_context_rolled`):
+    a real usage figure here means this call's process produced at least one
+    full turn, which means its OWN transcript now exists on disk — the
+    carried-handoff fallback is no longer needed once that's true.
     """
     _ctx = _agent_runtime.normalize_context_tokens(message.get('usage'))
     if _ctx is not None:
         session['context_tokens'] = _ctx
+        session.pop('_rolled_from', None)
         _midturn.note_call_tokens(session, _ctx, parent_tool_use_id)
 
 
@@ -9226,6 +9232,79 @@ def _live_context_tokens(project_id, claude_sid):
     return None
 
 
+def _live_session_rolled_from(project_id, claude_sid):
+    """`_rolled_from` off a still-live in-memory session owning `claude_sid` —
+    the `_live_context_tokens` lookup, read for the other field. Used by call
+    sites (dispatch/revive) that only hold a durable claude_session_id, not
+    the live session dict itself.
+    """
+    if not claude_sid:
+        return None
+    for s in agent_sessions.values():
+        if s.get('project_id') == project_id and s.get('claude_session_id') == claude_sid:
+            return s.get('_rolled_from')
+    return None
+
+
+def _mark_context_rolled(session, old_native_id):
+    """Reset the per-turn token figure after a roll and remember the native id
+    we rolled FROM, so a later attempt against the fresh native id (which may
+    never get a transcript, e.g. stopped before its first turn) can still
+    recover the real handoff instead of failing to a blank one-liner.
+
+    2026-09-27 double-roll incident: a roll's fresh CLI process was stopped
+    1s after spawn, before writing any transcript. The old code left
+    `context_tokens` at the PREVIOUS session's stale figure (e.g. 200297),
+    so the token trigger fired AGAIN on the next send against the new
+    (transcript-less) native id, and `_auto_fresh_handoff` had nothing to
+    hand off — the agent woke up with no prior conversation at all, despite
+    the real 2MB transcript sitting right there under the old native id.
+    Resetting to None here makes "unknown stays unknown" (the trigger's own
+    rule) apply to the fresh session instead of inheriting a stale figure.
+
+    `_rolled_from` is preserved through a CHAIN of interrupted rolls — only
+    set when not already present — so it always points at the last native id
+    that actually has a transcript, not at an intermediate dead end.
+    """
+    session['context_tokens'] = None
+    if old_native_id:
+        session['_rolled_from'] = session.get('_rolled_from') or old_native_id
+
+
+def _clear_live_context_tokens(project_id, claude_sid):
+    """`_mark_context_rolled` for call sites (dispatch/revive) that only hold
+    a durable claude_session_id, not the live session dict — mirrors
+    `_live_context_tokens`'s own lookup."""
+    if not claude_sid:
+        return
+    for s in agent_sessions.values():
+        if s.get('project_id') == project_id and s.get('claude_session_id') == claude_sid:
+            _mark_context_rolled(s, claude_sid)
+
+
+def _fragile_resume_target(pp, provider, native_id, rolled_from):
+    """True when a plain resume against `native_id` would silently lose
+    context instead of continuing it.
+
+    An earlier roll pointed this session at `native_id`, carrying the real
+    transcript under `rolled_from` — but the CLI process for `native_id` was
+    stopped before it ever wrote a transcript of its own (the 2026-09-27
+    double-roll incident: Stop landed 1s after spawn). With `context_tokens`
+    now correctly reset to None (`_mark_context_rolled`), the token trigger
+    no longer fires a second roll, so without this check the caller would
+    fall through to a bare `-r native_id` — which either errors or starts a
+    blank conversation, never recovering `rolled_from`'s real turns.
+    """
+    if not rolled_from or not native_id:
+        return False
+    try:
+        runtime = _agent_runtime.get_runtime(provider)
+        tpath = runtime.transcript_path(pp, native_id)
+        return not (tpath and Path(tpath).is_file())
+    except Exception:
+        return False
+
+
 def _context_tokens_over_threshold(context_tokens):
     """Token-based auto-fresh trigger (`context_rollover_tokens`, default
     200000, 0 disables) — the live counterpart to `_session_too_large`'s
@@ -9311,13 +9390,14 @@ def _mode_a_token_rollover(pp, project_id, session_id, session, provider, messag
     _log(f"[followup] {provider} session {native_id} rolling to fresh (tokens={ctx})")
     handoff_text, log_line, activity_line = _auto_fresh_handoff(
         pp, provider, native_id, project_id, session_id,
-        reason='tokens', detail=int(ctx))
+        reason='tokens', detail=int(ctx),
+        fallback_native_id=session.get('_rolled_from'))
     _log_agent_activity(project_id, activity_line)
     session.setdefault('log_lines', TimestampedLines()).append(log_line)
     if provider == 'codex':
         _carry_codex_usage(session)
     session.pop('provider_session_id', None)
-    session.pop('context_tokens', None)
+    _mark_context_rolled(session, native_id)
     return f"{handoff_text}\n\n{message}"
 
 
@@ -9372,7 +9452,7 @@ def _in_flight_children(project_id, session_id):
 
 
 def _auto_fresh_handoff(pp, provider, claude_sid, project_id, session_id,
-                        *, reason, detail):
+                        *, reason, detail, fallback_native_id=None):
     """Build the real rollover handoff (§3) that replaces the old one-sentence
     'Continuing from a previous conversation ... too large to resume' prefix,
     plus the log/activity lines auto-fresh call sites append.
@@ -9382,16 +9462,40 @@ def _auto_fresh_handoff(pp, provider, claude_sid, project_id, session_id,
     substitute (SUBSTITUTION IS A LIE) — when that raises (no transcript for
     this provider/id, e.g. a `claude_sid` whose file was never flushed).
 
+    `fallback_native_id` (a session's `_rolled_from`) is retried when the
+    primary id has no transcript — an interrupted earlier roll left the
+    session pointed at a native id that never wrote one (2026-09-27
+    double-roll incident). Retrying recovers the real handoff instead of the
+    one-liner; either way the header says plainly which native id the turns
+    actually came from, never silently (SUBSTITUTION IS A LIE).
+
     Returns (handoff_text, log_line, activity_line).
     """
+    _source_sid = claude_sid
     try:
         handoff_text, _meta = _build_handoff_context(
             pp, provider, claude_sid, project_id=project_id)
     except ValueError as e:
+        if fallback_native_id and fallback_native_id != claude_sid:
+            try:
+                handoff_text, _meta = _build_handoff_context(
+                    pp, provider, fallback_native_id, project_id=project_id)
+                _source_sid = fallback_native_id
+            except ValueError as e2:
+                handoff_text = (
+                    f"[Continuing from a previous conversation (session {claude_sid}) "
+                    f"that rolled to a fresh session. Real handoff unavailable: {e2}. "
+                    f"Start fresh but continue the user's request below.]")
+        else:
+            handoff_text = (
+                f"[Continuing from a previous conversation (session {claude_sid}) "
+                f"that rolled to a fresh session. Real handoff unavailable: {e}. "
+                f"Start fresh but continue the user's request below.]")
+    if _source_sid != claude_sid:
         handoff_text = (
-            f"[Continuing from a previous conversation (session {claude_sid}) "
-            f"that rolled to a fresh session. Real handoff unavailable: {e}. "
-            f"Start fresh but continue the user's request below.]")
+            f"[Note: session {claude_sid} rolled but was stopped before its "
+            f"first turn wrote a transcript — this handoff is carried from "
+            f"the earlier session {_source_sid} instead.]\n\n{handoff_text}")
     children = _in_flight_children(project_id, session_id)
     if children:
         lines = '\n'.join(f"- {c['session_id']} ({c['status']}): {c['task']}"
@@ -9403,6 +9507,9 @@ def _auto_fresh_handoff(pp, provider, claude_sid, project_id, session_id,
     if reason == 'tokens':
         log_line = f'[Session context is {detail // 1000}k tokens — starting fresh]'
         activity_line = f"Auto-fresh: context {detail // 1000}k tokens"
+    elif reason == 'interrupted':
+        log_line = '[Previous rollover was interrupted before it produced a transcript — recovering the real handoff]'
+        activity_line = "Auto-fresh: recovering handoff after an interrupted rollover"
     else:
         size_mb = detail / (1024 * 1024)
         log_line = f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]'
@@ -9837,8 +9944,17 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     original_resume = resume_id
     _af_log_line = ''
     if resume_id:
+        _af_rolled_from = _live_session_rolled_from(project_id, resume_id)
         _af_reason, _af_detail = _auto_fresh_trigger(
             pp, resume_id, _live_context_tokens(project_id, resume_id))
+        if not _af_reason and _fragile_resume_target(pp, 'claude', resume_id, _af_rolled_from):
+            # An earlier roll already reset this live session's context_tokens
+            # to None (`_mark_context_rolled`), so the trigger above sees
+            # "unknown" and stays quiet — but `resume_id` itself never wrote a
+            # transcript (stopped before its first turn), so a bare `-r
+            # resume_id` below would fail or silently start blank. Route to
+            # the carried handoff instead (2026-09-27 double-roll incident).
+            _af_reason, _af_detail = 'interrupted', 0
         if _af_reason:
             _log(f"[dispatch] Session {resume_id} rolling to fresh ({_af_reason}={_af_detail})")
             # This dispatch call is spawning a NEW MC session, so `reuse_session_id`
@@ -9847,9 +9963,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             # will generate below doesn't exist yet at this point in the function.
             _handoff_text, _af_log_line, _activity_line = _auto_fresh_handoff(
                 pp, 'claude', resume_id, project_id, reuse_session_id or '',
-                reason=_af_reason, detail=_af_detail)
+                reason=_af_reason, detail=_af_detail,
+                fallback_native_id=_af_rolled_from)
             _log_agent_activity(project_id, _activity_line)
             task = f"{_handoff_text}\n\n{task}"
+            _clear_live_context_tokens(project_id, resume_id)
             resume_id = ''
 
     # One live process per conversation (2026-09-14). Refused BEFORE a worktree
@@ -11349,16 +11467,30 @@ def agent_followup(project_id):
                     # (healthy — it just died later). Resume with -r to keep context.
                     _af_reason, _af_detail = _auto_fresh_trigger(
                         pp, claude_sid, existing.get('context_tokens'))
+                    _af_rolled_from = existing.get('_rolled_from')
+                    if not _af_reason and _fragile_resume_target(
+                            pp, 'claude', claude_sid, _af_rolled_from):
+                        # An earlier roll reset context_tokens to None
+                        # (`_mark_context_rolled`), so the trigger above sees
+                        # "unknown" and stays quiet — but `claude_sid` itself
+                        # never wrote a transcript (stopped before its first
+                        # turn), so `-r claude_sid` below would fail or
+                        # silently start blank. Carry the real handoff from
+                        # `_rolled_from` instead (2026-09-27 double-roll
+                        # incident: Stop landed 1s after the roll's respawn).
+                        _af_reason, _af_detail = 'interrupted', 0
                     if _af_reason:
                         _log(f"[followup] Session {claude_sid} rolling to fresh "
                              f"({_af_reason}={_af_detail})")
                         _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
                             pp, 'claude', claude_sid, project_id, session_id,
-                            reason=_af_reason, detail=_af_detail)
+                            reason=_af_reason, detail=_af_detail,
+                            fallback_native_id=_af_rolled_from)
                         _log_agent_activity(project_id, _activity_line)
                         existing['log_lines'].append(_log_line)
                         context = _fresh_context_for(p, existing, message or '')
                         message = f"{_handoff_text}\n\n{message}"
+                        _mark_context_rolled(existing, claude_sid)
                     else:
                         resume_flags = ['-r', claude_sid]
                         _log(f"[followup] {project_id}: respawning Mode B with -r {claude_sid[:12]}")
@@ -11734,18 +11866,29 @@ def agent_followup(project_id):
             if claude_sid:
                 _af_reason, _af_detail = _auto_fresh_trigger(
                     pp, claude_sid, existing.get('context_tokens'))
+                _af_rolled_from = existing.get('_rolled_from')
+                if not _af_reason and _fragile_resume_target(
+                        pp, 'claude', claude_sid, _af_rolled_from):
+                    # Same interrupted-roll case as the Mode B dead-process
+                    # branch: context_tokens was reset to None by an earlier
+                    # roll, so the trigger stays quiet, but `claude_sid` never
+                    # wrote its own transcript — a bare `-r claude_sid` below
+                    # would fail or silently start blank.
+                    _af_reason, _af_detail = 'interrupted', 0
                 if _af_reason:
                     _log(f"[followup-A] Session {claude_sid} rolling to fresh "
                          f"({_af_reason}={_af_detail})")
                     _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
                         pp, 'claude', claude_sid, project_id, session_id,
-                        reason=_af_reason, detail=_af_detail)
+                        reason=_af_reason, detail=_af_detail,
+                        fallback_native_id=_af_rolled_from)
                     _log_agent_activity(project_id, _activity_line)
                     with get_manager(project_id).lock:
                         existing['log_lines'].append(_log_line)
                     context = _fresh_context_for(p, existing, message or '')
                     followup_msg = f"{_handoff_text}\n\n{message}"
                     resume_flags = []
+                    _mark_context_rolled(existing, claude_sid)
                 else:
                     resume_flags = ['-r', claude_sid]
             else:
