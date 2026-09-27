@@ -41,11 +41,14 @@
  *     reconciler, and sendFollowup's own new eager patch) re-validates the
  *     height, regardless of the status value carried. One function is the
  *     single owner; no send/turn path can bypass it.
- *   - sendFollowup now flips agentStatusCache[sid].status to 'running' and
- *     calls updateAgentStatusUI(sid, 'running') synchronously, in the same
- *     tick as the eager dots — fixing the stale label immediately, and (via
- *     the point above) triggering the viewport recovery on every send,
- *     including one where the status value never changes (mid-turn).
+ *   - sendFollowup now calls updateAgentStatusUI(sid, 'running') synchronously,
+ *     in the same tick as the eager dots — fixing the stale label immediately,
+ *     and (via the point above) triggering the viewport recovery on every
+ *     send, including one where the status value never changes (mid-turn).
+ *     This is a pure DOM paint: it deliberately does NOT write
+ *     agentStatusCache[sid].status, because that write would land before the
+ *     MC-985 `_preSendStatus` capture and permanently disarm the
+ *     stale-idle-echo guard in resume-preview.js (caught in review, db3389d).
  *
  * Hermetic: real index.html + real static/js/*.js served verbatim, fake
  * visualViewport installed via addInitScript (same technique as the other
@@ -228,6 +231,17 @@ async function checkIdleSendRecoversHeight(page) {
   (Math.abs(recovered - layout) <= 2)
     ? ok(`idle send recovers full height within one frame (--mc-app-vh=${recovered})`)
     : fail(`idle send left the pane at keyboard height (--mc-app-vh=${recovered}, want ~${layout})`);
+
+  // Regression guard (Dave's MC-988 review, db3389d): the eager header paint
+  // must be a pure DOM update, not a write to agentStatusCache[sid].status —
+  // an optimistic write there lands BEFORE the MC-985 `_preSendStatus`
+  // capture a few lines into sendFollowup and would make it always read
+  // 'running', permanently disarming the resume-preview.js stale-idle-echo
+  // guard (`_preSendStatus[sessionId] === 'idle'`) on every idle send.
+  const preSend = await page.evaluate(sid => _preSendStatus[sid], SID);
+  (preSend === 'idle')
+    ? ok(`_preSendStatus captured the true pre-send status ("${preSend}"), not an optimistic overwrite`)
+    : fail(`_preSendStatus[sid] is "${preSend}", want "idle" — the eager header paint is leaking into agentStatusCache`);
 }
 
 // ── Check 3: header label must show running during a mid-turn send, not a

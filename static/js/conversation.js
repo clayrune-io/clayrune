@@ -5191,7 +5191,7 @@ async function sendFollowup(projectId, sessionId) {
   // still own the real state, this only avoids a silent gap before they fire.
   showTypingIndicator(sessionId);
 
-  // MC-988: flip the header dot/label to 'running' in this same tick, same
+  // MC-988: paint the header dot/label as 'running' in this same tick, same
   // reasoning as the eager dots just above — turn_start can't arrive until
   // the round trip resolves, and revive/queued/slow-network paths delay it
   // further, so waiting for it left the header reading a stale terminal
@@ -5202,12 +5202,26 @@ async function sendFollowup(projectId, sessionId) {
   // call fixes both the stale label AND a stale keyboard inset carried over
   // from before this send (down-button dismiss that left the composer
   // focused) — on a mid-turn send the status value doesn't even change
-  // (already 'running'), which is exactly the case that used to never
-  // reach any recovery path at all.
-  if (agentStatusCache[sessionId]) {
-    agentStatusCache[sessionId].status = 'running';
-    updateAgentStatusUI(sessionId, 'running');
-  }
+  // (already 'running'), which is exactly the case that used to never reach
+  // any recovery path at all.
+  //
+  // Deliberately DOES NOT write agentStatusCache[sessionId].status — this
+  // must stay a pure DOM paint, same as showTypingIndicator above (see the
+  // "Phase 2 ... no optimistic cache writes here" comment a few lines down).
+  // updateAgentStatusUI's dot/label/stop-button all key off the `status`
+  // ARGUMENT, not off the cache, so the paint doesn't need the write. Two
+  // real readers of the cache depend on it staying untouched here: (1)
+  // _preSendStatus below captures agentStatusCache[sessionId].status as the
+  // TRUE pre-send value for the MC-985 stale-echo guard (resume-preview.js
+  // `_preSendStatus[sessionId] === 'idle'`) — an optimistic write here used
+  // to make that always read 'running', permanently disarming the guard on
+  // every idle send; (2) `_reconcileAgentBuffer`'s freshness reconciler
+  // (resume-preview.js) compares cached.status against the server's — an
+  // optimistic 'running' write racing a server that still (correctly, for a
+  // moment) reports 'idle' would read as a mismatch and flip the DOM back,
+  // a visible flicker. Leaving the cache alone until the server's own
+  // turn_start/status event confirms it sidesteps both.
+  if (agentStatusCache[sessionId]) updateAgentStatusUI(sessionId, 'running');
 
   // Zero-gap picker update: reflect the newest user message in conversationsCache
   // so when this session later becomes non-running (stops / ends), the picker
