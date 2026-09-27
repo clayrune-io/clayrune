@@ -946,7 +946,7 @@ async function refreshBackupScheduleSection() {
     // a whole cadence — say so, instead of a "Next: <a week away>" that
     // would be wrong for a week of daily failures.
     if (st.last_status === 'error') {
-      hint.textContent = `Last attempt failed: ${st.last_error || 'unknown error'} — retrying hourly.`;
+      hint.textContent = `Last attempt failed: ${st.last_error || 'unknown error'}. Retrying hourly.`;
       return;
     }
     hint.textContent = `Last: ${_fmtBackupWhen(st.last_success_at)}` +

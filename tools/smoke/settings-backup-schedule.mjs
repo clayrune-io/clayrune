@@ -168,7 +168,7 @@ try {
     () => /disk full/.test(document.getElementById('backup-schedule-status-hint')?.textContent || ''),
     { timeout: 5000 });
   const failHint = await page.textContent('#backup-schedule-status-hint');
-  /retrying hourly/.test(failHint)
+  /retrying hourly/i.test(failHint)
     ? ok(`status hint says retrying hourly on a failure, not a stale cadence-away "Next": "${failHint.trim()}"`)
     : fail(`status hint missing "retrying hourly": "${failHint}"`);
 
