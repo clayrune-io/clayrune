@@ -216,6 +216,12 @@ _CONFIG_EDITABLE_KEYS = {
     # falls back to ~/.clayrune/backups — validated in update_config below so a
     # bad value (inside the repo or data/projects/) is refused, not persisted.
     'backup_dest_dir',
+    # Scheduled auto-backup (MC-983, BACKUP_EXPORT_SPEC.md §7 Phase 4). Both
+    # read live off state.CONFIG by mc/blueprints/backup_routes.py's
+    # background loop — no respawn needed. 'backup_schedule': 'off'|'daily'
+    # |'weekly', unset == off. 'backup_keep': int >=1, default 3, validated
+    # below like backup_dest_dir so a bad value is refused, not persisted.
+    'backup_schedule', 'backup_keep',
     # MEMORY_DESIGN_V2_SPEC.md §16 step 1 (MC-944), Condition 9. Four keys
     # already read live by mc/memory.py but missing from this set until now —
     # every PUT of one returned 200 {"updated": []} and silently changed
@@ -322,6 +328,20 @@ def update_config():
             _backup.validate_backup_dest_dir(data['backup_dest_dir'])
         except _backup.BackupError as e:
             return jsonify({'error': str(e)}), 400
+    if 'backup_schedule' in data and 'backup_schedule' in _CONFIG_EDITABLE_KEYS:
+        val = str(data['backup_schedule'] or 'off').strip().lower()
+        if val not in ('off', 'daily', 'weekly'):
+            return jsonify({'error': "backup_schedule must be 'off', 'daily' or 'weekly'"}), 400
+        data['backup_schedule'] = val
+    if 'backup_keep' in data and 'backup_keep' in _CONFIG_EDITABLE_KEYS:
+        val = data['backup_keep']
+        try:
+            if isinstance(val, bool) or int(val) != val or int(val) < 1:
+                raise ValueError
+            keep = int(val)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'backup_keep must be an integer >= 1'}), 400
+        data['backup_keep'] = keep
     if data.get('default_provider') and 'default_provider' in _CONFIG_EDITABLE_KEYS:
         # Same reasoning as character_routes._validated_engine's provider
         # check: a saved default that isn't a registered runtime would

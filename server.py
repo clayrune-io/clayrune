@@ -3279,6 +3279,10 @@ def boot(check_port=True):
     # firing a 12s git operation on every page load. Frontend polls
     # /api/system/update/cached.
     threading.Thread(target=_update_check_loop, daemon=True, name='update-check').start()
+    # Scheduled auto-backup daemon (MC-983, BACKUP_EXPORT_SPEC.md §7 Phase 4):
+    # hourly tick, runs a full backup if overdue per config 'backup_schedule'.
+    # Off by default (unset config == 'off', loop no-ops every tick).
+    threading.Thread(target=_bp_backup._backup_schedule_loop, daemon=True, name='backup-schedule').start()
     # Secrets vault idle-lock sweeper (MC-949 follow-up): clears the unwrapped
     # master key from memory after vault_idle_lock_minutes even if nothing
     # reads it in the meantime — the lazy check in load_master_key() only

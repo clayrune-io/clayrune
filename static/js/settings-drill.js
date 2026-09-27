@@ -739,6 +739,21 @@ async function _renderSettings() {
           <button class="btn-browse" onclick="browseBackupDestDir()" title="Browse for folder">Browse&hellip;</button>
         </div>
       </div>
+      <div class="settings-row">
+        <div><div class="settings-label">Scheduled backup</div><div class="settings-hint">Runs the full backup (everything, no vault) unattended on the cadence below. Off by default.</div></div>
+        <div class="mc-seg" id="mc-backup-schedule-seg">
+          <button class="${(cfg.backup_schedule||'off')==='off'?'active':''}" onclick="saveBackupSchedule('off')">Off</button>
+          <button class="${cfg.backup_schedule==='daily'?'active':''}" onclick="saveBackupSchedule('daily')">Daily</button>
+          <button class="${cfg.backup_schedule==='weekly'?'active':''}" onclick="saveBackupSchedule('weekly')">Weekly</button>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div><div class="settings-label">Keep</div><div class="settings-hint">How many scheduled archives to retain (oldest deleted first). Manual backups and restore points are never touched.</div></div>
+        ${numInput('backup_keep', cfg.backup_keep ?? 3)}
+      </div>
+      <div class="settings-row">
+        <div><div class="settings-label">Status</div><div class="settings-hint" id="backup-schedule-status-hint">Checking&hellip;</div></div>
+      </div>
     </div>
 
     <div class="settings-section">
@@ -813,6 +828,7 @@ async function _renderSettings() {
   try { refreshPushSection(); } catch (_) {}
   try { refreshMobilePairingSection(); } catch (_) {}
   try { refreshAgentFaceSection(); } catch (_) {}
+  try { refreshBackupScheduleSection(); } catch (_) {}
 
   // Restore the master/detail/search view (persisted across re-renders so that
   // setTone/setAccent/etc. don't bounce you back to the list mid-edit).
@@ -891,3 +907,42 @@ function browseBackupDestDir() {
   });
 }
 window.browseBackupDestDir = browseBackupDestDir;  // interop: Settings → System row (generated onclick)
+
+// Saves the cadence then repaints the segmented control + status line — the
+// active class is baked into innerHTML at render time (same as setDensity/
+// setVoice above), so a save with no re-render would leave the OLD button
+// looking selected until the next full settings open.
+function saveBackupSchedule(v) {
+  saveSetting('backup_schedule', v);
+  const seg = document.getElementById('mc-backup-schedule-seg');
+  if (seg) seg.querySelectorAll('button').forEach((b, i) =>
+    b.classList.toggle('active', ['off', 'daily', 'weekly'][i] === v));
+  refreshBackupScheduleSection();
+}
+window.saveBackupSchedule = saveBackupSchedule;    // interop: Settings → System row (generated onclick)
+
+function _fmtBackupWhen(iso) {
+  if (!iso) return 'never';
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
+}
+
+// GET /api/backup/schedule-status for the "Status" hint line — separate from
+// backup_dest_dir/backup_schedule/backup_keep (config, saved on change) since
+// last/next run + last error are server-computed, not settable fields.
+async function refreshBackupScheduleSection() {
+  const hint = document.getElementById('backup-schedule-status-hint');
+  if (!hint) return;
+  try {
+    const r = await fetch(API_BASE + '/api/backup/schedule-status');
+    const st = await r.json();
+    if (st.cadence === 'off') { hint.textContent = 'Scheduled backup is off.'; return; }
+    let text = `Last: ${_fmtBackupWhen(st.last_run_at)}` +
+      (st.last_status === 'error' ? ` (failed: ${esc(st.last_error || 'unknown error')})` : '') +
+      ` · Next: ${st.overdue ? 'due now' : _fmtBackupWhen(st.next_run_at)}`;
+    hint.textContent = text;
+  } catch (_) {
+    hint.textContent = 'Could not load backup schedule status.';
+  }
+}
+window.refreshBackupScheduleSection = refreshBackupScheduleSection;

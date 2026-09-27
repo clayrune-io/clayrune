@@ -767,8 +767,18 @@ def _read_and_maybe_reserialize(entry: _Entry) -> bytes:
 def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = None,
                   label: Optional[str] = None,
                   progress_cb: Optional[Callable[[dict], None]] = None,
-                  cancel_cb: Optional[Callable[[], bool]] = None) -> dict:
-    """``progress_cb``, if given, is called after every file is written with
+                  cancel_cb: Optional[Callable[[], bool]] = None,
+                  scheduled: bool = False) -> dict:
+    """``scheduled`` stamps ``manifest['scheduled'] = True`` (Phase 4,
+    docs/BACKUP_EXPORT_SPEC.md §7) — the marker retention (below) uses to
+    tell a scheduled archive from a manual one, so pruning old runs can never
+    touch a backup the user made by hand. Everything else about a scheduled
+    create is identical to a manual one: same default categories (full,
+    everything ON), same vault_status='not_available' (Phase 1 has no vault
+    category for a whole-install backup at all, scheduled or not — secrets
+    never travel this path regardless of trigger).
+
+    ``progress_cb``, if given, is called after every file is written with
     ``{files_written, total_files, bytes_written, total_bytes, current_file,
     warnings_count}`` — the async job path (mc/blueprints/backup_routes.py)
     passes one so a poller can render a real progress bar; the synchronous
@@ -892,6 +902,7 @@ def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = 
                     'media': bool(cats.get('media')), 'transcripts': bool(cats.get('transcripts')),
                     'unprotected': _unprotected_enabled(cats), 'vault': False,
                 },
+                'scheduled': bool(scheduled),
                 'unprotected_excluded_projects': sorted(unprotected_excl),
                 'vault_status': 'not_available',
                 'contains_secrets': False,
@@ -947,6 +958,123 @@ def list_backups(dest_dir: Optional[Path] = None, sweep_stale: bool = True) -> l
             'warning_count': len(manifest.get('warnings', [])),
         })
     return sorted(out, key=lambda r: r.get('created_at') or '', reverse=True)
+
+
+# ── Scheduled auto-backup (Phase 4, spec §7/§4.2) ────────────────────────────
+#
+# Pure logic only — no threading, no Flask, no notification delivery. The
+# daemon loop that calls this (hourly tick, boot catch-up, the concurrency
+# guard against an already-running create) lives in
+# mc/blueprints/backup_routes.py, same split as _update_check_loop living in
+# system_routes.py rather than in a "core" module: this file must stay
+# importable without server.py (module docstring), and a background thread
+# is an HTTP-process concern the CLI/tests never need.
+#
+# State persists to ~/.clayrune/backup_schedule_state.json — NOT under
+# data/projects/ (DATA_DIR pollution rule, CLAUDE.md) and not a sidecar of
+# any project; same directory as the archives and restore points themselves.
+
+_SCHEDULE_INTERVALS = {'daily': 24 * 3600, 'weekly': 7 * 24 * 3600}
+
+
+def _schedule_state_path() -> Path:
+    return clayrune_home() / 'backup_schedule_state.json'
+
+
+def load_schedule_state() -> dict:
+    """``{}`` (never run before) when the file is absent or unreadable — the
+    same treat-a-missing-file-as-empty-state pattern as ``_load_schedules``
+    above, not an error a scheduled run should ever fail on."""
+    try:
+        data = json.loads(_schedule_state_path().read_text(encoding='utf-8'))
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        _log(f"[backup] schedule state unreadable, treating as never-run: {e}")
+        return {}
+
+
+def save_schedule_state(state: dict) -> None:
+    p = _schedule_state_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(p, state, indent=2, ensure_ascii=False)
+
+
+def _parse_iso(ts: str) -> Optional[datetime]:
+    try:
+        return datetime.strptime(ts, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def is_backup_overdue(cadence: Optional[str], last_run_at: Optional[str],
+                      now: Optional[datetime] = None) -> bool:
+    """True when a scheduled backup is due. 'off'/unset/unknown cadence is
+    never due. Never run before => due immediately (the first boot after
+    the feature is turned on runs one, per spec §4). A machine that was off
+    for days is exactly ONE run overdue, not N — this returns a bool, not a
+    count, by construction; the caller runs at most once per check."""
+    interval = _SCHEDULE_INTERVALS.get(cadence or '')
+    if interval is None:
+        return False
+    if not last_run_at:
+        return True
+    last = _parse_iso(last_run_at)
+    if last is None:
+        return True
+    now = now or datetime.now(timezone.utc)
+    return (now - last).total_seconds() >= interval
+
+
+def next_run_at(cadence: Optional[str], last_run_at: Optional[str]) -> Optional[str]:
+    """None when there's no cadence, or nothing to count forward from yet —
+    the UI shows 'due now' for that case rather than a computed timestamp."""
+    interval = _SCHEDULE_INTERVALS.get(cadence or '')
+    if interval is None or not last_run_at:
+        return None
+    last = _parse_iso(last_run_at)
+    if last is None:
+        return None
+    from datetime import timedelta
+    return (last + timedelta(seconds=interval)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def prune_scheduled_backups(dest_dir: Path, keep: int) -> list[dict]:
+    """After a SUCCESSFUL scheduled run, delete older SCHEDULED archives
+    beyond ``keep`` (newest kept first) — spec: never a manual backup, never
+    a restore point. Restore points live in a wholly separate directory tree
+    (~/.clayrune/restore-points/) so they're untouched by construction; manual
+    archives are excluded by the ``manifest['scheduled']`` marker this module
+    stamps in ``create_backup(scheduled=True)``, not by filename guessing —
+    a user free-typing 'scheduled' into a manual label must not make that
+    archive deletable. ``keep`` < 1 is treated as 1 (retention must never
+    reach zero on its own — spec's own contract floors it at 1)."""
+    removed: list[dict] = []
+    keep = max(1, keep)
+    if not dest_dir.is_dir():
+        return removed
+    scheduled: list[tuple[str, Path]] = []
+    for f in sorted(dest_dir.glob('*.crbackup')):
+        try:
+            with zipfile.ZipFile(f) as zf:
+                manifest = json.loads(zf.read('manifest.json'))
+        except Exception as e:
+            _log(f"[backup] retention: {f} unreadable, leaving it alone: {e}")
+            continue
+        if manifest.get('scheduled'):
+            scheduled.append((manifest.get('created_at') or '', f))
+    scheduled.sort(key=lambda t: t[0], reverse=True)  # newest first
+    for _created, f in scheduled[keep:]:
+        try:
+            size = f.stat().st_size
+            f.unlink()
+        except OSError as e:
+            _log(f"[backup] retention could not remove {f}: {e}")
+            continue
+        removed.append({'path': str(f), 'bytes': size})
+        _log(f"[backup] retention removed scheduled archive {f} ({size} bytes)")
+    return removed
 
 
 # ── Restore (spec §4.7/§4.8/§6 — POST /api/backup/restore) ──────────────────

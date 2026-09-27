@@ -112,6 +112,8 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request
 
 from mc import backup as _backup
+from mc import obs
+from mc import state as _state
 from mc.core import _log
 from mc.state import agent_sessions
 from mc.unattended import is_unattended_caller
@@ -362,6 +364,125 @@ def api_backup_create_cancel(job_id):
         job['status'] = 'cancelling'
     _log(f"[backup] cancel requested for async create {job_id}")
     return jsonify({'job_id': job_id, 'status': 'cancelling', 'cancelled': True})
+
+
+# ── Scheduled auto-backup daemon (Phase 4, spec §7) ─────────────────────────
+#
+# NOT an agent schedule (data/schedules.json, no LLM, no dispatch) — a plain
+# background thread that calls the exact same create_backup() a human
+# triggers from the panel, on a timer. Config: 'backup_schedule'
+# ('off'|'daily'|'weekly', unset==off) and 'backup_keep' (int>=1, default 3)
+# — both validated in settings_routes.update_config, human-only edit path.
+#
+# Concurrency: the loop is single-threaded and runs create_backup()
+# synchronously inside its own tick, so it can never race ITSELF. The one
+# other writer that exists is a manual create from the panel — there is no
+# dedicated cross-context mutex anywhere in this module (concurrent creates
+# are made SAFE via unique .partial names, per mc.backup's
+# _partial_path_for docstring, rather than prevented), so this reuses the
+# one thing that DOES track "is a create running right now": the async job
+# registry above. A manual create that skips `async: true` isn't visible to
+# any registry and stays an existing, pre-existing gap this doesn't close.
+_BACKUP_SCHEDULE_INTERVAL_S = 3600   # hourly check, per spec
+_BACKUP_SCHEDULE_BOOT_DELAY_S = 30   # let the server finish booting first
+
+
+def _any_backup_job_active() -> bool:
+    with _backup_jobs_lock:
+        return any(j['status'] not in _TERMINAL_STATES for j in _backup_jobs.values())
+
+
+def _notify_backup_failure(reason: str) -> None:
+    """Best-effort — a notification failure must never mask the backup
+    failure it's reporting. This module lives in the same server process as
+    push_mobile (both are blueprints registered by the same server.py), so
+    unlike mc.secrets_store's out-of-process relay (built for callers that
+    might NOT be the server, e.g. tools/with-secret.py) this can call
+    _notify_push directly — the daemon this function serves is only ever
+    started from server.py's own startup, never standalone."""
+    try:
+        from mc.blueprints import push_mobile as _bp_push_mobile
+        _bp_push_mobile._notify_push('Scheduled backup failed', reason, kind='agent')
+    except Exception as e:
+        _log(f"[backup-schedule] failure notification itself failed: {e}")
+
+
+def _run_scheduled_backup_once() -> None:
+    sched_state = _backup.load_schedule_state()
+    try:
+        result = _backup.create_backup(scheduled=True, label='scheduled')
+    except Exception as e:
+        _log(f"[backup-schedule] scheduled backup failed: {e}")
+        sched_state['last_run_at'] = _backup._now_iso()
+        sched_state['last_status'] = 'error'
+        sched_state['last_error'] = str(e)
+        _backup.save_schedule_state(sched_state)
+        _notify_backup_failure(str(e))
+        return
+    sched_state['last_run_at'] = result['manifest']['created_at']
+    sched_state['last_status'] = 'success'
+    sched_state['last_error'] = None
+    sched_state['last_result_path'] = result['path']
+    _backup.save_schedule_state(sched_state)
+    _log(f"[backup-schedule] created {result['path']} "
+        f"({result['files_written']} files, {len(result['warnings'])} warnings)")
+    # Retention runs only after a SUCCESSFUL run (spec: never delete on
+    # failure) and only prunes archives THIS function's own create_backup()
+    # marked scheduled — a failed retention pass must never take the backup
+    # that just succeeded down with it.
+    try:
+        keep = int(_state.CONFIG.get('backup_keep', 3) or 3)
+        removed = _backup.prune_scheduled_backups(Path(result['path']).parent, keep)
+        if removed:
+            _log(f"[backup-schedule] retention removed {len(removed)} older scheduled archive(s)")
+    except Exception as e:
+        _log(f"[backup-schedule] retention pass failed (backup itself still succeeded): {e}")
+
+
+def _backup_schedule_loop():
+    """Daemon thread (started from server.py, same pattern as
+    system_routes._update_check_loop): on start and then hourly, run one
+    scheduled backup if overdue. A machine that was off for days runs
+    exactly ONE catch-up backup, not N — is_backup_overdue() is a bool, and
+    each tick runs at most once."""
+    time.sleep(_BACKUP_SCHEDULE_BOOT_DELAY_S)
+    while True:
+        obs.heartbeat('backup-schedule')
+        try:
+            cadence = str(_state.CONFIG.get('backup_schedule') or 'off').lower()
+            if cadence in ('daily', 'weekly'):
+                sched_state = _backup.load_schedule_state()
+                if _backup.is_backup_overdue(cadence, sched_state.get('last_run_at')):
+                    if _any_backup_job_active():
+                        _log("[backup-schedule] overdue but a backup job is already "
+                            "running — will retry next hour")
+                    else:
+                        _log(f"[backup-schedule] {cadence} backup overdue, running now")
+                        _run_scheduled_backup_once()
+        except Exception as e:
+            _log(f"[backup-schedule] loop error: {e}")
+        time.sleep(_BACKUP_SCHEDULE_INTERVAL_S)
+
+
+@bp.route('/api/backup/schedule-status')
+def api_backup_schedule_status():
+    """Cadence + keep count + last/next run, for the Settings > Backup panel.
+    No route named 'backup status' existed before this (checked: only
+    dest-dir and jobs did) — this is a new, minimally-scoped GET alongside
+    them, not a repurposing of either."""
+    cadence = str(_state.CONFIG.get('backup_schedule') or 'off').lower()
+    keep = int(_state.CONFIG.get('backup_keep', 3) or 3)
+    sched_state = _backup.load_schedule_state()
+    last_run_at = sched_state.get('last_run_at')
+    return jsonify({
+        'cadence': cadence, 'keep': keep,
+        'last_run_at': last_run_at,
+        'last_status': sched_state.get('last_status'),
+        'last_error': sched_state.get('last_error'),
+        'last_result_path': sched_state.get('last_result_path'),
+        'next_run_at': _backup.next_run_at(cadence, last_run_at),
+        'overdue': _backup.is_backup_overdue(cadence, last_run_at) if cadence in ('daily', 'weekly') else False,
+    })
 
 
 @bp.route('/api/backup/list')
