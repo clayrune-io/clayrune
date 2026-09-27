@@ -20,7 +20,7 @@ import time as _time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from flask import Blueprint, jsonify, request
 
@@ -634,6 +634,88 @@ def _fetch_oauth_usage_limits():
         return None
 
 
+# Codex weekly utilization — read from the CLI's OWN on-disk session record,
+# not a network call (the OAuth-usage pattern above is Claude-only; Codex has
+# no equivalent authenticated endpoint reachable without spending its own
+# quota). Every Codex `token_count` event embeds the CLI's own live view of
+# its rate limits, live-captured 2026-09-26 from real rollout files under
+# ~/.codex/sessions:
+#   "rate_limits":{"primary":{"used_percent":18.0,"window_minutes":300,
+#     "resets_at":1789557088},"secondary":{"used_percent":41.0,
+#     "window_minutes":10080,"resets_at":1789854189}, ...}
+# `window_minutes` identifies the window (300 = 5h, 10080 = 7d = weekly) —
+# which slot (primary/secondary) carries the weekly one depends on the
+# account's plan (a `prolite` plan showed weekly-only as `primary`; a `plus`
+# plan showed 5h as `primary` and weekly as `secondary`), so both slots are
+# checked by window_minutes rather than assumed to be one or the other.
+_CODEX_WEEKLY_WINDOW_MINUTES = 10080
+_CODEX_USAGE_TTL = 60.0  # seconds — matches _OAUTH_USAGE_TTL's cadence
+_codex_usage_cache: dict = {'ts': 0.0, 'data': None}
+# Tail-read size: token_count lines are small (a few hundred bytes); 300KB
+# comfortably covers many turns' worth even in a session with large tool
+# outputs between them. Session files are append-only and can reach several
+# MB, so the whole file is never read.
+_CODEX_TAIL_BYTES = 300_000
+
+
+def _fetch_codex_weekly_usage() -> Optional[dict]:
+    """Return {'utilization': 0-100, 'resets_at': ISO8601} for Codex's weekly
+    rate-limit window, or None if no rollout file yields one. Reads only the
+    most-recently-modified rollout file (Codex's rate limit is account-wide,
+    so any live session's own view of it is representative) and only its
+    tail, scanned backwards for the latest `token_count` event."""
+    now = _time.time()
+    cached = _codex_usage_cache.get('data')
+    if cached is not None and (now - _codex_usage_cache.get('ts', 0.0)) < _CODEX_USAGE_TTL:
+        return cached
+    result = None
+    try:
+        files = _agent_runtime._codex_rollout_files()
+        if files:
+            latest = max(files, key=lambda f: f.stat().st_mtime)
+            size = latest.stat().st_size
+            with open(latest, 'rb') as fh:
+                if size > _CODEX_TAIL_BYTES:
+                    fh.seek(size - _CODEX_TAIL_BYTES)
+                chunk = fh.read()
+            lines = chunk.decode('utf-8', errors='ignore').split('\n')
+            for line in reversed(lines):
+                if '"token_count"' not in line or '"rate_limits"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (ValueError, json.JSONDecodeError):
+                    continue
+                info = (rec.get('payload') or {}) if isinstance(rec.get('payload'), dict) else rec
+                rl = info.get('rate_limits') if isinstance(info, dict) else None
+                if not isinstance(rl, dict):
+                    continue
+                for slot in ('primary', 'secondary'):
+                    win = rl.get(slot)
+                    if isinstance(win, dict) and win.get('window_minutes') == _CODEX_WEEKLY_WINDOW_MINUTES:
+                        resets_at_raw = win.get('resets_at')
+                        resets_iso = None
+                        if resets_at_raw:
+                            try:
+                                resets_iso = datetime.fromtimestamp(
+                                    float(resets_at_raw), tz=timezone.utc).isoformat()
+                            except (TypeError, ValueError, OSError):
+                                resets_iso = None
+                        result = {
+                            'utilization': win.get('used_percent'),
+                            'resets_at': resets_iso,
+                        }
+                        break
+                if result is not None:
+                    break
+    except Exception as e:
+        _log(f"[system_usage] codex weekly usage read failed: {e}", flush=True)
+        result = None
+    _codex_usage_cache['ts'] = now
+    _codex_usage_cache['data'] = result
+    return result
+
+
 @bp.route('/api/system/usage', methods=['GET'])
 def system_usage_get():
     """Return local token-usage aggregates derived from ~/.claude/stats-cache.json.
@@ -692,6 +774,32 @@ def system_usage_get():
 
     last_data_date = mc.get('last_data_date', '') or cc_data.get('lastComputedDate', '')
 
+    usage_limits = _fetch_oauth_usage_limits()
+
+    # MC-966 bottom usage strip: one real weekly % per provider, keyed for the
+    # frontend to iterate directly (never invents a bar for a provider with no
+    # real signal — Gemini's CLI exposes no rate-limit percentage locally, so
+    # it is never a key here; see `_fetch_codex_weekly_usage` for Codex's
+    # on-disk source). Claude's number is the same `usage_limits.seven_day`
+    # the Usage-tab bars already draw, just re-keyed by provider name.
+    provider_weekly_usage: dict = {}
+    _claude_seven_day = (usage_limits or {}).get('seven_day')
+    if _claude_seven_day and _claude_seven_day.get('utilization') is not None:
+        provider_weekly_usage['claude'] = {
+            'utilization': _claude_seven_day.get('utilization'),
+            'resets_at': _claude_seven_day.get('resets_at'),
+        }
+    _codex_weekly = _fetch_codex_weekly_usage()
+    if _codex_weekly and _codex_weekly.get('utilization') is not None:
+        provider_weekly_usage['codex'] = _codex_weekly
+    # A vendor mid-exhaustion should read as full/red even if its last-sampled
+    # weekly % predates the block — but only for a provider that already has a
+    # real bar; exhaustion alone is not a substitute for a missing weekly %.
+    for _vendor, _entry in _allowance_state.all_states().items():
+        if _vendor in provider_weekly_usage:
+            provider_weekly_usage[_vendor]['exhausted'] = True
+            provider_weekly_usage[_vendor]['exhausted_display'] = _allowance_state.resets_clause(_entry)
+
     return jsonify({
         'available': True,
         'today': mc.get('today', {}),
@@ -705,7 +813,11 @@ def system_usage_get():
         'rate_limit_info': state._LAST_SYSTEM_STATUS.get('rate_limit_info') or {},
         # Authoritative subscription usage windows (% + resets) from the OAuth
         # endpoint; None when unavailable (UI falls back to rate_limit_info).
-        'usage_limits': _fetch_oauth_usage_limits(),
+        'usage_limits': usage_limits,
+        # Per-provider weekly % for the bottom usage strip (MC-966). Only real
+        # numbers, keyed by provider name; a provider with no real weekly %
+        # signal is simply absent, never a 0%/placeholder entry.
+        'provider_weekly_usage': provider_weekly_usage,
     })
 
 

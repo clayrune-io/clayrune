@@ -1288,6 +1288,52 @@
   }
   .minimized-chip .chip-close:hover { color: var(--red); }
 
+  /* ── BOTTOM USAGE STRIP (MC-966) ─────────────────────────────────────
+     Real flex child of .main-area (last item), NOT position:fixed — it
+     reserves its own row so it can never overlay project cards or the
+     agent console above it. Collapses to zero height via :empty when the
+     feature is off or no provider has real weekly-% data, same pattern as
+     .minimized-tray. #minimized-tray IS fixed (viewport-wide chips that pop
+     up from the true bottom edge); while this strip is non-empty its CSS
+     nudges the tray up by the strip's own height so a minimized-modal chip
+     never renders on top of a usage bar. */
+  .usage-bar-strip {
+    flex-shrink: 0;
+    display: flex; align-items: center; gap: 14px;
+    height: 24px; padding: 0 14px;
+    background: var(--surface2);
+    border-top: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  .usage-bar-strip:empty { display: none; }
+  body:has(.usage-bar-strip:not(:empty)) .minimized-tray { bottom: 24px; }
+
+  .usage-bar-item {
+    display: flex; align-items: center; gap: 6px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .usage-bar-label {
+    font-size: 10.5px; color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .usage-bar-track {
+    width: 64px; height: 5px; border-radius: 3px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  .usage-bar-fill {
+    height: 100%; border-radius: 3px;
+  }
+  .usage-bar-fill.green { background: var(--green); }
+  .usage-bar-fill.amber { background: var(--amber); }
+  .usage-bar-fill.red { background: var(--red); }
+  .usage-bar-pct {
+    font-size: 10.5px; color: var(--text-faint);
+    min-width: 28px;
+  }
+  @media (max-width: 960px) { .usage-bar-strip { display: none !important; } }
+
   .modal-header {
     /* Bottom padding is deliberately tight: the name row is the LAST thing in
        the header now (status row removed, path/summary hidden unconditionally),
