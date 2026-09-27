@@ -21,7 +21,8 @@ from mc import backup as bk  # noqa: E402
 
 def _git(cwd, *args):
     subprocess.run(['git'] + list(args), cwd=str(cwd), check=True,
-                   capture_output=True, text=True)
+                   capture_output=True, text=True,
+                   stdin=subprocess.DEVNULL)  # MC-984: WinError 6 under pytest capture
 
 
 @pytest.fixture
