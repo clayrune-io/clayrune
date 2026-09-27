@@ -3192,16 +3192,26 @@ def boot(check_port=True):
     global _BOOT_T0
     _BOOT_T0 = _time.time()
     _register_claude_runtime_hooks()
-    # MC-979: mint the per-boot /api/secrets/exec token NOW, not lazily on
-    # first request — a locked-vault CLI's with-secret.py fallback reads this
-    # file to build its very first request to that route, so the file must
-    # already exist before that request can be sent, not get created by
+    if check_port:
+        _boot_phase('port-conflict wait', _check_port_conflict)
+    # MC-979/MC-981: mint the per-boot /api/secrets/exec token NOW, not lazily
+    # on first request — a locked-vault CLI's with-secret.py fallback reads
+    # this file to build its very first request to that route, so the file
+    # must already exist before that request can be sent, not get created by
     # handling it. Belongs in boot(), not module scope (see the comment where
     # secrets_routes.bp is registered above) — a bare `import server` must
     # never mint a token, only an actual server starting up may.
+    #
+    # MUST run AFTER the port-conflict check above: `_check_port_conflict`
+    # calls `sys.exit(2)` when another live MC already holds the port, and a
+    # losing second instance must never get this far — minting here first
+    # would overwrite the WINNING instance's on-disk token with one only the
+    # loser (about to exit) holds in memory, the exact cross-process token
+    # mismatch MC-981 exists to prevent, just triggered by a losing instance
+    # instead of a bare import. `check_port=False` (app.py) is fine running
+    # this immediately: that caller already did its own single-instance
+    # handling before ever calling boot().
     _secrets_store_boot.ensure_exec_token()
-    if check_port:
-        _boot_phase('port-conflict wait', _check_port_conflict)
     # Reap child process trees orphaned by a prior MC instance that exited
     # (restart/crash) without killing them. Reads the PID ledger the prior
     # instance persisted; identity-guarded so it can't friendly-fire. Must run

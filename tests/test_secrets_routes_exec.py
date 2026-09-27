@@ -333,6 +333,48 @@ def test_timeout_kills_the_grandchild_too(client, tmp_path):
         f"grandchild pid {grandchild_pid} survived the route's timeout")
 
 
+def test_timeout_kills_grandchild_that_outlives_its_exited_parent(client, tmp_path):
+    """MC-981 review finding: ``test_timeout_kills_the_grandchild_too`` above
+    keeps the direct child alive (it sleeps 60s too) for the whole test, so
+    it never exercises the shape that actually broke a bare
+    ``taskkill /T /PID <child>`` — the common fork-and-exit daemon pattern,
+    where the CHILD SPAWNS A GRANDCHILD AND THEN EXITS ITSELF. Reproduced
+    with ``_scratch/mc981_probe.py`` before this fix: once the child has
+    already exited, ``taskkill /T`` has nothing to walk the tree from, so the
+    grandchild — which is what's actually keeping ``communicate()`` from
+    returning, since it inherited the write end of the child's stdout pipe —
+    survives forever. The job object this fix wires in
+    (``_win_job_object_for``) doesn't have that hole: the grandchild joins
+    the job when the child spawns it, and stays a member independent of
+    whether the child that created it is still alive."""
+    _create(client)
+    pid_file = tmp_path / 'grandchild3.pid'
+    parent_script = (
+        "import subprocess, sys\n"
+        "gc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open(r'{pid_file}', 'w').write(str(gc.pid))\n"
+        # No further sleep — this process exits immediately, leaving the
+        # grandchild as the only thing still holding the pipe open.
+    )
+    parent_cmd = [sys.executable, '-c', parent_script]
+    res = _exec(client, env=[['X', 'demo.token']], command=parent_cmd, timeout=1)
+    assert res.status_code == 504, res.get_data(as_text=True)
+    assert res.get_json()['error'] == 'timeout'
+
+    deadline = time.time() + 5
+    while time.time() < deadline and not pid_file.exists():
+        time.sleep(0.25)
+    assert pid_file.exists(), "grandchild never wrote its pid before the timeout fired"
+    grandchild_pid = int(pid_file.read_text().strip())
+
+    deadline = time.time() + 5
+    while time.time() < deadline and _pid_alive(grandchild_pid):
+        time.sleep(0.25)
+    assert not _pid_alive(grandchild_pid), (
+        f"grandchild pid {grandchild_pid} survived the timeout after its "
+        f"parent had already exited")
+
+
 def test_server_import_does_not_touch_exec_token_path(tmp_path):
     """MC-981 follow-up: ``ensure_exec_token()`` used to run at server.py
     MODULE-import time (right after registering ``secrets_routes.bp``), so
