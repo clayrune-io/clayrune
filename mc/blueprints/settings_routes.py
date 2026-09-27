@@ -264,6 +264,12 @@ _CONFIG_EDITABLE_KEYS = {
     # respawn needed. Default ON (unset/None reads as enabled client-side, the
     # same "absent key = default" convention as `desk_v1`).
     'usage_bar_enabled',
+    # MC-961 opt-in engine fallback (Settings > Agent > Advanced). Read live
+    # by mc/engine_fallback.py at the one dispatch choke point
+    # (agent_routes._apply_engine_fallback) — no respawn needed. Default []
+    # (off); validated below, same "refuse a bad write outright" reasoning as
+    # default_provider just above.
+    'engine_fallback_order',
 }
 
 # Respawn-trigger ("Tier-1") settings: baked into the spawn (CLI flags or the
@@ -362,6 +368,27 @@ def update_config():
             return jsonify({'error': f'unknown provider {prov!r} — available: '
                                      f'{", ".join(sorted(known))}'}), 400
         data['default_provider'] = prov
+    if 'engine_fallback_order' in data and 'engine_fallback_order' in _CONFIG_EDITABLE_KEYS:
+        # Same reasoning as default_provider above: a hand-typed or stale
+        # entry naming a provider that doesn't exist on this box would sit in
+        # config.json silently skipped by resolve_fallback() forever — refuse
+        # the write instead so the mistake surfaces immediately in the UI.
+        from mc import agent_runtime as _agent_runtime
+        from mc import engine_fallback as _engine_fallback
+        raw = data['engine_fallback_order']
+        if not isinstance(raw, list):
+            return jsonify({'error': 'engine_fallback_order must be a list'}), 400
+        try:
+            known = {r.name for r in _agent_runtime.available_runtimes()}
+        except Exception:
+            known = set()
+        cleaned = _engine_fallback.get_order({'engine_fallback_order': raw})
+        if known:
+            bad = [e['provider'] for e in cleaned if e['provider'] not in known]
+            if bad:
+                return jsonify({'error': f'unknown provider(s): {", ".join(sorted(set(bad)))} — '
+                                         f'available: {", ".join(sorted(known))}'}), 400
+        data['engine_fallback_order'] = cleaned
     updated = {}
     for k, v in data.items():
         if k in _CONFIG_EDITABLE_KEYS:

@@ -6,6 +6,11 @@
 let _settingsActiveCat = 'providers';
 let _settingsActiveSub = 0;
 let _settingsView = 'list'; // 'list' (categories) | 'subs' (sub-category list) | 'detail' | 'search'
+// MC-961 engine fallback order, synced from cfg.engine_fallback_order on every
+// _renderSettings() pass — module scope because the move/remove/add handlers
+// below fire from onclick attributes, after the render closure that computed
+// them has already returned.
+let _efOrder = [];
 const _settingsIcon = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
 const SETTINGS_CATS = [
   { key:'providers',  group:1, label:'Providers',    sub:'Claude, Gemini, Codex — sign-in & API keys', icon:_settingsIcon('<circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.3-9.3"/><path d="M17 5l2.5 2.5"/>') },
@@ -253,6 +258,46 @@ async function openSettings() {
   _positionSettingsModal(win);
 }
 
+// MC-961: the blocked-run card's "Set up a fallback" button lands here — the
+// only discovery path to this control besides browsing Agent > Advanced by
+// hand (deliberately excluded from first-run and the beginner path per Ron's
+// 2026-09-26 placement note). Opens Settings if needed, drills straight to
+// the Agent category and its "Advanced" section (expanded, not the collapsed
+// sub-list a cold open would show).
+async function openSettingsToEngineFallback() {
+  await openSettings();
+  drillSettings('agent');
+  const idx = _settingsSectionEls('agent').findIndex(s => {
+    const t = s.querySelector('.settings-section-title');
+    return t && t.textContent.trim() === 'Advanced';
+  });
+  if (idx >= 0) drillSettingsSub(idx);
+}
+
+async function _efPersist() {
+  await saveSetting('engine_fallback_order', _efOrder);
+  await _renderSettings();
+}
+
+function moveEngineFallback(idx, delta) {
+  const j = idx + delta;
+  if (j < 0 || j >= _efOrder.length) return;
+  [_efOrder[idx], _efOrder[j]] = [_efOrder[j], _efOrder[idx]];
+  _efPersist();
+}
+
+function removeEngineFallback(idx) {
+  _efOrder.splice(idx, 1);
+  _efPersist();
+}
+
+function addEngineFallback() {
+  const sel = document.getElementById('engine-fallback-add-provider');
+  if (!sel || !sel.value) return;
+  _efOrder.push({ provider: sel.value, model: '' });
+  _efPersist();
+}
+
 async function _renderSettings() {
   const body = document.getElementById('settings-body');
   if (!body) return;
@@ -353,6 +398,41 @@ async function _renderSettings() {
   function numInput(key, val) {
     return `<input class="settings-input" type="number" value="${val || 0}" onchange="saveSetting('${key}',parseInt(this.value)||0)">`;
   }
+
+  // MC-961 opt-in engine fallback. `_efOrder` is the module-scope mutable
+  // copy the move/remove/add handlers below act on (they can't close over
+  // this render's local `cfg` — they run from onclick attributes after this
+  // function has returned). Re-synced from the fetched config every render.
+  _efOrder = Array.isArray(cfg.engine_fallback_order) ? cfg.engine_fallback_order.slice() : [];
+  const _efSignedIn = (_agentProviders || []).filter(p => p.installed && p.auth_status === 'ok');
+  const _efLabel = (name) => {
+    const p = (_agentProviders || []).find(x => x.name === name);
+    return p ? p.display_name : name;
+  };
+  const _efAddOptions = _efSignedIn.filter(p => !_efOrder.some(e => e.provider === p.name));
+  const engineFallbackHTML = _efSignedIn.length < 2
+    ? `<div class="settings-hint">Fallback needs a second AI provider signed in.</div>`
+    : `
+      <div class="settings-hint" style="margin-bottom:10px">Opt-in only — empty means it never fires. When the active vendor is out of allowance or a pinned model is unavailable, MC swaps to the first entry below that can run right now, and always says so loudly (chat line, notification, activity log).</div>
+      ${_efOrder.length ? _efOrder.map((e, i) => `
+        <div class="settings-row" data-ef-idx="${i}">
+          <div><div class="settings-label">${i + 1}. ${esc(_efLabel(e.provider))}</div>${e.model ? `<div class="settings-hint">${esc(e.model)}</div>` : ''}</div>
+          <div style="display:flex;gap:4px">
+            <button class="btn-browse" ${i === 0 ? 'disabled' : ''} onclick="moveEngineFallback(${i},-1)" title="Move up">&#8593;</button>
+            <button class="btn-browse" ${i === _efOrder.length - 1 ? 'disabled' : ''} onclick="moveEngineFallback(${i},1)" title="Move down">&#8595;</button>
+            <button class="btn-browse" onclick="removeEngineFallback(${i})" title="Remove">&#10005;</button>
+          </div>
+        </div>`).join('') : `<div class="settings-hint">No fallback configured.</div>`}
+      ${_efAddOptions.length ? `
+      <div class="settings-row">
+        <div><div class="settings-label">Add vendor</div></div>
+        <div style="display:flex;gap:6px">
+          <select class="settings-select" id="engine-fallback-add-provider">
+            ${_efAddOptions.map(p => `<option value="${esc(p.name)}">${esc(p.display_name)}</option>`).join('')}
+          </select>
+          <button class="btn-dispatch" onclick="addEngineFallback()">Add</button>
+        </div>
+      </div>` : ''}`;
 
   body.innerHTML = `
     <div class="settings-search-wrap">
@@ -485,6 +565,12 @@ async function _renderSettings() {
         <div><div class="settings-label">Channels</div><div class="settings-hint">MCP plugin channels (e.g. plugin:telegram@…).</div></div>
         ${textInput('agent_channels', cfg.agent_channels)}
       </div>
+    </div>
+
+    <div class="settings-section" id="engine-fallback-section">
+      <div class="settings-section-title">Advanced</div>
+      <div class="settings-label" style="margin-bottom:6px">Engine fallback</div>
+      ${engineFallbackHTML}
     </div>
       </div>
 
@@ -956,3 +1042,7 @@ async function refreshBackupScheduleSection() {
   }
 }
 window.refreshBackupScheduleSection = refreshBackupScheduleSection;
+window.openSettingsToEngineFallback = openSettingsToEngineFallback; // interop: blocked-run chat card "Set up a fallback" button (conversation.js, generated onclick)
+window.moveEngineFallback = moveEngineFallback;    // interop: MC-961 fallback-order row (generated onclick)
+window.removeEngineFallback = removeEngineFallback; // interop: MC-961 fallback-order row (generated onclick)
+window.addEngineFallback = addEngineFallback;      // interop: MC-961 "Add vendor" row (generated onclick)
