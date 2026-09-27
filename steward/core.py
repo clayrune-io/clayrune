@@ -246,7 +246,7 @@ def _fence_settings_content() -> dict:
     return {
         "hooks": {
             "PreToolUse": [{
-                "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
+                "matcher": "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit",
                 "hooks": [{"type": "command", "command": _fence_command(), "timeout": 10000}],
             }],
         },

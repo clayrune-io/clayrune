@@ -79,8 +79,17 @@ _BLOCK_PATTERNS = [
     (re.compile(r'\bgh\s+release\s+(create|edit|delete)\b', re.I), "GitHub release mutation"),
     (re.compile(r'\bgh\s+(pr|issue|repo)\s+(create|edit|merge|close|delete|comment)\b', re.I),
      "GitHub write (leaves this box, notifies others)"),
+    (re.compile(r'\bgh\s+gist\s+(create|edit|delete)\b', re.I),
+     "GitHub gist write (leaves this box, notifies others)"),
     (re.compile(r'\bgh\s+api\b.*-X\s*(POST|PUT|PATCH|DELETE)', re.I),
      "GitHub API mutation"),
+    # PowerShell-only publish/release surfaces (Bash equivalents already above).
+    (re.compile(r'\bPublish-Module\b|\bPublish-Script\b', re.I),
+     "PowerShell Gallery publish is an irreversible release"),
+    # Raw network sockets: unrestricted send/receive with no verb shape the
+    # fence can bound (unlike curl/wget, nc has no request-method to check).
+    (re.compile(r'\b(nc|ncat|netcat)\b', re.I),
+     "raw network socket tool (nc/ncat/netcat), unrestricted send/receive is out of steward scope"),
     # Cloud spend / provisioning.
     (re.compile(r'\b(gcloud|aws|az)\b[\s\S]*\b(create|delete|deploy|apply|update|run|start|stop|remove|rm|set|put|destroy)\b', re.I),
      "cloud provisioning/spend (gcloud/aws/az mutation)"),
@@ -97,6 +106,15 @@ _BLOCK_PATTERNS = [
     (re.compile(r'\bmkfs\b|\bdd\s+if=', re.I), "disk-destructive operation"),
     (re.compile(r'\bshutdown\b|\breboot\b', re.I), "host power operation"),
 ]
+
+# KNOWN LIMIT, documented rather than chased (2026-09-27): DNS lookups
+# (nslookup/dig/ping/Resolve-DnsName) are NOT blocked. A DNS query can carry a
+# small amount of exfiltrated data in the queried name, but blocking DNS
+# outright would break ordinary connectivity checks the steward legitimately
+# needs, and a nslookup-based exfil channel is far lower-bandwidth than the
+# HTTP/scp/rsync sends this module already blocks. Not in scope for this
+# denylist; a defense against it would need to live at the network layer,
+# not a command-text fence.
 
 # Destructive-delete verbs. Blocked UNLESS the command is clearly scratch-scoped.
 _DELETE_PATTERNS = [
@@ -149,6 +167,38 @@ _INTERPRETER_RE = re.compile(
     r'\b(bash|sh|zsh|dash|ksh|pwsh|powershell|python\w*|node|perl|ruby|'
     r'eval|source|cmd|iex|invoke-expression)\b', re.I)
 
+# A grep/rg SEARCH PATTERN is data the tool consumes, never text the shell
+# executes — `grep -rn "git push" docs/` (searching this repo's OWN source,
+# including this file's comments, for the literal string) is not a git push
+# and must not block on it (false-positive incident, 2026-09-27). Left
+# unmasked, like the -m/--message body, when the pattern itself carries a
+# substitution token that WOULD execute.
+_GREP_PATTERN_RE = re.compile(
+    r"""(?P<head>\b(?:grep|egrep|fgrep|rg)\b(?:\s+-{1,2}[\w-]+(?:=\S+)?)*\s+)"""
+    r"""(?P<q>['"])(?P<body>(?:\\.|(?!(?P=q)).)*)(?P=q)""",
+    re.S | re.I)
+
+# A `python -c '<literal>'` program's own body is likewise data the fence
+# cannot execute — UNLESS the literal itself hands off to a shell (subprocess/
+# os.system/eval) or sends a network request directly (requests/urlopen/
+# httpx), in which case it is left unmasked so classify_bash's own checks
+# (curl-text-inside-a-python-string false positive, 2026-09-27) and
+# _python_network_send below can still see it.
+_PY_C_ARG_RE = re.compile(
+    r"""(?P<head>\bpython\w*\b(?:\s+-{1,2}[\w-]+(?:=\S+)?)*\s+-c\s+)"""
+    r"""(?P<q>['"])(?P<body>(?:\\.|(?!(?P=q)).)*)(?P=q)""",
+    re.S | re.I)
+
+_PY_EXEC_OR_SEND_RE = re.compile(
+    r'\b(subprocess\.\w+\s*\(|os\.system\s*\(|os\.popen\s*\(|os\.exec\w*\s*\(|'
+    r'eval\s*\(|exec\s*\(|requests\.\w+\s*\(|urlopen\s*\(|httpx\.\w+\s*\()', re.I)
+
+# An unresolved shell expansion inside the literal (`python -c "$CODE"`) means
+# the program text is a runtime VALUE, not the string on this line — the
+# existing `_DASH_C_EXPANSION_RE` enabling-construct check needs to still see
+# it, so it must never be masked away as "inert".
+_PY_C_HAS_EXPANSION_RE = re.compile(r'\$\{?\w+|\$\(|`')
+
 
 def _mask_inert_prose(cmd: str) -> str:
     """Replace provably-inert data spans with a placeholder. Best-effort and
@@ -159,6 +209,17 @@ def _mask_inert_prose(cmd: str) -> str:
             return m.group(0)          # substitution could execute — leave it
         return f"{m.group(1)}{m.group('q')}{_MASK_TOKEN}{m.group('q')}"
 
+    def _grep_repl(m):
+        if '$(' in m.group('body') or '`' in m.group('body'):
+            return m.group(0)          # substitution could execute — leave it
+        return f"{m.group('head')}{m.group('q')}{_MASK_TOKEN}{m.group('q')}"
+
+    def _py_c_repl(m):
+        body = m.group('body')
+        if _PY_EXEC_OR_SEND_RE.search(body) or _PY_C_HAS_EXPANSION_RE.search(body):
+            return m.group(0)          # shells out, sends, or is a runtime value — leave it visible
+        return f"{m.group('head')}{m.group('q')}{_MASK_TOKEN}{m.group('q')}"
+
     def _block_repl(m):
         # If the consuming line mentions an interpreter, the "data" may be
         # executed (bash <<'EOF') — leave the whole span for the patterns.
@@ -167,6 +228,8 @@ def _mask_inert_prose(cmd: str) -> str:
         return f"{m.group('head')}{_MASK_TOKEN}\n{m.group('term')}"
 
     out = _MSG_ARG_RE.sub(_msg_repl, cmd)
+    out = _GREP_PATTERN_RE.sub(_grep_repl, out)
+    out = _PY_C_ARG_RE.sub(_py_c_repl, out)
     out = _HEREDOC_RE.sub(_block_repl, out)
     out = _PS_HERESTRING_RE.sub(_block_repl, out)
     return out
@@ -203,16 +266,83 @@ def _touches_nonlocal_network(cmd: str) -> FenceDecision:
             return FenceDecision(True, "autonomous web browsing is out of steward scope - "
                                        "the browser HTTP API is the same capability as the "
                                        "browser MCP tools, which are blocked")
+        # curl -G/--get turns --data*/-d into GET query params, not a body
+        # (false-positive incident, 2026-09-27: `curl -G --data-urlencode`
+        # read as a mutating send). An explicit -X still overrides it.
+        get_override = bool(re.search(r'(^|\s)(-G\b|--get\b)', seg, re.I))
         mutating = (
             bool(re.search(r'-X\s*(POST|PUT|PATCH|DELETE)', seg, re.I))
-            or bool(re.search(r'(^|\s)(--data\b|--data-raw\b|-d\b|--upload-file\b|-T\b|-F\b|--form\b)', seg))
+            or (not get_override and bool(re.search(
+                r'(^|\s)(--data\b|--data-raw\b|--data-binary\b|--data-ascii\b|'
+                r'--data-urlencode\b|-d\b|--upload-file\b|-T\b|-F\b|--form\b|'
+                r'--post-data\b|--post-file\b)', seg, re.I)))
             or bool(re.search(r'-Method\s+(POST|PUT|PATCH|DELETE)', seg, re.I))
+            or bool(re.search(r'(^|\s)(-Body\b|-InFile\b)', seg, re.I))
         )
         if not mutating:
             continue
         if any(h in seg.lower() for h in _LOCAL_HOSTS):
             continue  # steward's own API calls
         return FenceDecision(True, "external network send (mutating HTTP to a non-local host)")
+    return FenceDecision(False, '')
+
+
+# ── python -c network sends (miss fix, 2026-09-27) ───────────────────────────
+# `curl`/`wget`/Invoke-WebRequest are covered above by name, but the exact
+# same POST-shaped send done from inline Python (`python -c
+# "requests.post(url, data=...)"`) named none of those tools, so it sailed
+# through unmatched. Scoped to a `-c` literal, same discipline as the
+# curl/wget check: the fence can see what's ON THE LINE, not what a script
+# FILE does.
+_PY_NETWORK_SEND_RE = re.compile(
+    r'\b(?:requests\.(?:post|put|patch|delete)\s*\(|'
+    r'requests\.request\s*\(\s*[\'"](?:POST|PUT|PATCH|DELETE)[\'"]|'
+    r'urlopen\s*\([^)]*\bdata\s*=|'
+    r'Request\s*\([^)]*\bdata\s*=|'
+    r'httpx\.(?:post|put|patch|delete)\s*\()', re.I)
+
+def _python_network_send(cmd: str) -> FenceDecision:
+    """Block a `python -c` literal that makes a POST/PUT/PATCH/DELETE-shaped
+    call (requests/urllib/httpx) to a non-local host.
+
+    Extracted via `_PY_C_ARG_RE` (the same quote-respecting match used to
+    mask inert `-c` literals above) rather than `_SHELL_SPLIT_RE`'s naive
+    per-segment split: a real literal commonly has its own internal `;`
+    (`"import requests; requests.post(...)"`), which the segment splitter
+    would cut apart from the leading `python -c`, losing the match."""
+    for m in _PY_C_ARG_RE.finditer(cmd):
+        body = m.group('body')
+        if not _PY_NETWORK_SEND_RE.search(body):
+            continue
+        if any(h in body.lower() for h in _LOCAL_HOSTS):
+            continue
+        return FenceDecision(True, "python -c makes a network POST/PUT/PATCH/DELETE-shaped "
+                                    "call (requests/urllib/httpx) to a non-local host")
+    return FenceDecision(False, '')
+
+
+# ── scp/rsync to a remote host (miss fix, 2026-09-27) ─────────────────────────
+_SCP_RSYNC_RE = re.compile(r'\b(scp|rsync)\b', re.I)
+# `[user@]host:` where host is 2+ chars, so a Windows drive letter (`C:\...`)
+# never matches (single char) and a bare local path never does either (no
+# trailing colon).
+_REMOTE_TARGET_TOKEN_RE = re.compile(r'^(?:[\w.\-]+@)?([\w.\-]{2,}):(?!\\)')
+
+
+def _scp_rsync_remote(cmd: str) -> FenceDecision:
+    """Block scp/rsync whose target names a remote host — data leaves this
+    box the same way a curl/wget upload does, just via a different tool."""
+    for seg in _SHELL_SPLIT_RE.split(cmd):
+        if not _SCP_RSYNC_RE.search(seg):
+            continue
+        if any(h in seg.lower() for h in _LOCAL_HOSTS):
+            continue
+        if re.search(r'rsync://|ssh://', seg, re.I):
+            return FenceDecision(True, "rsync to a remote host (data leaves this box)")
+        for tok in seg.split():
+            if _REMOTE_TARGET_TOKEN_RE.match(tok):
+                tool = 'scp' if re.search(r'\bscp\b', seg, re.I) else 'rsync'
+                return FenceDecision(True, f"{tool} to a remote host (data leaves this box)")
     return FenceDecision(False, '')
 
 
@@ -360,6 +490,14 @@ def classify_bash(command: str) -> FenceDecision:
     net = _touches_nonlocal_network(cmd)
     if net.blocked:
         return net
+
+    py_net = _python_network_send(cmd)
+    if py_net.blocked:
+        return py_net
+
+    remote_copy = _scp_rsync_remote(cmd)
+    if remote_copy.blocked:
+        return remote_copy
 
     enabling = _enabling_construct(cmd)
     if enabling.blocked:
@@ -686,7 +824,14 @@ def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
             if d.blocked:
                 return d
         return FenceDecision(False, '')
-    if name == 'Bash':
+    if name in ('Bash', 'PowerShell'):
+        # PowerShell tool_input carries the command in the same `command`
+        # key as Bash (mc/process_guard.py's _SHELL_TOOL_NAMES precedent) and
+        # its own cmdlets (Remove-Item, Invoke-WebRequest/-RestMethod, iwr/
+        # irm, Publish-Module/-Script) are already in classify_bash's
+        # patterns — a live `git push` via the PowerShell tool exited 0
+        # before this branch existed (Quill, 2026-09-27) because this
+        # function only ever routed 'Bash'.
         return classify_bash(ti.get('command', '') or '')
     # Writing to global config outside the project is out-of-scope for a
     # project steward — block edits/writes targeting ~/.claude or a home dotfile.
