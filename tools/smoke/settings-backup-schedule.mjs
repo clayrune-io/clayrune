@@ -144,9 +144,10 @@ try {
     ? ok('changing Keep PUTs /api/config {backup_keep:7}')
     : fail(`unexpected config PUT(s) for keep: ${JSON.stringify(configPuts)}`);
 
-  // ── 4. Status line reflects a real last/next run ────────────────────────
+  // ── 4. Status line reflects a real last-success/next run ───────────────
   scheduleStatus = { cadence: 'daily', keep: 7, last_run_at: '2026-09-25T08:00:00Z',
-    last_status: 'success', last_error: null, next_run_at: '2026-09-26T08:00:00Z', overdue: false };
+    last_success_at: '2026-09-25T08:00:00Z', last_status: 'success', last_error: null,
+    consecutive_failures: 0, next_run_at: '2026-09-26T08:00:00Z', overdue: false };
   await page.evaluate(() => window.refreshBackupScheduleSection());
   await page.waitForFunction(
     () => (document.getElementById('backup-schedule-status-hint')?.textContent || '').includes('Next'),
@@ -156,17 +157,20 @@ try {
     ? ok(`status hint shows last + next run: "${successHint.trim()}"`)
     : fail(`status hint missing last/next: "${successHint}"`);
 
-  // ── 5. A failed last run surfaces its error, not a silent timestamp ────
-  scheduleStatus = { cadence: 'daily', keep: 7, last_run_at: '2026-09-25T08:00:00Z',
-    last_status: 'error', last_error: 'disk full', next_run_at: null, overdue: true };
+  // ── 5. A failing streak says it's retrying hourly, not a stale "Next" ──
+  // (a failure must never push Next a whole cadence out — the daemon
+  // retries hourly against last_success_at, which a failure doesn't move).
+  scheduleStatus = { cadence: 'daily', keep: 7, last_run_at: '2026-09-26T08:00:00Z',
+    last_success_at: '2026-09-25T08:00:00Z', last_status: 'error', last_error: 'disk full',
+    consecutive_failures: 3, next_run_at: null, overdue: true };
   await page.evaluate(() => window.refreshBackupScheduleSection());
   await page.waitForFunction(
     () => /disk full/.test(document.getElementById('backup-schedule-status-hint')?.textContent || ''),
     { timeout: 5000 });
   const failHint = await page.textContent('#backup-schedule-status-hint');
-  /due now/.test(failHint)
-    ? ok(`status hint shows "due now" when overdue: "${failHint.trim()}"`)
-    : fail(`status hint missing overdue "due now": "${failHint}"`);
+  /retrying hourly/.test(failHint)
+    ? ok(`status hint says retrying hourly on a failure, not a stale cadence-away "Next": "${failHint.trim()}"`)
+    : fail(`status hint missing "retrying hourly": "${failHint}"`);
 
   pageErrors.length === 0 ? ok('no uncaught page errors throughout')
     : pageErrors.forEach(e => fail('uncaught: ' + e));

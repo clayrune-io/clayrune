@@ -937,10 +937,16 @@ async function refreshBackupScheduleSection() {
     const r = await fetch(API_BASE + '/api/backup/schedule-status');
     const st = await r.json();
     if (st.cadence === 'off') { hint.textContent = 'Scheduled backup is off.'; return; }
-    let text = `Last: ${_fmtBackupWhen(st.last_run_at)}` +
-      (st.last_status === 'error' ? ` (failed: ${esc(st.last_error || 'unknown error')})` : '') +
+    // A failing streak retries hourly (the daemon's own overdue check
+    // re-fires since last_success_at doesn't move) rather than waiting out
+    // a whole cadence — say so, instead of a "Next: <a week away>" that
+    // would be wrong for a week of daily failures.
+    if (st.last_status === 'error') {
+      hint.textContent = `Last attempt failed: ${st.last_error || 'unknown error'} — retrying hourly.`;
+      return;
+    }
+    hint.textContent = `Last: ${_fmtBackupWhen(st.last_success_at)}` +
       ` · Next: ${st.overdue ? 'due now' : _fmtBackupWhen(st.next_run_at)}`;
-    hint.textContent = text;
   } catch (_) {
     hint.textContent = 'Could not load backup schedule status.';
   }

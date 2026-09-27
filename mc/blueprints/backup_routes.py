@@ -408,21 +408,40 @@ def _notify_backup_failure(reason: str) -> None:
 
 
 def _run_scheduled_backup_once() -> None:
+    """Overdue/next-run is computed off ``last_success_at``, never
+    ``last_run_at`` (last ATTEMPT) — a failed run (full disk, unplugged
+    drive) must not push the next try a whole cadence out. A daily/weekly
+    failure leaves ``last_success_at`` untouched, so the very next hourly
+    tick sees the SAME overdue=True and retries — the retry is the loop's
+    own overdue check re-firing, not special-cased here.
+
+    Notification is still throttled: ``consecutive_failures`` +
+    ``last_notified_error`` fire a push on the FIRST failure of a streak and
+    again only if the error text changes, never once per hourly retry —
+    a week of the same disk-full error must not page hourly."""
     sched_state = _backup.load_schedule_state()
     try:
         result = _backup.create_backup(scheduled=True, label='scheduled')
     except Exception as e:
-        _log(f"[backup-schedule] scheduled backup failed: {e}")
+        error_text = str(e)
+        _log(f"[backup-schedule] scheduled backup failed: {error_text}")
+        streak = int(sched_state.get('consecutive_failures') or 0) + 1
         sched_state['last_run_at'] = _backup._now_iso()
         sched_state['last_status'] = 'error'
-        sched_state['last_error'] = str(e)
+        sched_state['last_error'] = error_text
+        sched_state['consecutive_failures'] = streak
+        if streak == 1 or error_text != sched_state.get('last_notified_error'):
+            _notify_backup_failure(error_text)
+            sched_state['last_notified_error'] = error_text
         _backup.save_schedule_state(sched_state)
-        _notify_backup_failure(str(e))
         return
     sched_state['last_run_at'] = result['manifest']['created_at']
+    sched_state['last_success_at'] = result['manifest']['created_at']
     sched_state['last_status'] = 'success'
     sched_state['last_error'] = None
     sched_state['last_result_path'] = result['path']
+    sched_state['consecutive_failures'] = 0
+    sched_state.pop('last_notified_error', None)
     _backup.save_schedule_state(sched_state)
     _log(f"[backup-schedule] created {result['path']} "
         f"({result['files_written']} files, {len(result['warnings'])} warnings)")
@@ -452,7 +471,7 @@ def _backup_schedule_loop():
             cadence = str(_state.CONFIG.get('backup_schedule') or 'off').lower()
             if cadence in ('daily', 'weekly'):
                 sched_state = _backup.load_schedule_state()
-                if _backup.is_backup_overdue(cadence, sched_state.get('last_run_at')):
+                if _backup.is_backup_overdue(cadence, sched_state.get('last_success_at')):
                     if _any_backup_job_active():
                         _log("[backup-schedule] overdue but a backup job is already "
                             "running — will retry next hour")
@@ -473,15 +492,21 @@ def api_backup_schedule_status():
     cadence = str(_state.CONFIG.get('backup_schedule') or 'off').lower()
     keep = int(_state.CONFIG.get('backup_keep', 3) or 3)
     sched_state = _backup.load_schedule_state()
-    last_run_at = sched_state.get('last_run_at')
+    last_success_at = sched_state.get('last_success_at')
     return jsonify({
         'cadence': cadence, 'keep': keep,
-        'last_run_at': last_run_at,
+        # last_run_at is the last ATTEMPT (success or failure); last_success_at
+        # is what overdue/next_run_at are computed from, so a failing streak
+        # doesn't push the next try a whole cadence out (see
+        # _run_scheduled_backup_once's docstring).
+        'last_run_at': sched_state.get('last_run_at'),
+        'last_success_at': last_success_at,
         'last_status': sched_state.get('last_status'),
         'last_error': sched_state.get('last_error'),
+        'consecutive_failures': int(sched_state.get('consecutive_failures') or 0),
         'last_result_path': sched_state.get('last_result_path'),
-        'next_run_at': _backup.next_run_at(cadence, last_run_at),
-        'overdue': _backup.is_backup_overdue(cadence, last_run_at) if cadence in ('daily', 'weekly') else False,
+        'next_run_at': _backup.next_run_at(cadence, last_success_at),
+        'overdue': _backup.is_backup_overdue(cadence, last_success_at) if cadence in ('daily', 'weekly') else False,
     })
 
 

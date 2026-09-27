@@ -250,10 +250,28 @@ def test_run_scheduled_backup_once_success_persists_state_and_prunes(
     assert state['last_status'] == 'success'
     assert state['last_error'] is None
     assert state['last_run_at']
+    assert state['last_success_at'] == state['last_run_at']
+    assert state['consecutive_failures'] == 0
     assert notified == []  # success never notifies
 
     remaining = sorted(dest.glob('*.crbackup'))
     assert len(remaining) == 2  # backup_keep=2: newest new run + 1 prior
+
+
+def test_run_scheduled_backup_once_success_resets_a_prior_failure_streak(
+        fake_install, tmp_path, monkeypatch, routes):
+    dest = tmp_path / 'dest'
+    _state.CONFIG['backup_dest_dir'] = str(dest)
+    bk.save_schedule_state({'consecutive_failures': 4, 'last_notified_error': 'disk full',
+                           'last_status': 'error', 'last_error': 'disk full'})
+    monkeypatch.setattr(routes, '_notify_backup_failure', lambda reason: None)
+
+    routes._run_scheduled_backup_once()
+
+    state = bk.load_schedule_state()
+    assert state['last_status'] == 'success'
+    assert state['consecutive_failures'] == 0
+    assert 'last_notified_error' not in state
 
 
 def test_run_scheduled_backup_once_failure_notifies_and_deletes_nothing(
@@ -277,10 +295,60 @@ def test_run_scheduled_backup_once_failure_notifies_and_deletes_nothing(
     state = bk.load_schedule_state()
     assert state['last_status'] == 'error'
     assert 'disk full' in state['last_error']
+    assert state['consecutive_failures'] == 1
+    assert 'last_success_at' not in state  # no success has ever happened
     assert len(notified) == 1
     assert 'disk full' in notified[0]
     # Failure never deletes: both pre-existing archives are untouched.
     assert all(f.exists() for f in existing)
+
+
+def test_failure_then_next_tick_is_still_overdue(fake_install, tmp_path, monkeypatch, routes):
+    """The bug the review caught: overdue must be computed off
+    last_success_at, so a failed daily/weekly backup is retried on the very
+    next hourly tick, not stalled for a whole cadence."""
+    dest = tmp_path / 'dest'
+    _state.CONFIG['backup_dest_dir'] = str(dest)
+    monkeypatch.setattr(bk, 'create_backup', lambda *a, **kw: (_ for _ in ()).throw(bk.BackupError('disk full')))
+    monkeypatch.setattr(routes, '_notify_backup_failure', lambda reason: None)
+
+    routes._run_scheduled_backup_once()
+
+    state = bk.load_schedule_state()
+    assert bk.is_backup_overdue('daily', state.get('last_success_at')) is True
+
+
+def test_three_consecutive_identical_failures_notify_once(fake_install, tmp_path, monkeypatch, routes):
+    dest = tmp_path / 'dest'
+    _state.CONFIG['backup_dest_dir'] = str(dest)
+    monkeypatch.setattr(bk, 'create_backup', lambda *a, **kw: (_ for _ in ()).throw(bk.BackupError('disk full')))
+    notified = []
+    monkeypatch.setattr(routes, '_notify_backup_failure', lambda reason: notified.append(reason))
+
+    for _ in range(3):
+        routes._run_scheduled_backup_once()
+
+    state = bk.load_schedule_state()
+    assert state['consecutive_failures'] == 3
+    assert len(notified) == 1  # only the first failure of the streak paged
+
+
+def test_failure_streak_notifies_again_when_error_text_changes(
+        fake_install, tmp_path, monkeypatch, routes):
+    dest = tmp_path / 'dest'
+    _state.CONFIG['backup_dest_dir'] = str(dest)
+    notified = []
+    monkeypatch.setattr(routes, '_notify_backup_failure', lambda reason: notified.append(reason))
+
+    monkeypatch.setattr(bk, 'create_backup', lambda *a, **kw: (_ for _ in ()).throw(bk.BackupError('disk full')))
+    routes._run_scheduled_backup_once()
+    routes._run_scheduled_backup_once()  # same error, no 2nd notify
+    monkeypatch.setattr(bk, 'create_backup', lambda *a, **kw: (_ for _ in ()).throw(bk.BackupError('dest unreachable')))
+    routes._run_scheduled_backup_once()  # different error, notifies again
+
+    assert notified == ['disk full', 'dest unreachable']
+    state = bk.load_schedule_state()
+    assert state['consecutive_failures'] == 3
 
 
 def test_notify_backup_failure_calls_push_inbox(fake_install, monkeypatch, routes):
@@ -327,12 +395,32 @@ def test_schedule_status_route_off_by_default(fake_install, client):
 def test_schedule_status_route_reports_overdue_and_next_run(fake_install, monkeypatch, client):
     _state.CONFIG['backup_schedule'] = 'daily'
     old = (datetime.now(timezone.utc) - timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
-    bk.save_schedule_state({'last_run_at': old, 'last_status': 'success'})
+    bk.save_schedule_state({'last_run_at': old, 'last_success_at': old, 'last_status': 'success'})
     resp = client.get('/api/backup/schedule-status')
     data = resp.get_json()
     assert data['cadence'] == 'daily'
     assert data['overdue'] is True
-    assert data['last_run_at'] == old
+    assert data['last_success_at'] == old
+
+
+def test_schedule_status_route_overdue_survives_a_failed_attempt(fake_install, client):
+    """A failed attempt bumps last_run_at (display) but must NOT bump
+    last_success_at — overdue/next_run_at are computed off the latter, so a
+    failure never buys the daemon a whole extra cadence before it tries
+    again. This is the exact bug the review caught: previously overdue was
+    computed off last_run_at, so a failed weekly backup went unretried for
+    a week."""
+    _state.CONFIG['backup_schedule'] = 'daily'
+    old_success = (datetime.now(timezone.utc) - timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    recent_failure = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    bk.save_schedule_state({
+        'last_run_at': recent_failure, 'last_success_at': old_success,
+        'last_status': 'error', 'last_error': 'disk full',
+    })
+    resp = client.get('/api/backup/schedule-status')
+    data = resp.get_json()
+    assert data['overdue'] is True  # still overdue despite a recent attempt
+    assert data['last_status'] == 'error'
 
 
 # ── PUT /api/config validates backup_schedule / backup_keep ────────────────
