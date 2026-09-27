@@ -631,7 +631,15 @@ def _win_job_object_for(pid: int):
     shape reproduces the bug we're fixing but does not hit this residual
     window.
     """
+    from ctypes import wintypes
     kernel32 = ctypes.windll.kernel32
+    # Declare HANDLE types: ctypes defaults to a 32-bit int, which can
+    # truncate a 64-bit handle on the way out and back in.
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     job = kernel32.CreateJobObjectW(None, None)
     if not job:
         return None
