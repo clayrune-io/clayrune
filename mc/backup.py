@@ -232,12 +232,13 @@ def _clayrune_version() -> str:
     try:
         out = subprocess.run(
             ['git', 'describe', '--tags', '--always', '--dirty'],
-            cwd=str(REPO_ROOT), capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
+            cwd=str(REPO_ROOT), capture_output=True, text=True, encoding='utf-8',
+            errors='replace', timeout=5, stdin=subprocess.DEVNULL)
         v = out.stdout.strip()
         if v:
             return v
-    except Exception:
-        pass
+    except Exception as e:
+        _log(f"[backup] git describe failed: {e}")
     return 'unknown'
 
 
@@ -273,9 +274,11 @@ def _git_info(path: Path) -> tuple[Optional[str], Optional[str]]:
     def _run(args):
         try:
             r = subprocess.run(['git', '-C', str(path)] + args,
-                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
+                               capture_output=True, text=True, encoding='utf-8', errors='replace',
+                               timeout=5, stdin=subprocess.DEVNULL)
             return r.stdout.strip() if r.returncode == 0 else None
-        except Exception:
+        except Exception as e:
+            _log(f"[backup] git {args[0] if args else '?'} failed for {path}: {e}")
             return None
     if not _is_git_repo(path):
         return None, None
@@ -286,11 +289,14 @@ def _untracked_not_ignored(path: Path) -> Optional[list[str]]:
     try:
         r = subprocess.run(
             ['git', '-C', str(path), 'ls-files', '--others', '--exclude-standard'],
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            timeout=30, stdin=subprocess.DEVNULL)
         if r.returncode != 0:
+            _log(f"[backup] git ls-files exited {r.returncode} for {path}: {r.stderr.strip()}")
             return None
         return [ln for ln in r.stdout.splitlines() if ln]
-    except Exception:
+    except Exception as e:
+        _log(f"[backup] git ls-files failed for {path}: {e}")
         return None
 
 

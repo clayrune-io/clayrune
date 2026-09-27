@@ -22,8 +22,14 @@ from mc import backup as bk  # noqa: E402
 
 
 def _git(cwd, *args):
+    # stdin=DEVNULL: default (inherit) makes Popen._get_handles duplicate the
+    # process's real STD_INPUT_HANDLE via DuplicateHandle. Under pytest's
+    # fd-level capture that handle is intermittently already closed, so the
+    # duplicate raises OSError [WinError 6] "The handle is invalid" (MC-984,
+    # reproduced 7/8 loop runs on Windows/Python 3.14). Nothing here reads
+    # stdin, so give it an explicit, always-valid target instead.
     subprocess.run(['git'] + list(args), cwd=str(cwd), check=True,
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, stdin=subprocess.DEVNULL)
 
 
 @pytest.fixture
