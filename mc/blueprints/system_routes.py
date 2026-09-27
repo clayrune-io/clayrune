@@ -659,21 +659,35 @@ _CODEX_TAIL_BYTES = 300_000
 
 
 def _fetch_codex_weekly_usage() -> Optional[dict]:
-    """Return {'utilization': 0-100, 'resets_at': ISO8601} for Codex's weekly
-    rate-limit window, or None if no rollout file yields one. Reads only the
-    most-recently-modified rollout file (Codex's rate limit is account-wide,
-    so any live session's own view of it is representative) and only its
-    tail, scanned backwards for the latest `token_count` event."""
+    """Return {'utilization': 0-100, 'resets_at': ISO8601, 'sampled_at':
+    ISO8601} for Codex's weekly rate-limit window, or None if no rollout file
+    yields a CURRENT one. Reads only the most-recently-modified rollout file
+    (Codex's rate limit is account-wide, so any live session's own view of it
+    is representative) and only its tail, scanned backwards for the latest
+    `token_count` event.
+
+    Freshness gate: if that event's own `resets_at` is missing or already in
+    the past, the weekly window it describes has already reset — the CLI just
+    hasn't run since, so there is no live reading, and showing the stale %
+    as "now" would violate the real-numbers-only rule the same as inventing
+    one. Omitted (returns None) rather than shown with a caveat, so the
+    frontend needs no extra state beyond its existing "provider absent = no
+    bar" contract. `sampled_at` (the rollout file's mtime) is carried on a
+    FRESH reading too, so a caller can judge how old the underlying session
+    is even when it's still within its window.
+    """
     now = _time.time()
     cached = _codex_usage_cache.get('data')
     if cached is not None and (now - _codex_usage_cache.get('ts', 0.0)) < _CODEX_USAGE_TTL:
-        return cached
+        return dict(cached) if cached else cached
     result = None
     try:
         files = _agent_runtime._codex_rollout_files()
         if files:
             latest = max(files, key=lambda f: f.stat().st_mtime)
-            size = latest.stat().st_size
+            st = latest.stat()
+            mtime = st.st_mtime
+            size = st.st_size
             with open(latest, 'rb') as fh:
                 if size > _CODEX_TAIL_BYTES:
                     fh.seek(size - _CODEX_TAIL_BYTES)
@@ -694,17 +708,21 @@ def _fetch_codex_weekly_usage() -> Optional[dict]:
                     win = rl.get(slot)
                     if isinstance(win, dict) and win.get('window_minutes') == _CODEX_WEEKLY_WINDOW_MINUTES:
                         resets_at_raw = win.get('resets_at')
-                        resets_iso = None
-                        if resets_at_raw:
+                        resets_epoch = None
+                        if resets_at_raw is not None:
                             try:
-                                resets_iso = datetime.fromtimestamp(
-                                    float(resets_at_raw), tz=timezone.utc).isoformat()
-                            except (TypeError, ValueError, OSError):
-                                resets_iso = None
-                        result = {
-                            'utilization': win.get('used_percent'),
-                            'resets_at': resets_iso,
-                        }
+                                resets_epoch = float(resets_at_raw)
+                            except (TypeError, ValueError):
+                                resets_epoch = None
+                        if resets_epoch is not None and resets_epoch > now:
+                            result = {
+                                'utilization': win.get('used_percent'),
+                                'resets_at': datetime.fromtimestamp(resets_epoch, tz=timezone.utc).isoformat(),
+                                'sampled_at': datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                            }
+                        # else: resets_at missing, unparseable, or already
+                        # elapsed — stale reading, left as `result = None`
+                        # (see docstring).
                         break
                 if result is not None:
                     break
@@ -713,7 +731,7 @@ def _fetch_codex_weekly_usage() -> Optional[dict]:
         result = None
     _codex_usage_cache['ts'] = now
     _codex_usage_cache['data'] = result
-    return result
+    return dict(result) if result else result
 
 
 @bp.route('/api/system/usage', methods=['GET'])
@@ -791,7 +809,11 @@ def system_usage_get():
         }
     _codex_weekly = _fetch_codex_weekly_usage()
     if _codex_weekly and _codex_weekly.get('utilization') is not None:
-        provider_weekly_usage['codex'] = _codex_weekly
+        # A fresh dict, not the cached object itself — the exhaustion overlay
+        # below mutates this entry, and mutating the cache's own dict would
+        # leak 'exhausted' onto every read for the rest of its 60s TTL, even
+        # after the vendor block clears.
+        provider_weekly_usage['codex'] = dict(_codex_weekly)
     # A vendor mid-exhaustion should read as full/red even if its last-sampled
     # weekly % predates the block — but only for a provider that already has a
     # real bar; exhaustion alone is not a substitute for a missing weekly %.

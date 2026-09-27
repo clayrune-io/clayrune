@@ -176,3 +176,77 @@ def test_malformed_line_does_not_raise(sr, tmp_path, monkeypatch):
     monkeypatch.setattr(sr._agent_runtime, "_codex_rollout_files", lambda: [f])
 
     assert sr._fetch_codex_weekly_usage() is None
+
+
+# ── Staleness (Ron's review of df34611) ──────────────────────────────────
+# The freshest recorded event's own `resets_at` may already be in the past —
+# the CLI simply hasn't run since the weekly window it describes reset. The
+# recorded % then belongs to a window that no longer exists; reporting it as
+# "now" is exactly the invented-number failure the whole feature exists to
+# avoid. `now` is real wall-clock time.time(), not a fixture constant, so
+# these assertions hold regardless of when the suite runs.
+import time as _real_time
+
+
+def test_past_resets_at_is_omitted(sr, tmp_path, monkeypatch):
+    """resets_at already elapsed -> the reading is stale, omitted (None)."""
+    stale_epoch = _real_time.time() - 100
+    f = tmp_path / "rollout-stale.jsonl"
+    f.write_text(
+        _rollout_line(primary={"used_percent": 92.0, "window_minutes": 10080, "resets_at": stale_epoch}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sr._agent_runtime, "_codex_rollout_files", lambda: [f])
+
+    assert sr._fetch_codex_weekly_usage() is None
+
+
+def test_missing_resets_at_is_omitted(sr, tmp_path, monkeypatch):
+    """No resets_at at all -> freshness can't be verified, treated as stale."""
+    f = tmp_path / "rollout-noresets.jsonl"
+    f.write_text(
+        _rollout_line(primary={"used_percent": 50.0, "window_minutes": 10080}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sr._agent_runtime, "_codex_rollout_files", lambda: [f])
+
+    assert sr._fetch_codex_weekly_usage() is None
+
+
+def test_future_resets_at_is_shown_with_sampled_at(sr, tmp_path, monkeypatch):
+    """resets_at still in the future -> shown, and carries sampled_at (file mtime)."""
+    future_epoch = _real_time.time() + 3600
+    f = tmp_path / "rollout-fresh.jsonl"
+    f.write_text(
+        _rollout_line(primary={"used_percent": 63.0, "window_minutes": 10080, "resets_at": future_epoch}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sr._agent_runtime, "_codex_rollout_files", lambda: [f])
+
+    result = sr._fetch_codex_weekly_usage()
+
+    assert result is not None
+    assert result["utilization"] == 63.0
+    assert "sampled_at" in result and result["sampled_at"]
+
+
+def test_returned_dict_is_a_copy_not_the_cached_object(sr, tmp_path, monkeypatch):
+    """Mutating the caller's copy (as system_usage_get's exhaustion overlay
+    does) must not leak into the module's own TTL cache — a provider's
+    'exhausted' flag would otherwise stick for up to 60s after the vendor
+    block actually clears."""
+    f = tmp_path / "rollout-copy.jsonl"
+    f.write_text(
+        _rollout_line(primary={"used_percent": 30.0, "window_minutes": 10080, "resets_at": _real_time.time() + 3600}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sr._agent_runtime, "_codex_rollout_files", lambda: [f])
+
+    first = sr._fetch_codex_weekly_usage()
+    first["exhausted"] = True  # simulate the exhaustion overlay mutating its copy
+
+    second = sr._fetch_codex_weekly_usage()  # still within the 60s TTL
+
+    assert "exhausted" not in second
+    assert sr._codex_usage_cache["data"] is not first
+    assert "exhausted" not in sr._codex_usage_cache["data"]
