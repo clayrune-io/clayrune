@@ -24,6 +24,21 @@ const MODEL_TIER_LABEL = { best: 'Best', balanced: 'Balanced', fast: 'Fast' };
 let _setupPhoneRevealed = false;    // essentials-phone: "Set it up" clicked this run
 let _setupAdvExpanded = false;      // essentials-detail: "Choose individually" expander
 
+// "Protect your work" step (MC-982) — backup destination + optional
+// immediate backup + automatic-cadence preference. Deliberately NOT the
+// backup-panel.js checklist: that panel is a separate ES module (top-level
+// consts there are not global here — static/js/*.js are `type="module"`),
+// and the standing position on backup categories is "everything ticked, no
+// untick/size-cap control" anyway, so this step has no checklist to render —
+// "Back up now" always runs the full default (no `categories` key sent).
+let _setupBackupDest = { loaded: false, configured: null, effective: null, override: '', saving: false, saveError: null };
+let _setupBackupSchedule = 'weekly';  // pre-selected per Ron's 2026-09-26 cadence approval; key backup_schedule (MC-983 builds the scheduler that reads it)
+let _setupBackupScheduleVisited = false;  // same auto-persist-once guard as setupModelTierVisited below
+let _setupBackupScheduleError = null;
+let _setupBackupJob = null;           // async create job, polled the same way backup-panel.js polls its own
+let _setupBackupResult = null;
+let _setupBackupError = null;
+
 const SETUP_STEPS = [
   {
     id: 'welcome',
@@ -128,6 +143,30 @@ const SETUP_STEPS = [
     title: 'How much detail do you want to see?',
     wide: true,
     body: () => _setupDetailHTML(),
+  },
+  {
+    id: 'protect',
+    title: 'Protect your work',
+    wide: true,
+    body: () => _setupProtectHTML(),
+    // Weekly is pre-selected: persist it the moment the step is first shown,
+    // same rule as the connections step's model tier above — a user who
+    // never touches the control (the common path: accept the highlight,
+    // click Next) must still get an explicit backup_schedule saved, not
+    // silently leave it unset (which MC-983's scheduler reads as "off").
+    // Only when NOTHING is saved yet: a re-run from Settings (or returning to
+    // this step) must show and keep whatever was already chosen — startFirstRun
+    // seeds _setupBackupSchedule from _globalConfig.backup_schedule before this
+    // step's body() ever renders, so re-checking _globalConfig here (not the
+    // local var) is what tells "already saved" apart from "still the default".
+    onEnter: () => {
+      _setupLoadBackupDestDir();
+      if (!_setupBackupScheduleVisited) {
+        _setupBackupScheduleVisited = true;
+        const cur = String((_globalConfig && _globalConfig.backup_schedule) || '').trim();
+        if (!cur) _setupPickBackupSchedule(_setupBackupSchedule);
+      }
+    },
   },
   {
     id: 'tour',
@@ -250,6 +289,216 @@ function setupPickPreset(which) {
   if (setupActive) setupShow(setupStep);
 }
 function setupToggleAdvExpander() { _setupAdvExpanded = !_setupAdvExpanded; if (setupActive) setupShow(setupStep); }
+
+// D. "Protect your work" — backup destination, an optional immediate backup,
+// the automatic-cadence preference, and a short restore-points explainer.
+const _BACKUP_CADENCE_LABEL = { off: 'Off', daily: 'Daily', weekly: 'Weekly' };
+
+function _setupProtectHTML() {
+  const dd = _setupBackupDest;
+  const placeholder = dd.effective || (dd.loaded ? '' : 'loading…');
+  const running = !!(_setupBackupJob && _setupBackupJob.status !== 'done'
+    && _setupBackupJob.status !== 'error' && _setupBackupJob.status !== 'cancelled');
+  return `<div class="setup-lead">A backup protects your projects, memory, and settings if this computer is lost or a disk fails.</div>`
+    + _setupSec('Backup destination',
+        'Pick a folder on a different drive, or a cloud-synced folder. A backup saved to the same disk does not survive a disk failure.',
+        `<div style="display:flex;gap:6px;align-items:center">
+          <input class="path-input" type="text" value="${esc(dd.override)}" placeholder="${esc(placeholder)}"
+            oninput="_setupBackupDestInput(this.value)" onchange="_setupSaveBackupDestDir(this.value)"
+            style="flex:1;box-sizing:border-box;padding:6px 10px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
+          <button type="button" class="btn-browse" onclick="_setupBackupBrowseDest()">Browse&hellip;</button>
+        </div>
+        ${dd.saving ? `<div style="margin-top:4px;font-size:11px;color:var(--text-faint)">Saving&hellip;</div>` : ''}
+        ${dd.saveError ? `<div style="margin-top:4px;font-size:11px;color:var(--red-text)">${esc(dd.saveError)}</div>` : ''}`)
+    + _setupSec('Back up now',
+        'Optional. Everything is included: records and memory, agent artifacts, media, transcripts, and other project files.',
+        `${running ? '' : `<button type="button" class="setup-btn-utility" onclick="_setupBackupNow()">Back up now</button>`}
+        <div id="setup-backup-job-progress">${_setupBackupJob ? _setupBackupJobProgressHTML(_setupBackupJob) : ''}</div>
+        ${_setupBackupError ? `<div style="margin-top:8px;font-size:11px;color:var(--red-text)">${esc(_setupBackupError)}</div>` : ''}
+        ${_setupBackupResult ? `<div style="margin-top:8px;font-size:11px;color:#22c55e">&#x2713; Backed up ${_setupBackupResult.files_written} file${_setupBackupResult.files_written === 1 ? '' : 's'}${_setupBackupResult.warnings && _setupBackupResult.warnings.length ? `, ${_setupBackupResult.warnings.length} warning${_setupBackupResult.warnings.length === 1 ? '' : 's'}` : ''}.</div>` : ''}`)
+    + _setupSec('Automatic backups',
+        'How often Clayrune backs up on its own, in addition to anything you run by hand.',
+        `<div class="mc-seg" id="setup-backup-schedule-seg">`
+        + Object.keys(_BACKUP_CADENCE_LABEL).map(k => `<button type="button" class="${_setupBackupSchedule === k ? 'active' : ''}" data-cadence="${k}" onclick="_setupPickBackupSchedule('${k}',this)">${_BACKUP_CADENCE_LABEL[k]}</button>`).join('')
+        + `</div>`
+        + `${_setupBackupScheduleError ? `<div style="margin-top:4px;font-size:11px;color:var(--red-text)">${esc(_setupBackupScheduleError)}</div>` : ''}`)
+    + `<div class="setup-section">
+        <div class="setup-section-label">Restore points</div>
+        <div class="setup-section-hint">Clayrune also keeps per-project restore points: automatic snapshots taken right before a rollback replaces a project's data, so a rollback can itself be recovered from. Up to 10 are kept per project.</div>
+      </div>`
+    + _SETUP_FOOTER;
+}
+
+async function _setupLoadBackupDestDir() {
+  if (_setupBackupDest.loaded) return;
+  try {
+    const res = await fetch(API_BASE + '/api/backup/dest-dir');
+    const data = await res.json();
+    _setupBackupDest.configured = data.configured || null;
+    _setupBackupDest.effective = data.effective || null;
+  } catch (e) {
+    // leave configured/effective null — the field still works as a plain input
+  }
+  _setupBackupDest.loaded = true;
+  if (setupActive && SETUP_STEPS[setupStep] && SETUP_STEPS[setupStep].id === 'protect') setupShow(setupStep);
+}
+
+function _setupBackupDestInput(v) {
+  _setupBackupDest.override = v;
+  _setupBackupDest.saveError = null;
+}
+
+// Persists through the SAME config path Settings uses (PUT /api/config),
+// which runs validate_backup_dest_dir server-side (settings_routes.py) and
+// refuses a destination inside the repo or data/projects/ — that error text
+// is surfaced here verbatim rather than re-validated client-side.
+async function _setupSaveBackupDestDir(path) {
+  const p = (path || '').trim();
+  if (!p || p === _setupBackupDest.configured) return;
+  _setupBackupDest.saving = true;
+  _setupBackupDest.saveError = null;
+  if (setupActive) setupShow(setupStep);
+  try {
+    const res = await fetch(API_BASE + '/api/config', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backup_dest_dir: p }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      _setupBackupDest.saveError = data.error || `Could not save (HTTP ${res.status})`;
+    } else {
+      try { _globalConfig.backup_dest_dir = p; } catch (_) {}
+      _setupBackupDest.configured = p;
+      _setupBackupDest.override = '';
+    }
+  } catch (e) {
+    _setupBackupDest.saveError = 'Could not save: ' + e.message;
+  } finally {
+    _setupBackupDest.saving = false;
+    if (setupActive) setupShow(setupStep);
+  }
+}
+
+// Same folder-picker dialog and route the Backup panel's destination field
+// uses (project-forms.js openFolderPicker) — the browser running this step is
+// often not the machine the backup is written to (phone, remote access), so
+// this is a server-side directory browse, never a native/File-System-Access dialog.
+function _setupBackupBrowseDest() {
+  openFolderPicker(null, {
+    startPath: (_setupBackupDest.override || _setupBackupDest.effective || ''),
+    title: 'Choose backup destination',
+    onSelect: (path) => { _setupSaveBackupDestDir(path); },
+  });
+}
+
+function _setupBackupJobProgressHTML(job) {
+  const pct = job.total_bytes ? Math.min(100, Math.floor((job.bytes_written / job.total_bytes) * 100)) : 0;
+  return `<div style="margin-top:10px">
+    <div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--text-faint);margin-bottom:4px">
+      <span>${job.files_written || 0}/${job.total_files || 0} files</span>
+      <span style="font-family:var(--mono)">${pct}%</span>
+    </div>
+    <div style="height:6px;background:var(--surface2);border-radius:3px;overflow:hidden">
+      <div style="height:100%;width:${pct}%;background:var(--accent);transition:width .3s"></div>
+    </div>
+  </div>`;
+}
+
+// Full default (no `categories` key => every category on, spec §6) — the
+// standing position on this checklist is "everything ticked, no untick/
+// size-cap control" (BACKUP_EXPORT_SPEC.md v1.2), so this step never offers one.
+async function _setupBackupNow() {
+  if (_setupBackupJob) return;
+  _setupBackupResult = null; _setupBackupError = null;
+  _setupBackupJob = { status: 'running', files_written: 0, total_files: 0, bytes_written: 0, total_bytes: 0 };
+  if (setupActive) setupShow(setupStep);
+  try {
+    const res = await fetch(API_BASE + '/api/backup/create', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ async: true }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      _setupBackupError = data.error || `Backup failed to start (HTTP ${res.status})`;
+      _setupBackupJob = null;
+      if (setupActive) setupShow(setupStep);
+      return;
+    }
+    _setupBackupJob.job_id = data.job_id;
+    _setupPollBackupJob(data.job_id);
+  } catch (e) {
+    _setupBackupError = 'Backup failed to start: ' + e.message;
+    _setupBackupJob = null;
+    if (setupActive) setupShow(setupStep);
+  }
+}
+
+async function _setupPollBackupJob(jobId) {
+  if (!_setupBackupJob || _setupBackupJob.job_id !== jobId) return;   // superseded or the step moved on
+  let data;
+  try {
+    const res = await fetch(API_BASE + '/api/backup/create/status/' + encodeURIComponent(jobId));
+    data = await res.json();
+    if (!res.ok) {
+      _setupBackupError = data.error || `Lost track of the backup (HTTP ${res.status})`;
+      _setupBackupJob = null;
+      if (setupActive) setupShow(setupStep);
+      return;
+    }
+  } catch (e) {
+    setTimeout(() => _setupPollBackupJob(jobId), 2000);   // transient fetch failure — keep watching
+    return;
+  }
+  _setupBackupJob = data;
+  if (data.status === 'done') {
+    _setupBackupResult = data.result; _setupBackupJob = null;
+    if (setupActive) setupShow(setupStep);
+    return;
+  }
+  if (data.status === 'error') {
+    _setupBackupError = data.error || 'Backup failed'; _setupBackupJob = null;
+    if (setupActive) setupShow(setupStep);
+    return;
+  }
+  if (data.status === 'cancelled') {
+    _setupBackupJob = null;
+    if (setupActive) setupShow(setupStep);
+    return;
+  }
+  // Still running: patch ONLY the progress subtree, same reasoning as
+  // backup-panel.js's own poll — a full setupShow() here would rebuild the
+  // whole card every 700ms and drop focus/caret in the destination field.
+  const el = document.getElementById('setup-backup-job-progress');
+  if (el) el.innerHTML = _setupBackupJobProgressHTML(data);
+  else if (setupActive) setupShow(setupStep);
+  setTimeout(() => _setupPollBackupJob(jobId), 700);
+}
+
+// Persisted through the same config path as the destination above. The
+// scheduler that reads this key is MC-983, built in parallel and not yet on
+// this branch — update_config (settings_routes.py _CONFIG_EDITABLE_KEYS)
+// silently drops any key not on its allowlist, so until MC-983 lands this
+// call round-trips ok:true without actually persisting. That silent no-op is
+// not treated as an error (cadence is a preference the user can also set
+// later once the scheduler ships, not a gate on finishing setup) — but a
+// genuine failure (network error, non-2xx) is surfaced inline rather than
+// swallowed, same as the destination field's saveError above.
+async function _setupPickBackupSchedule(v, btn) {
+  _setupBackupSchedule = v;
+  _setupBackupScheduleError = null;
+  if (btn) _setupHighlight(btn);
+  try {
+    const res = await fetch(API_BASE + '/api/config', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backup_schedule: v }),
+    });
+    if (res.ok) { try { _globalConfig.backup_schedule = v; } catch (_) {} }
+    else _setupBackupScheduleError = `Could not save (HTTP ${res.status}). Your pick still applies for this setup run.`;
+  } catch (e) {
+    _setupBackupScheduleError = 'Could not save: ' + e.message;
+  }
+  if (setupActive) setupShow(setupStep);
+}
 
 // Move the .active highlight to the clicked button within its own group.
 function _setupHighlight(btn) {
@@ -574,6 +823,17 @@ function startFirstRun(opts) {
   _setupPhoneRevealed = false;
   _setupAdvExpanded = false;
   _setupOpenedTerminalIds = new Set();
+  _setupBackupDest = { loaded: false, configured: null, effective: null, override: '', saving: false, saveError: null };
+  // Reflect what is already saved, same rule as setupModelTier above — an
+  // unrecognized/unset value falls back to the Weekly recommendation, a
+  // recognized saved value (a forced re-run showing 'daily') is kept as is.
+  const curSchedule = String((_globalConfig && _globalConfig.backup_schedule) || '').trim();
+  _setupBackupSchedule = (curSchedule === 'off' || curSchedule === 'daily' || curSchedule === 'weekly') ? curSchedule : 'weekly';
+  _setupBackupScheduleVisited = false;
+  _setupBackupScheduleError = null;
+  _setupBackupJob = null;
+  _setupBackupResult = null;
+  _setupBackupError = null;
   showDesktop();
   setupShow(0);
 }
@@ -769,4 +1029,9 @@ window.setupRevealPhone = setupRevealPhone;     // interop: essentials-phone "Se
 window.setupSkipPhone = setupSkipPhone;         // interop: essentials-phone "Not now" generated onclick
 window.setupPickPreset = setupPickPreset;       // interop: essentials-detail preset card generated onclick
 window.setupToggleAdvExpander = setupToggleAdvExpander; // interop: essentials-detail "Choose individually" generated onclick
+window._setupBackupDestInput = _setupBackupDestInput;         // interop: protect step destination input oninput
+window._setupSaveBackupDestDir = _setupSaveBackupDestDir;     // interop: protect step destination input onchange
+window._setupBackupBrowseDest = _setupBackupBrowseDest;       // interop: protect step "Browse…" generated onclick
+window._setupBackupNow = _setupBackupNow;                     // interop: protect step "Back up now" generated onclick
+window._setupPickBackupSchedule = _setupPickBackupSchedule;   // interop: protect step cadence segmented control generated onclick
 window.startTourOrSetup = startTourOrSetup;     // interop: header '?' button + command-palette "Take Tour" entry

@@ -37,12 +37,14 @@
  * which is the "gemini is missing" / "Install button called 0 times"
  * failures this smoke was throwing on unmodified `c14c2fd`. That is a STALE
  * ASSERTION about a UI shape that no longer exists, not a real chooser bug —
- * `tools/smoke/onboarding-multiselect.mjs` and
- * `tools/smoke/onboarding-multiselect-browser.mjs` already cover the
- * multi-select checkbox/default-radio/install/sign-in behavior end to end
- * and both pass unmodified. This rewrite updates the DOM reads to the
- * checkbox shape and keeps every other assertion (every-provider listing,
- * installed-first sort, state labels, live install-launch wiring) intact.
+ * `tools/smoke/onboarding-multiselect-browser.mjs` (plus
+ * `tools/smoke/onboarding-skip-rule.mjs` for the fresh-tour skip logic;
+ * onboarding-multiselect.mjs itself was retired 2026-09-26, MC-974: its
+ * shared-state flow asserted gate strings first-run.js had already removed)
+ * already cover the multi-select checkbox/default-radio/install/sign-in
+ * behavior end to end and pass unmodified. This rewrite updates the DOM
+ * reads to the checkbox shape and keeps every other assertion (every-provider
+ * listing, installed-first sort, state labels, live install-launch wiring) intact.
  *
  * RUN
  *   cd tools/smoke && node first-run-provider-chooser.mjs
