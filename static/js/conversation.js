@@ -5453,6 +5453,17 @@ async function stopAgent(projectId, sessionId) {
   // terminal 'status' SSE arrives to remove the dots — without this they'd
   // animate forever after a manual Stop. (§4)
   hideTypingIndicator(sessionId);
+  // MC-986: same reasoning applies to the mobile viewport height. Every OTHER
+  // path that settles a session into a non-running status re-validates
+  // --mc-app-vh from updateAgentStatusUI (see its comment) — but stopAgent
+  // closes its own SSE above and never calls updateAgentStatusUI itself, so a
+  // residual keyboard-inset height (left over from the composer being
+  // focused when Stop was pressed) was never recovered here. The pane sat
+  // wedged at that height for the whole STOPPED state, until the next Send's
+  // turn_start/turn_complete happened to fix it as a side effect.
+  if (typeof window.mcRecoverViewportOnStatusSettle === 'function') {
+    window.mcRecoverViewportOnStatusSettle();
+  }
 
   // Fire the stop request with a timeout — server kill can take seconds
   const controller = new AbortController();
