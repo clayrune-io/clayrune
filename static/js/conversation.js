@@ -5217,11 +5217,17 @@ async function sendFollowup(projectId, sessionId) {
   // dispatch. See _sendInFlight comment for the full race.
   _sendInFlight[sessionId] = Date.now();
   _turnStartAcked[sessionId] = false;
+  // MC-985: remember what status this session was in BEFORE the send, so the
+  // SSE handlers can tell a genuinely-stale echo (same status) from a real
+  // event for the new turn (different status) even when turn_start itself
+  // never arrives — see _preSendStatus comment at its declaration.
+  _preSendStatus[sessionId] = (agentStatusCache[sessionId] || {}).status || null;
   setTimeout(() => {
     // Safety net: if turn_start never arrives, lift the gate so terminal
     // status events can flow again.
     if (_sendInFlight[sessionId] && (Date.now() - _sendInFlight[sessionId]) >= 8000) {
       delete _sendInFlight[sessionId];
+      delete _preSendStatus[sessionId];
     }
   }, 8500);
 
@@ -5279,6 +5285,7 @@ async function sendFollowup(projectId, sessionId) {
       // turn_start is coming for a send the server itself rejected.
       hideTypingIndicator(sessionId);
       delete _sendInFlight[sessionId];
+      delete _preSendStatus[sessionId];
       // MC-961 item 4: no fallback configured (or every entry exhausted) —
       // the dispatch never started, so there's no session/turn to hang this
       // off. Render the same actionable card a scheduled/workflow run's
@@ -5304,6 +5311,7 @@ async function sendFollowup(projectId, sessionId) {
         const inp = document.getElementById(`agent-followup-${sessionId}`);
         if (inp && !inp.value) inp.value = message;
         delete _sendInFlight[sessionId];
+        delete _preSendStatus[sessionId];
         return;
       }
     }
@@ -5346,7 +5354,9 @@ async function sendFollowup(projectId, sessionId) {
       if (splitAgentTab[projectId] === sessionId) splitAgentTab[projectId] = targetSessionId;
       else activeAgentTab[projectId] = targetSessionId;
       _sendInFlight[targetSessionId] = _sendInFlight[sessionId] || Date.now();
+      _preSendStatus[targetSessionId] = _preSendStatus[sessionId];
       delete _sendInFlight[sessionId];
+      delete _preSendStatus[sessionId];
       refreshModal();
       renderAgentConsole();
       if (agentEventSources[sessionId]) {
@@ -5389,6 +5399,7 @@ async function sendFollowup(projectId, sessionId) {
     clearTimeout(_sendTID);
     console.error('Send error:', e);
     delete _sendInFlight[sessionId];
+    delete _preSendStatus[sessionId];
     // Same reasoning as the !data.ok branch above: the eager dots have
     // nothing left to wait for once the POST itself failed.
     hideTypingIndicator(sessionId);
