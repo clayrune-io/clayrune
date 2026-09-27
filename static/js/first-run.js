@@ -33,6 +33,8 @@ let _setupAdvExpanded = false;      // essentials-detail: "Choose individually" 
 // "Back up now" always runs the full default (no `categories` key sent).
 let _setupBackupDest = { loaded: false, configured: null, effective: null, override: '', saving: false, saveError: null };
 let _setupBackupSchedule = 'weekly';  // pre-selected per Ron's 2026-09-26 cadence approval; key backup_schedule (MC-983 builds the scheduler that reads it)
+let _setupBackupScheduleVisited = false;  // same auto-persist-once guard as setupModelTierVisited below
+let _setupBackupScheduleError = null;
 let _setupBackupJob = null;           // async create job, polled the same way backup-panel.js polls its own
 let _setupBackupResult = null;
 let _setupBackupError = null;
@@ -147,7 +149,24 @@ const SETUP_STEPS = [
     title: 'Protect your work',
     wide: true,
     body: () => _setupProtectHTML(),
-    onEnter: () => { _setupLoadBackupDestDir(); },
+    // Weekly is pre-selected: persist it the moment the step is first shown,
+    // same rule as the connections step's model tier above — a user who
+    // never touches the control (the common path: accept the highlight,
+    // click Next) must still get an explicit backup_schedule saved, not
+    // silently leave it unset (which MC-983's scheduler reads as "off").
+    // Only when NOTHING is saved yet: a re-run from Settings (or returning to
+    // this step) must show and keep whatever was already chosen — startFirstRun
+    // seeds _setupBackupSchedule from _globalConfig.backup_schedule before this
+    // step's body() ever renders, so re-checking _globalConfig here (not the
+    // local var) is what tells "already saved" apart from "still the default".
+    onEnter: () => {
+      _setupLoadBackupDestDir();
+      if (!_setupBackupScheduleVisited) {
+        _setupBackupScheduleVisited = true;
+        const cur = String((_globalConfig && _globalConfig.backup_schedule) || '').trim();
+        if (!cur) _setupPickBackupSchedule(_setupBackupSchedule);
+      }
+    },
   },
   {
     id: 'tour',
@@ -298,10 +317,11 @@ function _setupProtectHTML() {
         ${_setupBackupError ? `<div style="margin-top:8px;font-size:11px;color:var(--red-text)">${esc(_setupBackupError)}</div>` : ''}
         ${_setupBackupResult ? `<div style="margin-top:8px;font-size:11px;color:#22c55e">&#x2713; Backed up ${_setupBackupResult.files_written} file${_setupBackupResult.files_written === 1 ? '' : 's'}${_setupBackupResult.warnings && _setupBackupResult.warnings.length ? `, ${_setupBackupResult.warnings.length} warning${_setupBackupResult.warnings.length === 1 ? '' : 's'}` : ''}.</div>` : ''}`)
     + _setupSec('Automatic backups',
-        'How often Clayrune backs up on its own, in addition to anything you run by hand. The last 3 scheduled backups are kept.',
+        'How often Clayrune backs up on its own, in addition to anything you run by hand.',
         `<div class="mc-seg" id="setup-backup-schedule-seg">`
         + Object.keys(_BACKUP_CADENCE_LABEL).map(k => `<button type="button" class="${_setupBackupSchedule === k ? 'active' : ''}" data-cadence="${k}" onclick="_setupPickBackupSchedule('${k}',this)">${_BACKUP_CADENCE_LABEL[k]}</button>`).join('')
-        + `</div>`)
+        + `</div>`
+        + `${_setupBackupScheduleError ? `<div style="margin-top:4px;font-size:11px;color:var(--red-text)">${esc(_setupBackupScheduleError)}</div>` : ''}`)
     + `<div class="setup-section">
         <div class="setup-section-label">Restore points</div>
         <div class="setup-section-hint">Clayrune also keeps per-project restore points: automatic snapshots taken right before a rollback replaces a project's data, so a rollback can itself be recovered from. Up to 10 are kept per project.</div>
@@ -458,11 +478,14 @@ async function _setupPollBackupJob(jobId) {
 // scheduler that reads this key is MC-983, built in parallel and not yet on
 // this branch — update_config (settings_routes.py _CONFIG_EDITABLE_KEYS)
 // silently drops any key not on its allowlist, so until MC-983 lands this
-// call round-trips ok:true without actually persisting. Not treated as an
-// error: cadence is a preference the user can also set later once the
-// scheduler ships, not a gate on finishing setup.
+// call round-trips ok:true without actually persisting. That silent no-op is
+// not treated as an error (cadence is a preference the user can also set
+// later once the scheduler ships, not a gate on finishing setup) — but a
+// genuine failure (network error, non-2xx) is surfaced inline rather than
+// swallowed, same as the destination field's saveError above.
 async function _setupPickBackupSchedule(v, btn) {
   _setupBackupSchedule = v;
+  _setupBackupScheduleError = null;
   if (btn) _setupHighlight(btn);
   try {
     const res = await fetch(API_BASE + '/api/config', {
@@ -470,9 +493,11 @@ async function _setupPickBackupSchedule(v, btn) {
       body: JSON.stringify({ backup_schedule: v }),
     });
     if (res.ok) { try { _globalConfig.backup_schedule = v; } catch (_) {} }
+    else _setupBackupScheduleError = `Could not save (HTTP ${res.status}). Your pick still applies for this setup run.`;
   } catch (e) {
-    // best-effort — see comment above
+    _setupBackupScheduleError = 'Could not save: ' + e.message;
   }
+  if (setupActive) setupShow(setupStep);
 }
 
 // Move the .active highlight to the clicked button within its own group.
@@ -799,7 +824,13 @@ function startFirstRun(opts) {
   _setupAdvExpanded = false;
   _setupOpenedTerminalIds = new Set();
   _setupBackupDest = { loaded: false, configured: null, effective: null, override: '', saving: false, saveError: null };
-  _setupBackupSchedule = 'weekly';
+  // Reflect what is already saved, same rule as setupModelTier above — an
+  // unrecognized/unset value falls back to the Weekly recommendation, a
+  // recognized saved value (a forced re-run showing 'daily') is kept as is.
+  const curSchedule = String((_globalConfig && _globalConfig.backup_schedule) || '').trim();
+  _setupBackupSchedule = (curSchedule === 'off' || curSchedule === 'daily' || curSchedule === 'weekly') ? curSchedule : 'weekly';
+  _setupBackupScheduleVisited = false;
+  _setupBackupScheduleError = null;
   _setupBackupJob = null;
   _setupBackupResult = null;
   _setupBackupError = null;

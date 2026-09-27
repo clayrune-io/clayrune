@@ -256,6 +256,46 @@ try {
     else ok('protect step advances to the tour offer with nothing filled in (skippable, like the other essentials steps)');
   });
 
+  // ── 7. Pre-selected Weekly persists on step-enter, no click needed ───────
+  // Regression coverage for the review of c392e85: a user who accepts the
+  // highlighted default and clicks Next (the common path) must still get an
+  // explicit backup_schedule saved, not silently leave the key unset.
+  await scenario('pre-selected Weekly is saved automatically when the step is first shown', {
+    config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' },
+  }, async (page, { configPuts }) => {
+    if (!(await walkToProtectStep(page))) return;
+    const sent = configPuts.filter((p) => p.backup_schedule === 'weekly');
+    if (sent.length !== 1) fail(`expected one auto PUT /api/config {backup_schedule:'weekly'} on step-enter, got ${sent.length}: ${JSON.stringify(configPuts)}`);
+    else ok('Weekly auto-persisted on step-enter with no click');
+  });
+
+  // ── 8. A saved schedule is shown and left alone, never reset to Weekly ──
+  await scenario('a saved backup_schedule is shown as-is and not overwritten', {
+    config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced', backup_schedule: 'daily' },
+  }, async (page, { configPuts }) => {
+    if (!(await walkToProtectStep(page))) return;
+    const dailyActive = await page.locator('#setup-overlay #setup-backup-schedule-seg button[data-cadence="daily"]').getAttribute('class');
+    if (!/active/.test(dailyActive || '')) fail(`saved 'daily' should be pre-selected, class was: "${dailyActive}"`);
+    else ok('saved backup_schedule=\'daily\' is shown as the active selection, not reset to Weekly');
+    if (configPuts.some((p) => 'backup_schedule' in p)) fail(`an already-saved schedule must not be re-PUT on step-enter, got: ${JSON.stringify(configPuts)}`);
+    else ok('no auto-PUT fired — the saved choice was left alone');
+  });
+
+  // ── 9. A cadence PUT that genuinely fails surfaces an inline note ───────
+  await scenario('a failed cadence save shows an inline error, not silence', {
+    config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' },
+    configPutHandler: (body) => {
+      if ('backup_schedule' in body) return { status: 500, contentType: 'application/json', body: '{}' };
+      return null;
+    },
+  }, async (page) => {
+    if (!(await walkToProtectStep(page))) return; // step-enter's own auto-persist already fails here
+    await page.waitForTimeout(150);
+    const cardText = await page.locator('#setup-overlay').textContent();
+    if (!/Could not save/.test(cardText)) fail(`expected an inline "Could not save" note after the PUT failed, card text: "${cardText.slice(0, 300)}"`);
+    else ok('a failed backup_schedule save surfaces an inline note instead of being swallowed');
+  });
+
   console.log(bad === 0 ? '\n✅ PASS — "Protect your work" first-run step: render, validation error, save, back-up-now, cadence, skippable.'
                         : `\n❌ FAIL — ${bad} assertion(s) failed.`);
 } finally {
