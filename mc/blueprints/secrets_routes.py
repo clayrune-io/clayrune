@@ -34,9 +34,11 @@ second factors would be the plaintext hole this design otherwise refuses.
 plaintext value" — see its docstring below for why that's still safe (MC-979).
 """
 
+import ctypes
 import hmac
 import os
 import re
+import signal
 import subprocess
 import time
 
@@ -594,6 +596,103 @@ def _decode_and_scrub(raw_bytes: bytes) -> str:
     return text
 
 
+_PROCESS_SET_QUOTA = 0x0100
+_PROCESS_TERMINATE = 0x0001
+
+
+def _win_job_object_for(pid: int):
+    """Windows only: create a job object, put ``pid`` in it, return the job
+    HANDLE (an int) — or ``None`` on any failure, so the caller falls back to
+    plain ``taskkill /T``.
+
+    Why a job object and not just ``taskkill /T /PID <pid>`` (MC-981 review
+    finding, reproduced with a probe script): ``/T`` walks the process tree
+    from ``pid`` by PPID at the moment it's invoked. A command that forks a
+    grandchild and then EXITS ITSELF (the ordinary daemon/fork-and-detach
+    shape — confirmed with a script whose child's only job is to spawn a
+    sleeper and return) leaves nothing for `/T` to walk from: `pid` is
+    already gone by the time the timeout fires, so `taskkill` reports
+    "not found" and the grandchild — which kept the stdout pipe open, which
+    is *why* ``communicate()`` timed out in the first place — survives
+    forever. A job object doesn't have this hole: once a process is a
+    member, every process IT creates automatically joins too (as long as
+    membership happens before that grandchild is spawned), and the
+    membership persists independent of whether the original member is still
+    alive. ``TerminateJobObject`` then kills everyone still in the job in one
+    call, dead parent or not.
+
+    Assigned as early as possible after ``Popen`` returns to keep the window
+    where the child could fork before joining the job as small as possible —
+    not zero (that needs ``CREATE_SUSPENDED`` plus manual STARTUPINFO/pipe
+    wiring to replace ``subprocess.Popen``, which is a bigger rewrite than
+    this fix's scope), but in practice a fresh child process take many
+    milliseconds to reach the point of spawning anything, versus the
+    microseconds this function takes to run — the probe's fork-and-exit
+    shape reproduces the bug we're fixing but does not hit this residual
+    window.
+    """
+    kernel32 = ctypes.windll.kernel32
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    proc_handle = kernel32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
+    if not proc_handle:
+        kernel32.CloseHandle(job)
+        return None
+    try:
+        ok = kernel32.AssignProcessToJobObject(job, proc_handle)
+    finally:
+        kernel32.CloseHandle(proc_handle)
+    if not ok:
+        kernel32.CloseHandle(job)
+        return None
+    return job
+
+
+def _kill_process_tree(proc: subprocess.Popen, job_handle=None) -> None:
+    """Kill ``proc`` AND every process it spawned, on timeout (MC-981 follow-up
+    to MC-979). ``proc.kill()`` — what a bare ``timeout=`` on ``subprocess.run``
+    plumbs into — only signals the direct child; a resolved command that forks
+    its own grandchild (a daemon, a long sleeper) outlived the timeout because
+    nothing ever reaped it. Requires the child to have been started in its own
+    group (Windows: ``CREATE_NEW_PROCESS_GROUP``; POSIX: ``start_new_session``)
+    — see the ``Popen`` call below. Kills by the PID this process itself
+    started, never by image name (see AGENT_RULES.md process hygiene).
+
+    ``job_handle`` (Windows only, from ``_win_job_object_for``) is tried
+    FIRST and is the real fix — see that function's docstring for why a bare
+    ``taskkill /T`` misses a child that already exited by the time the
+    timeout fires. ``taskkill /T`` still runs unconditionally afterward as a
+    fallback belt for anything the job object didn't catch (job creation
+    failed, or a process that escaped it some other way).
+
+    POSIX's ``os.killpg`` does not have the Windows hole: a process group is
+    addressed by its (persistent) group id, not by walking a live PPID chain
+    from the original member, so it reaches a grandchild whether or not the
+    child that spawned it is still alive. Not independently verified with a
+    live POSIX repro in this change (this box is Windows-only) — confirmed
+    by POSIX process-group semantics instead: group membership outlives the
+    member that created it.
+    """
+    if os.name == 'nt':
+        if job_handle:
+            try:
+                ctypes.windll.kernel32.TerminateJobObject(job_handle, 1)
+            except Exception as e:
+                _log(f"[secrets] TerminateJobObject for server-exec pid "
+                     f"{proc.pid} failed: {e}")
+        try:
+            subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)],
+                           stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+        except Exception as e:
+            _log(f"[secrets] taskkill on server-exec pid {proc.pid} failed: {e}")
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception as e:
+            _log(f"[secrets] killpg on server-exec pid {proc.pid} failed: {e}")
+
+
 @bp.route('/api/secrets/exec', methods=['POST'])
 def api_secrets_exec():
     """Run a command with real secret values injected into its environment,
@@ -691,24 +790,54 @@ def api_secrets_exec():
     # would mean "inherit", and the server's own stdin is not something an
     # exec'd command should ever see (and, under a test harness that
     # replaces stdin with a non-inheritable handle, inheriting it fails
-    # process creation outright on Windows). `subprocess.run`'s `input=`
-    # already implies `stdin=PIPE`; DEVNULL only when there's no stdin_value.
+    # process creation outright on Windows).
+    #
+    # Started in its own process group/session (never inherited from this
+    # server) so a timeout can take out the whole tree, not just this direct
+    # child — see `_kill_process_tree` above (MC-981: a grandchild the child
+    # spawned used to survive `subprocess.run(..., timeout=)`, which only
+    # kills the process it started).
+    stdin_kw = subprocess.PIPE if stdin_value is not None else subprocess.DEVNULL
     try:
-        if stdin_value is not None:
-            proc = subprocess.run(
-                command, env=env, cwd=cwd, input=stdin_value.encode('utf-8'),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        if os.name == 'nt':
+            proc = subprocess.Popen(
+                command, env=env, cwd=cwd, stdin=stdin_kw,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
         else:
-            proc = subprocess.run(
-                command, env=env, cwd=cwd, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
-        exit_code = proc.returncode
-        stdout_bytes, stderr_bytes = proc.stdout, proc.stderr
-    except subprocess.TimeoutExpired as e:
-        exit_code = None
-        stdout_bytes, stderr_bytes = (e.stdout or b''), (e.stderr or b'')
+            proc = subprocess.Popen(
+                command, env=env, cwd=cwd, stdin=stdin_kw,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=True)
     except OSError as e:
         return jsonify({'error': f'failed to start command: {e}'}), 400
+
+    # Join the child to a job object as early as possible so any grandchild
+    # it spawns inherits membership too, even if the child itself has already
+    # exited by the time a timeout fires — see `_win_job_object_for` above
+    # for why `taskkill /T` alone misses that shape. None on POSIX, or on any
+    # Windows failure (falls back to `taskkill /T` only).
+    job_handle = _win_job_object_for(proc.pid) if os.name == 'nt' else None
+    try:
+        stdout_bytes, stderr_bytes = proc.communicate(
+            input=stdin_value.encode('utf-8') if stdin_value is not None else None,
+            timeout=timeout)
+        exit_code = proc.returncode
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(proc, job_handle)
+        # Drain whatever the tree had already written before it died —
+        # best-effort, bounded so a wedged pipe can't hang the request.
+        try:
+            stdout_bytes, stderr_bytes = proc.communicate(timeout=10)
+        except Exception:
+            stdout_bytes, stderr_bytes = b'', b''
+        exit_code = None
+    finally:
+        if job_handle:
+            try:
+                ctypes.windll.kernel32.CloseHandle(job_handle)
+            except Exception as e:
+                _log(f"[secrets] CloseHandle for server-exec job object failed: {e}")
 
     stdout_text = _decode_and_scrub(stdout_bytes)
     stderr_text = _decode_and_scrub(stderr_bytes)

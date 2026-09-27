@@ -70,3 +70,38 @@ def test_main_block_delegates_to_boot_and_adds_no_startup_work():
     stray = [c for c in called if c.split("(")[0] not in allowed
              and not c.startswith("_time.")]
     assert stray == [], f"__main__ does startup work outside boot(): {stray}"
+
+
+def test_boot_checks_port_conflict_before_minting_exec_token():
+    """MC-981 review finding: `ensure_exec_token()` used to run BEFORE the
+    port-conflict check in `boot()`. `_check_port_conflict` calls
+    `sys.exit(2)` (never caught by `_boot_phase`'s `except Exception`, since
+    `SystemExit` isn't one) when another live instance already holds the
+    port — a losing second instance must never get far enough to mint a
+    fresh exec token, since that would overwrite the WINNING instance's
+    on-disk token with one only the loser (about to exit) holds in memory:
+    the exact cross-process token mismatch MC-981 exists to prevent, just
+    triggered by a losing instance instead of a bare `import server`.
+    Static check (not executing `boot()`, same reason as the rest of this
+    file): the port-conflict call must appear before the exec-token call in
+    source order."""
+    tree = ast.parse((REPO / "server.py").read_text(encoding="utf-8"))
+    boot_fns = [n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "boot"]
+    assert len(boot_fns) == 1, "server.py must define exactly one boot()"
+    port_check_line = None
+    token_mint_line = None
+    for node in ast.walk(boot_fns[0]):
+        if not isinstance(node, ast.Call):
+            continue
+        src = ast.unparse(node)
+        if "_check_port_conflict" in src and port_check_line is None:
+            port_check_line = node.lineno
+        if "ensure_exec_token" in src and token_mint_line is None:
+            token_mint_line = node.lineno
+    assert port_check_line is not None, "boot() no longer calls _check_port_conflict"
+    assert token_mint_line is not None, "boot() no longer mints the exec token"
+    assert port_check_line < token_mint_line, (
+        "ensure_exec_token() must run AFTER the port-conflict check — a "
+        "losing second instance must never mint a token that clobbers the "
+        "winner's")
