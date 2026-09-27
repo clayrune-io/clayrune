@@ -116,7 +116,7 @@ def blocked_payload(refusal_message: str) -> Dict[str, object]:
     the scheduler's run-history entry and the workflow run's failure record
     all carry this same shape (MC-961 item 4: "the same pointer")."""
     return {
-        'error': f"{refusal_message} — {settings_pointer_text()}",
+        'error': f"{refusal_message.rstrip().rstrip('.')}. To keep working, {settings_pointer_text()}.",
         'allowance_blocked': True,
         'refusal_message': refusal_message,
         'settings_deep_link': SETTINGS_DEEP_LINK,
