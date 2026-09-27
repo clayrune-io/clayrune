@@ -1975,7 +1975,17 @@ function updateAgentStatusUI(sessionId, status) {
   // on tabContent in conversation.js), so a turn settling can't itself clear a
   // stale keyboard inset left over from a stale-vv dismiss. Re-validate mobile's
   // viewport height now — see mobile.js's mcRecoverViewportOnStatusSettle for why.
-  if (status !== 'running' && typeof window.mcRecoverViewportOnStatusSettle === 'function') {
+  // MC-988: unconditional (was `status !== 'running'` only). Viewport/keyboard
+  // handling is its own concern, decoupled from which status value this patch
+  // happens to carry — a mid-turn interjection re-enters this function with
+  // status 'running' both before and after (no settle transition to hang a
+  // recovery off), and that used to mean NOTHING ever re-validated the height
+  // for the entire span of an already-running turn. This is now the single
+  // place every status patch (turn_start/turn_complete/status/reconciler AND
+  // sendFollowup's own eager 'running' patch below) funnels through, so no
+  // send path can skip it. mcRecoverViewportOnStatusSettle itself still no-ops
+  // while the composer is genuinely being typed into (see its own guard).
+  if (typeof window.mcRecoverViewportOnStatusSettle === 'function') {
     window.mcRecoverViewportOnStatusSettle();
   }
 }

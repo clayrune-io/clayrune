@@ -5191,6 +5191,24 @@ async function sendFollowup(projectId, sessionId) {
   // still own the real state, this only avoids a silent gap before they fire.
   showTypingIndicator(sessionId);
 
+  // MC-988: flip the header dot/label to 'running' in this same tick, same
+  // reasoning as the eager dots just above — turn_start can't arrive until
+  // the round trip resolves, and revive/queued/slow-network paths delay it
+  // further, so waiting for it left the header reading a stale terminal
+  // status (COMPLETED/IDLE) underneath dots that already showed a turn in
+  // flight. Route through updateAgentStatusUI rather than a direct label
+  // write: that function is also where mobile's viewport-height recovery
+  // now unconditionally lives (see its comment in index.html), so this one
+  // call fixes both the stale label AND a stale keyboard inset carried over
+  // from before this send (down-button dismiss that left the composer
+  // focused) — on a mid-turn send the status value doesn't even change
+  // (already 'running'), which is exactly the case that used to never
+  // reach any recovery path at all.
+  if (agentStatusCache[sessionId]) {
+    agentStatusCache[sessionId].status = 'running';
+    updateAgentStatusUI(sessionId, 'running');
+  }
+
   // Zero-gap picker update: reflect the newest user message in conversationsCache
   // so when this session later becomes non-running (stops / ends), the picker
   // already shows the real last line without waiting for a reload.
