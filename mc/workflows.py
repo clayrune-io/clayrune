@@ -81,6 +81,8 @@ from typing import Any, Callable, Optional
 
 from mc import state
 from mc.core import _atomic_write_text, _log, now_iso
+from mc import engine_fallback as _engine_fallback  # MC-961: swap record + blocked-run pointer
+from mc.blueprints.push_mobile import _notify_push  # MC-961: same pointer, the notify/inbox surface
 
 # -- wired by server.py (see wire()) ------------------------------------------
 WORKFLOWS_PATH: Optional[Path] = None
@@ -1032,19 +1034,48 @@ def _dispatch_step(run: dict, node: dict) -> bool:
             character=node.get('character') or '',
             # An explicit per-step pin wins over the character's and the
             # project's default -- the same precedence a chat dispatch gets.
-            # A pin the provider cannot honour raises ValueError in dispatch,
-            # which fails this step visibly (below); it is never swapped.
+            # A pin naming a model that belongs to a DIFFERENT provider still
+            # hard-refuses (ValueError, step fails visibly, below) -- that
+            # never changes. MC-961: a pin whose own vendor is out of
+            # allowance is a different case -- if the user has opted into
+            # `engine_fallback_order`, dispatch may swap this step to a
+            # fallback vendor (dropping the pin for that vendor's own
+            # default model) instead of failing outright. Off by default;
+            # see mc/engine_fallback.py.
             model_override=(node.get('model') or '').strip(),
             effort_override=(node.get('effort') or '').strip() or None,
             notify_workflow={'run_id': run['id'], 'step': name},
         )
+    except _engine_fallback.EngineFallbackBlocked as e:
+        # MC-961 item 4: no fallback resolved (unset, or every configured
+        # entry itself unusable) -- str(e) is already the vendor+reset+pointer
+        # message (EngineFallbackBlocked.__init__ passes payload['error']
+        # straight through), so `_fail_run` below records the same pointer a
+        # blocked chat/schedule refusal gets. This is the notify/inbox half.
+        _fail_run(run, f"step '{name}' dispatch failed: {e}")
+        try:
+            _notify_push(
+                title='Workflow run blocked',
+                body=f"{run['id'][:12]} step '{name}' — {e.payload.get('error', str(e))}",
+                project_id=node['project_id'], kind='agent')
+        except Exception as ne:
+            _log(f"[workflows] blocked-run notification failed: {ne}")
+        return False
     except Exception as e:
         _fail_run(run, f"step '{name}' dispatch failed: {e}")
         return False
+    # MC-961 item 3: "record on the run" -- the swap already happened inside
+    # _dispatch_agent_internal (loud there: agent_log + chat line +
+    # notification, see _apply_engine_fallback); this step also carries the
+    # same {from,to,reason,vendor_reset} record so the workflow's own Runs
+    # panel (which renders `steps`, not the joined agent_log row) shows it
+    # without a second lookup.
+    _live = state.agent_sessions.get(session_id) or {}
     run.setdefault('steps', {})[name] = {
         'status': 'running', 'project_id': node['project_id'],
         'session_id': session_id, 'output': '', 'result': {}, 'error': None,
         'chosen_when': None, 'dispatched_at': now_iso(),
+        'engine_fallback': _live.get('engine_fallback'),
     }
     return True
 

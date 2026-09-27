@@ -5258,6 +5258,33 @@ async function sendFollowup(projectId, sessionId) {
   }).then(r => { clearTimeout(_sendTID); return r.json(); }).then(data => {
     if (!data.ok && !data.queued) {
       console.error('Send failed:', data.error);
+      // MC-961 item 4: no fallback configured (or every entry exhausted) —
+      // the dispatch never started, so there's no session/turn to hang this
+      // off. Render the same actionable card a scheduled/workflow run's
+      // notification carries (agent_routes._apply_engine_fallback raises
+      // EngineFallbackBlocked before any session_id exists), then stop —
+      // the SSE-connect logic below assumes a session it never got.
+      if (data.allowance_blocked) {
+        const el = document.getElementById(`agent-output-${sessionId}`);
+        if (el) {
+          const echo = el.querySelector('.agent-echo');
+          if (echo) {
+            echo.classList.remove('agent-echo');
+            echo.classList.add('agent-echo-failed');
+            echo.style.opacity = '0.6';
+            echo.textContent = `> [blocked] ${message}`;
+          }
+          const card = document.createElement('div');
+          card.className = 'guardian-banner';
+          card.innerHTML = `<span>⚠ ${esc(data.refusal_message || data.error)}</span>
+            <button class="btn-fresh" onclick="openSettingsToEngineFallback()">Set up a fallback</button>`;
+          el.appendChild(card);
+        }
+        const inp = document.getElementById(`agent-followup-${sessionId}`);
+        if (inp && !inp.value) inp.value = message;
+        delete _sendInFlight[sessionId];
+        return;
+      }
     }
     // A successful send makes this session server-live again (followup /
     // revive / dispatch alike) — drop the read-only marker so the freshness

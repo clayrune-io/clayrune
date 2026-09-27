@@ -65,6 +65,8 @@ import mc.project_sync as _proj_sync
 import mc.distiller as _distiller           # exploration read-floor (steward cycle refresh)
 from mc import workflows as _wf             # MC-871 Q4: a schedule may invoke a workflow run
 from mc import memory as _mem            # memory read-floor (steward cycle refresh)
+from mc import engine_fallback as _engine_fallback  # MC-961: blocked-run pointer on a timer fire
+from mc.blueprints.push_mobile import _notify_push  # MC-961: same pointer, the notify/inbox surface
 from steward import core as _steward_core  # cycle-task builder + skills delta
 # NOTE: `steward.core` is a leaf (no Flask, no blueprint imports), so this does
 # NOT create a cycle with mc.blueprints.steward_routes, which imports THIS
@@ -751,6 +753,21 @@ def _scheduler_loop():
                                 # panel has nothing to show either.
                                 _log_agent_activity(
                                     pid, f"Scheduled run FAILED: {task[:80]} — {e}")
+                                # MC-961 item 4: a blocked run with no usable
+                                # fallback must carry the SAME pointer an
+                                # attended chat gets, on the one surface an
+                                # unattended fire actually has — the activity
+                                # log line above already has it (dispatch_err
+                                # IS blocked_payload()['error']); this adds
+                                # the notification/inbox half.
+                                if isinstance(e, _engine_fallback.EngineFallbackBlocked):
+                                    try:
+                                        _notify_push(
+                                            title='Scheduled run blocked',
+                                            body=f"{task[:80]} — {e.payload.get('error', dispatch_err)}",
+                                            project_id=pid, kind='agent')
+                                    except Exception as ne:
+                                        _log(f"[scheduler] blocked-run notification failed: {ne}")
                     if dispatch_ok:
                         sched['last_run'] = now_iso()
                         sched.pop('last_error', None)

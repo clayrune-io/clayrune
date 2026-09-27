@@ -94,6 +94,7 @@ from mc.state import (
 
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 from mc import allowance_state as _allowance_state
+from mc import engine_fallback as _engine_fallback  # MC-961 opt-in vendor swap
 from mc import vision_bridge as _vision_bridge  # describe images for models that cannot see
 import mc.distiller as _distiller          # exploration read-floor (registered by server.py)
 import mc.identity as _identity            # ws_005: shared no-persona identity fallback (Floor/Channel)
@@ -124,6 +125,7 @@ from mc.blueprints.project_routes import (
     _upload_limit,
 )
 from mc.blueprints.push_mobile import _handle_push_signal      # re-homed 1.2 shim
+from mc.blueprints.push_mobile import _notify_push  # MC-961 loud engine-fallback swap
 from mc.blueprints.system_routes import _capture_system_init   # re-homed 1.6 shim
 from mc.blueprints.terminal_routes import launch_pty_session, launch_pipe_session    # MC-928
 from mc import pty_backend
@@ -3311,7 +3313,11 @@ def _allowance_refusal(vendor, *, user_initiated, project=None):
     vendor contradicts. A vendor with no cheap probe (Claude, Gemini, Qwen)
     keeps refusing until the record's reset time or a successful run or the
     user's explicit re-check — never a guess. The refusal itself is unchanged:
-    it names the vendor and never falls back to another one.
+    it names the vendor and never SILENTLY falls back to another one (MC-961:
+    an opt-in `engine_fallback_order` may still swap the caller to a second
+    vendor for THIS refusal — see `_apply_engine_fallback`, the one call site
+    that acts on this function's return value — but that is a loud, recorded
+    substitution the user configured, never invented here).
 
     MC-964 Step D.2 extends the same re-probe to a NON-user-initiated
     dispatch (scheduler/workflow/agent-to-agent) when `project` is given and
@@ -3320,7 +3326,7 @@ def _allowance_refusal(vendor, *, user_initiated, project=None):
     newer "Ron topped up" unit must produce one probe, not a refusal") has no
     user in the loop to type a chat assertion, so the gate must find this on
     its own. Same `heal()` 30s/vendor throttle bounds repeats; still never a
-    fallback to another vendor.
+    fallback to another vendor invented by this function itself.
     """
     entry = _allowance_state.get(vendor)
     if entry and (user_initiated
@@ -3331,6 +3337,65 @@ def _allowance_refusal(vendor, *, user_initiated, project=None):
         except KeyError:
             pass
     return _allowance_state.refusal_message(vendor)
+
+
+def _provider_available_for_fallback(provider_name: str) -> bool:
+    """Installed + signed in, the same two facts `/api/agent/providers`
+    reports per runtime (`health_check().installed` /
+    `.auth_state.status == 'ok'`) — an `engine_fallback_order` entry naming a
+    vendor with no CLI on this box, or one that's signed out, is skipped
+    rather than attempted and left to fail a second time."""
+    try:
+        rt = _agent_runtime.get_runtime(provider_name)
+        h = rt.health_check()
+    except Exception:
+        return False
+    return bool(h.installed) and bool(h.auth_state) and h.auth_state.status == 'ok'
+
+
+def _apply_engine_fallback(blocked_provider, refusal_message, *, project_id):
+    """The one place MC-961's opt-in fallback acts on an allowance/model
+    refusal from the single dispatch choke point below. Two outcomes:
+
+    - A configured entry can run right now: return `(new_provider,
+      new_model_or_none, record)`. `new_model_or_none` is the fallback
+      entry's own pinned model, or None to mean "use the new vendor's own
+      default" (never '' — that would read as "clear whatever the caller
+      pinned", which is not what an unset fallback model means).
+    - Nothing usable is configured (empty order, or every entry itself
+      exhausted/signed-out): raise ValueError whose message names the vendor
+      and reset time (unchanged from before this module existed) AND a
+      pointer to the setting that would fix it (MC-961 item 4) — read by the
+      chat/scheduler/workflow error handling below to build the actionable
+      card/notification the brief asks for.
+
+    Recording the swap (item 3: run history + agent_log + chat line +
+    notification, "no silent path may exist") happens HERE, not at the two
+    call sites — so a swap and its record can never separate.
+    """
+    fb = _engine_fallback.resolve_fallback(
+        blocked_provider, state.CONFIG, _provider_available_for_fallback)
+    if not fb:
+        raise _engine_fallback.EngineFallbackBlocked(
+            _engine_fallback.blocked_payload(refusal_message))
+    entry = _allowance_state.get(blocked_provider)
+    reset_display = _allowance_state.format_resets_at(entry) if entry else ''
+    record = _engine_fallback.swap_record(
+        from_provider=blocked_provider, to_provider=fb['provider'],
+        reason=refusal_message, reset_display=reset_display)
+    _log_agent_activity(
+        project_id,
+        f"Engine fallback: {record['from']} → {record['to']} "
+        f"({record['reason']})")
+    try:
+        _notify_push(
+            title='Engine fallback',
+            body=(f"{record['from']} → {record['to']}: {record['reason']}"
+                  + (f" ({record['vendor_reset']})" if record['vendor_reset'] else '')),
+            project_id=project_id, kind='agent')
+    except Exception as e:
+        _log(f"[engine_fallback] notification failed: {e}", flush=True)
+    return fb['provider'], (fb['model'] or None), record
 
 
 _ALLOWANCE_VENDOR_MENTION_RE_CACHE: dict = {}
@@ -6973,6 +7038,13 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
         'source': session.get('source', ''),
         'trigger_id': session.get('trigger_id', ''),
         'character': session.get('character'),
+        # MC-961 item 3: "record on the run" — {from,to,reason,vendor_reset}
+        # (mc.engine_fallback.swap_record) when this dispatch swapped vendors,
+        # None otherwise. Set on the session dict at dispatch time (both
+        # Mode A/B branches below); carried through unchanged by
+        # _log_agent_completion_body's own copy of this field so the
+        # completed row keeps it too.
+        'engine_fallback': session.get('engine_fallback'),
         # Same field/guard as _log_agent_completion — kept here too so a
         # dispatch that never reaches completion (killed mid-run) still
         # carries its spawner in the durable row. This is the CALLBACK
@@ -7825,6 +7897,10 @@ def _log_agent_completion_body(session):
         # Per-chat persona {name,scope,display_name} or None — survives restart
         # so the header pill + conversation marker render on reload.
         'character': session.get('character'),
+        # MC-961 item 3 — see the matching field/comment in
+        # _log_agent_dispatch_pending; this is the row that survives (the
+        # `complete()` upsert below pops the pending row entirely).
+        'engine_fallback': session.get('engine_fallback'),
         # Fix B marker: whether this session's memory was captured. Presence of
         # this key on ANY entry means the log was written by Fix-B-aware code
         # (used by the reconciler to distinguish first-boot baseline).
@@ -8369,7 +8445,8 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                           spawned_by=None,
                           project_generation=1,
                           lifecycle_bridge_factory=None,
-                          agent_cwd='', isolated=False, planned_session_id=''):
+                          agent_cwd='', isolated=False, planned_session_id='',
+                          engine_fallback=None):
     """Dispatch a session through the AgentRuntime abstraction (non-claude).
 
     `agent_cwd`/`isolated`/`planned_session_id` (vendor-parity gap 1,
@@ -8421,6 +8498,12 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     writes into it (proc, log_lines, status, ...) using the same shape the
     claude path uses, so the rest of MC (status badge, SSE generator, stop
     button, agent_log) keeps working without per-provider branching.
+
+    `engine_fallback` (MC-961 item 3): the swap record when this dispatch is
+    itself a fallback landing on a non-claude vendor — stamped onto the
+    session dict under the same key the claude Mode A/B dicts use, so
+    `_log_agent_dispatch_pending` / `_log_agent_completion_body` persist it
+    identically regardless of which provider actually ran.
     """
     try:
         runtime = _agent_runtime.get_runtime(provider_name)
@@ -8512,6 +8595,8 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             'effort_support': ('supported' if provider_name == 'codex' else 'unsupported'),
             'pinned_model': model_override or '',
             'character': character_meta,
+            # MC-961 item 3 — see this function's docstring.
+            'engine_fallback': engine_fallback,
             '_resume_id': resume_id,
             # f_4a2ccd47 (hm_d9c76579): `source` was never a parameter of this
             # function at all, so a delegated (source='agent') non-claude
@@ -9629,8 +9714,25 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # `project` lets the gate find that with nobody waiting on the result.
     _allowance_block = _allowance_refusal(
         provider_name, user_initiated=(trigger_type == 'manual'), project=p)
+    _engine_fallback_record = None
     if _allowance_block:
-        raise ValueError(_allowance_block)
+        # MC-961: opt-in only (empty `engine_fallback_order` is a no-op, and
+        # this never fires on any refusal but the allowance one checked
+        # above). A native `-r` resume can't cross vendors, and converting one
+        # into a cross-provider handoff automatically is out of scope for
+        # this pass (see docs/_journal/de998c45-mc961-engine-fallback.md) —
+        # a resume keeps today's hard refusal. Fresh dispatches (a new chat,
+        # every workflow step, and a schedule fire that isn't continuing a
+        # prior session) get the swap.
+        if resume_id:
+            raise _engine_fallback.EngineFallbackBlocked(
+                _engine_fallback.blocked_payload(_allowance_block))
+        provider_name, _fallback_model, _engine_fallback_record = _apply_engine_fallback(
+            provider_name, _allowance_block, project_id=project_id)
+        p = dict(p, provider=provider_name)
+        model_override = _fallback_model or ''
+        display_task = (_engine_fallback.swap_chat_line(_engine_fallback_record) + ' '
+                         + (display_task if display_task is not None else task))
     _resume_auto_requested = False
     if resume_id and not model_override and not preserve_model:
         _resume_settings = _prior_conversation_settings(project_id, resume_id, provider_name)
@@ -9644,8 +9746,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # merge placed after it (as this used to be) never reaches a non-claude
     # dispatch at all, silently dropping the character's model pin. Same
     # precedence as provider: explicit per-chat pick > character's own pin.
+    # MC-961: a fallback swap already chose provider+model together — the
+    # character's own engine pin belongs to the vendor that just got refused,
+    # so it must not be re-applied on top of the fallback vendor.
     _char_model = _character_engine(character_meta, 'model')
-    if not resume_id and not model_override and _char_model:
+    if not resume_id and not model_override and _char_model and not _engine_fallback_record:
         model_override = _char_model
     # Refuse an incoherent provider/model pair instead of handing a foreign
     # model id to a CLI that will reject it (e.g. a claude-code process
@@ -9665,7 +9770,19 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # a hard block rather than a warning.
         _quota_block = _model_quota_blocked(provider_name, model_override)
         if _quota_block:
-            raise ValueError(_quota_block)
+            # MC-961: this model is unavailable right now, the second of the
+            # two trigger shapes the fallback may act on (the first is the
+            # vendor-level allowance check above). Same resume_id exception —
+            # a native resume never swaps vendors automatically.
+            if resume_id:
+                raise _engine_fallback.EngineFallbackBlocked(
+                    _engine_fallback.blocked_payload(_quota_block))
+            provider_name, _fallback_model, _engine_fallback_record = _apply_engine_fallback(
+                provider_name, _quota_block, project_id=project_id)
+            p = dict(p, provider=provider_name)
+            model_override = _fallback_model or ''
+            display_task = (_engine_fallback.swap_chat_line(_engine_fallback_record) + ' '
+                             + (display_task if display_task is not None else task))
     if provider_name != 'claude':
         # Per-agent worktree isolation for non-claude runtimes (vendor-parity
         # gap 1, docs/VENDOR_HARNESS_MATRIX.md): this branch returns before the
@@ -9705,6 +9822,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          agent_cwd=_rt_agent_cwd,
                                          isolated=_rt_isolated,
                                          planned_session_id=_rt_planned_sid,
+                                         engine_fallback=_engine_fallback_record,
                                          lifecycle_bridge_factory=(
                                              _runtime_lifecycle_service.bridge_factory
                                              if _runtime_lifecycle_service is not None else None))
@@ -10061,6 +10179,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # Per-chat persona (Prompt Builder Phase 2): {name,scope,
                 # display_name} or None. Immutable; drives the header pill.
                 'character': character_meta,
+                # MC-961 item 3: durable swap record ({from,to,reason,
+                # vendor_reset}, or None) — see _log_agent_dispatch_pending.
+                'engine_fallback': _engine_fallback_record,
                 # Spawn context stash — re-appended verbatim on every `-r`
                 # respawn (see _respawn_sysprompt_args). Byte-identical
                 # content keeps the resumed prefix cache-friendly.
@@ -10178,6 +10299,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # Per-chat persona (Prompt Builder Phase 2): {name,scope,
                 # display_name} or None. Immutable; drives the header pill.
                 'character': character_meta,
+                # MC-961 item 3: durable swap record ({from,to,reason,
+                # vendor_reset}, or None) — see _log_agent_dispatch_pending.
+                'engine_fallback': _engine_fallback_record,
                 'housekeeping': bool(housekeeping),
                 '_runtime_callbacks': dict(runtime_callbacks or {}),
                 # Spawn context stash — re-appended verbatim on every `-r`
@@ -10307,6 +10431,8 @@ def agent_dispatch(project_id):
                                               strict_character=True,
                                               notify_session=notify_session,
                                               cross_provider_handoff=cross_provider_handoff)
+    except _engine_fallback.EngineFallbackBlocked as e:
+        return jsonify(e.payload), 400
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code
@@ -10627,6 +10753,8 @@ def agent_send(project_id):
             new_session_id = _dispatch_agent_internal(
                 project_id, claude_message, resume_id=resume_from, incognito=incognito,
                 provider_override=(data.get('provider') or '').strip().lower())
+        except _engine_fallback.EngineFallbackBlocked as e:
+            return jsonify(e.payload), 400
         except ValueError as e:
             code = 404 if 'not found' in str(e) else 400
             return jsonify({'error': str(e)}), code
