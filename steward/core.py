@@ -210,8 +210,38 @@ def steward_notify(project_id: str, kind: str, body: str, action: str = '') -> b
 
 
 # ── Fence settings file (the PreToolUse hook, passed via --settings) ──────────
+_AGENT_WORKTREE_PARTS = ('.clayrune', 'agents')
+
+
+def _agent_worktree_root(path: Path) -> Optional[Path]:
+    """If `path` sits inside an agent worktree (<repo>/.clayrune/agents/<id>/...),
+    return <repo>; else None."""
+    parts = path.parts
+    for i in range(len(parts) - 2):
+        if tuple(p.lower() for p in parts[i:i + 2]) == _AGENT_WORKTREE_PARTS:
+            return Path(*parts[:i])
+    return None
+
+
 def fence_script_path() -> Path:
-    return Path(__file__).resolve().with_name('fence.py')
+    """The fence script a PreToolUse hook should point at — always the CANONICAL
+    checkout's copy, never an agent worktree's.
+
+    2026-09-27: a migration run from agent worktree a59a6a992c4c resolved
+    __file__ inside that worktree and wrote its path into 21 projects'
+    .claude/settings.json. Those hooks then ran unmerged code, and when the
+    worktree is cleaned up the script vanishes: python exits 2 on a missing
+    file, which Claude Code treats as a BLOCK, so every Bash/PowerShell/Write/
+    Edit call in every one of those projects (attended sessions included — the
+    self-gate lives inside the missing script) would be refused. Persisted
+    hook paths must outlive the process that wrote them."""
+    own = Path(__file__).resolve().with_name('fence.py')
+    root = _agent_worktree_root(own)
+    if root is not None:
+        canonical = root / 'steward' / 'fence.py'
+        if canonical.is_file():
+            return canonical
+    return own
 
 
 def fence_settings_path() -> Path:
@@ -314,12 +344,19 @@ def install_fence_to_project(project_path: str) -> bool:
             except Exception as e:
                 _log(f"[steward] project settings unparseable, refusing to clobber: {e}")
                 return False
+        entry = _fence_settings_content()['hooks']['PreToolUse'][0]
+        if _agent_worktree_root(fence_script_path()) is not None:
+            # No canonical copy to redirect to (see fence_script_path) — refuse
+            # rather than persist a path that dies with the worktree.
+            _log(f"[steward] install_fence_to_project {project_path} refused: "
+                 f"fence script is inside an agent worktree ({fence_script_path()})")
+            return False
         hooks = settings.setdefault('hooks', {})
         pre = hooks.setdefault('PreToolUse', [])
         # Drop any prior steward entry, then append the current one (self-heal on
         # path/interpreter change).
         pre = [e for e in pre if not _is_steward_hook_entry(e)]
-        pre.append(_fence_settings_content()['hooks']['PreToolUse'][0])
+        pre.append(entry)
         hooks['PreToolUse'] = pre
         path.write_text(json.dumps(settings, indent=2), encoding='utf-8')
         return True

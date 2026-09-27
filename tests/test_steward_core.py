@@ -306,3 +306,34 @@ def test_public_api_exports():
                  'steward_notify', 'ensure_fence_settings', 'loop_health',
                  'classify_bash', 'classify_action'):
         assert hasattr(steward, name)
+
+
+# ── fence path must be canonical, never an agent worktree (2026-09-27) ──────
+# A migration run from agent worktree a59a6a992c4c wrote that worktree's
+# fence.py path into 21 projects' settings. A missing hook script makes python
+# exit 2, which Claude Code treats as a block — so worktree cleanup would have
+# refused every shell/edit tool call in all of them.
+
+def test_agent_worktree_root_detects_worktree_paths(tmp_path):
+    wt = tmp_path / 'repo' / '.clayrune' / 'agents' / 'abc123' / 'steward' / 'fence.py'
+    assert core._agent_worktree_root(wt) == tmp_path / 'repo'
+    assert core._agent_worktree_root(tmp_path / 'repo' / 'steward' / 'fence.py') is None
+
+
+def test_fence_script_path_redirects_worktree_to_canonical(tmp_path, monkeypatch):
+    repo = tmp_path / 'repo'
+    (repo / 'steward').mkdir(parents=True)
+    (repo / 'steward' / 'fence.py').write_text('# canonical', encoding='utf-8')
+    wt_core = repo / '.clayrune' / 'agents' / 'abc123' / 'steward' / 'core.py'
+    monkeypatch.setattr(core, '__file__', str(wt_core))
+    assert core.fence_script_path() == repo / 'steward' / 'fence.py'
+    assert '.clayrune' not in core._fence_command()
+
+
+def test_install_fence_refuses_when_only_a_worktree_copy_exists(tmp_path, monkeypatch):
+    wt_core = tmp_path / 'repo' / '.clayrune' / 'agents' / 'abc123' / 'steward' / 'core.py'
+    monkeypatch.setattr(core, '__file__', str(wt_core))
+    proj = tmp_path / 'proj'
+    proj.mkdir()
+    assert core.install_fence_to_project(str(proj)) is False
+    assert not (proj / '.claude' / 'settings.json').exists()
