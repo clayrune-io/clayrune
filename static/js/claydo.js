@@ -883,14 +883,32 @@ function _claydoOpenBrainstormSeed(seedText) {
   setTimeout(() => seedEl.focus(), 30);
 }
 
+// Reserved id (mc/blueprints/guide_routes.py IDEAS_WORKSPACE_ID). Leading
+// underscore is deliberate -- every id-slugifier in this repo strips
+// leading/trailing underscores from a user-typed project name, so this can
+// never collide with a project the user names "Ideas" (MC-990 D1: a plain
+// 'ideas' id did collide, and silently sent Brainstorm sessions into the
+// user's real project instead).
+const IDEAS_WORKSPACE_ID = '_ideas';
+
 // Dispatch global:brainstorm into the reserved Ideas workspace through the
 // SAME /api/project/<id>/agent/dispatch route every other dispatch in the
 // app uses — no special-case backend path for Claydo. Throws on failure so
 // the composer above can show the error and keep the panel open.
 async function _claydoDispatchBrainstorm(seedText, provider) {
+  // Verify the reserved id is actually the Ideas workspace before sending a
+  // real idea there -- belt-and-suspenders alongside the id no longer being
+  // producible by any name a user types (MC-990 D1).
+  const projects = await fetch(API_BASE + '/api/projects').then((r) => r.json()).catch(() => null);
+  const list = Array.isArray(projects) ? projects : [];
+  const ideasRecord = list.find((p) => p && p.id === IDEAS_WORKSPACE_ID);
+  if (!ideasRecord || !ideasRecord._is_ideas_workspace) {
+    throw new Error('Ideas workspace not found or not marked as reserved -- refusing to start Brainstorm here.');
+  }
+
   const body = { task: seedText, source: 'ui', character: 'global:brainstorm' };
   if (provider) body.provider = provider;
-  const res = await fetch(API_BASE + '/api/project/ideas/agent/dispatch', {
+  const res = await fetch(API_BASE + '/api/project/' + IDEAS_WORKSPACE_ID + '/agent/dispatch', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body),
@@ -909,21 +927,21 @@ async function _claydoDispatchBrainstorm(seedText, provider) {
     const startedAt = new Date().toISOString();
     agentOutputBuffers[sessionId] = [];
     agentServerLines[sessionId] = 0;
-    agentStatusCache[sessionId] = { status: 'running', task: seedText, projectId: 'ideas', startedAt,
+    agentStatusCache[sessionId] = { status: 'running', task: seedText, projectId: IDEAS_WORKSPACE_ID, startedAt,
       claudeSessionId: '', providerSessionId: '', incognito: false, provider: provider || '', character: null };
-    agentHistory.unshift({ projectId: 'ideas', sessionId, projectName: 'Ideas', task: seedText,
+    agentHistory.unshift({ projectId: IDEAS_WORKSPACE_ID, sessionId, projectName: 'Ideas', task: seedText,
       status: 'running', startedAt, resumedFrom: null, incognito: false, provider: provider || '', character: null });
-    activeAgentTab['ideas'] = sessionId;
-    delete agentConvNew['ideas'];
+    activeAgentTab[IDEAS_WORKSPACE_ID] = sessionId;
+    delete agentConvNew[IDEAS_WORKSPACE_ID];
     if (typeof upsertConversationCache === 'function') {
-      upsertConversationCache('ideas', '', seedText, 'running',
+      upsertConversationCache(IDEAS_WORKSPACE_ID, '', seedText, 'running',
         { mcSessionId: sessionId, providerSessionId: '', provider: provider || '', live: true, character: null });
     }
   }
 
   if (typeof closeModalById === 'function') closeModalById('__claydo');
-  if (typeof openProjectModal === 'function') openProjectModal('ideas');
-  if (sessionId && typeof connectAgentStream === 'function') connectAgentStream('ideas', sessionId);
+  if (typeof openProjectModal === 'function') openProjectModal(IDEAS_WORKSPACE_ID);
+  if (sessionId && typeof connectAgentStream === 'function') connectAgentStream(IDEAS_WORKSPACE_ID, sessionId);
 }
 
 // Roomy editable view of the artifact — the in-bubble <pre> is cramped.

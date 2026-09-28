@@ -37,7 +37,7 @@ mkdirSync(SHOT_DIR, { recursive: true });
 
 const ORIGIN = 'http://mc.smoke.test';
 const PID = 'smoke_handoff';
-const IDEAS_PID = 'ideas';
+const IDEAS_PID = '_ideas'; // mc/blueprints/guide_routes.py IDEAS_WORKSPACE_ID (MC-990 D1 rename)
 
 const STATIC = {};
 for (const f of readdirSync(JS_DIR)) if (f.endsWith('.js')) STATIC[`/static/js/${f}`] = ['text/javascript; charset=utf-8', readFileSync(resolve(JS_DIR, f), 'utf8')];
@@ -57,7 +57,10 @@ function fixtureProject(id, name) {
     distiller_skip_errors: true,
   };
 }
-const PROJECTS_JSON = JSON.stringify([fixtureProject(PID, 'Handoff Smoke'), fixtureProject(IDEAS_PID, 'Ideas')]);
+const PROJECTS_JSON = JSON.stringify([
+  fixtureProject(PID, 'Handoff Smoke'),
+  { ...fixtureProject(IDEAS_PID, 'Ideas'), _is_ideas_workspace: true },
+]);
 const CHARACTERS_JSON = JSON.stringify([
   { name: 'brainstorm', scope: 'global', agent_name: 'Brainstorm', display_name: 'brainstorm',
     description: 'x', file: 'brainstorm.md', size: 10, avatar: 'fig:alchemist',

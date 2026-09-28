@@ -817,12 +817,24 @@ def _has_real_user_project() -> bool:
 
 # ── Ideas workspace (MC-990: Brainstorm handoff) ────────────────────────────
 
-IDEAS_WORKSPACE_ID = 'ideas'
+IDEAS_WORKSPACE_ID = '_ideas'
 
 
 def _seed_ideas_workspace() -> bool:
     """Create the reserved, system-owned Ideas workspace if absent. Returns
     True if created, False if it already existed.
+
+    Leading underscore is deliberate (precedent: `_incognito`) -- every
+    frontend id-slugifier in this repo (`project-forms.js` `autoSlug` and its
+    duplicates) strips leading/trailing underscores from a user-typed name,
+    so ordinary project creation can never collide with this id. A plain
+    `'ideas'` id was tried first and rejected on review (MC-990 D1): on any
+    install where the user already had a project literally named "Ideas",
+    this function saw the file, returned False, and every Claydo Brainstorm
+    session then landed in the user's REAL project -- its rules, its memory,
+    silently. If a record still turns up at this id without the workspace
+    marker (an install that predates the rename, or something else entirely),
+    refuse loudly rather than silently adopting a project we don't own.
 
     The projectless home for a Claydo-started Brainstorm session
     (docs/BRAINSTORM_HANDOFF_SPEC.md §1). Provisioned as app infrastructure at
@@ -841,6 +853,16 @@ def _seed_ideas_workspace() -> bool:
     pid = IDEAS_WORKSPACE_ID
     filepath = DATA_DIR / f'{pid}.json'
     if filepath.exists():
+        try:
+            existing = json.loads(filepath.read_text(encoding='utf-8'))
+        except Exception as e:
+            print(f"[ideas] existing record at reserved id \"{pid}\" is unreadable, "
+                  f"refusing to touch it: {e}", flush=True)
+            return False
+        if not isinstance(existing, dict) or not existing.get('_is_ideas_workspace'):
+            print(f"[ideas] refusing to seed -- reserved id \"{pid}\" is already a project "
+                  "record without the _is_ideas_workspace marker; something else has "
+                  "claimed it", flush=True)
         return False
 
     base = Path(state.CONFIG.get('auto_workspace_base') or str(Path.home() / 'MissionControl'))
@@ -1086,6 +1108,8 @@ def brainstorm_transfer(project_id):
 
     created_project = False
     doc_path = None
+    created_folder = None  # workspace folder THIS request auto-created (mode=='create', no caller-supplied folder)
+    dest_item_id = None    # backlog item inserted into an already-existing destination (mode=='existing')
     if mode == 'create':
         dest_id = None  # set once creation succeeds, below
     try:
@@ -1107,6 +1131,7 @@ def brainstorm_transfer(project_id):
                     n += 1
                 candidate.mkdir(parents=True, exist_ok=True)
                 folder = str(candidate)
+                created_folder = candidate
             refusal = _refuse_project_path_in_install_dir(folder, None)
             if refusal:
                 return refusal
@@ -1172,6 +1197,13 @@ def brainstorm_transfer(project_id):
         backlog.insert(0, item)
         p_dest['last_updated'] = now_iso()
         save_project(dest_id, p_dest)
+        if not created_project:
+            # Only track for rollback when the destination predates this
+            # request -- a failure after this point must not leave the item
+            # behind for a retry to duplicate (MC-990 D2). A newly-created
+            # destination doesn't need this: deleting its whole project file
+            # below removes the item along with it.
+            dest_item_id = item['id']
 
         transfer_record = {'destination_project_id': dest_id, 'doc_path': doc_rel, 'backlog_item_id': item['id']}
         p_source = load_project(project_id) or p_source
@@ -1188,8 +1220,22 @@ def brainstorm_transfer(project_id):
         except Exception as e2:
             _log(f'[brainstorm-transfer] rollback doc cleanup failed: {e2}', flush=True)
         try:
+            if dest_item_id and dest_id:
+                p_dest_rb = load_project(dest_id)
+                if p_dest_rb is not None:
+                    p_dest_rb['backlog'] = [b for b in (p_dest_rb.get('backlog') or [])
+                                            if b.get('id') != dest_item_id]
+                    save_project(dest_id, p_dest_rb)
+        except Exception as e2:
+            _log(f'[brainstorm-transfer] rollback backlog-item cleanup failed: {e2}', flush=True)
+        try:
             if created_project and dest_id:
                 (DATA_DIR / f'{dest_id}.json').unlink(missing_ok=True)
         except Exception as e2:
             _log(f'[brainstorm-transfer] rollback project cleanup failed: {e2}', flush=True)
+        try:
+            if created_folder is not None and created_folder.exists() and not any(created_folder.iterdir()):
+                created_folder.rmdir()
+        except Exception as e2:
+            _log(f'[brainstorm-transfer] rollback folder cleanup failed: {e2}', flush=True)
         return jsonify({'error': f'transfer failed: {e}'}), 500
