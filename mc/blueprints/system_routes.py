@@ -26,7 +26,7 @@ from flask import Blueprint, jsonify, request
 
 import mc.agent_runtime as _agent_runtime
 from mc import allowance_state as _allowance_state
-from mc import obs, state
+from mc import obs, process_sweep, state
 from mc.blueprints.terminal_routes import launch_pty_session
 from mc.blueprints.workflow_routes import _is_agent_caller
 from mc import slash_commands as slash_cmds
@@ -76,11 +76,12 @@ def wire(*, load_project_fn, load_projects_fn, data_dir, data_root, app_dir,
     DATA_DIR = data_dir
     _DATA_ROOT = data_root
     _APP_DIR = app_dir
-    global _POPEN_FLAGS, _STARTUPINFO, RESTART_LOG_PATH, SYSTEM_STATUS_PATH
+    global _POPEN_FLAGS, _STARTUPINFO, RESTART_LOG_PATH, SYSTEM_STATUS_PATH, PROCESS_SWEEP_LOG_PATH
     _POPEN_FLAGS = popen_flags
     _STARTUPINFO = startupinfo
     RESTART_LOG_PATH = data_root / 'data' / 'restart_log.json'
     SYSTEM_STATUS_PATH = data_root / 'data' / 'system_status.json'
+    PROCESS_SWEEP_LOG_PATH = data_root / 'data' / 'process_sweep_log.json'
     global _backfill_token_telemetry
     _backfill_token_telemetry = backfill_token_telemetry_fn
     global _is_cf_tunneled_request
@@ -303,6 +304,112 @@ def cleanup_processes():
     return jsonify({'ok': True, 'killed': killed})
 
 
+# ── Orphan CLI process sweep (MC-991 Phase 2, mc/process_sweep.py) ──────────
+# Server-side auto-kill of agent CLI processes (codex/claude/gemini/opencode/
+# qwen) whose whole ancestor chain has died and that Clayrune has no other
+# record of — see position_whetherclayrunemayautokillorphanedagentcliproces.md
+# for the criteria and why Ron approved it. `run_process_sweep` is the single
+# call seam: the periodic loop below uses it, and tools/cli-version-check.py's
+# --apply path calls it (via POST, the model-upgrades/run precedent) before
+# attempting an install, so both share one config toggle and one kill path.
+PROCESS_SWEEP_LOG_PATH: Path = None  # type: ignore[assignment]  # wired
+
+
+def _append_process_sweep_log(entry):
+    """Append one sweep report to data/process_sweep_log.json, capped at the
+    last 200 entries (mirrors `_append_restart_log`). Surfaced here (durable,
+    inspectable) in addition to clayrune.log (`_log`, best-effort/rotates)."""
+    try:
+        log = []
+        if PROCESS_SWEEP_LOG_PATH.exists():
+            try:
+                log = json.loads(PROCESS_SWEEP_LOG_PATH.read_text(encoding='utf-8'))
+            except Exception:
+                log = []
+        log.append(entry)
+        if len(log) > 200:
+            log = log[-200:]
+        PROCESS_SWEEP_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(PROCESS_SWEEP_LOG_PATH, log, indent=2)
+    except Exception as e:
+        _log(f"[process-sweep] failed to append log: {e}")
+
+
+def _process_sweep_root_pids():
+    """Every PID the sweep must never touch: Clayrune's live in-memory
+    registry (`tracked_processes` — covers every running agent/housekeeping/
+    terminal/external process, including ones just re-registered by session
+    revival after a restart) UNION whatever's still recorded in the on-disk
+    child-PID ledger (`data/mc_child_pids.json` — covers the window right
+    after a restart, before revival has re-populated `tracked_processes`, and
+    covers tools/cli-version-check.py's own out-of-process callers of the
+    sweep endpoint, which have no access to the live registry at all)."""
+    with process_tracker_lock:
+        pids = {pid for pid in tracked_processes.keys() if isinstance(pid, int)}
+    ledger_path = _DATA_ROOT / 'data' / 'mc_child_pids.json'
+    try:
+        if ledger_path.exists():
+            data = json.loads(ledger_path.read_text(encoding='utf-8'))
+            for entry in (data.get('children') or []):
+                pid = entry.get('pid')
+                if isinstance(pid, int):
+                    pids.add(pid)
+    except Exception as e:
+        _log(f"[process-sweep] could not read child-PID ledger: {e}")
+    return pids
+
+
+def run_process_sweep(dry_run=None):
+    """Run the sweep once, honoring `process_sweep_enabled` (default True) —
+    OFF means neither the periodic loop nor a manual/pre-update call kills
+    anything, full stop; there is deliberately no way to bypass the toggle
+    per-call. `dry_run` overrides `process_sweep_dry_run` (default False) when
+    given explicitly (the /api/system/process-sweep POST body)."""
+    if not bool(state.CONFIG.get('process_sweep_enabled', True)):
+        return {'ok': True, 'skipped': True, 'reason': 'process_sweep_enabled is false'}
+    effective_dry_run = bool(state.CONFIG.get('process_sweep_dry_run', False)) if dry_run is None else bool(dry_run)
+
+    def _log_kill(entry):
+        _log(f"[process-sweep] {entry.get('action')}: pid={entry.get('pid')} "
+             f"cli={entry.get('cli_name')} age_hours={entry.get('age_hours')} "
+             f"exe={entry.get('exe')} start_epoch={entry.get('start_epoch')}")
+
+    report = process_sweep.run_sweep(
+        dry_run=effective_dry_run,
+        root_pids=_process_sweep_root_pids(),
+        kill_fn=_kill_pid,
+        log_fn=_log_kill,
+    )
+    if report.get('killed') or report.get('error'):
+        _append_process_sweep_log({**report, 'ts': now_iso()})
+    return report
+
+
+def _process_sweep_loop():
+    """Daemon thread: run the sweep every _PROCESS_SWEEP_INTERVAL_S seconds.
+    First run fires after _PROCESS_SWEEP_BOOT_DELAY_S so a fresh restart's
+    session revival has time to re-populate tracked_processes/the ledger
+    before any orphan judgment is made."""
+    _time.sleep(state._PROCESS_SWEEP_BOOT_DELAY_S)
+    while True:
+        obs.heartbeat('process-sweep')
+        try:
+            run_process_sweep()
+        except Exception as e:
+            _log(f"[process-sweep] loop error: {e}", flush=True)
+        _time.sleep(state._PROCESS_SWEEP_INTERVAL_S)
+
+
+@bp.route('/api/system/process-sweep', methods=['POST'])
+def system_process_sweep():
+    """Manual/pre-update trigger — tools/cli-version-check.py's --apply path
+    calls this before attempting an install (same precedent as
+    /api/model-upgrades/run: the caller asks the server to run its own gate,
+    it does not decide anything itself). Body: {"dry_run": bool} optional."""
+    body = request.get_json(silent=True) or {}
+    dry_run = body.get('dry_run')
+    report = run_process_sweep(dry_run=dry_run)
+    return jsonify(report)
 
 
 # ── Server restart (remote-triggered, graceful) ──────────────────────────────

@@ -2799,6 +2799,8 @@ app.register_blueprint(_bp_system.bp)
 # The _capture_system_init shim re-homed at 1.12: the stream readers moved to
 # agent_routes, which cross-imports it directly; no server.py caller remains.
 _update_check_loop = _bp_system._update_check_loop
+# MC-991 Phase 2: server-side orphan CLI process sweep daemon (mc/process_sweep.py).
+_process_sweep_loop = _bp_system._process_sweep_loop
 
 # ── Per-vendor allowance state (VENDOR_AGNOSTIC_PROGRAM.md §4) ──────────────
 # Same sibling-file placement as SYSTEM_STATUS_PATH above: a file next to
@@ -3306,6 +3308,11 @@ def boot(check_port=True):
     # firing a 12s git operation on every page load. Frontend polls
     # /api/system/update/cached.
     threading.Thread(target=_update_check_loop, daemon=True, name='update-check').start()
+    # MC-991 Phase 2: orphan agent-CLI process sweep (mc/process_sweep.py).
+    # Off switch is config 'process_sweep_enabled' (default True), checked
+    # inside the loop body itself, not here — so flipping it takes effect on
+    # the next tick without a restart.
+    threading.Thread(target=_process_sweep_loop, daemon=True, name='process-sweep').start()
     # Scheduled auto-backup daemon (MC-983, BACKUP_EXPORT_SPEC.md §7 Phase 4):
     # hourly tick, runs a full backup if overdue per config 'backup_schedule'.
     # Off by default (unset config == 'off', loop no-ops every tick).

@@ -148,6 +148,11 @@ _CONFIG_EDITABLE_KEYS = {
     # Model auto-upgrade gate (mc/model_upgrade.py). Read live by
     # POST /api/model-upgrades/run — no respawn needed.
     'model_auto_upgrade_enabled',
+    # Orphan agent-CLI process sweep (MC-991 Phase 2, mc/process_sweep.py).
+    # Read live by the periodic loop and POST /api/system/process-sweep — no
+    # respawn needed. process_sweep_enabled OFF blocks every kill path, no
+    # per-call override; process_sweep_dry_run reports without killing.
+    'process_sweep_enabled', 'process_sweep_dry_run',
     'long_session_advisory_enabled', 'long_session_advisory_turns',
     'context_rollover_tokens', 'midturn_rollover_enabled',
     # Per-agent skill scoping (mc/skill_scoping.py). Read at each spawn.
