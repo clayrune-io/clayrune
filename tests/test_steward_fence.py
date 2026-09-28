@@ -929,3 +929,141 @@ def test_hook_blocks_vault_key_read_for_ordinary_dev_session(tmp_path):
     )
     assert r.returncode == 2
     assert 'vault' in r.stderr.lower()
+
+
+# ── Global-option / disguised-program bypass fix (2026-09-28) ────────────────
+# Verified live (2026-09-28): every _BLOCK_PATTERNS regex only matched when
+# the verb directly followed the bare program name, so a global option
+# (`git -C x push`), a disguised program token (`git.exe`, a quoted/path
+# invocation, a PowerShell Start-Process wrapper), or both together sailed
+# through unmatched. One case per spelling named in the fix brief.
+GLOBAL_OPTION_BYPASS_BLOCK_CASES = [
+    'git -C ../other push origin main',
+    'git -C C:/tmp/work push -q origin HEAD:refs/heads/x',
+    'git -c user.name=x push',
+    'git --no-pager push',
+    'git.exe push',
+    "& 'C:/Program Files/Git/cmd/git.exe' push",
+    '"C:/Program Files/Git/cmd/git.exe" push origin main',
+    "Start-Process git -ArgumentList 'push origin main' -Wait",
+    "Start-Process -FilePath git.exe -ArgumentList 'push','origin','main'",
+    'npm --prefix pkg publish',
+    'npm.cmd publish',
+    'npm -g publish',
+    'npm --workspace a publish',
+    'docker --context prod push org/img:1',
+    'docker -H tcp://x:2375 push img',
+    'terraform -chdir=infra destroy -auto-approve',
+    'terraform -chdir=infra apply',
+    'terraform.exe destroy',
+    'kubectl -n prod delete deployment web',
+    'kubectl --context prod apply -f x.yaml',
+    'kubectl --namespace=prod delete pod p',
+    'kubectl.exe delete pod p',
+    'git -C x reset --hard',
+    'git -C x clean -fd',
+    'git -C x branch -D feature',
+    'gh -R o/r release create v1',
+    'gh --repo o/r pr create',
+    # twine upload's disguise handling (path/.exe) shares the general
+    # program-token normalisation; no twine-specific global option was named
+    # in the brief, so only the disguise form is exercised here.
+    'twine.exe upload dist/*',
+]
+
+
+@pytest.mark.parametrize('cmd', GLOBAL_OPTION_BYPASS_BLOCK_CASES)
+def test_blocks_global_option_and_disguised_program_bypass(cmd):
+    d = classify_bash(cmd)
+    assert d.blocked, f"fence FAILED to block bypass spelling: {cmd!r}"
+    assert d.reason
+
+
+@pytest.mark.parametrize('cmd', GLOBAL_OPTION_BYPASS_BLOCK_CASES)
+@pytest.mark.parametrize('tool_name', ['Bash', 'PowerShell'])
+def test_classify_action_blocks_global_option_bypass_both_tools(tool_name, cmd):
+    d = classify_action(tool_name, {'command': cmd})
+    assert d.blocked, f"{tool_name} FAILED to block bypass spelling: {cmd!r}"
+
+
+def test_git_dir_global_option_blocks_on_purpose_not_by_accident():
+    # Previously blocked only because the regex happened to match the
+    # ".git push" substring inside the --git-dir VALUE. Now it also blocks
+    # via the normalised `git push` form (see _strip_global_options'
+    # --git-dir entry) — pinned so a future refactor of the accidental match
+    # can't silently drop real coverage.
+    d = classify_bash('git --git-dir=../x/.git push')
+    assert d.blocked
+
+
+# Ordinary uses of the same global options, with a harmless verb, must keep
+# ALLOWing — stripping the option must never manufacture a blocked verb that
+# was not actually there.
+GLOBAL_OPTION_ALLOW_CASES = [
+    'git -C x status',
+    'git -C x log --oneline',
+    'git -C x commit -m "push it"',
+    'npm --prefix x install',
+    'docker --context x ps',
+    'kubectl -n x get pods',
+    'terraform -chdir=x plan',
+]
+
+
+@pytest.mark.parametrize('cmd', GLOBAL_OPTION_ALLOW_CASES)
+def test_allows_global_option_with_harmless_verb(cmd):
+    d = classify_bash(cmd)
+    assert not d.blocked, f"fence WRONGLY blocked safe command {cmd!r}: {d.reason}"
+
+
+# ── PowerShell assignment false positive fix (2026-09-28) ────────────────────
+# `$name = ...` / `$name += ...` / `$env:NAME = ...` at the START of a segment
+# is not "command position" for that segment — it stores a value, it does not
+# run one. Before this fix every one of these was blocked outright as
+# "variable/command substitution in command position", because the
+# enabling-construct head check read the assignment's OWN `$name` as an
+# unresolved command word.
+PS_ASSIGNMENT_ALLOW_CASES = [
+    '$x = 1; Write-Output $x',
+    '$files = Get-ChildItem C:/Users; $files.Count',
+    '$p = "C:/tmp"; Get-Content $p',
+]
+
+
+@pytest.mark.parametrize('cmd', PS_ASSIGNMENT_ALLOW_CASES)
+def test_allows_powershell_variable_assignment(cmd):
+    d = classify_bash(cmd)
+    assert not d.blocked, f"fence WRONGLY blocked PowerShell assignment {cmd!r}: {d.reason}"
+
+
+@pytest.mark.parametrize('cmd', PS_ASSIGNMENT_ALLOW_CASES)
+@pytest.mark.parametrize('tool_name', ['Bash', 'PowerShell'])
+def test_classify_action_allows_powershell_variable_assignment_both_tools(tool_name, cmd):
+    d = classify_action(tool_name, {'command': cmd})
+    assert not d.blocked, f"{tool_name} WRONGLY blocked assignment {cmd!r}: {d.reason}"
+
+
+def test_bash_assignment_then_argument_position_use_still_allowed():
+    # Regression pin (brief explicitly calls this out): this already passed
+    # before the assignment fix and must keep passing after it.
+    assert not classify_bash('T=/tmp/x; ls $T').blocked
+
+
+# A variable used in COMMAND POSITION — not assigned to — must still block,
+# including right after `&` (PowerShell call operator) or in a shape that
+# only LOOKS like an assignment. The assignment exemption above must not
+# widen the existing enabling-construct coverage.
+PS_COMMAND_POSITION_BLOCK_CASES = [
+    '$c = "git"; & $c push',
+    '& $cmd push',
+    '$env:X = 1; iex $y',
+    'git $P',
+    '$(echo git) push',
+    '$CMD args',
+]
+
+
+@pytest.mark.parametrize('cmd', PS_COMMAND_POSITION_BLOCK_CASES)
+def test_blocks_variable_in_command_position_not_assignment(cmd):
+    d = classify_bash(cmd)
+    assert d.blocked, f"fence FAILED to block command-position variable: {cmd!r}"

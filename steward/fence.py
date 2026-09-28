@@ -116,6 +116,195 @@ _BLOCK_PATTERNS = [
 # denylist; a defense against it would need to live at the network layer,
 # not a command-text fence.
 
+
+# ── Global-option / disguised-program bypass fix (2026-09-28) ────────────────
+# Verified live: every _BLOCK_PATTERNS regex above only matches when the
+# VERB directly follows the bare program name (`\bgit\s+push\b`). Any of the
+# following put something else between them, or spelled the program token
+# differently, and sailed through unmatched:
+#   • a global option before the verb — `git -C ../other push`, `docker
+#     --context prod push img`, `terraform -chdir=infra destroy`, `kubectl
+#     -n prod delete pod x`, `gh -R o/r release create v1`
+#   • a disguised program token — `git.exe push`, `npm.cmd publish`, a
+#     quoted/path-prefixed interpreter (`& 'C:/Program Files/Git/cmd/git.exe'
+#     push`), or a PowerShell `Start-Process` wrapper around either
+#
+# Fix shape: normalise a COPY of the (already inert-prose-masked) command —
+# unwrap Start-Process, strip quoting/path/.exe-suffix disguises off the
+# known program tokens, then eat recognised global options sitting between
+# a program name and whatever follows it — and run _BLOCK_PATTERNS against
+# BOTH the original masked command and this normalised copy (classify_bash
+# below ORs the two). This only ADDS a second pass; it never replaces or
+# loosens the original pass, so nothing that blocked before this fix can
+# stop blocking because of it — a normalisation bug just fails to strip
+# something, which leaves the original check as the fallback.
+_KNOWN_PROGRAMS = ('git', 'npm', 'docker', 'terraform', 'kubectl', 'gh', 'twine', 'pip')
+_PROG_EXT_RE = re.compile(r'\.(?:exe|cmd|bat|ps1)$', re.I)
+
+
+def _program_basename(token: str) -> Optional[str]:
+    """`token` (a bare name, a path, or a path with a .exe/.cmd/.bat/.ps1
+    suffix) -> the bare program name if its basename names one of
+    _KNOWN_PROGRAMS, else None."""
+    base = re.split(r'[\\/]', token)[-1]
+    base = _PROG_EXT_RE.sub('', base)
+    return base if base.lower() in _KNOWN_PROGRAMS else None
+
+
+# A quoted token in COMMAND POSITION (string start, or right after a `;`,
+# `&`/call-operator, `|`, `(`, or newline) — `& 'C:/.../git.exe' push` and a
+# bare `"C:/.../git.exe" push origin main` both invoke the quoted path as the
+# program. A quoted token elsewhere (an argument, e.g. a commit message) is
+# untouched — it never matches this position-anchored pattern.
+_QUOTED_PROG_TOKEN_RE = re.compile(
+    r'''(?P<pre>^|[;&|(\n])(?P<ws>\s*)(?P<q>['"])(?P<body>[^'"]*)(?P=q)''')
+
+
+def _unwrap_quoted_program_tokens(cmd: str) -> str:
+    def repl(m):
+        prog = _program_basename(m.group('body'))
+        return m.group('pre') + m.group('ws') + prog if prog else m.group(0)
+    return _QUOTED_PROG_TOKEN_RE.sub(repl, cmd)
+
+
+# An unquoted disguised token — `git.exe`, `cmd/git.exe`, `npm.cmd` — same
+# command-position anchor as the quoted form above, plus a trailing `\b` so
+# a program name that is merely a SUBSTRING of a longer word (`ghost`,
+# `legitimate`) can never match.
+_BARE_PROG_TOKEN_RE = re.compile(
+    r'''(?P<pre>^|[\s;&|(\n])(?P<path>(?:[^\s'"]*[\\/])?)'''
+    r'''(?P<prog>git|npm|docker|terraform|kubectl|gh|twine|pip)'''
+    r'''(?:\.exe|\.cmd|\.bat|\.ps1)?\b''', re.I)
+
+
+def _unwrap_bare_disguised_tokens(cmd: str) -> str:
+    return _BARE_PROG_TOKEN_RE.sub(lambda m: m.group('pre') + m.group('prog'), cmd)
+
+
+# `Start-Process git -ArgumentList 'push origin main' -Wait` and
+# `Start-Process -FilePath git.exe -ArgumentList 'push','origin','main'` both
+# run `git push origin main` but name neither "git push" nor "git" then
+# "push" adjacently anywhere in the line — reconstruct the plain invocation
+# text so the rest of this pipeline (disguise-stripping, global-option
+# stripping, _BLOCK_PATTERNS) can see it the normal way. Stops at `;`/`|`/
+# newline, the same rough segment boundary _SHELL_SPLIT_RE uses elsewhere.
+_START_PROCESS_RE = re.compile(r'\bStart-Process\b(?P<rest>[^\n;|]*)', re.I)
+_SP_FILEPATH_RE = re.compile(
+    r'''-FilePath\s+(?P<q>['"]?)(?P<val>[^\s'"]+)(?(q)(?P=q))''', re.I)
+_SP_POSITIONAL_RE = re.compile(
+    r'''^\s*(?!-)(?P<q>['"]?)(?P<val>[^\s'"]+)(?(q)(?P=q))''')
+_SP_ARGLIST_RE = re.compile(r'-ArgumentList\s+(?P<val>.+?)(?=\s+-\w|$)', re.I)
+
+
+def _start_process_program(rest: str) -> Optional[str]:
+    m = _SP_FILEPATH_RE.search(rest)
+    if m:
+        return m.group('val')
+    m = _SP_POSITIONAL_RE.match(rest)
+    return m.group('val') if m else None
+
+
+def _start_process_args(rest: str) -> str:
+    m = _SP_ARGLIST_RE.search(rest)
+    if not m:
+        return ''
+    parts = []
+    for piece in re.split(r'\s*,\s*', m.group('val').strip()):
+        if len(piece) >= 2 and piece[0] == piece[-1] and piece[0] in ('"', "'"):
+            piece = piece[1:-1]
+        if piece:
+            parts.append(piece)
+    return ' '.join(parts)
+
+
+def _unwrap_start_process(cmd: str) -> str:
+    def repl(m):
+        rest = m.group('rest')
+        prog = _start_process_program(rest)
+        if not prog:
+            return m.group(0)
+        args = _start_process_args(rest)
+        return f'{prog} {args}'.strip()
+    return _START_PROCESS_RE.sub(repl, cmd)
+
+
+# Global options recognised BETWEEN a program name and its verb, so
+# `git -C ../other push` normalises to `git push` the same way `git push`
+# already reads. `_opt_value` accepts both `--opt value` and `--opt=value`
+# (and the short-flag `-o value` form); `_opt_bool` is a bare flag with no
+# value to skip. Deliberately generous about which spellings are accepted —
+# over-matching an option here can only cause EXTRA stripping (still fed
+# through the same downstream _BLOCK_PATTERNS check), never a new ALLOW.
+_OPT_VAL = r'''(?:"[^"]*"|'[^']*'|\S+)'''
+
+
+def _opt_value(*names: str) -> str:
+    alt = '|'.join(re.escape(n) for n in names)
+    return rf'(?:{alt})(?:=(?:{_OPT_VAL})|\s+(?:{_OPT_VAL}))'
+
+
+def _opt_bool(*names: str) -> str:
+    alt = '|'.join(re.escape(n) for n in names)
+    return rf'(?:{alt})\b'
+
+
+_GIT_OPTS = '|'.join([
+    _opt_value('-C'), _opt_value('-c'), _opt_value('--git-dir'),
+    _opt_value('--work-tree'), _opt_value('--namespace'),
+    _opt_bool('--no-pager'), _opt_bool('-P'), _opt_bool('--bare'),
+    r'--exec-path(?:=' + _OPT_VAL + r')?',
+])
+_NPM_OPTS = '|'.join([
+    _opt_value('--prefix'), _opt_bool('-g'), _opt_bool('--global'),
+    _opt_value('--workspace'), _opt_value('-w'),
+])
+_DOCKER_OPTS = '|'.join([
+    _opt_value('--context', '-c'), _opt_value('--host', '-H'),
+    _opt_value('--config'), _opt_value('--log-level'),
+    r'--tls\w*(?:=' + _OPT_VAL + r'|\s+' + _OPT_VAL + r')?',
+])
+_TERRAFORM_OPTS = _opt_value('-chdir')
+_KUBECTL_OPTS = '|'.join([
+    _opt_value('-n', '--namespace'), _opt_value('--context'),
+    _opt_value('--kubeconfig'), _opt_value('-s', '--server'),
+    _opt_value('--cluster'), _opt_value('--user'),
+])
+_GH_OPTS = _opt_value('-R', '--repo')
+
+
+def _global_opt_strip_re(prog: str, opts_alt: str):
+    return re.compile(rf'\b(?P<prog>{re.escape(prog)})\b(?:\s+(?:{opts_alt}))*(?=\s)', re.I)
+
+
+_GLOBAL_OPT_STRIP_PATTERNS = (
+    _global_opt_strip_re('git', _GIT_OPTS),
+    _global_opt_strip_re('npm', _NPM_OPTS),
+    _global_opt_strip_re('docker', _DOCKER_OPTS),
+    _global_opt_strip_re('terraform', _TERRAFORM_OPTS),
+    _global_opt_strip_re('kubectl', _KUBECTL_OPTS),
+    _global_opt_strip_re('gh', _GH_OPTS),
+)
+
+
+def _strip_global_options(cmd: str) -> str:
+    out = cmd
+    for pat in _GLOBAL_OPT_STRIP_PATTERNS:
+        out = pat.sub(lambda m: m.group('prog'), out)
+    return out
+
+
+def _normalize_for_block_patterns(cmd: str) -> str:
+    """Best-effort normalised copy of `cmd` for the _BLOCK_PATTERNS pass only
+    (see classify_bash) — un-disguises the program token and collapses
+    global options so a verb that directly follows the program name in the
+    ORIGINAL patterns' sense also directly follows it here."""
+    out = _unwrap_start_process(cmd)
+    out = _unwrap_quoted_program_tokens(out)
+    out = _unwrap_bare_disguised_tokens(out)
+    out = _strip_global_options(out)
+    return out
+
+
 # Destructive-delete verbs. Blocked UNLESS the command is clearly scratch-scoped.
 _DELETE_PATTERNS = [
     re.compile(r'\brm\s+-\w*[rf]', re.I),       # rm -r / -f / -rf
@@ -383,7 +572,51 @@ _VAR_TOKEN = r'\$\{?\w+\}?|\$\([^()]*\)|`[^`]*`'
 _LEADING_ASSIGN_RE = re.compile(
     r'^(?:\s*\w+=(?:"[^"]*"|\'[^\']*\'|\S*)\s+)+')
 
-_HEAD_EXPANSION_RE = re.compile(rf'^\s*(?:{_VAR_TOKEN})')
+# A var token immediately followed by `.word` (`$files.Count`) is PowerShell
+# MEMBER ACCESS — an expression that reads a property, not an invocation of
+# whatever the variable holds — so it must not read as "command position"
+# (false-positive fix, 2026-09-28, paired with _PS_ASSIGN_HEAD_RE below: an
+# ordinary `$x = Get-Foo; $x.Count` was flagging on the second statement even
+# once the assignment itself stopped tripping the head check). KNOWN, ACCEPTED
+# GAP: `$cmd.Invoke()` still reads as inert by this same exemption even though
+# it DOES execute — same "spelling vs. act" residual-gap class already
+# documented for row7/row8 above; not in the fix brief's required set, not
+# chased here.
+#
+# Built from an ATOMIC-MATCH emulation of the `$name`/`${name}` halves of
+# _VAR_TOKEN (`(?=(?P<x>\w+))(?P=x)`), not `_VAR_TOKEN` directly: a plain
+# `\$\{?\w+\}?` backtracks `\w+` one character short when the `(?!\.\w)`
+# lookahead fails on the FULL name, which quietly re-passes on the shortened
+# name instead of correctly failing (`$files.Count` was still matching on
+# `$file`, one letter short, defeating the member-access exemption above —
+# caught by the `$files = Get-ChildItem C:/Users; $files.Count` test case).
+# The lookahead+backreference forces the `\w+` capture to stay at its
+# longest length with no backtracking, so the exemption actually holds.
+_HEAD_EXPANSION_RE = re.compile(
+    r'^\s*(?:'
+    r'\$\{(?=(?P<_hv1>\w+))(?P=_hv1)\}'   # ${name}
+    r'|\$(?=(?P<_hv2>\w+))(?P=_hv2)'      # $name
+    r'|\$\([^()]*\)'                      # $(...)
+    r'|`[^`]*`'                           # `...`
+    r')(?!\.\w)')
+
+# PowerShell assignment (`$x = ...`, `$x += ...`, `$env:NAME = ...`) at the
+# START of a segment (false-positive fix, 2026-09-28: Quill flagged that a
+# bare `$x = 1; Write-Output $x` was blocked outright — the head-expansion
+# check above read the assignment's OWN `$x` as an unresolved command-position
+# variable, even though storing a value never runs anything). An assignment's
+# LHS is never command position; deliberately excludes `==`/`===` comparisons
+# via the trailing negative lookahead so an `if ($x == $y)`-shaped segment
+# (not itself in scope here, but adjacent) can't be misread as an assignment.
+_PS_ASSIGN_HEAD_RE = re.compile(r'^\s*\$(?:env:)?\w+\s*(?:\+=|=)(?!=)')
+
+# The PowerShell call operator (`&`) and dot-source operator (`.`) put
+# whatever follows them in command position exactly like a bare command
+# word does — `& $cmd push` RUNS `$cmd`, it does not merely reference it —
+# so a variable/expansion right after either must still be caught by the
+# head-expansion check below. Requires trailing whitespace so this never
+# fires on `./script.sh` (dot immediately followed by `/`, not a space).
+_CALL_OP_STRIP_RE = re.compile(r'^\s*(?:&|\.)\s+')
 
 # Verbs the fence already denies by literal spelling — the exact set a hidden
 # variable sitting in the SUBCOMMAND slot (`git $P`, `terraform $T`) defeats.
@@ -454,7 +687,26 @@ def _enabling_construct(cmd: str) -> FenceDecision:
                                         "stdin (the verb the fence sees is "
                                         "not the verb that runs)")
         stripped = _LEADING_ASSIGN_RE.sub('', seg)
-        if _HEAD_EXPANSION_RE.match(stripped) or _VERB_THEN_EXPANSION_RE.search(seg):
+        assignment = _PS_ASSIGN_HEAD_RE.match(stripped)
+        if assignment:
+            # The LHS `$name =` is not command position for this segment (see
+            # _PS_ASSIGN_HEAD_RE above) — but the RIGHT-hand side can still
+            # hide an invocation (`$x = & $cmd push`, `$x = git $P`), so it
+            # gets the SAME head/verb checks the segment would otherwise get,
+            # just scoped to the text after the `=`.
+            rhs = stripped[assignment.end():]
+            rhs_head = _CALL_OP_STRIP_RE.sub('', rhs, count=1)
+            if _HEAD_EXPANSION_RE.match(rhs_head) or _VERB_THEN_EXPANSION_RE.search(seg):
+                return FenceDecision(True, "variable/command substitution in "
+                                            "command position (the word that "
+                                            "actually runs is decided at "
+                                            "runtime, not visible on this line)")
+            continue
+        # A leading `&` or `.` (dot-source) hands command position to
+        # whatever follows it — strip it before the head check so `& $cmd
+        # push` is judged on `$cmd`, not on the operator in front of it.
+        head = _CALL_OP_STRIP_RE.sub('', stripped, count=1)
+        if _HEAD_EXPANSION_RE.match(head) or _VERB_THEN_EXPANSION_RE.search(seg):
             return FenceDecision(True, "variable/command substitution in "
                                         "command position (the word that "
                                         "actually runs is decided at "
@@ -476,8 +728,19 @@ def classify_bash(command: str) -> FenceDecision:
     except Exception:
         cmd = command.strip()   # masking is best-effort; unmasked = stricter
 
+    # Global-option / disguised-program bypass fix (2026-09-28, see the
+    # section above _DELETE_PATTERNS): also check a normalised copy so
+    # `git -C x push`, `git.exe push`, `Start-Process git -ArgumentList
+    # 'push'...` etc. match the same way `git push` already does. ADDITIVE
+    # only — the original `cmd` is still checked unchanged, so nothing that
+    # blocked before this fix can stop blocking because of it.
+    try:
+        normalized = _normalize_for_block_patterns(cmd)
+    except Exception:
+        normalized = cmd   # normalisation is best-effort; falls back to the original check
+
     for pat, reason in _BLOCK_PATTERNS:
-        if pat.search(cmd):
+        if pat.search(cmd) or pat.search(normalized):
             return FenceDecision(True, reason)
 
     for pat in _DELETE_PATTERNS:
