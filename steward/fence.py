@@ -21,6 +21,7 @@ Self-contained (stdlib only) so it runs as a standalone hook script from any cwd
 import json
 import os
 import re
+import shlex
 import sys
 import urllib.parse
 import urllib.request
@@ -1050,12 +1051,28 @@ def _bash_touches_vault_file(cmd: str) -> bool:
     return False
 
 
+# Write/delete shapes (Fenn's review #3, N1): from the data dir a bare
+# `printf '{}' > local_auth.json` or `Set-Content local_auth.json ...` named
+# neither a read verb nor `data/local_auth.json`, so it passed with no pass
+# spent and would wipe the verifier and cookie secret. Any redirect or
+# write/move/delete verb in a segment naming the store is refused. A plain
+# `grep -rn "local_auth.json" mc/` over this repo's source still passes.
+_LOCAL_AUTH_WRITE_RE = re.compile(
+    r'>|\b(Set-Content|sc|Add-Content|ac|Out-File|Clear-Content|clc|tee|'
+    r'Tee-Object|cp|Copy-Item|cpi|mv|move|Move-Item|mi|ren|rename|'
+    r'Rename-Item|rni|rm|del|erase|Remove-Item|ri|rd|rmdir|New-Item|ni|'
+    r'truncate|dd|sed|install|ln|mklink|echo|printf|WriteAllText|'
+    r'WriteAllBytes)\b', re.I)
+
+
 def _bash_touches_local_auth_file(cmd: str) -> bool:
     for seg in _SHELL_SPLIT_RE.split(cmd):
         if not _LOCAL_AUTH_NAME_RE.search(seg):
             continue
         seg_norm = seg.replace('\\', '/').lower()
         if _VAULT_READ_VERB_RE.search(seg) or 'data/local_auth.json' in seg_norm:
+            return True
+        if _LOCAL_AUTH_WRITE_RE.search(seg):
             return True
     return False
 
@@ -1092,7 +1109,7 @@ def check_vault_file_access(tool_name: str, tool_input: dict,
         True, "reads the secrets vault's key/store file directly — use the "
               "vault API (GET /api/secrets) instead, never the raw file")
     local_auth_refusal = FenceDecision(
-        True, "reads the LAN dashboard passcode store directly — that "
+        True, "reads or writes the LAN dashboard passcode store directly — that "
               "passcode gates the vault-lock set/change routes, so this is "
               "a stepping-stone to the vault, not a separate file")
     if name == 'Read':
@@ -1389,7 +1406,78 @@ def _is_plain_single_invocation(cmd: str) -> bool:
         return False
     head = low.split()[0].replace('\\', '/').rsplit('/', 1)[-1]
     head = re.sub(r'\.(exe|cmd|bat|ps1)$', '', head)
-    return head not in _PASS_WRAPPER_HEADS
+    if head in _PASS_WRAPPER_HEADS:
+        return False
+    if head in _PASS_TRANSFER_HEADS:
+        try:
+            argv = shlex.split(text, posix=True)
+        except ValueError:
+            return False
+        return _is_single_transfer(head, argv[1:])
+    return True
+
+
+# Transfer tools send one request PER target, so one invocation is not one
+# operation for them (Fenn's review #3, N4: `curl -X POST a b`, `-:`, and URL
+# globbing `item[1-3]` each spent one pass on 2-3 POSTs). The pass is not bound
+# to a command, so capping each call at one target is the remaining limit.
+# Positive rule: exactly one positional target, no multi-transfer/config/input
+# options, no glob brackets. A value-taking option missing from this table makes
+# its value count as a second target and refuses: over-refusal is the safe way.
+_PS_WEB_ARG_OPTS = {'-uri', '-method', '-body', '-headers', '-contenttype',
+                    '-outfile', '-infile', '-timeoutsec', '-credential'}
+_PASS_TRANSFER_HEADS = {
+    'curl': {'-d', '--data', '--data-raw', '--data-binary', '--data-urlencode',
+             '--json', '-H', '--header', '-X', '--request', '-o', '--output',
+             '-u', '--user', '-F', '--form', '-A', '--user-agent', '-e',
+             '--referer', '-b', '--cookie', '-c', '--cookie-jar', '-T',
+             '--upload-file', '-w', '--write-out', '-m', '--max-time',
+             '--connect-timeout', '--retry', '--cacert', '--cert', '--key',
+             '--oauth2-bearer', '-x', '--proxy', '--resolve', '--url'},
+    'wget': {'-O', '--output-document', '-o', '--output-file', '--header',
+             '--post-data', '--post-file', '--method', '--body-data',
+             '--body-file', '-U', '--user-agent', '--user', '--password',
+             '-t', '--tries', '-T', '--timeout', '-P', '--directory-prefix'},
+    'invoke-webrequest': _PS_WEB_ARG_OPTS, 'iwr': _PS_WEB_ARG_OPTS,
+    'invoke-restmethod': _PS_WEB_ARG_OPTS, 'irm': _PS_WEB_ARG_OPTS,
+}
+_PASS_TRANSFER_MULTI_OPTS = {
+    'curl': {'-:', '--next', '-K', '--config', '-Z', '--parallel'},
+    'wget': {'-i', '--input-file', '-r', '--recursive', '-m', '--mirror',
+             '-p', '--page-requisites'},
+}
+
+
+def _is_single_transfer(head: str, args: list) -> bool:
+    arg_opts = _PASS_TRANSFER_HEADS[head]
+    multi = _PASS_TRANSFER_MULTI_OPTS.get(head, set())
+    case_sensitive = head in ('curl', 'wget')
+    targets = 0
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if '[' in tok or ']' in tok:
+            return False
+        name = tok.split('=', 1)[0]
+        key = name if case_sensitive else name.lower()
+        if key in multi:
+            return False
+        # curl short-option clusters (`-sK cfg`, `-s:`) hide -K/-Z/-: inside
+        # a token the table cannot see; refuse any cluster carrying one.
+        if head == 'curl' and re.fullmatch(r'-[A-Za-z:]{2,}', tok) \
+                and set(tok[1:]) & {':', 'K', 'Z'}:
+            return False
+        if tok.startswith('-') and len(tok) > 1:
+            if key in ('--url', '-uri'):
+                targets += 1
+            if key in arg_opts and '=' not in tok:
+                i += 2
+                continue
+            i += 1
+            continue
+        targets += 1
+        i += 1
+    return targets == 1
 
 
 def _blocked_leaves(tool_name: str, tool_input: dict) -> list:
@@ -1531,7 +1619,8 @@ def main(argv=None) -> int:
     # Same unconditional posture as the install-dir guard above — see
     # check_vault_file_access's docstring.
     try:
-        vault_access = check_vault_file_access(tool_name, tool_input)
+        vault_access = check_vault_file_access(tool_name, tool_input,
+                                               payload.get('cwd') or None)
     except Exception:
         vault_access = FenceDecision(False, '')
     if vault_access.blocked:

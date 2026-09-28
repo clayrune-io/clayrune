@@ -478,3 +478,66 @@ def test_passcode_store_write_and_powershell_read_are_refused(monkeypatch, tmp_p
                      ('apply_patch', {'command': '*** Begin Patch\n*** Update File: ' + store
                                                  + '\n@@\n-a\n+b\n*** End Patch'})):
         assert fence.check_vault_file_access(name, ti).blocked, name
+
+
+# ── Fenn's review #3 (2026-09-28, N1/N4) ────────────────────────────────────
+# N4: a transfer tool sends one request per target, so one pass covers exactly
+# one target. N1: bare relative writes to the passcode store from the data dir.
+
+@pytest.mark.parametrize('command', [
+    'curl -X POST https://example.invalid/a https://example.invalid/b',
+    'curl -X POST https://example.invalid/a -: -X POST https://example.invalid/b',
+    'curl -X POST https://example.invalid/item[1-3]',
+    'curl -X POST --url https://example.invalid/a https://example.invalid/b',
+    'curl -K cfg.txt -X POST https://example.invalid/a',
+    'curl -sK cfg.txt -X POST https://example.invalid/a',
+    'curl -Z -X POST https://example.invalid/a',
+    'wget --post-data=x -i urls.txt',
+    'wget --post-data=x https://example.invalid/a https://example.invalid/b',
+])
+def test_multi_target_transfer_never_consumes_a_pass(monkeypatch, tmp_path, command):
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', _never_consume)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2
+
+
+@pytest.mark.parametrize('command', [
+    'curl -s -X POST https://example.invalid/a -H "Content-Type: application/json" -d "x"',
+    'curl -XPOST --url https://example.invalid/a',
+])
+def test_single_target_transfer_still_consumes_a_pass(monkeypatch, tmp_path, command):
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', lambda: spent.append(1) or True)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 0 and spent == [1]
+
+
+_STORE = fence._LOCAL_AUTH_FILENAME
+
+
+@pytest.mark.parametrize('tool_name,command', [
+    ('PowerShell', 'Set-Content ' + _STORE + ' -Value "{}"'),
+    ('Bash', "printf '{}' > " + _STORE),
+    ('Bash', 'rm ' + _STORE),
+    ('PowerShell', 'Remove-Item ' + _STORE),
+    ('Bash', 'mv other.json ' + _STORE),
+])
+def test_relative_shell_write_to_passcode_store_is_refused(monkeypatch, tmp_path, tool_name, command):
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', _never_consume)
+    assert fence.check_vault_file_access(tool_name, {'command': command}).blocked
+    data_dir = str(fence._local_auth_data_root() / 'data')
+    payload = {'tool_name': tool_name, 'tool_input': {'command': command}, 'cwd': data_dir,
+               'transcript_path': _transcript(tmp_path, 'Please go implement the fix we discussed')}
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload)))
+    assert fence.main() == 2
+
+
+def test_searching_source_for_the_store_name_still_passes():
+    assert not fence.check_vault_file_access(
+        'Bash', {'command': 'grep -rn "' + _STORE + '" mc/'}).blocked
