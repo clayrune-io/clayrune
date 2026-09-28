@@ -532,7 +532,12 @@ async function _ubRefreshUsage(ev) {
 // system_routes.py `_USAGE_RESET_INSTRUCTIONS`: a banked/granted reset is
 // one-time and belongs to the account holder, so this only opens the
 // terminal and surfaces the instruction as a toast for the human to read
-// and type by hand.
+// and type by hand. Both CLIs are full-screen raw-mode TUIs (not a
+// line-oriented REPL), so the backend launches a REAL pty and this always
+// opens the pop-out with `isPty=true` — matching `is_pty` in the response —
+// so xterm wires keystrokes straight through (`disableStdin: !isPty` in
+// terminal.js) instead of showing the hidden line-input "Send" box a pipe
+// session would need.
 async function _ubLaunchResetTerminal(provider, ev) {
   if (ev) { ev.stopPropagation(); ev.preventDefault(); }
   try {
@@ -547,7 +552,7 @@ async function _ubLaunchResetTerminal(provider, ev) {
       return;
     }
     if (data.instruction) showToast(data.instruction, 12000);
-    openTerminalPopout(window.currentProjectId, data.session_id, data.command || provider, false);
+    openTerminalPopout(window.currentProjectId, data.session_id, data.command || provider, !!data.is_pty);
   } catch {
     showToast(`Could not open ${provider} terminal`, 5000);
   }

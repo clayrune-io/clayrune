@@ -8,12 +8,15 @@ same reasoning as Claude's `/limit-reset`. These tests pin that the endpoint
 only launches a bare CLI pop-out and returns instruction text; it never
 writes anything to the child's stdin.
 
-Determinism: patches `terminal_routes.subprocess.Popen` (the actual spawn
-point `launch_pipe_session` calls) with a recorder, same pattern as
-tests/test_terminal_routes.py. `_agent_runtime.get_runtime(...).resolve_binary`
-is monkeypatched per-provider so no real CLI needs to be installed.
+Determinism: patches `terminal_routes.pty_backend` (the actual spawn point
+`launch_pty_session` calls) with a recorder, same `FakePty`/`_fake_pty_backend`
+pattern as tests/test_terminal_routes.py — both CLIs are full-screen raw-mode
+TUIs (a review caught the endpoint originally using `launch_pipe_session`,
+which only fakes TTY-ness for Python subprocesses and left Codex refusing to
+start / Claude falling into print mode), so the real code path is the pty
+one. `_agent_runtime.get_runtime(...).resolve_binary` is monkeypatched
+per-provider so no real CLI needs to be installed.
 """
-import io
 import os
 import sys
 import types
@@ -26,27 +29,53 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-class FakeProc:
-    """Popen stand-in: real pipe for the reader thread, BytesIO stdin capture."""
+class FakePtyUnavailable(RuntimeError):
+    pass
+
+
+class FakePty:
+    """pty_backend session stand-in: real OS pipe for the reader thread, plus
+    the narrow interface terminal_routes.py actually drives — no real
+    ConPTY/pty.openpty() involved. Same shape as test_terminal_routes.py's
+    FakePty so both suites stay in sync if the interface changes."""
     _next_pid = 995000
 
     def __init__(self):
         r, w = os.pipe()
-        self.stdout = os.fdopen(r, 'rb')
+        self._r_fd = r
         self._w = w
-        self.stdin = _RecordingStdin()
-        FakeProc._next_pid += 1
-        self.pid = FakeProc._next_pid
+        self.written = []
+        FakePty._next_pid += 1
+        self.pid = FakePty._next_pid
         self._rc = None
+
+    def read(self, size=4096):
+        try:
+            data = os.read(self._r_fd, size)
+        except OSError:
+            return ''
+        return data.decode('utf-8', errors='replace')
+
+    def write(self, text):
+        self.written.append(text)
+
+    def resize(self, cols, rows):
+        pass
+
+    def isalive(self):
+        return self._rc is None
 
     def poll(self):
         return self._rc
 
     def kill(self):
-        self._exit(-9)
+        self.close(force=True)
 
     def wait(self, timeout=None):
         return self._rc if self._rc is not None else 0
+
+    def close(self, force=True):
+        self._exit(-9 if force else 0)
 
     def _exit(self, rc):
         if self._rc is None:
@@ -57,15 +86,26 @@ class FakeProc:
                 pass
 
 
-class _RecordingStdin(io.BytesIO):
-    """Captures every write so a test can assert nothing was ever sent."""
-    writes = None
+def _fake_pty_backend(available=True):
+    """A pty_backend-shaped namespace (pty_available/spawn/PtyUnavailable)
+    for monkeypatching tr.pty_backend — no real ConPTY/stdlib pty involved,
+    so these tests run identically on Windows and POSIX CI."""
+    spawned = []
 
-    def write(self, data):
-        if self.writes is None:
-            self.writes = []
-        self.writes.append(data)
-        return super().write(data)
+    def _spawn(command, cwd=None, env=None, cols=120, rows=30):
+        if not available:
+            raise FakePtyUnavailable('no pty backend installed')
+        p = FakePty()
+        spawned.append((command, cwd, env, cols, rows, p))
+        return p
+
+    ns = types.SimpleNamespace(
+        pty_available=lambda: available,
+        spawn=_spawn,
+        PtyUnavailable=FakePtyUnavailable,
+    )
+    ns.spawned = spawned
+    return ns
 
 
 @pytest.fixture()
@@ -88,14 +128,10 @@ def client(monkeypatch, state):
     from mc.blueprints import system_routes as sr
     from mc.blueprints import terminal_routes as tr
 
-    calls = []
-
-    def _popen(*a, **kw):
-        calls.append((a, kw))
-        return FakeProc()
-
-    monkeypatch.setattr(tr, 'subprocess', types.SimpleNamespace(
-        Popen=_popen, PIPE=-1, STDOUT=-2))
+    # Default: a real-PTY backend IS available, spawning FakePty instances —
+    # matches system_usage_reset_terminal's real launch_pty_session call.
+    fake_pty = _fake_pty_backend(available=True)
+    monkeypatch.setattr(tr, 'pty_backend', fake_pty)
 
     # Bust caches so a prior test's TTL can't leak a stale reading in.
     sr._oauth_usage_cache['ts'] = 0.0
@@ -107,7 +143,7 @@ def client(monkeypatch, state):
 
     server.app.config['TESTING'] = True
     c = server.app.test_client()
-    c._popen_calls = calls  # type: ignore[attr-defined]
+    c._fake_pty = fake_pty  # type: ignore[attr-defined]
     return c
 
 
@@ -118,6 +154,38 @@ def _stub_resolve_binary(monkeypatch, provider, path_str):
 
 
 class TestResetTerminal:
+    def test_uses_real_pty_launcher_not_pipe(self, client, monkeypatch, state):
+        """Pins the review fix: this route originally called
+        `launch_pipe_session`, which only fakes TTY-ness for Python
+        subprocesses — Codex refuses to start ('TERM is set to "dumb"
+        ... Refusing to start the interactive TUI') and Claude drops into
+        print mode. Both CLIs are full-screen raw-mode TUIs, so the route
+        must import and call `launch_pty_session` specifically."""
+        from mc.blueprints import system_routes as sr
+        from mc.blueprints import terminal_routes as tr
+
+        assert sr.launch_pty_session is tr.launch_pty_session
+        assert not hasattr(sr, 'launch_pipe_session'), (
+            'system_routes must not import launch_pipe_session for '
+            'reset-terminal — see the module comment above _USAGE_RESET_INSTRUCTIONS')
+
+        _stub_resolve_binary(monkeypatch, 'claude', 'C:/fake/claude.exe')
+        spawn_calls = []
+        real_spawn = tr.pty_backend.spawn
+
+        def _spy_spawn(*a, **kw):
+            spawn_calls.append((a, kw))
+            return real_spawn(*a, **kw)
+
+        monkeypatch.setattr(tr.pty_backend, 'spawn', _spy_spawn)
+
+        r = client.post('/api/system/usage/reset-terminal', json={'provider': 'claude'})
+
+        assert r.status_code == 200
+        assert len(spawn_calls) == 1, 'reset-terminal must launch through pty_backend.spawn'
+        j = r.get_json()
+        assert j['is_pty'] is True
+
     def test_claude_launches_bare_cli_and_returns_instruction(self, client, monkeypatch, state):
         _stub_resolve_binary(monkeypatch, 'claude', 'C:/fake/claude.exe')
 
@@ -127,19 +195,19 @@ class TestResetTerminal:
         j = r.get_json()
         assert j['ok'] is True
         assert j['session_id']
+        assert j['is_pty'] is True
         assert '/limit-reset' in j['instruction']
         assert 'weekly cap still applies' in j['instruction']
 
         # Exactly one spawn, the bare resolved binary — no extra args, no
         # command auto-sent.
-        assert len(client._popen_calls) == 1
-        args, kwargs = client._popen_calls[0]
-        assert args[0] == str(Path('C:/fake/claude.exe'))
-        assert kwargs.get('shell') is True
+        assert len(client._fake_pty.spawned) == 1
+        command, cwd, env, cols, rows, pty = client._fake_pty.spawned[0]
+        assert command == str(Path('C:/fake/claude.exe'))
 
         session = state.terminal_sessions[j['session_id']]
-        proc = session['proc']
-        assert proc.stdin.writes is None, 'reset-terminal must never write to the child stdin itself'
+        assert session['pty'] is pty
+        assert pty.written == [], 'reset-terminal must never write to the child stdin itself'
 
     def test_codex_launches_bare_cli_and_returns_instruction(self, client, monkeypatch, state):
         _stub_resolve_binary(monkeypatch, 'codex', 'C:/fake/codex.exe')
@@ -152,11 +220,12 @@ class TestResetTerminal:
         assert 'Redeem usage limit reset' in j['instruction']
         assert '/usage' in j['instruction']
 
-        args, kwargs = client._popen_calls[0]
-        assert args[0] == str(Path('C:/fake/codex.exe'))
+        command, cwd, env, cols, rows, pty = client._fake_pty.spawned[0]
+        assert command == str(Path('C:/fake/codex.exe'))
 
         session = state.terminal_sessions[j['session_id']]
-        assert session['proc'].stdin.writes is None
+        assert session['pty'] is pty
+        assert pty.written == []
 
     def test_gemini_has_no_reset_flow(self, client, state):
         r = client.post('/api/system/usage/reset-terminal', json={'provider': 'gemini'})
@@ -164,12 +233,12 @@ class TestResetTerminal:
         j = r.get_json()
         assert j['ok'] is False
         assert 'gemini' in j['error']
-        assert len(client._popen_calls) == 0
+        assert len(client._fake_pty.spawned) == 0
 
     def test_unknown_provider_rejected(self, client, state):
         r = client.post('/api/system/usage/reset-terminal', json={'provider': 'not-a-real-vendor'})
         assert r.status_code == 400
-        assert len(client._popen_calls) == 0
+        assert len(client._fake_pty.spawned) == 0
 
     def test_missing_cli_reports_not_installed(self, client, monkeypatch, state):
         from mc import agent_runtime as ar
@@ -182,7 +251,7 @@ class TestResetTerminal:
         j = r.get_json()
         assert j['ok'] is False
         assert 'not installed' in j['error']
-        assert len(client._popen_calls) == 0
+        assert len(client._fake_pty.spawned) == 0
 
 
 class TestUsageRefresh:

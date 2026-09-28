@@ -27,7 +27,7 @@ from flask import Blueprint, jsonify, request
 import mc.agent_runtime as _agent_runtime
 from mc import allowance_state as _allowance_state
 from mc import obs, state
-from mc.blueprints.terminal_routes import launch_pipe_session
+from mc.blueprints.terminal_routes import launch_pty_session
 from mc.blueprints.workflow_routes import _is_agent_caller
 from mc import slash_commands as slash_cmds
 from mc.atomic_json import write_json_atomic
@@ -969,11 +969,15 @@ def system_usage_refresh():
 # interactive, human-only reset command. NEVER auto-types or pipes the
 # command itself: a banked Codex reset is one-time and belongs to the account
 # holder, and Claude's /limit-reset is gated the same way — the human reads
-# the instruction and types it. `launch_pipe_session` (no pywinpty
-# dependency) is enough: these are simple line-oriented REPL prompts, not a
-# raw-mode TUI, and the terminal pop-out's own "Send input" box already
-# round-trips line-buffered stdin for exactly this shape (see
-# static/js/terminal.js `disableStdin: !isPty`).
+# the instruction and types it. Both CLIs are full-screen raw-mode TUIs, not
+# line-oriented REPLs — `codex` refuses to start at all with a piped stdin
+# ("Refusing to start the interactive TUI because no terminal is available"),
+# and `claude` with piped stdin drops into print mode, where a typed line
+# becomes a prompt instead of a slash command. So this needs a REAL pty
+# (`launch_pty_session`, MC-928's pywinpty-backed spawn), same as
+# `/api/terminal/launch`'s `{"pty": true}` branch — never
+# `launch_pipe_session`, which only fakes TTY-ness for Python subprocesses
+# via its PYTHONPATH shim and does nothing for these non-Python CLIs.
 _USAGE_RESET_INSTRUCTIONS = {
     'claude': ('Type /limit-reset and press Enter to reset the 5-hour session '
                'limit (once per week — the weekly cap still applies).'),
@@ -1013,7 +1017,7 @@ def system_usage_reset_terminal():
     bin_path = rt.resolve_binary()
     if not bin_path:
         return jsonify({'ok': False, 'error': f'{provider} CLI is not installed'}), 400
-    session_id, err = launch_pipe_session('_usage_reset', str(bin_path), cwd=_usage_reset_cwd())
+    session_id, err = launch_pty_session('_usage_reset', str(bin_path), cwd=_usage_reset_cwd())
     if err:
         return jsonify({'ok': False, 'error': err}), 500
     return jsonify({
@@ -1021,6 +1025,7 @@ def system_usage_reset_terminal():
         'session_id': session_id,
         'command': str(bin_path),
         'instruction': instruction,
+        'is_pty': True,
     })
 
 
