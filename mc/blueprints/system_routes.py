@@ -955,6 +955,13 @@ def _fetch_codex_usage_detail() -> Optional[dict]:
                         'plan_type': plan_type,
                         'credits': credits,
                         'sampled_at': datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                        # The record's own `timestamp` field (real event time),
+                        # distinct from `sampled_at` (rollout file mtime, which
+                        # can lag or repeat across polls). USAGE_BREAKDOWN_SPEC.md's
+                        # sampler needs the true event identity to dedupe repeat
+                        # reads of an unchanged source; None when the line has no
+                        # timestamp (never invented from mtime).
+                        'event_at': rec.get('timestamp') if isinstance(rec, dict) else None,
                     }
                 break  # latest token_count record found — stop scanning
     except Exception as e:

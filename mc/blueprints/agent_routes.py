@@ -110,6 +110,8 @@ import mc.agent_jobs as _agent_jobs  # MC-958 follow-up: engine-agnostic backgro
 import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
 import mc.artifact_coverage as _artifact_coverage  # substitution check: did the turn run what was asked
 import mc.vendor_context_sync as _vendor_context_sync  # mirrors CLAUDE.md into AGENTS.md/GEMINI.md/QWEN.md
+import mc.usage_breakdown_sampler as _usage_breakdown_sampler  # MC-998 session-fact capture
+from mc.usage_breakdown_store import UsageBreakdownStore as _UsageBreakdownStore  # MC-998
 from mc.delegation_delivery import (DeliveryStore, callback_payload,
                                     DeliveryBlocked, DeliveryDeferred,
                                     DeliveryUncertain, drain_once,
@@ -8010,6 +8012,23 @@ def _log_agent_completion_body(session):
                     break
         log.insert(0, entry)
     _update_agent_log(project_id, complete)
+
+    # MC-998 Phase 2: durable session_fact for the Usage Breakdown dashboard.
+    # Written for every completed/errored/stopped session INCLUDING housekeeping
+    # (spec §4: "the default includes every persisted run... so the user can
+    # tell whether their work is included" -- the `housekeeping` column is the
+    # visibility flag, not an exclusion). Incognito never reaches this point
+    # (early return above). Best-effort: a store failure must never break the
+    # agent-log write it rides alongside.
+    if entry.get('session_id'):
+        try:
+            _fact = _usage_breakdown_sampler.session_fact_from_entry(
+                entry, project_id=project_id, housekeeping=is_housekeeping)
+            _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite'
+                                 ).upsert_session_fact(entry['session_id'], _fact)
+        except Exception as e:
+            _log(f"[usage-breakdown] session fact write failed for "
+                 f"{entry.get('session_id', '')[:12]}: {e}")
 
     if is_housekeeping:
         return

@@ -515,3 +515,70 @@ def test_ordinary_text_with_no_mc_fence_is_unaffected(env):
     assert 'Reading the config now.' in session['log_lines']
     assert 'Done, config looks fine.' in session['log_lines']
     assert not any('Waiting for your answer' in ln for ln in session['log_lines'])
+
+
+# ── MC-998: completion hook writes a durable usage_breakdown session fact ──
+
+def _breakdown_store(env_):
+    from mc.usage_breakdown_store import UsageBreakdownStore
+    return UsageBreakdownStore(env_['tmp_path'] / 'usage_breakdown.sqlite')
+
+
+def test_completion_writes_a_usage_breakdown_session_fact(env):
+    """The wiring in `_log_agent_completion_body`, not the sampler's own
+    unit-tested logic (that's `tests/test_usage_breakdown_sampler.py`). This
+    pins that a real completion, through the real hook, produces a row the
+    dashboard can read — the thing the unit tests can't see since they call
+    `session_fact_from_entry` directly, never `_log_agent_completion_body`."""
+    sid, handle = _dispatch(env)
+    env['runtime'].run_turn(handle, ['did the thing'])
+
+    facts = _breakdown_store(env).list_session_facts()
+    assert len(facts) == 1, facts
+    assert facts[0]['session_id'] == sid
+    assert facts[0]['status'] == 'completed'
+    assert facts[0]['provider'] == 'fakeprov'
+
+
+def test_incognito_session_writes_no_usage_breakdown_fact(env):
+    sid, handle = _dispatch(env, incognito=True)
+    env['runtime'].run_turn(handle, ['secret'])
+
+    assert _breakdown_store(env).list_session_facts() == []
+
+
+def test_housekeeping_session_still_writes_a_usage_breakdown_fact(env):
+    """Spec §4: housekeeping is a visibility flag on the row, not an
+    exclusion — matches the agent-log parity in
+    `test_housekeeping_logs_a_row_but_writes_no_memory` above."""
+    sid, handle = _dispatch(env)
+    env['sessions'][sid]['housekeeping'] = True
+    env['runtime'].run_turn(handle, ['housekeeping output'])
+
+    facts = _breakdown_store(env).list_session_facts()
+    assert len(facts) == 1
+    assert facts[0]['housekeeping'] == 1  # sqlite stores bool as 0/1
+
+
+def test_error_exit_writes_a_usage_breakdown_fact_with_error_status(env):
+    sid, handle = _dispatch(env)
+    env['runtime'].run_turn(handle, ['partial work'], rc=1)
+
+    facts = _breakdown_store(env).list_session_facts()
+    assert len(facts) == 1
+    assert facts[0]['status'] == 'error'
+
+
+def test_usage_breakdown_store_failure_does_not_break_completion_logging(env, monkeypatch):
+    """Best-effort per the comment at the call site: a store exception must
+    not take down the agent-log write it rides alongside."""
+    def _boom(self, *a, **kw):
+        raise RuntimeError('disk full')
+    monkeypatch.setattr(env['ar']._UsageBreakdownStore, 'upsert_session_fact', _boom)
+
+    sid, handle = _dispatch(env)
+    env['runtime'].run_turn(handle, ['still works'])
+
+    rows = _log_rows(env)
+    assert len(rows) == 1
+    assert rows[0]['status'] == 'completed'
