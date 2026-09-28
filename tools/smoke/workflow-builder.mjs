@@ -280,30 +280,35 @@ async function portCenter(page, selector) {
 // (_wfRedrawEdges measures everything relative to #wfb-canvas-viewport's own
 // rect) to a real page coordinate.
 async function clickEdgeOffCenter(page, selector) {
-  const vp = await (await page.$('#wfb-canvas-viewport')).boundingBox();
+  // The `d` attribute is in the SVG's own (world/pan/zoom) coordinate space,
+  // not screen pixels -- a prior version of this helper assumed the canvas
+  // viewport's boundingBox origin could just be added to raw `d` numbers,
+  // which only happens to hold when pan=(0,0) and scale=1. Any non-default
+  // pan (several tests explicitly set one) makes that silently wrong. Let
+  // the browser's own getScreenCTM() do the SVG->screen transform instead --
+  // it's correct for any pan/zoom by construction.
   const candidates = await page.$eval(selector, (el) => {
-    const d = el.getAttribute('d') || '';
-    const m = /M\s*([\d.-]+),([\d.-]+)\s*C\s*([\d.-]+),([\d.-]+)\s*([\d.-]+),([\d.-]+)\s*([\d.-]+),([\d.-]+)/.exec(d);
-    if (!m) return [];
-    const [, x0, y0, x1, y1, x2, y2, x3, y3] = m.map(Number);
+    const len = el.getTotalLength();
     const at = (t) => {
-      const mt = 1 - t;
-      return {
-        x: mt ** 3 * x0 + 3 * mt ** 2 * t * x1 + 3 * mt * t ** 2 * x2 + t ** 3 * x3,
-        y: mt ** 3 * y0 + 3 * mt ** 2 * t * y1 + 3 * mt * t ** 2 * y2 + t ** 3 * y3,
-      };
+      const p = el.getPointAtLength(t * len);
+      const screen = p.matrixTransform(el.getScreenCTM());
+      return { x: screen.x, y: screen.y };
     };
     // Spread away from both t=0/1 (source/target ports+cards) and t=0.5
-    // (the delete × on hover).
-    return [0.35, 0.65, 0.25, 0.75, 0.2, 0.8].map(at);
+    // (the delete × on hover). A tight card layout can put a wide/overshooting
+    // Bezier (a short edge between adjacent cards can bulge well past either
+    // endpoint's x) underneath a node at several of these t's at once -- the
+    // wider spread here (closer to each end, and near-but-not-on center) gives
+    // more chances to land on open stroke instead of a card that happens to
+    // sit on the curve's path at this particular layout.
+    return [0.35, 0.65, 0.25, 0.75, 0.2, 0.8, 0.1, 0.9, 0.15, 0.85, 0.45, 0.55].map(at);
   });
   for (const pt of candidates) {
-    const px = vp.x + pt.x, py = vp.y + pt.y;
     const onTarget = await page.evaluate(({ px, py, selector }) => {
       const el = document.elementFromPoint(px, py);
       return !!(el && el.closest(selector));
-    }, { px, py, selector });
-    if (onTarget) { await page.mouse.click(px, py); return; }
+    }, { px: pt.x, py: pt.y, selector });
+    if (onTarget) { await page.mouse.click(pt.x, pt.y); return; }
   }
   throw new Error(`clickEdgeOffCenter: no candidate point along the curve resolved to ${selector} via elementFromPoint`);
 }
@@ -509,7 +514,6 @@ try {
   await page.waitForTimeout(80);
 
   // ── Drag a palette block onto the canvas ─────────────────────────────────
-  const vpBox = await (await page.$('#wfb-canvas-viewport')).boundingBox();
   // MC-962: the describe box is now a normal-flow sibling ABOVE the
   // viewport (no longer an overlay ON it), so on a brand-new empty canvas
   // the viewport itself is shorter than it used to be -- a fixed
@@ -561,7 +565,30 @@ try {
   // computed off the ORIGINAL (pre-inspector) `vpBox`.
   await closeInspector(page);
 
-  await dragPalettePersonTo(page, 'Fenn', vpBox.x + 460, vpBox.y + 120);
+  // Anchor the second drop off the FIRST node's own rendered box, not a
+  // vpBox-relative constant -- a fixed `vpBox.x + 460` only happened to land
+  // far enough right of wherever `firstDropPoint` put node 1 by coincidence
+  // of both formulas' magic numbers. A purely horizontal clearance off node 1
+  // (tried first) instead ran the OTHER way off a narrow viewport: two 260px
+  // cards side by side plus any real gap don't fit in an ~888px-wide canvas
+  // when node 1 already sits center-ish, so node 2's far port rendered past
+  // the viewport's right edge -- clipped by its `overflow:hidden`, so
+  // elementFromPoint there hits the page behind the canvas, not the port, and
+  // the connect drag never starts (no pointerdown ever reaches it). Placing
+  // node 2 mostly BELOW node 1 instead (vertical clearance past node 1's own
+  // bottom, only a small rightward nudge) avoids overlap without needing
+  // horizontal room this viewport doesn't have, and is clamped to the live
+  // viewport rect so it also can't run off any other edge.
+  const node1Box = await (await page.$('.wfb-node')).boundingBox();
+  const vpForDrop = await (await page.$('#wfb-canvas-viewport')).boundingBox();
+  const dropMargin = 20, halfW = 130, halfH = 45;
+  const dropX = Math.min(
+    Math.max(node1Box.x + node1Box.width / 2 + 40, vpForDrop.x + dropMargin + halfW),
+    vpForDrop.x + vpForDrop.width - dropMargin - halfW);
+  const dropY = Math.min(
+    Math.max(node1Box.y + node1Box.height + dropMargin + halfH, vpForDrop.y + dropMargin + halfH),
+    vpForDrop.y + vpForDrop.height - dropMargin - halfH);
+  await dragPalettePersonTo(page, 'Fenn', dropX, dropY);
   nodeCount = await page.$$eval('.wfb-node', els => els.length);
   nodeCount === 2 ? ok('a second palette drag placed a second, independent node')
                   : fail(`expected 2 nodes, got ${nodeCount}`);
@@ -1014,11 +1041,24 @@ try {
   // has panned back — the ORIGINAL cluster (triage/draft/the approval gate)
   // is still off-screen (clipped by .wfb-canvas-viewport's overflow:hidden),
   // so a click computed against its real on-screen coordinates would land
-  // outside the visible canvas entirely. Reset to the default pan before the
+  // outside the visible canvas entirely. Reset the pan before the
   // keyboard-delete test below, which operates back on that original cluster.
+  // Center on the "draft" node's own world position rather than a hardcoded
+  // (60,40) constant -- that constant assumed a specific initial-placement
+  // outcome, but "draft" and the auto-placed approval node it's connected to
+  // both trace back to the drag-drop math earlier in this test, which is
+  // itself relative to the canvas viewport's rect AT DROP TIME (still
+  // affected by the describe panel's height on an empty canvas, MC-962/
+  // follow-up) -- so any change to that panel's height can quietly move
+  // where this cluster ends up, and a fixed pan can lose it off-canvas.
   await page.evaluate(() => {
     const st = window._wfEntry()._wf;
-    st.viewport.x = 60; st.viewport.y = 40; st.viewport.scale = 1;
+    const draft = st.def.nodes.find(n => n.name === 'draft');
+    const vp = document.getElementById('wfb-canvas-viewport');
+    const rect = vp.getBoundingClientRect();
+    st.viewport.scale = 1;
+    st.viewport.x = rect.width / 2 - (draft.x + 130) * st.viewport.scale;
+    st.viewport.y = rect.height / 2 - (draft.y + 60) * st.viewport.scale;
     window._wfSetTriggerType(st.def.trigger.type || 'manual');
   });
   await page.waitForTimeout(80);
@@ -1552,6 +1592,24 @@ try {
   /\bbtn-add\b/.test(mDescribeBtnClass)
     ? ok(`the "Describe it" button carries the app's real button class at 390px too (${mDescribeBtnClass})`)
     : fail(`expected the "Describe it" button to carry btn-add at 390px, got class="${mDescribeBtnClass}"`);
+
+  // MC-962 follow-up, mobile width: same one-row + height-ceiling checks as
+  // the desktop case above -- the input shrinks to fit but the button must
+  // stay on the same row and visible (not wrapped below or clipped).
+  const mRow = await mpage.evaluate(() => {
+    const input = document.getElementById('wfb-describe-input');
+    const btn = document.querySelector('.wfb-describe-row .btn-add');
+    if (!input || !btn) return null;
+    const ir = input.getBoundingClientRect(), br = btn.getBoundingClientRect();
+    return { inputTop: ir.top, btnTop: br.top, btnVisible: br.width > 0 && br.height > 0 };
+  });
+  (mRow && Math.abs(mRow.inputTop - mRow.btnTop) <= 4 && mRow.btnVisible)
+    ? ok(`the describe input and "Describe it" button share one row and the button stays visible at 390px (${JSON.stringify(mRow)})`)
+    : fail(`expected the describe input and visible button on the same row at 390px, got ${JSON.stringify(mRow)}`);
+  const mPanelHeight = (await mpage.$eval('.wfb-canvas-empty', (el) => el.getBoundingClientRect().height));
+  mPanelHeight < 100
+    ? ok(`the describe panel (box + hint) fits under the one-row ceiling at 390px (${mPanelHeight}px)`)
+    : fail(`expected the describe panel under 100px at 390px, got ${mPanelHeight}px`);
 
   // Defect 13 (Ron, phone: "unable to drag agent onto the canvas") -- a REAL
   // touch gesture via CDP Input.dispatchTouchEvent, not a mouse-emulated
@@ -3080,6 +3138,26 @@ try {
   /\bbtn-add\b/.test(describeBtnClass10)
     ? ok(`the "Describe it" button carries the app's real button class (${describeBtnClass10})`)
     : fail(`expected the "Describe it" button to carry btn-add, got class="${describeBtnClass10}"`);
+
+  // MC-962 follow-up: the label/textarea/button/hint used to stack across four
+  // rows (~184px tall at this width). Now the input and "Describe it" button
+  // must share ONE row (tops within a few px of each other, allowing for
+  // border/line-height rounding) and the whole panel (box + hint) must stay
+  // under a fixed ceiling well below the old stacked height.
+  const row10 = await page10.evaluate(() => {
+    const input = document.getElementById('wfb-describe-input');
+    const btn = document.querySelector('.wfb-describe-row .btn-add');
+    if (!input || !btn) return null;
+    const ir = input.getBoundingClientRect(), br = btn.getBoundingClientRect();
+    return { inputTop: ir.top, btnTop: br.top };
+  });
+  (row10 && Math.abs(row10.inputTop - row10.btnTop) <= 4)
+    ? ok(`the describe input and "Describe it" button share one row at desktop width (${JSON.stringify(row10)})`)
+    : fail(`expected the describe input and button on the same row at desktop width, got ${JSON.stringify(row10)}`);
+  const panelHeight10 = (await page10.$eval('.wfb-canvas-empty', (el) => el.getBoundingClientRect().height));
+  panelHeight10 < 100
+    ? ok(`the describe panel (box + hint) fits under the one-row ceiling at desktop width (${panelHeight10}px)`)
+    : fail(`expected the describe panel under 100px at desktop width, got ${panelHeight10}px`);
 
   // Empty description: refused client-side, no request fired.
   await page10.click('.wfb-describe-row .btn-add');
