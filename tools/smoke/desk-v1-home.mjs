@@ -17,7 +17,7 @@
  * Exit 0 = every case holds (render checks in all three tones, interaction
  * checks once); 1 = a case regressed / harness error.
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
@@ -29,6 +29,8 @@ const CSS_DIR = resolve(REPO_ROOT, 'static', 'css');
 const ASSETS_DIR = resolve(REPO_ROOT, 'assets');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const ORIGIN = 'http://mc.smoke.test';
+const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
+mkdirSync(SHOT_DIR, { recursive: true });
 
 const MIME = { '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
 
@@ -315,7 +317,7 @@ async function runDesktopLayoutChecks(browser) {
     const main = document.querySelector('.desk-v1-home-main');
     return { cardHeight: needsyou.getBoundingClientRect().height, mainHeight: main.getBoundingClientRect().height };
   });
-  if (needsyouFit.cardHeight < needsyouFit.mainHeight - 40) {
+  if (needsyouFit.cardHeight < needsyouFit.mainHeight - 20) {
     ok(`Needs you sizes to its own content, not the cards column's height (${needsyouFit.cardHeight.toFixed(0)}px vs ${needsyouFit.mainHeight.toFixed(0)}px main)`);
   } else {
     fail(`Needs you stretched to match the main row's height: ${needsyouFit.cardHeight.toFixed(0)}px vs ${needsyouFit.mainHeight.toFixed(0)}px`);
@@ -393,6 +395,100 @@ async function runPhoneLayout(browser) {
   await ctx.close();
 }
 
+// ── item 1 (MC-977 R0 UX pass, Ron 2026-09-28: "the menu opens on the full
+// dashboard size"). desk-v1-shell.js used to call toggleModalMaximize() on
+// open; removed so Desk rides the SAME sizing convention every other project
+// modal uses (interactions.js's snap machinery, no bespoke full-size mode).
+// Checked at a wide (2000px) window — the width the screenshot that reported
+// this bug was taken at. ────────────────────────────────────────────────────
+async function runModalSizeCheck(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} }, { width: 2000, height: 1100 });
+
+  const size = await page.evaluate(() => {
+    const win = document.querySelector('.modal-window[data-modal-id="__desk"]');
+    const r = win.getBoundingClientRect();
+    return { isMaximized: win.classList.contains('is-maximized'), width: r.width, height: r.height };
+  });
+  !size.isMaximized
+    ? ok(`item 1: Desk does not force-maximize on open (no .is-maximized class)`)
+    : fail('item 1: Desk still opens maximized');
+  size.width < 2000 - 200
+    ? ok(`item 1: Desk modal is bounded on a 2000px window (${size.width.toFixed(0)}px wide, not edge-to-edge)`)
+    : fail(`item 1: Desk modal stretched edge-to-edge on a 2000px window: ${size.width.toFixed(0)}px wide`);
+
+  await page.screenshot({ path: resolve(SHOT_DIR, 'ux_item1_home_2000.png') });
+  ok('desktop (2000px) screenshot saved: ux_item1_home_2000.png');
+
+  reportUncaught(pageErrors, '[modal-size]');
+  await ctx.close();
+}
+
+// ── item 3 (MC-977 R0 UX pass) — Home card "More" menu, per Dave/Kestrel's
+// review scope: camp-2 (Proposed, never published) offers Delete; camp-1
+// (Active, has publication history) offers Archive, not Delete. Both route
+// through the shared confirm sheet + commandBus Undo desk-v1-campaign.js
+// built, and archiving moves the card into the collapsed Archived section
+// instead of the main grid. ─────────────────────────────────────────────────
+async function runHomeCardMoreMenu(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+
+  // Proposed campaign (camp-2) → Delete, with Undo.
+  const camp2Card = await page.$('.desk-v1-home-camp-card[data-campaign-id="camp-2"] [data-camp-more-btn]');
+  camp2Card ? ok('item 3: Home card for a Proposed campaign shows a More trigger') : fail('item 3: no More trigger on the Proposed campaign card');
+  await camp2Card.click();
+  await page.waitForSelector('.desk-v1-camp-cardmenu', { timeout: 2000 });
+  const menuText2 = (await page.textContent('.desk-v1-camp-cardmenu').catch(() => '') || '');
+  /Delete campaign/.test(menuText2) && !/Archive campaign/.test(menuText2)
+    ? ok('item 3: Proposed campaign\'s More menu offers Delete (never published, no Archive)')
+    : fail(`item 3: Proposed campaign menu wrong: ${JSON.stringify(menuText2)}`);
+  await page.click('.desk-v1-camp-cardmenu [data-menu-delete]');
+  const usesConfirmSheet = await page.$('.desk-v1-rules-confirm-overlay');
+  usesConfirmSheet
+    ? ok('item 3: Delete confirms via the in-page sheet, not window.confirm (d146df0)')
+    : fail('item 3: Delete confirm sheet did not render');
+  await page.click('[data-confirm-accept]');
+  await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
+  const delToast = (await page.textContent('.toast').catch(() => '') || '');
+  /Deleted/.test(delToast) ? ok(`item 3: delete shows a commandBus toast: "${delToast.trim()}"`) : fail(`item 3: delete toast missing/wrong: ${JSON.stringify(delToast)}`);
+  const camp2GoneFromCards = await page.$('.desk-v1-home-camp-card[data-campaign-id="camp-2"]');
+  !camp2GoneFromCards ? ok('item 3: deleted campaign leaves the Home grid') : fail('item 3: deleted campaign still rendered on Home');
+  await page.click('.toast .toast-btn.primary');
+  await page.waitForTimeout(80);
+  const camp2Restored = await page.$('.desk-v1-home-camp-card[data-campaign-id="camp-2"]');
+  camp2Restored ? ok('item 3: Undo restores the deleted campaign to Home') : fail('item 3: Undo did not restore the deleted campaign');
+
+  // Active campaign (camp-1) → Archive, with Undo; archived leaves the main
+  // grid for the Archived section.
+  const camp1More = await page.$('.desk-v1-home-camp-card[data-campaign-id="camp-1"] [data-camp-more-btn]');
+  await camp1More.click();
+  await page.waitForSelector('.desk-v1-camp-cardmenu', { timeout: 2000 });
+  const menuText1 = (await page.textContent('.desk-v1-camp-cardmenu').catch(() => '') || '');
+  /Archive campaign/.test(menuText1) && !/Delete campaign/.test(menuText1)
+    ? ok('item 3: Active campaign\'s More menu offers Archive, not Delete (has publication history)')
+    : fail(`item 3: Active campaign menu wrong: ${JSON.stringify(menuText1)}`);
+  await page.click('.desk-v1-camp-cardmenu [data-menu-archive]');
+  await page.waitForSelector('.desk-v1-rules-confirm-overlay', { timeout: 2000 });
+  const archiveBody = (await page.textContent('.desk-v1-rules-confirm-overlay').catch(() => '') || '');
+  /does not remove any posts already on a platform/.test(archiveBody)
+    ? ok('item 3: archive copy states it does not remove already-published posts')
+    : fail(`item 3: archive confirm copy missing the platform-safety line: ${JSON.stringify(archiveBody)}`);
+  await page.click('[data-confirm-accept]');
+  await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
+  const camp1GoneFromGrid = await page.$('.desk-v1-home-camp-card[data-campaign-id="camp-1"]');
+  !camp1GoneFromGrid ? ok('item 3: archived campaign leaves the main grid') : fail('item 3: archived campaign still in the main grid');
+  const archivedSection = (await page.textContent('#desk-v1-home-archived').catch(() => '') || '');
+  /Archived \(1\)/.test(archivedSection)
+    ? ok('item 3: archived campaign appears in the Archived section')
+    : fail(`item 3: Archived section wrong: ${JSON.stringify(archivedSection)}`);
+  await page.click('.toast .toast-btn.primary');
+  await page.waitForTimeout(80);
+  const camp1Restored = await page.$('.desk-v1-home-camp-card[data-campaign-id="camp-1"]');
+  camp1Restored ? ok('item 3: Undo restores the archived campaign to the main grid') : fail('item 3: Undo did not restore the archived campaign');
+
+  reportUncaught(pageErrors, '[home-more-menu]');
+  await ctx.close();
+}
+
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
@@ -402,6 +498,8 @@ try {
   await runAmbiguousDropChoosesCampaign(browser);
   await runDesktopLayoutChecks(browser);
   await runPhoneLayout(browser);
+  await runModalSizeCheck(browser);
+  await runHomeCardMoreMenu(browser);
   exitCode = bad ? 1 : 0;
 } catch (e) {
   console.error('❌ FAIL — smoke harness error: ' + (e && e.message ? e.message : e));

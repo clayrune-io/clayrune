@@ -463,6 +463,34 @@ async function runPhoneLayout(browser) {
   await ctx.close();
 }
 
+// ── item 5 (MC-977 R0 UX pass) — the review page's own Posy box call site
+// (desk-v1-review.js's `draftKey: review:${version.id}`) must not lose a
+// draft on a re-render, same requirement as the campaign page's box. ───────
+async function runPosyDraftPersistence(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToReview(page, 'v-restore-blog');
+  await page.waitForSelector('.desk-v1-review', { timeout: 8000 });
+
+  const DRAFT = 'review-page draft text';
+  const input = await page.$('#desk-v1-review-posy-input');
+  if (!input) { fail('item 5: review Posy input not found'); reportUncaught(pageErrors, '[posy-draft]'); await ctx.close(); return; }
+  await input.fill(DRAFT);
+
+  // Navigate away (campaign) and back — the same route-unmount rebuild that
+  // wiped the campaign-page box before the fix.
+  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
+  await page.waitForSelector('.desk-v1-campaign', { timeout: 8000 });
+  await navToReview(page, 'v-restore-blog');
+  await page.waitForSelector('.desk-v1-review', { timeout: 8000 });
+  const afterNav = await page.$eval('#desk-v1-review-posy-input', (ta) => ta.value).catch(() => '');
+  afterNav === DRAFT
+    ? ok('item 5: review Posy draft survives navigating away and back')
+    : fail(`item 5: review draft lost: ${JSON.stringify(afterNav)}`);
+
+  reportUncaught(pageErrors, '[posy-draft]');
+  await ctx.close();
+}
+
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
@@ -470,6 +498,7 @@ try {
   await runA6SelectionToolbar(browser);
   await runA7ClaimFlow(browser);
   await runA8Matrix(browser);
+  await runPosyDraftPersistence(browser);
   await runPhoneLayout(browser);
   exitCode = bad ? 1 : 0;
 } catch (e) {

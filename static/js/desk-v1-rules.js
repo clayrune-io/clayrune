@@ -49,7 +49,12 @@
     el.innerHTML = `
       <div class="desk-v1-camp-summary-top">
         ${stateHTML}
-        <button type="button" class="desk-v1-rules-start-btn" data-start-campaign>Start campaign</button>
+        <div class="desk-v1-camp-summary-top-actions">
+          <button type="button" class="desk-v1-rules-start-btn" data-start-campaign>Start campaign</button>
+          <div class="desk-v1-camp-card-more">
+            <button type="button" class="desk-v1-camp-card-morebtn" data-camp-more-btn aria-haspopup="menu" aria-label="More actions">⋯</button>
+          </div>
+        </div>
       </div>
       <div class="desk-v1-camp-summary-groups">
         <div class="desk-v1-camp-summary-group">
@@ -97,6 +102,21 @@
 
     const startBtn = el.querySelector('[data-start-campaign]');
     if (startBtn) startBtn.onclick = () => deskV1OpenStartSheet(camp.id);
+
+    // item 3 (MC-977 R0 UX pass, Dave's review): a proposed campaign is
+    // exactly the "never published" case Delete applies to — shares the
+    // same menu desk-v1-campaign.js's non-proposed summary uses, so the
+    // draft/published boundary lives in one place, not two.
+    const moreBtn = el.querySelector('[data-camp-more-btn]');
+    if (moreBtn) moreBtn.onclick = (e) => {
+      e.stopPropagation();
+      window.deskV1OpenCampaignMoreMenu(moreBtn, camp.id, {
+        onDone: (result) => {
+          if (result === 'deleted') deskV1Nav('home', {});
+          else window.deskV1FillCampaignSummary(el, params);
+        },
+      });
+    };
   }
 
   // ────────────────────────────────────────────────────────────────────────
@@ -267,6 +287,14 @@
     panel.style.left = `${left}px`;
     panel.style.top = `${top}px`;
     panel.style.right = 'auto';
+    // The CSS `max-height: calc(100vh - 64px)` default assumes `top` sits
+    // near the viewport's edge (true only when the anchor is near the top
+    // of a maximized window). Once Desk stopped force-maximizing (MC-977
+    // item 1), a lower anchor position leaves less real room below `top`
+    // than that static calc knows about, so a preview revealed after open
+    // (§8's Apply/Cancel row) could grow the panel past the window's bottom
+    // edge. Pin max-height to what's actually left below `top`.
+    panel.style.maxHeight = `${window.innerHeight - top - 12}px`;
   }
 
   window.deskV1OpenRulesPopover = function (campaignId, anchorEl) {

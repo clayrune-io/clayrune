@@ -421,6 +421,30 @@ async function runPhoneLayout(browser) {
   await ctx.close();
 }
 
+// ── item 5 (MC-977 R0 UX pass) — the video director's own Posy box call site
+// (desk-v1-video.js's `draftKey: video:${family.id}:${scope}`) must not lose
+// a draft on a re-render. ───────────────────────────────────────────────────
+async function runPosyDraftPersistence(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToVideo(page, 'fam-install-video');
+  await page.waitForSelector('#desk-v1-video-posy-input', { timeout: 8000 });
+
+  const DRAFT = 'video-page draft text';
+  await page.fill('#desk-v1-video-posy-input', DRAFT);
+
+  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
+  await page.waitForSelector('.desk-v1-campaign', { timeout: 8000 });
+  await navToVideo(page, 'fam-install-video');
+  await page.waitForSelector('#desk-v1-video-posy-input', { timeout: 8000 });
+  const afterNav = await page.$eval('#desk-v1-video-posy-input', (ta) => ta.value).catch(() => '');
+  afterNav === DRAFT
+    ? ok('item 5: video Posy draft survives navigating away and back')
+    : fail(`item 5: video draft lost: ${JSON.stringify(afterNav)}`);
+
+  reportUncaught(pageErrors, '[posy-draft]');
+  await ctx.close();
+}
+
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
@@ -431,6 +455,7 @@ try {
   await runSceneDragFlow(browser);
   await runInsertAndScopeFlow(browser);
   await runRenderFlow(browser);
+  await runPosyDraftPersistence(browser);
   await runPhoneLayout(browser);
   exitCode = bad ? 1 : 0;
 } catch (e) {

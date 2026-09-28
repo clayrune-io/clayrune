@@ -322,6 +322,14 @@ async function runAddTrayDrag(browser) {
   // The Add tray expands the scrollable tab body past the viewport at 950px
   // tall — manual mouse.move/down (unlike .click()) never auto-scrolls, so
   // the drag source can sit below the fold and every coordinate below misses.
+  // Since item 1 (MC-977) sized the modal to the standard convention instead
+  // of force-maximizing, the family list itself is now short enough that a
+  // real card can sit below ITS OWN fold too — same "no drag-time auto-scroll"
+  // limitation. A real user scrolls the list to the target before reaching
+  // into the tray to drag (the list and the tray are independent scroll
+  // regions, so this doesn't disturb the tray's own scroll position); model
+  // that here by scrolling the card into view first.
+  await card.scrollIntoViewIfNeeded();
   await assetItem.scrollIntoViewIfNeeded();
   const sBox = await assetItem.boundingBox();
   const cBox = await card.boundingBox();
@@ -374,6 +382,101 @@ async function runAddTrayDrag(browser) {
     : fail('dropping material on the list area did not create a new family');
 
   reportUncaught(pageErrors, '[add-tray-drag]');
+  await ctx.close();
+}
+
+// ── item 3 (MC-977 R0 UX pass) — campaign-page header "More" menu: camp-1
+// (Active, has publication history) offers Archive via the shared in-page
+// confirm sheet, Cancel leaves it untouched, and confirming archives with an
+// Undo. Delete's own full path (Proposed campaign) is exercised on the Home
+// card in desk-v1-home.mjs's runHomeCardMoreMenu — same shared menu/sheet
+// code, no need to duplicate every assertion here too. ─────────────────────
+async function runCampaignPageMoreMenu(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCampaign(page);
+
+  const moreBtn = await page.$('.desk-v1-camp-summary-top [data-camp-more-btn]');
+  moreBtn ? ok('item 3: campaign page header has a discoverable More trigger') : fail('item 3: no More trigger on the campaign page header');
+  await moreBtn.click();
+  await page.waitForSelector('.desk-v1-camp-cardmenu', { timeout: 2000 });
+  const menuText = (await page.textContent('.desk-v1-camp-cardmenu').catch(() => '') || '');
+  /Archive campaign/.test(menuText)
+    ? ok('item 3: Active campaign\'s page-level menu offers Archive')
+    : fail(`item 3: page-level menu wrong: ${JSON.stringify(menuText)}`);
+
+  await page.click('.desk-v1-camp-cardmenu [data-menu-archive]');
+  await page.waitForSelector('.desk-v1-rules-confirm-overlay', { timeout: 2000 });
+  await page.click('[data-confirm-decline]');
+  await page.waitForTimeout(50);
+  const stillActive = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').state);
+  stillActive === 'active' ? ok('item 3: Cancel on the confirm sheet leaves the campaign untouched') : fail(`item 3: Cancel still mutated state: ${stillActive}`);
+
+  await moreBtn.click();
+  await page.waitForSelector('.desk-v1-camp-cardmenu', { timeout: 2000 });
+  await page.click('.desk-v1-camp-cardmenu [data-menu-archive]');
+  await page.waitForSelector('.desk-v1-rules-confirm-overlay', { timeout: 2000 });
+  await page.click('[data-confirm-accept]');
+  await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
+  const archivedState = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').state);
+  archivedState === 'archived' ? ok('item 3: confirming Archive on the campaign page sets state to archived') : fail(`item 3: state after confirm: ${archivedState}`);
+  await page.click('.toast .toast-btn.primary');
+  await page.waitForTimeout(50);
+  const restoredState = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').state);
+  restoredState === 'active' ? ok('item 3: Undo restores the campaign to active') : fail(`item 3: state after Undo: ${restoredState}`);
+
+  reportUncaught(pageErrors, '[campaign-more-menu]');
+  await ctx.close();
+}
+
+// ── item 5 (MC-977 R0 UX pass, Ron 2026-09-28: "I sent an ask to Posy,
+// switched to another tab and the existing data ... disappeared") — text
+// typed but not sent into the campaign's Posy box must survive a tab-strip
+// switch (Content -> Conversations -> back), and a full navigate-away/back
+// (Home and back), both of which rebuild the Posy box's DOM from scratch. ──
+async function runPosyDraftPersistence(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCampaign(page);
+
+  const DRAFT = 'draft text that must survive a rebuild';
+  await page.fill('#desk-v1-camp-posy-input', DRAFT);
+
+  // Tab-strip switch NAVIGATES AWAY to a separate route (Conversations/Results
+  // are their own top-level pages, not a tab-body swap within Content — see
+  // desk-v1-shell.js ROUTES) and back via the crumb's Back button, which pops
+  // the stack and re-renders the campaign skeleton from scratch, including a
+  // brand-new Posy box — the exact rebuild item 5 reported losing the draft to.
+  await page.click('[data-tab="conversations"]');
+  await page.waitForSelector('.desk-v1-back', { timeout: 2000 });
+  await page.click('.desk-v1-back');
+  await page.waitForSelector('#desk-v1-camp-posy-input', { timeout: 2000 });
+  await page.waitForTimeout(50);
+  const afterTabSwitch = await page.$eval('#desk-v1-camp-posy-input', (ta) => ta.value).catch(() => '');
+  afterTabSwitch === DRAFT
+    ? ok('item 5: Posy draft survives a Content -> Conversations -> Content tab switch')
+    : fail(`item 5: draft lost across tab switch: ${JSON.stringify(afterTabSwitch)}`);
+
+  // Navigate away to Home and back — a harder rebuild than the tab strip
+  // (the whole route unmounts).
+  await page.evaluate(() => window.deskV1Nav('home', {}));
+  await page.waitForSelector('.desk-v1-home', { timeout: 8000 });
+  await navToCampaign(page);
+  const afterNavAway = await page.$eval('#desk-v1-camp-posy-input', (ta) => ta.value).catch(() => '');
+  afterNavAway === DRAFT
+    ? ok('item 5: Posy draft survives navigating to Home and back')
+    : fail(`item 5: draft lost across Home nav: ${JSON.stringify(afterNavAway)}`);
+
+  // Sending clears the draft (no stale text left behind for the next open).
+  await page.click('[data-posy-send="desk-v1-camp-posy-input"]');
+  await page.waitForTimeout(50);
+  await page.evaluate(() => window.deskV1Nav('home', {}));
+  await page.waitForSelector('.desk-v1-home', { timeout: 8000 });
+  await navToCampaign(page);
+  const afterSend = await page.$eval('#desk-v1-camp-posy-input', (ta) => ta.value).catch(() => '');
+  afterSend === ''
+    ? ok('item 5: sending clears the draft (no stale leftover on reopen)')
+    : fail(`item 5: draft not cleared after send: ${JSON.stringify(afterSend)}`);
+
+  reportUncaught(pageErrors, '[posy-draft]');
   await ctx.close();
 }
 
@@ -437,6 +540,8 @@ try {
   await runViewToggle(browser);
   await runCardMenu(browser);
   await runAddTrayDrag(browser);
+  await runCampaignPageMoreMenu(browser);
+  await runPosyDraftPersistence(browser);
   await runPhoneLayout(browser);
   await captureScreenshots(browser);
   exitCode = bad === 0 ? 0 : 1;

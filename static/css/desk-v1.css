@@ -271,6 +271,10 @@
 }
 .desk-v1-home-camp-card:hover { background: var(--surface2); border-color: var(--border); }
 .desk-v1-home-camp-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+/* item 3 (MC-977 R0 UX pass, Dave's review): the More trigger rides the
+   existing .desk-v1-camp-card-more/-morebtn pair verbatim (desk-v1-campaign.js's
+   own content-card menu) — only this placement rule is new. */
+.desk-v1-home-camp-top .desk-v1-camp-card-more { margin-left: auto; align-self: flex-start; }
 .desk-v1-home-camp-name { font-size: 14px; font-weight: 700; color: var(--text); }
 .desk-v1-home-camp-goal { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--text-dim); }
 .desk-v1-home-camp-goal-untracked { color: var(--text-faint); font-style: italic; }
@@ -310,6 +314,27 @@
   padding: 4px 8px; font-family: inherit;
 }
 .desk-v1-home-hold-fix:hover { background: var(--amber-text); color: var(--bg); }
+
+/* Archived campaigns (item 3 UX pass, Dave's review): the one place an
+   archived campaign is reachable from Home, once it's left the main grid.
+   Same collapsed-<details> shape as the campaign page's own Add tray. */
+.desk-v1-home-archived:empty { display: none; }
+.desk-v1-home-archived-details { border-top: 1px solid var(--border2); padding-top: 10px; }
+.desk-v1-home-archived-summary {
+  cursor: pointer; font-size: 12.5px; font-weight: 700; color: var(--text-dim); list-style: none;
+  display: inline-flex; align-items: center; gap: 4px; padding: 4px 0;
+}
+.desk-v1-home-archived-summary::-webkit-details-marker { display: none; }
+.desk-v1-home-archived-summary:hover { color: var(--text); }
+.desk-v1-home-archived-list { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; }
+.desk-v1-home-archived-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 7px;
+  padding: 8px 10px; text-align: left; cursor: pointer; font-family: inherit;
+}
+.desk-v1-home-archived-row:hover { background: var(--surface3); }
+.desk-v1-home-archived-name { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.desk-v1-home-archived-hint { font-size: 11px; color: var(--text-faint); }
 
 /* Shelves (bottom): two equal columns, each a wrapping row of pill items —
    the Channels + Material sources every drop target above accepts. */
@@ -391,6 +416,7 @@
 /* Summary bar (§3.1, frame 12a): state pill + Pause on one row, then three
    label/value groups (Goal · Channels · Rules) below sharing one shape. */
 .desk-v1-camp-summary-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.desk-v1-camp-summary-top-actions { display: flex; align-items: center; gap: 4px; }
 .desk-v1-camp-state-pill { padding: 4px 10px; border-radius: 999px; background: var(--surface3); border: 1px solid var(--border2); }
 .desk-v1-camp-state-pill[data-state="active"] { background: var(--green-dim); border-color: var(--green-text); }
 .desk-v1-camp-state-pill[data-state="active"] .desk-v1-state-glyph,
