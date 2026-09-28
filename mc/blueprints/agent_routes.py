@@ -6110,10 +6110,21 @@ def attend_session(project_id, session_id):
     handed-over session unguarded for its entire remaining lifetime, wider
     than Ron asked for. The header pill now calls `attend_once_session`
     below instead, which grants a single-use pass and leaves trigger_type
-    untouched. This route is kept, unchanged, for whatever already depends
-    on the permanent flip (and per the follow-up brief: sessions already
-    flipped to 'manual' by this route stay as they are — no migration).
+    untouched.
+
+    DISABLED 2026-09-28 (Fenn's review of the one-shot follow-up, P1):
+    `_is_agent_caller` only checks that an Origin header is present, so an
+    agent's `curl -H "Origin: http://localhost"` passed it and could
+    permanently disarm its own fence with one call. Refused outright — the
+    passcode-gated `attend_once_session` below is now the only live control.
+    Sessions already flipped to 'manual' by this route before it was
+    disabled stay as they are — no migration.
     """
+    if True:
+        return jsonify({
+            'error': ('the permanent "I\'m here" unlock is disabled: its human check '
+                      'could be forged. A passcode-gated "Allow once" control replaces it.'),
+        }), 410
     if _is_agent_caller():
         return jsonify({
             'error': ('marking a chat attended is human-only: an agent session cannot '
