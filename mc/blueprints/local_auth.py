@@ -26,7 +26,7 @@ itself stays registered on `app` in server.py (a thin wrapper), per the plan.
 import json
 import time as _time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from flask import Blueprint, jsonify, redirect, request
 
@@ -178,6 +178,32 @@ def _local_auth_note_fail() -> None:
         rec[0] += 1
 
 
+def _local_auth_clear_fail() -> None:
+    """Reset this caller's counter on a proven-correct passcode. Shared by
+    every route that spends this ONE per-IP budget (MC-994 re-review finding
+    N3, second pass — Fenn, 2026-09-28): /login, /set's current-passcode
+    check, the vault-lock set/change/unlock routes, and the attend-once
+    grant all called through `secrets_routes._require_human_passcode` used
+    to burn a SEPARATE budget (`_VAULT_LOCK_FAILS`) from this one — a caller
+    already shut out of /login could keep guessing the same passcode against
+    any of those instead. They now all read/write `_LOCAL_AUTH_FAILS`."""
+    _LOCAL_AUTH_FAILS.pop(request.remote_addr or '?', None)
+
+
+def _local_auth_passcode_set_at() -> Optional[int]:
+    """Unix timestamp the current passcode was last set/changed, or None if
+    the store predates this field. `_local_auth_set_passcode` already writes
+    `updated_at` unconditionally on every set/change — this just exposes it
+    to other blueprints (MC-994 re-review finding N2(b), Fenn 2026-09-28: the
+    attend-once grant route needs to know whether the passcode changed AFTER
+    a session started, to refuse re-granting a pass on the strength of a
+    passcode that chat never proved). A pre-existing store with no
+    `updated_at` yet returns None — callers must treat that as "before",
+    never as a reason to refuse, so an old install is never locked out by a
+    field that didn't exist when its passcode was set."""
+    return _load_local_auth().get('updated_at')
+
+
 def _local_auth_set_cookie(resp):
     resp.set_cookie(_LOCAL_AUTH_COOKIE, _local_auth_make_cookie(),
                     max_age=_LOCAL_AUTH_MAX_AGE, httponly=True, samesite='Lax', path='/')
@@ -255,7 +281,7 @@ def local_auth_set():
         if not _local_auth_verify_passcode((body.get('current') or '').strip()):
             _local_auth_note_fail()
             return jsonify({'error': 'bad_current_passcode'}), 403
-        _LOCAL_AUTH_FAILS.pop(request.remote_addr or '?', None)
+        _local_auth_clear_fail()
     _local_auth_set_passcode(new_pass)
     _log(f"[local-auth] passcode set/changed from {request.remote_addr}", flush=True)
     return _local_auth_set_cookie(jsonify({'ok': True, 'configured': True}))

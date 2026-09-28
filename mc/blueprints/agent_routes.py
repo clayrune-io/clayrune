@@ -130,6 +130,7 @@ from mc.blueprints.system_routes import _capture_system_init   # re-homed 1.6 sh
 from mc.blueprints.terminal_routes import launch_pty_session, launch_pipe_session    # MC-928
 from mc.blueprints.workflow_routes import _is_agent_caller  # MC-994 agent-caller guard reuse
 from mc.blueprints.secrets_routes import _require_human_passcode  # MC-994 follow-up: Fenn finding 1
+from mc.blueprints.local_auth import _local_auth_passcode_set_at  # MC-994 follow-up: Fenn finding N2(b)
 from mc import pty_backend
 
 bp = Blueprint('agent_routes', __name__)
@@ -6253,6 +6254,37 @@ def _evict_expired_attend_once_pass(session: dict) -> None:
     session.pop('_attend_once_pass', None)
 
 
+def _passcode_changed_after_session_start(session: dict) -> bool:
+    """True iff the local dashboard passcode was set/changed AFTER this
+    session started (MC-994 re-review finding N2(b), Fenn 2026-09-28).
+
+    `_require_human_passcode` proves the CALLER of the grant request knows
+    the current passcode — it says nothing about whether the DISPATCHED
+    CHAT the pass would be granted to is the one that chat is about. A
+    passcode changed mid-chat (e.g. after a suspected compromise, or simply
+    rotated) means this session's own history never saw or proved the new
+    value; granting it a pass on the strength of someone else typing the new
+    passcode elsewhere would let that someone reach into an unrelated,
+    already-dispatched chat. Refusing forces a fresh chat, started after the
+    change, to be the one attended instead.
+
+    A missing/unparseable `started_at`, or a passcode store with no
+    `updated_at` yet (pre-existing installs), both read as "before" — never
+    as a reason to refuse. Losing this check on old data is the safe
+    direction; locking out every session on an upgraded server is not."""
+    started_ts = session.get('started_at')
+    if not started_ts:
+        return False
+    try:
+        started_epoch = datetime.fromisoformat(started_ts.replace('Z', '+00:00')).timestamp()
+    except Exception:
+        return False
+    set_at = _local_auth_passcode_set_at()
+    if set_at is None:
+        return False
+    return set_at > started_epoch
+
+
 @bp.route('/api/project/<project_id>/agent/<session_id>/attend-once', methods=['POST'])
 def attend_once_session(project_id, session_id):
     """Human-click control: grant ONE pass letting the next fence-blocked
@@ -6288,6 +6320,9 @@ def attend_once_session(project_id, session_id):
         ineligible = _attend_once_ineligibility_reason(session)
         if ineligible:
             return jsonify({'error': ineligible}), 409
+        if _passcode_changed_after_session_start(session):
+            return jsonify({'error': 'the dashboard passcode was set or changed during this '
+                                      'chat; re-grant from a chat started after it'}), 409
         _evict_expired_attend_once_pass(session)
         existing = _attend_once_pass_view(session)
         if existing:
@@ -7280,11 +7315,25 @@ def _note_claude_sid(session, sid):
     an empty csid on the pending row and every scheduled fire cold-starts a new
     conversation. Called from both stream readers on every message carrying a
     session_id; the prev==sid early-out makes it a cheap no-op after the first
-    capture (no repeated agent_log IO on the hot path)."""
+    capture (no repeated agent_log IO on the hot path).
+
+    Fenn re-review, N5 (2026-09-28): both stream readers call this WITHOUT
+    holding the project's manager lock (deliberately — the read loop must
+    never block on it across model I/O), so consume_attend_once_pass's
+    re-scan of `agent_sessions` under that same lock was racing an unlocked
+    writer, not just an unlocked reader. The read-modify-write of
+    `claude_session_id` itself is now taken under that lock (RLock, so this
+    is safe even if a future caller already holds it) — cheap, no I/O inside
+    — so by the time consume's locked re-scan runs, every completed
+    `_note_claude_sid` write for this project is either fully visible or
+    hasn't started; there is no window where it can observe a half-applied
+    identity change. Everything below this block (agent_log I/O, transcript
+    marking) stays unlocked, same as before."""
     if not sid:
         return
-    prev = session.get('claude_session_id')
-    session['claude_session_id'] = sid
+    with get_manager(session.get('project_id')).lock:
+        prev = session.get('claude_session_id')
+        session['claude_session_id'] = sid
     if prev == sid:
         return
     try:
