@@ -711,7 +711,8 @@ def _enabling_construct(cmd: str) -> FenceDecision:
                      (_DASH_C_EXPANSION_RE, "interpreter -c on an expansion")):
         if pat.search(cmd):
             return FenceDecision(True, f"{why} - the program text that runs is "
-                                        "a runtime VALUE the fence cannot read")
+                                        "a runtime VALUE the fence cannot read",
+                                 overridable=False)
     if _B64_TO_INTERPRETER_RE.search(cmd):
         return FenceDecision(True, "base64/decode piped into an interpreter "
                                     "(decode-then-execute hides the command "
@@ -753,6 +754,9 @@ def _enabling_construct(cmd: str) -> FenceDecision:
     return FenceDecision(False, '')
 
 
+_HUMAN_GATE_ROUTE_RE = re.compile(r'local-auth/set|/attend-once(?!/consume)', re.IGNORECASE)
+
+
 def classify_bash(command: str) -> FenceDecision:
     """Classify a Bash command string. Returns (blocked, reason).
 
@@ -762,6 +766,14 @@ def classify_bash(command: str) -> FenceDecision:
     blocked before, it still blocks."""
     if not command or not command.strip():
         return FenceDecision(False, '')
+    # The human-proof gate's own routes (Fenn's re-review N2, 2026-09-28): an
+    # armed agent setting the first dashboard passcode, or calling the grant,
+    # would mint its own "Allow once". Checked on the raw text, before masking,
+    # so a heredoc'd URL still counts.
+    if _HUMAN_GATE_ROUTE_RE.search(command):
+        return FenceDecision(True, "calls the dashboard-passcode or Allow-once "
+                                   "grant route (the human-proof gate — "
+                                   "human-owned)", overridable=False)
     try:
         cmd = _mask_inert_prose(command.strip())
     except Exception:
@@ -1105,12 +1117,30 @@ def check_vault_file_access(tool_name: str, tool_input: dict,
             return refusal
         if _is_local_auth_filename(filter_val):
             return local_auth_refusal
-    elif name == 'Bash':
+    elif name in ('Bash', 'PowerShell'):
         cmd = str(ti.get('command', '') or '')
         if _bash_touches_vault_file(cmd):
             return refusal
         if _bash_touches_local_auth_file(cmd):
             return local_auth_refusal
+    # Writes to the passcode store (Fenn's re-review N1, 2026-09-28): the
+    # agent need not read the code if it can REPLACE the verifier with one it
+    # chose, then pass the passcode-gated "Allow once" grant with it. Same
+    # obvious-path scope as the reads above.
+    write_paths = []
+    if name in ('Write', 'Edit', 'MultiEdit', 'NotebookEdit'):
+        write_paths.append(str(ti.get('file_path', '') or ti.get('notebook_path', '') or ''))
+    if name in _PATCH_TOOL_NAMES or name in ('Bash', 'PowerShell'):
+        try:
+            write_paths.extend(patch_target_paths(ti))
+        except Exception:
+            pass
+    for raw in write_paths:
+        if _path_resolves_into_local_auth(raw, cwd):
+            return FenceDecision(
+                True, "writes the LAN dashboard passcode store directly — "
+                      "replacing its verifier would let an agent mint the "
+                      "code that proves a human")
     return FenceDecision(False, '')
 
 
@@ -1338,7 +1368,28 @@ def _should_arm_for_unattended_trigger() -> bool:
 # block loop in main() stops at the first hit, so judging the pass on that one
 # decision let `git push && <patch fence.py>` spend a pass on the push and
 # carry the fence edit through with it.
-_SEGMENT_SPLIT = re.compile(r'&&|\|\||[;\n|&]')
+#
+# Threat model (both reviews): this is a backstop against a confused or
+# prompt-injected agent taking an irreversible step, not an OS sandbox. An
+# agent running arbitrary same-user code can reach anything the server can.
+_PASS_META_CHARS = set('$`(){};|&<>\n\r')
+_PASS_WRAPPER_HEADS = {
+    'bash', 'sh', 'zsh', 'dash', 'cmd', 'powershell', 'pwsh', 'python', 'python3',
+    'py', 'node', 'perl', 'ruby', 'env', 'xargs', 'iex', 'invoke-expression',
+    'eval', 'exec', 'source', 'start-process', 'wsl', 'ssh',
+}
+
+
+def _is_plain_single_invocation(cmd: str) -> bool:
+    text = (cmd or '').strip()
+    if not text or any(c in _PASS_META_CHARS for c in text):
+        return False
+    low = text.lower()
+    if re.search(r'(^|\s)(eval|iex|--next|-exec)(\s|$)', low):
+        return False
+    head = low.split()[0].replace('\\', '/').rsplit('/', 1)[-1]
+    head = re.sub(r'\.(exe|cmd|bat|ps1)$', '', head)
+    return head not in _PASS_WRAPPER_HEADS
 
 
 def _blocked_leaves(tool_name: str, tool_input: dict) -> list:
@@ -1359,10 +1410,12 @@ def _blocked_leaves(tool_name: str, tool_input: dict) -> list:
         whole = classify_bash(cmd)
         if not whole.blocked:
             return []
-        # A chained command is never passable, whatever its segments say:
-        # per-segment classification can miss what only the whole line shows,
-        # so the agent must issue the one blocked command on its own.
-        if len([g for g in _SEGMENT_SPLIT.split(cmd) if g.strip()]) > 1:
+        # Only a plain single invocation is passable (Fenn's re-review N4):
+        # counting separators let eval, loops, a push nested in $(...) and
+        # curl --next through as "one" operation. So the check is positive:
+        # no shell metacharacter at all, and not handed to a shell or
+        # interpreter. Anything else stays blocked, just never passable.
+        if not _is_plain_single_invocation(cmd):
             return [whole, whole]
         return [whole]
     d = classify_action(tool_name, tool_input)

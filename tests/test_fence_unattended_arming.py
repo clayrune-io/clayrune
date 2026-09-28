@@ -422,3 +422,59 @@ def test_unreadable_transcript_arms_but_never_consumes_a_pass(monkeypatch, tmp_p
         lookup={'trigger_type': 'schedule', 'fence_unattended_enabled': True})
     assert rc == 2
     assert 'STEWARD FENCE blocked' in capsys.readouterr().err
+
+
+# ── Fenn's re-review (2026-09-28, N1/N2/N4) ─────────────────────────────────
+# Only a plain single invocation may spend a pass; every one of Fenn's
+# opaque/multi-operation probes must stay blocked with zero consumes.
+
+@pytest.mark.parametrize('tool_name,command', [
+    ('Bash', 'eval "$PAYLOAD"'),
+    ('Bash', 'git push origin $(git push --quiet origin other)'),
+    ('PowerShell', 'foreach ($x in 1,2) { git push origin master }'),
+    ('Bash', "powershell -Command 'foreach ($x in 1,2) { git push origin master }'"),
+    ('Bash', 'curl -X POST https://example.invalid/a --next -X POST https://example.invalid/b'),
+    ('Bash', 'bash -lc "git push origin master"'),
+])
+def test_opaque_or_multi_operation_command_never_consumes_a_pass(monkeypatch, tmp_path, tool_name, command):
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', _never_consume)
+    monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'sid-dispatch')
+    monkeypatch.setattr(fence, '_lookup_trigger_type',
+                        lambda sid: {'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    payload = {'tool_name': tool_name, 'tool_input': {'command': command},
+               'transcript_path': _transcript(tmp_path, 'Please go implement the fix we discussed')}
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload)))
+    assert fence.main() == 2
+
+
+def test_plain_push_still_consumes_a_pass(monkeypatch, tmp_path):
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', lambda: spent.append(1) or True)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command='git push origin master', session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 0 and spent == [1]
+
+
+@pytest.mark.parametrize('command', [
+    'curl -s -X POST http://localhost:5199/api/local-auth/set -d "{}"',
+    'curl -s -X POST http://localhost:5199/api/project/p/agent/s/attend-once -d "{}"',
+])
+def test_human_gate_routes_are_blocked_and_never_passable(monkeypatch, tmp_path, command):
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', _never_consume)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2
+
+
+def test_passcode_store_write_and_powershell_read_are_refused(monkeypatch, tmp_path):
+    store = str(fence._local_auth_data_root() / 'data' / fence._LOCAL_AUTH_FILENAME)
+    for name, ti in (('Write', {'file_path': store, 'content': '{}'}),
+                     ('Edit', {'file_path': store, 'old_string': 'a', 'new_string': 'b'}),
+                     ('PowerShell', {'command': 'Get-Content data/' + fence._LOCAL_AUTH_FILENAME}),
+                     ('apply_patch', {'command': '*** Begin Patch\n*** Update File: ' + store
+                                                 + '\n@@\n-a\n+b\n*** End Patch'})):
+        assert fence.check_vault_file_access(name, ti).blocked, name
