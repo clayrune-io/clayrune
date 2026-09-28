@@ -102,6 +102,34 @@ async function setValue(page, selector, value) {
   }, { selector, value });
 }
 
+// MC-963 box view: the full editor (project/persona/prompt/outcomes/etc, the
+// old `.wfb-node .wfb-node-own`) only ever exists inside `#wfb-inspector` now
+// -- the canvas box itself carries no editable field. Every case below that
+// used to read/type directly into a card now opens that node's inspector
+// first via the real entry point (_wfOpenInspector), then addresses fields
+// under `#wfb-inspector` (only ever one open at a time, so no name-scoping
+// needed there).
+async function openInspector(page, nodeName) {
+  await page.evaluate((n) => window._wfOpenInspector(n), nodeName);
+  await page.waitForSelector('#wfb-inspector.wfb-inspector-open', { timeout: 5000 });
+}
+async function closeInspector(page) {
+  await page.evaluate(() => window._wfCloseInspector());
+  await page.waitForTimeout(60);
+}
+
+// MC-963 added an "Edit" item at the top of the "..." node menu, ahead of
+// Duplicate/Disconnect/Delete step -- so a menu item's POSITION is no longer
+// a stable enough handle for the older cases here that click it by index.
+// Select by its actual label instead.
+async function clickMenuItem(page, label) {
+  const handle = await page.evaluateHandle((text) => [...document.querySelectorAll('#wfb-node-menu > div')]
+    .find(d => d.textContent.trim() === text), label);
+  const el = handle.asElement();
+  if (!el) throw new Error('clickMenuItem: menu item not found: ' + label);
+  await el.click();
+}
+
 // A palette-drag → canvas drop, expressed as raw mouse events so it exercises
 // the SAME pointerdown/pointermove/pointerup handlers a real drag fires
 // (Playwright's page.mouse.* dispatches real pointer events, unlike
@@ -463,13 +491,18 @@ try {
   // the bare "Prompt" label survives, with no `.memory-hint` sibling, and the
   // Insert control (which made the hint redundant) is still there doing the
   // explaining.
+  // MC-963 box view: this editor only exists in the inspector now -- the box
+  // itself never carries it (ground rule: "No inline textareas or dropdowns
+  // on the canvas"). Open the freshly-placed node's inspector to reach it.
+  const autoName1 = await page.$eval('.wfb-node', el => el.dataset.name);
+  await openInspector(page, autoName1);
   const promptLabelInfo = await page.evaluate(() => {
-    const label = Array.from(document.querySelectorAll('.wfb-node label'))
+    const label = Array.from(document.querySelectorAll('#wfb-inspector label'))
       .find(l => l.textContent.trim().startsWith('Prompt'));
     return {
       text: label ? label.textContent.trim() : null,
       hasHint: !!(label && label.querySelector('.memory-hint')),
-      hasInsertSelect: !!document.querySelector('.wfb-node .wfb-insert-btn'),
+      hasInsertSelect: !!document.querySelector('#wfb-inspector .wfb-insert-btn'),
     };
   });
   (promptLabelInfo.text === 'Prompt' && !promptLabelInfo.hasHint && promptLabelInfo.hasInsertSelect)
@@ -481,10 +514,13 @@ try {
   // header: "typing in one node's prompt is never clobbered by placing a new
   // block or dragging an edge elsewhere") — so the rename below won't be
   // reflected in `data-name` until the connect drag triggers a sync+render.
-  // Capture the auto-generated name now, for that first drag's selector.
-  const autoName1 = await page.$eval('.wfb-node', el => el.dataset.name);
-  await setValue(page, '.wfb-node .wfb-name', 'triage');
-  await setValue(page, '.wfb-node .wfb-prompt', 'Decide whether this is worth drafting.');
+  // The inspector is still open on this node from the check above.
+  await setValue(page, '#wfb-inspector .wfb-name', 'triage');
+  await setValue(page, '#wfb-inspector .wfb-prompt', 'Decide whether this is worth drafting.');
+  // MC-963: close before the next palette drag -- the inspector narrows the
+  // canvas viewport (flex sibling), and the drop-target coordinates below are
+  // computed off the ORIGINAL (pre-inspector) `vpBox`.
+  await closeInspector(page);
 
   await dragPalettePersonTo(page, 'Fenn', vpBox.x + 460, vpBox.y + 120);
   nodeCount = await page.$$eval('.wfb-node', els => els.length);
@@ -512,23 +548,26 @@ try {
   renamedOk ? ok('a typed rename in one node survives placing a second, independent block (no clobber)')
             : fail('placing a second block clobbered an unsynced rename in the first node');
   const autoName2 = await page.$eval('.wfb-node:not([data-name="triage"])', el => el.dataset.name);
-  await setValue(page, `.wfb-node[data-name="${autoName2}"] .wfb-name`, 'draft');
-  await setValue(page, `.wfb-node[data-name="${autoName2}"] .wfb-prompt`, 'Draft a post from {{steps.triage.output}}.');
+  await openInspector(page, autoName2);
+  await setValue(page, '#wfb-inspector .wfb-name', 'draft');
+  await setValue(page, '#wfb-inspector .wfb-prompt', 'Draft a post from {{steps.triage.output}}.');
+  // MC-963: editing only ever happens in the inspector now, and its close is
+  // what syncs the DOM into the model (_wfSyncDomToModel inside
+  // _wfCloseInspector) -- that's the "structural action" the old comment here
+  // pinned to the next canvas drag. Close before the connect drag below, both
+  // to commit the rename and so the inspector's 320px panel isn't narrowing
+  // the canvas viewport under the drag's port-position math.
+  await closeInspector(page);
 
   // ── Connect: drag triage's (single, unconditional) output port to draft's
-  // input port. "draft" hasn't synced yet at this exact moment, so address it
-  // by its still-current auto-generated name — the drag's own sync (inside
-  // _wfTryAddEdge) is what commits the rename and repoints the new edge to
-  // the post-rename name. ──────────────────────────────────────────────────
+  // input port. Both renames are already committed by the inspector closes
+  // above, so both sides address their real, post-rename names directly. ──
   await dragPortTo(page,
     '.wfb-node[data-name="triage"] .wfb-port-out',
-    `.wfb-node[data-name="${autoName2}"] .wfb-port-in`);
+    '.wfb-node[data-name="draft"] .wfb-port-in');
   let edgeCount = await page.$$eval('.wfb-edge-path', els => els.length);
-  edgeCount === 1 ? ok('drag from an output port to an input port drew one edge')
+  edgeCount === 1 ? ok('drag from an output port to an input port drew one edge, addressing both nodes by their inspector-committed names')
                   : fail(`expected 1 edge after connecting, got ${edgeCount}`);
-  const draftRenamedOk = await page.$eval('.wfb-node[data-name="draft"]', () => true).catch(() => false);
-  draftRenamedOk ? ok('the second node\'s rename landed too, and the new edge points at its post-rename name')
-                 : fail('the connect drag did not sync/repoint the second node\'s rename');
 
   // ── A refused cycle: draft → triage would close a loop ───────────────────
   const toastsBeforeCycle = (await page.evaluate(() => window.__toasts)).length;
@@ -750,13 +789,16 @@ try {
   const canvasUserSelect = await page.evaluate(() => getComputedStyle(document.getElementById('wfb-canvas-viewport')).userSelect);
   canvasUserSelect === 'none' ? ok('the canvas viewport is user-select:none at rest')
                               : fail(`expected the canvas viewport to be user-select:none, got "${canvasUserSelect}"`);
-  const promptUserSelect = await page.evaluate(() => getComputedStyle(document.querySelector('.wfb-node .wfb-prompt')).userSelect);
+  // MC-963: the prompt textarea lives only in the inspector now -- open
+  // "triage"'s to reach it.
+  await openInspector(page, 'triage');
+  const promptUserSelect = await page.evaluate(() => getComputedStyle(document.querySelector('#wfb-inspector .wfb-prompt')).userSelect);
   (promptUserSelect === 'text' || promptUserSelect === 'auto')
     ? ok(`a card's own prompt textarea stays selectable/editable (user-select: ${promptUserSelect})`)
     : fail(`expected the prompt textarea to allow selection, got "${promptUserSelect}"`);
   // Selecting actual text INSIDE a field must still work (Change 8's other
   // explicit requirement — don't blanket-kill selection in form fields).
-  await page.click('.wfb-node .wfb-prompt');
+  await page.click('#wfb-inspector .wfb-prompt');
   await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
   const fieldSelectionLen = await page.evaluate(() => {
     const el = document.activeElement;
@@ -764,6 +806,7 @@ try {
   });
   fieldSelectionLen > 0 ? ok('selecting text WITHIN a prompt field still works (Ctrl/Cmd+A selected it)')
                         : fail(`expected a non-empty in-field selection, got length ${fieldSelectionLen}`);
+  await closeInspector(page);
 
   // ── MC-871 Change 5 — "forgiving drop": a connect-drag completes on a drop
   // anywhere on the target CARD, not only its 40px in-port hit box. ────────
@@ -985,8 +1028,7 @@ try {
 
   // Duplicate: a distinctly-named node, zero copied edges.
   const preDupNames = await page.evaluate(() => window._wfEntry()._wf.def.nodes.map(n => n.name));
-  const menuItemEls = await page.$$('#wfb-node-menu > div');
-  await menuItemEls[0].click(); // Duplicate is first
+  await clickMenuItem(page, 'Duplicate');
   await page.waitForTimeout(100);
   const dupResult = await page.evaluate((before) => {
     const def = window._wfEntry()._wf.def;
@@ -1005,8 +1047,7 @@ try {
                         : fail('expected the drop-onto-card node to already carry an edge before testing Disconnect');
   await page.click(`.wfb-node[data-name="${homerName}"] .wfb-node-menu-btn`);
   await page.waitForSelector('#wfb-node-menu', { timeout: 3000 });
-  const homerMenuEls = await page.$$('#wfb-node-menu > div');
-  await homerMenuEls[1].click(); // Disconnect is second
+  await clickMenuItem(page, 'Disconnect');
   await page.waitForTimeout(100);
   const afterDisconnect = await page.evaluate((n) => {
     const def = window._wfEntry()._wf.def;
@@ -1335,17 +1376,29 @@ try {
   (!c13Save.runErrors['c13-noengine'] && !c13Save.runErrors['c13-deadmodel'])
     ? ok('an empty model chain and an off-catalog pin both SAVE — neither is refused as a hard error')
     : fail(`engine problems must not block Save, got ${JSON.stringify(c13Save.runErrors)}`);
-  const c13Warnings = await page.evaluate(() => {
-    const read = (n) => {
+  // MC-963: `.wfb-node-warning`/`.wfb-node-error` stay on the canvas box
+  // (nodeStateCls), but the full inline warning TEXT moved into the
+  // inspector body -- open each node in turn to read it.
+  async function readEngineWarning(name) {
+    const info = await page.evaluate((n) => {
       const el = document.querySelector(`.wfb-node[data-name="${n}"]`);
       if (!el) return null;
-      const w = el.querySelector('.wfb-node-inline-warning');
-      return { warn: el.classList.contains('wfb-node-warning'),
-               err: el.classList.contains('wfb-node-error'),
-               text: w ? w.textContent : '' };
-    };
-    return { noengine: read('c13-noengine'), dead: read('c13-deadmodel'), legacy: read('c13-legacymodel') };
-  });
+      return { warn: el.classList.contains('wfb-node-warning'), err: el.classList.contains('wfb-node-error') };
+    }, name);
+    if (!info) return null;
+    await openInspector(page, name);
+    const text = await page.evaluate(() => {
+      const w = document.querySelector('#wfb-inspector .wfb-node-inline-warning');
+      return w ? w.textContent : '';
+    });
+    await closeInspector(page);
+    return { ...info, text };
+  }
+  const c13Warnings = {
+    noengine: await readEngineWarning('c13-noengine'),
+    dead: await readEngineWarning('c13-deadmodel'),
+    legacy: await readEngineWarning('c13-legacymodel'),
+  };
   (c13Warnings.noengine && c13Warnings.noengine.warn && !c13Warnings.noengine.err
     && /pins no model.*"Some Other Project" sets no default/.test(c13Warnings.noengine.text))
     ? ok(`empty chain warns honestly about CLI drift, in amber: "${c13Warnings.noengine.text}"`)
@@ -1390,15 +1443,19 @@ try {
   await page.waitForSelector('.wfb-node[data-name="c13-authbad"].wfb-node-warning', { timeout: 3000 })
     .then(() => ok('the not-logged-in provider gets the live warning outline (wfb-node-warning) — not the hard-error red'),
           () => fail('expected c13-authbad to pick up wfb-node-warning after the auth probe resolved'));
-  const c13AuthBadText = await page.$eval('.wfb-node[data-name="c13-authbad"] .wfb-node-inline-warning', (el) => el.textContent).catch(() => null);
+  await openInspector(page, 'c13-authbad');
+  const c13AuthBadText = await page.$eval('#wfb-inspector .wfb-node-inline-warning', (el) => el.textContent).catch(() => null);
+  await closeInspector(page);
   (c13AuthBadText && /will fail when the workflow runs/.test(c13AuthBadText) && /authbad/.test(c13AuthBadText))
     ? ok(`warning names the consequence and the provider, not the mechanism: "${c13AuthBadText}"`)
     : fail(`expected a consequence-framed warning naming "authbad", got ${JSON.stringify(c13AuthBadText)}`);
   await page.waitForTimeout(400); // let authunknown's probe settle too -- it must NOT warn
+  await openInspector(page, 'c13-authunknown');
   const c13UnknownState = await page.evaluate(() => {
     const el = document.querySelector('.wfb-node[data-name="c13-authunknown"]');
-    return { warningClass: el.classList.contains('wfb-node-warning'), inlineWarning: !!el.querySelector('.wfb-node-inline-warning') };
+    return { warningClass: el.classList.contains('wfb-node-warning'), inlineWarning: !!document.querySelector('#wfb-inspector .wfb-node-inline-warning') };
   });
+  await closeInspector(page);
   (!c13UnknownState.warningClass && !c13UnknownState.inlineWarning)
     ? ok('an `unknown` auth status never trips the warning — "unknown is not unauthenticated"')
     : fail(`expected no warning for an unknown auth status, got ${JSON.stringify(c13UnknownState)}`);
@@ -1482,6 +1539,14 @@ try {
   // it) specifically so the browser never gets the chance to claim the move
   // as `.wfb-modal-body`'s native vertical scroll -- proved here with a real
   // touch gesture, not a mouse-emulated one.
+  // MC-963: dropping a person auto-opens its inspector (_wfFocusPrompt, the
+  // freshly-dropped-node caret-focus carried forward from the old inline
+  // card -- "the prompt is the one place the author actually types") -- on
+  // this mobile width that's a bottom sheet covering the canvas center
+  // (`.wfb-inspector-open` at <=960px, app.css), which would otherwise eat
+  // the drop coordinates every gesture below computes off `mCanvasBox2`.
+  // A real user closes it before placing the next block; do the same.
+  await closeInspector(mpage);
   const mToolBox = await toolbarToolBox(mpage, 'Action');
   const mCanvasBox2 = await (await mpage.$('#wfb-canvas-viewport')).boundingBox();
   const mToolStartX = mToolBox.x + mToolBox.width / 2, mToolStartY = mToolBox.y + mToolBox.height / 2;
@@ -1639,8 +1704,11 @@ try {
   await newWorkflow(page2, PID);
   const vpBox2 = await (await page2.$('#wfb-canvas-viewport')).boundingBox();
   await dragPalettePersonTo(page2, 'Tobin', vpBox2.x + 140, vpBox2.y + 240);
-  await setValue(page2, '.wfb-node .wfb-name', 'harvest-triage');
-  await setValue(page2, '.wfb-node .wfb-prompt', 'Score the signals.');
+  // MC-963: the drop auto-opens the inspector (_wfFocusPrompt) -- it's
+  // already open on this node, so address its fields there directly.
+  await setValue(page2, '#wfb-inspector .wfb-name', 'harvest-triage');
+  await setValue(page2, '#wfb-inspector .wfb-prompt', 'Score the signals.');
+  await closeInspector(page2);
   await setValue(page2, '#wfb-name', 'Smoke test workflow');
   // #wfb-desc only exists once the description disclosure is open (Change 1
   // — collapsed by default unless the loaded def already has one).
@@ -1723,6 +1791,13 @@ try {
   const c12aUnwiredBadge = await page2.$(`.wfb-node[data-name="${c12aNewName}"] .wfb-node-unwired-badge`);
   c12aUnwiredBadge ? ok(`the un-wired root "${c12aNewName}" carries the honesty badge (it will still run at start)`)
                    : fail('expected the unwired-root badge on a fresh standalone root');
+  // MC-963: this drop auto-opened the inspector (_wfFocusPrompt) -- close it
+  // before the port-drag below, both to match a real user's next action and
+  // because the open inspector narrows the canvas viewport, which shifts
+  // this card's on-screen position (it was placed by `emptyCanvasPoint`
+  // BEFORE the inspector claimed that screen space) enough that the target
+  // head's boundingBox lands under the inspector panel instead of the card.
+  await closeInspector(page2);
 
   // Dragging FROM the trigger's port ONTO an existing card (the honest
   // inverse) DOES explicitly wire it — this is the one gesture that's
@@ -1861,8 +1936,13 @@ try {
   await setValue(page3, '#wfb-name', 'Cadence smoke workflow');
   const vpBox3 = await (await page3.$('#wfb-canvas-viewport')).boundingBox();
   await dragPalettePersonTo(page3, 'Tobin', vpBox3.x + 140, vpBox3.y + 240);
-  await setValue(page3, '.wfb-node .wfb-name', 'step-one');
-  await setValue(page3, '.wfb-node .wfb-prompt', 'Do the thing.');
+  // MC-963: the drop auto-opens the inspector (_wfFocusPrompt) -- it's
+  // already open here, but address fields under it explicitly rather than
+  // rely on that side effect.
+  await page3.waitForSelector('#wfb-inspector.wfb-inspector-open', { timeout: 5000 });
+  await setValue(page3, '#wfb-inspector .wfb-name', 'step-one');
+  await setValue(page3, '#wfb-inspector .wfb-prompt', 'Do the thing.');
+  await closeInspector(page3);
 
   // MC-871 Change 2: the TRIGGER radios/cadence form no longer sit in a
   // permanent card above the canvas — they're reused verbatim inside a
@@ -2014,90 +2094,108 @@ try {
   await page4.waitForSelector('#projects-col .card', { timeout: 15000 });
   await newWorkflow(page4, PID);
 
+  // MC-963: the prompt panel (with its own collapse/expand) lives only
+  // inside #wfb-inspector now, one node at a time -- so every DOM check
+  // below addresses `#wfb-inspector .foo` rather than a per-card selector,
+  // and cross-node persistence is checked against the model's own
+  // st.promptOpen map (which survives regardless of which inspector is
+  // currently mounted), not the DOM.
   const vpBox4 = await (await page4.$('#wfb-canvas-viewport')).boundingBox();
   await dragPalettePersonTo(page4, 'Tobin', vpBox4.x + 140, vpBox4.y + 200);
   const c4Name1 = await page4.$eval('.wfb-node', el => el.dataset.name);
-  (await page4.$(`.wfb-node[data-name="${c4Name1}"] .wfb-prompt`))
+  await page4.waitForSelector('#wfb-inspector.wfb-inspector-open', { timeout: 5000 });
+  (await page4.$('#wfb-inspector .wfb-prompt'))
     ? ok('a freshly-dropped, empty-prompt step opens straight to the editable textarea — never a collapsed summary')
     : fail('a fresh empty-prompt step rendered collapsed instead of forcing its panel open');
-  (await page4.$(`.wfb-node[data-name="${c4Name1}"] .wfb-prompt-toggle`))
+  (await page4.$('#wfb-inspector .wfb-prompt-toggle'))
     ? fail('an empty prompt still offered a collapse control — an unfixed error must not be hideable')
     : ok('an empty prompt offers no "Hide prompt" control -- the error cannot be collapsed away');
-  await setValue(page4, `.wfb-node[data-name="${c4Name1}"] .wfb-name`, 'triage');
-  await setValue(page4, `.wfb-node[data-name="${c4Name1}"] .wfb-prompt`, 'Decide whether this is worth drafting.');
+  await setValue(page4, '#wfb-inspector .wfb-name', 'triage');
+  await setValue(page4, '#wfb-inspector .wfb-prompt', 'Decide whether this is worth drafting.');
 
   // Force a sync+render via an action unrelated to the prompt panel itself
   // (same technique the Trigger-position regression guard above uses) --
   // now that the prompt is non-empty, this is the first render where the
   // collapse control is actually reachable.
   await page4.evaluate(() => { window._wfToggleEnabled(); window._wfToggleEnabled(); });
-  const c4HideBtn = await page4.$(`.wfb-node[data-name="triage"] .wfb-prompt-toggle`);
+  const c4HideBtn = await page4.$('#wfb-inspector .wfb-prompt-toggle');
   c4HideBtn ? ok('once filled in, the prompt panel offers a "Hide prompt" control')
             : fail('expected a collapse control on a filled-in, valid prompt panel');
   await c4HideBtn.click();
   await page4.waitForTimeout(80);
-  const c4CollapsedSummary = await page4.$eval('.wfb-node[data-name="triage"] .wfb-prompt-summary', el => el.textContent).catch(() => null);
-  (await page4.$('.wfb-node[data-name="triage"] .wfb-prompt')) === null && c4CollapsedSummary === 'Decide whether this is worth drafting.'
+  const c4CollapsedSummary = await page4.$eval('#wfb-inspector .wfb-prompt-summary', el => el.textContent).catch(() => null);
+  (await page4.$('#wfb-inspector .wfb-prompt')) === null && c4CollapsedSummary === 'Decide whether this is worth drafting.'
     ? ok(`clicking "Hide prompt" collapsed the panel to a one-line summary: "${c4CollapsedSummary}"`)
     : fail(`collapse did not behave as expected (summary=${JSON.stringify(c4CollapsedSummary)})`);
+  await closeInspector(page4);
 
   // Expand state must survive a re-render (file header's own recurring
   // failure class: "state written but lost on rebuild" -- costs a whole
-  // round here every time it regresses).
+  // round here every time it regresses). Dropping Fenn auto-opens ITS
+  // inspector (_wfFocusPrompt always switches), so triage's own panel is
+  // off-DOM entirely at this point -- check the model instead.
   await dragPalettePersonTo(page4, 'Fenn', vpBox4.x + 460, vpBox4.y + 120);
-  const stillCollapsed = (await page4.$('.wfb-node[data-name="triage"] .wfb-prompt')) === null
-    && !!(await page4.$('.wfb-node[data-name="triage"] .wfb-prompt-summary'));
+  await closeInspector(page4);
+  const stillCollapsed = await page4.evaluate(() => window._wfEntry()._wf.promptOpen['triage'] === false);
   stillCollapsed ? ok('the collapsed state survived an unrelated structural re-render (placing a second block)')
                  : fail('placing a second block re-expanded a panel the user had explicitly collapsed');
 
   const c4Name2 = await page4.$eval('.wfb-node:not([data-name="triage"])', el => el.dataset.name);
-  (await page4.$(`.wfb-node[data-name="${c4Name2}"] .wfb-prompt`))
+  await openInspector(page4, c4Name2);
+  (await page4.$('#wfb-inspector .wfb-prompt'))
     ? ok("the second, freshly-dropped node's own empty prompt still opens straight to the textarea")
     : fail("the second node's empty prompt did not force its panel open");
 
   // Reopen "triage" and confirm the typed text round-tripped through the
   // collapse -- collapsing must never lose what was typed.
-  await page4.click('.wfb-node[data-name="triage"] .wfb-prompt-toggle');
+  await openInspector(page4, 'triage');
+  await page4.click('#wfb-inspector .wfb-prompt-toggle');
   await page4.waitForTimeout(80);
-  const c4Reopened = await page4.$eval('.wfb-node[data-name="triage"] .wfb-prompt', el => el.value).catch(() => null);
+  const c4Reopened = await page4.$eval('#wfb-inspector .wfb-prompt', el => el.value).catch(() => null);
   c4Reopened === 'Decide whether this is worth drafting.'
     ? ok('reopening the panel restores the exact text that was there before it was collapsed')
     : fail(`reopening lost or altered the prompt text: ${JSON.stringify(c4Reopened)}`);
 
   // ── A reference that BECOMES illegal (brief: "the step was renamed") must
   // force the panel open and stay legible -- the collapse must never hide it.
+  await closeInspector(page4);
   await dragPortTo(page4,
     `.wfb-node[data-name="triage"] .wfb-port-out`,
     `.wfb-node[data-name="${c4Name2}"] .wfb-port-in`);
-  await setValue(page4, `.wfb-node[data-name="${c4Name2}"] .wfb-name`, 'draft');
-  await setValue(page4, `.wfb-node[data-name="${c4Name2}"] .wfb-prompt`, 'Draft from {{steps.triage.output}}.');
+  await openInspector(page4, c4Name2);
+  await setValue(page4, '#wfb-inspector .wfb-name', 'draft');
+  await setValue(page4, '#wfb-inspector .wfb-prompt', 'Draft from {{steps.triage.output}}.');
   await page4.evaluate(() => { window._wfToggleEnabled(); window._wfToggleEnabled(); });
-  const c4ChipBeforeRename = await page4.$eval('.wfb-node[data-name="draft"] .wfb-slot-chip', el => el.className).catch(() => null);
+  const c4ChipBeforeRename = await page4.$eval('#wfb-inspector .wfb-slot-chip', el => el.className).catch(() => null);
   (c4ChipBeforeRename && !c4ChipBeforeRename.includes('wfb-slot-chip-broken'))
     ? ok('the reference to "triage" reads as valid before the rename')
     : fail(`expected a valid (non-broken) chip before the rename, got ${JSON.stringify(c4ChipBeforeRename)}`);
-  await page4.click('.wfb-node[data-name="draft"] .wfb-prompt-toggle'); // collapse it -- a valid prompt, nothing forcing it open
+  await page4.click('#wfb-inspector .wfb-prompt-toggle'); // collapse it -- a valid prompt, nothing forcing it open
   await page4.waitForTimeout(80);
-  (await page4.$('.wfb-node[data-name="draft"] .wfb-prompt')) === null
+  (await page4.$('#wfb-inspector .wfb-prompt')) === null
     ? ok('the "draft" panel collapses normally while its reference is still valid')
     : fail('the "draft" panel did not collapse despite having a valid, filled-in prompt');
+  await closeInspector(page4);
 
   // Rename "triage" -- its edges get repointed (existing behaviour), but the
   // literal `{{steps.triage.output}}` text inside "draft"'s prompt does not
   // get rewritten (file header: renames aren't guarded against breaking a
   // TEXT slot reference elsewhere), so it is now a dangling reference to a
   // name that no longer exists.
-  await setValue(page4, '.wfb-node[data-name="triage"] .wfb-name', 'triage2');
+  await openInspector(page4, 'triage');
+  await setValue(page4, '#wfb-inspector .wfb-name', 'triage2');
   await page4.evaluate(() => { window._wfToggleEnabled(); window._wfToggleEnabled(); });
-  const c4DraftPromptAfterRename = await page4.$(`.wfb-node[data-name="draft"] .wfb-prompt`);
+  await closeInspector(page4);
+  await openInspector(page4, 'draft');
+  const c4DraftPromptAfterRename = await page4.$('#wfb-inspector .wfb-prompt');
   c4DraftPromptAfterRename
     ? ok('renaming an upstream step re-forces the dependent panel open instead of leaving it collapsed')
     : fail('a reference broken by an upstream rename stayed hidden behind the collapse');
-  const c4BrokenChip = await page4.$eval('.wfb-node[data-name="draft"] .wfb-slot-chip', el => el.className).catch(() => null);
+  const c4BrokenChip = await page4.$eval('#wfb-inspector .wfb-slot-chip', el => el.className).catch(() => null);
   (c4BrokenChip && c4BrokenChip.includes('wfb-slot-chip-broken'))
     ? ok('the now-illegal {{steps.triage.output}} reference is flagged broken, visibly, without being collapsed away')
     : fail(`expected the chip to read broken after the rename, got ${JSON.stringify(c4BrokenChip)}`);
-  (await page4.$('.wfb-node[data-name="draft"] .wfb-prompt-toggle'))
+  (await page4.$('#wfb-inspector .wfb-prompt-toggle'))
     ? fail('a panel forced open by a live broken reference still offered a way to hide it')
     : ok('no collapse control is offered while the broken reference is live -- it cannot be hidden away');
 
@@ -2155,24 +2253,28 @@ try {
   await newWorkflow(page5, PID);
 
   // ── Wait: drag it on, confirm the default is "For a delay" with a minutes
-  // field and NO datetime field, then switch modes and confirm the reverse. ──
+  // field and NO datetime field, then switch modes and confirm the reverse.
+  // MC-963: this config lives only in #wfb-inspector now -- Wait/Action/
+  // Approval drops don't auto-open it (_wfFocusPrompt only fires for
+  // type:'agent'), so each one is opened explicitly below. ─────────────────
   const vpBox5 = await (await page5.$('#wfb-canvas-viewport')).boundingBox();
   await dragPaletteToolTo(page5, 'Wait', vpBox5.x + 140, vpBox5.y + 160);
   const waitName = await page5.$eval('.wfb-node', el => el.dataset.name);
-  const waitSel = `.wfb-node[data-name="${waitName}"]`;
-  (await page5.$eval(`${waitSel} .wfb-wait-mode-select`, el => el.value)) === 'delay'
+  await openInspector(page5, waitName);
+  (await page5.$eval('#wfb-inspector .wfb-wait-mode-select', el => el.value)) === 'delay'
     ? ok('a freshly-dropped Wait defaults to "For a delay"')
     : fail('a freshly-dropped Wait did not default to delay mode');
-  (await page5.$(`${waitSel} [data-cfg-key="minutes"]`)) && !(await page5.$(`${waitSel} [data-cfg-key="at"]`))
+  (await page5.$('#wfb-inspector [data-cfg-key="minutes"]')) && !(await page5.$('#wfb-inspector [data-cfg-key="at"]'))
     ? ok('delay mode shows the minutes field and NOT the date/time field — no not-yet-relevant control')
     : fail('delay mode rendered the wrong field(s)');
-  await setValue(page5, `${waitSel} [data-cfg-key="minutes"]`, '45');
-  await page5.selectOption(`${waitSel} .wfb-wait-mode-select`, 'until');
+  await setValue(page5, '#wfb-inspector [data-cfg-key="minutes"]', '45');
+  await page5.selectOption('#wfb-inspector .wfb-wait-mode-select', 'until');
   await page5.waitForTimeout(80);
-  (await page5.$(`${waitSel} [data-cfg-key="at"]`)) && !(await page5.$(`${waitSel} [data-cfg-key="minutes"]`))
+  (await page5.$('#wfb-inspector [data-cfg-key="at"]')) && !(await page5.$('#wfb-inspector [data-cfg-key="minutes"]'))
     ? ok('switching to "Until a date and time" shows the date/time field and hides minutes — never both at once')
     : fail('switching wait modes left the wrong field(s) visible');
-  await setValue(page5, `${waitSel} [data-cfg-key="at"]`, '2027-01-01T09:30');
+  await setValue(page5, '#wfb-inspector [data-cfg-key="at"]', '2027-01-01T09:30');
+  await closeInspector(page5);
 
   await setValue(page5, '#wfb-name', 'Wait smoke workflow');
   await page5.evaluate(() => window._wfSave());
@@ -2192,23 +2294,23 @@ try {
   await dragPaletteToolTo(page5, 'Action', actPt.x, actPt.y);
   const allNodeNames5 = await page5.$$eval('.wfb-node', els => els.map(e => e.dataset.name));
   const actName = allNodeNames5.find(n => n !== waitName);
-  const actSel = `.wfb-node[data-name="${actName}"]`;
-  (await page5.$eval(`${actSel} .wfb-action-group-select`, el => el.value)) === 'Backlog'
+  await openInspector(page5, actName);
+  (await page5.$eval('#wfb-inspector .wfb-action-group-select', el => el.value)) === 'Backlog'
     ? ok('a freshly-dropped Action defaults to the Backlog group')
     : fail('a freshly-dropped Action did not default to Backlog');
-  (await page5.$(`${actSel} .wfb-action-verb-select`)) && !(await page5.$(`${actSel} .wfb-action-verb-single`))
+  (await page5.$('#wfb-inspector .wfb-action-verb-select')) && !(await page5.$('#wfb-inspector .wfb-action-verb-single'))
     ? ok('Backlog (2 verbs) renders a real second dropdown, not static text')
     : fail('Backlog should render a verb dropdown, not static text');
-  await page5.fill(`${actSel} [data-cfg-key="text"]`, 'Something typed that would be lost');
-  await page5.selectOption(`${actSel} .wfb-action-group-select`, 'Notify');
+  await page5.fill('#wfb-inspector [data-cfg-key="text"]', 'Something typed that would be lost');
+  await page5.selectOption('#wfb-inspector .wfb-action-group-select', 'Notify');
   await page5.waitForTimeout(80);
   page5Dialogs.some(m => /clears the settings/i.test(m))
     ? ok(`switching groups with typed content prompted before discarding it: "${page5Dialogs.find(m => /clears the settings/i.test(m))}"`)
     : fail(`expected a confirm() before discarding typed config, got dialogs: ${JSON.stringify(page5Dialogs)}`);
-  (await page5.$(`${actSel} .wfb-action-verb-single`)) && !(await page5.$(`${actSel} .wfb-action-verb-select`))
+  (await page5.$('#wfb-inspector .wfb-action-verb-single')) && !(await page5.$('#wfb-inspector .wfb-action-verb-select'))
     ? ok('Notify (1 verb) renders static text, not a single-option dropdown — no not-yet-relevant control')
     : fail('Notify should render static text, not a dropdown, for its one verb');
-  (await page5.$eval(`${actSel} .wfb-action-id`, el => el.textContent.trim())) === 'notify_operator'
+  (await page5.$eval('#wfb-inspector .wfb-action-id', el => el.textContent.trim())) === 'notify_operator'
     ? ok('the raw identifier stayed visible and correct after the group switch (notify_operator)')
     : fail('the raw action identifier did not update to notify_operator after switching groups');
 
@@ -2220,8 +2322,8 @@ try {
   // a rename still in-flight (typed, not yet synced) — the field-sync must
   // resolve the CURRENT node via the card's own DOM element, not a name
   // string baked at the last render. ──────────────────────────────────────
-  await setValue(page5, `${actSel} .wfb-node-own .wfb-name`, 'Send email');
-  await page5.click(`${actSel} .wfb-insert-btn`);
+  await setValue(page5, '#wfb-inspector .wfb-node-own .wfb-name', 'Send email');
+  await page5.click('#wfb-inspector .wfb-insert-btn');
   await page5.waitForTimeout(80);
   const menuAfterOpen = await page5.$$eval('.wfb-insert-menu-item .wfb-insert-menu-item-primary', els => els.map(e => e.textContent));
   menuAfterOpen.includes("This run's ID")
@@ -2242,8 +2344,10 @@ try {
   (modelAfterInsert && modelAfterInsert.name === 'Send email' && /\{\{run\.id\}\}/.test((modelAfterInsert.config || {}).message || ''))
     ? ok(`inserting a result into a just-renamed action node's message field persisted in-memory: ${JSON.stringify(modelAfterInsert)}`)
     : fail(`inserting a result into a just-renamed action node's message field did NOT persist: ${JSON.stringify(modelAfterInsert)}`);
-  const actSelNow = '.wfb-node[data-name="Send email"]'; // the render after insert wrote the NEW data-name
-  const flashedAfterInsert = await page5.$eval(`${actSelNow} [data-cfg-key="message"]`, el => el.classList.contains('clayrune-highlight'));
+  // MC-963: the message field lives in #wfb-inspector, not on the canvas
+  // card -- the inspector's own re-render after the insert is what carries
+  // the flash class now.
+  const flashedAfterInsert = await page5.$eval('#wfb-inspector [data-cfg-key="message"]', el => el.classList.contains('clayrune-highlight'));
   flashedAfterInsert
     ? ok('the message field flashed (.clayrune-highlight) right after the insert landed — visible confirmation it worked')
     : fail('expected the message field to carry the highlight-flash class immediately after inserting');
@@ -2273,7 +2377,7 @@ try {
     def.edges = def.edges || [];
     def.edges.push({ from: 'triage-agent', to: actNodeName });
   }, { actNodeName: 'Send email', pid: PID });
-  await page5.click(`${actSelNow} .wfb-insert-btn`);
+  await page5.click('#wfb-inspector .wfb-insert-btn'); // "Send email"'s inspector is still open from above
   await page5.waitForTimeout(80);
   const ancestorItem = await page5.evaluate((stepName) => {
     const items = [...document.querySelectorAll('.wfb-insert-menu-item')];
@@ -2302,10 +2406,12 @@ try {
   await dragPaletteToolTo(page5, 'Approval gate', apprPt.x, apprPt.y);
   const allNodeNames5b = await page5.$$eval('.wfb-node', els => els.map(e => e.dataset.name));
   const apprName = allNodeNames5b.find(n => n !== waitName && n !== 'Send email' && n !== 'triage-agent');
-  const apprDesc = await page5.$eval(`.wfb-node[data-name="${apprName}"] .wfb-action-desc`, el => el.textContent).catch(() => '');
+  await openInspector(page5, apprName);
+  const apprDesc = await page5.$eval('#wfb-inspector .wfb-action-desc', el => el.textContent).catch(() => '');
   /Parks the run and waits for a human/.test(apprDesc)
     ? ok(`the Approval card states what it does, Action-style: "${apprDesc}"`)
     : fail(`expected the Approval card to describe its consequence, got: "${apprDesc}"`);
+  await closeInspector(page5);
 
   // ── Click/tap-to-add (Ron's own trap warning: "a toolbar item that only
   // responds to dragging reads as a broken button"). A plain click, no
@@ -2385,7 +2491,11 @@ try {
   // an attribute) — a full `_wfRender()` teardown-and-rebuild would replace
   // this exact node with a fresh one that never had it set, so the tag
   // surviving is proof the refresh patched in place instead of re-rendering.
-  await page6.fill(`${nodeSel6} .wfb-prompt`, 'do not lose this');
+  // MC-963: the drop auto-opened this node's inspector (_wfFocusPrompt) --
+  // the prompt textarea lives there now, not on the canvas card.
+  await page6.waitForSelector('#wfb-inspector.wfb-inspector-open', { timeout: 5000 });
+  await page6.fill('#wfb-inspector .wfb-prompt', 'do not lose this');
+  await closeInspector(page6);
   const before6 = await page6.evaluate((name) => {
     const el = document.querySelector(`.wfb-node[data-name="${CSS.escape(name)}"]`);
     el._smokeCanvasMarker = true;
