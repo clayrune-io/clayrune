@@ -36,11 +36,17 @@ def _write_log(sr, name, entries):
 
 
 def test_codex_entry_with_nested_usage_and_no_model_tokens_counts_today(sr):
+    """Production Codex rows carry an empty `claude_session_id` and identify
+    the session via `session_id` + `provider_session_id`
+    (docs/_journal/4668eafc-mc998-fenn-review.md finding 1) -- the fixture
+    must match that shape, not invent a claude_session_id no real row has."""
     today = sr.datetime.now().strftime('%Y-%m-%d')
     _write_log(sr, 'proj_agent_log.json', [{
         'ts': f'{today}T12:00:00Z',
         'provider': 'codex',
-        'claude_session_id': 'codex-sess-1',
+        'claude_session_id': '',
+        'session_id': 'mc-codex-sess-1',
+        'provider_session_id': 'codex-thread-1',
         'observed_model': 'gpt-5-codex',
         'model_tokens': {},
         'input_tokens': 0,
@@ -66,7 +72,9 @@ def test_cached_input_tokens_not_double_counted(sr):
     _write_log(sr, 'proj_agent_log.json', [{
         'ts': f'{today}T12:00:00Z',
         'provider': 'codex',
-        'claude_session_id': 'codex-sess-2',
+        'claude_session_id': '',
+        'session_id': 'mc-codex-sess-2',
+        'provider_session_id': 'codex-thread-2',
         'observed_model': 'gpt-5-codex',
         'model_tokens': {},
         'usage': {'input_tokens': 1000, 'output_tokens': 50, 'cached_input_tokens': 900},
@@ -85,7 +93,9 @@ def test_entry_with_no_usage_at_all_still_skipped(sr):
     _write_log(sr, 'proj_agent_log.json', [{
         'ts': f'{today}T12:00:00Z',
         'provider': 'codex',
-        'claude_session_id': 'codex-sess-3',
+        'claude_session_id': '',
+        'session_id': 'mc-codex-sess-3',
+        'provider_session_id': 'codex-thread-3',
         'model_tokens': {},
         'usage': {},
     }])
@@ -94,6 +104,44 @@ def test_entry_with_no_usage_at_all_still_skipped(sr):
 
     assert out == {'today': {}, 'week': {}, 'month': {}, 'all_time': {},
                     'last_data_date': ''}
+
+
+def test_codex_cumulative_snapshots_deduped_by_mc_session_id(sr):
+    """P1-1 (docs/_journal/4668eafc-mc998-fenn-review.md finding 1): Codex
+    completion rows are cumulative thread totals (rollover carry included),
+    one row per process exit/turn, all sharing the SAME MC `session_id` but
+    an empty `claude_session_id`. Before the fix these fell into the
+    "no stable identity, count individually" branch and got summed: cumulative
+    100 then 200 became 300. Must dedupe by `session_id` and keep only the
+    latest (200), same as the claude_session_id path does for Claude."""
+    today = sr.datetime.now().strftime('%Y-%m-%d')
+    _write_log(sr, 'proj_agent_log.json', [
+        {
+            'ts': f'{today}T12:00:00Z',
+            'provider': 'codex',
+            'claude_session_id': '',
+            'session_id': 'mc-codex-sess-4',
+            'provider_session_id': 'codex-thread-4',
+            'observed_model': 'gpt-5-codex',
+            'model_tokens': {},
+            'usage': {'input_tokens': 100, 'output_tokens': 0},
+        },
+        {
+            'ts': f'{today}T12:05:00Z',
+            'provider': 'codex',
+            'claude_session_id': '',
+            'session_id': 'mc-codex-sess-4',
+            'provider_session_id': 'codex-thread-4',
+            'observed_model': 'gpt-5-codex',
+            'model_tokens': {},
+            'usage': {'input_tokens': 200, 'output_tokens': 0},
+        },
+    ])
+
+    out = sr._mc_usage_from_agent_logs()
+
+    assert out['today'].get('gpt-5-codex') == 200, out
+    assert out['all_time'].get('gpt-5-codex') == 200, out
 
 
 def test_claude_model_tokens_path_unaffected(sr):

@@ -621,10 +621,22 @@ def _mc_usage_from_agent_logs():
     agnostic — covers Codex and any other non-Claude adapter); entries with
     neither are skipped (no evidence). Never raises.
 
-    Deduplicates by claude_session_id: Scribe checkpoints write multiple entries
-    for the same session (each with the cumulative token total from session start).
-    We keep only the latest entry per csid to avoid counting the same tokens N times.
-    Sessions without a csid are counted individually (legacy / non-CC providers).
+    Deduplicates by claude_session_id when present: Scribe checkpoints write
+    multiple entries for the same session (each with the cumulative token
+    total from session start). We keep only the latest entry per csid to
+    avoid counting the same tokens N times.
+
+    Non-CC providers (Codex, per the spec's baseline audit: 119/119 retained
+    rows have an empty claude_session_id) never get a csid, but their
+    completion rows are the SAME cumulative-snapshot shape -- `_mode_a_reader`
+    stores the thread's running total including rollover carry, and one row
+    is written per process exit/turn. Falling through to "count individually"
+    for these rows sums the same cumulative total repeatedly (100 then 200
+    becomes 300, not 200). Fall back to `session_id` -- the stable MC session
+    identity that outlives a Codex thread rollover (`provider_session_id`
+    does not) -- as the dedup key for any row with no claude_session_id.
+    Only a row with neither key is counted individually (no stable identity
+    to dedupe against).
     """
     today_str = datetime.now().strftime('%Y-%m-%d')
     try:
@@ -637,11 +649,12 @@ def _mc_usage_from_agent_logs():
     last_data_date = ''
 
     try:
-        # First pass: collect all entries across all log files, deduplicated by csid.
-        # For each csid, keep only the latest entry (highest ts = most complete snapshot).
-        # Entries without a csid are kept as-is (keyed by a unique fallback).
-        best_by_csid: dict = {}  # csid -> entry dict
-        _no_csid_counter = 0
+        # First pass: collect all entries across all log files, deduplicated by
+        # a stable session identity (claude_session_id, else session_id). For
+        # each key, keep only the latest entry (highest ts = most complete
+        # snapshot). Entries with neither key are kept as-is (unique fallback).
+        best_by_csid: dict = {}  # dedup key -> entry dict
+        _no_key_counter = 0
         for log_path in DATA_DIR.glob('*_agent_log.json'):
             try:
                 entries = json.loads(log_path.read_text(encoding='utf-8',
@@ -662,14 +675,21 @@ def _mc_usage_from_agent_logs():
                 if not ts:
                     continue
                 csid = e.get('claude_session_id') or ''
+                mc_sid = e.get('session_id') or ''
                 if csid:
-                    prev = best_by_csid.get(csid)
-                    if prev is None or ts >= (prev.get('ts') or '')[:10]:
-                        best_by_csid[csid] = e
+                    dedup_key = ('csid', csid)
+                elif mc_sid:
+                    dedup_key = ('mc_sid', mc_sid)
                 else:
-                    # No csid — count individually (non-CC provider or legacy entry)
-                    _no_csid_counter += 1
-                    best_by_csid[f'__no_csid_{_no_csid_counter}'] = e
+                    dedup_key = None
+                if dedup_key is not None:
+                    prev = best_by_csid.get(dedup_key)
+                    if prev is None or ts >= (prev.get('ts') or '')[:10]:
+                        best_by_csid[dedup_key] = e
+                else:
+                    # No stable identity at all — count individually (legacy entry)
+                    _no_key_counter += 1
+                    best_by_csid[('none', _no_key_counter)] = e
 
         for e in best_by_csid.values():
             mt = e.get('model_tokens') or _model_tokens_from_nested_usage(e)
