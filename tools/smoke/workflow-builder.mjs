@@ -199,6 +199,16 @@ async function clickToolbarTool(page, label) {
   await page.waitForTimeout(120);
 }
 
+// MC-962: the "Check workflow" button (and Undo/Redo/Reset) share the plain
+// `.wfb-toolbar-btn` class with no other hook — select by visible text.
+async function clickToolbarBtn(page, label) {
+  const handle = await page.evaluateHandle((text) => [...document.querySelectorAll('.wfb-toolbar-btn')]
+    .find(b => b.textContent.trim().startsWith(text)), label);
+  const el = handle.asElement();
+  if (!el) throw new Error('clickToolbarBtn: toolbar button not found: ' + label);
+  await el.click();
+}
+
 // Free canvas, measured NOW. Both halves matter: the modal body is a scroller
 // and Playwright scrolls elements into view on click, so a box captured
 // earlier in the run has moved; and cards accumulate, so a fixed offset
@@ -2930,9 +2940,215 @@ try {
   if (uncaught9m.length) uncaught9m.forEach((e) => fail('uncaught exception in the MC-963 mobile-inspector flow: ' + e));
   await ctx9m.close();
 
+  // ── MC-962 (backlog 78d23814): agent-authored DRAFT (POST /api/workflows/
+  // draft) landing on the canvas UNSAVED + disabled, and read-only CHECK
+  // WORKFLOW (POST /api/workflows/review) findings pinning to their node as
+  // a badge distinct from the validation badge, with a dismissible
+  // unassigned list and stale-on-edit clearing. A real model call is not
+  // acceptable in a smoke (file header) -- both routes are stubbed. ────────
+  const ctx10 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page10 = await ctx10.newPage();
+  const page10Errors = [];
+  page10.on('pageerror', (e) => page10Errors.push(e.message || String(e)));
+  const workflowPosts10 = [];
+  let draftResult10 = null;  // set per-case before clicking "Describe it"
+  let draftDelayMs10 = 0;    // >0 to catch the mid-flight "Drafting…" state
+  let reviewResult10 = null; // set per-case before clicking "Check workflow"
+  await page10.route('**/*', async (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
+    if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    if (path === '/api/workflows' && req.method() === 'POST') {
+      const body = JSON.parse(req.postData() || '{}');
+      workflowPosts10.push(body);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        ok: true, workflow: { ...body, id: 'wf-smoke10', format: 2, created: '2026-09-27T00:00:00Z', updated: '2026-09-27T00:00:00Z' },
+      }) });
+    }
+    if (path === '/api/workflows/draft' && req.method() === 'POST') {
+      if (draftDelayMs10) await new Promise((r) => setTimeout(r, draftDelayMs10));
+      const result = draftResult10 || { ok: false, error: 'draft_call_failed' };
+      return route.fulfill({ status: result.ok ? 200 : 502, contentType: 'application/json', body: JSON.stringify(result) });
+    }
+    if (path === '/api/workflows/review' && req.method() === 'POST') {
+      const result = reviewResult10 || { ok: true, findings: [] };
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(result) });
+    }
+    return route.abort();
+  });
+  await page10.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page10.waitForSelector('#projects-col .card', { timeout: 15000 });
+  await page10.evaluate(() => {
+    window.__toasts = [];
+    const orig = window.showToast;
+    window.showToast = (msg, ms) => { window.__toasts.push(msg); if (orig) orig(msg, ms); };
+  });
+  await newWorkflow(page10, PID);
+
+  const describeBoxPresent10 = !!(await page10.$('.wfb-describe-box'));
+  describeBoxPresent10
+    ? ok('a brand-new workflow shows the "Describe what you need" box on the empty canvas')
+    : fail('expected .wfb-describe-box on a brand-new, empty-canvas workflow');
+
+  // Empty description: refused client-side, no request fired.
+  await page10.click('.wfb-describe-row .btn-sched-save');
+  await page10.waitForTimeout(80);
+  const toastsEmpty10 = await page10.evaluate(() => window.__toasts || []);
+  (workflowPosts10.length === 0 && toastsEmpty10.some(t => /describe what you need/i.test(t)))
+    ? ok('clicking "Describe it" with no text is refused client-side with a visible toast, no request fired')
+    : fail(`expected a client-side refusal toast and no request, got toasts=${JSON.stringify(toastsEmpty10)}`);
+
+  // ── Case 1: the draft call fails (engine unavailable) -- must surface
+  // visibly, never silently, and show a loading state while in flight. ─────
+  draftResult10 = { ok: false, error: 'draft_call_failed' };
+  draftDelayMs10 = 250;
+  await setValue(page10, '#wfb-describe-input', 'Every morning, triage new backlog items.');
+  await page10.click('.wfb-describe-row .btn-sched-save');
+  await page10.waitForTimeout(80); // mid-flight: the 250ms server delay hasn't resolved yet
+  const midFlight10 = await page10.evaluate(() => ({
+    textareaDisabled: (document.getElementById('wfb-describe-input') || {}).disabled,
+    buttonText: (document.querySelector('.wfb-describe-row .btn-sched-save') || {}).textContent,
+  }));
+  (midFlight10.textareaDisabled === true && /Drafting/.test(midFlight10.buttonText || ''))
+    ? ok(`a loading state shows while the draft request is in flight (button reads "${(midFlight10.buttonText || '').trim()}", textarea disabled)`)
+    : fail(`expected a "Drafting…" loading state mid-flight, got ${JSON.stringify(midFlight10)}`);
+  await page10.waitForTimeout(300); // let the delayed response land
+  const afterFailedDraft10 = await page10.evaluate(() => ({
+    nodeCount: document.querySelectorAll('.wfb-node').length,
+    errorText: (document.querySelector('.wfb-describe-error') || {}).textContent || null,
+    drafting: window._wfEntry()._wf.drafting,
+  }));
+  (afterFailedDraft10.nodeCount === 0 && afterFailedDraft10.drafting === false && /engine is unavailable/i.test(afterFailedDraft10.errorText || ''))
+    ? ok(`a failed draft call surfaces a real, visible error ("${afterFailedDraft10.errorText}") and never fails silently -- canvas still empty, loading state cleared`)
+    : fail(`expected a visible engine-unavailable error, drafting=false, and 0 nodes, got ${JSON.stringify(afterFailedDraft10)}`);
+  draftDelayMs10 = 0;
+
+  // ── Case 2: the draft succeeds -- lands on the canvas UNSAVED and
+  // DISABLED (dirty state; nothing enables/schedules/runs it -- the standing
+  // position that only a human activates a workflow). The stubbed
+  // definition sets enabled:true on purpose, to prove the client re-asserts
+  // false rather than trusting the server response verbatim. ──────────────
+  draftResult10 = {
+    ok: true, valid: true, errors: [],
+    definition: {
+      name: 'Morning triage', description: 'Triage new backlog items every morning.',
+      trigger: { type: 'manual' }, enabled: true,
+      nodes: [{ name: 'triage', type: 'agent', character: 'global:builder', project_id: PID,
+                prompt: 'Triage anything new in the backlog and summarize it.' }],
+      edges: [],
+    },
+  };
+  await page10.click('.wfb-describe-row .btn-sched-save');
+  await page10.waitForTimeout(200);
+  const afterDraft10 = await page10.evaluate(() => {
+    const st = window._wfEntry()._wf;
+    return { nodeCount: document.querySelectorAll('.wfb-node').length, dirty: st.dirty, drafting: st.drafting,
+             enabled: st.def.enabled, workflowId: st.workflowId,
+             describeBoxGone: !document.querySelector('.wfb-describe-box') };
+  });
+  (afterDraft10.nodeCount === 1 && afterDraft10.dirty === true && afterDraft10.drafting === false
+      && afterDraft10.enabled === false && !afterDraft10.workflowId && afterDraft10.describeBoxGone)
+    ? ok('a successful draft loads onto the canvas as an unsaved (dirty), disabled workflow with no workflowId (client re-asserts enabled=false even though the stub sent true) -- describe box gone now that it has nodes')
+    : fail(`expected 1 node, dirty=true, drafting=false, enabled=false, no workflowId, describe box gone; got ${JSON.stringify(afterDraft10)}`);
+
+  // ── Save persists the draft -- still gated the ordinary way; Save is the
+  // human action the standing position requires. ──────────────────────────
+  await page10.click('.btn-sched-save');
+  await page10.waitForTimeout(200);
+  const savedBody10 = workflowPosts10[workflowPosts10.length - 1] || {};
+  const afterSave10 = await page10.evaluate(() => {
+    const st = window._wfEntry()._wf;
+    return { dirty: st.dirty, workflowId: st.workflowId };
+  });
+  (workflowPosts10.length === 1 && savedBody10.enabled === false && afterSave10.workflowId === 'wf-smoke10' && afterSave10.dirty === false)
+    ? ok('Save POSTed the drafted workflow exactly once, still enabled=false, and the canvas now tracks the persisted workflowId')
+    : fail(`expected exactly 1 POST with enabled=false and workflowId wf-smoke10 after Save, got posts=${workflowPosts10.length} body.enabled=${savedBody10.enabled} after=${JSON.stringify(afterSave10)}`);
+
+  // ── Check workflow: findings pin to their node as a badge distinct from
+  // the validation badge; whole-workflow findings land in a dismissible
+  // list; full text shows in the inspector. ───────────────────────────────
+  reviewResult10 = {
+    ok: true, valid: false,
+    findings: [
+      { node: 'triage', severity: 'warning', message: 'The prompt is vague about what "triage" means here.', suggestion: 'Name the specific fields to check.' },
+      { node: null, severity: 'error', message: 'This workflow has no failure handling for the agent step.', suggestion: null },
+    ],
+  };
+  await clickToolbarBtn(page10, 'Check workflow');
+  await page10.waitForTimeout(200);
+  const badge10 = await page10.$eval('.wfb-node[data-name="triage"]', el => ({
+    hasReviewBadge: !!el.querySelector('.wfb-node-review-badge'),
+    hasValidationBadge: !!el.querySelector('.wfb-node-validation-badge'),
+    title: (el.querySelector('.wfb-node-review-badge') || {}).title || null,
+  })).catch(() => ({}));
+  (badge10.hasReviewBadge && !badge10.hasValidationBadge && /vague/i.test(badge10.title || ''))
+    ? ok(`the pinned finding shows as a distinct .wfb-node-review-badge on "triage" (title="${badge10.title}"), not the validation-error badge`)
+    : fail(`expected a distinct review badge on triage naming the vague-prompt finding, got ${JSON.stringify(badge10)}`);
+
+  await openInspector(page10, 'triage');
+  const inspectorFinding10 = await page10.evaluate(() => (document.querySelector('#wfb-inspector .wfb-node-review-finding') || {}).textContent || '');
+  (/vague/i.test(inspectorFinding10) && /Name the specific fields/i.test(inspectorFinding10))
+    ? ok('the full finding text (message + suggestion) shows in that node\'s inspector')
+    : fail(`expected the full finding text + suggestion in the inspector, got "${inspectorFinding10}"`);
+
+  const unassigned10 = await page10.$$eval('#wfb-review-unassigned .wfb-review-unassigned-item', els => els.map(e => e.textContent));
+  (unassigned10.length === 1 && /no failure handling/i.test(unassigned10[0]))
+    ? ok(`the whole-workflow finding (no matching node) landed in the dismissible unassigned list: "${unassigned10[0].trim()}"`)
+    : fail(`expected 1 unassigned finding naming the missing failure handling, got ${JSON.stringify(unassigned10)}`);
+
+  await page10.click('.wfb-review-unassigned-dismiss');
+  await page10.waitForTimeout(80);
+  const unassignedAfterDismiss10 = await page10.$$eval('#wfb-review-unassigned .wfb-review-unassigned-item', els => els.length).catch(() => 0);
+  unassignedAfterDismiss10 === 0
+    ? ok('dismissing the unassigned finding removes it from the list')
+    : fail(`expected the unassigned list empty after dismiss, got ${unassignedAfterDismiss10} item(s) left`);
+
+  // ── A later edit clears stale findings -- both the pinned badge AND any
+  // remaining unassigned findings go together (`_wfClearStaleReviewFindings`
+  // keys off one snapshot of the whole def, not per-finding). ─────────────
+  // A non-empty, valid prompt reopens COLLAPSED by default -- expand it first
+  // (same case as MC-963 check 3's reopen, above).
+  if (!(await page10.$('#wfb-inspector .wfb-prompt'))) {
+    await page10.click('#wfb-inspector .wfb-prompt-toggle');
+    await page10.waitForSelector('#wfb-inspector .wfb-prompt', { timeout: 3000 });
+  }
+  await setValue(page10, '#wfb-inspector .wfb-prompt', 'Triage anything new: severity, owner, and a one-line summary.');
+  await closeInspector(page10); // _wfCloseInspector -> _wfSyncDomToModel -> _wfRender -> clears stale findings
+  const badgeAfterEdit10 = await page10.$eval('.wfb-node[data-name="triage"]', el => !!el.querySelector('.wfb-node-review-badge'));
+  badgeAfterEdit10 === false
+    ? ok('editing the workflow after a Check clears the now-stale review badge')
+    : fail('the review badge is still pinned to "triage" after an edit made the check stale');
+
+  // ── Check workflow itself failing (HTTP error) also surfaces visibly. ────
+  await page10.route('**/*', (route) => {
+    const req = route.request();
+    if (new URL(req.url()).pathname === '/api/workflows/review') return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"boom"}' });
+    return route.fallback();
+  });
+  const toastsBeforeReviewFail10 = (await page10.evaluate(() => window.__toasts || [])).length;
+  await clickToolbarBtn(page10, 'Check workflow');
+  await page10.waitForTimeout(200);
+  const toastsAfterReviewFail10 = (await page10.evaluate(() => window.__toasts || [])).slice(toastsBeforeReviewFail10);
+  toastsAfterReviewFail10.some(t => /check failed/i.test(t))
+    ? ok(`a failed Check workflow request surfaces a visible "Check failed" toast: "${toastsAfterReviewFail10.find(t => /check failed/i.test(t))}"`)
+    : fail(`expected a visible "Check failed" toast, got ${JSON.stringify(toastsAfterReviewFail10)}`);
+
+  const uncaught10 = page10Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught10.length) uncaught10.forEach((e) => fail('uncaught exception in the MC-962 draft/review flow: ' + e));
+  await ctx10.close();
+
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
-    ? '\n✅ PASS — the palette IS the Bench (real avatars, initial only where a face is genuinely absent, unrenderable values never echoed), drag-a-person-to-place with its persona preset, the port + popover and drop-onto-card auto-place-and-wire, port-to-port connect, a refused cycle, a refused slot break, an unconnected-port stop stub, mobile bottom-sheet layout, touch-action scroll-lock guard, save (format 2), and the schedule-trigger cadence form all behave correctly.'
+    ? '\n✅ PASS — the palette IS the Bench (real avatars, initial only where a face is genuinely absent, unrenderable values never echoed), drag-a-person-to-place with its persona preset, the port + popover and drop-onto-card auto-place-and-wire, port-to-port connect, a refused cycle, a refused slot break, an unconnected-port stop stub, mobile bottom-sheet layout, touch-action scroll-lock guard, save (format 2), the schedule-trigger cadence form, and MC-962 describe/draft (loading state, visible error, unsaved+disabled landing, Save persists) plus Check workflow (pinned badge, dismissible unassigned list, stale-on-edit clearing) all behave correctly.'
     : `\n❌ FAIL — ${bad} check(s) failed.`);
 } catch (err) {
   console.error('❌ harness error:', err && err.stack ? err.stack : err);
