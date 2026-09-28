@@ -869,3 +869,20 @@ def test_setting_a_mangled_face_stores_nothing(floor, tmp_path):
     sessions['1'] = _session('a', '1', character={'name': 'x', 'avatar': 'fig:scholar'})
     c.post('/api/floor/figure/1/name', json={'avatar': '??'})
     assert _get(c)['rooms'][0]['figures'][0]['avatar'] == 'fig:scholar'
+
+
+def test_a_session_added_mid_walk_does_not_500_the_board(floor):
+    """clayrune.log 2026-09-28 10:07: three /api/floor 500s, 'dictionary
+    changed size during iteration' in _live_sessions — a dispatch registered
+    a session while the board walked the live dict. The walk must snapshot."""
+    fr, c, sessions, projects, _ = floor
+    projects += [{'id': 'a', 'name': 'Alpha'}]
+
+    class _Spawning(dict):
+        def get(self, key, default=None):
+            if key == 'incognito' and 'late' not in sessions:
+                sessions['late'] = _session('a', 'late')  # another thread's dispatch
+            return super().get(key, default)
+
+    sessions['1'] = _Spawning(_session('a', '1'))
+    _get(c)

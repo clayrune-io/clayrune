@@ -410,7 +410,10 @@ def _live_sessions(defaults=None, labels=None):
     session carries no `hivemind_id` and stays hidden.
     """
     rooms: dict = {}
-    for s in agent_sessions.values():
+    # Snapshot: sessions are added/removed on other threads while this
+    # walks. Iterating the live dict raised "dictionary changed size during
+    # iteration" -> 500 on /api/floor (clayrune.log 2026-09-28 10:07, 3x).
+    for s in list(agent_sessions.values()):
         if s.get('incognito'):
             continue
         if s.get('housekeeping') and not s.get('hivemind_id'):
