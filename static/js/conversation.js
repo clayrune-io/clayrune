@@ -806,6 +806,46 @@ function fillStarterChip(projectId, text) {
   }
 }
 
+// MC-957 Entry A: switches the +New composer to the built-in Brainstorm
+// persona and leaves the idea field for the user to fill in — it does NOT
+// dispatch. setComposerCharacter already does everything dispatchAgent needs
+// (arms pendingDispatchCharacter, refreshes the modal so the placeholder/
+// picker pick up the new persona); an unresolvable 'global:brainstorm' (a
+// user deleted the built-in) surfaces as dispatchAgent's normal "unavailable
+// character" error, same as picking any other missing persona from the list.
+function startBrainstormThis(projectId) {
+  setComposerCharacter(projectId, 'global:brainstorm');
+  const ta = document.getElementById(`agent-task-${projectId}`);
+  if (ta && window.innerWidth > 960) ta.focus();
+}
+window.startBrainstormThis = startBrainstormThis;
+
+// MC-957 Entry B: "Brainstorm this" on a user-authored message. Opens a fresh
+// +New composer in the SAME project (a new tab/thread, not a resume) with the
+// source message visibly quoted and still editable, and switches only that
+// new composer to the Brainstorm persona. Deliberately does not touch the
+// live conversation the message came from — its persona and transcript are
+// untouched, and only the one message is carried over, never the whole
+// transcript (spec: "must not silently copy the entire old transcript").
+// The "linked back to the source conversation" requirement is satisfied by
+// naming the source persona in the seeded text itself — v1 needs no new
+// session store for this (BRAINSTORM_MODE_SPEC.md).
+function brainstormFromMessage(projectId, btn) {
+  const raw = btn.dataset.rawText || '';
+  const sourceLabel = btn.dataset.sourceLabel || 'this project';
+  newAgentTab(projectId);
+  setComposerCharacter(projectId, 'global:brainstorm');
+  const ta = document.getElementById(`agent-task-${projectId}`);
+  if (!ta) return;
+  const quoted = raw.split('\n').map(l => `> ${l}`).join('\n');
+  ta.value = `Brainstorm this idea — seeded from a message in the ${sourceLabel} conversation:\n\n${quoted}\n\n`;
+  if (window.innerWidth > 960) {
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }
+}
+window.brainstormFromMessage = brainstormFromMessage;
+
 // Ultrawide-only right-side "Surfaces" panel (shown via container query at wide
 // pane widths). Preview cards for the project's content tabs; clicking opens the
 // full tab in the center area (switchModalTab). Lightweight previews for now.
@@ -1118,7 +1158,13 @@ function agentPanelHTML(p) {
     ${_threadShellKey || _personPickerHTML ? '' : '<div class="ces-icon">&#128172;</div>'}
     <div class="ces-heading">${_threadShellKey ? 'No conversations yet' : `What should ${esc(_personName)} work on?`}</div>
     <div class="ces-sub">${_threadShellKey ? 'Say something to start the thread.' : 'Describe a task in plain language.<br>The agent plans, edits files, and reports back.'}</div>
-    <div class="ces-chips">${STARTER_CHIPS.map(c =>
+    <div class="ces-chips">${_threadShellKey ? '' :
+      `<button type="button" class="ces-chip ces-chip-brainstorm" onclick="startBrainstormThis('${esc(p.id)}')" title="Switch this new chat to the Brainstorm persona and describe the idea below">
+        <span class="ces-chip-icon">&#128161;</span>
+        <span class="ces-chip-label">Brainstorm this</span>
+        <span class="ces-chip-chev">&#8250;</span>
+      </button>`
+    }${STARTER_CHIPS.map(c =>
       `<button type="button" class="ces-chip" data-chip-text="${esc(c.label)}" onclick="fillStarterChip('${esc(p.id)}', this.dataset.chipText)">
         <span class="ces-chip-icon">${c.icon}</span>
         <span class="ces-chip-label">${esc(c.label)}</span>
@@ -1377,7 +1423,21 @@ function agentPanelHTML(p) {
             ? escPromptWithImages(line)
             : (cls.includes('agent-line-tool') || cls.includes('agent-line-error') || cls.includes('agent-line-followup') || cls.includes('agent-line-queued')
                 ? esc(line) : formatAgentText(line));
-          const div = `<div class="${cls}">${html}</div>`;
+          // MC-957 Entry B: a per-message "Brainstorm this" action on the
+          // user's own bubble only (never a slash command — there's no idea
+          // in "/compact" to brainstorm). Raw text and the source persona's
+          // display name travel via data-* attributes, never the onclick
+          // string itself — a message containing an apostrophe would break a
+          // single-quoted inline handler (discovery_esc_no_apostrophe_inline_
+          // handler.md); esc() DOES escape the double quotes these attributes
+          // use, so this is safe.
+          const _brainstormBtn = (cls.includes('agent-line-prompt') && !cls.includes('agent-line-cmd'))
+            ? `<button type="button" class="msg-brainstorm-btn" title="Brainstorm this"
+                data-raw-text="${esc(line.replace(/^\s*>\s?/, ''))}"
+                data-source-label="${esc(_activeSessionPersonName(activeSession, p))}"
+                onclick="brainstormFromMessage('${esc(p.id)}', this)">&#128161;</button>`
+            : '';
+          const div = `<div class="${cls}">${html}${_brainstormBtn}</div>`;
           // Tool lines and user prompts reset plan-block accumulator
           if (cls.includes('agent-line-tool') || cls.includes('agent-line-prompt')) {
             result += planBlock + div;
