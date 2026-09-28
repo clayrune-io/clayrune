@@ -38,6 +38,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from mc import process_sweep as _process_sweep  # noqa: E402
 
 _VER = re.compile(r'(\d+\.\d+\.\d+)')
 
@@ -226,57 +230,29 @@ def aside_dir_for(cli):
 
 
 def list_processes():
-    """All running processes as dicts (pid, ppid, name, exe, start_epoch), or
-    None when enumeration FAILED (PowerShell missing, non-zero exit, no
-    output, unparseable JSON) -- distinct from `[]`, which means Windows
-    genuinely has no matching processes right now, or this isn't Windows at
-    all (the feature is a no-op there; that's not a failure).
+    """All running processes as dicts (pid, ppid, name, exe, start_epoch, plus
+    cmdline/kernel_100ns/user_100ns from the shared implementation), or None
+    when enumeration FAILED (PowerShell missing, non-zero exit, no output,
+    unparseable JSON) -- distinct from `[]`, which means Windows genuinely
+    has no matching processes right now, or this isn't Windows at all (the
+    feature is a no-op there; that's not a failure).
 
     None must never be read as "no lockers": a caller doing a preflight
     check that treated enumeration failure as an empty result would let a
     known-EBUSY npm install proceed anyway -- exactly the MC-991 regression
     (Dave's review of 894ac19, D4). Every call site is required to check for
     None and fail closed rather than default to "found nothing".
+
+    Delegates the actual PowerShell/CIM query to mc.process_sweep (MC-991
+    Phase 2's server-side orphan sweep needs the identical enumeration, so
+    there is exactly one implementation, not two) -- `run_fn=_run` keeps this
+    module's own tests able to stub the process call via `monkeypatch.setattr
+    (cvc, '_run', ...)`, same as before this delegation.
     """
-    if sys.platform != 'win32':
-        return []
-    exe = shutil.which('powershell') or shutil.which('powershell.exe')
-    if not exe:
-        return None
-    ps_cmd = (
-        "Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, "
-        "Name, ExecutablePath, @{N='StartEpoch';E={ if ($_.CreationDate) { "
-        "[int64]([datetimeoffset]$_.CreationDate).ToUnixTimeSeconds() } else { $null } }} "
-        "| ConvertTo-Json -Compress"
-    )
-    rc, out = _run([exe, '-NoProfile', '-NonInteractive', '-Command', ps_cmd], timeout=30)
-    if rc != 0 or not out:
-        return None
-    try:
-        data = json.loads(out)
-    except ValueError:
-        return None
-    if isinstance(data, dict):
-        data = [data]
-    procs = []
-    for p in data or []:
-        if not isinstance(p, dict):
-            continue
-        procs.append({
-            'pid': p.get('ProcessId'),
-            'ppid': p.get('ParentProcessId'),
-            'name': p.get('Name'),
-            'exe': p.get('ExecutablePath'),
-            'start_epoch': p.get('StartEpoch'),
-        })
-    return procs
+    return _process_sweep.list_processes(run_fn=_run)
 
 
-def _under_dir(path, dir_path):
-    if not path or not dir_path:
-        return False
-    norm_dir = os.path.normcase(os.path.abspath(dir_path)) + os.sep
-    return os.path.normcase(os.path.abspath(path)).startswith(norm_dir)
+_under_dir = _process_sweep._under_dir
 
 
 def processes_locking(dir_path, procs):
@@ -293,12 +269,9 @@ def processes_locking(dir_path, procs):
 # Shells/runtimes that commonly sit BETWEEN a real launcher and the CLI they
 # spawned (`cmd /c npm-cli.js` -> `node` -> the vendor exe, or a shebang
 # script run through bash). None of these is itself "what started the
-# process" for orphan-detection purposes -- walk through them.
-_WRAPPER_NAMES = frozenset({
-    'cmd.exe', 'cmd', 'node.exe', 'node', 'conhost.exe', 'conhost',
-    'powershell.exe', 'powershell', 'pwsh.exe', 'pwsh',
-    'bash.exe', 'bash', 'sh.exe', 'sh',
-})
+# process" for orphan-detection purposes -- walk through them. Shared with
+# mc.process_sweep (MC-991 Phase 2) rather than duplicated.
+_WRAPPER_NAMES = _process_sweep._WRAPPER_NAMES
 
 
 def orphaned_processes(dir_path, procs, now=None, min_age_hours=24.0, max_chain_depth=8):
@@ -320,6 +293,13 @@ def orphaned_processes(dir_path, procs, now=None, min_age_hours=24.0, max_chain_
     recycled onto an unrelated process by the OS (see memory:
     never-taskkill-tree-on-stale-pid); "ancestor missing" is evidence of an
     orphan, not proof, and killing on it would risk exactly that mistake.
+
+    The ancestor walk itself is `mc.process_sweep.chain_is_dead` (shared with
+    MC-991 Phase 2's server-side sweep rather than duplicated) -- it also
+    treats a "parent" whose recorded start time is LATER than this process's
+    own as dead (a recycled PID can't really be the parent of something that
+    predates it), a case this report-only function never previously needed to
+    tell apart from a live ancestor.
     """
     now = time.time() if now is None else now
     by_pid = {p['pid']: p for p in procs if p.get('pid') is not None}
@@ -332,19 +312,7 @@ def orphaned_processes(dir_path, procs, now=None, min_age_hours=24.0, max_chain_
         if age_hours < min_age_hours:
             continue
 
-        ppid = p.get('ppid')
-        chain_dead = False
-        for _ in range(max_chain_depth):
-            if ppid is None:
-                break
-            parent = by_pid.get(ppid)
-            if parent is None:
-                chain_dead = True
-                break
-            if (parent.get('name') or '').lower() not in _WRAPPER_NAMES:
-                break  # live, non-wrapper ancestor -- someone still owns this chain
-            ppid = parent.get('ppid')
-        if chain_dead:
+        if _process_sweep.chain_is_dead(p, by_pid, max_chain_depth):
             out.append({'pid': p.get('pid'), 'ppid': p.get('ppid'), 'name': p.get('name'),
                         'exe': p.get('exe'), 'age_hours': round(age_hours, 1)})
     return out
@@ -568,6 +536,29 @@ def model_upgrades_check(host, apply_updates) -> dict:
         return {'error': f'{type(e).__name__}: {e}'}
 
 
+def process_sweep_before_apply(host) -> dict:
+    """POST /api/system/process-sweep on the running Clayrune server before
+    this script attempts any --apply install, so a week-old orphaned CLI
+    process (MC-991's original codex.exe) is gone before it can lock a
+    package dir again -- same call-seam pattern as `model_upgrades_check`:
+    this function does not decide anything, the server runs its own gate
+    (config 'process_sweep_enabled'/'process_sweep_dry_run', mc/process_sweep.py)
+    and this just reports what came back. Best-effort -- a server that can't
+    be reached must not block an --apply run; the per-CLI rename-aside
+    preflight already handles a locked package dir independently of this.
+    """
+    url = f'{host}/api/system/process-sweep'
+    req = urllib.request.Request(url, data=b'{}', method='POST',
+                                 headers={'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r)
+    except urllib.error.URLError as e:
+        return {'ok': False, 'error': f'could not reach {url}: {e}'}
+    except Exception as e:
+        return {'ok': False, 'error': f'{type(e).__name__}: {e}'}
+
+
 def main():
     ap = argparse.ArgumentParser(description='Check/update Clayrune agent CLIs.')
     ap.add_argument('--apply', action='store_true', help='perform updates, not just report')
@@ -594,6 +585,16 @@ def main():
         needs_human = bool(report.get('unknown_price')) or any(
             row.get('retirement_urgent') for row in report.get('more_expensive') or [])
         return 1 if needs_human else 0
+
+    if args.apply:
+        # Best-effort: sweep orphaned agent-CLI processes on the running
+        # server before any install attempt, so a stale locker (the
+        # original MC-991 codex.exe) is gone before it can lock a package
+        # dir again. Never blocks -- see process_sweep_before_apply's
+        # docstring for why an unreachable server must not stop --apply.
+        sweep_report = process_sweep_before_apply(args.host)
+        if sweep_report.get('error'):
+            print(f'[process-sweep] preflight skipped: {sweep_report["error"]}', file=sys.stderr)
 
     # Report every row, including not_installed. Hiding those was how a
     # resolution failure looked identical to "we don't run that CLI here".

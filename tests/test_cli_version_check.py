@@ -330,7 +330,7 @@ def test_orphaned_processes_reports_dead_ancestor_older_than_24h(cvc):
         # chain is owned, not just the direct parent.
         {'pid': 300, 'ppid': 200, 'name': 'codex', 'exe': pkg_dir + r'\vendor\other.exe',
          'start_epoch': now - 48 * 3600},
-        {'pid': 200, 'ppid': 1, 'name': 'cmd', 'exe': r'C:\Windows\System32\cmd.exe', 'start_epoch': now - 100},
+        {'pid': 200, 'ppid': 1, 'name': 'cmd', 'exe': r'C:\Windows\System32\cmd.exe', 'start_epoch': now - 49 * 3600},
         {'pid': 1, 'ppid': None, 'name': 'explorer.exe', 'exe': r'C:\Windows\explorer.exe',
          'start_epoch': now - 999999},
         # too young: dead parent but only 2h old

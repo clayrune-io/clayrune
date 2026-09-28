@@ -192,3 +192,9 @@ _UPDATE_CHECK_CACHE = {
 }
 _UPDATE_CHECK_INTERVAL_S = 6 * 3600   # 6 hours
 _UPDATE_CHECK_BOOT_DELAY_S = 60       # wait 1 min after server start
+
+# MC-991 Phase 2 — orphan CLI process sweep (mc/process_sweep.py). Longer boot
+# delay than update-check: a fresh restart's revived sessions need time to
+# re-register into tracked_processes before the sweep computes root_pids.
+_PROCESS_SWEEP_INTERVAL_S = 6 * 3600  # 6 hours
+_PROCESS_SWEEP_BOOT_DELAY_S = 5 * 60  # wait 5 min after server start
