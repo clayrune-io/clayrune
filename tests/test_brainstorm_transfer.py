@@ -17,6 +17,7 @@ assumes Claude.
 """
 import json
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -270,6 +271,71 @@ def test_source_record_failure_rolls_back_the_dest_backlog_item(client, monkeypa
     assert resp2.status_code == 201, resp2.get_json()
     dest2 = client.load('existing_proj')
     assert len(dest2['backlog']) == 1
+
+
+def test_concurrent_duplicate_submissions_create_exactly_one_item(client, monkeypatch):
+    """MC-990 D3 (Dave review round 2): the idempotency check (`prior = ...`)
+    and the write that satisfies it (the source save recording
+    `_brainstorm_transfers`) were two separate operations with nothing
+    atomic between them -- a double-tap, a second tab, or a retry during a
+    slow save could both pass the check before either had written,
+    producing two backlog items (and, in create mode, a race on the same
+    new project record). Drives two real threads through the route with an
+    identical payload, forcing the first to hold the per-transfer_key lock
+    across its own destination save so the second genuinely blocks at
+    `lock.acquire()` -- fails on master (pre-lock) with two backlog items
+    and both requests returning 201."""
+    _seed_source(client)
+    _seed_dest(client)
+
+    from mc.blueprints import guide_routes as gr
+    real_save = gr.save_project
+    first_in_dest_save = threading.Event()
+    release_first = threading.Event()
+    dest_save_count = {'n': 0}
+
+    def _slow_save(pid, doc):
+        if pid == 'existing_proj':
+            dest_save_count['n'] += 1
+            if dest_save_count['n'] == 1:
+                first_in_dest_save.set()
+                assert release_first.wait(10), 'second request never started racing'
+        return real_save(pid, doc)
+
+    monkeypatch.setattr(gr, 'save_project', _slow_save)
+
+    results = []
+
+    def _post():
+        results.append(client.post('/api/project/_ideas/brainstorm/transfer',
+                                    json=_existing_body(), headers=UI_HEADERS))
+
+    t1 = threading.Thread(target=_post, name='req-1')
+    t1.start()
+    assert first_in_dest_save.wait(10), 'first request never reached the destination save'
+
+    t2 = threading.Thread(target=_post, name='req-2')
+    t2.start()
+    # req-2 must be blocked acquiring the same transfer_key lock, not racing
+    # the idempotency check -- give it time to *try*, then let req-1 finish.
+    t2.join(0.3)
+    assert t2.is_alive(), 'second request was not blocked by the transfer lock'
+
+    release_first.set()
+    t1.join(10)
+    t2.join(10)
+    assert not t1.is_alive() and not t2.is_alive()
+
+    assert dest_save_count['n'] == 1, 'the lock let a second request perform its own destination save'
+    statuses = sorted(r.status_code for r in results)
+    assert statuses == [200, 201], [r.get_json() for r in results]
+    winner = next(r for r in results if r.status_code == 201).get_json()
+    loser = next(r for r in results if r.status_code == 200).get_json()
+    assert loser['idempotent'] is True
+    assert loser['backlog_item_id'] == winner['backlog_item_id']
+
+    dest = client.load('existing_proj')
+    assert len(dest['backlog']) == 1, 'exactly one backlog item must exist, not two'
 
 
 def test_create_mode_failure_removes_the_new_project_record(client, monkeypatch):

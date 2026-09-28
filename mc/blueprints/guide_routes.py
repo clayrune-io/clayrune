@@ -29,6 +29,7 @@ alias, 1.7 precedent).
 
 import json
 import re
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -1039,6 +1040,28 @@ def _brainstorm_transfer_key(claude_session_id, version, dest_ref):
     return f'{claude_session_id}:{version}:{dest_ref}'
 
 
+# One lock per transfer_key (same dict+guard shape as media.py `_lock_for` /
+# distiller.py `_get_skill_stats_lock`). MC-990 D3 (review finding): the
+# idempotency check (`prior = ...`) and the write that satisfies it (the
+# source save recording `_brainstorm_transfers`) are two separate operations
+# with nothing atomic between them -- a double-tap, a second tab, or a retry
+# during a slow save can both pass the check before either has written,
+# producing two backlog items (and, in create mode, a race on the same new
+# project record). Keyed by transfer_key (session+version+destination), not
+# a single route-wide lock, so unrelated transfers stay concurrent; the dict
+# grows unbounded over the process lifetime the same way the precedents
+# above do -- acceptable given how rarely a given transfer_key recurs.
+_transfer_locks: dict[str, threading.Lock] = {}
+_transfer_locks_guard = threading.Lock()
+
+
+def _transfer_lock_for(transfer_key: str) -> threading.Lock:
+    with _transfer_locks_guard:
+        if transfer_key not in _transfer_locks:
+            _transfer_locks[transfer_key] = threading.Lock()
+        return _transfer_locks[transfer_key]
+
+
 @bp.route('/api/project/<project_id>/brainstorm/transfer', methods=['POST'])
 def brainstorm_transfer(project_id):
     """Transfer one Brainstorm Exploration brief into a project as a durable
@@ -1102,140 +1125,146 @@ def brainstorm_transfer(project_id):
         return jsonify({'error': "destination.mode must be 'create' or 'existing'"}), 400
 
     transfer_key = _brainstorm_transfer_key(claude_session_id, version, dest_ref)
-    prior = (p_source.get('_brainstorm_transfers') or {}).get(transfer_key)
-    if prior:
-        return jsonify({'ok': True, 'idempotent': True, **prior}), 200
-
-    created_project = False
-    doc_path = None
-    created_folder = None  # workspace folder THIS request auto-created (mode=='create', no caller-supplied folder)
-    dest_item_id = None    # backlog item inserted into an already-existing destination (mode=='existing')
-    if mode == 'create':
-        dest_id = None  # set once creation succeeds, below
-    try:
-        if mode == 'create':
-            filepath = DATA_DIR / f'{new_id}.json'
-            if filepath.exists():
-                return jsonify({'error': f'project id "{new_id}" already exists'}), 409
-            name = str(dest.get('name') or '').strip() or new_id
-            domain = str(dest.get('domain') or 'general').strip() or 'general'
-            folder = str(dest.get('folder') or '').strip()
-            description = str(dest.get('description') or '').strip()
-            if not folder:
-                base = Path(state.CONFIG.get('auto_workspace_base') or str(Path.home() / 'MissionControl'))
-                base.mkdir(parents=True, exist_ok=True)
-                candidate = base / new_id
-                n = 1
-                while candidate.exists():
-                    candidate = base / f'{new_id}_{n}'
-                    n += 1
-                candidate.mkdir(parents=True, exist_ok=True)
-                folder = str(candidate)
-                created_folder = candidate
-            refusal = _refuse_project_path_in_install_dir(folder, None)
-            if refusal:
-                return refusal
-            try:
-                Path(folder).mkdir(parents=True, exist_ok=True)
-            except Exception as e:
-                return jsonify({'error': f'could not create workspace folder: {e}'}), 500
-            ts = now_iso()
-            save_project(new_id, {
-                'id': new_id, 'name': name, 'domain': domain, 'status': 'active',
-                'project_path': folder, 'description': description,
-                'last_updated': ts, 'backlog': [],
-                'activity_log': [{'ts': ts, 'msg': f'Created from Brainstorm exploration ({claude_session_id} v{version})'}],
-            })
-            created_project = True
-            dest_id = new_id
-        else:
-            p_dest_check = load_project(dest_id)
-            if p_dest_check is None:
-                return jsonify({'error': 'destination project not found'}), 404
-            if p_dest_check.get('_is_ideas_workspace') or p_dest_check.get('_is_incognito_project'):
-                return jsonify({'error': 'cannot transfer into a reserved workspace'}), 400
-
-        p_dest = load_project(dest_id)
-        if p_dest is None:
-            raise RuntimeError(f'destination project "{dest_id}" vanished mid-transfer')
-
-        doc_rel = f'docs/brainstorm/{claude_session_id}-v{version}.md'
-        doc_path = Path(p_dest.get('project_path') or '') / doc_rel
-        doc_path.parent.mkdir(parents=True, exist_ok=True)
-        doc_content = (
-            f"# Exploration brief -- v{version}\n\n"
-            f"Source: project `{project_id}`, Brainstorm conversation `{claude_session_id}`.\n\n"
-            "---\n\n"
-            f"{brief_text}\n"
-        )
-        doc_path.write_text(doc_content, encoding='utf-8')
-
-        backlog_text = str(body.get('backlog_text') or '').strip()
-        if not backlog_text:
-            backlog_text = f'Run the next experiment from Brainstorm exploration v{version} (see {doc_rel})'
-        backlog = p_dest.setdefault('backlog', [])
-        _ensure_backlog_numbers(p_dest)
-        seq = int(p_dest.get('backlog_seq') or 0) + 1
-        p_dest['backlog_seq'] = seq
-        item = {
-            'id': str(uuid.uuid4())[:8],
-            'num': seq,
-            'key': _format_backlog_key(p_dest.get('backlog_key'), seq),
-            'text': backlog_text,
-            'priority': 'normal',
-            'status': 'open',
-            'created_at': now_iso(),
-            'done_at': None,
-            'source': 'brainstorm-handoff',
-            'attachments': [],
-            'links': [
-                {'type': 'brainstorm-doc', 'path': doc_rel},
-                {'type': 'brainstorm-source', 'project_id': project_id,
-                 'claude_session_id': claude_session_id, 'version': version},
-            ],
-        }
-        backlog.insert(0, item)
-        p_dest['last_updated'] = now_iso()
-        save_project(dest_id, p_dest)
-        if not created_project:
-            # Only track for rollback when the destination predates this
-            # request -- a failure after this point must not leave the item
-            # behind for a retry to duplicate (MC-990 D2). A newly-created
-            # destination doesn't need this: deleting its whole project file
-            # below removes the item along with it.
-            dest_item_id = item['id']
-
-        transfer_record = {'destination_project_id': dest_id, 'doc_path': doc_rel, 'backlog_item_id': item['id']}
+    lock = _transfer_lock_for(transfer_key)
+    with lock:
+        # Re-read: another request holding this SAME lock may have just
+        # finished (or rolled back) an identical transfer while we were
+        # waiting -- the p_source loaded above, before the lock, can be stale.
         p_source = load_project(project_id) or p_source
-        transfers = p_source.setdefault('_brainstorm_transfers', {})
-        transfers[transfer_key] = transfer_record
-        save_project(project_id, p_source)
+        prior = (p_source.get('_brainstorm_transfers') or {}).get(transfer_key)
+        if prior:
+            return jsonify({'ok': True, 'idempotent': True, **prior}), 200
 
-        return jsonify({'ok': True, 'idempotent': False, **transfer_record}), 201
-    except Exception as e:
-        _log(f'[brainstorm-transfer] failed, rolling back: {e}', flush=True)
+        created_project = False
+        doc_path = None
+        created_folder = None  # workspace folder THIS request auto-created (mode=='create', no caller-supplied folder)
+        dest_item_id = None    # backlog item inserted into an already-existing destination (mode=='existing')
+        if mode == 'create':
+            dest_id = None  # set once creation succeeds, below
         try:
-            if doc_path is not None and doc_path.exists():
-                doc_path.unlink()
-        except Exception as e2:
-            _log(f'[brainstorm-transfer] rollback doc cleanup failed: {e2}', flush=True)
-        try:
-            if dest_item_id and dest_id:
-                p_dest_rb = load_project(dest_id)
-                if p_dest_rb is not None:
-                    p_dest_rb['backlog'] = [b for b in (p_dest_rb.get('backlog') or [])
-                                            if b.get('id') != dest_item_id]
-                    save_project(dest_id, p_dest_rb)
-        except Exception as e2:
-            _log(f'[brainstorm-transfer] rollback backlog-item cleanup failed: {e2}', flush=True)
-        try:
-            if created_project and dest_id:
-                (DATA_DIR / f'{dest_id}.json').unlink(missing_ok=True)
-        except Exception as e2:
-            _log(f'[brainstorm-transfer] rollback project cleanup failed: {e2}', flush=True)
-        try:
-            if created_folder is not None and created_folder.exists() and not any(created_folder.iterdir()):
-                created_folder.rmdir()
-        except Exception as e2:
-            _log(f'[brainstorm-transfer] rollback folder cleanup failed: {e2}', flush=True)
-        return jsonify({'error': f'transfer failed: {e}'}), 500
+            if mode == 'create':
+                filepath = DATA_DIR / f'{new_id}.json'
+                if filepath.exists():
+                    return jsonify({'error': f'project id "{new_id}" already exists'}), 409
+                name = str(dest.get('name') or '').strip() or new_id
+                domain = str(dest.get('domain') or 'general').strip() or 'general'
+                folder = str(dest.get('folder') or '').strip()
+                description = str(dest.get('description') or '').strip()
+                if not folder:
+                    base = Path(state.CONFIG.get('auto_workspace_base') or str(Path.home() / 'MissionControl'))
+                    base.mkdir(parents=True, exist_ok=True)
+                    candidate = base / new_id
+                    n = 1
+                    while candidate.exists():
+                        candidate = base / f'{new_id}_{n}'
+                        n += 1
+                    candidate.mkdir(parents=True, exist_ok=True)
+                    folder = str(candidate)
+                    created_folder = candidate
+                refusal = _refuse_project_path_in_install_dir(folder, None)
+                if refusal:
+                    return refusal
+                try:
+                    Path(folder).mkdir(parents=True, exist_ok=True)
+                except Exception as e:
+                    return jsonify({'error': f'could not create workspace folder: {e}'}), 500
+                ts = now_iso()
+                save_project(new_id, {
+                    'id': new_id, 'name': name, 'domain': domain, 'status': 'active',
+                    'project_path': folder, 'description': description,
+                    'last_updated': ts, 'backlog': [],
+                    'activity_log': [{'ts': ts, 'msg': f'Created from Brainstorm exploration ({claude_session_id} v{version})'}],
+                })
+                created_project = True
+                dest_id = new_id
+            else:
+                p_dest_check = load_project(dest_id)
+                if p_dest_check is None:
+                    return jsonify({'error': 'destination project not found'}), 404
+                if p_dest_check.get('_is_ideas_workspace') or p_dest_check.get('_is_incognito_project'):
+                    return jsonify({'error': 'cannot transfer into a reserved workspace'}), 400
+
+            p_dest = load_project(dest_id)
+            if p_dest is None:
+                raise RuntimeError(f'destination project "{dest_id}" vanished mid-transfer')
+
+            doc_rel = f'docs/brainstorm/{claude_session_id}-v{version}.md'
+            doc_path = Path(p_dest.get('project_path') or '') / doc_rel
+            doc_path.parent.mkdir(parents=True, exist_ok=True)
+            doc_content = (
+                f"# Exploration brief -- v{version}\n\n"
+                f"Source: project `{project_id}`, Brainstorm conversation `{claude_session_id}`.\n\n"
+                "---\n\n"
+                f"{brief_text}\n"
+            )
+            doc_path.write_text(doc_content, encoding='utf-8')
+
+            backlog_text = str(body.get('backlog_text') or '').strip()
+            if not backlog_text:
+                backlog_text = f'Run the next experiment from Brainstorm exploration v{version} (see {doc_rel})'
+            backlog = p_dest.setdefault('backlog', [])
+            _ensure_backlog_numbers(p_dest)
+            seq = int(p_dest.get('backlog_seq') or 0) + 1
+            p_dest['backlog_seq'] = seq
+            item = {
+                'id': str(uuid.uuid4())[:8],
+                'num': seq,
+                'key': _format_backlog_key(p_dest.get('backlog_key'), seq),
+                'text': backlog_text,
+                'priority': 'normal',
+                'status': 'open',
+                'created_at': now_iso(),
+                'done_at': None,
+                'source': 'brainstorm-handoff',
+                'attachments': [],
+                'links': [
+                    {'type': 'brainstorm-doc', 'path': doc_rel},
+                    {'type': 'brainstorm-source', 'project_id': project_id,
+                     'claude_session_id': claude_session_id, 'version': version},
+                ],
+            }
+            backlog.insert(0, item)
+            p_dest['last_updated'] = now_iso()
+            save_project(dest_id, p_dest)
+            if not created_project:
+                # Only track for rollback when the destination predates this
+                # request -- a failure after this point must not leave the item
+                # behind for a retry to duplicate (MC-990 D2). A newly-created
+                # destination doesn't need this: deleting its whole project file
+                # below removes the item along with it.
+                dest_item_id = item['id']
+
+            transfer_record = {'destination_project_id': dest_id, 'doc_path': doc_rel, 'backlog_item_id': item['id']}
+            p_source = load_project(project_id) or p_source
+            transfers = p_source.setdefault('_brainstorm_transfers', {})
+            transfers[transfer_key] = transfer_record
+            save_project(project_id, p_source)
+
+            return jsonify({'ok': True, 'idempotent': False, **transfer_record}), 201
+        except Exception as e:
+            _log(f'[brainstorm-transfer] failed, rolling back: {e}', flush=True)
+            try:
+                if doc_path is not None and doc_path.exists():
+                    doc_path.unlink()
+            except Exception as e2:
+                _log(f'[brainstorm-transfer] rollback doc cleanup failed: {e2}', flush=True)
+            try:
+                if dest_item_id and dest_id:
+                    p_dest_rb = load_project(dest_id)
+                    if p_dest_rb is not None:
+                        p_dest_rb['backlog'] = [b for b in (p_dest_rb.get('backlog') or [])
+                                                if b.get('id') != dest_item_id]
+                        save_project(dest_id, p_dest_rb)
+            except Exception as e2:
+                _log(f'[brainstorm-transfer] rollback backlog-item cleanup failed: {e2}', flush=True)
+            try:
+                if created_project and dest_id:
+                    (DATA_DIR / f'{dest_id}.json').unlink(missing_ok=True)
+            except Exception as e2:
+                _log(f'[brainstorm-transfer] rollback project cleanup failed: {e2}', flush=True)
+            try:
+                if created_folder is not None and created_folder.exists() and not any(created_folder.iterdir()):
+                    created_folder.rmdir()
+            except Exception as e2:
+                _log(f'[brainstorm-transfer] rollback folder cleanup failed: {e2}', flush=True)
+            return jsonify({'error': f'transfer failed: {e}'}), 500
