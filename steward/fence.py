@@ -1322,6 +1322,30 @@ def _should_arm_for_unattended_trigger() -> bool:
     return info['fence_unattended_enabled']
 
 
+# One-shot "Allow once" pass (MC-994 follow-up, 2026-09-28). A human click in
+# the chat header (POST .../agent/<sid>/attend-once, human-only) grants ONE
+# pass; this hook spends it on the single blocked call it permits. The consume
+# route can only SPEND an existing pass, never create one. Fails CLOSED: any
+# lookup failure means no pass, so the action stays blocked.
+_PASS_INELIGIBLE_MARK = 'human-owned'
+
+
+def _consume_attend_once_pass() -> bool:
+    sid = _session_id_from_env()
+    if not sid:
+        return False
+    try:
+        req = urllib.request.Request(
+            f'{_MC_API_BASE}/api/session/attend-once/consume',
+            data=json.dumps({'claude_session_id': sid}).encode('utf-8'),
+            headers={'Content-Type': 'application/json'}, method='POST')
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+    except Exception:
+        return False
+    return data.get('consumed') is True
+
+
 def main(argv=None) -> int:
     """PreToolUse hook entrypoint. Reads the hook JSON on stdin.
 
@@ -1416,9 +1440,14 @@ def main(argv=None) -> int:
     # Confirmed steward (marker=True) always enforces. Everything else
     # (confirmed non-steward OR genuinely unknown) falls through to the
     # generalized trigger_type signal — see the corrected gate above.
+    # Only a session armed purely by the server-recorded trigger_type may spend
+    # a human's one-shot "Allow once" pass (MC-994 follow-up). A confirmed
+    # steward cycle or a launcher-armed (Codex --armed) run never can.
+    pass_eligible = False
     if not armed_by_launcher and _session_is_steward(payload) is not True:
         if not _should_arm_for_unattended_trigger():
             return 0
+        pass_eligible = True
 
     decision = FenceDecision(False, '')
     for call_name, call_input in calls:
@@ -1432,10 +1461,23 @@ def main(argv=None) -> int:
     if not decision.blocked:
         return 0
 
+    # Supply-chain edits (the fence's own code, learning-loop artifacts) are
+    # never passable: a pass granted for one action must not be spendable on
+    # disarming the guard itself. Those need a genuinely attended session.
+    if (pass_eligible and _PASS_INELIGIBLE_MARK not in decision.reason
+            and _consume_attend_once_pass()):
+        return 0
+
+    if pass_eligible and _PASS_INELIGIBLE_MARK not in decision.reason:
+        how = ('The human can click "Allow once" in the chat header to permit '
+               'the next blocked action (one action, expires in 10 minutes). '
+               'Do NOT retry it until they say they have.')
+    else:
+        how = ('Do NOT retry it. Instead post a `DECISION NEEDED:` note to your '
+               'charter with the exact command so the human can approve it.')
     msg = (f"STEWARD FENCE blocked this action: {decision.reason}. "
            f"This is irreversible/mutating and you are running unattended. "
-           f"Do NOT retry it. Instead post a `DECISION NEEDED:` note to your "
-           f"charter with the exact command so the human can approve it.")
+           f"{how}")
     # Exit 2 + stderr is the fail-CLOSED block contract: it denies the tool call
     # across all CLI versions (verified against hooks.md — exit 2 blocks even
     # under --dangerously-skip-permissions). JSON permissionDecision is the

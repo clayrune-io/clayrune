@@ -29,6 +29,9 @@ REPO = Path(__file__).resolve().parents[1]
 def _clean_env(monkeypatch):
     # Every test controls CLAUDE_CODE_SESSION_ID explicitly.
     monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
+    # No "Allow once" pass unless a test grants one, and never reach the
+    # live server's consume route from the suite.
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', lambda: False)
 
 
 def _transcript(tmp_path, first_user_text):
