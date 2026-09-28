@@ -468,7 +468,7 @@ _SHELL_SPLIT_RE = re.compile(r'&&|\|\||[|;\n]')
 
 
 _NET_TOOL_RE = re.compile(
-    r'\b(curl|wget|http|invoke-webrequest|invoke-restmethod|iwr)\b', re.I)
+    r'\b(curl|wget|http|invoke-webrequest|invoke-restmethod|iwr|irm)\b', re.I)
 
 
 def _touches_nonlocal_network(cmd: str) -> FenceDecision:
@@ -499,14 +499,24 @@ def _touches_nonlocal_network(cmd: str) -> FenceDecision:
         # (false-positive incident, 2026-09-27: `curl -G --data-urlencode`
         # read as a mutating send). An explicit -X still overrides it.
         get_override = bool(re.search(r'(^|\s)(-G\b|--get\b)', seg, re.I))
+        # Ordinary spellings of the same send (Fenn's review #6, N6). These
+        # are the tools' documented forms, not re-spellings; the position
+        # against chasing evasions (2026-09-12) still stands. Any option whose
+        # value is a mutating verb counts (`-X`, `-sX`, `--request`,
+        # `--method=`, `-Method:`, `-CustomMethod`), so this matches the
+        # option SHAPE rather than a list of names. Attached short data
+        # (`-dvalue`, `-Tfile`, `-Fk=v`) is curl-only: for Invoke-WebRequest
+        # `-T...` is `-TimeoutSec`, and a GET must not read as a send.
+        attached = r'|-d\S|-T\S|-F\S' if re.search(r'\bcurl\b', seg, re.I) else ''
         mutating = (
-            bool(re.search(r'-X\s*(POST|PUT|PATCH|DELETE)', seg, re.I))
+            bool(re.search(r'(^|\s)--?[A-Za-z][\w-]*[\s=:]*["\']?'
+                           r'(POST|PUT|PATCH|DELETE)\b', seg, re.I))
+            or bool(re.search(r'(^|\s)(--json\b|--body-data\b|--body-file\b)', seg))
             or (not get_override and bool(re.search(
                 r'(^|\s)(--data\b|--data-raw\b|--data-binary\b|--data-ascii\b|'
                 r'--data-urlencode\b|-d\b|--upload-file\b|-T\b|-F\b|--form\b|'
-                r'--post-data\b|--post-file\b)', seg, re.I)))
-            or bool(re.search(r'-Method\s+(POST|PUT|PATCH|DELETE)', seg, re.I))
-            or bool(re.search(r'(^|\s)(-Body\b|-InFile\b)', seg, re.I))
+                r'--post-data\b|--post-file\b' + attached + r')', seg)))
+            or bool(re.search(r'(^|\s)(-Body\b|-InFile\b|-Form\b)', seg, re.I))
         )
         if not mutating:
             continue
@@ -1405,82 +1415,21 @@ def _is_plain_single_invocation(cmd: str) -> bool:
     heads = {_pass_head_name(argv[0]), _pass_head_name(text.split()[0])}
     if heads & _PASS_WRAPPER_HEADS:
         return False
-    if heads & _PASS_REPLAYING_TRANSFER_HEADS:
-        return False
-    if 'curl' in heads:
-        return _is_single_transfer('curl', argv[1:])
-    return True
+    return not heads & _PASS_TRANSFER_HEADS
 
 
-# Transfer tools send one request PER target, so one invocation is not one
-# operation for them (Fenn's reviews #3-#5, N4). The pass is not bound to a
-# command, so capping each call at one request is the remaining limit.
-# Rounds #3 and #4 each found a spelling past a deny-list, so curl is judged
-# by an allowlist: every option known, short clusters walked letter by
-# letter, every value inspected, config/input sources refused, no glob
-# brackets. Review #5 showed a single URL still is not a single request when
-# the tool REPLAYS it: `-L` resends a POST on a 307, `--retry` on a 503. Those
-# are left off the list. wget and Invoke-WebRequest/-RestMethod follow
-# redirects and retry BY DEFAULT, so they are never passable at all.
-_PASS_REPLAYING_TRANSFER_HEADS = {
-    'wget', 'invoke-webrequest', 'iwr', 'invoke-restmethod', 'irm',
+# No HTTP transfer tool can spend a pass (Fenn's reviews #3-#6, N4). A single
+# invocation is not a single request for them: extra URLs, globs, config
+# files, redirect-follow and retry each turned one pass into 2-3 POSTs, and
+# after an argv allowlist closed those, curl's default config file
+# (`.curlrc` with `location` or `retry`) restored replay with nothing on the
+# command line. The pass is not bound to a command, so the only bound that
+# holds is not covering these tools at all. A blocked external send stays
+# blocked; the human can run it themselves.
+_PASS_TRANSFER_HEADS = {
+    'curl', 'wget', 'http', 'https', 'httpie', 'invoke-webrequest', 'iwr',
+    'invoke-restmethod', 'irm',
 }
-_PASS_CURL_SPEC = {
-    'short_arg': set('dHXouFAebcTwmxErCyYzQUtDP'),
-    'short_flag': set('sSfkivIgGjlnNOR0123469#J'),
-    'long_arg': {'--data', '--data-raw', '--data-binary', '--data-urlencode',
-                 '--data-ascii', '--json', '--header', '--request', '--output',
-                 '--user', '--form', '--form-string', '--user-agent', '--referer',
-                 '--cookie', '--cookie-jar', '--upload-file', '--write-out',
-                 '--max-time', '--connect-timeout', '--cacert', '--cert', '--key',
-                 '--oauth2-bearer', '--proxy', '--resolve', '--url', '--range',
-                 '--dump-header', '--limit-rate', '--max-filesize'},
-    'long_flag': {'--silent', '--show-error', '--fail', '--fail-with-body',
-                  '--compressed', '--insecure', '--include', '--verbose',
-                  '--http1.1', '--http2', '--globoff', '--get', '--head',
-                  '--no-progress-meter', '--remote-name', '--remote-header-name',
-                  '--no-buffer', '--ipv4', '--ipv6'},
-    'target_opts': {'--url'},
-}
-
-
-def _is_single_transfer(head: str, args: list) -> bool:
-    if any(ch in tok for tok in args for ch in '[]{}'):
-        return False
-    spec = _PASS_CURL_SPEC
-    targets = 0
-    i = 0
-    while i < len(args):
-        tok = args[i]
-        i += 1
-        if tok.startswith('--') and len(tok) > 2:
-            name, eq, _ = tok.partition('=')
-            if name in spec['long_flag'] and not eq:
-                continue
-            if name not in spec['long_arg']:
-                return False
-            if not eq:
-                if i >= len(args):
-                    return False
-                i += 1
-            if name in spec['target_opts']:
-                targets += 1
-            continue
-        if tok.startswith('-') and len(tok) > 1:
-            letters = tok[1:]
-            for j, ch in enumerate(letters):
-                if ch in spec['short_flag']:
-                    continue
-                if ch not in spec['short_arg']:
-                    return False
-                if j == len(letters) - 1:
-                    if i >= len(args):
-                        return False
-                    i += 1
-                break
-            continue
-        targets += 1
-    return targets == 1
 
 
 def _blocked_leaves(tool_name: str, tool_input: dict) -> list:

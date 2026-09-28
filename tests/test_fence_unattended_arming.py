@@ -507,15 +507,66 @@ def test_multi_target_transfer_never_consumes_a_pass(monkeypatch, tmp_path, comm
 @pytest.mark.parametrize('command', [
     'curl -s -X POST https://example.invalid/a -H "Content-Type: application/json" -d "x"',
     'curl -XPOST --url https://example.invalid/a',
+    'curl -s -X POST https://example.invalid/a',
 ])
-def test_single_target_transfer_still_consumes_a_pass(monkeypatch, tmp_path, command):
+def test_review6_curl_never_spends_a_pass(monkeypatch, tmp_path, command):
+    # Fenn's review #6 N4: a default ~/.curlrc (`location`, `retry = 1`)
+    # replays the POST with nothing on the command line, so no argv check
+    # can bound curl to one request. It is refused even with a pass on hand.
     spent = []
     monkeypatch.setattr(fence, '_consume_attend_once_pass', lambda: spent.append(1) or True)
     rc = _run_main(monkeypatch, tmp_path,
                    first_user_text='Please go implement the fix we discussed',
                    command=command, session_id='sid-dispatch',
                    lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2 and spent == []
+
+
+def test_git_push_still_spends_one_pass(monkeypatch, tmp_path):
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', lambda: spent.append(1) or True)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command='git push', session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
     assert rc == 0 and spent == [1]
+
+
+@pytest.mark.parametrize('have_pass', [True, False])
+@pytest.mark.parametrize('command', [
+    'curl --request POST https://example.invalid/single',
+    'curl --json fixture https://example.invalid/single',
+    'curl -dfixture https://example.invalid/single',
+    'curl -X "POST" https://example.invalid/single',
+    'curl -sX POST https://example.invalid/single',
+    'curl --request POST -L https://example.invalid/redirect',
+    'curl --request POST https://example.invalid/a https://example.invalid/b',
+    'irm -Method POST -Uri https://example.invalid/single',
+    'iwr -Method:Post https://example.invalid/single',
+    'iwr -CustomMethod DELETE https://example.invalid/single',
+    'wget --method=POST https://example.invalid/single',
+])
+def test_review6_ordinary_mutation_spellings_are_blocked(monkeypatch, tmp_path, command, have_pass):
+    # Fenn's review #6 N6: these returned exit 0 with zero consumes, i.e. a
+    # remote mutation with no pass at all.
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass',
+                        lambda: spent.append(1) or have_pass)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2 and spent == []
+
+
+@pytest.mark.parametrize('command', [
+    'iwr -TimeoutSec 5 https://example.invalid/f -OutFile a',
+    'curl -fsSL https://example.invalid/i.sh -o i.sh',
+    'curl -D h.txt https://example.invalid/',
+    'curl -G --data-urlencode q=1 https://example.invalid/',
+])
+def test_review6_reads_are_not_sends(command):
+    assert not fence._touches_nonlocal_network(command).blocked
 
 
 _STORE = fence._LOCAL_AUTH_FILENAME
@@ -565,19 +616,6 @@ def test_review4_transfer_fanout_never_consumes_a_pass(monkeypatch, tmp_path, co
                    command=command, session_id='sid-dispatch',
                    lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
     assert rc == 2
-
-
-@pytest.mark.parametrize('command', [
-    'curl -s -X POST https://example.invalid/a',
-])
-def test_review4_single_target_forms_still_consume_a_pass(monkeypatch, tmp_path, command):
-    spent = []
-    monkeypatch.setattr(fence, '_consume_attend_once_pass', lambda: spent.append(1) or True)
-    rc = _run_main(monkeypatch, tmp_path,
-                   first_user_text='Please go implement the fix we discussed',
-                   command=command, session_id='sid-dispatch',
-                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
-    assert rc == 0 and spent == [1]
 
 
 @pytest.mark.parametrize('tool_name,command', [
