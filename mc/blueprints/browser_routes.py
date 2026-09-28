@@ -713,6 +713,27 @@ _UA_HIGH_ENTROPY_JS = (
     "]).then(v => JSON.stringify(v)) : null")
 
 
+# MC-992: _start_ua_guard also holds every page's and iframe's CHILD targets
+# (cross-site iframes, workers) so the UA override reaches them from their
+# first request. False restores the pre-MC-992 page-only guard; it exists so
+# the fail baseline can be re-measured (_scratch harness), not as a setting.
+_UA_GUARD_CHILDREN = True
+# Target types whose own Network domain carries the UA. Workers inherit their
+# frame's override (measured: a dedicated worker in the iframe reported
+# Chrome once its frame did), so they are only released, never overridden.
+_UA_OVERRIDE_TYPES = ('page', 'iframe')
+
+
+def _guard_ua_override(session, target_type):
+    """The UA an attaching target must present. An iframe matches the mode
+    the pane is in NOW (a mobile page with a desktop-UA frame inside it is a
+    mismatch of its own); a page keeps the desktop override the guard always
+    gave it -- the reader re-applies mobile to popups once it attaches."""
+    if target_type == 'iframe' and session.get('device_mode') == 'mobile':
+        return _mobile_ua_override(session)
+    return session.get('ua_override')
+
+
 def _start_ua_guard(session, port):
     """Make every tab present as the ordinary Chromium it is -- from its FIRST
     request -- and store the override on session['ua_override'].
@@ -836,12 +857,32 @@ def _start_ua_guard(session, port):
                     continue
                 p = msg.get('params') or {}
                 sid = p.get('sessionId')
+                ttype = (p.get('targetInfo') or {}).get('type')
                 try:
                     # Same connection, same session: Chromium runs these in
                     # order, so the override is in place before the release.
-                    ws.send(json.dumps({'id': 0, 'sessionId': sid,
-                                        'method': 'Network.setUserAgentOverride',
-                                        'params': session['ua_override']}))
+                    ua = _guard_ua_override(session, ttype)
+                    if ttype in _UA_OVERRIDE_TYPES and ua:
+                        ws.send(json.dumps({'id': 0, 'sessionId': sid,
+                                            'method': 'Network.setUserAgentOverride',
+                                            'params': ua}))
+                    # MC-992: the override is per TARGET, and a cross-site
+                    # iframe is its own target (an OOPIF). The browser-level
+                    # auto-attach above never sees one, so every OOPIF --
+                    # Cloudflare Turnstile's challenges.cloudflare.com frame
+                    # included -- said HeadlessChrome in navigator.userAgent
+                    # AND its User-Agent header while the page around it said
+                    # Chrome, and Turnstile failed every click with 600010.
+                    # Auto-attach each page/iframe's own children, held the
+                    # same way, so they arrive here too. Measured 2026-09-28:
+                    # nopecha.com challenge 0/6 -> 6/6, cjdropshipping login
+                    # 0/2 (600010) -> 2/2.
+                    if _UA_GUARD_CHILDREN and ttype in ('page', 'iframe'):
+                        ws.send(json.dumps({'id': 0, 'sessionId': sid,
+                                            'method': 'Target.setAutoAttach',
+                                            'params': {'autoAttach': True,
+                                                       'waitForDebuggerOnStart': True,
+                                                       'flatten': True}}))
                 finally:
                     if p.get('waitingForDebugger'):
                         ws.send(json.dumps({'id': 0, 'sessionId': sid,
@@ -1827,7 +1868,10 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
         args.append(f'--force-device-scale-factor={dpr}')
     args.append('about:blank')
     try:
-        proc = subprocess.Popen(args, stdout=subprocess.DEVNULL,
+        # stdin too: a host with no valid stdin handle (pytest capture, a
+        # service) otherwise fails the inherit with WinError 6.
+        proc = subprocess.Popen(args, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
                                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
     except Exception as e:
