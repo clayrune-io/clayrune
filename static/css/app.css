@@ -578,6 +578,13 @@
   }
   .sys-status-popover .ssp-refresh:hover { background: var(--accent-dim, var(--surface3)); }
   .sys-status-popover .ssp-refresh:disabled { opacity: 0.5; cursor: wait; }
+  .sys-status-popover .ssp-action-row {
+    display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px;
+  }
+  .sys-status-popover .ssp-action-row .ssp-refresh {
+    flex: 1 1 auto; text-align: center; text-decoration: none;
+    font-family: inherit; white-space: nowrap;
+  }
   .live-badge {
     display: flex; align-items: center; gap: 5px;
     color: var(--green-text); font-size: 10px;

@@ -27,6 +27,7 @@ from flask import Blueprint, jsonify, request
 import mc.agent_runtime as _agent_runtime
 from mc import allowance_state as _allowance_state
 from mc import obs, state
+from mc.blueprints.terminal_routes import launch_pipe_session
 from mc.blueprints.workflow_routes import _is_agent_caller
 from mc import slash_commands as slash_cmds
 from mc.atomic_json import write_json_atomic
@@ -734,6 +735,104 @@ def _fetch_codex_weekly_usage() -> Optional[dict]:
     return dict(result) if result else result
 
 
+# MC-989 Part A — the usage POPUP wants more than the bottom strip's single
+# weekly %: 5-hour window (when the record carries one), plan_type, and
+# credits balance, plus how stale the reading is (Codex's number is a
+# read of the CLI's own last turn, not a live fetch — it only updates when a
+# Codex turn actually runs). A SIBLING of `_fetch_codex_weekly_usage` rather
+# than an extension of it: that function's contract (used by the bottom
+# strip + pinned by tests/test_codex_weekly_usage.py) is "weekly window or
+# None", and a record with only a five-hour window but no weekly one must
+# keep returning None there. This one scans independently and returns
+# whatever detail the latest record actually carries, gated per-window (not
+# all-or-nothing) by the same staleness rule as the weekly-only reader.
+_CODEX_FIVE_HOUR_WINDOW_MINUTES = 300
+_CODEX_DETAIL_TTL = 60.0  # seconds — matches the weekly reader's cadence
+_codex_detail_cache: dict = {'ts': 0.0, 'data': None}
+
+
+def _fetch_codex_usage_detail() -> Optional[dict]:
+    """Return {'weekly': {...}|None, 'five_hour': {...}|None, 'plan_type':
+    str|None, 'credits': {...}|None, 'sampled_at': ISO8601|None} from the
+    latest Codex rollout file's own `rate_limits` block, or None if no
+    rollout file yields anything at all. Each window dict is
+    {utilization, resets_at} and is independently omitted if its own
+    `resets_at` is missing or already elapsed (see `_fetch_codex_weekly_usage`
+    docstring) — `plan_type`/`credits` carry no time window, so they're
+    included whenever the record has them regardless of window staleness.
+    """
+    now = _time.time()
+    cached = _codex_detail_cache.get('data')
+    if cached is not None and (now - _codex_detail_cache.get('ts', 0.0)) < _CODEX_DETAIL_TTL:
+        return dict(cached) if cached else cached
+    result = None
+    try:
+        files = _agent_runtime._codex_rollout_files()
+        if files:
+            latest = max(files, key=lambda f: f.stat().st_mtime)
+            st = latest.stat()
+            mtime = st.st_mtime
+            size = st.st_size
+            with open(latest, 'rb') as fh:
+                if size > _CODEX_TAIL_BYTES:
+                    fh.seek(size - _CODEX_TAIL_BYTES)
+                chunk = fh.read()
+            lines = chunk.decode('utf-8', errors='ignore').split('\n')
+            for line in reversed(lines):
+                if '"token_count"' not in line or '"rate_limits"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (ValueError, json.JSONDecodeError):
+                    continue
+                info = (rec.get('payload') or {}) if isinstance(rec.get('payload'), dict) else rec
+                rl = info.get('rate_limits') if isinstance(info, dict) else None
+                if not isinstance(rl, dict):
+                    continue
+
+                def _window(win) -> Optional[dict]:
+                    if not isinstance(win, dict):
+                        return None
+                    resets_at_raw = win.get('resets_at')
+                    try:
+                        resets_epoch = float(resets_at_raw) if resets_at_raw is not None else None
+                    except (TypeError, ValueError):
+                        resets_epoch = None
+                    if resets_epoch is None or resets_epoch <= now:
+                        return None
+                    return {
+                        'utilization': win.get('used_percent'),
+                        'resets_at': datetime.fromtimestamp(resets_epoch, tz=timezone.utc).isoformat(),
+                    }
+
+                weekly = five_hour = None
+                for slot in ('primary', 'secondary'):
+                    win = rl.get(slot)
+                    wmin = win.get('window_minutes') if isinstance(win, dict) else None
+                    if wmin == _CODEX_WEEKLY_WINDOW_MINUTES:
+                        weekly = _window(win)
+                    elif wmin == _CODEX_FIVE_HOUR_WINDOW_MINUTES:
+                        five_hour = _window(win)
+
+                plan_type = rl.get('plan_type')
+                credits = rl.get('credits') if isinstance(rl.get('credits'), dict) else None
+                if weekly or five_hour or plan_type or credits:
+                    result = {
+                        'weekly': weekly,
+                        'five_hour': five_hour,
+                        'plan_type': plan_type,
+                        'credits': credits,
+                        'sampled_at': datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                    }
+                break  # latest token_count record found — stop scanning
+    except Exception as e:
+        _log(f"[system_usage] codex usage detail read failed: {e}", flush=True)
+        result = None
+    _codex_detail_cache['ts'] = now
+    _codex_detail_cache['data'] = result
+    return dict(result) if result else result
+
+
 @bp.route('/api/system/usage', methods=['GET'])
 def system_usage_get():
     """Return local token-usage aggregates derived from ~/.claude/stats-cache.json.
@@ -822,6 +921,12 @@ def system_usage_get():
             provider_weekly_usage[_vendor]['exhausted'] = True
             provider_weekly_usage[_vendor]['exhausted_display'] = _allowance_state.resets_clause(_entry)
 
+    # MC-989 Part A: Codex detail for the Usage tab (weekly + 5h + plan_type +
+    # credits + sampled_at) — the bottom strip only ever wanted the one
+    # weekly %, this is the fuller picture the popup shows. None when no
+    # rollout file yields anything at all (see `_fetch_codex_usage_detail`).
+    codex_usage_detail = _fetch_codex_usage_detail()
+
     return jsonify({
         'available': True,
         'today': mc.get('today', {}),
@@ -840,6 +945,82 @@ def system_usage_get():
         # numbers, keyed by provider name; a provider with no real weekly %
         # signal is simply absent, never a 0%/placeholder entry.
         'provider_weekly_usage': provider_weekly_usage,
+        # Fuller Codex breakdown for the Usage tab (MC-989 Part A). None when
+        # no rollout file yields anything; see `_fetch_codex_usage_detail`.
+        'codex_usage_detail': codex_usage_detail,
+    })
+
+
+@bp.route('/api/system/usage/refresh', methods=['POST'])
+def system_usage_refresh():
+    """Bust the OAuth + Codex usage caches, then return the same payload as
+    GET /api/system/usage (MC-989). Codex's own number only changes when a
+    Codex turn actually runs — this can't force a fresh sample, it just lets
+    a sample that already landed since the last 60s window show immediately
+    instead of waiting out the TTL.
+    """
+    _oauth_usage_cache['ts'] = 0.0
+    _codex_usage_cache['ts'] = 0.0
+    _codex_detail_cache['ts'] = 0.0
+    return system_usage_get()
+
+
+# MC-989 Part B — one bare-CLI terminal pop-out per provider that has an
+# interactive, human-only reset command. NEVER auto-types or pipes the
+# command itself: a banked Codex reset is one-time and belongs to the account
+# holder, and Claude's /limit-reset is gated the same way — the human reads
+# the instruction and types it. `launch_pipe_session` (no pywinpty
+# dependency) is enough: these are simple line-oriented REPL prompts, not a
+# raw-mode TUI, and the terminal pop-out's own "Send input" box already
+# round-trips line-buffered stdin for exactly this shape (see
+# static/js/terminal.js `disableStdin: !isPty`).
+_USAGE_RESET_INSTRUCTIONS = {
+    'claude': ('Type /limit-reset and press Enter to reset the 5-hour session '
+               'limit (once per week — the weekly cap still applies).'),
+    'codex': ('Type /usage, then choose "Redeem usage limit reset" if your '
+              'account has one banked.'),
+}
+
+
+def _usage_reset_cwd() -> Optional[str]:
+    """Scratch cwd for the reset terminal — same pattern as agent_routes.py's
+    `_auth_probe_cwd`: DATA_DIR's PARENT, never DATA_DIR itself (anything
+    dropped inside DATA_DIR is treated as a project record by
+    load_projects())."""
+    try:
+        d = _DATA_ROOT / 'data' / '_usage_reset'
+        d.mkdir(parents=True, exist_ok=True)
+        return str(d.resolve())
+    except Exception:
+        return None
+
+
+@bp.route('/api/system/usage/reset-terminal', methods=['POST'])
+def system_usage_reset_terminal():
+    """Open a terminal pop-out running the bare provider CLI so a human can
+    type its own interactive reset command. Returns the instruction text for
+    the frontend to show alongside the pop-out; never sends the command
+    itself (see module comment above)."""
+    data = request.get_json(silent=True) or {}
+    provider = (data.get('provider') or '').strip().lower()
+    instruction = _USAGE_RESET_INSTRUCTIONS.get(provider)
+    if not instruction:
+        return jsonify({'ok': False, 'error': f'no terminal reset flow for provider: {provider}'}), 400
+    try:
+        rt = _agent_runtime.get_runtime(provider)
+    except KeyError:
+        return jsonify({'ok': False, 'error': f'unknown provider: {provider}'}), 404
+    bin_path = rt.resolve_binary()
+    if not bin_path:
+        return jsonify({'ok': False, 'error': f'{provider} CLI is not installed'}), 400
+    session_id, err = launch_pipe_session('_usage_reset', str(bin_path), cwd=_usage_reset_cwd())
+    if err:
+        return jsonify({'ok': False, 'error': err}), 500
+    return jsonify({
+        'ok': True,
+        'session_id': session_id,
+        'command': str(bin_path),
+        'instruction': instruction,
     })
 
 
