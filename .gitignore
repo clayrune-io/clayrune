@@ -87,6 +87,7 @@ data/agent_labels.json
 data/remote_enrollment_liveness.json
 data/coordination/
 data/.schedule_claims/
+data/diag/
 
 # Build artifacts
 build/

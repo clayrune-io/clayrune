@@ -23,6 +23,96 @@
   function layoutH() {
     return Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0);
   }
+  // ── Self-triggering viewport diagnostic (MC-988 part 3) ───────────────────
+  // The "half-height pane after Send" report (Galaxy Z Fold, OneUI, the
+  // Capacitor WebView) didn't reproduce in desktop emulation or on a stock
+  // Pixel 6 AVD (docs/_journal/40ff4ab5-mc988-part2-mobile-viewport-repro.md)
+  // — it can only be caught live, on Ron's own device. This answers ONE
+  // question without anything for him to switch on: is the void INSIDE the
+  // WebView (appVh/_lastApplied stuck short while layoutH() has already
+  // recovered — a JS bug in this file) or OUTSIDE it (layoutH() itself is
+  // still short relative to the screen — the native WebView was never
+  // resized back, not fixable here)? A rolling log of what this file saw
+  // plus one snapshot at the moment it looks stuck settles it either way.
+  // Gated to <=960px (mobile only) and capped to one POST per page load.
+  const _DIAG_MAX_EVENTS = 30;
+  const _DIAG_STUCK_MS = 1500;
+  let _diagEvents = [];
+  let _diagStuckSince = 0;
+  let _diagSent = false;
+  function _diagIsMobile() { return window.innerWidth <= 960; }
+  function _diagNumbers() {
+    return {
+      innerHeight: window.innerHeight || 0,
+      clientHeight: document.documentElement.clientHeight || 0,
+      outerHeight: window.outerHeight || 0,
+      screenHeight: (window.screen && window.screen.height) || 0,
+      screenAvailHeight: (window.screen && window.screen.availHeight) || 0,
+      vvHeight: vv ? vv.height : null,
+      vvOffsetTop: vv ? vv.offsetTop : null,
+      appVh: _lastApplied || 0,
+      lastApplied: _lastApplied,
+    };
+  }
+  // Never allowed to block or delay apply() — every call site adds this
+  // AFTER the real work, and every failure inside is swallowed.
+  function _diagRecord(source) {
+    if (!_diagIsMobile()) return;
+    try {
+      const row = _diagNumbers();
+      row.ts = Date.now();
+      row.source = source;
+      _diagEvents.push(row);
+      if (_diagEvents.length > _DIAG_MAX_EVENTS) _diagEvents.shift();
+    } catch (e) { /* diagnostic only — never throw */ }
+  }
+  function _diagOpenModalHeight() {
+    try {
+      if (typeof openModals === 'undefined') return null;
+      for (const entry of openModals.values()) {
+        if (!entry || entry.minimized || !entry.element) continue;
+        return entry.element.getBoundingClientRect().height;
+      }
+    } catch (e) { /* best-effort */ }
+    return null;
+  }
+  function _diagSend() {
+    if (_diagSent) return;
+    _diagSent = true;
+    try {
+      const payload = JSON.stringify({
+        ts: Date.now(),
+        events: _diagEvents.slice(),
+        current: _diagNumbers(),
+        modalHeight: _diagOpenModalHeight(),
+        devicePixelRatio: window.devicePixelRatio || null,
+        ua: navigator.userAgent || '',
+        capacitor: !!window.Capacitor,
+      });
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon('/api/diag/viewport', new Blob([payload], { type: 'application/json' }));
+      } else {
+        fetch('/api/diag/viewport', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: payload, keepalive: true,
+        }).catch(() => {});
+      }
+    } catch (e) { /* fire-and-forget — never throw */ }
+  }
+  // Stuck iff no field is focused (a focused field's inset IS the keyboard,
+  // not a bug) AND either half of the INSIDE/OUTSIDE test above holds, for
+  // >=1.5s straight — a single bad reading (mid-transition) must not fire.
+  function _diagCheckStuck() {
+    if (_diagSent || !_diagIsMobile()) return;
+    if (_isField(document.activeElement)) { _diagStuckSince = 0; return; }
+    const lh = layoutH();
+    const availH = (window.screen && window.screen.availHeight) || 0;
+    const stuck = (_lastApplied > 0 && _lastApplied < lh - 100)
+                || (availH > 0 && lh < 0.75 * availH);
+    if (!stuck) { _diagStuckSince = 0; return; }
+    if (!_diagStuckSince) { _diagStuckSince = Date.now(); return; }
+    if (Date.now() - _diagStuckSince >= _DIAG_STUCK_MS) _diagSend();
+  }
   function _renudgeOpenModals() {
     try {
       if (typeof openModals === 'undefined' || typeof sizeAgentChat !== 'function') return;
@@ -82,7 +172,7 @@
     if (_fieldLooksLive()) return;
     forceFull();
   }
-  function apply() {
+  function apply(_diagSource) {
     _raf = 0;
     const lh = layoutH();
     const vh = (vv && vv.height) ? vv.height : lh;
@@ -100,6 +190,9 @@
     const grew = h > _lastApplied;
     _lastApplied = h;
     document.documentElement.style.setProperty('--mc-app-vh', h + 'px');
+    // requestAnimationFrame(apply) passes a DOMHighResTimeStamp as the first
+    // arg — only a real string source (an explicit call site below) counts.
+    _diagRecord(typeof _diagSource === 'string' ? _diagSource : 'apply');
     // sizeAgentChat latches EXPLICIT pixel heights onto the tab content, agent
     // panel, chat and output. The modal's own ResizeObserver re-runs it, but
     // only once layout has settled — re-run it directly on the way back up so
@@ -128,31 +221,32 @@
   // write the full layout height immediately, bypassing the focus/inset gate
   // for this one write, then let settle() reassert a real inset shortly after
   // if resuming genuinely re-opened the keyboard (e.g. an autofocus).
-  function forceFull() {
+  function forceFull(_diagSource) {
     _vvTrusted = false;  // don't let apply()'s own settle() calls undo this with the same stale reading
     const lh = layoutH();
     _lastApplied = -1;  // defeat the h === _lastApplied no-op guard in apply()
     document.documentElement.style.setProperty('--mc-app-vh', lh + 'px');
     _lastApplied = lh;
+    _diagRecord(typeof _diagSource === 'string' ? _diagSource : 'forceFull');
     _renudgeOpenModals();
     settle();
   }
   apply();
   if (vv) {
-    vv.addEventListener('resize', () => { _vvTrusted = true; schedule(); });
-    vv.addEventListener('scroll', () => { _vvTrusted = true; schedule(); });
+    vv.addEventListener('resize', () => { _vvTrusted = true; schedule(); _diagRecord('vv-resize'); });
+    vv.addEventListener('scroll', () => { _vvTrusted = true; schedule(); _diagRecord('vv-scroll'); });
   }
-  window.addEventListener('resize', schedule);
+  window.addEventListener('resize', () => { schedule(); _diagRecord('window-resize'); });
   // A one-shot apply() at a guessed 200ms couldn't help if the post-rotation
   // layout/vv values hadn't settled yet — same flakiness settle() already
   // exists to cover, so use it here too instead of a single fixed-delay guess.
   window.addEventListener('orientationchange', () => setTimeout(settle, 200));
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') forceFull(); });
-  window.addEventListener('pageshow', forceFull);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') forceFull('visibility'); });
+  window.addEventListener('pageshow', () => forceFull('visibility'));
   // Keyboard show/hide tracks focus entering/leaving a text field — the most
   // reliable signal when the vv event is flaky. Settle on both.
-  document.addEventListener('focusin', e => { if (_isField(e.target)) settle(); });
-  document.addEventListener('focusout', e => { if (_isField(e.target)) settle(); });
+  document.addEventListener('focusin', e => { if (_isField(e.target)) { settle(); _diagRecord('focusin'); } });
+  document.addEventListener('focusout', e => { if (_isField(e.target)) { settle(); _diagRecord('focusout'); } });
   // Down-button keyboard dismiss keeps focus ON the field and fires NEITHER a
   // focusout NOR (on some Android WebViews) a visualViewport 'resize' — so
   // nothing re-runs apply() and the modal stays pinned short (the reported
@@ -182,6 +276,8 @@
     if (_isField(document.activeElement)) return;
     if (layoutH() - _lastApplied > 6) schedule();
   }, 500);
+  // Same 500ms cadence carries the stuck-pane diagnostic — no separate timer.
+  setInterval(_diagCheckStuck, 500);
   // NO standing timer for a focused field (Dave, 2026-09-25 review of 8d4ca7d).
   // An 8s invariant gated on RECENT_ACTIVITY_MS fires during every ordinary
   // 2-8s pause with a genuinely open keyboard (reading the reply, thinking,
@@ -221,7 +317,7 @@
   // rAF/timeout/watchdog next happens to fire. `apply()` already forces
   // inset=0 once the field is no longer focused, so this doesn't need its
   // own "pretend the keyboard is gone" branch — it just needs to run NOW.
-  window.mcRestoreFullHeight = apply;
+  window.mcRestoreFullHeight = () => apply('send');
   // Exposed for updateAgentStatusUI (index.html): a turn settling (running →
   // idle/error/completed) deliberately skips the full modal rebuild (MC-940 —
   // rebuilding the composer every turn cost ~205ms/keystroke on mobile), so
