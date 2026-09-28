@@ -196,10 +196,6 @@
 
     _stack = [{ route: 'home', params: {} }];
     deskV1Render();
-
-    // Opened maximized (T0a spec) — rides the existing snap machinery rather
-    // than a bespoke full-size mode; no-op on mobile/narrow (_snapEnabled()).
-    if (typeof window.toggleModalMaximize === 'function') window.toggleModalMaximize(MODAL_ID);
   }
 
   window.deskV1Open = deskV1Open;

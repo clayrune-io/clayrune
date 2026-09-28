@@ -301,6 +301,46 @@
     });
   }
 
+  // ── Confirm sheet (item 3, MC-977 R0 UX pass) — generic version of the
+  // overlay/scrim/sheet T2b's Start sheet and widening-confirm already built
+  // (desk-v1-rules.js's deskV1OpenStartSheet/_openWideningConfirm), pulled
+  // here so a caller outside that file (the campaign/Home delete flow) can
+  // reuse the SAME in-page sheet instead of window.confirm() — d146df0's own
+  // rule (native confirm blocks the render thread and can't be styled)
+  // applies just as much to delete as it did to widening authority. Reuses
+  // the exact class names desk-v1.css already defines for
+  // .desk-v1-rules-overlay/-scrim/-sheet/... so no new CSS is needed and the
+  // two call sites render pixel-identical. Appended to document.body, not
+  // `.desk-v1-shell` — same stacking-context reason d146df0 fixed: the shell
+  // lives inside the Desk's own z-indexed `.modal-window`, so nothing inside
+  // it can out-rank an overlay appended straight to body.
+  function openConfirmSheet(opts) {
+    opts = opts || {};
+    const wrap = document.createElement('div');
+    wrap.className = 'desk-v1-rules-confirm-overlay';
+    wrap.innerHTML = `
+      <div class="desk-v1-rules-scrim" data-confirm-scrim></div>
+      <div class="desk-v1-rules-sheet" role="dialog" aria-modal="true" aria-label="${esc(opts.title || '')}">
+        <div class="desk-v1-rules-sheet-title">${esc(opts.title || '')}</div>
+        <div class="desk-v1-rules-sheet-body"><p class="desk-v1-rules-confirmtext">${esc(opts.body || '')}</p></div>
+        ${opts.note ? `<div class="desk-v1-rules-sheet-note">${esc(opts.note)}</div>` : ''}
+        <div class="desk-v1-rules-sheet-actions">
+          <button type="button" class="desk-v1-rules-sheet-cancel" data-confirm-decline>${esc(opts.cancelLabel || 'Cancel')}</button>
+          <button type="button" class="desk-v1-rules-sheet-confirm" data-confirm-accept>${esc(opts.confirmLabel || 'Confirm')}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); decline(); } };
+    function cleanup() { wrap.remove(); document.removeEventListener('keydown', onKey, true); }
+    function decline() { cleanup(); if (opts.onDecline) opts.onDecline(); }
+    function accept() { cleanup(); if (opts.onConfirm) opts.onConfirm(); }
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('[data-confirm-scrim]').onclick = decline;
+    wrap.querySelector('[data-confirm-decline]').onclick = decline;
+    wrap.querySelector('[data-confirm-accept]').onclick = accept;
+    return { close: decline };
+  }
+
   // ── Posy box (scope dropdown, suggestion, 1–3 chips, input) — built from
   // the existing chat classes verbatim (`.agent-output`, `.agent-question-
   // chip`, `.agent-input-row`, `.typing-indicator`; source doc for the
@@ -348,6 +388,18 @@
       </div>`;
   }
 
+  // ── Draft persistence (item 5, MC-977 R0 UX pass). Text typed into a Posy
+  // box but not yet sent used to live only in the DOM node's `.value` — every
+  // caller rebuilds that DOM wholesale (a commandBus re-render, a tab-strip
+  // navigation to Conversations/Results and back, a Home round-trip, a
+  // different card selected in the campaign rail), so the draft vanished on
+  // all of those, not just a real navigation-away. A plain Map keyed by the
+  // caller's own `draftKey` survives every one of those rebuilds because it
+  // lives here in the module closure, not in the element bindPosyBox mounted
+  // last time. Callers that pass no draftKey (none exist today, but a future
+  // one might) get the exact old behaviour — no restore, no persistence.
+  const _posyDrafts = new Map();
+
   // Wires a mounted posyBoxHTML() instance: chips FILL the input (never
   // auto-send — same fixed-set convention as the Queue thread's quick
   // replies), Send/Enter calls onSend(text) and clears the box.
@@ -358,6 +410,11 @@
   // T5's scope genuinely changes (Scene N / Whole video / a version), so it
   // needs a click hook; passing nothing leaves the button exactly as inert
   // as it's always been (existing 3-arg callers are unaffected).
+  //
+  // opts.draftKey: a string identifying WHICH conversation this box is (e.g.
+  // "campaign:camp-1:card:My piece", "review:v-42", "video:fam-9") — stable
+  // across re-renders of the same logical box, distinct across different
+  // ones (so selecting a different card doesn't leak its neighbour's draft).
   function bindPosyBox(containerEl, inputId, onSend, opts) {
     if (!containerEl) return;
     opts = opts || {};
@@ -368,10 +425,19 @@
       };
     });
     const ta = document.getElementById(inputId);
+    if (ta && opts.draftKey) {
+      const draft = _posyDrafts.get(opts.draftKey);
+      if (draft) ta.value = draft;
+      ta.addEventListener('input', () => {
+        if (ta.value) _posyDrafts.set(opts.draftKey, ta.value);
+        else _posyDrafts.delete(opts.draftKey);
+      });
+    }
     const send = () => {
       const text = (ta && ta.value.trim()) || '';
       if (!text) return;
       if (ta) ta.value = '';
+      if (opts.draftKey) _posyDrafts.delete(opts.draftKey);
       onSend(text);
     };
     const sendBtn = containerEl.querySelector(`[data-posy-send="${inputId}"]`);
@@ -395,5 +461,6 @@
     addToMenu, bindAddToTrigger,
     infoIconHTML, bindInfoIcons,
     posyBoxHTML, bindPosyBox,
+    openConfirmSheet,
   };
 })();

@@ -314,26 +314,92 @@
     // says don't touch it) keeps finding a generic "the fixture campaign
     // renders as a clickable link on Home" element by that selector; its own
     // T0a styling is overridden below by the more specific card rule.
+    //
+    // A plain <button> wrapper (T1's original shape) can't host the item-3
+    // More menu Dave's review added — a <button> inside a <button> is
+    // invalid HTML and browsers auto-close the outer one, which would kill
+    // the whole card's own click-to-open. Switched to a div with
+    // role="button" + tabindex so keyboard/AT users keep exactly the same
+    // affordance; _wireCards below adds the Enter/Space handler a real
+    // button gave for free.
     return `
-      <button type="button" class="desk-v1-home-camp-card desk-v1-stub-link" data-campaign-id="${esc(c.id)}"
-        onclick="deskV1Nav('campaign',{campaignId:'${esc(c.id)}'})">
-        <div class="desk-v1-home-camp-top">${label}<span class="desk-v1-home-camp-name">${esc(c.name)}</span></div>
+      <div class="desk-v1-home-camp-card desk-v1-stub-link" data-campaign-id="${esc(c.id)}"
+        role="button" tabindex="0">
+        <div class="desk-v1-home-camp-top">
+          ${label}<span class="desk-v1-home-camp-name">${esc(c.name)}</span>
+          ${c.state !== 'archived' ? `<div class="desk-v1-camp-card-more">
+            <button type="button" class="desk-v1-camp-card-morebtn" data-camp-more-btn aria-haspopup="menu" aria-label="More actions">⋯</button>
+          </div>` : ''}
+        </div>
         ${goalHTML}
         <div class="desk-v1-home-camp-badges">${badges}</div>
         <div class="desk-v1-home-camp-result" aria-live="polite"></div>
-      </button>`;
+      </div>`;
+  }
+
+  // Archived campaigns' "Archived view" (Dave's review note) — a plain
+  // <details> row list rather than a second grid/route: R0 is fixture-only
+  // and this is the one place archived campaigns need to be reachable at
+  // all, not a surface worth its own navigation. Re-rendered after every
+  // archive/restore so the count and membership stay live.
+  function _renderArchivedSection() {
+    const host = document.getElementById('desk-v1-home-archived');
+    if (!host) return;
+    const archived = _campaigns().filter((c) => c.state === 'archived');
+    if (!archived.length) { host.innerHTML = ''; return; }
+    const wasOpen = !!host.querySelector('details[open]');
+    host.innerHTML = `
+      <details class="desk-v1-home-archived-details" ${wasOpen ? 'open' : ''}>
+        <summary class="desk-v1-home-archived-summary">Archived (${archived.length})</summary>
+        <div class="desk-v1-home-archived-list">
+          ${archived.map((c) => `
+            <button type="button" class="desk-v1-home-archived-row" data-campaign-id="${esc(c.id)}">
+              <span class="desk-v1-home-archived-name">${esc(c.name)}</span>
+              <span class="desk-v1-home-archived-hint">Results and receipts kept</span>
+            </button>`).join('')}
+        </div>
+      </details>`;
+    host.querySelectorAll('.desk-v1-home-archived-row').forEach((row) => {
+      row.onclick = () => deskV1Nav('campaign', { campaignId: row.dataset.campaignId });
+    });
   }
 
   function _renderCards() {
     const host = document.getElementById('desk-v1-home-cards');
     if (!host) return;
-    const camps = _campaigns();
+    // Archived campaigns leave the main grid (§"visible in an Archived
+    // view", Dave's review note) — an Archive is a settled campaign, not one
+    // still competing for attention beside active/proposed work. Kept
+    // reachable via the toggle row _renderArchivedSection wires below rather
+    // than a new route (fixture-only, no IA change beyond this).
+    const camps = _campaigns().filter((c) => c.state !== 'archived');
     host.innerHTML = camps.length
       ? camps.map(_campCardHTML).join('')
       : '<div class="desk-v1-home-empty">No campaigns yet — promote something above to start one.</div>';
-    // Card clicks work through the inline onclick above (no rewiring
-    // needed); nothing else on a card is interactive beyond the drop
-    // hover text, which the active drag's own handlers write directly.
+    host.querySelectorAll('.desk-v1-home-camp-card').forEach((cardEl) => {
+      const campaignId = cardEl.dataset.campaignId;
+      const go = () => deskV1Nav('campaign', { campaignId });
+      // Exclude the WHOLE .desk-v1-camp-card-more host, not just the trigger
+      // button — the More menu itself mounts as the trigger's SIBLING under
+      // that host (deskV1OpenCampaignMoreMenu's `host = triggerEl.parentElement`),
+      // so a menu item click (e.g. Delete) isn't a descendant of
+      // [data-camp-more-btn] and used to bubble straight through to `go()`,
+      // navigating to the campaign page instead of running the menu action.
+      cardEl.addEventListener('click', (e) => { if (!e.target.closest('.desk-v1-camp-card-more')) go(); });
+      cardEl.addEventListener('keydown', (e) => {
+        if (e.target !== cardEl) return; // ignore a keypress bubbling up from the More button
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); }
+      });
+      const moreBtn = cardEl.querySelector('[data-camp-more-btn]');
+      if (moreBtn) moreBtn.onclick = (e) => {
+        e.stopPropagation();
+        window.deskV1OpenCampaignMoreMenu(moreBtn, campaignId, { onDone: () => { _renderCards(); _renderArchivedSection(); } });
+      };
+    });
+    _renderArchivedSection();
+    // Drop-hover text on a card is written directly by the active drag's own
+    // handlers — nothing else on a card is interactive beyond that and the
+    // click/keydown/More wiring just above.
   }
 
   // ── render: Needs you (right column) ────────────────────────────────────
@@ -581,6 +647,7 @@
           <div class="desk-v1-home-cards" id="desk-v1-home-cards"></div>
           <div class="desk-v1-home-needsyou" id="desk-v1-home-needsyou"></div>
         </div>
+        <div class="desk-v1-home-archived" id="desk-v1-home-archived"></div>
         <div class="desk-v1-home-shelves">
           <div class="desk-v1-home-shelf">
             <div class="desk-v1-home-shelf-title">Channels</div>

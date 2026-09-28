@@ -115,7 +115,12 @@
     el.innerHTML = `
       <div class="desk-v1-camp-summary-top">
         ${stateHTML}
-        <button type="button" class="desk-v1-camp-pause-btn" data-pause-btn ${camp.state !== 'active' ? 'disabled' : ''}>⏸ Pause</button>
+        <div class="desk-v1-camp-summary-top-actions">
+          <button type="button" class="desk-v1-camp-pause-btn" data-pause-btn ${camp.state !== 'active' ? 'disabled' : ''}>⏸ Pause</button>
+          ${camp.state !== 'archived' ? `<div class="desk-v1-camp-card-more">
+            <button type="button" class="desk-v1-camp-card-morebtn" data-camp-more-btn aria-haspopup="menu" aria-label="More actions">⋯</button>
+          </div>` : ''}
+        </div>
       </div>
       <div class="desk-v1-camp-summary-groups">
         ${goalHTML}
@@ -125,6 +130,16 @@
 
     const goalBtn = el.querySelector('[data-goal-btn]');
     if (goalBtn) goalBtn.onclick = () => deskV1Nav('results', { campaignId: camp.id });
+    const moreBtn = el.querySelector('[data-camp-more-btn]');
+    if (moreBtn) moreBtn.onclick = (e) => {
+      e.stopPropagation();
+      deskV1OpenCampaignMoreMenu(moreBtn, camp.id, {
+        onDone: (result) => {
+          if (result === 'deleted') deskV1Nav('home', {});
+          else deskV1FillCampaignSummary(el, params);
+        },
+      });
+    };
     const pauseBtn = el.querySelector('[data-pause-btn]');
     if (pauseBtn) pauseBtn.onclick = () => {
       if (camp.state !== 'active') return;
@@ -145,6 +160,126 @@
       else DeskV1Kit.toast('Editing rules lands with the rules popover (T2b).');
     };
   }
+
+  // ── Delete / Archive (item 3, MC-977 R0 UX pass; scope note from Dave/
+  // Kestrel's review, 2026-09-28): a campaign that has never published
+  // (draft/proposed) is fully removable — nothing exists anywhere else to
+  // protect. One that has ever gone active/paused/completed carries
+  // publication history and receipts, so the destructive action becomes
+  // Archive (stops future work, keeps results) instead of outright Delete.
+  // Both routes through the SAME in-page confirm sheet (d146df0's rule —
+  // never window.confirm) and the SAME commandBus Undo. Shared here (not
+  // duplicated in desk-v1-home.js) so Home's card menu and the campaign
+  // page's header menu can never drift on the draft/published boundary.
+  function _isPrePublish(camp) { return camp.state === 'proposed' || camp.state === 'draft'; }
+
+  // Cascades to the campaign's own families/versions and conversations —
+  // Home's _needsYouItems() iterates ALL families/conversations with no
+  // existence check on their campaignId, so leaving them behind would
+  // deep-link Home's Needs You rail into a campaign that no longer exists.
+  // Undo restores every removed item at its ORIGINAL array index (captured
+  // before removal), not just appended at the end, so array order — and any
+  // other code that assumes it — survives an undo unchanged.
+  function _deleteCampaignCascade(camp, onDone) {
+    const campaigns = _campaigns();
+    const families = _families();
+    const conversations = _conversations();
+    let campIdx, famRemoved, convRemoved;
+    DeskV1Kit.commandBus.run({
+      label: `Deleted “${camp.name}”`,
+      do: () => {
+        campIdx = campaigns.indexOf(camp);
+        famRemoved = [];
+        for (let i = families.length - 1; i >= 0; i--) {
+          if (families[i].campaignId === camp.id) { famRemoved.unshift({ item: families[i], idx: i }); families.splice(i, 1); }
+        }
+        convRemoved = [];
+        for (let i = conversations.length - 1; i >= 0; i--) {
+          if (conversations[i].campaignId === camp.id) { convRemoved.unshift({ item: conversations[i], idx: i }); conversations.splice(i, 1); }
+        }
+        if (campIdx >= 0) campaigns.splice(campIdx, 1);
+        if (onDone) onDone('deleted');
+      },
+      undo: () => {
+        campaigns.splice(Math.min(campIdx, campaigns.length), 0, camp);
+        famRemoved.forEach(({ item, idx }) => families.splice(idx, 0, item));
+        convRemoved.forEach(({ item, idx }) => conversations.splice(idx, 0, item));
+        if (onDone) onDone('restored');
+      },
+    });
+  }
+
+  // Archive never touches families/conversations/results — §"keeps results
+  // and receipts" means literally nothing else in fixture data moves; only
+  // camp.state changes, same one-field mutation Pause already makes.
+  function _archiveCampaign(camp, onDone) {
+    const prevState = camp.state;
+    DeskV1Kit.commandBus.run({
+      label: `Archived “${camp.name}”`,
+      do: () => { camp.state = 'archived'; if (onDone) onDone('archived'); },
+      undo: () => { camp.state = prevState; if (onDone) onDone('restored'); },
+    });
+  }
+
+  // triggerEl's own parent becomes the positioned host (same convention as
+  // _openCardMenu below) — works whether triggerEl sits in the campaign
+  // header's own wrapper or a Home card's, so one function serves both.
+  // opts.onDone(result) — 'deleted' | 'archived' | 'restored' — lets each
+  // caller decide what a completed action means for ITS page (the campaign
+  // page navigates Home away from a just-deleted campaign; Home just
+  // re-renders its own grid either way).
+  function deskV1OpenCampaignMoreMenu(triggerEl, campaignId, opts) {
+    opts = opts || {};
+    const camp = _campaign(campaignId);
+    if (!camp) return;
+    const host = triggerEl.parentElement;
+    const existing = host.querySelector(':scope > .desk-v1-camp-cardmenu');
+    if (existing) { existing.remove(); return; }
+    host.style.position = 'relative';
+    const prePublish = _isPrePublish(camp);
+    const menu = document.createElement('div');
+    menu.className = 'desk-v1-camp-cardmenu';
+    menu.setAttribute('role', 'menu');
+    menu.innerHTML = prePublish
+      ? `<button type="button" data-menu-delete>Delete campaign</button>`
+      : `<button type="button" data-menu-archive>Archive campaign</button>`;
+    host.appendChild(menu);
+    const close = () => { menu.remove(); document.removeEventListener('click', closer); };
+    const closer = (e) => { if (!menu.contains(e.target) && e.target !== triggerEl) close(); };
+    setTimeout(() => document.addEventListener('click', closer), 0);
+
+    // e.stopPropagation() here (not just on the trigger) matters when this
+    // menu mounts inside a clickable card (Home): close() detaches `menu`
+    // from `host` synchronously, so by the time this click would otherwise
+    // bubble to the card's own listener, e.target's ancestor chain no
+    // longer reaches .desk-v1-camp-card-more — closest() can't find it, and
+    // the click fell through to the card's navigate handler. Stopping
+    // propagation at the source doesn't depend on DOM structure surviving
+    // the handler that runs first.
+    const delBtn = menu.querySelector('[data-menu-delete]');
+    if (delBtn) delBtn.onclick = (e) => {
+      e.stopPropagation();
+      close();
+      DeskV1Kit.openConfirmSheet({
+        title: `Delete “${camp.name}”?`,
+        body: 'This removes the campaign and its draft content. Nothing here has published yet, so there is nothing on any platform to clean up. You can undo right after.',
+        confirmLabel: 'Delete', cancelLabel: 'Cancel',
+        onConfirm: () => _deleteCampaignCascade(camp, opts.onDone),
+      });
+    };
+    const archBtn = menu.querySelector('[data-menu-archive]');
+    if (archBtn) archBtn.onclick = (e) => {
+      e.stopPropagation();
+      close();
+      DeskV1Kit.openConfirmSheet({
+        title: `Archive “${camp.name}”?`,
+        body: 'Archiving stops future activity on this campaign and keeps its results and receipts. It does not remove any posts already on a platform. You can undo right after.',
+        confirmLabel: 'Archive', cancelLabel: 'Cancel',
+        onConfirm: () => _archiveCampaign(camp, opts.onDone),
+      });
+    };
+  }
+  window.deskV1OpenCampaignMoreMenu = deskV1OpenCampaignMoreMenu;
 
   function _fmtDate(iso) {
     try { return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(iso)); }
@@ -700,6 +835,7 @@
       }
     }, {
       onScopeClick: () => _setSelection('campaign', null),
+      draftKey: `campaign:${camp.id}:${st.selection.scope}:${st.selection.label || ''}`,
     });
   }
 

@@ -458,7 +458,7 @@
       window.DeskV1Kit.bindInfoIcons(el, {});
       window.DeskV1Kit.bindPosyBox(el.querySelector('#desk-v1-video-posy'), 'desk-v1-video-posy-input', (text) => {
         _sendToPosy(family, detail, text);
-      }, { onScopeClick: (trigger) => _openScopeMenu(trigger, family, detail) });
+      }, { onScopeClick: (trigger) => _openScopeMenu(trigger, family, detail), draftKey: `video:${family.id}:${_st.scope}` });
     }
 
     _wireSceneDrag(el, detail);
