@@ -93,6 +93,10 @@ async function runOnce(viewport, label) {
       if (/\/agent\/status$/.test(path)) return json({ sessions: Object.values(SESSIONS()) });
       if (req.method() === 'POST' && /\/agent\/mcDispatch\/attend-once$/.test(path)) {
         attendOnceCalls++;
+        const sent = JSON.parse(req.postData() || '{}');
+        if (sent.passcode !== 'smoke-test-passcode') {
+          return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'bad_passcode' }) });
+        }
         passExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
         return json({ ok: true, session_id: 'mcDispatch', status: 'granted', expires_at: passExpiresAt });
       }
@@ -134,10 +138,18 @@ async function runOnce(viewport, label) {
     // firing the grant directly — punch through it like a human would.
     const modalId = '__attend-once_mcDispatch';
     await page.waitForSelector(`.modal-window[data-modal-id="${modalId}"]`, { timeout: 5000 });
+    // Wrong passcode: the server refuses, the modal says so, nothing flips.
+    await page.fill(`#ao-passcode-mcDispatch`, 'wrong-passcode');
+    await page.click(`.modal-window[data-modal-id="${modalId}"] button.btn-add`);
+    await page.waitForFunction(() => /wrong/i.test((document.getElementById('ao-status-mcDispatch') || {}).textContent || ''), null, { timeout: 5000 });
+    check(await page.locator('.attend-pill.guarded').count() === 1 && await page.locator('.attend-pill.attended').count() === 0,
+      'wrong passcode leaves the pill Guarded', 'pill flipped on a wrong passcode');
+    check(await page.locator(`.modal-window[data-modal-id="${modalId}"]`).count() === 1,
+      'modal stays open after a wrong passcode', 'modal closed on a wrong passcode');
     await page.fill(`#ao-passcode-mcDispatch`, 'smoke-test-passcode');
     await page.click(`.modal-window[data-modal-id="${modalId}"] button.btn-add`);
     await page.waitForFunction(() => document.querySelector('.attend-pill.attended'), null, { timeout: 5000 });
-    check(attendOnceCalls === 1, `exactly one POST .../attend-once fired (got ${attendOnceCalls})`, `attend-once POST count wrong: ${attendOnceCalls}`);
+    check(attendOnceCalls === 2, `one refused + one granted POST .../attend-once (got ${attendOnceCalls})`, `attend-once POST count wrong: ${attendOnceCalls}`);
     check(await page.locator('.attend-pill.guarded').count() === 0, 'guarded pill is gone after the click',
       'guarded pill still present after the click');
     check((await page.locator('.attend-pill.attended').first().innerText()).toLowerCase().includes('allowed once'),
@@ -148,6 +160,14 @@ async function runOnce(viewport, label) {
     check(await page.evaluate(() => !!(agentStatusCache['mcDispatch'].attendOncePass && agentStatusCache['mcDispatch'].attendOncePass.open)),
       'client-side attendOncePass marked open after the click',
       `attendOncePass: ${await page.evaluate(() => JSON.stringify(agentStatusCache['mcDispatch'].attendOncePass))}`);
+
+    // Fenn finding 6: the fence spends (or the clock expires) the pass
+    // server-side; the idle chat's bounded poll must flip the pill back.
+    passExpiresAt = null;
+    const flippedBack = await page.waitForFunction(() => document.querySelector('.attend-pill.guarded')
+      && !document.querySelector('.attend-pill.attended'), null, { timeout: 9000 }).then(() => true, () => false);
+    check(flippedBack, 'spent/expired pass flips the pill back to Guarded via the status poll',
+      'pill still shows Allowed once 9s after the server dropped the pass');
 
     const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
     uncaught.length ? uncaught.forEach((e) => fail('uncaught page error: ' + e)) : ok('no uncaught page errors');
