@@ -195,6 +195,26 @@ def npm_package_dir(cli):
     return os.path.join(prefix, 'node_modules', *cli.npm_package.split('/'))
 
 
+def aside_dir_for(cli):
+    """Where rename_aside moves a locked file for this CLI -- OUTSIDE
+    npm_package_dir entirely (same npm prefix, a dedicated subtree per
+    package), or None when npm_package_dir itself would be None.
+
+    Measured (code review of e61ce33, Dave, via a copied PING.EXE probe):
+    renaming a locked exe to a NEW NAME INSIDE the package dir still leaves
+    `shutil.rmtree(pkg_dir)` -- which is what an in-place `npm install -g`
+    does to retire the old tree -- raising PermissionError WinError 5. Moving
+    the file OUTSIDE the tree first (same volume, so os.rename still works)
+    is what lets the rmtree succeed while the process keeps running.
+    """
+    if not cli.npm_package:
+        return None
+    prefix = _npm_prefix()
+    if not prefix:
+        return None
+    return os.path.join(prefix, '.clayrune-locked-aside', *cli.npm_package.split('/'))
+
+
 def list_processes():
     """All running processes as dicts (pid, ppid, name, exe, start_epoch).
 
@@ -250,9 +270,31 @@ def processes_locking(dir_path, procs):
     return [p for p in procs if _under_dir(p.get('exe'), dir_path)]
 
 
-def orphaned_processes(dir_path, procs, now=None, min_age_hours=24.0):
-    """Processes under `dir_path` whose parent pid belongs to no currently
-    running process, and that have run at least `min_age_hours`.
+# Shells/runtimes that commonly sit BETWEEN a real launcher and the CLI they
+# spawned (`cmd /c npm-cli.js` -> `node` -> the vendor exe, or a shebang
+# script run through bash). None of these is itself "what started the
+# process" for orphan-detection purposes -- walk through them.
+_WRAPPER_NAMES = frozenset({
+    'cmd.exe', 'cmd', 'node.exe', 'node', 'conhost.exe', 'conhost',
+    'powershell.exe', 'powershell', 'pwsh.exe', 'pwsh',
+    'bash.exe', 'bash', 'sh.exe', 'sh',
+})
+
+
+def orphaned_processes(dir_path, procs, now=None, min_age_hours=24.0, max_chain_depth=8):
+    """Processes under `dir_path` whose ancestor chain goes dead before
+    reaching a live, non-wrapper process, and that have run at least
+    `min_age_hours`.
+
+    A dead DIRECT parent isn't sufficient signal by itself: MC-991's own
+    orphaned codex (PID 45812) had a LIVE parent (node 37048, wrapper) and a
+    LIVE grandparent (cmd 56332, wrapper) -- the chain only went dead at the
+    great-grandparent (33956). Checking only `ppid` missed exactly the
+    process this feature exists to find (Dave's review of e61ce33). Walk up
+    through _WRAPPER_NAMES and call it orphaned only once the walk hits a pid
+    that resolves to no running process at all; a live, non-wrapper ancestor
+    found along the way means someone (a shell, a service, Explorer) still
+    owns the chain, and it's not reported.
 
     Report-only -- NEVER killed. A dead ancestor's pid can already have been
     recycled onto an unrelated process by the OS (see memory:
@@ -260,30 +302,52 @@ def orphaned_processes(dir_path, procs, now=None, min_age_hours=24.0):
     orphan, not proof, and killing on it would risk exactly that mistake.
     """
     now = time.time() if now is None else now
-    alive = {p['pid'] for p in procs if p.get('pid') is not None}
+    by_pid = {p['pid']: p for p in procs if p.get('pid') is not None}
     out = []
     for p in processes_locking(dir_path, procs):
-        ppid = p.get('ppid')
         start = p.get('start_epoch')
-        if ppid is None or ppid in alive or start is None:
+        if start is None:
             continue
         age_hours = (now - start) / 3600.0
-        if age_hours >= min_age_hours:
-            out.append({'pid': p.get('pid'), 'ppid': ppid, 'name': p.get('name'),
+        if age_hours < min_age_hours:
+            continue
+
+        ppid = p.get('ppid')
+        chain_dead = False
+        for _ in range(max_chain_depth):
+            if ppid is None:
+                break
+            parent = by_pid.get(ppid)
+            if parent is None:
+                chain_dead = True
+                break
+            if (parent.get('name') or '').lower() not in _WRAPPER_NAMES:
+                break  # live, non-wrapper ancestor -- someone still owns this chain
+            ppid = parent.get('ppid')
+        if chain_dead:
+            out.append({'pid': p.get('pid'), 'ppid': p.get('ppid'), 'name': p.get('name'),
                         'exe': p.get('exe'), 'age_hours': round(age_hours, 1)})
     return out
 
 
-def rename_aside(path):
-    """Rename a locked file aside so npm can write a fresh one at the
-    original name. Windows lets you rename a file a running process still
-    has open (the loader shares delete/rename access on the image mapping);
-    the process keeps running against the old inode under its new name.
-    Returns the new path, or None on failure.
+def rename_aside(path, aside_dir):
+    """Rename a locked file into `aside_dir` -- OUTSIDE the package tree it
+    normally lives in (see aside_dir_for's docstring for why: an in-place
+    npm install retires the WHOLE package dir via rename/rmtree, and an
+    aside file left inside that dir still blocks deleting it). Windows lets
+    you rename/move a file a running process still has open (the loader
+    shares delete/rename access on the image mapping); the process keeps
+    running against the old inode under its new path. Returns the new path,
+    or None on failure.
     """
-    if not path or not os.path.isfile(path):
+    if not path or not aside_dir or not os.path.isfile(path):
         return None
-    aside = '%s.locked-aside-%s' % (path, time.strftime('%Y%m%dT%H%M%S'))
+    try:
+        os.makedirs(aside_dir, exist_ok=True)
+    except OSError:
+        return None
+    aside = os.path.join(
+        aside_dir, '%s.locked-aside-%s' % (os.path.basename(path), time.strftime('%Y%m%dT%H%M%S')))
     try:
         os.rename(path, aside)
         return aside
@@ -292,11 +356,11 @@ def rename_aside(path):
 
 
 def sweep_aside_files(dir_path, procs):
-    """Remove `.locked-aside-*` files a previous rename_aside left behind,
-    once nothing still has them open. A rename-aside can't delete the old
-    file -- npm has to succeed first -- so a later run cleans up what an
-    earlier one left; skips (does not delete) any still pointed at by a live
-    process.
+    """Remove `.locked-aside-*` files a previous rename_aside left behind in
+    its aside_dir_for destination, once nothing still has them open. A
+    rename-aside can't delete the old file -- npm has to succeed first -- so
+    a later run cleans up what an earlier one left; skips (does not delete)
+    any still pointed at by a live process.
     """
     removed, skipped = [], []
     if not dir_path or not os.path.isdir(dir_path):
@@ -347,11 +411,13 @@ def check_one(cli, apply_updates=False):
     # processes and sweep stale rename-aside files from a prior run, so a
     # plain report already shows what a locked-exe update would run into.
     pkg_dir = npm_package_dir(cli)
+    aside_dir = aside_dir_for(cli) if pkg_dir else None
     if pkg_dir:
         procs = list_processes()
-        swept = sweep_aside_files(pkg_dir, procs)
-        if swept['removed']:
-            row['swept_aside_files'] = swept['removed']
+        if aside_dir:
+            swept = sweep_aside_files(aside_dir, procs)
+            if swept['removed']:
+                row['swept_aside_files'] = swept['removed']
         orphans = orphaned_processes(pkg_dir, procs)
         if orphans:
             row['orphaned_processes'] = orphans
@@ -383,10 +449,19 @@ def check_one(cli, apply_updates=False):
         for attempt in range(1, max_attempts + 1):
             if pkg_dir:
                 lockers = processes_locking(pkg_dir, list_processes())
+                if lockers and not aside_dir:
+                    # No npm prefix -> nowhere safe to move a locker to.
+                    # Don't guess; block instead.
+                    row['status'] = 'blocked_by_running_process'
+                    row['blocking_processes'] = [
+                        {'pid': p.get('pid'), 'name': p.get('name'), 'exe': p.get('exe')}
+                        for p in lockers]
+                    blocked = True
+                    break
                 if lockers:
                     renamed, rename_ok = [], True
                     for p in lockers:
-                        aside = rename_aside(p.get('exe'))
+                        aside = rename_aside(p.get('exe'), aside_dir)
                         if aside is None:
                             rename_ok = False
                             break
