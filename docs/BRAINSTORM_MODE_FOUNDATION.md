@@ -22,7 +22,7 @@ the mode actually does. The essay is not reproduced here; read it at the link.
 | 7 | New ideas come from **working on something slightly too hard**, not from trying to be original. The best ones feel **new and obvious at once** — obvious once a broken assumption is fixed. | The agent asks "what assumption does this idea overturn?" An idea that overturns nothing is flagged as likely incremental. |
 | 8 | Often the real discovery is **the question**; pull many threads, **start lots of small things**. | The mode can branch: it keeps a short list of side-threads worth pulling rather than forcing convergence on the first framing. |
 | 9 | Great work is **a search**: dead ends are normal; back up only as far as needed; **never abandon the desire itself**. | A "not worth chasing" verdict names *which* part failed (fit, gap, timing, market) and what adjacent variant survives, instead of killing the whole direction. |
-| 10 | The one-word summary is **curiosity**. | Tone: exploratory and question-led, not a consultant's scorecard. SWOT and market checks are tools the curiosity uses, not the frame. |
+| 10 | The one-word summary is **curiosity**. | Tone: exploratory and question-led, not a consultant's scorecard. Market checks are tools the curiosity uses, not the frame. SWOT is mandatory for business/competitive ideas (Ron, 2026-09-27) but is built up across the session, not opened as a template; see the spec. |
 
 ## What this rules out
 

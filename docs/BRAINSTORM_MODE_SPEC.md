@@ -28,7 +28,7 @@ Phases are **coverage goals, not a locked wizard**. The user may jump back when 
 | 1. Find the pull | Restate the idea as a testable hypothesis; ask why this user cares, what work they have already done, which parts they enjoy or can do unusually well, and what scope they see. Check curiosity, delight, and ambition in words, without a score. | 1, 4, 10 |
 | 2. Map the frontier | Identify the field's current approaches, strongest examples, competitors or prior art, users and unmet jobs. Research before calling the space crowded or empty. Separate what the user knows firsthand from what external sources establish. | 2 |
 | 3. Probe gaps | Name concrete anomalies, ignored complaints, contradictions, and places where existing solutions fail. Ask which assumption the idea overturns. Keep up to three side threads when the best question changes. Do not flatten a strange finding into the nearest familiar category. | 3, 7, 8 |
-| 4. Pressure-test | Only after phases 2–3, check demand, timing, willingness to adopt or pay where relevant, constraints, and evidence for uniqueness. Use a compact SWOT only if it clarifies a specific decision; label every item as evidence, user report, or hypothesis. | 2, 3, 10 |
+| 4. Pressure-test | Only after phases 2–3, check demand, timing, willingness to adopt or pay where relevant, constraints, and evidence for uniqueness. Complete the SWOT (mandatory for business or competitive ideas, see below); label every item as evidence, user report, or hypothesis. | 2, 3, 10 |
 | 5. Choose the next probe | Compare the current framing with surviving variants. State what failed if recommending a pivot or stop. Propose the most interesting cheap experiment that preserves options, with a first action feasible in one day and an observable learning signal. | 5, 6, 9 |
 
 ### Foundation behavior contract
@@ -48,6 +48,17 @@ The persona prompt and acceptance checks must preserve all ten rows in the found
 
 The mode **will not** open with a SWOT template, end with only a binary go/no-go, or reject an idea solely because today's market appears small. These are product constraints, not optional prompt style.
 
+### SWOT: mandatory for business ideas (Ron, 2026-09-27)
+
+For any idea that competes with existing players or aims to open a new market niche, a SWOT is **required**; the mode may not waive it and the user is not offered a skip. It is not the opening frame (see the foundation's 'what this rules out'); it is **built across the session**:
+
+- **Strengths / Weaknesses are seeded in phase 1** from personal fit: aptitude, interest, what the user can do unusually well, and what they lack.
+- **Opportunities / Threats are seeded in phases 2-3** from the frontier map and the gaps: unmet jobs and anomalies feed Opportunities; incumbents, prior art and timing risks feed Threats.
+- **Phase 4 completes and challenges it** with the demand, timing and uniqueness evidence, and fills any quadrant still empty.
+- **Phase 5's recommendation must be derived from the SWOT as a whole**, and say which quadrant drove it.
+
+The working map shows the SWOT-in-progress so the user can correct it as it forms. For a non-business idea (personal project, research question) the SWOT is optional and the brief says it was skipped and why.
+
 ## Research and evidence
 
 When a claim depends on current conditions, the mode must perform live research before presenting it as fact. It starts with official or primary sources where possible, then uses credible user or competitor evidence for observed behavior. Each material external claim in the brief includes a direct source link and retrieval date. It distinguishes (a) observed facts, (b) the user's firsthand experience, and (c) inference. It must not infer "no competitor" or "unique" from a sparse search; it states search coverage and unresolved prior art instead. Market size and pricing are given only when sourced and relevant to the next experiment.
@@ -64,7 +75,8 @@ The final **Exploration brief** is Markdown in the conversation, retained with i
 - Personal fit: aptitude evidence, interest, scope, and the three motives in plain words.
 - Frontier map: existing approaches and direct links; date and coverage of live research.
 - Specific gaps and anomalies, the assumption being challenged, and up to three live side threads.
-- Demand/timing/uniqueness assessment with evidence level and unresolved questions; SWOT only when useful.
+- Demand/timing/uniqueness assessment with evidence level and unresolved questions.
+- SWOT (mandatory for business or competitive ideas): each item tagged evidence / user report / hypothesis, and the recommendation below must cite it.
 - Recommendation: test this version, test an adjacent version, pause, or stop this framing; exact reason and surviving desire/variant.
 - One cheap experiment, its first action within a day, expected learning signal, and the options it preserves or closes.
 
@@ -78,7 +90,7 @@ Recommended engine policy: pin a high-reasoning provider/model for the Brainstor
 
 ## Non-goals and acceptance
 
-Out of scope for v1: automated venture scoring, mandatory SWOT, autonomous multi-agent research, a generated multi-month roadmap, scheduled rechecks, automatic task or backlog creation, and automatic publishing or file writes.
+Out of scope for v1: automated venture scoring, autonomous multi-agent research, a generated multi-month roadmap, scheduled rechecks, automatic task or backlog creation, and automatic publishing or file writes.
 
 Acceptance examples:
 
