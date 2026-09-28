@@ -12,7 +12,7 @@
 1. **Map what exists** into `docs/desk_v1_gap_map.md`: `mc/desk.py`, `mc/blueprints/desk_routes.py`, `/api/desk/*`, `mc/desk_brief.py`, `desk.record_edit`, `static/js/desk.js`, `schedule-calendar.js`, the scheduler, persona/Bench store, credential service, and existing publication records. For each spec entity (§13 DAT-01), note: *exists / partial / missing*, with file + line.
 2. **Don't break the current Desk.** Build v1 behind a feature flag `desk_v1` (settings, default off). Legacy views stay read-only when the flag is on (MIG-04). Only one publication worker is ever active.
 3. **Theme tokens only** (`--bg`, `--surface2/3`, `--border2`, `--accent`, `--text`, `--text-dim`, `--green-text`, `--amber-text`, `--red-text`). The mockup's cream hexes are illustrative. Dark and cream themes must both pass.
-4. **Reuse the chat pieces** from `CLAYRUNE_CONVERSATION_REDESIGN.md` (bubbles, typing dots, quick-reply chips, composer). Import them; don't fork.
+4. **Reuse the chat pieces** from `docs/CONVERSATION_REDESIGN_ACTION_PLAN.md` (bubbles, typing dots, quick-reply chips, composer). Import them; don't fork.
 5. **Status is glyph + word, always** (UX-01). Colour only reinforces. The fixed vocabulary is in §9.
 
 ---
@@ -21,7 +21,7 @@
 
 ```
 Desk Home (11a)
- ├─ "What would you like to promote?" box  → creates a Proposed campaign
+ ├─ "Start a campaign" box                 → creates a ✎ Draft, opens its setup (UX_PASS §7)
  ├─ Needs you inbox (incl. holds)          → deep-links to the exact item
  ├─ Campaign cards (drop targets)
  └─ Shelves: Channels · Material           (drag sources)
@@ -46,12 +46,15 @@ Conversation thread (12c) ← Conversations tab, or Needs you
 
 ## 2. Desk Home (frame 11a)
 
-**Header:** `The Desk` · project scope dropdown (`Clayrune ▾`) · right: `⚙ Settings` · `⏸ Pause all`.
+> **Amended 2026-09-28:** project scope is a `Projects: All ▾` filter, not a switcher, and the promote box's
+> `Propose` became `Create campaign ›` (a Draft with setup). Binding detail: `THE_DESK_V1_UX_PASS.md` §7.
+
+**Header:** `The Desk` · project filter (`Projects: All ▾`) · right: `⚙ Settings` · `⏸ Pause all`.
 - **Do not show worker heartbeat on Home.** Heartbeat and connection health live in Settings → Connections. If the worker is offline or scheduling is unavailable, add a **Needs you hold** ("Scheduling paused — worker offline since 14:02 · 2 posts missed") so the user is interrupted only when it matters (INT availability, E13).
 
 **Promote box**
 - One input. It accepts typed text, a dropped file or link, and paste. There are no separate Add files / Add link buttons; dropping onto the box, or ＋ in the Material shelf, covers both.
-- `Propose` → `ProposeCampaign` command → navigate to the new campaign in **Proposed** state (12a layout, see §3.5).
+- `Create campaign ›` → creates a `✎ Draft` with the brief saved → opens its Setup checklist (see §3.5 and `THE_DESK_V1_UX_PASS.md` §3).
 - Below the box, up to 3 **Posy suggestion chips** from project signals (KNW). Tapping one fills the box; it doesn't send.
 
 **Campaign cards** (3-up grid): state (glyph + word), name, goal progress bar with numbers, channel badges.
@@ -74,7 +77,7 @@ Conversation thread (12c) ← Conversations tab, or Needs you
 `‹ Desk` · campaign name · state · `⏸ Pause`, then three groups:
 - **Goal:** "30 tester signups by Oct 20", a mini progress bar and the current number. Clicking it opens Results.
 - **Channels:** badges attached to this campaign.
-- **Rules:** chips such as `Organic` · `You approve each piece` · `≤3/wk` · `Edit`. `Edit` opens the rules popover (§8).
+- **Rules:** chips such as `Organic` · `≤3/wk` · `Ends Oct 28` · `Edit`, all derived from `camp.plan` (no per-piece review chip since 2026-09-28, UX_PASS §4). `Edit` opens the rules popover (§8).
 
 Then tabs: `Content [n]` · `Conversations [n]` · `Results`. Badge counts are *needs-you* items only.
 
@@ -112,17 +115,20 @@ Toolbar: `All content ▾` (All · Needs you · Scheduled · Published · Blocke
 - Always use the **user's configured timezone** from settings. Don't show a zone label unless the item's destination timezone differs; handle DST ambiguity per §9 Scheduling.
 
 ### 3.4 Posy box (right column, persistent)
+Working/failed/ready states and the `/ask` contract: `THE_DESK_V1_UX_PASS.md` §5 (binding, 2026-09-28).
 - Posy's current suggestion as a bubble, plus 1–3 one-tap chips (e.g. "Make the LinkedIn cut"). Tapping a chip creates the piece or version in the list, with Undo.
 - Instruction input with a **scope dropdown** `About: <selection> ▾` that follows the current selection: the campaign, a card, a version, a paragraph, or a scene (INS-01).
 - Posy's reply to an instruction shows **before → after**, the affected items, and **Undo**. If the change widens authority (more accounts, paid, more frequency), it asks for confirmation instead of applying (INS-03/04). Durable instructions become visible rule chips (INS-02).
 
-### 3.5 Proposed state (a new campaign)
-Same page, with state `◇ Proposed` and primary button `Start campaign` in the header.
-- The goal is a single editable sentence (dashed underlines on the editable parts: target, date, audience).
-- Content cards are Posy's proposed pieces (planned or drafting).
-- **Assumptions:** show inline on the relevant card or chip as `? Assumed` with a popover to confirm or edit. Don't lay them out as a form.
-- **Blockers:** only a real blocker gets a card at the top of the list (`⛔ Posy's one question` with two answer buttons). Missing tracking shows as a warning on the Goal ("⚠ not tracked yet"), not a blocker (CMP-03).
-- `Start campaign` opens a **review sheet** that lists the ongoing authority in plain language (accounts, frequency ceiling, dates, review mode, replies, paid, generation limits, stop conditions) and states: "Starting doesn't approve any piece" (CMP-05). Confirm → `Active`, and create a policy record.
+### 3.5 Draft and Proposed (a new campaign) — SUPERSEDED 2026-09-28
+**No longer the same page as an Active campaign.** Ron's decision (2026-09-28): a new campaign is `✎ Draft` and shows
+a 4-step resumable **Setup checklist inside the campaign frame** (Purpose; Destinations + voice; First plan; Review +
+start). It becomes `◇ Proposed` once Posy returns a populated plan, and `▶ Active` only when a human confirms step 4
+with every required bound set or explicitly Off. The standalone Start review sheet, its "Starting doesn't approve any
+piece" line, and the per-piece review-mode default are retired (per-campaign release, 2026-09-22). One canonical
+`camp.plan` feeds the goal display and step 4. Binding spec: **`THE_DESK_V1_UX_PASS.md` §1–§4**.
+Still true from the old text: assumptions render inline as `? Assumed`; only a real blocker gets `⛔ Posy's one
+question`; missing tracking is a Goal warning, never a blocker (CMP-03).
 
 ### 3.6 Add tray
 Bottom of the campaign page, collapsible (`＋ Add ▾`). It holds the same two shelves as Home, scoped to this campaign. Channels already attached are hidden or dimmed.
@@ -233,7 +239,7 @@ Plain language, grouped. Every change shows its effect before applying. Widening
   - `⚠ Held — <reason>` — disconnected, rate limited or expired.
   - **Never** "posts automatically" while review mode is on.
 - **Version states:** `◇ Planned` · `✎ Drafting` · `✋ Needs review` · `⛔ Blocked` · `✓ Approved` · `✓ Scheduled` · `⟳ Sending` · `⟳ Submitted` · `✓ Verified published` · `✋ You reported` · `? Unknown outcome` · `✕ Failed` · `⚠ Held` · `Skipped` · `Archived` (LIF-01/02/03). Never use "Released".
-- **Campaign states:** `◇ Proposed` · `▶ Active` · `⏸ Paused` · `✓ Completed` · `Archived` (+ `✎ Draft` for manually started and incomplete).
+- **Campaign states:** `◇ Proposed` · `▶ Active` · `⏸ Paused` · `✓ Completed` · `Archived` (+ `✎ Draft` = in setup; lifecycle in `THE_DESK_V1_UX_PASS.md` §1).
 - **Money:** never say "free". Say "No <X> charge yet", and disclose other usage behind ⓘ.
 - **Explanations** go behind ⓘ. Keep only what the current decision needs on screen.
 

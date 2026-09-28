@@ -1,5 +1,10 @@
 # Desk v1 UX pass: Kestrel's independent review
 
+> **INPUT, not authority (2026-09-28).** Reconciled with Merrin's spec into the single binding build spec,
+> `docs/THE_DESK_V1_UX_PASS.md`, per Ron's decisions of 2026-09-28: this review's 4-step in-page setup, graduation
+> rule, Posy lifecycle and extra blockers were adopted; its header project switcher (§2) was not (Ron chose one Desk
+> with a `Projects: All` filter). Build from the spec; keep this file for its reasoning.
+
 2026-09-28. **Verdict: the interface assumes a campaign exists before it helps someone make one.** Narrowing the window helps, but the primary repair is a reliable path from an intention to a reviewable plan, then a separate operating view.
 
 ## Evidence and limits

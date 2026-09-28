@@ -1,228 +1,244 @@
-# The Desk v1 — UX pass (items 2, 4, 6)
+# The Desk v1 — UX pass: binding build spec (items 2, 4, 6 + review blockers)
 
-**Status:** spec, 2026-09-28, Merrin (design lane). MC-977 / backlog 8f64d565. R0 is parked on this pass.
-**Scope:** Ron's 2026-09-28 list, items **2** (project switching + obvious campaign creation), **4** (Posy-is-working
-state) and **6** (first-run walkthrough vs ongoing campaign). Items **1, 3, 5** are Tilda's code fixes (modal size,
-delete campaign, Posy input lost on tab switch). This doc references them and does not re-spec them.
-**Authority:** amends `THE_DESK_V1_UI.md` §2, §3.4, §3.5. Where this doc and that one disagree, this doc wins for R0
-and the UI doc gets a pointer (ticket U6). Behaviour/permissions still follow `THE_DESK_SPEC.md` and
-`THE_DESK_SIMPLIFICATION_PLAN.md` §4 (approval bounds).
+**Status:** BINDING build spec, 2026-09-28. MC-977 / backlog 8f64d565. R0 stays parked until ticket T8 passes.
+**Owner:** Merrin (plan). Builders per ticket, §9. Doc only; no code changed by this revision.
+**Inputs (kept, not authority):** Merrin's first spec (this file at `e23cec8`) and Kestrel's independent review,
+`docs/THE_DESK_V1_UX_PASS_kestrel.md` (`c60953b`). Where they disagreed, Ron decided (below).
+**Authority:** amends `THE_DESK_V1_UI.md` §1, §2, §3.4, §3.5 (those sections now point here). Behaviour, permissions and
+approval bounds still follow `THE_DESK_SPEC.md` and `THE_DESK_SIMPLIFICATION_PLAN.md` §4. Items **1, 3, 5** (modal
+size, delete/archive campaign, Posy text lost on tab switch) are Tilda's, in flight in session `3ad45d19f2bc`; this
+doc builds on them and does not re-spec them.
 
-## 0. What the screenshots show (the defects, precisely)
+## Decisions (Ron, 2026-09-28, binding)
 
-| Screenshot | What's wrong | Root cause in code |
+1. **Projects: one Desk, all projects, a `Projects: All ▾` filter.** Not a header switcher. (Merrin's model.)
+2. **Setup: a 4-step resumable checklist INSIDE the campaign page** — Purpose; Destinations + voice; First plan;
+   Review + start — with one next action. Not a separate 7-step `setup` route. (Kestrel's model.)
+3. **Graduation:** `✎ Draft` (setup) → `◇ Proposed` (populated plan) → `▶ Active` **only** on explicit human approval of
+   a bounded plan.
+4. **No per-piece approval for a first campaign** (Merrin's old Q2, dropped). The standing per-campaign release policy
+   holds: Ron approves a bounded plan once; posts publish on cadence behind Pause and a published log.
+5. **Delete vs Archive** (Tilda building): Delete only for never-started campaigns; Archive for anything with publication
+   history; both in a labelled `More` menu, with Undo.
+6. **Also in scope** (Kestrel's blockers): Resume after Pause; tabs switch panels inside a persistent campaign frame;
+   one canonical plan object feeds goal display AND Start; Start blocked until every required bound has a value or an
+   explicit Off; a blank-campaign + second-project acceptance journey smoke.
+
+## 0. The defects (screenshots `data/uploads/agent_{4175e5c7c4,6fce437ae7,77f1e42ebf}.png`)
+
+| Screen | Wrong | Cause |
 |---|---|---|
-| `agent_4175e5c7c4.png` Home | `Clayrune ▾` looks like a switcher and does nothing; nothing says "start a campaign here" | `desk-v1-home.js:523` toast stub; promote box is only a placeholder sentence |
-| `agent_6fce437ae7.png` new campaign | Goal `__ by __`, "No channels yet", empty Content, Posy's "reply" appears instantly and just echoes the text | `_createProposedCampaign` (`home.js:71`) creates an empty shell and navigates straight to the ongoing layout; `deskV1FillProposedSummary` (`rules.js:43`) renders labels with no values; Posy handler is synchronous |
-| `agent_77f1e42ebf.png` Start sheet | Every row `—`; title is a suggestion chip's raw sentence | `deskV1OpenStartSheet` (`rules.js:180-187`) falls back to `'—'`; campaign name = raw promote text |
+| Home | `Clayrune ▾` looks like a switcher, does nothing; nothing says "start a campaign here" | `desk-v1-home.js:523` toast stub |
+| New campaign | Goal `__ by __`, no channels, Posy "reply" instant and echoes text | `_createProposedCampaign` (`home.js:71`) makes an empty shell and opens the ongoing layout; `rules.js:43` labels with no values; Posy handler synchronous (`rules.js:572`) |
+| Start sheet | every row `—`; title is the raw prompt | `rules.js:173-187` reads a separate `proposedDetail.authority`, falls back to `—`, still permits Start (`:220`) |
 
-The common fault: **a campaign exists before it has anything in it.** Fixing 6 fixes most of 2 and all of the Start sheet.
+Common fault: **a campaign is shown as ready before it has anything in it.** Rule for every surface in this pass:
+**no label without a value** — an unset optional is omitted or stated as its default in words, never `—` or a blank.
 
-## 1. Item 6: two modes, one graduation rule
+## 1. Lifecycle
 
-### 1.1 States (no new vocabulary)
-Uses the existing §9 campaign states. `✎ Draft` already exists in `DeskV1Kit.CAMPAIGN_STATES` ("manually started,
-incomplete") and becomes the walkthrough's state.
-
-| State | Layout shown | Enters when | Leaves when |
+| State | Frame shows | Enters | Leaves |
 |---|---|---|---|
-| `✎ Draft` | **Setup walkthrough** (new route `setup`) | user presses `Plan a campaign ›` on Home, or picks `＋ New campaign` | all required answers given AND Posy's plan returns ≥1 sample piece → `◇ Proposed` |
-| `◇ Proposed` | **Plan view** (replaces today's empty summary bar) | graduation from Draft | `Start campaign` confirmed → `▶ Active`; or discarded (Tilda's item 3 delete) |
-| `▶ Active` / `⏸ Paused` / `✓ Completed` | **Ongoing campaign page** (today's 12a layout) | Start confirmed | unchanged |
+| `✎ Draft` | Setup checklist, steps 1–3 | `Create campaign ›` on Home, or `＋ New campaign` | step 3 returns a plan with ≥1 sample AND step 1 required set → Proposed |
+| `◇ Proposed` | Setup checklist, opens on step 4 | graduation; or a widening edit to an Active plan | `Start campaign` confirmed with a valid plan → Active |
+| `▶ Active` | Operating view (§6) | Start confirmed | Pause; end date / post cap reached → Completed; widening edit → Proposed (stops publishing) |
+| `⏸ Paused` | Operating view + `▶ Resume` | Pause | Resume (§6.2) |
+| `✓ Completed` | Operating view, read-only + `Renew ›` | end/cap reached | Renew = step 4 with changed terms only → Active |
+| `Archived` | read-only history | `More › Archive` (any campaign with publication history) | `More › Restore` |
 
-**Graduation rule, exactly:** a campaign may render the ongoing layout only in Active/Paused/Completed. A Draft never
-renders a summary bar. A Proposed campaign renders the Plan view, never the tabbed page.
+- Setup progress (`camp.setup = {step, done[]}`) is UI state, separate from the lifecycle state.
+- Viewing a summary or getting a Posy reply is **not** graduation. No result or published post is needed to go Active.
+- `More › Delete` exists only while the campaign has never been Active (Draft/Proposed). Neither action removes posts
+  already on a platform; the confirm says so.
 
-### 1.2 Setup walkthrough (Draft): screen by screen
-Full-width route inside the Desk window, `‹ Home` back. One question per screen, `Step n of 7`, `‹ Back` · `Next ›`.
-Every step shows Posy's suggestion **pre-filled**, marked `? Posy's guess` until the user touches it, so pressing Next
-seven times always produces a valid plan. Progress saves on every Next; leaving mid-way keeps a Draft card on Home.
+## 2. Campaign frame (persistent)
 
-| # | Question (screen title) | Control | Required | Default / Posy's guess | Maps to bound (SIMPLIFICATION §4) |
-|---|---|---|---|---|---|
-| 1 | **What are you promoting?** | the promote-box text (carried over), `📎` file / `🔗` link, project picker `From: Clayrune ▾`, name field | text yes | name = Posy's short title, never the raw sentence; project = Home filter, else the single project | thesis, source scope |
-| 2 | **Who is it for?** | 3 audience chips + free text | no | from the project's signals, e.g. "Windows users trying Claude Code" | (goal audience) |
-| 3 | **What should happen?** | outcome chips (signups · installs · stars · visits · "just get it seen") + number + date | no | "Just get it seen", no number | goal; untracked = `⚠ not tracked yet`, not a blocker (CMP-03) |
-| 4 | **Where should it go?** | connected channel badges (UX-02 identity + capability glyph); `✋ You publish it` destinations listed; `＋ Connect` | ≥1 | the project's connected channels | platforms / accounts |
-| 5 | **Whose voice?** | per channel: `Ron (first person)` / `Clayrune (the product)`, each with a one-line sample | yes | X → Ron, LinkedIn → Clayrune (spec, decided 2026-09-09) | voice(s) |
-| 6 | **How often, and until when?** | `Up to [3] a week` + ⓘ "a ceiling, not a quota"; ends `[30 days]` or `[12 posts]` | yes | 3/wk, 30 days / 12 posts | cadence ceiling, end date + cap |
-| 7 | **How much do you want to check?** | two cards: `You approve each piece` · `Approve the plan, then Posy runs it` (with Pause always available) | yes | see open question Q2 | review mode |
+One frame for every state. Header: `‹ Desk` · campaign short title · state (glyph + word) · project chip · `More ▾`
+(Tilda) · `⏸ Pause` / `▶ Resume` (Active/Paused only). Below it, one panel at a time:
 
-Step 4 with **zero** connected channels: shows the manual route (Open in X / Copy, SIMPLIFICATION step 2b) as a real,
-selectable destination with `✋ You publish it`, plus `＋ Connect`. The walkthrough never dead-ends on a missing API
-connection.
+- Draft / Proposed: the **Setup** panel (§3). No tabs, no goal bar, no results widgets.
+- Active / Paused / Completed: tabs `Overview · Content · Conversations · Results`. **Tabs switch the panel in place**:
+  route stays `campaign` with `params.panel`; header, Posy box and the panel's scroll/selection state persist.
+  `conversations`, `results`, `calendar` stop being separate routes; `deskV1Nav('results', p)` still works (maps to
+  `campaign` + `panel:'results'`) so existing deep links and smokes keep resolving.
+- Full-width review (`review`), video (`video`) and `rules` stay child routes: those are deliberate departures with `‹`.
 
-**Finish:** `Next ›` on step 7 becomes `Make the plan`. The page switches to the **Posy working** state (§3, full-width
-variant: "Posy is drafting your plan… reading Clayrune's recent changes"). On result → navigate to Plan view.
-On failure → stays on step 7 with the failure copy from §3.3; answers are kept.
+## 3. Setup: 4-step checklist inside the campaign (Draft → Proposed)
 
-Visuals in samples: a real screenshot from the project (tools/smoke capture or user upload) or none. Posy never
-generates imagery of the product (standing position, 2026-09-10).
+**Shape.** A vertical checklist: `✓ done · ● current · ○ to do · ⚠ needs attention`, each step expandable, any done
+step reopenable in any order. One primary button, always the next concrete action ("Choose where it will run ›").
+Posy's guesses are pre-filled and marked `? Assumed` until touched, so accepting defaults always yields a valid
+plan. Every change saves immediately; `Save and leave` returns Home; the Draft card reads `✎ Draft · Setup 2 of 4 ·
+Continue ›`. Explanations sit behind ⓘ and can be collapsed (remembered). It is work on the real campaign: no tour
+overlay, no chat interview. Experienced users may edit the checklist directly; nobody bypasses step 4.
 
-### 1.3 Plan view (Proposed)
-Replaces `deskV1FillProposedSummary` + `deskV1FillProposedContent`. A readable page, no tabs, no empty fields:
+| Step | Asks | Required to leave the step | Posy's default | Plan fields (§4) |
+|---|---|---|---|---|
+| **1 Purpose** | What are we promoting (full brief, kept whole; `📎`/`🔗` attach), short title, owning project, `Also draw on:` other projects, who should care (3 chips + text), outcome (chips: signups · installs · stars · visits · just get it seen · ongoing updates; optional number + date) | brief, title, ≥1 project, objective in words | title = Posy's short title, never the raw sentence; project = Home filter, else the only one; outcome "Just get it seen" | `brief`, `title`, `source_projects`, `audience`, `goal` |
+| **2 Destinations + voice** | Destination identities (badge + capability: publishes · `✋ You publish it` · `⚠ Held`), `＋ Connect`; per destination, the voice with a one-line sample | nothing to continue planning; a viable path (connected or `✋`) is required at step 4 | the project's connected destinations; 𝕏 → Ron (first person), LinkedIn → Clayrune page (2026-09-14 split) | `destinations[] {account, voice}` |
+| **3 First plan** | `Draft the plan` → Posy task (§5, stage "Preparing a draft plan"). Result: the angle in one paragraph, **3 sample posts** (editable, `Ask Posy to redo`, a "why this serves the goal" line, the material/evidence used), suggested cadence and end | plan returned with ≥1 sample | cadence ≤3/wk, min gap 12 h; ends 30 days or 12 posts | `angle`, `samples[]`, `cadence`, `end` |
+| **4 Review + start** | The bounds, §3.1 | every required bound valid | — | approval |
 
-```
-◇ Proposed   Windows beta testers                                   [Start campaign]
-The plan, in one paragraph:
-  Posy will post up to 3 a week on 𝕏 · @ron as Ron, for 30 days or 12 posts, whichever
-  comes first, to reach Windows users trying Claude Code. Goal: 30 tester signups by
-  Oct 20 (⚠ not tracked yet · How?). You approve each piece.            [Change ›]
-Three sample posts                     (each: editable, `Ask Posy to redo`, `? Assumed` popovers)
-Posy's one question (only if a real blocker exists, CMP-03)
-[Posy box, scoped "About: the plan"]
-```
+- Missing measurement is a note (`⚠ not tracked yet · How?`), never a blocker (CMP-03). An ongoing-presence campaign
+  with no numeric target is valid.
+- Zero connected destinations: step 2 still offers the manual route (Open in X / Copy, SIMPLIFICATION 2b) as a real,
+  selectable `✋ You publish it` destination. Setup never dead-ends on a missing API connection.
+- Step 3 failure keeps every answer and the request; `Retry` / `Edit request`. A real blocker shows as Posy's one
+  question (`⛔` card, two answer buttons) — `Needs your answer` in §5.
+- Revising the plan in plain language uses the Posy box scoped `About: the plan`.
+- Sample visuals: a real project screenshot (smoke capture or upload) or none. Posy never generates product imagery.
 
-- Every clause in the paragraph is a link back to its walkthrough step (`Change ›` opens step 1 with answers kept).
-- An unset optional answer is **omitted from the sentence**, never rendered as a blank label. No goal → the sentence
-  reads "Goal: none set · Add one". That is the rule for every surface in this pass: *no label without a value.*
+### 3.1 Step 4: Review + start (replaces `deskV1OpenStartSheet`)
 
-### 1.4 Start sheet with unset fields
-`deskV1OpenStartSheet` changes (CMP-05 content unchanged):
-- **Title** = campaign name (Posy's short title), never the promote text.
-- **Required bound unset** (accounts, voice, frequency, end): row reads `⚠ Not set · Set it ›` (jumps to that step);
-  `Confirm — Start campaign` disabled with the reason under it: "Set 2 things first: accounts, end date."
-  Via the walkthrough this state is unreachable; it guards Proposed campaigns created by drops (`home.js:126`).
-- **Optional unset**: the default in words, never `—`: Replies `Drafted for your review (default)`, Paid `Off`,
-  Generation limits `No video generation (default)`, Stop conditions `Ends at 30 days or 12 posts` (derived).
-- Keeps "Starting doesn't approve any piece" only when review mode = each piece. Under plan approval the line becomes
-  "Starting lets Posy publish within these limits. Pause stops it at any time." (per-campaign position, 2026-09-23).
+Rendered in-page, not a modal. Top: the plan in one sentence, each clause a link to its step:
+"Posy will post up to 3 a week on 𝕏 · @ron as Ron, for 30 days or 12 posts, whichever comes first, to reach Windows
+users trying Claude Code. Goal: 30 tester signups by Oct 20 (⚠ not tracked yet)." Unset optional clauses are omitted.
 
-### 1.5 Ongoing page: empty states once Active
-Active but nothing published yet is still a thin page. Rules:
-- Summary bar goal with no data: `Goal: 30 signups by Oct 20 · starts counting at the first post` (no `0/30` bar).
-- **Results** tab before the first publish: "Results start after the first post goes out. Next: Tue 09:00 on 𝕏 · @ron."
-  No zeroes (MET-01 already forbids unmeasured 0).
-- **Conversations** before the first publish: "Replies show up here once a post is live." (never "no one is talking").
-
-### 1.6 Flow
-
-```mermaid
-flowchart TD
-    H[Home: 'What do you want to promote?'] -->|Plan a campaign ›| S1[Step 1 What · project · name]
-    N[＋ New campaign card] --> S1
-    D[Draft card: Continue step n] --> S1
-    S1 --> S2[2 Who] --> S3[3 Goal · optional] --> S4[4 Channels] --> S5[5 Voice] --> S6[6 Cadence + end] --> S7[7 Review mode]
-    S7 -->|Make the plan| W[Posy working · full-width]
-    W -->|fail / timeout| S7
-    W -->|plan + ≥1 sample| P[◇ Proposed: Plan view]
-    P -->|Change ›| S1
-    P -->|Start campaign| SS[Start sheet · no dashes]
-    SS -->|required unset| P
-    SS -->|Confirm| A[▶ Active: ongoing page]
-    A -->|first post published| A2[Results / Conversations fill in]
-    S1 -.leave mid-way.-> DR[✎ Draft kept on Home]
-```
-
-## 2. Item 2: projects and campaign creation
-
-**Decision (recommended, Q1):** the Desk stays one place across projects (spec "one-place requirement"); a project is a
-**filter**, not a context switch. Campaigns already carry `project_ids` (`desk_routes.py:322`, the source-scope bound).
-
-- Header `Clayrune ▾` → `Projects: All ▾`, a checklist of Clayrune projects with ≥1 signal or campaign, plus "All".
-  Persisted in `localStorage` (`desk_v1_project_filter`). Filters campaign cards, Needs you and suggestion chips.
-- Each campaign card gets a project chip when the filter is "All" and >1 project is present.
-- The walkthrough's step 1 `From:` defaults to the filtered project.
-- R0: fixtures gain a second project (`engulfing_scanner`, 1 campaign) so the filter is exercisable.
-
-**Making creation obvious** (no tour, no coach marks; the layout teaches it):
-1. The promote box gets a title, **Start a campaign**, and helper text: "Tell Posy what you want to promote: a feature,
-   a release, a link. She'll walk you through the rest." Button `Propose` → **`Plan a campaign ›`**. It opens step 1
-   pre-filled; it no longer creates a campaign.
-2. The campaign grid always ends with a dashed **`＋ New campaign`** card (opens step 1 empty).
-3. **Zero campaigns** (first ever visit): Home shows only the promote box, centered at reading width, with 3 example
-   chips ("The new Windows installer", "Restore points", "Paste a link to a release"). Needs you and shelves are hidden
-   until there is something in them; Channels shelf shows only `＋ Connect a channel` if none exist.
-4. Draft cards: `✎ Draft · step 4 of 7` with `Continue ›` and `Discard` (Tilda's item-3 delete path).
-
-## 3. Item 4: Posy is working
-
-### 3.1 States (every Posy box: campaign, plan, review, video director, walkthrough finish)
-
-| State | What the box shows | Input |
+| Bound (SIMPLIFICATION §4) | Required | Shown as when unset |
 |---|---|---|
-| idle | suggestion + chips | enabled |
-| sent | user's text as a bubble, then `.typing-indicator` (reused, `data-act` = thinking / writing / tool) | Send disabled, label `Posy is working…`; typing allowed, kept |
-| working > 10s | adds a line: "Still working · 0:14" (elapsed, ticking) | same |
-| working > 30s | "Taking longer than usual. You can leave this page; the answer will wait here." | same |
-| done | before → after + affected items + Undo (existing INS-01..04 rendering) | enabled |
-| failed | `⚠ Posy couldn't finish: <reason>. Nothing was changed.` · `Try again` · `Edit request` (puts the text back) | enabled |
-| timed out (180s) | `⚠ Posy didn't answer in 3 minutes. Nothing was changed.` · `Try again` · `Keep waiting` | enabled |
+| Destinations + voices | yes | `⚠ Not set · Set it ›` (→ step 2) |
+| Source projects | yes | `⚠ Not set · Set it ›` (→ step 1) |
+| Cadence ceiling + min gap | yes | `⚠ Not set · Set it ›` (→ step 3) |
+| End date and/or post cap | ≥1 | `⚠ Not set · Set it ›` (→ step 3) |
+| Spend ceiling | derived | `Up to $2.40 (12 posts × X link rate)` — never "free" |
+| Replies | value or Off | default `Drafted for your review` |
+| Paid promotion | value or Off | default `Off` |
+| Generation limits | value or Off | default `No video generation` |
+| Stop conditions | derived | `Ends at 30 days or 12 posts; Pause stops it any time` |
 
-- **Reuse, don't fork:** the dots/wave markup is `_actIndicatorInner` in `conversation.js:4436`. Expose it once as
-  `window.actIndicatorHTML(kind)` and call it from the kit. (The UI doc's `CLAYRUNE_CONVERSATION_REDESIGN.md` does
-  not exist; the real source is `docs/CONVERSATION_REDESIGN_ACTION_PLAN.md`, as the R0 plan already notes.)
-- **Survives navigation:** in-flight state lives in a store keyed by `(campaignId, scope)`, not in the DOM. Returning to
-  the page re-renders the dots. Home's campaign card shows `⟳ Posy working` while any ask for it is in flight. A result
-  that lands while the user is elsewhere raises a toast "Posy finished: <campaign> · Open".
-  **This is the same store as Tilda's item 5 (draft text survives tab switch).** One store in the kit, not two:
-  `DeskV1Kit.posyState` = `{draftText, ask: {id, state, activity, startedAt, result, error}}`.
-- One ask in flight per scope. A second Send on the same scope is disabled with "Posy is still on the last one."
-- Nothing is applied until the result renders with Undo. A widening result still asks first (INS-03/04).
+- Then: "First post: Tue 09:00 on 𝕏 · @ron" and "Starting lets Posy publish within these limits. Pause stops it at
+  any time." (per-campaign release, 2026-09-22). The old "Starting doesn't approve any piece" line is retired.
+- `Start campaign` (header and step 4) is **disabled** while `validatePlan` reports anything missing, with the reason
+  under it: "Set 2 things first: destinations, end date." Confirm → Active; R1 writes the approval record
+  (`bounds_hash`, `approved_via:'ui'`, nonce, SIMPLIFICATION step 4/4b).
 
-### 3.2 R0 (simulated)
-Latency 1.5–4 s, activity `thinking` then `writing`. Test hooks: `window.__deskV1PosyForce = 'fail' | 'timeout' | 'slow'`
-(slow = 35 s scripted clock, so the smoke never sleeps). Copy is final; only the transport is fake.
+## 4. One canonical plan object
 
-### 3.3 R1 contract (real Posy)
+`camp.plan` is the only copy. Goal display, summary bar, rule chips, step 4, Resume/Renew and Home cards all **derive**
+from it; `proposedDetail`, `detail.authority` and `goalSentence` are deleted (fixtures migrated).
 
 ```
-POST /api/desk/campaigns/<id>/ask   {text, scope:{kind, id}, client_req_id}
-  202 {ask_id, session_id}            dispatches Posy (same path as dispatch_rework, desk_routes.py:466)
-  409 {reason:'in_flight', ask_id}    one per scope; client re-attaches to ask_id
-  4xx {reason}                        shown verbatim in the failed state
-GET  /api/desk/asks/<ask_id>
-  {state: queued|working|done|failed|timed_out, activity: thinking|writing|tool|'',
-   started_at, result?: {before, after, affected[], widening, undo_token}, error?: {reason}}
+plan = { brief, title, source_projects[], audience, goal:{outcome, target?, deadline?, tracked},
+         destinations:[{account, voice}], angle, samples[], cadence:{per_week, min_gap_h},
+         end:{date?, post_cap?}, replies, paid, generation }          // spend + stop conditions derived
+DeskV1Kit.validatePlan(plan) → { ok, missing:[{bound, step, label}] }
 ```
-- `client_req_id` makes Send idempotent across reconnects. Client polls every 2 s while visible (SSE later, optional).
-- The server owns the 180 s timeout. A result arriving after `timed_out` is stored and shown as "Posy finished late ·
-  Review", never auto-applied.
-- `activity` comes from the session's existing `activity_state` (`--include-partial-messages`, shipped `5c70f37`).
-- Agent-originated calls to `/ask` are fine (it only proposes); it can never apply a widening change (authority guard).
 
-## 4. Files that change
+- Editing the goal date edits `goal.deadline`; every surface re-renders from it (fixes `rules.js:85-90`).
+- `validatePlan` is the single gate used by the checklist state, the Start button, Resume and Renew.
+- Widening vs narrowing is decided by comparing plan bounds (SIMPLIFICATION §4): narrowing keeps Active; widening an
+  Active plan → Proposed with the changed terms highlighted, publishing stops.
+
+## 5. Posy is working (every Posy box: setup step 3, campaign, review, video director)
+
+| State | Box shows | Input |
+|---|---|---|
+| **Sending** | the request as a bubble immediately, `Sending…` | Send disabled; draft kept |
+| **Accepted** | `Posy has it` (R1: server saved it and returned `ask_id`) | draft cleared **now**, not before |
+| **Working** | typing indicator (`data-act` thinking/writing/tool) + stage text ("Preparing a draft plan"); after 10 s `Still working · 0:14`; after 30 s "Taking longer than usual. You can leave; the answer will wait here." · `Cancel` | typing allowed; 2nd Send on same scope: "Posy is still on the last one." |
+| **Needs your answer** | Posy's one question with answer buttons. Every widening change lands here, never applied | answer buttons |
+| **Ready** | before → after, affected items, link to the changed plan/piece, `Undo`. The word "applied" appears only here and only with a concrete diff; no diff → "Posy answered; nothing changed." | enabled |
+| **Failed** | `⚠ Posy couldn't finish: <reason>. Nothing was changed.` · `Retry` · `Edit request` (text restored). Timeout (180 s) adds `Keep waiting`; Cancelled is Failed with reason "cancelled" | enabled |
+
+- No percentages, no completion estimates. Status text is in an `aria-live="polite"` region.
+- **Reuse, don't fork:** expose `_actIndicatorInner` (`conversation.js:4436`) once as `window.actIndicatorHTML(kind)`.
+  Chat-piece source: `docs/CONVERSATION_REDESIGN_ACTION_PLAN.md`.
+- **One store, extending Tilda's item-5 draft store** (not a second one), keyed `(projectId, campaignId, targetId)` —
+  stable ids, never a label or shared textarea id: `{draftText, asks:[{id, clientReqId, state, stage, startedAt,
+  request, result, error}]}`. Survives tab/route changes; Home card shows `⟳ Posy working`; a result landing
+  elsewhere toasts "Posy finished: <campaign> · Open". A selection change never retargets text already being typed:
+  the scope chip stays on the original target and offers `Switch to <new>`.
+- **R0 is simulated and says so:** fixture mode shows `Simulated reply (R0)` in the box footer. Latency 1.5–4 s;
+  hooks `window.__deskV1PosyForce = 'fail' | 'timeout' | 'slow' | 'question'` (`slow` = 35 s scripted clock, the
+  smoke never sleeps). Refresh/reopen durability is **not** R0 (tab/route survival is); it is R1-b.
+
+**R1 contract (R1-a):**
+```
+POST   /api/desk/campaigns/<id>/ask  {text, scope:{kind,id}, client_req_id}
+  202 {ask_id, session_id}   dispatches Posy (same path as dispatch_rework, desk_routes.py:466)
+  409 {reason:'in_flight', ask_id}   one per scope; client re-attaches
+GET    /api/desk/asks/<ask_id> → {state: accepted|working|needs_answer|ready|failed|cancelled|timed_out,
+        stage, activity, started_at, question?, result?:{applied, before, after, affected[], undo_token}, error?}
+DELETE /api/desk/asks/<ask_id> → cancel
+```
+- `client_req_id` makes Send idempotent across reconnects; client polls 2 s while visible. Server owns the 180 s
+  timeout; a late result is stored as "Posy finished late · Review", never auto-applied. `activity` comes from the
+  session's `activity_state` (`5c70f37`). `/ask` only proposes; it can never apply a widening change or approve.
+
+## 6. Operating view (Active / Paused / Completed)
+
+### 6.1 Overview panel (default)
+`Next action` (e.g. "Next post Tue 09:00 on 𝕏 · @ron · Open") · `Needs you` (this campaign's items) · `Recent outcome`,
+then the queue and the published log. Routine release follows cadence: no per-post approval ritual. Changes within
+the plan show their effect and are logged.
+Empty states before the first publish: goal `30 signups by Oct 20 · starts counting at the first post` (no `0/30`
+bar); Results "Results start after the first post goes out. Next: Tue 09:00 on 𝕏 · @ron."; Conversations "Replies
+show up here once a post is live." Results always distinguish measured zero, delayed and untracked (MET-01).
+
+### 6.2 Pause / Resume
+- `⏸ Pause` (header, Home card `More`): stops at once, Undo toast.
+- `▶ Resume` on Paused (header and Home card `More`) opens a short sheet: upcoming work affected ("3 posts resume:
+  Tue 09:00 …"; missed slots are skipped, never posted late), then `Resume`. Before resuming, `validatePlan` +
+  expiry check: end date passed, cap reached, or a destination held → Resume routes to step 4 with only the changed
+  terms, not a silent restart.
+
+## 7. Projects and creating a campaign (Home)
+
+- Header `Clayrune ▾` → **`Projects: All ▾`**: checklist of projects with ≥1 signal or campaign, plus All. Persisted in
+  `localStorage` (`desk_v1_project_filter`). Filters campaign cards, Needs you, suggestions and Material consistently.
+- Owning project ≠ destination: the project chip says what is promoted; the channel badge says where and as whom. Cards
+  show the project chip when >1 project is visible; the campaign header always shows it.
+- R0 fixtures gain a second project (`engulfing_scanner`, one Active campaign, one Needs you item).
+- Promote box titled **Start a campaign**, helper: "Tell Posy what you want to achieve; you'll review the plan before
+  it runs." Button **`Create campaign ›`** creates a `✎ Draft` with the full brief saved and opens step 1, project =
+  current filter (correctable). Suggestion chips fill the box; they don't send.
+- The campaign grid always ends with a dashed `＋ New campaign` card (blank Draft, step 1).
+- **Zero campaigns:** Home shows only the promote box at reading width with 3 example chips; Needs you and shelves
+  hidden until non-empty; Channels shows only `＋ Connect a channel` when none exist.
+- **Deferred (flagged scope, not this pass):** a campaign picker in the campaign header; `More › Rename` and
+  `Duplicate plan`. Each needs its own ask.
+
+## 8. Files
 
 | File | Change | Ticket |
 |---|---|---|
-| `static/js/desk-v1-kit.js` | `posyState` store; working/failed/timeout rendering in `posyBoxHTML`/`bindPosyBox`; async `onSend` | U1 |
-| `static/js/conversation.js` | expose `window.actIndicatorHTML` (one line, no behaviour change) | U1 |
-| `static/js/desk-v1-setup.js` (new) | walkthrough route, 7 steps, Draft persistence, finish → working → Plan view | U2 |
-| `static/js/desk-v1-shell.js` | add `setup` route (parent `home`) | U2 |
-| `static/js/desk-v1-rules.js` | Plan view replaces Proposed summary/content; Start sheet unset rows; async Posy handler | U3 |
-| `static/js/desk-v1-campaign.js` | Active empty states (goal, Results, Conversations) | U4 |
-| `static/js/desk-v1-home.js` | project filter, zero-campaign Home, `＋ New campaign` card, Draft cards, Propose → setup | U5 |
-| `static/js/desk-v1-fixtures.js` | 2nd project, a Draft campaign, zero-campaign mode, Posy latency script | U1–U5 |
-| `static/css/desk-v1.css` | walkthrough, plan view, working states | U1–U5 |
-| `tools/smoke/desk-v1-*.mjs` | new `desk-v1-setup.mjs`; home/rules/campaign updated; exit sweep adds `setup` + `plan` routes | each ticket |
-| `docs/THE_DESK_V1_UI.md` | pointers from §2/§3.4/§3.5 to this doc | U6 |
+| `static/js/desk-v1-kit.js` | `camp.plan` helpers + `validatePlan`; Posy task store/lifecycle on Tilda's store | T1, T3 |
+| `static/js/conversation.js` | expose `window.actIndicatorHTML` (no behaviour change) | T3 |
+| `static/js/desk-v1-shell.js` | `campaign` route gets `params.panel`; old panel routes alias to it | T2 |
+| `static/js/desk-v1-campaign.js` | persistent frame, Overview panel, Pause/Resume, empty states | T2, T6 |
+| `static/js/desk-v1-setup.js` (new) | Setup panel: checklist, steps 1–4, graduation | T4, T5 |
+| `static/js/desk-v1-rules.js` | delete Proposed summary/content + `deskV1OpenStartSheet`; rule chips read `camp.plan` | T1, T5 |
+| `static/js/desk-v1-home.js` | project filter, Create campaign, New card, zero-campaign Home, Draft cards | T7 |
+| `static/js/desk-v1-fixtures.js` | `proposedDetail` → `camp.plan`; 2nd project; Draft + Paused fixtures; Posy script | T1–T7 |
+| `static/css/desk-v1.css` | frame, checklist, step 4, working states | T2–T7 |
+| `tools/smoke/desk-v1-*.mjs` | `desk-v1-setup.mjs`, `desk-v1-journey.mjs` new; others updated per ticket | each |
 
-## 5. Tickets (one builder each, merge one at a time, smokes after each merge)
+## 9. Tickets — one builder each, in this order; merge one at a time; run the named smokes after EACH merge
 
-| # | Ticket | Depends on | Acceptance (verified by smoke, all 3 tones) |
+| # | Ticket | Depends on | Acceptance (smoke; all 3 tones where it renders UI) |
 |---|---|---|---|
-| **U1** | Posy working state + shared `posyState` store | Tilda item 5 merged first, or U1 absorbs it (coordinate) | Send → dots within 100 ms; forced fail/timeout show exact §3.1 copy and restore text; navigate away and back mid-ask → dots still there; Home card shows `⟳ Posy working` |
-| **U2** | Setup walkthrough + Draft state | U1 (finish uses working state) | 7× Next from Home with defaults reaches Plan view; leave at step 4 → Draft card → Continue lands on step 4 with answers; zero connected channels still completes via `✋` |
-| **U3** | Plan view + Start sheet with no dashes | U2 | Plan view has 0 empty label/value pairs (DOM assertion); Start sheet contains no `—`; required-unset disables Confirm with reason; title = name |
-| **U4** | Active empty states | U3 | fresh Active campaign: no `0/` progress, Results + Conversations show the §1.5 copy; lint A12 clean |
-| **U5** | Home: project filter, first-run Home, New campaign card | U2, Tilda item 1 | filter hides the other project's cards/Needs you; zero-campaign fixture shows only the promote box + examples; `Plan a campaign ›` opens step 1 prefilled |
-| **U6** | Exit gate re-run + UI doc pointers + greyscale shots for `setup`/`plan` | U1–U5 | `desk-v1-exit.mjs` exit 0, routes incl. setup/plan × 3 tones |
-| R1-a | `/ask` backend per §3.3 (filed, not R0) | R1 start | tests: 202/409/idempotent replay, server timeout, late result not applied |
+| **T1** | Canonical `camp.plan` + `validatePlan`; migrate fixtures; delete `proposedDetail`/`authority`/`goalSentence` | **Tilda's items 1/3/5 branch merged to master first**; T1 branches from that merge | `desk-v1-rules.mjs`: editing goal date changes deadline in summary bar + rules chips; a plan missing end → `validatePlan.missing` names it; `rg proposedDetail static/` = 0. `desk-v1-home/campaign/kit.mjs` still green |
+| **T2** | Persistent campaign frame; in-place panels; Pause/Resume (§6.2); header `More` placement | T1 | `desk-v1-campaign.mjs`: tab click keeps header + Posy DOM node (same element), no route push; Pause → Resume sheet → Active; expired end → Resume opens step 4. `desk-v1-results/conversations/calendar.mjs` green via aliases |
+| **T3** | Posy task lifecycle §5 on Tilda's store; `actIndicatorHTML`; R0 simulated label | Tilda item 5 (via T1 base) | `desk-v1-kit.mjs`: Send → Sending bubble < 100 ms; forced fail/timeout/question show exact §5 copy, text restored on fail; navigate away mid-ask and back → still Working; Home card `⟳ Posy working`; no "applied" text in any non-Ready state |
+| **T4** | Setup panel steps 1–3, Draft persistence, Draft → Proposed | T1, T2, T3 | `desk-v1-setup.mjs`: Create → accept defaults → step 3 plan → state Proposed; leave at step 2 → Home card `Setup 2 of 4` → Continue lands on step 2 with answers; zero connected destinations completes via `✋` |
+| **T5** | Step 4 Review + start; Proposed → Active; widening → Proposed | T4 | `desk-v1-setup.mjs`: step 4 has 0 `—` and 0 empty label/value pairs; missing bound disables Start with reason and `Set it ›` jumps to the step; title = short title; Start → Active. `desk-v1-rules.mjs`: widening an Active plan → Proposed |
+| **T6** | Overview panel + Active empty states | T2, T5 | `desk-v1-campaign.mjs`: fresh Active shows no `0/` bar; Results/Conversations show §6.1 copy; lint A12 clean |
+| **T7** | Home: `Projects: All` filter, 2nd project, Create campaign, New card, zero-campaign Home, Draft cards | T4 | `desk-v1-home.mjs`: filter hides the other project's cards + Needs you and persists across reload; zero-campaign fixture shows only promote box + examples; Create opens step 1 with brief + filtered project |
+| **T8** | Acceptance journey + exit gate + UI doc greyscale shots | T1–T7 | new `desk-v1-journey.mjs`: blank campaign in the **second** project → setup → interrupt at step 2 → resume → forced Posy failure + Retry → Start → Pause → Resume → Delete a never-started Draft (Undo) → Archive an Active. `desk-v1-exit.mjs` exit 0 incl. setup/step-4 × 3 tones |
+| R1-a | `/ask` backend per §5 | R1 start | tests: 202/409/idempotent replay, cancel, server timeout, late result not applied |
+| R1-b | Durable Posy drafts/asks across refresh | R1-a | test: refresh mid-ask resumes the same `ask_id` |
 
-**Not verified yet, needs people:** the 5-user "under 5 minutes" test (`desk_v1_r0_exit.md`). This pass is designed
-to make it passable; only running it proves that. Run it after U6.
+T3 touches only kit/conversation and may be *built* in parallel with T2, but still merges after T2 with smokes between.
 
-## 6. Open questions for Ron (recommendation marked)
+**Not verified until people run it:** the 5-user "create and review a draft in under 5 minutes" test
+(`desk_v1_r0_exit.md`), plus Kestrel's probes: each user names the project/account, explains what Start authorizes,
+recovers a request after navigating away, and stops/resumes the campaign. Run after T8. Also check keyboard focus
+restoration, live-region announcements, phone action reachability at 390 px, 200% zoom.
 
-**Q1. Projects: filter or switch?** (a) One Desk, `Projects: All ▾` filter, campaigns tagged by project.
-(b) Hard switch, one project's Desk at a time. **Recommend (a):** the spec's one-place requirement, and a
-cross-project campaign (one voice, two projects) can't live under a hard switch.
+## 10. Open question for Ron (nonblocking)
 
-**Q2. Default review mode for a user's FIRST campaign?** (a) `You approve each piece` for the first campaign only,
-`Approve the plan, then Posy runs it` default from the second on. (b) Plan approval from the start, per the standing
-position. **Recommend (a):** a non-expert should see what Posy writes before trusting the cadence. This does not
-reopen the per-campaign position; plan approval stays available and becomes the default once one campaign has run.
+**Q1. First usability scenario:** (a) a bounded launch ("Windows installer, 30 days"); (b) ongoing project updates.
+**Recommend (b)** (Kestrel): it also exercises renewal, Pause/Resume and routine management, not just setup.
 
-**Q3. Walkthrough form: stepped cards or a chat with Posy?** (a) Stepped cards, one question each, Posy's guess
-pre-filled. (b) Posy asks in the chat, user answers in free text. **Recommend (a):** faster, Back works, defaults are
-visible, and it's scriptable for the smoke; Posy's personality shows in the guesses and the plan paragraph instead.
+Resolved and closed: projects model, setup shape, stepped-vs-chat (checklist on the campaign, not a chat interview),
+first-campaign review mode (dropped), delete vs archive.
