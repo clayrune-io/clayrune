@@ -6175,6 +6175,8 @@ def attend_session(project_id, session_id):
 # attend_session, which has to survive a restart because 'manual' is meant to
 # stick.
 _ATTEND_ONCE_TTL_SECONDS = 600  # 10 minutes
+# Guards claude_session_id writes (_note_claude_sid) against consume's scan.
+_CSID_LOCK = threading.Lock()
 
 # Literal copy of steward/fence.py's `_UNATTENDED_TRIGGER_TYPES` and
 # `STEWARD_MARKER` — same idiom as the JS mirror above
@@ -6403,16 +6405,16 @@ def consume_attend_once_pass():
     # WHICH manager lock to take; every decision that matters is re-derived
     # from `agent_sessions` again immediately below, inside that lock.
     project_id = matches[0][1].get('project_id')
-    with get_manager(project_id).lock:
+    with get_manager(project_id).lock, _CSID_LOCK:
+        # Every project, not just this one: _CSID_LOCK makes the scan atomic
+        # with every _note_claude_sid write, so a collision anywhere refuses.
         live_matches = [(sid, s) for sid, s in list(agent_sessions.items())
-                        if s.get('claude_session_id') == csid
-                        and s.get('project_id') == project_id]
-        if len(live_matches) > 1:
+                        if s.get('claude_session_id') == csid]
+        if len(live_matches) > 1 or (live_matches and live_matches[0][1].get('project_id') != project_id):
             ambiguous_sids = [sid for sid, _ in live_matches]
             _log(f"[attend-once] consume REFUSED: claude_session {csid[:12]} maps to "
-                 f"{len(live_matches)} MC sessions {ambiguous_sids} in project "
-                 f"{project_id} — ambiguous, refusing rather than guessing which "
-                 f"one the human approved")
+                 f"{len(live_matches)} MC sessions {ambiguous_sids} — ambiguous, "
+                 f"refusing rather than guessing which one the human approved")
             return jsonify({'consumed': False,
                             'error': 'ambiguous claude_session_id: more than one MC session '
                                      'shares it'}), 409
@@ -7331,7 +7333,13 @@ def _note_claude_sid(session, sid):
     marking) stays unlocked, same as before."""
     if not sid:
         return
-    with get_manager(session.get('project_id')).lock:
+    # Dave, reviewing the above: NOT the project manager lock. That lock is
+    # held across proc.stdin.write in the send paths; a stream reader waiting
+    # on it while the child waits on the reader to drain stdout is the
+    # respawn-stdin deadlock shape. _CSID_LOCK guards only this dict write
+    # and consume's scan+spend, and nothing holding it does I/O or takes
+    # another lock.
+    with _CSID_LOCK:
         prev = session.get('claude_session_id')
         session['claude_session_id'] = sid
     if prev == sid:
