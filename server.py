@@ -3246,6 +3246,11 @@ def boot(check_port=True):
     # mean a fresh install had zero projects. Swallows internally; never blocks
     # startup.
     _boot_phase('onboarding seed', _bp_guide.seed_onboarding_on_startup)
+    # MC-990: reserved Ideas workspace for projectless Brainstorm sessions
+    # started from Claydo (docs/BRAINSTORM_HANDOFF_SPEC.md §1). App
+    # infrastructure, never agent- or Brainstorm-provisioned. Swallows
+    # internally; never blocks startup.
+    _boot_phase('ideas workspace seed', _bp_guide.seed_ideas_workspace_on_startup)
     # First-run Claude auth gate: actively probe auth once at startup (background,
     # best-effort) so _claude_auth_state reflects reality BEFORE the user dispatches.
     # The state defaults optimistically to ok:True and is only flipped by a failing

@@ -810,7 +810,8 @@ async function floorHireMenu(currentPid, scope, name, display) {
   if (scope !== 'project') {
     const projects = (typeof allProjects !== 'undefined' ? allProjects : []).filter((p) =>
       !(typeof isIncognitoProject === 'function' && isIncognitoProject(p)) &&
-      !(typeof isStewardWorkspace === 'function' && isStewardWorkspace(p)));
+      !(typeof isStewardWorkspace === 'function' && isStewardWorkspace(p)) &&
+      !(typeof isIdeasWorkspace === 'function' && isIdeasWorkspace(p)));
     if (!projects.length) { if (window.showToast) showToast('No projects to hire into.', 3000); return; }
     const listing = projects.map((p, i) => `${i + 1}. ${p.name || p.id}`).join('\n');
     const pick = window.prompt(`Hire ${display} into which project? Type its number.\n\n${listing}`, '');

@@ -1533,10 +1533,18 @@ function isOnboardingProject(p) {
   return !!(p && (p._is_onboarding_project || p.id === 'clayrune' || p.id === 'sample-project'));
 }
 
+// MC-990: the reserved Ideas workspace (projectless Brainstorm sessions
+// started from Claydo, docs/BRAINSTORM_HANDOFF_SPEC.md §1) is app
+// infrastructure like the steward workspaces above — real project record,
+// but not a user project and never selectable as a handoff destination.
+function isIdeasWorkspace(p) {
+  return !!(p && (p._is_ideas_workspace || p.id === 'ideas'));
+}
+
 function filterProjects() {
   // Hide the global incognito pseudo-project from regular listings — it's
   // surfaced via the dedicated "Incognito" sidebar entry instead.
-  const base = allProjects.filter(p => !isIncognitoProject(p) && !isStewardWorkspace(p));
+  const base = allProjects.filter(p => !isIncognitoProject(p) && !isStewardWorkspace(p) && !isIdeasWorkspace(p));
   if (activeFilter === 'all') return base;
   if (activeFilter === 'unread') return base.filter(p => unreadCount(p) > 0);
   if (activeFilter === 'urgent')

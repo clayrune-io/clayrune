@@ -788,7 +788,11 @@ def _has_real_user_project() -> bool:
     walkthrough used to create in place of `clayrune`. Installs old enough to
     carry one counted as "established", so the upgrade seeded no Clayrune
     project and the first-run tour never auto-started — the starter was
-    standing in for a real project it never was."""
+    standing in for a real project it never was.
+
+    MC-990: also excludes the reserved Ideas workspace (`_is_ideas_workspace`)
+    for the same reason — it is app infrastructure seeded at every boot, not
+    evidence the user has set anything up."""
     from mc.blueprints.project_routes import EXCLUDED_SIDECAR_SUFFIXES
     for f in DATA_DIR.glob('*.json'):
         if f.name.endswith(EXCLUDED_SIDECAR_SUFFIXES):
@@ -803,8 +807,83 @@ def _has_real_user_project() -> bool:
             continue
         if p.get('_is_onboarding_project') or p.get('id') in ('clayrune', 'sample-project'):
             continue
+        if p.get('_is_ideas_workspace'):
+            continue
         return True
     return False
+
+
+# ── Ideas workspace (MC-990: Brainstorm handoff) ────────────────────────────
+
+IDEAS_WORKSPACE_ID = 'ideas'
+
+
+def _seed_ideas_workspace() -> bool:
+    """Create the reserved, system-owned Ideas workspace if absent. Returns
+    True if created, False if it already existed.
+
+    The projectless home for a Claydo-started Brainstorm session
+    (docs/BRAINSTORM_HANDOFF_SPEC.md §1). Provisioned as app infrastructure at
+    boot — never by an agent, never by Brainstorm itself — so
+    `/api/project/<id>/agent/dispatch` (which refuses a missing/invalid
+    `project_path`) has somewhere durable to land before the user has named a
+    project. A real project record with the ordinary transcript/resume/
+    provider/agent-log paths: deliberately NOT `_incognito` (that pseudo-
+    project forces incognito and omits the agent log + memory a durable
+    exploration needs), and seeded with no AGENT_RULES.md / project memory of
+    its own so no unrelated project's rules leak into an idea explored here.
+    `_is_ideas_workspace` marks it so pickers can exclude it as an output
+    destination — same shape `_is_onboarding_project` already gives the
+    `clayrune` tour project.
+    """
+    pid = IDEAS_WORKSPACE_ID
+    filepath = DATA_DIR / f'{pid}.json'
+    if filepath.exists():
+        return False
+
+    base = Path(state.CONFIG.get('auto_workspace_base') or str(Path.home() / 'MissionControl'))
+    workspace = base / pid
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"[ideas] workspace folder create failed: {e}", flush=True)
+
+    ts = now_iso()
+    project = {
+        'id': pid,
+        'name': 'Ideas',
+        '_is_ideas_workspace': True,
+        'domain': 'general',
+        'status': 'active',
+        'project_path': str(workspace),
+        'summary': "Brainstorm conversations started from Claydo before a project exists.",
+        'description': (
+            "System home for Brainstorm sessions started outside any project. "
+            "Finish an exploration, then use its \"Use this exploration\" card "
+            "to send the brief to a real project — nothing here is written "
+            "anywhere else on its own."
+        ),
+        'last_updated': ts,
+        'backlog': [],
+        'activity_log': [{'ts': ts, 'msg': 'Ideas workspace created'}],
+    }
+    save_project(pid, project)
+    return True
+
+
+def seed_ideas_workspace_on_startup():
+    """Boot-time seed for the Ideas workspace, called once from server.py
+    startup (same one-shot-marker shape as seed_onboarding_on_startup, kept
+    as its own marker: the two projects are provisioned for unrelated
+    reasons and neither's presence should gate the other's re-seed)."""
+    try:
+        marker = DATA_DIR.parent / 'ideas_workspace_seeded.flag'
+        if marker.exists():
+            return
+        _seed_ideas_workspace()
+        marker.write_text(now_iso(), encoding='utf-8')
+    except Exception as e:
+        print(f"[ideas] startup seed failed: {e}", flush=True)
 
 
 def _seed_onboarding_project() -> bool:
