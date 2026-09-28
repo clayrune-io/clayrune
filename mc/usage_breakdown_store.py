@@ -6,15 +6,28 @@ never trips `load_projects()`'s "every *.json in DATA_DIR is a project"
 contract. WAL mode, so the caller must gitignore the `-wal`/`-shm` sidecars
 alongside the db file itself.
 
-Three tables, schema-versioned via `PRAGMA user_version`:
+Four tables, schema-versioned via `PRAGMA user_version`:
   - allowance_sample: one row per distinct vendor utilization reading.
     Deduplicated by (provider, window_kind, window_scope, source_observed_at)
     — an unchanged source observation is not a new sample (spec: "a cache hit
     is not a new sample" / "identical event identity/timestamp/values are
     stored once").
   - session_fact: one row per MC session_id, upserted at start/checkpoint/
-    completion. Carries token categories, provenance, and an `included` flag
-    so housekeeping/internal sessions stay visible-but-markable per spec §4.
+    completion -- always the session's LATEST snapshot, for totals/rankings.
+    Carries token categories, provenance, and an `included` flag so
+    housekeeping/internal sessions stay visible-but-markable per spec §4.
+  - session_checkpoint: exactly one 'baseline' row (written at dispatch, zero
+    cumulative tokens, `UNIQUE(session_id, checkpoint_type)` makes a repeated
+    dispatch-pending call a no-op) and, once the session ends, one
+    'completion' row (final cumulative tokens) per session_id. The
+    tokens-per-point calibration in mc/usage_breakdown_aggregate.py needs the
+    session's cumulative total AT the exact boundary of an allowance-sample
+    interval, not just its final total, to derive a correct per-interval
+    delta instead of charging a session's whole lifetime total to every
+    interval it overlaps (P1-3, docs/_journal/4668eafc-mc998-fenn-review.md
+    finding 3). A session with only a baseline row (still running, or ended
+    without ever completing) has no measurable delta yet -- callers treat
+    that as incomplete coverage, never as zero.
   - code_delta: one row per session_id, LOC added/deleted or an `unavailable`
     reason.
 
@@ -29,11 +42,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 APPLICATION_ID = 0x4D435542  # 'MCUB'
 DB_FILENAME = 'usage_breakdown.sqlite'
 
-_TABLES = {'allowance_sample', 'session_fact', 'code_delta'}
+_TABLES = {'allowance_sample', 'session_fact', 'session_checkpoint', 'code_delta'}
+_V1_TABLES = {'allowance_sample', 'session_fact', 'code_delta'}
 
 
 class UsageBreakdownStoreError(RuntimeError):
@@ -135,7 +149,56 @@ class UsageBreakdownStore:
                 ' FOREIGN KEY(session_id) REFERENCES session_fact(session_id)'
                 ')'
             )
+            db.execute(
+                'CREATE TABLE session_checkpoint ('
+                ' id INTEGER PRIMARY KEY AUTOINCREMENT,'
+                ' session_id TEXT NOT NULL,'
+                ' provider TEXT NOT NULL,'
+                ' checkpoint_type TEXT NOT NULL,'  # 'baseline' | 'completion'
+                ' observed_at TEXT NOT NULL,'
+                ' input_fresh INTEGER,'
+                ' input_cache_write INTEGER,'
+                ' input_cache_read INTEGER,'
+                ' input_processed_total INTEGER,'
+                ' output_tokens INTEGER,'
+                ' output_reasoning INTEGER,'
+                ' token_coverage TEXT NOT NULL,'
+                ' created_at TEXT NOT NULL,'
+                ' UNIQUE(session_id, checkpoint_type)'
+                ')'
+            )
+            db.execute('CREATE INDEX idx_session_checkpoint_session '
+                       'ON session_checkpoint(session_id, observed_at)')
+            db.execute('CREATE INDEX idx_session_checkpoint_observed '
+                       'ON session_checkpoint(observed_at)')
             db.execute(f'PRAGMA application_id={APPLICATION_ID}')
+            db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
+        elif version == 1 and app == APPLICATION_ID and (tables - {'sqlite_sequence'}) == _V1_TABLES:
+            # Pre-existing v1 install (no session_checkpoint table yet): add it
+            # in place rather than raising, so a dev/test db created before
+            # P1-3 doesn't need to be deleted by hand.
+            db.execute(
+                'CREATE TABLE session_checkpoint ('
+                ' id INTEGER PRIMARY KEY AUTOINCREMENT,'
+                ' session_id TEXT NOT NULL,'
+                ' provider TEXT NOT NULL,'
+                ' checkpoint_type TEXT NOT NULL,'
+                ' observed_at TEXT NOT NULL,'
+                ' input_fresh INTEGER,'
+                ' input_cache_write INTEGER,'
+                ' input_cache_read INTEGER,'
+                ' input_processed_total INTEGER,'
+                ' output_tokens INTEGER,'
+                ' output_reasoning INTEGER,'
+                ' token_coverage TEXT NOT NULL,'
+                ' created_at TEXT NOT NULL,'
+                ' UNIQUE(session_id, checkpoint_type)'
+                ')'
+            )
+            db.execute('CREATE INDEX idx_session_checkpoint_session '
+                       'ON session_checkpoint(session_id, observed_at)')
+            db.execute('CREATE INDEX idx_session_checkpoint_observed '
+                       'ON session_checkpoint(observed_at)')
             db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
         elif (app != APPLICATION_ID or version != SCHEMA_VERSION
               or (tables - {'sqlite_sequence'}) != _TABLES):
@@ -274,6 +337,64 @@ class UsageBreakdownStore:
             q += ' ORDER BY COALESCE(ended_at, started_at) ASC'
             return [dict(r) for r in db.execute(q, params).fetchall()]
 
+    # ── session_checkpoint ──────────────────────────────────────────────
+
+    def record_session_checkpoint(
+        self, *, session_id: str, provider: str, checkpoint_type: str, observed_at: str,
+        input_fresh: Optional[int] = None, input_cache_write: Optional[int] = None,
+        input_cache_read: Optional[int] = None, input_processed_total: Optional[int] = None,
+        output_tokens: Optional[int] = None, output_reasoning: Optional[int] = None,
+        token_coverage: str = 'unavailable',
+    ) -> bool:
+        """Record one timestamped cumulative-token snapshot for `session_id`.
+        Returns False (no-op) when this session_id already has a row of this
+        `checkpoint_type` -- `UNIQUE(session_id, checkpoint_type)` makes a
+        repeated dispatch-pending call for the same session safe to call
+        more than once. `provider` is captured on the baseline row (known at
+        dispatch) so calibration can filter to the right provider before a
+        still-running session ever gets a session_fact."""
+        if not session_id:
+            raise ValueError('session_id is required')
+        if checkpoint_type not in ('baseline', 'completion'):
+            raise ValueError(f'invalid checkpoint_type: {checkpoint_type!r}')
+        if not observed_at:
+            raise ValueError('observed_at is required')
+        with self._connection(write=True) as db:
+            try:
+                db.execute(
+                    'INSERT INTO session_checkpoint '
+                    '(session_id, provider, checkpoint_type, observed_at, input_fresh, input_cache_write, '
+                    ' input_cache_read, input_processed_total, output_tokens, output_reasoning, '
+                    ' token_coverage, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (session_id, provider, checkpoint_type, observed_at, input_fresh, input_cache_write,
+                     input_cache_read, input_processed_total, output_tokens, output_reasoning,
+                     token_coverage, _now()),
+                )
+            except sqlite3.IntegrityError:
+                return False
+        return True
+
+    def list_session_checkpoints(self, *, since: Optional[str] = None) -> list[dict]:
+        """All checkpoints ordered by (session_id, observed_at) -- the shape
+        `usage_breakdown_aggregate.py` needs to walk each session's baseline
+        -> completion pairs and derive per-interval deltas."""
+        with self._connection(write=False) as db:
+            q = 'SELECT * FROM session_checkpoint'
+            params: list[Any] = []
+            if since:
+                q += ' WHERE observed_at >= ?'
+                params.append(since)
+            q += ' ORDER BY session_id ASC, observed_at ASC'
+            return [dict(r) for r in db.execute(q, params).fetchall()]
+
+    def get_session_checkpoints(self, session_id: str) -> dict[str, dict]:
+        """{'baseline': row, 'completion': row} for one session_id -- either
+        or both keys absent when that checkpoint hasn't been recorded yet."""
+        with self._connection(write=False) as db:
+            rows = db.execute(
+                'SELECT * FROM session_checkpoint WHERE session_id=?', (session_id,)).fetchall()
+            return {r['checkpoint_type']: dict(r) for r in rows}
+
     # ── code_delta ──────────────────────────────────────────────────────
 
     def upsert_code_delta(self, session_id: str, fields: dict) -> None:
@@ -312,7 +433,8 @@ class UsageBreakdownStore:
         must log failures, not crash the sampler loop over a prune error.
         """
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        removed = {'allowance_sample': 0, 'session_fact': 0, 'code_delta': 0}
+        removed = {'allowance_sample': 0, 'session_fact': 0, 'code_delta': 0,
+                   'session_checkpoint': 0}
         with self._connection(write=True) as db:
             while True:
                 ids = [r[0] for r in db.execute(
@@ -335,10 +457,30 @@ class UsageBreakdownStore:
                 db.executemany('DELETE FROM code_delta WHERE session_id=?',
                                 [(s,) for s in sids])
                 removed['code_delta'] += db.execute('SELECT changes()').fetchone()[0]
+                db.executemany('DELETE FROM session_checkpoint WHERE session_id=?',
+                                [(s,) for s in sids])
+                removed['session_checkpoint'] += db.execute('SELECT changes()').fetchone()[0]
                 db.executemany('DELETE FROM session_fact WHERE session_id=?',
                                 [(s,) for s in sids])
                 removed['session_fact'] += len(sids)
                 if len(sids) < batch_size:
+                    break
+            # Orphaned checkpoints: a session whose session_fact was already
+            # pruned by an earlier run (schema-version-2 upgrade path) or
+            # whose checkpoint predates its session_fact's own retention --
+            # bound by observed_at directly so this table can't grow forever
+            # off a session_fact row that never gets old enough itself
+            # (e.g. a long-running/never-completed session).
+            while True:
+                ids = [r[0] for r in db.execute(
+                    'SELECT id FROM session_checkpoint WHERE observed_at < ? LIMIT ?',
+                    (cutoff, batch_size)).fetchall()]
+                if not ids:
+                    break
+                db.executemany('DELETE FROM session_checkpoint WHERE id=?',
+                                [(i,) for i in ids])
+                removed['session_checkpoint'] += len(ids)
+                if len(ids) < batch_size:
                     break
         return removed
 

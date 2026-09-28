@@ -1211,7 +1211,13 @@ def _usage_breakdown_default_range(store, *, provider: str, window_kind: str,
     recent `resets_at` CHANGE (a fresh window beginning) in the last 90 days
     of retained samples, through now. Falls back to a flat window-length
     lookback (e.g. the last 5h/7d) when no samples exist yet at all, so a
-    fresh install still gets a sane, non-degenerate default range."""
+    fresh install still gets a sane, non-degenerate default range.
+
+    Uses `source_observed_at` (finding 8, P2-8), never `server_received_at`
+    -- network/disk receipt delay means the receipt time of the window's
+    first sample is always slightly AFTER that sample was actually
+    observed, and an exclusive-of-receipt-time-and-earlier bound would cut
+    that sample (and its data) out of its own default window."""
     now = datetime.now(timezone.utc)
     samples = store.list_allowance_samples(provider=provider, window_kind=window_kind,
                                             window_scope=window_scope)
@@ -1219,11 +1225,11 @@ def _usage_breakdown_default_range(store, *, provider: str, window_kind: str,
     if not samples:
         return (now - span).isoformat(), now.isoformat()
     current_resets_at = samples[-1].get('resets_at')
-    window_start = samples[-1]['server_received_at']
+    window_start = samples[-1]['source_observed_at']
     for s in reversed(samples):
         if s.get('resets_at') != current_resets_at:
             break
-        window_start = s['server_received_at']
+        window_start = s['source_observed_at']
     return window_start, now.isoformat()
 
 
@@ -1260,23 +1266,30 @@ def system_usage_breakdown_get():
             store, provider=provider, window_kind=window_kind, window_scope=window_scope)
 
     ninety_days_ago = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    # source_observed_at, inclusive at both ends (finding 8, P2-8): the
+    # picker's range_start/range_end ARE a bounding sample's own source
+    # time for a completed window, and receipt time / an exclusive end
+    # would silently drop that sample from its own window.
     range_samples = [
         s for s in store.list_allowance_samples(provider=provider, window_kind=window_kind,
                                                   window_scope=window_scope)
-        if range_start <= s['server_received_at'] < range_end
+        if range_start <= s['source_observed_at'] <= range_end
     ]
     calibration_samples = store.list_allowance_samples(
         provider=provider, window_kind=window_kind, window_scope=window_scope, since=ninety_days_ago)
     session_facts = store.list_session_facts(since=ninety_days_ago)
     code_deltas = {f['session_id']: (store.get_code_delta(f['session_id']) or {})
                    for f in session_facts if f.get('session_id')}
+    checkpoints: dict[str, dict] = {}
+    for row in store.list_session_checkpoints(since=ninety_days_ago):
+        checkpoints.setdefault(row['session_id'], {})[row['checkpoint_type']] = row
 
     try:
         payload = _agg.build_breakdown(
             provider=provider, window_kind=window_kind, window_scope=window_scope,
             range_start=range_start, range_end=range_end, dimension=dimension, sort_by=sort_by,
             range_samples=range_samples, calibration_samples=calibration_samples,
-            calibration_facts=session_facts, session_facts=session_facts, code_deltas=code_deltas,
+            session_facts=session_facts, checkpoints=checkpoints, code_deltas=code_deltas,
             coverage_begins=store.coverage_begins(),
         )
     except ValueError as e:
@@ -1290,6 +1303,11 @@ def system_usage_windows_get():
     provider/window_kind/window_scope range picker -- "the range can be the
     current window or any completed window retained in the last 90 days."
     A window is `completed` once its `resets_at` is in the past.
+
+    Bounds are `source_observed_at`, never `server_received_at` (finding 8,
+    P2-8) -- the breakdown route filters samples by their own source time,
+    so a picker built from receipt time hands back bounds that exclude the
+    very samples that define the window.
     """
     provider = (request.args.get('provider') or 'claude').lower()
     window_kind = request.args.get('window_kind') or '5h'
@@ -1308,10 +1326,10 @@ def system_usage_windows_get():
     windows: list[dict] = []
     for s in samples:
         if windows and windows[-1]['resets_at'] == s.get('resets_at'):
-            windows[-1]['range_end'] = s['server_received_at']
+            windows[-1]['range_end'] = s['source_observed_at']
             continue
-        windows.append({'resets_at': s.get('resets_at'), 'range_start': s['server_received_at'],
-                         'range_end': s['server_received_at']})
+        windows.append({'resets_at': s.get('resets_at'), 'range_start': s['source_observed_at'],
+                         'range_end': s['source_observed_at']})
     for w in windows:
         w['completed'] = bool(w['resets_at']) and w['resets_at'] < now
     return jsonify({'windows': windows, 'coverage_begins': store.coverage_begins()})

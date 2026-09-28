@@ -194,6 +194,40 @@ def session_fact_from_entry(entry: dict, *, project_id: str,
     }
 
 
+def baseline_checkpoint_fields(session_id: str, *, provider: str, observed_at: str) -> dict:
+    """The dispatch-time 'baseline' `session_checkpoint` row: zero cumulative
+    tokens at `observed_at` (the dispatch time). `token_coverage='complete'`
+    -- a zero baseline is a confirmed zero, not missing data, so it never
+    trips the "unavailable" no-fabricated-zero rule downstream. `provider` is
+    known at dispatch (the session dict's own field), captured here so
+    calibration can filter by provider before this session ever gets a
+    session_fact row (which only exists after completion)."""
+    return {
+        'session_id': session_id, 'provider': provider, 'checkpoint_type': 'baseline',
+        'observed_at': observed_at,
+        'input_fresh': 0, 'input_cache_write': 0, 'input_cache_read': 0,
+        'input_processed_total': 0, 'output_tokens': 0, 'output_reasoning': 0,
+        'token_coverage': 'complete',
+    }
+
+
+def completion_checkpoint_fields(fact: dict, *, session_id: str, observed_at: str) -> dict:
+    """The completion-time 'completion' `session_checkpoint` row, built from
+    the same `fact` dict `session_fact_from_entry` just produced -- the
+    checkpoint and the session_fact snapshot must never disagree on the
+    session's final cumulative totals (or its provider), so this reads its
+    fields rather than re-deriving them from the raw entry."""
+    return {
+        'session_id': session_id, 'provider': fact.get('provider') or 'claude',
+        'checkpoint_type': 'completion', 'observed_at': observed_at,
+        'input_fresh': fact.get('input_fresh'), 'input_cache_write': fact.get('input_cache_write'),
+        'input_cache_read': fact.get('input_cache_read'),
+        'input_processed_total': fact.get('input_processed_total'),
+        'output_tokens': fact.get('output_tokens'), 'output_reasoning': fact.get('output_reasoning'),
+        'token_coverage': fact.get('token_coverage') or 'unavailable',
+    }
+
+
 def should_sample_interval_seconds(*, any_session_active: bool) -> int:
     """60s while any provider session runs, 300s (5 min) while idle -- the
     two cadences the spec's Sampling section requires."""

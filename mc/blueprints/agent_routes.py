@@ -7249,6 +7249,24 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
         if strict:
             raise
 
+    # P1-3 fix (docs/_journal/4668eafc-mc998-fenn-review.md finding 3): a
+    # dispatch-time 'baseline' session_checkpoint row, zero cumulative tokens
+    # at dispatch time. Without this, a still-running session is completely
+    # invisible to usage_breakdown_aggregate.py (session_fact is only written
+    # at completion), so an allowance-sample interval overlapping its run
+    # looked "coverage complete" with zero active sessions -- exactly the
+    # review's "Running first-turn sessions have no fact at all" gap.
+    # `UNIQUE(session_id, checkpoint_type)` makes the second call for the
+    # same session_id (native-provider INIT re-invocation, see docstring
+    # above) a safe no-op. Best-effort, same as the completion-side write.
+    try:
+        _store = _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite')
+        _store.record_session_checkpoint(**_usage_breakdown_sampler.baseline_checkpoint_fields(
+            sid, provider=(entry.get('provider') or 'claude'),
+            observed_at=entry.get('started_at') or now_iso()))
+    except Exception as e:
+        _log(f"[usage-breakdown] baseline checkpoint write failed for {sid[:12]}: {e}")
+
 def _last_reply_text(session):
     """The child's last real assistant text, for the spawner callback.
 
@@ -8106,6 +8124,15 @@ def _log_agent_completion_body(session):
                 entry, project_id=project_id, housekeeping=is_housekeeping)
             _store = _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite')
             _store.upsert_session_fact(entry['session_id'], _fact)
+            # P1-3 fix (docs/_journal/4668eafc-mc998-fenn-review.md finding 3):
+            # the completion 'session_checkpoint' row -- paired with the
+            # dispatch-time 'baseline' row from _log_agent_dispatch_pending --
+            # is what lets usage_breakdown_aggregate.py derive this session's
+            # token delta instead of charging its lifetime total to every
+            # allowance-sample interval it overlaps.
+            _ckpt_at = _fact.get('ended_at') or entry.get('ts') or now_iso()
+            _store.record_session_checkpoint(**_usage_breakdown_sampler.completion_checkpoint_fields(
+                _fact, session_id=entry['session_id'], observed_at=_ckpt_at))
             # MC-998 Phase 3: LOC attribution, computed pre-merge-back above.
             # code_delta has a (non-enforced) FK on session_fact, so this
             # write is ordered after it. Not gated on is_housekeeping — a

@@ -51,35 +51,84 @@ def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
 
 
 def _in_range(ts: Optional[str], start: Optional[datetime], end: Optional[datetime]) -> bool:
+    """Inclusive at both ends (finding 8, P2-8): a completed window's own
+    picker bounds ARE a bounding sample's source_observed_at, so an
+    exclusive end silently drops that sample. The caller is responsible for
+    passing source-observation time, never receipt time, as start/end."""
     dt = _parse_iso(ts)
     if dt is None:
         return False
     if start is not None and dt < start:
         return False
-    if end is not None and dt >= end:
+    if end is not None and dt > end:
         return False
     return True
 
 
 # ── totals + rankings (session_fact / code_delta, no allowance samples) ────
 
-def filter_facts_in_range(session_facts: list[dict], *, provider: str,
-                           range_start: Optional[str], range_end: Optional[str]) -> list[dict]:
-    """A session "belongs to" the window it started in -- matches the
-    dashboard's per-window story (a session that starts in one window and
-    finishes in the next still attributes its whole cost to where the work
-    began)."""
+def _checkpoint_bounds(fact: dict, checkpoints: dict[str, dict]) -> tuple[Optional[datetime], Optional[datetime]]:
+    """(baseline_at, completion_at) for one session, preferring the
+    session_checkpoint pair (the measured dispatch/completion boundary) and
+    falling back to the fact's own started_at/ended_at for a fact that
+    predates the checkpoint table (historical backfill, spec: "must be
+    marked partial") or was never paired with one."""
+    ck = checkpoints.get(fact.get('session_id') or '') or {}
+    baseline, completion = ck.get('baseline'), ck.get('completion')
+    if baseline and completion:
+        return _parse_iso(baseline['observed_at']), _parse_iso(completion['observed_at'])
+    return _parse_iso(fact.get('started_at')), _parse_iso(fact.get('ended_at'))
+
+
+def filter_facts_in_range(session_facts: list[dict], checkpoints: dict[str, dict], *, provider: str,
+                           range_start: Optional[str], range_end: Optional[str]) -> tuple[list[dict], int]:
+    """Sessions whose ENTIRE measured span (checkpoint baseline -> completion,
+    or the fact's started_at -> ended_at where no checkpoint pair exists) is
+    contained in [range_start, range_end) -- a window's totals can only sum a
+    counter DELTA it actually measured, per finding 4
+    (docs/_journal/4668eafc-mc998-fenn-review.md): "Window token totals need
+    measured counter deltas within that window; incomplete coverage must
+    remain explicit." A session that only partially overlaps the range (or
+    is still running) is excluded from BOTH the numeric totals and the
+    ranking rows -- attributing it by started_at alone (the prior behaviour)
+    either double-counted it across windows or silently dropped it from the
+    window most of its work actually happened in. Its exclusion is instead
+    surfaced via the second return value so it never just vanishes.
+
+    Returns (facts fully contained in the range, count of same-provider
+    sessions that overlap the range but are NOT fully contained -- shown by
+    the caller as an explicit incomplete-coverage count).
+    """
     start = _parse_iso(range_start)
     end = _parse_iso(range_end)
-    return [f for f in session_facts
-            if f.get('provider') == provider and _in_range(f.get('started_at'), start, end)]
+    contained: list[dict] = []
+    incomplete = 0
+    for f in session_facts:
+        if f.get('provider') != provider:
+            continue
+        b_at, c_at = _checkpoint_bounds(f, checkpoints)
+        if b_at is None:
+            continue
+        is_contained = (start is None or b_at >= start) and c_at is not None and (end is None or c_at < end)
+        if is_contained:
+            contained.append(f)
+            continue
+        c_at_or_now = c_at  # None (still running) never overlaps a bounded past range on its end side
+        overlaps = (end is None or b_at < end) and (c_at_or_now is None or (start is None or c_at_or_now >= start))
+        if overlaps:
+            incomplete += 1
+    return contained, incomplete
 
 
-def compute_totals(facts: list[dict], code_deltas: dict[str, dict]) -> dict:
+def compute_totals(facts: list[dict], code_deltas: dict[str, dict], *,
+                    incomplete_coverage_session_count: int = 0) -> dict:
     """Sum token/LOC categories across `facts`. A field stays `None` (not 0)
     when every contributing session had `token_coverage='unavailable'` for
     it -- a reported 0 must mean a confirmed zero, per the spec's "no
-    fabricated zero" rule."""
+    fabricated zero" rule. `incomplete_coverage_session_count` (finding 4)
+    surfaces sessions that overlap the range but whose in-range token delta
+    could not be measured, so their exclusion from the sums above is visible
+    rather than looking like they simply didn't exist."""
     sums = {'input_fresh': 0, 'input_cache_write': 0, 'input_cache_read': 0,
             'input_processed_total': 0, 'output_tokens': 0}
     have_any_token_data = False
@@ -113,6 +162,7 @@ def compute_totals(facts: list[dict], code_deltas: dict[str, dict]) -> dict:
         'loc': {'added': loc_added if have_any_loc_data else None,
                 'deleted': loc_deleted if have_any_loc_data else None},
         'loc_unavailable_count': loc_unavailable_rows,
+        'incomplete_coverage_session_count': incomplete_coverage_session_count,
     }
 
 
@@ -161,16 +211,49 @@ def compute_rankings(facts: list[dict], code_deltas: dict[str, dict], *,
     return {'rows': rows, 'unknown_count': unknown_count, 'missing_data_count': missing_data_count}
 
 
-# ── tokens-per-point calibration (allowance_sample pairs + session_fact) ───
+# ── tokens-per-point calibration (allowance_sample pairs + session_checkpoint) ─
 
-def _eligible_intervals(samples: list[dict], facts: list[dict]) -> list[dict]:
+def _scope_matches(fact: Optional[dict], window_scope: str) -> Optional[bool]:
+    """True/False when determinable from the fact's observed_model, None
+    when it can't be determined yet (no session_fact -- a still-running
+    session whose baseline checkpoint exists but hasn't completed)."""
+    if window_scope == 'all':
+        return True
+    if not fact:
+        return None
+    model = (fact.get('observed_model') or '').lower()
+    if not model:
+        return None
+    if window_scope == 'opus':
+        return 'opus' in model
+    if window_scope == 'sonnet':
+        return 'sonnet' in model
+    return None
+
+
+def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts_by_session: dict[str, dict],
+                         *, provider: str, window_scope: str) -> list[dict]:
     """Consecutive fresh-sample pairs meeting the spec's eligibility rule:
     same provider/window/scope identity (guaranteed -- `samples` is already
     scoped to one), <=10 minutes apart, positive delta >=1pp, quality 'ok'
-    at both endpoints, no reset crossed (same `resets_at`). Each eligible
-    interval also gets the set of session_ids whose activity overlaps it and
-    whether ALL of them have complete-or-partial (non-unavailable) token
-    coverage -- "complete Clayrune session-token coverage" per the spec.
+    at both endpoints, no reset crossed (same `resets_at`).
+
+    Per finding 2 (P1-2): a session only counts toward an interval when its
+    checkpoint's own `provider` matches AND (for a scoped Claude window) its
+    observed_model matches -- `_scope_matches` returning None (unknown, no
+    fact yet) is NOT treated as a match, so a still-running session of
+    unconfirmed scope makes the interval's coverage incomplete rather than
+    silently passing as this window's class.
+
+    Per finding 3 (P1-3): `coverage_complete` requires every overlapping
+    session to be FULLY CONTAINED in [t_a, t_b) -- baseline at/after t_a AND
+    a 'complete'-coverage completion checkpoint before t_b -- so a session
+    whose lifetime spans multiple intervals contributes its measured delta to
+    exactly the one interval that actually contains it, never to every
+    interval it happens to overlap. A partially-overlapping or still-running
+    session marks the interval incomplete (withheld from calibration) without
+    removing it from `session_ids` -- P1-2's "exactly one active session"
+    check must still see it.
     """
     out = []
     ordered = sorted((s for s in samples if s.get('quality') == 'ok'
@@ -188,37 +271,62 @@ def _eligible_intervals(samples: list[dict], facts: list[dict]) -> list[dict]:
         delta = b['raw_utilization'] - a['raw_utilization']
         if delta < 1.0:
             continue
-        overlapping = [f for f in facts if _fact_overlaps(f, t_a, t_b)]
-        coverage_complete = all(f.get('token_coverage') != 'unavailable' for f in overlapping)
+
+        session_ids: set[str] = set()
+        coverage_complete = True
+        input_processed_total = 0
+        output_tokens = 0
+        for sid, ck in checkpoints.items():
+            baseline = ck.get('baseline')
+            if not baseline or baseline.get('provider') != provider:
+                continue
+            fact = facts_by_session.get(sid)
+            scope_ok = _scope_matches(fact, window_scope)
+            if scope_ok is False:
+                continue  # confirmed different model scope -- not this window's class
+            b_at = _parse_iso(baseline['observed_at'])
+            completion = ck.get('completion')
+            c_at = _parse_iso(completion['observed_at']) if completion else None
+            end_bound = c_at if c_at is not None else t_b  # still running -> extends through "now"
+            if b_at is None or not (b_at < t_b and end_bound >= t_a):
+                continue  # doesn't overlap this interval at all
+            session_ids.add(sid)
+            if scope_ok is None or completion is None:
+                coverage_complete = False  # scope unconfirmed, or still running -- unmeasurable
+                continue
+            if not (b_at >= t_a and c_at is not None and c_at <= t_b):
+                coverage_complete = False  # partial overlap -- can't isolate this interval's delta
+                continue
+            if completion.get('token_coverage') != 'complete':
+                coverage_complete = False
+                continue
+            input_processed_total += completion.get('input_processed_total') or 0
+            output_tokens += completion.get('output_tokens') or 0
+
         out.append({
             'start': t_a, 'end': t_b, 'delta_pp': delta,
-            'session_ids': {f.get('session_id') for f in overlapping if f.get('session_id')},
+            'session_ids': session_ids,
             'coverage_complete': coverage_complete,
-            'input_processed_total': sum(f.get('input_processed_total') or 0 for f in overlapping),
-            'output_tokens': sum(f.get('output_tokens') or 0 for f in overlapping),
+            'input_processed_total': input_processed_total,
+            'output_tokens': output_tokens,
         })
     return out
 
 
-def _fact_overlaps(fact: dict, start: datetime, end: datetime) -> bool:
-    s = _parse_iso(fact.get('started_at'))
-    e = _parse_iso(fact.get('ended_at')) or end  # a still-running session extends to "now" (= end)
-    if s is None:
-        return False
-    return s < end and e >= start
-
-
-def compute_calibration(samples: list[dict], facts: list[dict]) -> dict:
+def compute_calibration(samples: list[dict], checkpoints: dict[str, dict], facts_by_session: dict[str, dict],
+                         *, provider: str, window_scope: str) -> dict:
     """Median + 10th/90th percentile workload-per-point and input-per-point
     over ALL eligible intervals in the given (already 90-day-scoped)
     history, per "A calibration value requires at least five eligible
     intervals from at least three distinct sessions in the same
-    provider/window class." An interval with zero overlapping sessions
-    contributes nothing to calibration (its delta belongs to
+    provider/window class. Those intervals must have only one Clayrune
+    session active." (finding 2, P1-2). An interval with zero overlapping
+    sessions contributes nothing to calibration (its delta belongs to
     `Unattributed activity` instead, per spec) but is not itself an error.
     """
-    intervals = _eligible_intervals(samples, facts)
-    calibratable = [iv for iv in intervals if iv['coverage_complete'] and iv['session_ids']]
+    intervals = _eligible_intervals(samples, checkpoints, facts_by_session,
+                                     provider=provider, window_scope=window_scope)
+    calibratable = [iv for iv in intervals if iv['coverage_complete'] and len(iv['session_ids']) == 1]
     distinct_sessions = set().union(*(iv['session_ids'] for iv in calibratable)) if calibratable else set()
     if len(calibratable) < _MIN_ELIGIBLE_INTERVALS or len(distinct_sessions) < _MIN_ELIGIBLE_SESSIONS:
         return {'status': 'insufficient_samples', 'eligible_interval_count': len(calibratable),
@@ -308,19 +416,24 @@ def build_breakdown(*, provider: str, window_kind: str, window_scope: str,
                      range_start: Optional[str], range_end: Optional[str],
                      dimension: str, sort_by: str,
                      range_samples: list[dict], calibration_samples: list[dict],
-                     calibration_facts: list[dict], session_facts: list[dict],
+                     session_facts: list[dict], checkpoints: dict[str, dict],
                      code_deltas: dict[str, dict], coverage_begins: Optional[str]) -> dict:
     """Assemble one provider/window/range Breakdown payload. Caller (the
     Flask route) is responsible for fetching `range_samples` (this
     provider/window/scope's allowance_sample rows for the display range),
-    `calibration_samples`/`calibration_facts` (the full 90-day history for
-    calibration, NOT range-limited), `session_facts` (all facts, any
-    provider -- filtered here), and `code_deltas` (session_id -> row)."""
-    facts_in_range = filter_facts_in_range(session_facts, provider=provider,
-                                            range_start=range_start, range_end=range_end)
-    totals = compute_totals(facts_in_range, code_deltas)
+    `calibration_samples` (the full 90-day history for calibration, NOT
+    range-limited), `session_facts` + `checkpoints` (session_id ->
+    {'baseline':row,'completion':row}, also the full 90-day history --
+    calibration and the window-totals fix both need to see a session's
+    checkpoint pair regardless of the display range), and `code_deltas`
+    (session_id -> row)."""
+    facts_by_session = {f['session_id']: f for f in session_facts if f.get('session_id')}
+    facts_in_range, incomplete_count = filter_facts_in_range(
+        session_facts, checkpoints, provider=provider, range_start=range_start, range_end=range_end)
+    totals = compute_totals(facts_in_range, code_deltas, incomplete_coverage_session_count=incomplete_count)
     rankings = compute_rankings(facts_in_range, code_deltas, dimension=dimension, sort_by=sort_by)
-    calibration = compute_calibration(calibration_samples, calibration_facts)
+    calibration = compute_calibration(calibration_samples, checkpoints, facts_by_session,
+                                       provider=provider, window_scope=window_scope)
     bar_change = compute_bar_change(range_samples, range_start=range_start, range_end=range_end)
     segmented_bar = compute_segmented_bar(bar_change, totals, calibration)
 

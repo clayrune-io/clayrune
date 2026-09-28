@@ -11,6 +11,17 @@ Covers the spec's acceptance checks that land in this module:
   3. No row (ranking or otherwise) is ever given an exact percentage share
      -- the segmented bar is the only percentage estimate, and it is
      whole-bar, never per-project.
+
+Plus the review fixes from docs/_journal/4668eafc-mc998-fenn-review.md:
+  P1-2: a calibration interval only counts with correct provider/scope,
+        complete coverage, and exactly one active session.
+  P1-3: token deltas come from timestamped session_checkpoint pairs
+        (baseline -> completion), not a completed session's lifetime total
+        charged to every interval it overlaps.
+  P2-4: window totals require the session's full measured span (checkpoint
+        pair, or started_at/ended_at fallback) to be CONTAINED in the
+        range; partial overlap is surfaced as "incomplete coverage", not
+        silently included or dropped.
 """
 import sys
 from datetime import datetime, timedelta, timezone
@@ -47,6 +58,30 @@ def _sample(*, raw_utilization, source_observed_at, resets_at='2026-10-05T00:00:
             'resets_at': resets_at, 'quality': quality}
 
 
+def _checkpoint(session_id, *, provider='claude', baseline_at, completion_at=None,
+                 input_processed_total=100, output_tokens=50, token_coverage='complete'):
+    """One session's {'baseline': row, 'completion': row} -- the production
+    shape `UsageBreakdownStore.get_session_checkpoints`/grouped
+    `list_session_checkpoints` returns. `completion_at=None` models a
+    still-running session (baseline recorded at dispatch, no completion
+    row yet)."""
+    ck = {'baseline': {
+        'session_id': session_id, 'provider': provider, 'checkpoint_type': 'baseline',
+        'observed_at': baseline_at, 'input_fresh': 0, 'input_cache_write': 0,
+        'input_cache_read': 0, 'input_processed_total': 0, 'output_tokens': 0,
+        'output_reasoning': 0, 'token_coverage': 'unavailable',
+    }}
+    if completion_at is not None:
+        ck['completion'] = {
+            'session_id': session_id, 'provider': provider, 'checkpoint_type': 'completion',
+            'observed_at': completion_at, 'input_fresh': input_processed_total,
+            'input_cache_write': 0, 'input_cache_read': 0,
+            'input_processed_total': input_processed_total, 'output_tokens': output_tokens,
+            'output_reasoning': 0, 'token_coverage': token_coverage,
+        }
+    return ck
+
+
 # ── totals / AC1 ─────────────────────────────────────────────────────────
 
 def test_unavailable_coverage_rows_do_not_contribute_a_fabricated_zero():
@@ -79,17 +114,66 @@ def test_loc_present_when_code_delta_ok():
     assert totals['loc'] == {'added': 5, 'deleted': 2}
 
 
-# ── filter_facts_in_range ───────────────────────────────────────────────
+def test_totals_carries_incomplete_coverage_count_through():
+    facts = [_fact('s1', started_at='2026-09-28T10:00:00Z', ended_at='2026-09-28T10:05:00Z')]
+    totals = compute_totals(facts, {}, incomplete_coverage_session_count=2)
+    assert totals['incomplete_coverage_session_count'] == 2
 
-def test_filter_scopes_to_provider_and_start_time_range():
+
+# ── filter_facts_in_range (P2-4 / finding 4) ────────────────────────────
+
+def test_filter_scopes_to_provider_and_requires_full_containment():
     facts = [
-        _fact('s1', provider='claude', started_at='2026-09-28T10:00:00Z'),
-        _fact('s2', provider='codex', started_at='2026-09-28T10:00:00Z'),
-        _fact('s3', provider='claude', started_at='2026-09-27T10:00:00Z'),
+        _fact('s1', provider='claude', started_at='2026-09-28T10:00:00Z',
+              ended_at='2026-09-28T10:05:00Z'),
+        _fact('s2', provider='codex', started_at='2026-09-28T10:00:00Z',
+              ended_at='2026-09-28T10:05:00Z'),
+        _fact('s3', provider='claude', started_at='2026-09-27T10:00:00Z',
+              ended_at='2026-09-27T15:00:00Z'),
     ]
-    got = filter_facts_in_range(facts, provider='claude',
-                                 range_start='2026-09-28T00:00:00Z', range_end='2026-09-29T00:00:00Z')
+    got, incomplete = filter_facts_in_range(
+        facts, {}, provider='claude',
+        range_start='2026-09-28T00:00:00Z', range_end='2026-09-29T00:00:00Z')
     assert [f['session_id'] for f in got] == ['s1']
+    assert incomplete == 0  # s3 is fully outside the range -- no overlap, not "incomplete"
+
+
+def test_filter_partial_overlap_is_incomplete_not_dropped_or_included():
+    """A session that started the evening before and finished inside the
+    range must not be silently included (its pre-range tokens aren't this
+    window's) nor silently dropped (finding 4: the caller needs to know
+    coverage is incomplete, not that nothing happened)."""
+    facts = [_fact('s1', provider='claude', started_at='2026-09-27T23:00:00Z',
+                    ended_at='2026-09-28T01:00:00Z')]
+    got, incomplete = filter_facts_in_range(
+        facts, {}, provider='claude',
+        range_start='2026-09-28T00:00:00Z', range_end='2026-09-29T00:00:00Z')
+    assert got == []
+    assert incomplete == 1
+
+
+def test_filter_still_running_session_in_range_is_incomplete():
+    facts = [_fact('s1', provider='claude', started_at='2026-09-28T10:00:00Z', ended_at=None)]
+    got, incomplete = filter_facts_in_range(
+        facts, {}, provider='claude',
+        range_start='2026-09-28T00:00:00Z', range_end='2026-09-29T00:00:00Z')
+    assert got == []
+    assert incomplete == 1
+
+
+def test_filter_prefers_checkpoint_bounds_over_fact_started_ended():
+    """P1-3: when a checkpoint pair exists it is the authority on the
+    session's measured span, not the (possibly wider) session_fact
+    started_at/ended_at."""
+    checkpoints = {'s1': _checkpoint('s1', baseline_at='2026-09-28T10:00:00Z',
+                                      completion_at='2026-09-28T10:05:00Z')}
+    facts = [_fact('s1', provider='claude', started_at='2026-09-27T23:00:00Z',
+                    ended_at='2026-09-28T10:05:00Z')]
+    got, incomplete = filter_facts_in_range(
+        facts, checkpoints, provider='claude',
+        range_start='2026-09-28T00:00:00Z', range_end='2026-09-29T00:00:00Z')
+    assert [f['session_id'] for f in got] == ['s1']
+    assert incomplete == 0
 
 
 # ── rankings / AC3 (no per-row percentage attribution exists at all) ──────
@@ -148,37 +232,44 @@ def test_bar_change_single_sample_is_insufficient():
     assert bc['status'] == 'insufficient_samples'
 
 
-# ── calibration eligibility / AC2 ───────────────────────────────────────
+# ── calibration eligibility / AC2 + P1-2/P1-3 ───────────────────────────
 
-def _calibration_fixture(n_pairs=5, distinct_sessions=3):
-    """Each pair is 2 minutes wide (eligible on its own); pairs are spaced 20
-    minutes apart so no cross-pair adjacency is ALSO eligible (the 10-minute
-    max-gap rule excludes it) -- keeps the eligible-interval count exactly
-    `n_pairs`, not `2*n_pairs - 1`."""
-    samples, facts = [], []
+def _calibration_fixture(n_pairs=5):
+    """`n_pairs` distinct sessions, each with a checkpoint pair (baseline,
+    completion) EXACTLY matching one sample pair's [t_a, t_b) -- the
+    production shape a fully-measured, fully-contained session takes.
+    Pairs are spaced 20 minutes apart so no cross-pair adjacency is ALSO
+    eligible (the 10-minute max-gap rule excludes it)."""
+    samples, checkpoints, facts = [], {}, []
     base = datetime(2026, 9, 28, 10, 0, 0, tzinfo=timezone.utc)
     for i in range(n_pairs):
-        s_id = f'sess-{i % distinct_sessions}'
+        sid = f'sess-{i}'
         t0 = base + timedelta(minutes=20 * i)
         t1 = t0 + timedelta(minutes=2)
         samples.append(_sample(raw_utilization=float(i * 10), source_observed_at=t0.isoformat()))
         samples.append(_sample(raw_utilization=float(i * 10 + 5), source_observed_at=t1.isoformat()))
-        facts.append(_fact(s_id, started_at=(t0 - timedelta(hours=1)).isoformat(),
-                            ended_at=(t1 + timedelta(hours=1)).isoformat()))
-    return samples, facts
+        checkpoints[sid] = _checkpoint(sid, baseline_at=t0.isoformat(), completion_at=t1.isoformat())
+        facts.append(_fact(sid, started_at=t0.isoformat(), ended_at=t1.isoformat()))
+    return samples, checkpoints, facts
 
 
-def test_calibration_ok_with_five_intervals_three_sessions():
-    samples, facts = _calibration_fixture()
-    cal = compute_calibration(samples, facts)
+def _facts_by_session(facts):
+    return {f['session_id']: f for f in facts}
+
+
+def test_calibration_ok_with_five_intervals_five_sessions():
+    samples, checkpoints, facts = _calibration_fixture()
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
     assert cal['status'] == 'ok'
     assert cal['eligible_interval_count'] == 5
-    assert cal['distinct_session_count'] == 3
+    assert cal['distinct_session_count'] == 5
 
 
 def test_calibration_insufficient_with_only_four_intervals():
-    samples, facts = _calibration_fixture(n_pairs=4)
-    cal = compute_calibration(samples, facts)
+    samples, checkpoints, facts = _calibration_fixture(n_pairs=4)
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
     assert cal['status'] == 'insufficient_samples'
 
 
@@ -187,8 +278,7 @@ def test_calibration_reset_between_pair_excludes_that_interval():
                         resets_at='2026-10-01T00:00:00+00:00'),
                _sample(raw_utilization=20.0, source_observed_at='2026-09-28T10:05:00Z',
                        resets_at='2026-10-08T00:00:00+00:00')]  # different resets_at = reset crossed
-    facts = [_fact('s1', started_at='2026-09-28T09:00:00Z', ended_at='2026-09-28T12:00:00Z')]
-    cal = compute_calibration(samples, facts)
+    cal = compute_calibration(samples, {}, {}, provider='claude', window_scope='all')
     assert cal['status'] == 'insufficient_samples'
     assert cal['eligible_interval_count'] == 0
 
@@ -196,15 +286,68 @@ def test_calibration_reset_between_pair_excludes_that_interval():
 def test_calibration_gap_over_ten_minutes_excludes_interval():
     samples = [_sample(raw_utilization=10.0, source_observed_at='2026-09-28T10:00:00Z'),
                _sample(raw_utilization=20.0, source_observed_at='2026-09-28T10:15:00Z')]
-    facts = [_fact('s1', started_at='2026-09-28T09:00:00Z', ended_at='2026-09-28T12:00:00Z')]
-    cal = compute_calibration(samples, facts)
+    cal = compute_calibration(samples, {}, {}, provider='claude', window_scope='all')
     assert cal['eligible_interval_count'] == 0
 
 
 def test_calibration_no_session_activity_excluded_not_counted_as_eligible():
     samples = [_sample(raw_utilization=10.0, source_observed_at='2026-09-28T10:00:00Z'),
                _sample(raw_utilization=20.0, source_observed_at='2026-09-28T10:05:00Z')]
-    cal = compute_calibration(samples, [])  # no Clayrune activity at all
+    cal = compute_calibration(samples, {}, {}, provider='claude', window_scope='all')
+    assert cal['status'] == 'insufficient_samples'
+    assert cal['eligible_interval_count'] == 0
+
+
+def test_calibration_two_active_sessions_in_one_interval_excludes_it():
+    """P1-2 finding 2: "exactly one active session" -- a second, concurrent
+    session inside an otherwise-clean interval must remove it from
+    calibratable, not just average its counters in."""
+    samples, checkpoints, facts = _calibration_fixture()
+    t0 = datetime(2026, 9, 28, 10, 0, 0, tzinfo=timezone.utc)  # sess-0's own interval
+    checkpoints['sess-0-concurrent'] = _checkpoint(
+        'sess-0-concurrent', baseline_at=t0.isoformat(),
+        completion_at=(t0 + timedelta(minutes=2)).isoformat())
+    facts.append(_fact('sess-0-concurrent', started_at=t0.isoformat(),
+                        ended_at=(t0 + timedelta(minutes=2)).isoformat()))
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    # 5 raw intervals, but sess-0's is no longer single-session -> only 4 calibratable
+    assert cal['status'] == 'insufficient_samples'
+    assert cal['eligible_interval_count'] == 4
+
+
+def test_calibration_partially_overlapping_session_marks_interval_incomplete():
+    """P1-3 finding 3: a session whose lifetime spans BEYOND one interval
+    (e.g. dispatched before the window opened) must not have its lifetime
+    total charged to that interval -- the interval is withheld instead."""
+    samples, checkpoints, facts = _calibration_fixture()
+    t0 = datetime(2026, 9, 28, 10, 0, 0, tzinfo=timezone.utc)
+    checkpoints['sess-0'] = _checkpoint(
+        'sess-0', baseline_at=(t0 - timedelta(hours=1)).isoformat(),  # started well before t_a
+        completion_at=(t0 + timedelta(minutes=2)).isoformat())
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    assert cal['status'] == 'insufficient_samples'
+    assert cal['eligible_interval_count'] == 4
+
+
+def test_calibration_wrong_model_scope_excludes_session_entirely():
+    samples, checkpoints, facts = _calibration_fixture()
+    facts_by_session = _facts_by_session(facts)
+    facts_by_session['sess-0']['observed_model'] = 'claude-opus-4'
+    cal = compute_calibration(samples, checkpoints, facts_by_session,
+                               provider='claude', window_scope='sonnet')
+    # sess-0's opus session doesn't belong to the sonnet window at all --
+    # its interval has zero sessions, so it's excluded (not "incomplete").
+    assert cal['eligible_interval_count'] == 4
+
+
+def test_calibration_unconfirmed_scope_marks_interval_incomplete():
+    """A still-running session (no session_fact yet, so its model is
+    unknown) must not silently pass as this window's scope."""
+    samples, checkpoints, _facts = _calibration_fixture()
+    cal = compute_calibration(samples, checkpoints, {},  # no facts at all -> scope unknown
+                               provider='claude', window_scope='sonnet')
     assert cal['status'] == 'insufficient_samples'
     assert cal['eligible_interval_count'] == 0
 
@@ -246,26 +389,30 @@ def test_build_breakdown_no_runs_empty_state():
         provider='claude', window_kind='5h', window_scope='all',
         range_start='2026-09-28T00:00:00Z', range_end='2026-09-29T00:00:00Z',
         dimension='project', sort_by='input',
-        range_samples=[], calibration_samples=[], calibration_facts=[],
-        session_facts=[], code_deltas={}, coverage_begins=None,
+        range_samples=[], calibration_samples=[],
+        session_facts=[], checkpoints={}, code_deltas={}, coverage_begins=None,
     )
     assert out['empty_state'] == 'no_runs'
     assert out['totals']['session_count'] == 0
 
 
 def test_build_breakdown_end_to_end_ok_path():
-    samples, cal_facts = _calibration_fixture()
+    samples, checkpoints, cal_facts = _calibration_fixture()
     range_samples = [_sample(raw_utilization=10.0, source_observed_at='2026-09-28T10:00:00Z'),
                       _sample(raw_utilization=25.0, source_observed_at='2026-09-28T10:05:00Z')]
-    session_facts = cal_facts + [_fact('extra', provider='claude', started_at='2026-09-28T09:30:00Z')]
+    extra = _fact('extra', provider='claude', started_at='2026-09-28T09:30:00Z',
+                   ended_at='2026-09-28T09:45:00Z')
+    session_facts = cal_facts + [extra]
     out = build_breakdown(
         provider='claude', window_kind='5h', window_scope='all',
         range_start='2026-09-28T00:00:00Z', range_end='2026-09-29T00:00:00Z',
         dimension='character', sort_by='input',
-        range_samples=range_samples, calibration_samples=samples, calibration_facts=cal_facts,
-        session_facts=session_facts, code_deltas={}, coverage_begins='2026-09-01T00:00:00Z',
+        range_samples=range_samples, calibration_samples=samples,
+        session_facts=session_facts, checkpoints=checkpoints, code_deltas={},
+        coverage_begins='2026-09-01T00:00:00Z',
     )
     assert out['empty_state'] is None
     assert out['tokens_per_point']['status'] == 'ok'
     assert out['bar_change']['status'] == 'ok'
     assert out['segmented_bar']['status'] in ('ok', 'estimate_exceeds_observed')
+    assert out['totals']['session_count'] == len(session_facts)

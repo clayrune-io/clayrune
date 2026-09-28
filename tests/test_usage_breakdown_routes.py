@@ -9,6 +9,7 @@ output -- so this catches wiring bugs the aggregate/store unit tests can't
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -148,6 +149,42 @@ def test_windows_groups_samples_by_resets_at(client, store):
     assert len(body['windows']) == 2
     assert body['windows'][0]['resets_at'] == reset_a
     assert body['windows'][1]['resets_at'] == reset_b
+
+
+def test_windows_and_breakdown_use_source_time_not_receipt_time_for_bounds(client, store):
+    """P2-8 (finding 8): the picker's range must be identified and bounded
+    by source_observed_at, never server_received_at -- a sample observed
+    hours ago but only just received (network/disk delay, or a backfill)
+    must still land at its own observed time, and re-querying breakdown
+    with the picker's own returned bounds must retain both readings."""
+    now = datetime.now(timezone.utc)
+    observed_first = now - timedelta(hours=2)
+    observed_last = observed_first + timedelta(minutes=5)
+    resets_at = _iso(now + timedelta(hours=4))
+    store.record_allowance_sample(
+        provider='claude', window_kind='5h', window_scope='all',
+        raw_utilization=10.0, resets_at=resets_at, source_observed_at=_iso(observed_first))
+    store.record_allowance_sample(
+        provider='claude', window_kind='5h', window_scope='all',
+        raw_utilization=15.0, resets_at=resets_at, source_observed_at=_iso(observed_last))
+
+    windows_body = client.get('/api/system/usage/windows').get_json()
+    assert len(windows_body['windows']) == 1
+    w = windows_body['windows'][0]
+    # server_received_at is "now" (insertion time) for both rows -- if the
+    # picker were still keyed on it, these would equal `now`, not the
+    # samples' own (much earlier) observed times.
+    assert w['range_start'] == _iso(observed_first)
+    assert w['range_end'] == _iso(observed_last)
+
+    r = client.get(
+        f"/api/system/usage/breakdown?range_start={quote(w['range_start'])}"
+        f"&range_end={quote(w['range_end'])}"
+    )
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body['bar_change']['status'] == 'ok'
+    assert body['bar_change']['delta_pp'] == 5.0
 
 
 def test_windows_codex_forces_window_scope_to_all(client, store):
