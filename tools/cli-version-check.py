@@ -74,9 +74,19 @@ CLIS = [
 
 
 def _run(cmd, timeout=120):
-    """Run a command, return (rc, combined output). Never raises."""
+    """Run a command, return (rc, combined output). Never raises.
+
+    stdin=DEVNULL is required, not cosmetic: with no stdin argument the child
+    inherits the parent's stdin handle, which is invalid under pytest's
+    capture and equally under any launch with no console (scheduler,
+    pythonw, a detached service) -- subprocess.run then raises OSError
+    WinError 6 ("the handle is invalid") before the child even runs. Dave
+    caught this via list_processes() returning [] under pytest while working
+    fine standalone (MC-991 review of 894ac19).
+    """
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           stdin=subprocess.DEVNULL)
         return r.returncode, ((r.stdout or '') + (r.stderr or '')).strip()
     except Exception as e:
         return 1, '%s: %s' % (type(e).__name__, e)
@@ -216,19 +226,23 @@ def aside_dir_for(cli):
 
 
 def list_processes():
-    """All running processes as dicts (pid, ppid, name, exe, start_epoch).
+    """All running processes as dicts (pid, ppid, name, exe, start_epoch), or
+    None when enumeration FAILED (PowerShell missing, non-zero exit, no
+    output, unparseable JSON) -- distinct from `[]`, which means Windows
+    genuinely has no matching processes right now, or this isn't Windows at
+    all (the feature is a no-op there; that's not a failure).
 
-    Windows-only -- returns [] on every other platform, and on any
-    enumeration failure, so preflight/orphan-reporting degrade to "found no
-    lockers" rather than a half-working guess. psutil isn't a dependency of
-    this project (checked 2026-09-28), so this shells to PowerShell
-    Get-CimInstance, per MC-991's brief.
+    None must never be read as "no lockers": a caller doing a preflight
+    check that treated enumeration failure as an empty result would let a
+    known-EBUSY npm install proceed anyway -- exactly the MC-991 regression
+    (Dave's review of 894ac19, D4). Every call site is required to check for
+    None and fail closed rather than default to "found nothing".
     """
     if sys.platform != 'win32':
         return []
     exe = shutil.which('powershell') or shutil.which('powershell.exe')
     if not exe:
-        return []
+        return None
     ps_cmd = (
         "Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, "
         "Name, ExecutablePath, @{N='StartEpoch';E={ if ($_.CreationDate) { "
@@ -237,11 +251,11 @@ def list_processes():
     )
     rc, out = _run([exe, '-NoProfile', '-NonInteractive', '-Command', ps_cmd], timeout=30)
     if rc != 0 or not out:
-        return []
+        return None
     try:
         data = json.loads(out)
     except ValueError:
-        return []
+        return None
     if isinstance(data, dict):
         data = [data]
     procs = []
@@ -266,7 +280,13 @@ def _under_dir(path, dir_path):
 
 
 def processes_locking(dir_path, procs):
-    """Processes in `procs` whose executable resolves under `dir_path`."""
+    """Processes in `procs` whose executable resolves under `dir_path`, or
+    None when `procs` is None (list_processes() enumeration failed) --
+    propagated rather than treated as an empty list, so a preflight check
+    fails closed instead of concluding "no lockers" from data it never got.
+    """
+    if procs is None:
+        return None
     return [p for p in procs if _under_dir(p.get('exe'), dir_path)]
 
 
@@ -414,13 +434,19 @@ def check_one(cli, apply_updates=False):
     aside_dir = aside_dir_for(cli) if pkg_dir else None
     if pkg_dir:
         procs = list_processes()
-        if aside_dir:
-            swept = sweep_aside_files(aside_dir, procs)
-            if swept['removed']:
-                row['swept_aside_files'] = swept['removed']
-        orphans = orphaned_processes(pkg_dir, procs)
-        if orphans:
-            row['orphaned_processes'] = orphans
+        if procs is None:
+            # Enumeration failed -- say so rather than silently reporting
+            # "no orphans found", which a reader can't tell apart from a
+            # real clean check. Report-only, so we still finish this row.
+            row['process_enumeration_failed'] = True
+        else:
+            if aside_dir:
+                swept = sweep_aside_files(aside_dir, procs)
+                if swept['removed']:
+                    row['swept_aside_files'] = swept['removed']
+            orphans = orphaned_processes(pkg_dir, procs)
+            if orphans:
+                row['orphaned_processes'] = orphans
 
     behind = _cmp(latest, inst) > 0
     if behind and shadows:
@@ -448,7 +474,17 @@ def check_one(cli, apply_updates=False):
         max_attempts = 2 if pkg_dir else 1
         for attempt in range(1, max_attempts + 1):
             if pkg_dir:
-                lockers = processes_locking(pkg_dir, list_processes())
+                procs_now = list_processes()
+                if procs_now is None:
+                    # Enumeration failed -- do NOT default to "no lockers".
+                    # That default is exactly how MC-991 shipped a preflight
+                    # that always passed and let a known-EBUSY npm install
+                    # run anyway (Dave's review of 894ac19, D4).
+                    row['status'] = 'preflight_failed'
+                    row['preflight_error'] = 'process enumeration failed -- npm not invoked'
+                    blocked = True
+                    break
+                lockers = processes_locking(pkg_dir, procs_now)
                 if lockers and not aside_dir:
                     # No npm prefix -> nowhere safe to move a locker to.
                     # Don't guess; block instead.

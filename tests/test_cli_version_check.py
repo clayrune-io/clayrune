@@ -67,6 +67,46 @@ def test_list_processes_noop_on_non_windows(cvc, monkeypatch):
     assert cvc.list_processes() == []
 
 
+# ── list_processes fails CLOSED (None), not open ([]) ────────────────────
+
+def test_list_processes_returns_none_on_enumeration_failure(cvc, monkeypatch):
+    """MC-991 review of 894ac19 (D4): a PowerShell/CIM failure must be
+    distinguishable from a genuine 'no processes' result. Returning [] here
+    is what let a known-EBUSY npm install proceed on a preflight that could
+    not actually check anything."""
+    monkeypatch.setattr(cvc, '_run', lambda cmd, timeout=120: (1, 'boom'))
+    assert cvc.list_processes() is None
+
+
+def test_processes_locking_propagates_none(cvc):
+    assert cvc.processes_locking(r'C:\fake\pkg', None) is None
+
+
+def test_check_one_blocks_when_process_enumeration_fails_npm_not_invoked(cvc, tmp_path, monkeypatch):
+    pkg_dir = tmp_path / 'node_modules' / '@openai' / 'codex'
+    pkg_dir.mkdir(parents=True)
+
+    cli = _fake_cli(cvc)
+    monkeypatch.setattr(cvc, 'npm_package_dir', lambda c: str(pkg_dir))
+    monkeypatch.setattr(cvc, 'aside_dir_for', lambda c: str(tmp_path / 'aside'))
+    monkeypatch.setattr(cvc, 'list_processes', lambda: None)  # enumeration failed
+    monkeypatch.setattr(cvc, 'installed_version', lambda name: ('0.155.1', r'C:\fake\codex.cmd'))
+    monkeypatch.setattr(cvc, 'latest_version', lambda pkg: '0.158.0')
+    monkeypatch.setattr(cvc, 'shadow_check', lambda name, path: [])
+
+    run_calls = []
+    monkeypatch.setattr(cvc, '_run', lambda cmd, timeout=120: run_calls.append(cmd) or (0, 'ok'))
+    monkeypatch.setattr(cvc.shutil, 'which', lambda x: x)
+
+    row = cvc.check_one(cli, apply_updates=True)
+
+    assert run_calls == [], 'a preflight that could not check for lockers must never invoke npm'
+    assert row['status'] == 'preflight_failed'
+    assert row['updated'] is False
+    assert row.get('process_enumeration_failed') is True, \
+        'the diagnostic block runs first and should also record the failure'
+
+
 # ── preflight: real spawned process, under-dir filtering ────────────────
 
 def test_processes_locking_finds_only_the_process_under_the_dir(cvc, tmp_path):
