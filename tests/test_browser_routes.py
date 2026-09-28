@@ -1684,3 +1684,242 @@ def test_minimize_pause_still_holds_without_a_new_viewer(app_client):
     assert r.status_code == 200
     assert s['screencast_paused'] is True
     assert s['cmd_queue'].get_nowait() == ('Page.stopScreencast', {})
+
+
+# ── MC-997: leaked pane-Chromium sweep ───────────────────────────────────────
+#
+# A server restart os._exit()s past the atexit browser cleanup, so a
+# throwaway profile's Chromium (never relaunched by name, unlike a named
+# profile) stays running forever with its profile dir locked. Every test
+# here mocks `_scan_chromium_processes` (no real process enumeration) and
+# `_cdp_browser_close` / `_kill_pid_fn` (no real CDP call, no real kill) —
+# per the brief, no real running Chromium may be closed or killed by this
+# suite. `_pane_leak_sweep_loop`'s real timing is exercised nowhere here for
+# the same reason a bare `pytest` run must never touch a real profile dir
+# (see the `profiles` fixture above): SWEEP_ENABLED gates the sweep, and
+# `profiles` turns it on against tmp_path roots only.
+
+def _chromium_row(pid, udd, port=9333, headless=True, child=False):
+    """A fabricated (pid, cmdline) row shaped like _scan_chromium_processes'
+    real output — never a real process."""
+    parts = ['C:/fake/chrome.exe']
+    if headless:
+        parts.append('--headless=new')
+    if child:
+        parts.append('--type=renderer')
+    parts.append(f'--remote-debugging-port={port}')
+    parts.append(f'--user-data-dir={udd}')
+    return (pid, ' '.join(parts))
+
+
+# ── _cdp_browser_close: the one shared Browser.close call site ─────────────
+
+def test_cdp_browser_close_no_websocket_client(monkeypatch):
+    monkeypatch.setattr(br, '_import_ws', lambda: None)
+    ok, err = br._cdp_browser_close(1234)
+    assert ok is False and 'websocket-client' in err
+
+
+def test_cdp_browser_close_no_cdp_endpoint(monkeypatch):
+    monkeypatch.setattr(br, '_import_ws', lambda: object())
+    monkeypatch.setattr(br, '_browser_ws_url', lambda *a, **k: None)
+    ok, err = br._cdp_browser_close(1234)
+    assert ok is False and 'no CDP endpoint' in err
+
+
+class _FakeWsConn:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, msg):
+        self.sent.append(json.loads(msg))
+
+    def close(self):
+        pass
+
+
+def test_cdp_browser_close_sends_browser_close(monkeypatch):
+    conn = _FakeWsConn()
+    fake_module = type('FakeWsModule', (), {
+        'create_connection': staticmethod(lambda *a, **k: conn)})
+    monkeypatch.setattr(br, '_import_ws', lambda: fake_module)
+    monkeypatch.setattr(br, '_browser_ws_url', lambda *a, **k: 'ws://fake')
+    ok, err = br._cdp_browser_close(1234)
+    assert ok is True and err is None
+    assert conn.sent == [{'id': 1, 'method': 'Browser.close', 'params': {}}]
+
+
+# ── _profile_holder now delegates to _scan_chromium_processes ──────────────
+
+def test_profile_holder_fails_closed_on_scan_failure(monkeypatch):
+    monkeypatch.setattr(br, '_scan_chromium_processes', lambda: None)
+    assert br._profile_holder('/p/main') is None
+
+
+def test_profile_holder_filters_child_processes(monkeypatch):
+    rows = [(1, 'chrome.exe --type=renderer --user-data-dir=/p/main'),
+            (2, 'chrome.exe --user-data-dir=/p/main')]
+    monkeypatch.setattr(br, '_scan_chromium_processes', lambda: rows)
+    assert br._profile_holder('/p/main') == (2, rows[1][1])
+
+
+# ── pure helpers ─────────────────────────────────────────────────────────────
+
+def test_cmdline_user_data_dir_extracts_and_unquotes():
+    assert br._cmdline_user_data_dir('chrome.exe --user-data-dir=/p/main --x') == '/p/main'
+    assert br._cmdline_user_data_dir('chrome.exe --user-data-dir="C:/a b/c" --x') == 'C:/a b/c'
+    assert br._cmdline_user_data_dir('chrome.exe --headless') is None
+
+
+def test_under_root_matches_root_itself_and_nested(tmp_path):
+    root = tmp_path / 'root'
+    root.mkdir()
+    child = root / 'sub'
+    assert br._under_root(str(root), str(root)) is True
+    assert br._under_root(str(child), str(root)) is True
+    assert br._under_root(str(tmp_path / 'sibling'), str(root)) is False
+
+
+# ── sweep_leaked_pane_chromiums: candidate selection + close/kill policy ────
+
+def test_leak_sweep_refuses_to_run_when_sweep_disabled(profiles, monkeypatch):
+    monkeypatch.setattr(br, 'SWEEP_ENABLED', False)
+    monkeypatch.setattr(br, '_scan_chromium_processes',
+                        lambda: pytest.fail('must not enumerate when SWEEP_ENABLED is false'))
+    report = br.sweep_leaked_pane_chromiums()
+    assert report['ok'] is False
+    assert report['closed'] == report['failed'] == report['reported'] == []
+
+
+def test_leak_sweep_respects_its_own_config_toggle(profiles, monkeypatch):
+    monkeypatch.setitem(state.CONFIG, 'browser_pane_leak_sweep_enabled', False)
+    monkeypatch.setattr(br, '_scan_chromium_processes',
+                        lambda: pytest.fail('must not enumerate when toggled off'))
+    report = br.sweep_leaked_pane_chromiums()
+    assert report.get('skipped') is True and report['ok'] is True
+
+
+def test_leak_sweep_fails_closed_on_enumeration_failure(profiles, monkeypatch):
+    monkeypatch.setattr(br, '_scan_chromium_processes', lambda: None)
+    report = br.sweep_leaked_pane_chromiums()
+    assert report['ok'] is False and 'enumeration' in report['error']
+    assert report['closed'] == report['failed'] == report['reported'] == []
+
+
+def test_leak_sweep_closes_a_leaked_throwaway_profile(profiles, monkeypatch):
+    eph, _named = profiles
+    udd = str(eph / 'leaked1')
+    os.makedirs(udd, exist_ok=True)
+    monkeypatch.setattr(br, '_scan_chromium_processes', lambda: [_chromium_row(111, udd)])
+    closes = []
+    monkeypatch.setattr(br, '_cdp_browser_close',
+                        lambda port: closes.append(port) or (True, None))
+    monkeypatch.setattr(br, '_pid_alive_fn', lambda pid: False)  # already exited
+    monkeypatch.setattr(br, '_kill_pid_fn',
+                        lambda pid, tree=False: pytest.fail('must not hard-kill when Browser.close worked'))
+    report = br.sweep_leaked_pane_chromiums()
+    assert closes == [9333]
+    assert [c['action'] for c in report['closed']] == ['closed']
+    assert report['closed'][0]['pid'] == 111 and report['closed'][0]['named'] is False
+    assert report['failed'] == report['reported'] == []
+
+
+def test_leak_sweep_skips_a_live_session(profiles, monkeypatch):
+    eph, _named = profiles
+    udd = str(eph / 'live1')
+    os.makedirs(udd, exist_ok=True)
+    browser_sessions['sid-x'] = {'user_data_dir': udd, 'status': 'running'}
+    monkeypatch.setattr(br, '_scan_chromium_processes', lambda: [_chromium_row(222, udd)])
+    monkeypatch.setattr(br, '_cdp_browser_close',
+                        lambda port: pytest.fail('must not touch a live session\'s Chromium'))
+    report = br.sweep_leaked_pane_chromiums()
+    assert report['closed'] == report['failed'] == report['reported'] == []
+
+
+def test_leak_sweep_reports_only_outside_clayrune_roots(profiles, monkeypatch, tmp_path):
+    outside = tmp_path / 'bp-diag-abc123'
+    outside.mkdir()
+    monkeypatch.setattr(br, '_scan_chromium_processes', lambda: [_chromium_row(333, str(outside))])
+    monkeypatch.setattr(br, '_cdp_browser_close',
+                        lambda port: pytest.fail('must never close a process outside the Clayrune roots'))
+    monkeypatch.setattr(br, '_kill_pid_fn',
+                        lambda pid, tree=False: pytest.fail('must never kill a process outside the Clayrune roots'))
+    report = br.sweep_leaked_pane_chromiums()
+    assert report['closed'] == [] and report['failed'] == []
+    assert [r['pid'] for r in report['reported']] == [333]
+
+
+def test_leak_sweep_skips_a_non_headless_chromium(profiles, monkeypatch):
+    eph, _named = profiles
+    udd = str(eph / 'visible')
+    monkeypatch.setattr(br, '_scan_chromium_processes',
+                        lambda: [_chromium_row(444, udd, headless=False)])
+    monkeypatch.setattr(br, '_cdp_browser_close',
+                        lambda port: pytest.fail('a visible (non-pane) Chromium must never be touched'))
+    report = br.sweep_leaked_pane_chromiums()
+    assert report['closed'] == report['failed'] == report['reported'] == []
+
+
+def test_leak_sweep_skips_a_chromium_with_no_debug_port(profiles, monkeypatch):
+    eph, _named = profiles
+    udd = str(eph / 'noport')
+    pid, cmd = _chromium_row(555, udd)
+    row = (pid, cmd.replace('--remote-debugging-port=9333', ''))
+    monkeypatch.setattr(br, '_scan_chromium_processes', lambda: [row])
+    monkeypatch.setattr(br, '_cdp_browser_close',
+                        lambda port: pytest.fail('no port means no CDP endpoint to identify it by'))
+    report = br.sweep_leaked_pane_chromiums()
+    assert report['closed'] == report['failed'] == report['reported'] == []
+
+
+def test_leak_sweep_skips_child_renderer_processes(profiles, monkeypatch):
+    eph, _named = profiles
+    udd = str(eph / 'renderer-child')
+    monkeypatch.setattr(br, '_scan_chromium_processes',
+                        lambda: [_chromium_row(666, udd, child=True)])
+    monkeypatch.setattr(br, '_cdp_browser_close',
+                        lambda port: pytest.fail('a --type= child carries the same --user-data-dir '
+                                                 'as its browser process and is not it'))
+    report = br.sweep_leaked_pane_chromiums()
+    assert report['closed'] == report['failed'] == report['reported'] == []
+
+
+def test_leak_sweep_never_hard_kills_a_named_profile(profiles, monkeypatch):
+    _eph, named = profiles
+    udd = str(named / 'reddit')
+    os.makedirs(udd, exist_ok=True)
+    monkeypatch.setattr(br, '_scan_chromium_processes', lambda: [_chromium_row(777, udd)])
+    monkeypatch.setattr(br, '_cdp_browser_close', lambda port: (False, 'no response'))
+    monkeypatch.setattr(br, '_kill_pid_fn',
+                        lambda pid, tree=False: pytest.fail('a saved login must never be hard-killed'))
+    report = br.sweep_leaked_pane_chromiums()
+    assert [c['action'] for c in report['failed']] == ['close_failed']
+    assert report['failed'][0]['named'] is True
+    assert report['closed'] == []
+
+
+def test_leak_sweep_hard_kills_a_throwaway_only_after_close_fails(profiles, monkeypatch):
+    eph, _named = profiles
+    udd = str(eph / 'stuck')
+    os.makedirs(udd, exist_ok=True)
+    monkeypatch.setattr(br, '_scan_chromium_processes', lambda: [_chromium_row(888, udd)])
+    monkeypatch.setattr(br, '_cdp_browser_close', lambda port: (False, 'no response'))
+    killed = []
+    monkeypatch.setattr(br, '_kill_pid_fn',
+                        lambda pid, tree=False: killed.append((pid, tree)) or True)
+    report = br.sweep_leaked_pane_chromiums()
+    assert killed == [(888, True)]
+    assert [c['action'] for c in report['closed']] == ['killed']
+    assert report['closed'][0]['named'] is False
+
+
+def test_leak_sweep_reports_kill_failure_for_an_unkillable_throwaway(profiles, monkeypatch):
+    eph, _named = profiles
+    udd = str(eph / 'unkillable')
+    os.makedirs(udd, exist_ok=True)
+    monkeypatch.setattr(br, '_scan_chromium_processes', lambda: [_chromium_row(999, udd)])
+    monkeypatch.setattr(br, '_cdp_browser_close', lambda port: (False, 'no response'))
+    monkeypatch.setattr(br, '_kill_pid_fn', lambda pid, tree=False: False)
+    report = br.sweep_leaked_pane_chromiums()
+    assert [c['action'] for c in report['failed']] == ['kill_failed']
+    assert report['closed'] == []

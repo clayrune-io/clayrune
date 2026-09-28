@@ -153,6 +153,9 @@ _CONFIG_EDITABLE_KEYS = {
     # respawn needed. process_sweep_enabled OFF blocks every kill path, no
     # per-call override; process_sweep_dry_run reports without killing.
     'process_sweep_enabled', 'process_sweep_dry_run',
+    # Leaked pane-Chromium sweep (MC-997, mc/blueprints/browser_routes.py).
+    # Read live by the periodic loop and the startup pass — no respawn needed.
+    'browser_pane_leak_sweep_enabled',
     'long_session_advisory_enabled', 'long_session_advisory_turns',
     'context_rollover_tokens', 'midturn_rollover_enabled',
     # Per-agent skill scoping (mc/skill_scoping.py). Read at each spawn.
