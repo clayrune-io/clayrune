@@ -585,6 +585,61 @@
     flex: 1 1 auto; text-align: center; text-decoration: none;
     font-family: inherit; white-space: nowrap;
   }
+  /* MC-998 — Usage Breakdown section (docs/USAGE_BREAKDOWN_SPEC.md "Dashboard
+     layout and states"). Same markup at every width; `.ub-table-wrap` (desktop
+     scrollable table) and `.ub-cards` (phone stacked rows) toggle visibility
+     by media query below, mirroring `.usage-bar-strip`'s pattern. */
+  .sys-status-popover .ub-controls {
+    display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px;
+  }
+  .sys-status-popover .ub-select {
+    flex: 1 1 auto; min-width: 100px; padding: 4px 6px;
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 4px; font-size: 11px;
+    font-family: inherit;
+  }
+  .sys-status-popover .ub-segbar {
+    height: 10px; border-radius: 5px; background: var(--surface3);
+    overflow: hidden; margin: 6px 0 4px; position: relative;
+  }
+  .sys-status-popover .ub-segbar-estimated {
+    height: 100%; background: var(--accent, var(--green)); border-radius: 5px;
+  }
+  .sys-status-popover .ub-segbar-unknown {
+    background: repeating-linear-gradient(
+      45deg, var(--surface3), var(--surface3) 6px, var(--border) 6px, var(--border) 12px);
+  }
+  .sys-status-popover .ub-table-wrap { overflow-x: auto; margin: 6px 0; }
+  .sys-status-popover .ub-table {
+    width: 100%; border-collapse: collapse; font-size: 11px;
+  }
+  .sys-status-popover .ub-table th {
+    text-align: left; color: var(--text-faint); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    padding: 4px 8px 4px 0; border-bottom: 1px solid var(--border);
+  }
+  .sys-status-popover .ub-table td {
+    padding: 5px 8px 5px 0; border-bottom: 1px dashed var(--border);
+    color: var(--text); font-family: 'JetBrains Mono', monospace;
+    white-space: nowrap;
+  }
+  .sys-status-popover .ub-cards { display: none; margin: 6px 0; }
+  .sys-status-popover .ub-card {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px; margin-bottom: 6px;
+  }
+  .sys-status-popover .ub-card-label {
+    color: var(--text); font-weight: 600; font-size: 12px; margin-bottom: 4px;
+    word-break: break-all;
+  }
+  .sys-status-popover .ub-card-row {
+    display: flex; justify-content: space-between; gap: 8px;
+    font-size: 11px; color: var(--text-dim); padding: 2px 0;
+  }
+  @media (max-width: 960px) {
+    .sys-status-popover .ub-table-wrap { display: none; }
+    .sys-status-popover .ub-cards { display: block; }
+  }
   .live-badge {
     display: flex; align-items: center; gap: 5px;
     color: var(--green-text); font-size: 10px;

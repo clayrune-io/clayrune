@@ -24,6 +24,21 @@ let _sysStatusActiveTab = 'status';  // status | config | mcp | usage
 let _sysUsageFetching = false;
 let _sysUsageRefreshing = false;  // MC-989: the Usage tab's own "Refresh numbers" busy-state
 
+// MC-998 — Breakdown section (docs/USAGE_BREAKDOWN_SPEC.md "Dashboard layout
+// and states"). Own cache + own query-param state, separate from the
+// authoritative-% bars above it; selecting a control re-fetches only this
+// section, never the bars.
+let systemUsageBreakdownCache = null;
+let systemUsageWindowsCache = null;
+let _ubBreakdownFetching = false;
+let _ubWindowsFetching = false;
+let _ubProvider = 'claude';
+let _ubWindowKind = '5h';
+let _ubWindowScope = 'all';
+let _ubDimension = 'project';
+let _ubSort = 'input';
+let _ubRangeKey = '';  // '' = current window (server default); else 'range_start|range_end'
+
 async function fetchSystemStatus() {
   try {
     const res = await fetchFailFast(API_BASE + '/api/system/status');
@@ -263,6 +278,153 @@ function _ssUsageLimitBar(label, win) {
     </div>`;
 }
 
+// MC-998 — Usage Breakdown section (docs/USAGE_BREAKDOWN_SPEC.md "Dashboard
+// layout and states"). Renders the payload from GET /api/system/usage/
+// breakdown: compact observed totals + coverage, tokens-per-1%-point, the
+// estimated/unattributed segmented bar, and a per-dimension ranking table.
+// One JS render path for both desktop and phone -- emits BOTH the table
+// (`.ub-table-wrap`) and the stacked-card list (`.ub-cards`) from the same
+// `rows` array; app.css toggles which is visible at the existing 960px
+// breakpoint (mirrors `.usage-bar-strip`'s pattern, not a second code path).
+const _UB_EMPTY_STATE_LABEL = {
+  no_runs: 'No runs',
+  no_vendor_percentage: 'No vendor percentage',
+  sampling_not_begun: 'Sampling has not begun',
+};
+const _UB_BAR_STATUS_LABEL = {
+  insufficient_samples: 'Insufficient samples',
+  reset_crossed: 'Window reset during range',
+  insufficient_calibration: 'Insufficient calibration',
+  estimate_exceeds_observed: 'Estimate exceeds observed change',
+  unavailable: 'Unavailable',
+};
+
+function _ubFmtTok(n) { return n == null ? 'unavailable' : _ssFormatTokens(n); }
+function _ubFmtLoc(n) { return n == null ? 'unavailable' : n.toLocaleString(); }
+function _ubFmtPP(n) { return n == null ? '—' : n.toFixed(2) + '%'; }
+
+function _renderUsageBreakdownSection() {
+  const b = systemUsageBreakdownCache;
+  const windowsList = (systemUsageWindowsCache && systemUsageWindowsCache.windows) || [];
+
+  const provSel = `
+    <select class="ub-select" onchange="_ubBreakdownControlChange('provider', event)">
+      <option value="claude" ${_ubProvider === 'claude' ? 'selected' : ''}>Claude</option>
+      <option value="codex" ${_ubProvider === 'codex' ? 'selected' : ''}>Codex</option>
+    </select>`;
+  const windowSel = `
+    <select class="ub-select" onchange="_ubBreakdownControlChange('window_kind', event)">
+      <option value="5h" ${_ubWindowKind === '5h' ? 'selected' : ''}>5-hour</option>
+      <option value="7d" ${_ubWindowKind === '7d' ? 'selected' : ''}>7-day</option>
+    </select>`;
+  const scopeSel = _ubProvider === 'codex' ? '' : `
+    <select class="ub-select" onchange="_ubBreakdownControlChange('window_scope', event)">
+      <option value="all" ${_ubWindowScope === 'all' ? 'selected' : ''}>All models</option>
+      <option value="opus" ${_ubWindowScope === 'opus' ? 'selected' : ''}>Opus</option>
+      <option value="sonnet" ${_ubWindowScope === 'sonnet' ? 'selected' : ''}>Sonnet</option>
+    </select>`;
+  const rangeOpts = windowsList.map(w => {
+    const key = `${w.range_start}|${w.range_end}`;
+    const label = (w.completed ? 'Completed window · ' : 'Window · ') +
+      (w.resets_at ? new Date(w.resets_at).toLocaleString() : w.range_start);
+    return `<option value="${esc(key)}" ${_ubRangeKey === key ? 'selected' : ''}>${esc(label)}</option>`;
+  }).join('');
+  const rangeSel = `
+    <select class="ub-select" onchange="_ubBreakdownControlChange('range', event)">
+      <option value="" ${_ubRangeKey === '' ? 'selected' : ''}>Current window</option>
+      ${rangeOpts}
+    </select>`;
+  const dimSel = `
+    <select class="ub-select" onchange="_ubBreakdownControlChange('dimension', event)">
+      ${['project', 'character', 'trigger', 'model', 'provider'].map(d =>
+        `<option value="${d}" ${_ubDimension === d ? 'selected' : ''}>${d[0].toUpperCase() + d.slice(1)}</option>`).join('')}
+    </select>`;
+  const sortSel = `
+    <select class="ub-select" onchange="_ubBreakdownControlChange('sort', event)">
+      <option value="input" ${_ubSort === 'input' ? 'selected' : ''}>Sort: input tokens</option>
+      <option value="output" ${_ubSort === 'output' ? 'selected' : ''}>Sort: output tokens</option>
+      <option value="added" ${_ubSort === 'added' ? 'selected' : ''}>Sort: LOC added</option>
+    </select>`;
+
+  const controlsHTML = `
+    <div class="ub-controls">${provSel}${windowSel}${scopeSel}${rangeSel}${dimSel}${sortSel}</div>`;
+
+  if (_ubBreakdownFetching && !b) {
+    return `<div class="ssp-section-head">Breakdown</div>${controlsHTML}<div class="ssp-empty">Loading breakdown…</div>`;
+  }
+  if (!b) {
+    return `<div class="ssp-section-head">Breakdown</div>${controlsHTML}<div class="ssp-empty">Breakdown not loaded yet.</div>`;
+  }
+
+  const esLabel = b.empty_state ? _UB_EMPTY_STATE_LABEL[b.empty_state] || b.empty_state : '';
+  const t = b.totals || {};
+  const tok = t.tokens || {};
+  const loc = t.loc || {};
+  const telemetryUnavailable = (t.session_count || 0) > 0 && tok.input_processed_total == null;
+
+  const totalsHTML = `
+    <div class="ssp-row"><span class="ssp-k">Sessions in range</span><span class="ssp-v">${(t.session_count || 0).toLocaleString()}</span></div>
+    <div class="ssp-row"><span class="ssp-k">Input tokens</span><span class="ssp-v">${_ubFmtTok(tok.input_processed_total)}</span></div>
+    <div class="ssp-row"><span class="ssp-k">Output tokens</span><span class="ssp-v">${_ubFmtTok(tok.output_tokens)}</span></div>
+    <div class="ssp-row"><span class="ssp-k">LOC added / deleted</span><span class="ssp-v">${_ubFmtLoc(loc.added)} / ${_ubFmtLoc(loc.deleted)}</span></div>
+    ${telemetryUnavailable ? '<div class="ssp-hint-line">Telemetry unavailable for every session in this range.</div>' : ''}
+    ${(t.token_coverage_unavailable_count || 0) > 0 ? `<div class="ssp-hint-line">${t.token_coverage_unavailable_count} session(s) with unavailable token coverage.</div>` : ''}
+    ${(t.loc_unavailable_count || 0) > 0 ? `<div class="ssp-hint-line">${t.loc_unavailable_count} session(s) with LOC unavailable (shared/dirty worktree).</div>` : ''}
+  `;
+
+  const tpp = b.tokens_per_point || {};
+  const tppHTML = tpp.status === 'ok'
+    ? `<div class="ssp-row"><span class="ssp-k">Tokens per 1%</span><span class="ssp-v">${_ubFmtTok(tpp.median)} (p10 ${_ubFmtTok(tpp.p10)} · p90 ${_ubFmtTok(tpp.p90)}, n=${tpp.sample_count})</span></div>`
+    : `<div class="ssp-row"><span class="ssp-k">Tokens per 1%</span><span class="ssp-v">${esc(_UB_BAR_STATUS_LABEL[tpp.status] || 'Insufficient calibration')}</span></div>`;
+
+  const seg = b.segmented_bar || {};
+  let segbarHTML;
+  if (seg.status === 'ok' || seg.status === 'estimate_exceeds_observed') {
+    const estPct = Math.max(0, Math.min(100, (seg.estimated_pp / (seg.bar_change_pp || 1)) * 100));
+    segbarHTML = `
+      <div class="ub-segbar"><div class="ub-segbar-estimated" style="width:${estPct}%"></div></div>
+      <div class="ssp-row"><span class="ssp-k">Estimated Clayrune</span><span class="ssp-v">${_ubFmtPP(seg.estimated_pp)}</span></div>
+      <div class="ssp-row"><span class="ssp-k">Unattributed / uncertain</span><span class="ssp-v">${_ubFmtPP(seg.unattributed_pp)}</span></div>
+      ${seg.status === 'estimate_exceeds_observed' ? '<div class="ssp-hint-line">Estimate exceeds the observed vendor change — shown, not clamped.</div>' : ''}`;
+  } else {
+    segbarHTML = `
+      <div class="ub-segbar ub-segbar-unknown"></div>
+      <div class="ssp-hint-line">${esc(_UB_BAR_STATUS_LABEL[seg.status] || seg.status || 'Unavailable')} — whole bar shown as unattributed.</div>`;
+  }
+
+  const rows = (b.rankings && b.rankings.rows) || [];
+  const rankingsHTML = rows.length === 0 ? '<div class="ssp-empty">No sessions to rank in this range.</div>' : `
+    <div class="ub-table-wrap"><table class="ub-table">
+      <thead><tr><th>${b.dimension[0].toUpperCase() + b.dimension.slice(1)}</th><th>Input</th><th>Output</th><th>LOC+</th><th>Sessions</th></tr></thead>
+      <tbody>${rows.map(r => `
+        <tr><td>${esc(r.label)}</td><td>${_ubFmtTok(r.input_processed_total)}</td><td>${_ubFmtTok(r.output_tokens)}</td><td>${_ubFmtLoc(r.added)}</td><td>${r.session_count}</td></tr>
+      `).join('')}</tbody>
+    </table></div>
+    <div class="ub-cards">${rows.map(r => `
+      <div class="ub-card">
+        <div class="ub-card-label">${esc(r.label)}</div>
+        <div class="ub-card-row"><span>Input</span><span>${_ubFmtTok(r.input_processed_total)}</span></div>
+        <div class="ub-card-row"><span>Output</span><span>${_ubFmtTok(r.output_tokens)}</span></div>
+        <div class="ub-card-row"><span>LOC+</span><span>${_ubFmtLoc(r.added)}</span></div>
+        <div class="ub-card-row"><span>Sessions</span><span>${r.session_count}</span></div>
+      </div>
+    `).join('')}</div>
+    ${(b.rankings.unknown_count || 0) > 0 ? `<div class="ssp-hint-line">${b.rankings.unknown_count} session(s) in Unknown.</div>` : ''}
+    ${(b.rankings.missing_data_count || 0) > 0 ? `<div class="ssp-hint-line">${b.rankings.missing_data_count} session(s) missing token data.</div>` : ''}
+  `;
+
+  return `
+    <div class="ssp-section-head">Breakdown${b.coverage_begins ? '' : ' · sampling not begun'}</div>
+    ${controlsHTML}
+    ${esLabel ? `<div class="ssp-empty">${esc(esLabel)}.</div>` : ''}
+    ${totalsHTML}
+    ${tppHTML}
+    ${segbarHTML}
+    ${rankingsHTML}
+    ${b.coverage_begins ? `<div class="ssp-hint-line">Retained samples since ${esc(new Date(b.coverage_begins).toLocaleDateString())}.</div>` : ''}
+  `;
+}
+
 function _renderUsageTab() {
   // Two layers stacked top-to-bottom:
   //   1. MC activity — tokens/cost/sessions launched THROUGH Mission Control,
@@ -438,6 +600,8 @@ function _renderUsageTab() {
     <div class="ssp-section-head">Gemini</div>
     ${geminiHTML}
 
+    ${_renderUsageBreakdownSection()}
+
     <div class="ssp-section-head">${esc(periodLabel)} · tokens by model</div>
     ${periodHTML}
 
@@ -495,6 +659,10 @@ function _sysStatusSwitchTab(tab, ev) {
   if (tab === 'usage' && !systemUsageCache && !_sysUsageFetching) {
     fetchSystemUsage();
   }
+  if (tab === 'usage' && !systemUsageBreakdownCache && !_ubBreakdownFetching) {
+    fetchUsageBreakdown();
+    fetchUsageWindows();
+  }
   _rerenderSysStatusSurfaces();
 }
 
@@ -525,6 +693,61 @@ async function _ubRefreshUsage(ev) {
   _sysUsageRefreshing = false;
   _rerenderSysStatusSurfaces();
 }
+
+// MC-998 — Usage Breakdown section: fetch/render pair mirroring
+// fetchSystemUsage's guard/cache/rerender shape, against the two read-only
+// endpoints in mc/blueprints/system_routes.py.
+async function fetchUsageBreakdown() {
+  if (_ubBreakdownFetching) return;
+  _ubBreakdownFetching = true;
+  try {
+    const params = new URLSearchParams({
+      provider: _ubProvider, window_kind: _ubWindowKind, window_scope: _ubWindowScope,
+      dimension: _ubDimension, sort: _ubSort,
+    });
+    if (_ubRangeKey) {
+      const [rs, re] = _ubRangeKey.split('|');
+      params.set('range_start', rs);
+      params.set('range_end', re);
+    }
+    const res = await fetchFailFast(API_BASE + '/api/system/usage/breakdown?' + params.toString());
+    if (res.ok) systemUsageBreakdownCache = await res.json();
+  } catch { /* leave cache as-is */ }
+  _ubBreakdownFetching = false;
+  _rerenderSysStatusSurfaces();
+}
+
+async function fetchUsageWindows() {
+  if (_ubWindowsFetching) return;
+  _ubWindowsFetching = true;
+  try {
+    const params = new URLSearchParams({
+      provider: _ubProvider, window_kind: _ubWindowKind, window_scope: _ubWindowScope,
+    });
+    const res = await fetchFailFast(API_BASE + '/api/system/usage/windows?' + params.toString());
+    if (res.ok) systemUsageWindowsCache = await res.json();
+  } catch { /* leave cache as-is */ }
+  _ubWindowsFetching = false;
+  _rerenderSysStatusSurfaces();
+}
+
+// One change handler per control — each updates the relevant state var then
+// re-fetches. Provider/window_kind/window_scope changes also refresh the
+// range picker's window list (it's scoped to that triple); dimension/sort
+// changes only re-fetch the breakdown (rankings are recomputed server-side).
+function _ubBreakdownControlChange(field, ev) {
+  const val = ev.target.value;
+  if (field === 'provider') { _ubProvider = val; _ubRangeKey = ''; if (val === 'codex') _ubWindowScope = 'all'; }
+  else if (field === 'window_kind') { _ubWindowKind = val; _ubRangeKey = ''; }
+  else if (field === 'window_scope') { _ubWindowScope = val; _ubRangeKey = ''; }
+  else if (field === 'dimension') { _ubDimension = val; }
+  else if (field === 'sort') { _ubSort = val; }
+  else if (field === 'range') { _ubRangeKey = val; }
+  _rerenderSysStatusSurfaces();
+  fetchUsageBreakdown();
+  if (field === 'provider' || field === 'window_kind' || field === 'window_scope') fetchUsageWindows();
+}
+window._ubBreakdownControlChange = _ubBreakdownControlChange;
 
 // MC-989 Part B — opens a bare-CLI terminal pop-out for a provider's
 // interactive reset flow (Claude /limit-reset, Codex "Redeem usage limit
@@ -640,6 +863,7 @@ function openSystemUsage() {
   // Land on Usage (the reason this surface exists); the other tabs stay usable.
   _sysStatusActiveTab = 'usage';
   if (!systemUsageCache && !_sysUsageFetching) fetchSystemUsage();
+  if (!systemUsageBreakdownCache && !_ubBreakdownFetching) { fetchUsageBreakdown(); fetchUsageWindows(); }
   fetchSystemStatus();
 
   if (openModals.has(modalId)) {
