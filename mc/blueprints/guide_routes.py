@@ -28,6 +28,9 @@ alias, 1.7 precedent).
 """
 
 import json
+import re
+import threading
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -788,7 +791,11 @@ def _has_real_user_project() -> bool:
     walkthrough used to create in place of `clayrune`. Installs old enough to
     carry one counted as "established", so the upgrade seeded no Clayrune
     project and the first-run tour never auto-started — the starter was
-    standing in for a real project it never was."""
+    standing in for a real project it never was.
+
+    MC-990: also excludes the reserved Ideas workspace (`_is_ideas_workspace`)
+    for the same reason — it is app infrastructure seeded at every boot, not
+    evidence the user has set anything up."""
     from mc.blueprints.project_routes import EXCLUDED_SIDECAR_SUFFIXES
     for f in DATA_DIR.glob('*.json'):
         if f.name.endswith(EXCLUDED_SIDECAR_SUFFIXES):
@@ -803,8 +810,105 @@ def _has_real_user_project() -> bool:
             continue
         if p.get('_is_onboarding_project') or p.get('id') in ('clayrune', 'sample-project'):
             continue
+        if p.get('_is_ideas_workspace'):
+            continue
         return True
     return False
+
+
+# ── Ideas workspace (MC-990: Brainstorm handoff) ────────────────────────────
+
+IDEAS_WORKSPACE_ID = '_ideas'
+
+
+def _seed_ideas_workspace() -> bool:
+    """Create the reserved, system-owned Ideas workspace if absent. Returns
+    True if created, False if it already existed.
+
+    Leading underscore is deliberate (precedent: `_incognito`) -- every
+    frontend id-slugifier in this repo (`project-forms.js` `autoSlug` and its
+    duplicates) strips leading/trailing underscores from a user-typed name,
+    so ordinary project creation can never collide with this id. A plain
+    `'ideas'` id was tried first and rejected on review (MC-990 D1): on any
+    install where the user already had a project literally named "Ideas",
+    this function saw the file, returned False, and every Claydo Brainstorm
+    session then landed in the user's REAL project -- its rules, its memory,
+    silently. If a record still turns up at this id without the workspace
+    marker (an install that predates the rename, or something else entirely),
+    refuse loudly rather than silently adopting a project we don't own.
+
+    The projectless home for a Claydo-started Brainstorm session
+    (docs/BRAINSTORM_HANDOFF_SPEC.md §1). Provisioned as app infrastructure at
+    boot — never by an agent, never by Brainstorm itself — so
+    `/api/project/<id>/agent/dispatch` (which refuses a missing/invalid
+    `project_path`) has somewhere durable to land before the user has named a
+    project. A real project record with the ordinary transcript/resume/
+    provider/agent-log paths: deliberately NOT `_incognito` (that pseudo-
+    project forces incognito and omits the agent log + memory a durable
+    exploration needs), and seeded with no AGENT_RULES.md / project memory of
+    its own so no unrelated project's rules leak into an idea explored here.
+    `_is_ideas_workspace` marks it so pickers can exclude it as an output
+    destination — same shape `_is_onboarding_project` already gives the
+    `clayrune` tour project.
+    """
+    pid = IDEAS_WORKSPACE_ID
+    filepath = DATA_DIR / f'{pid}.json'
+    if filepath.exists():
+        try:
+            existing = json.loads(filepath.read_text(encoding='utf-8'))
+        except Exception as e:
+            print(f"[ideas] existing record at reserved id \"{pid}\" is unreadable, "
+                  f"refusing to touch it: {e}", flush=True)
+            return False
+        if not isinstance(existing, dict) or not existing.get('_is_ideas_workspace'):
+            print(f"[ideas] refusing to seed -- reserved id \"{pid}\" is already a project "
+                  "record without the _is_ideas_workspace marker; something else has "
+                  "claimed it", flush=True)
+        return False
+
+    base = Path(state.CONFIG.get('auto_workspace_base') or str(Path.home() / 'MissionControl'))
+    workspace = base / pid
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"[ideas] workspace folder create failed: {e}", flush=True)
+
+    ts = now_iso()
+    project = {
+        'id': pid,
+        'name': 'Ideas',
+        '_is_ideas_workspace': True,
+        'domain': 'general',
+        'status': 'active',
+        'project_path': str(workspace),
+        'summary': "Brainstorm conversations started from Claydo before a project exists.",
+        'description': (
+            "System home for Brainstorm sessions started outside any project. "
+            "Finish an exploration, then use its \"Use this exploration\" card "
+            "to send the brief to a real project — nothing here is written "
+            "anywhere else on its own."
+        ),
+        'last_updated': ts,
+        'backlog': [],
+        'activity_log': [{'ts': ts, 'msg': 'Ideas workspace created'}],
+    }
+    save_project(pid, project)
+    return True
+
+
+def seed_ideas_workspace_on_startup():
+    """Boot-time seed for the Ideas workspace, called once from server.py
+    startup (same one-shot-marker shape as seed_onboarding_on_startup, kept
+    as its own marker: the two projects are provisioned for unrelated
+    reasons and neither's presence should gate the other's re-seed)."""
+    try:
+        marker = DATA_DIR.parent / 'ideas_workspace_seeded.flag'
+        if marker.exists():
+            return
+        _seed_ideas_workspace()
+        marker.write_text(now_iso(), encoding='utf-8')
+    except Exception as e:
+        print(f"[ideas] startup seed failed: {e}", flush=True)
 
 
 def _seed_onboarding_project() -> bool:
@@ -893,3 +997,274 @@ def _seed_onboarding_project() -> bool:
     }
     save_project(pid, project)
     return True
+
+
+# ── Brainstorm handoff transfer (MC-990) ────────────────────────────────────
+# docs/BRAINSTORM_HANDOFF_SPEC.md — the ONE server route that performs the
+# transfer. The Exploration brief text is re-derived HERE from the real
+# transcript (via agent_routes.resolve_transcript_messages, the same
+# vendor-agnostic reader the Runs panel viewer uses) rather than trusted from
+# the request body — the client only ever supplies identifiers (session id,
+# marker ordinal, destination) and the human-edited destination/backlog
+# fields, never the brief content or a filesystem path. This mirrors
+# `mc:team`'s split: the model can propose structure, but content that lands
+# on disk is re-read from a source of truth the model doesn't control.
+
+EXPLORATION_READY_MARKER = '[clayrune:exploration-ready]'
+
+
+def _find_exploration_brief(messages, version):
+    """Return (brief_text, total_versions) for the `version`-th (1-based)
+    assistant message carrying EXPLORATION_READY_MARKER, or (None, total) if
+    `version` doesn't exist. `messages` is the `messages` list
+    `resolve_transcript_messages` returns — vendor-agnostic role/text pairs."""
+    marker_texts = [
+        m.get('text') or '' for m in (messages or [])
+        if m.get('role') == 'assistant' and EXPLORATION_READY_MARKER in (m.get('text') or '')
+    ]
+    total = len(marker_texts)
+    if not isinstance(version, int) or version < 1 or version > total:
+        return None, total
+    raw = marker_texts[version - 1]
+    # Strip the terminal marker line itself (and any trailing blank line before
+    # it) — it is a rendering instruction for the chat, not part of the brief.
+    brief = re.sub(r'\n?[ \t]*' + re.escape(EXPLORATION_READY_MARKER) + r'[ \t]*\Z', '', raw).strip()
+    return (brief or None), total
+
+
+_PROJECT_ID_RE = re.compile(r'^[a-z][a-z0-9_-]{0,63}$')
+_RESERVED_PROJECT_IDS = {IDEAS_WORKSPACE_ID, '_incognito'}
+
+
+def _brainstorm_transfer_key(claude_session_id, version, dest_ref):
+    return f'{claude_session_id}:{version}:{dest_ref}'
+
+
+# One lock per transfer_key (same dict+guard shape as media.py `_lock_for` /
+# distiller.py `_get_skill_stats_lock`). MC-990 D3 (review finding): the
+# idempotency check (`prior = ...`) and the write that satisfies it (the
+# source save recording `_brainstorm_transfers`) are two separate operations
+# with nothing atomic between them -- a double-tap, a second tab, or a retry
+# during a slow save can both pass the check before either has written,
+# producing two backlog items (and, in create mode, a race on the same new
+# project record). Keyed by transfer_key (session+version+destination), not
+# a single route-wide lock, so unrelated transfers stay concurrent; the dict
+# grows unbounded over the process lifetime the same way the precedents
+# above do -- acceptable given how rarely a given transfer_key recurs.
+_transfer_locks: dict[str, threading.Lock] = {}
+_transfer_locks_guard = threading.Lock()
+
+
+def _transfer_lock_for(transfer_key: str) -> threading.Lock:
+    with _transfer_locks_guard:
+        if transfer_key not in _transfer_locks:
+            _transfer_locks[transfer_key] = threading.Lock()
+        return _transfer_locks[transfer_key]
+
+
+@bp.route('/api/project/<project_id>/brainstorm/transfer', methods=['POST'])
+def brainstorm_transfer(project_id):
+    """Transfer one Brainstorm Exploration brief into a project as a durable
+    doc + one open backlog item. See module docstring above and
+    docs/BRAINSTORM_HANDOFF_SPEC.md."""
+    from mc.blueprints.agent_routes import resolve_transcript_messages
+    from mc.blueprints.workflow_routes import _is_agent_caller
+    from mc.blueprints.project_routes import (
+        _refuse_project_path_in_install_dir, _ensure_backlog_numbers, _format_backlog_key,
+    )
+
+    if _is_agent_caller():
+        return jsonify({
+            'error': ('the Brainstorm handoff is human-only -- no agent session may '
+                      'transfer an exploration into a project on its own (CLAUDE.md '
+                      'authority guard, MC-990). Use the Clayrune UI review form.'),
+        }), 403
+
+    body = request.get_json(silent=True) or {}
+    p_source = load_project(project_id)
+    if p_source is None:
+        return jsonify({'error': 'source project not found'}), 404
+
+    claude_session_id = str(body.get('claude_session_id') or '').strip()
+    if not claude_session_id:
+        return jsonify({'error': 'claude_session_id required'}), 400
+    version = body.get('version')
+    if isinstance(version, str) and version.strip().isdigit():
+        version = int(version.strip())
+    if not isinstance(version, int) or version < 1:
+        return jsonify({'error': 'version must be a positive integer'}), 400
+    provider = str(body.get('provider') or 'claude').strip().lower()
+
+    transcript_payload, status = resolve_transcript_messages(p_source, claude_session_id, provider)
+    if status != 200:
+        return jsonify(transcript_payload), status
+    brief_text, total_versions = _find_exploration_brief(transcript_payload.get('messages'), version)
+    if brief_text is None:
+        return jsonify({
+            'error': (f'brief version {version} not found in this conversation '
+                      f'({total_versions} version(s) present) -- it may have been '
+                      'revised or the marker not yet emitted'),
+        }), 409
+
+    dest = body.get('destination') or {}
+    mode = str(dest.get('mode') or '').strip()
+    if mode == 'create':
+        raw_id = str(dest.get('id') or dest.get('name') or '').strip().lower()
+        new_id = re.sub(r'[^a-z0-9_-]+', '_', raw_id).strip('_')
+        if not new_id or not _PROJECT_ID_RE.match(new_id):
+            return jsonify({'error': 'a valid project id is required (letters, digits, _ or -)'}), 400
+        if new_id in _RESERVED_PROJECT_IDS:
+            return jsonify({'error': f'"{new_id}" is a reserved project id'}), 400
+        dest_ref = f'create:{new_id}'
+    elif mode == 'existing':
+        dest_id = str(dest.get('project_id') or '').strip()
+        if not dest_id:
+            return jsonify({'error': 'destination.project_id required'}), 400
+        dest_ref = f'existing:{dest_id}'
+    else:
+        return jsonify({'error': "destination.mode must be 'create' or 'existing'"}), 400
+
+    transfer_key = _brainstorm_transfer_key(claude_session_id, version, dest_ref)
+    lock = _transfer_lock_for(transfer_key)
+    with lock:
+        # Re-read: another request holding this SAME lock may have just
+        # finished (or rolled back) an identical transfer while we were
+        # waiting -- the p_source loaded above, before the lock, can be stale.
+        p_source = load_project(project_id) or p_source
+        prior = (p_source.get('_brainstorm_transfers') or {}).get(transfer_key)
+        if prior:
+            return jsonify({'ok': True, 'idempotent': True, **prior}), 200
+
+        created_project = False
+        doc_path = None
+        created_folder = None  # workspace folder THIS request auto-created (mode=='create', no caller-supplied folder)
+        dest_item_id = None    # backlog item inserted into an already-existing destination (mode=='existing')
+        if mode == 'create':
+            dest_id = None  # set once creation succeeds, below
+        try:
+            if mode == 'create':
+                filepath = DATA_DIR / f'{new_id}.json'
+                if filepath.exists():
+                    return jsonify({'error': f'project id "{new_id}" already exists'}), 409
+                name = str(dest.get('name') or '').strip() or new_id
+                domain = str(dest.get('domain') or 'general').strip() or 'general'
+                folder = str(dest.get('folder') or '').strip()
+                description = str(dest.get('description') or '').strip()
+                if not folder:
+                    base = Path(state.CONFIG.get('auto_workspace_base') or str(Path.home() / 'MissionControl'))
+                    base.mkdir(parents=True, exist_ok=True)
+                    candidate = base / new_id
+                    n = 1
+                    while candidate.exists():
+                        candidate = base / f'{new_id}_{n}'
+                        n += 1
+                    candidate.mkdir(parents=True, exist_ok=True)
+                    folder = str(candidate)
+                    created_folder = candidate
+                refusal = _refuse_project_path_in_install_dir(folder, None)
+                if refusal:
+                    return refusal
+                try:
+                    Path(folder).mkdir(parents=True, exist_ok=True)
+                except Exception as e:
+                    return jsonify({'error': f'could not create workspace folder: {e}'}), 500
+                ts = now_iso()
+                save_project(new_id, {
+                    'id': new_id, 'name': name, 'domain': domain, 'status': 'active',
+                    'project_path': folder, 'description': description,
+                    'last_updated': ts, 'backlog': [],
+                    'activity_log': [{'ts': ts, 'msg': f'Created from Brainstorm exploration ({claude_session_id} v{version})'}],
+                })
+                created_project = True
+                dest_id = new_id
+            else:
+                p_dest_check = load_project(dest_id)
+                if p_dest_check is None:
+                    return jsonify({'error': 'destination project not found'}), 404
+                if p_dest_check.get('_is_ideas_workspace') or p_dest_check.get('_is_incognito_project'):
+                    return jsonify({'error': 'cannot transfer into a reserved workspace'}), 400
+
+            p_dest = load_project(dest_id)
+            if p_dest is None:
+                raise RuntimeError(f'destination project "{dest_id}" vanished mid-transfer')
+
+            doc_rel = f'docs/brainstorm/{claude_session_id}-v{version}.md'
+            doc_path = Path(p_dest.get('project_path') or '') / doc_rel
+            doc_path.parent.mkdir(parents=True, exist_ok=True)
+            doc_content = (
+                f"# Exploration brief -- v{version}\n\n"
+                f"Source: project `{project_id}`, Brainstorm conversation `{claude_session_id}`.\n\n"
+                "---\n\n"
+                f"{brief_text}\n"
+            )
+            doc_path.write_text(doc_content, encoding='utf-8')
+
+            backlog_text = str(body.get('backlog_text') or '').strip()
+            if not backlog_text:
+                backlog_text = f'Run the next experiment from Brainstorm exploration v{version} (see {doc_rel})'
+            backlog = p_dest.setdefault('backlog', [])
+            _ensure_backlog_numbers(p_dest)
+            seq = int(p_dest.get('backlog_seq') or 0) + 1
+            p_dest['backlog_seq'] = seq
+            item = {
+                'id': str(uuid.uuid4())[:8],
+                'num': seq,
+                'key': _format_backlog_key(p_dest.get('backlog_key'), seq),
+                'text': backlog_text,
+                'priority': 'normal',
+                'status': 'open',
+                'created_at': now_iso(),
+                'done_at': None,
+                'source': 'brainstorm-handoff',
+                'attachments': [],
+                'links': [
+                    {'type': 'brainstorm-doc', 'path': doc_rel},
+                    {'type': 'brainstorm-source', 'project_id': project_id,
+                     'claude_session_id': claude_session_id, 'version': version},
+                ],
+            }
+            backlog.insert(0, item)
+            p_dest['last_updated'] = now_iso()
+            save_project(dest_id, p_dest)
+            if not created_project:
+                # Only track for rollback when the destination predates this
+                # request -- a failure after this point must not leave the item
+                # behind for a retry to duplicate (MC-990 D2). A newly-created
+                # destination doesn't need this: deleting its whole project file
+                # below removes the item along with it.
+                dest_item_id = item['id']
+
+            transfer_record = {'destination_project_id': dest_id, 'doc_path': doc_rel, 'backlog_item_id': item['id']}
+            p_source = load_project(project_id) or p_source
+            transfers = p_source.setdefault('_brainstorm_transfers', {})
+            transfers[transfer_key] = transfer_record
+            save_project(project_id, p_source)
+
+            return jsonify({'ok': True, 'idempotent': False, **transfer_record}), 201
+        except Exception as e:
+            _log(f'[brainstorm-transfer] failed, rolling back: {e}', flush=True)
+            try:
+                if doc_path is not None and doc_path.exists():
+                    doc_path.unlink()
+            except Exception as e2:
+                _log(f'[brainstorm-transfer] rollback doc cleanup failed: {e2}', flush=True)
+            try:
+                if dest_item_id and dest_id:
+                    p_dest_rb = load_project(dest_id)
+                    if p_dest_rb is not None:
+                        p_dest_rb['backlog'] = [b for b in (p_dest_rb.get('backlog') or [])
+                                                if b.get('id') != dest_item_id]
+                        save_project(dest_id, p_dest_rb)
+            except Exception as e2:
+                _log(f'[brainstorm-transfer] rollback backlog-item cleanup failed: {e2}', flush=True)
+            try:
+                if created_project and dest_id:
+                    (DATA_DIR / f'{dest_id}.json').unlink(missing_ok=True)
+            except Exception as e2:
+                _log(f'[brainstorm-transfer] rollback project cleanup failed: {e2}', flush=True)
+            try:
+                if created_folder is not None and created_folder.exists() and not any(created_folder.iterdir()):
+                    created_folder.rmdir()
+            except Exception as e2:
+                _log(f'[brainstorm-transfer] rollback folder cleanup failed: {e2}', flush=True)
+            return jsonify({'error': f'transfer failed: {e}'}), 500

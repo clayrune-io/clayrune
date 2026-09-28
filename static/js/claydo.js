@@ -201,7 +201,8 @@ async function restoreClaydoSession() {
   _claydoResetConversation(mode);
   const histDiv = document.getElementById('claydo-history');
   if (histDiv) {
-    for (const m of st.history) {
+    for (let i = 0; i < st.history.length; i++) {
+      const m = st.history[i];
       const el = document.createElement('div');
       el.className = 'claydo-msg ' + (m.role === 'user' ? 'user' : 'bot');
       if (m.role === 'user') el.textContent = m.text || '';
@@ -211,6 +212,13 @@ async function restoreClaydoSession() {
       // restore at all, so the hand-off card comes back with its message.
       if (m.role !== 'user' && m.ready) {
         _claydoRenderReadyCard(el, [{kind: m.ready}], m.text || '');
+      }
+      // MC-990: rebuild the Brainstorm offer chip the same way — its
+      // triggering message is whichever user turn came right before it.
+      if (m.role !== 'user' && m.brainstormOffer) {
+        const prior = st.history[i - 1];
+        const triggering = (prior && prior.role === 'user') ? (prior.text || '') : '';
+        _claydoRenderBrainstormChip(el, [{kind: 'brainstorm-offer'}], triggering);
       }
     }
     histDiv.scrollTop = histDiv.scrollHeight;
@@ -347,6 +355,7 @@ function _claydoResetConversation(mode) {
     ? `<div class="claydo-chips">
          <button class="claydo-chip" onclick="setClaydoMode('prompt')"><span class="claydo-chip-ico">&#x270D;&#xFE0F;</span> Help me write a prompt</button>
          <button class="claydo-chip" onclick="setClaydoMode('character')"><span class="claydo-chip-ico">&#x1F3AD;</span> Create an agent character</button>
+         <button class="claydo-chip" onclick="_claydoOpenBrainstormSeed('')"><span class="claydo-chip-ico">&#x1F4A1;</span> Brainstorm an idea</button>
        </div>`
     : '';
   histDiv.innerHTML = `<div class="claydo-msg bot">${ui.greeting}</div>${chips}`;
@@ -588,13 +597,18 @@ async function submitClaydo() {
           // "this reply had a draft to save" from the text alone.
           const _ready = (actions.find(
             (x) => x.kind === 'prompt-ready' || x.kind === 'character-ready') || {}).kind || '';
-          _claydoHistory.push({role: 'assistant', text: cleanText, ready: _ready});
+          // MC-990: same "stored text has markers stripped" rationale — carry
+          // only the boolean, keyed off the triggering user message (this
+          // turn's `question`), never re-derived from replayed marker text.
+          const _brainstormOffer = actions.some((x) => x.kind === 'brainstorm-offer');
+          _claydoHistory.push({role: 'assistant', text: cleanText, ready: _ready, brainstormOffer: _brainstormOffer});
           const histCap = _claydoMode === 'ask' ? 12 : 24;
           if (_claydoHistory.length > histCap) {
             _claydoHistory = _claydoHistory.slice(-histCap);
           }
           _claydoDispatchActions(actions);
           _claydoRenderReadyCard(botMsg, actions, cleanText);
+          _claydoRenderBrainstormChip(botMsg, actions, question);
           _claydoSaveSession();
         }
       }
@@ -652,12 +666,14 @@ function _claydoRenderError(botMsg, message, originalQuestion) {
 // Parse [clayrune:goto view="..."], [clayrune:open-modal project="..."],
 // [clayrune:highlight selector="..." duration=N] markers out of Claydo's
 // reply, plus the builder handoffs [clayrune:prompt-ready] and
-// [clayrune:character-ready name="..."]. Returns the cleaned text + an
-// array of action objects to dispatch. The ready markers deliberately
-// carry no payload — the artifact is the reply's last fenced block.
+// [clayrune:character-ready name="..."], plus the MC-990 Brainstorm offer
+// [clayrune:brainstorm-offer] (docs/BRAINSTORM_HANDOFF_SPEC.md §1). Returns
+// the cleaned text + an array of action objects to dispatch. The ready and
+// offer markers deliberately carry no payload — the ready markers' artifact
+// is the reply's last fenced block; the offer marker only shows a chip.
 function _claydoParseMarkers(raw) {
   const actions = [];
-  const re = /\[clayrune:(goto|open-modal|highlight|prompt-ready|character-ready)(\s+[^\]]+)?\]/g;
+  const re = /\[clayrune:(goto|open-modal|highlight|prompt-ready|character-ready|brainstorm-offer)(\s+[^\]]+)?\]/g;
   const cleanText = raw.replace(re, (_match, kind, attrs) => {
     const out = {kind};
     // Parse key="value" pairs (also accept key=value for unquoted nums).
@@ -784,6 +800,148 @@ function _claydoRenderReadyCard(botMsg, actions, cleanText) {
     mkBtn('Copy', '', (e) => _claydoCopy(artifact, e.target));
   }
   botMsg.appendChild(card);
+}
+
+// ── MC-990: Brainstorm handoff — offer chip + seed composer ────────────────
+// docs/BRAINSTORM_HANDOFF_SPEC.md §1. Same chip both ways in (the always-
+// visible greeting chip and the [clayrune:brainstorm-offer] context offer)
+// so there is exactly one entry point to keep working.
+
+function _claydoRenderBrainstormChip(botMsg, actions, triggeringMessage) {
+  if (!actions.some(a => a.kind === 'brainstorm-offer')) return;
+  const chip = document.createElement('button');
+  chip.className = 'claydo-chip claydo-brainstorm-offer-chip';
+  chip.innerHTML = '<span class="claydo-chip-ico">&#x1F4A1;</span> Brainstorm an idea';
+  chip.onclick = () => _claydoOpenBrainstormSeed(triggeringMessage || '');
+  botMsg.appendChild(chip);
+}
+
+// Editable "Start Brainstorm" seed composer. Carries ONLY the triggering
+// user message (never Claydo's history, its own answer, or hidden project
+// context — spec §1). Submitting dispatches a fresh global:brainstorm
+// session into the reserved Ideas workspace through the normal agent-
+// dispatch endpoint; a failure re-opens this same panel with the seed
+// intact and a specific error, never a silently retried or lost draft.
+function _claydoOpenBrainstormSeed(seedText) {
+  const content = document.querySelector(`[data-modal-id="__claydo"] .modal-content`)
+    || document.getElementById('claydo-history')?.parentElement;
+  if (!content) return;
+  if (getComputedStyle(content).position === 'static') content.style.position = 'relative';
+  content.querySelector('.claydo-brainstorm-panel')?.remove();
+
+  const provs = (_agentProviders || []).filter(x => x.installed);
+  const providerRow = provs.length > 1 ? `
+      <label for="claydo-brainstorm-provider">Provider</label>
+      <select id="claydo-brainstorm-provider">
+        ${provs.map(x => `<option value="${esc(x.name)}">${esc(x.display_name)}</option>`).join('')}
+      </select>` : '';
+
+  const panel = document.createElement('div');
+  panel.className = 'claydo-save-panel claydo-brainstorm-panel';
+  panel.innerHTML = `
+    <div class="claydo-save-inner">
+      <div class="claydo-save-title">Start Brainstorm</div>
+      <div class="claydo-save-scroll">
+      <label for="claydo-brainstorm-seed">Idea</label>
+      <textarea id="claydo-brainstorm-seed" class="claydo-save-voice" spellcheck="true" rows="6"
+        placeholder="Describe the idea you want to explore&hellip;">${esc(seedText)}</textarea>
+      ${providerRow}
+      </div>
+      <div class="claydo-save-err" id="claydo-brainstorm-err" style="display:none"></div>
+      <div class="claydo-save-actions">
+        <button class="claydo-ready-btn" id="claydo-brainstorm-cancel">Cancel</button>
+        <button class="claydo-ready-btn accent" id="claydo-brainstorm-go">Start Brainstorm</button>
+      </div>
+    </div>`;
+  content.appendChild(panel);
+
+  panel.querySelector('#claydo-brainstorm-cancel').onclick = () => panel.remove();
+  panel.addEventListener('mousedown', (e) => { if (e.target === panel) panel.remove(); });
+
+  const seedEl = panel.querySelector('#claydo-brainstorm-seed');
+  const errEl = panel.querySelector('#claydo-brainstorm-err');
+  const goBtn = panel.querySelector('#claydo-brainstorm-go');
+  const showErr = (msg) => { errEl.textContent = msg; errEl.style.display = 'block'; };
+
+  goBtn.onclick = async () => {
+    const text = seedEl.value.trim();
+    if (!text) { showErr('Describe the idea first.'); seedEl.focus(); return; }
+    errEl.style.display = 'none';
+    goBtn.disabled = true;
+    goBtn.textContent = 'Starting…';
+    const providerSel = panel.querySelector('#claydo-brainstorm-provider');
+    try {
+      await _claydoDispatchBrainstorm(text, providerSel ? providerSel.value : '');
+      panel.remove();
+    } catch (e) {
+      // Errors keep the seed intact — the panel stays open (spec §1).
+      showErr(e.message || 'Could not start Brainstorm.');
+      goBtn.disabled = false;
+      goBtn.textContent = 'Start Brainstorm';
+    }
+  };
+  setTimeout(() => seedEl.focus(), 30);
+}
+
+// Reserved id (mc/blueprints/guide_routes.py IDEAS_WORKSPACE_ID). Leading
+// underscore is deliberate -- every id-slugifier in this repo strips
+// leading/trailing underscores from a user-typed project name, so this can
+// never collide with a project the user names "Ideas" (MC-990 D1: a plain
+// 'ideas' id did collide, and silently sent Brainstorm sessions into the
+// user's real project instead).
+const IDEAS_WORKSPACE_ID = '_ideas';
+
+// Dispatch global:brainstorm into the reserved Ideas workspace through the
+// SAME /api/project/<id>/agent/dispatch route every other dispatch in the
+// app uses — no special-case backend path for Claydo. Throws on failure so
+// the composer above can show the error and keep the panel open.
+async function _claydoDispatchBrainstorm(seedText, provider) {
+  // Verify the reserved id is actually the Ideas workspace before sending a
+  // real idea there -- belt-and-suspenders alongside the id no longer being
+  // producible by any name a user types (MC-990 D1).
+  const projects = await fetch(API_BASE + '/api/projects').then((r) => r.json()).catch(() => null);
+  const list = Array.isArray(projects) ? projects : [];
+  const ideasRecord = list.find((p) => p && p.id === IDEAS_WORKSPACE_ID);
+  if (!ideasRecord || !ideasRecord._is_ideas_workspace) {
+    throw new Error('Ideas workspace not found or not marked as reserved -- refusing to start Brainstorm here.');
+  }
+
+  const body = { task: seedText, source: 'ui', character: 'global:brainstorm' };
+  if (provider) body.provider = provider;
+  const res = await fetch(API_BASE + '/api/project/' + IDEAS_WORKSPACE_ID + '/agent/dispatch', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) {
+    throw new Error(data.error || `Could not start Brainstorm (${res.status})`);
+  }
+  const sessionId = data.session_id;
+
+  // Populate the SAME caches dispatchAgent() populates on success
+  // (resume-preview.js) so the Ideas project modal we're about to open shows
+  // the running chat immediately instead of an empty "0 conversations"
+  // dispatch screen while waiting for the next /agent/status poll.
+  if (sessionId && typeof agentHistory !== 'undefined') {
+    const startedAt = new Date().toISOString();
+    agentOutputBuffers[sessionId] = [];
+    agentServerLines[sessionId] = 0;
+    agentStatusCache[sessionId] = { status: 'running', task: seedText, projectId: IDEAS_WORKSPACE_ID, startedAt,
+      claudeSessionId: '', providerSessionId: '', incognito: false, provider: provider || '', character: null };
+    agentHistory.unshift({ projectId: IDEAS_WORKSPACE_ID, sessionId, projectName: 'Ideas', task: seedText,
+      status: 'running', startedAt, resumedFrom: null, incognito: false, provider: provider || '', character: null });
+    activeAgentTab[IDEAS_WORKSPACE_ID] = sessionId;
+    delete agentConvNew[IDEAS_WORKSPACE_ID];
+    if (typeof upsertConversationCache === 'function') {
+      upsertConversationCache(IDEAS_WORKSPACE_ID, '', seedText, 'running',
+        { mcSessionId: sessionId, providerSessionId: '', provider: provider || '', live: true, character: null });
+    }
+  }
+
+  if (typeof closeModalById === 'function') closeModalById('__claydo');
+  if (typeof openProjectModal === 'function') openProjectModal(IDEAS_WORKSPACE_ID);
+  if (sessionId && typeof connectAgentStream === 'function') connectAgentStream(IDEAS_WORKSPACE_ID, sessionId);
 }
 
 // Roomy editable view of the artifact — the in-bubble <pre> is cramped.
@@ -1772,3 +1930,4 @@ window.openClaydo = openClaydo;
 window.openPersonaEditor = openPersonaEditor;
 window.restoreClaydoSession = restoreClaydoSession;
 window._claydoSaveSession = _claydoSaveSession;
+window._claydoOpenBrainstormSeed = _claydoOpenBrainstormSeed;

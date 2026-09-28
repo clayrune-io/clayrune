@@ -160,6 +160,8 @@ data/allowance_state.json
 data/onboarding_seeded.flag
 # One-shot repair marker for the incognito-skip bug (_heal_missing_onboarding_project).
 data/onboarding_heal_v1.flag
+# MC-990: Ideas workspace seed marker (guide_routes.seed_ideas_workspace_on_startup).
+data/ideas_workspace_seeded.flag
 
 # SQLite state DB (docs/SQLITE_MIGRATION_SPEC.md) + its WAL/SHM sidecars.
 # Runtime state, rebuilt by backfill from the JSON during migration; never commit.
