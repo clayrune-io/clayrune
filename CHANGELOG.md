@@ -6,6 +6,34 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-28] — Sweep leaked pane-Chromium processes a restart orphans (MC-997)
+
+- **A server restart could leak headless Chromium trees forever.** Dave's
+  2026-09-28 audit (Bram's `eb8c6f92` run) found 9 headless pane-Chromium
+  trees / ~35 processes running with no project's `/browser/status` knowing
+  about them. Cause: the restart path `os._exit()`s past the atexit browser
+  cleanup, and `_release_held_profile` only recovers a leaked profile's
+  Chromium when a launch names that SAME profile again — a throwaway profile
+  (a random session-id dir) is never relaunched by name, so it ran forever
+  with its profile dir locked.
+- New `sweep_leaked_pane_chromiums()` (`mc/blueprints/browser_routes.py`),
+  run once 5 minutes after boot and every 6 hours after, gated by the
+  existing `SWEEP_ENABLED` plus a new `browser_pane_leak_sweep_enabled`
+  config toggle (default on). A candidate is a headless Chromium browser
+  process (never a `--type=` child) with a `--remote-debugging-port` and a
+  `--user-data-dir` not in `browser_sessions`. Under a Clayrune profile root
+  it is closed via `Browser.close` (a named profile only this way, so its
+  cookies flush; a throwaway profile is hard-killed by its own PID tree only
+  if that doesn't make it exit). Anything outside the Clayrune roots is
+  report-only.
+- 12 new tests in `tests/test_browser_routes.py` (199 total, 187 pre-existing
+  + 12 new) cover candidate selection, the named-vs-throwaway kill policy,
+  both gates, and fail-closed enumeration failure — all against mocked
+  process enumeration and CDP calls.
+- Undone: the 9 already-leaked Chromiums from before this fix are still
+  running — the sweep only prevents new leaks and cleans up on the next
+  restart.
+
 ## [2026-09-26] — Preserve live popup siblings and restore the opener address (MC-976)
 
 - Removed automatic sibling-popup pruning: opening a second window could
