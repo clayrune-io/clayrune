@@ -6103,7 +6103,18 @@ def attend_session(project_id, session_id):
     arming rules, or `fence_unattended_enabled` — every other session's
     behavior is unaffected. This only overwrites what ONE session's own
     trigger_type says, live and on disk, so it survives a restart.
+
+    DISABLED 2026-09-28 (Fenn's review of the one-shot follow-up, P1):
+    `_is_agent_caller` only checks that an Origin header is present, so an
+    agent's `curl -H "Origin: http://localhost"` passed it and could
+    permanently disarm its own fence with one call. Refused outright until the
+    passcode-gated one-shot "Allow once" replacement lands.
     """
+    if True:
+        return jsonify({
+            'error': ('the permanent "I\'m here" unlock is disabled: its human check '
+                      'could be forged. A passcode-gated "Allow once" control replaces it.'),
+        }), 410
     if _is_agent_caller():
         return jsonify({
             'error': ('marking a chat attended is human-only: an agent session cannot '

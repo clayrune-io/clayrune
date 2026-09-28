@@ -1072,136 +1072,26 @@ def test_trigger_type_reports_fence_unattended_enabled_false_when_configured(cli
         mc_state.CONFIG['fence_unattended_enabled'] = before
 
 
-# ── MC-994: POST /api/project/<id>/agent/<sid>/attend ───────────────────────
-# Human-click attended-handoff control (backlog fb822042). Re-stamps ONE
-# session's trigger_type to 'manual', live and on disk, so
-# steward/fence.py's _should_arm_for_unattended_trigger stops arming for it —
-# without touching the fence's arming rules or any OTHER session.
+# ── MC-994: POST /api/project/<id>/agent/<sid>/attend — DISABLED ─────────────
+# Fenn's 2026-09-28 review: the route's only human check was "an Origin header
+# is present", which an agent's curl can forge, so one call permanently
+# disarmed its own fence. The route now refuses every caller (410) until the
+# passcode-gated one-shot replacement lands.
 
-def _attend_as_human(client, project_id, session_id):
+def test_attend_refuses_even_a_forged_origin_and_leaves_trigger_type(client):
+    from mc import state as mc_state
+    mc_state.agent_sessions['sid-x'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-x',
+                                        'trigger_type': 'dispatch'}
     client.environ_base['HTTP_ORIGIN'] = 'http://localhost:5199'
     try:
-        return client.post(f'/api/project/{project_id}/agent/{session_id}/attend')
+        resp = client.post('/api/project/proj-a/agent/sid-x/attend')
+        assert resp.status_code == 410
+        assert mc_state.agent_sessions['sid-x']['trigger_type'] == 'dispatch'
+        data = client.get('/api/session/trigger-type?claude_session_id=csid-x').get_json()
+        assert data['trigger_type'] == 'dispatch'
     finally:
         client.environ_base.pop('HTTP_ORIGIN', None)
-
-
-def test_attend_refuses_agent_caller(client):
-    """No Origin header = agent's curl, per workflow_routes._is_agent_caller.
-    Must be refused before touching either the live session or disk."""
-    from mc import state as mc_state
-    mc_state.agent_sessions['sid-a'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-a',
-                                        'trigger_type': 'dispatch'}
-    try:
-        resp = client.post('/api/project/proj-a/agent/sid-a/attend')
-        assert resp.status_code == 403
-        assert mc_state.agent_sessions['sid-a']['trigger_type'] == 'dispatch'
-    finally:
-        mc_state.agent_sessions.pop('sid-a', None)
-
-
-def test_attend_human_click_flips_live_session_and_lookup(client):
-    from mc import state as mc_state
-    mc_state.agent_sessions['sid-b'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-b',
-                                        'trigger_type': 'dispatch'}
-    try:
-        resp = _attend_as_human(client, 'proj-a', 'sid-b')
-        assert resp.status_code == 200
-        body = resp.get_json()
-        assert body['ok'] is True and body['trigger_type'] == 'manual'
-        assert mc_state.agent_sessions['sid-b']['trigger_type'] == 'manual'
-        lookup = client.get('/api/session/trigger-type?claude_session_id=csid-b')
-        assert lookup.get_json()['trigger_type'] == 'manual'
-    finally:
-        mc_state.agent_sessions.pop('sid-b', None)
-
-
-def test_attend_flips_persisted_agent_log_row(client):
-    """The persisted row (not just the live agent_sessions entry) must flip,
-    or a restart before the session completes reverts the handoff."""
-    from mc.blueprints import agent_routes as ar
-    from mc import state as mc_state
-    (ar.DATA_DIR / 'proj-a_agent_log.json').write_text(json.dumps([
-        {'session_id': 'sid-c', 'claude_session_id': 'csid-c', 'trigger_type': 'dispatch'},
-    ]), encoding='utf-8')
-    mc_state.agent_sessions['sid-c'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-c',
-                                        'trigger_type': 'dispatch'}
-    try:
-        resp = _attend_as_human(client, 'proj-a', 'sid-c')
-        assert resp.status_code == 200
-        assert resp.get_json()['persisted'] is True
-        rows = json.loads((ar.DATA_DIR / 'proj-a_agent_log.json').read_text(encoding='utf-8'))
-        assert rows[0]['trigger_type'] == 'manual'
-    finally:
-        mc_state.agent_sessions.pop('sid-c', None)
-
-
-def test_attend_disarms_fence_should_arm_check(client, monkeypatch):
-    """End-to-end proof, not just a route-shape check: point
-    steward/fence.py's own lookup at this Flask app (exactly what the real
-    subprocess hook does over HTTP) and confirm the fence's arming decision
-    flips from True to False after the human click — with no fence.py code
-    changed."""
-    import steward.fence as fence
-    from mc import state as mc_state
-    mc_state.agent_sessions['sid-d'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-d',
-                                        'trigger_type': 'dispatch'}
-
-    def _lookup_via_route(csid):
-        data = client.get(f'/api/session/trigger-type?claude_session_id={csid}').get_json()
-        if not data.get('found'):
-            return None
-        return {'trigger_type': data['trigger_type'],
-                'fence_unattended_enabled': data['fence_unattended_enabled']}
-    monkeypatch.setattr(fence, '_lookup_trigger_type', _lookup_via_route)
-    monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'csid-d')
-    try:
-        assert fence._should_arm_for_unattended_trigger() is True
-        resp = _attend_as_human(client, 'proj-a', 'sid-d')
-        assert resp.status_code == 200
-        assert fence._should_arm_for_unattended_trigger() is False
-    finally:
-        mc_state.agent_sessions.pop('sid-d', None)
-
-
-def test_attend_does_not_arm_or_disarm_other_sessions(client):
-    """Regression pin: flipping one dispatched session must leave a sibling
-    dispatch session — one nobody clicked "I'm here" on — fully armed."""
-    from mc import state as mc_state
-    mc_state.agent_sessions['sid-e1'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-e1',
-                                         'trigger_type': 'dispatch'}
-    mc_state.agent_sessions['sid-e2'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-e2',
-                                         'trigger_type': 'dispatch'}
-    try:
-        resp = _attend_as_human(client, 'proj-a', 'sid-e1')
-        assert resp.status_code == 200
-        assert mc_state.agent_sessions['sid-e1']['trigger_type'] == 'manual'
-        assert mc_state.agent_sessions['sid-e2']['trigger_type'] == 'dispatch'
-        lookup = client.get('/api/session/trigger-type?claude_session_id=csid-e2')
-        assert lookup.get_json()['trigger_type'] == 'dispatch'
-    finally:
-        mc_state.agent_sessions.pop('sid-e1', None)
-        mc_state.agent_sessions.pop('sid-e2', None)
-
-
-def test_attend_unknown_session_404s(client):
-    resp = _attend_as_human(client, 'proj-a', 'no-such-session')
-    assert resp.status_code == 404
-
-
-def test_attend_refuses_session_from_another_project(client):
-    """The session id is looked up on the shared agent_sessions dict — a
-    project_id mismatch must 404, not silently flip a different project's
-    session."""
-    from mc import state as mc_state
-    mc_state.agent_sessions['sid-f'] = {'project_id': 'proj-other', 'claude_session_id': 'csid-f',
-                                        'trigger_type': 'dispatch'}
-    try:
-        resp = _attend_as_human(client, 'proj-a', 'sid-f')
-        assert resp.status_code == 404
-        assert mc_state.agent_sessions['sid-f']['trigger_type'] == 'dispatch'
-    finally:
-        mc_state.agent_sessions.pop('sid-f', None)
+        mc_state.agent_sessions.pop('sid-x', None)
 
 
 # ── POST /api/project/<id>/agent/dispatch stamps trigger_type='dispatch' ────
