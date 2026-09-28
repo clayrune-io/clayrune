@@ -162,7 +162,15 @@ def session_fact_from_entry(entry: dict, *, project_id: str,
         inp = int(nested.get('input_tokens') or 0)
         out = int(nested.get('output_tokens') or 0)
         if inp or out:
-            fresh, output, processed_total = inp, out, inp
+            # `cached_input_tokens` is a SUBSET of `input_tokens` (spec's
+            # metrics table) -- split it into cache_read so `input_fresh`
+            # reflects only the non-cached portion. `processed_total` stays
+            # `inp` (the already-inclusive total); adding cached again would
+            # double-count it a second way (finding #9, review journal).
+            cached = int(nested.get('cached_input_tokens') or 0)
+            cache_read = min(cached, inp)
+            fresh = inp - cache_read
+            output, processed_total = out, inp
             reasoning = nested.get('reasoning_output_tokens')
             token_source, coverage = 'nested_usage', 'complete'
 

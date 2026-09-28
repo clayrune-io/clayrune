@@ -148,6 +148,23 @@ def test_codex_nested_usage_input_total_not_double_counted_with_cached():
     assert fact['token_coverage'] == 'complete'
 
 
+def test_codex_cached_input_split_into_cache_read_not_fresh():
+    """Review finding #9 (docs/_journal/4668eafc-mc998-fenn-review.md): with
+    input=1000, cached=900, `input_fresh` must be the non-cached 100, not the
+    full 1000 -- the segmented-bar's estimate range uses input_fresh as its
+    low-bound proxy, and treating all input as fresh overstates it."""
+    entry = {
+        'provider': 'codex', 'status': 'completed', 'ts': 't',
+        'usage': {'input_tokens': 1000, 'output_tokens': 50, 'cached_input_tokens': 900},
+        'observed_model': 'gpt-5-codex',
+    }
+    fact = session_fact_from_entry(entry, project_id='p')
+
+    assert fact['input_fresh'] == 100
+    assert fact['input_cache_read'] == 900
+    assert fact['input_processed_total'] == 1000  # unchanged, still not double-counted
+
+
 def test_no_evidence_at_all_is_unavailable_not_zero():
     entry = {'provider': 'codex', 'status': 'completed', 'ts': 't', 'usage': {}}
     fact = session_fact_from_entry(entry, project_id='p')

@@ -108,6 +108,14 @@ const TELEMETRY_UNAVAILABLE_FIXTURE = {
   totals: { session_count: 2, tokens: { input_fresh: null, input_cache_write: null, input_cache_read: null, input_processed_total: null, output_tokens: null }, loc: { added: null, deleted: null }, loc_unavailable_count: 0, token_coverage_unavailable_count: 2 },
 };
 
+// Review finding #9: estimate (12) exceeds the observed vendor change (10) --
+// unattributed_pp is negative (-2) and must render as a separate excess
+// error, never as a literal negative "Unattributed" amount.
+const ESTIMATE_EXCEEDS_OBSERVED_FIXTURE = {
+  ...POPULATED_FIXTURE,
+  segmented_bar: { status: 'estimate_exceeds_observed', bar_change_pp: 10, estimated_pp: 12, unattributed_pp: -2, range_pp: [9, 13] },
+};
+
 const ok = (m) => console.log('  ✓ ' + m);
 let bad = 0;
 const fail = (m) => { console.error('  ✗ ' + m); bad++; };
@@ -169,6 +177,7 @@ try {
     /Breakdown/.test(text) ? ok('Breakdown section head present') : fail('Breakdown section head missing');
     /12\.0k/.test(text) ? ok('input tokens total (12.0k) rendered') : fail(`input total missing from: ${text.slice(0, 800)}`);
     /50\.0k/.test(text) ? ok('tokens-per-1% median (50.0k) rendered') : fail('tokens-per-point median missing');
+    /range 5\.00%.{0,3}7\.00%/.test(text) ? ok('segmented bar renders its estimate range (5.00%-7.00%)') : fail(`range caveat missing from: ${text.slice(0, 800)}`);
 
     const tableVisible = await page.$eval('.ub-table-wrap', (el) => getComputedStyle(el).display !== 'none');
     tableVisible ? ok('desktop: .ub-table-wrap visible') : fail('.ub-table-wrap should be visible at 1440px');
@@ -238,6 +247,29 @@ try {
       c.pattern.test(text) ? ok(`empty state "${c.name}" renders distinguishably`) : fail(`empty state "${c.name}" not found in: ${text.slice(0, 500)}`);
       await ctx.close();
     }
+  }
+
+  // ── 5. Finding #9: unattributed bucket stays visible pre-calibration,
+  //      and an over-estimate renders as an excess error, never a negative
+  //      "Unattributed" amount ─────────────────────────────────────────────
+  {
+    const { ctx, page } = await openDesktopPopover(browser, INSUFFICIENT_CALIBRATION_FIXTURE, WINDOWS_FIXTURE);
+    const text = await page.$eval('.sys-status-popover', (el) => el.textContent);
+    /Unattributed[\s\S]{0,40}10\.00%/.test(text)
+      ? ok('pre-calibration: unattributed bucket (10.00%) stays visible, not hidden')
+      : fail(`pre-calibration unattributed value missing from: ${text.slice(0, 800)}`);
+    await ctx.close();
+  }
+  {
+    const { ctx, page } = await openDesktopPopover(browser, ESTIMATE_EXCEEDS_OBSERVED_FIXTURE, WINDOWS_FIXTURE);
+    const text = await page.$eval('.sys-status-popover', (el) => el.textContent);
+    /exceeds[\s\S]{0,60}2\.00%/i.test(text)
+      ? ok('estimate-exceeds-observed: excess (2.00%) rendered as a separate error')
+      : fail(`excess-error text missing from: ${text.slice(0, 800)}`);
+    /Unattributed.{0,10}-2\.00%/.test(text)
+      ? fail('estimate-exceeds-observed: rendered a literal negative "Unattributed" amount')
+      : ok('estimate-exceeds-observed: no literal negative Unattributed amount rendered');
+    await ctx.close();
   }
 
   exitCode = bad === 0 ? 0 : 1;

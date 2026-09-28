@@ -374,22 +374,42 @@ function _renderUsageBreakdownSection() {
 
   const tpp = b.tokens_per_point || {};
   const tppHTML = tpp.status === 'ok'
-    ? `<div class="ssp-row"><span class="ssp-k">Tokens per 1%</span><span class="ssp-v">${_ubFmtTok(tpp.median)} (p10 ${_ubFmtTok(tpp.p10)} · p90 ${_ubFmtTok(tpp.p90)}, n=${tpp.sample_count})</span></div>`
+    ? `<div class="ssp-row"><span class="ssp-k">Tokens per 1%</span><span class="ssp-v">${_ubFmtTok(tpp.median)} (p10 ${_ubFmtTok(tpp.p10)} · p90 ${_ubFmtTok(tpp.p90)}, n=${tpp.sample_count})</span></div>${tpp.note ? `<div class="ssp-hint-line">${esc(tpp.note)}</div>` : ''}`
     : `<div class="ssp-row"><span class="ssp-k">Tokens per 1%</span><span class="ssp-v">${esc(_UB_BAR_STATUS_LABEL[tpp.status] || 'Insufficient calibration')}</span></div>`;
 
+  // MC-998 review finding #9: the range/caveat was dropped, the
+  // pre-calibration bucket disappeared instead of staying visible (spec:
+  // "unattributed bucket always visible"), and a negative `unattributed_pp`
+  // (estimate > observed — never clamped server-side, see
+  // `compute_segmented_bar`) rendered as if it were a real negative amount
+  // of external usage instead of a separate over-estimate error.
   const seg = b.segmented_bar || {};
+  const rangeSuffix = Array.isArray(seg.range_pp) && seg.range_pp.length === 2
+    ? ` (range ${_ubFmtPP(seg.range_pp[0])}–${_ubFmtPP(seg.range_pp[1])})` : '';
   let segbarHTML;
-  if (seg.status === 'ok' || seg.status === 'estimate_exceeds_observed') {
+  if (seg.status === 'ok') {
     const estPct = Math.max(0, Math.min(100, (seg.estimated_pp / (seg.bar_change_pp || 1)) * 100));
     segbarHTML = `
       <div class="ub-segbar"><div class="ub-segbar-estimated" style="width:${estPct}%"></div></div>
-      <div class="ssp-row"><span class="ssp-k">Estimated Clayrune</span><span class="ssp-v">${_ubFmtPP(seg.estimated_pp)}</span></div>
+      <div class="ssp-row"><span class="ssp-k">Estimated Clayrune</span><span class="ssp-v">${_ubFmtPP(seg.estimated_pp)}${rangeSuffix}</span></div>
+      <div class="ssp-row"><span class="ssp-k">Unattributed / uncertain</span><span class="ssp-v">${_ubFmtPP(seg.unattributed_pp)}</span></div>`;
+  } else if (seg.status === 'estimate_exceeds_observed') {
+    const estPct = Math.max(0, Math.min(100, (seg.estimated_pp / (seg.bar_change_pp || 1)) * 100));
+    segbarHTML = `
+      <div class="ub-segbar"><div class="ub-segbar-estimated" style="width:${estPct}%"></div></div>
+      <div class="ssp-row"><span class="ssp-k">Estimated Clayrune</span><span class="ssp-v">${_ubFmtPP(seg.estimated_pp)}${rangeSuffix}</span></div>
+      <div class="ssp-hint-line">Estimate exceeds the observed vendor change by ${_ubFmtPP(-seg.unattributed_pp)} — shown, not clamped; not a negative unattributed amount.</div>`;
+  } else if (seg.unattributed_pp != null) {
+    // Pre-calibration: the whole observed change is known but not yet split
+    // into estimated/unattributed — the bucket stays visible, just uncalibrated.
+    segbarHTML = `
+      <div class="ub-segbar ub-segbar-unknown"></div>
       <div class="ssp-row"><span class="ssp-k">Unattributed / uncertain</span><span class="ssp-v">${_ubFmtPP(seg.unattributed_pp)}</span></div>
-      ${seg.status === 'estimate_exceeds_observed' ? '<div class="ssp-hint-line">Estimate exceeds the observed vendor change — shown, not clamped.</div>' : ''}`;
+      <div class="ssp-hint-line">${esc(_UB_BAR_STATUS_LABEL[seg.status] || seg.status || 'Unavailable')} — not yet split into an estimate.</div>`;
   } else {
     segbarHTML = `
       <div class="ub-segbar ub-segbar-unknown"></div>
-      <div class="ssp-hint-line">${esc(_UB_BAR_STATUS_LABEL[seg.status] || seg.status || 'Unavailable')} — whole bar shown as unattributed.</div>`;
+      <div class="ssp-hint-line">${esc(_UB_BAR_STATUS_LABEL[seg.status] || seg.status || 'Unavailable')} — no observed change to attribute.</div>`;
   }
 
   const rows = (b.rankings && b.rankings.rows) || [];
