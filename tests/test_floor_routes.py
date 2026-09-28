@@ -886,3 +886,44 @@ def test_a_session_added_mid_walk_does_not_500_the_board(floor):
 
     sessions['1'] = _Spawning(_session('a', '1'))
     _get(c)
+
+
+# ── performance: one project-record load per request ───────────────────────
+
+def test_load_projects_is_called_once_per_floor_request(monkeypatch):
+    """`floor()` used to call `load_projects()` once for the room walk, once
+    more PER LIVE FIGURE inside `_figure_subagents` (subagent lookup needs a
+    project's `project_path`), and once more for the bench's per-project
+    roster loop — 2+N calls for N figures. Measured live: 14 calls for 12
+    figures, ~44% of /api/floor's 0.65-0.9s (Dave, py-spy, 2026-09-28), since
+    `load_projects()` parses every `data/projects/*.json` record. Must load
+    the project list exactly once and thread it through."""
+    from mc.blueprints import floor_routes as fr
+    from mc.blueprints import agent_routes as ar
+    from flask import Flask
+
+    # Subagent lookup is exercised (not stubbed away) so this test still
+    # covers the path that used to call load_projects() per figure; only its
+    # own transcript scan is stubbed, since that needs a real ~/.claude tree.
+    monkeypatch.setattr(ar, '_active_subagents_for_session', lambda s, pp: [])
+
+    calls = []
+    projects = [{'id': 'a', 'name': 'Alpha', 'project_path': '/tmp/a'},
+                {'id': 'b', 'name': 'Beta', 'project_path': '/tmp/b'}]
+
+    def _load():
+        calls.append(1)
+        return projects
+
+    sessions = {str(i): _session('a' if i % 2 else 'b', str(i))
+                for i in range(6)}
+    fr.wire(agent_sessions_ref=sessions, load_projects_fn=_load,
+            list_characters_fn=lambda **kw: [])
+    app = Flask(__name__)
+    app.register_blueprint(fr.bp)
+    client = app.test_client()
+
+    r = client.get('/api/floor')
+    assert r.status_code == 200
+    assert r.get_json()['counts']['figures'] == 6, 'fixture setup is wrong'
+    assert len(calls) == 1, f'load_projects() called {len(calls)}x, want 1'

@@ -320,7 +320,7 @@ def _figure_model(s, proj_default):
     return '', ''
 
 
-def _figure(s, proj_default='', labels=None):
+def _figure(s, proj_default='', labels=None, projects=None):
     _fig_model, _fig_model_from = _figure_model(s, proj_default)
     st, reason = _figure_state(s)
     ch = _character_of(s)
@@ -357,7 +357,7 @@ def _figure(s, proj_default='', labels=None):
         # Ron asked "is anyone working?" six times while three of them ran.
         # Same source and liveness rule as /agent/status (MC-937 Phase 4); the
         # figure carries the count, the card can expand it.
-        'subagents': _figure_subagents(s),
+        'subagents': _figure_subagents(s, projects),
         # VENDOR_AGNOSTIC_PROGRAM.md §4 item 4: "Out of allowance, resets
         # <time>" reads from the SAME state a dispatch refusal reads from —
         # never a second, drifting notion of what "exhausted" means. Empty
@@ -366,7 +366,7 @@ def _figure(s, proj_default='', labels=None):
     }
 
 
-def _figure_subagents(s):
+def _figure_subagents(s, projects=None):
     """Running subagents for this session, or [] — never raises.
 
     Reuses agent_routes' single source of truth so the Floor cannot drift into
@@ -379,18 +379,23 @@ def _figure_subagents(s):
     (hm_d9c76579 f_cdb76b7a / f_31dbc93d). Two copies of one liveness
     predicate in two files is what produced that regression — don't
     re-introduce a copy here; let the imported function own it.
+
+    `projects` is the caller's already-loaded list (one `load_projects()` per
+    /api/floor request, not one per figure — see `floor()`); falls back to a
+    fresh load only when called without it.
     """
     try:
         from mc.blueprints.agent_routes import _active_subagents_for_session
         pid = s.get('project_id') or ''
-        proj = next((p for p in (load_projects() or []) if p.get('id') == pid), {})
+        plist = projects if projects is not None else (load_projects() or [])
+        proj = next((p for p in plist if p.get('id') == pid), {})
         return _active_subagents_for_session(s, proj.get('project_path') or '') or []
     except Exception as e:
         _log(f"[floor] subagent lookup failed for {s.get('session_id')}: {e}")
         return []
 
 
-def _live_sessions(defaults=None, labels=None):
+def _live_sessions(defaults=None, labels=None, projects=None):
     """Sessions worth drawing, grouped by project.
 
     Incognito is excluded because that is its whole promise: it does not show
@@ -424,7 +429,7 @@ def _live_sessions(defaults=None, labels=None):
         if not pid:
             continue
         rooms.setdefault(pid, []).append(
-            _figure(s, (defaults or {}).get(pid, ''), labels))
+            _figure(s, (defaults or {}).get(pid, ''), labels, projects))
     order = {'asking': 0, 'working': 1, 'idle': 2}
     for figs in rooms.values():
         figs.sort(key=lambda f: (order.get(f['state'], 3),
@@ -467,7 +472,7 @@ def floor():
     # resolution order (`agent_status`: project agent_model, then CONFIG).
     _global = state.CONFIG.get('agent_model') or ''
     defaults = {p.get('id'): (p.get('agent_model') or _global) for p in projects}
-    rooms = _live_sessions(defaults, read_labels())
+    rooms = _live_sessions(defaults, read_labels(), projects)
     live, quiet = [], []
     for p in projects:
         pid = p.get('id')
@@ -550,7 +555,7 @@ def floor():
         # no pencil, and nothing saying where it had gone.
         for c in (list_characters() or []):
             bench.append(_bench_card(c))
-        for p in (load_projects() or []):
+        for p in projects:
             pp = p.get('project_path')
             if not pp:
                 continue
