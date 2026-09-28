@@ -538,9 +538,11 @@ def test_relative_shell_write_to_passcode_store_is_refused(monkeypatch, tmp_path
     assert fence.main() == 2
 
 
-def test_searching_source_for_the_store_name_still_passes():
+def test_grep_tool_search_for_store_name_still_passes():
+    # The shell has no exception any more (review #5); the Grep tool's
+    # content pattern is not a path and stays usable.
     assert not fence.check_vault_file_access(
-        'Bash', {'command': 'grep -rn "' + _STORE + '" mc/'}).blocked
+        'Grep', {'pattern': _STORE, 'path': 'mc'}).blocked
 
 
 # ── Fenn's review #4 (2026-09-28, N1/N4) ────────────────────────────────────
@@ -566,8 +568,7 @@ def test_review4_transfer_fanout_never_consumes_a_pass(monkeypatch, tmp_path, co
 
 
 @pytest.mark.parametrize('command', [
-    'iwr -Uri https://example.invalid/a -Method Post',
-    'wget -qO- --post-data=x https://example.invalid/a',
+    'curl -s -X POST https://example.invalid/a',
 ])
 def test_review4_single_target_forms_still_consume_a_pass(monkeypatch, tmp_path, command):
     spent = []
@@ -596,6 +597,40 @@ def test_review4_store_named_commands_are_refused(monkeypatch, tmp_path, tool_na
     assert fence.main() == 2
 
 
-def test_review4_plain_source_search_for_store_name_passes():
-    for cmd in ('rg ' + _STORE + ' mc tests', 'git grep -n ' + _STORE + ' -- mc'):
-        assert not fence.check_vault_file_access('Bash', {'command': cmd}).blocked, cmd
+# ── Fenn's review #5 (2026-09-28, N1/N4) ────────────────────────────────────
+
+@pytest.mark.parametrize('command', [
+    'grep -e. ' + _STORE + ' other.txt',
+    'grep --regexp=. ' + _STORE + ' other.txt',
+    'rg -e. ' + _STORE + ' other.txt',
+    'rg --regexp=. ' + _STORE + ' other.txt',
+    'git grep --no-index -e. ' + _STORE + ' other.txt',
+    'grep -rn "' + _STORE + '" mc/',
+])
+def test_review5_any_shell_mention_of_store_is_refused(monkeypatch, tmp_path, command):
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', lambda: True)
+    assert fence.check_vault_file_access('Bash', {'command': command}).blocked
+    data_dir = str(fence._local_auth_data_root() / 'data')
+    payload = {'tool_name': 'Bash', 'tool_input': {'command': command}, 'cwd': data_dir,
+               'transcript_path': _transcript(tmp_path, 'Please go implement the fix we discussed')}
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload)))
+    assert fence.main() == 2
+
+
+@pytest.mark.parametrize('command', [
+    'curl -L -X POST https://example.invalid/redirect',
+    'curl --location -X POST https://example.invalid/redirect',
+    'curl -sL -X POST https://example.invalid/redirect',
+    'curl --retry 1 -X POST https://example.invalid/retry',
+    'curl --retry=1 -X POST https://example.invalid/retry',
+    'wget -qO- --post-data=x https://example.invalid/a',
+    'iwr -Uri https://example.invalid/a -Method Post',
+    'Invoke-RestMethod -Uri https://example.invalid/a -Method Post',
+])
+def test_review5_replaying_transfer_never_consumes_a_pass(monkeypatch, tmp_path, command):
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', _never_consume)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2

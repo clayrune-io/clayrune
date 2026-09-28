@@ -1051,51 +1051,14 @@ def _bash_touches_vault_file(cmd: str) -> bool:
     return False
 
 
-# Any shell mention of the passcode store is refused, with ONE narrow
-# exception (Fenn's reviews #3 and #4, N1). Two rounds of listing dangerous
-# verbs each left a spelling out: `printf '{}' > local_auth.json`, then
-# `curl -o local_auth.json <url>` and `Invoke-WebRequest ... -OutFile`, each
-# of which wiped the verifier and cookie secret with no pass spent. So the
-# rule is positive: the only allowed shape is searching source for the
-# filename, `grep|rg|git grep [opts] <exactly the filename> <paths...>`, where
-# the filename appears once, as the pattern, with no pattern-file option.
-_STORE_SEARCH_PATTERN_RE = re.compile(r'[\w./\\-]*' + re.escape(_LOCAL_AUTH_FILENAME), re.I)
-
-
-def _is_store_name_source_search(seg: str) -> bool:
-    try:
-        argv = shlex.split(seg, posix=True)
-    except ValueError:
-        return False
-    if not argv:
-        return False
-    head = _pass_head_name(argv[0])
-    rest = argv[1:]
-    if head == 'git' and rest[:1] == ['grep']:
-        rest = rest[1:]
-    elif head not in ('grep', 'rg'):
-        return False
-    positionals = []
-    for tok in rest:
-        if tok.startswith('--'):
-            if tok.startswith('--file') or _LOCAL_AUTH_NAME_RE.search(tok):
-                return False
-        elif tok.startswith('-') and len(tok) > 1:
-            if 'f' in tok[1:] or _LOCAL_AUTH_NAME_RE.search(tok):
-                return False
-        else:
-            positionals.append(tok)
-    named = [t for t in positionals if _LOCAL_AUTH_NAME_RE.search(t)]
-    return (len(positionals) >= 2 and len(named) == 1
-            and named[0] is positionals[0]
-            and bool(_STORE_SEARCH_PATTERN_RE.fullmatch(positionals[0])))
-
-
+# Any shell mention of the passcode store is refused, no exceptions (Fenn's
+# reviews #3-#5, N1). Every round of listing dangerous verbs left a spelling
+# out (`printf > store`, `curl -o store`, `-OutFile store`), and the one
+# "source search" exception that replaced them was itself read-bypassed by
+# `grep -e. local_auth.json other.txt`. To search source for the filename use
+# the Grep tool: its content `pattern` is not a path and is never checked.
 def _bash_touches_local_auth_file(cmd: str) -> bool:
-    for seg in _SHELL_SPLIT_RE.split(cmd):
-        if _LOCAL_AUTH_NAME_RE.search(seg) and not _is_store_name_source_search(seg):
-            return True
-    return False
+    return bool(_LOCAL_AUTH_NAME_RE.search(cmd or ''))
 
 
 def check_vault_file_access(tool_name: str, tool_input: dict,
@@ -1442,68 +1405,49 @@ def _is_plain_single_invocation(cmd: str) -> bool:
     heads = {_pass_head_name(argv[0]), _pass_head_name(text.split()[0])}
     if heads & _PASS_WRAPPER_HEADS:
         return False
-    transfer = heads & set(_PASS_TRANSFER_SPECS)
-    if transfer:
-        return _is_single_transfer(transfer.pop(), argv[1:])
+    if heads & _PASS_REPLAYING_TRANSFER_HEADS:
+        return False
+    if 'curl' in heads:
+        return _is_single_transfer('curl', argv[1:])
     return True
 
 
 # Transfer tools send one request PER target, so one invocation is not one
-# operation for them (Fenn's reviews #3/#4, N4). The pass is not bound to a
-# command, so capping each call at one target is the remaining limit. Two
-# rounds of refusing bad spellings each missed one (`--url` with a glob value,
-# attached `-Kfile`), so this is an allowlist: every option must be known,
-# short clusters are walked letter by letter, every value is inspected, config
-# and input sources are refused, and no token may carry glob brackets.
-# Anything unknown refuses; over-refusal is the safe direction.
-_PASS_TRANSFER_SPECS = {
-    'curl': {
-        'short_arg': set('dHXouFAebcTwmxErCyYzQUtDP'),
-        'short_flag': set('sSfLkivIgGjlnNOR0123469#J'),
-        'long_arg': {'--data', '--data-raw', '--data-binary', '--data-urlencode',
-                     '--data-ascii', '--json', '--header', '--request', '--output',
-                     '--user', '--form', '--form-string', '--user-agent', '--referer',
-                     '--cookie', '--cookie-jar', '--upload-file', '--write-out',
-                     '--max-time', '--connect-timeout', '--retry', '--retry-delay',
-                     '--cacert', '--cert', '--key', '--oauth2-bearer', '--proxy',
-                     '--resolve', '--url', '--range', '--dump-header',
-                     '--limit-rate', '--max-filesize'},
-        'long_flag': {'--silent', '--show-error', '--fail', '--fail-with-body',
-                      '--location', '--compressed', '--insecure', '--include',
-                      '--verbose', '--http1.1', '--http2', '--globoff', '--get',
-                      '--head', '--no-progress-meter', '--remote-name',
-                      '--remote-header-name', '--no-buffer', '--ipv4', '--ipv6'},
-        'target_opts': {'--url'},
-    },
-    'wget': {
-        'short_arg': set('OoUtTP'),
-        'short_flag': set('qvScN'),
-        'long_arg': {'--output-document', '--output-file', '--header', '--post-data',
-                     '--post-file', '--method', '--body-data', '--body-file',
-                     '--user-agent', '--user', '--password', '--tries', '--timeout',
-                     '--directory-prefix'},
-        'long_flag': {'--quiet', '--verbose', '--no-verbose', '--server-response',
-                      '--no-check-certificate', '--content-on-error', '--continue'},
-        'target_opts': set(),
-    },
+# operation for them (Fenn's reviews #3-#5, N4). The pass is not bound to a
+# command, so capping each call at one request is the remaining limit.
+# Rounds #3 and #4 each found a spelling past a deny-list, so curl is judged
+# by an allowlist: every option known, short clusters walked letter by
+# letter, every value inspected, config/input sources refused, no glob
+# brackets. Review #5 showed a single URL still is not a single request when
+# the tool REPLAYS it: `-L` resends a POST on a 307, `--retry` on a 503. Those
+# are left off the list. wget and Invoke-WebRequest/-RestMethod follow
+# redirects and retry BY DEFAULT, so they are never passable at all.
+_PASS_REPLAYING_TRANSFER_HEADS = {
+    'wget', 'invoke-webrequest', 'iwr', 'invoke-restmethod', 'irm',
 }
-_PS_WEB_SPEC = {
-    'arg': {'-uri', '-method', '-body', '-headers', '-contenttype', '-outfile',
-            '-infile', '-timeoutsec', '-credential', '-useragent',
-            '-maximumredirection'},
-    'flag': {'-usebasicparsing', '-usedefaultcredentials', '-skipcertificatecheck',
-             '-passthru', '-disablekeepalive'},
+_PASS_CURL_SPEC = {
+    'short_arg': set('dHXouFAebcTwmxErCyYzQUtDP'),
+    'short_flag': set('sSfkivIgGjlnNOR0123469#J'),
+    'long_arg': {'--data', '--data-raw', '--data-binary', '--data-urlencode',
+                 '--data-ascii', '--json', '--header', '--request', '--output',
+                 '--user', '--form', '--form-string', '--user-agent', '--referer',
+                 '--cookie', '--cookie-jar', '--upload-file', '--write-out',
+                 '--max-time', '--connect-timeout', '--cacert', '--cert', '--key',
+                 '--oauth2-bearer', '--proxy', '--resolve', '--url', '--range',
+                 '--dump-header', '--limit-rate', '--max-filesize'},
+    'long_flag': {'--silent', '--show-error', '--fail', '--fail-with-body',
+                  '--compressed', '--insecure', '--include', '--verbose',
+                  '--http1.1', '--http2', '--globoff', '--get', '--head',
+                  '--no-progress-meter', '--remote-name', '--remote-header-name',
+                  '--no-buffer', '--ipv4', '--ipv6'},
+    'target_opts': {'--url'},
 }
-for _ps in ('invoke-webrequest', 'iwr', 'invoke-restmethod', 'irm'):
-    _PASS_TRANSFER_SPECS[_ps] = None
 
 
 def _is_single_transfer(head: str, args: list) -> bool:
     if any(ch in tok for tok in args for ch in '[]{}'):
         return False
-    if _PASS_TRANSFER_SPECS[head] is None:
-        return _is_single_ps_transfer(args)
-    spec = _PASS_TRANSFER_SPECS[head]
+    spec = _PASS_CURL_SPEC
     targets = 0
     i = 0
     while i < len(args):
@@ -1534,29 +1478,6 @@ def _is_single_transfer(head: str, args: list) -> bool:
                         return False
                     i += 1
                 break
-            continue
-        targets += 1
-    return targets == 1
-
-
-def _is_single_ps_transfer(args: list) -> bool:
-    targets = 0
-    i = 0
-    while i < len(args):
-        tok = args[i]
-        i += 1
-        if tok.startswith('-') and len(tok) > 1:
-            name, colon, _ = tok.lower().partition(':')
-            if name in _PS_WEB_SPEC['flag'] and not colon:
-                continue
-            if name not in _PS_WEB_SPEC['arg']:
-                return False
-            if not colon:
-                if i >= len(args):
-                    return False
-                i += 1
-            if name == '-uri':
-                targets += 1
             continue
         targets += 1
     return targets == 1
