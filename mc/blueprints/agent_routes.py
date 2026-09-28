@@ -128,6 +128,7 @@ from mc.blueprints.push_mobile import _handle_push_signal      # re-homed 1.2 sh
 from mc.blueprints.push_mobile import _notify_push  # MC-961 loud engine-fallback swap
 from mc.blueprints.system_routes import _capture_system_init   # re-homed 1.6 shim
 from mc.blueprints.terminal_routes import launch_pty_session, launch_pipe_session    # MC-928
+from mc.blueprints.workflow_routes import _is_agent_caller  # MC-994 agent-caller guard reuse
 from mc import pty_backend
 
 bp = Blueprint('agent_routes', __name__)
@@ -6074,6 +6075,67 @@ def get_session_trigger_type():
                 return jsonify({'found': True, 'trigger_type': e.get('trigger_type') or 'manual',
                                 'fence_unattended_enabled': fue})
     return jsonify({'found': False, 'fence_unattended_enabled': fue})
+
+
+@bp.route('/api/project/<project_id>/agent/<session_id>/attend', methods=['POST'])
+def attend_session(project_id, session_id):
+    """Human-click control: re-stamp ONE session's trigger_type to 'manual' so
+    steward/fence.py stops arming for it (MC-994, docs/backlog fb822042).
+
+    Built for the 2026-09-28 incident: a scheduled Dave handed its thread to a
+    new chat via POST /agent/dispatch at Ron's request. The dispatch route
+    stamps trigger_type='dispatch' for any agent-sourced dispatch regardless
+    of who's reading it, so `_should_arm_for_unattended_trigger` (fence.py,
+    keyed on GET /api/session/trigger-type) fenced that chat like an unwatched
+    cycle even after Ron approved the blocked command in it: "this
+    conversation is not supposed to be guarded."
+
+    Human-only: same structural guard as the character/workflow mutation
+    routes (workflow_routes._is_agent_caller — a real browser fetch always
+    carries an Origin header, an agent's curl does not, and nothing in the
+    request body can fake it). An agent lifting its own fence is exactly the
+    self-expansion CLAUDE.md's authority guard exists to block.
+
+    One-way. There is no companion route to re-arm a session — see the
+    backlog item; a mistaken flip means starting a new chat.
+
+    Deliberately does NOT touch `_UNATTENDED_TRIGGER_TYPES`, the fence's
+    arming rules, or `fence_unattended_enabled` — every other session's
+    behavior is unaffected. This only overwrites what ONE session's own
+    trigger_type says, live and on disk, so it survives a restart.
+    """
+    if _is_agent_caller():
+        return jsonify({
+            'error': ('marking a chat attended is human-only: an agent session cannot '
+                      'lift its own unattended fence (CLAUDE.md authority guard). '
+                      'Use the control in the chat header.'),
+        }), 403
+    with get_manager(project_id).lock:
+        session = agent_sessions.get(session_id)
+        if not session:
+            return jsonify({'error': 'session not found'}), 404
+        if session.get('project_id') != project_id:
+            return jsonify({'error': 'session not found'}), 404
+        prior = session.get('trigger_type') or 'manual'
+        session['trigger_type'] = 'manual'
+        persisted = False
+        # Same durability guard as the model-pin route: incognito/housekeeping
+        # sessions have no durable agent_log row to flip in the first place.
+        if not session.get('incognito') and not session.get('housekeeping'):
+            def flip_row(rows):
+                row = next((r for r in rows if r.get('session_id') == session_id), None)
+                if row is not None:
+                    row['trigger_type'] = 'manual'
+            try:
+                _update_agent_log(project_id, flip_row)
+                persisted = True
+            except Exception as e:
+                _log(f'[attend] {project_id}/{session_id}: persistence failed: {e}',
+                     level='error')
+    _log(f"[attend] session={session_id} project={project_id} "
+         f"trigger_type {prior} -> manual at {now_iso()}")
+    return jsonify({'ok': True, 'session_id': session_id, 'trigger_type': 'manual',
+                    'persisted': persisted})
 
 
 _agent_log_mutation_locks = {}

@@ -6896,6 +6896,25 @@
     border-left: 1px solid var(--border); padding-left: 5px;
   }
   .provider-badge .cms-pin { font-size: 9px; }
+
+  /* ── Attended-handoff control (MC-994) — the chat header's guarded/attended
+     indicator for a dispatched/scheduled chat, and the one-click flip. Warm/
+     warning register (this pill IS a warning: irreversible actions are
+     blocked here) until flipped, then a quiet green confirmation — there is
+     no un-attend action, so there is nothing more to show after that. */
+  .provider-badge.attend-pill.guarded {
+    cursor: pointer; gap: 6px;
+    border: 1px solid rgba(245,158,11,.4); background: rgba(245,158,11,.12);
+    color: #f59e0b; text-transform: none; letter-spacing: normal;
+  }
+  .provider-badge.attend-pill.guarded:hover { background: rgba(245,158,11,.22); border-color: #f59e0b; }
+  .provider-badge.attend-pill.guarded .attend-cta {
+    font-weight: 700; text-decoration: underline; text-underline-offset: 2px;
+  }
+  .provider-badge.attend-pill.attended {
+    border: 1px solid rgba(16,185,129,.35); background: rgba(16,185,129,.12);
+    color: #10b981; text-transform: none; letter-spacing: normal;
+  }
   .chat-model-menu {
     position: fixed; top: 0; left: 0; display: none;
     min-width: 200px; z-index: 9200; padding: 4px;
