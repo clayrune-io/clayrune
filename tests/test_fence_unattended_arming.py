@@ -266,3 +266,35 @@ def test_unreadable_transcript_combined_with_manual_trigger_still_allows(monkeyp
         command='git push', session_id='sid-manual',
         lookup={'trigger_type': 'manual', 'fence_unattended_enabled': True})
     assert rc == 0
+
+
+# ── Worktree fix (2026-09-28, Dave): double-fire safety ───────────────────────
+# tools/guards/install_hooks.py now injects fence.py into EVERY Claude
+# launch's per-launch --settings file (closing the worktree hole — see that
+# module's EXTRA_HOOK_SHAPES comment), on top of the pre-existing project-
+# level <project>/.claude/settings.json entry a steward-enabled project
+# already carries. That means an armed session can have BOTH copies of the
+# hook registered for the SAME PreToolUse event and see it invoked twice per
+# tool call. These pin the two properties that make that harmless: (1) an
+# attended session still gets a no-op from EACH invocation (self-gating is
+# per-call, not per-process — nothing latches state between calls), and (2) a
+# blocked command is blocked identically on a second, independent call with
+# the same stdin (idempotent — no shared state a second call could see
+# differently).
+def test_double_invocation_on_attended_session_is_a_noop_both_times(monkeypatch, tmp_path):
+    for _ in range(2):
+        rc = _run_main(monkeypatch, tmp_path,
+                       first_user_text='hey can you fix this bug',
+                       command='git push origin main')
+        assert rc == 0
+
+
+def test_double_invocation_on_armed_session_blocks_identically_both_times(monkeypatch, tmp_path, capsys):
+    for _ in range(2):
+        rc = _run_main(monkeypatch, tmp_path,
+                       first_user_text='Nightly competitor scan for project X',
+                       command='git push origin main',
+                       session_id='sid-dispatch',
+                       lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+        assert rc == 2
+        assert 'STEWARD FENCE blocked' in capsys.readouterr().err

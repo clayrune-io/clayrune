@@ -57,10 +57,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from mc import guardrail_hooks as _gh  # noqa: E402
+from steward import core as _steward_core  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD_SCRIPT = REPO_ROOT / 'mc' / 'process_guard.py'
 HOOK_NAME = _gh.HOOK_NAME
+FENCE_HOOK_NAME = _gh.FENCE_HOOK_NAME
 
 # Per-vendor hook-file SHAPE (event name + matcher). Codex is deliberately
 # absent — see the module docstring.
@@ -69,6 +71,52 @@ VENDOR_CONFIGS: Dict[str, Dict[str, str]] = {
     'gemini': {'event': 'BeforeTool', 'matcher': 'run_shell_command'},
     'qwen': {'event': 'PreToolUse', 'matcher': 'Bash|PowerShell|run_shell_command'},
 }
+
+# ── Steward fence hole in agent worktrees (2026-09-28, Dave) ─────────────────
+# A dispatched Claude session runs with cwd <project>/.clayrune/agents/<sid>
+# (or Claude Code's own <project>/.claude/worktrees/<sid>) — a git worktree.
+# steward.core.install_fence_to_project() only ever writes the fence hook
+# into the MAIN checkout's <project>/.claude/settings.json (untracked, so a
+# worktree simply doesn't have one), and Claude Code does not walk up to a
+# parent worktree's settings. So a fence armed for an unattended session
+# never fired at all in that cwd — verified live twice (session
+# a5db5cf5-9854-4c51-b4cd-b22dc78ccbfa: `fence_unattended_enabled: true` yet
+# a plain `git push` to a temp bare repo exited 0 through both the Bash and
+# PowerShell tools; feeding the identical PreToolUse JSON to steward/fence.py
+# directly exits 2).
+#
+# Fix: the per-launch `--settings <file>` mechanism below already reaches
+# EVERY Claude launch regardless of cwd (that's its entire point — see
+# mc.guardrail_hooks's module docstring). Give it the fence hook as a SECOND
+# group alongside the cross-vendor process-guard, so a worktree launch is
+# covered even with no project settings file at all.
+#
+# Safe to add unconditionally to every launch: steward/fence.py's own main()
+# self-gates on the session being confirmed unattended (transcript marker or
+# server-recorded trigger_type — see its docstring) and returns 0 (no-op) for
+# an ordinary attended session. And it is harmless for this to fire ALONGSIDE
+# a project-level fence.py entry when one exists (e.g. this repo's own
+# <project>/.claude/settings.json, installed by install_fence_to_project): both
+# copies read the same stdin JSON and reach the same verdict — either both
+# ALLOW, or the first BLOCK Claude Code sees ends the tool call; there is no
+# per-tool-call state to double-mutate.
+#
+# Claude only — Gemini and Qwen have no fence-hook injection path at all
+# today (steward.core.install_fence_to_project only ever targeted Claude's
+# .claude/settings.json), so this is a pre-existing, separate gap for those
+# two vendors rather than a worktree-specific regression; not fixed here
+# (see the dispatch report for why it isn't "trivial and safe").
+EXTRA_HOOK_SHAPES: Dict[str, List[Dict[str, str]]] = {
+    'claude': [{'name': FENCE_HOOK_NAME, 'matcher': _steward_core.FENCE_MATCHER}],
+}
+
+
+def fence_command() -> str:
+    """The fence hook's command string — the SAME one steward.core uses for
+    the project-settings install path (`install_fence_to_project`), so a
+    worktree launch and a main-checkout launch always point at the identical
+    invocation (frozen-build vs source handled identically in both places)."""
+    return _steward_core._fence_command()
 
 
 def guard_command(guard_script: Optional[Path] = GUARD_SCRIPT, python_exe: Optional[str] = None) -> str:
@@ -148,6 +196,20 @@ def plan_generate(vendor: str, guard_script: Optional[Path] = GUARD_SCRIPT,
         event_list.append(desired)
     else:
         event_list[idx] = desired
+
+    # Extra groups (currently: Claude's fence hook — see EXTRA_HOOK_SHAPES)
+    # share the SAME event as the vendor's guard group above and are found/
+    # replaced by their OWN name marker, so they never collide with it.
+    for shape in EXTRA_HOOK_SHAPES.get(vendor, ()):
+        extra_desired = {
+            'matcher': shape['matcher'],
+            'hooks': [{'type': 'command', 'command': fence_command(), 'name': shape['name']}],
+        }
+        eidx = _find_group_index(event_list, shape['name'])
+        if eidx is None:
+            event_list.append(extra_desired)
+        else:
+            event_list[eidx] = extra_desired
 
     changed = before != after
     return before, after, changed

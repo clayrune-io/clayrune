@@ -231,10 +231,12 @@ def _unwrap_start_process(cmd: str) -> str:
 # Global options recognised BETWEEN a program name and its verb, so
 # `git -C ../other push` normalises to `git push` the same way `git push`
 # already reads. `_opt_value` accepts both `--opt value` and `--opt=value`
-# (and the short-flag `-o value` form); `_opt_bool` is a bare flag with no
-# value to skip. Deliberately generous about which spellings are accepted —
-# over-matching an option here can only cause EXTRA stripping (still fed
-# through the same downstream _BLOCK_PATTERNS check), never a new ALLOW.
+# (and the short-flag `-o value` form), for options that consume a separate
+# token when not written with `=`. Everything else (bare boolean flags, or
+# any option written with `=`) is handled by the generic fallback below.
+# Deliberately generous about which spellings are accepted — over-matching
+# an option here can only cause EXTRA stripping (still fed through the same
+# downstream _BLOCK_PATTERNS check), never a new ALLOW.
 _OPT_VAL = r'''(?:"[^"]*"|'[^']*'|\S+)'''
 
 
@@ -243,33 +245,67 @@ def _opt_value(*names: str) -> str:
     return rf'(?:{alt})(?:=(?:{_OPT_VAL})|\s+(?:{_OPT_VAL}))'
 
 
-def _opt_bool(*names: str) -> str:
-    alt = '|'.join(re.escape(n) for n in names)
-    return rf'(?:{alt})\b'
+# ── Residual global-option bypass fix (2026-09-28, Quill) ────────────────────
+# The NAMED lists below (_GIT_OPTS etc.) only stripped options someone had
+# already thought to enumerate. Anything else — `--no-optional-locks`,
+# `--literal-pathspecs`, `--paginate`, a brand-new flag added in a future git
+# release — put a token between the program and its verb that the old
+# `_global_opt_strip_re` did not recognise, so the verb never lined up with
+# `_BLOCK_PATTERNS`'s `\bgit\s+push\b` and the command sailed through. Live:
+# `git --no-optional-locks push origin HEAD:refs/heads/main` exited 0 through
+# an armed fence.
+#
+# Fix: skip EVERY dash-led token between the program and the verb, not just
+# named ones. `_GENERIC_DASH_OPT` matches any `-x`/`--xxx` token, with an
+# optional `=value` suffix already attached (no separate token consumed) —
+# that alone covers every one of the 11 reported spellings, all of which are
+# boolean-shaped or self-contained with `=`. The one thing a fully generic
+# token walker cannot know on its own is which options take their value as a
+# SEPARATE token when not written with `=` (`-C ../x`, not `-C=../x`) — for
+# those, eating the option but leaving its value behind would misidentify the
+# value token as the verb. That set is still named per tool below
+# (`_GIT_VALUE_OPTS` etc.) and tried FIRST in the alternation, so it wins over
+# the generic fallback; the fallback only ever handles what the named list
+# doesn't. Over-matching here still only causes EXTRA stripping fed through
+# the same downstream check — never a new ALLOW — so the generic fallback is
+# safe to be this broad.
+_GENERIC_DASH_OPT = rf'--?[A-Za-z][\w-]*(?:=(?:{_OPT_VAL}))?'
 
 
-_GIT_OPTS = '|'.join([
-    _opt_value('-C'), _opt_value('-c'), _opt_value('--git-dir'),
-    _opt_value('--work-tree'), _opt_value('--namespace'),
-    _opt_bool('--no-pager'), _opt_bool('-P'), _opt_bool('--bare'),
-    r'--exec-path(?:=' + _OPT_VAL + r')?',
-])
-_NPM_OPTS = '|'.join([
-    _opt_value('--prefix'), _opt_bool('-g'), _opt_bool('--global'),
-    _opt_value('--workspace'), _opt_value('-w'),
-])
-_DOCKER_OPTS = '|'.join([
-    _opt_value('--context', '-c'), _opt_value('--host', '-H'),
-    _opt_value('--config'), _opt_value('--log-level'),
-    r'--tls\w*(?:=' + _OPT_VAL + r'|\s+' + _OPT_VAL + r')?',
-])
-_TERRAFORM_OPTS = _opt_value('-chdir')
-_KUBECTL_OPTS = '|'.join([
-    _opt_value('-n', '--namespace'), _opt_value('--context'),
-    _opt_value('--kubeconfig'), _opt_value('-s', '--server'),
-    _opt_value('--cluster'), _opt_value('--user'),
-])
-_GH_OPTS = _opt_value('-R', '--repo')
+def _opt_value_or_generic(value_opts_alt: str) -> str:
+    """Named value-consuming options (space or `=` form, consuming a
+    separate token when not written with `=`) tried first, then any other
+    dash-led token (own `=value` only, no separate-token consumption).
+    `value_opts_alt` is already a complete `_opt_value(...)` pattern — it
+    consumes its own value, so it is NOT wrapped in another value suffix
+    here (that would require the value to appear twice)."""
+    return rf'{value_opts_alt}|{_GENERIC_DASH_OPT}'
+
+
+# Options that take their value as a SEPARATE token when not written with
+# `=` — these must be named, or the fix above would swallow the value as if
+# it were the next option and misread it (or an innocent word) as the verb.
+# `--exec-path` deliberately excluded: git only accepts it as `--exec-path`
+# (bare, prints the path) or `--exec-path=<path>`, never a separate-token
+# form (checked against git 2.51's parse-options usage) — the generic
+# fallback already handles both of those shapes via its own `=value` suffix.
+_GIT_VALUE_OPTS = _opt_value('-C', '-c', '--git-dir', '--work-tree',
+                              '--namespace', '--config-env')
+_NPM_VALUE_OPTS = _opt_value('--prefix', '--workspace', '-w')
+_DOCKER_VALUE_OPTS = _opt_value('--context', '-c', '--host', '-H',
+                                 '--config', '--log-level')
+_TERRAFORM_VALUE_OPTS = _opt_value('-chdir')
+_KUBECTL_VALUE_OPTS = _opt_value('-n', '--namespace', '--context',
+                                  '--kubeconfig', '-s', '--server',
+                                  '--cluster', '--user')
+_GH_VALUE_OPTS = _opt_value('-R', '--repo')
+
+_GIT_OPTS = _opt_value_or_generic(_GIT_VALUE_OPTS)
+_NPM_OPTS = _opt_value_or_generic(_NPM_VALUE_OPTS)
+_DOCKER_OPTS = _opt_value_or_generic(_DOCKER_VALUE_OPTS)
+_TERRAFORM_OPTS = _opt_value_or_generic(_TERRAFORM_VALUE_OPTS)
+_KUBECTL_OPTS = _opt_value_or_generic(_KUBECTL_VALUE_OPTS)
+_GH_OPTS = _opt_value_or_generic(_GH_VALUE_OPTS)
 
 
 def _global_opt_strip_re(prog: str, opts_alt: str):

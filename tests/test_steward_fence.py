@@ -1016,6 +1016,61 @@ def test_allows_global_option_with_harmless_verb(cmd):
     assert not d.blocked, f"fence WRONGLY blocked safe command {cmd!r}: {d.reason}"
 
 
+# ── Residual global-option bypass fix (2026-09-28, Quill) ────────────────────
+# The 2026-09-28 fix above only stripped NAMED global options; any git option
+# not on that list still hid the verb from _BLOCK_PATTERNS. Live:
+# `git --no-optional-locks push origin HEAD:refs/heads/main` exited 0 through
+# an armed fence. One case per spelling named in the follow-up brief, plus the
+# combined case from its live-proof requirement.
+RESIDUAL_GLOBAL_OPTION_BYPASS_BLOCK_CASES = [
+    'git --literal-pathspecs push',
+    'git --glob-pathspecs push',
+    'git --noglob-pathspecs push',
+    'git --icase-pathspecs push',
+    'git --no-replace-objects push',
+    'git --no-optional-locks push',
+    'git --no-lazy-fetch push',
+    'git --no-advice push',
+    'git --attr-source=HEAD push',
+    'git --paginate push',
+    'git --config-env=foo.bar=BAZ push',
+    'git --no-optional-locks push origin HEAD:refs/heads/main',
+    'git --literal-pathspecs -C C:/tmp/clone push',
+]
+
+
+@pytest.mark.parametrize('cmd', RESIDUAL_GLOBAL_OPTION_BYPASS_BLOCK_CASES)
+def test_blocks_residual_global_option_bypass(cmd):
+    d = classify_bash(cmd)
+    assert d.blocked, f"fence FAILED to block residual bypass spelling: {cmd!r}"
+    assert d.reason
+
+
+@pytest.mark.parametrize('cmd', RESIDUAL_GLOBAL_OPTION_BYPASS_BLOCK_CASES)
+@pytest.mark.parametrize('tool_name', ['Bash', 'PowerShell'])
+def test_classify_action_blocks_residual_global_option_bypass_both_tools(tool_name, cmd):
+    d = classify_action(tool_name, {'command': cmd})
+    assert d.blocked, f"{tool_name} FAILED to block residual bypass spelling: {cmd!r}"
+
+
+# Every option-then-verb ALLOW control still needs to keep ALLOWing once the
+# strip covers every dash-led token generically, not just the named ones —
+# stripping an unlisted option must never manufacture a blocked verb that was
+# not actually there.
+RESIDUAL_GLOBAL_OPTION_ALLOW_CASES = [
+    'git --no-pager log',
+    'git -C x status',
+    'kubectl -n x get pods',
+    'docker --context x ps',
+]
+
+
+@pytest.mark.parametrize('cmd', RESIDUAL_GLOBAL_OPTION_ALLOW_CASES)
+def test_allows_residual_global_option_with_harmless_verb(cmd):
+    d = classify_bash(cmd)
+    assert not d.blocked, f"fence WRONGLY blocked safe command {cmd!r}: {d.reason}"
+
+
 # ── PowerShell assignment false positive fix (2026-09-28) ────────────────────
 # `$name = ...` / `$name += ...` / `$env:NAME = ...` at the START of a segment
 # is not "command position" for that segment — it stores a value, it does not
