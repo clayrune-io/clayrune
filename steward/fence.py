@@ -31,6 +31,9 @@ from typing import NamedTuple, Optional
 class FenceDecision(NamedTuple):
     blocked: bool
     reason: str
+    # False = a human's one-shot "Allow once" pass can never let this through
+    # (MC-994 follow-up): changes to the guard itself or to what agents load.
+    overridable: bool = True
 
 
 # ── Install-dir write guard (2026-09-14, Amit's "update blocked" report) ────
@@ -1138,7 +1141,8 @@ def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
         path = str(ti.get('file_path', '') or ti.get('notebook_path', '') or '')
         low = path.replace('\\', '/').lower()
         if '/.claude/' in low or low.endswith('/.claude'):
-            return FenceDecision(True, "editing global ~/.claude config (out of project scope)")
+            return FenceDecision(True, "editing global ~/.claude config (out of project scope)",
+                                 overridable=False)
         # Fence supply chain (MC-914, 2026-08-31): this hook script is re-read
         # from disk fresh on EVERY tool call (invoked as a fresh subprocess per
         # PreToolUse event, no caching) — the exact "hot re-read of a mutable
@@ -1151,7 +1155,7 @@ def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
                 low.rsplit('/', 1)[-1] in _fence_names:
             return FenceDecision(True, "editing the steward fence's own "
                                        "enforcement code (safety-rail supply "
-                                       "chain — human-owned)")
+                                       "chain — human-owned)", overridable=False)
         # Learning-loop supply chain (committee M3, 2026-07-16): proposal
         # frontmatter and the skill-stats signal store are the INPUTS that
         # decide what enters agent loadouts. An unattended agent editing its
@@ -1161,7 +1165,8 @@ def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
                 or low.endswith('_skill_stats.json')
                 or low.endswith('_skill_stats_archive.jsonl')):
             return FenceDecision(True, "editing learning-loop artifacts/telemetry "
-                                       "(loadout supply chain — human-owned)")
+                                       "(loadout supply chain — human-owned)",
+                                 overridable=False)
     # Autonomous web browsing is high blast-radius for an unattended agent: the
     # browser MCP is unrestricted (all sites) with in-page JS execution, so
     # prompt-injecting page content can steer a steward cycle. The steward does
@@ -1327,7 +1332,51 @@ def _should_arm_for_unattended_trigger() -> bool:
 # pass; this hook spends it on the single blocked call it permits. The consume
 # route can only SPEND an existing pass, never create one. Fails CLOSED: any
 # lookup failure means no pass, so the action stays blocked.
-_PASS_INELIGIBLE_MARK = 'human-owned'
+#
+# Fenn's review (2026-09-28): the pass is spent only when the WHOLE tool call
+# holds exactly one blocked operation and that operation is overridable. The
+# block loop in main() stops at the first hit, so judging the pass on that one
+# decision let `git push && <patch fence.py>` spend a pass on the push and
+# carry the fence edit through with it.
+_SEGMENT_SPLIT = re.compile(r'&&|\|\||[;\n|&]')
+
+
+def _blocked_leaves(tool_name: str, tool_input: dict) -> list:
+    """Every blocked operation inside one call: patch tools recurse into their
+    writes, a chained shell command counts as more than one. Over-counting only
+    ever refuses a pass, never grants one."""
+    if tool_name in _PATCH_TOOL_NAMES:
+        out = []
+        for sub_name, sub_input in as_write_calls(tool_name, tool_input or {}):
+            if sub_name in _PATCH_TOOL_NAMES:
+                d = classify_action(sub_name, sub_input)
+                out.extend([d] if d.blocked else [])
+            else:
+                out.extend(_blocked_leaves(sub_name, sub_input))
+        return out
+    if tool_name in ('Bash', 'PowerShell'):
+        cmd = (tool_input or {}).get('command', '') or ''
+        whole = classify_bash(cmd)
+        if not whole.blocked:
+            return []
+        # A chained command is never passable, whatever its segments say:
+        # per-segment classification can miss what only the whole line shows,
+        # so the agent must issue the one blocked command on its own.
+        if len([g for g in _SEGMENT_SPLIT.split(cmd) if g.strip()]) > 1:
+            return [whole, whole]
+        return [whole]
+    d = classify_action(tool_name, tool_input)
+    return [d] if d.blocked else []
+
+
+def _pass_can_cover(calls) -> bool:
+    try:
+        leaves = []
+        for call_name, call_input in calls:
+            leaves.extend(_blocked_leaves(call_name, call_input))
+    except Exception:
+        return False
+    return len(leaves) == 1 and leaves[0].overridable
 
 
 def _consume_attend_once_pass() -> bool:
@@ -1443,11 +1492,16 @@ def main(argv=None) -> int:
     # Only a session armed purely by the server-recorded trigger_type may spend
     # a human's one-shot "Allow once" pass (MC-994 follow-up). A confirmed
     # steward cycle or a launcher-armed (Codex --armed) run never can.
+    #
+    # Eligibility needs a POSITIVELY confirmed non-steward (marker False): an
+    # unreadable transcript (None) still arms through trigger_type below, but
+    # must not open the pass to what may be a real steward cycle (Fenn).
     pass_eligible = False
-    if not armed_by_launcher and _session_is_steward(payload) is not True:
+    steward = None if armed_by_launcher else _session_is_steward(payload)
+    if not armed_by_launcher and steward is not True:
         if not _should_arm_for_unattended_trigger():
             return 0
-        pass_eligible = True
+        pass_eligible = steward is False
 
     decision = FenceDecision(False, '')
     for call_name, call_input in calls:
@@ -1461,14 +1515,14 @@ def main(argv=None) -> int:
     if not decision.blocked:
         return 0
 
-    # Supply-chain edits (the fence's own code, learning-loop artifacts) are
-    # never passable: a pass granted for one action must not be spendable on
-    # disarming the guard itself. Those need a genuinely attended session.
-    if (pass_eligible and _PASS_INELIGIBLE_MARK not in decision.reason
-            and _consume_attend_once_pass()):
+    # Supply-chain and global-config edits are never passable, and a call that
+    # bundles more than one blocked operation is refused whole: one click, one
+    # operation. Those need a genuinely attended session.
+    passable = pass_eligible and _pass_can_cover(calls)
+    if passable and _consume_attend_once_pass():
         return 0
 
-    if pass_eligible and _PASS_INELIGIBLE_MARK not in decision.reason:
+    if passable:
         how = ('The human can click "Allow once" in the chat header to permit '
                'the next blocked action (one action, expires in 10 minutes). '
                'Do NOT retry it until they say they have.')

@@ -350,7 +350,7 @@ def test_steward_marker_session_never_consumes_a_pass(monkeypatch, tmp_path, cap
 
 def test_human_owned_supply_chain_block_never_consumes_a_pass(monkeypatch, tmp_path, capsys):
     # Editing fence.py's own enforcement code is the supply-chain case the
-    # pass must never be spendable on (Dave's _PASS_INELIGIBLE_MARK check) —
+    # pass must never be spendable on (FenceDecision.overridable=False) —
     # even a trigger-type-armed, otherwise-pass-eligible session with an
     # open pass must stay blocked, and consume must never be called.
     def _boom():
@@ -368,3 +368,57 @@ def test_human_owned_supply_chain_block_never_consumes_a_pass(monkeypatch, tmp_p
     err = capsys.readouterr().err
     assert 'STEWARD FENCE blocked' in err
     assert 'human-owned' in err
+
+
+# ── Fenn's review of the pass (2026-09-28) ───────────────────────────────────
+# The block loop stops at the first hit, so the pass must be judged on the
+# WHOLE call: one blocked operation, and that one overridable.
+
+def _never_consume():
+    raise AssertionError("this call must never spend a pass")
+
+
+def test_chained_command_never_consumes_a_pass(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', _never_consume)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command='git push origin master && git reset --hard HEAD~1',
+                   session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2
+    assert 'STEWARD FENCE blocked' in capsys.readouterr().err
+
+
+def test_push_with_hidden_fence_patch_never_consumes_a_pass(monkeypatch, tmp_path):
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', _never_consume)
+    cmd = ("git push origin master\napply_patch <<'PATCH'\n*** Begin Patch\n"
+           "*** Update File: steward/fence.py\n@@\n-x\n+y\n*** End Patch\nPATCH")
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=cmd, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2
+
+
+def test_global_claude_skill_write_never_consumes_a_pass(monkeypatch, tmp_path):
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', _never_consume)
+    monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'sid-dispatch')
+    monkeypatch.setattr(fence, '_lookup_trigger_type',
+                        lambda sid: {'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    payload = {'tool_name': 'Write',
+               'tool_input': {'file_path': 'C:/Users/u/.claude/skills/x/SKILL.md', 'content': 'y'},
+               'transcript_path': _transcript(tmp_path, 'please add a skill')}
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload)))
+    assert fence.main() == 2
+
+
+def test_unreadable_transcript_arms_but_never_consumes_a_pass(monkeypatch, tmp_path, capsys):
+    # marker unknown (None) must still arm via trigger_type, but only a
+    # POSITIVELY confirmed non-steward may spend a pass.
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', _never_consume)
+    rc = _run_main_no_transcript(
+        monkeypatch, transcript_path=str(tmp_path / 'nope.jsonl'),
+        command='git push origin master', session_id='sid-sched',
+        lookup={'trigger_type': 'schedule', 'fence_unattended_enabled': True})
+    assert rc == 2
+    assert 'STEWARD FENCE blocked' in capsys.readouterr().err
