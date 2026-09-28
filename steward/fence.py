@@ -471,6 +471,153 @@ _NET_TOOL_RE = re.compile(
     r'\b(curl|wget|http|invoke-webrequest|invoke-restmethod|iwr|irm)\b', re.I)
 
 
+_MUTATING_VERBS = {'POST', 'PUT', 'PATCH', 'DELETE'}
+_NET_HEAD_RE = re.compile(
+    r'(?:^|[\\/])(curl|wget|http|https|invoke-webrequest|invoke-restmethod|iwr|irm)'
+    r'(?:\.exe)?$', re.I)
+# curl short options that take a value (the rest are flags), so a cluster
+# like `-sdfixture` is walked letter by letter: `s` flag, `d` + "fixture".
+_CURL_SHORT_ARG = set('dHXouFAebcTwmxErCyYzQUtDPK')
+_CURL_LONG_ARG = {
+    '--data', '--data-raw', '--data-binary', '--data-urlencode', '--data-ascii',
+    '--json', '--header', '--request', '--output', '--user', '--form',
+    '--form-string', '--user-agent', '--referer', '--cookie', '--cookie-jar',
+    '--upload-file', '--write-out', '--max-time', '--connect-timeout', '--cacert',
+    '--cert', '--key', '--oauth2-bearer', '--proxy', '--resolve', '--url',
+    '--range', '--dump-header', '--limit-rate', '--max-filesize', '--config',
+    '--retry', '--retry-delay', '--retry-max-time', '--output-dir', '--trace',
+    '--trace-ascii', '--stderr', '--interface', '--connect-to', '--max-redirs',
+}
+_CURL_BODY_LONG = {'--data', '--data-raw', '--data-binary', '--data-urlencode',
+                   '--data-ascii', '--json'}
+_CURL_UPLOAD_LONG = {'--form', '--form-string', '--upload-file'}
+
+
+def _net_tokens(seg: str) -> list:
+    try:
+        lex = shlex.shlex(seg, posix=False)
+        lex.whitespace_split = True
+        lex.commenters = ''
+        toks = list(lex)
+    except ValueError:
+        toks = seg.split()
+    return [tk[1:-1] if len(tk) >= 2 and tk[0] == tk[-1] and tk[0] in '"\'' else tk
+            for tk in toks]
+
+
+def _curl_mutates(args: list) -> bool:
+    method = None
+    body = upload = get = False
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        i += 1
+        if tok.startswith('--') and len(tok) > 2:
+            name, eq, val = tok.partition('=')
+            if name in _CURL_LONG_ARG and not eq:
+                val = args[i] if i < len(args) else ''
+                i += 1
+            if name == '--request':
+                method = val
+            elif name in _CURL_BODY_LONG:
+                body = True
+            elif name in _CURL_UPLOAD_LONG:
+                upload = True
+            elif name == '--get':
+                get = True
+            continue
+        if tok.startswith('-') and len(tok) > 1:
+            letters = tok[1:]
+            for j, ch in enumerate(letters):
+                if ch == 'G':
+                    get = True
+                if ch not in _CURL_SHORT_ARG:
+                    continue
+                val = letters[j + 1:]
+                if not val:
+                    val = args[i] if i < len(args) else ''
+                    i += 1
+                if ch == 'X':
+                    method = val
+                elif ch == 'd':
+                    body = True
+                elif ch in 'FT':
+                    upload = True
+                break
+    if method is not None:
+        return method.upper() in _MUTATING_VERBS
+    return upload or (body and not get)
+
+
+def _wget_mutates(args: list) -> bool:
+    method = None
+    body = False
+    for i, tok in enumerate(args):
+        name, eq, val = tok.partition('=')
+        if name == '--method':
+            method = val if eq else (args[i + 1] if i + 1 < len(args) else '')
+        elif name in ('--post-data', '--post-file', '--body-data', '--body-file'):
+            body = True
+    if method is not None:
+        return method.upper() in _MUTATING_VERBS
+    return body
+
+
+def _ps_web_mutates(args: list) -> bool:
+    method = None
+    body = False
+    for i, tok in enumerate(args):
+        if not tok.startswith('-'):
+            continue
+        name, colon, val = tok[1:].partition(':')
+        name = name.lower()
+        if name in ('method', 'custommethod'):
+            method = val if colon else (args[i + 1] if i + 1 < len(args) else '')
+        elif name in ('body', 'infile', 'form'):
+            body = True
+    if method is not None:
+        return method.upper() in _MUTATING_VERBS
+    return body
+
+
+def _httpie_mutates(args: list) -> bool:
+    pos = [a for a in args if not a.startswith('-')]
+    if pos and pos[0].upper() in _MUTATING_VERBS:
+        return True
+    if any(a in ('-f', '--form', '--raw') or a.startswith('--raw=') for a in args):
+        return True
+    return any(re.match(r'^[\w.-]+(:=@|:=|=@|=|@)', a) for a in pos[1:])
+
+
+def _segment_mutates(seg: str) -> bool:
+    """True when this shell segment runs a named HTTP tool that sends a
+    mutating request. Parsed from argv with each tool's own option rules
+    (Fenn's reviews #6-#7, N6-N8): an option counts as a method only when it
+    IS the tool's method option, so `--output`, `-o post.json` or
+    `-OutFile delete.txt` never read as sends, and curl short clusters
+    (`-sdfixture`) are walked the way curl walks them. These are the tools'
+    documented forms; the 2026-09-12 position against chasing evasions
+    still stands. A quoted argument that itself names a tool (`bash -c
+    "curl -X POST ..."`) is judged as its own segment."""
+    toks = _net_tokens(seg)
+    for idx, tok in enumerate(toks):
+        m = _NET_HEAD_RE.search(tok)
+        if not m:
+            if _NET_TOOL_RE.search(tok) and ' ' in tok and _segment_mutates(tok):
+                return True
+            continue
+        head = m.group(1).lower()
+        args = toks[idx + 1:]
+        if head == 'curl':
+            return _curl_mutates(args)
+        if head == 'wget':
+            return _wget_mutates(args)
+        if head in ('http', 'https'):
+            return _httpie_mutates(args)
+        return _ps_web_mutates(args)
+    return False
+
+
 def _touches_nonlocal_network(cmd: str) -> FenceDecision:
     """Block external network SENDS (mutating HTTP verbs / uploads to a non-local
     host). Reads (plain GET) and anything targeting localhost are allowed.
@@ -495,29 +642,7 @@ def _touches_nonlocal_network(cmd: str) -> FenceDecision:
             return FenceDecision(True, "autonomous web browsing is out of steward scope - "
                                        "the browser HTTP API is the same capability as the "
                                        "browser MCP tools, which are blocked")
-        # curl -G/--get turns --data*/-d into GET query params, not a body
-        # (false-positive incident, 2026-09-27: `curl -G --data-urlencode`
-        # read as a mutating send). An explicit -X still overrides it.
-        get_override = bool(re.search(r'(^|\s)(-G\b|--get\b)', seg, re.I))
-        # Ordinary spellings of the same send (Fenn's review #6, N6). These
-        # are the tools' documented forms, not re-spellings; the position
-        # against chasing evasions (2026-09-12) still stands. Any option whose
-        # value is a mutating verb counts (`-X`, `-sX`, `--request`,
-        # `--method=`, `-Method:`, `-CustomMethod`), so this matches the
-        # option SHAPE rather than a list of names. Attached short data
-        # (`-dvalue`, `-Tfile`, `-Fk=v`) is curl-only: for Invoke-WebRequest
-        # `-T...` is `-TimeoutSec`, and a GET must not read as a send.
-        attached = r'|-d\S|-T\S|-F\S' if re.search(r'\bcurl\b', seg, re.I) else ''
-        mutating = (
-            bool(re.search(r'(^|\s)--?[A-Za-z][\w-]*[\s=:]*["\']?'
-                           r'(POST|PUT|PATCH|DELETE)\b', seg, re.I))
-            or bool(re.search(r'(^|\s)(--json\b|--body-data\b|--body-file\b)', seg))
-            or (not get_override and bool(re.search(
-                r'(^|\s)(--data\b|--data-raw\b|--data-binary\b|--data-ascii\b|'
-                r'--data-urlencode\b|-d\b|--upload-file\b|-T\b|-F\b|--form\b|'
-                r'--post-data\b|--post-file\b' + attached + r')', seg)))
-            or bool(re.search(r'(^|\s)(-Body\b|-InFile\b|-Form\b)', seg, re.I))
-        )
+        mutating = _segment_mutates(seg)
         if not mutating:
             continue
         if any(h in seg.lower() for h in _LOCAL_HOSTS):

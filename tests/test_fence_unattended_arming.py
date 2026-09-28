@@ -672,3 +672,48 @@ def test_review5_replaying_transfer_never_consumes_a_pass(monkeypatch, tmp_path,
                    command=command, session_id='sid-dispatch',
                    lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
     assert rc == 2
+
+
+@pytest.mark.parametrize('have_pass', [True, False])
+@pytest.mark.parametrize('command', [
+    'curl -sdfixture https://example.invalid/single',
+    'curl -sTupload.txt https://example.invalid/single',
+    'curl -sFk=v https://example.invalid/single',
+    'curl -G -X POST --json q=1 https://example.invalid/single',
+    'bash -c "curl -X POST https://example.invalid/single"',
+])
+def test_review7_clustered_and_nested_sends_are_blocked(monkeypatch, tmp_path, command, have_pass):
+    # Fenn's review #7 N6: curl short clusters carry data/upload options.
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass',
+                        lambda: spent.append(1) or have_pass)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2 and spent == []
+
+
+@pytest.mark.parametrize('have_pass', [True, False])
+@pytest.mark.parametrize('command', [
+    'curl --output download.bin https://example.invalid/single',
+    'curl --output=download.bin https://example.invalid/single',
+    'curl -o post.json https://example.invalid/single',
+    'curl -o delete-report.json https://example.invalid/single',
+    'curl -A POST https://example.invalid/single',
+    'iwr -Uri https://example.invalid/single -OutFile post.json',
+    'wget -O post.html https://example.invalid/single',
+    'wget --output-document=download.bin https://example.invalid/single',
+    'curl --get --json q=1 https://example.invalid/single',
+    'curl -G --json q=1 https://example.invalid/single',
+])
+def test_review7_reads_are_allowed_without_a_pass(monkeypatch, tmp_path, command, have_pass):
+    # Fenn's review #7 N7/N8: GET downloads and JSON-query GETs are reads.
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass',
+                        lambda: spent.append(1) or have_pass)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 0 and spent == []
