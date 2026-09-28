@@ -13151,6 +13151,52 @@ def _enrich_run_entries(entries):
                         e['claude_session_id'] = live_csid
     return entries
 
+def resolve_transcript_messages(p, claude_session_id, provider='claude'):
+    """Vendor-agnostic transcript read: `p` (a loaded project dict), a
+    provider-native session id, and the provider name -> `(payload, status)`
+    where `payload` is either the same shape `get_project_transcript` has
+    always returned (minus `csid`, added by the route) or an `{'error': ...}`
+    body. Factored out of the route so a non-HTTP caller — MC-990's Brainstorm
+    handoff transfer route re-deriving a brief server-side rather than
+    trusting a client-supplied copy — gets the identical Claude/Codex logic
+    the Runs panel viewer already relies on, instead of a second copy that
+    can silently drift from it.
+    """
+    provider = (provider or 'claude').strip().lower()
+    if provider == 'codex':
+        # Native-only sessions have no MC run-log row. Resolve through the
+        # provider store, with strict project ownership and no glob patterns.
+        if not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', claude_session_id):
+            return {'error': 'invalid Codex session id'}, 400
+        runtime = _agent_runtime.get_runtime('codex')
+        f = runtime.transcript_path(p.get('project_path', ''), claude_session_id)
+        if not f:
+            return {'error': 'transcript not found'}, 404
+        cwd, native_id = _agent_runtime._codex_read_meta(f)
+        if native_id != claude_session_id or not _agent_runtime._codex_same_path(cwd, p.get('project_path', '')):
+            return {'error': 'transcript not found'}, 404
+        try:
+            messages = [{'role': role, 'text': text}
+                        for role, text in runtime.extract_chat_turns(f)]  # pyright: ignore[reportAttributeAccessIssue]
+            size = f.stat().st_size
+        except OSError as e:
+            _log(f'[transcript] Codex read failed: {e}')
+            return {'error': 'transcript unavailable'}, 404
+        return {'provider': provider, 'provider_session_id': native_id,
+                'size': size, 'message_count': len(messages), 'messages': messages}, 200
+    if provider != 'claude':
+        return {'error': 'unsupported transcript provider'}, 400
+    f = _find_transcript_file(p.get('project_path', ''), claude_session_id)
+    if not f:
+        return {'error': 'transcript not found'}, 404
+    try:
+        size = f.stat().st_size
+    except OSError:
+        size = 0
+    messages = _parse_transcript_messages(f)
+    return {'size': size, 'message_count': len(messages), 'messages': messages}, 200
+
+
 @bp.route('/api/project/<project_id>/transcript/<claude_session_id>')
 def get_project_transcript(project_id, claude_session_id):
     """Return parsed transcript for read-only display in the Runs panel viewer."""
@@ -13158,43 +13204,10 @@ def get_project_transcript(project_id, claude_session_id):
     if not p:
         return jsonify({'error': 'project not found'}), 404
     provider = request.args.get('provider', 'claude').strip().lower()
-    if provider == 'codex':
-        # Native-only sessions have no MC run-log row. Resolve through the
-        # provider store, with strict project ownership and no glob patterns.
-        if not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', claude_session_id):
-            return jsonify({'error': 'invalid Codex session id'}), 400
-        runtime = _agent_runtime.get_runtime('codex')
-        f = runtime.transcript_path(p.get('project_path', ''), claude_session_id)
-        if not f:
-            return jsonify({'error': 'transcript not found'}), 404
-        cwd, native_id = _agent_runtime._codex_read_meta(f)
-        if native_id != claude_session_id or not _agent_runtime._codex_same_path(cwd, p.get('project_path', '')):
-            return jsonify({'error': 'transcript not found'}), 404
-        try:
-            messages = [{'role': role, 'text': text}
-                        for role, text in runtime.extract_chat_turns(f)]  # pyright: ignore[reportAttributeAccessIssue]
-            size = f.stat().st_size
-        except OSError as e:
-            _log(f'[transcript] Codex read failed: {e}')
-            return jsonify({'error': 'transcript unavailable'}), 404
-        return jsonify({'provider': provider, 'provider_session_id': native_id,
-                        'size': size, 'message_count': len(messages), 'messages': messages})
-    if provider != 'claude':
-        return jsonify({'error': 'unsupported transcript provider'}), 400
-    f = _find_transcript_file(p.get('project_path', ''), claude_session_id)
-    if not f:
-        return jsonify({'error': 'transcript not found'}), 404
-    try:
-        size = f.stat().st_size
-    except OSError:
-        size = 0
-    messages = _parse_transcript_messages(f)
-    return jsonify({
-        'csid': claude_session_id,
-        'size': size,
-        'message_count': len(messages),
-        'messages': messages,
-    })
+    payload, status = resolve_transcript_messages(p, claude_session_id, provider)
+    if status == 200 and 'csid' not in payload and provider != 'codex':
+        payload = dict(payload, csid=claude_session_id)
+    return jsonify(payload), status
 
 
 def _wf_agent_label(wf_dir, agent_id, maxlen=90):

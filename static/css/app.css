@@ -4689,6 +4689,30 @@
   }
   .team-create:disabled { opacity: 0.6; cursor: default; }
   .team-card-pending, .team-card-invalid { font-size: 12px; color: var(--text-faint); padding: 6px 4px; }
+
+  /* Brainstorm exploration card ([clayrune:exploration-ready], MC-990,
+     static/js/exploration-card.js) — reuses .team-f/.team-add/.team-create
+     from the mc:team card above; only the wrapper/grid/status classes are new. */
+  .exploration-card {
+    background: var(--surface3); border: 1px solid var(--accent); border-radius: 8px;
+    padding: 12px 14px; margin: 8px 4px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .exploration-card.invalid { border-color: var(--border); }
+  .exploration-card-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .exploration-card-kicker {
+    font-size: 10px; color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;
+  }
+  .exploration-card-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .exploration-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px 8px; }
+  .exploration-card-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .exploration-card-msg { font-size: 12px; color: var(--text-dim); flex: 1; min-width: 120px; }
+  .exploration-card-msg.err { color: var(--red-text, #d9534f); }
+  .exploration-newer { font-size: 12px; color: var(--amber, var(--accent)); }
+  .exploration-done-list { display: flex; gap: 6px; flex-wrap: wrap; }
+  .exploration-open {
+    background: transparent; border: 1px dashed var(--border); color: var(--text-dim);
+    border-radius: 5px; font-size: 12px; padding: 4px 10px; cursor: pointer;
+  }
   .agent-question-header {
     font-size: 10px; color: var(--accent); font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.6px; margin-bottom: 6px;

@@ -1320,6 +1320,8 @@ function agentPanelHTML(p) {
       let planRawLines = []; // raw text for plan viewer
       let mermaidLines = null;  // null when not inside a ```mermaid block; array otherwise
       let teamLines = null;     // same, for a ```mc:team proposal (static/js/team-card.js)
+      let explVersion = 0;      // occurrence counter for [clayrune:exploration-ready], matches the live-DOM count in exploration-card.js
+      let explBriefChars = 0;   // narration chars seen since the last user prompt (exploration-card.js's no-brief heuristic, cold-path twin)
       function flushTable() {
         if (tableLines.length === 0) return;
         if (isPipeTable(tableLines)) {
@@ -1379,6 +1381,18 @@ function agentPanelHTML(p) {
             teamLines.push(line);
           }
           planRawLines.push(line);
+          continue;
+        }
+        // Brainstorm exploration handoff (MC-990): a single terminal line, not
+        // a fenced block — same contract as _handleExplorationLine's live-DOM
+        // twin in exploration-card.js (see that file's module doc).
+        if (/^\s*\[clayrune:exploration-ready\]\s*$/.test(line) && typeof window.explorationCardPlaceholderHTML === 'function') {
+          flushTable();
+          result += planBlock;
+          planBlock = ''; planRawLines = [];
+          explVersion += 1;
+          result += window.explorationCardPlaceholderHTML(activeSessionId, explVersion, p.id, (activeSession && activeSession.claudeSessionId) || '', explBriefChars >= 20);
+          explBriefChars = 0;
           continue;
         }
         // Stop-hook block/resend boundary (see agent_runtime.is_stop_hook_
@@ -1453,7 +1467,7 @@ function agentPanelHTML(p) {
             // next (§4: "a message after the user speaks DOES re-show it").
             // Tool chips don't — they're the agent's own activity, not a new
             // speaker, so a header wouldn't repeat around them either way.
-            if (cls.includes('agent-line-prompt')) _msgAttrResetPending(activeSessionId);
+            if (cls.includes('agent-line-prompt')) { _msgAttrResetPending(activeSessionId); explBriefChars = 0; }
           } else {
             // Bare narration bubble: the first one since the header was last
             // shown (start of buffer, or since the last user message) gets
@@ -1463,6 +1477,7 @@ function agentPanelHTML(p) {
               planBlock += _msgAttrHeaderHTML(_attrChar);
             }
             if (cls === 'agent-line') _msgAttrClearPending(activeSessionId);
+            if (cls === 'agent-line') explBriefChars += line.trim().length;
             planBlock += div;
             planRawLines.push(line);
           }
@@ -4701,6 +4716,10 @@ function appendAgentLine(sessionId, text, dateHint) {
   // Mermaid diagram interception. Must come before all other line handling
   // so ```mermaid fences are caught even if they look like other syntaxes.
   if (typeof window._handleTeamLine === 'function' && window._handleTeamLine(sessionId, text, el)) {
+    if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
+    return;
+  }
+  if (typeof window._handleExplorationLine === 'function' && window._handleExplorationLine(sessionId, text, el)) {
     if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
     return;
   }

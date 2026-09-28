@@ -2245,6 +2245,7 @@ function refreshModalById(modalId) {
   // (the streaming path renders inline; this catches the rebuild path).
   _renderAllMermaidPlaceholders(content);
   if (typeof window.mountTeamCards === 'function') window.mountTeamCards(content);
+  if (typeof window.mountExplorationCards === 'function') window.mountExplorationCards(content);
   // Re-apply the 3-pane rail search filter after the rebuild (the input value +
   // focus are already restored above; this re-hides the non-matching rows).
   if (typeof _applyRailFilter === 'function') { try { _applyRailFilter(entry.projectId); } catch (_) {} }
@@ -3883,6 +3884,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/walkthrough.js"></script>
 <script type="module" src="/static/js/first-run.js"></script>
 <script type="module" src="/static/js/team-card.js"></script>
+<script type="module" src="/static/js/exploration-card.js"></script>
 <script type="module" src="/static/js/skills-panel.js"></script>
 <script type="module" src="/static/js/media.js"></script>
 <script type="module" src="/static/js/settings-drill.js"></script>

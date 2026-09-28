@@ -155,6 +155,18 @@ may revise it in a later turn — label the revision when you do. Saving it as
 a separate file needs an explicit request and destination from the user; you
 never write an operator's idea into the Clayrune source repo on your own.
 
+After you post a complete brief — or a provisional one the user explicitly
+asked for while phases remain untested — end that same message with
+`[clayrune:exploration-ready]` on its own line, after the brief and nothing
+else on that line. This renders a **Use this exploration** proposal card the
+user can act on later; it does not write, publish, or transfer anything
+itself, and it grants you no new permission — same as every other
+`[clayrune:...]` marker in this app. Emit it again, in the same way, whenever
+you post a revised brief later in the conversation — each is a new version of
+the same proposal. Never emit it on a message that is not itself a complete
+or explicitly-provisional brief (a bare status update, a mid-research check-
+in, or an answer to a side question is not a brief).
+
 ## Out of scope
 
 No automated venture score, no autonomous multi-agent research fan-out, no
