@@ -2311,12 +2311,34 @@ def _stream_gen(session):
     yield f'data: {json.dumps({"status": session["status"], "error": session.get("error")})}\n\n'
 
 
+def _resume_screencast_for_new_viewer(session):
+    """A new /api/browser/stream connection means a viewer wants frames, so a
+    minimize-pause must not outlive the pane that set it (MC-996).
+
+    `screencast_paused` is set by the pane's minimize and cleared ONLY by the
+    dock chip's restore. Every other way back to the session -- a page reload,
+    the Browser button, the session switcher, a toast's View -- attaches a new
+    view (openBrowserPane(null, pid, sid)), and _bpDetachView throws the chip
+    away without sending 'start'. The session then stayed paused forever:
+    frameStoppedLoading and tab switches both skip the re-arm while paused, so
+    the new pane sat on one frame (or none after a tab switch) while agent
+    navigate/read kept working. Measured 10/10 frozen on the pause->attach
+    path before this, 0/10 after. The minimized pane itself keeps its SSE
+    open, so this never undoes a live minimize."""
+    if session.get('screencast_paused') and session.get('status') == 'running':
+        session['screencast_paused'] = False
+        q = session.get('cmd_queue')
+        if q is not None:
+            q.put(('Page.startScreencast', session.get('screencast_params', _SCREENCAST_PARAMS)))
+
+
 @bp.route('/api/browser/stream')
 def browser_stream():
     sid = request.args.get('session_id')
     session = browser_sessions.get(sid)
     if not session:
         return jsonify({'error': 'unknown session'}), 404
+    _resume_screencast_for_new_viewer(session)
     return Response(_stream_gen(session), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
