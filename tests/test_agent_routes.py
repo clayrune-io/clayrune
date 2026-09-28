@@ -1314,6 +1314,47 @@ def test_consume_refuses_ambiguous_claude_session_id(client):
         mc_state.agent_sessions.pop('sid-amb-b', None)
 
 
+def test_consume_reverifies_ambiguity_after_acquiring_the_lock(client):
+    """MC-994 re-review finding N5 (Fenn, 2026-09-28): the first cut's
+    ambiguity check ran only on the pre-lock snapshot, before the project's
+    manager lock was even known — a session B sharing A's claude_session_id,
+    inserted into the SAME project between that snapshot and
+    `get_manager(project_id).lock`, was invisible to it, so consume still
+    spent A's pass while B (now ambiguous) sat there too. Reproduces the
+    exact interleaving Fenn's probe used: B is inserted at the moment
+    consume asks for the project's manager, i.e. exactly the gap between the
+    unlocked snapshot and the lock acquisition."""
+    from unittest import mock
+    from mc import state as mc_state
+    from mc.blueprints import agent_routes as ar
+    mc_state.agent_sessions['sid-race-a'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-race',
+                                              'trigger_type': 'dispatch'}
+    try:
+        granted = _grant_pass_as_human(client, 'proj-a', 'sid-race-a')
+        assert granted.get_json()['status'] == 'granted'
+
+        real_get_manager = ar.get_manager
+        injected = {'done': False}
+
+        def _get_manager_and_inject(project_id):
+            if not injected['done']:
+                injected['done'] = True
+                mc_state.agent_sessions['sid-race-b'] = {
+                    'project_id': 'proj-a', 'claude_session_id': 'csid-race',
+                    'trigger_type': 'dispatch'}
+            return real_get_manager(project_id)
+
+        with mock.patch.object(ar, 'get_manager', side_effect=_get_manager_and_inject):
+            resp = _consume_pass(client, 'csid-race')
+        assert resp.status_code == 409
+        assert resp.get_json()['consumed'] is False
+        # Refused, not spent — A's pass must still be sitting there afterward.
+        assert '_attend_once_pass' in mc_state.agent_sessions['sid-race-a']
+    finally:
+        mc_state.agent_sessions.pop('sid-race-a', None)
+        mc_state.agent_sessions.pop('sid-race-b', None)
+
+
 def test_consume_refuses_pass_bound_to_a_different_session_record(client):
     """Belt-and-braces on top of the ambiguity refusal: a pass records the MC
     session_id it was granted to at grant time; if the record consume would

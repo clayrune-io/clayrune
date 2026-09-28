@@ -6335,11 +6335,26 @@ def consume_attend_once_pass():
     subprocess has (CLAUDE_CODE_SESSION_ID), so there is no server-issued
     launch identity to bind to instead without a hook-payload change; refusing
     outright whenever the mapping is ambiguous is the interim fix Fenn asked
-    for. Residual race: a second session claiming the same csid between this
-    lookup and the lock below is not closed here — that would need a lock
-    spanning every project's session dict, which nothing else in this file
-    takes either. Fenn's ambiguity finding is about a *standing* collision
-    (two live records sharing an ID), which this closes.
+    for.
+
+    Re-review (Fenn, 2026-09-28, N5): the FIRST cut's ambiguity check ran only
+    on the unlocked snapshot above, before `project_id`'s lock was even known —
+    a second session B claiming the same csid, inserted into THIS project
+    between that snapshot and the `with get_manager(project_id).lock:` below,
+    was invisible to it, so consume still spent A's pass for a now-ambiguous
+    csid. Every write site that gives a session a claude_session_id
+    (`_note_claude_sid`, and every session-dict literal that seeds one at
+    creation/revive time) does so while holding — or, for the hot stream-reader
+    path, WITHOUT holding — this same project's manager lock; re-running the
+    scan restricted to `project_id` immediately after acquiring that lock
+    closes the specific interleaving Fenn's test hook reproduced (an insertion
+    into the SAME project between snapshot and lock). Residual: a csid is a
+    Claude-CLI-issued UUID scoped to one spawned process for one project's cwd
+    (see `_sessions_sharing_csid`'s own project_id scoping) and this codebase
+    already assumes it cannot span projects, so a genuinely CROSS-project
+    collision — which would need a global lock over every project's session
+    dict, matched by nothing else in this file — stays out of scope, same as
+    Fenn's report says.
     """
     data = request.get_json(silent=True) or {}
     csid = (data.get('claude_session_id') or '').strip()
@@ -6347,22 +6362,28 @@ def consume_attend_once_pass():
         return jsonify({'consumed': False, 'error': 'claude_session_id required'}), 400
     matches = [(sid, s) for sid, s in list(agent_sessions.items())
                if s.get('claude_session_id') == csid]
-    if len(matches) > 1:
-        ambiguous_sids = [sid for sid, _ in matches]
-        _log(f"[attend-once] consume REFUSED: claude_session {csid[:12]} maps to "
-             f"{len(matches)} MC sessions {ambiguous_sids} — ambiguous, refusing "
-             f"rather than guessing which one the human approved")
-        return jsonify({'consumed': False,
-                        'error': 'ambiguous claude_session_id: more than one MC session '
-                                 'shares it'}), 409
     if not matches:
         return jsonify({'consumed': False, 'error': 'session not found'}), 404
-    sid, s = matches[0]
-    project_id = s.get('project_id')
+    # project_id is read from the (possibly stale) snapshot purely to know
+    # WHICH manager lock to take; every decision that matters is re-derived
+    # from `agent_sessions` again immediately below, inside that lock.
+    project_id = matches[0][1].get('project_id')
     with get_manager(project_id).lock:
-        live = agent_sessions.get(sid)
-        if live is None or live.get('claude_session_id') != csid:
+        live_matches = [(sid, s) for sid, s in list(agent_sessions.items())
+                        if s.get('claude_session_id') == csid
+                        and s.get('project_id') == project_id]
+        if len(live_matches) > 1:
+            ambiguous_sids = [sid for sid, _ in live_matches]
+            _log(f"[attend-once] consume REFUSED: claude_session {csid[:12]} maps to "
+                 f"{len(live_matches)} MC sessions {ambiguous_sids} in project "
+                 f"{project_id} — ambiguous, refusing rather than guessing which "
+                 f"one the human approved")
+            return jsonify({'consumed': False,
+                            'error': 'ambiguous claude_session_id: more than one MC session '
+                                     'shares it'}), 409
+        if not live_matches:
             return jsonify({'consumed': False, 'error': 'session not found'}), 404
+        sid, live = live_matches[0]
         _evict_expired_attend_once_pass(live)
         if not _attend_once_pass_view(live):
             return jsonify({'consumed': False, 'error': 'no open pass'})

@@ -242,8 +242,20 @@ def local_auth_set():
             # No LAN bootstrapping — the owner sets the first passcode on the host.
             return jsonify({'error': 'setup_requires_host'}), 403
     else:
+        # Share /login's throttle: MC-994 re-review finding N3 (Fenn, 2026-09-28)
+        # — this branch used to verify `current` with no attempt cap at all, so
+        # a caller shut out of /login by _local_auth_throttled could still run
+        # an unthrottled online guess of the SAME passcode here and, on a hit,
+        # walk away with a replacement of their own choosing. Same IP counter,
+        # same cap/window as login; a wrong guess here counts against login
+        # attempts too, and vice versa — one guessing budget per source IP,
+        # not one per route.
+        if _local_auth_throttled():
+            return jsonify({'error': 'too_many_attempts'}), 429
         if not _local_auth_verify_passcode((body.get('current') or '').strip()):
+            _local_auth_note_fail()
             return jsonify({'error': 'bad_current_passcode'}), 403
+        _LOCAL_AUTH_FAILS.pop(request.remote_addr or '?', None)
     _local_auth_set_passcode(new_pass)
     _log(f"[local-auth] passcode set/changed from {request.remote_addr}", flush=True)
     return _local_auth_set_cookie(jsonify({'ok': True, 'configured': True}))
