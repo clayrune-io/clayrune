@@ -1061,9 +1061,16 @@ function agentPanelHTML(p) {
   }
   // Mobile Layer-2 list is built from the durable conversations — ensure they
   // load whenever we're not inside a specific chat (even if live sessions exist,
-  // where noActiveTab is false and the block above wouldn't fire).
-  if (mobileMode && !activeSession && !wantNew && !conversationsCache[p.id]) {
-    loadConversations(p.id);
+  // where noActiveTab is false and the block above wouldn't fire). Also load the
+  // agent log here for the same reason: it's what _userInitiatedConvos merges in
+  // to rescue a chat that's aged out of the /conversations top-20 window. Without
+  // it, a busy project's mobile list only ever shows what's still in that window
+  // — e.g. two of a hired persona's three conversations vanishing from the list
+  // the moment a burst of other agent activity pushes them past position 20
+  // (Ron, 2026-09-28: "why do I now see only one Dave conversation?").
+  if (mobileMode && !activeSession && !wantNew) {
+    if (!conversationsCache[p.id]) loadConversations(p.id);
+    if (!agentLogCache[p.id]) loadAgentLog(p.id);
   }
   // Provider capability gate — all defaults match claude (safe for existing
   // callers). An active session is bound to the provider it began with; the
