@@ -121,6 +121,12 @@ const ESTIMATE_EXCEEDS_OBSERVED_FIXTURE = {
   segmented_bar: { status: 'estimate_exceeds_observed', bar_change_pp: 10, estimated_pp: 12, unattributed_pp: -2, range_pp: [9, 13] },
 };
 
+// Review finding #7's own reproduction: a Claude request in flight when
+// Codex is selected before it resolves. Distinct session_count per provider
+// (111 vs 222) is the tell for which one actually ended up on screen.
+const CLAUDE_RACE_FIXTURE = { ...POPULATED_FIXTURE, provider: 'claude', totals: { ...POPULATED_FIXTURE.totals, session_count: 111 } };
+const CODEX_RACE_FIXTURE = { ...POPULATED_FIXTURE, provider: 'codex', totals: { ...POPULATED_FIXTURE.totals, session_count: 222 } };
+
 const ok = (m) => console.log('  ✓ ' + m);
 let bad = 0;
 const fail = (m) => { console.error('  ✗ ' + m); bad++; };
@@ -306,6 +312,105 @@ try {
       ? ok('provider control reflects the clicked provider (codex)')
       : fail(`provider control should show codex selected, saw "${providerSelected}"`);
 
+    await ctx.close();
+  }
+
+  // ── 7. Finding #7: an in-flight fetch never leaks a stale/superseded
+  //      response into a newer selection, and a failed fetch surfaces an
+  //      error instead of silently relabelling old data as current ────────
+  {
+    // 7a. Race: switch provider before the FIRST (slow) request resolves --
+    // the newer request must win even though the older one settles later.
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await ctx.newPage();
+    let breakdownCalls = 0;
+    await page.route('**/*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/system/usage/breakdown') {
+        breakdownCalls++;
+        const isFirst = breakdownCalls === 1;
+        const provider = url.searchParams.get('provider');
+        const body = provider === 'codex' ? CODEX_RACE_FIXTURE : CLAUDE_RACE_FIXTURE;
+        if (isFirst) await new Promise((r) => setTimeout(r, 400));
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+      }
+      return routeHandler(POPULATED_FIXTURE, WINDOWS_FIXTURE)(route);
+    });
+    await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
+    await page.evaluate(() => { toggleSysStatusPopover(); _sysStatusSwitchTab('usage'); });
+    await page.waitForSelector('#sys-status-popover.open', { timeout: 3000 });
+    await page.waitForSelector('.ub-controls', { state: 'attached', timeout: 5000 });
+    // The initial claude/5h fetch (delayed 400ms) is now in flight; switch
+    // to codex before it resolves.
+    await page.selectOption('.ub-select:has(option[value="claude"])', 'codex');
+    await page.waitForTimeout(600);
+    const text = await page.$eval('.sys-status-popover', (el) => el.textContent);
+    (/222/.test(text) && !/111/.test(text))
+      ? ok('race: newer selection (codex/222) wins even though claude/111 resolves later')
+      : fail(`race: stale/superseded data leaked into the current selection: ${text.slice(0, 400)}`);
+    const providerSelected = await page.$eval('.ub-select:has(option[value="claude"])', (el) => el.value);
+    providerSelected === 'codex'
+      ? ok('race: provider control still reflects codex after the late response')
+      : fail(`race: provider control drifted to "${providerSelected}"`);
+    await ctx.close();
+  }
+  {
+    // 7b. A failed refresh keeps the last good render but surfaces an error
+    // hint -- it must not silently pretend the stale data is current.
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await ctx.newPage();
+    let fail500 = false;
+    await page.route('**/*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/system/usage/breakdown') {
+        if (fail500) return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(POPULATED_FIXTURE) });
+      }
+      return routeHandler(POPULATED_FIXTURE, WINDOWS_FIXTURE)(route);
+    });
+    await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
+    await page.evaluate(() => { toggleSysStatusPopover(); _sysStatusSwitchTab('usage'); });
+    await page.waitForSelector('#sys-status-popover.open', { timeout: 3000 });
+    await page.waitForSelector('.ub-controls', { state: 'attached', timeout: 5000 });
+    await page.waitForSelector('.ub-table-wrap', { state: 'attached', timeout: 5000 });
+
+    fail500 = true;
+    await page.click('#ssp-usage-refresh-btn');
+    await page.waitForTimeout(300);
+    const text2 = await page.$eval('.sys-status-popover', (el) => el.textContent);
+    /Last refresh failed/i.test(text2)
+      ? ok('failed refresh surfaces an error hint')
+      : fail(`failed refresh did not surface an error hint: ${text2.slice(0, 500)}`);
+    /proj-a/.test(text2)
+      ? ok('failed refresh keeps showing the last good data, not a blank/failed state')
+      : fail('failed refresh should keep the last good render visible');
+    await ctx.close();
+  }
+  {
+    // 7c. A failed FIRST load (no prior cache) shows a distinct failed
+    // message -- not the generic "not loaded yet", which reads as nothing
+    // happened rather than an actual failure.
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await ctx.newPage();
+    await page.route('**/*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/system/usage/breakdown') {
+        return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+      }
+      return routeHandler(POPULATED_FIXTURE, WINDOWS_FIXTURE)(route);
+    });
+    await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
+    await page.evaluate(() => { toggleSysStatusPopover(); _sysStatusSwitchTab('usage'); });
+    await page.waitForSelector('#sys-status-popover.open', { timeout: 3000 });
+    await page.waitForSelector('.ub-controls', { state: 'attached', timeout: 5000 });
+    await page.waitForTimeout(300);
+    const text3 = await page.$eval('.sys-status-popover', (el) => el.textContent);
+    /failed to load/i.test(text3)
+      ? ok('a failed first load shows a distinct failed message, not "not loaded yet"')
+      : fail(`first-load failure should show a distinct error, saw: ${text3.slice(0, 500)}`);
     await ctx.close();
   }
 

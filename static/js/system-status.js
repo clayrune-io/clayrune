@@ -32,6 +32,20 @@ let systemUsageBreakdownCache = null;
 let systemUsageWindowsCache = null;
 let _ubBreakdownFetching = false;
 let _ubWindowsFetching = false;
+// Review finding #7 (docs/_journal/4668eafc-mc998-fenn-review.md): an
+// in-flight fetch used to suppress the next one outright, so switching
+// provider before the first request resolved left the control saying
+// Codex while Claude's data stayed on screen — and a failed fetch left the
+// stale cache in place with no error state. `*ReqSeq` lets the LATEST
+// request always win (an older one that resolves late is discarded, never
+// applied) instead of dropping the newer selection's request; `*CacheKey`
+// tags which exact query produced the cache so the renderer can tell a
+// stale cache from a current one.
+let _ubBreakdownReqSeq = 0;
+let _ubBreakdownCacheKey = '';
+let _ubBreakdownError = false;
+let _ubWindowsReqSeq = 0;
+let _ubWindowsCacheKey = '';
 let _ubProvider = 'claude';
 let _ubWindowKind = '5h';
 let _ubWindowScope = 'all';
@@ -304,7 +318,12 @@ function _ubFmtLoc(n) { return n == null ? 'unavailable' : n.toLocaleString(); }
 function _ubFmtPP(n) { return n == null ? '—' : n.toFixed(2) + '%'; }
 
 function _renderUsageBreakdownSection() {
-  const b = systemUsageBreakdownCache;
+  const currentKey = _ubBreakdownQueryKey();
+  // Review finding #7: a cache from a PRIOR selection (provider/window/
+  // range/etc. changed since it was fetched) must never be shown as if it
+  // answered the current one -- `stale` gates that below.
+  const stale = systemUsageBreakdownCache != null && _ubBreakdownCacheKey !== currentKey;
+  const b = stale ? null : systemUsageBreakdownCache;
   const windowsList = (systemUsageWindowsCache && systemUsageWindowsCache.windows) || [];
 
   const provSel = `
@@ -353,8 +372,11 @@ function _renderUsageBreakdownSection() {
     return `<div class="ssp-section-head">Breakdown</div>${controlsHTML}<div class="ssp-empty">Loading breakdown…</div>`;
   }
   if (!b) {
-    return `<div class="ssp-section-head">Breakdown</div>${controlsHTML}<div class="ssp-empty">Breakdown not loaded yet.</div>`;
+    const msg = _ubBreakdownError ? 'Breakdown failed to load for this selection — try again.' : 'Breakdown not loaded yet.';
+    return `<div class="ssp-section-head">Breakdown</div>${controlsHTML}<div class="ssp-empty">${msg}</div>`;
   }
+  const refreshErrorHint = _ubBreakdownError
+    ? '<div class="ssp-hint-line">Last refresh failed — showing the previous result.</div>' : '';
 
   const esLabel = b.empty_state ? _UB_EMPTY_STATE_LABEL[b.empty_state] || b.empty_state : '';
   const t = b.totals || {};
@@ -436,6 +458,7 @@ function _renderUsageBreakdownSection() {
   return `
     <div class="ssp-section-head">Breakdown${b.coverage_begins ? '' : ' · sampling not begun'}</div>
     ${controlsHTML}
+    ${refreshErrorHint}
     ${esLabel ? `<div class="ssp-empty">${esc(esLabel)}.</div>` : ''}
     ${totalsHTML}
     ${tppHTML}
@@ -711,43 +734,77 @@ async function _ubRefreshUsage(ev) {
     if (res.ok) systemUsageCache = await res.json();
   } catch { /* leave cache as-is */ }
   _sysUsageRefreshing = false;
+  // Review finding #7: this button only lived on the Usage tab, yet only
+  // ever refreshed the OLD usage cache — Breakdown stayed on whatever it
+  // last fetched, arbitrarily stale, until a control change forced it.
+  fetchUsageBreakdown();
+  fetchUsageWindows();
   _rerenderSysStatusSurfaces();
+}
+
+// The exact query identity for the CURRENT control selection — shared by the
+// fetcher (what it requests + tags its cache with) and the renderer (to spot
+// a cache that belongs to a since-changed selection). Single source so the
+// two can never drift apart.
+function _ubBreakdownQueryKey() {
+  const params = new URLSearchParams({
+    provider: _ubProvider, window_kind: _ubWindowKind, window_scope: _ubWindowScope,
+    dimension: _ubDimension, sort: _ubSort,
+  });
+  if (_ubRangeKey) {
+    const [rs, re] = _ubRangeKey.split('|');
+    params.set('range_start', rs);
+    params.set('range_end', re);
+  }
+  return params.toString();
+}
+function _ubWindowsQueryKey() {
+  return new URLSearchParams({ provider: _ubProvider, window_kind: _ubWindowKind, window_scope: _ubWindowScope }).toString();
 }
 
 // MC-998 — Usage Breakdown section: fetch/render pair mirroring
 // fetchSystemUsage's guard/cache/rerender shape, against the two read-only
 // endpoints in mc/blueprints/system_routes.py.
+//
+// Review finding #7: no longer drops a request just because one is already
+// in flight — every call is tagged with a monotonic sequence number, and
+// only the response whose sequence still matches the LATEST call is ever
+// applied. A request superseded by a newer selection is discarded
+// silently; it can never relabel the newer selection's data as its own.
 async function fetchUsageBreakdown() {
-  if (_ubBreakdownFetching) return;
+  const key = _ubBreakdownQueryKey();
+  const seq = ++_ubBreakdownReqSeq;
   _ubBreakdownFetching = true;
+  _rerenderSysStatusSurfaces();
+  let payload = null, succeeded = false;
   try {
-    const params = new URLSearchParams({
-      provider: _ubProvider, window_kind: _ubWindowKind, window_scope: _ubWindowScope,
-      dimension: _ubDimension, sort: _ubSort,
-    });
-    if (_ubRangeKey) {
-      const [rs, re] = _ubRangeKey.split('|');
-      params.set('range_start', rs);
-      params.set('range_end', re);
-    }
-    const res = await fetchFailFast(API_BASE + '/api/system/usage/breakdown?' + params.toString());
-    if (res.ok) systemUsageBreakdownCache = await res.json();
-  } catch { /* leave cache as-is */ }
+    const res = await fetchFailFast(API_BASE + '/api/system/usage/breakdown?' + key);
+    if (res.ok) { payload = await res.json(); succeeded = true; }
+  } catch { /* succeeded stays false -> error state below */ }
+  if (seq !== _ubBreakdownReqSeq) return;  // superseded by a newer selection meanwhile
   _ubBreakdownFetching = false;
+  if (succeeded) {
+    systemUsageBreakdownCache = payload;
+    _ubBreakdownCacheKey = key;
+    _ubBreakdownError = false;
+  } else {
+    _ubBreakdownError = true;
+  }
   _rerenderSysStatusSurfaces();
 }
 
 async function fetchUsageWindows() {
-  if (_ubWindowsFetching) return;
+  const key = _ubWindowsQueryKey();
+  const seq = ++_ubWindowsReqSeq;
   _ubWindowsFetching = true;
+  let payload = null, succeeded = false;
   try {
-    const params = new URLSearchParams({
-      provider: _ubProvider, window_kind: _ubWindowKind, window_scope: _ubWindowScope,
-    });
-    const res = await fetchFailFast(API_BASE + '/api/system/usage/windows?' + params.toString());
-    if (res.ok) systemUsageWindowsCache = await res.json();
+    const res = await fetchFailFast(API_BASE + '/api/system/usage/windows?' + key);
+    if (res.ok) { payload = await res.json(); succeeded = true; }
   } catch { /* leave cache as-is */ }
+  if (seq !== _ubWindowsReqSeq) return;  // superseded by a newer selection meanwhile
   _ubWindowsFetching = false;
+  if (succeeded) { systemUsageWindowsCache = payload; _ubWindowsCacheKey = key; }
   _rerenderSysStatusSurfaces();
 }
 
@@ -845,6 +902,13 @@ function toggleSysStatusPopover(ev) {
     if (_sysStatusActiveTab === 'usage' && !systemUsageCache && !_sysUsageFetching) {
       fetchSystemUsage();
     }
+    // Review finding #7: reopening the popover never refreshed Breakdown —
+    // only the initial tab switch did (guarded on cache being null), so a
+    // popover that starts already on Usage from a persisted prior session
+    // showed whatever it had last fetched, however old. Unconditional, same
+    // as fetchSystemStatus() above: reopening is itself the "give me current
+    // data" signal.
+    if (_sysStatusActiveTab === 'usage') { fetchUsageBreakdown(); fetchUsageWindows(); }
   } else {
     pop.classList.remove('open');
   }
@@ -868,7 +932,13 @@ async function refreshSystemStatus(ev) {
   renderSysStatusPill();
   // Drop the usage cache too so the next render re-fetches stats-cache.json.
   systemUsageCache = null;
-  if (_sysStatusActiveTab === 'usage') fetchSystemUsage();
+  if (_sysStatusActiveTab === 'usage') {
+    fetchSystemUsage();
+    // Review finding #7: this global "Refresh" footer button updated the
+    // old usage cache only, on every tab — Breakdown never moved.
+    fetchUsageBreakdown();
+    fetchUsageWindows();
+  }
   _rerenderSysStatusSurfaces();
 }
 
@@ -883,7 +953,12 @@ function openSystemUsage() {
   // Land on Usage (the reason this surface exists); the other tabs stay usable.
   _sysStatusActiveTab = 'usage';
   if (!systemUsageCache && !_sysUsageFetching) fetchSystemUsage();
-  if (!systemUsageBreakdownCache && !_ubBreakdownFetching) { fetchUsageBreakdown(); fetchUsageWindows(); }
+  // Review finding #7: gating on "cache is null" meant Breakdown refreshed
+  // only the FIRST time this modal opened — every later reopen (including
+  // restoring a minimized one) showed whatever it had, however stale.
+  // Unconditional, same as fetchSystemStatus() below.
+  fetchUsageBreakdown();
+  fetchUsageWindows();
   fetchSystemStatus();
 
   if (openModals.has(modalId)) {
@@ -1049,7 +1124,16 @@ document.addEventListener('click', (e) => {
 // anyway, so polling it here at the same cadence costs nothing extra.
 fetchSystemStatus();
 fetchSystemUsage();
-setInterval(() => { fetchSystemStatus(); fetchSystemUsage(); }, 60000);
+// Review finding #7: the 60s tick refreshed the OLD usage cache only, so
+// Breakdown could sit stale indefinitely once loaded. Gated on
+// `systemUsageBreakdownCache` (not the active tab) -- once Breakdown has
+// been loaded at all this session it keeps ticking even if the user is
+// currently on another tab, same as the poll never stops for the usage bar.
+setInterval(() => {
+  fetchSystemStatus();
+  fetchSystemUsage();
+  if (systemUsageBreakdownCache) { fetchUsageBreakdown(); fetchUsageWindows(); }
+}, 60000);
 
 // ── Interop: re-expose for inline / cross-module + region-generated on*=
 //    handler callers. All runtime-only (resolve against window — incl. the
