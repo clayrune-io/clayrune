@@ -16,6 +16,7 @@ apply to a test spawning a real PID.
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 
@@ -88,6 +89,99 @@ def test_matched_cli_name_by_cmdline_when_exe_is_node():
 def test_matched_cli_name_none_outside_install_dir():
     p = _proc(1, 0, 'notepad.exe', exe=r'C:\Windows\notepad.exe')
     assert ps.matched_cli_name(p, INSTALL_DIRS) is None
+
+
+# ── resolve_known_install_dirs (Dave's review of cfa95c7): must resolve to
+# each CLI's OWN package dir, never the shared npm prefix every globally-
+# installed npm tool (npm itself, pm2, an unrelated MCP server) also sits
+# under. Real filesystem, real function -- no INSTALL_DIRS stand-in. ───────
+
+@pytest.fixture()
+def fake_npm_prefix(tmp_path, monkeypatch):
+    """A prefix dir with codex + gemini installed as real npm packages,
+    PLUS npm's own package and pm2 (globally-installed, unrelated tools
+    that share the same prefix on a real box) -- the exact collision Dave
+    measured."""
+    prefix = tmp_path / 'npm-global'
+    node_modules = prefix / 'node_modules'
+    (node_modules / '@openai' / 'codex' / 'vendor').mkdir(parents=True)
+    (node_modules / '@openai' / 'codex' / 'vendor' / 'codex.exe').write_text('x')
+    (node_modules / '@google' / 'gemini-cli' / 'dist').mkdir(parents=True)
+    (node_modules / '@google' / 'gemini-cli' / 'dist' / 'gemini.js').write_text('x')
+    (node_modules / 'npm' / 'bin').mkdir(parents=True)
+    (node_modules / 'npm' / 'bin' / 'npm-cli.js').write_text('x')
+    (node_modules / 'pm2' / 'bin').mkdir(parents=True)
+    (node_modules / 'pm2' / 'bin' / 'pm2').write_text('x')
+    monkeypatch.setattr(ps, '_npm_prefix', lambda: str(prefix))
+    monkeypatch.setattr(ps, '_native_install_dirs', lambda name: [])
+    return prefix
+
+
+def test_resolve_known_install_dirs_excludes_shared_prefix_root(fake_npm_prefix):
+    prefix = fake_npm_prefix
+    dirs = ps.resolve_known_install_dirs(names=('codex',))
+    norm_prefix = os.path.normcase(str(prefix))
+    assert norm_prefix not in [os.path.normcase(d) for d in dirs['codex']]
+    for d in dirs['codex']:
+        assert 'codex' in d.lower()
+
+
+def test_resolve_known_install_dirs_never_includes_npm_or_pm2(fake_npm_prefix):
+    dirs = ps.resolve_known_install_dirs(names=('codex', 'gemini'))
+    all_dirs = [d for v in dirs.values() for d in v]
+    assert not any('npm' in d.lower().split(os.sep)[-2:] for d in all_dirs)
+    assert not any('pm2' in d.lower() for d in all_dirs)
+
+
+def test_matched_cli_name_ignores_npm_cli_process(fake_npm_prefix):
+    dirs = ps.resolve_known_install_dirs(names=('codex', 'gemini'))
+    npm_js = str(fake_npm_prefix / 'node_modules' / 'npm' / 'bin' / 'npm-cli.js')
+    p = _proc(1, 0, 'node.exe', exe=r'C:\Program Files\nodejs\node.exe',
+               cmdline='node "%s" install -g @openai/codex@latest' % npm_js)
+    assert ps.matched_cli_name(p, dirs) is None
+
+
+def test_matched_cli_name_ignores_pm2_process(fake_npm_prefix):
+    dirs = ps.resolve_known_install_dirs(names=('codex', 'gemini'))
+    pm2 = str(fake_npm_prefix / 'node_modules' / 'pm2' / 'bin' / 'pm2')
+    p = _proc(1, 0, 'node.exe', exe=r'C:\Program Files\nodejs\node.exe', cmdline='node "%s"' % pm2)
+    assert ps.matched_cli_name(p, dirs) is None
+
+
+def test_matched_cli_name_still_matches_real_codex_under_its_own_package_dir(fake_npm_prefix):
+    """The PID 45812 case this whole module exists for: codex.exe living
+    under its own node_modules/@openai/codex dir must still match."""
+    dirs = ps.resolve_known_install_dirs(names=('codex', 'gemini'))
+    exe = str(fake_npm_prefix / 'node_modules' / '@openai' / 'codex' / 'vendor' / 'codex.exe')
+    p = _proc(1, 0, 'codex.exe', exe=exe)
+    assert ps.matched_cli_name(p, dirs) == 'codex'
+
+
+def test_matched_cli_name_correct_per_package_not_first_dict_entry(fake_npm_prefix):
+    """A gemini process must be labelled 'gemini', not whichever CLI name
+    happens to iterate first in the install-dirs dict."""
+    dirs = ps.resolve_known_install_dirs(names=('codex', 'gemini'))
+    exe = str(fake_npm_prefix / 'node_modules' / '@google' / 'gemini-cli' / 'dist' / 'gemini.js')
+    p = _proc(1, 0, 'node.exe', exe=r'C:\Program Files\nodejs\node.exe', cmdline='node "%s"' % exe)
+    assert ps.matched_cli_name(p, dirs) == 'gemini'
+
+
+def test_run_sweep_end_to_end_spares_npm_and_pm2_but_kills_real_codex_orphan(fake_npm_prefix, monkeypatch):
+    """Full run_sweep against the real resolve_known_install_dirs (not the
+    fake INSTALL_DIRS stand-in used elsewhere in this file): an idle, old,
+    dead-chain npm-cli.js and pm2 process must NOT be swept even though
+    every other criterion is met; a real orphaned codex.exe must still be."""
+    now = time.time()
+    codex_exe = str(fake_npm_prefix / 'node_modules' / '@openai' / 'codex' / 'vendor' / 'codex.exe')
+    npm_js = str(fake_npm_prefix / 'node_modules' / 'npm' / 'bin' / 'npm-cli.js')
+    pm2_bin = str(fake_npm_prefix / 'node_modules' / 'pm2' / 'bin' / 'pm2')
+    orphan_codex = _proc(1, 99999, 'codex.exe', exe=codex_exe, start_epoch=now - 26 * 3600)
+    orphan_npm = _proc(2, 99998, 'node.exe', exe=r'C:\Program Files\nodejs\node.exe',
+                        cmdline='node "%s"' % npm_js, start_epoch=now - 26 * 3600)
+    orphan_pm2 = _proc(3, 99997, 'node.exe', exe=r'C:\Program Files\nodejs\node.exe',
+                        cmdline='node "%s"' % pm2_bin, start_epoch=now - 26 * 3600)
+    report, killed, _ = _run_sweep_with([orphan_codex, orphan_npm, orphan_pm2])
+    assert killed == [1]
 
 
 # ── chain_is_dead (criterion b, including recycled-PID) ─────────────────────

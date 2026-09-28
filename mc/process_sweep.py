@@ -155,28 +155,62 @@ def _npm_prefix():
     return None
 
 
-def resolve_known_install_dirs(names=AGENT_CLI_NAMES):
-    """dict CLI name -> sorted list of directories believed to hold that
-    CLI's own files: the directory PATH resolves it to, plus the usual npm
-    global-prefix fallback locations (mirrors tools/cli-version-check.py's
-    `_prefix_fallback`, generalized across all five CLIs instead of one).
+# The npm PACKAGE each CLI ships as (mc/agent_runtime.py's resolve_binary()
+# candidate lists + tools/cli-version-check.py's CLIS table are the source
+# of truth for these names). Deliberately NOT `shutil.which(name)`'s
+# directory or any shared bin dir (npm global prefix, ~/.local/bin,
+# /usr/local/bin, ~/.npm-global itself) — Dave's review of cfa95c7 found
+# every one of these CLIs resolving to the SAME shared prefix on a real
+# box, which made criterion (a) match "any globally-installed npm tool"
+# (npm itself, pm2, an unrelated MCP server) rather than an agent CLI.
+_AGENT_CLI_PACKAGES: Dict[str, List[str]] = {
+    'claude': ['@anthropic-ai/claude-code'],
+    'codex': ['@openai/codex'],
+    'gemini': ['@google/gemini-cli'],
+    'opencode': ['opencode-ai'],
+    'qwen': ['@qwen-code/qwen-code'],
+}
 
-    A name absent from the result means we could not locate it at all — its
-    processes never match `matched_cli_name` and are never sweep candidates
-    (fail toward NOT flagging an unresolvable CLI's processes as orphans)."""
+# Native (non-npm) install dirs that belong to exactly one CLI — safe to
+# include because nothing else installs into them. Only claude has one we
+# can verify (mc/agent_runtime.py ClaudeRuntime.resolve_binary()'s fallback
+# list); unverified guesses (e.g. a per-CLI appdata dir) are deliberately
+# left out rather than fabricated — an absent entry just means that
+# install path never becomes a sweep candidate (fail toward not flagging).
+def _native_install_dirs(name: str) -> List[str]:
+    if name != 'claude':
+        return []
+    if sys.platform == 'win32':
+        return [os.path.join(os.environ.get('USERPROFILE', ''), '.claude', 'bin')]
+    return [os.path.join(os.path.expanduser('~'), '.claude', 'bin')]
+
+
+def resolve_known_install_dirs(names=AGENT_CLI_NAMES):
+    """dict CLI name -> sorted list of directories that are that CLI's OWN
+    package or vendor directory — e.g. `<npm-prefix>/node_modules/@openai/codex`,
+    never a shared location a shim or an unrelated tool could also live in.
+    Criterion (a) (`matched_cli_name`) requires a process's exe/cmdline to
+    fall UNDER one of these, so a shared dir here would make every
+    globally-installed npm tool a kill candidate (see module comment above
+    `_AGENT_CLI_PACKAGES` for the incident this fixes).
+
+    A name absent from the result means we could not locate its own
+    package dir at all — its processes never match `matched_cli_name` and
+    are never sweep candidates (fail toward NOT flagging an unresolvable
+    CLI's processes as orphans)."""
     prefix = _npm_prefix()
     roots = [r for r in (prefix, os.path.join(os.path.expanduser('~'), '.npm-global')) if r]
     dirs: Dict[str, List[str]] = {}
     for name in names:
         found: Set[str] = set()
-        path = shutil.which(name)
-        if path:
-            found.add(os.path.normcase(os.path.abspath(os.path.dirname(path))))
         for root in roots:
-            for rel in (name, name + '.cmd', name + '.exe', os.path.join('bin', name)):
-                cand = os.path.join(root, rel)
-                if os.path.isfile(cand):
-                    found.add(os.path.normcase(os.path.abspath(os.path.dirname(cand))))
+            for pkg in _AGENT_CLI_PACKAGES.get(name, ()):
+                cand = os.path.join(root, 'node_modules', *pkg.split('/'))
+                if os.path.isdir(cand):
+                    found.add(os.path.normcase(os.path.abspath(cand)))
+        for cand in _native_install_dirs(name):
+            if cand and os.path.isdir(cand):
+                found.add(os.path.normcase(os.path.abspath(cand)))
         if found:
             dirs[name] = sorted(found)
     return dirs
