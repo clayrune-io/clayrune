@@ -322,6 +322,14 @@ async function runAddTrayDrag(browser) {
   // The Add tray expands the scrollable tab body past the viewport at 950px
   // tall — manual mouse.move/down (unlike .click()) never auto-scrolls, so
   // the drag source can sit below the fold and every coordinate below misses.
+  // Since item 1 (MC-977) sized the modal to the standard convention instead
+  // of force-maximizing, the family list itself is now short enough that a
+  // real card can sit below ITS OWN fold too — same "no drag-time auto-scroll"
+  // limitation. A real user scrolls the list to the target before reaching
+  // into the tray to drag (the list and the tray are independent scroll
+  // regions, so this doesn't disturb the tray's own scroll position); model
+  // that here by scrolling the card into view first.
+  await card.scrollIntoViewIfNeeded();
   await assetItem.scrollIntoViewIfNeeded();
   const sBox = await assetItem.boundingBox();
   const cBox = await card.boundingBox();

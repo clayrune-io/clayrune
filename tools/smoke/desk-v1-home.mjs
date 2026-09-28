@@ -17,7 +17,7 @@
  * Exit 0 = every case holds (render checks in all three tones, interaction
  * checks once); 1 = a case regressed / harness error.
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
@@ -29,6 +29,8 @@ const CSS_DIR = resolve(REPO_ROOT, 'static', 'css');
 const ASSETS_DIR = resolve(REPO_ROOT, 'assets');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const ORIGIN = 'http://mc.smoke.test';
+const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
+mkdirSync(SHOT_DIR, { recursive: true });
 
 const MIME = { '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
 
@@ -413,6 +415,9 @@ async function runModalSizeCheck(browser) {
   size.width < 2000 - 200
     ? ok(`item 1: Desk modal is bounded on a 2000px window (${size.width.toFixed(0)}px wide, not edge-to-edge)`)
     : fail(`item 1: Desk modal stretched edge-to-edge on a 2000px window: ${size.width.toFixed(0)}px wide`);
+
+  await page.screenshot({ path: resolve(SHOT_DIR, 'ux_item1_home_2000.png') });
+  ok('desktop (2000px) screenshot saved: ux_item1_home_2000.png');
 
   reportUncaught(pageErrors, '[modal-size]');
   await ctx.close();
