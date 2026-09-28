@@ -3308,9 +3308,107 @@ try {
   if (uncaught10.length) uncaught10.forEach((e) => fail('uncaught exception in the MC-962 draft/review flow: ' + e));
   await ctx10.close();
 
+  // ── Dave's THIRD scope addition (same MC-962 item, Ron's third screenshot,
+  // project 'drop_shipping_company'): new workflow, don't save, "← Back to
+  // conversation", reopen Workflows -- the tab got stuck on render-core.js's
+  // literal "Loading..." placeholder forever. Root cause: `refreshModalById`
+  // (index.html) only preserved the inline canvas host across an innerHTML
+  // rebuild once `#wfb-canvas-viewport` existed inside it. Reopening the
+  // Workflows tab sets `curTab` synchronously (switchModalTab) and only THEN
+  // awaits `/api/workflows` inside `loadWorkflows` -- during that gap the host
+  // has `#wfb-clayrune-section-<pid>` (loadWorkflows' own skeleton) but no
+  // canvas yet. An SSE turn event landing in that gap (exactly what a live
+  // Vector schedule session in the same project produces) called
+  // `refreshModalById`, found no `#wfb-canvas-viewport`, skipped the preserve,
+  // and wiped the host back to a brand-new "Loading..." node. `loadWorkflows`'s
+  // own in-flight fetch then resolved and called `_wfSyncTabsForProject`,
+  // which looks up `#wfb-clayrune-section-<pid>` fresh by id -- found nothing
+  // (that id died with the orphaned old host) -- and returned early. Nothing
+  // else ever re-calls `loadWorkflows` (the 3s poll only runs while a CC
+  // fan-out exists), so the placeholder was permanent. The in-memory
+  // `_wfState` survived untouched the whole time -- only the DOM mount was
+  // lost -- which is why the fix widens the SAME preserve check to also cover
+  // "loadWorkflows already built its skeleton here", not a client-side
+  // workaround elsewhere. This reproduces that exact race by calling
+  // `window.refreshModalById` mid-flight -- the identical function every SSE
+  // turn-event handler calls (conversation.js), not a stand-in for it. ─────
+  const ctx11 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page11 = await ctx11.newPage();
+  const page11Errors = [];
+  page11.on('pageerror', (e) => page11Errors.push(e.message || String(e)));
+  let delayNextWorkflowsGet11 = false;
+  await page11.route('**/*', async (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
+    if (path === '/api/workflows' && req.method() === 'GET') {
+      if (delayNextWorkflowsGet11) { delayNextWorkflowsGet11 = false; await new Promise((r) => setTimeout(r, 350)); }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    }
+    if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    return route.abort();
+  });
+  await page11.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page11.waitForSelector('#projects-col .card', { timeout: 15000 });
+  await newWorkflow(page11, PID);
+
+  // Mark the draft so "still there" after the race is a real check, not just
+  // "a canvas of SOME kind rendered". Typed into the DOM only -- the FIELD
+  // SYNC discipline (workflow-builder.js) flushes it into `_wfState.def` when
+  // leaving the tab below, exactly like a real user typing then navigating.
+  await setValue(page11, '#wfb-name', 'Ron unsaved draft smoke');
+
+  await page11.click('.modal-back-to-chat');
+  await page11.waitForTimeout(80);
+
+  // Desktop hides the literal tab strip (`.modal-tab-bar { display:none }`,
+  // app.css @media min-width:961px) -- tabs move into the three-dot menu's
+  // `_mcMenuSwitchTab`, which is a thin wrapper that closes the menu then
+  // calls the SAME `switchModalTab` this calls directly. Real click path,
+  // same function reached, no menu-open choreography needed to exercise it.
+  delayNextWorkflowsGet11 = true;
+  await page11.evaluate((pid) => { switchModalTab(pid, 'workflows'); }, PID);
+  // loadWorkflows() builds its skeleton synchronously before the delayed
+  // /api/workflows GET -- 60ms is well inside that gap and well before the
+  // 350ms delayed response, so this lands exactly mid-flight.
+  await page11.waitForTimeout(60);
+  await page11.evaluate((pid) => { window.refreshModalById(pid); }, PID);
+  // Past the 350ms delayed response + settle time.
+  await page11.waitForTimeout(600);
+
+  const raceResult11 = await page11.evaluate((pid) => {
+    const body = document.getElementById('workflows-body-' + pid);
+    const stillLoading = !!body && /Loading\.\.\./.test(body.textContent || '') && !body.querySelector('#wfb-canvas-viewport');
+    const nameEl = document.querySelector('#wfb-name');
+    const st = (typeof window._wfEntry === 'function' && window._wfEntry()) ? window._wfEntry()._wf : null;
+    return {
+      canvasPresent: !!document.getElementById('wfb-canvas-viewport'),
+      stillLoading,
+      nameValue: nameEl ? nameEl.value : null,
+      workflowId: st ? st.workflowId : undefined,
+    };
+  }, PID);
+  (raceResult11.canvasPresent && !raceResult11.stillLoading)
+    ? ok('reopening Workflows after an SSE-style rebuild mid-flight mounts the canvas, not a stuck "Loading..." placeholder')
+    : fail(`expected the canvas mounted with no stuck placeholder, got ${JSON.stringify(raceResult11)}`);
+  (raceResult11.nameValue === 'Ron unsaved draft smoke' && raceResult11.workflowId === null)
+    ? ok('the unsaved draft (name typed before "Back to conversation", never saved) is still there after the race')
+    : fail(`expected the unsaved draft's name + null workflowId to survive the race, got ${JSON.stringify(raceResult11)}`);
+
+  const uncaught11 = page11Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught11.length) uncaught11.forEach((e) => fail('uncaught exception in the reopen-Workflows-mid-SSE-rebuild race: ' + e));
+  await ctx11.close();
+
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
-    ? '\n✅ PASS — the palette IS the Bench (real avatars, initial only where a face is genuinely absent, unrenderable values never echoed), drag-a-person-to-place with its persona preset, the port + popover and drop-onto-card auto-place-and-wire, port-to-port connect, a refused cycle, a refused slot break, an unconnected-port stop stub, mobile bottom-sheet layout, touch-action scroll-lock guard, save (format 2), the schedule-trigger cadence form, and MC-962 describe/draft (loading state, visible error, unsaved+disabled landing, Save persists) plus Check workflow (pinned badge, dismissible unassigned list, stale-on-edit clearing) all behave correctly.'
+    ? '\n✅ PASS — the palette IS the Bench (real avatars, initial only where a face is genuinely absent, unrenderable values never echoed), drag-a-person-to-place with its persona preset, the port + popover and drop-onto-card auto-place-and-wire, port-to-port connect, a refused cycle, a refused slot break, an unconnected-port stop stub, mobile bottom-sheet layout, touch-action scroll-lock guard, save (format 2), the schedule-trigger cadence form, MC-962 describe/draft (loading state, visible error, unsaved+disabled landing, Save persists) plus Check workflow (pinned badge, dismissible unassigned list, stale-on-edit clearing), and reopening Workflows after an SSE-style rebuild mid-flight (no stuck "Loading...", unsaved draft survives) all behave correctly.'
     : `\n❌ FAIL — ${bad} check(s) failed.`);
 } catch (err) {
   console.error('❌ harness error:', err && err.stack ? err.stack : err);

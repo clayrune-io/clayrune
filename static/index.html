@@ -2128,10 +2128,28 @@ function refreshModalById(modalId) {
   // would silently discard them exactly like an agent-output rebuild would
   // discard streaming text. Detach the whole host subtree (tabs row included,
   // so the active-tab selection doesn't flicker) and swap it back in below.
+  //
+  // Also preserve the host while `loadWorkflows()` is still IN FLIGHT for it
+  // (skeleton built, `#wfb-canvas-viewport` not mounted yet) — not just once
+  // the canvas is up. Reopening the Workflows tab sets `curTab` synchronously
+  // and only THEN awaits `/api/workflows`; an SSE turn event's refreshModalById
+  // landing in that gap used to see no `#wfb-canvas-viewport` yet, skip the
+  // preserve, and get a brand-new placeholder host from `modalContentHTML`.
+  // `loadWorkflows`'s in-flight fetch then resolved and called
+  // `_wfSyncTabsForProject`, which looks up `#wfb-clayrune-section-<pid>` by
+  // id on the CURRENT document — found nothing (that id lived on the detached
+  // orphaned old host), returned early, and left the fresh placeholder stuck
+  // on "Loading..." forever (nothing else re-triggers `loadWorkflows`; the 3s
+  // poll only runs while a CC fan-out exists). An unsaved draft is worst hit:
+  // the in-memory `_wfState` survives untouched, but nothing remounts it.
+  // `#wfb-clayrune-section-` is the skeleton `loadWorkflows` writes before its
+  // first await, so its presence — with or without the canvas inside it yet —
+  // is exactly "there is in-flight or live state here worth keeping".
   let _savedWfHost = null;
   if (curTab === 'workflows') {
     const existingWfHost = document.getElementById(`workflows-body-${entry.projectId}`);
-    if (existingWfHost && existingWfHost.querySelector('#wfb-canvas-viewport')) {
+    if (existingWfHost && (existingWfHost.querySelector('#wfb-canvas-viewport')
+        || existingWfHost.querySelector('[id^="wfb-clayrune-section-"]'))) {
       _savedWfHost = existingWfHost;
       existingWfHost.remove();
     }
