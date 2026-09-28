@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -142,7 +143,10 @@ def _references_dir(cmdline, dir_path):
     itself, not the package directory `_under_dir` alone would need."""
     if not cmdline or not dir_path:
         return False
-    return os.path.normcase(os.path.abspath(dir_path)) in os.path.normcase(cmdline)
+    # The dir must END at a path boundary: a bare substring test let
+    # `@openai\codex-mcp\...` match the `@openai\codex` package dir.
+    d = re.escape(os.path.normcase(os.path.abspath(dir_path)))
+    return re.search(d + r'''(?=[\\/"'\s]|$)''', os.path.normcase(cmdline)) is not None
 
 
 def _npm_prefix():

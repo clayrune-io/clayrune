@@ -504,3 +504,14 @@ def test_list_processes_enumeration_failure_returns_none(monkeypatch):
     monkeypatch.setattr(sys, 'platform', 'win32')
     monkeypatch.setattr(ps.shutil, 'which', lambda *a, **kw: None)
     assert ps.list_processes() is None
+
+
+def test_references_dir_requires_path_boundary():
+    """A sibling package sharing a name prefix (`@openai\codex-mcp`) must not
+    match the `@openai\codex` package dir via the command line (Dave review)."""
+    d = os.path.join('C:' + os.sep, 'npm', 'node_modules', '@openai', 'codex')
+    base = os.path.normcase(os.path.abspath(d))
+    assert ps._references_dir('node ' + base + os.sep + 'bin' + os.sep + 'codex.js', d)
+    assert ps._references_dir('"' + base + '" --flag', d)
+    assert ps._references_dir('node ' + base, d)
+    assert not ps._references_dir('node ' + base + '-mcp' + os.sep + 'bin.js', d)
