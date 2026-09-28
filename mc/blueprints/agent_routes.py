@@ -6103,6 +6103,16 @@ def attend_session(project_id, session_id):
     arming rules, or `fence_unattended_enabled` — every other session's
     behavior is unaffected. This only overwrites what ONE session's own
     trigger_type says, live and on disk, so it survives a restart.
+
+    SUPERSEDED as the chat header's live control (MC-994 follow-up,
+    2026-09-28 — Ron: "every time the gate opens only for that single
+    iteration, that is the safer approach"): a permanent re-stamp left a
+    handed-over session unguarded for its entire remaining lifetime, wider
+    than Ron asked for. The header pill now calls `attend_once_session`
+    below instead, which grants a single-use pass and leaves trigger_type
+    untouched. This route is kept, unchanged, for whatever already depends
+    on the permanent flip (and per the follow-up brief: sessions already
+    flipped to 'manual' by this route stay as they are — no migration).
     """
     if _is_agent_caller():
         return jsonify({
@@ -6136,6 +6146,124 @@ def attend_session(project_id, session_id):
          f"trigger_type {prior} -> manual at {now_iso()}")
     return jsonify({'ok': True, 'session_id': session_id, 'trigger_type': 'manual',
                     'persisted': persisted})
+
+
+# ── One-shot "Allow once" pass (MC-994 follow-up, 2026-09-28) ────────────────
+# Ron's correction to attend_session above: a human confirming they're
+# reading right now should open the fence for exactly the ONE action it's
+# currently blocking, not disarm the session permanently. trigger_type is
+# never touched here, so steward/fence.py's _should_arm_for_unattended_trigger
+# keeps arming on every subsequent tool call — only the single blocked call
+# the pass was spent on gets through.
+#
+# In-memory only, deliberately not persisted: losing an unconsumed pass on a
+# server restart is the SAFE direction (a session that goes back to fully
+# fenced), so there is no durability work to do here — unlike trigger_type on
+# attend_session, which has to survive a restart because 'manual' is meant to
+# stick.
+_ATTEND_ONCE_TTL_SECONDS = 600  # 10 minutes
+
+
+def _attend_once_pass_view(session: dict) -> Optional[dict]:
+    """{'open': True, 'expires_at': iso} while an unconsumed, unexpired pass
+    is live on `session`; else None. Also lazily evicts an expired entry so
+    neither /agent/status nor a later grant/consume call ever sees a pass
+    that has already lapsed — there is no background sweep, only this
+    read-time check, so every call site that looks at the pass must go
+    through this function rather than reading `_attend_once_pass` directly."""
+    info = session.get('_attend_once_pass')
+    if not info:
+        return None
+    try:
+        expires_at = datetime.fromisoformat(info['expires_at'])
+    except Exception:
+        session.pop('_attend_once_pass', None)
+        return None
+    if datetime.now(timezone.utc) >= expires_at:
+        session.pop('_attend_once_pass', None)
+        return None
+    return {'open': True, 'expires_at': info['expires_at']}
+
+
+@bp.route('/api/project/<project_id>/agent/<session_id>/attend-once', methods=['POST'])
+def attend_once_session(project_id, session_id):
+    """Human-click control: grant ONE pass letting the next fence-blocked
+    irreversible action through for this session, then it's spent — the
+    session goes right back to fully fenced (MC-994 follow-up, 2026-09-28).
+
+    Human-only, same guard as attend_session above: an agent calling this
+    gains nothing (CLAUDE.md authority guard — granting stays human-only,
+    only *spending* an already-granted pass is agent/hook-reachable, via
+    consume_attend_once_pass below).
+
+    A second click while a pass is already open does NOT stack or extend
+    it — same pass, same expiry, returned as `status: 'already_open'`.
+    """
+    if _is_agent_caller():
+        return jsonify({
+            'error': ('granting an "allow once" pass is human-only: an agent session '
+                      'cannot grant its own pass (CLAUDE.md authority guard). '
+                      'Use the control in the chat header.'),
+        }), 403
+    with get_manager(project_id).lock:
+        session = agent_sessions.get(session_id)
+        if not session:
+            return jsonify({'error': 'session not found'}), 404
+        if session.get('project_id') != project_id:
+            return jsonify({'error': 'session not found'}), 404
+        existing = _attend_once_pass_view(session)
+        if existing:
+            return jsonify({'ok': True, 'session_id': session_id,
+                            'status': 'already_open', 'expires_at': existing['expires_at']})
+        expires_iso = (datetime.now(timezone.utc)
+                       + timedelta(seconds=_ATTEND_ONCE_TTL_SECONDS)).isoformat()
+        session['_attend_once_pass'] = {'expires_at': expires_iso}
+    _log(f"[attend-once] session={session_id} project={project_id} pass granted, "
+         f"expires {expires_iso}")
+    return jsonify({'ok': True, 'session_id': session_id, 'status': 'granted',
+                    'expires_at': expires_iso})
+
+
+@bp.route('/api/session/attend-once/consume', methods=['POST'])
+def consume_attend_once_pass():
+    """Hook-facing: atomically SPEND an already-open one-shot pass for the
+    Claude session named by `claude_session_id`, so steward/fence.py can let
+    exactly one blocked tool call through after a human clicks "Allow once"
+    (MC-994 follow-up). Keyed on claude_session_id, not the MC session_id or
+    project_id, because that's the only identity the PreToolUse hook
+    subprocess has (CLAUDE_CODE_SESSION_ID) — same lookup shape as GET
+    /api/session/trigger-type above.
+
+    Deliberately NOT gated by _is_agent_caller: the hook calls this as a bare
+    subprocess with no Origin header, same posture as the trigger-type
+    lookup. That's safe specifically because this route has no path to
+    CREATE a pass — attend_once_session above is the only place one is
+    granted, and it's human-only. An agent calling this endpoint can spend a
+    pass a human already handed it, never conjure one for itself.
+
+    Atomic: the read-check-pop happens while holding this session's project
+    lock (the same one attend_once_session grants under), so two concurrent
+    hook calls for the same session can't both observe the pass present —
+    the second sees it already gone and reports `consumed: False`.
+    """
+    data = request.get_json(silent=True) or {}
+    csid = (data.get('claude_session_id') or '').strip()
+    if not csid:
+        return jsonify({'consumed': False, 'error': 'claude_session_id required'}), 400
+    for sid, s in list(agent_sessions.items()):
+        if s.get('claude_session_id') != csid:
+            continue
+        project_id = s.get('project_id')
+        with get_manager(project_id).lock:
+            live = agent_sessions.get(sid)
+            if live is None or live.get('claude_session_id') != csid:
+                continue
+            if not _attend_once_pass_view(live):
+                return jsonify({'consumed': False, 'error': 'no open pass'})
+            live.pop('_attend_once_pass', None)
+        _log(f"[attend-once] session={sid} project={project_id} pass consumed at {now_iso()}")
+        return jsonify({'consumed': True, 'session_id': sid})
+    return jsonify({'consumed': False, 'error': 'session not found'}), 404
 
 
 _agent_log_mutation_locks = {}
@@ -12997,6 +13125,12 @@ def agent_status(project_id):
                 'hivemind_role': s.get('hivemind_role', ''),
                 'trigger_type': s.get('trigger_type', 'manual'),
                 'trigger_id': s.get('trigger_id', ''),
+                # {'open': True, 'expires_at': iso} while a granted "Allow
+                # once" pass (MC-994 follow-up) is unconsumed and unexpired,
+                # else None — chat header polls this rather than tracking a
+                # local timer, so a spend/expiry from another tab or the
+                # fence hook itself shows up here on the next poll.
+                'attend_once_pass': _attend_once_pass_view(s),
                 'waiting_for_plan_approval': s.get('waiting_for_plan_approval', False),
                 'waiting_for_question': s.get('waiting_for_question', False),
                 # Mirror pending_questions so the FE can re-render the form on

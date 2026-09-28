@@ -600,11 +600,16 @@ window.switchChatModel = switchChatModel;
 // A dispatched/scheduled chat is fenced by steward/fence.py even when a human
 // is reading every line — the trigger_type MC stamped at dispatch time is the
 // only signal the fence has, and it can't tell "an agent handed this thread
-// to a human at their request" from "nobody is watching". This is the
-// human-click override: POST .../attend re-stamps that ONE session's
-// trigger_type to 'manual' server-side (agent_routes.py:attend_session,
-// human-only — an agent caller is refused the same way a character/workflow
-// mutation is).
+// to a human at their request" from "nobody is watching".
+//
+// MC-994 follow-up (2026-09-28, Ron: "every time the gate opens only for
+// that single iteration, that is the safer approach"): the human click now
+// grants a ONE-SHOT "Allow once" pass (POST .../attend-once, agent_routes.py
+// :attend_once_session, human-only — an agent caller is refused the same way
+// a character/workflow mutation is) instead of permanently re-stamping
+// trigger_type. The fence spends it on the single next blocked action, then
+// re-arms — trigger_type stays unattended the whole time, so every
+// subsequent action still needs its own click.
 //
 // Mirrors steward/fence.py's _UNATTENDED_TRIGGER_TYPES verbatim — this is a
 // display concern the header needs synchronously on every render, so it's a
@@ -612,47 +617,41 @@ window.switchChatModel = switchChatModel;
 // they change rarely (new trigger_type values are a deliberate addition).
 const _UNATTENDED_FENCE_TRIGGERS = new Set(['schedule', 'workflow', 'dispatch', 'hivemind_orchestrator', 'hivemind_worker']);
 
-// Sessions flipped to attended THIS TAB, THIS PAGE LOAD. There is no durable
-// "was guarded, now attended" flag to read back — trigger_type just becomes
-// 'manual', identical to a chat that was never guarded (by design: no
-// un-attend action exists, so nothing more needs remembering). The
-// confirmation pill below is a one-time acknowledgement, not a permanent record.
-const _attendedThisSession = {};
-
 function _attendControlHTML(activeSession, sid) {
   if (!activeSession || !sid) return '';
   const tt = activeSession.triggerType || 'manual';
-  if (_UNATTENDED_FENCE_TRIGGERS.has(tt)) {
-    return `<button type="button" class="provider-badge attend-pill guarded" title="This chat was dispatched/scheduled — the unattended fence blocks irreversible actions here even after you approve them in chat, because nothing confirms a human is reading. Click if you're here now."
-      onclick="attendSession(event,'${esc(sid)}')">&#x1F512; Guarded <span class="attend-cta">I'm here</span></button>`;
+  if (!_UNATTENDED_FENCE_TRIGGERS.has(tt)) return '';
+  // Server truth, not a local timer: a pass spent by the fence hook, or one
+  // that simply expired, must fall back to "Guarded" on the next status poll
+  // even if this tab never re-clicked anything.
+  const pass = activeSession.attendOncePass;
+  if (pass && pass.open) {
+    return `<span class="provider-badge attend-pill attended" title="A human clicked Allow once — the fence lets exactly the next blocked action through, then re-arms. Expires after 10 minutes if unused.">&#x2713; Allowed once (10 min)</span>`;
   }
-  if (_attendedThisSession[sid]) {
-    return `<span class="provider-badge attend-pill attended" title="Marked attended — the unattended fence no longer arms for this chat.">&#x2713; Attended</span>`;
-  }
-  return '';
+  return `<button type="button" class="provider-badge attend-pill guarded" title="This chat was dispatched/scheduled — the unattended fence blocks irreversible actions here. Click to let the NEXT blocked action through once; the fence re-arms right after."
+    onclick="attendOnceSession(event,'${esc(sid)}')">&#x1F512; Guarded <span class="attend-cta">Allow once</span></button>`;
 }
 
-async function attendSession(event, sid) {
+async function attendOnceSession(event, sid) {
   if (event) { event.stopPropagation(); event.preventDefault(); }
   const s = agentStatusCache[sid];
   const projectId = s && s.projectId;
   if (!projectId) return;
   try {
-    const resp = await fetch(`${API_BASE}/api/project/${projectId}/agent/${sid}/attend`, { method: 'POST' });
+    const resp = await fetch(`${API_BASE}/api/project/${projectId}/agent/${sid}/attend-once`, { method: 'POST' });
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok || !body.ok) {
-      if (typeof showToast === 'function') showToast(body.error || 'Could not mark attended', 3000);
+      if (typeof showToast === 'function') showToast(body.error || 'Could not grant a pass', 3000);
       return;
     }
-    if (s) s.triggerType = 'manual';
-    _attendedThisSession[sid] = true;
-    if (typeof showToast === 'function') showToast("Marked attended — the unattended fence is off for this chat", 3000);
+    if (s) s.attendOncePass = { open: true, expires_at: body.expires_at };
+    if (typeof showToast === 'function') showToast("Allowed once — the next blocked action goes through, then the fence re-arms", 3000);
     refreshModalById(projectId);
   } catch (e) {
-    if (typeof showToast === 'function') showToast('Could not mark attended', 2500);
+    if (typeof showToast === 'function') showToast('Could not grant a pass', 2500);
   }
 }
-window.attendSession = attendSession;
+window.attendOnceSession = attendOnceSession;
 
 function getIncognitoFor(projectId) {
   // Global incognito project is always incognito; user can't turn it off.
@@ -5736,7 +5735,7 @@ async function fetchAgentStatus(projectId) {
       // nag. The server still computes `s.long_session_advisory`; nothing
       // consumes it now. To bring the nudge back, render it somewhere
       // non-intrusive (e.g. an inline session-panel hint) rather than a toast.
-      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, contextTokens: (typeof s.context_tokens === 'number' ? s.context_tokens : null), contextWindow: (typeof s.context_window === 'number' ? s.context_window : null), hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', providerSessionId: s.provider_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [], liveCopies: s.live_copies || [], cwdMovedFrom: s.cwd_moved_from || '', processAlive: !!s.process_alive, spawnedBySessionId: s.spawned_by_session_id || '' };
+      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, contextTokens: (typeof s.context_tokens === 'number' ? s.context_tokens : null), contextWindow: (typeof s.context_window === 'number' ? s.context_window : null), hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', providerSessionId: s.provider_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [], liveCopies: s.live_copies || [], cwdMovedFrom: s.cwd_moved_from || '', processAlive: !!s.process_alive, spawnedBySessionId: s.spawned_by_session_id || '', attendOncePass: s.attend_once_pass || null };
       // MC-937 Phase 4 (frontend): patch this session's nested subagent
       // card(s) + its rail helper-count badge in place from server truth —
       // same discipline as the pendingQuestions reconciliation below (touch

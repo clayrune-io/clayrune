@@ -83,6 +83,11 @@ EXPECTED_ROUTES = {
     # MC-994: human-click attended-handoff control — re-stamps ONE session's
     # trigger_type to 'manual' so steward/fence.py stops arming for it.
     '/api/project/<project_id>/agent/<session_id>/attend',
+    # MC-994 follow-up: one-shot "Allow once" pass — grant (human-only) and
+    # hook-facing consume, replacing the permanent re-stamp above as the
+    # chat header's live control.
+    '/api/project/<project_id>/agent/<session_id>/attend-once',
+    '/api/session/attend-once/consume',
     '/api/project/<project_id>/agent/session',
     '/api/project/<project_id>/agent/status',
     '/api/project/<project_id>/agent/stop',
@@ -1202,6 +1207,180 @@ def test_attend_refuses_session_from_another_project(client):
         assert mc_state.agent_sessions['sid-f']['trigger_type'] == 'dispatch'
     finally:
         mc_state.agent_sessions.pop('sid-f', None)
+
+
+# ── MC-994 follow-up: one-shot "Allow once" pass ─────────────────────────────
+# POST .../attend-once (grant, human-only) + POST /api/session/attend-once/
+# consume (spend, hook-facing). Replaces the permanent attend_session
+# re-stamp above as the chat header's live control (Ron, 2026-09-28: "every
+# time the gate opens only for that single iteration, that is the safer
+# approach") — trigger_type must stay untouched by either route.
+
+def _grant_pass_as_human(client, project_id, session_id):
+    client.environ_base['HTTP_ORIGIN'] = 'http://localhost:5199'
+    try:
+        return client.post(f'/api/project/{project_id}/agent/{session_id}/attend-once')
+    finally:
+        client.environ_base.pop('HTTP_ORIGIN', None)
+
+
+def _consume_pass(client, csid):
+    return client.post('/api/session/attend-once/consume',
+                       json={'claude_session_id': csid})
+
+
+def test_attend_once_refuses_agent_caller(client):
+    """Granting a pass is human-only, same guard as attend_session — an
+    agent's own curl (no Origin header) must not be able to authorize
+    itself."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['sid-g'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-g',
+                                        'trigger_type': 'dispatch'}
+    try:
+        resp = client.post('/api/project/proj-a/agent/sid-g/attend-once')
+        assert resp.status_code == 403
+        assert '_attend_once_pass' not in mc_state.agent_sessions['sid-g']
+    finally:
+        mc_state.agent_sessions.pop('sid-g', None)
+
+
+def test_attend_once_grant_does_not_change_trigger_type(client):
+    """The core behavior change from the old /attend route: granting a pass
+    must leave trigger_type exactly as it was, so the fence still arms for
+    the SESSION's next action once the pass is spent (or never granted)."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['sid-h'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-h',
+                                        'trigger_type': 'dispatch'}
+    try:
+        resp = _grant_pass_as_human(client, 'proj-a', 'sid-h')
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body['ok'] is True and body['status'] == 'granted'
+        assert mc_state.agent_sessions['sid-h']['trigger_type'] == 'dispatch'
+        lookup = client.get('/api/session/trigger-type?claude_session_id=csid-h')
+        assert lookup.get_json()['trigger_type'] == 'dispatch'
+    finally:
+        mc_state.agent_sessions.pop('sid-h', None)
+
+
+def test_attend_once_second_click_does_not_stack(client):
+    """A second grant while a pass is already open must return the SAME
+    expiry, not extend or stack a second pass."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['sid-i'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-i',
+                                        'trigger_type': 'schedule'}
+    try:
+        first = _grant_pass_as_human(client, 'proj-a', 'sid-i').get_json()
+        assert first['status'] == 'granted'
+        second = _grant_pass_as_human(client, 'proj-a', 'sid-i').get_json()
+        assert second['status'] == 'already_open'
+        assert second['expires_at'] == first['expires_at']
+    finally:
+        mc_state.agent_sessions.pop('sid-i', None)
+
+
+def test_attend_once_unknown_session_404s(client):
+    resp = _grant_pass_as_human(client, 'proj-a', 'no-such-session')
+    assert resp.status_code == 404
+
+
+def test_attend_once_refuses_session_from_another_project(client):
+    from mc import state as mc_state
+    mc_state.agent_sessions['sid-j'] = {'project_id': 'proj-other', 'claude_session_id': 'csid-j',
+                                        'trigger_type': 'dispatch'}
+    try:
+        resp = _grant_pass_as_human(client, 'proj-a', 'sid-j')
+        assert resp.status_code == 404
+        assert '_attend_once_pass' not in mc_state.agent_sessions['sid-j']
+    finally:
+        mc_state.agent_sessions.pop('sid-j', None)
+
+
+def test_consume_with_no_pass_granted_reports_not_consumed(client):
+    """The steward fence's own posture depends on this: no open pass means
+    the blocked action stays blocked."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['sid-k'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-k',
+                                        'trigger_type': 'dispatch'}
+    try:
+        resp = _consume_pass(client, 'csid-k')
+        assert resp.status_code == 200
+        assert resp.get_json()['consumed'] is False
+    finally:
+        mc_state.agent_sessions.pop('sid-k', None)
+
+
+def test_consume_unknown_session_404s(client):
+    resp = _consume_pass(client, 'csid-nobody')
+    assert resp.status_code == 404
+    assert resp.get_json()['consumed'] is False
+
+
+def test_consume_expired_pass_refused(client):
+    """A pass past its expires_at must be treated as absent, not spendable —
+    pins the 10-minute TTL without sleeping in the test."""
+    from datetime import datetime, timedelta, timezone
+    from mc import state as mc_state
+    mc_state.agent_sessions['sid-l'] = {
+        'project_id': 'proj-a', 'claude_session_id': 'csid-l', 'trigger_type': 'dispatch',
+        '_attend_once_pass': {'expires_at': (datetime.now(timezone.utc)
+                                             - timedelta(seconds=1)).isoformat()},
+    }
+    try:
+        resp = _consume_pass(client, 'csid-l')
+        assert resp.get_json()['consumed'] is False
+        assert '_attend_once_pass' not in mc_state.agent_sessions['sid-l']
+    finally:
+        mc_state.agent_sessions.pop('sid-l', None)
+
+
+def test_consume_spends_an_open_pass_exactly_once_under_concurrency(client):
+    """Two PreToolUse hook calls racing to spend the same pass must not both
+    succeed — the grant+pop happens under the project manager lock, so
+    exactly one of two concurrent consume calls gets consumed:true."""
+    import threading
+    from mc import state as mc_state
+    mc_state.agent_sessions['sid-m'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-m',
+                                        'trigger_type': 'dispatch'}
+    try:
+        granted = _grant_pass_as_human(client, 'proj-a', 'sid-m')
+        assert granted.get_json()['status'] == 'granted'
+
+        results = [False, False]
+
+        def _consume(i):
+            results[i] = _consume_pass(client, 'csid-m').get_json()['consumed']
+
+        threads = [threading.Thread(target=_consume, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert sorted(results) == [False, True]
+        assert '_attend_once_pass' not in mc_state.agent_sessions['sid-m']
+        # A pass, once spent, cannot be spent again by a later, non-racing call.
+        assert _consume_pass(client, 'csid-m').get_json()['consumed'] is False
+    finally:
+        mc_state.agent_sessions.pop('sid-m', None)
+
+
+def test_agent_status_surfaces_open_attend_once_pass(client):
+    """The chat header pill refreshes from server truth (not a local timer),
+    so /agent/status must carry the pass state the grant route wrote."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['sid-n'] = {
+        'project_id': 'proj-a', 'session_id': 'sid-n', 'claude_session_id': 'csid-n',
+        'trigger_type': 'dispatch', 'status': 'idle', 'task': '', 'log_lines': [],
+        'started_at': '', 'usage': {}, 'cost_usd': 0, 'num_turns': 0,
+    }
+    try:
+        assert _grant_pass_as_human(client, 'proj-a', 'sid-n').get_json()['status'] == 'granted'
+        resp = client.get('/api/project/proj-a/agent/status')
+        row = next(s for s in resp.get_json()['sessions'] if s['session_id'] == 'sid-n')
+        assert row['attend_once_pass']['open'] is True
+    finally:
+        mc_state.agent_sessions.pop('sid-n', None)
 
 
 # ── POST /api/project/<id>/agent/dispatch stamps trigger_type='dispatch' ────

@@ -8,8 +8,13 @@
  * fence blocked `git push origin master` even after Ron approved it — "this
  * conversation is not supposed to be guarded"). The fix is a human-click
  * control in the chat header: a "Guarded" pill on any chat whose trigger_type
- * is in the unattended set, with a click that POSTs .../attend and flips it
- * to an "Attended" confirmation.
+ * is in the unattended set, with a click that POSTs .../attend-once.
+ *
+ * MC-994 follow-up (2026-09-28, Ron: "every time the gate opens only for
+ * that single iteration, that is the safer approach"): the click grants a
+ * ONE-SHOT pass, not a permanent unlock — trigger_type stays unattended the
+ * whole time, and the pill shows "Allowed once (10 min)" only while the
+ * pass is open, reverting to Guarded once it's spent or expires.
  *
  * This smoke stubs the server entirely (page.route, no real MC process) —
  * the point is the CLIENT render + click wiring, not the server route (that
@@ -45,16 +50,17 @@ async function runOnce(viewport, label) {
   let bad = 0;
   const fail = (m) => { console.error('  ✗ ' + m); bad++; };
   const check = (cond, pass, failMsg) => (cond ? ok(pass) : fail(failMsg));
-  let attendCalls = 0;
-  let attendFlipped = false;
+  let attendOnceCalls = 0;
+  let passExpiresAt = null;
 
   const SESSIONS = () => ({
     mcDispatch: {
       session_id: 'mcDispatch', status: 'idle',
-      trigger_type: attendFlipped ? 'manual' : 'dispatch',
+      trigger_type: 'dispatch',
       claude_session_id: 'csidDispatch', started_at: '2026-09-28T21:00:00Z',
       task: 'Please push the fix we discussed', character: DAVE,
       log_lines: ['> Ron: please push the fix we discussed', 'On it.'],
+      attend_once_pass: passExpiresAt ? { open: true, expires_at: passExpiresAt } : null,
     },
   });
 
@@ -80,10 +86,10 @@ async function runOnce(viewport, label) {
       }
       if (path === '/api/config') return json({});
       if (/\/agent\/status$/.test(path)) return json({ sessions: Object.values(SESSIONS()) });
-      if (req.method() === 'POST' && /\/agent\/mcDispatch\/attend$/.test(path)) {
-        attendCalls++;
-        attendFlipped = true;
-        return json({ ok: true, session_id: 'mcDispatch', trigger_type: 'manual', persisted: true });
+      if (req.method() === 'POST' && /\/agent\/mcDispatch\/attend-once$/.test(path)) {
+        attendOnceCalls++;
+        passExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+        return json({ ok: true, session_id: 'mcDispatch', status: 'granted', expires_at: passExpiresAt });
       }
       return route.abort();
     });
@@ -120,14 +126,17 @@ async function runOnce(viewport, label) {
 
     await pill().first().click();
     await page.waitForFunction(() => document.querySelector('.attend-pill.attended'), null, { timeout: 5000 });
-    check(attendCalls === 1, `exactly one POST .../attend fired (got ${attendCalls})`, `attend POST count wrong: ${attendCalls}`);
+    check(attendOnceCalls === 1, `exactly one POST .../attend-once fired (got ${attendOnceCalls})`, `attend-once POST count wrong: ${attendOnceCalls}`);
     check(await page.locator('.attend-pill.guarded').count() === 0, 'guarded pill is gone after the click',
       'guarded pill still present after the click');
-    check((await page.locator('.attend-pill.attended').first().innerText()).toLowerCase().includes('attended'),
-      'pill reads Attended after the click', `pill text: ${await page.locator('.attend-pill.attended').first().innerText()}`);
-    check(await page.evaluate(() => agentStatusCache['mcDispatch'].triggerType) === 'manual',
-      'client-side triggerType flipped to manual optimistically',
+    check((await page.locator('.attend-pill.attended').first().innerText()).toLowerCase().includes('allowed once'),
+      'pill reads Allowed once after the click', `pill text: ${await page.locator('.attend-pill.attended').first().innerText()}`);
+    check(await page.evaluate(() => agentStatusCache['mcDispatch'].triggerType) === 'dispatch',
+      'client-side triggerType stays dispatch — the pass never touches it',
       `agentStatusCache triggerType: ${await page.evaluate(() => agentStatusCache['mcDispatch'].triggerType)}`);
+    check(await page.evaluate(() => !!(agentStatusCache['mcDispatch'].attendOncePass && agentStatusCache['mcDispatch'].attendOncePass.open)),
+      'client-side attendOncePass marked open after the click',
+      `attendOncePass: ${await page.evaluate(() => JSON.stringify(agentStatusCache['mcDispatch'].attendOncePass))}`);
 
     const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
     uncaught.length ? uncaught.forEach((e) => fail('uncaught page error: ' + e)) : ok('no uncaught page errors');

@@ -301,3 +301,70 @@ def test_double_invocation_on_armed_session_blocks_identically_both_times(monkey
                        lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
         assert rc == 2
         assert 'STEWARD FENCE blocked' in capsys.readouterr().err
+
+
+# ── One-shot "Allow once" pass (MC-994 follow-up, 2026-09-28) ────────────────
+# _consume_attend_once_pass is stubbed to False by the autouse fixture above;
+# these override it per-test to pin the three properties the brief calls out:
+# a spent pass lets exactly the one blocked call through, a steward-marker
+# session is never even eligible to spend one, and a supply-chain
+# ("human-owned") reason can never be passed regardless of eligibility.
+
+def test_consumed_pass_allows_an_otherwise_blocked_trigger_type_action(monkeypatch, tmp_path):
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', lambda: True)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command='git push origin master',
+                   session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 0
+
+
+def test_no_open_pass_still_blocks_trigger_type_action(monkeypatch, tmp_path, capsys):
+    # Default fixture already stubs consume to False; assert explicitly so
+    # this test still documents the "no pass -> still blocked" contract even
+    # if the fixture default ever changes.
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', lambda: False)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command='git push origin master',
+                   session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2
+    assert 'STEWARD FENCE blocked' in capsys.readouterr().err
+
+
+def test_steward_marker_session_never_consumes_a_pass(monkeypatch, tmp_path, capsys):
+    # A steward-marker session is not `pass_eligible` at all (brief item 3) —
+    # even if a pass happens to be open server-side, the fence must not spend
+    # it, and must not even ask.
+    def _boom():
+        raise AssertionError("steward-marker session must never call consume")
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', _boom)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='[Steward cycle] run one cycle',
+                   command='git push', session_id='sid-steward')
+    assert rc == 2
+    assert 'STEWARD FENCE blocked' in capsys.readouterr().err
+
+
+def test_human_owned_supply_chain_block_never_consumes_a_pass(monkeypatch, tmp_path, capsys):
+    # Editing fence.py's own enforcement code is the supply-chain case the
+    # pass must never be spendable on (Dave's _PASS_INELIGIBLE_MARK check) —
+    # even a trigger-type-armed, otherwise-pass-eligible session with an
+    # open pass must stay blocked, and consume must never be called.
+    def _boom():
+        raise AssertionError("a human-owned supply-chain block must never consume a pass")
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', _boom)
+    monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'sid-dispatch')
+    monkeypatch.setattr(fence, '_lookup_trigger_type',
+                        lambda sid: {'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    payload = {'tool_name': 'Edit',
+               'tool_input': {'file_path': 'steward/fence.py', 'old_string': 'x', 'new_string': 'y'},
+               'transcript_path': _transcript(tmp_path, 'please tweak the fence')}
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload)))
+    rc = fence.main()
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert 'STEWARD FENCE blocked' in err
+    assert 'human-owned' in err
