@@ -62,7 +62,7 @@ const PROJECTS_JSON = JSON.stringify([fixtureProject(PID, 'Brainstorm Smoke')]);
 const CHARACTERS_JSON = JSON.stringify([
   { name: 'brainstorm', scope: 'global', agent_name: 'Brainstorm', display_name: 'brainstorm',
     description: 'x', file: 'brainstorm.md', size: 10, avatar: 'fig:alchemist',
-    engine: { provider: 'claude', model: 'opus', effort: 'high' } },
+    engine: { model: 'tier:best', effort: 'high' } },
 ]);
 const SOURCE_SESSION_ID = 'sess-brainstorm-source';
 const CONVERSATIONS_JSON = JSON.stringify([]);
