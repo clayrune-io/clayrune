@@ -45,8 +45,21 @@ for (const f of readdirSync(CSS_DIR)) if (f.endsWith('.css')) STATIC[`/static/cs
 // Shaped exactly like mc/blueprints/system_routes.py's `provider_weekly_usage`:
 // claude green (41%), codex red via `used_percent` alone (92%) — gemini is
 // deliberately ABSENT (no real weekly-% source), never a 0%/placeholder row.
+// `codex_usage_detail` + a gemini row in `top_models` cover MC-989 Part A's
+// Usage-tab sections (Codex weekly/5h/plan/credits, Gemini token count).
 const USAGE_FIXTURE = {
   available: true,
+  top_models: [
+    { model: 'claude-sonnet-5', tokens: 500000, cache_read: 0 },
+    { model: 'gemini-2.5-pro', tokens: 12345, cache_read: 0 },
+  ],
+  codex_usage_detail: {
+    weekly: { utilization: 41, resets_at: '2026-10-03T19:20:26+00:00' },
+    five_hour: { utilization: 5, resets_at: '2026-09-28T02:26:25+00:00' },
+    plan_type: 'plus',
+    credits: { has_credits: true, unlimited: false, balance: '12.50' },
+    sampled_at: '2026-09-28T01:26:25+00:00',
+  },
   provider_weekly_usage: {
     claude: { utilization: 41, resets_at: '2026-10-03T19:20:26+00:00' },
     codex: { utilization: 92, resets_at: '2026-09-30T00:00:00+00:00' },
@@ -57,9 +70,14 @@ const ok = (m) => console.log('  ✓ ' + m);
 let bad = 0;
 const fail = (m) => { console.error('  ✗ ' + m); bad++; };
 
-function routeHandler(usageBody) {
+// `calls` records every request path this handler served — the MC-989
+// no-auto-redemption check needs to assert /api/terminal/stdin (the ONLY
+// endpoint that actually types into a running CLI) was never hit, since
+// nothing in the smoke flow simulates a human typing into the pop-out.
+function routeHandler(usageBody, calls) {
   return (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (calls) calls.push(path);
     if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
@@ -68,16 +86,26 @@ function routeHandler(usageBody) {
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === '/api/system/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/system/usage') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(usageBody) });
+    if (path === '/api/system/usage/refresh') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(usageBody) });
+    if (path === '/api/system/usage/reset-terminal') {
+      const body = route.request().postData() || '{}';
+      const provider = (JSON.parse(body).provider || '').toLowerCase();
+      const instruction = provider === 'codex'
+        ? 'Type /usage, then choose "Redeem usage limit reset" if your account has one banked.'
+        : 'Type /limit-reset and press Enter to reset the 5-hour session limit.';
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, session_id: 'smoke-' + provider, command: provider, instruction }) });
+    }
+    if (path === '/api/terminal/stream') return route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' });
     return route.abort();
   };
 }
 
-async function newPage(browser, { width, height }, usageBody) {
+async function newPage(browser, { width, height }, usageBody, calls) {
   const ctx = await browser.newContext({ viewport: { width, height } });
   const page = await ctx.newPage();
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
-  await page.route('**/*', routeHandler(usageBody));
+  await page.route('**/*', routeHandler(usageBody, calls));
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
   // fetchSystemUsage() is async (awaited fetch); give the stubbed round-trip
@@ -201,6 +229,62 @@ try {
     count === 0
       ? ok('empty provider_weekly_usage from the server renders zero bars (not a placeholder)')
       : fail(`expected 0 bars with an empty fixture, got ${count}`);
+    await ctx.close();
+  }
+
+  // ── 7. MC-989: Usage-tab popup shows Codex + Gemini sections and reset
+  // actions, and clicking a reset button NEVER auto-submits the redemption
+  // command — it only opens a terminal pop-out + shows the instruction text
+  // for a human to type themselves (/api/terminal/stdin must stay untouched).
+  {
+    const calls = [];
+    const { ctx, page } = await newPage(browser, { width: 1440, height: 900 }, USAGE_FIXTURE, calls);
+    await page.click('#usage-bar-strip .usage-bar-item');
+    await page.waitForSelector('#sys-status-popover.open', { timeout: 3000 });
+
+    const sectionHeads = await page.$$eval('.ssp-section-head', (els) => els.map((el) => el.textContent.trim()));
+    sectionHeads.includes('Codex')
+      ? ok('Usage popup: Codex section head present')
+      : fail(`Codex section head missing, got: ${JSON.stringify(sectionHeads)}`);
+    sectionHeads.includes('Gemini')
+      ? ok('Usage popup: Gemini section head present')
+      : fail(`Gemini section head missing, got: ${JSON.stringify(sectionHeads)}`);
+
+    const geminiHint = await page.$eval('.sys-status-popover', (el) => el.textContent).catch(() => '');
+    /Google exposes no quota/i.test(geminiHint)
+      ? ok('Gemini section states honestly that no quota % exists (never a fake bar)')
+      : fail('Gemini section missing the "no quota %" disclosure');
+    /Sampled/i.test(geminiHint) && /Codex turn runs/i.test(geminiHint)
+      ? ok('Codex section shows a "sampled <age> ago" freshness label')
+      : fail('Codex freshness label missing');
+
+    const claudeWeeklyBtn = await page.$('a.ssp-refresh[href="https://claude.ai/settings/usage"]');
+    claudeWeeklyBtn
+      ? ok('Claude "Reset weekly limit" link present (opens claude.ai, new tab)')
+      : fail('Claude weekly-reset link missing');
+
+    const resetBtns = await page.$$eval('.ssp-action-row button.ssp-refresh', (els) => els.map((el) => el.textContent.trim()));
+    resetBtns.some((t) => /5-hour session/.test(t) && /limit-reset/.test(t))
+      ? ok('Claude "Reset 5-hour session (/limit-reset)" button present')
+      : fail(`Claude 5h reset button missing, got: ${JSON.stringify(resetBtns)}`);
+    resetBtns.some((t) => /Redeem a banked reset/.test(t))
+      ? ok('Codex "Redeem a banked reset" button present')
+      : fail(`Codex redeem button missing, got: ${JSON.stringify(resetBtns)}`);
+
+    // Click Codex's reset action — must open a terminal pop-out and show the
+    // instruction as text, and must NEVER call /api/terminal/stdin (the only
+    // path that types into the running CLI) on its own.
+    calls.length = 0;
+    await page.click('button.ssp-refresh:has-text("Redeem a banked reset")');
+    await page.waitForSelector('#terminal-popout, .terminal-popout, [id^="terminal-modal"]', { timeout: 3000 }).catch(() => {});
+    await page.waitForTimeout(300);
+    calls.includes('/api/system/usage/reset-terminal')
+      ? ok('clicking "Redeem a banked reset" calls the reset-terminal endpoint')
+      : fail(`reset-terminal endpoint not called, saw: ${JSON.stringify(calls)}`);
+    calls.includes('/api/terminal/stdin')
+      ? fail('clicking the reset button auto-submitted stdin — a redemption must be human-typed, never auto-sent')
+      : ok('no auto-submitted stdin — the redemption command is never typed for the user');
+
     await ctx.close();
   }
 

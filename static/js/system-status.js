@@ -22,6 +22,7 @@ let _sysStatusPopoverOpen = false;
 let _sysStatusRefreshing = false;
 let _sysStatusActiveTab = 'status';  // status | config | mcp | usage
 let _sysUsageFetching = false;
+let _sysUsageRefreshing = false;  // MC-989: the Usage tab's own "Refresh numbers" busy-state
 
 async function fetchSystemStatus() {
   try {
@@ -379,10 +380,63 @@ function _renderUsageTab() {
     <div class="ssp-row"><span class="ssp-k">Status</span><span class="ssp-v">${esc(rl.status || '—')}</span></div>`;
   }
 
+  // ── Claude reset actions (MC-989 Part B) — neither one is auto-sent. The
+  // weekly reset is Anthropic's own web toggle (only some accounts have one);
+  // the 5-hour reset is the CLI's interactive `/limit-reset`, typed by hand
+  // in a terminal pop-out this only OPENS. ─────────────────────────────────
+  const claudeResetHTML = `
+    <div class="ssp-action-row">
+      <a class="ssp-refresh" href="https://claude.ai/settings/usage" target="_blank" rel="noopener">Reset weekly limit (if granted) →</a>
+      <button class="ssp-refresh" onclick="_ubLaunchResetTerminal('claude', event)">Reset 5-hour session (/limit-reset)</button>
+    </div>`;
+
+  // ── Codex section — weekly + 5h % (when the record carries one), plan
+  // tier, credits balance, and how stale the on-disk reading is (it only
+  // updates on Codex's OWN next turn, never fetched live). Never a fake %.
+  const cx = u.codex_usage_detail || null;
+  let codexHTML;
+  if (cx && (cx.weekly || cx.five_hour || cx.plan_type || cx.credits)) {
+    const cr = cx.credits || {};
+    const creditsLine = cr && (cr.has_credits || Number(cr.balance) > 0)
+      ? `<div class="ssp-row"><span class="ssp-k">Credits</span><span class="ssp-v">${cr.unlimited ? 'unlimited' : (esc(String(cr.balance ?? '—')))}</span></div>`
+      : '';
+    codexHTML = `
+    ${_ssUsageLimitBar('Weekly', cx.weekly)}
+    ${_ssUsageLimitBar('Session · 5-hour', cx.five_hour)}
+    ${cx.plan_type ? `<div class="ssp-row"><span class="ssp-k">Plan</span><span class="ssp-v">${esc(cx.plan_type)}</span></div>` : ''}
+    ${creditsLine}
+    <div class="ssp-hint-line">Sampled ${esc(_ssRelTime(cx.sampled_at))} — updates only when a Codex turn runs.</div>`;
+  } else {
+    codexHTML = '<div class="ssp-empty">No Codex usage sampled yet — run a Codex turn to populate this.</div>';
+  }
+
+  // ── Gemini section — Google's API-key auth exposes no quota %, so this is
+  // ONLY the tokens Clayrune itself recorded through agent_log telemetry,
+  // labelled honestly as such. Never draw a fake %/bar for it.
+  const _geminiTokensFor = (obj) => Object.entries(obj || {})
+    .filter(([m]) => /^gemini/i.test(m))
+    .reduce((sum, [, t]) => sum + (Number(t) || 0), 0);
+  const geminiTokens = tokenCounterMode === 'all'
+    ? top.filter(t => /^gemini/i.test(t.model || '')).reduce((sum, t) => sum + (Number(t.tokens) || 0), 0)
+    : _geminiTokensFor(tokenCounterMode === 'today' ? today : tokenCounterMode === 'week' ? week : month);
+  const geminiHTML = `
+    <div class="ssp-row"><span class="ssp-k">${esc(periodLabel)}</span><span class="ssp-v">${_ssFormatTokens(geminiTokens)} tok</span></div>
+    <div class="ssp-hint-line">Tokens used through Clayrune; Google exposes no quota % for API keys.</div>`;
+
   return mcSection + `
     <div class="ssp-section-head">Claude Code · machine-wide</div>
     ${claudeMultiNote}
     ${limitsHTML}
+    ${claudeResetHTML}
+
+    <div class="ssp-section-head">Codex</div>
+    ${codexHTML}
+    <div class="ssp-action-row">
+      <button class="ssp-refresh" onclick="_ubLaunchResetTerminal('codex', event)">Redeem a banked reset →</button>
+    </div>
+
+    <div class="ssp-section-head">Gemini</div>
+    ${geminiHTML}
 
     <div class="ssp-section-head">${esc(periodLabel)} · tokens by model</div>
     ${periodHTML}
@@ -392,6 +446,9 @@ function _renderUsageTab() {
     <div class="ssp-row"><span class="ssp-k">Messages</span><span class="ssp-v">${(u.total_messages || 0).toLocaleString()}</span></div>
     <div class="ssp-row"><span class="ssp-k">Data through</span><span class="ssp-v">${esc(dataDate)}</span></div>
 
+    <div class="ssp-action-row">
+      <button class="ssp-refresh" id="ssp-usage-refresh-btn" onclick="_ubRefreshUsage(event)" ${_sysUsageRefreshing ? 'disabled' : ''}>${_sysUsageRefreshing ? 'Refreshing…' : 'Refresh numbers'}</button>
+    </div>
     <a class="ssp-link" href="https://claude.ai/settings/usage" target="_blank" rel="noopener">Open canonical usage page →</a>
   `;
 }
@@ -451,6 +508,57 @@ async function fetchSystemUsage() {
   _sysUsageFetching = false;
   _rerenderSysStatusSurfaces();
 }
+
+// MC-989 Part B — "Refresh numbers": busts the server's oauth/codex usage
+// caches then re-fetches, so a sample that already landed since the last
+// 60s TTL window shows immediately. Does NOT force Codex to sample fresh —
+// that only happens on Codex's own next turn (see backend docstring).
+async function _ubRefreshUsage(ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  if (_sysUsageRefreshing) return;
+  _sysUsageRefreshing = true;
+  _rerenderSysStatusSurfaces();
+  try {
+    const res = await fetch(API_BASE + '/api/system/usage/refresh', { method: 'POST' });
+    if (res.ok) systemUsageCache = await res.json();
+  } catch { /* leave cache as-is */ }
+  _sysUsageRefreshing = false;
+  _rerenderSysStatusSurfaces();
+}
+
+// MC-989 Part B — opens a bare-CLI terminal pop-out for a provider's
+// interactive reset flow (Claude /limit-reset, Codex "Redeem usage limit
+// reset"). NEVER types or submits the command itself — see the hard rule in
+// system_routes.py `_USAGE_RESET_INSTRUCTIONS`: a banked/granted reset is
+// one-time and belongs to the account holder, so this only opens the
+// terminal and surfaces the instruction as a toast for the human to read
+// and type by hand. Both CLIs are full-screen raw-mode TUIs (not a
+// line-oriented REPL), so the backend launches a REAL pty and this always
+// opens the pop-out with `isPty=true` — matching `is_pty` in the response —
+// so xterm wires keystrokes straight through (`disableStdin: !isPty` in
+// terminal.js) instead of showing the hidden line-input "Send" box a pipe
+// session would need.
+async function _ubLaunchResetTerminal(provider, ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  try {
+    const res = await fetch(API_BASE + '/api/system/usage/reset-terminal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!data.ok) {
+      showToast(data.error || `Could not open ${provider} terminal`, 5000);
+      return;
+    }
+    if (data.instruction) showToast(data.instruction, 12000);
+    openTerminalPopout(window.currentProjectId, data.session_id, data.command || provider, !!data.is_pty);
+  } catch {
+    showToast(`Could not open ${provider} terminal`, 5000);
+  }
+}
+window._ubRefreshUsage = _ubRefreshUsage;
+window._ubLaunchResetTerminal = _ubLaunchResetTerminal;
 
 function renderSysStatusPopover() {
   const pop = document.getElementById('sys-status-popover');
