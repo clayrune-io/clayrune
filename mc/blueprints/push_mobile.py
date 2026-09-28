@@ -42,7 +42,7 @@ def wire(*, data_root, load_project_fn, cf_session_nonce_fn, get_remote_provider
     register_blueprint). data_root → the four storage paths; load_project →
     projects family (1.11); CF session nonce → remote family (1.7)."""
     global PUSH_VAPID_PATH, PUSH_SUBS_PATH, PUSH_FCM_KEY_PATH, MOBILE_PAIRING_PATH
-    global PUSH_NOTIF_PATH
+    global PUSH_NOTIF_PATH, VIEWPORT_DIAG_PATH
     global load_project, _cf_session_nonce_from_request, _get_remote_provider
     PUSH_VAPID_PATH = data_root / 'data' / 'push_vapid.json'
     PUSH_SUBS_PATH = data_root / 'data' / 'push_subscriptions.json'
@@ -52,6 +52,10 @@ def wire(*, data_root, load_project_fn, cf_session_nonce_fn, get_remote_provider
     # data/projects/ (that dir is the project-records store — a stray file there
     # 500s load_projects; see CLAUDE.md DATA_DIR pollution rule).
     PUSH_NOTIF_PATH = data_root / 'data' / 'notifications.json'
+    # MC-988 part 3 — client-side viewport diagnostic (see api_diag_viewport).
+    # Same DATA_DIR-pollution reasoning as PUSH_NOTIF_PATH: a device beacon
+    # dropped into data/projects/ would 500 both restart endpoints.
+    VIEWPORT_DIAG_PATH = data_root / 'data' / 'diag' / 'viewport.jsonl'
     load_project = load_project_fn
     _cf_session_nonce_from_request = cf_session_nonce_fn
     _get_remote_provider = get_remote_provider_fn
@@ -1160,6 +1164,77 @@ def mobile_pair_token_delete(token_id):
         token_id=token_id,
         **auth_kwargs,  # pyright: ignore[reportArgumentType]  # moved-verbatim typing debt (1.2)
     ))
+
+
+# ── Viewport diagnostic (MC-988 part 3) ──────────────────────────────────────
+# The mobile "half-height pane after Send" report (Galaxy Z Fold, OneUI, the
+# Capacitor WebView) didn't reproduce in desktop emulation or on a stock
+# Pixel 6 AVD (docs/_journal/40ff4ab5-mc988-part2-mobile-viewport-repro.md).
+# static/js/mobile.js's own watchdog now self-detects the stuck condition on
+# Ron's real device and POSTs one snapshot here — nothing for him to switch
+# on. This is a raw client-supplied beacon (no session/auth context, fired
+# from a WebView that may itself be malfunctioning), so both the per-request
+# body and the on-disk log are hard-capped.
+VIEWPORT_DIAG_PATH: Path = None  # type: ignore[assignment]  # wired from _DATA_ROOT
+_VIEWPORT_DIAG_MAX_BODY = 32 * 1024        # one snapshot (30-event ring buffer) is a few KB
+_VIEWPORT_DIAG_MAX_FILE = 1 * 1024 * 1024  # rolling cap; oldest lines drop first
+_viewport_diag_lock = threading.Lock()
+
+
+def _append_viewport_diag(row: dict) -> None:
+    """Append one line, then trim from the front if the file has grown past
+    the cap. Low-frequency (at most one POST per page load per device), so a
+    full read-trim-rewrite on the rare occasion it's needed is cheap enough —
+    matches the _prune_notifications precedent above rather than inventing a
+    second capping strategy."""
+    VIEWPORT_DIAG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(row, ensure_ascii=False)
+    with _viewport_diag_lock:
+        with open(VIEWPORT_DIAG_PATH, 'a', encoding='utf-8') as f:
+            f.write(line + '\n')
+        try:
+            if VIEWPORT_DIAG_PATH.stat().st_size > _VIEWPORT_DIAG_MAX_FILE:
+                with open(VIEWPORT_DIAG_PATH, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                kept = lines
+                total = sum(len(l.encode('utf-8')) for l in kept)
+                while kept and total > _VIEWPORT_DIAG_MAX_FILE:
+                    total -= len(kept[0].encode('utf-8'))
+                    kept = kept[1:]
+                tmp = VIEWPORT_DIAG_PATH.with_suffix('.jsonl.tmp')
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    f.writelines(kept)
+                os.replace(tmp, VIEWPORT_DIAG_PATH)
+        except Exception as e:
+            _log(f"[diag/viewport] trim failed: {e}", flush=True)
+
+
+@bp.route('/api/diag/viewport', methods=['POST'])
+def api_diag_viewport():
+    """Body: {ts, events:[...], current:{...}, modalHeight, devicePixelRatio,
+    ua, capacitor} — see static/js/mobile.js's _diagSend for the exact shape.
+    Accepted verbatim (no schema enforcement beyond type/size) since the whole
+    point is to see what a misbehaving client actually reports; malformed
+    input is still a data point, not an error.
+    """
+    cl = request.content_length
+    if cl is not None and cl > _VIEWPORT_DIAG_MAX_BODY:
+        return jsonify({'ok': False, 'error': 'payload_too_large'}), 413
+    raw = request.get_data(as_text=False) or b''  # cached (default): get_json below reuses it
+    if len(raw) > _VIEWPORT_DIAG_MAX_BODY:
+        return jsonify({'ok': False, 'error': 'payload_too_large'}), 413
+    body = request.get_json(force=True, silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({'ok': False, 'error': 'invalid_body'}), 400
+    row = dict(body)
+    row['received_at'] = _time.time()
+    row['ip'] = (request.headers.get('X-Forwarded-For', '') or request.remote_addr or '')[:64]
+    try:
+        _append_viewport_diag(row)
+    except Exception as e:
+        _log(f"[diag/viewport] append failed: {e}", flush=True)
+        return jsonify({'ok': False, 'error': 'write_failed'}), 500
+    return jsonify({'ok': True})
 
 
 @bp.route('/api/presence', methods=['POST'])
