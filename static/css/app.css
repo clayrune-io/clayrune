@@ -9292,9 +9292,25 @@
   .wfb-canvas-viewport.wfb-drop-target { outline: 2px dashed var(--accent); outline-offset: -2px; }
   .wfb-canvas-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
   .wfb-canvas-empty {
-    position: absolute; top: 16px; left: 16px; font-size: 12px; color: var(--text-faint);
-    font-style: italic; pointer-events: none;
+    position: absolute; top: 16px; left: 16px; right: 16px; max-width: 420px;
+    font-size: 12px; color: var(--text-faint); pointer-events: none;
   }
+  .wfb-canvas-empty-hint { font-style: italic; margin-top: 10px; }
+  /* MC-962 "Describe it": the one interactive element inside the otherwise
+     pointer-events:none empty-canvas hint above, so it needs its own opt-in. */
+  .wfb-describe-box {
+    pointer-events: auto; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+  }
+  .wfb-describe-title { font-size: 12px; font-weight: 700; color: var(--text); font-style: normal; }
+  .wfb-describe-input {
+    width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12px; resize: vertical;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+    padding: 6px 8px; font-style: normal;
+  }
+  .wfb-describe-input:focus { border-color: var(--accent); outline: none; }
+  .wfb-describe-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .wfb-describe-error { font-size: 11px; color: var(--red-text); font-style: normal; }
   .wfb-canvas-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
   .wfb-edge-path { fill: none; stroke: var(--text-faint); stroke-width: 2; pointer-events: stroke; cursor: pointer; }
   .wfb-edge-path:hover, .wfb-edge-path.wfb-edge-selected { stroke: var(--accent); stroke-width: 2.5; }
@@ -9766,6 +9782,41 @@
   .wfb-node-validation-badge { font-size: 12px; flex-shrink: 0; cursor: help; line-height: 1; }
   .wfb-node-validation-error { color: var(--red-text); }
   .wfb-node-validation-warning { color: var(--amber-text); }
+
+  /* MC-962 "Check workflow": a distinct class from wfb-node-validation-badge
+     on purpose -- this is an advisory model finding that goes stale on the
+     next edit (_wfClearStaleReviewFindings), never a hard Save/Run-now
+     structural error, and the two must never read as the same kind of thing
+     on the box. Same badge-on-box/full-text-in-inspector split otherwise. */
+  .wfb-node-review-badge {
+    font-size: 11px; flex-shrink: 0; cursor: help; line-height: 1; border-radius: 3px;
+    padding: 1px 3px; border: 1px solid currentColor;
+  }
+  .wfb-node-review-error { color: var(--red-text); }
+  .wfb-node-review-warning { color: var(--amber-text); }
+  .wfb-node-review-finding {
+    font-size: 11px; padding: 6px 8px; border-radius: 5px; margin-bottom: 8px; border: 1px dashed;
+  }
+  .wfb-node-review-finding-error { background: var(--red-dim, rgba(220,53,69,0.08)); border-color: var(--red); color: var(--red-text); }
+  .wfb-node-review-finding-warning { background: var(--amber-dim); border-color: var(--amber); color: var(--amber-text); }
+  .wfb-node-review-suggestion { margin-top: 3px; color: var(--text-dim, var(--text-faint)); font-style: italic; }
+
+  /* Findings review_workflow (or the client's own quoted-name guess,
+     _wfGuessFindingNode) couldn't pin to any box on this canvas -- whole-
+     workflow findings, or a step name that no longer exists. */
+  .wfb-review-unassigned { flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+  .wfb-review-unassigned-item {
+    display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 5px;
+    font-size: 11.5px; border: 1px dashed;
+  }
+  .wfb-review-unassigned-item.wfb-review-error { background: var(--red-dim, rgba(220,53,69,0.08)); border-color: var(--red); color: var(--red-text); }
+  .wfb-review-unassigned-item.wfb-review-warning { background: var(--amber-dim); border-color: var(--amber); color: var(--amber-text); }
+  .wfb-review-unassigned-text { flex: 1; min-width: 0; }
+  .wfb-review-unassigned-dismiss {
+    background: transparent; border: none; color: inherit; cursor: pointer; font-size: 12px;
+    line-height: 1; padding: 0; flex-shrink: 0; opacity: 0.7;
+  }
+  .wfb-review-unassigned-dismiss:hover { opacity: 1; }
 
   /* ── MC-963 inspector: right side panel (desktop) / bottom sheet (<=960px)
      holding the one open node's full editor, reused verbatim from the old

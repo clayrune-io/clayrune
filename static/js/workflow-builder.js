@@ -706,7 +706,18 @@ function _wfFreshState(def, workflowId, error, hintProjectId) {
            dirty: false, savedAt: null, runErrors: null, scrollToNode: null,
            descOpen: !!(def.description && String(def.description).trim()),
            liveRun: null, cancellingRun: false,
-           _undo: [], _redo: [], _lastSnapshot: null, _savedSnapshot: null };
+           _undo: [], _redo: [], _lastSnapshot: null, _savedSnapshot: null,
+           // MC-962: "Describe it" (draft) + "Check workflow" (review) UI state.
+           // draftDescription/drafting/draftError back the empty-canvas describe
+           // box (_wfRenderDescribeBox/_wfDraftFromDescription). reviewFindings
+           // (pinned to a node) / reviewUnassigned (dismissible, no node match) /
+           // reviewChecking / _reviewDefSnapshot back Check workflow
+           // (_wfCheckWorkflow) -- _reviewDefSnapshot is the JSON of `def` at the
+           // moment the findings were computed, so the next render can tell a
+           // real edit happened since and drop stale findings (_wfRender).
+           draftDescription: '', drafting: false, draftError: null,
+           reviewFindings: [], reviewUnassigned: [], reviewChecking: false,
+           _reviewDefSnapshot: null };
 }
 
 async function _wfLoadInto(entry, workflowId, hintProjectId) {
@@ -1477,6 +1488,7 @@ function _wfRender() {
   const entry = _wfEntry();
   if (!entry || !entry._wf) return;
   const st = entry._wf;
+  _wfClearStaleReviewFindings(st); // MC-962: an edit since the last Check invalidates it
   _wfCheckpointForUndo(st); // Change 3: one undo step per structural render, zero per keystroke
   _wfClosePortPopover(); // its anchor port is about to be replaced
   const body = document.getElementById('wfb-body');
@@ -1685,6 +1697,8 @@ function _wfRenderBody(st) {
       <button type="button" class="wfb-toolbar-btn" title="Redo (Ctrl+Shift+Z)" onclick="_wfRedo()" ${_wfCanRedo(st) ? '' : 'disabled'}>&#8631; Redo</button>
       <button type="button" class="wfb-toolbar-btn" title="Revert to the last saved state" onclick="_wfResetCanvas()">&#8635; Reset</button>
       ${_wfRenderToolbarTools()}
+      <button type="button" class="wfb-toolbar-btn" onclick="_wfCheckWorkflow()" ${st.reviewChecking ? 'disabled' : ''}
+        title="Ask the model to review this workflow for problems">${st.reviewChecking ? 'Checking…' : 'Check workflow'}</button>
       <button class="btn-sched-save" onclick="_wfSave()" ${st.saving ? 'disabled' : ''}>${st.saving ? 'Saving…' : (st.workflowId ? 'Update' : 'Create')}</button>
       <button class="btn-sched-cancel" style="color:var(--accent);border-color:var(--accent)" onclick="_wfRunNow()"
         title="${st.workflowId ? 'Validate and run this workflow now' : 'Save the workflow first'}">&#x25B6; Run now</button>
@@ -1693,13 +1707,17 @@ function _wfRenderBody(st) {
     ${descOpen ? `<div class="wfb-toolbar-desc-row">
       <textarea id="wfb-desc" rows="1" placeholder="What this pipeline is for">${esc(def.description || '')}</textarea>
     </div>` : ''}
+    ${_wfRenderReviewUnassigned(st)}
     <div id="wfb-live-run-slot">${_wfRenderLiveRun(st)}</div>
     <div class="wfb-builder">
       <div class="wfb-palette" id="wfb-palette">${_wfRenderPalette(st)}</div>
       <div id="wfb-canvas-viewport" class="wfb-canvas-viewport" onpointerdown="_wfViewportDown(event)">
         <svg id="wfb-canvas-svg" class="wfb-canvas-svg"></svg>
         <div id="wfb-world" class="wfb-canvas-world">${_wfRenderTriggerBox(st)}${nodesHtml}</div>
-        ${nodes.length ? '' : '<div class="wfb-canvas-empty">drop anyone anywhere &middot; drag the blue dot onto another card to connect them &middot; + on a port adds &amp; wires the next step</div>'}
+        ${nodes.length ? '' : `<div class="wfb-canvas-empty">
+          ${_wfRenderDescribeBox(st)}
+          <div class="wfb-canvas-empty-hint">drop anyone anywhere &middot; drag the blue dot onto another card to connect them &middot; + on a port adds &amp; wires the next step</div>
+        </div>`}
       </div>
       ${_wfRenderInspector(st)}
     </div>
@@ -2074,6 +2092,10 @@ function _wfRenderNode(st, node) {
   const validationBadge = runError
     ? `<span class="wfb-node-validation-badge wfb-node-validation-error" title="${esc(runError)}">&#10071;</span>`
     : (authWarning ? `<span class="wfb-node-validation-badge wfb-node-validation-warning" title="${esc(authWarning)}">&#9888;</span>` : '');
+  // MC-962: Check-workflow findings pinned to this box (own class from
+  // validationBadge -- see _wfReviewNodeBadge for why they must never look
+  // like the same thing).
+  const reviewBadge = _wfReviewNodeBadge((st.reviewFindings || []).filter(f => f.node === node.name));
   // MC-946: show which step a LIVE run is on, right on the canvas node --
   // the strip alone (_wfRenderLiveRun) named the step in text but the card
   // itself showed nothing. Keyed by node name, the same key run.steps uses
@@ -2089,6 +2111,7 @@ function _wfRenderNode(st, node) {
       ${liveBadge}
       ${unwiredBadge}
       ${validationBadge}
+      ${reviewBadge}
       ${headHtml}
       <button class="wfb-node-menu-btn" title="Step options" onclick="_wfNodeMenuToggle(event,'${_wfJsStrEsc(node.name)}')">&#8230;</button>
     </div>
@@ -2255,6 +2278,15 @@ function _wfRenderInspector(st) {
   const runError = st.runErrors && st.runErrors[node.name];
   const engineInfo = node.type === 'agent' ? _wfEngineResolution(st, node) : null;
   const authWarning = (!runError && node.type === 'agent') ? _wfEngineWarning(st, node, engineInfo) : '';
+  // MC-962: the badge on the box only carries the message on `title` -- the
+  // full text (and any suggestion) for this node's findings lives here,
+  // same "badge on the box, full text in the inspector" split the
+  // validation badge already uses (runError/authWarning above).
+  const nodeFindings = (st.reviewFindings || []).filter(f => f.node === node.name);
+  const findingsHtml = nodeFindings.map(f => `<div class="wfb-node-review-finding wfb-node-review-finding-${f.severity === 'error' ? 'error' : 'warning'}">
+      <strong>${f.severity === 'error' ? 'Error' : (f.severity === 'warning' ? 'Warning' : 'Note')}:</strong> ${esc(f.message || '')}
+      ${f.suggestion ? `<div class="wfb-node-review-suggestion">${esc(f.suggestion)}</div>` : ''}
+    </div>`).join('');
   return `<div id="wfb-inspector" class="wfb-inspector wfb-inspector-open">
     <div class="wfb-inspector-head">
       <span class="wfb-inspector-title">${titleHtml}</span>
@@ -2263,6 +2295,7 @@ function _wfRenderInspector(st) {
     <div class="wfb-inspector-body">
       ${runError ? `<div class="wfb-node-inline-error">${esc(runError)}</div>` : ''}
       ${authWarning ? `<div class="wfb-node-inline-warning">${esc(authWarning)}</div>` : ''}
+      ${findingsHtml}
       <div class="wfb-node-own" data-name="${esc(node.name || '')}">${own}</div>
     </div>
   </div>`;
@@ -3275,8 +3308,10 @@ function _wfViewportDown(e) {
   // follows to the VIEWPORT -- exactly the mechanism _wfNodeDragDown's own
   // header comment already documents for the node "..." menu button -- which
   // silently ate clicks on the trigger's own "+" (`.wfb-port-plus` is not
-  // `.wfb-port`, so it wasn't covered either).
-  if (e.target.closest('.wfb-node, .wfb-port, .wfb-trigger-box')) return;
+  // `.wfb-port`, so it wasn't covered either). MC-962: the empty-canvas
+  // "Describe it" box hit the exact same trap -- its textarea/button never
+  // received a click at all, captured into a pan gesture instead.
+  if (e.target.closest('.wfb-node, .wfb-port, .wfb-trigger-box, .wfb-describe-box')) return;
   if (typeof e.button === 'number' && e.button !== 0) return;
   if (_wfPan || _wfNodeDrag || _wfPlaceDrag || _wfConnectDrag) return;
   const entry = _wfEntry(); if (!entry) return;
@@ -4396,6 +4431,188 @@ async function _wfRunNow() {
     showToast('Run failed: ' + e.message, 6000);
   }
 }
+
+// ── MC-962: "Describe it" (draft) + "Check workflow" (review) ───────────────
+//
+// Both hit the human-only-gated `/api/workflows/draft` and the open
+// `/api/workflows/review` routes (mc/blueprints/workflow_routes.py) added for
+// MC-962. Neither route ever persists anything -- draft_workflow/review_workflow
+// (mc/workflows.py) never touch the store -- so a draft only ever lands on the
+// canvas as a dirty, unsaved def (the user still has to press Save, same as
+// dragging a block on by hand) and a review only ever produces read-only
+// findings, never a mutation.
+
+// Shown in place of the empty-canvas hint (_wfRenderBody) only while there is
+// nothing on the canvas yet -- "the new-workflow flow". A workflow that already
+// has steps uses the toolbar's Check workflow instead; describing INTO an
+// existing-but-emptied canvas is not a case worth a special guard against,
+// since Save still behaves exactly as it always does for that workflowId.
+function _wfRenderDescribeBox(st) {
+  return `<div class="wfb-describe-box">
+    <div class="wfb-describe-title">Describe what you need</div>
+    <textarea id="wfb-describe-input" class="wfb-describe-input" rows="3"
+      placeholder="e.g. every morning, triage new backlog items and draft a summary"
+      ${st.drafting ? 'disabled' : ''}>${esc(st.draftDescription || '')}</textarea>
+    <div class="wfb-describe-row">
+      <button type="button" class="btn-sched-save" onclick="_wfDraftFromDescription()" ${st.drafting ? 'disabled' : ''}
+        >${st.drafting ? 'Drafting…' : 'Describe it'}</button>
+      ${st.draftError ? `<span class="wfb-describe-error">${esc(st.draftError)}</span>` : ''}
+    </div>
+  </div>`;
+}
+
+async function _wfDraftFromDescription() {
+  const entry = _wfEntry(); if (!entry) return;
+  const st = entry._wf;
+  const textarea = document.getElementById('wfb-describe-input');
+  const description = ((textarea ? textarea.value : st.draftDescription) || '').trim();
+  if (!description) { showToast('Describe what you need first.', 4000); return; }
+  st.draftDescription = description;
+  st.drafting = true;
+  st.draftError = null;
+  _wfRender();
+  let data;
+  try {
+    const res = await fetch(`${API_BASE}/api/workflows/draft`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description, project_id: st.hintProjectId || '' }),
+    });
+    data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      const msg = data.error === 'draft_parse_failed'
+        ? 'The engine could not produce a usable workflow. Try describing it differently.'
+        : data.error === 'draft_call_failed'
+        ? 'The engine is unavailable right now. Try again shortly.'
+        : (data.error || `HTTP ${res.status}`);
+      st.drafting = false;
+      st.draftError = msg;
+      _wfRender();
+      return;
+    }
+  } catch (e) {
+    st.drafting = false;
+    st.draftError = 'Draft failed: ' + e.message;
+    _wfRender();
+    return;
+  }
+  // Loaded UNSAVED and disabled -- def.enabled is already forced false by
+  // draft_workflow server-side, but the field is re-asserted here too so a
+  // future server change can never silently flip this UI straight to armed.
+  const def = data.definition;
+  def.enabled = false;
+  st.def = def;
+  st.dirty = true;
+  st.drafting = false;
+  st.draftDescription = '';
+  st.draftError = null;
+  st.runErrors = null;
+  st.reviewFindings = [];
+  st.reviewUnassigned = [];
+  st._reviewDefSnapshot = null;
+  _wfRender();
+  showToast(data.valid ? 'Draft loaded. Review, then Save when ready.'
+    : 'Draft loaded, but has issues -- see the badges, or Check workflow.', 6000);
+}
+window._wfDraftFromDescription = _wfDraftFromDescription;
+
+// ── Check workflow (review) ──────────────────────────────────────────────────
+
+function _wfClearStaleReviewFindings(st) {
+  if (!st._reviewDefSnapshot) return;
+  if (JSON.stringify(st.def) === st._reviewDefSnapshot) return;
+  st.reviewFindings = [];
+  st.reviewUnassigned = [];
+  st._reviewDefSnapshot = null;
+}
+
+// A deterministic validate_workflow() error always comes back with node:null
+// (mc/workflows.py review_workflow) even though its own message text usually
+// quotes the offending step, e.g. "agent step 'draft' missing prompt" -- the
+// same convention _wfSave/_wfRunNow's own error handlers already parse back
+// out of a server error string. Reusing it here means a validator finding
+// still pins to its box instead of only ever landing in the unassigned list.
+function _wfGuessFindingNode(message, names) {
+  const m = String(message || '');
+  return names.find(n => m.includes(`'${n}'`)) || null;
+}
+
+async function _wfCheckWorkflow() {
+  const entry = _wfEntry(); if (!entry) return;
+  _wfSyncDomToModel(entry);
+  const st = entry._wf;
+  const def = st.def;
+  if (!(def.nodes || []).length) { showToast('Add at least one step before checking.', 4000); return; }
+  st.reviewChecking = true;
+  _wfRender();
+  const sentDef = { name: def.name, description: def.description, trigger: def.trigger,
+                    nodes: def.nodes, edges: def.edges || [] };
+  try {
+    const res = await fetch(`${API_BASE}/api/workflows/review`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ definition: sentDef }),
+    });
+    const data = await res.json().catch(() => ({}));
+    st.reviewChecking = false;
+    if (!res.ok) {
+      showToast('Check failed: ' + (data.error || `HTTP ${res.status}`), 6000);
+      _wfRender();
+      return;
+    }
+    const names = (def.nodes || []).map(n => n.name);
+    const findings = (data.findings || []).map(f => ({ ...f, node: f.node || _wfGuessFindingNode(f.message, names) }));
+    st.reviewFindings = findings.filter(f => f.node);
+    st.reviewUnassigned = findings.filter(f => !f.node);
+    st._reviewDefSnapshot = JSON.stringify(st.def);
+    if (data.model_error) {
+      showToast('Deterministic checks ran; the model reviewer failed: ' + data.model_error, 6000);
+    } else {
+      showToast(findings.length ? `${findings.length} finding${findings.length === 1 ? '' : 's'}.` : 'No issues found.', 4000);
+    }
+    _wfRender();
+  } catch (e) {
+    st.reviewChecking = false;
+    showToast('Check failed: ' + e.message, 6000);
+    _wfRender();
+  }
+}
+window._wfCheckWorkflow = _wfCheckWorkflow;
+
+function _wfReviewSeverityRank(s) { return s === 'error' ? 2 : (s === 'warning' ? 1 : 0); }
+
+// Reuses the MC-963 validation-badge pattern (`.wfb-node-validation-badge`,
+// _wfRenderNode) but under its own class -- a Check-workflow finding is
+// advisory and can go stale on the next edit, unlike a hard Save/Run-now
+// structural error, so the two must never be visually confused for one another.
+function _wfReviewNodeBadge(findings) {
+  if (!findings || !findings.length) return '';
+  const worst = findings.reduce((a, f) => _wfReviewSeverityRank(f.severity) > _wfReviewSeverityRank(a.severity) ? f : a, findings[0]);
+  const cls = worst.severity === 'error' ? 'wfb-node-review-error' : 'wfb-node-review-warning';
+  const glyph = worst.severity === 'error' ? '&#10071;' : '&#9888;';
+  const count = findings.length > 1 ? ` ${findings.length}` : '';
+  const title = findings.map(f => f.message).join(' | ');
+  return `<span class="wfb-node-review-badge ${cls}" title="${esc(title)}">${glyph}${count}</span>`;
+}
+
+// Dismissible list for findings review_workflow (or _wfGuessFindingNode)
+// couldn't pin to any node on this canvas -- whole-workflow findings and
+// anything naming a step that no longer exists.
+function _wfRenderReviewUnassigned(st) {
+  const list = st.reviewUnassigned || [];
+  if (!list.length) return '';
+  const rows = list.map((f, i) => `<div class="wfb-review-unassigned-item wfb-review-${f.severity === 'error' ? 'error' : 'warning'}">
+      <span class="wfb-review-unassigned-text">${esc(f.message || '')}${f.suggestion ? ' — ' + esc(f.suggestion) : ''}</span>
+      <button type="button" class="wfb-review-unassigned-dismiss" title="Dismiss" onclick="_wfDismissUnassignedFinding(${i})">&#10005;</button>
+    </div>`).join('');
+  return `<div id="wfb-review-unassigned" class="wfb-review-unassigned">${rows}</div>`;
+}
+
+function _wfDismissUnassignedFinding(i) {
+  const entry = _wfEntry(); if (!entry) return;
+  const st = entry._wf;
+  (st.reviewUnassigned || []).splice(i, 1);
+  _wfRender();
+}
+window._wfDismissUnassignedFinding = _wfDismissUnassignedFinding;
 
 // ── Live run strip + Cancel ──────────────────────────────────────────────────
 // One live run per workflow (mc/workflows.py `_has_live_run`), so the strip
