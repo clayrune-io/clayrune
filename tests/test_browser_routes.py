@@ -1644,3 +1644,43 @@ def test_device_mode_commands_uses_the_passed_view_over_the_session_view():
     session = {'view': (1280, 800)}
     cmds = br._device_mode_commands(session, True, view=(412, 915))
     assert (cmds[0][1]['width'], cmds[0][1]['height']) == (412, 915)
+
+
+# ── MC-996: a new viewer must un-pause a minimize-paused screencast ──────────
+# The pane's minimize sets screencast_paused; only the dock chip's restore
+# cleared it. Re-attaching by any other path (page reload, Browser button,
+# switcher, toast View) opened a new stream on a session that stayed paused
+# forever -- the viewer froze while agent navigate/read kept working.
+
+def _paused_session():
+    import queue
+    return {'session_id': 'sid-1', 'status': 'running', 'url': 'https://x',
+            'screencast_paused': True, 'cmd_queue': queue.Queue(),
+            'screencast_params': {'format': 'jpeg', 'quality': 70}}
+
+
+def test_stream_attach_resumes_a_minimize_paused_screencast(app_client):
+    browser_sessions['sid-1'] = s = _paused_session()
+    resp = app_client.get('/api/browser/stream?session_id=sid-1', buffered=False)
+    resp.close()
+    assert s['screencast_paused'] is False
+    assert s['cmd_queue'].get_nowait() == ('Page.startScreencast',
+                                           {'format': 'jpeg', 'quality': 70})
+
+
+def test_stream_attach_leaves_an_unpaused_session_alone(app_client):
+    browser_sessions['sid-1'] = s = _paused_session()
+    s['screencast_paused'] = False
+    resp = app_client.get('/api/browser/stream?session_id=sid-1', buffered=False)
+    resp.close()
+    assert s['cmd_queue'].empty()
+
+
+def test_minimize_pause_still_holds_without_a_new_viewer(app_client):
+    browser_sessions['sid-1'] = s = _paused_session()
+    s['screencast_paused'] = False
+    r = app_client.post('/api/browser/input',
+                        json={'session_id': 'sid-1', 'type': 'screencast', 'action': 'stop'})
+    assert r.status_code == 200
+    assert s['screencast_paused'] is True
+    assert s['cmd_queue'].get_nowait() == ('Page.stopScreencast', {})
