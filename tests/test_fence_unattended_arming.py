@@ -541,3 +541,61 @@ def test_relative_shell_write_to_passcode_store_is_refused(monkeypatch, tmp_path
 def test_searching_source_for_the_store_name_still_passes():
     assert not fence.check_vault_file_access(
         'Bash', {'command': 'grep -rn "' + _STORE + '" mc/'}).blocked
+
+
+# ── Fenn's review #4 (2026-09-28, N1/N4) ────────────────────────────────────
+# Both guards are allowlists now; each spelling that slipped past review #3's
+# fixes is pinned here.
+
+@pytest.mark.parametrize('command', [
+    'curl -X POST --url https://example.invalid/item[1-3]',
+    'curl -X POST -Kreview4.conf https://example.invalid/a',
+    '"curl" -X POST https://example.invalid/a https://example.invalid/b',
+    r'C:\tools\curl.exe -X POST https://example.invalid/a https://example.invalid/b',
+    'curl -X POST --unknown-option https://example.invalid/a',
+    'iwr -Ur https://example.invalid/a -Method Post',
+    'wget -e input=urls.txt --post-data=x https://example.invalid/a',
+])
+def test_review4_transfer_fanout_never_consumes_a_pass(monkeypatch, tmp_path, command):
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', _never_consume)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2
+
+
+@pytest.mark.parametrize('command', [
+    'iwr -Uri https://example.invalid/a -Method Post',
+    'wget -qO- --post-data=x https://example.invalid/a',
+])
+def test_review4_single_target_forms_still_consume_a_pass(monkeypatch, tmp_path, command):
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', lambda: spent.append(1) or True)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 0 and spent == [1]
+
+
+@pytest.mark.parametrize('tool_name,command', [
+    ('Bash', 'curl -o ' + _STORE + ' http://127.0.0.1:9/empty'),
+    ('PowerShell', 'Invoke-WebRequest http://127.0.0.1:9/empty -OutFile ' + _STORE),
+    ('Bash', 'grep . ' + _STORE),
+    ('Bash', 'grep -rn "' + _STORE + '|pw_hash" data/'),
+    ('Bash', 'grep -f ' + _STORE + ' mc/'),
+])
+def test_review4_store_named_commands_are_refused(monkeypatch, tmp_path, tool_name, command):
+    monkeypatch.setattr(fence, '_consume_attend_once_pass', lambda: True)
+    assert fence.check_vault_file_access(tool_name, {'command': command}).blocked
+    data_dir = str(fence._local_auth_data_root() / 'data')
+    payload = {'tool_name': tool_name, 'tool_input': {'command': command}, 'cwd': data_dir,
+               'transcript_path': _transcript(tmp_path, 'Please go implement the fix we discussed')}
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload)))
+    assert fence.main() == 2
+
+
+def test_review4_plain_source_search_for_store_name_passes():
+    for cmd in ('rg ' + _STORE + ' mc tests', 'git grep -n ' + _STORE + ' -- mc'):
+        assert not fence.check_vault_file_access('Bash', {'command': cmd}).blocked, cmd

@@ -1051,28 +1051,49 @@ def _bash_touches_vault_file(cmd: str) -> bool:
     return False
 
 
-# Write/delete shapes (Fenn's review #3, N1): from the data dir a bare
-# `printf '{}' > local_auth.json` or `Set-Content local_auth.json ...` named
-# neither a read verb nor `data/local_auth.json`, so it passed with no pass
-# spent and would wipe the verifier and cookie secret. Any redirect or
-# write/move/delete verb in a segment naming the store is refused. A plain
-# `grep -rn "local_auth.json" mc/` over this repo's source still passes.
-_LOCAL_AUTH_WRITE_RE = re.compile(
-    r'>|\b(Set-Content|sc|Add-Content|ac|Out-File|Clear-Content|clc|tee|'
-    r'Tee-Object|cp|Copy-Item|cpi|mv|move|Move-Item|mi|ren|rename|'
-    r'Rename-Item|rni|rm|del|erase|Remove-Item|ri|rd|rmdir|New-Item|ni|'
-    r'truncate|dd|sed|install|ln|mklink|echo|printf|WriteAllText|'
-    r'WriteAllBytes)\b', re.I)
+# Any shell mention of the passcode store is refused, with ONE narrow
+# exception (Fenn's reviews #3 and #4, N1). Two rounds of listing dangerous
+# verbs each left a spelling out: `printf '{}' > local_auth.json`, then
+# `curl -o local_auth.json <url>` and `Invoke-WebRequest ... -OutFile`, each
+# of which wiped the verifier and cookie secret with no pass spent. So the
+# rule is positive: the only allowed shape is searching source for the
+# filename, `grep|rg|git grep [opts] <exactly the filename> <paths...>`, where
+# the filename appears once, as the pattern, with no pattern-file option.
+_STORE_SEARCH_PATTERN_RE = re.compile(r'[\w./\\-]*' + re.escape(_LOCAL_AUTH_FILENAME), re.I)
+
+
+def _is_store_name_source_search(seg: str) -> bool:
+    try:
+        argv = shlex.split(seg, posix=True)
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    head = _pass_head_name(argv[0])
+    rest = argv[1:]
+    if head == 'git' and rest[:1] == ['grep']:
+        rest = rest[1:]
+    elif head not in ('grep', 'rg'):
+        return False
+    positionals = []
+    for tok in rest:
+        if tok.startswith('--'):
+            if tok.startswith('--file') or _LOCAL_AUTH_NAME_RE.search(tok):
+                return False
+        elif tok.startswith('-') and len(tok) > 1:
+            if 'f' in tok[1:] or _LOCAL_AUTH_NAME_RE.search(tok):
+                return False
+        else:
+            positionals.append(tok)
+    named = [t for t in positionals if _LOCAL_AUTH_NAME_RE.search(t)]
+    return (len(positionals) >= 2 and len(named) == 1
+            and named[0] is positionals[0]
+            and bool(_STORE_SEARCH_PATTERN_RE.fullmatch(positionals[0])))
 
 
 def _bash_touches_local_auth_file(cmd: str) -> bool:
     for seg in _SHELL_SPLIT_RE.split(cmd):
-        if not _LOCAL_AUTH_NAME_RE.search(seg):
-            continue
-        seg_norm = seg.replace('\\', '/').lower()
-        if _VAULT_READ_VERB_RE.search(seg) or 'data/local_auth.json' in seg_norm:
-            return True
-        if _LOCAL_AUTH_WRITE_RE.search(seg):
+        if _LOCAL_AUTH_NAME_RE.search(seg) and not _is_store_name_source_search(seg):
             return True
     return False
 
@@ -1397,6 +1418,11 @@ _PASS_WRAPPER_HEADS = {
 }
 
 
+def _pass_head_name(tok: str) -> str:
+    head = (tok or '').strip('"\'').lower().replace('\\', '/').rsplit('/', 1)[-1]
+    return re.sub(r'\.(exe|cmd|bat|ps1)$', '', head)
+
+
 def _is_plain_single_invocation(cmd: str) -> bool:
     text = (cmd or '').strip()
     if not text or any(c in _PASS_META_CHARS for c in text):
@@ -1404,79 +1430,135 @@ def _is_plain_single_invocation(cmd: str) -> bool:
     low = text.lower()
     if re.search(r'(^|\s)(eval|iex|--next|-exec)(\s|$)', low):
         return False
-    head = low.split()[0].replace('\\', '/').rsplit('/', 1)[-1]
-    head = re.sub(r'\.(exe|cmd|bat|ps1)$', '', head)
-    if head in _PASS_WRAPPER_HEADS:
+    try:
+        argv = shlex.split(text, posix=True)
+    except ValueError:
         return False
-    if head in _PASS_TRANSFER_HEADS:
-        try:
-            argv = shlex.split(text, posix=True)
-        except ValueError:
-            return False
-        return _is_single_transfer(head, argv[1:])
+    if not argv:
+        return False
+    # Judge the head both ways: POSIX quoting strips `"curl"` to `curl`
+    # (Fenn's review #4), but also eats Windows backslashes, which the raw
+    # first token keeps. Either reading naming a wrapper or transfer tool counts.
+    heads = {_pass_head_name(argv[0]), _pass_head_name(text.split()[0])}
+    if heads & _PASS_WRAPPER_HEADS:
+        return False
+    transfer = heads & set(_PASS_TRANSFER_SPECS)
+    if transfer:
+        return _is_single_transfer(transfer.pop(), argv[1:])
     return True
 
 
 # Transfer tools send one request PER target, so one invocation is not one
-# operation for them (Fenn's review #3, N4: `curl -X POST a b`, `-:`, and URL
-# globbing `item[1-3]` each spent one pass on 2-3 POSTs). The pass is not bound
-# to a command, so capping each call at one target is the remaining limit.
-# Positive rule: exactly one positional target, no multi-transfer/config/input
-# options, no glob brackets. A value-taking option missing from this table makes
-# its value count as a second target and refuses: over-refusal is the safe way.
-_PS_WEB_ARG_OPTS = {'-uri', '-method', '-body', '-headers', '-contenttype',
-                    '-outfile', '-infile', '-timeoutsec', '-credential'}
-_PASS_TRANSFER_HEADS = {
-    'curl': {'-d', '--data', '--data-raw', '--data-binary', '--data-urlencode',
-             '--json', '-H', '--header', '-X', '--request', '-o', '--output',
-             '-u', '--user', '-F', '--form', '-A', '--user-agent', '-e',
-             '--referer', '-b', '--cookie', '-c', '--cookie-jar', '-T',
-             '--upload-file', '-w', '--write-out', '-m', '--max-time',
-             '--connect-timeout', '--retry', '--cacert', '--cert', '--key',
-             '--oauth2-bearer', '-x', '--proxy', '--resolve', '--url'},
-    'wget': {'-O', '--output-document', '-o', '--output-file', '--header',
-             '--post-data', '--post-file', '--method', '--body-data',
-             '--body-file', '-U', '--user-agent', '--user', '--password',
-             '-t', '--tries', '-T', '--timeout', '-P', '--directory-prefix'},
-    'invoke-webrequest': _PS_WEB_ARG_OPTS, 'iwr': _PS_WEB_ARG_OPTS,
-    'invoke-restmethod': _PS_WEB_ARG_OPTS, 'irm': _PS_WEB_ARG_OPTS,
+# operation for them (Fenn's reviews #3/#4, N4). The pass is not bound to a
+# command, so capping each call at one target is the remaining limit. Two
+# rounds of refusing bad spellings each missed one (`--url` with a glob value,
+# attached `-Kfile`), so this is an allowlist: every option must be known,
+# short clusters are walked letter by letter, every value is inspected, config
+# and input sources are refused, and no token may carry glob brackets.
+# Anything unknown refuses; over-refusal is the safe direction.
+_PASS_TRANSFER_SPECS = {
+    'curl': {
+        'short_arg': set('dHXouFAebcTwmxErCyYzQUtDP'),
+        'short_flag': set('sSfLkivIgGjlnNOR0123469#J'),
+        'long_arg': {'--data', '--data-raw', '--data-binary', '--data-urlencode',
+                     '--data-ascii', '--json', '--header', '--request', '--output',
+                     '--user', '--form', '--form-string', '--user-agent', '--referer',
+                     '--cookie', '--cookie-jar', '--upload-file', '--write-out',
+                     '--max-time', '--connect-timeout', '--retry', '--retry-delay',
+                     '--cacert', '--cert', '--key', '--oauth2-bearer', '--proxy',
+                     '--resolve', '--url', '--range', '--dump-header',
+                     '--limit-rate', '--max-filesize'},
+        'long_flag': {'--silent', '--show-error', '--fail', '--fail-with-body',
+                      '--location', '--compressed', '--insecure', '--include',
+                      '--verbose', '--http1.1', '--http2', '--globoff', '--get',
+                      '--head', '--no-progress-meter', '--remote-name',
+                      '--remote-header-name', '--no-buffer', '--ipv4', '--ipv6'},
+        'target_opts': {'--url'},
+    },
+    'wget': {
+        'short_arg': set('OoUtTP'),
+        'short_flag': set('qvScN'),
+        'long_arg': {'--output-document', '--output-file', '--header', '--post-data',
+                     '--post-file', '--method', '--body-data', '--body-file',
+                     '--user-agent', '--user', '--password', '--tries', '--timeout',
+                     '--directory-prefix'},
+        'long_flag': {'--quiet', '--verbose', '--no-verbose', '--server-response',
+                      '--no-check-certificate', '--content-on-error', '--continue'},
+        'target_opts': set(),
+    },
 }
-_PASS_TRANSFER_MULTI_OPTS = {
-    'curl': {'-:', '--next', '-K', '--config', '-Z', '--parallel'},
-    'wget': {'-i', '--input-file', '-r', '--recursive', '-m', '--mirror',
-             '-p', '--page-requisites'},
+_PS_WEB_SPEC = {
+    'arg': {'-uri', '-method', '-body', '-headers', '-contenttype', '-outfile',
+            '-infile', '-timeoutsec', '-credential', '-useragent',
+            '-maximumredirection'},
+    'flag': {'-usebasicparsing', '-usedefaultcredentials', '-skipcertificatecheck',
+             '-passthru', '-disablekeepalive'},
 }
+for _ps in ('invoke-webrequest', 'iwr', 'invoke-restmethod', 'irm'):
+    _PASS_TRANSFER_SPECS[_ps] = None
 
 
 def _is_single_transfer(head: str, args: list) -> bool:
-    arg_opts = _PASS_TRANSFER_HEADS[head]
-    multi = _PASS_TRANSFER_MULTI_OPTS.get(head, set())
-    case_sensitive = head in ('curl', 'wget')
+    if any(ch in tok for tok in args for ch in '[]{}'):
+        return False
+    if _PASS_TRANSFER_SPECS[head] is None:
+        return _is_single_ps_transfer(args)
+    spec = _PASS_TRANSFER_SPECS[head]
     targets = 0
     i = 0
     while i < len(args):
         tok = args[i]
-        if '[' in tok or ']' in tok:
-            return False
-        name = tok.split('=', 1)[0]
-        key = name if case_sensitive else name.lower()
-        if key in multi:
-            return False
-        # curl short-option clusters (`-sK cfg`, `-s:`) hide -K/-Z/-: inside
-        # a token the table cannot see; refuse any cluster carrying one.
-        if head == 'curl' and re.fullmatch(r'-[A-Za-z:]{2,}', tok) \
-                and set(tok[1:]) & {':', 'K', 'Z'}:
-            return False
-        if tok.startswith('-') and len(tok) > 1:
-            if key in ('--url', '-uri'):
-                targets += 1
-            if key in arg_opts and '=' not in tok:
-                i += 2
+        i += 1
+        if tok.startswith('--') and len(tok) > 2:
+            name, eq, _ = tok.partition('=')
+            if name in spec['long_flag'] and not eq:
                 continue
-            i += 1
+            if name not in spec['long_arg']:
+                return False
+            if not eq:
+                if i >= len(args):
+                    return False
+                i += 1
+            if name in spec['target_opts']:
+                targets += 1
+            continue
+        if tok.startswith('-') and len(tok) > 1:
+            letters = tok[1:]
+            for j, ch in enumerate(letters):
+                if ch in spec['short_flag']:
+                    continue
+                if ch not in spec['short_arg']:
+                    return False
+                if j == len(letters) - 1:
+                    if i >= len(args):
+                        return False
+                    i += 1
+                break
             continue
         targets += 1
+    return targets == 1
+
+
+def _is_single_ps_transfer(args: list) -> bool:
+    targets = 0
+    i = 0
+    while i < len(args):
+        tok = args[i]
         i += 1
+        if tok.startswith('-') and len(tok) > 1:
+            name, colon, _ = tok.lower().partition(':')
+            if name in _PS_WEB_SPEC['flag'] and not colon:
+                continue
+            if name not in _PS_WEB_SPEC['arg']:
+                return False
+            if not colon:
+                if i >= len(args):
+                    return False
+                i += 1
+            if name == '-uri':
+                targets += 1
+            continue
+        targets += 1
     return targets == 1
 
 
