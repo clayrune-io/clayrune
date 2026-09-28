@@ -3694,6 +3694,9 @@
     font-family: inherit; transition: border-color .15s, background .15s;
   }
   .composer-empty-state .ces-chip:hover { border-color: var(--accent); }
+  /* MC-957 Entry A: distinguishes the persona-switch action from the plain
+     text-filling starter chips above/below it — same shape, accent border. */
+  .composer-empty-state .ces-chip-brainstorm { border-color: var(--accent-dim); }
   .composer-empty-state .ces-chip-icon { font-size: 16px; flex-shrink: 0; }
   .composer-empty-state .ces-chip-label { flex: 1; }
   .composer-empty-state .ces-chip-chev { color: var(--text-faint); font-size: 17px; flex-shrink: 0; }
@@ -4239,6 +4242,34 @@
     font-weight: 500;
     max-width: 84%;
     white-space: pre-wrap;
+  }
+  /* MC-957 Entry B: hover-reveal "Brainstorm this" icon at the end of a user
+     bubble's own text — inline rather than a separate overlay so it never
+     shifts the bubble's flex layout or its :not(.agent-line-prompt) siblings. */
+  .agent-output .agent-line-prompt .msg-brainstorm-btn {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 0 2px;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font-size: 1em;
+    line-height: 1;
+    vertical-align: middle;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .agent-output .agent-line-prompt:hover .msg-brainstorm-btn,
+  .agent-output .agent-line-prompt .msg-brainstorm-btn:focus-visible {
+    opacity: 0.85;
+  }
+  .agent-output .agent-line-prompt .msg-brainstorm-btn:hover {
+    opacity: 1;
+  }
+  /* Touch devices have no hover — always show it, smaller, so it's reachable */
+  @media (hover: none) {
+    .agent-output .agent-line-prompt .msg-brainstorm-btn { opacity: 0.7; }
   }
   /* Slash commands — still a user bubble, but rendered as a command: deeper
      accent, monospace, and a leading "/" rail. Uses --accent-soft so it stays
