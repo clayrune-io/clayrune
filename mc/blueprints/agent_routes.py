@@ -112,6 +112,7 @@ import mc.artifact_coverage as _artifact_coverage  # substitution check: did the
 import mc.vendor_context_sync as _vendor_context_sync  # mirrors CLAUDE.md into AGENTS.md/GEMINI.md/QWEN.md
 import mc.usage_breakdown_sampler as _usage_breakdown_sampler  # MC-998 session-fact capture
 from mc.usage_breakdown_store import UsageBreakdownStore as _UsageBreakdownStore  # MC-998
+import mc.project_sync as _project_sync  # MC-998 phase 3: LOC attribution git numstat
 from mc.delegation_delivery import (DeliveryStore, callback_payload,
                                     DeliveryBlocked, DeliveryDeferred,
                                     DeliveryUncertain, drain_once,
@@ -1230,6 +1231,76 @@ def _maybe_isolate_worktree(project, session_id, incognito=False):
     except Exception as e:
         _log(f"[worktree] isolation failed, using shared tree: {e}")
         return pp, False
+
+
+_LOC_EXTENSIONS = {
+    '.py', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.html', '.css',
+    '.scss', '.swift', '.kt', '.java', '.rs', '.go', '.sh', '.ps1',
+}
+
+
+def _compute_code_delta(session):
+    """MC-998 phase 3 LOC attribution (docs/USAGE_BREAKDOWN_SPEC.md "Trigger
+    and code attribution"). Returns the `fields` dict for
+    `UsageBreakdownStore.upsert_code_delta`.
+
+    Only an isolated worktree gives an attributable diff — the shared
+    project tree can carry concurrent human/agent edits with no way to
+    separate this session's lines from them, so every non-isolated session
+    is `unavailable` by construction (acceptance check 3: "a shared dirty
+    worktree yields LOC unavailable"). Must be called BEFORE
+    `_worktree_merge_back_on_end` — the spec requires "the session's own
+    commit SHA set and a final isolated diff before any automatic
+    merge-back" — since merge-back can delete the worktree and its branch
+    once merged.
+
+    Diffs against `merge-base(HEAD, base_ref)` rather than a stored base
+    commit: a fresh `git worktree add` starts exactly at that ancestor, so
+    the merge-base recovers it even if the project's base branch has since
+    moved — no separate baseline capture at dispatch time is needed. The
+    diff is taken directly against the working tree (not just `HEAD`), so
+    committed AND any still-uncommitted changes are counted once, in one
+    numstat pass. `-M` groups a rename into one numstat line (added/deleted
+    of the actual edit) instead of counting the whole file as both a delete
+    and an add.
+    """
+    branch = _agent_worktree.branch_name(session.get('session_id', ''))
+    if not session.get('_worktree_isolated'):
+        return {'status': 'unavailable', 'branch': branch,
+                'reason': "shared working tree, cannot isolate this session's commits"}
+    project = load_project(session.get('project_id'))
+    if not project:
+        return {'status': 'unavailable', 'branch': branch, 'reason': 'project not found'}
+    wt = _agent_worktree.worktree_path(project, session.get('session_id', ''))
+    if wt is None or not wt.exists():
+        return {'status': 'unavailable', 'branch': branch, 'reason': 'worktree missing at completion'}
+    wts = str(wt)
+    base_ref = _agent_worktree._base_ref(project)
+    ok, base_commit = _project_sync.git_run(wts, ['merge-base', 'HEAD', base_ref], timeout=15)
+    if not ok or not base_commit:
+        return {'status': 'unavailable', 'branch': branch,
+                'reason': f'cannot resolve base commit: {base_commit}'}
+    ok, commits_out = _project_sync.git_run(wts, ['rev-list', f'{base_commit}..HEAD'], timeout=15)
+    head_commits = commits_out.splitlines() if ok else []
+    ok, diff_out = _project_sync.git_run(wts, ['diff', '--numstat', '-M', base_commit], timeout=30)
+    if not ok:
+        return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
+                'head_commits': ','.join(head_commits), 'reason': f'git diff failed: {diff_out}'}
+    added = deleted = 0
+    for line in diff_out.splitlines():
+        parts = line.split('\t')
+        if len(parts) < 3:
+            continue
+        a, d, path = parts[0], parts[1], parts[-1]
+        if a == '-' or d == '-':
+            continue  # numstat marks a binary file this way
+        ext = Path(path.split(' => ')[-1].strip('{}')).suffix.lower()
+        if ext not in _LOC_EXTENSIONS:
+            continue
+        added += int(a)
+        deleted += int(d)
+    return {'status': 'ok', 'branch': branch, 'base_commit': base_commit,
+            'head_commits': ','.join(head_commits), 'added': added, 'deleted': deleted}
 
 
 def _worktree_merge_back_on_end(session):
@@ -7824,6 +7895,15 @@ def _log_agent_completion_body(session):
     if not project_id:
         return
 
+    # MC-998 phase 3: LOC attribution. Must run BEFORE the worktree merge-back
+    # immediately below — merge-back can merge and then delete the isolated
+    # branch/worktree, after which the diff this reads is gone. Best-effort;
+    # never let a git failure here block completion logging.
+    try:
+        _code_delta = _compute_code_delta(session)
+    except Exception as e:
+        _code_delta = {'status': 'unavailable', 'reason': f'LOC computation failed: {e}'}
+
     # Worktree isolation (b264200a): merge this agent's committed work back
     # into the base branch before anything else. Runs FIRST and outside the
     # incognito/housekeeping early-returns below, because stranding an agent's
@@ -8024,8 +8104,14 @@ def _log_agent_completion_body(session):
         try:
             _fact = _usage_breakdown_sampler.session_fact_from_entry(
                 entry, project_id=project_id, housekeeping=is_housekeeping)
-            _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite'
-                                 ).upsert_session_fact(entry['session_id'], _fact)
+            _store = _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite')
+            _store.upsert_session_fact(entry['session_id'], _fact)
+            # MC-998 Phase 3: LOC attribution, computed pre-merge-back above.
+            # code_delta has a (non-enforced) FK on session_fact, so this
+            # write is ordered after it. Not gated on is_housekeeping — a
+            # housekeeping session's LOC is `unavailable` (it never isolates
+            # a worktree) but the row still belongs, same as its session_fact.
+            _store.upsert_code_delta(entry['session_id'], _code_delta)
         except Exception as e:
             _log(f"[usage-breakdown] session fact write failed for "
                  f"{entry.get('session_id', '')[:12]}: {e}")
