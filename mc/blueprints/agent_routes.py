@@ -129,6 +129,7 @@ from mc.blueprints.push_mobile import _notify_push  # MC-961 loud engine-fallbac
 from mc.blueprints.system_routes import _capture_system_init   # re-homed 1.6 shim
 from mc.blueprints.terminal_routes import launch_pty_session, launch_pipe_session    # MC-928
 from mc.blueprints.workflow_routes import _is_agent_caller  # MC-994 agent-caller guard reuse
+from mc.blueprints.secrets_routes import _require_human_passcode  # MC-994 follow-up: Fenn finding 1
 from mc import pty_backend
 
 bp = Blueprint('agent_routes', __name__)
@@ -6174,26 +6175,82 @@ def attend_session(project_id, session_id):
 # stick.
 _ATTEND_ONCE_TTL_SECONDS = 600  # 10 minutes
 
+# Literal copy of steward/fence.py's `_UNATTENDED_TRIGGER_TYPES` and
+# `STEWARD_MARKER` — same idiom as the JS mirror above
+# (`_UNATTENDED_FENCE_TRIGGERS`, conversation.js), for the same reason: the
+# grant route needs this synchronously in-process and fence.py is a
+# subprocess hook script, not an importable server module (it has no
+# `mc.*` package shape and is invoked as `__main__`). Keep all three copies
+# in sync by hand; they change rarely. Fenn finding 4 (server side): grant
+# must refuse a session the fence could never honor a pass for, so the pill
+# never promises something it can't deliver.
+_ATTEND_ONCE_ELIGIBLE_TRIGGER_TYPES = {
+    'schedule', 'workflow', 'dispatch', 'hivemind_orchestrator', 'hivemind_worker',
+}
+_ATTEND_ONCE_STEWARD_MARKER = '[Steward cycle]'
+
+
+def _attend_once_ineligibility_reason(session: dict) -> Optional[str]:
+    """None if `session` is a candidate for an "Allow once" pass; else a
+    human-readable reason to refuse the grant outright (Fenn finding 4).
+
+    Two of fence.py's three eligibility gates are checkable here:
+      - trigger_type must be one `_should_arm_for_unattended_trigger` actually
+        arms for — granting a pass to a 'manual' session would be inert (the
+        fence never blocks it) but misleadingly implies the control does
+        something.
+      - a steward-cycle session's task always starts with the marker
+        (steward/core.py's build_cycle_task) — same check agent_routes.py's
+        own conversation-list steward tag uses, `str(...).lstrip().startswith(...)`.
+    The third — Codex `--armed` — is NOT checked: guardrail_hooks.py decides
+    it at dispatch time but nothing persists it onto the live session dict,
+    so the server genuinely cannot tell here. Moot in practice: Codex has no
+    CLAUDE_CODE_SESSION_ID, so an armed Codex session can never reach
+    consume_attend_once_pass in the first place (it's keyed on that env var).
+    """
+    trigger_type = session.get('trigger_type') or 'manual'
+    if trigger_type not in _ATTEND_ONCE_ELIGIBLE_TRIGGER_TYPES:
+        return f"session trigger_type '{trigger_type}' is not fence-gated — a pass would never be spent"
+    if str(session.get('task') or '').lstrip().startswith(_ATTEND_ONCE_STEWARD_MARKER):
+        return 'steward-cycle sessions are never eligible for an "Allow once" pass'
+    return None
+
 
 def _attend_once_pass_view(session: dict) -> Optional[dict]:
-    """{'open': True, 'expires_at': iso} while an unconsumed, unexpired pass
-    is live on `session`; else None. Also lazily evicts an expired entry so
-    neither /agent/status nor a later grant/consume call ever sees a pass
-    that has already lapsed — there is no background sweep, only this
-    read-time check, so every call site that looks at the pass must go
-    through this function rather than reading `_attend_once_pass` directly."""
+    """Pure read: {'open': True, 'expires_at': iso} while an unconsumed,
+    unexpired pass is recorded on `session`; else None. Never mutates —
+    expired-pass EVICTION happens only under a project lock, in
+    `_evict_expired_attend_once_pass` below, called from the grant/consume
+    routes that already hold one. This function used to pop the expired
+    entry itself, which ran it unlocked from GET /agent/status (that route
+    never takes a project lock while building the sessions list) — Fenn:
+    that lazy write can race a concurrent grant and silently discard it.
+    Status reads must stay pure; only grant/consume mutate."""
     info = session.get('_attend_once_pass')
     if not info:
         return None
     try:
         expires_at = datetime.fromisoformat(info['expires_at'])
     except Exception:
-        session.pop('_attend_once_pass', None)
         return None
     if datetime.now(timezone.utc) >= expires_at:
-        session.pop('_attend_once_pass', None)
         return None
     return {'open': True, 'expires_at': info['expires_at']}
+
+
+def _evict_expired_attend_once_pass(session: dict) -> None:
+    """Pop `session`'s pass if it's corrupt or past expiry. Caller MUST hold
+    that session's project manager lock — this is the mutation
+    `_attend_once_pass_view` used to perform unlocked (see its docstring)."""
+    info = session.get('_attend_once_pass')
+    if not info:
+        return
+    try:
+        if datetime.now(timezone.utc) < datetime.fromisoformat(info['expires_at']):
+            return
+    except Exception:
+        pass
+    session.pop('_attend_once_pass', None)
 
 
 @bp.route('/api/project/<project_id>/agent/<session_id>/attend-once', methods=['POST'])
@@ -6202,33 +6259,46 @@ def attend_once_session(project_id, session_id):
     irreversible action through for this session, then it's spent — the
     session goes right back to fully fenced (MC-994 follow-up, 2026-09-28).
 
-    Human-only, same guard as attend_session above: an agent calling this
-    gains nothing (CLAUDE.md authority guard — granting stays human-only,
-    only *spending* an already-granted pass is agent/hook-reachable, via
-    consume_attend_once_pass below).
+    Human-only. Fenn's review of the first cut (`_is_agent_caller`, an Origin
+    header check) found any agent `curl -H "Origin: http://localhost"` passed
+    it and could grant itself unlimited passes forever. Gated the same way as
+    the vault lock (`secrets_routes._require_human_passcode`, Ron 2026-09-28):
+    the LOCAL DASHBOARD PASSCODE, re-entered in the request body and verified
+    server-side. No agent-reachable path mints or observes that passcode.
+    Only *spending* an already-granted pass is agent/hook-reachable, via
+    consume_attend_once_pass below.
 
     A second click while a pass is already open does NOT stack or extend
     it — same pass, same expiry, returned as `status: 'already_open'`.
+
+    Refuses a session the fence could never spend a pass for (Fenn finding
+    4, `_attend_once_ineligibility_reason`) — the pill must not promise an
+    approval that can't be delivered.
     """
-    if _is_agent_caller():
-        return jsonify({
-            'error': ('granting an "allow once" pass is human-only: an agent session '
-                      'cannot grant its own pass (CLAUDE.md authority guard). '
-                      'Use the control in the chat header.'),
-        }), 403
+    data = request.get_json(silent=True) or {}
+    refusal = _require_human_passcode(data)
+    if refusal:
+        return refusal
     with get_manager(project_id).lock:
         session = agent_sessions.get(session_id)
         if not session:
             return jsonify({'error': 'session not found'}), 404
         if session.get('project_id') != project_id:
             return jsonify({'error': 'session not found'}), 404
+        ineligible = _attend_once_ineligibility_reason(session)
+        if ineligible:
+            return jsonify({'error': ineligible}), 409
+        _evict_expired_attend_once_pass(session)
         existing = _attend_once_pass_view(session)
         if existing:
             return jsonify({'ok': True, 'session_id': session_id,
                             'status': 'already_open', 'expires_at': existing['expires_at']})
         expires_iso = (datetime.now(timezone.utc)
                        + timedelta(seconds=_ATTEND_ONCE_TTL_SECONDS)).isoformat()
-        session['_attend_once_pass'] = {'expires_at': expires_iso}
+        # mc_session_id pins WHICH session record the pass belongs to (Fenn
+        # finding 5) — consume checks it, not just that some record happens
+        # to share the Claude conversation id.
+        session['_attend_once_pass'] = {'expires_at': expires_iso, 'mc_session_id': session_id}
     _log(f"[attend-once] session={session_id} project={project_id} pass granted, "
          f"expires {expires_iso}")
     return jsonify({'ok': True, 'session_id': session_id, 'status': 'granted',
@@ -6256,25 +6326,56 @@ def consume_attend_once_pass():
     lock (the same one attend_once_session grants under), so two concurrent
     hook calls for the same session can't both observe the pass present —
     the second sees it already gone and reports `consumed: False`.
+
+    Bound to the exact MC session, not just the Claude ID (Fenn finding 5):
+    picking "the first record matching claude_session_id" let a second MC
+    chat that happens to share a Claude conversation ID spend a human's
+    approval that was granted to a DIFFERENT chat — B's hook consuming A's
+    pass. `claude_session_id` is the only identity a PreToolUse hook
+    subprocess has (CLAUDE_CODE_SESSION_ID), so there is no server-issued
+    launch identity to bind to instead without a hook-payload change; refusing
+    outright whenever the mapping is ambiguous is the interim fix Fenn asked
+    for. Residual race: a second session claiming the same csid between this
+    lookup and the lock below is not closed here — that would need a lock
+    spanning every project's session dict, which nothing else in this file
+    takes either. Fenn's ambiguity finding is about a *standing* collision
+    (two live records sharing an ID), which this closes.
     """
     data = request.get_json(silent=True) or {}
     csid = (data.get('claude_session_id') or '').strip()
     if not csid:
         return jsonify({'consumed': False, 'error': 'claude_session_id required'}), 400
-    for sid, s in list(agent_sessions.items()):
-        if s.get('claude_session_id') != csid:
-            continue
-        project_id = s.get('project_id')
-        with get_manager(project_id).lock:
-            live = agent_sessions.get(sid)
-            if live is None or live.get('claude_session_id') != csid:
-                continue
-            if not _attend_once_pass_view(live):
-                return jsonify({'consumed': False, 'error': 'no open pass'})
-            live.pop('_attend_once_pass', None)
-        _log(f"[attend-once] session={sid} project={project_id} pass consumed at {now_iso()}")
-        return jsonify({'consumed': True, 'session_id': sid})
-    return jsonify({'consumed': False, 'error': 'session not found'}), 404
+    matches = [(sid, s) for sid, s in list(agent_sessions.items())
+               if s.get('claude_session_id') == csid]
+    if len(matches) > 1:
+        ambiguous_sids = [sid for sid, _ in matches]
+        _log(f"[attend-once] consume REFUSED: claude_session {csid[:12]} maps to "
+             f"{len(matches)} MC sessions {ambiguous_sids} — ambiguous, refusing "
+             f"rather than guessing which one the human approved")
+        return jsonify({'consumed': False,
+                        'error': 'ambiguous claude_session_id: more than one MC session '
+                                 'shares it'}), 409
+    if not matches:
+        return jsonify({'consumed': False, 'error': 'session not found'}), 404
+    sid, s = matches[0]
+    project_id = s.get('project_id')
+    with get_manager(project_id).lock:
+        live = agent_sessions.get(sid)
+        if live is None or live.get('claude_session_id') != csid:
+            return jsonify({'consumed': False, 'error': 'session not found'}), 404
+        _evict_expired_attend_once_pass(live)
+        if not _attend_once_pass_view(live):
+            return jsonify({'consumed': False, 'error': 'no open pass'})
+        # Belt-and-braces on top of the ambiguity refusal above: the pass
+        # itself records which MC session it was granted to
+        # (attend_once_session's mc_session_id), so even a pass found by
+        # walking to `sid`/`live` above only spends if it agrees this is
+        # that same record (Fenn finding 5).
+        if (live.get('_attend_once_pass') or {}).get('mc_session_id') != sid:
+            return jsonify({'consumed': False, 'error': 'pass is bound to a different session'}), 409
+        live.pop('_attend_once_pass', None)
+    _log(f"[attend-once] session={sid} project={project_id} pass consumed at {now_iso()}")
+    return jsonify({'consumed': True, 'session_id': sid})
 
 
 _agent_log_mutation_locks = {}

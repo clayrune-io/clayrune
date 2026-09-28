@@ -16,6 +16,11 @@
  * whole time, and the pill shows "Allowed once (10 min)" only while the
  * pass is open, reverting to Guarded once it's spent or expires.
  *
+ * MC-994 follow-up, Fenn finding 1 (2026-09-28): the click no longer fires
+ * the grant directly — it opens a "Allow once" modal that re-collects the
+ * local dashboard passcode (a forgeable Origin-header check was the only
+ * gate before), so this smoke also drives that modal before the pill flips.
+ *
  * This smoke stubs the server entirely (page.route, no real MC process) —
  * the point is the CLIENT render + click wiring, not the server route (that
  * has its own request-level tests in tests/test_agent_routes.py). Checked at
@@ -125,6 +130,12 @@ async function runOnce(viewport, label) {
       'pill reads Guarded before the click', `pill text: ${await pill().first().innerText()}`);
 
     await pill().first().click();
+    // Passcode gate (Fenn finding 1): the click opens a modal instead of
+    // firing the grant directly — punch through it like a human would.
+    const modalId = '__attend-once_mcDispatch';
+    await page.waitForSelector(`.modal-window[data-modal-id="${modalId}"]`, { timeout: 5000 });
+    await page.fill(`#ao-passcode-mcDispatch`, 'smoke-test-passcode');
+    await page.click(`.modal-window[data-modal-id="${modalId}"] button.btn-add`);
     await page.waitForFunction(() => document.querySelector('.attend-pill.attended'), null, { timeout: 5000 });
     check(attendOnceCalls === 1, `exactly one POST .../attend-once fired (got ${attendOnceCalls})`, `attend-once POST count wrong: ${attendOnceCalls}`);
     check(await page.locator('.attend-pill.guarded').count() === 0, 'guarded pill is gone after the click',

@@ -1105,13 +1105,24 @@ def test_attend_refuses_even_a_forged_origin_and_leaves_trigger_type(client):
 # re-stamp above as the chat header's live control (Ron, 2026-09-28: "every
 # time the gate opens only for that single iteration, that is the safer
 # approach") — trigger_type must stay untouched by either route.
+#
+# Fenn's second-vendor review of the first cut found the human check
+# (`_is_agent_caller`, an Origin header) forgeable by a plain agent curl —
+# grant is now gated on `_require_human_passcode` instead (same as the vault
+# lock), re-verified on every click. `_grant_pass_as_human` configures and
+# supplies a real passcode so the below can go on testing the OTHER
+# properties (no-stack, trigger_type untouched, 404s, eligibility); the
+# passcode gate itself is tested separately below.
 
-def _grant_pass_as_human(client, project_id, session_id):
-    client.environ_base['HTTP_ORIGIN'] = 'http://localhost:5199'
-    try:
-        return client.post(f'/api/project/{project_id}/agent/{session_id}/attend-once')
-    finally:
-        client.environ_base.pop('HTTP_ORIGIN', None)
+ATTEND_ONCE_TEST_PASSCODE = 'allow-once-1234'
+
+
+def _grant_pass_as_human(client, project_id, session_id, passcode=ATTEND_ONCE_TEST_PASSCODE):
+    from mc.blueprints import local_auth as la
+    if passcode is not None and not la._local_auth_is_configured():
+        la._local_auth_set_passcode(ATTEND_ONCE_TEST_PASSCODE)
+    body = {'passcode': passcode} if passcode is not None else {}
+    return client.post(f'/api/project/{project_id}/agent/{session_id}/attend-once', json=body)
 
 
 def _consume_pass(client, csid):
@@ -1119,19 +1130,93 @@ def _consume_pass(client, csid):
                        json={'claude_session_id': csid})
 
 
-def test_attend_once_refuses_agent_caller(client):
-    """Granting a pass is human-only, same guard as attend_session — an
-    agent's own curl (no Origin header) must not be able to authorize
-    itself."""
+def test_attend_once_refuses_without_a_configured_passcode(client):
+    """No local dashboard passcode set at all -> 403 with the same
+    'set a local dashboard passcode' guidance the vault lock gives
+    (`_require_human_passcode`) — Fenn finding 1's fix must fail closed, not
+    open, when there's nothing to check the click against."""
     from mc import state as mc_state
     mc_state.agent_sessions['sid-g'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-g',
                                         'trigger_type': 'dispatch'}
     try:
-        resp = client.post('/api/project/proj-a/agent/sid-g/attend-once')
+        resp = client.post('/api/project/proj-a/agent/sid-g/attend-once', json={'passcode': 'whatever'})
         assert resp.status_code == 403
+        assert resp.get_json()['error'] == 'passcode_required'
         assert '_attend_once_pass' not in mc_state.agent_sessions['sid-g']
     finally:
         mc_state.agent_sessions.pop('sid-g', None)
+
+
+def test_attend_once_refuses_wrong_passcode(client):
+    """A configured passcode that doesn't match the one submitted must 403,
+    granting nothing — matches the vault-lock error shape (bad_passcode)."""
+    from mc import state as mc_state
+    from mc.blueprints import local_auth as la
+    la._local_auth_set_passcode(ATTEND_ONCE_TEST_PASSCODE)
+    mc_state.agent_sessions['sid-g2'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-g2',
+                                         'trigger_type': 'dispatch'}
+    try:
+        resp = client.post('/api/project/proj-a/agent/sid-g2/attend-once',
+                           json={'passcode': 'not-the-real-one'})
+        assert resp.status_code == 403
+        assert resp.get_json()['error'] == 'bad_passcode'
+        assert '_attend_once_pass' not in mc_state.agent_sessions['sid-g2']
+    finally:
+        mc_state.agent_sessions.pop('sid-g2', None)
+
+
+def test_attend_once_forged_origin_alone_no_longer_grants(client):
+    """The ORIGINAL vulnerability Fenn found: an agent curl adding a browser
+    Origin header used to pass `_is_agent_caller` outright. Proves that
+    header carries no weight now — without a correct passcode in the body it
+    still 403s even with Origin spoofed."""
+    from mc import state as mc_state
+    from mc.blueprints import local_auth as la
+    la._local_auth_set_passcode(ATTEND_ONCE_TEST_PASSCODE)
+    mc_state.agent_sessions['sid-g3'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-g3',
+                                         'trigger_type': 'dispatch'}
+    client.environ_base['HTTP_ORIGIN'] = 'http://localhost:5199'
+    try:
+        resp = client.post('/api/project/proj-a/agent/sid-g3/attend-once', json={})
+        assert resp.status_code == 403
+        assert '_attend_once_pass' not in mc_state.agent_sessions['sid-g3']
+    finally:
+        client.environ_base.pop('HTTP_ORIGIN', None)
+        mc_state.agent_sessions.pop('sid-g3', None)
+
+
+def test_attend_once_grant_refuses_manual_trigger_type(client):
+    """Fenn finding 4 (server side): a 'manual' session's fence never blocks
+    anything, so the fence could never spend a pass for it — grant must
+    refuse outright rather than let the pill promise something inert."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['sid-elig-1'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-elig-1',
+                                             'trigger_type': 'manual'}
+    try:
+        resp = _grant_pass_as_human(client, 'proj-a', 'sid-elig-1')
+        assert resp.status_code == 409
+        assert '_attend_once_pass' not in mc_state.agent_sessions['sid-elig-1']
+    finally:
+        mc_state.agent_sessions.pop('sid-elig-1', None)
+
+
+def test_attend_once_grant_refuses_steward_marker_task(client):
+    """Fenn finding 4: a confirmed steward-cycle session (task starts with
+    the marker steward/core.py's build_cycle_task always stamps) is never
+    eligible, even though its trigger_type ('schedule') would otherwise
+    qualify — mirrors steward/fence.py's own 'confirmed steward always
+    enforces' rule."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['sid-elig-2'] = {
+        'project_id': 'proj-a', 'claude_session_id': 'csid-elig-2',
+        'trigger_type': 'schedule', 'task': '[Steward cycle] you are the autonomous steward...',
+    }
+    try:
+        resp = _grant_pass_as_human(client, 'proj-a', 'sid-elig-2')
+        assert resp.status_code == 409
+        assert '_attend_once_pass' not in mc_state.agent_sessions['sid-elig-2']
+    finally:
+        mc_state.agent_sessions.pop('sid-elig-2', None)
 
 
 def test_attend_once_grant_does_not_change_trigger_type(client):
@@ -1204,6 +1289,48 @@ def test_consume_unknown_session_404s(client):
     resp = _consume_pass(client, 'csid-nobody')
     assert resp.status_code == 404
     assert resp.get_json()['consumed'] is False
+
+
+def test_consume_refuses_ambiguous_claude_session_id(client):
+    """Fenn finding 5: two MC chats sharing a Claude conversation id used to
+    let B's hook spend a pass a human granted to A. Consume must refuse
+    outright rather than guess which record the human meant, even when only
+    one of the two actually holds an open pass."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['sid-amb-a'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-amb',
+                                            'trigger_type': 'dispatch'}
+    mc_state.agent_sessions['sid-amb-b'] = {'project_id': 'proj-a', 'claude_session_id': 'csid-amb',
+                                            'trigger_type': 'dispatch'}
+    try:
+        granted = _grant_pass_as_human(client, 'proj-a', 'sid-amb-a')
+        assert granted.get_json()['status'] == 'granted'
+        resp = _consume_pass(client, 'csid-amb')
+        assert resp.status_code == 409
+        assert resp.get_json()['consumed'] is False
+        # Refused, not spent — A's pass must still be sitting there afterward.
+        assert '_attend_once_pass' in mc_state.agent_sessions['sid-amb-a']
+    finally:
+        mc_state.agent_sessions.pop('sid-amb-a', None)
+        mc_state.agent_sessions.pop('sid-amb-b', None)
+
+
+def test_consume_refuses_pass_bound_to_a_different_session_record(client):
+    """Belt-and-braces on top of the ambiguity refusal: a pass records the MC
+    session_id it was granted to at grant time; if the record consume would
+    spend from doesn't match, refuse rather than trust the claude_session_id
+    lookup alone."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['sid-bind'] = {
+        'project_id': 'proj-a', 'claude_session_id': 'csid-bind', 'trigger_type': 'dispatch',
+        '_attend_once_pass': {'expires_at': '2099-01-01T00:00:00+00:00', 'mc_session_id': 'sid-someone-else'},
+    }
+    try:
+        resp = _consume_pass(client, 'csid-bind')
+        assert resp.status_code == 409
+        assert resp.get_json()['consumed'] is False
+        assert '_attend_once_pass' in mc_state.agent_sessions['sid-bind']
+    finally:
+        mc_state.agent_sessions.pop('sid-bind', None)
 
 
 def test_consume_expired_pass_refused(client):
