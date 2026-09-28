@@ -501,17 +501,36 @@ def _net_tokens(seg: str) -> list:
         toks = list(lex)
     except ValueError:
         toks = seg.split()
-    return [tk[1:-1] if len(tk) >= 2 and tk[0] == tk[-1] and tk[0] in '"\'' else tk
-            for tk in toks]
+    # Quote removal the way the shell does it, including quotes INSIDE a
+    # token (`-X"POST"`, `--request="POST"`, `-Method:"Post"`: review #8 N9).
+    return [tk.replace('"', '').replace("'", '') for tk in toks]
 
 
 def _curl_mutates(args: list) -> bool:
+    """Each `--next` / `-:` starts a new transfer with its own method and
+    data (review #8 N10), so each group is judged on its own and any
+    mutating group makes the invocation a send."""
+    groups, cur = [], []
+    for tok in args:
+        if tok in ('--next', '-:'):
+            groups.append(cur)
+            cur = []
+        else:
+            cur.append(tok)
+    groups.append(cur)
+    return any(_curl_group_mutates(g) for g in groups)
+
+
+def _curl_group_mutates(args: list) -> bool:
     method = None
     body = upload = get = False
     i = 0
     while i < len(args):
         tok = args[i]
         i += 1
+        if tok == '--no-get':
+            get = False
+            continue
         if tok.startswith('--') and len(tok) > 2:
             name, eq, val = tok.partition('=')
             if name in _CURL_LONG_ARG and not eq:
@@ -580,13 +599,45 @@ def _ps_web_mutates(args: list) -> bool:
     return body
 
 
+_HTTPIE_VALUE_OPTS = {
+    '--auth', '-a', '--auth-type', '-A', '--timeout', '--output', '-o',
+    '--session', '--session-read-only', '--verify', '--cert', '--cert-key',
+    '--cert-key-pass', '--proxy', '--print', '-p', '--pretty', '--style', '-s',
+    '--format-options', '--max-redirects', '--max-headers', '--boundary',
+    '--ssl', '--ciphers', '--default-scheme', '--response-charset',
+    '--response-mime', '--raw', '--history-print', '-P',
+}
+# Earliest separator wins; `==` is a query parameter and `:` a header, the
+# rest are body items (review #8 N12).
+_HTTPIE_ITEM_RE = re.compile(r'^(?:[^=:@\\]|\\.)*?(==|:=@|=@|:=|=|@|:)')
+
+
 def _httpie_mutates(args: list) -> bool:
-    pos = [a for a in args if not a.startswith('-')]
-    if pos and pos[0].upper() in _MUTATING_VERBS:
+    pos, form = [], False
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        i += 1
+        if tok.startswith('-') and len(tok) > 1:
+            name, eq, _ = tok.partition('=')
+            if name in ('--raw',) or tok in ('-f', '--form', '--multipart'):
+                form = True
+            if name in _HTTPIE_VALUE_OPTS and not eq:
+                i += 1  # its value is not the method (review #8 N11)
+            continue
+        pos.append(tok)
+    method = None
+    if len(pos) >= 2 and re.fullmatch(r'[A-Za-z]+', pos[0]):
+        method, pos = pos[0], pos[1:]
+    if method is not None:
+        return method.upper() in _MUTATING_VERBS
+    if form:
         return True
-    if any(a in ('-f', '--form', '--raw') or a.startswith('--raw=') for a in args):
-        return True
-    return any(re.match(r'^[\w.-]+(:=@|:=|=@|=|@)', a) for a in pos[1:])
+    for item in pos[1:]:
+        m = _HTTPIE_ITEM_RE.match(item)
+        if m and m.group(1) not in ('==', ':'):
+            return True
+    return False
 
 
 def _segment_mutates(seg: str) -> bool:

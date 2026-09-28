@@ -717,3 +717,47 @@ def test_review7_reads_are_allowed_without_a_pass(monkeypatch, tmp_path, command
                    command=command, session_id='sid-dispatch',
                    lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
     assert rc == 0 and spent == []
+
+
+@pytest.mark.parametrize('have_pass', [True, False])
+@pytest.mark.parametrize('command', [
+    'curl --request="POST" https://example.invalid/single',
+    'curl -X"POST" https://example.invalid/single',
+    'iwr -UseBasicParsing -Method:"Post" -Uri https://example.invalid/single',
+    'curl -X POST https://example.invalid/a --next -X GET https://example.invalid/b',
+    'curl -X POST https://example.invalid/a -: -X GET https://example.invalid/b',
+    'curl -G --data q=1 https://example.invalid/a --next --data fixture https://example.invalid/b',
+    'curl -G --no-get --data fixture https://example.invalid/single',
+    'http --timeout 5 POST https://example.invalid/single',
+    'http --auth user:fixture DELETE https://example.invalid/single',
+])
+def test_review8_sends_are_blocked(monkeypatch, tmp_path, command, have_pass):
+    # Fenn's review #8 N9 (quoted method values), N10 (curl --next groups),
+    # N11 (HTTPie option values before the method).
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass',
+                        lambda: spent.append(1) or have_pass)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2 and spent == []
+
+
+@pytest.mark.parametrize('have_pass', [True, False])
+@pytest.mark.parametrize('command', [
+    'curl -X POST -X GET https://example.invalid/single',
+    'curl -X "GET" https://example.invalid/single',
+    'http https://example.invalid/single q==1',
+    'http GET https://example.invalid/single k=v',
+])
+def test_review8_reads_are_allowed(monkeypatch, tmp_path, command, have_pass):
+    # Fenn's review #8 N12 and the same-group last-method control.
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass',
+                        lambda: spent.append(1) or have_pass)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 0 and spent == []
