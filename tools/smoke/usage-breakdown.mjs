@@ -43,7 +43,12 @@ const STATIC = {};
 for (const f of readdirSync(JS_DIR)) if (f.endsWith('.js')) STATIC[`/static/js/${f}`] = ['text/javascript; charset=utf-8', readFileSync(resolve(JS_DIR, f), 'utf8')];
 for (const f of readdirSync(CSS_DIR)) if (f.endsWith('.css')) STATIC[`/static/css/${f}`] = ['text/css; charset=utf-8', readFileSync(resolve(CSS_DIR, f), 'utf8')];
 
-const USAGE_FIXTURE = { available: true, top_models: [], provider_weekly_usage: {} };
+// codex-only so the strip renders exactly one bar (review finding #6's
+// entry point) without needing a second click target in the test.
+const USAGE_FIXTURE = {
+  available: true, top_models: [],
+  provider_weekly_usage: { codex: { utilization: 55, resets_at: '2026-09-30T00:00:00+00:00' } },
+};
 
 const WINDOWS_FIXTURE = {
   windows: [{ resets_at: '2026-09-25T00:00:00+00:00', range_start: '2026-09-24T19:00:00+00:00', range_end: '2026-09-25T00:00:00+00:00', completed: true }],
@@ -269,6 +274,38 @@ try {
     /Unattributed.{0,10}-2\.00%/.test(text)
       ? fail('estimate-exceeds-observed: rendered a literal negative "Unattributed" amount')
       : ok('estimate-exceeds-observed: no literal negative Unattributed amount rendered');
+    await ctx.close();
+  }
+
+  // ── 6. Finding #6: the desktop weekly-strip entry loads Breakdown for the
+  //      CLICKED provider, not the Claude/5h defaults ─────────────────────
+  {
+    const calls = [];
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await ctx.newPage();
+    await page.route('**/*', routeHandler(POPULATED_FIXTURE, WINDOWS_FIXTURE, calls));
+    await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#usage-bar-strip .usage-bar-item', { state: 'attached', timeout: 15000 });
+    calls.length = 0;
+    await page.click('#usage-bar-strip .usage-bar-item');
+    await page.waitForSelector('#sys-status-popover.open', { timeout: 3000 }).catch(() => {});
+
+    const popoverOpen = await page.$eval('#sys-status-popover', (el) => el.classList.contains('open')).catch(() => false);
+    const activeTabLabel = await page.$eval('#sys-status-popover .ssp-tab.active', (el) => el.textContent.trim()).catch(() => null);
+    (popoverOpen && activeTabLabel === 'Usage')
+      ? ok('strip click opens the popover on the Usage tab')
+      : fail(`strip click should open Usage tab, open=${popoverOpen} activeTab=${activeTabLabel}`);
+
+    await page.waitForTimeout(200);
+    calls.some((c) => c.includes('/api/system/usage/breakdown') && c.includes('provider=codex') && c.includes('window_kind=7d'))
+      ? ok('strip click fetches Breakdown for the clicked provider (codex) at 7d, not Claude/5h defaults')
+      : fail(`strip click did not fetch codex/7d breakdown, saw: ${JSON.stringify(calls)}`);
+
+    const providerSelected = await page.$eval('.ub-select:has(option[value="claude"])', (el) => el.value).catch(() => null);
+    providerSelected === 'codex'
+      ? ok('provider control reflects the clicked provider (codex)')
+      : fail(`provider control should show codex selected, saw "${providerSelected}"`);
+
     await ctx.close();
   }
 

@@ -953,13 +953,28 @@ function _ubProviderLabel(name) {
   return (p && p.display_name) || (name.charAt(0).toUpperCase() + name.slice(1));
 }
 
-// Opens (never toggles-closed) the system-status popover on its Usage tab —
-// the strip is a shortcut INTO the existing surface, not a second one.
-function _ubOpenUsagePopover(ev) {
+// Review finding #6 (docs/_journal/4668eafc-mc998-fenn-review.md): the strip
+// is a WEEKLY bar per provider, but only ever opened the Usage tab's old
+// endpoint and kept whatever provider/window_kind the controls already had
+// (default Claude/5h) — clicking Codex's bar showed Claude's 5-hour
+// Breakdown. `providerName` is the strip's own dict key (systemUsageCache
+// .provider_weekly_usage — 'claude'/'codex'; other providers with no
+// Breakdown support are simply left on the current selection), and the
+// strip is always weekly, so window_kind moves to '7d' to match what was
+// clicked, same as picking it from the controls (_ubBreakdownControlChange).
+function _ubOpenUsagePopover(providerName, ev) {
   if (ev) { ev.stopPropagation(); ev.preventDefault(); }
   const pop = document.getElementById('sys-status-popover');
   if (!pop) return;
   _sysStatusActiveTab = 'usage';
+  let selectionChanged = false;
+  if (['claude', 'codex'].includes(providerName) && (providerName !== _ubProvider || _ubWindowKind !== '7d')) {
+    _ubProvider = providerName;
+    _ubWindowKind = '7d';
+    _ubRangeKey = '';
+    if (providerName === 'codex') _ubWindowScope = 'all';
+    selectionChanged = true;
+  }
   if (!pop.classList.contains('open')) {
     _sysStatusPopoverOpen = true;
     pop.classList.add('open');
@@ -967,6 +982,10 @@ function _ubOpenUsagePopover(ev) {
     fetchSystemStatus();
   }
   if (!systemUsageCache && !_sysUsageFetching) fetchSystemUsage();
+  if (selectionChanged || (!systemUsageBreakdownCache && !_ubBreakdownFetching)) {
+    fetchUsageBreakdown();
+    fetchUsageWindows();
+  }
   renderSysStatusPopover();
 }
 window._ubOpenUsagePopover = _ubOpenUsagePopover;
@@ -989,7 +1008,7 @@ function _renderUsageBarStrip() {
       ? `${_ubProviderLabel(name)} — ${win.exhausted_display || 'exhausted'}`
       : `${_ubProviderLabel(name)} — ${pct.toFixed(0)}% of weekly quota${until ? ' · ' + until : ''}`;
     return `
-      <div class="usage-bar-item" title="${esc(title)}" onclick="_ubOpenUsagePopover(event)">
+      <div class="usage-bar-item" title="${esc(title)}" onclick="_ubOpenUsagePopover('${name}', event)">
         <span class="usage-bar-label">${esc(_ubProviderLabel(name))}</span>
         <div class="usage-bar-track"><div class="usage-bar-fill ${cls}" style="width:${pct}%"></div></div>
         <span class="usage-bar-pct">${exhausted ? 'full' : pct.toFixed(0) + '%'}</span>
