@@ -451,6 +451,32 @@
     }
   }
 
+  // ── validatePlan (§4: "one canonical plan object") — the single gate the
+  // checklist state, the Start button, Resume and Renew all share (those
+  // callers are T2-T4; T1 only introduces the function itself, wired into
+  // desk-v1-rules.js's `validatePlan().missing` check). Checks exactly the
+  // §3.1 bound table's "Required: yes" rows — Destinations + voices, Source
+  // projects, Cadence ceiling + min gap, End date and/or post cap (≥1) — the
+  // rest of that table (spend, replies, paid, generation, stop conditions)
+  // is either derived or has a real default, never a blocker.
+  const _PLAN_BOUNDS = [
+    { bound: 'destinations', step: 2, label: 'destinations',
+      missing: (p) => !(p.destinations && p.destinations.length) },
+    { bound: 'source_projects', step: 1, label: 'source project',
+      missing: (p) => !(p.source_projects && p.source_projects.length) },
+    { bound: 'cadence', step: 3, label: 'cadence',
+      missing: (p) => !(p.cadence && p.cadence.per_week != null && p.cadence.min_gap_h != null) },
+    { bound: 'end', step: 3, label: 'end date',
+      missing: (p) => !(p.end && (p.end.date != null || p.end.post_cap != null)) },
+  ];
+  function validatePlan(plan) {
+    plan = plan || {};
+    const missing = _PLAN_BOUNDS
+      .filter((b) => b.missing(plan))
+      .map((b) => ({ bound: b.bound, step: b.step, label: b.label }));
+    return { ok: missing.length === 0, missing };
+  }
+
   window.DeskV1Kit = {
     VERSION_STATES, CAMPAIGN_STATES,
     channelCapabilityCopy, noChargeYetCopy,
@@ -462,5 +488,6 @@
     infoIconHTML, bindInfoIcons,
     posyBoxHTML, bindPosyBox,
     openConfirmSheet,
+    validatePlan,
   };
 })();

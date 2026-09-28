@@ -531,6 +531,32 @@
       reviewMode: 'each_piece', frequencyPerWeek: 2,
       repliesMode: 'drafts', paid: false,
     },
+    // ── T1 (MC-977 UX pass §4): the one canonical plan object. Goal display,
+    // rule chips and the Start sheet (desk-v1-rules.js) all read THIS, not
+    // the `goal`/`rules` fields above — those stay as-is (Home's card and
+    // the Active-state Rules popover still read them; unifying every state
+    // onto `plan` is T2-T5, out of this ticket). `goal.deadline` here starts
+    // equal to the legacy `goal.deadline` above by construction, not by any
+    // code that keeps them in sync — editing one in Setup wouldn't move the
+    // other today, same "not unified yet" boundary as the rest of this note.
+    plan: {
+      brief: 'Restore points is live in Clayrune 2.1 — undo any agent mistake by rolling back to a saved snapshot.',
+      title: 'Restore points launch',
+      source_projects: ['clayrune'],
+      audience: 'the developer audience',
+      goal: { outcome: 'beta signups', target: 60, deadline: '2026-10-20', tracked: false },
+      destinations: [
+        { account: 'ch-x-ron', voice: 'Ron (first person)' },
+        { account: 'ch-li-page', voice: 'Clayrune page' },
+      ],
+      angle: 'Frame restore points as the cheap insurance that makes trying agent changes low-risk.',
+      samples: [],
+      cadence: { per_week: 2, min_gap_h: 12 },
+      end: { date: '2026-10-20', post_cap: null },
+      replies: 'drafts',
+      paid: false,
+      generation: 'No video generation planned for this campaign',
+    },
   });
 
   // Posy's proposed pieces (§3.5: "planned or drafting") for camp-2 — one
@@ -545,14 +571,15 @@
       versions: [{ id: 'v-launch-li', channelId: 'ch-li-page', state: 'planned', revision: 0 }] },
   );
 
-  // Proposed-state detail, keyed by campaignId (same "own key, own section"
-  // convention as REVIEW_DETAIL/VIDEO_DETAIL/CONVERSATION_DETAIL above).
-  const PROPOSED_DETAIL = {
+  // Proposed-state EXTRAS — T1 (§4) moved the goal sentence + Start-sheet
+  // authority list off this map and onto `camp.plan` above (the one
+  // canonical plan object); a real sequencing blocker and per-card
+  // "? Assumed" notes aren't plan bounds, so they stay here, keyed by
+  // campaignId (same "own key, own section" convention as REVIEW_DETAIL/
+  // VIDEO_DETAIL/CONVERSATION_DETAIL above), just under a name that doesn't
+  // claim to be the plan anymore.
+  const PROPOSED_EXTRAS = {
     'camp-2': {
-      // The goal sentence's editable parts (§3.5: "dashed underlines on the
-      // editable parts: target, date, audience"). `metric` is fixed prose,
-      // not one of the three dashed slots.
-      goalSentence: { target: 60, metric: 'beta signups', date: '2026-10-20', audience: 'the developer audience' },
       // "Only a real blocker gets a card... ⛔ Posy's one question" (CMP-03)
       // — a real sequencing call between the two voices, not something Posy
       // can decide alone.
@@ -568,19 +595,6 @@
       assumptions: {
         'fam-launch-x': 'Assumed this posts from @ron in first person, not the Clayrune page.',
         'fam-launch-li': 'Assumed the Clayrune page post uses its own voice, distinct from Ron’s.',
-      },
-      // The Start-sheet's authority list (CMP-05: "accounts, frequency
-      // ceiling, dates, review mode, replies, paid, generation limits, stop
-      // conditions", in plain language).
-      authority: {
-        accounts: ['𝕏 @ron', 'in · Clayrune page'],
-        frequencyPerWeek: 2,
-        dates: 'Now through Oct 20, 2026',
-        reviewMode: 'You approve each piece',
-        replies: 'Drafts for review',
-        paid: 'Off',
-        generationLimits: 'No video generation planned for this campaign',
-        stopConditions: 'Pause automatically once the goal is reached or Oct 20 passes',
       },
     },
   };
@@ -603,6 +617,6 @@
     conversationDetail: CONVERSATION_DETAIL,
     conversationCoverageGaps: CONVERSATION_COVERAGE_GAPS,
     resultsInsight: RESULTS_INSIGHT,
-    proposedDetail: PROPOSED_DETAIL,
+    proposedExtras: PROPOSED_EXTRAS,
   };
 })();

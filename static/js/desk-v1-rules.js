@@ -20,17 +20,46 @@
   function _channel(id) { return _channels().find((c) => c.id === id); }
   function _families() { return _fx().families || []; }
   function _familiesFor(campaignId) { return _families().filter((f) => f.campaignId === campaignId); }
-  function _proposedDetail(campaignId) { return (_fx().proposedDetail || {})[campaignId] || null; }
+  // T1 (§4): the blocker card + "? Assumed" notes aren't plan bounds, so
+  // they live in their own fixture map, not `camp.plan` — the goal sentence
+  // and Start-sheet authority fields that used to share that map now read
+  // straight off `camp.plan` below.
+  function _proposedExtras(campaignId) { return (_fx().proposedExtras || {})[campaignId] || null; }
 
   // §3.5: "the same page... shows the same chips" as T2a's summary bar.
   // `window.deskV1RuleChips` is a one-line backward-compatible export added
   // to desk-v1-campaign.js's existing (private) `_ruleChips` — see the final
   // report; it's a pure getter already used by T2a itself, not new logic.
-  function _ruleChipsFor(camp) { return typeof window.deskV1RuleChips === 'function' ? window.deskV1RuleChips(camp) : []; }
+  // T1 adds one derived chip on top, Proposed-only: an "Ends …" chip read
+  // straight off `camp.plan.end` so editing the goal date (which T1 also
+  // writes into `plan.end.date`, see the blur handler below) visibly changes
+  // a rule chip too, not just the goal sentence — campaign.js's own
+  // `_ruleChips` (Active state, camp.rules only) is untouched.
+  function _ruleChipsFor(camp) {
+    const base = typeof window.deskV1RuleChips === 'function' ? window.deskV1RuleChips(camp) : [];
+    const end = camp.plan && camp.plan.end;
+    if (!end) return base;
+    const endLabel = end.date ? `Ends ${_fmtDate(end.date)}` : (end.post_cap ? `Ends after ${end.post_cap} posts` : null);
+    return endLabel ? base.concat(endLabel) : base;
+  }
 
   function _fmtDate(iso) {
     try { return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(iso)); }
     catch (e) { return iso; }
+  }
+  function _fmtDateLong(iso) {
+    try { return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(iso)); }
+    catch (e) { return iso; }
+  }
+  // Accepts the dashed date field's free-typed text: a literal YYYY-MM-DD
+  // passes straight through; anything else goes through Date parsing and
+  // back out as YYYY-MM-DD (UTC, so a bare "2026-11-15" round-trips without
+  // a local-timezone day shift). Returns null on anything unparsable — the
+  // caller leaves the plan untouched rather than writing a bad date.
+  function _parseDateInput(val) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(val)) return val;
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
   }
 
   // ────────────────────────────────────────────────────────────────────────
@@ -41,8 +70,11 @@
   // kit badge (UX-02 — never a bare logo, even here).
   // ────────────────────────────────────────────────────────────────────────
   function deskV1FillProposedSummary(el, params, camp) {
-    const detail = _proposedDetail(camp.id) || {};
-    const gs = detail.goalSentence || {};
+    // T1 (§4): the editable goal sentence reads/writes `camp.plan.goal` —
+    // `plan` IS the fixture, so a commit below mutates it directly rather
+    // than a copy that would need writing back.
+    const plan = camp.plan = camp.plan || {};
+    const goal = plan.goal = plan.goal || {};
     const stateHTML = DeskV1Kit.stateLabelHTML(camp.state, { className: 'desk-v1-camp-state-pill' });
     const chans = (camp.channelIds || []).map(_channel).filter(Boolean);
 
@@ -60,12 +92,12 @@
         <div class="desk-v1-camp-summary-group">
           <span class="desk-v1-camp-summary-label">GOAL</span>
           <div class="desk-v1-rules-goal-sentence">
-            <span class="desk-v1-rules-dashed" data-goal-field="target" contenteditable="true" role="textbox" tabindex="0" aria-label="Target number">${esc(gs.target != null ? gs.target : '')}</span>
-            ${esc(gs.metric || '')} by
-            <span class="desk-v1-rules-dashed" data-goal-field="dateLabel" contenteditable="true" role="textbox" tabindex="0" aria-label="Deadline">${esc(gs.dateLabel || _fmtDate(gs.date))}</span>
-            ${gs.audience ? `in <span class="desk-v1-rules-dashed" data-goal-field="audience" contenteditable="true" role="textbox" tabindex="0" aria-label="Audience">${esc(gs.audience)}</span>` : ''}
+            <span class="desk-v1-rules-dashed" data-goal-field="target" contenteditable="true" role="textbox" tabindex="0" aria-label="Target number">${esc(goal.target != null ? goal.target : '')}</span>
+            ${esc(goal.outcome || '')} by
+            <span class="desk-v1-rules-dashed" data-goal-field="dateLabel" contenteditable="true" role="textbox" tabindex="0" aria-label="Deadline">${esc(_fmtDate(goal.deadline))}</span>
+            ${plan.audience ? `in <span class="desk-v1-rules-dashed" data-goal-field="audience" contenteditable="true" role="textbox" tabindex="0" aria-label="Audience">${esc(plan.audience)}</span>` : ''}
           </div>
-          ${!camp.goal || !camp.goal.tracked ? '<span class="desk-v1-rules-goal-warning">⚠ not tracked yet</span>' : ''}
+          ${!goal.tracked ? '<span class="desk-v1-rules-goal-warning">⚠ not tracked yet</span>' : ''}
         </div>
         <div class="desk-v1-camp-summary-group" data-summary-group="channels">
           <span class="desk-v1-camp-summary-label">CHANNELS</span>
@@ -83,20 +115,27 @@
     const rulesEditBtn = el.querySelector('[data-rules-edit]');
     if (rulesEditBtn) rulesEditBtn.onclick = () => window.deskV1OpenRulesPopover(camp.id, rulesEditBtn);
 
+    // §4: "every surface re-renders from it" — a commit re-invokes this same
+    // function so the goal sentence AND the rule chips beside it (the
+    // derived "Ends …" chip above) always reflect the one just-edited plan,
+    // instead of patching the blurred span's own text in place.
     el.querySelectorAll('[data-goal-field]').forEach((span) => {
       span.addEventListener('blur', () => {
         const field = span.dataset.goalField;
         const val = span.textContent.trim();
         if (field === 'target') {
           const n = parseInt(val, 10);
-          if (!isNaN(n)) { gs.target = n; if (camp.goal) camp.goal.target = n; }
-          else span.textContent = String(gs.target != null ? gs.target : '');
+          if (!isNaN(n)) goal.target = n;
         } else if (field === 'dateLabel') {
-          gs.dateLabel = val;
+          const parsed = _parseDateInput(val);
+          if (parsed) {
+            goal.deadline = parsed;
+            if (plan.end) plan.end.date = parsed;
+          }
         } else if (field === 'audience') {
-          gs.audience = val;
-          if (camp.goal) camp.goal.audience = val;
+          plan.audience = val;
         }
+        deskV1FillProposedSummary(el, params, camp);
       });
     });
 
@@ -125,7 +164,7 @@
   // carrying a "? Assumed" popover where the fixture has one.
   // ────────────────────────────────────────────────────────────────────────
   function deskV1FillProposedContent(el, params, camp) {
-    const detail = _proposedDetail(camp.id) || {};
+    const detail = _proposedExtras(camp.id) || {};
     const fams = _familiesFor(camp.id);
     el.innerHTML = `
       <div class="desk-v1-rules-proposed">
@@ -189,12 +228,28 @@
   function deskV1OpenStartSheet(campaignId) {
     const camp = _campaign(campaignId);
     if (!camp) return;
-    const detail = _proposedDetail(campaignId) || {};
-    const auth = detail.authority || {};
+    // T1 (§4): the Start sheet's authority rows read straight off `camp.plan`
+    // — the same object the goal sentence and rule chips read.
+    const plan = camp.plan || {};
     const shell = document.querySelector('.desk-v1-shell');
     if (!shell) return;
     if (!shell.style.position) shell.style.position = 'relative';
     _closeOverlay();
+
+    const dests = (plan.destinations || []).map((d) => d.voice ? `${d.account} (${d.voice})` : d.account);
+    const datesLabel = plan.end && (plan.end.date
+      ? `Ends ${_fmtDateLong(plan.end.date)}`
+      : (plan.end.post_cap ? `Ends after ${plan.end.post_cap} posts` : null));
+    const auth = {
+      accounts: dests,
+      frequencyPerWeek: plan.cadence && plan.cadence.per_week,
+      dates: datesLabel,
+      reviewMode: camp.rules && camp.rules.reviewMode === 'themes' ? 'Approve themes, then run' : 'You approve each piece',
+      replies: plan.replies === 'auto_faq' ? 'Auto-answer verified FAQ' : 'Drafts for review',
+      paid: plan.paid ? 'On' : 'Off',
+      generationLimits: plan.generation,
+      stopConditions: null,
+    };
 
     const rows = [
       ['Accounts', (auth.accounts || []).join(', ') || '—'],
