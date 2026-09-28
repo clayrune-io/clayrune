@@ -987,12 +987,13 @@ _USAGE_RESET_INSTRUCTIONS = {
 
 
 def _usage_reset_cwd() -> Optional[str]:
-    """Scratch cwd for the reset terminal — same pattern as agent_routes.py's
-    `_auth_probe_cwd`: DATA_DIR's PARENT, never DATA_DIR itself (anything
-    dropped inside DATA_DIR is treated as a project record by
-    load_projects())."""
+    """Scratch cwd for the reset terminal. Outside the install/repo on
+    purpose: `claude` started anywhere under the repo picks up its
+    `.mcp.json` and opens on the project-MCP approval screen before the user
+    can type /limit-reset. Never DATA_DIR (load_projects() treats anything
+    there as a project record)."""
     try:
-        d = _DATA_ROOT / 'data' / '_usage_reset'
+        d = Path.home() / '.clayrune' / 'usage_reset'
         d.mkdir(parents=True, exist_ok=True)
         return str(d.resolve())
     except Exception:
