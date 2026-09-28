@@ -590,13 +590,36 @@ def system_status_get():
     return jsonify(_build_system_status_payload())
 
 
+def _model_tokens_from_nested_usage(e):
+    """Fallback for entries with no transcript-derived `model_tokens` — the
+    case for every provider whose adapter doesn't write a Claude-shaped JSONL
+    transcript (Codex: 119/119 retained rows have empty model_tokens despite
+    61 having positive nested `usage`, per USAGE_BREAKDOWN_SPEC.md's baseline
+    audit). Vendor-agnostic: reads whatever `usage.input_tokens` /
+    `usage.output_tokens` the adapter recorded. `cached_input_tokens` (Codex)
+    is a subset of `input_tokens`, never added again. Returns {} when there's
+    no positive evidence — a missing/zero usage dict stays excluded, not 0.
+    """
+    usage = e.get('usage')
+    if not isinstance(usage, dict):
+        return {}
+    inp = int(usage.get('input_tokens') or 0)
+    out = int(usage.get('output_tokens') or 0)
+    if not inp and not out:
+        return {}
+    model = e.get('observed_model') or e.get('model') or 'unknown'
+    return {model: inp + out}
+
+
 def _mc_usage_from_agent_logs():
     """Aggregate token usage from MC's own agent_log files.
 
     Returns {'today': {model: tokens}, 'week': {...}, 'month': {...},
              'all_time': {model: tokens}, 'last_data_date': str}
-    Reads all *_agent_log.json in DATA_DIR. Entries without model_tokens are
-    skipped (pre-telemetry entries). Never raises.
+    Reads all *_agent_log.json in DATA_DIR. Entries without model_tokens fall
+    back to nested `usage` via `_model_tokens_from_nested_usage` (vendor-
+    agnostic — covers Codex and any other non-Claude adapter); entries with
+    neither are skipped (no evidence). Never raises.
 
     Deduplicates by claude_session_id: Scribe checkpoints write multiple entries
     for the same session (each with the cumulative token total from session start).
@@ -632,7 +655,9 @@ def _mc_usage_from_agent_logs():
                     continue
                 mt = e.get('model_tokens')
                 if not mt or not isinstance(mt, dict):
-                    continue
+                    mt = _model_tokens_from_nested_usage(e)
+                    if not mt:
+                        continue
                 ts = (e.get('ts') or '')[:10]
                 if not ts:
                     continue
@@ -647,7 +672,7 @@ def _mc_usage_from_agent_logs():
                     best_by_csid[f'__no_csid_{_no_csid_counter}'] = e
 
         for e in best_by_csid.values():
-            mt = e.get('model_tokens') or {}
+            mt = e.get('model_tokens') or _model_tokens_from_nested_usage(e)
             ts = (e.get('ts') or '')[:10]
             if ts > last_data_date:
                 last_data_date = ts
