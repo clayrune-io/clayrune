@@ -972,6 +972,80 @@ def _fetch_codex_usage_detail() -> Optional[dict]:
     return dict(result) if result else result
 
 
+# ── Usage Breakdown allowance sampler (MC-998 phase 4) ──────────────────────
+# docs/USAGE_BREAKDOWN_SPEC.md "Sampling and durable facts": sample at server
+# startup, every 60s while any session is running, every 5min while idle.
+# Deliberately reuses the two 60s vendor caches above rather than fetching --
+# a poll served from cache naturally yields zero new rows via
+# UsageBreakdownStore's (provider, window, source_observed_at) dedup, so this
+# loop can run on its own short cadence without ever over-sampling the vendor.
+
+
+def _usage_breakdown_store():
+    from mc.usage_breakdown_store import UsageBreakdownStore, db_path_for
+    return UsageBreakdownStore(db_path_for(_DATA_ROOT))
+
+
+def _usage_breakdown_any_session_active() -> bool:
+    try:
+        return any(s.get('status') == 'running' for s in agent_sessions.values())
+    except Exception:
+        return False
+
+
+def usage_breakdown_sample_once() -> dict:
+    """Fetch both vendor caches and persist any new allowance samples.
+    Best-effort per source -- a Claude fetch failure must not block a Codex
+    sample or vice versa. Returns {'claude': n, 'codex': n} rows inserted."""
+    from mc import usage_breakdown_sampler as _sampler
+    store = _usage_breakdown_store()
+    claude_n = codex_n = 0
+    try:
+        usage_limits = _fetch_oauth_usage_limits()
+        claude_n = _sampler.sample_claude(
+            store, usage_limits=usage_limits, fetched_at_epoch=_oauth_usage_cache.get('ts'))
+    except Exception as e:
+        _log(f"[usage-breakdown] claude allowance sample failed: {e}", flush=True)
+    try:
+        detail = _fetch_codex_usage_detail()
+        codex_n = _sampler.sample_codex(store, detail=detail)
+    except Exception as e:
+        _log(f"[usage-breakdown] codex allowance sample failed: {e}", flush=True)
+    return {'claude': claude_n, 'codex': codex_n}
+
+
+def _usage_breakdown_sample_loop():
+    """Daemon thread: sample immediately at startup, then re-sample on the
+    spec's active/idle cadence (`should_sample_interval_seconds`)."""
+    from mc import usage_breakdown_sampler as _sampler
+    while True:
+        obs.heartbeat('usage-breakdown-sample')
+        try:
+            usage_breakdown_sample_once()
+        except Exception as e:
+            _log(f"[usage-breakdown] sample loop error: {e}", flush=True)
+        interval = _sampler.should_sample_interval_seconds(
+            any_session_active=_usage_breakdown_any_session_active())
+        _time.sleep(interval)
+
+
+_USAGE_BREAKDOWN_PRUNE_INTERVAL_S = 24 * 3600  # once/day is enough for a 90-day retention window
+
+
+def _usage_breakdown_prune_loop():
+    """Daemon thread: enforce the spec's 90-day retention in bounded batches,
+    once a day (the store's own `prune_older_than` batches internally, so an
+    accumulated backlog from a long-stopped server still drains safely)."""
+    _time.sleep(_UPDATE_CHECK_BOOT_DELAY_S)  # let startup settle first
+    while True:
+        obs.heartbeat('usage-breakdown-prune')
+        try:
+            _usage_breakdown_store().prune_older_than(days=90)
+        except Exception as e:
+            _log(f"[usage-breakdown] prune loop error: {e}", flush=True)
+        _time.sleep(_USAGE_BREAKDOWN_PRUNE_INTERVAL_S)
+
+
 @bp.route('/api/system/usage', methods=['GET'])
 def system_usage_get():
     """Return local token-usage aggregates derived from ~/.claude/stats-cache.json.
