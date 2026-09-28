@@ -1307,6 +1307,11 @@
   }
   .usage-bar-strip:empty { display: none; }
   body:has(.usage-bar-strip:not(:empty)) .minimized-tray { bottom: 24px; }
+  /* The agent console is ALSO fixed at bottom:0 (z-index 150), so without this
+     it painted over the strip the moment it rendered (Ron, 2026-09-27: "shows
+     for a brief moment, then AGENT SESSIONS takes over"). Lift it by the
+     strip's height, same nudge as the tray above. */
+  body:has(.usage-bar-strip:not(:empty)) .agent-console { bottom: 24px; }
 
   .usage-bar-item {
     display: flex; align-items: center; gap: 6px;
