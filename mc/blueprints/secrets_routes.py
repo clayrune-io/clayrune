@@ -151,21 +151,31 @@ def _require_human_passcode(data: dict):
     /set, or the attend-once grant — every one of them gates through this
     same function) keep an unthrottled run at the SAME passcode against the
     vault-lock routes instead; merged, a wrong guess anywhere against this
-    passcode counts against every route that checks it."""
-    if local_auth._local_auth_throttled():
+    passcode counts against every route that checks it.
+
+    Reserves an admission slot via ``_local_auth_admit()`` before running
+    PBKDF2 and releases it via ``_local_auth_release()`` after (MC-994
+    re-review finding N3, review #3 — Fenn): the previous throttled-check +
+    verify + note_fail sequence held no lock across that gap, so this route
+    was one of three concurrently-reachable ways to blow past the shared
+    cap. The ``passcode_required`` early-return releases the slot as a
+    no-op success (it never attempted a guess) rather than leaking the
+    reservation or recording a spurious failure."""
+    if not local_auth._local_auth_admit():
         return jsonify({'error': 'too_many_attempts',
                         'message': 'too many attempts — wait a few minutes '
                                    'and try again'}), 429
     if not local_auth._local_auth_is_configured():
+        local_auth._local_auth_release(True)
         return jsonify({'error': 'passcode_required',
                         'message': 'set a local dashboard passcode in '
                                    'Settings > Connectivity > Network access '
                                    'before changing the vault lock'}), 403
     passcode = (data.get('passcode') or '').strip()
-    if not passcode or not local_auth._local_auth_verify_passcode(passcode):
-        local_auth._local_auth_note_fail()
+    ok = bool(passcode) and local_auth._local_auth_verify_passcode(passcode)
+    local_auth._local_auth_release(ok)
+    if not ok:
         return jsonify({'error': 'bad_passcode'}), 403
-    local_auth._local_auth_clear_fail()
     return None
 
 

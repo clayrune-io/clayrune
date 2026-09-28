@@ -1362,6 +1362,92 @@ def test_wrong_local_auth_set_guesses_exhaust_the_attend_once_grant(client):
         la._LOCAL_AUTH_FAILS.clear()
 
 
+def test_concurrent_burst_across_login_change_grant_admits_exactly_one(client):
+    """MC-994 re-review finding N3, review #3 (Fenn, 2026-09-28): the shared
+    per-IP counter closed the SEPARATE-budget gap above, but the
+    check-then-verify-then-increment sequence itself held no lock across the
+    gap between reading the fail count and incrementing it on a miss. A
+    burst of concurrent wrong guesses — spread across the three routes that
+    share this budget (/login, /set's current-passcode check, and the
+    attend-once grant verifier, which gates through
+    `secrets_routes._require_human_passcode`) — could all read the SAME
+    pre-attempt count, all pass the throttle check, and all reach PBKDF2
+    before any one of them recorded a failure. Measured before the fix: 9
+    prior failures + 16 concurrent wrong guesses, cap 10, left the counter at
+    25. `_local_auth_admit`/`_local_auth_release` make fails+in_flight the
+    true worst case at every instant: exactly 1 of 16 concurrent guesses
+    reaches the verifier; the other 15 are refused before ever calling it."""
+    import threading
+    from mc import state as mc_state
+    from mc.blueprints import local_auth as la
+    la._LOCAL_AUTH_FAILS.clear()
+    la._LOCAL_AUTH_IN_FLIGHT.clear()
+    la._local_auth_set_passcode(ATTEND_ONCE_TEST_PASSCODE)
+    mc_state.agent_sessions['sid-n3-burst'] = {
+        'project_id': 'proj-a', 'claude_session_id': 'csid-n3-burst',
+        'trigger_type': 'dispatch',
+    }
+    try:
+        # 9 prior failures already on the books for this (loopback) source IP.
+        for _ in range(la._LOCAL_AUTH_FAIL_CAP - 1):
+            r = client.post('/api/local-auth/login', json={'passcode': 'bad'})
+            assert r.status_code == 403
+        ip = '127.0.0.1'
+        assert la._LOCAL_AUTH_FAILS[ip][0] == la._LOCAL_AUTH_FAIL_CAP - 1
+
+        barrier = threading.Barrier(16)
+        codes = []
+        codes_lock = threading.Lock()
+
+        def call(i):
+            barrier.wait(timeout=5)
+            kind = i % 3
+            if kind == 0:
+                r = client.post('/api/local-auth/login', json={'passcode': 'still-bad'})
+            elif kind == 1:
+                r = client.post('/api/local-auth/set',
+                                json={'passcode': 'newpass', 'current': 'still-bad'})
+            else:
+                r = _grant_pass_as_human(client, 'proj-a', 'sid-n3-burst',
+                                         passcode='still-bad')
+            with codes_lock:
+                codes.append(r.status_code)
+
+        threads = [threading.Thread(target=call, args=(i,)) for i in range(16)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(5)
+
+        assert codes.count(429) == 15
+        reached_verifier = [c for c in codes if c != 429]
+        assert reached_verifier == [403]
+        assert la._LOCAL_AUTH_FAILS[ip][0] == la._LOCAL_AUTH_FAIL_CAP
+        assert ip not in la._LOCAL_AUTH_IN_FLIGHT
+        assert '_attend_once_pass' not in mc_state.agent_sessions['sid-n3-burst']
+    finally:
+        mc_state.agent_sessions.pop('sid-n3-burst', None)
+        la._LOCAL_AUTH_FAILS.clear()
+        la._LOCAL_AUTH_IN_FLIGHT.clear()
+
+
+def test_success_after_admit_still_resets_shared_counter(client):
+    """Plus the success path: a correct passcode through the SAME
+    admit/release pair still clears the counter, same as before the race
+    fix."""
+    from mc.blueprints import local_auth as la
+    la._LOCAL_AUTH_FAILS.clear()
+    la._local_auth_set_passcode(ATTEND_ONCE_TEST_PASSCODE)
+    ip = '127.0.0.1'
+    r = client.post('/api/local-auth/login', json={'passcode': 'bad'})
+    assert r.status_code == 403
+    assert la._LOCAL_AUTH_FAILS[ip][0] == 1
+    r = client.post('/api/local-auth/login', json={'passcode': ATTEND_ONCE_TEST_PASSCODE})
+    assert r.status_code == 200
+    assert ip not in la._LOCAL_AUTH_FAILS
+    la._LOCAL_AUTH_FAILS.clear()
+
+
 def test_consume_with_no_pass_granted_reports_not_consumed(client):
     """The steward fence's own posture depends on this: no open pass means
     the blocked action stays blocked."""

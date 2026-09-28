@@ -24,6 +24,7 @@ itself stays registered on `app` in server.py (a thin wrapper), per the plan.
 """
 
 import json
+import threading
 import time as _time
 from pathlib import Path
 from typing import Callable, Optional
@@ -54,6 +55,12 @@ _LOCAL_AUTH_MIN_LEN = 4
 _LOCAL_AUTH_FAILS = {}            # ip -> [count, window_start_ts]
 _LOCAL_AUTH_FAIL_CAP = 10
 _LOCAL_AUTH_FAIL_WINDOW = 300     # seconds
+
+# Guards _LOCAL_AUTH_FAILS and _LOCAL_AUTH_IN_FLIGHT for _local_auth_admit()/
+# _local_auth_release() — see that pair's docstring (MC-994 re-review finding
+# N3, review #3).
+_LOCAL_AUTH_LOCK = threading.Lock()
+_LOCAL_AUTH_IN_FLIGHT = {}        # ip -> count of admitted, unresolved attempts
 
 
 def wire(*, local_auth_path, is_cf_tunneled_request):
@@ -158,36 +165,69 @@ def _local_auth_request_ok() -> bool:
         request.cookies.get(_LOCAL_AUTH_COOKIE, ''))
 
 
-def _local_auth_throttled() -> bool:
-    rec = _LOCAL_AUTH_FAILS.get(request.remote_addr or '?')
-    if not rec:
-        return False
-    if _time.time() - rec[1] > _LOCAL_AUTH_FAIL_WINDOW:
-        _LOCAL_AUTH_FAILS.pop(request.remote_addr or '?', None)
-        return False
-    return rec[0] >= _LOCAL_AUTH_FAIL_CAP
+def _local_auth_admit() -> bool:
+    """Atomically reserve one verification slot for this request's source IP,
+    or refuse if already-recorded failures plus already-in-flight attempts
+    would meet or exceed the cap.
 
+    MC-994 re-review finding N3, review #3 (Fenn, 2026-09-28): every route
+    that shares this per-IP guessing budget (/login, /set's current-passcode
+    check, and `secrets_routes._require_human_passcode` — the vault-lock
+    routes and the attend-once grant) used to check the fail count, run
+    PBKDF2, and increment on a miss with NO lock across that gap. A burst of
+    concurrent wrong guesses — 16 against 9 prior failures, cap 10 — could
+    all read the SAME pre-attempt count, all pass the check, and all reach
+    PBKDF2 before any one of them recorded a failure; measured, the counter
+    ended at 25, not 10. Reserving a slot BEFORE the verify and releasing it
+    (via `_local_auth_release`) after makes fails+in_flight the true worst
+    case at every instant, not just after the fact — locking only the final
+    increment (the obvious fix) does not close this: the race is in the gap
+    between the CHECK and the increment, not in the increment itself.
 
-def _local_auth_note_fail() -> None:
+    Deliberately does NOT hold the lock across the verify call itself —
+    PBKDF2 here is 200k iterations by design, and every route sharing this
+    budget would otherwise serialize on that cost instead of just the
+    bookkeeping. Every caller MUST pair this with exactly one
+    `_local_auth_release()` call once the attempt resolves, success or
+    failure, or the reservation leaks forever."""
     ip = request.remote_addr or '?'
     now = _time.time()
-    rec = _LOCAL_AUTH_FAILS.get(ip)
-    if not rec or now - rec[1] > _LOCAL_AUTH_FAIL_WINDOW:
-        _LOCAL_AUTH_FAILS[ip] = [1, now]
-    else:
-        rec[0] += 1
+    with _LOCAL_AUTH_LOCK:
+        rec = _LOCAL_AUTH_FAILS.get(ip)
+        if rec and now - rec[1] > _LOCAL_AUTH_FAIL_WINDOW:
+            _LOCAL_AUTH_FAILS.pop(ip, None)
+            rec = None
+        fails = rec[0] if rec else 0
+        in_flight = _LOCAL_AUTH_IN_FLIGHT.get(ip, 0)
+        if fails + in_flight >= _LOCAL_AUTH_FAIL_CAP:
+            return False
+        _LOCAL_AUTH_IN_FLIGHT[ip] = in_flight + 1
+        return True
 
 
-def _local_auth_clear_fail() -> None:
-    """Reset this caller's counter on a proven-correct passcode. Shared by
-    every route that spends this ONE per-IP budget (MC-994 re-review finding
-    N3, second pass — Fenn, 2026-09-28): /login, /set's current-passcode
-    check, the vault-lock set/change/unlock routes, and the attend-once
-    grant all called through `secrets_routes._require_human_passcode` used
-    to burn a SEPARATE budget (`_VAULT_LOCK_FAILS`) from this one — a caller
-    already shut out of /login could keep guessing the same passcode against
-    any of those instead. They now all read/write `_LOCAL_AUTH_FAILS`."""
-    _LOCAL_AUTH_FAILS.pop(request.remote_addr or '?', None)
+def _local_auth_release(success: bool) -> None:
+    """Release the slot `_local_auth_admit()` reserved for this request's
+    source IP, and record the outcome — success clears the counter (as
+    before `_local_auth_clear_fail` did), failure increments it (as before
+    `_local_auth_note_fail` did). Both now happen under the same lock as the
+    reservation they resolve, so a concurrent `_local_auth_admit()` never
+    observes a half-updated state."""
+    ip = request.remote_addr or '?'
+    with _LOCAL_AUTH_LOCK:
+        left = _LOCAL_AUTH_IN_FLIGHT.get(ip, 0) - 1
+        if left > 0:
+            _LOCAL_AUTH_IN_FLIGHT[ip] = left
+        else:
+            _LOCAL_AUTH_IN_FLIGHT.pop(ip, None)
+        if success:
+            _LOCAL_AUTH_FAILS.pop(ip, None)
+            return
+        now = _time.time()
+        rec = _LOCAL_AUTH_FAILS.get(ip)
+        if not rec or now - rec[1] > _LOCAL_AUTH_FAIL_WINDOW:
+            _LOCAL_AUTH_FAILS[ip] = [1, now]
+        else:
+            rec[0] += 1
 
 
 def _local_auth_passcode_set_at() -> Optional[int]:
@@ -268,20 +308,23 @@ def local_auth_set():
             # No LAN bootstrapping — the owner sets the first passcode on the host.
             return jsonify({'error': 'setup_requires_host'}), 403
     else:
-        # Share /login's throttle: MC-994 re-review finding N3 (Fenn, 2026-09-28)
-        # — this branch used to verify `current` with no attempt cap at all, so
-        # a caller shut out of /login by _local_auth_throttled could still run
-        # an unthrottled online guess of the SAME passcode here and, on a hit,
-        # walk away with a replacement of their own choosing. Same IP counter,
-        # same cap/window as login; a wrong guess here counts against login
-        # attempts too, and vice versa — one guessing budget per source IP,
-        # not one per route.
-        if _local_auth_throttled():
+        # Share /login's guessing budget: MC-994 re-review finding N3 (Fenn,
+        # 2026-09-28) — this branch used to verify `current` with no attempt
+        # cap at all, so a caller shut out of /login could still run an
+        # unthrottled online guess of the SAME passcode here and, on a hit,
+        # walk away with a replacement of their own choosing. Same IP
+        # counter, same cap/window as login; a wrong guess here counts
+        # against login attempts too, and vice versa — one guessing budget
+        # per source IP, not one per route. Review #3 found the check-then-
+        # verify-then-increment sequence itself racy under concurrency;
+        # _local_auth_admit()/_local_auth_release() close that (see the
+        # former's docstring).
+        if not _local_auth_admit():
             return jsonify({'error': 'too_many_attempts'}), 429
-        if not _local_auth_verify_passcode((body.get('current') or '').strip()):
-            _local_auth_note_fail()
+        ok = _local_auth_verify_passcode((body.get('current') or '').strip())
+        _local_auth_release(ok)
+        if not ok:
             return jsonify({'error': 'bad_current_passcode'}), 403
-        _local_auth_clear_fail()
     _local_auth_set_passcode(new_pass)
     _log(f"[local-auth] passcode set/changed from {request.remote_addr}", flush=True)
     return _local_auth_set_cookie(jsonify({'ok': True, 'configured': True}))
@@ -291,13 +334,13 @@ def local_auth_set():
 def local_auth_login():
     if not _local_auth_is_configured():
         return jsonify({'error': 'not_configured'}), 400
-    if _local_auth_throttled():
+    if not _local_auth_admit():
         return jsonify({'error': 'too_many_attempts'}), 429
     passcode = ((request.get_json(silent=True) or {}).get('passcode') or '').strip()
-    if not _local_auth_verify_passcode(passcode):
-        _local_auth_note_fail()
+    ok = _local_auth_verify_passcode(passcode)
+    _local_auth_release(ok)
+    if not ok:
         return jsonify({'error': 'bad_passcode'}), 403
-    _LOCAL_AUTH_FAILS.pop(request.remote_addr or '?', None)
     return _local_auth_set_cookie(jsonify({'ok': True}))
 
 
