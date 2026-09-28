@@ -35,6 +35,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -167,6 +168,157 @@ def shadow_check(name, resolved_path):
     return others
 
 
+def _npm_prefix():
+    """npm's configured global install prefix, or None if npm can't answer."""
+    rc, out = _npm(['config', 'get', 'prefix'], timeout=30)
+    if rc == 0 and out and not out.startswith('undefined'):
+        return out.strip()
+    return None
+
+
+def npm_package_dir(cli):
+    """Directory `npm install -g` will overwrite for this CLI, or None when
+    the CLI isn't npm-managed (native installer, e.g. `claude update`) or npm
+    has no configured prefix.
+
+    This is where MC-991 happened: `npm install -g` writes in place under
+    `<prefix>/node_modules/<package>`, regardless of which copy PATH
+    currently resolves (see shadow_check) -- so THIS is the directory a
+    preflight must check for lockers before an install is attempted, not the
+    resolved binary's own directory.
+    """
+    if not cli.update_cmd or cli.update_cmd[0] != 'npm' or not cli.npm_package:
+        return None
+    prefix = _npm_prefix()
+    if not prefix:
+        return None
+    return os.path.join(prefix, 'node_modules', *cli.npm_package.split('/'))
+
+
+def list_processes():
+    """All running processes as dicts (pid, ppid, name, exe, start_epoch).
+
+    Windows-only -- returns [] on every other platform, and on any
+    enumeration failure, so preflight/orphan-reporting degrade to "found no
+    lockers" rather than a half-working guess. psutil isn't a dependency of
+    this project (checked 2026-09-28), so this shells to PowerShell
+    Get-CimInstance, per MC-991's brief.
+    """
+    if sys.platform != 'win32':
+        return []
+    exe = shutil.which('powershell') or shutil.which('powershell.exe')
+    if not exe:
+        return []
+    ps_cmd = (
+        "Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, "
+        "Name, ExecutablePath, @{N='StartEpoch';E={ if ($_.CreationDate) { "
+        "[int64]([datetimeoffset]$_.CreationDate).ToUnixTimeSeconds() } else { $null } }} "
+        "| ConvertTo-Json -Compress"
+    )
+    rc, out = _run([exe, '-NoProfile', '-NonInteractive', '-Command', ps_cmd], timeout=30)
+    if rc != 0 or not out:
+        return []
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    procs = []
+    for p in data or []:
+        if not isinstance(p, dict):
+            continue
+        procs.append({
+            'pid': p.get('ProcessId'),
+            'ppid': p.get('ParentProcessId'),
+            'name': p.get('Name'),
+            'exe': p.get('ExecutablePath'),
+            'start_epoch': p.get('StartEpoch'),
+        })
+    return procs
+
+
+def _under_dir(path, dir_path):
+    if not path or not dir_path:
+        return False
+    norm_dir = os.path.normcase(os.path.abspath(dir_path)) + os.sep
+    return os.path.normcase(os.path.abspath(path)).startswith(norm_dir)
+
+
+def processes_locking(dir_path, procs):
+    """Processes in `procs` whose executable resolves under `dir_path`."""
+    return [p for p in procs if _under_dir(p.get('exe'), dir_path)]
+
+
+def orphaned_processes(dir_path, procs, now=None, min_age_hours=24.0):
+    """Processes under `dir_path` whose parent pid belongs to no currently
+    running process, and that have run at least `min_age_hours`.
+
+    Report-only -- NEVER killed. A dead ancestor's pid can already have been
+    recycled onto an unrelated process by the OS (see memory:
+    never-taskkill-tree-on-stale-pid); "ancestor missing" is evidence of an
+    orphan, not proof, and killing on it would risk exactly that mistake.
+    """
+    now = time.time() if now is None else now
+    alive = {p['pid'] for p in procs if p.get('pid') is not None}
+    out = []
+    for p in processes_locking(dir_path, procs):
+        ppid = p.get('ppid')
+        start = p.get('start_epoch')
+        if ppid is None or ppid in alive or start is None:
+            continue
+        age_hours = (now - start) / 3600.0
+        if age_hours >= min_age_hours:
+            out.append({'pid': p.get('pid'), 'ppid': ppid, 'name': p.get('name'),
+                        'exe': p.get('exe'), 'age_hours': round(age_hours, 1)})
+    return out
+
+
+def rename_aside(path):
+    """Rename a locked file aside so npm can write a fresh one at the
+    original name. Windows lets you rename a file a running process still
+    has open (the loader shares delete/rename access on the image mapping);
+    the process keeps running against the old inode under its new name.
+    Returns the new path, or None on failure.
+    """
+    if not path or not os.path.isfile(path):
+        return None
+    aside = '%s.locked-aside-%s' % (path, time.strftime('%Y%m%dT%H%M%S'))
+    try:
+        os.rename(path, aside)
+        return aside
+    except OSError:
+        return None
+
+
+def sweep_aside_files(dir_path, procs):
+    """Remove `.locked-aside-*` files a previous rename_aside left behind,
+    once nothing still has them open. A rename-aside can't delete the old
+    file -- npm has to succeed first -- so a later run cleans up what an
+    earlier one left; skips (does not delete) any still pointed at by a live
+    process.
+    """
+    removed, skipped = [], []
+    if not dir_path or not os.path.isdir(dir_path):
+        return {'removed': removed, 'skipped': skipped}
+    locked = {os.path.normcase(os.path.abspath(p['exe']))
+              for p in procs if p.get('exe')}
+    for root, _dirs, files in os.walk(dir_path):
+        for fn in files:
+            if '.locked-aside-' not in fn:
+                continue
+            full = os.path.join(root, fn)
+            if os.path.normcase(os.path.abspath(full)) in locked:
+                skipped.append(full)
+                continue
+            try:
+                os.remove(full)
+                removed.append(full)
+            except OSError:
+                skipped.append(full)
+    return {'removed': removed, 'skipped': skipped}
+
+
 def _cmp(a, b):
     """-1 / 0 / 1 on dotted versions; 0 when either side is unknown."""
     if not a or not b:
@@ -191,6 +343,19 @@ def check_one(cli, apply_updates=False):
         'shadowed_by': shadows, 'status': 'ok', 'updated': False,
     }
 
+    # Diagnostic-only, independent of --apply/--behind: surface orphaned CLI
+    # processes and sweep stale rename-aside files from a prior run, so a
+    # plain report already shows what a locked-exe update would run into.
+    pkg_dir = npm_package_dir(cli)
+    if pkg_dir:
+        procs = list_processes()
+        swept = sweep_aside_files(pkg_dir, procs)
+        if swept['removed']:
+            row['swept_aside_files'] = swept['removed']
+        orphans = orphaned_processes(pkg_dir, procs)
+        if orphans:
+            row['orphaned_processes'] = orphans
+
     behind = _cmp(latest, inst) > 0
     if behind and shadows:
         row['status'] = 'outdated_and_shadowed'
@@ -204,23 +369,66 @@ def check_one(cli, apply_updates=False):
         # FileNotFoundError here and every npm update silently failed.
         cmd = list(cli.update_cmd)
         cmd[0] = shutil.which(cmd[0]) or shutil.which(cmd[0] + '.cmd') or cmd[0]
-        rc, out = _run(cmd, timeout=600)
-        after, _ = installed_version(cli.name)
-        row['installed_after'] = after
-        row['updated'] = (rc == 0 and _cmp(after, inst) > 0)
-        if not row['updated']:
-            row['update_error'] = out[-400:]
-            # A failed npm in-place upgrade can leave the package PARTIALLY
-            # replaced, so what runs afterwards is OLDER than what we started
-            # with -- a regression this job itself caused. Measured 2026-09-25:
-            # codex 0.156.1 -> 0.155.1 when a live codex process held the .exe
-            # and npm's rename hit EPERM. It must never read as plain
-            # "outdated", which is indistinguishable from "we did nothing".
-            if _cmp(after, inst) < 0:
-                row['status'] = 'downgraded_by_failed_update'
-                row['downgraded_from'] = inst
-        elif _cmp(latest, after) <= 0:
-            row['status'] = 'shadowed' if shadows else 'ok'
+
+        # Preflight: a process with the CLI's own package dir open for
+        # execution EBUSYs an in-place npm write (MC-991, codex 2026-09-25
+        # and 2026-09-28). Rename each locker aside first; if any rename
+        # fails, don't attempt a known-failing install at all. Retried once
+        # (pkg_dir-managed CLIs only) if the FIRST attempt still downgrades
+        # the CLI -- a locker preflight missed, or one that showed up
+        # mid-install.
+        rc, out, after = 1, '', inst
+        blocked = False
+        max_attempts = 2 if pkg_dir else 1
+        for attempt in range(1, max_attempts + 1):
+            if pkg_dir:
+                lockers = processes_locking(pkg_dir, list_processes())
+                if lockers:
+                    renamed, rename_ok = [], True
+                    for p in lockers:
+                        aside = rename_aside(p.get('exe'))
+                        if aside is None:
+                            rename_ok = False
+                            break
+                        renamed.append((p['exe'], aside))
+                    if not rename_ok:
+                        for orig, aside in renamed:
+                            try:
+                                os.rename(aside, orig)
+                            except OSError:
+                                pass
+                        row['status'] = 'blocked_by_running_process'
+                        row['blocking_processes'] = [
+                            {'pid': p.get('pid'), 'name': p.get('name'), 'exe': p.get('exe')}
+                            for p in lockers]
+                        blocked = True
+                        break
+                    row.setdefault('renamed_aside', []).extend(a for _orig, a in renamed)
+
+            rc, out = _run(cmd, timeout=600)
+            after, _ = installed_version(cli.name)
+            if rc == 0 and _cmp(after, inst) > 0:
+                break
+            if _cmp(after, inst) < 0 and attempt < max_attempts:
+                continue
+            break
+
+        if not blocked:
+            row['installed_after'] = after
+            row['updated'] = (rc == 0 and _cmp(after, inst) > 0)
+            if not row['updated']:
+                row['update_error'] = out[-400:]
+                # A failed npm in-place upgrade can leave the package PARTIALLY
+                # replaced, so what runs afterwards is OLDER than what we started
+                # with -- a regression this job itself caused. Measured 2026-09-25:
+                # codex 0.156.1 -> 0.155.1 when a live codex process held the .exe
+                # and npm's rename hit EPERM. It must never read as plain
+                # "outdated", which is indistinguishable from "we did nothing".
+                if _cmp(after, inst) < 0:
+                    row['status'] = 'downgraded_by_failed_update'
+                    row['downgraded_from'] = inst
+            elif _cmp(latest, after) <= 0:
+                row['status'] = 'shadowed' if shadows else 'ok'
     return row
 
 
