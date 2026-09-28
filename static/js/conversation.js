@@ -596,6 +596,64 @@ if (typeof window !== 'undefined' && !window._chatModelMenuCloserBound) {
 window.toggleChatModelMenu = toggleChatModelMenu;
 window.switchChatModel = switchChatModel;
 
+// ── Attended-handoff control (MC-994, backlog fb822042) ──────────────────────
+// A dispatched/scheduled chat is fenced by steward/fence.py even when a human
+// is reading every line — the trigger_type MC stamped at dispatch time is the
+// only signal the fence has, and it can't tell "an agent handed this thread
+// to a human at their request" from "nobody is watching". This is the
+// human-click override: POST .../attend re-stamps that ONE session's
+// trigger_type to 'manual' server-side (agent_routes.py:attend_session,
+// human-only — an agent caller is refused the same way a character/workflow
+// mutation is).
+//
+// Mirrors steward/fence.py's _UNATTENDED_TRIGGER_TYPES verbatim — this is a
+// display concern the header needs synchronously on every render, so it's a
+// literal copy, not a server round trip. Keep the two lists in sync by hand;
+// they change rarely (new trigger_type values are a deliberate addition).
+const _UNATTENDED_FENCE_TRIGGERS = new Set(['schedule', 'workflow', 'dispatch', 'hivemind_orchestrator', 'hivemind_worker']);
+
+// Sessions flipped to attended THIS TAB, THIS PAGE LOAD. There is no durable
+// "was guarded, now attended" flag to read back — trigger_type just becomes
+// 'manual', identical to a chat that was never guarded (by design: no
+// un-attend action exists, so nothing more needs remembering). The
+// confirmation pill below is a one-time acknowledgement, not a permanent record.
+const _attendedThisSession = {};
+
+function _attendControlHTML(activeSession, sid) {
+  if (!activeSession || !sid) return '';
+  const tt = activeSession.triggerType || 'manual';
+  if (_UNATTENDED_FENCE_TRIGGERS.has(tt)) {
+    return `<button type="button" class="provider-badge attend-pill guarded" title="This chat was dispatched/scheduled — the unattended fence blocks irreversible actions here even after you approve them in chat, because nothing confirms a human is reading. Click if you're here now."
+      onclick="attendSession(event,'${esc(sid)}')">&#x1F512; Guarded <span class="attend-cta">I'm here</span></button>`;
+  }
+  if (_attendedThisSession[sid]) {
+    return `<span class="provider-badge attend-pill attended" title="Marked attended — the unattended fence no longer arms for this chat.">&#x2713; Attended</span>`;
+  }
+  return '';
+}
+
+async function attendSession(event, sid) {
+  if (event) { event.stopPropagation(); event.preventDefault(); }
+  const s = agentStatusCache[sid];
+  const projectId = s && s.projectId;
+  if (!projectId) return;
+  try {
+    const resp = await fetch(`${API_BASE}/api/project/${projectId}/agent/${sid}/attend`, { method: 'POST' });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok || !body.ok) {
+      if (typeof showToast === 'function') showToast(body.error || 'Could not mark attended', 3000);
+      return;
+    }
+    if (s) s.triggerType = 'manual';
+    _attendedThisSession[sid] = true;
+    if (typeof showToast === 'function') showToast("Marked attended — the unattended fence is off for this chat", 3000);
+    refreshModalById(projectId);
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Could not mark attended', 2500);
+  }
+}
+window.attendSession = attendSession;
+
 function getIncognitoFor(projectId) {
   // Global incognito project is always incognito; user can't turn it off.
   if (projectId === '_incognito') return true;
@@ -1705,6 +1763,7 @@ function agentPanelHTML(p) {
     const _apkExpired = (_apk && _apk.bridge && window._apkPillFirstShownAt
         && (Date.now() - window._apkPillFirstShownAt > 20000));
     const _apkBadge = (_apk && !_apkExpired) ? `<span class="provider-badge" style="background:${_apk.bridge ? 'rgba(16,185,129,.12)' : 'rgba(239,68,68,.15)'};color:${_apk.bridge ? '#10b981' : '#ef4444'}" title="${_apk.bridge ? 'Native POST bridge active' : 'WARNING: native bridge missing — POSTs may hang after Doze'}">APK ${esc(_apk.version)}${_apk.bridge ? '' : ' ⚠'}</span>` : '';
+    const _attendBadge = _attendControlHTML(activeSession, activeSessionId);
     tabContent = `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;flex-shrink:0">
         <span class="agent-status-dot ${st}"></span>
@@ -1712,6 +1771,7 @@ function agentPanelHTML(p) {
         ${_provBadge}
         ${_charBadge}
         ${_apkBadge}
+        ${_attendBadge}
         ${isActiveOrch ? '<span class="hm-orch-label">&#x2B21; Hivemind</span>' : ''}
         ${stopBtnSlot}
         <!-- Always rendered (not gated on _pcaps.emits_usage): the live
