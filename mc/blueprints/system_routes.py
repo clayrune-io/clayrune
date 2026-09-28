@@ -1178,6 +1178,125 @@ def system_usage_refresh():
     return system_usage_get()
 
 
+# ── Usage Breakdown dashboard (MC-998 phase 4b) ─────────────────────────────
+_USAGE_BREAKDOWN_VALID_PROVIDERS = {'claude', 'codex'}
+_USAGE_BREAKDOWN_VALID_WINDOW_KINDS = {'5h', '7d'}
+_USAGE_BREAKDOWN_VALID_SCOPES = {'all', 'opus', 'sonnet'}
+_USAGE_BREAKDOWN_DEFAULT_WINDOW_SPAN = {'5h': timedelta(hours=5), '7d': timedelta(days=7)}
+
+
+def _usage_breakdown_default_range(store, *, provider: str, window_kind: str,
+                                    window_scope: str) -> tuple[str, str]:
+    """The spec's "default view is the current window": since the most
+    recent `resets_at` CHANGE (a fresh window beginning) in the last 90 days
+    of retained samples, through now. Falls back to a flat window-length
+    lookback (e.g. the last 5h/7d) when no samples exist yet at all, so a
+    fresh install still gets a sane, non-degenerate default range."""
+    now = datetime.now(timezone.utc)
+    samples = store.list_allowance_samples(provider=provider, window_kind=window_kind,
+                                            window_scope=window_scope)
+    span = _USAGE_BREAKDOWN_DEFAULT_WINDOW_SPAN[window_kind]
+    if not samples:
+        return (now - span).isoformat(), now.isoformat()
+    current_resets_at = samples[-1].get('resets_at')
+    window_start = samples[-1]['server_received_at']
+    for s in reversed(samples):
+        if s.get('resets_at') != current_resets_at:
+            break
+        window_start = s['server_received_at']
+    return window_start, now.isoformat()
+
+
+@bp.route('/api/system/usage/breakdown', methods=['GET'])
+def system_usage_breakdown_get():
+    """docs/USAGE_BREAKDOWN_SPEC.md "Dashboard layout and states" -- one
+    provider/window/range Breakdown payload: totals, LOC, tokens-per-1%,
+    the segmented estimated/unattributed bar, and a ranking table. Query
+    params: provider (claude|codex), window_kind (5h|7d), window_scope
+    (all|opus|sonnet -- codex is always 'all'), range_start/range_end
+    (ISO8601, optional -- default is the current window), dimension
+    (project|character|trigger|model|provider), sort (input|output|added).
+    """
+    provider = (request.args.get('provider') or 'claude').lower()
+    window_kind = request.args.get('window_kind') or '5h'
+    window_scope = request.args.get('window_scope') or 'all'
+    dimension = request.args.get('dimension') or 'project'
+    sort_by = request.args.get('sort') or 'input'
+    if provider not in _USAGE_BREAKDOWN_VALID_PROVIDERS:
+        return jsonify({'error': f'invalid provider: {provider}'}), 400
+    if window_kind not in _USAGE_BREAKDOWN_VALID_WINDOW_KINDS:
+        return jsonify({'error': f'invalid window_kind: {window_kind}'}), 400
+    if window_scope not in _USAGE_BREAKDOWN_VALID_SCOPES:
+        return jsonify({'error': f'invalid window_scope: {window_scope}'}), 400
+    if provider == 'codex':
+        window_scope = 'all'  # Codex has one account-wide scope, no per-model split
+
+    from mc import usage_breakdown_aggregate as _agg
+    store = _usage_breakdown_store()
+    range_start = request.args.get('range_start')
+    range_end = request.args.get('range_end')
+    if not range_start or not range_end:
+        range_start, range_end = _usage_breakdown_default_range(
+            store, provider=provider, window_kind=window_kind, window_scope=window_scope)
+
+    ninety_days_ago = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    range_samples = [
+        s for s in store.list_allowance_samples(provider=provider, window_kind=window_kind,
+                                                  window_scope=window_scope)
+        if range_start <= s['server_received_at'] < range_end
+    ]
+    calibration_samples = store.list_allowance_samples(
+        provider=provider, window_kind=window_kind, window_scope=window_scope, since=ninety_days_ago)
+    session_facts = store.list_session_facts(since=ninety_days_ago)
+    code_deltas = {f['session_id']: (store.get_code_delta(f['session_id']) or {})
+                   for f in session_facts if f.get('session_id')}
+
+    try:
+        payload = _agg.build_breakdown(
+            provider=provider, window_kind=window_kind, window_scope=window_scope,
+            range_start=range_start, range_end=range_end, dimension=dimension, sort_by=sort_by,
+            range_samples=range_samples, calibration_samples=calibration_samples,
+            calibration_facts=session_facts, session_facts=session_facts, code_deltas=code_deltas,
+            coverage_begins=store.coverage_begins(),
+        )
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify(payload)
+
+
+@bp.route('/api/system/usage/windows', methods=['GET'])
+def system_usage_windows_get():
+    """List distinct retained windows (grouped by `resets_at`) for the
+    provider/window_kind/window_scope range picker -- "the range can be the
+    current window or any completed window retained in the last 90 days."
+    A window is `completed` once its `resets_at` is in the past.
+    """
+    provider = (request.args.get('provider') or 'claude').lower()
+    window_kind = request.args.get('window_kind') or '5h'
+    window_scope = request.args.get('window_scope') or 'all'
+    if provider not in _USAGE_BREAKDOWN_VALID_PROVIDERS:
+        return jsonify({'error': f'invalid provider: {provider}'}), 400
+    if window_kind not in _USAGE_BREAKDOWN_VALID_WINDOW_KINDS:
+        return jsonify({'error': f'invalid window_kind: {window_kind}'}), 400
+    if provider == 'codex':
+        window_scope = 'all'
+
+    store = _usage_breakdown_store()
+    samples = store.list_allowance_samples(provider=provider, window_kind=window_kind,
+                                            window_scope=window_scope)
+    now = datetime.now(timezone.utc).isoformat()
+    windows: list[dict] = []
+    for s in samples:
+        if windows and windows[-1]['resets_at'] == s.get('resets_at'):
+            windows[-1]['range_end'] = s['server_received_at']
+            continue
+        windows.append({'resets_at': s.get('resets_at'), 'range_start': s['server_received_at'],
+                         'range_end': s['server_received_at']})
+    for w in windows:
+        w['completed'] = bool(w['resets_at']) and w['resets_at'] < now
+    return jsonify({'windows': windows, 'coverage_begins': store.coverage_begins()})
+
+
 # MC-989 Part B — one bare-CLI terminal pop-out per provider that has an
 # interactive, human-only reset command. NEVER auto-types or pipes the
 # command itself: a banked Codex reset is one-time and belongs to the account
