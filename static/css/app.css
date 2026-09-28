@@ -9735,6 +9735,84 @@
     font-size: 11px; padding: 6px 8px; border-radius: 5px; margin-bottom: 8px;
   }
 
+  /* ── MC-963 box view: the canvas box carries no editor any more, just a
+     one-line summary + its ports (_wfRenderNode/_wfNodeSummary) — click,
+     double-click, or the "..." menu's Edit opens the SAME editors, reused
+     verbatim, in the inspector below instead. `.wfb-node-own`'s own rules
+     above (label/input/textarea styling) are untouched and now only ever
+     apply inside `#wfb-inspector`. */
+  .wfb-node-body { padding: 6px 12px 10px; cursor: pointer; }
+  .wfb-node-body:hover .wfb-node-summary { color: var(--text); }
+  .wfb-node-summary {
+    font-size: 12px; color: var(--text-dim, var(--text-faint)); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .wfb-node-compact-ports { margin-top: 6px; }
+  /* Read-only stand-in for the inspector's editable `.wfb-vocab-pill` input
+     (_wfRenderVocabRowsCompact) — same row/port anchoring math (see the
+     Change 12b comment above `.wfb-vocab-row`), just inert text instead of a
+     field, since the box never carries an editable control (ground rule:
+     "No inline textareas or dropdowns on the canvas"). */
+  .wfb-vocab-pill-ro {
+    display: block; font-size: 11.5px; color: var(--text-dim, var(--text-faint));
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 5px;
+    padding: 3px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* Validation badge (ask: "Validation errors show as a badge on the
+     offending box") — the full error/warning text moved into the inspector
+     body below; the box only shows this glyph, with the message on `title`.
+     Sits in `.wfb-node-head` alongside the existing unwired-badge, so it
+     inherits that row's flex/gap placement for free. */
+  .wfb-node-validation-badge { font-size: 12px; flex-shrink: 0; cursor: help; line-height: 1; }
+  .wfb-node-validation-error { color: var(--red-text); }
+  .wfb-node-validation-warning { color: var(--amber-text); }
+
+  /* ── MC-963 inspector: right side panel (desktop) / bottom sheet (<=960px)
+     holding the one open node's full editor, reused verbatim from the old
+     inline card body (`.wfb-node-own` and everything under it, unchanged).
+     Lives as a flex sibling of the palette/canvas inside `.wfb-builder` on
+     desktop; the mobile media query below takes it out of that flow onto a
+     fixed sheet instead, same pattern `.wfb-palette` already uses for its
+     own desktop-sidebar / mobile-bottom-sheet split. */
+  .wfb-inspector { display: none; }
+  .wfb-inspector.wfb-inspector-open {
+    display: flex; flex-direction: column; width: 320px; flex-shrink: 0;
+    background: var(--surface); border-left: 1px solid var(--border); overflow-y: auto;
+  }
+  .wfb-inspector-head {
+    display: flex; align-items: center; gap: 8px; padding: 10px 12px; flex-shrink: 0;
+    border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1;
+  }
+  .wfb-inspector-title {
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
+    font-size: 13px; font-weight: 700; color: var(--text); overflow: hidden;
+  }
+  .wfb-inspector-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wfb-inspector-close {
+    background: transparent; border: none; color: var(--text-faint); cursor: pointer;
+    font-size: 15px; line-height: 1; padding: 2px 5px; flex-shrink: 0;
+  }
+  .wfb-inspector-close:hover { color: var(--accent); }
+  .wfb-inspector-body { padding: 4px 12px 14px; }
+  /* Backdrop that closes the inspector on an outside tap — only meaningful
+     as a full-screen scrim on the mobile bottom sheet (see the media query
+     below); left un-styled (no fixed positioning) on desktop so it never
+     paints over the canvas there. */
+  .wfb-inspector-scrim { display: none; }
+  @media (max-width: 960px) {
+    /* Bottom sheet, same shape as every other mobile sheet in this file
+       (e.g. `.wfb-palette` above) — taken OUT of `.wfb-builder`'s
+       `column-reverse` flow via `position: fixed` so it overlays the canvas
+       instead of pushing it, since a permanently-docked inspector would
+       leave almost no canvas visible on a phone. */
+    .wfb-inspector.wfb-inspector-open {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 10001;
+      width: auto; max-height: 70vh; border-left: none; border-top: 1px solid var(--border);
+      border-radius: 14px 14px 0 0; box-shadow: 0 -4px 20px rgba(0,0,0,0.3);
+    }
+    .wfb-inspector-scrim { display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 10000; }
+  }
+
   /* ── Workflow tabs row, top of the Workflows tab (MC-871 Q7 re-reversed:
      the canvas hosts inline here, one tab per workflow touching this
      project, plus "+ New Workflow"). ── */

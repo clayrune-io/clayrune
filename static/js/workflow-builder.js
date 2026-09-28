@@ -694,10 +694,15 @@ function _wfFreshState(def, workflowId, error, hintProjectId) {
   // migrates a renamed node's key the same way it already repoints edges.
   // _undo/_redo/_lastSnapshot/_savedSnapshot (Change 3): see _wfCheckpointForUndo
   // and _wfStampSavedSnapshot below for how these three stay in sync.
+  // inspectorOpen (MC-963 box view): the name of the node whose full editor
+  // (project/persona/prompt/outcomes/etc, reused verbatim from the pre-963
+  // inline card) is showing in the side panel/bottom sheet, or null when
+  // nothing is open. The canvas box itself never holds an editable field --
+  // see _wfRenderNode/_wfRenderInspector.
   return { def, workflowId, saving: false, error: error || null, _cardSeq: 0,
            _charLoads: [], viewport: { x: 60, y: 40, scale: 1 }, linkedSchedule: null,
            hintProjectId: hintProjectId || '', bench: [], benchLoaded: false, paletteSearch: '',
-           paletteExpanded: false, promptOpen: {},
+           paletteExpanded: false, promptOpen: {}, inspectorOpen: null,
            dirty: false, savedAt: null, runErrors: null, scrollToNode: null,
            descOpen: !!(def.description && String(def.description).trim()),
            liveRun: null, cancellingRun: false,
@@ -1271,7 +1276,11 @@ function _wfInsertMenuToggle(e, nodeName, fieldKey) {
   _wfCloseInsertMenu();
   const entry = _wfEntry(); if (!entry) return;
   const btn = e.currentTarget;
-  const cardEl = btn.closest('.wfb-node');
+  // MC-963: the Insert button only ever renders inside the inspector's
+  // `.wfb-node-own` now (there is no ancestor `.wfb-node` box any more --
+  // the editor moved off the canvas), which carries the same `data-name`
+  // a canvas card used to.
+  const cardEl = btn.closest('.wfb-node-own');
   if (!cardEl) return;
   const renameMap = _wfSyncDomToModel(entry);
   const currentName = renameMap[cardEl.dataset.name] || cardEl.dataset.name;
@@ -1335,7 +1344,9 @@ function _wfInsertAtField(cardEl, field, node, fieldKey, selector, value) {
   }
   _wfMarkDirty();
   _wfRender();
-  const freshField = document.querySelector(`.wfb-node[data-name="${_wfAttrEsc(node.name)}"] ${selector}`);
+  // MC-963: the field lives in the inspector's `.wfb-node-own` now, not a
+  // canvas `.wfb-node` box (see the Insert-button fix above).
+  const freshField = document.querySelector(`.wfb-node-own[data-name="${_wfAttrEsc(node.name)}"] ${selector}`);
   if (freshField) {
     freshField.focus({ preventScroll: true });
     try { freshField.setSelectionRange(caret, caret); } catch (err) { /* not all input types support it */ }
@@ -1370,26 +1381,33 @@ function _wfSyncDomToModel(entry) {
   const nodes = def.nodes || [];
   const edges = def.edges || [];
   const renameMap = {};
-  document.querySelectorAll('.wfb-node').forEach((nodeEl) => {
-    const oldName = nodeEl.dataset.name;
-    const node = nodes.find(n => n.name === oldName);
-    const own = nodeEl.querySelector('.wfb-node-own');
-    if (!node || !own) return;
-    _wfSyncNodeOwn(node, own);
-    if (node.name && node.name !== oldName) {
-      // Renames aren't guarded against breaking a TEXT slot reference
-      // elsewhere (spine behaviour, carried forward — see file header), but
-      // a rename WOULD silently orphan this node's own edges if they
-      // weren't repointed, which is new breakage this file would be
-      // introducing, not inheriting. Repoint them -- and Change 12a's
-      // def.trigger.entry the same way, for the same reason.
-      edges.forEach(e => { if (e.from === oldName) e.from = node.name; if (e.to === oldName) e.to = node.name; });
-      if (def.trigger && Array.isArray(def.trigger.entry)) {
-        def.trigger.entry = def.trigger.entry.map(n => n === oldName ? node.name : n);
+  // MC-963: the canvas box carries no editable field any more -- the ONE
+  // live editor (if any) lives in the inspector, keyed to entry._wf.inspectorOpen
+  // rather than to a per-card DOM node the old `.wfb-node .wfb-node-own` loop
+  // used to find on every card at once.
+  const openName = entry._wf.inspectorOpen;
+  if (openName) {
+    const node = nodes.find(n => n.name === openName);
+    const own = document.querySelector('#wfb-inspector .wfb-node-own');
+    if (node && own) {
+      const oldName = node.name;
+      _wfSyncNodeOwn(node, own);
+      if (node.name && node.name !== oldName) {
+        // Renames aren't guarded against breaking a TEXT slot reference
+        // elsewhere (spine behaviour, carried forward — see file header), but
+        // a rename WOULD silently orphan this node's own edges if they
+        // weren't repointed, which is new breakage this file would be
+        // introducing, not inheriting. Repoint them -- and Change 12a's
+        // def.trigger.entry the same way, for the same reason.
+        edges.forEach(e => { if (e.from === oldName) e.from = node.name; if (e.to === oldName) e.to = node.name; });
+        if (def.trigger && Array.isArray(def.trigger.entry)) {
+          def.trigger.entry = def.trigger.entry.map(n => n === oldName ? node.name : n);
+        }
+        renameMap[oldName] = node.name;
+        entry._wf.inspectorOpen = node.name;
       }
-      renameMap[oldName] = node.name;
     }
-  });
+  }
   // promptOpen is keyed by node name (see _wfFreshState) -- a rename that
   // isn't repointed here would silently reset that card's disclosure state
   // to collapsed the next render, since the old key would no longer match.
@@ -1683,7 +1701,9 @@ function _wfRenderBody(st) {
         <div id="wfb-world" class="wfb-canvas-world">${_wfRenderTriggerBox(st)}${nodesHtml}</div>
         ${nodes.length ? '' : '<div class="wfb-canvas-empty">drop anyone anywhere &middot; drag the blue dot onto another card to connect them &middot; + on a port adds &amp; wires the next step</div>'}
       </div>
+      ${_wfRenderInspector(st)}
     </div>
+    ${st.inspectorOpen ? '<div class="wfb-inspector-scrim" onclick="_wfCloseInspector()"></div>' : ''}
     ${st.error ? `<div class="wfb-error">${esc(st.error)}</div>` : ''}`;
 }
 
@@ -1982,19 +2002,17 @@ function _wfLiveStatusBadge(status) {
 
 function _wfRenderNode(st, node) {
   const nameAttr = esc(node.name || '');
-  let own = '';
-  if (node.type === 'agent') own = _wfRenderAgentOwn(st, node);
-  else if (node.type === 'approval') own = _wfRenderApprovalOwn(st, node);
-  else if (node.type === 'action') own = _wfRenderActionOwn(st, node);
-  else if (node.type === 'wait') own = _wfRenderWaitOwn(st, node);
-  else own = 'Unknown node type.';
   const edges = st.def.edges || [];
-  // A declared vocabulary (agent outcomes / approval options) renders its
-  // ports as pills INSIDE the card body (see _wfRenderVocabRows, called from
-  // _wfRenderAgentOwn/_wfRenderApprovalOwn) -- there is nothing left for the
-  // card-edge ports column to draw. Only the plain, single, unconditional
-  // port (a no-outcome agent step or any action node -- action steps cannot
-  // have conditional edges, validate_workflow) still uses it.
+  // MC-963 box view: the card no longer renders a full editor -- click,
+  // double-click, or the "..." menu's Edit opens the inspector for that
+  // instead (_wfOpenInspector/_wfRenderInspector). A declared vocabulary
+  // (agent outcomes / approval options) still renders its ports as pills on
+  // the box (_wfRenderVocabRowsCompact) -- "outcome ports must stay on the
+  // box so edges remain connectable" -- just without the editable label/
+  // remove control, which only exists in the inspector's full
+  // _wfRenderVocabRows. Only the plain, single, unconditional port (a
+  // no-outcome agent step or any action node -- action steps cannot have
+  // conditional edges, validate_workflow) still uses the edge-anchored column.
   const vocabPresent = _wfVocab(node).length > 0;
   const portsHtml = vocabPresent ? '' : (() => {
     const connected = edges.some(e => e.from === node.name && (e.when || null) === null);
@@ -2048,6 +2066,14 @@ function _wfRenderNode(st, node) {
     ? `<span class="wfb-node-unwired-badge" title="No incoming edges, so this runs automatically as soon as the workflow starts — even though it isn't wired to the Trigger tile.">&#9888;</span>`
     : '';
   const nodeStateCls = runError ? ' wfb-node-error' : (authWarning ? ' wfb-node-warning' : '');
+  // MC-963: the full error/warning banner text now lives in the inspector
+  // (_wfRenderInspector) -- the box only shows a compact badge (native
+  // `title` carries the message) so a validation problem is visible without
+  // opening it, per the ask ("Validation errors show as a badge on the
+  // offending box").
+  const validationBadge = runError
+    ? `<span class="wfb-node-validation-badge wfb-node-validation-error" title="${esc(runError)}">&#10071;</span>`
+    : (authWarning ? `<span class="wfb-node-validation-badge wfb-node-validation-warning" title="${esc(authWarning)}">&#9888;</span>` : '');
   // MC-946: show which step a LIVE run is on, right on the canvas node --
   // the strip alone (_wfRenderLiveRun) named the step in text but the card
   // itself showed nothing. Keyed by node name, the same key run.steps uses
@@ -2059,16 +2085,16 @@ function _wfRenderNode(st, node) {
   const liveCls = (liveStatus && liveStatus !== 'pending') ? ` wfb-node-live-${liveStatus}` : '';
   const liveBadge = _wfLiveStatusBadge(liveStatus);
   return `<div class="wfb-node${nodeStateCls}${liveCls}" data-name="${nameAttr}" style="left:${node.x || 0}px;top:${node.y || 0}px">
-    <div class="wfb-node-head" onpointerdown="_wfNodeDragDown(event)">
+    <div class="wfb-node-head" onpointerdown="_wfNodeDragDown(event)" ondblclick="_wfOpenInspector('${_wfJsStrEsc(node.name)}')">
       ${liveBadge}
       ${unwiredBadge}
+      ${validationBadge}
       ${headHtml}
       <button class="wfb-node-menu-btn" title="Step options" onclick="_wfNodeMenuToggle(event,'${_wfJsStrEsc(node.name)}')">&#8230;</button>
     </div>
-    <div class="wfb-node-own">
-      ${runError ? `<div class="wfb-node-inline-error">${esc(runError)}</div>` : ''}
-      ${authWarning ? `<div class="wfb-node-inline-warning">${esc(authWarning)}</div>` : ''}
-      ${own}
+    <div class="wfb-node-body" onclick="_wfOpenInspector('${_wfJsStrEsc(node.name)}')">
+      <div class="wfb-node-summary">${esc(_wfNodeSummary(node))}</div>
+      ${vocabPresent ? `<div class="wfb-node-compact-ports">${_wfRenderVocabRowsCompact(st, node, node.type === 'approval' ? 'option' : 'outcome')}</div>` : ''}
     </div>
     <span class="wfb-port wfb-port-in" data-node="${nameAttr}" title="Drop a connection here"><span class="wfb-port-dot"></span></span>
     ${vocabPresent ? '' : `<div class="wfb-ports-out">${portsHtml}</div>`}
@@ -2113,6 +2139,133 @@ function _wfRenderVocabRows(st, node, kind) {
     </div>`;
   })() : '';
   return `${rows}<button class="wfb-add-btn wfb-vocab-add" onclick="${addFn}('${_wfJsStrEsc(node.name)}')">+ ${kind}</button>${otherwiseRow}`;
+}
+
+// ── MC-963 box view: compact, read-only port rows for the canvas box ───────
+//
+// The full _wfRenderVocabRows above (editable label input + remove + port)
+// only ever renders inside the inspector now. The box still needs the SAME
+// ports -- "outcome ports must stay on the box so edges remain connectable"
+// (Ron) -- so this renders the identical port/plus/stub markup with the
+// label as inert text instead of an input, and no remove button. Reuses the
+// `.wfb-vocab-row`/`.wfb-otherwise-row` CSS verbatim: the port's `right:-32px`
+// offset is only ever relative to ITS OWN row's right edge (see app.css
+// comment at .wfb-vocab-row .wfb-port), so it lines up correctly under
+// `.wfb-node-body`'s matching 12px right padding without any new CSS math.
+function _wfRenderVocabRowsCompact(st, node, kind) {
+  const vocab = kind === 'outcome' ? (node.outcomes || []) : (node.options || []);
+  const edges = st.def.edges || [];
+  const nameAttr = esc(node.name || '');
+  const rows = vocab.map((label) => {
+    const connected = edges.some(e => e.from === node.name && (e.when || null) === label);
+    return `<div class="wfb-vocab-row">
+      <span class="wfb-vocab-pill wfb-vocab-pill-ro">${esc(label)}</span>
+      <button type="button" class="wfb-port-plus" title="After &ldquo;${esc(label)}&rdquo;, run&hellip;"
+        onclick="_wfPortPlusClick(event,'${_wfJsStrEsc(node.name)}','${_wfJsStrEsc(label)}')">&#43;</button>
+      <span class="wfb-port wfb-port-out" data-node="${nameAttr}" data-when="${esc(label)}" title="Drag to connect to the next step" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
+      ${connected ? '' : '<span class="wfb-port-stub"></span>'}
+    </div>`;
+  }).join('');
+  const otherwiseRow = vocab.length ? (() => {
+    const otherConnected = edges.some(e => e.from === node.name && (e.when || null) === 'otherwise');
+    return `<div class="wfb-otherwise-row">
+      <em>otherwise</em>
+      <span class="wfb-port wfb-port-out wfb-port-otherwise" data-node="${nameAttr}" data-when="otherwise" title="Drag to connect to the next step" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
+      ${otherConnected ? '' : '<span class="wfb-port-stub"></span>'}
+    </div>`;
+  })() : '';
+  return `${rows}${otherwiseRow}`;
+}
+
+// One line, first words of the prompt (agent) or the action verb / wait
+// description -- the box's ONLY hint at what a step does without opening the
+// inspector (MC-963: "type glyph or persona avatar, title, one-line summary
+// such as the first words of the prompt or the action verb label").
+function _wfNodeSummary(node) {
+  if (node.type === 'agent') {
+    const prompt = (node.prompt || '').trim().replace(/\s+/g, ' ');
+    return prompt || 'No prompt yet';
+  }
+  if (node.type === 'approval') {
+    const options = node.options || [];
+    return options.length ? `Human picks: ${options.join(', ')}` : 'Needs at least one option';
+  }
+  if (node.type === 'action') {
+    const meta = _WF_ACTION_META[node.action] || {};
+    return meta.label || node.action || 'No action picked yet';
+  }
+  if (node.type === 'wait') {
+    const cfg = node.config || {};
+    if (cfg.mode === 'until') {
+      const d = cfg.at ? new Date(cfg.at) : null;
+      return d && !isNaN(d.getTime()) ? `Wait until ${d.toLocaleString()}` : 'Needs a resume date/time';
+    }
+    const minutes = (cfg.minutes === undefined || cfg.minutes === null) ? 30 : cfg.minutes;
+    return `Wait ${minutes} minute${minutes === 1 ? '' : 's'}`;
+  }
+  return '';
+}
+
+// ── MC-963 box view: the inspector — right panel (desktop) / bottom sheet
+// (<=960px) that holds the EXISTING card editors verbatim (project, persona,
+// prompt + Insert slots, outcomes/options, gate/action/wait fields). Exactly
+// one can be open at a time; opening a different node re-syncs whatever was
+// open first (same "sync before you touch something else" discipline every
+// other structural mutator here already follows).
+function _wfOpenInspector(nodeName) {
+  const entry = _wfEntry(); if (!entry) return;
+  const renameMap = _wfSyncDomToModel(entry);
+  nodeName = renameMap[nodeName] || nodeName;
+  const st = entry._wf;
+  const node = (st.def.nodes || []).find(n => n.name === nodeName);
+  if (!node) return;
+  st.inspectorOpen = nodeName;
+  _wfRender();
+}
+window._wfOpenInspector = _wfOpenInspector;
+
+function _wfCloseInspector() {
+  const entry = _wfEntry(); if (!entry) return;
+  _wfSyncDomToModel(entry);
+  entry._wf.inspectorOpen = null;
+  _wfRender();
+}
+window._wfCloseInspector = _wfCloseInspector;
+
+// A node the inspector was pointed at can disappear out from under it (the
+// user deleted it via the "..." menu, or an undo/redo swapped the whole def)
+// -- render-time self-correction, same pattern _wfPromptForceOpen already
+// uses rather than trusting every caller to have cleared inspectorOpen itself.
+function _wfRenderInspector(st) {
+  const name = st.inspectorOpen;
+  const node = name ? (st.def.nodes || []).find(n => n.name === name) : null;
+  if (!node) {
+    if (name) st.inspectorOpen = null;
+    return `<div id="wfb-inspector" class="wfb-inspector"></div>`;
+  }
+  const person = node.type === 'agent' ? _wfPersonFromCharacter(st, node.character) : null;
+  const titleHtml = node.type === 'agent'
+    ? `${_wfAvatarHTML(person, 20)} <span>${esc(person ? (person.display || person.name) : 'No persona yet')}</span>`
+    : `<span class="wfb-node-type-icon">${_wfTypeIcon(node.type)}</span> <span>${_wfTypeLabel(node.type)}</span>`;
+  let own = '';
+  if (node.type === 'agent') own = _wfRenderAgentOwn(st, node);
+  else if (node.type === 'approval') own = _wfRenderApprovalOwn(st, node);
+  else if (node.type === 'action') own = _wfRenderActionOwn(st, node);
+  else if (node.type === 'wait') own = _wfRenderWaitOwn(st, node);
+  const runError = st.runErrors && st.runErrors[node.name];
+  const engineInfo = node.type === 'agent' ? _wfEngineResolution(st, node) : null;
+  const authWarning = (!runError && node.type === 'agent') ? _wfEngineWarning(st, node, engineInfo) : '';
+  return `<div id="wfb-inspector" class="wfb-inspector wfb-inspector-open">
+    <div class="wfb-inspector-head">
+      <span class="wfb-inspector-title">${titleHtml}</span>
+      <button type="button" class="wfb-inspector-close" title="Close" onclick="_wfCloseInspector()">&#10005;</button>
+    </div>
+    <div class="wfb-inspector-body">
+      ${runError ? `<div class="wfb-node-inline-error">${esc(runError)}</div>` : ''}
+      ${authWarning ? `<div class="wfb-node-inline-warning">${esc(authWarning)}</div>` : ''}
+      <div class="wfb-node-own" data-name="${esc(node.name || '')}">${own}</div>
+    </div>
+  </div>`;
 }
 
 // MC-871 agent-card pass (Ron: "why show [the prompt] in the first place?").
@@ -2331,8 +2484,10 @@ function _wfActionGroupChanged(selectEl) {
   const box = own.querySelector('.wfb-action-fields');
   if (box) {
     const entry = _wfEntry();
-    const nodeEl = selectEl.closest('.wfb-node');
-    const nodeName = nodeEl ? nodeEl.dataset.name : '';
+    // MC-963: `own` (the inspector's `.wfb-node-own`, resolved above) carries
+    // `data-name` itself now -- there is no ancestor `.wfb-node` box to climb
+    // to any more, since the editor lives in the inspector, not on the canvas.
+    const nodeName = own.dataset.name || '';
     const st = entry && entry._wf ? entry._wf : null;
     box.innerHTML = _wfActionFieldsHTML(newAction, {}, st, nodeName);
   }
@@ -2503,8 +2658,8 @@ function _wfRerenderActionFields(selectEl) {
   if (descEl) descEl.textContent = meta.desc || '';
   if (idEl) idEl.textContent = selectEl.value;
   const entry = _wfEntry();
-  const nodeEl = selectEl.closest('.wfb-node');
-  const nodeName = nodeEl ? nodeEl.dataset.name : '';
+  // MC-963: same as _wfActionGroupChanged above -- `own` carries the name now.
+  const nodeName = own ? (own.dataset.name || '') : '';
   const st = entry && entry._wf ? entry._wf : null;
   box.innerHTML = _wfActionFieldsHTML(selectEl.value, {}, st, nodeName);
 }
@@ -3535,13 +3690,17 @@ function _wfMakeRoot(rawName) {
 }
 
 // The prompt is the one place the author actually types (UI brief §2 — "prompt
-// focuses"), so a freshly-dropped person hands them the caret.
+// focuses"), so a freshly-dropped person hands them the caret. MC-963: the
+// prompt field lives only in the inspector now, so a fresh drop opens it
+// there rather than focusing anything on the (now read-only) canvas box.
 function _wfFocusPrompt(nodeName) {
-  const el = document.querySelector(`.wfb-node[data-name="${_wfAttrEsc(nodeName)}"] .wfb-prompt`);
+  _wfOpenInspector(nodeName);
+  const el = document.querySelector('#wfb-inspector .wfb-prompt');
   // preventScroll is load-bearing, not a nicety: the modal body is an
-  // overflow:auto scroller, so a plain focus() scrolls the freshly-dropped
-  // card into view and drags the whole canvas out from under the pointer —
-  // the card you just placed jumps, and the next drop lands somewhere else.
+  // overflow:auto scroller, so a plain focus() scrolls the freshly-opened
+  // inspector into view and drags the whole canvas out from under the
+  // pointer — the card you just placed jumps, and the next drop lands
+  // somewhere else.
   if (el) el.focus({ preventScroll: true });
 }
 
@@ -3638,6 +3797,15 @@ function _wfNodeDragUp(e) {
     // config popover. Reusing that flag here is what tells a click from a
     // drag apart, rather than adding a second gesture path.
     _wfOpenTriggerPopover(st.nodeEl.querySelector('.wfb-trigger-box-head') || st.nodeEl);
+  } else {
+    // MC-963: same click-vs-drag distinction, for a plain click on a real
+    // node's head -- opens the inspector. `.wfb-node-body`'s own onclick
+    // covers a click below the head; this covers the head itself, which is
+    // a pointerdown/drag surface a plain onclick can't safely share (a
+    // click event still fires after a completed drag in most browsers,
+    // which is exactly why the trigger tile above already uses `st.active`
+    // instead of a second listener).
+    _wfOpenInspector(st.nodeEl.dataset.name);
   }
   _wfNodeDragTeardown(st);
 }
@@ -3970,6 +4138,7 @@ function _wfNodeMenuToggle(e, name) {
   // action uses (_wfMarkDirty + _wfRender), so all three are undoable for
   // free via the Change 3 checkpoint hook -- nothing extra needed here.
   box.innerHTML = `
+    <div class="wfb-node-menu-item" onclick="_wfOpenInspector('${_wfJsStrEsc(name)}');_wfCloseNodeMenu()">Edit</div>
     <div class="wfb-node-menu-item" onclick="_wfDuplicateNode('${_wfJsStrEsc(name)}');_wfCloseNodeMenu()">Duplicate</div>
     <div class="wfb-node-menu-item" onclick="_wfDisconnectNode('${_wfJsStrEsc(name)}');_wfCloseNodeMenu()">Disconnect</div>
     <div class="wfb-node-menu-sep"></div>

@@ -51,6 +51,21 @@ TOOLS
 
 ## 3. Cards (nodes)
 
+**Superseded by MC-963 (2026-09-27).** The canvas box is now BOX VIEW ONLY —
+no inline textareas or dropdowns ever render on a card. A box shows: type
+glyph or persona avatar, title, a one-line summary (first words of the
+prompt, or the action verb label), and its ports. Clicking or
+double-clicking a box (or the `⋯` menu's `Edit` item) opens the **inspector**
+— a right-side panel on desktop, a bottom sheet at ≤960px — which holds the
+full editor for that node: project, persona, prompt with Insert slot chips,
+outcomes/otherwise/on_failure, gate options, action verb, trigger + cadence.
+Everything described below (prompt textarea, slot chips, Insert dropdown,
+OUTCOMES section, verb/field narrowing) is unchanged in substance — it now
+lives inside `#wfb-inspector .wfb-node-own`, not on the card itself. Outcome
+ports stay on the box (adding an outcome in the inspector adds the port, so
+edges stay connectable without opening it); validation errors show as a
+badge on the offending box instead of inline on the card.
+
 All cards: white surface (`--surface3`), 12px radius, 1px `--border2`, soft shadow; selected = 2px `--accent` border + accent glow. Header row: type glyph + small-caps type label, `⋯` menu at right (Rename · Duplicate · Delete). Input port: hollow accent dot on the **left edge**, vertically at the header row. All output ports on the **right edge** (see §4).
 
 **Trigger** — `⚡ TRIGGER`. Two dropdowns: type (`Manual` / `On a schedule`), and when scheduled, the schedule (existing schedules + `New schedule…`, which opens the existing schedule form with `workflow_id` prefilled, Q4). Footer link `📅 shows on Calendar`. One output port.
