@@ -31,8 +31,11 @@ $adb = Join-Path $AndroidHome 'platform-tools\adb.exe'
 $emu = Join-Path $AndroidHome 'emulator\emulator.exe'
 $serial = "emulator-$Port"
 
-# Already booted?
-$booted = (& $adb -s $serial shell getprop sys.boot_completed 2>$null)
+# Already booted? (adb prints "device not found" to stderr when it isn't up
+# yet; under $ErrorActionPreference='Stop' that redirected stderr still
+# throws as a terminating NativeCommandError, so this must be caught.)
+$booted = ''
+try { $booted = (& $adb -s $serial shell getprop sys.boot_completed 2>$null) } catch { $booted = '' }
 if (("$booted").Trim() -eq '1') { Write-Host "$serial already booted."; exit 0 }
 
 # Create AVD if missing.

@@ -141,7 +141,89 @@ async function S4_two_chats_switch(client) {
   return { name, pass, sidA, sidB, slA, slB, stA, stB, checks: { aOk, bOk } };
 }
 
-const SCENARIOS = [S1_switch_away_sse_drop, S2_background_restore, S3_happy_path, S4_two_chats_switch];
+// Read the viewport-sync numbers mobile.js's mcViewportHeightSync tracks:
+// layout viewport, visualViewport, and the --mc-app-vh CSS var it drives.
+async function readViewportMetrics(client, sid) {
+  return evalIn(client, `(() => {
+    const vv = window.visualViewport;
+    return {
+      layoutH: Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0),
+      innerHeight: window.innerHeight,
+      clientHeight: document.documentElement.clientHeight,
+      vvHeight: vv ? vv.height : null,
+      vvOffsetTop: vv ? vv.offsetTop : null,
+      appVh: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--mc-app-vh')) || null,
+      activeTag: document.activeElement ? document.activeElement.tagName : null,
+      activeId: document.activeElement ? document.activeElement.id : null,
+    };
+  })()`);
+}
+
+async function tapCenterOf(client, selectorExpr) {
+  const rect = await evalIn(client, `(() => {
+    const el = ${selectorExpr};
+    if (!el) return null;
+    el.scrollIntoView({ block: 'center' });
+    const r = el.getBoundingClientRect();
+    return { x: r.x, y: r.y, w: r.width, h: r.height, dpr: window.devicePixelRatio || 1 };
+  })()`);
+  if (!rect || !rect.w || !rect.h) return null;
+  const x = Math.round((rect.x + rect.w / 2) * rect.dpr);
+  const y = Math.round((rect.y + rect.h / 2) * rect.dpr);
+  adb.adbShell(`input tap ${x} ${y}`);
+  return { x, y, rect };
+}
+
+// S5 -- MC-988 part 2: Ron sends from an IDLE/Completed chat on a real device.
+// A CDP-evaluated `.focus()` carries no user gesture and Android WebView won't
+// raise the IME for it, so this drives REAL taps via `adb input tap` (composer,
+// then Send) and polls the real viewport numbers for 2.5s after the tap --
+// exactly what mobile.js's mcViewportHeightSync is racing to recover.
+async function S5_idle_send_viewport_recovery(client) {
+  const name = 'S5_idle_send_viewport_recovery';
+  const fastPrompt = 'Reply with exactly one word: done. Do not use any tools.';
+  const sid = await app.dispatchAgentTask(client, PROJECT, fastPrompt);
+  if (!sid) return { name, pass: false, error: 'dispatch returned no session id' };
+  const sess = await waitServerSettled(PROJECT, sid, { timeoutMs: 60000, stableMs: 6000 });
+  if (!sess) return { name, pass: false, error: 'session never settled', sid };
+
+  await sleep(1200); // let the SPA paint the completed/idle state
+  const baseline = await readViewportMetrics(client, sid);
+
+  const composerSel = `document.getElementById('agent-followup-' + ${JSON.stringify(sid)})`;
+  const focusTap = await tapCenterOf(client, composerSel);
+  if (!focusTap) return { name, pass: false, error: 'composer not found/zero-size', sid, baseline };
+  await sleep(900); // real IME show animation
+  const afterFocusTap = await readViewportMetrics(client, sid);
+
+  adb.adbShell('input text mc988probe');
+  await sleep(300);
+
+  const sendSel = `Array.from(document.querySelectorAll('.btn-send-arrow'))`
+    + `.find(b => (b.getAttribute('onclick')||'').includes(${JSON.stringify(sid)}))`;
+  const sendTap = await tapCenterOf(client, sendSel);
+  if (!sendTap) return { name, pass: false, error: 'send button not found/zero-size', sid, baseline, afterFocusTap };
+
+  const samples = [];
+  const t0 = Date.now();
+  while (Date.now() - t0 < 2500) {
+    const m = await readViewportMetrics(client, sid).catch((e) => ({ error: e.message }));
+    samples.push({ tMs: Date.now() - t0, ...m });
+    await sleep(150);
+  }
+
+  const full = baseline.layoutH;
+  const last = samples[samples.length - 1] || {};
+  const recoveredAt = samples.find((s) => typeof s.appVh === 'number' && (full - s.appVh) <= 8);
+  const staysRecovered = typeof last.appVh === 'number' && (full - last.appVh) <= 8;
+  const pass = !!recoveredAt && staysRecovered;
+  return {
+    name, pass, sid, full, baseline, afterFocusTap, samples,
+    checks: { recoveredAtMs: recoveredAt ? recoveredAt.tMs : null, staysRecovered },
+  };
+}
+
+const SCENARIOS = [S1_switch_away_sse_drop, S2_background_restore, S3_happy_path, S4_two_chats_switch, S5_idle_send_viewport_recovery];
 
 (async () => {
   const only = process.env.MC_ONLY;
