@@ -273,11 +273,18 @@ def _fence_command() -> str:
     return f'"{sys.executable}" "{fence_script_path().as_posix()}"'
 
 
+# Shared with tools/guards/install_hooks.py, which injects this SAME fence
+# hook into the per-launch --settings file every Claude launch carries (see
+# that module's EXTRA_HOOK_SHAPES) — one constant so the two injection paths
+# can never drift apart on which tools the fence actually watches.
+FENCE_MATCHER = "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit"
+
+
 def _fence_settings_content() -> dict:
     return {
         "hooks": {
             "PreToolUse": [{
-                "matcher": "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit",
+                "matcher": FENCE_MATCHER,
                 "hooks": [{"type": "command", "command": _fence_command(), "timeout": 10000}],
             }],
         },

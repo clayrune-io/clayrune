@@ -37,10 +37,20 @@ def test_generates_a_clayrune_owned_file_never_touching_real_home(tmp_path):
         data = _read(clayrune_home, vendor)
         cfg = install_hooks.VENDOR_CONFIGS[vendor]
         entries = data['hooks'][cfg['event']]
-        assert len(entries) == 1
-        assert entries[0]['matcher'] == cfg['matcher']
-        assert entries[0]['hooks'][0]['command'] == install_hooks.guard_command()
-        assert entries[0]['hooks'][0]['name'] == install_hooks.HOOK_NAME
+        # claude carries a SECOND group (the steward fence, since 2026-09-28
+        # — see EXTRA_HOOK_SHAPES) alongside the cross-vendor process-guard;
+        # gemini/qwen still carry only the guard group.
+        extra_names = {s['name'] for s in install_hooks.EXTRA_HOOK_SHAPES.get(vendor, ())}
+        assert len(entries) == 1 + len(extra_names)
+        by_name = {e['hooks'][0]['name']: e for e in entries}
+        assert set(by_name) == {install_hooks.HOOK_NAME} | extra_names
+        guard_entry = by_name[install_hooks.HOOK_NAME]
+        assert guard_entry['matcher'] == cfg['matcher']
+        assert guard_entry['hooks'][0]['command'] == install_hooks.guard_command()
+        for shape in install_hooks.EXTRA_HOOK_SHAPES.get(vendor, ()):
+            extra_entry = by_name[shape['name']]
+            assert extra_entry['matcher'] == shape['matcher']
+            assert extra_entry['hooks'][0]['command'] == install_hooks.fence_command()
 
 
 def test_second_run_is_a_no_op(tmp_path):
@@ -245,3 +255,81 @@ def test_cli_dry_run_default_never_writes(tmp_path):
     rc = install_hooks.main(['--vendor', 'qwen', '--clayrune-home', str(clayrune_home)])
     assert rc == 0
     assert not (clayrune_home / 'hooks' / 'qwen-settings.json').exists()
+
+
+# ── Fence hole in agent worktrees fix (2026-09-28, Dave) ──────────────────────
+# A dispatched Claude session's cwd is a git worktree
+# (<project>/.clayrune/agents/<sid> or Claude Code's own
+# <project>/.claude/worktrees/<sid>); steward.core.install_fence_to_project()
+# only ever wrote the fence hook into the MAIN checkout's
+# <project>/.claude/settings.json (untracked), so the fence never fired for a
+# worktree-cwd launch at all. Fix: the fence hook now rides in the SAME
+# per-launch --settings file the cross-vendor process-guard already uses,
+# which reaches every Claude launch regardless of cwd.
+def test_claude_launch_file_carries_the_fence_hook(tmp_path):
+    clayrune_home = tmp_path / '.clayrune'
+    install_hooks.generate('claude', apply=True, clayrune_home=clayrune_home)
+    data = _read(clayrune_home, 'claude')
+    entries = data['hooks']['PreToolUse']
+    by_name = {e['hooks'][0]['name']: e for e in entries}
+
+    assert install_hooks.HOOK_NAME in by_name, 'process-guard must still be present'
+    assert install_hooks.FENCE_HOOK_NAME in by_name, 'fence hook missing from claude launch file'
+
+    fence_entry = by_name[install_hooks.FENCE_HOOK_NAME]
+    assert fence_entry['matcher'] == 'Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit'
+    assert 'fence.py' in fence_entry['hooks'][0]['command']
+
+
+def test_gemini_and_qwen_launch_files_do_not_carry_the_fence_hook(tmp_path):
+    # Documents the residual, PRE-EXISTING gap (not fixed here — see the
+    # EXTRA_HOOK_SHAPES comment): steward.core.install_fence_to_project only
+    # ever targeted Claude's .claude/settings.json, so Gemini and Qwen never
+    # had a fence-hook injection path at all, worktree or not.
+    clayrune_home = tmp_path / '.clayrune'
+    for vendor, event in (('gemini', 'BeforeTool'), ('qwen', 'PreToolUse')):
+        install_hooks.generate(vendor, apply=True, clayrune_home=clayrune_home)
+        data = _read(clayrune_home, vendor)
+        names = {e['hooks'][0]['name'] for e in data['hooks'][event]}
+        assert install_hooks.FENCE_HOOK_NAME not in names
+
+
+def test_claude_fence_hook_second_run_is_a_no_op(tmp_path):
+    clayrune_home = tmp_path / '.clayrune'
+    install_hooks.generate('claude', apply=True, clayrune_home=clayrune_home)
+    path = gh.launch_file_path('claude', clayrune_home)
+    before = path.read_text(encoding='utf-8')
+
+    result = install_hooks.generate('claude', apply=True, clayrune_home=clayrune_home)
+
+    assert result['changed'] is False
+    assert path.read_text(encoding='utf-8') == before
+
+
+def test_claude_fence_hook_reinstall_with_changed_path_replaces_in_place(tmp_path, monkeypatch):
+    clayrune_home = tmp_path / '.clayrune'
+
+    install_hooks.generate('claude', apply=True, clayrune_home=clayrune_home)
+    first = _read(clayrune_home, 'claude')
+    first_fence_cmd = next(e for e in first['hooks']['PreToolUse']
+                           if e['hooks'][0]['name'] == install_hooks.FENCE_HOOK_NAME)['hooks'][0]['command']
+
+    monkeypatch.setattr(install_hooks._steward_core, 'fence_script_path',
+                         lambda: Path('other/checkout/steward/fence.py'))
+    result = install_hooks.generate('claude', apply=True, clayrune_home=clayrune_home)
+
+    assert result['changed'] is True
+    second = _read(clayrune_home, 'claude')
+    second_fence_cmd = next(e for e in second['hooks']['PreToolUse']
+                            if e['hooks'][0]['name'] == install_hooks.FENCE_HOOK_NAME)['hooks'][0]['command']
+    assert second_fence_cmd != first_fence_cmd
+    assert 'other/checkout' in second_fence_cmd.replace('\\', '/')
+
+
+def test_fence_command_matches_steward_core_project_install_command():
+    # The worktree fix and the existing project-settings install
+    # (steward.core.install_fence_to_project) must point at the IDENTICAL
+    # invocation — otherwise a worktree launch and a main-checkout launch
+    # could silently diverge on interpreter/script resolution.
+    from steward import core as steward_core
+    assert install_hooks.fence_command() == steward_core._fence_command()
