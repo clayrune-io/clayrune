@@ -230,6 +230,24 @@ def _local_auth_release(success: bool) -> None:
             rec[0] += 1
 
 
+def _local_auth_try_passcode(passcode) -> Optional[bool]:
+    """One budgeted guess: None if this IP is out of attempts, else whether
+    `passcode` is right. The only way routes should spend the shared budget:
+    admit and release are paired in try/finally, so an exception between them
+    (a malformed body, an unreadable store) counts as a failed guess instead
+    of leaking an in-flight slot. Ten leaked slots would lock that IP out of
+    every passcode route until restart."""
+    if not _local_auth_admit():
+        return None
+    ok = False
+    try:
+        ok = isinstance(passcode, str) and bool(passcode) \
+            and _local_auth_verify_passcode(passcode)
+    finally:
+        _local_auth_release(ok)
+    return ok
+
+
 def _local_auth_passcode_set_at() -> Optional[int]:
     """Unix timestamp the current passcode was last set/changed, or None if
     the store predates this field. `_local_auth_set_passcode` already writes
@@ -319,10 +337,10 @@ def local_auth_set():
         # verify-then-increment sequence itself racy under concurrency;
         # _local_auth_admit()/_local_auth_release() close that (see the
         # former's docstring).
-        if not _local_auth_admit():
+        current = body.get('current') if isinstance(body, dict) else None
+        ok = _local_auth_try_passcode(current.strip() if isinstance(current, str) else '')
+        if ok is None:
             return jsonify({'error': 'too_many_attempts'}), 429
-        ok = _local_auth_verify_passcode((body.get('current') or '').strip())
-        _local_auth_release(ok)
         if not ok:
             return jsonify({'error': 'bad_current_passcode'}), 403
     _local_auth_set_passcode(new_pass)
@@ -334,11 +352,11 @@ def local_auth_set():
 def local_auth_login():
     if not _local_auth_is_configured():
         return jsonify({'error': 'not_configured'}), 400
-    if not _local_auth_admit():
+    body = request.get_json(silent=True)
+    passcode = body.get('passcode') if isinstance(body, dict) else None
+    ok = _local_auth_try_passcode(passcode.strip() if isinstance(passcode, str) else '')
+    if ok is None:
         return jsonify({'error': 'too_many_attempts'}), 429
-    passcode = ((request.get_json(silent=True) or {}).get('passcode') or '').strip()
-    ok = _local_auth_verify_passcode(passcode)
-    _local_auth_release(ok)
     if not ok:
         return jsonify({'error': 'bad_passcode'}), 403
     return _local_auth_set_cookie(jsonify({'ok': True}))

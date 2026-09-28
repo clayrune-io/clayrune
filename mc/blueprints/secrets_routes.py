@@ -153,27 +153,23 @@ def _require_human_passcode(data: dict):
     vault-lock routes instead; merged, a wrong guess anywhere against this
     passcode counts against every route that checks it.
 
-    Reserves an admission slot via ``_local_auth_admit()`` before running
-    PBKDF2 and releases it via ``_local_auth_release()`` after (MC-994
-    re-review finding N3, review #3 — Fenn): the previous throttled-check +
-    verify + note_fail sequence held no lock across that gap, so this route
-    was one of three concurrently-reachable ways to blow past the shared
-    cap. The ``passcode_required`` early-return releases the slot as a
-    no-op success (it never attempted a guess) rather than leaking the
-    reservation or recording a spurious failure."""
-    if not local_auth._local_auth_admit():
-        return jsonify({'error': 'too_many_attempts',
-                        'message': 'too many attempts — wait a few minutes '
-                                   'and try again'}), 429
+    The guess goes through ``local_auth._local_auth_try_passcode`` (MC-994
+    re-review finding N3, review #3 — Fenn): it reserves a slot before PBKDF2
+    and always releases it, so concurrent guesses cannot overrun the shared
+    cap and a malformed body cannot leak a slot. ``passcode_required`` is
+    checked first because it spends no guess."""
     if not local_auth._local_auth_is_configured():
-        local_auth._local_auth_release(True)
         return jsonify({'error': 'passcode_required',
                         'message': 'set a local dashboard passcode in '
                                    'Settings > Connectivity > Network access '
                                    'before changing the vault lock'}), 403
-    passcode = (data.get('passcode') or '').strip()
-    ok = bool(passcode) and local_auth._local_auth_verify_passcode(passcode)
-    local_auth._local_auth_release(ok)
+    passcode = data.get('passcode') if isinstance(data, dict) else None
+    ok = local_auth._local_auth_try_passcode(
+        passcode.strip() if isinstance(passcode, str) else '')
+    if ok is None:
+        return jsonify({'error': 'too_many_attempts',
+                        'message': 'too many attempts — wait a few minutes '
+                                   'and try again'}), 429
     if not ok:
         return jsonify({'error': 'bad_passcode'}), 403
     return None

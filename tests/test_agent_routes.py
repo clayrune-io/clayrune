@@ -2581,3 +2581,40 @@ def test_claude_auth_probe_refreshes_registry_path(monkeypatch):
         ar._claude_auth_state.clear()
         ar._claude_auth_state.update(snapshot)
     assert calls[:2] == ['merge', 'resolve']
+
+
+def test_malformed_or_raising_guess_never_leaks_an_admission_slot(client, monkeypatch):
+    """A slot reserved by `_local_auth_admit` must be released even when the
+    request body is malformed or the verifier raises. Before
+    `_local_auth_try_passcode`, a JSON list body raised between admit and
+    release, and ten of those locked loopback out of every passcode route
+    until restart, the human included."""
+    from mc.blueprints import local_auth as la
+    la._LOCAL_AUTH_FAILS.clear()
+    la._LOCAL_AUTH_IN_FLIGHT.clear()
+    la._local_auth_set_passcode(ATTEND_ONCE_TEST_PASSCODE)
+    try:
+        for _ in range(3):
+            client.post('/api/local-auth/login', json=['x'])
+            client.post('/api/local-auth/set', json={'passcode': 'newpass', 'current': ['x']})
+        assert la._LOCAL_AUTH_IN_FLIGHT == {}
+
+        def boom(_p):
+            raise RuntimeError('store unreadable')
+        real = la._local_auth_verify_passcode
+        la._local_auth_verify_passcode = boom
+        try:
+            with pytest.raises(RuntimeError):
+                with client.application.test_request_context(
+                        '/', environ_base={'REMOTE_ADDR': '127.0.0.1'}):
+                    la._local_auth_try_passcode('anything')
+        finally:
+            la._local_auth_verify_passcode = real
+        assert la._LOCAL_AUTH_IN_FLIGHT == {}
+
+        la._LOCAL_AUTH_FAILS.clear()
+        r = client.post('/api/local-auth/login', json={'passcode': ATTEND_ONCE_TEST_PASSCODE})
+        assert r.status_code == 200
+    finally:
+        la._LOCAL_AUTH_FAILS.clear()
+        la._LOCAL_AUTH_IN_FLIGHT.clear()
