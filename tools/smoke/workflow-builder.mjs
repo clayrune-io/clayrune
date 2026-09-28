@@ -2733,6 +2733,203 @@ try {
   if (uncaught8.length) uncaught8.forEach((e) => fail('uncaught exception in the missing-cancel-route flow: ' + e));
   await ctx8.close();
 
+  // ── MC-963 explicit coverage (Dave's review of a34cae6): the earlier
+  // cases above exercise the box view and inspector implicitly (every case
+  // that used to type into a card now goes through openInspector/
+  // closeInspector) but never ASSERT the box-view/inspector-split behaviour
+  // itself. Five explicit checks: (1) the box carries no editable field,
+  // (2) both the head dblclick and the "..." menu's Edit open the SAME
+  // node's inspector without disturbing the canvas, (3) an inspector edit
+  // survives a real save + reopen round trip read back from the DOM, (4)
+  // the mobile inspector is a full-width bottom sheet that opens/closes on
+  // touch, (5) a validation error shows as a badge on the offending box. ──
+  const ctx9 = await browser.newContext({ viewport: { width: 1280, height: 900 }, hasTouch: true });
+  const page9 = await ctx9.newPage();
+  const page9Errors = [];
+  page9.on('pageerror', (e) => page9Errors.push(e.message || String(e)));
+  page9.on('dialog', (d) => d.accept());
+  let savedWorkflows9 = [];
+  await page9.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
+    if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedWorkflows9) });
+    if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    if (path === '/api/workflows' && req.method() === 'POST') {
+      const body = JSON.parse(req.postData() || '{}');
+      const saved = { ...body, id: 'wf-smoke9', format: 2, created: '2026-09-27T00:00:00Z', updated: '2026-09-27T00:00:00Z' };
+      savedWorkflows9 = [saved];
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, workflow: saved }) });
+    }
+    if (path === '/api/workflows/wf-smoke9' && req.method() === 'PUT') {
+      const body = JSON.parse(req.postData() || '{}');
+      const saved = { ...body, id: 'wf-smoke9', format: 2 };
+      savedWorkflows9 = [saved];
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, workflow: saved }) });
+    }
+    if (path === '/api/workflows/wf-smoke9/runs') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === '/api/workflows/wf-smoke9/run' && req.method() === 'POST') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: false, error: 'blocked' }) });
+    if (path.startsWith('/api/schedules')) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    return route.abort();
+  });
+  await page9.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page9.waitForSelector('#projects-col .card', { timeout: 15000 });
+  await newWorkflow(page9, PID);
+
+  const vpBox9 = await (await page9.$('#wfb-canvas-viewport')).boundingBox();
+  await dragPalettePersonTo(page9, 'Tobin', vpBox9.x + 150, vpBox9.y + 150);
+  const nodeName9 = await page9.$eval('.wfb-node', el => el.dataset.name);
+  // The drop auto-opens the inspector (_wfFocusPrompt) -- close it so check 1
+  // inspects the box in its normal, closed resting state.
+  await page9.waitForSelector('#wfb-inspector.wfb-inspector-open', { timeout: 5000 });
+  await closeInspector(page9);
+
+  // 1) Compact box: no textarea/select/input anywhere on the canvas node,
+  // and it shows a non-empty title plus a non-empty one-line summary.
+  const box9 = await page9.$eval(`.wfb-node[data-name="${nodeName9}"]`, el => ({
+    fieldCount: el.querySelectorAll('textarea, select, input').length,
+    title: (el.querySelector('.wfb-node-title') || {}).textContent || '',
+    summary: (el.querySelector('.wfb-node-summary') || {}).textContent || '',
+  }));
+  (box9.fieldCount === 0 && box9.title.trim().length > 0 && box9.summary.trim().length > 0)
+    ? ok(`the canvas box carries no editable field (0 textarea/select/input) and shows a title ("${box9.title.trim()}") + summary ("${box9.summary.trim()}")`)
+    : fail(`expected 0 fields plus non-empty title/summary on the box, got ${JSON.stringify(box9)}`);
+
+  // 2) Inspector: both the head dblclick AND the "..." menu's Edit open the
+  // SAME node's inspector, and closing it leaves the canvas unchanged.
+  const nodeCountBefore9 = await page9.$$eval('.wfb-node', els => els.length);
+  await page9.dblclick(`.wfb-node[data-name="${nodeName9}"] .wfb-node-head`);
+  await page9.waitForSelector('#wfb-inspector.wfb-inspector-open', { timeout: 5000 });
+  const inspectorNameDbl9 = await page9.$eval('#wfb-inspector .wfb-node-own', el => el.dataset.name);
+  await closeInspector(page9);
+  const nodeCountAfterDbl9 = await page9.$$eval('.wfb-node', els => els.length);
+  (inspectorNameDbl9 === nodeName9 && nodeCountAfterDbl9 === nodeCountBefore9)
+    ? ok(`double-clicking the box head opened the inspector for "${nodeName9}" and closing it left the canvas at ${nodeCountAfterDbl9} node(s), unchanged`)
+    : fail(`expected the dblclick to open ${nodeName9}'s inspector and leave ${nodeCountBefore9} node(s), got inspector-for="${inspectorNameDbl9}" count=${nodeCountAfterDbl9}`);
+
+  await page9.click(`.wfb-node[data-name="${nodeName9}"] .wfb-node-menu-btn`);
+  await page9.waitForSelector('#wfb-node-menu', { timeout: 3000 });
+  await clickMenuItem(page9, 'Edit');
+  await page9.waitForSelector('#wfb-inspector.wfb-inspector-open', { timeout: 5000 });
+  const inspectorNameMenu9 = await page9.$eval('#wfb-inspector .wfb-node-own', el => el.dataset.name);
+  await closeInspector(page9);
+  const nodeCountAfterMenu9 = await page9.$$eval('.wfb-node', els => els.length);
+  (inspectorNameMenu9 === nodeName9 && nodeCountAfterMenu9 === nodeCountBefore9)
+    ? ok(`the "..." menu's Edit opened the inspector for "${nodeName9}" too, and closing it left the canvas unchanged (${nodeCountAfterMenu9} node(s))`)
+    : fail(`expected the menu's Edit to open ${nodeName9}'s inspector and leave ${nodeCountBefore9} node(s), got inspector-for="${inspectorNameMenu9}" count=${nodeCountAfterMenu9}`);
+
+  // 3) Persist: a prompt edit made in the inspector survives a real save +
+  // reopen round trip -- read back from the reopened inspector's DOM, not
+  // the in-memory model (a stale render could show the right JS state on
+  // top of the wrong DOM).
+  await openInspector(page9, nodeName9);
+  await setValue(page9, '#wfb-inspector .wfb-prompt', 'Persisted prompt text, MC-963 check 3.');
+  await closeInspector(page9);
+  await setValue(page9, '#wfb-name', 'MC-963 check 3');
+  await page9.evaluate(() => window._wfSave());
+  await page9.waitForTimeout(200);
+  (savedWorkflows9.length === 1)
+    ? ok('the workflow POSTed to the server on Save (check 3 setup)')
+    : fail(`expected exactly 1 saved workflow after Save, got ${savedWorkflows9.length}`);
+  await page9.evaluate(({ id, pid }) => { window.openWorkflowBuilder(id, pid); }, { id: 'wf-smoke9', pid: PID });
+  await page9.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
+  const reopenedNodeName9 = await page9.$eval('.wfb-node', el => el.dataset.name);
+  await openInspector(page9, reopenedNodeName9);
+  // A non-empty, valid prompt reopens COLLAPSED by default (st.promptOpen is
+  // per-session, fresh on this reload) -- open it if needed before reading.
+  if (!(await page9.$('#wfb-inspector .wfb-prompt'))) {
+    await page9.click('#wfb-inspector .wfb-prompt-toggle');
+    await page9.waitForSelector('#wfb-inspector .wfb-prompt', { timeout: 3000 });
+  }
+  const reopenedPrompt9 = await page9.$eval('#wfb-inspector .wfb-prompt', el => el.value);
+  reopenedPrompt9 === 'Persisted prompt text, MC-963 check 3.'
+    ? ok('the prompt edit survived a save + reopen round trip, read back from the reopened inspector\'s DOM')
+    : fail(`expected the reopened inspector's prompt to read "Persisted prompt text, MC-963 check 3.", got "${reopenedPrompt9}"`);
+  await closeInspector(page9);
+
+  // 4) Validation badge: a node with a validation error shows
+  // .wfb-node-validation-badge on its box (Run-now populates st.runErrors
+  // via the same client-side validator Save's whole-form guard reuses).
+  await openInspector(page9, reopenedNodeName9);
+  await setValue(page9, '#wfb-inspector .wfb-prompt', '');
+  await closeInspector(page9);
+  await page9.evaluate(() => window._wfRunNow());
+  await page9.waitForTimeout(150);
+  const badge9 = await page9.$eval(`.wfb-node[data-name="${reopenedNodeName9}"]`, el => ({
+    hasBadge: !!el.querySelector('.wfb-node-validation-badge'),
+    title: (el.querySelector('.wfb-node-validation-badge') || {}).title || null,
+  })).catch(() => ({ hasBadge: false, title: null }));
+  (badge9.hasBadge && /prompt/i.test(badge9.title || ''))
+    ? ok(`an empty prompt (a validation error) shows .wfb-node-validation-badge on the box, title="${badge9.title}"`)
+    : fail(`expected .wfb-node-validation-badge naming the missing prompt on the box, got ${JSON.stringify(badge9)}`);
+
+  const uncaught9 = page9Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught9.length) uncaught9.forEach((e) => fail('uncaught exception in the MC-963 explicit-coverage flow: ' + e));
+  await ctx9.close();
+
+  // 5) Mobile: at <=960px the inspector renders as a full-width bottom
+  // sheet, and it can be opened and closed by touch. A FRESH mobile context
+  // (same pattern as `mctx` above), not a mid-session viewport resize of the
+  // desktop context above -- the workflow builder lives inside a
+  // `.modal-window` positioned by `centerModalElement` with inline
+  // left/top computed against the viewport size AT OPEN TIME, so resizing
+  // an already-open desktop modal leaves it stranded at its old desktop
+  // position/size instead of exercising the real mobile-open layout.
+  const ctx9m = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const page9m = await ctx9m.newPage();
+  const page9mErrors = [];
+  page9m.on('pageerror', (e) => page9mErrors.push(e.message || String(e)));
+  await page9m.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
+    if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedWorkflows9) });
+    if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    if (path === '/api/workflows/wf-smoke9/runs') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path.startsWith('/api/schedules')) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    return route.abort();
+  });
+  await page9m.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page9m.waitForSelector('#projects-col .card, .mc-chat-row', { timeout: 15000 });
+  await openWorkflowsTab(page9m, PID);
+  await page9m.evaluate(({ id, pid }) => { window.openWorkflowBuilder(id, pid); }, { id: 'wf-smoke9', pid: PID });
+  await page9m.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
+  const mobileNodeName9 = await page9m.$eval('.wfb-node', el => el.dataset.name);
+
+  await page9m.tap(`.wfb-node[data-name="${mobileNodeName9}"] .wfb-node-body`);
+  await page9m.waitForSelector('#wfb-inspector.wfb-inspector-open', { timeout: 5000 });
+  const sheetBox9 = await page9m.$eval('#wfb-inspector', el => el.getBoundingClientRect().toJSON());
+  const viewport9m = page9m.viewportSize();
+  const looksLikeSheet9 = Math.abs(sheetBox9.right - viewport9m.width) < 2 && Math.abs(sheetBox9.left) < 2
+    && Math.abs(sheetBox9.bottom - viewport9m.height) < 2 && sheetBox9.width >= viewport9m.width - 2;
+  looksLikeSheet9
+    ? ok(`at 390px the inspector renders as a full-width, bottom-anchored sheet (rect ${JSON.stringify(sheetBox9)}, viewport ${viewport9m.width}x${viewport9m.height})`)
+    : fail(`expected a full-width bottom-anchored inspector at 390px, got rect ${JSON.stringify(sheetBox9)} viewport ${JSON.stringify(viewport9m)}`);
+  await page9m.tap('.wfb-inspector-close');
+  await page9m.waitForTimeout(120);
+  const inspectorOpenAfterTap9 = await page9m.$('#wfb-inspector.wfb-inspector-open');
+  inspectorOpenAfterTap9 === null
+    ? ok('tapping the inspector\'s close control closes the mobile bottom sheet')
+    : fail('the inspector bottom sheet is still open after tapping its close control');
+
+  const uncaught9m = page9mErrors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught9m.length) uncaught9m.forEach((e) => fail('uncaught exception in the MC-963 mobile-inspector flow: ' + e));
+  await ctx9m.close();
+
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
     ? '\n✅ PASS — the palette IS the Bench (real avatars, initial only where a face is genuinely absent, unrenderable values never echoed), drag-a-person-to-place with its persona preset, the port + popover and drop-onto-card auto-place-and-wire, port-to-port connect, a refused cycle, a refused slot break, an unconnected-port stop stub, mobile bottom-sheet layout, touch-action scroll-lock guard, save (format 2), and the schedule-trigger cadence form all behave correctly.'
