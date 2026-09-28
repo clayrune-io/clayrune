@@ -91,5 +91,7 @@ Out of scope: calculating a vendor's private billing formula; proving which exte
 
 ## Decisions for Ron
 
+**APPROVED by Ron 2026-09-28: both as recommended (90-day retention; estimated shares only after the calibration gate, with an always-visible unattributed bucket).**
+
 1. **Recommended: use a 90-day local retention window** for raw samples and durable session facts. Alternative: shorter retention lowers disk use but removes completed-window comparison sooner.
 2. **Recommended: show estimated percentage shares only after the calibration gate above, with an always-visible unattributed bucket.** Alternative: keep percentages vendor-wide only and show rankings in tokens/LOC until an external-use signal exists.
