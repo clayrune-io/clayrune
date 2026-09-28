@@ -1,6 +1,6 @@
 # MC-990: Brainstorm handoff from Claydo to a project
 
-**Status:** Proposal for Ron. This extends [MC-957](BRAINSTORM_MODE_SPEC.md); its conversation, research, SWOT, and Exploration brief contract remain binding. No implementation is authorized by this document.
+**Status:** APPROVED by Ron 2026-09-28: all five decisions accepted as recommended. This extends [MC-957](BRAINSTORM_MODE_SPEC.md); its conversation, research, SWOT, and Exploration brief contract remain binding. 
 
 ## Problem and user
 
@@ -50,7 +50,7 @@ Out of scope: running Brainstorm inside Claydo's guide stream; automatic project
 6. Duplicate clicks return the same result. A failed validation or mid-transfer error cannot leave an unreported partial result. A revised brief creates a distinct version and does not silently overwrite an earlier transfer.
 7. After either handoff, the source transcript remains reopenable and linked from the destination; an existing project's description and unrelated conversations remain intact.
 
-## Decisions for Ron
+## Decisions (accepted as recommended by Ron, 2026-09-28)
 
 1. **Projectless home:** A reserved Ideas workspace (**recommend**) or a user project created before exploration. The first preserves the user-project creation gate.
 2. **Claydo entry:** An always-visible chip plus a context offer (**recommend**) or a context offer alone. The chip makes the path discoverable without requiring precise phrasing.
