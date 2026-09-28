@@ -1188,6 +1188,58 @@ def test_draft_workflow_repairs_after_validator_error(wf, monkeypatch):
     assert result['errors'] == []
 
 
+_BRANCH_DRAFT_JSON = json.dumps({
+    'format': 2, 'name': 'Backlog triage with branch', 'description': 'Triage then branch.',
+    'trigger': {'type': 'manual'}, 'enabled': True,
+    # The model is never trusted for position -- these three all share the
+    # same explicit (0, 0) the way an under-specified model completion
+    # regularly does -- and it names no `trigger.entry` at all (nothing in
+    # `_NODE_VOCAB_DOC` tells it to). MC-962 follow-up (Dave, Ron's second
+    # screenshot): unfixed, a draft shaped exactly like this rendered all
+    # three cards stacked and left the trigger unwired to "triage".
+    'nodes': [
+        {'name': 'triage', 'type': 'agent', 'project_id': 'p1', 'prompt': 'look for new items', 'x': 0, 'y': 0},
+        {'name': 'items_found', 'type': 'action', 'action': 'backlog_add', 'config': {}, 'x': 0, 'y': 0},
+        {'name': 'no_new_items', 'type': 'wait', 'config': {}, 'x': 0, 'y': 0},
+    ],
+    'edges': [
+        {'from': 'triage', 'to': 'items_found', 'when': 'items_found'},
+        {'from': 'triage', 'to': 'no_new_items', 'when': 'otherwise'},
+    ],
+})
+
+
+def test_draft_workflow_branch_lays_out_without_overlap_and_wires_trigger(wf, monkeypatch):
+    """MC-962 follow-up (Dave, Ron's screenshot 2): a multi-step branch draft
+    must not (a) stack two nodes on the same box, or (b) leave the trigger
+    with no edge into the entry step. Bounding boxes use the same card W/H
+    the client renders (WFB_TOOL_SPOT_CARD_W/H in workflow-builder.js) so
+    this catches real visual overlap, not just identical (x, y) pairs."""
+    CARD_W, CARD_H = 260, 140
+    rec = _ToollessRecorder(_BRANCH_DRAFT_JSON)
+    monkeypatch.setattr(wf.m, '_run_toolless', rec)
+    result = wf.m.draft_workflow('triage new items and branch on whether any were found', 'p1')
+    assert result['ok'] is True
+    definition = result['definition']
+    nodes = definition['nodes']
+    assert len(nodes) == 3
+
+    def _box(n):
+        return (n['x'], n['y'], n['x'] + CARD_W, n['y'] + CARD_H)
+
+    def _overlaps(a, b):
+        return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+
+    boxes = [_box(n) for n in nodes]
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            assert not _overlaps(boxes[i], boxes[j]), \
+                f"{nodes[i]['name']} overlaps {nodes[j]['name']}: {boxes[i]} vs {boxes[j]}"
+
+    # The trigger must be wired to the entry step -- not left an unwired root.
+    assert definition['trigger']['entry'] == ['triage']
+
+
 def test_draft_workflow_unparseable_output_returns_ok_false(wf, monkeypatch):
     rec = _ToollessRecorder('Sure, here is a workflow for you: no JSON at all here.')
     monkeypatch.setattr(wf.m, '_run_toolless', rec)

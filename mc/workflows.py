@@ -604,8 +604,17 @@ _DRAFT_NODE_FIELDS = {
     'action': {'action', 'config'},
     'wait': {'config'},
 }
-_DRAFT_NODE_COMMON_FIELDS = {'name', 'type', 'x', 'y'}
+_DRAFT_NODE_COMMON_FIELDS = {'name', 'type'}
 _DRAFT_EDGE_FIELDS = {'from', 'to', 'when'}
+# Mirrors static/js/workflow-builder.js's own WFB_TOOL_SPOT_CARD_W/H/GAP (a
+# card is 260px wide; 140/32 are that file's own guessed-height/gap constants
+# for a fresh card before its real DOM height is known) -- not measured here
+# (no DOM to measure), but the same order of magnitude, so a drafted layout
+# looks like the rest of the canvas rather than a different grid.
+_DRAFT_LAYOUT_COL_W = 260 + 32
+_DRAFT_LAYOUT_ROW_H = 140 + 32
+_DRAFT_LAYOUT_ORIGIN_X = 60
+_DRAFT_LAYOUT_ORIGIN_Y = 80
 
 _NODE_VOCAB_DOC = f"""WORKFLOW DEFINITION FORMAT (format: 2) -- the only shape you may output:
 
@@ -765,6 +774,67 @@ def _shape_errors(data: Any) -> list:
     return errors
 
 
+def _draft_auto_layout(nodes: list, edges: list) -> list:
+    """Assign non-overlapping x/y to every drafted node, in place, and return
+    the root names (no incoming edge) for the caller to wire as
+    `trigger.entry`. The model is never trusted for placement -- MC-962
+    follow-up (Ron's screenshot): two drafted nodes landed at the same spot
+    and rendered stacked, one hiding the other's ports.
+
+    Layered by graph depth (longest path from a root, so a node with several
+    parents sits after ALL of them, never beside one) -- column = depth,
+    row = position within that depth, in the model's own node order for a
+    deterministic result. A cycle should already be refused by
+    `validate_workflow` after this runs, but this pass runs BEFORE that check
+    (`draft_workflow`'s retry loop calls this, then validates), so it must
+    terminate and produce SOME layout even if the model handed back a loop:
+    any node whose depth can't be resolved in a fixed number of relaxation
+    passes (bounded by node count) is dropped to the deepest resolved column
+    + 1, same as a node discovered after that point."""
+    names = [n.get('name') for n in nodes if isinstance(n.get('name'), str)]
+    name_set = set(names)
+    valid_edges = [e for e in edges if e.get('from') in name_set and e.get('to') in name_set]
+    parents: dict = {n: [] for n in names}
+    for e in valid_edges:
+        parents[e['to']].append(e['from'])
+    has_incoming = {e['to'] for e in valid_edges}
+    roots = [n for n in names if n not in has_incoming]
+    if not roots and names:
+        roots = [names[0]]  # every node has a parent -- an all-cycle draft; anchor somewhere
+
+    depth: dict = {n: 0 for n in roots}
+    for _ in range(len(names) + 1):
+        changed = False
+        for n in names:
+            if n in roots:
+                continue
+            ps = [depth[p] for p in parents.get(n, []) if p in depth]
+            if not ps:
+                continue
+            want = max(ps) + 1
+            if depth.get(n) != want:
+                depth[n] = want
+                changed = True
+        if not changed:
+            break
+    unresolved = [n for n in names if n not in depth]
+    if unresolved:
+        floor = (max(depth.values()) + 1) if depth else 0
+        for n in unresolved:
+            depth[n] = floor
+
+    rows_used: dict = {}
+    by_name = {n.get('name'): n for n in nodes if isinstance(n.get('name'), str)}
+    for n in names:
+        d = depth[n]
+        row = rows_used.get(d, 0)
+        rows_used[d] = row + 1
+        node = by_name[n]
+        node['x'] = _DRAFT_LAYOUT_ORIGIN_X + d * _DRAFT_LAYOUT_COL_W
+        node['y'] = _DRAFT_LAYOUT_ORIGIN_Y + row * _DRAFT_LAYOUT_ROW_H
+    return roots
+
+
 def _normalize_draft_doc(data: dict, *, default_project_id: str) -> dict:
     """Rebuild a clean doc from only recognised keys -- the model's raw JSON
     is untrusted, so this is an allowlist copy, not a filter. `format` and
@@ -800,6 +870,13 @@ def _normalize_draft_doc(data: dict, *, default_project_id: str) -> dict:
             continue
         edges_out.append({k: edge.get(k) for k in _DRAFT_EDGE_FIELDS if k in edge})
     out['edges'] = edges_out
+    # Auto-layout (never the model's own x/y -- see _draft_auto_layout) plus
+    # trigger.entry = the resulting roots, so the canvas draws a real
+    # trigger -> first-step line instead of leaving it an unwired root with
+    # just a warning badge (static/js/workflow-builder.js _wfRedrawEdges only
+    # draws that implied line for names in trigger.entry).
+    roots = _draft_auto_layout(nodes_out, edges_out)
+    out['trigger']['entry'] = roots
     return out
 
 

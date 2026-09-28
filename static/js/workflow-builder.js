@@ -1711,13 +1711,15 @@ function _wfRenderBody(st) {
     <div id="wfb-live-run-slot">${_wfRenderLiveRun(st)}</div>
     <div class="wfb-builder">
       <div class="wfb-palette" id="wfb-palette">${_wfRenderPalette(st)}</div>
-      <div id="wfb-canvas-viewport" class="wfb-canvas-viewport" onpointerdown="_wfViewportDown(event)">
-        <svg id="wfb-canvas-svg" class="wfb-canvas-svg"></svg>
-        <div id="wfb-world" class="wfb-canvas-world">${_wfRenderTriggerBox(st)}${nodesHtml}</div>
+      <div class="wfb-canvas-col">
         ${nodes.length ? '' : `<div class="wfb-canvas-empty">
           ${_wfRenderDescribeBox(st)}
           <div class="wfb-canvas-empty-hint">drop anyone anywhere &middot; drag the blue dot onto another card to connect them &middot; + on a port adds &amp; wires the next step</div>
         </div>`}
+        <div id="wfb-canvas-viewport" class="wfb-canvas-viewport" onpointerdown="_wfViewportDown(event)">
+          <svg id="wfb-canvas-svg" class="wfb-canvas-svg"></svg>
+          <div id="wfb-world" class="wfb-canvas-world">${_wfRenderTriggerBox(st)}${nodesHtml}</div>
+        </div>
       </div>
       ${_wfRenderInspector(st)}
     </div>
@@ -4454,7 +4456,7 @@ function _wfRenderDescribeBox(st) {
       placeholder="e.g. every morning, triage new backlog items and draft a summary"
       ${st.drafting ? 'disabled' : ''}>${esc(st.draftDescription || '')}</textarea>
     <div class="wfb-describe-row">
-      <button type="button" class="btn-sched-save" onclick="_wfDraftFromDescription()" ${st.drafting ? 'disabled' : ''}
+      <button type="button" class="btn-add" onclick="_wfDraftFromDescription()" ${st.drafting ? 'disabled' : ''}
         >${st.drafting ? 'Drafting…' : 'Describe it'}</button>
       ${st.draftError ? `<span class="wfb-describe-error">${esc(st.draftError)}</span>` : ''}
     </div>

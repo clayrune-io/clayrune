@@ -9322,11 +9322,23 @@
     border-radius: 6px; box-shadow: 0 3px 10px rgba(0,0,0,0.25); white-space: nowrap;
   }
 
+  /* MC-962 regression fix: `.wfb-canvas-empty` used to be absolutely
+     positioned INSIDE `.wfb-canvas-viewport` at top:16/left:16 — the exact
+     spot `_wfTriggerDefaultPos` spawns a brand-new trigger card (40,40), so
+     the describe box sat directly on top of it (Ron's screenshot: the
+     trigger's port dot poking out from underneath). Now the empty-state bar
+     is a normal-flow sibling ABOVE the viewport instead of an overlay ON it,
+     so it can never overlap a canvas node regardless of trigger/node
+     position, zoom or pan. `.wfb-canvas-col` carries the flex role
+     `.wfb-canvas-viewport` used to own directly on `.wfb-builder`. */
+  .wfb-canvas-col {
+    display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 360px;
+  }
   .wfb-canvas-viewport {
-    /* Change 1 amendment: no fixed height — fills .wfb-builder (itself now
+    /* Change 1 amendment: no fixed height — fills .wfb-canvas-col (itself now
        flex:1 down to a 360px floor). Mobile (~8730 below) overrides back to
        an explicit height, unchanged. */
-    position: relative; flex: 1; min-width: 0; min-height: 360px; height: auto; overflow: hidden;
+    position: relative; flex: 1; min-width: 0; min-height: 0; height: auto; overflow: hidden;
     background-color: var(--bg); background-image: radial-gradient(var(--border) 1px, transparent 1px);
     background-size: 22px 22px; touch-action: none; cursor: grab;
     user-select: none; /* Change 8 — a pan/drag starting here must never select card text */
@@ -9335,14 +9347,11 @@
   .wfb-canvas-viewport.wfb-drop-target { outline: 2px dashed var(--accent); outline-offset: -2px; }
   .wfb-canvas-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
   .wfb-canvas-empty {
-    position: absolute; top: 16px; left: 16px; right: 16px; max-width: 420px;
-    font-size: 12px; color: var(--text-faint); pointer-events: none;
+    flex-shrink: 0; max-width: 420px; margin: 0 0 8px; font-size: 12px; color: var(--text-faint);
   }
   .wfb-canvas-empty-hint { font-style: italic; margin-top: 10px; }
-  /* MC-962 "Describe it": the one interactive element inside the otherwise
-     pointer-events:none empty-canvas hint above, so it needs its own opt-in. */
   .wfb-describe-box {
-    pointer-events: auto; background: var(--surface); border: 1px solid var(--border);
+    background: var(--surface); border: 1px solid var(--border);
     border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
   }
   .wfb-describe-title { font-size: 12px; font-weight: 700; color: var(--text); font-style: normal; }
@@ -9975,8 +9984,13 @@
        instead. With no free space to grow into (the un-sized flex container
        has nothing to distribute), the viewport collapsed to 0 height until
        `flex: none` let the explicit `height` win as the item's own size
-       again. Caught by the canvas smoke's mobile-viewport case. */
-    .wfb-canvas-viewport { flex: none; height: 58vh; }
+       again. Caught by the canvas smoke's mobile-viewport case. MC-962: this
+       now targets `.wfb-canvas-col` (the flex item `.wfb-builder` actually
+       sizes) instead of `.wfb-canvas-viewport` directly, since the describe
+       bar is a flow sibling above the viewport inside that column — the
+       viewport itself stays `flex: 1` there so it fills whatever the
+       describe bar (when present) leaves of the 58vh. */
+    .wfb-canvas-col { flex: none; height: 58vh; }
     /* Mobile keeps its OWN bounded, scrolling treatment rather than
        inheriting the desktop flex-fill (Change 1 amendment's explicit
        instruction) — opts back out of `flex:1;display:flex` (app.css

@@ -234,6 +234,29 @@ async function emptyCanvasPoint(page) {
   return pt;
 }
 
+// A safe drop point for the very FIRST node on a brand-new canvas. Unlike
+// `emptyCanvasPoint` (which hunts near the viewport's corners -- fine once
+// the viewport is its full, tall self with existing cards to dodge), MC-962's
+// empty-canvas describe box now sits in normal flow ABOVE the viewport and
+// shortens it considerably. A corner point there can leave most of a freshly
+// dropped card clipped past the visible edge by `.wfb-canvas-viewport`'s own
+// `overflow:hidden` -- including its OUTPUT port, which a later port-drag
+// test needs to actually grab. This instead picks a point with margin on
+// every side for the full card, centered under `_wfPlaceNodeAt`'s own math
+// (`x - 130, y - 24`ish for a ~260x140 card), and clear of the trigger box
+// (top-left, ~260x140) horizontally so vertical overlap with it never
+// matters.
+async function firstDropPoint(page) {
+  return page.evaluate(() => {
+    const vp = document.getElementById('wfb-canvas-viewport');
+    const r = vp.getBoundingClientRect();
+    const x = Math.min(r.left + 500, r.right - 140);
+    const yMin = r.top + 30, yMax = Math.max(yMin, r.bottom - 120);
+    const y = Math.min(Math.max(r.top + r.height / 2, yMin), yMax);
+    return { x, y };
+  });
+}
+
 async function portCenter(page, selector) {
   const el = await page.$(selector);
   if (!el) return null;
@@ -487,7 +510,13 @@ try {
 
   // ── Drag a palette block onto the canvas ─────────────────────────────────
   const vpBox = await (await page.$('#wfb-canvas-viewport')).boundingBox();
-  await dragPalettePersonTo(page, 'Tobin', vpBox.x + 140, vpBox.y + 240);
+  // MC-962: the describe box is now a normal-flow sibling ABOVE the
+  // viewport (no longer an overlay ON it), so on a brand-new empty canvas
+  // the viewport itself is shorter than it used to be -- a fixed
+  // vpBox.y+240 offset can now land past its bottom edge, in
+  // `.wfb-modal-body` beyond it. `firstDropPoint` picks a point that leaves
+  // room for the whole card (port included) inside the shrunk viewport.
+  await dragPalettePersonTo(page, 'Tobin', () => firstDropPoint(page));
   let nodeCount = await page.$$eval('.wfb-node', els => els.length);
   nodeCount === 1 ? ok('dragging a PERSON from the palette placed one agent step on the canvas')
                   : fail(`expected 1 node after the palette drag, got ${nodeCount}`);
@@ -1503,6 +1532,27 @@ try {
     ? ok(`at a phone width, the palette lays out as a bottom sheet (builder: ${paletteFlow.builderDir}, palette row: ${paletteFlow.paletteDir})`)
     : fail(`expected the palette to become a horizontal bottom sheet at 390px, got ${JSON.stringify(paletteFlow)}`);
 
+  // MC-962 regression, mobile width: same overlap check as the desktop case
+  // (ctx10 below) but at 390px, where the empty-canvas describe box and the
+  // default-positioned trigger card are even more likely to collide since
+  // both hug the same top-left corner. Must run before the touch-drag below
+  // places a node -- that removes the describe box (nodes.length > 0).
+  const mOverlap = await mpage.evaluate(() => {
+    const rectOf = (sel) => { const el = document.querySelector(sel); return el ? el.getBoundingClientRect() : null; };
+    const d = rectOf('.wfb-describe-box'), t = rectOf('.wfb-trigger-box');
+    if (!d || !t) return { d, t, intersects: null };
+    const intersects = d.left < t.right && d.right > t.left && d.top < t.bottom && d.bottom > t.top;
+    return { d: { left: d.left, top: d.top, right: d.right, bottom: d.bottom },
+             t: { left: t.left, top: t.top, right: t.right, bottom: t.bottom }, intersects };
+  });
+  mOverlap.intersects === false
+    ? ok(`the describe box does not overlap the trigger card at 390px (describe=${JSON.stringify(mOverlap.d)}, trigger=${JSON.stringify(mOverlap.t)})`)
+    : fail(`the describe box overlaps the trigger card at 390px: ${JSON.stringify(mOverlap)}`);
+  const mDescribeBtnClass = await mpage.$eval('.wfb-describe-row button', (el) => el.className);
+  /\bbtn-add\b/.test(mDescribeBtnClass)
+    ? ok(`the "Describe it" button carries the app's real button class at 390px too (${mDescribeBtnClass})`)
+    : fail(`expected the "Describe it" button to carry btn-add at 390px, got class="${mDescribeBtnClass}"`);
+
   // Defect 13 (Ron, phone: "unable to drag agent onto the canvas") -- a REAL
   // touch gesture via CDP Input.dispatchTouchEvent, not a mouse-emulated
   // drag: touchstart, hold past the 400ms long-press with no movement, THEN
@@ -1713,7 +1763,9 @@ try {
   await page2.waitForSelector('#projects-col .card', { timeout: 15000 });
   await newWorkflow(page2, PID);
   const vpBox2 = await (await page2.$('#wfb-canvas-viewport')).boundingBox();
-  await dragPalettePersonTo(page2, 'Tobin', vpBox2.x + 140, vpBox2.y + 240);
+  // MC-962: see the same fix + comment at the first drag above -- the
+  // describe box now shortens the empty-canvas viewport.
+  await dragPalettePersonTo(page2, 'Tobin', () => firstDropPoint(page2));
   // MC-963: the drop auto-opens the inspector (_wfFocusPrompt) -- it's
   // already open on this node, so address its fields there directly.
   await setValue(page2, '#wfb-inspector .wfb-name', 'harvest-triage');
@@ -1945,7 +1997,9 @@ try {
 
   await setValue(page3, '#wfb-name', 'Cadence smoke workflow');
   const vpBox3 = await (await page3.$('#wfb-canvas-viewport')).boundingBox();
-  await dragPalettePersonTo(page3, 'Tobin', vpBox3.x + 140, vpBox3.y + 240);
+  // MC-962: see the same fix + comment at the first drag above -- the
+  // describe box now shortens the empty-canvas viewport.
+  await dragPalettePersonTo(page3, 'Tobin', () => firstDropPoint(page3));
   // MC-963: the drop auto-opens the inspector (_wfFocusPrompt) -- it's
   // already open here, but address fields under it explicitly rather than
   // rely on that side effect.
@@ -2999,8 +3053,36 @@ try {
     ? ok('a brand-new workflow shows the "Describe what you need" box on the empty canvas')
     : fail('expected .wfb-describe-box on a brand-new, empty-canvas workflow');
 
+  // MC-962 regression: the describe box used to be absolutely positioned
+  // INSIDE the canvas at the exact spot a brand-new trigger card spawns
+  // (40,40), so it rendered on top of the trigger — Ron's screenshot showed
+  // the trigger's port dot poking out from underneath it. Bounding-box
+  // intersection is the direct check for that, not just presence of both.
+  const overlap10 = await page10.evaluate(() => {
+    const rectOf = (sel) => { const el = document.querySelector(sel); return el ? el.getBoundingClientRect() : null; };
+    const d = rectOf('.wfb-describe-box'), t = rectOf('.wfb-trigger-box');
+    if (!d || !t) return { d, t, intersects: null };
+    const intersects = d.left < t.right && d.right > t.left && d.top < t.bottom && d.bottom > t.top;
+    return { d: { left: d.left, top: d.top, right: d.right, bottom: d.bottom },
+             t: { left: t.left, top: t.top, right: t.right, bottom: t.bottom }, intersects };
+  });
+  overlap10.intersects === false
+    ? ok(`the describe box does not overlap the trigger card at desktop width (describe=${JSON.stringify(overlap10.d)}, trigger=${JSON.stringify(overlap10.t)})`)
+    : fail(`the describe box overlaps the trigger card at desktop width: ${JSON.stringify(overlap10)}`);
+
+  // MC-962 regression: "Describe it" rendered as an unstyled browser-default
+  // button because it carried `btn-sched-save`, a class only ever styled
+  // scoped under `.schedule-form` (app.css) -- this widget has no such
+  // ancestor. `btn-add` is the app's own unscoped "primary action" button
+  // class, already used elsewhere at this same altitude (e.g. the backlog
+  // add button).
+  const describeBtnClass10 = await page10.$eval('.wfb-describe-row button', (el) => el.className);
+  /\bbtn-add\b/.test(describeBtnClass10)
+    ? ok(`the "Describe it" button carries the app's real button class (${describeBtnClass10})`)
+    : fail(`expected the "Describe it" button to carry btn-add, got class="${describeBtnClass10}"`);
+
   // Empty description: refused client-side, no request fired.
-  await page10.click('.wfb-describe-row .btn-sched-save');
+  await page10.click('.wfb-describe-row .btn-add');
   await page10.waitForTimeout(80);
   const toastsEmpty10 = await page10.evaluate(() => window.__toasts || []);
   (workflowPosts10.length === 0 && toastsEmpty10.some(t => /describe what you need/i.test(t)))
@@ -3012,11 +3094,11 @@ try {
   draftResult10 = { ok: false, error: 'draft_call_failed' };
   draftDelayMs10 = 250;
   await setValue(page10, '#wfb-describe-input', 'Every morning, triage new backlog items.');
-  await page10.click('.wfb-describe-row .btn-sched-save');
+  await page10.click('.wfb-describe-row .btn-add');
   await page10.waitForTimeout(80); // mid-flight: the 250ms server delay hasn't resolved yet
   const midFlight10 = await page10.evaluate(() => ({
     textareaDisabled: (document.getElementById('wfb-describe-input') || {}).disabled,
-    buttonText: (document.querySelector('.wfb-describe-row .btn-sched-save') || {}).textContent,
+    buttonText: (document.querySelector('.wfb-describe-row .btn-add') || {}).textContent,
   }));
   (midFlight10.textareaDisabled === true && /Drafting/.test(midFlight10.buttonText || ''))
     ? ok(`a loading state shows while the draft request is in flight (button reads "${(midFlight10.buttonText || '').trim()}", textarea disabled)`)
@@ -3047,7 +3129,7 @@ try {
       edges: [],
     },
   };
-  await page10.click('.wfb-describe-row .btn-sched-save');
+  await page10.click('.wfb-describe-row .btn-add');
   await page10.waitForTimeout(200);
   const afterDraft10 = await page10.evaluate(() => {
     const st = window._wfEntry()._wf;
@@ -3141,6 +3223,86 @@ try {
   toastsAfterReviewFail10.some(t => /check failed/i.test(t))
     ? ok(`a failed Check workflow request surfaces a visible "Check failed" toast: "${toastsAfterReviewFail10.find(t => /check failed/i.test(t))}"`)
     : fail(`expected a visible "Check failed" toast, got ${JSON.stringify(toastsAfterReviewFail10)}`);
+
+  // ── Dave's scope addition (same MC-962 item, Ron's follow-up screenshot):
+  // a multi-step draft with a branch used to land every node at the SAME
+  // default spot (stacked, one hiding another's ports) and leave the
+  // trigger unwired to the first step (no edge drawn). Fresh workflow so
+  // this isn't polluted by the single-node "triage" canvas above. ────────
+  //
+  // This route is a network mock -- it stands in for the SERVER, so the
+  // real layout math (`_draft_auto_layout` in mc/workflows.py, which now
+  // assigns every drafted node's x/y and fills `trigger.entry` with the
+  // roots) never runs here; the client just trusts whatever x/y and
+  // trigger.entry the response carries (`_wfDraftFromDescription`: `st.def
+  // = def`, no client-side layout). That fix's OWN regression coverage is
+  // Python-side: test_draft_workflow_branch_lays_out_without_overlap_and_
+  // wires_trigger in tests/test_workflows.py, which calls draft_workflow()
+  // for real and fails on unfixed mc/workflows.py. What THIS mock's x/y
+  // and trigger.entry below check is the other half: that the CLIENT
+  // faithfully renders whatever non-overlapping, wired layout the server
+  // sends -- no independent re-stacking, no dropped wire -- using the same
+  // depth-layered coordinates _draft_auto_layout would compute for this
+  // exact graph (triage depth 0; items_found/no_new_items depth 1, rows
+  // 0/1) so a real server response would look just like this.
+  //
+  // The canvas above is dirty (edited after Save, for the stale-badge
+  // check) -- openWorkflowBuilder's own discard-confirm would otherwise get
+  // Playwright's default "dismiss" for an unhandled dialog and silently
+  // no-op, leaving the OLD "triage" canvas mounted with no describe box.
+  page10.once('dialog', (d) => d.accept());
+  await newWorkflow(page10, PID);
+  draftResult10 = {
+    ok: true, valid: true, errors: [],
+    definition: {
+      name: 'Backlog triage with branch', description: 'Triage then branch on findings.',
+      trigger: { type: 'manual', entry: ['triage'] }, enabled: true,
+      nodes: [
+        { name: 'triage', type: 'agent', character: 'global:builder', project_id: PID,
+          prompt: 'Look for new backlog items.', x: 60, y: 80 },
+        { name: 'items_found', type: 'action', action: 'backlog_add', config: {}, x: 352, y: 80 },
+        { name: 'no_new_items', type: 'wait', config: {}, x: 352, y: 252 },
+      ],
+      edges: [
+        { from: 'triage', to: 'items_found', when: 'items_found' },
+        { from: 'triage', to: 'no_new_items', when: 'otherwise' },
+      ],
+    },
+  };
+  await setValue(page10, '#wfb-describe-input', 'Every morning, triage new backlog items and branch on whether any were found.');
+  await page10.click('.wfb-describe-row .btn-add');
+  await page10.waitForTimeout(200);
+  const branchLayout10 = await page10.evaluate(() => {
+    const boxes = [...document.querySelectorAll('.wfb-node')].map(el => {
+      const r = el.getBoundingClientRect();
+      return { name: el.dataset.name, left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+    });
+    let anyOverlap = null;
+    for (let i = 0; i < boxes.length && !anyOverlap; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i], b = boxes[j];
+        if (a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top) { anyOverlap = [a.name, b.name]; break; }
+      }
+    }
+    return { count: boxes.length, boxes, anyOverlap };
+  });
+  (branchLayout10.count === 3 && !branchLayout10.anyOverlap)
+    ? ok(`a drafted branch (3 nodes) lays out with no two node boxes overlapping (${JSON.stringify(branchLayout10.boxes.map(b => `${b.name}@${Math.round(b.left)},${Math.round(b.top)}`))})`)
+    : fail(`expected 3 non-overlapping drafted nodes, got ${JSON.stringify(branchLayout10)}`);
+  const triggerWire10 = await page10.evaluate(() => {
+    const def = window._wfEntry()._wf.def;
+    const entry = (def.trigger && Array.isArray(def.trigger.entry)) ? def.trigger.entry : [];
+    // The implied trigger->root line is `.wfb-edge-implied` (_wfRedrawEdges,
+    // workflow-builder.js) -- drawn only for names in `trigger.entry` that
+    // still have a live port, no per-edge data-attrs to pick out "which"
+    // root it targets, so presence + a non-empty entry naming the drafted
+    // first step together stand in for "the edge reaches that node".
+    const drawnToEntry = entry.length > 0 && !!document.querySelector('#wfb-canvas-svg .wfb-edge-implied');
+    return { entry, drawnToEntry };
+  });
+  (triggerWire10.entry.includes('triage') && triggerWire10.drawnToEntry)
+    ? ok(`the trigger is wired to the drafted entry step "triage" (trigger.entry=${JSON.stringify(triggerWire10.entry)}, edge drawn on canvas)`)
+    : fail(`expected the trigger wired to "triage" with a drawn edge, got ${JSON.stringify(triggerWire10)}`);
 
   const uncaught10 = page10Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught10.length) uncaught10.forEach((e) => fail('uncaught exception in the MC-962 draft/review flow: ' + e));
