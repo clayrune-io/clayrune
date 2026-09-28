@@ -174,6 +174,14 @@ _register_process: Callable[..., Any] = None  # type: ignore[assignment]
 _unregister_process: Callable[..., Any] = None  # type: ignore[assignment]
 _POPEN_FLAGS: int = 0
 _STARTUPINFO: Any = None
+# MC-997 leaked-pane sweep: kill a PID's tree (only ever used on a THROWAWAY
+# profile's process, and only once Browser.close has already failed to make
+# it exit — see sweep_leaked_pane_chromiums) and check whether a PID is still
+# alive. None until wired means the sweep can ask Chromium to close itself
+# but can never hard-kill a stuck one — fails toward leaving it running, not
+# toward silently no-op'ing the check.
+_kill_pid_fn: Callable[..., Any] | None = None
+_pid_alive_fn: Callable[..., Any] | None = None
 # This server's own listening port — used only to recognise a URL that points
 # BACK at Clayrune itself (see _is_clayrune_own_origin below). None until
 # wired means "unknown", which the check below treats as "block every
@@ -197,17 +205,43 @@ _swept_orphans: bool = False
 # sets this True at startup; nothing else may.
 SWEEP_ENABLED: bool = False
 
+# MC-997 leaked-pane-Chromium sweep timing — mirrors mc/process_sweep.py's
+# orphan-CLI sweep (state._PROCESS_SWEEP_BOOT_DELAY_S / _INTERVAL_S): wait
+# after boot so session revival has re-populated browser_sessions before any
+# leak judgment is made, then repeat periodically for restarts that happen
+# while the server keeps running.
+_PANE_LEAK_SWEEP_BOOT_DELAY_S = 5 * 60
+_PANE_LEAK_SWEEP_INTERVAL_S = 6 * 3600
+
+
+def pane_leak_sweep_loop(sleep_fn=_time.sleep):
+    """Daemon thread body: run `sweep_leaked_pane_chromiums` once after
+    `_PANE_LEAK_SWEEP_BOOT_DELAY_S`, then every `_PANE_LEAK_SWEEP_INTERVAL_S`.
+    Started from server.py, same shape as `_process_sweep_loop`. The config
+    toggle (`browser_pane_leak_sweep_enabled`) is read inside the sweep
+    itself, not here, so flipping it takes effect on the next tick without a
+    restart."""
+    sleep_fn(_PANE_LEAK_SWEEP_BOOT_DELAY_S)
+    while True:
+        try:
+            sweep_leaked_pane_chromiums()
+        except Exception as e:
+            print(f'[browser] leak sweep loop error: {e}', flush=True)
+        sleep_fn(_PANE_LEAK_SWEEP_INTERVAL_S)
+
 
 def wire(*, register_process_fn, unregister_process_fn, popen_flags, startupinfo,
-         server_port=None, uploads_dir=None):
+         server_port=None, uploads_dir=None, kill_pid_fn=None, pid_alive_fn=None):
     global _register_process, _unregister_process, _POPEN_FLAGS, _STARTUPINFO, _SERVER_PORT
-    global _UPLOADS_DIR
+    global _UPLOADS_DIR, _kill_pid_fn, _pid_alive_fn
     _register_process = register_process_fn
     _unregister_process = unregister_process_fn
     _POPEN_FLAGS = popen_flags
     _STARTUPINFO = startupinfo
     _SERVER_PORT = server_port
     _UPLOADS_DIR = uploads_dir
+    _kill_pid_fn = kill_pid_fn
+    _pid_alive_fn = pid_alive_fn
 
 
 _LOOPBACK_HOSTS = ('localhost', '127.0.0.1', '::1')
@@ -495,6 +529,150 @@ def sweep_orphan_profiles():
     if removed:
         print(f'[browser] swept {removed} orphaned profile dir(s), '
               f'freed {freed // (1024 * 1024)} MB', flush=True)
+
+
+_UDD_FLAG_RE = re.compile(r'--user-data-dir=("[^"]*"|\S+)')
+_PORT_FLAG_RE = re.compile(r'--remote-debugging-port=(\d+)')
+
+
+def _cmdline_user_data_dir(cmdline):
+    """The `--user-data-dir` value off a Chromium command line, unquoted, or
+    None if the flag isn't present."""
+    m = _UDD_FLAG_RE.search(cmdline or '')
+    if not m:
+        return None
+    val = m.group(1)
+    if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+        val = val[1:-1]
+    return val
+
+
+def _under_root(path, root):
+    """True if `path` is `root` itself or nested under it — both sides
+    case-normalised, matching `test_named_root_is_not_inside_the_swept_root`'s
+    own comparison so a Windows drive-letter case difference can't defeat it."""
+    p = os.path.normcase(os.path.abspath(path))
+    r = os.path.normcase(os.path.abspath(root))
+    return p == r or p.startswith(r + os.sep)
+
+
+def sweep_leaked_pane_chromiums():
+    """Close headless pane Chromiums that a server restart orphaned and that
+    nothing ever relaunches (MC-997, Dave 2026-09-28): 9 leaked trees / ~35
+    processes found, none in `/browser/status` for any project. Cause: the
+    restart path `os._exit()`s past the atexit browser cleanup, and
+    `_release_held_profile` only recovers a leaked profile's Chromium when a
+    launch names that SAME profile again — a throwaway profile (a random
+    session-id dir under `_profiles_root()`) is never relaunched by name, so
+    it stays running forever with its profile dir locked.
+
+    A candidate is a Chromium BROWSER process (never a `--type=` child) that
+    is headless, has a `--remote-debugging-port`, and has a
+    `--user-data-dir` this process doesn't recognise as a live session's
+    (`browser_sessions`). What happens next depends on where that
+    user-data-dir lives:
+
+      - under `_profiles_root()` (throwaway) or `_named_profiles_root()`
+        (saved login) → close it, via the same `_cdp_browser_close` the
+        launch-time `_release_held_profile` path already uses. A NAMED
+        profile is never hard-killed if Browser.close doesn't make it exit —
+        only Browser.close flushes cookies (see `_graceful_close`'s
+        measurements), so a stuck one is left running and reported, same as
+        a launch racing a stuck holder already does. A THROWAWAY profile
+        with nothing to preserve is hard-killed, by its own PID's tree
+        (never by image name), only once Browser.close has failed to make it
+        exit.
+      - anywhere else (e.g. an agent's own `%TEMP%/bp-diag-*` diagnostic
+        harness) → REPORT only, never touched. Those are not Clayrune's to
+        manage.
+
+    Server-process-only, same gate as `SWEEP_ENABLED` (see its module-level
+    comment): this reads `browser_sessions` to tell a live pane from a leak,
+    and only the server's registry knows what's actually live — a test or a
+    second MC importing this module would see an empty registry and treat
+    every real live session's Chromium as leaked. `browser_pane_leak_sweep_
+    enabled` (config, default True) is the separate feature toggle checked
+    once SWEEP_ENABLED has already passed.
+
+    Enumeration failure fails CLOSED — nothing is touched, `ok` is False.
+    Returns a report dict: {ok, closed: [...], failed: [...], reported: [...],
+    error?}."""
+    empty = {'closed': [], 'failed': [], 'reported': []}
+    if not SWEEP_ENABLED:
+        return {'ok': False, 'error': 'sweep disabled (not the server process)', **empty}
+    if not bool(state.CONFIG.get('browser_pane_leak_sweep_enabled', True)):
+        return {'ok': True, 'skipped': True,
+                'reason': 'browser_pane_leak_sweep_enabled is false', **empty}
+    rows = _scan_chromium_processes()
+    if rows is None:
+        return {'ok': False, 'error': 'chromium process enumeration failed', **empty}
+
+    eph_root, named_root = _profiles_root(), _named_profiles_root()
+    with browser_lock:
+        live_dirs = {os.path.normcase(os.path.abspath(s['user_data_dir']))
+                     for s in browser_sessions.values() if s.get('user_data_dir')}
+
+    closed, failed, reported = [], [], []
+    for pid, cmd in rows:
+        if '--type=' in cmd or '--headless' not in cmd:
+            continue  # a child process, or a visible (non-pane) Chromium
+        m = _PORT_FLAG_RE.search(cmd)
+        udd = _cmdline_user_data_dir(cmd)
+        if not m or not udd:
+            continue
+        port = int(m.group(1))
+        if os.path.normcase(os.path.abspath(udd)) in live_dirs:
+            continue  # a session this process itself is driving — not a leak
+
+        under_named = _under_root(udd, named_root)
+        under_eph = not under_named and _under_root(udd, eph_root)
+        if not (under_named or under_eph):
+            reported.append({'pid': pid, 'user_data_dir': udd, 'port': port})
+            continue
+
+        entry = {'pid': pid, 'user_data_dir': udd, 'port': port,
+                 'named': under_named}
+        ok, err = _cdp_browser_close(port)
+        exited = False
+        if ok:
+            deadline = _time.time() + 5
+            while _time.time() < deadline:
+                if _pid_alive_fn is not None and not _pid_alive_fn(pid):
+                    exited = True
+                    break
+                _time.sleep(0.2)
+        if exited:
+            entry['action'] = 'closed'
+            closed.append(entry)
+            print(f'[browser] leak sweep: closed leaked pane Chromium pid {pid} '
+                  f'({"named" if under_named else "throwaway"} profile) at {udd}',
+                  flush=True)
+        elif under_named:
+            entry['action'] = 'close_failed'
+            entry['error'] = err
+            failed.append(entry)
+            print(f'[browser] leak sweep: leaked NAMED-profile Chromium pid {pid} '
+                  f'at {udd} did not respond to Browser.close ({err}) — left '
+                  f'running, never hard-killed', flush=True)
+        elif _kill_pid_fn is not None and _kill_pid_fn(pid, tree=True):
+            entry['action'] = 'killed'
+            closed.append(entry)
+            print(f'[browser] leak sweep: hard-killed leaked throwaway pane '
+                  f'Chromium pid {pid} at {udd} (Browser.close did not respond: {err})',
+                  flush=True)
+        else:
+            entry['action'] = 'kill_failed'
+            entry['error'] = err
+            failed.append(entry)
+            print(f'[browser] leak sweep: could not close or kill leaked '
+                  f'throwaway Chromium pid {pid} at {udd}', flush=True)
+
+    if reported:
+        print(f'[browser] leak sweep: {len(reported)} Chromium process(es) outside '
+              'the Clayrune profile roots, report-only: '
+              + ', '.join(f'pid={r["pid"]} udd={r["user_data_dir"]}' for r in reported),
+              flush=True)
+    return {'ok': True, 'closed': closed, 'failed': failed, 'reported': reported}
 
 
 def _find_chromium():
@@ -1964,14 +2142,16 @@ def _profile_dir_locked(udd):
         return False
 
 
-def _profile_holder(udd):
-    """``(pid, cmdline)`` of the browser process holding ``udd``, or None.
+def _scan_chromium_processes():
+    """``[(pid, cmdline), ...]`` for every running process whose image matches
+    the resolved Chromium binary — browser AND child (`--type=renderer` etc.)
+    processes alike, unfiltered. None on enumeration failure (fail closed);
+    callers must not read that as "no Chromiums running".
 
-    Only called once _profile_dir_locked has said the dir IS held, so the
-    process-table scan (~0.8s via CIM on Windows) is paid on the failure
-    path alone. Child processes (`--type=renderer` etc.) carry the same
-    --user-data-dir, so they are excluded to land on the browser process.
-    """
+    Shared by `_profile_holder` (one profile's holder, used on the launch
+    path) and `sweep_leaked_pane_chromiums` (every leaked one, used by the
+    MC-997 sweep) so there is exactly one process-table scan implementation,
+    not one per caller."""
     image = os.path.basename(_find_chromium() or 'chrome.exe')
     rows = []
     try:
@@ -1992,7 +2172,21 @@ def _profile_holder(udd):
                 if pid.isdigit():
                     rows.append((int(pid), args))
     except Exception as e:
-        print(f'[browser] profile holder scan failed: {e}', flush=True)
+        print(f'[browser] chromium process scan failed: {e}', flush=True)
+        return None
+    return rows
+
+
+def _profile_holder(udd):
+    """``(pid, cmdline)`` of the browser process holding ``udd``, or None.
+
+    Only called once _profile_dir_locked has said the dir IS held, so the
+    process-table scan (~0.8s via CIM on Windows) is paid on the failure
+    path alone. Child processes (`--type=renderer` etc.) carry the same
+    --user-data-dir, so they are excluded to land on the browser process.
+    """
+    rows = _scan_chromium_processes()
+    if rows is None:
         return None
     flag = f'--user-data-dir={udd}'
     for pid, cmd in rows:
@@ -2034,18 +2228,13 @@ def _release_held_profile(profile, udd, timeout=10):
                 f"(could not identify it) — close it and try again")
     pid, cmd = holder
     m = re.search(r'--remote-debugging-port=(\d+)', cmd)
-    url = _browser_ws_url(int(m.group(1))) if (m and '--headless' in cmd) else None
-    if not url:
+    port = int(m.group(1)) if (m and '--headless' in cmd) else None
+    if port is None:
         return (f"profile '{profile}' is in use by another browser process "
                 f"(pid {pid}) — close it and try again")
-    try:
-        ws = _import_ws().create_connection(url, max_size=None, timeout=3)
-        try:
-            ws.send(json.dumps({'id': 1, 'method': 'Browser.close', 'params': {}}))
-        finally:
-            ws.close()
-    except Exception as e:
-        return f"profile '{profile}' is held by a leftover pane browser (pid {pid}) that did not respond: {e}"
+    ok, err = _cdp_browser_close(port)
+    if not ok:
+        return f"profile '{profile}' is held by a leftover pane browser (pid {pid}) that did not respond: {err}"
     deadline = _time.time() + timeout
     while _time.time() < deadline:
         if not _profile_dir_locked(udd):
@@ -2065,6 +2254,35 @@ def _browser_ws_url(port, timeout=2):
         return v.get('webSocketDebuggerUrl')
     except Exception:
         return None
+
+
+def _cdp_browser_close(port, timeout=3):
+    """Send `Browser.close` to the Chromium listening on `port`'s
+    browser-level CDP endpoint. Returns `(ok, error)` — `ok` means the
+    request was sent and acknowledged by a live websocket, not that the
+    process has actually exited yet (the caller polls for that separately,
+    e.g. `_profile_dir_locked` or `proc.wait`).
+
+    The ONE place this module asks a Chromium to close itself over CDP —
+    `_release_held_profile` (freeing a named profile a launch wants) and
+    `sweep_leaked_pane_chromiums` (MC-997) both call this rather than each
+    opening their own websocket, so there is exactly one Browser.close call
+    site to reason about."""
+    websocket = _import_ws()
+    if websocket is None:
+        return False, 'websocket-client not installed'
+    url = _browser_ws_url(port, timeout=timeout)
+    if not url:
+        return False, f'no CDP endpoint on port {port}'
+    try:
+        ws = websocket.create_connection(url, max_size=None, timeout=timeout)
+        try:
+            ws.send(json.dumps({'id': 1, 'method': 'Browser.close', 'params': {}}))
+        finally:
+            ws.close()
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 def _graceful_close(session, timeout=10):
@@ -2089,25 +2307,13 @@ def _graceful_close(session, timeout=10):
 
     Returns True if the process exited on its own (no hard kill needed).
     """
-    websocket = _import_ws()
     proc = session.get('proc')
-    if websocket is None or proc is None:
+    if proc is None:
         return False
-    url = _browser_ws_url(session.get('port'))
-    if not url:
-        return False
-    try:
-        ws = websocket.create_connection(url, max_size=None, timeout=3)
-        try:
-            ws.send(json.dumps({'id': 1, 'method': 'Browser.close', 'params': {}}))
-        finally:
-            try:
-                ws.close()
-            except Exception:
-                pass
-    except Exception as e:
+    ok, err = _cdp_browser_close(session.get('port'))
+    if not ok:
         print(f'[browser] graceful close failed for '
-              f'{session.get("session_id")}: {e}', flush=True)
+              f'{session.get("session_id")}: {err}', flush=True)
         return False
     try:
         proc.wait(timeout=timeout)

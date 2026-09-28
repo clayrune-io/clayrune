@@ -460,6 +460,13 @@ def _load_config():
         # make the 🌐 Browser button reuse one persistent, signed-in profile.
         # Per-launch opt-out: POST /api/browser/launch {"ephemeral": true}.
         'browser_default_profile': '',
+        # Leaked pane-Chromium sweep (MC-997). A server restart os._exit()s
+        # past the atexit browser cleanup, so a throwaway pane Chromium that
+        # is never relaunched on the same profile stays running forever with
+        # its profile dir locked — 9 trees / ~35 processes found 2026-09-28.
+        # Default ON; set false to disable both the startup pass and the
+        # periodic loop (see browser_routes.sweep_leaked_pane_chromiums).
+        'browser_pane_leak_sweep_enabled': True,
 
         # ── MEMORY_DESIGN_V2_SPEC.md §16 step 1 (MC-944) ─────────────────────
         # Condition 9: these four were already read from CONFIG.get(...) with a
@@ -2850,6 +2857,11 @@ _bp_browser.wire(
     startupinfo=_STARTUPINFO,
     server_port=PORT,
     uploads_dir=UPLOADS_DIR,
+    # MC-997 leaked-pane sweep: hard-kill fallback for a throwaway profile's
+    # Chromium that didn't respond to Browser.close, by the exact PID's tree
+    # (never by image name — the process-hygiene rule binds this sweep too).
+    kill_pid_fn=_bp_agent._kill_pid,
+    pid_alive_fn=_bp_agent._pid_is_alive,
 )
 app.register_blueprint(_bp_browser.bp)
 # Only the server process may sweep orphaned Chromium profile dirs: it is the
@@ -2857,6 +2869,7 @@ app.register_blueprint(_bp_browser.bp)
 # inside wire() — test harnesses call that too. See browser_routes.SWEEP_ENABLED.
 _bp_browser.SWEEP_ENABLED = True
 _kill_browser_session = _bp_browser._kill_browser_session
+_pane_leak_sweep_loop = _bp_browser.pane_leak_sweep_loop
 
 # ── AgentRuntime hook registration ──────────────────────────────────────────
 # Wire ClaudeRuntime delegates back into server.py so external callers (future
@@ -3313,6 +3326,11 @@ def boot(check_port=True):
     # inside the loop body itself, not here — so flipping it takes effect on
     # the next tick without a restart.
     threading.Thread(target=_process_sweep_loop, daemon=True, name='process-sweep').start()
+    # MC-997: leaked pane-Chromium sweep (mc/blueprints/browser_routes.py).
+    # Off switch is config 'browser_pane_leak_sweep_enabled' (default True),
+    # checked inside the sweep itself, not here — same "flip takes effect on
+    # the next tick" shape as process-sweep above.
+    threading.Thread(target=_pane_leak_sweep_loop, daemon=True, name='pane-leak-sweep').start()
     # Scheduled auto-backup daemon (MC-983, BACKUP_EXPORT_SPEC.md §7 Phase 4):
     # hourly tick, runs a full backup if overdue per config 'backup_schedule'.
     # Off by default (unset config == 'off', loop no-ops every tick).
