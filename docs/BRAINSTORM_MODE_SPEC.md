@@ -1,6 +1,6 @@
 # MC-957: Brainstorm this
 
-**Status:** proposed product specification, 2026-09-27. The four decisions at the end are recommendations, not approvals. The thinking contract in [BRAINSTORM_MODE_FOUNDATION.md](BRAINSTORM_MODE_FOUNDATION.md) is binding. It paraphrases Paul Graham's [How to Do Great Work](https://paulgraham.com/greatwork.html); this spec applies it to Clayrune without reproducing the essay.
+**Status:** APPROVED by Ron 2026-09-27: all four decisions below accepted as recommended (B, B, B, B), plus mandatory SWOT for business ideas. The thinking contract in [BRAINSTORM_MODE_FOUNDATION.md](BRAINSTORM_MODE_FOUNDATION.md) is binding. It paraphrases Paul Graham's [How to Do Great Work](https://paulgraham.com/greatwork.html); this spec applies it to Clayrune without reproducing the essay.
 
 ## Problem and audience
 
