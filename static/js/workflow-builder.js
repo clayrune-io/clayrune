@@ -4453,9 +4453,9 @@ function _wfRenderDescribeBox(st) {
   return `<div class="wfb-describe-box">
     <div class="wfb-describe-row">
       <input id="wfb-describe-input" class="wfb-describe-input" type="text"
-        placeholder="Describe what you need — e.g. every morning, triage new backlog items and draft a summary"
+        placeholder="Describe what you need, e.g. every morning, triage new backlog items and draft a summary"
         value="${esc(st.draftDescription || '')}"
-        onkeydown="if(event.key==='Enter'){event.preventDefault();_wfDraftFromDescription();}"
+        onkeydown="if(event.key==='Enter'&&!event.isComposing){event.preventDefault();_wfDraftFromDescription();}"
         ${st.drafting ? 'disabled' : ''}>
       <button type="button" class="btn-add" onclick="_wfDraftFromDescription()" ${st.drafting ? 'disabled' : ''}
         >${st.drafting ? 'Drafting…' : 'Describe it'}</button>
