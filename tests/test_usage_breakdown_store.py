@@ -112,6 +112,24 @@ def test_code_delta_upsert_and_unavailable_reason(store):
     assert delta['added'] is None
 
 
+def test_code_delta_unavailable_never_overwrites_a_prior_ok(store):
+    """MC-998 review finding #5: a later completion in the same chat (e.g.
+    after merge-back already removed the worktree, so the recompute reports
+    'worktree missing') must not clobber an already-captured LOC count."""
+    store.upsert_session_fact('sess-3', {'provider': 'claude', 'token_coverage': 'complete'})
+    store.upsert_code_delta('sess-3', {
+        'status': 'ok', 'added': 5, 'deleted': 2, 'branch': 'clayrune/agent/sess-3',
+        'base_commit': 'abc123', 'head_commits': 'def456',
+    })
+    store.upsert_code_delta('sess-3', {
+        'status': 'unavailable', 'reason': 'worktree missing at completion',
+    })
+    delta = store.get_code_delta('sess-3')
+    assert delta['status'] == 'ok'
+    assert delta['added'] == 5
+    assert delta['deleted'] == 2
+
+
 def test_prune_removes_completed_facts_past_retention_but_keeps_running(store):
     old_cutoff_session = 'sess-old'
     store.upsert_session_fact(old_cutoff_session, {

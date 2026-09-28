@@ -124,6 +124,46 @@ def branch_name(session_id: str) -> str:
     return f'clayrune/agent/{session_id}'
 
 
+_LOC_BASELINE_FILE = 'clayrune-loc-base-commit'
+
+
+def _capture_loc_baseline(wts: str) -> None:
+    """Freeze the commit this worktree's branch actually started at, into the
+    worktree's admin git-dir (NOT the working tree, so it never shows up as
+    an untracked file in the agent's own diff).
+
+    `merge-base(HEAD, base_ref)`, recomputed later, is not durable: once the
+    agent's own commits land on base_ref (e.g. the project's standing
+    "always commit + merge/land your work" instruction), base_ref advances
+    to include HEAD and the merge-base collapses to HEAD itself, zeroing out
+    the LOC diff (MC-998 review finding #5). This file is written once, at
+    creation, while HEAD is still exactly the starting point, and is read
+    back verbatim regardless of what base_ref does afterward.
+    """
+    ok, head = _sync.git_run(wts, ['rev-parse', 'HEAD'], timeout=10)
+    if not ok or not head.strip():
+        return
+    ok, gitdir = _sync.git_run(wts, ['rev-parse', '--absolute-git-dir'], timeout=10)
+    if not ok or not gitdir.strip():
+        return
+    try:
+        (Path(gitdir.strip()) / _LOC_BASELINE_FILE).write_text(head.strip(), encoding='utf-8')
+    except OSError as e:
+        _plog(f"[worktree] could not persist LOC baseline: {e}")
+
+
+def loc_baseline_commit(wts: str) -> str:
+    """Read back the baseline `_capture_loc_baseline` wrote, or '' if this
+    worktree predates the fix (caller should fall back to merge-base)."""
+    ok, gitdir = _sync.git_run(wts, ['rev-parse', '--absolute-git-dir'], timeout=10)
+    if not ok or not gitdir.strip():
+        return ''
+    try:
+        return (Path(gitdir.strip()) / _LOC_BASELINE_FILE).read_text(encoding='utf-8').strip()
+    except OSError:
+        return ''
+
+
 # ── Linking shared runtime dirs (requirement #1) ────────────────────────────
 
 def _link_dir(link: Path, target: Path) -> bool:
@@ -287,6 +327,8 @@ def create(project: dict, session_id: str, base_ref: str = 'HEAD'):
         ok, msg = _sync.git_run(base, args, timeout=120)
         if not ok:
             return False, f'git worktree add failed: {msg}'
+        if not have:
+            _capture_loc_baseline(str(wt))
 
         linked = link_runtime(project, wt)
         retarget_mcp(project, wt)

@@ -1238,6 +1238,20 @@ _LOC_EXTENSIONS = {
     '.scss', '.swift', '.kt', '.java', '.rs', '.go', '.sh', '.ps1',
 }
 
+# MC-998 review finding #5: an extension match alone still counted vendored/
+# generated files as session source (e.g. staged lines under `vendor/`).
+_LOC_VENDOR_DIR_PARTS = {
+    'node_modules', 'vendor', 'vendored', 'third_party', 'dist', 'build',
+    '.venv', 'venv', '__pycache__',
+}
+
+
+def _loc_path_excluded(path: str) -> bool:
+    lower = path.lower()
+    if lower.endswith('.min.js') or lower.endswith('.min.css'):
+        return True
+    return any(part in _LOC_VENDOR_DIR_PARTS for part in Path(path).parts)
+
 
 def _compute_code_delta(session):
     """MC-998 phase 3 LOC attribution (docs/USAGE_BREAKDOWN_SPEC.md "Trigger
@@ -1254,15 +1268,22 @@ def _compute_code_delta(session):
     merge-back" — since merge-back can delete the worktree and its branch
     once merged.
 
-    Diffs against `merge-base(HEAD, base_ref)` rather than a stored base
-    commit: a fresh `git worktree add` starts exactly at that ancestor, so
-    the merge-base recovers it even if the project's base branch has since
-    moved — no separate baseline capture at dispatch time is needed. The
-    diff is taken directly against the working tree (not just `HEAD`), so
-    committed AND any still-uncommitted changes are counted once, in one
-    numstat pass. `-M` groups a rename into one numstat line (added/deleted
-    of the actual edit) instead of counting the whole file as both a delete
-    and an add.
+    The baseline is the commit `agent_worktree._capture_loc_baseline` froze
+    at worktree creation, read back via `loc_baseline_commit` — NOT a fresh
+    `merge-base(HEAD, base_ref)` computed now. Recomputing it here would
+    collapse to HEAD once the agent's own commits land on base_ref (MC-998
+    review finding #5), silently zeroing out the diff for anyone who follows
+    the project's own "land your work" instruction before the chat ends.
+    Worktrees created before this fix have no frozen baseline, so those fall
+    back to the old merge-base behavior. The diff is taken directly against
+    the working tree (not just `HEAD`), so committed AND any still-
+    uncommitted changes are counted once, in one numstat pass. `-M` groups a
+    rename into one numstat line (added/deleted of the actual edit) instead
+    of counting the whole file as both a delete and an add. Untracked new
+    files are invisible to `git diff` entirely, so they're counted in a
+    separate pass over `git status`. Vendored/generated paths are excluded
+    from both passes (extension matching alone previously let a vendored
+    `.js` file count as session source).
     """
     branch = _agent_worktree.branch_name(session.get('session_id', ''))
     if not session.get('_worktree_isolated'):
@@ -1275,11 +1296,13 @@ def _compute_code_delta(session):
     if wt is None or not wt.exists():
         return {'status': 'unavailable', 'branch': branch, 'reason': 'worktree missing at completion'}
     wts = str(wt)
-    base_ref = _agent_worktree._base_ref(project)
-    ok, base_commit = _project_sync.git_run(wts, ['merge-base', 'HEAD', base_ref], timeout=15)
-    if not ok or not base_commit:
-        return {'status': 'unavailable', 'branch': branch,
-                'reason': f'cannot resolve base commit: {base_commit}'}
+    base_commit = _agent_worktree.loc_baseline_commit(wts)
+    if not base_commit:
+        base_ref = _agent_worktree._base_ref(project)
+        ok, base_commit = _project_sync.git_run(wts, ['merge-base', 'HEAD', base_ref], timeout=15)
+        if not ok or not base_commit:
+            return {'status': 'unavailable', 'branch': branch,
+                    'reason': f'cannot resolve base commit: {base_commit}'}
     ok, commits_out = _project_sync.git_run(wts, ['rev-list', f'{base_commit}..HEAD'], timeout=15)
     head_commits = commits_out.splitlines() if ok else []
     ok, diff_out = _project_sync.git_run(wts, ['diff', '--numstat', '-M', base_commit], timeout=30)
@@ -1294,11 +1317,30 @@ def _compute_code_delta(session):
         a, d, path = parts[0], parts[1], parts[-1]
         if a == '-' or d == '-':
             continue  # numstat marks a binary file this way
-        ext = Path(path.split(' => ')[-1].strip('{}')).suffix.lower()
-        if ext not in _LOC_EXTENSIONS:
+        path = path.split(' => ')[-1].strip('{}')
+        ext = Path(path).suffix.lower()
+        if ext not in _LOC_EXTENSIONS or _loc_path_excluded(path):
             continue
         added += int(a)
         deleted += int(d)
+    ok, status_out = _project_sync.git_run(
+        wts, ['status', '--porcelain', '--untracked-files=all'], timeout=15)
+    if ok:
+        for line in status_out.splitlines():
+            if not line.startswith('?? '):
+                continue
+            rel = line[3:].strip()
+            if len(rel) >= 2 and rel[0] == '"' and rel[-1] == '"':
+                rel = rel[1:-1]
+            ext = Path(rel).suffix.lower()
+            if ext not in _LOC_EXTENSIONS or _loc_path_excluded(rel):
+                continue
+            try:
+                text = (wt / rel).read_text(encoding='utf-8')
+            except (UnicodeDecodeError, OSError):
+                continue  # binary or unreadable — not attributable source
+            if text:
+                added += text.count('\n') + (0 if text.endswith('\n') else 1)
     return {'status': 'ok', 'branch': branch, 'base_commit': base_commit,
             'head_commits': ','.join(head_commits), 'added': added, 'deleted': deleted}
 

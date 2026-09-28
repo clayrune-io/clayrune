@@ -10,6 +10,7 @@ reports added 1, deleted 1."
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -22,13 +23,40 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+if sys.platform == 'win32':
+    # This module is the only one that spawns real `git` subprocesses
+    # (through both the test's own helper and mc.agent_worktree/project_sync
+    # in production). In a headless/no-console run the process's Win32
+    # standard-input handle can be invalid, which makes every child spawn
+    # fail with WinError 6 before git ever runs — unrelated to the code
+    # under test. Fenn's MC-998 review hit and diagnosed the same thing,
+    # calling it "a harness limitation, not evidence the branch's LOC
+    # runtime cannot run on Windows," and worked around it the same way:
+    # give the process a real, inheritable stdin handle. `os.dup2` alone
+    # only fixes the C-runtime fd table, not the Win32 STD_INPUT_HANDLE
+    # that subprocess actually duplicates, so set that directly.
+    try:
+        import ctypes
+        devnull_handle = ctypes.windll.kernel32.CreateFileW(
+            'NUL', 0x80000000, 1, None, 3, 0, None)  # GENERIC_READ, OPEN_EXISTING
+        if devnull_handle and devnull_handle != -1:
+            ctypes.windll.kernel32.SetStdHandle(-10, devnull_handle)  # STD_INPUT_HANDLE
+        os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
+    except OSError:
+        pass
+
 from mc import project_sync  # noqa: E402
 import mc.agent_worktree as w  # noqa: E402
 from mc.blueprints import agent_routes as ar  # noqa: E402
 
 
 def _git(cwd, *args, check=True):
-    r = subprocess.run(['git', *args], cwd=str(cwd), capture_output=True, text=True)
+    # stdin=DEVNULL: this harness's own stdin handle is sometimes invalid
+    # when running headless on Windows, which makes subprocess fail
+    # inheriting it (WinError 6) before git even runs — unrelated to the
+    # code under test (Fenn's MC-998 review hit and confirmed the same).
+    r = subprocess.run(['git', *args], cwd=str(cwd), capture_output=True, text=True,
+                        stdin=subprocess.DEVNULL)
     if check and r.returncode != 0:
         raise RuntimeError(f'git {" ".join(args)}: {r.stderr.strip()}')
     return r.stdout.strip()
@@ -162,6 +190,76 @@ def test_no_changes_reports_zero(env, project):
     assert result['added'] == 0
     assert result['deleted'] == 0
     assert result['head_commits'] == ''
+
+
+# ── review findings (baseline durability, untracked files, vendor paths) ────
+
+def test_baseline_survives_base_branch_landing_the_sessions_own_commits(env, project, repo):
+    """MC-998 review finding #5: merge-base(HEAD, base_ref) recomputed at
+    completion time collapses to HEAD once base_ref (master) has been
+    advanced to include the session's own commits — exactly what happens
+    when an agent follows the project's own "land your work" instruction
+    before the chat ends. The frozen baseline captured at worktree creation
+    must still report the real diff afterward."""
+    sid = 'mb5'
+    ok, path = w.create(project, sid)
+    assert ok, path
+    (Path(path) / 'app.py').write_text(
+        'def one():\n    return "orig one"\n\n\ndef two():\n    return "orig two"\n'
+        'def three():\n    return "added"\n',
+        encoding='utf-8')
+    _git(path, 'add', '.')
+    _git(path, 'commit', '-q', '-m', 'edit')
+
+    # Simulate landing: fast-forward master to the session branch's tip, as
+    # `_worktree_merge_back_on_end` would.
+    head = _git(path, 'rev-parse', 'HEAD')
+    _git(repo, 'merge', '--ff-only', head)
+    assert _git(repo, 'rev-parse', 'HEAD') == head
+
+    result = ar._compute_code_delta(_session(sid, project['id'], isolated=True))
+    assert result['status'] == 'ok', result
+    assert result['added'] == 2  # unchanged from before master advanced
+    assert result['deleted'] == 0
+    assert result['head_commits']
+
+
+def test_untracked_new_file_is_counted(env, project):
+    """A new file the agent created but never `git add`ed is invisible to
+    `git diff` entirely — must not silently report zero (MC-998 review
+    finding #5)."""
+    sid = 'mb6'
+    ok, path = w.create(project, sid)
+    assert ok, path
+    (Path(path) / 'new_module.py').write_text(
+        'def helper():\n    return 1\n\n\ndef other():\n    return 2\n',
+        encoding='utf-8')
+    # deliberately left untracked
+
+    result = ar._compute_code_delta(_session(sid, project['id'], isolated=True))
+    assert result['status'] == 'ok', result
+    assert result['added'] == 6  # every newline-terminated line in the file
+    assert result['deleted'] == 0
+
+
+def test_vendor_path_is_excluded_even_though_extension_matches(env, project):
+    """Staged lines under a vendor directory must not count as session
+    source, even though `.js` is an attributed extension (MC-998 review
+    finding #5)."""
+    sid = 'mb7'
+    ok, path = w.create(project, sid)
+    assert ok, path
+    vendor_dir = Path(path) / 'vendor'
+    vendor_dir.mkdir()
+    (vendor_dir / 'dependency.js').write_text(
+        'line one;\nline two;\nline three;\n', encoding='utf-8')
+    _git(path, 'add', '.')
+    _git(path, 'commit', '-q', '-m', 'vendor drop')
+
+    result = ar._compute_code_delta(_session(sid, project['id'], isolated=True))
+    assert result['status'] == 'ok', result
+    assert result['added'] == 0
+    assert result['deleted'] == 0
 
 
 def test_missing_worktree_is_unavailable(env, project):

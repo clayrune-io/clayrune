@@ -404,6 +404,15 @@ class UsageBreakdownStore:
         row = {c: fields.get(c) for c in cols}
         row['status'] = row.get('status') or 'unavailable'
         with self._connection(write=True) as db:
+            if row['status'] != 'ok':
+                existing = db.execute(
+                    'SELECT status FROM code_delta WHERE session_id=?', (session_id,)).fetchone()
+                if existing and existing['status'] == 'ok':
+                    # A later completion in the same chat (e.g. after
+                    # merge-back already removed the worktree) must never
+                    # clobber an already-captured LOC count with
+                    # 'unavailable' (MC-998 review finding #5).
+                    return
             placeholders = ', '.join(f':{c}' for c in cols)
             assignments = ', '.join(f'{c}=excluded.{c}' for c in cols)
             params = dict(row)
