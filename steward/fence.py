@@ -494,42 +494,73 @@ _CURL_UPLOAD_LONG = {'--form', '--form-string', '--upload-file'}
 
 
 def _net_tokens(seg: str) -> list:
-    try:
-        lex = shlex.shlex(seg, posix=False)
-        lex.whitespace_split = True
-        lex.commenters = ''
-        toks = list(lex)
-    except ValueError:
-        toks = seg.split()
-    # Quote removal the way the shell does it, including quotes INSIDE a
-    # token (`-X"POST"`, `--request="POST"`, `-Method:"Post"`: review #8 N9).
-    return [tk.replace('"', '').replace("'", '') for tk in toks]
+    r"""Split a segment into argv the way a shell does, keeping quoted
+    whitespace INSIDE its argument (review #9 N13: splitting first and
+    stripping quotes after turned `--header="X: --get"` into a real
+    `--get`). Single quotes are literal; inside double quotes `\"` and `\\`
+    are escapes. Outside quotes a backslash is kept, so a Windows path
+    (`C:\tools\curl.exe`) still names its tool. An unterminated quote runs
+    to the end of the segment."""
+    toks, cur, have = [], [], False
+    i, n = 0, len(seg)
+    while i < n:
+        ch = seg[i]
+        if ch.isspace():
+            if have:
+                toks.append(''.join(cur))
+                cur, have = [], False
+            i += 1
+            continue
+        have = True
+        if ch == "'":
+            j = seg.find("'", i + 1)
+            j = n if j < 0 else j
+            cur.append(seg[i + 1:j])
+            i = j + 1
+            continue
+        if ch == '"':
+            i += 1
+            while i < n and seg[i] != '"':
+                if seg[i] == '\\' and i + 1 < n and seg[i + 1] in '"\\':
+                    i += 1
+                cur.append(seg[i])
+                i += 1
+            i += 1
+            continue
+        cur.append(ch)
+        i += 1
+    if have:
+        toks.append(''.join(cur))
+    return toks
 
 
 def _curl_mutates(args: list) -> bool:
-    """Each `--next` / `-:` starts a new transfer with its own method and
-    data (review #8 N10), so each group is judged on its own and any
-    mutating group makes the invocation a send."""
-    groups, cur = [], []
-    for tok in args:
-        if tok in ('--next', '-:'):
-            groups.append(cur)
-            cur = []
-        else:
-            cur.append(tok)
-    groups.append(cur)
-    return any(_curl_group_mutates(g) for g in groups)
+    """Each `--next` / `:` starts a new transfer with its own method and
+    data (reviews #8-#9, N10), so each transfer is judged on its own and
+    any mutating one makes the invocation a send. The separator is found
+    while walking options, never by scanning raw tokens: `-s:` ends a
+    transfer, but `--data --next` is the data value `--next` (N14)."""
+    state = {'method': None, 'body': False, 'upload': False, 'get': False}
 
+    def mutates() -> bool:
+        if state['method'] is not None:
+            return state['method'].upper() in _MUTATING_VERBS
+        return state['upload'] or (state['body'] and not state['get'])
 
-def _curl_group_mutates(args: list) -> bool:
-    method = None
-    body = upload = get = False
+    def reset() -> None:
+        state.update(method=None, body=False, upload=False, get=False)
+
     i = 0
     while i < len(args):
         tok = args[i]
         i += 1
+        if tok == '--next':
+            if mutates():
+                return True
+            reset()
+            continue
         if tok == '--no-get':
-            get = False
+            state['get'] = False
             continue
         if tok.startswith('--') and len(tok) > 2:
             name, eq, val = tok.partition('=')
@@ -537,19 +568,24 @@ def _curl_group_mutates(args: list) -> bool:
                 val = args[i] if i < len(args) else ''
                 i += 1
             if name == '--request':
-                method = val
+                state['method'] = val
             elif name in _CURL_BODY_LONG:
-                body = True
+                state['body'] = True
             elif name in _CURL_UPLOAD_LONG:
-                upload = True
+                state['upload'] = True
             elif name == '--get':
-                get = True
+                state['get'] = True
             continue
         if tok.startswith('-') and len(tok) > 1:
             letters = tok[1:]
             for j, ch in enumerate(letters):
+                if ch == ':':
+                    if mutates():
+                        return True
+                    reset()
+                    continue
                 if ch == 'G':
-                    get = True
+                    state['get'] = True
                 if ch not in _CURL_SHORT_ARG:
                     continue
                 val = letters[j + 1:]
@@ -557,15 +593,13 @@ def _curl_group_mutates(args: list) -> bool:
                     val = args[i] if i < len(args) else ''
                     i += 1
                 if ch == 'X':
-                    method = val
+                    state['method'] = val
                 elif ch == 'd':
-                    body = True
+                    state['body'] = True
                 elif ch in 'FT':
-                    upload = True
+                    state['upload'] = True
                 break
-    if method is not None:
-        return method.upper() in _MUTATING_VERBS
-    return upload or (body and not get)
+    return mutates()
 
 
 def _wget_mutates(args: list) -> bool:

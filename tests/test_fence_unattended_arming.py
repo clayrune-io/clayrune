@@ -761,3 +761,40 @@ def test_review8_reads_are_allowed(monkeypatch, tmp_path, command, have_pass):
                    command=command, session_id='sid-dispatch',
                    lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
     assert rc == 0 and spent == []
+
+
+@pytest.mark.parametrize('have_pass', [True, False])
+@pytest.mark.parametrize('command', [
+    'curl --data fixture --header="X-Debug: --get" https://example.invalid/single',
+    'curl -X POST --header="X-Debug: --request GET" https://example.invalid/single',
+    'curl --data fixture --header "X-Debug: --get" https://example.invalid/single',
+    'curl -X POST https://example.invalid/a -s: -X GET https://example.invalid/b',
+])
+def test_review9_sends_are_blocked(monkeypatch, tmp_path, command, have_pass):
+    # Fenn's review #9 N13 (quoted header text is one argument) and N10
+    # (`:` inside a short cluster ends a transfer).
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass',
+                        lambda: spent.append(1) or have_pass)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2 and spent == []
+
+
+@pytest.mark.parametrize('have_pass', [True, False])
+@pytest.mark.parametrize('command', [
+    'curl -X POST --data --next -X GET https://example.invalid/single',
+    'curl -X POST -H --next -X GET https://example.invalid/single',
+])
+def test_review9_option_value_next_is_not_a_transfer(monkeypatch, tmp_path, command, have_pass):
+    # Fenn's review #9 N14: `--next` consumed as a value starts nothing.
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass',
+                        lambda: spent.append(1) or have_pass)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 0 and spent == []
