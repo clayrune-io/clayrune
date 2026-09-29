@@ -260,12 +260,16 @@ async function runStubRoutes(browser) {
   await page.click('.desk-v1-back');
   await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
 
+  // IA7 landed the real Engagement dashboard — no longer a stub route (was
+  // asserted as one in IA1; re-check on master before calling this a
+  // regression if it ever fails). Full lane/filter behavior belongs to
+  // desk-v1-engagement.mjs; this just confirms the stub is gone.
   await page.evaluate(() => window.deskV1Nav('engagement', {}));
-  await page.waitForSelector('.desk-v1-stub', { timeout: 4000 });
-  let stubText = (await page.textContent('.desk-v1-stub-body').catch(() => '') || '');
-  /Engagement is not built yet/.test(stubText)
-    ? ok(`engagement route: honest stub placeholder — "${stubText.trim()}"`)
-    : fail(`engagement stub wrong: ${JSON.stringify(stubText)}`);
+  await page.waitForSelector('.desk-v1-engagement', { timeout: 4000 });
+  const stubGone = await page.$('.desk-v1-stub');
+  !stubGone
+    ? ok('engagement route: real dashboard renders, no longer the IA1 stub')
+    : fail('engagement route still shows the IA1 stub placeholder');
 
   // IA5 landed the real piece page — no longer a stub route (was asserted as
   // one in IA1/IA3; re-check on master before calling this a regression if
