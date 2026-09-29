@@ -734,23 +734,33 @@ def _segment_mutates(seg: str) -> bool:
     (`-sdfixture`) are walked the way curl walks them. These are the tools'
     documented forms; the 2026-09-12 position against chasing evasions
     still stands. A quoted argument that itself names a tool (`bash -c
-    "curl -X POST ..."`) is judged as its own segment."""
+    "curl -X POST ...; curl -X GET ..."`) is a program: it is split at its
+    OWN operators and each command judged alone (review #11 N18), so a
+    later GET cannot overwrite an earlier POST's method. The local-host
+    exemption is judged per command too, so a nested localhost call
+    cannot exempt a nested external one. True means a NON-LOCAL send."""
     toks = _net_tokens(seg)
     for idx, tok in enumerate(toks):
         m = _NET_HEAD_RE.search(tok)
         if not m:
-            if _NET_TOOL_RE.search(tok) and ' ' in tok and _segment_mutates(tok):
+            if _NET_TOOL_RE.search(tok) and ' ' in tok and any(
+                    _segment_mutates(inner) for inner in _net_segments(tok)):
                 return True
             continue
         head = m.group(1).lower()
         args = toks[idx + 1:]
         if head == 'curl':
-            return _curl_mutates(args)
-        if head == 'wget':
-            return _wget_mutates(args)
-        if head in ('http', 'https'):
-            return _httpie_mutates(args)
-        return _ps_web_mutates(args)
+            mutates = _curl_mutates(args)
+        elif head == 'wget':
+            mutates = _wget_mutates(args)
+        elif head in ('http', 'https'):
+            mutates = _httpie_mutates(args)
+        else:
+            mutates = _ps_web_mutates(args)
+        if not mutates:
+            return False
+        target = ' '.join(args).lower()
+        return not any(h in target for h in _LOCAL_HOSTS)  # own API calls
     return False
 
 
@@ -819,11 +829,8 @@ def _touches_nonlocal_network(cmd: str) -> FenceDecision:
             return FenceDecision(True, "autonomous web browsing is out of steward scope - "
                                        "the browser HTTP API is the same capability as the "
                                        "browser MCP tools, which are blocked")
-        mutating = _segment_mutates(seg)
-        if not mutating:
+        if not _segment_mutates(seg):
             continue
-        if any(h in seg.lower() for h in _LOCAL_HOSTS):
-            continue  # steward's own API calls
         return FenceDecision(True, "external network send (mutating HTTP to a non-local host)")
     return FenceDecision(False, '')
 

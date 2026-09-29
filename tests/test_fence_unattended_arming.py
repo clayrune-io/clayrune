@@ -831,3 +831,31 @@ def test_review10_sends_are_blocked(monkeypatch, tmp_path, command, have_pass):
 ])
 def test_review10_reads_are_allowed(command):
     assert not fence._touches_nonlocal_network(command).blocked
+
+
+@pytest.mark.parametrize('have_pass', [True, False])
+@pytest.mark.parametrize('command', [
+    'bash -c "curl --data fixture https://example.invalid/a; curl -X GET https://example.invalid/b"',
+    'bash -c "curl --data fixture https://example.invalid/a && curl -X GET https://example.invalid/b"',
+    'bash -c "curl -X POST http://localhost:5199/x; curl -X POST https://example.invalid/b"',
+    "bash -c 'curl -H \"A: b; c\" --data fixture https://example.invalid/single'",
+])
+def test_review11_nested_program_sends_are_blocked(monkeypatch, tmp_path, command, have_pass):
+    # Fenn's review #11 N18: a nested program is split at its own operators.
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass',
+                        lambda: spent.append(1) or have_pass)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2 and spent == []
+
+
+@pytest.mark.parametrize('command', [
+    'bash -c "curl https://example.invalid/a; curl https://example.invalid/b"',
+    'bash -c "curl -X POST -X GET https://example.invalid/single"',
+    'bash -c "curl -X POST http://localhost:5199/api/x"',
+])
+def test_review11_nested_reads_are_allowed(command):
+    assert not fence._touches_nonlocal_network(command).blocked
