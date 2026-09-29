@@ -512,12 +512,54 @@ async function runTaskLifecycleChecks(browser) {
   await ctx.close();
 }
 
+// ── IA2 acceptance (§5 row IA2): "ask survives project -> campaign ->
+// project nav". Every other check above drives window.DeskV1Kit directly
+// against a bare boot; this one needs the real shell (desk-v1-shell.js's
+// deskV1Nav + desk-v1-project.js's project-scoped Posy box) so a stale
+// draftKey collision between the project scope and a campaign scope would
+// actually show up here — matching desk-v1-project.mjs's own boot pattern. ─
+async function runShellBootedPage(browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 950 } });
+  const page = await ctx.newPage();
+  const pageErrors = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
+  await page.route('**/*', fulfillOrAbort);
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
+  await page.evaluate(() => window.sidebarNav('social'));
+  await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
+  return { ctx, page, pageErrors };
+}
+
+async function runProjectCampaignProjectNavDraftSurvival(browser) {
+  const { ctx, page, pageErrors } = await runShellBootedPage(browser);
+
+  await page.evaluate(() => window.deskV1Nav('project', { projectId: 'clayrune' }));
+  await page.waitForSelector('#desk-v1-project-posy .agent-task-input', { timeout: 4000 });
+  await page.fill('#desk-v1-project-posy-input', 'Ask surviving project -> campaign -> project nav');
+
+  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1', projectId: 'clayrune' }));
+  await page.waitForSelector('.desk-v1-camp-posy .agent-task-input', { timeout: 4000 });
+
+  await page.evaluate(() => window.deskV1Nav('project', { projectId: 'clayrune' }));
+  await page.waitForSelector('#desk-v1-project-posy .agent-task-input', { timeout: 4000 });
+  const draftValue = await page.$eval('#desk-v1-project-posy-input', (el) => el.value);
+  draftValue === 'Ask surviving project -> campaign -> project nav'
+    ? ok(`draft key survives project -> campaign -> project nav: ${JSON.stringify(draftValue)}`)
+    : fail(`draft lost across project -> campaign -> project nav: ${JSON.stringify(draftValue)}`);
+
+  const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught.length) uncaught.forEach((e) => fail('[project-campaign-project nav] uncaught page error: ' + e));
+  await ctx.close();
+}
+
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
   for (const tone of TONES) await runToneRenderChecks(browser, tone);
   await runInteractionChecks(browser);
   await runTaskLifecycleChecks(browser);
+  await runProjectCampaignProjectNavDraftSurvival(browser);
   exitCode = bad ? 1 : 0;
 } catch (e) {
   console.error('❌ FAIL — smoke harness error: ' + (e && e.message ? e.message : e));
