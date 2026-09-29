@@ -22,6 +22,8 @@ Routes:
     POST   /api/secrets/vault-lock/change      rotate the passphrase (human-only)
     POST   /api/secrets/vault-lock/unlock      unlock with passphrase or recovery key (human-only)
     POST   /api/secrets/vault-lock/lock        lock now, immediately (human-only)
+    POST   /api/secrets/vault-lock/retire-legacy retry the legacy-key quarantine
+                                               (human-only)
     POST   /api/secrets/exec                   run a command with secrets injected,
                                                entirely server-side (loopback+token only)
     POST   /api/secrets/notify-vault-locked    relay a 'vault locked' push for an
@@ -427,10 +429,15 @@ def api_secrets_audit():
 def api_vault_lock_state():
     """Read-only status — safe for any caller, including agents: it never
     reveals the key or a secret, only which of the three states the vault
-    is in (see ``vault.lock_state()``)."""
+    is in (see ``vault.lock_state()``), plus a metadata-only boolean for
+    whether a pre-passphrase-lock copy of the master key is still live
+    (MC 503edfe4 follow-up — no values, no key-material paths)."""
+    state = vault.lock_state()
     return jsonify({
-        'state': vault.lock_state(),
-        'configured': vault.lock_state() != 'unconfigured',
+        'state': state,
+        'configured': state != 'unconfigured',
+        'legacy_key_copies_present': (
+            vault.legacy_key_copies_present() if state != 'unconfigured' else False),
     })
 
 
@@ -520,6 +527,29 @@ def api_vault_lock_lock():
         return refusal
     vault.lock_now(caller_addr=request.remote_addr or '')
     return jsonify({'ok': True, 'state': vault.lock_state()})
+
+
+@bp.route('/api/secrets/vault-lock/retire-legacy', methods=['POST'])
+def api_vault_lock_retire_legacy():
+    """Manual retry of the legacy-key quarantine (MC 503edfe4 follow-up) —
+    same human-only + passcode gate as set/change/unlock/lock. No-op (still
+    200, ``had_legacy_copies: false``) if nothing legacy is left to
+    retire — the button doesn't need to know the current state first."""
+    if is_unattended_caller():
+        return _unattended_refusal()
+    data = request.get_json(silent=True) or {}
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
+    try:
+        had_legacy = vault.retire_legacy_key_copies(caller_addr=request.remote_addr or '')
+    except vault.SecretsError as e:
+        return _err(e)
+    return jsonify({
+        'ok': True,
+        'had_legacy_copies': had_legacy,
+        'legacy_key_copies_present': vault.legacy_key_copies_present(),
+    })
 
 
 @bp.route('/api/secrets/check', methods=['POST'])

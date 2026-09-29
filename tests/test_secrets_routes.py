@@ -306,7 +306,8 @@ def test_vault_lock_lifecycle_over_http(client):
     passcode = _set_passcode()
 
     state = client.get('/api/secrets/vault-lock').get_json()
-    assert state == {'state': 'unconfigured', 'configured': False}
+    assert state == {'state': 'unconfigured', 'configured': False,
+                     'legacy_key_copies_present': False}
 
     res = client.post('/api/secrets/vault-lock/set',
                       json={'passphrase': 'a real passphrase', 'passcode': passcode})
@@ -437,3 +438,61 @@ def test_vault_lock_lock_route_is_a_no_op_when_already_locked(client):
     res = client.post('/api/secrets/vault-lock/lock', json={'passcode': passcode})
     assert res.status_code == 200
     assert res.get_json()['state'] == 'unconfigured'
+
+
+# ── legacy-key quarantine visibility + retry (MC 503edfe4 follow-up) ────────
+
+def test_vault_lock_state_flags_legacy_copies_present(client, monkeypatch, tmp_path):
+    """The status route's legacy_key_copies_present boolean must reflect a
+    quarantine that failed (e.g. clayrune.log 2026-09-24T16:18Z's WinError
+    5) and clear once it's retried successfully — no values, no paths."""
+    from mc import secrets_store as vault
+    blocker = tmp_path / 'quarantine_blocker'
+    blocker.write_text('in the way')
+    monkeypatch.setattr(vault, 'legacy_key_quarantine_dir', lambda: blocker)
+    passcode = _set_passcode()
+    client.post('/api/secrets/vault-lock/set',
+               json={'passphrase': 'a real passphrase', 'passcode': passcode})
+    state = client.get('/api/secrets/vault-lock').get_json()
+    assert state['legacy_key_copies_present'] is True
+    assert 'secrets.key' not in str(state)
+
+
+def test_vault_lock_retire_legacy_route_retries_and_reports(client, monkeypatch, tmp_path):
+    from mc import secrets_store as vault
+    blocker = tmp_path / 'quarantine_blocker'
+    blocker.write_text('in the way')
+    real_qdir = vault.clayrune_home() / 'legacy_key_quarantine'
+    state = {'dir': blocker}
+    monkeypatch.setattr(vault, 'legacy_key_quarantine_dir', lambda: state['dir'])
+    passcode = _set_passcode()
+    client.post('/api/secrets/vault-lock/set',
+               json={'passphrase': 'a real passphrase', 'passcode': passcode})
+    assert client.get('/api/secrets/vault-lock').get_json()['legacy_key_copies_present'] is True
+
+    state['dir'] = real_qdir
+    res = client.post('/api/secrets/vault-lock/retire-legacy', json={'passcode': passcode})
+    assert res.status_code == 200
+    out = res.get_json()
+    assert out['had_legacy_copies'] is True
+    assert out['legacy_key_copies_present'] is False
+    assert client.get('/api/secrets/vault-lock').get_json()['legacy_key_copies_present'] is False
+
+
+def test_vault_lock_retire_legacy_route_refused_without_the_passcode(client, monkeypatch, tmp_path):
+    from mc import secrets_store as vault
+    blocker = tmp_path / 'quarantine_blocker'
+    blocker.write_text('in the way')
+    monkeypatch.setattr(vault, 'legacy_key_quarantine_dir', lambda: blocker)
+    passcode = _set_passcode()
+    client.post('/api/secrets/vault-lock/set',
+               json={'passphrase': 'a real passphrase', 'passcode': passcode})
+    res = client.post('/api/secrets/vault-lock/retire-legacy', json={})
+    assert res.status_code == 403
+    assert vault.legacy_key_copies_present() is True
+
+
+def test_vault_lock_retire_legacy_route_refuses_before_passphrase_set(client):
+    passcode = _set_passcode()
+    res = client.post('/api/secrets/vault-lock/retire-legacy', json={'passcode': passcode})
+    assert res.status_code == 400
