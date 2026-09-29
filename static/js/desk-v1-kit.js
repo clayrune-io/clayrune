@@ -755,7 +755,7 @@
       if (key) {
         const entry = _entryFor(key);
         const cur = entry.asks[entry.asks.length - 1];
-        if (cur && !_isPosyTerminal(cur.state)) { toast('Posy is still on the last one.'); return; }
+        if (cur && !_isPosyTerminal(cur.state)) { toast(`${ctx.agentName || 'Your agent'} is still on the last one.`); return; }
       }
       _startPosyTask(key, text, ctx);
     };
