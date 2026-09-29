@@ -269,6 +269,18 @@ _lock_notified = False
 # unlock).
 _last_key_use: float | None = None
 
+# Cached existence of a live OS-keyring master-key entry — the ``keyring``
+# package has no exists-only check (``get_password``/``get_credential`` both
+# return the actual secret), so a bare truthiness check in
+# ``legacy_key_copies_present()`` used to pull the real master key out of
+# the OS keyring on every call, including from the metadata-only status
+# route any agent can poll (MC 503edfe4 rework). Refreshed for real only at
+# quarantine time and right after an unlock (see
+# ``_refresh_legacy_keyring_cache``); ``legacy_key_copies_present()`` reads
+# this instead of the keyring on every other call. ``None`` until the first
+# such refresh in this process's lifetime.
+_legacy_keyring_entry_cached: bool | None = None
+
 
 # ── Name validation ──────────────────────────────────────────────────────────
 
@@ -1082,14 +1094,50 @@ def _quarantine_legacy_key_material() -> None:
     quarantine must not unwind the wrapped-key write that already
     succeeded, and a half-retired legacy set is still strictly safer than
     the pre-fix all-of-them-live state. Every step is logged so a partial
-    failure is visible, not silent."""
+    failure is visible, not silent.
+
+    Real root cause of the mkdir failure clayrune.log caught at
+    2026-09-24T16:18Z, ``WinError 5 Access is denied`` (MC 503edfe4
+    rework — the first pass at this fix mis-called it a transient hiccup
+    and only added a retry, which cannot succeed against this): the
+    ``_write_wrapped_key`` call immediately before this one rewrote the
+    Clayrune home directory's ACL with a NON-inheritable grant, and
+    ``icacls /inheritance:r`` on that directory propagates the
+    inheritance removal to whatever children already existed under it —
+    this quarantine dir among them — leaving those children with an EMPTY
+    DACL (no ACEs, not even for the owner). `mkdir` inside an empty-DACL
+    directory fails ``WinError 5`` on every attempt, forever, so no retry
+    count fixes it. :func:`_repair_broken_legacy_acls_windows` runs first,
+    below, to put a working ACL back on any child left this way before the
+    mkdir is even attempted; :func:`_icacls_grant_and_verify_once`'s
+    directory grants are now inheritable so a correctly-hardened directory
+    never does this to its children again.
+
+    The ``qdir.mkdir`` loop still retries once after a short pause — kept
+    as a residual guard against a genuinely transient filesystem hiccup,
+    now that the permanent cause above has its own fix."""
+    if os.name == 'nt':
+        try:
+            sid, account = _current_user_sid_and_name()
+            _repair_broken_legacy_acls_windows(sid, account)
+        except Exception as e:
+            _log(f"[secrets] could not resolve current user SID to repair "
+                 f"legacy-key ACLs before quarantine: {e}")
     ts = now_iso().replace(':', '').replace('+00:00', 'Z')
     qdir = legacy_key_quarantine_dir() / ts
-    try:
-        qdir.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
+    mkdir_err: OSError | None = None
+    for attempt in range(2):
+        try:
+            qdir.mkdir(parents=True, exist_ok=True)
+            mkdir_err = None
+            break
+        except OSError as e:
+            mkdir_err = e
+            if attempt == 0:
+                time.sleep(0.25)
+    if mkdir_err is not None:
         _log(f"[secrets] could not create legacy-key quarantine dir "
-             f"({qdir}) — leaving legacy key copies in place: {e}")
+             f"({qdir}) — leaving legacy key copies in place: {mkdir_err}")
         return
     if os.name == 'nt':
         # Fail CLOSED, SID-based (Wren's review of MC 503edfe4): this dir is
@@ -1122,7 +1170,10 @@ def _quarantine_legacy_key_material() -> None:
 
     kp = key_file_path()
     try:
-        if kp.is_file():
+        if _is_reparse_point(kp):
+            _log(f"[secrets] refusing to quarantine {kp} — it is a reparse "
+                 f"point, not the plaintext key file")
+        elif kp.is_file():
             dest = qdir / kp.name
             os.replace(kp, dest)
             _harden_secret_perms(dest)
@@ -1132,7 +1183,10 @@ def _quarantine_legacy_key_material() -> None:
 
     dp = dpapi_mirror_path()
     try:
-        if dp.is_file():
+        if _is_reparse_point(dp):
+            _log(f"[secrets] refusing to quarantine {dp} — it is a reparse "
+                 f"point, not the DPAPI key mirror")
+        elif dp.is_file():
             dest = qdir / dp.name
             os.replace(dp, dest)
             _harden_secret_perms(dest)
@@ -1140,6 +1194,7 @@ def _quarantine_legacy_key_material() -> None:
     except OSError as e:
         _log(f"[secrets] could not quarantine DPAPI key mirror {dp}: {e}")
 
+    global _legacy_keyring_entry_cached
     if not _keyring_disabled():
         try:
             import keyring
@@ -1150,9 +1205,105 @@ def _quarantine_legacy_key_material() -> None:
                 keyring.delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
                 _log(f"[secrets] quarantined OS keyring master-key entry to "
                      f"{dest} and removed the live keyring entry")
+            # Ground truth either way: either nothing was there, or it just
+            # got deleted. Cache it so legacy_key_copies_present() doesn't
+            # have to pull the keyring again to answer the same question.
+            _legacy_keyring_entry_cached = False
         except Exception as e:
             _log(f"[secrets] could not quarantine/remove the OS keyring "
                  f"master-key entry: {e}")
+            # Genuinely unknown whether the entry survived — leave the
+            # cache as it was rather than guess.
+
+
+def _refresh_legacy_keyring_cache() -> bool:
+    """The only place outside :func:`_quarantine_legacy_key_material` allowed
+    to call ``keyring.get_password`` for existence purposes — right after an
+    unlock (see :func:`_retry_quarantine_if_needed`), never from a bare
+    :func:`legacy_key_copies_present` GET. ``keyring`` has no exists-only
+    check (``get_password``/``get_credential`` both hand back the actual
+    secret), so this is the real cost every previous per-GET check paid;
+    confining it to unlock/quarantine events is the fix. Updates and returns
+    ``_legacy_keyring_entry_cached``."""
+    global _legacy_keyring_entry_cached
+    present = False
+    if not _keyring_disabled():
+        try:
+            import keyring
+            present = bool(keyring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT))
+        except Exception:
+            present = False
+    _legacy_keyring_entry_cached = present
+    return present
+
+
+def legacy_key_copies_present() -> bool:
+    """True if a pre-passphrase-lock copy of the master key is still live
+    on disk or in the OS keyring — i.e. :func:`_quarantine_legacy_key_material`
+    has not (yet) fully succeeded. Metadata-only (a boolean, never key
+    material or a path with key content) — safe for the vault-lock status
+    route any caller, including agents, can read (MC 503edfe4 follow-up).
+
+    The file checks below are cheap stats, run live every call. The keyring
+    leg is CACHED (MC 503edfe4 rework): ``keyring.get_password`` is the only
+    way to check whether an entry exists, and it hands back the actual
+    master key to do it — so this route used to pull the real key into
+    process memory on every single call, including from agents polling
+    status. Reads ``_legacy_keyring_entry_cached`` instead; lazily populated
+    on first use in this process if nothing has refreshed it yet (a
+    passphrase-locked box that has never quarantined or unlocked in this
+    process's lifetime), and refreshed for real at quarantine time and after
+    every unlock — see :func:`_refresh_legacy_keyring_cache`."""
+    if key_file_path().is_file() or dpapi_mirror_path().is_file():
+        return True
+    global _legacy_keyring_entry_cached
+    if _legacy_keyring_entry_cached is None:
+        _refresh_legacy_keyring_cache()
+    return bool(_legacy_keyring_entry_cached)
+
+
+def _retry_quarantine_if_needed() -> None:
+    """Best-effort retry of :func:`_quarantine_legacy_key_material`, called
+    on every successful unlock (MC 503edfe4 follow-up). ``set_passphrase``
+    only ever runs the quarantine once — guarded by the "already
+    configured" check — so its original attempt failing (clayrune.log
+    2026-09-24T16:18Z: ``WinError 5`` on the quarantine dir's ``mkdir``) had
+    no other path to recover on. A no-op once
+    :func:`legacy_key_copies_present` is False. Never raises into the
+    caller's unlock path — a failed retry here is no worse than the
+    original failure, just logged again.
+
+    Refreshes the keyring cache for real before checking (MC 503edfe4
+    rework) — an unlock is exactly the ground-truth-may-have-changed moment
+    :func:`_refresh_legacy_keyring_cache` exists for, and it's one call per
+    unlock, not one per status GET."""
+    try:
+        if not wrapped_key_path().is_file():
+            return
+        _refresh_legacy_keyring_cache()
+        if legacy_key_copies_present():
+            _quarantine_legacy_key_material()
+    except Exception as e:
+        _log(f"[secrets] legacy-key quarantine retry failed: {e}")
+
+
+def retire_legacy_key_copies(*, caller_addr: str = '') -> bool:
+    """Human-triggered retry of the legacy-key quarantine — the Settings >
+    Vault "Retire legacy key copies" button (MC 503edfe4 follow-up). Only
+    meaningful once the vault is passphrase-configured; the underlying
+    quarantine step is the same best-effort, MOVE-never-delete operation
+    :func:`_quarantine_legacy_key_material` always was. Returns whether any
+    legacy copies were present to retire (``False`` is a legitimate no-op,
+    not a failure)."""
+    if not wrapped_key_path().is_file():
+        raise SecretsError("no passphrase is set yet — use set-passphrase")
+    with _lock:
+        had_legacy = legacy_key_copies_present()
+        if had_legacy:
+            _quarantine_legacy_key_material()
+    _audit('vault_legacy_key_retire_requested', caller_addr=caller_addr,
+           had_legacy_copies=had_legacy)
+    return had_legacy
 
 
 def set_passphrase(passphrase: str, *, caller_addr: str = '') -> str:
@@ -1273,6 +1424,7 @@ def unlock_with_passphrase(passphrase: str) -> None:
         _mark_key_used()
     _audit('vault_unlocked', method='passphrase')
     _log("[secrets] vault unlocked (passphrase)")
+    _retry_quarantine_if_needed()
 
 
 def unlock_with_recovery_key(recovery_key: str, *, caller_addr: str = '') -> None:
@@ -1297,6 +1449,7 @@ def unlock_with_recovery_key(recovery_key: str, *, caller_addr: str = '') -> Non
     _audit('vault_unlocked', method='recovery_key', caller_addr=caller_addr)
     _notify_vault_tamper('unlocked with the recovery key', caller_addr)
     _log("[secrets] vault unlocked (recovery key)")
+    _retry_quarantine_if_needed()
 
 
 def _read_wrapped_key() -> dict[str, Any]:
@@ -1401,11 +1554,29 @@ def _current_user_sid_and_name() -> tuple[str, str]:
 
 def _icacls_grant_and_verify_once(path: Path, sid: str, account: str) -> tuple[bool, str]:
     """One attempt at :func:`_icacls_grant_and_verify` — see that function for
-    the retry wrapper callers actually use. Never raises; returns (ok, detail)."""
+    the retry wrapper callers actually use. Never raises; returns (ok, detail).
+
+    Directories grant ``(OI)(CI)F`` (object-inherit, container-inherit) —
+    files keep plain ``F``. Measured 2026-09-29 (MC 503edfe4 rework): a bare
+    ``F`` grant on a DIRECTORY is not inheritable, and ``/inheritance:r`` on
+    that directory still propagates the inheritance-removal to any children
+    that already existed (a legacy ``legacy_key_quarantine`` dir, leftover
+    key files from before this module's ACL hardening ever ran) — those
+    children end up with an EMPTY DACL: no ACEs at all, not even for the
+    owner. `mkdir` inside such a directory then fails ``WinError 5 Access is
+    denied`` on every attempt, and reading/moving a pre-existing file inside
+    it fails ``Errno 13`` — permanently, since nothing about that failure is
+    transient. The inheritable grant makes new directories correctly pass
+    permissions to whatever gets created under them afterward; see
+    :func:`_repair_broken_legacy_acls_windows` for repairing directories a
+    pre-fix run already broke this way."""
     p = str(path)
+    is_dir = path.is_dir()
+    sid_grant = f'*{sid}:(OI)(CI)F' if is_dir else f'*{sid}:F'
+    system_grant = '*S-1-5-18:(OI)(CI)F' if is_dir else '*S-1-5-18:F'
     try:
         grant = subprocess.run(
-            ['icacls', p, '/inheritance:r', '/grant:r', f'*{sid}:F', '*S-1-5-18:F'],
+            ['icacls', p, '/inheritance:r', '/grant:r', sid_grant, system_grant],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
             stdin=subprocess.DEVNULL,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -1427,6 +1598,9 @@ def _icacls_grant_and_verify_once(path: Path, sid: str, account: str) -> tuple[b
     system_present = ('s-1-5-18' in low) or ('system' in low)
     if not (owner_present and system_present):
         return False, f"unexpected ACL after icacls grant: {(verify.stdout or '').strip()!r}"
+    if is_dir and low.count('(oi)(ci)') < 2:
+        return False, (f"expected an inheritable (OI)(CI)F grant on a "
+                        f"directory but got: {(verify.stdout or '').strip()!r}")
     return True, ''
 
 
@@ -1454,12 +1628,143 @@ def _icacls_grant_and_verify(path: Path, sid: str, account: str) -> tuple[bool, 
     return False, f"failed twice (retried once): first={detail!r} retry={retry_detail!r}"
 
 
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def _is_reparse_point(p: Path) -> bool:
+    """True if ``p`` is itself a symlink or NTFS junction, checked without
+    following it. An agent that can write into a directory this module is
+    about to re-ACL could otherwise drop a junction/symlink pointing at any
+    path it merely has WRITE_DAC on, and have the next unlock hand that
+    target a fresh, wide-open ACL (MC 503edfe4 security review).
+
+    ``Path.is_symlink()`` alone is not enough on Windows: a junction sets
+    the mount-point reparse tag, not the symlink one, so ``os.path.islink``
+    (and therefore ``is_symlink``) misses it — only ``os.lstat``'s
+    ``st_file_attributes`` (set for every reparse point, junction or
+    symlink alike) catches both. Using that directly, rather than
+    ``Path.is_junction()`` (3.12+), keeps this working on the older
+    Pythons this repo's pyright config targets. Fails closed: anything that
+    can't be determined safely is treated as a reparse point and skipped."""
+    try:
+        if p.is_symlink():
+            return True
+    except OSError:
+        return True
+    if os.name == 'nt':
+        try:
+            attrs = os.lstat(p).st_file_attributes  # type: ignore[attr-defined]
+        except OSError:
+            return True
+        except AttributeError:
+            return False
+        return bool(attrs & _FILE_ATTRIBUTE_REPARSE_POINT)
+    return False
+
+
+def _repair_broken_legacy_acls_windows(sid: str, account: str) -> None:
+    """Best-effort repair for the specific paths a PRE-FIX run of
+    ``_icacls_grant_and_verify_once`` could have left with an empty DACL —
+    see that function's docstring for how a non-inheritable grant on the
+    Clayrune home directory does this to whatever children already existed
+    under it. Scoped deliberately to only the legacy-key/vault paths THIS
+    module owns (``key_file_path()``, ``dpapi_mirror_path()``,
+    ``store_path()``, ``audit_path()``, ``legacy_key_quarantine_dir()`` and
+    whatever it already contains from an earlier attempt) — never the wider
+    ``~/.clayrune`` tree, which other subsystems (named browser profiles
+    among them) also live under and this module has no business re-ACLing.
+
+    The owner keeps WRITE_DAC even when a DACL is completely empty, so
+    ``icacls /grant:r`` still succeeds against a path already broken this
+    way — this must run BEFORE a `mkdir` or file move into any of these
+    paths, or that mkdir/move hits the exact permanent WinError 5 / Errno 13
+    this function exists to clear. Idempotent and cheap to call on an
+    already-healthy tree: re-granting an ACL that's already correct is a
+    no-op. Never raises; a single path failing to repair is logged and does
+    not stop the rest.
+
+    Every candidate is checked with :func:`_is_reparse_point` and refused if
+    it is one — a junction or symlink dropped anywhere in the quarantine
+    tree is never descended into and never re-ACL'd itself, so its TARGET
+    can never inherit a grant meant for a legacy-key copy (MC 503edfe4
+    security review, finding 1). Anything found while walking the
+    quarantine tree is additionally required to resolve to somewhere inside
+    it before its ACL is touched."""
+    fixed_candidates = [key_file_path(), dpapi_mirror_path(), store_path(),
+                         audit_path(), legacy_key_quarantine_dir()]
+    candidates: list[Path] = list(fixed_candidates)
+    qroot = legacy_key_quarantine_dir()
+    try:
+        qroot_resolved = qroot.resolve()
+    except OSError as e:
+        qroot_resolved = None
+        _log(f"[secrets] could not resolve {qroot} to repair legacy ACLs: {e}")
+    if qroot.is_dir() and not _is_reparse_point(qroot):
+        try:
+            for dirpath, dirnames, filenames in os.walk(qroot, followlinks=False):
+                dirpath_p = Path(dirpath)
+                kept_dirnames = []
+                for name in dirnames:
+                    d = dirpath_p / name
+                    if _is_reparse_point(d):
+                        _log(f"[secrets] not descending into a reparse point "
+                             f"found in the legacy-key quarantine tree: {d}")
+                        continue
+                    kept_dirnames.append(name)
+                    candidates.append(d)
+                dirnames[:] = kept_dirnames
+                for name in filenames:
+                    f = dirpath_p / name
+                    if _is_reparse_point(f):
+                        _log(f"[secrets] skipping a reparse point found in "
+                             f"the legacy-key quarantine tree: {f}")
+                        continue
+                    candidates.append(f)
+        except OSError as e:
+            _log(f"[secrets] could not list {qroot} to repair legacy ACLs: {e}")
+    for p in candidates:
+        try:
+            exists = p.exists()
+        except OSError:
+            exists = False
+        if not exists:
+            continue
+        if _is_reparse_point(p):
+            _log(f"[secrets] refusing to repair the ACL of a reparse point: {p}")
+            continue
+        is_fixed = p in fixed_candidates
+        if not is_fixed:
+            try:
+                resolved = p.resolve()
+            except OSError as e:
+                _log(f"[secrets] could not resolve {p} to repair its ACL: {e}")
+                continue
+            if qroot_resolved is None:
+                continue
+            try:
+                resolved.relative_to(qroot_resolved)
+            except ValueError:
+                _log(f"[secrets] refusing to repair {p} — resolved path "
+                     f"{resolved} is outside the quarantine root")
+                continue
+        ok, detail = _icacls_grant_and_verify_once(p, sid, account)
+        if not ok:
+            _log(f"[secrets] could not repair a possibly-broken ACL on {p}: {detail}")
+
+
 def _harden_clayrune_home_windows(home: Path) -> None:
     """Best-effort: strip ACL inheritance on ~/.clayrune itself and grant
-    only (owner, SYSTEM), so a file created under it no longer inherits
-    whatever the parent directory happens to grant. Logged, not raised: the
-    wrapped-key FILE's own ACL is independently verified and fail-closed
-    (see _write_private_text_fail_closed_windows below)."""
+    only (owner, SYSTEM) — inheritable, so directories created under it pass
+    permissions on to whatever gets created under THEM too — no longer
+    inheriting whatever the parent directory happens to grant. Logged, not
+    raised: the wrapped-key FILE's own ACL is independently verified and
+    fail-closed (see _write_private_text_fail_closed_windows below).
+
+    Runs :func:`_repair_broken_legacy_acls_windows` first: this call used to
+    grant a non-inheritable ACE, which strips existing children of `home`
+    down to an empty DACL (MC 503edfe4 rework) — repairing them before
+    re-hardening `home` means a box already broken by the pre-fix code heals
+    the next time a passphrase is set or changed, not just going forward."""
     if os.name != 'nt':
         return
     try:
@@ -1467,6 +1772,7 @@ def _harden_clayrune_home_windows(home: Path) -> None:
     except Exception as e:
         _log(f"[secrets] could not resolve current user SID to harden {home}: {e}")
         return
+    _repair_broken_legacy_acls_windows(sid, account)
     ok, detail = _icacls_grant_and_verify(home, sid, account)
     if not ok:
         _log(f"[secrets] could not harden {home}'s ACL: {detail}")

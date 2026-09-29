@@ -238,6 +238,20 @@ def test_unattended_cannot_lock_now(client):
     assert secrets_store.lock_state() == 'unlocked'
 
 
+def test_unattended_cannot_retire_legacy_key_copies(client):
+    """The manual quarantine-retry route (MC 503edfe4 follow-up) is
+    human-only for the same reason 'Lock now' is: it's a vault-mutating
+    action gated on the dashboard passcode, not on is_unattended_caller()
+    alone."""
+    passcode = _set_vault_passcode()
+    res = client.post('/api/secrets/vault-lock/set',
+                      json={'passphrase': 'correct horse battery', 'passcode': passcode})
+    assert res.status_code == 200
+    _mark_unattended()
+    res = client.post('/api/secrets/vault-lock/retire-legacy', json={'passcode': passcode})
+    assert res.status_code == 403
+
+
 def test_vault_lock_state_is_readable_by_anyone(client):
     """The status route reveals only locked/unlocked/unconfigured — never a
     key or a secret — so agents may read it; a job that hits VaultLocked

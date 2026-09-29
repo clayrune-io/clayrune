@@ -977,6 +977,85 @@ def test_set_passphrase_quarantine_failure_does_not_block_the_lock(vault, monkey
     assert vault.key_file_path().is_file()
 
 
+def test_quarantine_retries_a_transient_mkdir_failure(vault, monkeypatch):
+    """MC 503edfe4: clayrune.log 2026-09-24T16:18Z caught the quarantine
+    dir's mkdir failing once with ``WinError 5 Access is denied`` and no
+    retry — permanent, since set_passphrase only ever runs the quarantine
+    once. Fails on pre-fix code (a single un-retried attempt leaves the
+    legacy key file live); passes once the mkdir retries."""
+    from pathlib import Path as _Path
+    qroot = vault.legacy_key_quarantine_dir()
+    calls = {'n': 0}
+    orig_mkdir = _Path.mkdir
+
+    def flaky_mkdir(self, *args, **kwargs):
+        if str(self).startswith(str(qroot)):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                raise OSError(5, 'Access is denied')
+        return orig_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(_Path, 'mkdir', flaky_mkdir)
+
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+
+    assert not vault.key_file_path().is_file(), (
+        "legacy key file should have been quarantined once the retry succeeded")
+    quarantined = list(qroot.rglob('secrets.key'))
+    assert len(quarantined) == 1
+
+
+def test_unlock_retries_quarantine_when_legacy_copies_remain(vault, monkeypatch, tmp_path):
+    """set_passphrase's own quarantine attempt can fail permanently (it never
+    retries itself) — the recovery path is retrying on the NEXT unlock,
+    which happens on every restart. Simulate the original failure with the
+    same unwritable-quarantine-dir blocker the failure test above uses,
+    then clear it and confirm a later unlock finishes the job."""
+    from mc import secrets_store
+    blocker = tmp_path / 'quarantine_blocker'
+    blocker.write_text('in the way')
+    real_qdir = secrets_store.clayrune_home() / 'legacy_key_quarantine'
+    state = {'dir': blocker}
+    monkeypatch.setattr(secrets_store, 'legacy_key_quarantine_dir', lambda: state['dir'])
+
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    assert vault.key_file_path().is_file()
+    assert vault.legacy_key_copies_present() is True
+
+    state['dir'] = real_qdir
+    _relock(vault)
+    vault.unlock_with_passphrase('correct horse battery staple')
+
+    assert vault.legacy_key_copies_present() is False
+    assert not vault.key_file_path().is_file()
+
+
+def test_retire_legacy_key_copies_retries_and_reports(vault, monkeypatch, tmp_path):
+    from mc import secrets_store
+    blocker = tmp_path / 'quarantine_blocker'
+    blocker.write_text('in the way')
+    real_qdir = secrets_store.clayrune_home() / 'legacy_key_quarantine'
+    state = {'dir': blocker}
+    monkeypatch.setattr(secrets_store, 'legacy_key_quarantine_dir', lambda: state['dir'])
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    assert vault.legacy_key_copies_present() is True
+
+    state['dir'] = real_qdir
+    had_legacy = vault.retire_legacy_key_copies()
+    assert had_legacy is True
+    assert vault.legacy_key_copies_present() is False
+    # Nothing left to retire — a legitimate no-op, not an error.
+    assert vault.retire_legacy_key_copies() is False
+
+
+def test_retire_legacy_key_copies_refuses_before_passphrase_set(vault):
+    with pytest.raises(vault.SecretsError):
+        vault.retire_legacy_key_copies()
+
+
 def test_set_passphrase_refuses_short_passphrase(vault):
     with pytest.raises(vault.SecretsError):
         vault.set_passphrase('short')
@@ -1345,3 +1424,167 @@ def test_icacls_grant_and_verify_still_fails_closed_after_two_failures(monkeypat
     assert len(calls) == 2
     assert 'attempt 1 denied' in detail
     assert 'attempt 2 denied' in detail
+
+
+# ── Empty-DACL cascade — the REAL cause behind MC 503edfe4's WinError 5 ────
+# (rework, 2026-09-29). The first pass at this fix called the quarantine
+# dir's mkdir failure a transient hiccup and only added a retry. It isn't
+# transient: _harden_clayrune_home_windows granted a NON-inheritable ACE on
+# the home directory, and icacls /inheritance:r on that directory propagates
+# the inheritance removal to whatever children already existed under it,
+# leaving them with an EMPTY DACL — no ACEs at all, not even for the owner.
+# `mkdir` inside such a directory fails WinError 5 on every attempt, forever;
+# no retry count reaches a directory the ACL itself has locked everyone out
+# of. Real subprocess/filesystem calls on purpose — this is exactly the
+# class of bug a mocked icacls call cannot reproduce.
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='ACL propagation is Windows-only')
+def test_home_lock_used_to_strand_preexisting_children_with_an_empty_dacl(
+        tmp_path, monkeypatch):
+    """Reproduces the exact live-item shape: legacy_key_quarantine/ already
+    exists (empty, left over from an earlier attempt) and a legacy
+    secrets.key file sits next to it — both from before ACL hardening ever
+    touched this home dir, same as a box that has been running Clayrune for
+    a while before ever calling set_passphrase. Fails on pre-fix code: the
+    home-lock call strands both paths with an empty DACL, so the quarantine
+    dir's own mkdir fails WinError 5 and the legacy key file can't even be
+    read. Passes once directory grants are inheritable and pre-existing
+    children are repaired before home gets re-hardened."""
+    from mc import secrets_store
+    home = tmp_path / '.clayrune'
+    home.mkdir()
+    qdir = home / 'legacy_key_quarantine'
+    qdir.mkdir()
+    keyfile = home / 'secrets.key'
+    keyfile.write_text('legacy-key-bytes', encoding='utf-8')
+    monkeypatch.setenv('CLAYRUNE_HOME', str(home))
+
+    secrets_store._harden_clayrune_home_windows(home)
+
+    # This is exactly what _quarantine_legacy_key_material's own mkdir does
+    # next — WinError 5 here pre-fix, permanently, on every attempt.
+    (qdir / 'probe').mkdir()
+    # The legacy key file must still be readable — Errno 13 pre-fix.
+    assert keyfile.read_text(encoding='utf-8') == 'legacy-key-bytes'
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='ACL propagation is Windows-only')
+def test_quarantine_repairs_a_home_dir_broken_by_a_prior_pre_fix_run(
+        tmp_path, monkeypatch):
+    """Same empty-DACL damage as above, but simulated directly (bypassing
+    _harden_clayrune_home_windows so this test doesn't depend on that
+    function already being fixed) to pin _quarantine_legacy_key_material's
+    OWN repair-before-mkdir step, independent of the home-lock function's."""
+    import subprocess
+    from mc import secrets_store
+    home = tmp_path / '.clayrune'
+    home.mkdir()
+    qdir = home / 'legacy_key_quarantine'
+    qdir.mkdir()
+    keyfile = home / 'secrets.key'
+    keyfile.write_text('legacy-key-bytes', encoding='utf-8')
+    monkeypatch.setenv('CLAYRUNE_HOME', str(home))
+    monkeypatch.setenv('CLAYRUNE_SECRETS_KEY_BACKEND', 'file')
+
+    sid, _account = secrets_store._current_user_sid_and_name()
+    # The exact pre-fix grant shape: non-inheritable, stripping inheritance
+    # on the way — this is what left qdir/keyfile with an empty DACL.
+    subprocess.run(
+        ['icacls', str(home), '/inheritance:r', '/grant:r', f'*{sid}:F', '*S-1-5-18:F'],
+        capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL)
+
+    secrets_store._quarantine_legacy_key_material()
+
+    quarantined = list(qdir.rglob('secrets.key'))
+    assert len(quarantined) == 1, (
+        "the legacy key file should have been quarantined once the "
+        "pre-existing empty-DACL damage was repaired")
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='ACL propagation is Windows-only')
+def test_repair_does_not_follow_a_junction_into_the_quarantine_tree(
+        tmp_path, monkeypatch):
+    """MC 503edfe4 security review, finding 1: _repair_broken_legacy_acls_windows
+    used to walk the quarantine tree with plain ``rglob('*')`` and no
+    reparse-point check, then run ``icacls /grant:r`` on every hit. Measured
+    directly (2026-09-29): ``icacls`` on the junction PATH ITSELF re-ACLs
+    only the reparse point's own security descriptor and leaves its target
+    alone — but ``rglob`` follows the junction when walking, so it yields
+    paths like ``.../evil_junction/secret.txt`` one level down, and the OS
+    resolves the junction transparently for that intermediate component —
+    ``icacls`` on THAT path strips and re-grants the real target FILE's ACL.
+    So the file one level inside the junction, not the junction's own root,
+    is where the vulnerability actually lands; that's what this test checks.
+    Fails on pre-fix code (a7859b5/ec8583f): the target file's ACL changes.
+    Passes once :func:`secrets_store._is_reparse_point` refuses to descend
+    into the junction at all."""
+    import subprocess
+    from mc import secrets_store
+    home = tmp_path / '.clayrune'
+    home.mkdir()
+    qdir = home / 'legacy_key_quarantine'
+    qdir.mkdir()
+    monkeypatch.setenv('CLAYRUNE_HOME', str(home))
+
+    outside_target = tmp_path / 'outside_target_junction'
+    outside_target.mkdir()
+    target_file = outside_target / 'secret.txt'
+    target_file.write_text('not yours', encoding='utf-8')
+    before = subprocess.run(
+        ['icacls', str(target_file)], capture_output=True, text=True,
+        check=True, stdin=subprocess.DEVNULL).stdout
+
+    junction = qdir / 'evil_junction'
+    mk = subprocess.run(
+        ['cmd', '/c', 'mklink', '/J', str(junction), str(outside_target)],
+        capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert mk.returncode == 0, f"could not create test junction: {mk.stdout} {mk.stderr}"
+
+    sid, account = secrets_store._current_user_sid_and_name()
+    secrets_store._repair_broken_legacy_acls_windows(sid, account)
+
+    after = subprocess.run(
+        ['icacls', str(target_file)], capture_output=True, text=True,
+        check=True, stdin=subprocess.DEVNULL).stdout
+    assert after == before, (
+        "the junction target's file ACL changed — the repair walk followed "
+        "the junction out of the quarantine tree")
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='ACL propagation is Windows-only')
+def test_repair_does_not_follow_a_symlink_into_the_quarantine_tree(
+        tmp_path, monkeypatch):
+    """Same guard as the junction test above, for a plain NTFS symlink.
+    Skips cleanly if this account lacks permission to create one
+    (SeCreateSymbolicLinkPrivilege / Developer Mode) — that permission is an
+    environment property, not something this fix controls."""
+    import subprocess
+    from mc import secrets_store
+    home = tmp_path / '.clayrune'
+    home.mkdir()
+    qdir = home / 'legacy_key_quarantine'
+    qdir.mkdir()
+    monkeypatch.setenv('CLAYRUNE_HOME', str(home))
+
+    outside_target = tmp_path / 'outside_target_symlink'
+    outside_target.mkdir()
+    (outside_target / 'secret.txt').write_text('not yours', encoding='utf-8')
+    before = subprocess.run(
+        ['icacls', str(outside_target)], capture_output=True, text=True,
+        check=True, stdin=subprocess.DEVNULL).stdout
+
+    link = qdir / 'evil_symlink'
+    try:
+        link.symlink_to(outside_target, target_is_directory=True)
+    except OSError as e:
+        pytest.skip(f"cannot create a symlink on this account: {e}")
+
+    sid, account = secrets_store._current_user_sid_and_name()
+    secrets_store._repair_broken_legacy_acls_windows(sid, account)
+
+    after = subprocess.run(
+        ['icacls', str(outside_target)], capture_output=True, text=True,
+        check=True, stdin=subprocess.DEVNULL).stdout
+    assert after == before, (
+        "the symlink target's ACL changed — the repair walk followed the "
+        "symlink out of the quarantine tree")
