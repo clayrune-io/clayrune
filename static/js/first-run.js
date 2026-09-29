@@ -840,29 +840,16 @@ function startFirstRun(opts) {
 function firstRunNeeded() {
   if (!_globalConfig || !('setup_completed' in _globalConfig)) return false;
   if (_globalConfig.setup_completed) return false;
-  if (localStorage.getItem('walkthrough_done')) { _setupPersistMigration(); return false; }
+  // Used to fire an unguarded PUT /api/config here for the old combined-tour
+  // flag (see history below) — on any boot with a passcode configured
+  // (MC-995) that 403'd every time, spending an attempt out of the shared
+  // throttle for a browser that hadn't touched anything yet. There is no
+  // user action here to hang a passcode modal off, and this flag alone
+  // isn't worth one, so this migration no longer writes at all; a browser
+  // in this state still gets prompted through the normal wizard/backfill
+  // path the next time setup actually runs.
+  if (localStorage.getItem('walkthrough_done')) return false;
   return true;
-}
-
-// Fires on BOOT, unprompted, for any browser carrying the old combined-tour
-// flag — unlike setupFinish's write below, there is no user action here to
-// hang a passcode modal off, so this stays the plain best-effort fetch it
-// always was rather than routing through humanProofFetch. On an install with
-// the human-proof guard's passcode configured (MC-995), this now 403s and is
-// swallowed same as any other unconfigured caller of the gated route; that
-// matches every other pre-existing PUT /api/config caller outside this
-// wizard (out of scope here — only the wizard's own three writes were asked
-// for) and is strictly no worse than before this fix.
-async function _setupPersistMigration() {
-  try {
-    const res = await fetch(API_BASE + '/api/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ setup_completed: true }),
-    });
-    if (res.ok) { try { _globalConfig.setup_completed = true; } catch (_) {} }
-    else console.warn('setup_completed not saved: HTTP ' + res.status);
-  } catch (e) { console.warn('setup_completed not saved', e); }
 }
 
 // The three config writes this flow used to fire one at a time — backup_dest_dir

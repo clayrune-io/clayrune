@@ -597,6 +597,68 @@ async function runClaydoRestoreGuard(browser) {
   return true;
 }
 
+// ── Old-tour migration must never write unprompted (MC-995 follow-up) ───────
+// first-run.js's firstRunNeeded() used to call _setupPersistMigration() for
+// any browser carrying the pre-wizard 'walkthrough_done' flag, firing a plain
+// unguarded PUT /api/config on every boot. Once the human-proof passcode
+// guard (006f03e) started gating that route, this 403'd every single time —
+// silently, with no user in the loop to answer a prompt — and burned an
+// attempt out of the shared ten-per-window throttle on a browser that hadn't
+// touched anything. Dave review of 78052d4 flagged it; the fix deletes the
+// write entirely (first-run.js:843).
+async function runFirstRunMigrationNoWriteGuard(browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await ctx.newPage();
+  await page.addInitScript(() => { localStorage.setItem('walkthrough_done', '1'); });
+  let configPuts = 0;
+  await page.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/api/config') {
+      if (req.method() === 'PUT') {
+        configPuts++;
+        return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+      }
+      // The exact state that used to trigger the migration write: never set
+      // up server-side, but this browser already did the old combined tour.
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ setup_completed: false }) });
+    }
+    return fulfillStaticOrAbort(route);
+  });
+  const pageErrors = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  try {
+    await page.waitForSelector('#projects-col .card', { timeout: BOOT_TIMEOUT_MS });
+  } catch {
+    console.error('❌ first-run migration guard: grid never rendered (boot failed before the guard could run).');
+    await ctx.close();
+    return false;
+  }
+  // firstRunNeeded()/the migration call used to fire ~600ms after boot
+  // continuation (same timing every other first-run scenario in this file
+  // waits on) — give it a real margin past that before asserting silence.
+  await page.waitForTimeout(1200);
+  await ctx.close();
+
+  const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  let ok = true;
+  if (uncaught.length) {
+    ok = false;
+    console.error('❌ first-run migration guard: uncaught exception(s):');
+    uncaught.forEach((e) => console.error(`       • ${e}`));
+  }
+  if (configPuts !== 0) {
+    ok = false;
+    console.error(`❌ first-run migration guard: booting with walkthrough_done set and `
+      + `setup_completed:false fired ${configPuts} PUT /api/config request(s) — the old-tour `
+      + `migration write must never fire unprompted.`);
+  }
+  if (ok) console.log('✅ first-run migration guard: walkthrough_done + setup_completed:false boots '
+    + 'with ZERO PUT /api/config requests.');
+  return ok;
+}
+
 // ── A new hire arrives with a name and a face (MC-871 defect B) ─────────────
 // Never built before this: the save panel wrote Voice automatically but left
 // "Goes by" and "Face" both unset, so a hire landed on the roster nameless and
@@ -2597,6 +2659,7 @@ try {
   // Cross-module dispatch guard — runs after the boot scenarios so a boot
   // regression is reported on its own first.
   results.push(await runDispatchGuard(browser));
+  results.push(await runFirstRunMigrationNoWriteGuard(browser));
   results.push(await runModelPickerGuard(browser));
   results.push(await runClaydoRestoreGuard(browser));
   results.push(await runClaydoQuotaErrorGuard(browser));
@@ -2611,7 +2674,7 @@ try {
   results.push(await runAgentFaceGuard(browser));
   allOk = results.every(Boolean);
   console.log(allOk
-    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, identity-prefill, backlog, backlog-links, memory-panel, calendar, scheduler-layout, question-repaint, floor & agent-face guards all green.`
+    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, first-run-migration, model-picker, identity-prefill, backlog, backlog-links, memory-panel, calendar, scheduler-layout, question-repaint, floor & agent-face guards all green.`
     : `\n❌ FAIL — ${results.filter((r) => !r).length}/${results.length} check(s) failed.`);
 } catch (err) {
   console.error('❌ FAIL — smoke harness error:', err && err.stack ? err.stack : err);

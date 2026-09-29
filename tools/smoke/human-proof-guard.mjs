@@ -51,13 +51,22 @@ const CHAR_RECORD = {
   engine: {},
 };
 
-const calls = { config: [], character: [], workflow: [] };
+const calls = { config: [], character: [], workflow: [], voice: [], identity: [] };
 let configResponder = (body) => ({ status: 200, body: {} });
 let characterResponder = (body) => ({ status: 200, body: { ok: true } });
 let workflowResponder = (body) => ({
   status: 200,
   body: { ok: true, workflow: { ...body, id: 'wf_smoke_1' } },
 });
+let voiceResponder = (body) => ({ status: 200, body: { voice: '## Voice\n\nSpeaks in short declarative sentences.' } });
+let identityResponder = (body) => ({ status: 200, body: { agent_name: 'Bolt', avatar: 'fig:smith' } });
+
+// Dave review of 78052d4 (item D): a canned character-ready Claydo reply, so
+// R3 below can reach the real "Save character…" button through the actual
+// SSE parse path (_claydoParseMarkers / _claydoLastFenced) instead of calling
+// _claydoOpenSavePanel directly.
+const CLAYDO_READY_ANSWER = 'Here is your agent.\n\n[clayrune:character-ready name="builder"]\n\n'
+  + '```\n---\nname: builder\ndescription: builds things\n---\nYou are a builder.\n```';
 
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -94,7 +103,9 @@ await page.route('**/*', (route) => {
   if (path === '/api/floor') return json({ rooms: [], quiet: [], bench: [], counts: {} });
   if (path === '/api/secrets') return json({ secrets: [], locked: false });
   if (path === '/api/local-auth/status') return json({ configured: true });
+  if (path === '/api/avatars') return json({ figures: [] });
 
+  if (path === '/api/config' && method === 'GET') return json({});
   if (path === '/api/config' && method === 'PUT') {
     const body = postJson();
     calls.config.push(body);
@@ -115,6 +126,24 @@ await page.route('**/*', (route) => {
     const r = workflowResponder(body);
     return json(r.body, r.status);
   }
+  if (path === '/api/characters/voice' && method === 'POST') {
+    const body = postJson();
+    calls.voice.push(body);
+    const r = voiceResponder(body);
+    return json(r.body, r.status);
+  }
+  if (path === '/api/characters/identity' && method === 'POST') {
+    const body = postJson();
+    calls.identity.push(body);
+    const r = identityResponder(body);
+    return json(r.body, r.status);
+  }
+  // Canned SSE stream: one 'done' event carrying a character-ready reply, so
+  // R3 below can drive the real ready-card "Save character…" button.
+  if (path === '/api/guide/stream' && method === 'POST') {
+    const sse = `data: ${JSON.stringify({ type: 'done', answer: CLAYDO_READY_ANSWER })}\n\n`;
+    return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse });
+  }
   return route.abort();
 });
 
@@ -123,7 +152,10 @@ try {
   await page.waitForFunction(() => typeof window.humanProofFetch === 'function'
     && typeof window.saveSetting === 'function'
     && typeof window.openPersonaEditor === 'function'
-    && typeof window.openWorkflowBuilder === 'function', { timeout: 20000 });
+    && typeof window.openWorkflowBuilder === 'function'
+    && typeof window.openSettings === 'function'
+    && typeof window.drillSettings === 'function'
+    && typeof window.openClaydo === 'function', { timeout: 20000 });
 
   // ── helpers against the one shared modal ──────────────────────────────────
   // Both the persona-editor panel and the workflow builder are appended
@@ -153,6 +185,19 @@ try {
   });
   const hpGone = () => page.waitForFunction(
     () => document.querySelector('[data-modal-id^="__human-proof-"]') === null, { timeout: 5000 });
+  // Dave review of 78052d4 (item D): R1-R4 below need REAL clicks/keypresses
+  // against the modal's own Confirm/Cancel buttons — the helpers above drive
+  // window._hpSubmit/_hpCancel directly, which proves the fetch/DOM wiring
+  // but not that a human's mouse can actually reach the button.
+  const hpClickConfirm = async () => {
+    await page.waitForSelector('[data-modal-id^="__human-proof-"] button.btn-add', { timeout: 5000 });
+    await page.click('[data-modal-id^="__human-proof-"] button.btn-add');
+  };
+  const hpClickCancel = async () => {
+    await page.waitForSelector('[data-modal-id^="__human-proof-"] button.btn-secondary', { timeout: 5000 });
+    await page.click('[data-modal-id^="__human-proof-"] button.btn-secondary');
+  };
+  const hpFillPasscodeReal = (passcode) => page.fill('[id^="hp-passcode-__human-proof-"]', passcode);
 
   // ── 1. Settings toggle: PUT /api/config ──────────────────────────────────
   calls.config.length = 0;
@@ -282,6 +327,100 @@ try {
   calls.config.length === 1 && calls.config[0].passcode === FIXTURE_PASSCODE
     ? ok('phone viewport: correct passcode still submits successfully')
     : fail(`phone viewport: submit failed: ${JSON.stringify(calls.config)}`);
+
+  // ── Dave review of 78052d4 (item D): click-level evidence for R1-R4 ────────
+  // Everything above drives the modal programmatically (window._hpSubmit /
+  // _hpCancel) to pin the fetch/DOM wiring quickly. These four re-run the
+  // same scenarios through real Playwright mouse clicks and key presses —
+  // page.click (no force) fails if the target is covered, the way a human's
+  // click would.
+
+  // R1: persona editor → open the prompt → real click on Confirm.
+  calls.character.length = 0;
+  characterResponder = () => ({ status: 200, body: { ok: true } });
+  await page.evaluate(() => window.openPersonaEditor(null, 'global', 'builder'));
+  await page.waitForSelector('#pe-save', { timeout: 5000 });
+  await page.click('#pe-save');
+  await hpModal();
+  await hpFillPasscodeReal(FIXTURE_PASSCODE);
+  await hpClickConfirm();
+  await hpGone();
+  const r1Call = calls.character[calls.character.length - 1];
+  (r1Call && r1Call.passcode === FIXTURE_PASSCODE)
+    ? ok('R1: persona editor Confirm — a real mouse click (not force) submits the request')
+    : fail(`R1: real Confirm click did not submit: ${JSON.stringify(r1Call)}`);
+  await page.evaluate(() => document.querySelector('.persona-editor')?.remove());
+
+  // R2: press Escape (real key press) — no request, and the caller's Save
+  // re-enables (it was disabled the instant Save was clicked).
+  calls.character.length = 0;
+  await page.evaluate(() => window.openPersonaEditor(null, 'global', 'builder'));
+  await page.waitForSelector('#pe-save', { timeout: 5000 });
+  await page.click('#pe-save');
+  await hpModal();
+  const disabledWhilePending = await page.evaluate(() => document.getElementById('pe-save').disabled);
+  await page.keyboard.press('Escape');
+  await hpGone();
+  calls.character.length === 0
+    ? ok('R2: Escape sends no PUT /api/characters/global/builder')
+    : fail(`R2: Escape still sent a request: ${JSON.stringify(calls.character)}`);
+  const reenabled = await page.evaluate(() => document.getElementById('pe-save').disabled === false);
+  (disabledWhilePending && reenabled)
+    ? ok("R2: Escape re-enables the caller's Save button (disabled while pending, enabled after)")
+    : fail(`R2: Save button state wrong (pending disabled=${disabledWhilePending}, after enabled=${reenabled})`);
+  await page.evaluate(() => document.querySelector('.persona-editor')?.remove());
+
+  // R3: Claydo save panel — 0 requests to voice/identity before a click,
+  // then a real click on Generate raises the prompt. Drives the actual
+  // ready-card button through a canned SSE character-ready reply, not a
+  // direct call into _claydoOpenSavePanel.
+  await page.evaluate(() => window.openClaydo());
+  await page.waitForSelector('#claydo-input', { timeout: 5000 });
+  await page.fill('#claydo-input', 'hire me a builder');
+  await page.click('#claydo-send');
+  await page.waitForSelector('.claydo-ready-card', { timeout: 10000 });
+  const saveBtnHandle = await page.evaluateHandle(() =>
+    Array.from(document.querySelectorAll('.claydo-ready-card button')).find(b => b.textContent.includes('Save character')));
+  calls.voice.length = 0;
+  calls.identity.length = 0;
+  await saveBtnHandle.asElement().click();
+  await page.waitForSelector('#claydo-save-voice-regen', { timeout: 5000 });
+  (calls.voice.length === 0 && calls.identity.length === 0)
+    ? ok('R3: opening the Claydo save panel sends 0 requests to /api/characters/voice or /identity')
+    : fail(`R3: an unrequested call fired before any click: voice=${JSON.stringify(calls.voice)} identity=${JSON.stringify(calls.identity)}`);
+  await page.click('#claydo-save-voice-regen');
+  await hpModal();
+  ok('R3: a real click on Generate voice raises the passcode prompt');
+  await hpClickCancel();
+  await hpGone();
+  await page.evaluate(() => document.querySelector('.claydo-save-panel')?.remove());
+
+  // R4: toggle a setting, cancel the prompt with a real click, and the
+  // switch reverts to its original (pre-toggle) value.
+  await page.evaluate(() => window.openSettings());
+  await page.click('button.settings-list-row:has-text("Appearance")');
+  await page.click('button.settings-sub-row:has-text("Theme & display")');
+  const toggleSel = '[data-cat="appearance"] .settings-toggle';
+  await page.waitForSelector(toggleSel, { timeout: 5000 });
+  const beforeOn = await page.evaluate((sel) => document.querySelector(sel).classList.contains('on'), toggleSel);
+  await page.click(toggleSel);
+  const duringOn = await page.evaluate((sel) => document.querySelector(sel).classList.contains('on'), toggleSel);
+  await hpModal();
+  await hpClickCancel();
+  await hpGone();
+  // saveSetting's cancel branch calls _renderSettings() without awaiting it
+  // (fire-and-forget) — it re-fetches /api/config before rebuilding the
+  // pane, so the reverted class lands a tick after hpGone() resolves, not
+  // synchronously with it.
+  await page.waitForFunction(({ sel, want }) => {
+    const el = document.querySelector(sel);
+    return el && el.classList.contains('on') === want;
+  }, { sel: toggleSel, want: beforeOn }, { timeout: 5000 }).catch(() => {});
+  const afterOn = await page.evaluate((sel) => document.querySelector(sel)?.classList.contains('on'), toggleSel);
+  (duringOn === !beforeOn && afterOn === beforeOn)
+    ? ok(`R4: toggle flips optimistically (${beforeOn}->${duringOn}) then a real Cancel click reverts it (${afterOn})`)
+    : fail(`R4: switch state wrong (before=${beforeOn}, duringPending=${duringOn}, after=${afterOn})`);
+  await page.evaluate(() => closeModalById('__settings'));
 
   pageErrors.length === 0 ? ok('no uncaught page errors throughout')
     : pageErrors.forEach(e => fail('uncaught: ' + e));
