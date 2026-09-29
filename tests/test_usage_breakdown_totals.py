@@ -144,6 +144,47 @@ def test_codex_cumulative_snapshots_deduped_by_mc_session_id(sr):
     assert out['all_time'].get('gpt-5-codex') == 200, out
 
 
+def test_codex_cumulative_snapshots_deduped_in_production_newest_first_order(sr):
+    """P1-1 re-review (docs/_journal/4668eafc-mc998-fenn-review.md
+    "2026-09-28 re-review" finding 1): the agent log is newest-first --
+    `agent_routes.py`'s completion writer does `log.insert(0, entry)` -- so
+    on a day with more than one entry, the OLDER row appears LATER in the
+    list. The prior fix's dedup comparison truncated `ts` to a date before
+    comparing (`ts >= prev_ts[:10]`), so on a same-day pair an
+    older-but-later-in-list row still satisfied `>=` and overwrote the
+    newer-but-earlier-in-list row that was already kept: cumulative 200
+    (kept first) got replaced by 100 (seen second). Must compare the FULL
+    timestamp so list order can never invert which snapshot is "latest"."""
+    today = sr.datetime.now().strftime('%Y-%m-%d')
+    _write_log(sr, 'proj_agent_log.json', [
+        {  # newest row appears FIRST in the log (list.insert(0, ...))
+            'ts': f'{today}T12:05:00Z',
+            'provider': 'codex',
+            'claude_session_id': '',
+            'session_id': 'mc-codex-sess-5',
+            'provider_session_id': 'codex-thread-5',
+            'observed_model': 'gpt-5-codex',
+            'model_tokens': {},
+            'usage': {'input_tokens': 200, 'output_tokens': 0},
+        },
+        {  # older row appears SECOND -- same calendar day
+            'ts': f'{today}T12:00:00Z',
+            'provider': 'codex',
+            'claude_session_id': '',
+            'session_id': 'mc-codex-sess-5',
+            'provider_session_id': 'codex-thread-5',
+            'observed_model': 'gpt-5-codex',
+            'model_tokens': {},
+            'usage': {'input_tokens': 100, 'output_tokens': 0},
+        },
+    ])
+
+    out = sr._mc_usage_from_agent_logs()
+
+    assert out['today'].get('gpt-5-codex') == 200, out
+    assert out['all_time'].get('gpt-5-codex') == 200, out
+
+
 def test_claude_model_tokens_path_unaffected(sr):
     """Existing Claude rows (real model_tokens) must keep working unchanged --
     the fallback must only engage when model_tokens is absent/empty."""

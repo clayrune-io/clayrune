@@ -671,8 +671,17 @@ def _mc_usage_from_agent_logs():
                     mt = _model_tokens_from_nested_usage(e)
                     if not mt:
                         continue
-                ts = (e.get('ts') or '')[:10]
-                if not ts:
+                # Review re-review finding #1 (docs/_journal/4668eafc-mc998-
+                # fenn-review.md, "2026-09-28 re-review"): compare the FULL
+                # timestamp, never a date-truncated one. The log is
+                # newest-first (agent_routes.py's completion writer does
+                # `log.insert(0, entry)`), so on a day with more than one
+                # entry, a same-day OLDER row appears LATER in the list; a
+                # date-only `>=` comparison treats equal dates as "still the
+                # latest" and lets that older row overwrite the newer one
+                # that was already kept.
+                full_ts = e.get('ts') or ''
+                if not full_ts:
                     continue
                 csid = e.get('claude_session_id') or ''
                 mc_sid = e.get('session_id') or ''
@@ -684,7 +693,7 @@ def _mc_usage_from_agent_logs():
                     dedup_key = None
                 if dedup_key is not None:
                     prev = best_by_csid.get(dedup_key)
-                    if prev is None or ts >= (prev.get('ts') or '')[:10]:
+                    if prev is None or full_ts >= (prev.get('ts') or ''):
                         best_by_csid[dedup_key] = e
                 else:
                     # No stable identity at all — count individually (legacy entry)
@@ -1280,9 +1289,17 @@ def system_usage_breakdown_get():
     session_facts = store.list_session_facts(since=ninety_days_ago)
     code_deltas = {f['session_id']: (store.get_code_delta(f['session_id']) or {})
                    for f in session_facts if f.get('session_id')}
+    # {session_id: {'baseline': row|None, 'completions': [row, ...]}} -- a
+    # multi-turn session appends one completion row per turn (P1-3); the
+    # list stays in observed_at order because list_session_checkpoints is
+    # itself ordered (session_id ASC, observed_at ASC).
     checkpoints: dict[str, dict] = {}
     for row in store.list_session_checkpoints(since=ninety_days_ago):
-        checkpoints.setdefault(row['session_id'], {})[row['checkpoint_type']] = row
+        entry = checkpoints.setdefault(row['session_id'], {'baseline': None, 'completions': []})
+        if row['checkpoint_type'] == 'baseline':
+            entry['baseline'] = row
+        else:
+            entry['completions'].append(row)
 
     try:
         payload = _agg.build_breakdown(

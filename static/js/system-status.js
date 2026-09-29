@@ -46,6 +46,7 @@ let _ubBreakdownCacheKey = '';
 let _ubBreakdownError = false;
 let _ubWindowsReqSeq = 0;
 let _ubWindowsCacheKey = '';
+let _ubWindowsError = false;
 let _ubProvider = 'claude';
 let _ubWindowKind = '5h';
 let _ubWindowScope = 'all';
@@ -302,6 +303,11 @@ function _ssUsageLimitBar(label, win) {
 // breakpoint (mirrors `.usage-bar-strip`'s pattern, not a second code path).
 const _UB_EMPTY_STATE_LABEL = {
   no_runs: 'No runs',
+  // Review finding #4: distinct from "No runs" -- work exists and overlaps
+  // this window, but no session's delta could be isolated to it yet (still
+  // mid-turn across the boundary). Telling the two apart is the fix; see
+  // the incomplete_coverage_session_count hint line below.
+  incomplete_coverage: 'Not yet measurable in this window',
   no_vendor_percentage: 'No vendor percentage',
   sampling_not_begun: 'Sampling has not begun',
 };
@@ -324,7 +330,14 @@ function _renderUsageBreakdownSection() {
   // answered the current one -- `stale` gates that below.
   const stale = systemUsageBreakdownCache != null && _ubBreakdownCacheKey !== currentKey;
   const b = stale ? null : systemUsageBreakdownCache;
-  const windowsList = (systemUsageWindowsCache && systemUsageWindowsCache.windows) || [];
+  // Finding #7 (P2-7): the windows list is scoped to provider/window_kind/
+  // window_scope, exactly like the breakdown cache above -- a cache keyed
+  // to a PRIOR selection (or left behind by a failed fetch for the current
+  // one) must never be shown as if it were this selection's completed-
+  // window dates.
+  const windowsStale = _ubWindowsCacheKey !== _ubWindowsQueryKey();
+  const windowsList = (!windowsStale && systemUsageWindowsCache && systemUsageWindowsCache.windows) || [];
+  const windowsUnavailable = windowsStale && (_ubWindowsError || _ubWindowsFetching);
 
   const provSel = `
     <select class="ub-select" onchange="_ubBreakdownControlChange('provider', event)">
@@ -352,7 +365,7 @@ function _renderUsageBreakdownSection() {
     <select class="ub-select" onchange="_ubBreakdownControlChange('range', event)">
       <option value="" ${_ubRangeKey === '' ? 'selected' : ''}>Current window</option>
       ${rangeOpts}
-    </select>`;
+    </select>${windowsUnavailable ? '<span class="ssp-hint-line"> completed windows unavailable for this selection</span>' : ''}`;
   const dimSel = `
     <select class="ub-select" onchange="_ubBreakdownControlChange('dimension', event)">
       ${['project', 'character', 'trigger', 'model', 'provider'].map(d =>
@@ -392,6 +405,7 @@ function _renderUsageBreakdownSection() {
     ${telemetryUnavailable ? '<div class="ssp-hint-line">Telemetry unavailable for every session in this range.</div>' : ''}
     ${(t.token_coverage_unavailable_count || 0) > 0 ? `<div class="ssp-hint-line">${t.token_coverage_unavailable_count} session(s) with unavailable token coverage.</div>` : ''}
     ${(t.loc_unavailable_count || 0) > 0 ? `<div class="ssp-hint-line">${t.loc_unavailable_count} session(s) with LOC unavailable (shared/dirty worktree).</div>` : ''}
+    ${(t.incomplete_coverage_session_count || 0) > 0 ? `<div class="ssp-hint-line">${t.incomplete_coverage_session_count} session(s) overlap this window but aren't isolated to it yet (excluded from the totals above).</div>` : ''}
   `;
 
   const tpp = b.tokens_per_point || {};
@@ -804,7 +818,21 @@ async function fetchUsageWindows() {
   } catch { /* leave cache as-is */ }
   if (seq !== _ubWindowsReqSeq) return;  // superseded by a newer selection meanwhile
   _ubWindowsFetching = false;
-  if (succeeded) { systemUsageWindowsCache = payload; _ubWindowsCacheKey = key; }
+  if (succeeded) {
+    systemUsageWindowsCache = payload;
+    _ubWindowsCacheKey = key;
+    _ubWindowsError = false;
+  } else {
+    // Finding #7 (P2-7, "2026-09-28 re-review"): `_ubWindowsCacheKey` was
+    // recorded but never checked, so a failed fetch after switching
+    // provider left the PRIOR provider's completed-window dates selectable
+    // under the new one -- picking one then sent that stale window's
+    // range_start/range_end to the new provider's endpoint. Leave the old
+    // payload out of reach of the renderer by flagging the error; the key
+    // stays behind the old provider's value so the stale-check below still
+    // treats it as stale regardless.
+    _ubWindowsError = true;
+  }
   _rerenderSysStatusSurfaces();
 }
 

@@ -1298,11 +1298,27 @@ def _compute_code_delta(session):
     wts = str(wt)
     base_commit = _agent_worktree.loc_baseline_commit(wts)
     if not base_commit:
+        # Re-review finding #5 (P2-5, "2026-09-28 re-review"): a worktree
+        # from before the frozen-baseline fix has no admin file to read, so
+        # this recomputes the same moving `merge-base(HEAD, base_ref)` that
+        # finding #5 originally reported. If the agent has ALREADY landed
+        # its own commits on base_ref by the time this runs, merge-base
+        # collapses to HEAD itself -- an empty diff that looks like a
+        # confirmed zero but is actually "we lost the ability to measure
+        # this," which the spec's "no fabricated zero" rule forbids passing
+        # off as real. Detect exactly that collapse and report unavailable
+        # instead of a wrong zero; every OTHER pre-fix worktree (base_ref
+        # not yet advanced) still gets a correct diff from this fallback.
         base_ref = _agent_worktree._base_ref(project)
-        ok, base_commit = _project_sync.git_run(wts, ['merge-base', 'HEAD', base_ref], timeout=15)
-        if not ok or not base_commit:
+        ok, head_commit = _project_sync.git_run(wts, ['rev-parse', 'HEAD'], timeout=10)
+        ok2, base_commit = _project_sync.git_run(wts, ['merge-base', 'HEAD', base_ref], timeout=15)
+        if not ok2 or not base_commit:
             return {'status': 'unavailable', 'branch': branch,
                     'reason': f'cannot resolve base commit: {base_commit}'}
+        if ok and head_commit and base_commit == head_commit:
+            return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
+                    'reason': 'no frozen baseline and merge-base has collapsed to HEAD '
+                              '(own commits already landed on base_ref) -- diff not measurable'}
     ok, commits_out = _project_sync.git_run(wts, ['rev-list', f'{base_commit}..HEAD'], timeout=15)
     head_commits = commits_out.splitlines() if ok else []
     ok, diff_out = _project_sync.git_run(wts, ['diff', '--numstat', '-M', base_commit], timeout=30)

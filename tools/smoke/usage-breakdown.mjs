@@ -90,6 +90,19 @@ const NO_RUNS_FIXTURE = {
   tokens_per_point: { status: 'insufficient_samples', median: null, p10: null, p90: null, sample_count: 0, note: 'Indicative: account-wide bar' },
 };
 
+// Review finding #4 ("2026-09-28 re-review"): a session overlaps this
+// window but couldn't be isolated to it (still mid-turn across the
+// boundary) -- distinct from "No runs", and the excluded-session count must
+// be visible, not silently dropped.
+const INCOMPLETE_COVERAGE_FIXTURE = {
+  ...POPULATED_FIXTURE, empty_state: 'incomplete_coverage',
+  totals: { session_count: 0, tokens: { input_fresh: null, input_cache_write: null, input_cache_read: null, input_processed_total: null, output_tokens: null }, loc: { added: null, deleted: null }, loc_unavailable_count: 0, token_coverage_unavailable_count: 0, incomplete_coverage_session_count: 1 },
+  rankings: { rows: [], unknown_count: 0, missing_data_count: 0 },
+  bar_change: { status: 'insufficient_samples', delta_pp: null },
+  segmented_bar: { status: 'insufficient_samples', estimated_pp: null, unattributed_pp: null, range_pp: null },
+  tokens_per_point: { status: 'insufficient_samples', median: null, p10: null, p90: null, sample_count: 0, note: 'Indicative: account-wide bar' },
+};
+
 const NO_VENDOR_PCT_FIXTURE = {
   ...POPULATED_FIXTURE, empty_state: 'no_vendor_percentage',
   bar_change: { status: 'insufficient_samples', delta_pp: null },
@@ -260,6 +273,20 @@ try {
     }
   }
 
+  // ── 4b. Finding #4: "incomplete coverage" is NOT the same message as
+  //        "No runs", and the excluded-session count is visible ───────────
+  {
+    const { ctx, page } = await openDesktopPopover(browser, INCOMPLETE_COVERAGE_FIXTURE, WINDOWS_FIXTURE);
+    const text = await page.$eval('.sys-status-popover', (el) => el.textContent);
+    (!/No runs/i.test(text) && /not yet measurable/i.test(text))
+      ? ok('incomplete-coverage empty state is distinct from "No runs"')
+      : fail(`expected "Not yet measurable", not "No runs", in: ${text.slice(0, 500)}`);
+    /1 session\(s\) overlap this window/i.test(text)
+      ? ok('incomplete_coverage_session_count is surfaced, not silently dropped')
+      : fail(`expected the excluded-session hint in: ${text.slice(0, 500)}`);
+    await ctx.close();
+  }
+
   // ── 5. Finding #9: unattributed bucket stays visible pre-calibration,
   //      and an over-estimate renders as an excess error, never a negative
   //      "Unattributed" amount ─────────────────────────────────────────────
@@ -411,6 +438,42 @@ try {
     /failed to load/i.test(text3)
       ? ok('a failed first load shows a distinct failed message, not "not loaded yet"')
       : fail(`first-load failure should show a distinct error, saw: ${text3.slice(0, 500)}`);
+    await ctx.close();
+  }
+  {
+    // 7d. Finding #7's remaining P2 (windows-picker cache key): a failed
+    // windows fetch after switching provider must NOT leave the PRIOR
+    // provider's completed-window option selectable under the new one --
+    // picking it would send that stale range to the new provider's endpoint.
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await ctx.newPage();
+    let windowsProvider = null;
+    await page.route('**/*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/system/usage/windows') {
+        windowsProvider = url.searchParams.get('provider');
+        if (windowsProvider === 'codex') return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(WINDOWS_FIXTURE) });
+      }
+      return routeHandler(POPULATED_FIXTURE, WINDOWS_FIXTURE)(route);
+    });
+    await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
+    await page.evaluate(() => { toggleSysStatusPopover(); _sysStatusSwitchTab('usage'); });
+    await page.waitForSelector('#sys-status-popover.open', { timeout: 3000 });
+    await page.waitForSelector('.ub-controls', { state: 'attached', timeout: 5000 });
+    await page.waitForTimeout(200);
+    await page.selectOption('.ub-select:has(option[value="claude"])', 'codex');
+    await page.waitForTimeout(300);
+    const rangeSelect = await page.$('select.ub-select[onchange*="\'range\'"]');
+    const rangeOptCountAfter = rangeSelect ? await rangeSelect.$$eval('option', (els) => els.length) : null;
+    const text4 = await page.$eval('.sys-status-popover', (el) => el.textContent);
+    (rangeOptCountAfter === 1)
+      ? ok('windows cache: a failed provider-switch fetch clears the range picker, no stale option')
+      : fail(`stale window option still selectable after switching provider+failed fetch (${rangeOptCountAfter} option(s)): ${text4.slice(0, 400)}`);
+    /completed windows unavailable/i.test(text4)
+      ? ok('windows cache: failure state surfaced for the range picker')
+      : fail(`expected a windows-unavailable hint in: ${text4.slice(0, 400)}`);
     await ctx.close();
   }
 

@@ -60,26 +60,43 @@ def _sample(*, raw_utilization, source_observed_at, resets_at='2026-10-05T00:00:
 
 def _checkpoint(session_id, *, provider='claude', baseline_at, completion_at=None,
                  input_processed_total=100, output_tokens=50, token_coverage='complete'):
-    """One session's {'baseline': row, 'completion': row} -- the production
-    shape `UsageBreakdownStore.get_session_checkpoints`/grouped
-    `list_session_checkpoints` returns. `completion_at=None` models a
-    still-running session (baseline recorded at dispatch, no completion
-    row yet)."""
+    """One session's {'baseline': row|None, 'completions': [row, ...]} -- the
+    production shape `UsageBreakdownStore.get_session_checkpoints`/grouped
+    `list_session_checkpoints` returns (P1-3: a multi-turn session appends
+    one completion row per turn, so `completions` is a list, not a single
+    row). `completion_at=None` models a still-running session (baseline
+    recorded at dispatch, no completion row yet). Cumulative totals given
+    here ARE the checkpoint's absolute totals at that turn's end, matching
+    the store row shape -- `_session_turns` derives per-turn deltas from
+    them, not the other way around."""
     ck = {'baseline': {
         'session_id': session_id, 'provider': provider, 'checkpoint_type': 'baseline',
         'observed_at': baseline_at, 'input_fresh': 0, 'input_cache_write': 0,
         'input_cache_read': 0, 'input_processed_total': 0, 'output_tokens': 0,
         'output_reasoning': 0, 'token_coverage': 'unavailable',
-    }}
+    }, 'completions': []}
     if completion_at is not None:
-        ck['completion'] = {
+        ck['completions'].append({
             'session_id': session_id, 'provider': provider, 'checkpoint_type': 'completion',
             'observed_at': completion_at, 'input_fresh': input_processed_total,
             'input_cache_write': 0, 'input_cache_read': 0,
             'input_processed_total': input_processed_total, 'output_tokens': output_tokens,
             'output_reasoning': 0, 'token_coverage': token_coverage,
-        }
+        })
     return ck
+
+
+def _completion(session_id, *, provider='claude', observed_at,
+                 input_processed_total, output_tokens, token_coverage='complete'):
+    """One additional 'completion' checkpoint row, for appending a second/
+    third turn onto a `_checkpoint(...)` fixture's `completions` list."""
+    return {
+        'session_id': session_id, 'provider': provider, 'checkpoint_type': 'completion',
+        'observed_at': observed_at, 'input_fresh': input_processed_total,
+        'input_cache_write': 0, 'input_cache_read': 0,
+        'input_processed_total': input_processed_total, 'output_tokens': output_tokens,
+        'output_reasoning': 0, 'token_coverage': token_coverage,
+    }
 
 
 # ── totals / AC1 ─────────────────────────────────────────────────────────
@@ -352,6 +369,73 @@ def test_calibration_unconfirmed_scope_marks_interval_incomplete():
     assert cal['eligible_interval_count'] == 0
 
 
+def test_calibration_session_with_no_checkpoint_at_all_still_blocks_isolation():
+    """P1-2 finding 2 (2026-09-28 re-review): the original fix only walked
+    `checkpoints.items()`, so a session with NO checkpoint row -- a
+    housekeeping dispatch that returns before checkpoint capture, or an old
+    baseline dropped by 90-day retention -- was invisible to the isolation
+    check even though its session_fact proves it overlapped the interval.
+    Such a session must still disqualify that interval, exactly like a
+    checkpoint-bearing overlapping session would."""
+    samples, checkpoints, facts = _calibration_fixture()
+    t0 = datetime(2026, 9, 28, 10, 0, 0, tzinfo=timezone.utc)  # sess-0's own interval
+    # 'ghost' has a session_fact overlapping sess-0's interval, but never
+    # made it into `checkpoints` at all.
+    facts.append(_fact('ghost', started_at=t0.isoformat(),
+                        ended_at=(t0 + timedelta(minutes=2)).isoformat()))
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    assert cal['status'] == 'insufficient_samples'
+    assert cal['eligible_interval_count'] == 4
+
+
+def test_calibration_multiturn_session_only_counts_the_contained_turn():
+    """P1-3 finding 3 (2026-09-28 re-review): a session with more than one
+    completion checkpoint (one per turn) must contribute only the turn that
+    actually falls inside a given interval -- never the session's other
+    turns' tokens, and never its lifetime cumulative total."""
+    samples, checkpoints, facts = _calibration_fixture()
+    t0 = datetime(2026, 9, 28, 10, 0, 0, tzinfo=timezone.utc)  # sess-0's own interval
+    t1 = t0 + timedelta(minutes=2)
+    # sess-0 already has one turn ending in-interval at t1 with cumulative
+    # total 100 (from _calibration_fixture). Add a SECOND turn entirely in
+    # the 18-minute gap before sess-1's interval opens (t0+20min) -- it
+    # can't itself disqualify a different fixture interval by crossing into
+    # one -- that pushes the cumulative total much higher. If the old
+    # lifetime-total bug were still present this second turn's tokens would
+    # leak into sess-0's own [t0, t1) interval, which must see only its
+    # first turn's delta.
+    checkpoints['sess-0']['completions'].append(_completion(
+        'sess-0', observed_at=(t1 + timedelta(minutes=5)).isoformat(),
+        input_processed_total=100 + 5000, output_tokens=50 + 2000))
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    assert cal['status'] == 'ok'
+    assert cal['eligible_interval_count'] == 5
+    # sess-0's interval must still show only its first turn's 100+50=150
+    # workload, not 5100+2050.
+    sess0_interval = next(iv for iv in cal['all_intervals'] if iv['start'] == t0)
+    assert sess0_interval['input_processed_total'] == 100
+    assert sess0_interval['output_tokens'] == 50
+
+
+def test_calibration_turn_crossing_interval_boundary_marks_it_incomplete():
+    """A turn that starts before an interval opens and ends inside it (the
+    session was already mid-turn when the interval's first sample was
+    taken) cannot be isolated to that interval -- its tokens might partly
+    belong to an earlier interval too. Must withhold, not attribute."""
+    samples, checkpoints, facts = _calibration_fixture()
+    t0 = datetime(2026, 9, 28, 10, 0, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(minutes=2)
+    checkpoints['sess-0'] = _checkpoint(
+        'sess-0', baseline_at=(t0 - timedelta(minutes=30)).isoformat(),
+        completion_at=t1.isoformat())
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    assert cal['status'] == 'insufficient_samples'
+    assert cal['eligible_interval_count'] == 4
+
+
 # ── segmented bar ────────────────────────────────────────────────────────
 
 def test_segmented_bar_no_calibration_puts_whole_delta_in_unattributed():
@@ -394,6 +478,26 @@ def test_build_breakdown_no_runs_empty_state():
     )
     assert out['empty_state'] == 'no_runs'
     assert out['totals']['session_count'] == 0
+
+
+def test_build_breakdown_incomplete_coverage_not_reported_as_no_runs():
+    """P2-4 re-review (docs/_journal/4668eafc-mc998-fenn-review.md,
+    "2026-09-28 re-review" finding 4): a session overlapping the window but
+    excluded from the totals because its delta isn't isolated to this range
+    must not render the same 'no_runs' empty state as a window with zero
+    activity -- the work happened, it just isn't measurable in this window."""
+    crossing = _fact('crossing', provider='claude',
+                      started_at='2026-09-28T11:59:00Z', ended_at='2026-09-28T12:06:00Z')
+    out = build_breakdown(
+        provider='claude', window_kind='5h', window_scope='all',
+        range_start='2026-09-28T12:00:00Z', range_end='2026-09-28T12:06:00Z',
+        dimension='project', sort_by='input',
+        range_samples=[], calibration_samples=[],
+        session_facts=[crossing], checkpoints={}, code_deltas={}, coverage_begins=None,
+    )
+    assert out['totals']['session_count'] == 0
+    assert out['totals']['incomplete_coverage_session_count'] == 1
+    assert out['empty_state'] == 'incomplete_coverage'
 
 
 def test_build_breakdown_end_to_end_ok_path():

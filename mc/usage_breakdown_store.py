@@ -17,17 +17,22 @@ Four tables, schema-versioned via `PRAGMA user_version`:
     Carries token categories, provenance, and an `included` flag so
     housekeeping/internal sessions stay visible-but-markable per spec §4.
   - session_checkpoint: exactly one 'baseline' row (written at dispatch, zero
-    cumulative tokens, `UNIQUE(session_id, checkpoint_type)` makes a repeated
-    dispatch-pending call a no-op) and, once the session ends, one
-    'completion' row (final cumulative tokens) per session_id. The
-    tokens-per-point calibration in mc/usage_breakdown_aggregate.py needs the
-    session's cumulative total AT the exact boundary of an allowance-sample
-    interval, not just its final total, to derive a correct per-interval
-    delta instead of charging a session's whole lifetime total to every
-    interval it overlaps (P1-3, docs/_journal/4668eafc-mc998-fenn-review.md
-    finding 3). A session with only a baseline row (still running, or ended
-    without ever completing) has no measurable delta yet -- callers treat
-    that as incomplete coverage, never as zero.
+    cumulative tokens -- a partial unique index on session_id makes a
+    repeated dispatch-pending call a no-op) and one 'completion' row PER
+    TURN (Mode-A completions fire per turn, not once per session; a unique
+    index on (session_id, observed_at) only dedupes an exact retry, never a
+    later turn's new timestamp). Schema v3 (was: table-level
+    `UNIQUE(session_id, checkpoint_type)`, which froze the FIRST completion
+    forever and silently discarded every later turn's row while
+    `session_fact` kept advancing to the latest cumulative total --
+    docs/_journal/4668eafc-mc998-fenn-review.md "2026-09-28 re-review"
+    finding 3, P1-3). The tokens-per-point calibration in
+    mc/usage_breakdown_aggregate.py walks each session's full checkpoint
+    HISTORY as consecutive (turn) pairs to derive a per-turn delta, instead
+    of charging a session's lifetime total to every interval it overlaps. A
+    session with only a baseline row (still running, or ended without ever
+    completing) has no measurable delta yet -- callers treat that as
+    incomplete coverage, never as zero.
   - code_delta: one row per session_id, LOC added/deleted or an `unavailable`
     reason.
 
@@ -42,12 +47,46 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 APPLICATION_ID = 0x4D435542  # 'MCUB'
 DB_FILENAME = 'usage_breakdown.sqlite'
 
 _TABLES = {'allowance_sample', 'session_fact', 'session_checkpoint', 'code_delta'}
 _V1_TABLES = {'allowance_sample', 'session_fact', 'code_delta'}
+
+# Schema v3 shape (docs/_journal/4668eafc-mc998-fenn-review.md finding 3,
+# P1-3): no table-level UNIQUE(session_id, checkpoint_type) -- that froze
+# every session's completion checkpoint at its first turn. A 'baseline' row
+# stays unique per session (a partial index, checked only for that type);
+# 'completion' rows append one per turn, deduped only against an exact
+# repeated (session_id, observed_at) retry.
+_SESSION_CHECKPOINT_TABLE_SQL = (
+    'CREATE TABLE session_checkpoint ('
+    ' id INTEGER PRIMARY KEY AUTOINCREMENT,'
+    ' session_id TEXT NOT NULL,'
+    ' provider TEXT NOT NULL,'
+    ' checkpoint_type TEXT NOT NULL,'  # 'baseline' | 'completion'
+    ' observed_at TEXT NOT NULL,'
+    ' input_fresh INTEGER,'
+    ' input_cache_write INTEGER,'
+    ' input_cache_read INTEGER,'
+    ' input_processed_total INTEGER,'
+    ' output_tokens INTEGER,'
+    ' output_reasoning INTEGER,'
+    ' token_coverage TEXT NOT NULL,'
+    ' created_at TEXT NOT NULL'
+    ')'
+)
+_SESSION_CHECKPOINT_INDEX_SQL = (
+    'CREATE INDEX idx_session_checkpoint_session '
+    'ON session_checkpoint(session_id, observed_at)',
+    'CREATE INDEX idx_session_checkpoint_observed '
+    'ON session_checkpoint(observed_at)',
+    'CREATE UNIQUE INDEX idx_session_checkpoint_baseline_once '
+    "ON session_checkpoint(session_id) WHERE checkpoint_type='baseline'",
+    'CREATE UNIQUE INDEX idx_session_checkpoint_completion_dedup '
+    "ON session_checkpoint(session_id, observed_at) WHERE checkpoint_type='completion'",
+)
 
 
 class UsageBreakdownStoreError(RuntimeError):
@@ -149,56 +188,41 @@ class UsageBreakdownStore:
                 ' FOREIGN KEY(session_id) REFERENCES session_fact(session_id)'
                 ')'
             )
-            db.execute(
-                'CREATE TABLE session_checkpoint ('
-                ' id INTEGER PRIMARY KEY AUTOINCREMENT,'
-                ' session_id TEXT NOT NULL,'
-                ' provider TEXT NOT NULL,'
-                ' checkpoint_type TEXT NOT NULL,'  # 'baseline' | 'completion'
-                ' observed_at TEXT NOT NULL,'
-                ' input_fresh INTEGER,'
-                ' input_cache_write INTEGER,'
-                ' input_cache_read INTEGER,'
-                ' input_processed_total INTEGER,'
-                ' output_tokens INTEGER,'
-                ' output_reasoning INTEGER,'
-                ' token_coverage TEXT NOT NULL,'
-                ' created_at TEXT NOT NULL,'
-                ' UNIQUE(session_id, checkpoint_type)'
-                ')'
-            )
-            db.execute('CREATE INDEX idx_session_checkpoint_session '
-                       'ON session_checkpoint(session_id, observed_at)')
-            db.execute('CREATE INDEX idx_session_checkpoint_observed '
-                       'ON session_checkpoint(observed_at)')
+            db.execute(_SESSION_CHECKPOINT_TABLE_SQL)
+            for stmt in _SESSION_CHECKPOINT_INDEX_SQL:
+                db.execute(stmt)
             db.execute(f'PRAGMA application_id={APPLICATION_ID}')
             db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
         elif version == 1 and app == APPLICATION_ID and (tables - {'sqlite_sequence'}) == _V1_TABLES:
             # Pre-existing v1 install (no session_checkpoint table yet): add it
             # in place rather than raising, so a dev/test db created before
             # P1-3 doesn't need to be deleted by hand.
+            db.execute(_SESSION_CHECKPOINT_TABLE_SQL)
+            for stmt in _SESSION_CHECKPOINT_INDEX_SQL:
+                db.execute(stmt)
+            db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
+        elif version == 2 and app == APPLICATION_ID and (tables - {'sqlite_sequence'}) == _TABLES:
+            # v2->v3: the v2 table carried a table-level
+            # `UNIQUE(session_id, checkpoint_type)`, which silently discarded
+            # every completion checkpoint after the session's FIRST turn
+            # (docs/_journal/4668eafc-mc998-fenn-review.md "2026-09-28
+            # re-review" finding 3, P1-3) while session_fact kept advancing.
+            # SQLite can't drop a table-level constraint in place, so rebuild
+            # the table under the new shape (a partial unique index instead)
+            # and copy every existing row across unchanged.
+            db.execute('ALTER TABLE session_checkpoint RENAME TO session_checkpoint_v2')
+            db.execute(_SESSION_CHECKPOINT_TABLE_SQL)
             db.execute(
-                'CREATE TABLE session_checkpoint ('
-                ' id INTEGER PRIMARY KEY AUTOINCREMENT,'
-                ' session_id TEXT NOT NULL,'
-                ' provider TEXT NOT NULL,'
-                ' checkpoint_type TEXT NOT NULL,'
-                ' observed_at TEXT NOT NULL,'
-                ' input_fresh INTEGER,'
-                ' input_cache_write INTEGER,'
-                ' input_cache_read INTEGER,'
-                ' input_processed_total INTEGER,'
-                ' output_tokens INTEGER,'
-                ' output_reasoning INTEGER,'
-                ' token_coverage TEXT NOT NULL,'
-                ' created_at TEXT NOT NULL,'
-                ' UNIQUE(session_id, checkpoint_type)'
-                ')'
+                'INSERT INTO session_checkpoint (session_id, provider, checkpoint_type, '
+                ' observed_at, input_fresh, input_cache_write, input_cache_read, '
+                ' input_processed_total, output_tokens, output_reasoning, token_coverage, created_at) '
+                'SELECT session_id, provider, checkpoint_type, observed_at, input_fresh, '
+                ' input_cache_write, input_cache_read, input_processed_total, output_tokens, '
+                ' output_reasoning, token_coverage, created_at FROM session_checkpoint_v2'
             )
-            db.execute('CREATE INDEX idx_session_checkpoint_session '
-                       'ON session_checkpoint(session_id, observed_at)')
-            db.execute('CREATE INDEX idx_session_checkpoint_observed '
-                       'ON session_checkpoint(observed_at)')
+            db.execute('DROP TABLE session_checkpoint_v2')
+            for stmt in _SESSION_CHECKPOINT_INDEX_SQL:
+                db.execute(stmt)
             db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
         elif (app != APPLICATION_ID or version != SCHEMA_VERSION
               or (tables - {'sqlite_sequence'}) != _TABLES):
@@ -347,12 +371,15 @@ class UsageBreakdownStore:
         token_coverage: str = 'unavailable',
     ) -> bool:
         """Record one timestamped cumulative-token snapshot for `session_id`.
-        Returns False (no-op) when this session_id already has a row of this
-        `checkpoint_type` -- `UNIQUE(session_id, checkpoint_type)` makes a
-        repeated dispatch-pending call for the same session safe to call
-        more than once. `provider` is captured on the baseline row (known at
-        dispatch) so calibration can filter to the right provider before a
-        still-running session ever gets a session_fact."""
+        Returns False (no-op) when this would violate one of the two partial
+        unique indexes: a 'baseline' row already exists for this session (a
+        repeated dispatch-pending call is safe to call more than once), or a
+        'completion' row already exists at this EXACT `observed_at` (an exact
+        retry). A later turn's completion at a new `observed_at` always
+        inserts a new row -- callers must never assume this call overwrites
+        a previous completion. `provider` is captured on the baseline row
+        (known at dispatch) so calibration can filter to the right provider
+        before a still-running session ever gets a session_fact."""
         if not session_id:
             raise ValueError('session_id is required')
         if checkpoint_type not in ('baseline', 'completion'):
@@ -387,32 +414,64 @@ class UsageBreakdownStore:
             q += ' ORDER BY session_id ASC, observed_at ASC'
             return [dict(r) for r in db.execute(q, params).fetchall()]
 
-    def get_session_checkpoints(self, session_id: str) -> dict[str, dict]:
-        """{'baseline': row, 'completion': row} for one session_id -- either
-        or both keys absent when that checkpoint hasn't been recorded yet."""
+    def get_session_checkpoints(self, session_id: str) -> dict[str, Any]:
+        """{'baseline': row|None, 'completions': [row, ...] oldest first} for
+        one session_id. Callers must never assume `completions` has at most
+        one entry (P1-3, docs/_journal/4668eafc-mc998-fenn-review.md
+        "2026-09-28 re-review" finding 3): Mode-A completions fire per turn,
+        so a multi-turn session accumulates one completion row per turn."""
         with self._connection(write=False) as db:
             rows = db.execute(
-                'SELECT * FROM session_checkpoint WHERE session_id=?', (session_id,)).fetchall()
-            return {r['checkpoint_type']: dict(r) for r in rows}
+                'SELECT * FROM session_checkpoint WHERE session_id=? ORDER BY observed_at ASC',
+                (session_id,)).fetchall()
+            result: dict[str, Any] = {'baseline': None, 'completions': []}
+            for r in rows:
+                d = dict(r)
+                if d['checkpoint_type'] == 'baseline':
+                    result['baseline'] = d
+                else:
+                    result['completions'].append(d)
+            return result
 
     # ── code_delta ──────────────────────────────────────────────────────
 
     def upsert_code_delta(self, session_id: str, fields: dict) -> None:
+        """Reviewer re-review finding #5 (P2-5, docs/_journal/4668eafc-mc998-
+        fenn-review.md "2026-09-28 re-review"): the dispatch path allows a
+        session_id's worktree to be removed and RE-created (e.g. after an
+        earlier merge-back), which captures a fresh baseline at the new
+        worktree's own HEAD -- a valid 'ok' zero for that new lifetime, not a
+        correction of the earlier one. Overwriting used to erase the earlier
+        lifetime's real added/deleted the moment that happened. Detect a new
+        lifetime by `base_commit` changing and ACCUMULATE onto the prior
+        totals instead of replacing them, so a session's code_delta row
+        always reflects everything it has contributed across every worktree
+        it has ever had, never just the most recent one."""
         if not session_id:
             raise ValueError('session_id is required')
         cols = ['added', 'deleted', 'status', 'reason', 'branch', 'base_commit', 'head_commits']
         row = {c: fields.get(c) for c in cols}
         row['status'] = row.get('status') or 'unavailable'
         with self._connection(write=True) as db:
+            existing = db.execute(
+                'SELECT * FROM code_delta WHERE session_id=?', (session_id,)).fetchone()
             if row['status'] != 'ok':
-                existing = db.execute(
-                    'SELECT status FROM code_delta WHERE session_id=?', (session_id,)).fetchone()
                 if existing and existing['status'] == 'ok':
                     # A later completion in the same chat (e.g. after
                     # merge-back already removed the worktree) must never
                     # clobber an already-captured LOC count with
                     # 'unavailable' (MC-998 review finding #5).
                     return
+            elif existing and existing['status'] == 'ok' and existing['base_commit'] != row['base_commit']:
+                # Same session, a DIFFERENT baseline than what's on record --
+                # a new worktree lifetime for this session_id. This capture's
+                # added/deleted are only for the lifetime since ITS baseline;
+                # fold them onto the running total instead of replacing it.
+                row['added'] = (existing['added'] or 0) + (row['added'] or 0)
+                row['deleted'] = (existing['deleted'] or 0) + (row['deleted'] or 0)
+                prior_commits = (existing['head_commits'] or '').split(',') if existing['head_commits'] else []
+                new_commits = (row['head_commits'] or '').split(',') if row['head_commits'] else []
+                row['head_commits'] = ','.join([c for c in prior_commits if c] + [c for c in new_commits if c])
             placeholders = ', '.join(f':{c}' for c in cols)
             assignments = ', '.join(f'{c}=excluded.{c}' for c in cols)
             params = dict(row)

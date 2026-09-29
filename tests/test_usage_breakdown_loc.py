@@ -269,3 +269,113 @@ def test_missing_worktree_is_unavailable(env, project):
     result = ar._compute_code_delta(_session('never-created', project['id'], isolated=True))
     assert result['status'] == 'unavailable'
     assert 'worktree missing' in result['reason']
+
+
+# ── re-review findings, 2026-09-28 ("2026-09-28 re-review", finding #5) ─────
+
+def test_prefix_worktree_collapsed_merge_base_is_unavailable_not_a_fabricated_zero(env, project, repo):
+    """A worktree created BEFORE `_capture_loc_baseline` shipped has no
+    frozen-baseline admin file, so `_compute_code_delta` falls back to
+    recomputing `merge-base(HEAD, base_ref)` at completion time -- the exact
+    computation finding #5 originally reported as unsafe. Once the session's
+    own commits have landed on base_ref, that merge-base collapses to HEAD
+    itself: the diff would silently read as a confirmed zero when the real
+    answer is "not measurable," which the spec's "no fabricated zero" rule
+    forbids. This must degrade to unavailable instead."""
+    sid = 'mb8'
+    ok, path = w.create(project, sid)
+    assert ok, path
+    # Simulate a pre-fix worktree: remove the frozen-baseline admin file.
+    gitdir = _git(path, 'rev-parse', '--absolute-git-dir')
+    baseline_file = Path(gitdir) / w._LOC_BASELINE_FILE
+    assert baseline_file.exists()
+    baseline_file.unlink()
+
+    (Path(path) / 'app.py').write_text(
+        'def one():\n    return "orig one"\n\n\ndef two():\n    return "orig two"\n'
+        'def three():\n    return "added"\n',
+        encoding='utf-8')
+    _git(path, 'add', '.')
+    _git(path, 'commit', '-q', '-m', 'edit')
+
+    # Land it, exactly like test_baseline_survives_...: master fast-forwards
+    # to the branch tip, so merge-base(HEAD, master) == HEAD.
+    head = _git(path, 'rev-parse', 'HEAD')
+    _git(repo, 'merge', '--ff-only', head)
+    assert _git(repo, 'rev-parse', 'HEAD') == head
+
+    result = ar._compute_code_delta(_session(sid, project['id'], isolated=True))
+    assert result['status'] == 'unavailable', result
+    assert 'collapsed' in result['reason'] or 'merge-base' in result['reason']
+
+
+def test_prefix_worktree_without_landing_still_reports_real_diff(env, project):
+    """The fallback path is only unsafe once base_ref has advanced past the
+    branch point -- a pre-fix worktree that has NOT been landed yet must
+    still report its real diff through the old merge-base computation."""
+    sid = 'mb9'
+    ok, path = w.create(project, sid)
+    assert ok, path
+    gitdir = _git(path, 'rev-parse', '--absolute-git-dir')
+    (Path(gitdir) / w._LOC_BASELINE_FILE).unlink()
+
+    (Path(path) / 'app.py').write_text(
+        'def one():\n    return "orig one"\n\n\ndef two():\n    return "orig two"\n'
+        'def three():\n    return "added"\n',
+        encoding='utf-8')
+    _git(path, 'add', '.')
+    _git(path, 'commit', '-q', '-m', 'edit')
+
+    result = ar._compute_code_delta(_session(sid, project['id'], isolated=True))
+    assert result['status'] == 'ok', result
+    assert result['added'] == 2
+    assert result['deleted'] == 0
+
+
+def test_recreated_worktree_accumulates_onto_prior_contribution(env, project, repo):
+    """Re-review finding #5: the dispatch path allows a session's worktree
+    (and its branch, `delete_branch=True` after a merge-back) to be removed
+    and the SAME session_id recreated later -- `w.create` then makes a
+    genuinely new branch off the current base_ref and captures a fresh
+    baseline at ITS own HEAD, a valid 'ok' zero for that new lifetime, not a
+    correction of the earlier one. The stored code_delta must accumulate
+    across both lifetimes, never let the new capture erase the prior one."""
+    import mc.usage_breakdown_store as ubs
+
+    sid = 'mb10'
+    ok, path = w.create(project, sid)
+    assert ok, path
+    (Path(path) / 'app.py').write_text(
+        'def one():\n    return "orig one"\n\n\ndef two():\n    return "orig two"\n'
+        'def three():\n    return "added"\n',
+        encoding='utf-8')
+    _git(path, 'add', '.')
+    _git(path, 'commit', '-q', '-m', 'first lifetime')
+
+    first = ar._compute_code_delta(_session(sid, project['id'], isolated=True))
+    assert first['status'] == 'ok' and first['added'] == 2, first
+
+    store = ubs.UsageBreakdownStore(db_path=Path(tempfile.mkdtemp(prefix='ubstore_')) / 'ub.sqlite')
+    store.upsert_code_delta(sid, first)
+    assert store.get_code_delta(sid)['added'] == 2
+
+    # Merge-back lands the branch on master, then fully tears down the
+    # worktree AND its branch -- the real post-merge-back cleanup path.
+    head = _git(path, 'rev-parse', 'HEAD')
+    _git(repo, 'merge', '--ff-only', head)
+    w.remove(project, sid, delete_branch=True)
+
+    # Recreate for the SAME session_id: a brand-new branch off master's
+    # current tip (which already contains 'first lifetime') -- a fresh
+    # baseline captured at that tip, zero lines changed so far.
+    ok, path2 = w.create(project, sid)
+    assert ok, path2
+
+    second = ar._compute_code_delta(_session(sid, project['id'], isolated=True))
+    assert second['status'] == 'ok' and second['added'] == 0, second
+    assert second['base_commit'] != first['base_commit']
+
+    store.upsert_code_delta(sid, second)
+    stored = store.get_code_delta(sid)
+    assert stored['added'] == 2, stored  # first lifetime's contribution preserved, not zeroed
+    assert stored['deleted'] == 0

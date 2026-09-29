@@ -68,16 +68,71 @@ def _in_range(ts: Optional[str], start: Optional[datetime], end: Optional[dateti
 # ── totals + rankings (session_fact / code_delta, no allowance samples) ────
 
 def _checkpoint_bounds(fact: dict, checkpoints: dict[str, dict]) -> tuple[Optional[datetime], Optional[datetime]]:
-    """(baseline_at, completion_at) for one session, preferring the
+    """(baseline_at, latest_completion_at) for one session, preferring the
     session_checkpoint pair (the measured dispatch/completion boundary) and
     falling back to the fact's own started_at/ended_at for a fact that
     predates the checkpoint table (historical backfill, spec: "must be
-    marked partial") or was never paired with one."""
+    marked partial") or was never paired with one. `checkpoints[sid]` is
+    `{'baseline': row|None, 'completions': [row, ...] oldest first}` --
+    a multi-turn session's latest completion is `completions[-1]`."""
     ck = checkpoints.get(fact.get('session_id') or '') or {}
-    baseline, completion = ck.get('baseline'), ck.get('completion')
-    if baseline and completion:
-        return _parse_iso(baseline['observed_at']), _parse_iso(completion['observed_at'])
+    baseline = ck.get('baseline')
+    completions = ck.get('completions') or []
+    if baseline and completions:
+        return _parse_iso(baseline['observed_at']), _parse_iso(completions[-1]['observed_at'])
     return _parse_iso(fact.get('started_at')), _parse_iso(fact.get('ended_at'))
+
+
+def _session_provider(ck: Optional[dict], fact: Optional[dict]) -> Optional[str]:
+    """The provider a session belongs to, from whichever evidence exists.
+    A checkpoint's baseline is captured at dispatch (before a session_fact
+    exists), so it is authoritative when present; a session with NO
+    checkpoint at all (finding 2, P1-2: a housekeeping dispatch that returns
+    before checkpoint capture, or an old baseline dropped by retention)
+    still has a provider on its session_fact, and must not become invisible
+    just because the checkpoint table has nothing for it."""
+    baseline = (ck or {}).get('baseline')
+    if baseline and baseline.get('provider'):
+        return baseline['provider']
+    if fact and fact.get('provider'):
+        return fact['provider']
+    return None
+
+
+def _session_turns(ck: Optional[dict]) -> list[dict]:
+    """[{'start','end','input_processed_total','output_tokens','token_coverage'}]
+    -- one entry per TURN (P1-3, finding 3): consecutive checkpoint pairs
+    (baseline -> completions[0], completions[0] -> completions[1], ...),
+    each holding that turn's OWN token delta, never the session's cumulative
+    lifetime total charged again to every interval it overlaps. A session
+    with no baseline, or a baseline but zero completions yet (still running,
+    mid-turn), has no turn evidence at all -- an empty list, not a
+    fabricated one spanning "start to now"."""
+    baseline = (ck or {}).get('baseline')
+    completions = (ck or {}).get('completions') or []
+    if not baseline or not completions:
+        return []
+    turns = []
+    prev_at = _parse_iso(baseline['observed_at'])
+    prev_input = baseline.get('input_processed_total') or 0
+    prev_output = baseline.get('output_tokens') or 0
+    for c in completions:
+        c_at = _parse_iso(c.get('observed_at'))
+        if prev_at is None or c_at is None:
+            prev_at = c_at
+            prev_input = c.get('input_processed_total') or 0
+            prev_output = c.get('output_tokens') or 0
+            continue
+        turns.append({
+            'start': prev_at, 'end': c_at,
+            'input_processed_total': max((c.get('input_processed_total') or 0) - prev_input, 0),
+            'output_tokens': max((c.get('output_tokens') or 0) - prev_output, 0),
+            'token_coverage': c.get('token_coverage') or 'unavailable',
+        })
+        prev_at = c_at
+        prev_input = c.get('input_processed_total') or 0
+        prev_output = c.get('output_tokens') or 0
+    return turns
 
 
 def filter_facts_in_range(session_facts: list[dict], checkpoints: dict[str, dict], *, provider: str,
@@ -238,28 +293,36 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
     scoped to one), <=10 minutes apart, positive delta >=1pp, quality 'ok'
     at both endpoints, no reset crossed (same `resets_at`).
 
-    Per finding 2 (P1-2): a session only counts toward an interval when its
-    checkpoint's own `provider` matches AND (for a scoped Claude window) its
-    observed_model matches -- `_scope_matches` returning None (unknown, no
-    fact yet) is NOT treated as a match, so a still-running session of
-    unconfirmed scope makes the interval's coverage incomplete rather than
-    silently passing as this window's class.
+    Per finding 2 (P1-2, "2026-09-28 re-review"): the ORIGINAL fix only
+    walked `checkpoints.items()`, so a session with NO checkpoint row at all
+    (a housekeeping dispatch that returns before checkpoint capture, an old
+    baseline dropped by 90-day retention, or a pre-checkpoint historical
+    fact) was invisible to this loop -- it could overlap an interval that
+    then still reported "exactly one active session" and unlocked
+    calibration. This walks the UNION of `checkpoints` and
+    `facts_by_session` instead, falling back to a fact's own
+    started_at/ended_at for overlap detection when no checkpoint exists --
+    such a session can never be calibratable (no turn-level delta to trust)
+    but its mere overlap still marks the interval incomplete, exactly like a
+    still-running or partially-overlapping session does.
 
-    Per finding 3 (P1-3): `coverage_complete` requires every overlapping
-    session to be FULLY CONTAINED in [t_a, t_b) -- baseline at/after t_a AND
-    a 'complete'-coverage completion checkpoint before t_b -- so a session
-    whose lifetime spans multiple intervals contributes its measured delta to
-    exactly the one interval that actually contains it, never to every
-    interval it happens to overlap. A partially-overlapping or still-running
-    session marks the interval incomplete (withheld from calibration) without
-    removing it from `session_ids` -- P1-2's "exactly one active session"
-    check must still see it.
+    Per finding 3 (P1-3, "2026-09-28 re-review"): a session's lifetime may
+    now span several completion checkpoints (one per TURN, not one per
+    session). `_session_turns` derives each turn's own delta; a turn is only
+    counted toward an interval when it is FULLY CONTAINED in [t_a, t_b).
+    Any turn that overlaps the interval WITHOUT being fully contained (the
+    session was mid-turn across a boundary) marks the interval incomplete --
+    that turn's tokens cannot be split between intervals, so they are
+    withheld here rather than fabricated as belonging to this one. A session
+    can contribute turns to more than one interval; each interval only ever
+    sees the turns that actually happened inside it.
     """
     out = []
     ordered = sorted((s for s in samples if s.get('quality') == 'ok'
                        and s.get('raw_utilization') is not None
                        and s.get('source_observed_at')),
                       key=lambda s: s['source_observed_at'])
+    all_sids = set(checkpoints.keys()) | set(facts_by_session.keys())
     for a, b in zip(ordered, ordered[1:]):
         if a.get('resets_at') != b.get('resets_at'):
             continue  # a reset happened between these two readings
@@ -276,32 +339,48 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
         coverage_complete = True
         input_processed_total = 0
         output_tokens = 0
-        for sid, ck in checkpoints.items():
-            baseline = ck.get('baseline')
-            if not baseline or baseline.get('provider') != provider:
-                continue
+        for sid in all_sids:
+            ck = checkpoints.get(sid)
             fact = facts_by_session.get(sid)
+            if _session_provider(ck, fact) != provider:
+                continue
             scope_ok = _scope_matches(fact, window_scope)
             if scope_ok is False:
                 continue  # confirmed different model scope -- not this window's class
-            b_at = _parse_iso(baseline['observed_at'])
-            completion = ck.get('completion')
-            c_at = _parse_iso(completion['observed_at']) if completion else None
+
+            baseline = (ck or {}).get('baseline')
+            completions = (ck or {}).get('completions') or []
+            if baseline:
+                b_at = _parse_iso(baseline['observed_at'])
+                c_at = _parse_iso(completions[-1]['observed_at']) if completions else None
+            else:
+                # No checkpoint evidence whatsoever -- fall back to the
+                # fact's own span purely for overlap detection (P1-2).
+                b_at = _parse_iso(fact.get('started_at')) if fact else None
+                c_at = _parse_iso(fact.get('ended_at')) if fact else None
+            if b_at is None:
+                continue
             end_bound = c_at if c_at is not None else t_b  # still running -> extends through "now"
-            if b_at is None or not (b_at < t_b and end_bound >= t_a):
+            if not (b_at < t_b and end_bound >= t_a):
                 continue  # doesn't overlap this interval at all
             session_ids.add(sid)
-            if scope_ok is None or completion is None:
-                coverage_complete = False  # scope unconfirmed, or still running -- unmeasurable
+            if scope_ok is None:
+                coverage_complete = False  # scope unconfirmed -- unmeasurable
                 continue
-            if not (b_at >= t_a and c_at is not None and c_at <= t_b):
-                coverage_complete = False  # partial overlap -- can't isolate this interval's delta
+
+            turns = _session_turns(ck)
+            contained = [t for t in turns if t['start'] >= t_a and t['end'] <= t_b]
+            crossing = [t for t in turns if t not in contained
+                        and t['start'] < t_b and t['end'] >= t_a]
+            if not turns or crossing:
+                coverage_complete = False  # no turn evidence, or a turn straddles the boundary
                 continue
-            if completion.get('token_coverage') != 'complete':
+            if any(t['token_coverage'] != 'complete' for t in contained):
                 coverage_complete = False
                 continue
-            input_processed_total += completion.get('input_processed_total') or 0
-            output_tokens += completion.get('output_tokens') or 0
+            for t in contained:
+                input_processed_total += t['input_processed_total']
+                output_tokens += t['output_tokens']
 
         out.append({
             'start': t_a, 'end': t_b, 'delta_pp': delta,
@@ -439,7 +518,13 @@ def build_breakdown(*, provider: str, window_kind: str, window_scope: str,
 
     empty_state = None
     if totals['session_count'] == 0:
-        empty_state = 'no_runs'
+        # Finding 4 (P2-4, "2026-09-28 re-review"): a session that overlaps
+        # this window but whose in-range delta couldn't be isolated (still
+        # mid-turn across the boundary) is excluded from `facts_in_range`,
+        # same as before -- but "no session survived the filter" must not
+        # collapse to the same "No runs" a truly-empty window shows. The
+        # work happened; it just isn't measurable in this window yet.
+        empty_state = 'incomplete_coverage' if incomplete_count > 0 else 'no_runs'
     elif not range_samples:
         empty_state = 'no_vendor_percentage'
     elif coverage_begins is None:

@@ -18,7 +18,9 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from mc.usage_breakdown_store import UsageBreakdownStore, db_path_for, SchemaError  # noqa: E402
+from mc.usage_breakdown_store import (  # noqa: E402
+    APPLICATION_ID, UsageBreakdownStore, db_path_for, SchemaError,
+)
 
 
 @pytest.fixture
@@ -202,3 +204,145 @@ def test_wal_sidecar_files_appear_after_a_write(store, tmp_path):
         provider='claude', window_kind='5h', window_scope='all',
         raw_utilization=1.0, resets_at='r', source_observed_at='t1')
     assert (tmp_path / 'usage_breakdown.sqlite-wal').exists() or (tmp_path / 'usage_breakdown.sqlite').exists()
+
+
+# ── session_checkpoint (P1-3, docs/_journal/4668eafc-mc998-fenn-review.md
+# "2026-09-28 re-review" finding 3) ─────────────────────────────────────────
+
+def test_checkpoint_baseline_insert_then_get(store):
+    ok = store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='baseline',
+        observed_at='2026-09-28T10:00:00Z', token_coverage='unavailable')
+    assert ok is True
+    ck = store.get_session_checkpoints('s1')
+    assert ck['baseline']['observed_at'] == '2026-09-28T10:00:00Z'
+    assert ck['completions'] == []
+
+
+def test_checkpoint_repeated_baseline_dispatch_call_is_a_noop(store):
+    """A repeated dispatch-pending call for the same session must not
+    clobber or duplicate the baseline."""
+    first = store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='baseline',
+        observed_at='2026-09-28T10:00:00Z', token_coverage='unavailable')
+    second = store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='baseline',
+        observed_at='2026-09-28T10:00:05Z', token_coverage='unavailable')
+    assert first is True
+    assert second is False
+    assert store.get_session_checkpoints('s1')['baseline']['observed_at'] == '2026-09-28T10:00:00Z'
+
+
+def test_checkpoint_completion_appends_per_turn_not_one_frozen_row(store):
+    """P1-3: Mode-A completions fire per turn. A second completion for the
+    same session_id at a later observed_at must be a NEW row, never
+    discarded -- the pre-fix schema's table-level
+    UNIQUE(session_id, checkpoint_type) silently dropped it (verified
+    against the pre-fix module: `record_session_checkpoint` returned False
+    for the second call and the session was frozen at its first turn
+    forever)."""
+    store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='baseline',
+        observed_at='2026-09-28T10:00:00Z', token_coverage='unavailable')
+    turn1 = store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='completion',
+        observed_at='2026-09-28T10:05:00Z', input_processed_total=100,
+        output_tokens=50, token_coverage='complete')
+    turn2 = store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='completion',
+        observed_at='2026-09-28T11:00:00Z', input_processed_total=500,
+        output_tokens=200, token_coverage='complete')
+    assert turn1 is True
+    assert turn2 is True
+    completions = store.get_session_checkpoints('s1')['completions']
+    assert [c['input_processed_total'] for c in completions] == [100, 500]
+    assert [c['observed_at'] for c in completions] == [
+        '2026-09-28T10:05:00Z', '2026-09-28T11:00:00Z']
+
+
+def test_checkpoint_exact_retry_completion_is_a_noop(store):
+    """An exact retry (same session_id, same observed_at) must not create a
+    duplicate turn -- only a genuinely new observed_at is a new turn."""
+    store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='baseline',
+        observed_at='t0')
+    first = store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='completion',
+        observed_at='t1', input_processed_total=100, token_coverage='complete')
+    retry = store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='completion',
+        observed_at='t1', input_processed_total=100, token_coverage='complete')
+    assert first is True
+    assert retry is False
+    assert len(store.get_session_checkpoints('s1')['completions']) == 1
+
+
+def test_schema_v2_migration_preserves_rows_and_unfreezes_later_turns(tmp_path):
+    """A pre-existing v2 install (table-level
+    UNIQUE(session_id, checkpoint_type)) must migrate in place: its one
+    stored baseline+completion pair survives, AND a session that already had
+    one completion can now record a second turn -- proving the migration
+    actually replaced the freezing constraint, not just renamed it."""
+    db_path = tmp_path / 'usage_breakdown.sqlite'
+    with sqlite3.connect(db_path) as raw:
+        raw.execute(
+            'CREATE TABLE allowance_sample ('
+            ' id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL,'
+            ' window_kind TEXT NOT NULL, window_scope TEXT NOT NULL,'
+            ' raw_utilization REAL, resets_at TEXT, source_observed_at TEXT,'
+            ' server_received_at TEXT NOT NULL, source_version TEXT, quality TEXT NOT NULL,'
+            ' account_ref TEXT, created_at TEXT NOT NULL,'
+            ' UNIQUE(provider, window_kind, window_scope, source_observed_at))')
+        raw.execute(
+            'CREATE TABLE session_fact ('
+            ' session_id TEXT PRIMARY KEY, provider TEXT NOT NULL, project_id TEXT,'
+            ' character TEXT, trigger_type TEXT, requested_model TEXT, observed_model TEXT,'
+            ' status TEXT NOT NULL, started_at TEXT, ended_at TEXT, input_fresh INTEGER,'
+            ' input_cache_write INTEGER, input_cache_read INTEGER, input_processed_total INTEGER,'
+            ' output_tokens INTEGER, output_reasoning INTEGER, token_source TEXT,'
+            ' token_coverage TEXT NOT NULL, included INTEGER NOT NULL DEFAULT 1,'
+            ' housekeeping INTEGER NOT NULL DEFAULT 0, parent_session_id TEXT,'
+            ' updated_at TEXT NOT NULL, created_at TEXT NOT NULL)')
+        raw.execute(
+            'CREATE TABLE code_delta ('
+            ' session_id TEXT PRIMARY KEY, added INTEGER, deleted INTEGER, status TEXT NOT NULL,'
+            ' reason TEXT, branch TEXT, base_commit TEXT, head_commits TEXT, created_at TEXT NOT NULL)')
+        raw.execute(
+            'CREATE TABLE session_checkpoint ('
+            ' id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, provider TEXT NOT NULL,'
+            ' checkpoint_type TEXT NOT NULL, observed_at TEXT NOT NULL, input_fresh INTEGER,'
+            ' input_cache_write INTEGER, input_cache_read INTEGER, input_processed_total INTEGER,'
+            ' output_tokens INTEGER, output_reasoning INTEGER, token_coverage TEXT NOT NULL,'
+            ' created_at TEXT NOT NULL, UNIQUE(session_id, checkpoint_type))')
+        raw.execute(
+            "INSERT INTO session_checkpoint (session_id, provider, checkpoint_type, observed_at,"
+            " input_fresh, input_cache_write, input_cache_read, input_processed_total, output_tokens,"
+            " output_reasoning, token_coverage, created_at) VALUES"
+            " ('s1','claude','baseline','2026-09-28T10:00:00Z',0,0,0,0,0,0,'unavailable',"
+            " '2026-09-28T10:00:00Z')")
+        raw.execute(
+            "INSERT INTO session_checkpoint (session_id, provider, checkpoint_type, observed_at,"
+            " input_fresh, input_cache_write, input_cache_read, input_processed_total, output_tokens,"
+            " output_reasoning, token_coverage, created_at) VALUES"
+            " ('s1','claude','completion','2026-09-28T10:05:00Z',100,0,0,100,50,0,'complete',"
+            " '2026-09-28T10:05:00Z')")
+        raw.execute(f'PRAGMA application_id={APPLICATION_ID}')
+        raw.execute('PRAGMA user_version=2')
+        raw.commit()
+
+    migrated = UsageBreakdownStore(db_path)
+    ck = migrated.get_session_checkpoints('s1')
+    assert ck['baseline']['observed_at'] == '2026-09-28T10:00:00Z'
+    assert len(ck['completions']) == 1
+    assert ck['completions'][0]['input_processed_total'] == 100
+
+    turn2 = migrated.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='completion',
+        observed_at='2026-09-28T11:00:00Z', input_processed_total=500,
+        output_tokens=200, token_coverage='complete')
+    assert turn2 is True
+    completions = migrated.get_session_checkpoints('s1')['completions']
+    assert [c['input_processed_total'] for c in completions] == [100, 500]
+
+    with sqlite3.connect(db_path) as raw:
+        assert raw.execute('PRAGMA user_version').fetchone()[0] == 3
