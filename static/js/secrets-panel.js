@@ -1012,3 +1012,5 @@ window.submitVaultChangePassphrase = submitVaultChangePassphrase;
 window.openVaultLockNow = openVaultLockNow;
 window.submitVaultLockNow = submitVaultLockNow;
 window._secToggleUseRecoveryKey = _secToggleUseRecoveryKey;
+window.openVaultRetireLegacy = openVaultRetireLegacy;
+window.submitVaultRetireLegacy = submitVaultRetireLegacy;
