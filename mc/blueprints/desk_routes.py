@@ -34,6 +34,7 @@ from typing import Callable, Optional
 
 from flask import Blueprint, jsonify, request
 
+from mc import characters as _chars
 from mc import desk as _desk
 from mc import desk_brief as _brief
 from mc import desk_harvest as _harvest
@@ -102,6 +103,52 @@ def _pick_agent_error(project: dict):
     name = project.get('name') or project.get('id')
     return jsonify({'error': f'no agent picked for {name} yet — pick who plans for this project',
                     'pick_agent': True, 'project_id': project.get('id')}), 409
+
+
+def _valid_agent_ref(project: dict, ref: str) -> bool:
+    """True if `ref` ("scope:name") resolves to a real character, the same
+    check `_resolve_character(strict=True)` makes at dispatch time — so a
+    presence PATCH can never store a pick that would 409 every draft/triage/
+    accept the moment someone tries to use it."""
+    scope, _, name = (ref or '').partition(':')
+    scope = (scope or '').strip().lower()
+    name = (name or '').strip()
+    if scope not in ('project', 'global') or not name:
+        return False
+    try:
+        pp = project.get('project_path') if scope == 'project' else None
+        return _chars.read_character(scope, name, project_path=pp,
+                                      include_body=False) is not None
+    except Exception:
+        return False
+
+
+# ── Presence: who plans for this project (R1-A follow-up) ───────────────────
+#
+# `_desk_agent_ref`/`_pick_agent_error` above turn a missing pick into a 409
+# instead of a silent default — but `upsert_presence` had no HTTP route, so
+# nothing in the product could ever CLEAR that 409. These two close the loop:
+# the picker the 409 sends the UI to open calls PATCH here.
+
+@bp.route('/api/desk/presence/<project_id>', methods=['GET'])
+def get_presence(project_id):
+    return jsonify(_desk.get_presence(project_id) or {'project_id': project_id, 'desk_agent': None})
+
+
+@bp.route('/api/desk/presence/<project_id>', methods=['PATCH'])
+def patch_presence(project_id):
+    if load_project is None:
+        return jsonify({'error': 'not wired'}), 503
+    project = load_project(project_id)
+    if not project:
+        return jsonify({'error': 'project not found'}), 404
+    d = request.get_json(silent=True) or {}
+    if 'desk_agent' in d and d.get('desk_agent') is not None:
+        ref = d['desk_agent']
+        if not isinstance(ref, str) or not _valid_agent_ref(project, ref):
+            return jsonify({'error': f'unknown agent {ref!r} — pick one from '
+                                      f'/api/characters?project_id={project_id}'}), 400
+    return jsonify(_desk.upsert_presence(project_id, d))
 
 
 # ── Signal feed ──────────────────────────────────────────────────────────────

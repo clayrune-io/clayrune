@@ -435,3 +435,52 @@ def test_no_dispatch_site_hardcodes_the_old_default_agent():
     assert "'global:social-media-strategist'" not in src
     assert '"global:social-media-strategist"' not in src
 
+
+# -- presence: the route the 409 above needs the UI to be able to call -------
+# (Dave's follow-up: R1-A made every draft/triage/accept 409 with pick_agent,
+# but nothing could clear it — `upsert_presence` had no HTTP route.)
+
+def test_get_presence_on_an_unset_project_is_not_a_404(client):
+    r = client.get('/api/desk/presence/proj-9')
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body['project_id'] == 'proj-9'
+    assert body['desk_agent'] is None
+
+
+def test_patch_presence_sets_a_valid_agent(client, monkeypatch):
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid, 'name': 'Proj Nine'})
+    r = client.patch('/api/desk/presence/proj-9', json={'desk_agent': 'global:claydo'})
+    assert r.status_code == 200
+    assert r.get_json()['desk_agent'] == 'global:claydo'
+
+    r = client.get('/api/desk/presence/proj-9')
+    assert r.get_json()['desk_agent'] == 'global:claydo'
+
+
+def test_patch_presence_rejects_an_unknown_agent(client, monkeypatch):
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid, 'name': 'Proj Nine'})
+    r = client.patch('/api/desk/presence/proj-9', json={'desk_agent': 'global:no-such-agent'})
+    assert r.status_code == 400
+    assert 'no-such-agent' in r.get_json()['error']
+    assert _desk.get_presence('proj-9') is None
+
+
+def test_patch_presence_rejects_a_malformed_ref(client, monkeypatch):
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid, 'name': 'Proj Nine'})
+    r = client.patch('/api/desk/presence/proj-9', json={'desk_agent': 'claydo'})
+    assert r.status_code == 400
+
+
+def test_patch_presence_unknown_project_is_404(client, monkeypatch):
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: None)
+    r = client.patch('/api/desk/presence/ghost', json={'desk_agent': 'global:claydo'})
+    assert r.status_code == 404
+
+
+def test_patch_presence_can_clear_the_agent(client, monkeypatch):
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid, 'name': 'Proj Nine'})
+    client.patch('/api/desk/presence/proj-9', json={'desk_agent': 'global:claydo'})
+    r = client.patch('/api/desk/presence/proj-9', json={'desk_agent': None})
+    assert r.status_code == 200
+    assert r.get_json()['desk_agent'] is None
