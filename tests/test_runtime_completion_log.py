@@ -729,11 +729,20 @@ def test_automatic_wake_marks_the_usage_turn_running(env):
     """Fenn round 4 AUTO_WAKE: a background-task wake starts a turn nobody
     sent. `_note_self_started_turn` must mark the usage fact running on
     EVERY such turn, not only when the INTERIM latch is set -- here it is
-    not set, and the previous turn's fact is 'completed'."""
+    not set, and the fact is stale-'completed' going in.
+
+    MC-998 reopened: no `_before` result line here on purpose. Since the
+    turn-boundary fix (`_write_usage_breakdown_turn_checkpoint`) now marks
+    the fact 'running' at every ordinary turn's own result too, a `_before`
+    result would do this test's job before the wake ever got a chance to —
+    collapsing the very distinction ("not only when...") the test exists to
+    pin. `status='idle'` is set directly to reproduce the state a prior
+    turn's result would have left, without going through that write."""
     ar = env['ar']
     store = _breakdown_store(env)
     seen = {}
     s = _mode_b_session(env, 'mb-wake')
+    s['status'] = 'idle'
     ar._log_agent_dispatch_pending(s)
     store.upsert_session_fact('mb-wake', {'provider': 'claude', 'status': 'completed',
                                           'started_at': s['started_at'],
@@ -747,7 +756,7 @@ def test_automatic_wake_marks_the_usage_turn_running(env):
         seen['memory'] = s['status']
         seen['after'] = store.get_session_fact('mb-wake')['status']
 
-    proc = _LiveModeBProc([_result_line()], tick,
+    proc = _LiveModeBProc([], tick,
                           after=[_assistant_line('Background task finished, continuing.')],
                           after_hook=after_wake)
     s['proc'] = proc
@@ -843,3 +852,93 @@ def test_session_whose_process_exited_without_a_completion_is_closed(env):
     s['proc'] = _FakeProc([], rc=1)
     assert _reconcile(env, now=_later(minutes=5)) == ['mb-dead']
     assert _breakdown_store(env).get_session_fact('mb-dead')['status'] == 'ended_unknown'
+
+
+# ── MC-998 reopened (backlog 4668eafc, 2026-09-29): Mode B never checkpoints
+# a follow-up turn, only real process exit ────────────────────────────────
+# `_log_agent_completion` (the only writer of a 'completion' `session_checkpoint`
+# before this fix) ran only in `_read_agent_stream_b`'s `finally` block, i.e.
+# on real process exit. Mode B's process stays alive across turns, so a live
+# chat's 2nd/3rd/... turns got `mark_session_running` (already covered by
+# `test_resumed_turn_reopens_the_usage_breakdown_fact_until_it_completes`
+# above) but no completion — `_session_evidence` then read every turn after
+# the first as one open, unmeasured span forever. This drives the REAL
+# `_read_agent_stream_b` across 3 turns without letting the process exit
+# between them, and pins a checkpoint after EACH one.
+
+class _MultiTurnModeBProc:
+    """Popen stand-in that runs a hook after each stdout line while staying
+    'alive' (`poll()` returns None) for the whole sequence — unlike
+    `_LiveModeBProc`, which only supports one such hook between two groups
+    of lines. Needed here to snapshot state after every one of 3 turns."""
+
+    pid = -1
+
+    def __init__(self, turns):
+        self._turns = turns  # [(line, hook_or_None), ...]
+        self.exited = False
+
+    def poll(self):
+        return None if not self.exited else 0
+
+    def wait(self):
+        self.exited = True
+        return 0
+
+    @property
+    def stdout(self):
+        def gen():
+            for line, hook in self._turns:
+                yield line
+                if hook:
+                    hook()
+        return gen()
+
+
+def _completion_checkpoints(env_, sid):
+    return [c for c in _breakdown_store(env_).list_session_checkpoints()
+            if c['session_id'] == sid and c['checkpoint_type'] == 'completion']
+
+
+def test_mode_b_turn_boundary_writes_a_completion_checkpoint_per_turn(env):
+    """Snapshots are taken from INSIDE the stdout generator's hooks, i.e.
+    while the simulated process is still running the next turn — never
+    after `ar._read_agent_stream_b` returns. Once the generator is
+    exhausted the reader's `finally` block sees the process as exited (a
+    real Mode B process never would, mid-chat) and runs the unrelated
+    exit-time `_log_agent_completion` path, which would add its own
+    checkpoint — a 4th row that must not be mistaken for this fix."""
+    ar = env['ar']
+    seen = {}
+    s = _mode_b_session(env, 'mb-multiturn')
+    ar._log_agent_dispatch_pending(s)  # baseline, as a real dispatch does
+    store = _breakdown_store(env)
+
+    def snapshot(n):
+        def _hook():
+            seen.setdefault('counts', []).append(len(_completion_checkpoints(env, 'mb-multiturn')))
+            fact = store.get_session_fact('mb-multiturn')
+            seen.setdefault('status', []).append(fact['status'])
+            seen.setdefault('ended_at', []).append(fact['ended_at'])
+        return _hook
+
+    proc = _MultiTurnModeBProc([
+        (_result_line(), snapshot(1)),
+        (_result_line(), snapshot(2)),
+        (_result_line(), snapshot(3)),
+    ])
+    s['proc'] = proc
+    ar._read_agent_stream_b(proc, s)
+
+    assert seen['counts'] == [1, 2, 3], seen
+    # Status stays 'running'/no ended_at between turns — this is a mid-
+    # session snapshot, not the session's end (mark_session_running already
+    # covers that half; this pins the checkpoint doesn't fight it).
+    assert seen['status'] == ['running', 'running', 'running'], seen
+    assert seen['ended_at'] == [None, None, None], seen
+    # `_accumulate_session_usage` sums each turn's usage into a running
+    # session total (Mode B's `result` carries only that turn's own
+    # counts) — so each checkpoint's cumulative total climbs, and the
+    # aggregate derives turn 2's own delta by diffing checkpoint N-1 from N.
+    rows = sorted(_completion_checkpoints(env, 'mb-multiturn'), key=lambda r: r['observed_at'])[:3]
+    assert [r['output_tokens'] for r in rows] == [10, 20, 30], rows
