@@ -1075,6 +1075,8 @@ let agentStatusCache = {};     // session_id → {status, task, projectId, start
 let agentHistory = [];         // [{projectId, sessionId, projectName, task, status, startedAt}]
 let activeAgentTab = {};       // project_id → session_id (which tab is active in modal)
 let splitAgentTab = {};        // project_id → session_id shown in the 2nd (split) pane, or unset. Desktop split-view.
+let splitAgentTabProject = {}; // project_id → the OTHER project id that owns splitAgentTab[project_id]'s
+                                // session, only set when the split pane is cross-project (MC-backlog 321d8efc).
 let agentConvNew = {};         // project_id → true when the user explicitly chose
 let agentPendingImages = {};   // key (projectId or sessionId) → [{file, objectUrl, serverPath}]
 let acOpenSessions = new Set(); // session_id → expanded in console
