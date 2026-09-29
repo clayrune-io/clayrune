@@ -269,6 +269,18 @@ _lock_notified = False
 # unlock).
 _last_key_use: float | None = None
 
+# Cached existence of a live OS-keyring master-key entry — the ``keyring``
+# package has no exists-only check (``get_password``/``get_credential`` both
+# return the actual secret), so a bare truthiness check in
+# ``legacy_key_copies_present()`` used to pull the real master key out of
+# the OS keyring on every call, including from the metadata-only status
+# route any agent can poll (MC 503edfe4 rework). Refreshed for real only at
+# quarantine time and right after an unlock (see
+# ``_refresh_legacy_keyring_cache``); ``legacy_key_copies_present()`` reads
+# this instead of the keyring on every other call. ``None`` until the first
+# such refresh in this process's lifetime.
+_legacy_keyring_entry_cached: bool | None = None
+
 
 # ── Name validation ──────────────────────────────────────────────────────────
 
@@ -1176,6 +1188,7 @@ def _quarantine_legacy_key_material() -> None:
     except OSError as e:
         _log(f"[secrets] could not quarantine DPAPI key mirror {dp}: {e}")
 
+    global _legacy_keyring_entry_cached
     if not _keyring_disabled():
         try:
             import keyring
@@ -1186,9 +1199,36 @@ def _quarantine_legacy_key_material() -> None:
                 keyring.delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
                 _log(f"[secrets] quarantined OS keyring master-key entry to "
                      f"{dest} and removed the live keyring entry")
+            # Ground truth either way: either nothing was there, or it just
+            # got deleted. Cache it so legacy_key_copies_present() doesn't
+            # have to pull the keyring again to answer the same question.
+            _legacy_keyring_entry_cached = False
         except Exception as e:
             _log(f"[secrets] could not quarantine/remove the OS keyring "
                  f"master-key entry: {e}")
+            # Genuinely unknown whether the entry survived — leave the
+            # cache as it was rather than guess.
+
+
+def _refresh_legacy_keyring_cache() -> bool:
+    """The only place outside :func:`_quarantine_legacy_key_material` allowed
+    to call ``keyring.get_password`` for existence purposes — right after an
+    unlock (see :func:`_retry_quarantine_if_needed`), never from a bare
+    :func:`legacy_key_copies_present` GET. ``keyring`` has no exists-only
+    check (``get_password``/``get_credential`` both hand back the actual
+    secret), so this is the real cost every previous per-GET check paid;
+    confining it to unlock/quarantine events is the fix. Updates and returns
+    ``_legacy_keyring_entry_cached``."""
+    global _legacy_keyring_entry_cached
+    present = False
+    if not _keyring_disabled():
+        try:
+            import keyring
+            present = bool(keyring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT))
+        except Exception:
+            present = False
+    _legacy_keyring_entry_cached = present
+    return present
 
 
 def legacy_key_copies_present() -> bool:
@@ -1196,17 +1236,24 @@ def legacy_key_copies_present() -> bool:
     on disk or in the OS keyring — i.e. :func:`_quarantine_legacy_key_material`
     has not (yet) fully succeeded. Metadata-only (a boolean, never key
     material or a path with key content) — safe for the vault-lock status
-    route any caller, including agents, can read (MC 503edfe4 follow-up)."""
+    route any caller, including agents, can read (MC 503edfe4 follow-up).
+
+    The file checks below are cheap stats, run live every call. The keyring
+    leg is CACHED (MC 503edfe4 rework): ``keyring.get_password`` is the only
+    way to check whether an entry exists, and it hands back the actual
+    master key to do it — so this route used to pull the real key into
+    process memory on every single call, including from agents polling
+    status. Reads ``_legacy_keyring_entry_cached`` instead; lazily populated
+    on first use in this process if nothing has refreshed it yet (a
+    passphrase-locked box that has never quarantined or unlocked in this
+    process's lifetime), and refreshed for real at quarantine time and after
+    every unlock — see :func:`_refresh_legacy_keyring_cache`."""
     if key_file_path().is_file() or dpapi_mirror_path().is_file():
         return True
-    if not _keyring_disabled():
-        try:
-            import keyring
-            if keyring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT):
-                return True
-        except Exception:
-            pass
-    return False
+    global _legacy_keyring_entry_cached
+    if _legacy_keyring_entry_cached is None:
+        _refresh_legacy_keyring_cache()
+    return bool(_legacy_keyring_entry_cached)
 
 
 def _retry_quarantine_if_needed() -> None:
@@ -1218,9 +1265,17 @@ def _retry_quarantine_if_needed() -> None:
     no other path to recover on. A no-op once
     :func:`legacy_key_copies_present` is False. Never raises into the
     caller's unlock path — a failed retry here is no worse than the
-    original failure, just logged again."""
+    original failure, just logged again.
+
+    Refreshes the keyring cache for real before checking (MC 503edfe4
+    rework) — an unlock is exactly the ground-truth-may-have-changed moment
+    :func:`_refresh_legacy_keyring_cache` exists for, and it's one call per
+    unlock, not one per status GET."""
     try:
-        if wrapped_key_path().is_file() and legacy_key_copies_present():
+        if not wrapped_key_path().is_file():
+            return
+        _refresh_legacy_keyring_cache()
+        if legacy_key_copies_present():
             _quarantine_legacy_key_material()
     except Exception as e:
         _log(f"[secrets] legacy-key quarantine retry failed: {e}")
