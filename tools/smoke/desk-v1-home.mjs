@@ -110,21 +110,27 @@ function reportUncaught(pageErrors, tag) {
 async function runToneRenderChecks(browser, tone) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, tone);
 
-  const cardCount = await page.$$eval('.desk-v1-home-camp-card', (els) => els.length);
-  // §2: cards show every campaign with its state — camp-1 (Active) and,
-  // since T2b, camp-2 (Proposed).
-  if (cardCount === 2) ok(`[${tone.name}] both fixture campaign cards render (Active + Proposed)`);
-  else fail(`[${tone.name}] expected 2 campaign cards, got ${cardCount}`);
+  // IA1 (Dave's review pass 3): Home's own "at a glance" row is now one
+  // card per project, not a flat campaign grid — the grid + Archived section
+  // are retired from Home entirely (only reachable via a project's own page,
+  // covered by desk-v1-project.mjs). Both fixture projects render here.
+  const projectCardCount = await page.$$eval('.desk-v1-home-project-card', (els) => els.length);
+  if (projectCardCount === 2) ok(`[${tone.name}] both fixture project cards render`);
+  else fail(`[${tone.name}] expected 2 project cards, got ${projectCardCount}`);
 
-  const cardText = (await page.textContent('.desk-v1-home-camp-card').catch(() => '') || '');
-  if (/Windows beta testers/.test(cardText) && /11\/30 tester signups/.test(cardText)) {
-    ok(`[${tone.name}] campaign card shows name + goal progress`);
+  const projectsText = (await page.textContent('#desk-v1-home-projects').catch(() => '') || '');
+  if (/Clayrune/.test(projectsText) && /2 campaigns/.test(projectsText) && /1 active/.test(projectsText)) {
+    ok(`[${tone.name}] Clayrune project card shows campaign count + active count`);
   } else {
-    fail(`[${tone.name}] campaign card content wrong: ${JSON.stringify(cardText)}`);
+    fail(`[${tone.name}] Clayrune project card content wrong: ${JSON.stringify(projectsText)}`);
   }
-  const badgeCount = await page.$eval('.desk-v1-home-camp-card', (el) => el.querySelectorAll('.desk-v1-channel-badge').length);
-  if (badgeCount === 3) ok(`[${tone.name}] campaign card shows all 3 fixture channel badges`);
-  else fail(`[${tone.name}] expected 3 channel badges, got ${badgeCount}`);
+  if (/Engulfing scanner/.test(projectsText) && /1 campaign/.test(projectsText)) {
+    ok(`[${tone.name}] Engulfing scanner project card shows its own campaign count`);
+  } else {
+    fail(`[${tone.name}] Engulfing scanner project card content wrong: ${JSON.stringify(projectsText)}`);
+  }
+  const campCardsGone = await page.$('.desk-v1-home-camp-card');
+  !campCardsGone ? ok(`[${tone.name}] no flat campaign-card grid on Home`) : fail(`[${tone.name}] a retired .desk-v1-home-camp-card still rendered`);
 
   // Needs you: 1 piece (fam-restore-points), 1 video (fam-install-video),
   // 1 reply (conv-1), plus the held ch-li-page hold row and the offline
@@ -217,115 +223,94 @@ async function runNeedsYouDeepLinks(browser) {
   await ctx.close();
 }
 
-// ── A4 (Home half) + UX-03: dropping a channel shelf item onto the single
-// fixture campaign card adds it as a destination with a result preview +
-// Undo; a second drop of the SAME channel is refused (already attached). ───
-async function runChannelDropOnCard(browser) {
+// ── A4 + UX-03 (Dave's review pass 3): Home no longer has a campaign grid to
+// drag/drop onto — _homeShelfAdapter.onDrop always misses — so a shelf item's
+// click/keyboard "Add to…" path (UX-05) is now the ONLY way Home attaches a
+// channel/asset to a campaign, across every project at once (no "ambiguous
+// drop" case left: the picker always lists every campaign, suffixed with its
+// project name since the fixture ships two). ───────────────────────────────
+async function runAddToMenuAttach(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
 
-  // ch-x-ron is already on camp-1 (fixture); drop the OTHER channel we can
-  // still add is none — all 3 are already attached in the base fixture, so
-  // exercise the refusal path first, then detach one via Undo-of-detach is
-  // out of scope; instead verify the "already on" refusal directly (every
-  // fixture channel is already attached, which is itself the real case
-  // ground rule 3's fixture produces for a single-campaign drop).
-  const before = await page.evaluate(() => window.DeskV1Fixtures.campaigns[0].channelIds.length);
-  await page.evaluate(() => {
-    window.PointerDrag = window.PointerDrag || {};
-  });
-  const shelfItem = await page.$('#desk-v1-home-shelf-channels .desk-v1-shelf-item[data-channel-id="ch-x-ron"]');
-  const card = await page.$('.desk-v1-home-camp-card');
-  const [sBox, cBox] = await Promise.all([shelfItem.boundingBox(), card.boundingBox()]);
-  await page.mouse.move(sBox.x + sBox.width / 2, sBox.y + sBox.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(cBox.x + cBox.width / 2, cBox.y + 10, { steps: 8 });
-  await page.mouse.move(cBox.x + cBox.width / 2, cBox.y + cBox.height / 2, { steps: 8 });
-  const resultText = (await page.textContent('.desk-v1-home-camp-result').catch(() => '') || '');
-  if (/Drop to add/.test(resultText)) ok(`A4/UX-03: hovering a shelf item over the card previews the drop: "${resultText.trim()}"`);
-  else fail(`A4/UX-03: no drop-hover preview text: ${JSON.stringify(resultText)}`);
-  await page.mouse.up();
+  const before = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').channelIds.length);
+  const channelItem = await page.$('#desk-v1-home-shelf-channels .desk-v1-shelf-item[data-channel-id="ch-x-ron"]');
+  await channelItem.click();
+  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
+  const menuText = (await page.textContent('.desk-v1-addto-menu').catch(() => '') || '');
+  if (/Windows beta testers — Clayrune/.test(menuText) && /Restore points launch — Clayrune/.test(menuText)
+    && /Signal alerts for day traders — Engulfing scanner/.test(menuText) && /New campaign/.test(menuText)) {
+    ok('Add to…: menu lists every campaign across both fixture projects, suffixed with its project name, plus "+ New campaign"');
+  } else {
+    fail(`Add to… menu wrong: ${JSON.stringify(menuText)}`);
+  }
+  // ch-x-ron is already on camp-1 (fixture) — exercise the "already on"
+  // refusal, the same case the old drag-onto-card test covered.
+  await page.click('.desk-v1-addto-menu button:has-text("Windows beta testers")');
   const toastText = (await page.$eval('.toast:last-of-type', (el) => el.textContent).catch(() => '') || '');
-  if (/already on/.test(toastText)) ok(`A4: dropping an already-attached channel is refused with a toast: "${toastText.trim()}"`);
-  else fail(`A4: expected an "already on" refusal toast, got: ${JSON.stringify(toastText)}`);
-  const after = await page.evaluate(() => window.DeskV1Fixtures.campaigns[0].channelIds.length);
-  if (after === before) ok('A4: refused drop does not mutate channelIds');
-  else fail(`A4: channelIds mutated on a refused drop: ${before} -> ${after}`);
+  if (/already on/.test(toastText)) ok(`Add to…: attaching a channel already on the campaign is refused: "${toastText.trim()}"`);
+  else fail(`Add to…: expected an "already on" refusal toast, got: ${JSON.stringify(toastText)}`);
+  const after = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').channelIds.length);
+  if (after === before) ok('Add to…: refused attach does not mutate channelIds');
+  else fail(`Add to…: channelIds mutated on a refused attach: ${before} -> ${after}`);
 
-  // Material asset drop DOES add a new family + version (the literal "adds a
-  // version" case per §13/A4), and IS undo-able via the command bus.
+  // Material asset -> a real campaign DOES add a new family (the literal
+  // "adds a version" case per §13/A4), and IS undo-able via the command bus.
   const famCountBefore = await page.evaluate(() => window.DeskV1Fixtures.families.length);
   const assetItem = await page.$('.desk-v1-home-material-assets .desk-v1-shelf-item');
-  const aBox = await assetItem.boundingBox();
-  await page.mouse.move(aBox.x + aBox.width / 2, aBox.y + aBox.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(cBox.x + cBox.width / 2, cBox.y + 10, { steps: 8 });
-  await page.mouse.move(cBox.x + cBox.width / 2, cBox.y + cBox.height / 2, { steps: 8 });
-  await page.mouse.up();
+  await assetItem.click();
+  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
+  await page.click('.desk-v1-addto-menu button:has-text("Signal alerts for day traders")');
   const famCountAfter = await page.evaluate(() => window.DeskV1Fixtures.families.length);
-  if (famCountAfter === famCountBefore + 1) ok('A4: dropping a Material asset onto the card adds a new family (a drafting version)');
-  else fail(`A4: family count did not increase on asset drop: ${famCountBefore} -> ${famCountAfter}`);
+  if (famCountAfter === famCountBefore + 1) ok('Add to…: attaching a Material asset to a campaign adds a new family (a drafting version)');
+  else fail(`Add to…: family count did not increase: ${famCountBefore} -> ${famCountAfter}`);
   const hasUndo = await page.$eval('.toast:last-of-type', (el) => /toast-btn/.test(el.innerHTML)).catch(() => false);
   if (hasUndo) {
     await page.click('.toast:last-of-type .toast-btn.primary');
     const famCountUndone = await page.evaluate(() => window.DeskV1Fixtures.families.length);
-    if (famCountUndone === famCountBefore) ok('A4: Undo removes the family the drop added');
-    else fail(`A4: Undo did not remove the added family: ${famCountBefore} -> ${famCountUndone}`);
+    if (famCountUndone === famCountBefore) ok('Add to…: Undo removes the family the attach added');
+    else fail(`Add to…: Undo did not remove the added family: ${famCountBefore} -> ${famCountUndone}`);
   } else {
     const lastToastText = (await page.$eval('.toast:last-of-type', (el) => el.textContent).catch(() => '') || '');
-    fail(`A4: asset-drop toast had no Undo button: ${JSON.stringify(lastToastText)}`);
+    fail(`Add to…: asset-attach toast had no Undo button: ${JSON.stringify(lastToastText)}`);
   }
 
-  reportUncaught(pageErrors, '[drop]');
+  // "+ New campaign" still creates one and navigates straight to it (UX-03's
+  // old "ambiguous drop -> + New campaign" case, now reached via the picker).
+  const campCountBefore = await page.evaluate(() => window.DeskV1Fixtures.campaigns.length);
+  const channelItem2 = await page.$('#desk-v1-home-shelf-channels .desk-v1-shelf-item[data-channel-id="ch-blog"]');
+  await channelItem2.click();
+  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
+  await page.click('.desk-v1-addto-menu button:has-text("New campaign")');
+  await page.waitForSelector('#desk-v1-crumb .desk-v1-crumb-title:has-text("New campaign")', { timeout: 4000 }).catch(() => {});
+  const campCountAfter = await page.evaluate(() => window.DeskV1Fixtures.campaigns.length);
+  const crumbAfterNew = (await page.textContent('#desk-v1-crumb .desk-v1-crumb-title').catch(() => '') || '');
+  if (campCountAfter === campCountBefore + 1) ok('Add to…: "+ New campaign" creates a campaign');
+  else fail(`Add to…: "+ New campaign" did not create a campaign: ${campCountBefore} -> ${campCountAfter}`);
+  if (/New campaign/.test(crumbAfterNew)) ok(`Add to…: "+ New campaign" navigates straight to the new campaign: crumb "${crumbAfterNew.trim()}"`);
+  else fail(`Add to…: did not land on the new campaign: crumb ${JSON.stringify(crumbAfterNew)}`);
+
+  reportUncaught(pageErrors, '[addto]');
   await ctx.close();
 }
 
-// ── UX-03 "Which campaign?" on an ambiguous drop — the fixture ships two
-// campaigns since T2b (camp-1 Active, camp-2 Proposed), so no runtime push. ─
-async function runAmbiguousDropChoosesCampaign(browser) {
-  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
-  await page.waitForSelector('.desk-v1-home-camp-card', { timeout: 8000 });
-  const cardCount = await page.$$eval('.desk-v1-home-camp-card', (els) => els.length);
-  if (cardCount === 2) ok('UX-03 setup: two campaign cards render');
-  else fail(`UX-03 setup: expected 2 cards, got ${cardCount}`);
-
-  const shelfItem = await page.$('#desk-v1-home-shelf-channels .desk-v1-shelf-item[data-channel-id="ch-blog"]');
-  const sBox = await shelfItem.boundingBox();
-  // Drop over the cards section's own empty grid space (3 columns, only 2
-  // cards) but not on either card — the "2+ campaigns, no single target"
-  // ambiguous case (_resolveDropAt's `inSection` branch).
-  const cardsHost = await page.$('#desk-v1-home-cards');
-  const chBox = await cardsHost.boundingBox();
-  await page.mouse.move(sBox.x + sBox.width / 2, sBox.y + sBox.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(chBox.x + chBox.width * 0.9, chBox.y + 10, { steps: 8 });
-  await page.mouse.up();
-  const menu = await page.$('.desk-v1-addto-menu');
-  if (menu) ok('UX-03: an ambiguous drop opens the "Which campaign? / + New campaign" menu');
-  else fail('UX-03: ambiguous drop did not open the campaign-choice menu');
-  const menuText = (await page.textContent('.desk-v1-addto-menu').catch(() => '') || '');
-  if (/New campaign/.test(menuText)) ok('UX-03: menu offers "+ New campaign"');
-  else fail(`UX-03: menu missing "+ New campaign": ${JSON.stringify(menuText)}`);
-
-  reportUncaught(pageErrors, '[ambiguous]');
-  await ctx.close();
-}
-
-// ── Desktop layout (Dave's review): Needs you sizes to its own content
-// instead of stretching to match the cards column, and a channel shelf item
-// renders as ONE pill (grip + badge + add inside a single outline), not a
-// badge-pill nested inside the shelf-item's own pill. ──────────────────────
+// ── Desktop layout (Dave's review): with the campaign grid retired, Needs
+// you is the only content row left in the .desk-v1-home column — it must
+// still size to its own content (flex:0 0 auto), not stretch to fill
+// whatever height the column has free, and a channel shelf item renders as
+// ONE pill (grip + badge + add inside a single outline), not a badge-pill
+// nested inside the shelf-item's own pill. ─────────────────────────────────
 async function runDesktopLayoutChecks(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
 
   const needsyouFit = await page.evaluate(() => {
     const needsyou = document.querySelector('.desk-v1-home-needsyou');
-    const main = document.querySelector('.desk-v1-home-main');
-    return { cardHeight: needsyou.getBoundingClientRect().height, mainHeight: main.getBoundingClientRect().height };
+    const home = document.querySelector('.desk-v1-home');
+    return { needsyouHeight: needsyou.getBoundingClientRect().height, homeHeight: home.getBoundingClientRect().height };
   });
-  if (needsyouFit.cardHeight < needsyouFit.mainHeight - 20) {
-    ok(`Needs you sizes to its own content, not the cards column's height (${needsyouFit.cardHeight.toFixed(0)}px vs ${needsyouFit.mainHeight.toFixed(0)}px main)`);
+  if (needsyouFit.needsyouHeight < needsyouFit.homeHeight - 40) {
+    ok(`Needs you sizes to its own content, not stretched to fill the Home column (${needsyouFit.needsyouHeight.toFixed(0)}px vs ${needsyouFit.homeHeight.toFixed(0)}px column)`);
   } else {
-    fail(`Needs you stretched to match the main row's height: ${needsyouFit.cardHeight.toFixed(0)}px vs ${needsyouFit.mainHeight.toFixed(0)}px`);
+    fail(`Needs you stretched to fill the Home column: ${needsyouFit.needsyouHeight.toFixed(0)}px vs ${needsyouFit.homeHeight.toFixed(0)}px`);
   }
 
   const badgeBorders = await page.evaluate(() => {
@@ -343,45 +328,39 @@ async function runDesktopLayoutChecks(browser) {
   await ctx.close();
 }
 
-// ── Phone (§11): promote box shows the icon row (no drag), cards/needsyou/
-// shelves stack, hit targets >=44px. ────────────────────────────────────────
+// ── Phone (§11): promote box shows the icon row (no drag), Home's content
+// rows stack (they always do now — the campaign grid's rail layout that used
+// to need a desktop/phone split is retired), hit targets >=44px. ───────────
 async function runPhoneLayout(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} }, { width: 390, height: 844 });
 
   const layout = await page.evaluate(() => {
     const phoneActions = document.querySelector('.desk-v1-home-promote-phone-actions');
-    const main = document.querySelector('.desk-v1-home-main');
     const shelves = document.querySelector('.desk-v1-home-shelves');
     const promote = document.querySelector('.desk-v1-home-promote');
+    const projects = document.querySelector('.desk-v1-home-projects');
     const needsyou = document.querySelector('.desk-v1-home-needsyou');
-    const cards = document.querySelector('.desk-v1-home-cards');
-    const card = document.querySelector('.desk-v1-home-camp-card');
     return {
       phoneActionsDisplay: getComputedStyle(phoneActions).display,
-      mainDirection: getComputedStyle(main).flexDirection,
       shelvesColumns: getComputedStyle(shelves).gridTemplateColumns.split(' ').length,
-      // Visual (top-to-bottom) order, not DOM order — §11: promote, Needs
-      // you, THEN campaign cards.
       promoteTop: promote.getBoundingClientRect().top,
+      projectsTop: projects.getBoundingClientRect().top,
       needsyouTop: needsyou.getBoundingClientRect().top,
-      cardsTop: cards.getBoundingClientRect().top,
-      cardWidth: card.getBoundingClientRect().width,
-      cardsHostWidth: cards.getBoundingClientRect().width,
+      needsyouWidth: needsyou.getBoundingClientRect().width,
+      homeWidth: document.querySelector('.desk-v1-home').getBoundingClientRect().width,
     };
   });
   if (layout.phoneActionsDisplay !== 'none') ok('§11: promote box icon row (📎 🔗 🎙) visible at phone width');
   else fail('§11: promote box icon row hidden at phone width');
-  if (layout.mainDirection === 'column') ok('§11: cards + Needs you stack vertically on phone width');
-  else fail(`§11: cards/Needs you did not stack: flex-direction ${layout.mainDirection}`);
   if (layout.shelvesColumns === 1) ok('§11: Channels + Material shelves stack to a single column');
   else fail(`§11: shelves did not stack to one column: ${layout.shelvesColumns} columns`);
-  if (layout.promoteTop < layout.needsyouTop && layout.needsyouTop < layout.cardsTop) {
-    ok('§11: phone stack order is promote, Needs you, then campaign cards');
+  if (layout.promoteTop < layout.projectsTop && layout.projectsTop < layout.needsyouTop) {
+    ok('§11: phone stack order is promote, project cards, then Needs you');
   } else {
-    fail(`§11: phone stack order wrong — promote@${layout.promoteTop} needsyou@${layout.needsyouTop} cards@${layout.cardsTop}`);
+    fail(`§11: phone stack order wrong — promote@${layout.promoteTop} projects@${layout.projectsTop} needsyou@${layout.needsyouTop}`);
   }
-  if (Math.abs(layout.cardWidth - layout.cardsHostWidth) < 2) ok(`§11: campaign card is full width on phone (${layout.cardWidth.toFixed(0)}px)`);
-  else fail(`§11: campaign card is not full width: card ${layout.cardWidth}px vs host ${layout.cardsHostWidth}px`);
+  if (Math.abs(layout.needsyouWidth - layout.homeWidth) < 2) ok(`§11: Needs you is full width on phone, no fixed rail (${layout.needsyouWidth.toFixed(0)}px)`);
+  else fail(`§11: Needs you is not full width: ${layout.needsyouWidth}px vs ${layout.homeWidth}px column`);
 
   const hitTargets = await page.evaluate(() => {
     const els = [
@@ -428,83 +407,15 @@ async function runModalSizeCheck(browser) {
   await ctx.close();
 }
 
-// ── item 3 (MC-977 R0 UX pass) — Home card "More" menu, per Dave/Kestrel's
-// review scope: camp-2 (Proposed, never published) offers Delete; camp-1
-// (Active, has publication history) offers Archive, not Delete. Both route
-// through the shared confirm sheet + commandBus Undo desk-v1-campaign.js
-// built, and archiving moves the card into the collapsed Archived section
-// instead of the main grid. ─────────────────────────────────────────────────
-async function runHomeCardMoreMenu(browser) {
-  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
-
-  // Proposed campaign (camp-2) → Delete, with Undo.
-  const camp2Card = await page.$('.desk-v1-home-camp-card[data-campaign-id="camp-2"] [data-camp-more-btn]');
-  camp2Card ? ok('item 3: Home card for a Proposed campaign shows a More trigger') : fail('item 3: no More trigger on the Proposed campaign card');
-  await camp2Card.click();
-  await page.waitForSelector('.desk-v1-camp-cardmenu', { timeout: 2000 });
-  const menuText2 = (await page.textContent('.desk-v1-camp-cardmenu').catch(() => '') || '');
-  /Delete campaign/.test(menuText2) && !/Archive campaign/.test(menuText2)
-    ? ok('item 3: Proposed campaign\'s More menu offers Delete (never published, no Archive)')
-    : fail(`item 3: Proposed campaign menu wrong: ${JSON.stringify(menuText2)}`);
-  await page.click('.desk-v1-camp-cardmenu [data-menu-delete]');
-  const usesConfirmSheet = await page.$('.desk-v1-rules-confirm-overlay');
-  usesConfirmSheet
-    ? ok('item 3: Delete confirms via the in-page sheet, not window.confirm (d146df0)')
-    : fail('item 3: Delete confirm sheet did not render');
-  await page.click('[data-confirm-accept]');
-  await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
-  const delToast = (await page.textContent('.toast').catch(() => '') || '');
-  /Deleted/.test(delToast) ? ok(`item 3: delete shows a commandBus toast: "${delToast.trim()}"`) : fail(`item 3: delete toast missing/wrong: ${JSON.stringify(delToast)}`);
-  const camp2GoneFromCards = await page.$('.desk-v1-home-camp-card[data-campaign-id="camp-2"]');
-  !camp2GoneFromCards ? ok('item 3: deleted campaign leaves the Home grid') : fail('item 3: deleted campaign still rendered on Home');
-  await page.click('.toast .toast-btn.primary');
-  await page.waitForTimeout(80);
-  const camp2Restored = await page.$('.desk-v1-home-camp-card[data-campaign-id="camp-2"]');
-  camp2Restored ? ok('item 3: Undo restores the deleted campaign to Home') : fail('item 3: Undo did not restore the deleted campaign');
-
-  // Active campaign (camp-1) → Archive, with Undo; archived leaves the main
-  // grid for the Archived section.
-  const camp1More = await page.$('.desk-v1-home-camp-card[data-campaign-id="camp-1"] [data-camp-more-btn]');
-  await camp1More.click();
-  await page.waitForSelector('.desk-v1-camp-cardmenu', { timeout: 2000 });
-  const menuText1 = (await page.textContent('.desk-v1-camp-cardmenu').catch(() => '') || '');
-  /Archive campaign/.test(menuText1) && !/Delete campaign/.test(menuText1)
-    ? ok('item 3: Active campaign\'s More menu offers Archive, not Delete (has publication history)')
-    : fail(`item 3: Active campaign menu wrong: ${JSON.stringify(menuText1)}`);
-  await page.click('.desk-v1-camp-cardmenu [data-menu-archive]');
-  await page.waitForSelector('.desk-v1-rules-confirm-overlay', { timeout: 2000 });
-  const archiveBody = (await page.textContent('.desk-v1-rules-confirm-overlay').catch(() => '') || '');
-  /does not remove any posts already on a platform/.test(archiveBody)
-    ? ok('item 3: archive copy states it does not remove already-published posts')
-    : fail(`item 3: archive confirm copy missing the platform-safety line: ${JSON.stringify(archiveBody)}`);
-  await page.click('[data-confirm-accept]');
-  await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
-  const camp1GoneFromGrid = await page.$('.desk-v1-home-camp-card[data-campaign-id="camp-1"]');
-  !camp1GoneFromGrid ? ok('item 3: archived campaign leaves the main grid') : fail('item 3: archived campaign still in the main grid');
-  const archivedSection = (await page.textContent('#desk-v1-home-archived').catch(() => '') || '');
-  /Archived \(1\)/.test(archivedSection)
-    ? ok('item 3: archived campaign appears in the Archived section')
-    : fail(`item 3: Archived section wrong: ${JSON.stringify(archivedSection)}`);
-  await page.click('.toast .toast-btn.primary');
-  await page.waitForTimeout(80);
-  const camp1Restored = await page.$('.desk-v1-home-camp-card[data-campaign-id="camp-1"]');
-  camp1Restored ? ok('item 3: Undo restores the archived campaign to the main grid') : fail('item 3: Undo did not restore the archived campaign');
-
-  reportUncaught(pageErrors, '[home-more-menu]');
-  await ctx.close();
-}
-
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
   for (const tone of TONES) await runToneRenderChecks(browser, tone);
   await runNeedsYouDeepLinks(browser);
-  await runChannelDropOnCard(browser);
-  await runAmbiguousDropChoosesCampaign(browser);
+  await runAddToMenuAttach(browser);
   await runDesktopLayoutChecks(browser);
   await runPhoneLayout(browser);
   await runModalSizeCheck(browser);
-  await runHomeCardMoreMenu(browser);
   exitCode = bad ? 1 : 0;
 } catch (e) {
   console.error('❌ FAIL — smoke harness error: ' + (e && e.message ? e.message : e));
@@ -515,5 +426,5 @@ try {
 
 console.log(bad
   ? `\n❌ FAIL — ${bad} Desk v1 home check(s) regressed.`
-  : '\n✅ PASS — Desk v1 T1 home: A13 (heartbeat -> hold row), A4 (channel/asset drop, home half), A12 (Needs-you deep-links), UX-03 (ambiguous drop), phone layout all hold.');
+  : '\n✅ PASS — Desk v1 T1 home: A13 (heartbeat -> hold row), A4/UX-03 (Add to… menu attach), A12 (Needs-you deep-links), phone layout all hold.');
 process.exit(exitCode);
