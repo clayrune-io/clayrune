@@ -139,8 +139,11 @@ async function run(browser) {
   await page.click('.desk-v1-back');
   await page.waitForSelector('.desk-v1-project', { timeout: 8000 });
   const cardWordSel = `.desk-v1-project-camp-card[data-campaign-id="${campA}"] .desk-v1-state-word`;
+  // R2-3: the project card's draft label moved from "Setup N of 3" to
+  // "Draft · at <stop>" (camp.map.stop) — IA4's steps never touch the map,
+  // so it reads "at Goal" throughout setup regardless of the step reached.
   let cardLabel = (await page.textContent(cardWordSel).catch(() => '') || '').trim();
-  /Setup 2 of 3/.test(cardLabel)
+  /Draft · at Goal/.test(cardLabel)
     ? ok(`interrupted at step 2: project card reads "${cardLabel}"`)
     : fail(`interrupted-at-step-2 card label wrong: ${JSON.stringify(cardLabel)}`);
 

@@ -194,8 +194,13 @@ async function runLeaveAtStepTwoResumes(browser) {
   await page.click('.desk-v1-back');
   await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
 
+  // R2-3: the project card's own draft label moved from IA4's "Setup N of 3"
+  // step counter to "Draft · at <stop>" (camp.map.stop) — IA4's in-page steps
+  // never touch the map, so it reads "at Goal" throughout setup regardless
+  // of which of the 3 steps a draft is actually on (§3 table; desk-v1-
+  // project.js `_draftCardLabel`, R2-3b is the ticket that reconciles them).
   const cardLabel = (await page.textContent(`${cardSel} .desk-v1-state-word`).catch(() => '') || '');
-  /Setup 2 of 3/.test(cardLabel)
+  /Draft · at Goal/.test(cardLabel)
     ? ok(`left setup at step 2: project card reads "${cardLabel.trim()}"`)
     : fail(`project card label wrong after leaving at step 2: ${JSON.stringify(cardLabel)}`);
 

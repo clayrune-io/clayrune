@@ -143,20 +143,23 @@ async function runToneRenderChecks(browser, tone) {
   editBtn ? ok(`[${tone.name}] Rules "Edit" hook renders (popover itself is T2b)`) : fail(`[${tone.name}] Rules Edit hook missing`);
 
   // R2-3: the old Content/Conversations/Results tab strip is now the ①-⑥ map
-  // stepper (IA revision 2 §3/§4.1). camp-1's fixture map (`map: {stop:
-  // 'launch', done:[goal,how,what,when,where]}`) puts five stops done and
-  // Launch "here" — Conversations is no longer one of the six stops (§6:
+  // stepper (IA revision 2 §3/§4.1). navToCampaign() opens camp-1 (Active)
+  // with no explicit panel, which defaults to ③ What (desk-v1-shell.js's
+  // `_renderCampaignSkeleton`: a non-draft campaign's `map.stop` is NOT a
+  // resume cursor — "here" tracks the actually-rendered `params.panel`).
+  // camp-1's fixture `map.done` still marks Goal done from its own separate
+  // progress history. Conversations is no longer one of the six stops (§6:
   // moves into Engagement at R2-12), so its old badge assertion is retired
   // with the tab it lived on, not rewritten onto a stop that doesn't exist.
   const stopWords = await page.$$eval('.desk-v1-map-stop .desk-v1-map-stop-word', (els) => els.map((e) => e.textContent.trim()));
   JSON.stringify(stopWords) === JSON.stringify(['Goal', 'How', 'What', 'When', 'Where', 'Launch'])
     ? ok(`[${tone.name}] map stepper shows all 6 stops in order: ${JSON.stringify(stopWords)}`)
     : fail(`[${tone.name}] map stepper stops wrong: ${JSON.stringify(stopWords)}`);
-  const launchState = await page.$eval('.desk-v1-map-stop[data-stop="launch"]', (el) => el.dataset.state).catch(() => null);
+  const whatState = await page.$eval('.desk-v1-map-stop[data-stop="what"]', (el) => el.dataset.state).catch(() => null);
   const goalState = await page.$eval('.desk-v1-map-stop[data-stop="goal"]', (el) => el.dataset.state).catch(() => null);
-  launchState === 'here' && goalState === 'done'
-    ? ok(`[${tone.name}] map stepper reflects camp.map (launch=here, goal=done)`)
-    : fail(`[${tone.name}] map stepper state wrong: launch=${launchState} goal=${goalState}`);
+  whatState === 'here' && goalState === 'done'
+    ? ok(`[${tone.name}] map stepper reflects current panel + map.done (what=here, goal=done)`)
+    : fail(`[${tone.name}] map stepper state wrong: what=${whatState} goal=${goalState}`);
 
   // A2/A3: grouped "All content" — needs-you group holds both multi-claim
   // article and multi-version video families; each card lists every

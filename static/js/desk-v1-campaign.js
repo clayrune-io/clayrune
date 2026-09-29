@@ -470,8 +470,14 @@
   const _STOP_STATE_GLYPH = { done: '✓', here: '●', needs_you: '⚠', not_started: '○' };
   const _STOP_STATE_WORD = { done: 'Done', here: 'You are here', needs_you: 'Needs you', not_started: 'Not started' };
 
-  function _stopState(stop, map, missingStops) {
-    if (map.stop === stop) return 'here';
+  // "here" is read off `params.panel` — the panel actually on screen — not
+  // `map.stop` (that field is only the Draft resume cursor `_gotoMapStop`
+  // writes; `_renderCampaignSkeleton`'s own comment is explicit that a
+  // non-draft campaign's `map.stop` is NOT a resume cursor, so a deep link
+  // via PANEL_ALIASES — which sets `params.panel` without touching
+  // `map.stop` — must still highlight the stop it actually landed on).
+  function _stopState(stop, currentPanel, map, missingStops) {
+    if (currentPanel === stop) return 'here';
     if ((map.done || []).includes(stop)) return 'done';
     if (missingStops.has(stop)) return 'needs_you';
     return 'not_started';
@@ -485,7 +491,7 @@
     const missing = (DeskV1Kit.validatePlan(camp.plan, project) || { missing: [] }).missing;
     const missingStops = new Set(missing.map((m) => m.stop));
     const stopsHTML = DeskV1Kit.MAP_STOPS.map((stop) => {
-      const state = _stopState(stop, map, missingStops);
+      const state = _stopState(stop, params.panel, map, missingStops);
       const word = DeskV1Kit.MAP_STOP_WORDS[stop];
       return `<button type="button" class="desk-v1-map-stop" data-stop="${esc(stop)}" data-state="${esc(state)}" aria-current="${state === 'here'}" title="${esc(word)} — ${esc(_STOP_STATE_WORD[state])}">` +
         `<span class="desk-v1-map-stop-glyph" aria-hidden="true">${_STOP_STATE_GLYPH[state]}</span>` +
