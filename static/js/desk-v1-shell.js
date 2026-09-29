@@ -17,8 +17,26 @@
   // order relative to this one, and a later ticket replaces the stub function
   // in place without this table changing.
   const ROUTES = {
-    home:          { parent: null,      label: 'Home',          render: () => window.deskV1RenderHome },
-    campaign:      { parent: 'home',    label: _campaignLabel,  render: () => _renderCampaignSkeleton },
+    // IA1 (docs/THE_DESK_V1_IA_REVISION.md §5 row IA1, §1's hierarchy): label
+    // renamed Home -> Desk so a project page's Back button reads '‹ Desk'
+    // (the doc's own worked example) — Home's OWN crumb-title uses the same
+    // string when landed on directly, which is also the modal's title bar.
+    home:          { parent: null,      label: 'Desk',          render: () => window.deskV1RenderHome },
+    // IA1 §5 row IA1 / §1: campaign's real parent becomes the project page
+    // once a project entry sits below it on the stack (Home -> project ->
+    // campaign); a caller that still pushes campaign straight from Home
+    // (old deep links, desk-v1-harness.mjs's own direct nav) leaves Back
+    // reading whatever IS actually below it, per _renderCrumb's "actual
+    // previous stack entry" rule two comments below — this field is
+    // documentation only, never read by the router itself.
+    project:       { parent: 'home',    label: _projectLabel,  render: () => window.deskV1RenderProject },
+    campaign:      { parent: 'project', label: _campaignLabel,  render: () => _renderCampaignSkeleton },
+    // IA1 stub (§5 row IA1: "piece (stub)") — full facets land in IA5.
+    piece:         { parent: 'campaign', label: _pieceLabel,   render: () => window.deskV1RenderPiece },
+    // IA1 stub (§5 row IA1: "presence (stub)") — settings UI lands in IA3.
+    presence:      { parent: 'project', label: 'Presence',     render: () => window.deskV1RenderPresence },
+    // IA1 stub (§5 row IA1: "engagement (stub)") — dashboard lands in IA7.
+    engagement:    { parent: 'home',    label: 'Engagement',   render: () => window.deskV1RenderEngagement },
     rules:         { parent: 'campaign', label: 'Rules',        render: () => window.deskV1RenderRules },
     // Empty label: T3 renders its own doc-label/count into the crumb-tools
     // slot below instead (frame 12b, one row). Safe only because no route's
@@ -47,6 +65,27 @@
     const camps = (window.DeskV1Fixtures && window.DeskV1Fixtures.campaigns) || [];
     const c = camps.find(x => x.id === (params || {}).campaignId);
     return c ? c.name : 'Campaign';
+  }
+
+  // IA1: dynamic like _campaignLabel above — a project page's own crumb
+  // title is the fixture project's real name (e.g. "Clayrune"), not the
+  // word "Project".
+  function _projectLabel(params) {
+    const projects = (window.DeskV1Fixtures && window.DeskV1Fixtures.projects) || [];
+    const p = projects.find(x => x.id === (params || {}).projectId);
+    return p ? p.name : 'Project';
+  }
+
+  // IA1: a piece's crumb title (and so a child review/video route's Back
+  // label, per §1's "review/video -> piece") is the content family's own
+  // title — resolved by versionId since that's what the existing Needs-you
+  // deep link already carries (desk-v1-home.js), same lookup shape as
+  // _videoLabel below (by familyId) but keyed the other way round.
+  function _pieceLabel(params) {
+    const families = (window.DeskV1Fixtures && window.DeskV1Fixtures.families) || [];
+    const versionId = (params || {}).versionId;
+    const fam = families.find(f => (f.versions || []).some(v => v.id === versionId));
+    return fam ? fam.title : 'Piece';
   }
 
   function _videoLabel(params) {

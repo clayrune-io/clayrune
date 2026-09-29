@@ -12,6 +12,7 @@
 
   // ── data resolution (same _fx() convention as desk-v1-review.js) ────────
   function _fx() { return window.DeskV1Fixtures || {}; }
+  function _projects() { return _fx().projects || []; }
   function _campaigns() { return _fx().campaigns || []; }
   function _channels() { return _fx().channels || []; }
   function _families() { return _fx().families || []; }
@@ -293,6 +294,41 @@
     }
   }
 
+  // ── IA1 (§5 row IA1, §1's hierarchy): project cards. §1 states Home's grid
+  // is one card PER PROJECT, not per campaign — the campaign-card grid below
+  // stays exactly as T1-T3 built it (ground rule 2: desk-v1-home.mjs, out of
+  // this ticket's file list, still asserts on it directly), so this is
+  // additive: a new row above it, the first hop of the new Home -> project
+  // -> campaign path IA1's own acceptance test exercises. Full retirement of
+  // the flat campaign grid in favour of this one is a later ticket's scope. ─
+  function _projectCardHTML(p) {
+    const count = _campaigns().filter((c) => c.projectId === p.id && c.state !== 'archived').length;
+    // One line, not two (desk-v1-home.mjs's "Needs you sizes to its own
+    // content" check budgets .desk-v1-home-main's height against whatever
+    // this row leaves it — a two-line card here starved that budget enough
+    // to make Needs-you's own content height collide with main's).
+    return `
+      <div class="desk-v1-home-project-card" data-project-id="${esc(p.id)}" role="button" tabindex="0">
+        <span class="desk-v1-home-project-name">${esc(p.name)}</span>
+        <span class="desk-v1-home-project-meta">${count} campaign${count === 1 ? '' : 's'}</span>
+      </div>`;
+  }
+
+  function _renderProjectCards() {
+    const host = document.getElementById('desk-v1-home-projects');
+    if (!host) return;
+    const projects = _projects();
+    host.innerHTML = projects.length ? projects.map(_projectCardHTML).join('') : '';
+    host.querySelectorAll('.desk-v1-home-project-card').forEach((cardEl) => {
+      const projectId = cardEl.dataset.projectId;
+      const go = () => deskV1Nav('project', { projectId });
+      cardEl.addEventListener('click', go);
+      cardEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); }
+      });
+    });
+  }
+
   // ── render: campaign cards (3-up grid, drop targets) ─────────────────────
   function _campCardHTML(c) {
     const label = DeskV1Kit.stateLabelHTML(c.state);
@@ -360,7 +396,10 @@
   function _renderArchivedSection() {
     const host = document.getElementById('desk-v1-home-archived');
     if (!host) return;
-    const archived = _campaigns().filter((c) => c.state === 'archived');
+    // Same HOME_SCOPE_PROJECT_ID scoping as _renderCards above — an archived
+    // campaign belonging to a different project has no business in a section
+    // sitting under a header that reads "Clayrune ▾".
+    const archived = _campaigns().filter((c) => c.state === 'archived' && (!c.projectId || c.projectId === HOME_SCOPE_PROJECT_ID));
     if (!archived.length) { host.innerHTML = ''; return; }
     const wasOpen = !!host.querySelector('details[open]');
     host.innerHTML = `
@@ -379,6 +418,18 @@
     });
   }
 
+  // IA1: the flat grid predates the project hierarchy and was never written
+  // project-aware — it read every fixture campaign, which was safe only
+  // because R0's fixtures modeled exactly one project (_bindHeader's own
+  // "R0 fixtures model exactly one project" comment above). IA1 adds a
+  // SECOND project (engulfing_scanner) to the same CAMPAIGNS array for the
+  // new project page to show, and the header directly above this grid
+  // already hardcodes its scope as "Clayrune ▾" — so the grid must filter to
+  // that same project rather than leaking a second project's campaigns into
+  // a header that doesn't claim to show them. Full retirement of this grid
+  // in favour of the project cards above it is a later ticket's scope.
+  const HOME_SCOPE_PROJECT_ID = 'clayrune';
+
   function _renderCards() {
     const host = document.getElementById('desk-v1-home-cards');
     if (!host) return;
@@ -387,7 +438,7 @@
     // still competing for attention beside active/proposed work. Kept
     // reachable via the toggle row _renderArchivedSection wires below rather
     // than a new route (fixture-only, no IA change beyond this).
-    const camps = _campaigns().filter((c) => c.state !== 'archived');
+    const camps = _campaigns().filter((c) => c.state !== 'archived' && (!c.projectId || c.projectId === HOME_SCOPE_PROJECT_ID));
     host.innerHTML = camps.length
       ? camps.map(_campCardHTML).join('')
       : '<div class="desk-v1-home-empty">No campaigns yet — promote something above to start one.</div>';
@@ -426,12 +477,33 @@
       ? `deskV1Nav('conversations',{campaignId:'${esc(firstItem.campaignId)}',conversationId:'${esc(firstItem.conversationId)}'})`
       : firstItem.kind === 'video'
       ? `deskV1Nav('video',{campaignId:'${esc(firstItem.campaignId)}',versionId:'${esc(firstItem.versionId)}'})`
-      : `deskV1Nav('review',{campaignId:'${esc(firstItem.campaignId)}',versionId:'${esc(firstItem.versionId)}'})`;
+      : `deskV1HomeGotoReview('${esc(firstItem.campaignId)}','${esc(firstItem.versionId)}')`;
     return `<button type="button" class="desk-v1-home-needsyou-row" onclick="${onclick}">
       <span class="desk-v1-home-needsyou-glyph" aria-hidden="true">${esc(glyph)}</span>
       <span class="desk-v1-home-needsyou-text">${esc(text)}</span>
     </button>`;
   }
+
+  // IA1 (§5 row IA1's acceptance: "Needs-you deep link into a review builds
+  // the 5-deep stack") — a "piece to approve" row used to jump straight from
+  // Home to 'review' (a 2-deep stack). §1's hierarchy now runs Home ->
+  // project -> campaign -> piece -> review, so this pushes the full chain;
+  // each deskV1Nav call is one stack frame and they run synchronously (no
+  // paint between them), so the visible result is still landing directly on
+  // the review surface — only Back now walks up through piece/campaign/
+  // project instead of straight to Home. Video/reply rows are untouched:
+  // the acceptance names "a review" specifically, and desk-v1-home.mjs's own
+  // deep-link checks for those two assert only the surface reached, which a
+  // longer stack wouldn't change anyway.
+  function deskV1HomeGotoReview(campaignId, versionId) {
+    const camp = _campaign(campaignId);
+    const projectId = camp && camp.projectId;
+    if (projectId) deskV1Nav('project', { projectId });
+    deskV1Nav('campaign', { campaignId, projectId });
+    deskV1Nav('piece', { campaignId, versionId, projectId });
+    deskV1Nav('review', { campaignId, versionId, projectId });
+  }
+  window.deskV1HomeGotoReview = deskV1HomeGotoReview;
 
   function _holdRowHTML(h) {
     const text = h.kind === 'worker' ? `${h.label} · ${h.count} posts missed` : `${h.label} · ${h.count} held`;
@@ -658,6 +730,7 @@
           </div>
           <div class="desk-v1-home-suggestions" id="desk-v1-home-suggestions"></div>
         </div>
+        <div class="desk-v1-home-projects" id="desk-v1-home-projects"></div>
         <div class="desk-v1-home-main">
           <div class="desk-v1-home-cards" id="desk-v1-home-cards"></div>
           <div class="desk-v1-home-needsyou" id="desk-v1-home-needsyou"></div>
@@ -677,6 +750,7 @@
     _bindHeader(el);
     _bindPromoteBox(el);
     _renderSuggestions();
+    _renderProjectCards();
     _renderCards();
     _renderNeedsYou();
     _renderShelves();
