@@ -1,7 +1,9 @@
 # The Desk v1: IA revision 2 (campaign map: Goal, How, What, When, Where, Launch)
 
 **Status:** DRAFT design revision, 2026-09-29. MC-977 / backlog 8f64d565. Docs only, no code changed. Becomes
-binding when Ron answers §9 (three questions, each with a recommendation the tickets already assume).
+binding when Ron answers §9 (three questions, each with a recommendation the tickets already assume). §9 answered
+2026-09-29. **§10 (outcome learning loop, Ron's item 9) added 2026-09-29**: tickets R2-14 to R2-17 + R1-L, two open
+questions in §10.8.
 **Owner:** Merrin (plan). Builders per ticket, §8. Measured against master `5d6ec89` (IA1 to IA8 all merged:
 `c229954`, `ed3410b`, `a5c7cd2`, `e528e19`, `dc5b674`, `8d75d8a`, `2bcaeb9`, `24818af`).
 **Delta on:** `THE_DESK_V1_IA_REVISION.md` (2026-09-28, "IA 1"). Read that first. This doc only states what Ron's
@@ -26,6 +28,8 @@ approval per campaign; auto-replies out of v1).
 7. Conversations, responses and comments get their OWN menu, not inside the campaign page. Its landing groups by
    project with counts (unread / total), a quick read of each project's social activity.
 8. HOW carries an OPTIONAL budget: drawn from the project's promotion budget, or a campaign's own budget.
+9. (added later the same day) A loopback that measures each campaign's effectiveness, to learn long term what worked
+   and what did not. Answered by §10.
 
 ---
 
@@ -300,14 +304,21 @@ untouched.
 | **R2-10** | ⑤ Where: account columns from the presence binding, on/off = `accounts[]`, drag piece between `Unplaced` and columns (create/move version), Channels tray, `Connect another ›` to Presence; retire the campaign Add tray | R2-3 | new `desk-v1-where.mjs`: drag a piece onto LinkedIn creates a version with the Clayrune voice; switching 𝕏 off on an Active campaign keeps approval (narrow), switching it back on voids it; keyboard move (no drag) works |
 | **R2-11** | ⑥ Launch: bounds table incl. goal, term, budget; Start; Live state; Pause/Resume; `Renew term` for long horizons (new approval, same bounds shown) | R2-4, R2-6, R2-9, R2-10 | `desk-v1-map.mjs`: Start with defaults → `Live since`; long goal at term end → `Renew term` → term 2 with a new approval record; project budget cut below earmark clamps and logs |
 | **R2-12** | Engagement menu landing: per-project bundles (unread / awaiting / total, channel split, latest line, `Not connected` state); remove campaign Conversations tab + embed; `read_at` | R2-1 (parallel), merges after R2-3 | `desk-v1-engagement.mjs`: 2 bundles, Clayrune `5 unread`; opening a thread drops it to 4; `Open ›` shows IA7 lanes filtered to that project; campaign page has no Conversations tab; a project with no feed reads `Not connected`, never `0 unread` |
-| **R2-13** | Acceptance journey + exit gate on the new path | R2-2 to R2-12 | `desk-v1-journey.mjs`: Home → picker → Engulfing scanner → New campaign → ① long goal → ② talk + Suggest (forced failure + Retry) → accept → ③ Make video in Studio → back → ④ drag → ⑤ drag → ⑥ Start → Home row `Active · on track` → Engagement bundle → Delete a never-started Draft (Undo). `desk-v1-exit.mjs` exit 0 incl. map, how, where, studio × 3 tones |
+| **R2-13** | Acceptance journey + exit gate on the new path | R2-2 to R2-12, R2-14 to R2-17 | `desk-v1-journey.mjs`: Home → picker → Engulfing scanner → New campaign → ① long goal → ② talk + Suggest (forced failure + Retry) → accept → ③ Make video in Studio → back → ④ drag → ⑤ drag → ⑥ Start → Home row `Active · on track` → **term end (fixture clock) → Needs-you `Retro ready` → ① paste per-post numbers → Confirm one finding, Reject one → Renew term → ② Suggest shows `Based on F<n> ›` and never the rejected one** → Engagement bundle → Delete a never-started Draft (Undo). `desk-v1-exit.mjs` exit 0 incl. map, how, where, studio, **retro, playbook** × 3 tones |
 | **R1-P** (amend) | backend presence/campaign/piece: add `goal` shape, `term`, `how.budget`, earmarks, `desk_agent`; migration maps `production → budget`, `outcome → metric`, `setup → map` | R2-1 merged (shapes frozen) | tests: earmark sum ≤ project budget enforced at the route; budget raise changes `bounds_hash`; migration idempotent |
 | **R1-A** (new) | backend agent of choice: desk routes resolve `presence.desk_agent` instead of `global:social-media-strategist` (`desk_routes.py:254`, `:453`); unresolvable → structured error naming the project, never a silent default | R1-P | tests: a presence naming `global:claydo` dispatches Claydo; a missing character returns 409 with `pick_agent`; no route string contains `social-media-strategist` |
-| **R1-E** (amend) | engagement feed + `read_at` + per-project aggregates for the landing | R1-P | tests: per-platform coverage gap → bundle `Not connected`; aggregates match lane counts |
+| **R1-E** (amend) | engagement feed + `read_at` + per-project aggregates for the landing; **(§10.7) writes per-post outcome entries `source:'feed'` where the platform exposes them, each read costed against the budget** | R1-P, R1-L | tests: per-platform coverage gap → bundle `Not connected`; aggregates match lane counts; a feed entry never overwrites a typed entry for the same post + metric (both kept, source shown); a platform with no metrics read leaves per-post cells `No per-post numbers yet`, never 0 |
+| **R2-14** | Outcome loop fixtures + kit shapes (§10): ledger row `piece_id/format/account/term/cost`, per-post `outcomes[{metric, value, at, source}]`, `retro` object, `finding` object + states, rejection record; kit `retroVerdict()` implementing §10.1's sample-size table | R2-1 | `desk-v1-kit.mjs`: arms 6 vs 4 posts → `Too few posts to tell (6 and 4; need 10 each)`; 12 vs 12 with 1.2× gap → `No clear difference`; one post = 60% of an arm → `One post drives this`; platform row reads `Platform + voice` with the can't-separate note; fixture load has 0 findings with `state:'confirmed'` and `origin:'unattended'` together |
+| **R2-15** | ① Retro section: per closed term goal vs actual, spend + cost per outcome, dimension table with verdicts, per-post number grid (paste from CSV), proposed findings with Confirm / Edit / Reject / Don't suggest again; `Run retro now` = Interim, no findings; Needs-you row `Retro ready: n findings to confirm` | R2-4, R2-14 | new `desk-v1-retro.mjs` × 3 tones: closed term shows `Judged on clicks per post, not on signups`; paste 12 rows fills the grid; Interim shows 0 proposed findings; Confirm F3 removes the Needs-you row; Edit wording then Confirm stores `edited_text` and `origin:'interactive'`; Reject then re-run retro on the same evidence proposes nothing; a finding whose `maybe_why` says "raise the cadence" renders without that line |
+| **R2-16** | Project page Playbook: confirmed findings by dimension (sentence, confidence, n, campaign links), Stale sub-list with Re-confirm / Retire, rejected collapsed with `Undo reject`; no Home line (Needs-you only) | R2-15 | `desk-v1-project.mjs` extended: 2 confirmed + 1 stale + 1 rejected fixture render in their groups; campaign link lands on that campaign's ①; Undo reject moves the finding back to `proposed`; Home has no playbook line |
+| **R2-17** | How agent cites the playbook: Suggest results carry `because`; `Based on F3 ›` / `Trying: untested` chips on ③ ④ ⑤ suggestions; unknown or non-confirmed ids dropped | R2-6, R2-16 | `desk-v1-how.mjs` extended: with F3 confirmed, the ④ Tue 09:00 suggestion shows `Based on F3 ›` and opens F3's evidence; a suggestion citing rejected F5 or unknown F99 shows no chip; with a covered dimension, ≥1 of 5 suggested pieces is labelled `Trying`; accepting an F3-based slot on an Active campaign within bounds keeps approval |
+| **R1-L** (new) | backend outcome loop: ledger rows gain `piece_id/format/account/term/cost`; per-post `outcomes[]` replaces the free-form `outcome` dict (migration keeps old values as one `source:'manual'` entry); `mc/desk_retro.py` computes the retro deterministically at term/campaign end (model words summary + `maybe_why` only); `store['playbook']` + state transitions (human-only routes); rejection records + `evidence_key`; `playbook_brief()` in the Suggest brief (R1-A's dispatch); `distiller.authority_violation` made public and applied with the Desk bounds pattern | R1-P, R1-A | tests: retro on a fixture term reproduces R2-14's verdicts byte-for-byte; a retro run from a steward/scheduled context creates only `proposed, origin:unattended` findings; `playbook_brief()` contains confirmed findings only (proposed/rejected/stale absent); same evidence after Reject proposes nothing, +10 posts from a new campaign re-proposes with the prior rejection date; no finding route accepts a field naming a bound (`cadence`, `budget`, `accounts`, `approval`, `end`, `post_cap` → 400); the state-change routes refuse an unattended caller; `data/desk.json` stays outside `DATA_DIR` |
 
 Order: R2-1 → R2-3 → then R2-4, R2-5, R2-7, R2-9, R2-10 build in parallel and **merge one at a time** in that order
-(smokes after each) → R2-6 → R2-8 → R2-11 → R2-2 → R2-12 → R2-13. The 5-user test (UX_PASS §9 footer) runs after
-R2-13, probing: which stage is this campaign at; is it on track; where do you change the budget; where are replies.
+(smokes after each) → R2-6 → R2-8 → R2-11 → R2-2 → R2-12 → **R2-14 → R2-15 → R2-16 → R2-17** → R2-13. R2-14 may
+build in parallel with anything after R2-1 (fixtures only) but merges in this slot. R1-L follows R1-A on the backend
+track. The 5-user test (UX_PASS §9 footer) runs after R2-13, probing: which stage is this campaign at; is it on track;
+where do you change the budget; where are replies; **what worked last term, and why did the agent suggest this slot**.
 
 ## 9. Open questions for Ron (the tickets assume each recommendation)
 
@@ -327,3 +338,184 @@ are earmarked at Launch, never a shared pot.
 3. **Campaign budget drawn from the project pool: earmark or shared?** **Recommend: earmark.** At Launch the campaign
    reserves its amount; the sum of live earmarks cannot exceed the project budget. Shared first-come spending lets one
    busy campaign silently starve another, and no screen would show it until the money is gone.
+
+## 10. Outcome learning loop (Ron's item 9, 2026-09-29)
+
+> "We should have a loopback which measures the effectiveness of the campaign to learn long term what worked and
+> what not."
+
+**The gap.** The Desk learns one thing today: VOICE, from Ron's edits (`desk.record_edit` → `voice_brief`,
+THE_DESK_SPEC.md "Five stores"). Nothing learns from OUTCOMES. The story ledger (`desk.record_published`) has an
+`outcome` slot per post, a free-form dict written by hand through `POST /api/desk/ledger/<id>/outcome` and read by
+nobody. Ledger rows carry `campaign_id`, `platform`, `voice`, `published_at`, but no `piece_id`, format, account or
+cost, so even a filled-in outcome cannot be attributed to anything.
+
+**The loop, in four steps:**
+
+```
+ ⑥ term ends / campaign ends
+      │  (unattended: autonomous campaigns publish with nobody watching)
+      ▼
+ RETRO  computed by code, worded by a model      → ① Goal · effectiveness panel · "Retro" section
+      │  goal vs actual · spend · per-dimension table · "too few to tell" where true
+      ▼
+ PROPOSED FINDINGS (origin: unattended)          → Needs you: "Retro ready: 3 findings to confirm"
+      │  Ron: Confirm · Edit · Reject · Don't suggest again      ← the human side of the loop
+      ▼
+ PLAYBOOK (confirmed only, origin: interactive)  → project page · Playbook
+      │
+      ▼
+ ② How agent's Suggest task reads the playbook   → ③ ④ ⑤ suggestions carry `Based on F3 ›` or `Trying: untested`
+```
+
+### 10.1 Retro: when, and what it holds
+
+- **When.** At every term end (`long` horizon) and at campaign end (a `short` goal has one term, so the same event).
+  `Run retro now` exists mid-term but is labelled **Interim**, shows numbers only and **never proposes findings**: a
+  half-term's numbers are the noisiest there are.
+- **Goal vs actual**, per term and overall: target, actual, pace at close (§4.1), delta from baseline.
+- **Spend**: publishing (ledger count × platform rate) + production (media jobs), against `how.budget` or the derived
+  ceiling; **cost per outcome** when spend > 0 (same rule as §4.1).
+- **Per-dimension table**, one row per dimension with its arms and the per-post metric per arm:
+
+| Dimension | Arms come from | Unit of evidence | v1 honesty rule |
+|---|---|---|---|
+| Piece format (post / article / video / image) | piece kind | post | |
+| Platform + voice | version account | post | **one dimension, not two**: the voice split fixes Ron to 𝕏 and Clayrune to LinkedIn, so v1 cannot separate "LinkedIn worked" from "the Clayrune voice worked". The row says so. |
+| Posting day / time slot | version publish time | post | compared **within one account** only (platforms have different audiences at different hours) |
+| Angle / strategy | `how.angle`, strategy tag | **campaign** | n = campaigns, so almost always `Too few campaigns to tell` in v1; shown anyway so the gap is visible |
+| Spend kind (none / project / own; production on/off) | `how.budget`, media jobs | campaign | cost per outcome, same n caveat |
+
+- **Which metric judges a post.** The goal metric (say signups) is campaign-level; no post can be credited with a
+  signup from manual numbers. Per-post dimensions are judged on a **per-post metric** chosen at ① (default `clicks`,
+  else `engagements`), and the retro says so in words: `Judged on clicks per post, not on signups.`
+
+**Sample-size rules (deterministic code, never the model):**
+
+| Situation | Retro says |
+|---|---|
+| any arm has < 10 posts with a number | `Too few posts to tell (6 and 4; need 10 each)` |
+| relative gap between arms < 30%, or mean and median disagree on direction | `No clear difference` |
+| one post supplies > 50% of an arm's total | `One post drives this, not a pattern` (post linked) |
+| campaign-level dimension with < 3 campaigns per arm | `Too few campaigns to tell (1 and 1; need 3 each)` |
+| none of the above | a candidate finding, confidence per §10.2 |
+
+The model only words the retro summary and an optional one-line `maybe_why`; it never picks a winner the table did not
+already produce.
+
+### 10.2 Finding and playbook
+
+A **finding** is structured, and its sentence is rendered from the structure by code:
+
+```
+{id:'F3', project_id, scope:'project', dimension:'slot', arms:{a:'Tue/Thu 08-10', b:'other slots'},
+ account:'x:ron', metric:'clicks', effect:{ratio:2.1, direction:'a>b'},
+ evidence:[{campaign_id, term, n_a, n_b}], n_total, confidence:'low'|'medium'|'high',
+ maybe_why?: '<model text, checked>', state, origin, decided_at, decided_by, edited_text?}
+→ "On 𝕏 (Ron), Tue/Thu 08-10 got 2.1× the clicks per post of other slots (3 campaigns, n=41, medium)."
+```
+
+- **Confidence:** `low` = one campaign/term. `medium` = same direction in ≥ 2 campaigns, pooled n ≥ 20 per arm. `high`
+  = ≥ 3 campaigns, pooled n ≥ 30 per arm, and no confirmed retro pointing the other way.
+- **States:** `proposed` → `confirmed` (as-is or with Ron's edited wording) | `rejected`. `confirmed` → `stale` when a
+  newer retro points the other way (proposed as `Contradicts F3`) or after 180 days → Ron re-confirms or retires.
+  **Only Ron moves a finding between states.** Only `confirmed` findings reach an agent.
+- **Scope:** per project by default; cross-project is §10.8 Q2.
+
+### 10.3 The How agent reads the playbook
+
+- The ② `Suggest What / When / Where` brief (R1-A's dispatch, beside `voice_brief`) gains a `PLAYBOOK` section:
+  confirmed findings for this project, each with id, sentence and confidence. Proposed, rejected, stale and retired
+  findings are never in it.
+- Every suggestion carries `because: [finding ids]` or `because: 'untested'`. The UI renders `Based on F3 ›` (opens
+  the finding with its evidence) or `Trying: untested`. A cited id that is not a confirmed finding of this project is
+  **dropped** and the suggestion shows no chip, so an agent cannot invent authority for a suggestion.
+- **Exploration, not just exploitation.** Where the playbook covers a dimension, the brief asks for at least 1 in 5
+  suggested pieces to try something the playbook does not favour, labelled `Trying`. Without it the playbook only ever
+  confirms its own first guess, and a slot that was never tried can never win.
+- The agent SUGGESTS. Accepting stays Ron's tap, exactly as §4.2.
+
+### 10.4 Where it shows
+
+| Surface | Shows |
+|---|---|
+| **① Goal**, effectiveness panel | a `Retro` section per closed term (goal vs actual, spend, dimension table, per-post number grid, proposed findings with `Confirm` · `Edit` · `Reject` · `Don't suggest again`); `Interim` retro on demand |
+| **Project page** | `Playbook`: confirmed findings grouped by dimension, each with confidence, n and its campaigns as links; a `Stale` sub-list; rejected findings collapsed, each with `Undo reject` |
+| **Home** | **no new line.** A retro with findings to confirm is a Needs-you row (`Clayrune · Retro ready: 3 findings to confirm`), the queue that already exists; a second Home line would duplicate it |
+| **② How** | `Based on F3 ›` / `Trying` chips on suggestions (§10.3) |
+
+### 10.5 Guardrails (CLAUDE.md "Learning-system safety rails", applied here)
+
+1. **Authority guard: a finding changes what the agent SUGGESTS, never what is allowed.** Enforced by structure, not
+   wording: the finding schema has no field that can name an approval bound (accounts on/off, cadence ceiling, min
+   gap, end, post cap, budget, spend ceiling, approval, term). Its only consumer is the Suggest brief, whose output
+   lands as `? suggested` items; bounds are checked by `validatePlan` and the approval `bounds_hash` whatever a
+   suggestion's source, so an accepted suggestion that widens a bound on an Active campaign still flips ⑥ to
+   `⚠ Awaiting approval`. Second layer for machine-written text: `maybe_why` and the retro summary pass
+   `distiller._authority_violation` (exposed as a public `authority_violation`, not copied) plus a Desk bounds pattern
+   (`raise|increase|more` near `cadence|budget|spend|cap|ceiling|accounts|approval`); a hit drops the text and logs
+   it. Findings describe ("got 2.1× the clicks"); they never prescribe ("post more often").
+2. **A human on one side of every loop.** Autonomous campaigns publish unattended and their retros run unattended, so
+   every retro-born finding is `origin: unattended`, `state: proposed`, invisible to agents until Ron confirms or
+   edits it (which stamps `origin: interactive`). Same rule as `exploration_read_floor(consumer_unattended=True)`:
+   autonomous output never becomes autonomous input. Unstamped findings fail closed.
+3. **"No" is durable.** A rejection stores `{project_id, dimension, arms, direction, evidence_key}`, where
+   `evidence_key` = hash of the sorted `(campaign_id, term)` set. The same finding from the same evidence is never
+   re-proposed. It may return only with **new** evidence (≥ 10 more posts from campaigns/terms outside the rejected
+   set), and then says so: `You rejected this on 12 Oct (1 campaign, n=12). New: +2 campaigns, n=31.`
+   `Don't suggest again` suppresses that dimension + arms + direction for the project permanently (lifted only by
+   `Undo reject` on the project page).
+
+### 10.6 Where findings live: a `playbook` store in `data/desk.json`, not the Distiller
+
+**Recommendation: host findings in the Desk store** (`store['playbook']`, beside `voices`, `campaigns`, `ledger`,
+under the same `_store_lock`), render them with a `playbook_brief()` that mirrors `voice_brief()`, and **reuse** the
+Distiller's guard and rejection semantics rather than its store.
+
+Why not `mc/distiller.py` or its skill artifacts:
+- The Distiller's input is session transcripts clustered through a closed-vocabulary phrase fingerprint; its output is
+  SKILL.md prose that skill matching loads into ANY agent on any project. A finding is numbers tied to campaign ids,
+  consumed by one brief. As a skill it would leak Desk statistics into unrelated agents' prompts, and
+  `dimension=slot, arms=Tue/Thu 08-10` has no place in the fingerprint vocabulary.
+- Its human gate is the promote queue, measured at 80 promoted vs 2 rejected (CLAUDE.md): a rubber stamp. A finding
+  needs its evidence on screen at the moment of confirmation, which is ①'s retro, not a queue of prose.
+- The Desk already runs a learning loop this way (voices in `desk.json` → `voice_brief` → drafting brief). The
+  playbook is the second half of that loop, not a new subsystem.
+- `data/desk.json` is a sibling of `DATA_DIR`, not a member, so the DATA_DIR pollution rule is untouched.
+- The "native learning-item system" preference is about reference knowledge shared across projects. No separate
+  learning-item store exists in code (only Distiller artifacts); if Ron wants cross-project findings (Q2), that is a
+  `scope: 'workspace'` flag in the same store, not a second system.
+
+Reused, not rebuilt: `_authority_violation` (made public, one regex, one test file); the origin stamp and fail-closed
+read of `exploration_read_floor`; the durable-suppression pattern of `_suppress_artifact` / `_is_suppressed`.
+
+### 10.7 Data reality: what works on manual numbers, what waits for R1-E
+
+**Works now, manual only:**
+- Goal vs actual per term, pace at close: from ①'s `manual` entries (§9 Q1, already required).
+- Posting facts per dimension (format, account, slot, count): OUR records (ledger + pieces), no inbound read needed,
+  once R1-L adds `piece_id`, format, account, term and cost to ledger rows.
+- Spend and cost per outcome: publishing cost is known per post, production cost per media job.
+- Per-post attribution **only if Ron types one number per post** at retro time: a grid, one row per published post,
+  one column for the chosen per-post metric, paste-from-CSV accepted (both 𝕏 and LinkedIn show per-post numbers in
+  their own analytics). Without it every per-post dimension reads `No per-post numbers yet`, and only the
+  campaign-level rows (almost always `Too few campaigns`) remain. That is Q1.
+
+**Waits for R1-E (amended below):** per-post numbers filled automatically (`source: 'feed'`). Reply counts arrive with
+the engagement feed; impressions and clicks need a metrics read on top of it. Expected constraints, to be confirmed in
+R1-E: 𝕏 reads are pay-per-use and must be costed against the budget; LinkedIn page analytics are expected to need the
+same Community Management API approval the Clayrune page's posting already waits on.
+
+Until then the retro labels each number's source (`typed 3 Oct` / `from 𝕏`), and a dimension with no numbers never
+renders as zero.
+
+### 10.8 Questions for Ron (the §8 R2-14 to R2-17 and R1-L rows assume each recommendation)
+
+1. **Will you type one number per post at term end?** Attribution by format, platform and posting time needs a
+   per-post number, and none flows in until R1-E. **Recommend: yes, optional, one metric (clicks by default) in a
+   paste-friendly grid, about 10 to 30 rows per term.** Skip it and retros are goal vs actual plus spend only until
+   R1-E.
+2. **Should a confirmed finding reach other projects?** **Recommend: per project by default; a confirmed finding gets
+   a `Use in all projects` action, after which other projects' agents see it labelled `from <project>` with its
+   confidence dropped one level.** Clayrune's 𝕏 audience is not the engulfing scanner's, so automatic sharing would
+   mostly move noise.
