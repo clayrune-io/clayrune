@@ -5888,6 +5888,10 @@ def _read_agent_stream_b(proc, session):
                         _maybe_notify_spawner(session, _last_reply_text(session))
                     # Step 6: mid-session note-taker (default-off; fast-gated).
                     _maybe_checkpoint(session)
+                    # MC-998 bugfix: this IS the turn boundary for a Mode B
+                    # session (process stays alive) -- see
+                    # _write_usage_breakdown_turn_checkpoint's docstring.
+                    _write_usage_breakdown_turn_checkpoint(session)
                 # Web push hook: intercept PushNotification tool_use + turn results.
                 _handle_push_signal(
                     session.get('project_id', ''),
@@ -8278,6 +8282,89 @@ def stop_delegation_delivery(timeout_s: float = 5.0) -> dict[str, object]:
                 _delivery_stop_in_progress = False
     return {'requested': True, 'joined': not alive, 'alive': alive,
             'timed_out': alive, 'self_join': False}
+
+
+def _write_usage_breakdown_turn_checkpoint(session):
+    """MC-998 bugfix (docs/_journal/4668eafc-mc998-fenn-review.md; backlog
+    4668eafc reopened 2026-09-29): `_log_agent_completion` -- the only writer
+    of `session_fact`/'completion' `session_checkpoint` rows -- runs only
+    when the provider PROCESS EXITS. Mode B keeps that process alive across
+    turns (`_read_agent_stream_b`'s 'result' branch just flips status to
+    'idle'), so a long-lived Mode B chat's follow-up turns get
+    `mark_session_running` (round 3/4, see `_log_agent_dispatch_pending`)
+    but never a completion checkpoint -- the whole span after whatever
+    completion DID land (the last real process exit, if any) reads as one
+    open `_session_evidence` unmeasured span forever. Every calibration
+    interval and window it overlaps stays incomplete no matter how much real
+    turn-level history exists, because there is none to read.
+
+    Called from the Mode B 'result' handler at every turn boundary. Mirrors
+    the session_fact/checkpoint write `_log_agent_completion_body` does at
+    real process exit (this file, `_store.upsert_session_fact` /
+    `record_session_checkpoint` below), but independently, so it never
+    touches the agent_log (no completion row -- the session is not done) and
+    never fires spawner callbacks (`_maybe_notify_spawner` already ran for
+    this turn in the 'result' handler).
+
+    `status` is 'completed' (terminal), NOT the non-terminal 'in_progress'
+    an earlier version of this fix used -- Dave's review of 963d4bd caught
+    that 'in_progress' maps to `session_fact.status='running'` with no
+    `ended_at`, which makes `_fact_is_running` (usage_breakdown_aggregate.py)
+    true and `_session_evidence` append an OPEN `(last_completion, None)`
+    span after EVERY turn -- so the CURRENT window read incomplete
+    whenever a Mode B chat sat idle between turns, the exact symptom this
+    bugfix exists to remove. A terminal 'completed' status stamps
+    `ended_at` at this turn's own end, closing the span there; the next
+    turn's `_log_agent_dispatch_pending` -> `mark_session_running` (round
+    3/4, already shipped) reopens it as 'running' with `ended_at` cleared
+    when that turn starts, and THIS write closes it again when it ends --
+    matching a real Mode-A session's baseline->completion->baseline cycle
+    turn for turn, just without a process exit between them.
+    `record_session_checkpoint`'s 'completion' index is keyed on
+    (session_id, checkpoint_type, observed_at), not unique per session
+    (round 3 fix) -- exactly designed for one row per turn; this is the
+    first caller that actually writes more than one per session.
+    Best-effort, same exception handling as the process-exit write."""
+    project_id = session.get('project_id')
+    sid = session.get('session_id')
+    if not project_id or not sid or session.get('incognito'):
+        return
+    is_housekeeping = session.get('housekeeping', False)
+    _telemetry = {}
+    try:
+        _tp = load_project(project_id)
+        _pp = (_tp or {}).get('project_path', '')
+        _csid = session.get('claude_session_id', '')
+        if _pp and _csid:
+            _tf = _find_transcript_file(_pp, _csid)
+            _telemetry = _extract_transcript_telemetry(_tf)
+    except Exception as e:
+        _log(f"[usage-breakdown] turn checkpoint transcript read failed for {sid[:12]}: {e}")
+    entry = {
+        'provider': session.get('provider', 'claude'),
+        'status': 'completed',
+        'started_at': session.get('started_at', ''),
+        'ts': now_iso(),
+        'usage': session.get('usage', {}),
+        'trigger_type': session.get('trigger_type', 'manual'),
+        'character': session.get('character'),
+        'model': _requested_model_snapshot(session),
+        'agent_model': _requested_model_snapshot(session),
+        'observed_model': session.get('observed_model') or _telemetry.get('model', ''),
+        'input_tokens': _telemetry.get('input_tokens', 0),
+        'output_tokens': _telemetry.get('output_tokens', 0),
+        'cache_read_tokens': _telemetry.get('cache_read_tokens', 0),
+        'parent_session_id': session.get('_notify_session') or None,
+    }
+    try:
+        _fact = _usage_breakdown_sampler.session_fact_from_entry(
+            entry, project_id=project_id, housekeeping=is_housekeeping)
+        _store = _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite')
+        _store.upsert_session_fact(sid, _fact)
+        _store.record_session_checkpoint(**_usage_breakdown_sampler.completion_checkpoint_fields(
+            _fact, session_id=sid, observed_at=entry['ts']))
+    except Exception as e:
+        _log(f"[usage-breakdown] turn checkpoint write failed for {sid[:12]}: {e}")
 
 
 def _log_agent_completion(session):
