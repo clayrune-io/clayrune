@@ -2315,7 +2315,10 @@ function refreshModalById(modalId) {
   // same discipline as the switch-back repaint (commit fdb8eeb/6244401).
   if (_splitSid && curTab === 'agent') {
     sizeAgentChat(entry.element, _splitSid);
-    _rerenderPendingQuestions(entry.projectId, _splitSid);
+    // The split pane's session may belong to a DIFFERENT project than this
+    // modal (splitAgentTabProject) — an answer button baked with the wrong
+    // project id would POST to the wrong project's API route.
+    _rerenderPendingQuestions(splitAgentTabProject[entry.projectId] || entry.projectId, _splitSid);
     const _so = document.getElementById(`agent-output-${_splitSid}`);
     if (_so && _so.childElementCount === 0 && (agentOutputBuffers[_splitSid] || []).length) {
       try { window._repaintAgentOutput(_splitSid); } catch (_) {}

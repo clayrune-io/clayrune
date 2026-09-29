@@ -274,12 +274,17 @@ function closeAgentTab(projectId, sessionId) {
   acOpenSessions.delete(sessionId);
 
   // Split-view: if the closed conversation was one of the two panes, keep the
-  // OTHER as the single active view instead of dropping to the list.
+  // OTHER as the single active view instead of dropping to the list. A
+  // cross-project split pane can't be promoted into activeAgentTab[projectId]
+  // here — its rail/status still belong to a different project — so that
+  // combination falls through to the plain drop-selection branch instead.
   const _wasActive = activeAgentTab[projectId] === sessionId;
   const _wasSplit = splitAgentTab[projectId] === sessionId;
+  const _splitCrossProject = !!splitAgentTabProject[projectId];
   if (_wasSplit) {
     delete splitAgentTab[projectId];   // closed the 2nd pane → back to single (primary stays)
-  } else if (_wasActive && splitAgentTab[projectId]) {
+    delete splitAgentTabProject[projectId];
+  } else if (_wasActive && splitAgentTab[projectId] && !_splitCrossProject) {
     activeAgentTab[projectId] = splitAgentTab[projectId];  // closed primary → promote the split pane
     delete splitAgentTab[projectId];
   } else {
@@ -288,6 +293,7 @@ function closeAgentTab(projectId, sessionId) {
     // remain, direct chat if exactly 1, dispatch screen if none.
     delete activeAgentTab[projectId];
     delete splitAgentTab[projectId];
+    delete splitAgentTabProject[projectId];
   }
   delete agentConvNew[projectId];
   refreshModal();

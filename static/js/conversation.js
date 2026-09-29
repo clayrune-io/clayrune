@@ -1903,17 +1903,26 @@ function agentPanelHTML(p) {
     const _railStyle = (_railW >= 200 && _railW <= 560) ? ` style="width:${_railW}px"` : '';
     // Split-view: two conversation panes side by side. Active only when a 2nd
     // session is pinned AND it's a real, distinct, known session (guards against
-    // a stale split id after a conversation is closed/detached).
+    // a stale split id after a conversation is closed/detached). The 2nd pane
+    // may belong to a DIFFERENT project (splitAgentTabProject) — its pane must
+    // render with THAT project's own object (id/provider/name), not p, or its
+    // send/stop/attach controls would post to the wrong project.
     const _splitSid = splitAgentTab[p.id];
+    const _splitPid = splitAgentTabProject[p.id] || p.id;
     const _splitActive = !!(_splitSid && activeSessionId && _splitSid !== activeSessionId
       && agentStatusCache[_splitSid]);
+    const _splitProject = (_splitPid !== p.id)
+      ? ((typeof allProjects !== 'undefined' ? allProjects : []).find(x => x.id === _splitPid) || p)
+      : p;
     const _mainInner = _splitActive
-      ? `${splitPaneHTML(p, activeSessionId, true)}<div class="agent-split-divider"></div>${splitPaneHTML(p, _splitSid, false)}`
+      ? `${splitPaneHTML(p, activeSessionId, true)}<div class="agent-split-divider"></div>${splitPaneHTML(_splitProject, _splitSid, false)}`
       : `${tabContent}${dispatchRow}`;
     try { _ensureThreadsCss(); } catch (e) {}  // never let a board bug break the panel render
     return `<div class="agent-panel agent-3pane">
       <div class="agent-rail"${_railStyle}>
         <button class="conv-newbtn agent-rail-new" onclick="newAgentTab('${esc(p.id)}')">&#43; New conversation</button>
+        ${activeSessionId ? `<button class="agent-rail-crossproj-btn" onclick="toggleCrossProjectPicker('${esc(p.id)}')" title="Open a conversation from another project beside this one">&#8646; Split with another project&hellip;</button>` : ''}
+        ${_crossProjectPickerOpen[p.id] ? `<div class="agent-rail-crossproj-panel">${_crossProjectPickerHTML(p)}</div>` : ''}
         <div class="rail-mode" role="tablist">
           <button class="rail-mode-btn${_mode === 'chats' ? ' on' : ''}" role="tab"
             onclick="setRailMode('${esc(p.id)}','chats')">Chats</button>
@@ -1980,6 +1989,10 @@ function _railResizeEnd() {
 document.addEventListener('mousemove', _railResizeMove);
 document.addEventListener('mouseup', _railResizeEnd);
 window.startRailResize = startRailResize;
+
+// Cross-project split picker — project_id → true while its "split with another
+// project" dropdown is open. See toggleCrossProjectPicker / _crossProjectPickerHTML.
+let _crossProjectPickerOpen = {};
 
 // Rail search — filter the recents rail's conversation rows by name, in place.
 // The query is preserved per-project (the input value + focus survive refreshes
@@ -4118,6 +4131,7 @@ function backToConvList(projectId) {
   modalActiveTab[projectId] = 'agent';
   delete activeAgentTab[projectId];
   delete splitAgentTab[projectId];   // leaving the thread view exits split too
+  delete splitAgentTabProject[projectId];
   delete agentConvNew[projectId];
   delete pendingResumeId[projectId];  // deselect any armed resume → back to the Layer-2 list
   delete pendingResumeProvider[projectId];
@@ -4340,19 +4354,45 @@ async function _resolveConversationSid(projectId, csid, mcSessionId, isLive) {
 }
 window._resolveConversationSid = _resolveConversationSid;
 
+// Reverse lookup: which project (if any) currently has `sid` pinned as its
+// split pane. splitAgentTab is keyed by the PRIMARY project id, but a
+// cross-project split pane's own sendFollowup/fetchAgentStatus calls pass
+// the session's OWNING project id (splitAgentTabProject[host]), not the
+// host's — so "is this session someone's split pane" can't be answered by
+// keying off the caller's own projectId there. See MC backlog 321d8efc.
+function _splitPaneHost(sid) {
+  for (const pid in splitAgentTab) {
+    if (splitAgentTab[pid] === sid) return pid;
+  }
+  return null;
+}
+window._splitPaneHost = _splitPaneHost;
+
 // Open a rail conversation as the 2nd (split) pane — live, idle, or finished.
-async function openInSplit(projectId, csid, mcSessionId, isLive) {
-  const sid = await _resolveConversationSid(projectId, csid, mcSessionId, isLive);
+// sourceProjectId lets the picked conversation belong to a DIFFERENT project
+// than the one it's being split against (the cross-project picker passes it;
+// same-project rail rows omit it and default to `projectId`, unchanged).
+async function openInSplit(projectId, csid, mcSessionId, isLive, sourceProjectId) {
+  const srcPid = sourceProjectId || projectId;
+  const sid = await _resolveConversationSid(srcPid, csid, mcSessionId, isLive);
   if (!sid) { if (typeof showToast === 'function') showToast('Could not open this conversation in split view', 2500); return; }
   const active = activeAgentTab[projectId];
   if (!active) { switchAgentTab(projectId, sid); return; }  // nothing to split against
   if (sid === active) return;  // can't split a conversation with itself
   splitAgentTab[projectId] = sid;
+  if (srcPid !== projectId) splitAgentTabProject[projectId] = srcPid;
+  else delete splitAgentTabProject[projectId];
+  delete _crossProjectPickerOpen[projectId];
   refreshModal();
   // Hydrate both panes from server truth + connect their streams. The
   // refreshModalById split-hydrate already repainted fresh nodes; this makes
-  // the buffers authoritative and (re)connects any missing SSE.
-  fetchAgentStatus(projectId).then(() => {
+  // the buffers authoritative and (re)connects any missing SSE. A cross-
+  // project pane's session never appears in `projectId`'s own status poll
+  // (server scopes it per project), so fetch its own project too.
+  Promise.all([
+    fetchAgentStatus(projectId),
+    srcPid !== projectId ? fetchAgentStatus(srcPid) : Promise.resolve(),
+  ]).then(() => {
     if (splitAgentTab[projectId] !== sid) return;
     for (const psid of [active, sid]) {
       _repaintAgentOutput(psid);
@@ -4364,12 +4404,23 @@ async function openInSplit(projectId, csid, mcSessionId, isLive) {
   }).catch(() => {});
 }
 
-// Close one split pane; the OTHER pane becomes the single active conversation.
+// Close one split pane; the OTHER pane becomes the single active conversation
+// — unless the split pane was cross-project and the PRIMARY is the one being
+// closed: promoting a foreign session into this project's activeAgentTab slot
+// would leave the rail (still `projectId`'s own conversations) showing a
+// session it doesn't own, so that case exits split view back to the list.
 function closeSplitPane(projectId, closeSid) {
   const a = activeAgentTab[projectId], s = splitAgentTab[projectId];
-  const keep = (closeSid === a) ? s : a;   // keep whichever pane wasn't closed
+  const crossProject = !!splitAgentTabProject[projectId];
+  const closingPrimary = (closeSid === a);
   delete splitAgentTab[projectId];
-  if (keep) activeAgentTab[projectId] = keep;
+  delete splitAgentTabProject[projectId];
+  if (closingPrimary && crossProject) {
+    delete activeAgentTab[projectId];
+  } else {
+    const keep = closingPrimary ? s : a;   // keep whichever pane wasn't closed
+    if (keep) activeAgentTab[projectId] = keep;
+  }
   refreshModal();
   const sid = activeAgentTab[projectId];
   if (!sid) return;
@@ -4387,6 +4438,40 @@ window.splitPaneHTML = splitPaneHTML;
 window.openInSplit = openInSplit;
 window.closeSplitPane = closeSplitPane;
 
+// "Split with another project" — desktop-only picker that lists OTHER
+// projects' recent conversations, so the 2nd pane isn't limited to this
+// project's own rail. agentHistory already spans every project the client
+// has loaded status for, so no extra fetch is needed to seed the list.
+function toggleCrossProjectPicker(projectId) {
+  _crossProjectPickerOpen[projectId] = !_crossProjectPickerOpen[projectId];
+  refreshModal();
+}
+window.toggleCrossProjectPicker = toggleCrossProjectPicker;
+
+function _crossProjectPickerHTML(p) {
+  const seen = new Set();
+  const rows = (agentHistory || []).filter(h => {
+    if (!h.sessionId || h.projectId === p.id || seen.has(h.sessionId)) return false;
+    seen.add(h.sessionId);
+    return true;
+  }).slice(0, 25);
+  if (!rows.length) {
+    return `<div class="agent-rail-crossproj-empty">No other project has a conversation yet.</div>`;
+  }
+  return rows.map(h => {
+    const pName = h.projectName
+      || ((typeof allProjects !== 'undefined' ? allProjects : []).find(x => x.id === h.projectId) || {}).name
+      || h.projectId;
+    const label = esc((h.task || 'Conversation').substring(0, 60));
+    const isLive = h.status === 'running';
+    return `<button type="button" class="agent-rail-crossproj-row" onclick="openInSplit('${esc(p.id)}','','${esc(h.sessionId)}',${isLive ? 'true' : 'false'},'${esc(h.projectId)}')">
+      <span class="agent-rail-crossproj-proj">${esc(pName)}</span>
+      <span class="agent-rail-crossproj-task">${label}</span>
+    </button>`;
+  }).join('');
+}
+window._crossProjectPickerHTML = _crossProjectPickerHTML;
+
 function newAgentTab(projectId) {
   // Clear active tab and force the dispatch screen. agentConvNew keeps it
   // there even with sessions present (otherwise multi would fall back to
@@ -4394,6 +4479,7 @@ function newAgentTab(projectId) {
   const wasOnList = !activeAgentTab[projectId] && agentConvNew[projectId] !== true;
   delete activeAgentTab[projectId];
   delete splitAgentTab[projectId];   // starting a new chat exits split view
+  delete splitAgentTabProject[projectId];
   agentConvNew[projectId] = true;
   // The "New / Resume" screen is a sub-level of the list — push the L2 sentinel
   // so hardware-back returns to the list, not out (mobile always has a list now).
@@ -5643,8 +5729,12 @@ async function sendFollowup(projectId, sessionId) {
       agentStatusCache[targetSessionId] = { ...(agentStatusCache[sessionId] || {}), status: 'running', startedAt: new Date().toISOString(), claudeSessionId: '' };
       // Retarget the pane the send came FROM. Unconditionally moving
       // activeAgentTab made a send from the split (2nd) pane replace the
-      // primary pane with the 2nd conversation.
-      if (splitAgentTab[projectId] === sessionId) splitAgentTab[projectId] = targetSessionId;
+      // primary pane with the 2nd conversation. Look up the split pane by a
+      // reverse scan (not `splitAgentTab[projectId]`) — a cross-project split
+      // pane's sendFollowup call passes ITS OWN project id here, which is a
+      // different key than the primary project that's actually hosting it.
+      const _splitHost = _splitPaneHost(sessionId);
+      if (_splitHost) splitAgentTab[_splitHost] = targetSessionId;
       else activeAgentTab[projectId] = targetSessionId;
       _sendInFlight[targetSessionId] = _sendInFlight[sessionId] || Date.now();
       _preSendStatus[targetSessionId] = _preSendStatus[sessionId];
@@ -5955,9 +6045,14 @@ async function fetchAgentStatus(projectId) {
       // We still skip idle background sessions to preserve Chromium's 6-slot
       // per-origin cap; only the currently-visible idle one is subscribed.
       // Split-view: the 2nd pane's session is "active" too — keep its idle SSE
-      // connected and its repaint ungated so both panes stream live.
-      const isActiveTab = (activeAgentTab[projectId] === sid
-        || splitAgentTab[projectId] === sid) && openModals.has(projectId);
+      // connected and its repaint ungated so both panes stream live. A cross-
+      // project split pane's `sid` is iterated by ITS OWN project's poll
+      // (this loop runs once per project), so `splitAgentTab[projectId]`
+      // never matches it — use the reverse lookup and check the HOST
+      // project's modal (the one actually rendering the pane), not this one.
+      const _splitHost = _splitPaneHost(sid);
+      const isActiveTab = (activeAgentTab[projectId] === sid && openModals.has(projectId))
+        || (!!_splitHost && openModals.has(_splitHost));
       const wantsLiveStream = (
         s.status === 'running' ||
         (s.status === 'idle' && (s.waiting_for_question || isActiveTab))
