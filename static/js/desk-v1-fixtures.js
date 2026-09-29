@@ -38,6 +38,21 @@
           'ch-blog': { per_week: 3, min_gap_h: 12 },
         },
         replies: 'drafts',
+        // IA revision 2 §5.3: who plans and writes for this project, asked
+        // once in step 0 (R2-5, not built by this ticket — this fixture
+        // just demonstrates a resolved pick). `global:claydo` is a shipped
+        // default character, never the hardcoded, user-hired-only
+        // `social-media-strategist` §5.3 flags as unsafe on a fresh install.
+        desk_agent: 'global:claydo',
+        // §5.2: renamed from `production` — `amount` is the per-period pool
+        // covering both production AND publishing; `per_job`/`kinds` stay as
+        // safety caps, not money pools. $100/month here is the fixture's
+        // project remaining-budget case (R2-1 acceptance: a $120 earmark
+        // against this project is short by $20).
+        budget: { amount: 100, period: 'month', per_job: 20, kinds: [] },
+        // §5.3: measurement entries gain `kind: 'manual'` (the user types
+        // the current number; dated) — the only kind that exists today.
+        measurement: [{ event: 'tester signups', source: 'manual count', kind: 'manual', at: '2026-09-24T18:00:00Z', value: 11 }],
       },
     },
     // K1: @ron on X is a workspace asset shared across projects, never
@@ -50,6 +65,10 @@
         audience: 'Day traders evaluating signal tools',
         ceilings: { 'ch-x-ron': { per_week: 2, min_gap_h: 12 } },
         replies: 'drafts',
+        // desk_agent deliberately absent — demonstrates R2-5's "unresolvable
+        // agent" fallback case (no pick made yet), unlike clayrune above.
+        budget: { amount: 40, period: 'month', per_job: 20, kinds: [] },
+        measurement: [],
       },
     },
   ];
@@ -68,7 +87,37 @@
       // `plan.goal` below, the single canonical copy a plan edit (rules
       // popover, Resume revalidation) actually writes to. `current` stays:
       // it's live progress, which has no field in §4's plan shape at all.
-      goal: { current: 11 },
+      //
+      // IA revision 2 §5.1: the rest of this object (`metric` on down) is
+      // the NEW measurable-goal shape, additive onto the same `goal` object
+      // rather than a second copy — `current`/`entries` is the live series,
+      // `metric`/`target`/`source` is what R2-4's goal editor (not built by
+      // this ticket) will read/write. `plan.goal` below is untouched: the
+      // R0 setup wizard and results panel still read it until R2-3/R2-4
+      // migrate them off it.
+      goal: {
+        current: 11, metric: 'tester signups', target: 30, baseline: 0,
+        unit: 'signups', horizon: 'short', deadline: '2026-10-20',
+        source: 'manual', entries: [{ at: '2026-09-24T18:00:00Z', value: 11 }],
+      },
+      // §5.1: the approval's finite window (§9 Q2 binding: ≤90 days; a
+      // `long` horizon goal above would renew terms until `goal.deadline`).
+      // camp-1's own `short` horizon needs exactly one term.
+      term: { index: 1, starts: '2026-09-01', ends: '2026-10-20', post_cap: null },
+      // §5.1: `plan.angle` moves here eventually (R2-6); duplicated rather
+      // than moved for this ticket since `plan.angle` still has no reader
+      // of its own to retire (grep confirms) and nothing depends on this
+      // one yet — R2-6 picks a single home for it.
+      how: {
+        strategy: 'Show the beta working end to end, not just announce it.',
+        angle: 'Show the restore-points and install flow working end to end so trying the beta feels low-risk.',
+        agent: null,
+        budget: { source: 'project', amount: 60, period: 'term' },
+      },
+      // §5.1: replaces `setup {step, done}` (a Draft-only concept the R0
+      // setup wizard still owns via `camp.setup`, untouched here) — `map`
+      // is the R2-3 stepper's own state, additive, unread by anything yet.
+      map: { stop: 'launch', done: ['goal', 'how', 'what', 'when', 'where'] },
       // IA2 (THE_DESK_V1_IA_REVISION.md §3): `customChips` (row 11) is the
       // only field this object still owns — the per-piece approval toggle,
       // the weekly-count duplicate, the reply-mode toggle and the paid

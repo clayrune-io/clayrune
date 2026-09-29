@@ -553,6 +553,103 @@ async function runProjectCampaignProjectNavDraftSurvival(browser) {
   await ctx.close();
 }
 
+// ── R2-1 (IA revision 2 §5/§8): validatePlan's new goal/term/how-budget
+// gates and the bounds-hash widen/narrow contract. Pure-function checks
+// against window.DeskV1Kit — no live UI consumer exists yet (R2-3/R2-4/
+// R2-6/R2-11 wire the map, goal editor and how-budget UI), so this drives
+// the kit the same way runInteractionChecks drives lintCopy above.
+async function runR21PlanBoundsChecks(browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await ctx.newPage();
+  const pageErrors = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
+  await page.route('**/*', fulfillOrAbort);
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#projects-col .card', { timeout: 15000 });
+
+  const result = await page.evaluate(() => {
+    const K = window.DeskV1Kit;
+    const base = {
+      accounts: [{ channel_id: 'ch-x-ron' }], cadence: { per_week: 2 }, end: { post_cap: 10 },
+    };
+
+    // §9 Q1 binding: goal needs target + source; plan without a goal target
+    // -> validatePlan missing names 'goal' with stop 'goal'.
+    const noTarget = K.validatePlan({ ...base, goal: { metric: 'signups', source: 'manual' } }, null, {});
+    const withTarget = K.validatePlan({ ...base, goal: { metric: 'signups', source: 'manual', target: 30 } }, null, {});
+
+    // §5.2/§9 Q3 binding: $120 earmark vs $100 project remaining -> missing
+    // names 'how' with "short by $20".
+    const short = K.validatePlan({ ...base, how: { budget: { source: 'project', amount: 120 } } }, null, { projectRemaining: 100 });
+    const covered = K.validatePlan({ ...base, how: { budget: { source: 'project', amount: 80 } } }, null, { projectRemaining: 100 });
+
+    // Bounds hash: widening how.budget.amount changes the hash; lowering
+    // does not.
+    const prevBounds = { budget: { source: 'project', amount: 60 } };
+    const prevHash = K.computeBoundsHash(prevBounds);
+    const widenedBounds = { budget: { source: 'project', amount: 80 } };
+    const loweredBounds = { budget: { source: 'project', amount: 40 } };
+    const widenedHash = K.nextBoundsHash(prevHash, prevBounds, widenedBounds);
+    const loweredHash = K.nextBoundsHash(prevHash, prevBounds, loweredBounds);
+
+    return {
+      noTargetMissing: noTarget.missing.map((m) => m.bound),
+      noTargetStop: (noTarget.missing.find((m) => m.bound === 'goal') || {}).stop,
+      withTargetOk: withTarget.missing.some((m) => m.bound === 'goal'),
+      shortMissing: short.missing.find((m) => m.bound === 'how_budget'),
+      coveredMissing: covered.missing.some((m) => m.bound === 'how_budget'),
+      prevHash, widenedHash, loweredHash,
+    };
+  });
+
+  result.noTargetMissing.includes('goal') && result.noTargetStop === 'goal'
+    ? ok(`plan without goal target -> validatePlan missing names stop 'goal': ${JSON.stringify(result.noTargetMissing)}`)
+    : fail(`goal-target gate wrong: ${JSON.stringify(result.noTargetMissing)}, stop=${result.noTargetStop}`);
+  !result.withTargetOk
+    ? ok('plan with goal target + source clears the goal bound')
+    : fail('goal bound still missing once target + source are set');
+  result.shortMissing && result.shortMissing.detail === 'short by $20'
+    ? ok(`$120 earmark vs $100 project remaining -> missing names 'how' with "short by $20": ${JSON.stringify(result.shortMissing)}`)
+    : fail(`budget-earmark gate wrong: ${JSON.stringify(result.shortMissing)}`);
+  !result.coveredMissing
+    ? ok('$80 earmark vs $100 project remaining clears the how_budget bound')
+    : fail('how_budget bound still fired for a covered earmark');
+  result.widenedHash !== result.prevHash
+    ? ok(`widening how.budget.amount (60 -> 80) changes the bounds hash: ${result.prevHash} -> ${result.widenedHash}`)
+    : fail(`widening did not change the bounds hash: ${result.prevHash}`);
+  result.loweredHash === result.prevHash
+    ? ok(`lowering how.budget.amount (60 -> 40) keeps the bounds hash: ${result.loweredHash}`)
+    : fail(`lowering changed the bounds hash: ${result.prevHash} -> ${result.loweredHash}`);
+
+  const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught.length) uncaught.forEach((e) => fail('[R2-1 plan bounds] uncaught page error: ' + e));
+  await ctx.close();
+}
+
+// ── R2-1 (§8): fixture load has 0 'production' keys (renamed to
+// presence.budget).
+async function runR21FixtureProductionKeyCheck(browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await ctx.newPage();
+  const pageErrors = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
+  await page.route('**/*', fulfillOrAbort);
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#projects-col .card', { timeout: 15000 });
+
+  const productionKeyCount = await page.evaluate(() => {
+    const src = Array.from(document.scripts)
+      .map((s) => s.src)
+      .find((s) => /desk-v1-fixtures\.js$/.test(s));
+    return fetch(src).then((r) => r.text()).then((text) => (text.match(/\bproduction\b\s*:/g) || []).length);
+  });
+  productionKeyCount === 0
+    ? ok('fixture load has 0 \'production\' keys (renamed to presence.budget)')
+    : fail(`fixtures still declare ${productionKeyCount} 'production' key(s)`);
+
+  await ctx.close();
+}
+
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
@@ -560,6 +657,8 @@ try {
   await runInteractionChecks(browser);
   await runTaskLifecycleChecks(browser);
   await runProjectCampaignProjectNavDraftSurvival(browser);
+  await runR21PlanBoundsChecks(browser);
+  await runR21FixtureProductionKeyCheck(browser);
   exitCode = bad ? 1 : 0;
 } catch (e) {
   console.error('❌ FAIL — smoke harness error: ' + (e && e.message ? e.message : e));

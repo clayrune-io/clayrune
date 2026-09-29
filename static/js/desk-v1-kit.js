@@ -730,35 +730,129 @@
     return { value: campPerWeek, fromProject: false };
   }
 
-  // ── validatePlan (§4: "one canonical plan object"; rescoped IA2 §5) — the
-  // single gate the checklist state, the Start button, Resume and Renew all
-  // share. Checks the §2.3 step-2 bound table's "Required to leave" rows —
-  // accounts, cadence, end date and/or post cap (>=1). `source_projects` is
-  // retired (§3 row 14: owner is the parent project, implicit, no bound) and
-  // `min_gap_h` moved to the project's own ceilings (§3 row 22) — neither is
-  // a campaign-level plan bound any more. `project` is optional so callers
-  // without a resolved project (e.g. a just-created draft campaign) still
-  // get a usable result; effective cadence then falls back to the
-  // campaign's own value with no clamp.
+  // ── validatePlan (§4: "one canonical plan object"; rescoped IA2 §5, IA
+  // revision 2 §5/§8 R2-1) — the single gate the checklist state, the Start
+  // button, Resume and Renew all share. Checks the §2.3 step-2 bound table's
+  // "Required to leave" rows — accounts, cadence, end date and/or post cap
+  // (>=1). `source_projects` is retired (§3 row 14: owner is the parent
+  // project, implicit, no bound) and `min_gap_h` moved to the project's own
+  // ceilings (§3 row 22) — neither is a campaign-level plan bound any more.
+  // `project` is optional so callers without a resolved project (e.g. a
+  // just-created draft campaign) still get a usable result; effective
+  // cadence then falls back to the campaign's own value with no clamp.
+  //
+  // Each bound now carries a `stop` (§2 map vocabulary: 'goal'|'how'|'what'|
+  // 'when'|'where'|'launch') alongside the older numeric `step`, additive —
+  // existing callers reading `.step`/`.bound` see no change; R2-3's map
+  // stepper (not built by this ticket) will read `.stop` to link a missing
+  // bound to the right ①-⑥ stop.
   const _PLAN_BOUNDS = [
-    { bound: 'accounts', step: 2, label: 'accounts',
+    { bound: 'accounts', step: 2, stop: 'where', label: 'accounts',
       missing: (p) => !(p.accounts && p.accounts.length) },
-    { bound: 'cadence', step: 2, label: 'cadence',
+    { bound: 'cadence', step: 2, stop: 'when', label: 'cadence',
       missing: (p) => !(p.cadence && p.cadence.per_week != null) },
-    { bound: 'end', step: 2, label: 'end date',
+    { bound: 'end', step: 2, stop: 'when', label: 'end date',
       missing: (p) => !(p.end && (p.end.date != null || p.end.post_cap != null)) },
   ];
-  function validatePlan(plan, project) {
+
+  // ── R2-1 additions (IA revision 2 §5.1/§5.2, §9 Ron's binding answers) ──
+  // These three checks are gated on the NEW shapes (`plan.goal.metric`,
+  // `plan.term`, `plan.how.budget`) rather than added unconditionally to
+  // _PLAN_BOUNDS above — no fixture campaign carries those fields yet (R2-1
+  // is fixtures + kit shapes only; R2-3/R2-4/R2-6/R2-11 wire the map, goal
+  // editor, how-budget UI and the Launch bounds table that actually set
+  // them). Adding an unconditional goal/budget requirement to every
+  // validatePlan() call would silently fail today's camp-1/camp-2 fixtures
+  // (neither carries `source`/`metric`) and flip Resume/Pause outcomes that
+  // have nothing to do with this ticket's scope — gating on the new field
+  // names keeps this purely additive until a later ticket migrates a real
+  // plan onto the new shape.
+  //
+  // §9 Q1 (binding): a goal needs a target AND a source — `manual` allowed.
+  function _goalMissing(plan) {
+    const goal = plan.goal;
+    if (!goal || goal.metric === undefined) return null; // old-shape or absent — not this ticket's gate
+    if (goal.target == null || !goal.source) return { bound: 'goal', stop: 'goal', label: 'goal' };
+    return null;
+  }
+  // §9 Q2 (binding): terms run ≤90 days; a long-horizon goal renews rather
+  // than holding one open-ended approval.
+  const _MAX_TERM_DAYS = 90;
+  function _termMissing(plan) {
+    const term = plan.term;
+    if (!term || !term.starts || !term.ends) return null; // no term set yet — not this ticket's gate
+    const days = (new Date(term.ends).getTime() - new Date(term.starts).getTime()) / 86400000;
+    if (days > _MAX_TERM_DAYS) return { bound: 'term', stop: 'launch', label: 'term', detail: `${Math.round(days)} days (max ${_MAX_TERM_DAYS})` };
+    return null;
+  }
+  // §5.2/§9 Q3 (binding): a project-funded budget is earmarked at Launch;
+  // Launch refuses an earmark the project cannot cover and says by how much.
+  // `opts.projectRemaining` is the caller's job to compute (project budget
+  // minus the sum of the OTHER live campaigns' earmarks) — this function
+  // stays a pure comparison, no cross-campaign lookup here.
+  function _howBudgetMissing(plan, opts) {
+    const budget = plan.how && plan.how.budget;
+    if (!budget || budget.source !== 'project' || opts.projectRemaining == null) return null;
+    const short = (budget.amount || 0) - opts.projectRemaining;
+    if (short > 0) return { bound: 'how_budget', stop: 'how', label: 'how', detail: `short by $${short}` };
+    return null;
+  }
+
+  function validatePlan(plan, project, opts) {
     plan = plan || {};
+    opts = opts || {};
     const missing = _PLAN_BOUNDS
       .filter((b) => b.missing(plan))
-      .map((b) => ({ bound: b.bound, step: b.step, label: b.label }));
+      .map((b) => ({ bound: b.bound, step: b.step, stop: b.stop, label: b.label }));
+    [_goalMissing(plan), _termMissing(plan), _howBudgetMissing(plan, opts)]
+      .filter(Boolean)
+      .forEach((m) => missing.push(m));
     const eff = _effectiveCadence(plan, project);
     return {
       ok: missing.length === 0,
       missing,
       effective: { cadence_per_week: eff.value, cadence_from_project: eff.fromProject },
     };
+  }
+
+  // ── Bounds hash (SIMPLIFICATION §4 / IA revision 2 §5.1 `approval.
+  // bounds_hash`, §5.2 "the ceiling that goes into bounds_hash is the number
+  // at approval time... a later raise is a widening [needs a new hash]...
+  // lowering keeps approval [same hash]"). `computeBoundsHash` is a pure
+  // function of the canonical bounds object — deterministic, no crypto dep
+  // (djb2 over a stable-sorted-keys JSON string is enough: this hash is an
+  // equality fingerprint for "did the approved envelope change", never a
+  // security boundary). `nextBoundsHash` is the actual widen/narrow policy:
+  // call it every time a bound-affecting field is edited; it returns a NEW
+  // hash only when the edit widens, otherwise the previous hash unchanged —
+  // this is what "lowering does not change the bounds hash" means in
+  // practice (the narrowed bounds are in effect, but the approval on file,
+  // and its hash, is untouched).
+  function _stableStringify(v) {
+    if (v === null || typeof v !== 'object') return JSON.stringify(v);
+    if (Array.isArray(v)) return '[' + v.map(_stableStringify).join(',') + ']';
+    const keys = Object.keys(v).sort();
+    return '{' + keys.map((k) => JSON.stringify(k) + ':' + _stableStringify(v[k])).join(',') + '}';
+  }
+  function computeBoundsHash(bounds) {
+    const s = _stableStringify(bounds || {});
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+    return h.toString(16).padStart(8, '0');
+  }
+  // Widening rule, §5.2: budget.amount raised, or budget.source switches
+  // 'own' -> 'project' (a pool that can be larger than the fixed own
+  // amount), is a widening. Equal or lower amount, or 'project' -> 'own',
+  // never widens on the budget dimension.
+  function boundsWiden(prevBounds, nextBounds) {
+    const prevBudget = (prevBounds && prevBounds.budget) || {};
+    const nextBudget = (nextBounds && nextBounds.budget) || {};
+    if ((nextBudget.amount || 0) > (prevBudget.amount || 0)) return true;
+    if (prevBudget.source === 'own' && nextBudget.source === 'project') return true;
+    return false;
+  }
+  function nextBoundsHash(prevHash, prevBounds, nextBounds) {
+    return boundsWiden(prevBounds, nextBounds) ? computeBoundsHash(nextBounds) : prevHash;
   }
 
   window.DeskV1Kit = {
@@ -774,5 +868,6 @@
     anyPosyWorking, POSY_WORKING_LABEL, paintPosyReadyNoDiff,
     openConfirmSheet,
     validatePlan, validatePresence,
+    computeBoundsHash, boundsWiden, nextBoundsHash,
   };
 })();

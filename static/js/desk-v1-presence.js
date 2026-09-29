@@ -201,35 +201,38 @@
     });
   }
 
-  // ── Production budget (§2.1: bigger budget widens). ─────────────────────
+  // ── Presence budget (§2.1: bigger budget widens; renamed from
+  // `presence.production` to `presence.budget` and `per_period` to `amount`
+  // — IA revision 2 §5.3/§8 R2-1: `amount` covers production AND publishing
+  // for the period, `per_job`/`kinds` stay safety caps, not money pools). ──
   function _budgetHTML(p) {
-    const prod = p.presence.production = p.presence.production || { per_job: 0, per_period: 0, period: 'month', kinds: [] };
+    const budget = p.presence.budget = p.presence.budget || { per_job: 0, amount: 0, period: 'month', kinds: [] };
     return `
-      <div class="desk-v1-rules-inlinerow">$<input type="number" min="0" class="desk-v1-rules-numinput" data-budget-perjob-input value="${esc(prod.per_job || 0)}"> per job</div>
-      <div class="desk-v1-rules-inlinerow">$<input type="number" min="0" class="desk-v1-rules-numinput" data-budget-perperiod-input value="${esc(prod.per_period || 0)}"> per ${esc(prod.period || 'month')}</div>
-      <div class="desk-v1-rules-hint">${prod.kinds && prod.kinds.length ? 'Allowed: ' + esc(prod.kinds.join(', ')) : 'No video generation allowed yet.'}</div>
+      <div class="desk-v1-rules-inlinerow">$<input type="number" min="0" class="desk-v1-rules-numinput" data-budget-perjob-input value="${esc(budget.per_job || 0)}"> per job</div>
+      <div class="desk-v1-rules-inlinerow">$<input type="number" min="0" class="desk-v1-rules-numinput" data-budget-perperiod-input value="${esc(budget.amount || 0)}"> per ${esc(budget.period || 'month')}</div>
+      <div class="desk-v1-rules-hint">${budget.kinds && budget.kinds.length ? 'Allowed: ' + esc(budget.kinds.join(', ')) : 'No video generation allowed yet.'}</div>
       <div class="desk-v1-rules-pop-preview" data-budget-preview hidden></div>`;
   }
   function _bindBudget(el, p) {
-    const prod = p.presence.production;
+    const budget = p.presence.budget;
     const previewEl = el.querySelector('[data-budget-preview]');
     const perJob = el.querySelector('[data-budget-perjob-input]');
     const perPeriod = el.querySelector('[data-budget-perperiod-input]');
     if (perJob) perJob.addEventListener('change', () => {
-      const prev = prod.per_job || 0;
+      const prev = budget.per_job || 0;
       const next = parseFloat(perJob.value) || 0;
       if (next === prev) return;
       const widening = next > prev;
       const effect = `Per-job production budget set to $${next} — was $${prev}.`;
-      _stageChange(previewEl, () => { prod.per_job = next; }, effect, widening, () => { perJob.value = String(prev); }, p);
+      _stageChange(previewEl, () => { budget.per_job = next; }, effect, widening, () => { perJob.value = String(prev); }, p);
     });
     if (perPeriod) perPeriod.addEventListener('change', () => {
-      const prev = prod.per_period || 0;
+      const prev = budget.amount || 0;
       const next = parseFloat(perPeriod.value) || 0;
       if (next === prev) return;
       const widening = next > prev;
-      const effect = `Production budget set to $${next} per ${prod.period || 'month'} — was $${prev}.`;
-      _stageChange(previewEl, () => { prod.per_period = next; }, effect, widening, () => { perPeriod.value = String(prev); }, p);
+      const effect = `Production budget set to $${next} per ${budget.period || 'month'} — was $${prev}.`;
+      _stageChange(previewEl, () => { budget.amount = next; }, effect, widening, () => { perPeriod.value = String(prev); }, p);
     });
   }
 
