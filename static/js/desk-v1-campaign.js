@@ -656,11 +656,15 @@
     });
   }
 
+  // IA5 (§2.4, §5 row IA5 ticket: "the content card's primary action opens
+  // the piece"): every card, whatever its kind or state, opens the piece
+  // page now — What hands off to review when a version needs it, How hands
+  // off to the video director for a video piece, same as the piece page's
+  // own facet actions. Replaces the old kind-branched review/video/toast
+  // dispatch (the toast's "later ticket" is this one).
   function _runPrimaryAction(fam, camp) {
     const action = _primaryAction(fam);
-    if (action.kind === 'review') deskV1Nav('review', { campaignId: camp.id, versionId: action.versionId });
-    else if (action.kind === 'video') deskV1Nav('video', { campaignId: camp.id, familyId: fam.id });
-    else DeskV1Kit.toast('Opening a scheduled or published piece for reading lands with a read-only viewer (later ticket) — T3’s review surface only covers needs-review items in R0.');
+    deskV1Nav('piece', { campaignId: camp.id, familyId: fam.id, projectId: camp.projectId, versionId: action.versionId || null });
   }
 
   // ── ⋯ menu (§3.2: "Add a channel version ▸ · Move to another channel ▸ ·
