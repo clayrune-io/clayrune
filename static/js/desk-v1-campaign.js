@@ -281,8 +281,16 @@
   }
   window.deskV1OpenCampaignMoreMenu = deskV1OpenCampaignMoreMenu;
 
+  // Dave's review (2026-09-28): `new Date('2026-10-20')` parses a bare
+  // YYYY-MM-DD as UTC midnight, which rolls back to the previous local day
+  // in a host timezone behind UTC ("Oct 19"). Calendar days, not instants —
+  // parse as a LOCAL date (same fix as desk-v1-rules.js's own copy).
+  function _localDateFromISO(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+    return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(iso);
+  }
   function _fmtDate(iso) {
-    try { return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(iso)); }
+    try { return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(_localDateFromISO(iso)); }
     catch (e) { return iso; }
   }
 

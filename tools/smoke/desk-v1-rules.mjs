@@ -200,13 +200,98 @@ async function runGoalEdit(browser) {
 
   const target = await page.evaluate(() => {
     const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2');
-    return camp.goal.target;
+    return camp.plan.goal.target;
   });
   target === 75
-    ? ok('editing the goal sentence\'s target field commits to camp.goal.target on blur')
+    ? ok('editing the goal sentence\'s target field commits to camp.plan.goal.target on blur (T1 §4: one canonical plan object)')
     : fail(`goal target did not commit: ${JSON.stringify(target)}`);
 
   reportUncaught(pageErrors, '[goal-edit]');
+  await ctx.close();
+}
+
+// ── T1 (§4): "editing the goal date edits `goal.deadline`; every surface
+// re-renders from it" — the deadline shown in the summary bar's dashed date
+// span AND the derived "Ends …" rule chip both read `camp.plan`, so a single
+// edit must move both without a page reload. ────────────────────────────────
+async function runGoalDateEdit(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCampaign(page, 'camp-2');
+
+  const before = await page.evaluate(() => {
+    const chips = Array.from(document.querySelectorAll('[data-summary-group="rules"] .desk-v1-camp-rule-chip')).map((e) => e.textContent.trim());
+    return {
+      summaryDate: document.querySelector('[data-goal-field="dateLabel"]').textContent.trim(),
+      endChip: chips.find((c) => c.startsWith('Ends')),
+    };
+  });
+
+  await page.click('[data-goal-field="dateLabel"]');
+  await page.keyboard.press('Control+A');
+  await page.keyboard.type('2026-12-25');
+  // A plain `.click()` on the wrapping sentence lands at ITS geometric
+  // center, which the longer typed date can shift back inside the very span
+  // still focused (never blurring it) — force blur explicitly instead.
+  await page.evaluate(() => document.activeElement && document.activeElement.blur());
+  await page.waitForTimeout(50);
+
+  // The exact rendered day depends on the pre-existing `_fmtDate` helper
+  // (duplicated as-is from desk-v1-campaign.js, out of T1's scope), which
+  // has its own UTC-midnight/local-timezone quirk — not something this
+  // ticket touches. What T1 owns is that BOTH readers move off the same
+  // `camp.plan` write and land on the SAME day as each other.
+  const after = await page.evaluate(() => {
+    const chips = Array.from(document.querySelectorAll('[data-summary-group="rules"] .desk-v1-camp-rule-chip')).map((e) => e.textContent.trim());
+    return {
+      summaryDate: document.querySelector('[data-goal-field="dateLabel"]').textContent.trim(),
+      endChip: chips.find((c) => c.startsWith('Ends')),
+    };
+  });
+  after.summaryDate !== before.summaryDate
+    ? ok(`editing the goal date field moves the summary bar's own deadline: "${before.summaryDate}" → "${after.summaryDate}"`)
+    : fail(`summary bar deadline did not update: stayed "${before.summaryDate}"`);
+
+  after.endChip === `Ends ${after.summaryDate}` && after.endChip !== before.endChip
+    ? ok(`the same edit also moves the "Ends …" rule chip, matching the summary bar: "${before.endChip}" → "${after.endChip}"`)
+    : fail(`rule chip did not follow the goal-date edit in step with the summary bar: before="${before.endChip}" after="${after.endChip}" summary="${after.summaryDate}"`);
+
+  const plan = await page.evaluate(() => {
+    const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2');
+    return { deadline: camp.plan.goal.deadline, end: camp.plan.end.date };
+  });
+  plan.deadline === '2026-12-25' && plan.end === '2026-12-25'
+    ? ok('camp.plan.goal.deadline and camp.plan.end.date both hold the new date (single write, both readers)')
+    : fail(`plan not updated consistently: ${JSON.stringify(plan)}`);
+
+  reportUncaught(pageErrors, '[goal-date-edit]');
+  await ctx.close();
+}
+
+// ── T1 (§4): "`validatePlan` is the single gate" — a plan missing its end
+// date (and only that bound) must be named by `missing`, not silently pass.
+// ────────────────────────────────────────────────────────────────────────
+async function runValidatePlanMissingEnd(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCampaign(page, 'camp-2');
+
+  const result = await page.evaluate(() => {
+    const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2');
+    const plan = Object.assign({}, camp.plan, { end: { date: null, post_cap: null } });
+    return window.DeskV1Kit.validatePlan(plan);
+  });
+  !result.ok && result.missing.some((m) => m.bound === 'end')
+    ? ok(`validatePlan() names the missing end date: ${JSON.stringify(result.missing)}`)
+    : fail(`validatePlan() did not flag the missing end date: ${JSON.stringify(result)}`);
+
+  const fullResult = await page.evaluate(() => {
+    const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2');
+    return window.DeskV1Kit.validatePlan(camp.plan);
+  });
+  fullResult.ok
+    ? ok('the unmodified camp-2 fixture plan validates clean (all bounds present)')
+    : fail(`camp-2's own plan fixture unexpectedly fails validatePlan(): ${JSON.stringify(fullResult)}`);
+
+  reportUncaught(pageErrors, '[validate-plan-missing-end]');
   await ctx.close();
 }
 
@@ -652,6 +737,8 @@ try {
   browser = await chromium.launch();
   for (const tone of TONES) await runProposedRenderChecks(browser, tone);
   await runGoalEdit(browser);
+  await runGoalDateEdit(browser);
+  await runValidatePlanMissingEnd(browser);
   await runBlockerAnswer(browser);
   await runStartSheet(browser);
   await runReviewModeToggle(browser);
