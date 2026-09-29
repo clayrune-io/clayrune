@@ -93,6 +93,7 @@ await page.route('**/*', (route) => {
 
   if (path === '/api/projects') return json([]);
   if (path === '/api/config') return json({});
+  if (path === '/api/local-auth/status') return json({ configured: true });
   if (path === '/api/system/update/status') return json(statusBody);
   if (path === '/api/system/update') {
     updateCalls.push(JSON.parse(route.request().postData() || '{}'));
@@ -174,6 +175,15 @@ try {
   // ── 3. Clicking stash posts {stash:true} and shows the returned message ─
   updateCalls = [];
   await page.click('#update-stash-btn');
+  // Stashing now routes through the human-proof passcode modal (MC-995)
+  // instead of firing POST /api/system/update directly — answer it.
+  await page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout: 5000 });
+  await page.evaluate(() => {
+    const win = document.querySelector('[data-modal-id^="__human-proof-"]');
+    const modalId = win.dataset.modalId;
+    document.getElementById(`hp-passcode-${modalId}`).value = 'smoke-dash-passcode';
+    window._hpSubmit(modalId);
+  });
   await page.waitForFunction(
     () => /Updated to/.test(document.getElementById('update-status-hint')?.textContent || ''),
     { timeout: 5000 });

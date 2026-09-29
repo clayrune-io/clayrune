@@ -117,6 +117,7 @@ from mc import state as _state
 from mc.core import _log
 from mc.state import agent_sessions
 from mc.unattended import is_unattended_caller
+from mc.blueprints.secrets_routes import _require_human_passcode
 
 bp = Blueprint('backup_routes', __name__)
 
@@ -542,6 +543,11 @@ def api_backup_restore():
     if _is_unattended():
         return jsonify({'error': 'restore is attended-only — refused for this trigger type'}), 403
     data = request.get_json(silent=True) or {}
+    # MC-995: is_unattended_caller() alone is forgeable — restoring live state
+    # over a running project also requires the retyped dashboard passcode.
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
     path = data.get('path')
     if not path:
         return jsonify({'error': 'path is required'}), 400
@@ -602,8 +608,14 @@ def api_backup_import():
         return jsonify({'error': 'path is required'}), 400
     try:
         if not data.get('apply'):
+            # Preview/dry-run never mutates anything — same posture as
+            # secrets/import-authenticator's preview half. The passcode gate
+            # below only guards the path that actually applies the import.
             report = _backup.import_dry_run(Path(path))
             return jsonify(report)
+        refusal = _require_human_passcode(data)
+        if refusal is not None:
+            return refusal
         report = _backup.import_project(
             Path(path),
             project_resolution=data.get('project_resolution', 'skip'),
@@ -677,6 +689,13 @@ def api_backup_rollback(project_id, snap_id):
     dry_run = bool(data.get('dry_run'))
     if _is_unattended(project_id) and not dry_run:
         return jsonify({'error': 'rollback is attended-only — refused for this trigger type'}), 403
+    if not dry_run:
+        # MC-995: same non-dry-run-only placement as import above — a dry
+        # run never mutates the project, so only the real rollback needs the
+        # retyped dashboard passcode on top of the is_unattended() check.
+        refusal = _require_human_passcode(data)
+        if refusal is not None:
+            return refusal
     try:
         report = _backup.rollback(
             project_id, snap_id,

@@ -66,6 +66,20 @@ const ok = (m) => console.log('  ✓ ' + m);
 const fail = (m) => { console.error('  ✗ ' + m); bad++; };
 const check = (cond, m) => (cond ? ok(m) : fail(m));
 
+// Create team now routes through the human-proof passcode modal (MC-995)
+// instead of firing POST /api/characters/team directly — answer it.
+async function answerHumanProofModalIfShown(page, timeout = 5000) {
+  const win = await page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout }).catch(() => null);
+  if (!win) return false;
+  await page.evaluate(() => {
+    const el = document.querySelector('[data-modal-id^="__human-proof-"]');
+    const modalId = el.dataset.modalId;
+    document.getElementById(`hp-passcode-${modalId}`).value = 'smoke-dash-passcode';
+    window._hpSubmit(modalId);
+  });
+  return true;
+}
+
 let lastProxy = null;
 const teamCalls = [];
 function runProxy(body) {
@@ -85,6 +99,7 @@ async function route(page) {
     if (hit) return r.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return json(200, [PROJECT]);
     if (path === '/api/config') return json(200, {});
+    if (path === '/api/local-auth/status') return json(200, { configured: true });
     if (path === '/api/avatars') return json(200, { figures: FIGURES, prefix: 'fig:' });
     const fig = path.match(/^\/api\/avatars\/([a-z0-9_-]+)$/i);
     if (fig && FIGURES.includes(fig[1])) return r.fulfill({ status: 200, contentType: 'image/webp', body: readFileSync(resolve(REPO_ROOT, 'assets', 'avatars', fig[1] + '.webp')) });
@@ -166,6 +181,7 @@ try {
   }
 
   await card.locator('[data-act="create"]').click();
+  await answerHumanProofModalIfShown(page);
   await page.waitForSelector('#agent-output-team_sid .team-card.created', { timeout: 90000 }).catch(() => {});
   check(await card.evaluate((el) => el.classList.contains('created')), 'Create team finished and the card shows created');
   const res = lastProxy || {};
@@ -187,12 +203,14 @@ try {
   // Conflict: a second card proposing the now-existing name.
   const conf = page.locator('#agent-output-conflict_sid .team-card');
   await conf.locator('[data-act="create"]').click();
+  await answerHumanProofModalIfShown(page);
   await page.waitForTimeout(400);
   await conf.locator('.team-conflict').waitFor({ timeout: 90000 }).catch(() => {});
   check(await conf.locator('.team-conflict input[type="checkbox"]').count() === 1, 'an existing name shows the overwrite prompt');
   check(lastProxy.status === 409 && (lastProxy.files['proj/.claude/agents/game-designer.md'] || '') === gd, 'the conflict wrote nothing');
   await conf.locator('.team-conflict input[type="checkbox"]').check();
   await conf.locator('[data-act="create"]').click();
+  await answerHumanProofModalIfShown(page);
   await page.waitForSelector('#agent-output-conflict_sid .team-card.created', { timeout: 90000 }).catch(() => {});
   check(lastProxy.status === 201 && /You design loops, again\./.test(lastProxy.files['proj/.claude/agents/game-designer.md'] || ''), 'ticking overwrite then Create replaces it');
 

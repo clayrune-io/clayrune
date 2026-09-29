@@ -48,6 +48,11 @@ const BEACON_CSS = readFileSync(resolve(REPO_ROOT, 'static', 'css', 'beacon.css'
 // Every extracted /static/js/*.js must be fulfilled here or the hermetic
 // harness aborts its request and the SPA boots without that feature.
 const CLAYDO_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'claydo.js'), 'utf8');
+// Human-proof guard shared passcode modal (MC-995) — same rule as claydo.js
+// above; claydo.js's persona-editor Save and other call sites now depend on
+// window.humanProofFetch existing, so an unregistered module here doesn't
+// just skip its own feature, it breaks every gated Save button.
+const HUMAN_PROOF_MODAL_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'human-proof-modal.js'), 'utf8');
 // Mobile pairing ES module (Phase 3 module 3) — same rule as claydo.js above.
 const MOBILE_PAIRING_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'mobile-pairing.js'), 'utf8');
 // Walkthrough / tour ES module (Phase 3 module 4) — same rule as claydo.js above.
@@ -157,6 +162,7 @@ const STATIC_MAP = {
   '/static/css/app.css': ['text/css; charset=utf-8', APP_CSS],
   '/static/css/beacon.css': ['text/css; charset=utf-8', BEACON_CSS],
   '/static/js/claydo.js': ['text/javascript; charset=utf-8', CLAYDO_JS],
+  '/static/js/human-proof-modal.js': ['text/javascript; charset=utf-8', HUMAN_PROOF_MODAL_JS],
   '/static/js/mobile-pairing.js': ['text/javascript; charset=utf-8', MOBILE_PAIRING_JS],
   '/static/js/walkthrough.js': ['text/javascript; charset=utf-8', WALKTHROUGH_JS],
   '/static/js/skills-panel.js': ['text/javascript; charset=utf-8', SKILLS_PANEL_JS],
@@ -591,6 +597,68 @@ async function runClaydoRestoreGuard(browser) {
   return true;
 }
 
+// ── Old-tour migration must never write unprompted (MC-995 follow-up) ───────
+// first-run.js's firstRunNeeded() used to call _setupPersistMigration() for
+// any browser carrying the pre-wizard 'walkthrough_done' flag, firing a plain
+// unguarded PUT /api/config on every boot. Once the human-proof passcode
+// guard (006f03e) started gating that route, this 403'd every single time —
+// silently, with no user in the loop to answer a prompt — and burned an
+// attempt out of the shared ten-per-window throttle on a browser that hadn't
+// touched anything. Dave review of 78052d4 flagged it; the fix deletes the
+// write entirely (first-run.js:843).
+async function runFirstRunMigrationNoWriteGuard(browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await ctx.newPage();
+  await page.addInitScript(() => { localStorage.setItem('walkthrough_done', '1'); });
+  let configPuts = 0;
+  await page.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/api/config') {
+      if (req.method() === 'PUT') {
+        configPuts++;
+        return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+      }
+      // The exact state that used to trigger the migration write: never set
+      // up server-side, but this browser already did the old combined tour.
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ setup_completed: false }) });
+    }
+    return fulfillStaticOrAbort(route);
+  });
+  const pageErrors = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  try {
+    await page.waitForSelector('#projects-col .card', { timeout: BOOT_TIMEOUT_MS });
+  } catch {
+    console.error('❌ first-run migration guard: grid never rendered (boot failed before the guard could run).');
+    await ctx.close();
+    return false;
+  }
+  // firstRunNeeded()/the migration call used to fire ~600ms after boot
+  // continuation (same timing every other first-run scenario in this file
+  // waits on) — give it a real margin past that before asserting silence.
+  await page.waitForTimeout(1200);
+  await ctx.close();
+
+  const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  let ok = true;
+  if (uncaught.length) {
+    ok = false;
+    console.error('❌ first-run migration guard: uncaught exception(s):');
+    uncaught.forEach((e) => console.error(`       • ${e}`));
+  }
+  if (configPuts !== 0) {
+    ok = false;
+    console.error(`❌ first-run migration guard: booting with walkthrough_done set and `
+      + `setup_completed:false fired ${configPuts} PUT /api/config request(s) — the old-tour `
+      + `migration write must never fire unprompted.`);
+  }
+  if (ok) console.log('✅ first-run migration guard: walkthrough_done + setup_completed:false boots '
+    + 'with ZERO PUT /api/config requests.');
+  return ok;
+}
+
 // ── A new hire arrives with a name and a face (MC-871 defect B) ─────────────
 // Never built before this: the save panel wrote Voice automatically but left
 // "Goes by" and "Face" both unset, so a hire landed on the roster nameless and
@@ -640,6 +708,7 @@ async function runIdentityPrefillGuard(browser) {
       createCalls.push(JSON.parse(req.postData() || '{}'));
       return json({ name: 'terse-reviewer', scope: 'global' });
     }
+    if (path === '/api/local-auth/status') return json({ configured: true });
     return fulfillStaticOrAbort(route);
   });
   const pageErrors = [];
@@ -660,10 +729,6 @@ async function runIdentityPrefillGuard(browser) {
       const saveBtn = document.querySelector('[data-act="save"]');
       if (!saveBtn) throw new Error('the editor never opened, or has no Save action');
       saveBtn.click();
-      // Checked with NO await in between: _claydoOpenSavePanel builds the
-      // panel and kicks off both generations synchronously, so this reads the
-      // DOM before either fetch has had any chance to resolve — the state a
-      // fast real click would actually see.
       const panel = document.querySelector('.claydo-save-panel');
       if (!panel) throw new Error('the save panel never opened');
       // Read, not filled: _claydoOpenSavePanel's description-frontmatter regex
@@ -674,10 +739,35 @@ async function runIdentityPrefillGuard(browser) {
       // so this now asserts the prefill instead of papering over it.
       r.descField = panel.querySelector('#claydo-save-desc').value;
       const goBtn = panel.querySelector('#claydo-save-go');
-      r.goDisabledWhileGenerating = !!goBtn && goBtn.disabled;
-      // The identity + voice fetches both fire on open; give them a real round
-      // trip through the mocked route rather than assuming they've landed.
-      await settle(600);
+      // Neither generation auto-fires on open any more (MC-995/Fenn R3): each
+      // burned a passcode-guard attempt on every panel open, even one the
+      // user abandoned without ever hitting Save. Save must therefore open
+      // enabled — there is nothing pending to wait for yet.
+      r.goEnabledOnOpen = !!goBtn && !goBtn.disabled;
+      const answerHumanProof = async (passcode) => {
+        for (let i = 0; i < 20 && !document.querySelector('[data-modal-id^="__human-proof-"]'); i++) {
+          await settle(50);
+        }
+        const hpWin = document.querySelector('[data-modal-id^="__human-proof-"]');
+        if (!hpWin) return false;
+        const modalId = hpWin.dataset.modalId;
+        const input = document.getElementById(`hp-passcode-${modalId}`);
+        if (input) input.value = passcode;
+        window._hpSubmit(modalId);
+        await settle(300);
+        return true;
+      };
+      const regenBtn = panel.querySelector('#claydo-save-voice-regen');
+      const identityGenBtn = panel.querySelector('#claydo-save-identity-gen');
+      regenBtn.click();
+      // Checked with NO await in between the click and this read: _beginGen
+      // disables Save synchronously, before the passcode modal even mounts.
+      r.goDisabledDuringVoiceGen = !!goBtn && goBtn.disabled;
+      r.voiceModalAnswered = await answerHumanProof('smoke-dash-passcode');
+      identityGenBtn.click();
+      r.goDisabledDuringIdentityGen = !!goBtn && goBtn.disabled;
+      r.identityModalAnswered = await answerHumanProof('smoke-dash-passcode');
+      await settle(300);
       r.agentNameField = panel.querySelector('#claydo-save-agent-name')?.value || '';
       r.avatarField = panel.querySelector('#claydo-save-avatar')?.value || '';
       r.figChips = panel.querySelectorAll('#claydo-save-figs .pe-fig').length;
@@ -696,6 +786,20 @@ async function runIdentityPrefillGuard(browser) {
       model.value = 'gpt-6-astra';
       panel.querySelector('#claydo-save-effort').value = 'high';
       goBtn.click();
+      // Save now routes through the human-proof passcode modal (MC-995) —
+      // the click's async handler awaits humanProofFetch(), which does not
+      // resolve until the modal is answered. Poll for it and submit a
+      // fixture passcode before checking whether POST /api/characters fired.
+      for (let i = 0; i < 20 && !document.querySelector('[data-modal-id^="__human-proof-"]'); i++) {
+        await settle(50);
+      }
+      const hpWin = document.querySelector('[data-modal-id^="__human-proof-"]');
+      if (hpWin) {
+        const modalId = hpWin.dataset.modalId;
+        const input = document.getElementById(`hp-passcode-${modalId}`);
+        if (input) input.value = 'smoke-dash-passcode';
+        window._hpSubmit(modalId);
+      }
       await settle(500);
       const errEl = panel.querySelector('#claydo-save-err');
       r.saveErr = errEl && errEl.style.display !== 'none' ? errEl.textContent : '';
@@ -710,6 +814,15 @@ async function runIdentityPrefillGuard(browser) {
   if (out.err) fails.push('threw - ' + out.err);
   pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))
     .forEach((e) => fails.push('uncaught: ' + e));
+  if (!out.goEnabledOnOpen)
+    fails.push('Save opened disabled with nothing generating yet — neither generation '
+      + 'auto-fires any more (MC-995/Fenn R3), so there is nothing to wait for');
+  if (!out.voiceModalAnswered)
+    fails.push('clicking Generate voice never raised the human-proof passcode prompt — '
+      + '/api/characters/voice is server-gated and must go through humanProofFetch');
+  if (!out.identityModalAnswered)
+    fails.push('clicking Choose name & face never raised the human-proof passcode prompt '
+      + '— /api/characters/identity is server-gated and must go through humanProofFetch');
   if (!identityCalls.length)
     fails.push('the save panel never called /api/characters/identity — a hire would '
       + 'land with no name and no face suggested at all');
@@ -725,9 +838,12 @@ async function runIdentityPrefillGuard(browser) {
   if (!out.figChips) fails.push('the face-chip row never rendered any figures to pick from');
   if (!out.selectedChip)
     fails.push('the suggested face is not shown as selected among the figure chips');
-  if (!out.goDisabledWhileGenerating)
-    fails.push('Save was clickable WHILE identity/voice were still generating — a fast '
-      + 'click could ship a hire with no name and no face nobody saw chosen');
+  if (!out.goDisabledDuringVoiceGen)
+    fails.push('Save was clickable WHILE voice was still generating — a fast click could '
+      + 'ship a hire with a half-written voice nobody saw finish');
+  if (!out.goDisabledDuringIdentityGen)
+    fails.push('Save was clickable WHILE identity was still generating — a fast click '
+      + 'could ship a hire with no name and no face nobody saw chosen');
   if (!out.goEnabledAfterGeneration)
     fails.push('Save stayed disabled after both generations settled');
   if (!out.modelDisabledByDefault || !out.modelResetOnProviderChange || !out.noClaudeModelsInCodex)
@@ -2431,6 +2547,7 @@ async function runAgentFaceGuard(browser) {
     if (path.startsWith('/api/avatars/')) return route.fulfill({
       status: 200, contentType: 'image/png',
       body: Buffer.from(PNG.split(',')[1], 'base64') });
+    if (path === '/api/local-auth/status') return json({ configured: true });
     return fulfillStaticOrAbort(route);
   });
   const pageErrors = [];
@@ -2447,6 +2564,22 @@ async function runAgentFaceGuard(browser) {
   const out = await page.evaluate(async () => {
     const r = { err: null };
     const settle = (ms) => new Promise((res) => setTimeout(res, ms || 400));
+    // Face picks save via saveSetting(), which now routes through the
+    // human-proof passcode modal (MC-995) instead of firing PUT /api/config
+    // directly — poll for the modal and answer it with a fixture passcode.
+    const answerHumanProofModal = async () => {
+      let win = null;
+      for (let i = 0; i < 20 && !win; i++) {
+        win = document.querySelector('[data-modal-id^="__human-proof-"]');
+        if (!win) await settle(50);
+      }
+      if (!win) return false;
+      const modalId = win.dataset.modalId;
+      const input = document.getElementById(`hp-passcode-${modalId}`);
+      if (input) input.value = 'smoke-dash-passcode';
+      window._hpSubmit(modalId);
+      return true;
+    };
     try {
       sidebarNav('settings');
       await settle(700);
@@ -2466,6 +2599,7 @@ async function runAgentFaceGuard(browser) {
       // Picking a different one saves immediately — no Save button to forget.
       const wizard = row.querySelector('[data-face="fig:wizard"]');
       wizard.click();
+      await answerHumanProofModal();
       await settle(250);
       r.afterPick = input.value;
       r.selectedAfter = Array.from(row.querySelectorAll('.settings-fig.sel'))
@@ -2473,6 +2607,7 @@ async function runAgentFaceGuard(browser) {
       // Clicking the one you already wear takes it off, so the strip is not a
       // one-way door for someone who never guesses the field can be emptied.
       wizard.click();
+      await answerHumanProofModal();
       await settle(250);
       r.afterUnpick = input.value;
     } catch (e) {
@@ -2524,6 +2659,7 @@ try {
   // Cross-module dispatch guard — runs after the boot scenarios so a boot
   // regression is reported on its own first.
   results.push(await runDispatchGuard(browser));
+  results.push(await runFirstRunMigrationNoWriteGuard(browser));
   results.push(await runModelPickerGuard(browser));
   results.push(await runClaydoRestoreGuard(browser));
   results.push(await runClaydoQuotaErrorGuard(browser));
@@ -2538,7 +2674,7 @@ try {
   results.push(await runAgentFaceGuard(browser));
   allOk = results.every(Boolean);
   console.log(allOk
-    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, identity-prefill, backlog, backlog-links, memory-panel, calendar, scheduler-layout, question-repaint, floor & agent-face guards all green.`
+    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, first-run-migration, model-picker, identity-prefill, backlog, backlog-links, memory-panel, calendar, scheduler-layout, question-repaint, floor & agent-face guards all green.`
     : `\n❌ FAIL — ${results.filter((r) => !r).length}/${results.length} check(s) failed.`);
 } catch (err) {
   console.error('❌ FAIL — smoke harness error:', err && err.stack ? err.stack : err);

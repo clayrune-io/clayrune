@@ -133,7 +133,6 @@ from mc.blueprints.push_mobile import _handle_push_signal      # re-homed 1.2 sh
 from mc.blueprints.push_mobile import _notify_push  # MC-961 loud engine-fallback swap
 from mc.blueprints.system_routes import _capture_system_init   # re-homed 1.6 shim
 from mc.blueprints.terminal_routes import launch_pty_session, launch_pipe_session    # MC-928
-from mc.blueprints.workflow_routes import _is_agent_caller  # MC-994 agent-caller guard reuse
 from mc.blueprints.secrets_routes import _require_human_passcode  # MC-994 follow-up: Fenn finding 1
 from mc.blueprints.local_auth import _local_auth_passcode_set_at  # MC-994 follow-up: Fenn finding N2(b)
 from mc import pty_backend
@@ -6260,12 +6259,14 @@ def attend_session(project_id, session_id):
             'error': ('the permanent "I\'m here" unlock is disabled: its human check '
                       'could be forged. A passcode-gated "Allow once" control replaces it.'),
         }), 410
-    if _is_agent_caller():
-        return jsonify({
-            'error': ('marking a chat attended is human-only: an agent session cannot '
-                      'lift its own unattended fence (CLAUDE.md authority guard). '
-                      'Use the control in the chat header.'),
-        }), 403
+    # MC-995: this was `_is_agent_caller()` (an Origin-header check, forgeable
+    # by any agent curl) — replaced with the same retyped-passcode helper
+    # every other human-only route now uses, so a future removal of the
+    # `if True` guard above does not resurrect the forgeable check underneath.
+    data = request.get_json(silent=True) or {}
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
     with get_manager(project_id).lock:
         session = agent_sessions.get(session_id)
         if not session:

@@ -62,6 +62,14 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(cr, 'load_projects', lambda: [proj, pathless])
     monkeypatch.setattr(sr, 'load_project', _load)
 
+    # MC-995: character mutations also require the retyped dashboard
+    # passcode (_require_human_passcode, shared with secrets_routes) on top
+    # of the Origin check below. This file's ~50 tests exercise character
+    # CRUD/generation logic, not the passcode gate itself — bypass it here
+    # and exercise the real gate (missing/wrong/correct passcode, per route)
+    # in tests/test_human_proof_guard.py instead.
+    monkeypatch.setattr(cr, '_require_human_passcode', lambda data: None)
+
     server.app.config['TESTING'] = True
     c = server.app.test_client()
     # Character mutations are human-only (the SPA's fetch carries Origin, an

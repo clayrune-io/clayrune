@@ -235,6 +235,12 @@ def api_secrets_set():
     if is_unattended_caller():
         return _unattended_refusal()
     data = request.get_json(silent=True) or {}
+    # MC-995: is_unattended_caller() alone is forgeable (an agent curl can
+    # carry an Origin header and read as "attended manual chat") — also
+    # require the retyped dashboard passcode, same as the vault-lock routes.
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
     name = (data.get('name') or '').strip()
     value = data.get('value')
     if not isinstance(value, str) or not value:
@@ -267,6 +273,9 @@ def api_secrets_patch(name: str):
     if is_unattended_caller():
         return _unattended_refusal()
     data = request.get_json(silent=True) or {}
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
     try:
         current = {s['name']: s for s in vault.list_secrets()}.get(name)
         if current is None:
@@ -299,6 +308,10 @@ def api_secrets_patch(name: str):
 def api_secrets_delete(name: str):
     if is_unattended_caller():
         return _unattended_refusal()
+    data = request.get_json(silent=True) or {}
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
     try:
         ok = vault.delete_secret(name)
     except vault.SecretsError as e:
@@ -353,6 +366,9 @@ def api_secrets_import_authenticator():
     # call. Missed by the F3/F5 pass because it sits outside the cited range.
     if is_unattended_caller():
         return _unattended_refusal()
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
 
     scope = (data.get('scope') or 'global').strip() or 'global'
     allow_unattended = bool(data.get('allow_unattended', True))

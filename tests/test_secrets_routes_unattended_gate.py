@@ -78,15 +78,19 @@ def test_unattended_create_is_refused_and_writes_nothing(client):
 def test_unattended_patch_cannot_flip_allow_unattended(client):
     """The exact F3 trigger: PATCH allow_unattended=true with no caller
     check. Create attended first, then try to flip the flag unattended."""
+    passcode = _set_vault_passcode()
     client.post('/api/secrets', json={'name': 'reddit.password',
                                       'value': SECRET,
-                                      'allow_unattended': False})
+                                      'allow_unattended': False,
+                                      'passcode': passcode})
     before = _existing_record()
     assert before['allow_unattended'] is False
 
     _mark_unattended()
+    # Correct passcode supplied too — proves the refusal is the
+    # is_unattended_caller() gate firing, not the passcode gate.
     res = client.patch('/api/secrets/reddit.password',
-                       json={'allow_unattended': True})
+                       json={'allow_unattended': True, 'passcode': passcode})
     assert res.status_code == 403
     after = _existing_record()
     assert after == before
@@ -94,9 +98,13 @@ def test_unattended_patch_cannot_flip_allow_unattended(client):
 
 
 def test_unattended_delete_is_refused_and_secret_survives(client):
-    client.post('/api/secrets', json={'name': 'reddit.password', 'value': SECRET})
+    passcode = _set_vault_passcode()
+    client.post('/api/secrets', json={'name': 'reddit.password', 'value': SECRET,
+                                      'passcode': passcode})
     _mark_unattended()
-    res = client.delete('/api/secrets/reddit.password')
+    # Correct passcode supplied too — proves the refusal is the
+    # is_unattended_caller() gate firing, not the passcode gate.
+    res = client.delete('/api/secrets/reddit.password', json={'passcode': passcode})
     assert res.status_code == 403
     assert _existing_record() is not None
 
@@ -114,15 +122,17 @@ def test_unidentifiable_running_session_fails_closed(client):
 def test_manual_session_and_no_session_at_all_still_succeed(client):
     """Human path (no live session — the SPA) and a real interactive chat
     (trigger_type='manual') must both keep working."""
-    res = client.post('/api/secrets', json={'name': 'a.b', 'value': SECRET})
+    passcode = _set_vault_passcode()
+    res = client.post('/api/secrets', json={'name': 'a.b', 'value': SECRET,
+                                            'passcode': passcode})
     assert res.status_code == 200
 
     from mc.state import agent_sessions
     agent_sessions['manual-1'] = {'status': 'running', 'trigger_type': 'manual',
                                   'project_id': 'mission_control'}
-    res = client.patch('/api/secrets/a.b', json={'description': 'renamed'})
+    res = client.patch('/api/secrets/a.b', json={'description': 'renamed', 'passcode': passcode})
     assert res.status_code == 200
-    res = client.delete('/api/secrets/a.b')
+    res = client.delete('/api/secrets/a.b', json={'passcode': passcode})
     assert res.status_code == 200
 
 

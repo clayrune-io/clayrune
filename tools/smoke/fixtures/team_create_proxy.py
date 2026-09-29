@@ -29,6 +29,7 @@ from mc.blueprints import project_routes as pr  # noqa: E402
 from mc.blueprints import skills_routes as sr  # noqa: E402
 
 la.LOCAL_AUTH_PATH = work / 'local_auth.json'
+la._local_auth_set_passcode('smoke-dash-passcode')
 ch.GLOBAL_AGENTS_DIR = work / 'global'
 proj_path = work / 'proj'
 proj_path.mkdir(parents=True, exist_ok=True)

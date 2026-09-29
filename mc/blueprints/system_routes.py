@@ -29,6 +29,7 @@ from mc import allowance_state as _allowance_state
 from mc import obs, process_sweep, state
 from mc.blueprints.terminal_routes import launch_pty_session
 from mc.blueprints.workflow_routes import _is_agent_caller
+from mc.blueprints.secrets_routes import _require_human_passcode
 from mc import slash_commands as slash_cmds
 from mc.atomic_json import write_json_atomic
 from mc.core import _atomic_write_text, _log, now_iso, path_is_within, time_ago
@@ -2332,6 +2333,11 @@ def system_update():
                           'must never discard or shelve uncommitted work (its own or '
                           'someone else\'s) without a person confirming it in the UI.'),
             }), 403
+        # MC-995: Origin check alone is forgeable — also require the retyped
+        # dashboard passcode before shelving anything.
+        refusal = _require_human_passcode(data)
+        if refusal is not None:
+            return refusal
         rc_pre, pre_sha = _git(['rev-parse', '--short', 'HEAD'], repo_root)
         stash_msg = f"clayrune-auto-stash {now_iso()} {pre_sha if rc_pre == 0 else 'unknown'}"
         # No -u: this only shelves TRACKED changes (the dirty-check above is

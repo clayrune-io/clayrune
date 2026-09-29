@@ -23,6 +23,10 @@ from typing import Callable, Optional
 from flask import Blueprint, jsonify, request
 
 from mc import workflows as _wf
+# MC-995: the same retyped-dashboard-passcode gate the vault-lock routes use
+# (secrets_routes.py), generalized here — one shared helper, not a copy per
+# route. secrets_routes has no import back to this module, so no cycle.
+from mc.blueprints.secrets_routes import _require_human_passcode
 
 bp = Blueprint('workflow_routes', __name__)
 
@@ -63,6 +67,11 @@ def _is_agent_caller() -> bool:
 
 
 def _refuse_if_agent_caller():
+    """Origin-header check first (cheap, catches the common case), THEN the
+    retyped dashboard passcode (MC-995) — an agent's curl carrying a forged
+    `Origin: http://localhost` header used to sail through this on the
+    Origin check alone. Every call site below passes through here, so this
+    one function is the passcode gate for all six workflow routes."""
     if _is_agent_caller():
         return jsonify({
             'error': ('workflow definitions and approval decisions are human-only '
@@ -70,6 +79,10 @@ def _refuse_if_agent_caller():
                      'approved by an agent session (CLAUDE.md authority guard, '
                      'MC-871). Use the Clayrune UI.'),
         }), 403
+    data = request.get_json(silent=True) or {}
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
     return None
 
 

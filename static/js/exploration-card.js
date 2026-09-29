@@ -193,14 +193,20 @@ async function _explSubmit(mount, st) {
   st.status = 'busy'; st.message = ''; _explRender(mount, st);
   let res, data = {};
   try {
-    res = await fetch(API_BASE + `/api/project/${encodeURIComponent(st.projectId)}/brainstorm/transfer`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    // MC-995: promoting a brainstorm into a doc + backlog item is human-only-gated.
+    const result = await humanProofFetch(API_BASE + `/api/project/${encodeURIComponent(st.projectId)}/brainstorm/transfer`, {
+      method: 'POST',
       body: JSON.stringify({
         claude_session_id: st.claudeSessionId, version: st.version,
         destination, backlog_text: st.draft.backlog_text,
       }),
+    }, {
+      title: 'Transfer exploration',
+      description: 'Re-enter your dashboard passcode to promote this exploration.',
     });
-    data = await res.json().catch(() => ({}));
+    if (result === null) { st.status = 'draft'; _explRender(mount, st); return; }
+    res = { status: result.status };
+    data = result.body;
   } catch (e) {
     st.status = 'error'; st.message = 'Network error: ' + (e.message || e);
     _explRender(mount, st);

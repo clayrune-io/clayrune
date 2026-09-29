@@ -161,6 +161,10 @@ try {
       installLaunchCalls++;
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, command: 'npm install -g @google/gemini-cli' }) });
     }
+    // Fresh install: humanProofFetch (setupFinish's batched write at the end
+    // of this smoke) sees no passcode configured yet and needs both routes.
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: false }) });
+    if (path === '/api/local-auth/set' && req.method() === 'POST') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
     return route.abort();
   });
 
@@ -215,9 +219,14 @@ try {
 
     // Default model tier control: next to the default-provider pick, a
     // provider-neutral Best/Balanced/Fast chooser with Balanced pre-selected
-    // (model-hierarchy-simplification, 2026-09-22). Persisted automatically
-    // on step entry (onEnter), so it must already be in configPuts here —
-    // no click needed to exercise the save path.
+    // (model-hierarchy-simplification, 2026-09-22). Held in memory only on
+    // step entry (onEnter) since MC-995 follow-up (Dave review of feea79d):
+    // PUT /api/config is human-only-gated on every call, so persisting it
+    // immediately here — before the wizard has even asked for a passcode —
+    // was a second passcode interaction on top of Finish's batched write.
+    // It now travels in that same single batched write, verified at the
+    // bottom of this scenario once nothing else still needs the overlay
+    // (setupFinish removes it).
     const tierState = await page.evaluate(() => {
       const overlay = document.getElementById('setup-overlay');
       const seg = overlay && overlay.querySelector('#setup-model-tier-seg');
@@ -238,10 +247,9 @@ try {
       if (!balanced || !balanced.active) fail(`Balanced should be pre-selected, got: ${JSON.stringify(tierState)}`);
       else ok('Balanced is pre-selected');
     }
-    const tierPut = configPuts.find((p) => 'agent_model' in p);
-    if (!tierPut || tierPut.agent_model !== 'tier:balanced')
-      fail(`expected a PUT /api/config with agent_model='tier:balanced', got: ${JSON.stringify(configPuts)}`);
-    else ok("saving the pre-selected default writes agent_model='tier:balanced'");
+    if (configPuts.some((p) => 'agent_model' in p))
+      fail(`the pre-selected tier must not PUT /api/config immediately — got: ${JSON.stringify(configPuts)}`);
+    else ok('pre-selecting the default tier makes no immediate PUT /api/config (held for the batched Finish write)');
 
     // Click gemini's Install button and confirm it hits the real endpoint.
     await page.evaluate(() => {
@@ -282,6 +290,26 @@ try {
     else if (!codexAfter || !codexAfter.selected || !codexAfter.hasDefaultRadio || codexAfter.defaultChecked)
       fail(`codex should be selected with its own (unchecked) default radio after checking it, got: ${JSON.stringify(codexAfter)}`);
     else ok('multi-select: two vendors selected simultaneously, claude keeps default, codex gets its own unchecked default radio');
+
+    // Finish the wizard directly (setupFinish) rather than walking every
+    // later step's fixture through this smoke's narrower route table — it
+    // only needs to prove the tier picked above rides in the SAME batched
+    // write as everything else, not re-exercise the rest of the flow
+    // (first-run-backup.mjs already does that). setupFinish removes
+    // #setup-overlay, which is why this runs last.
+    await page.evaluate(() => window.setupFinish());
+    await page.waitForTimeout(150);
+    const newInput = page.locator('input[id^="hp-new-"]');
+    await newInput.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    await newInput.fill('smoke-pass-1');
+    await page.click('button:has-text("Set passcode & continue")');
+    await page.waitForTimeout(150);
+    await page.click('button:has-text("Confirm")');
+    await page.waitForTimeout(150);
+    const finishPut = configPuts.find((p) => 'agent_model' in p);
+    if (!finishPut || finishPut.agent_model !== 'tier:balanced')
+      fail(`expected the batched Finish PUT /api/config to carry agent_model='tier:balanced', got: ${JSON.stringify(configPuts)}`);
+    else ok("Finish's batched write carries agent_model='tier:balanced' — the one passcode interaction covers it too");
   }
 
   if (pageErrors.length) fail('uncaught exception(s): ' + pageErrors.join(' | '));

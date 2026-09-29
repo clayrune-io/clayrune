@@ -22,6 +22,7 @@ from mc import state
 from mc.core import _log, now_iso
 from mc.blueprints.skills_routes import _resolve_project_path_or_400
 from mc.blueprints.workflow_routes import _is_agent_caller
+from mc.blueprints.secrets_routes import _require_human_passcode
 
 bp = Blueprint('characters', __name__)
 
@@ -117,6 +118,13 @@ def _refuse_if_agent_caller():
                       'propose a team with a ```mc:team``` block, and a click in the '
                       'Clayrune UI creates it (CLAUDE.md authority guard).'),
         }), 403
+    # MC-995: Origin-header check alone is forgeable (an agent's curl can set
+    # it), so every character mutation also proves a human via the retyped
+    # dashboard passcode — the same gate the vault-lock routes use.
+    data = request.get_json(silent=True) or {}
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
     return None
 
 

@@ -56,6 +56,7 @@ from mc.atomic_json import write_json_atomic
 from mc.core import _log
 from mc.state import agent_sessions
 from mc.unattended import is_unattended_caller
+from mc.blueprints.secrets_routes import _require_human_passcode
 
 bp = Blueprint('settings_routes', __name__)
 
@@ -327,6 +328,13 @@ def update_config():
                                  'the user to change it from the Settings UI'}
                        ), 403
     data = request.get_json() or {}
+    # MC-995: is_unattended_caller() alone is forgeable — every config write
+    # also requires the retyped dashboard passcode (sharpest single item in
+    # the human-proof-guard inventory: this route can flip fence_unattended_
+    # enabled/agent_permission_mode/scheduler_paused in one call).
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
     if 'delegation_payload_warning_bytes' in data:
         value = data['delegation_payload_warning_bytes']
         if isinstance(value, bool):

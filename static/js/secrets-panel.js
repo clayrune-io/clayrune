@@ -567,9 +567,15 @@ function copySecretPlaceholder(name) {
 async function deleteSecret(name) {
   if (!confirm(`Delete "${name}"?\n\nAnything referencing {{secret:${name}}} will start failing.`)) return;
   try {
-    const res = await fetch(API_BASE + '/api/secrets/' + encodeURIComponent(name), { method: 'DELETE' });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || res.statusText);
+    // MC-995: deleting a secret is human-only-gated server-side.
+    const result = await humanProofFetch(API_BASE + '/api/secrets/' + encodeURIComponent(name), {
+      method: 'DELETE',
+    }, {
+      title: 'Delete secret',
+      description: `Re-enter your dashboard passcode to delete "${name}".`,
+    });
+    if (result === null) return;
+    if (!result.ok) throw new Error(result.body.error || `HTTP ${result.status}`);
     showToast('Deleted ' + name);
   } catch (e) {
     showToast('Delete failed: ' + e.message, 4000);
@@ -834,32 +840,39 @@ async function saveSecret(modalId, isNew) {
     // through the single-secret path — route it to the importer instead of
     // storing the whole payload as one useless blob.
     if (/^otpauth-migration:\/\//i.test(value.trim())) {
-      const r = await fetch(API_BASE + '/api/secrets/import-authenticator', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      // MC-995: bulk-importing TOTP secrets is human-only-gated server-side.
+      const result = await humanProofFetch(API_BASE + '/api/secrets/import-authenticator', {
+        method: 'POST',
         body: JSON.stringify({
           uri: value.trim(), commit: true, scope,
           allow_unattended: body.allow_unattended,
-        })
+        }),
+      }, {
+        title: 'Import authenticator export',
+        description: 'Re-enter your dashboard passcode to import these accounts.',
       });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || r.statusText);
+      if (result === null) { if (btn) { btn.disabled = false; btn.textContent = 'Save secret'; } return; }
+      const d = result.body;
+      if (!result.ok) throw new Error(d.error || `HTTP ${result.status}`);
       if (valueEl) valueEl.value = '';
       closeModalById(modalId);
       showToast(`Imported ${d.imported.length} account(s) from Google Authenticator`);
       refreshSecretsList();
       return;
     }
-    const res = isNew
-      ? await fetch(API_BASE + '/api/secrets', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...body, value })
-        })
-      : await fetch(API_BASE + '/api/secrets/' + encodeURIComponent(name), {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || res.statusText);
+    // MC-995: creating/editing a secret is human-only-gated server-side.
+    const result = isNew
+      ? await humanProofFetch(API_BASE + '/api/secrets', {
+          method: 'POST',
+          body: JSON.stringify({ ...body, value }),
+        }, { title: 'Save secret', description: `Re-enter your dashboard passcode to store "${name}".` })
+      : await humanProofFetch(API_BASE + '/api/secrets/' + encodeURIComponent(name), {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+        }, { title: 'Save secret', description: `Re-enter your dashboard passcode to update "${name}".` });
+    if (result === null) { if (btn) { btn.disabled = false; btn.textContent = isNew ? 'Save secret' : 'Save changes'; } return; }
+    const data = result.body;
+    if (!result.ok) throw new Error(data.error || `HTTP ${result.status}`);
     // A server older than the username field accepts the POST and drops it —
     // Flask ignores unknown JSON keys, so the save "succeeds" and the credential
     // is stored half-complete. Only the echoed record can tell us, and silence

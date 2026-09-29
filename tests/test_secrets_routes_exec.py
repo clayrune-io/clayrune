@@ -51,8 +51,21 @@ def client(tmp_path, monkeypatch):
     return app.test_client()
 
 
+PASSCODE = 'unlock1234'
+
+
+def _set_passcode(passcode=PASSCODE):
+    from mc.blueprints import local_auth
+    local_auth._local_auth_set_passcode(passcode)
+    return passcode
+
+
 def _create(client, name='demo.token', value=SECRET, **over):
-    body = {'name': name, 'value': value}
+    # MC-995: POST /api/secrets is human-only-gated — seed a passcode here so
+    # this suite's own gate (loopback + exec token) stays the thing under
+    # test, not this one.
+    _set_passcode(PASSCODE)
+    body = {'name': name, 'value': value, 'passcode': PASSCODE}
     body.update(over)
     return client.post('/api/secrets', json=body)
 

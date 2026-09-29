@@ -71,6 +71,12 @@ def ctx(tmp_path, monkeypatch):
     monkeypatch.setattr(sr, 'SETTINGS_PATH', settings_path)
     monkeypatch.setattr(sr, 'CONFIG_PATH', config_path)
     monkeypatch.setattr(sr, 'PROJECTS_BASE', projects_base)
+    # MC-995: PUT /api/config now also requires the retyped dashboard passcode
+    # (_require_human_passcode) on top of the routes this file already
+    # exercises. This file is about config CRUD/respawn semantics, not the
+    # passcode gate itself — bypass it here and exercise the real gate
+    # (missing/wrong/correct passcode) in tests/test_human_proof_guard.py.
+    monkeypatch.setattr(sr, '_require_human_passcode', lambda data: None)
 
     # Snapshot + restore the live CONFIG dict and agent_sessions so the
     # respawn-flag test (which mutates both) can't bleed into the rest of the

@@ -21,6 +21,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+PASSCODE = 'unlock1234'
+
+
 @pytest.fixture()
 def ctx(tmp_path, monkeypatch):
     import server  # noqa: F401  (registers the blueprint + runs wire() on import)
@@ -29,6 +32,8 @@ def ctx(tmp_path, monkeypatch):
     from mc.blueprints import settings_routes as sr
 
     monkeypatch.setattr(la, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
+    la._local_auth_set_passcode(PASSCODE)
+    la._LOCAL_AUTH_FAILS.clear()
 
     settings_path = tmp_path / 'settings.json'
     config_path = tmp_path / 'config.json'
@@ -61,7 +66,10 @@ def test_unattended_session_cannot_change_settings(ctx):
     ctx.state.agent_sessions['scheduled-1'] = {
         'status': 'running', 'trigger_type': 'schedule', 'project_id': 'p'}
     before = ctx.state.CONFIG.get('agent_permission_mode')
-    res = ctx.client.put('/api/config', json={'agent_permission_mode': 'bypassPermissions'})
+    # Correct passcode supplied too — proves the refusal is the
+    # is_unattended_caller() gate firing, not the passcode gate.
+    res = ctx.client.put('/api/config', json={'agent_permission_mode': 'bypassPermissions',
+                                               'passcode': PASSCODE})
     assert res.status_code == 403
     assert ctx.state.CONFIG.get('agent_permission_mode') == before
 
@@ -70,7 +78,7 @@ def test_unidentifiable_running_session_fails_closed(ctx):
     ctx.state.agent_sessions['unidentifiable-1'] = {
         'status': 'running', 'trigger_type': '', 'project_id': None}
     before = ctx.state.CONFIG.get('scheduler_paused')
-    res = ctx.client.put('/api/config', json={'scheduler_paused': True})
+    res = ctx.client.put('/api/config', json={'scheduler_paused': True, 'passcode': PASSCODE})
     assert res.status_code == 403
     assert ctx.state.CONFIG.get('scheduler_paused') == before
 
@@ -82,19 +90,20 @@ def test_dashboard_request_succeeds_even_while_an_agent_is_running(ctx):
     # running non-manually — not just one touching this project.
     ctx.state.agent_sessions['scheduled-1'] = {
         'status': 'running', 'trigger_type': 'schedule', 'project_id': 'p'}
-    res = ctx.client.put('/api/config', json={'agent_permission_mode': 'bypassPermissions'},
+    res = ctx.client.put('/api/config', json={'agent_permission_mode': 'bypassPermissions',
+                                               'passcode': PASSCODE},
                          headers={'Origin': 'http://localhost:5199'})
     assert res.status_code == 200
     assert ctx.state.CONFIG.get('agent_permission_mode') == 'bypassPermissions'
 
 
 def test_manual_session_and_no_session_still_succeed(ctx):
-    res = ctx.client.put('/api/config', json={'agent_name': 'Vector'})
+    res = ctx.client.put('/api/config', json={'agent_name': 'Vector', 'passcode': PASSCODE})
     assert res.status_code == 200
     assert ctx.state.CONFIG['agent_name'] == 'Vector'
 
     ctx.state.agent_sessions['manual-1'] = {
         'status': 'running', 'trigger_type': 'manual', 'project_id': 'p'}
-    res = ctx.client.put('/api/config', json={'log_level': 'warn'})
+    res = ctx.client.put('/api/config', json={'log_level': 'warn', 'passcode': PASSCODE})
     assert res.status_code == 200
     assert ctx.state.CONFIG['log_level'] == 'warn'

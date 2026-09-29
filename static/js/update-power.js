@@ -216,12 +216,17 @@ async function performClayruneUpdateWithStash() {
   btn.textContent = 'Stashing...';
   hint.textContent = 'Stashing local changes and running git pull...';
   try {
-    const res = await fetch(API_BASE + '/api/system/update', {
+    // MC-995: shelving local changes before a pull is human-only-gated server-side.
+    const result = await humanProofFetch(API_BASE + '/api/system/update', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ stash: true }),
+    }, {
+      title: 'Stash local changes and update',
+      description: 'Re-enter your dashboard passcode to set aside local changes and pull.',
     });
-    const data = await res.json();
+    if (result === null) { btn.disabled = false; btn.textContent = 'Set aside local changes and update'; return; }
+    const res = { ok: result.ok, status: result.status };
+    const data = result.body;
     if (!res.ok || !data.ok) {
       hint.textContent = (data.error || `Update failed (${res.status})`) + (data.detail ? ' — ' + data.detail.split('\n')[0] : '')
         + (data.stashed ? ` Your local changes were already saved as "${data.stashed}" (git stash list).` : '');

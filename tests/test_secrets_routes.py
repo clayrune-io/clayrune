@@ -46,11 +46,7 @@ def client(tmp_path, monkeypatch):
     return app.test_client()
 
 
-def _create(client, **over):
-    body = {'name': 'reddit.password', 'value': SECRET,
-            'description': 'launch account'}
-    body.update(over)
-    return client.post('/api/secrets', json=body)
+PASSCODE = 'unlock1234'
 
 
 def _set_passcode(passcode='unlock1234'):
@@ -59,6 +55,19 @@ def _set_passcode(passcode='unlock1234'):
     from mc.blueprints import local_auth
     local_auth._local_auth_set_passcode(passcode)
     return passcode
+
+
+def _create(client, **over):
+    # MC-995: POST /api/secrets is human-only-gated — every caller here is
+    # standing in for the dashboard UI, which always has a configured
+    # passcode by the time it can even show the secrets editor, so seed one
+    # here rather than in every test. Tests that care about the UNCONFIGURED
+    # state (test_create_rejects_*) don't go through this helper.
+    _set_passcode(PASSCODE)
+    body = {'name': 'reddit.password', 'value': SECRET,
+            'description': 'launch account', 'passcode': PASSCODE}
+    body.update(over)
+    return client.post('/api/secrets', json=body)
 
 
 def test_create_and_list(client):
@@ -81,13 +90,14 @@ def test_no_route_returns_the_plaintext(client):
     # …including the write and edit responses themselves.
     assert SECRET not in _create(client).get_data(as_text=True)
     patched = client.patch('/api/secrets/reddit.password',
-                           json={'description': 'renamed'})
+                           json={'description': 'renamed', 'passcode': PASSCODE})
     assert SECRET not in patched.get_data(as_text=True)
 
 
 def test_username_round_trips_and_survives_an_unrelated_patch(client):
     _create(client, username='u/ron')
-    client.patch('/api/secrets/reddit.password', json={'description': 'renamed'})
+    client.patch('/api/secrets/reddit.password',
+                 json={'description': 'renamed', 'passcode': PASSCODE})
     entry = client.get('/api/secrets').get_json()['secrets'][0]
     assert entry['username'] == 'u/ron'
 
@@ -106,19 +116,23 @@ def test_check_flags_a_user_reference_with_no_username(client):
 
 
 def test_create_rejects_missing_value(client):
-    r = client.post('/api/secrets', json={'name': 'a.b'})
+    _set_passcode(PASSCODE)
+    r = client.post('/api/secrets', json={'name': 'a.b', 'passcode': PASSCODE})
     assert r.status_code == 400
 
 
 def test_create_rejects_bad_name(client):
-    r = client.post('/api/secrets', json={'name': 'Bad Name', 'value': 'xxxxxx'})
+    _set_passcode(PASSCODE)
+    r = client.post('/api/secrets',
+                    json={'name': 'Bad Name', 'value': 'xxxxxx', 'passcode': PASSCODE})
     assert r.status_code == 400
 
 
 def test_patch_metadata_preserves_the_value(client):
     _create(client)
     r = client.patch('/api/secrets/reddit.password',
-                     json={'scope': 'mission_control', 'allow_unattended': False})
+                     json={'scope': 'mission_control', 'allow_unattended': False,
+                           'passcode': PASSCODE})
     assert r.status_code == 200
     assert r.get_json()['scope'] == 'mission_control'
     assert r.get_json()['allow_unattended'] is False
@@ -130,13 +144,17 @@ def test_patch_metadata_preserves_the_value(client):
 
 
 def test_patch_unknown_is_404(client):
-    assert client.patch('/api/secrets/nope.none', json={}).status_code == 404
+    _set_passcode(PASSCODE)
+    assert client.patch('/api/secrets/nope.none',
+                        json={'passcode': PASSCODE}).status_code == 404
 
 
 def test_delete(client):
     _create(client)
-    assert client.delete('/api/secrets/reddit.password').status_code == 200
-    assert client.delete('/api/secrets/reddit.password').status_code == 404
+    assert client.delete('/api/secrets/reddit.password',
+                         json={'passcode': PASSCODE}).status_code == 200
+    assert client.delete('/api/secrets/reddit.password',
+                         json={'passcode': PASSCODE}).status_code == 404
     assert client.get('/api/secrets').get_json()['secrets'] == []
 
 
@@ -215,8 +233,9 @@ def test_authenticator_import_commits_selected_accounts(client):
         (b'12345678901234567890', 'ron', 'GitHub', 2),
         (b'09876543210987654321', 'ron', 'Reddit', 2),
     ])
+    _set_passcode(PASSCODE)
     r = client.post('/api/secrets/import-authenticator', json={
-        'uri': uri, 'commit': True,
+        'uri': uri, 'commit': True, 'passcode': PASSCODE,
         'names': {'github.ron.totp': 'gh.totp', 'reddit.ron.totp': ''},
     })
     data = r.get_json()
@@ -237,8 +256,9 @@ def test_authenticator_import_rejects_a_plain_otpauth_uri(client):
 def test_totp_probe_confirms_without_revealing_the_code(client):
     from mc import totp
     seed = 'JBSWY3DPEHPK3PXP'
+    _set_passcode(PASSCODE)
     client.post('/api/secrets', json={'name': 'gh.totp', 'value': seed,
-                                      'kind': 'totp'})
+                                      'kind': 'totp', 'passcode': PASSCODE})
     good = totp.generate(seed)
     r = client.post('/api/secrets/totp/gh.totp', json={'code': good})
     data = r.get_json()
@@ -251,9 +271,10 @@ def test_totp_probe_confirms_without_revealing_the_code(client):
 
 
 def test_patching_metadata_does_not_downgrade_a_totp_secret(client):
+    _set_passcode(PASSCODE)
     client.post('/api/secrets', json={'name': 'gh.totp', 'kind': 'totp',
-                                      'value': 'JBSWY3DPEHPK3PXP'})
-    client.patch('/api/secrets/gh.totp', json={'description': 'renamed'})
+                                      'value': 'JBSWY3DPEHPK3PXP', 'passcode': PASSCODE})
+    client.patch('/api/secrets/gh.totp', json={'description': 'renamed', 'passcode': PASSCODE})
     stored = client.get('/api/secrets').get_json()['secrets'][0]
     assert stored['kind'] == 'totp'
     assert stored['placeholder'] == '{{totp:gh.totp}}'

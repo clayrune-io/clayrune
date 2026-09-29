@@ -120,22 +120,27 @@ function renderSchedulerPause() {
 
 async function toggleSchedulerPause() {
   const next = !_schedPaused;
-  _schedPaused = next;             // optimistic: the toggle should feel instant
-  renderSchedulerPause();
-  try {
-    const res = await fetch(API_BASE + '/api/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scheduler_paused: next }),
-    });
-    if (!res.ok) throw new Error('save failed');
-    try { _globalConfig.scheduler_paused = next; } catch(_) {}
-    showToast(next ? 'All scheduled runs paused' : 'Scheduled runs resumed');
-  } catch(e) {
-    _schedPaused = !next;          // roll back — the server never took it
-    renderSchedulerPause();
+  // MC-995: PUT /api/config is human-only-gated server-side now, so the
+  // optimistic flip has to wait for the passcode modal before it can be
+  // "instant" — flipping first and showing the modal after would let a
+  // cancelled/wrong-passcode attempt leave the switch showing a state the
+  // server never accepted.
+  const result = await humanProofFetch(API_BASE + '/api/config', {
+    method: 'PUT',
+    body: JSON.stringify({ scheduler_paused: next }),
+  }, {
+    title: next ? 'Pause scheduler' : 'Resume scheduler',
+    description: `Re-enter your dashboard passcode to ${next ? 'pause' : 'resume'} all scheduled runs.`,
+  });
+  if (result === null) return; // cancelled — leave state untouched
+  if (!result.ok) {
     showToast('Failed to change scheduler state', 4000);
+    return;
   }
+  _schedPaused = next;
+  renderSchedulerPause();
+  try { _globalConfig.scheduler_paused = next; } catch(_) {}
+  showToast(next ? 'All scheduled runs paused' : 'Scheduled runs resumed');
   refreshScheduleList();
   // The kill-switch decides whether ANY chip on the calendar can fire, so the
   // grid has to repaint with it — a stale grid would contradict its own banner.

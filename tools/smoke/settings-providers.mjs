@@ -91,6 +91,7 @@ await page.route('**/*', (route) => {
     return route.abort();
   }
   if (path === '/api/projects') return json([]);
+  if (path === '/api/local-auth/status') return json({ configured: true });
   if (path === '/api/config' && req.method() === 'PUT') {
     const body = JSON.parse(req.postData() || '{}');
     calls.put.push(body);
@@ -268,6 +269,18 @@ try {
   await page.check('#settings-providers-section .prov-row[data-provider="codex"] input[type=radio]');
   await page.waitForFunction(() => document.querySelector(
     '#settings-providers-section .prov-row[data-provider="codex"] input[type=radio]')?.checked);
+  // Default radio -> saveSetting() -> now gated by the human-proof passcode
+  // modal (MC-995) instead of firing PUT /api/config directly.
+  await page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout: 5000 });
+  await page.evaluate(() => {
+    const win = document.querySelector('[data-modal-id^="__human-proof-"]');
+    const modalId = win.dataset.modalId;
+    document.getElementById(`hp-passcode-${modalId}`).value = 'smoke-dash-passcode';
+    window._hpSubmit(modalId);
+  });
+  for (let i = 0; i < 20 && !calls.put.some(b => b.default_provider === 'codex'); i++) {
+    await page.waitForTimeout(50);
+  }
   check(calls.put.some(b => b.default_provider === 'codex'), 'Default radio -> PUT default_provider=codex',
     `puts: ${JSON.stringify(calls.put)}`);
 
