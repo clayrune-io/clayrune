@@ -1308,39 +1308,67 @@ function escPromptWithImages(raw) {
   const stripped = raw.replace(
     /\[(?:Screenshot|Attachment):\s+((?:[A-Za-z]:[\\\/]|\/)[^\s"'`<>|\[\]]+?\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif))\s*\]/gi,
     '$1');
-  let t = esc(stripped);
-  // RTL: a user line is literally "&gt; Label: message" once escaped — the
-  // label (config.user_name, always Latin) is the FIRST strong-directional
-  // text in the bubble, so a bare dir="auto" on the bubble div would detect
-  // LTR from "User:"/"Ron:" even when the actual message is Hebrew/Arabic.
-  // Isolating the prefix in its own dir="ltr" span makes the HTML auto-
-  // direction algorithm skip it (per the living standard, an "auto"-
-  // detecting ancestor ignores descendants that carry their own dir
-  // attribute) so detection runs against the message text instead. MC-1000.
-  t = t.replace(/^(&gt;\s?[^:\n]{0,60}:\s)/, '<span dir="ltr">$1</span>');
+
+  // RTL: a multi-line prompt (e.g. "Q: <Hebrew>?\nA: <English>") used to be
+  // ONE dir="auto" block, so a single strong character anywhere in the whole
+  // message decided direction for every line — a Hebrew line's own "?"
+  // could land on the wrong side, and an English line in the same bubble
+  // couldn't independently stay ltr. Each line now gets its own dir="auto"
+  // block, exactly like agent narration lines (rich-text.js). MC-1000 round 2.
   const _imgTokens = [];
-  // Same path detection regex as formatAgentText — keep the two in sync.
-  t = t.replace(
-    /(?<![\w:/%])((?:[A-Za-z]:(?!\/\/)[\\/]|\/)[^\s"'`<>|]+?\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif))(?![A-Za-z0-9])/gi,
-    (m, p) => {
-      const rawPath = p.replace(/&amp;/g, '&').replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
-      const src = API_BASE + '/api/serve-image?path=' + encodeURIComponent(rawPath);
-      const tok = '@@CLImg' + _imgTokens.length + '@@';
-      _imgTokens.push(
-        `<span class="agent-img-wrap">` +
-        `<a class="agent-img-path" href="${src}" target="_blank" rel="noopener">${p}</a>` +
-        `<img class="agent-img" src="${src}" alt="" ` +
-        `onload="this.classList.add('agent-img-ok')" ` +
-        `onerror="this.closest('.agent-img-wrap').classList.add('agent-img-failed');this.remove()" ` +
-        `onclick="_openImageViewer(this.src)"></span>`);
-      return tok;
-    });
+  const lineHtml = stripped.split('\n').map((rawLine) => {
+    let t = esc(rawLine);
+    // A short fixed Latin label at line-start ("&gt; Name: ", "Q: ", "A: ")
+    // is the FIRST strong-directional text a bare dir="auto" would read —
+    // isolate it in its own dir="ltr" span so detection runs against the
+    // actual line content instead (per spec, "auto" skips a descendant that
+    // carries its own dir). Generalizes the old "> Name:"-only prefix regex
+    // to the "Q: "/"A: " prefixes renderAgentQuestion's answer message uses.
+    // The char class is Latin-only, so a Hebrew/Arabic word before a colon
+    // never matches — this only ever isolates genuine fixed English labels.
+    t = t.replace(/^(&gt;\s?[^:\n]{0,60}:\s|[A-Za-z]{1,12}:\s)/, '<span dir="ltr">$1</span>');
+    // Same path detection regex as formatAgentText — keep the two in sync.
+    t = t.replace(
+      /(?<![\w:/%])((?:[A-Za-z]:(?!\/\/)[\\/]|\/)[^\s"'`<>|]+?\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif))(?![A-Za-z0-9])/gi,
+      (m, p) => {
+        const rawPath = p.replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+        const src = API_BASE + '/api/serve-image?path=' + encodeURIComponent(rawPath);
+        const tok = '@@CLImg' + _imgTokens.length + '@@';
+        _imgTokens.push(
+          `<span class="agent-img-wrap">` +
+          `<a class="agent-img-path" href="${src}" target="_blank" rel="noopener">${p}</a>` +
+          `<img class="agent-img" src="${src}" alt="" ` +
+          `onload="this.classList.add('agent-img-ok')" ` +
+          `onerror="this.closest('.agent-img-wrap').classList.add('agent-img-failed');this.remove()" ` +
+          `onclick="_openImageViewer(this.src)"></span>`);
+        return tok;
+      });
+    // Isolate embedded Hebrew/Arabic runs so an English-base line doesn't
+    // let neutrals (quotes, commas) at the RTL boundary resolve against the
+    // outer paragraph. Only when the LINE's own base direction is ltr — see
+    // the matching comment in rich-text.js's formatAgentText for why a
+    // Hebrew-first line must never be wrapped this way, and why the gate
+    // must run against the built HTML (skipping already-isolated content:
+    // the label-prefix span above, and image tokens once restored) rather
+    // than the raw line — "> Ron: <Hebrew>" has 'R' (Latin) as its raw first
+    // strong char, which would wrongly read as an ltr-base line, bdi-wrap
+    // the Hebrew, and then have BOTH the prefix span and the bdi excluded
+    // from the outer dir="auto" scan, flipping the whole line to ltr. Found
+    // live: "> Ron: <Hebrew> `npm run build`" computed direction=ltr.
+    // MC-1000 round 2.
+    const _dirProbeHtml = _imgTokens.length ? t.replace(/@@CLImg(\d+)@@/g, (_, i) => _imgTokens[+i] || '') : t;
+    if (window._isolateRtlRuns && window._baseDirIgnoringIsolated && window._baseDirIgnoringIsolated(_dirProbeHtml) === 'ltr') {
+      t = window._isolateRtlRuns(t);
+    }
+    return `<div dir="auto">${t.trim() === '' ? '&nbsp;' : t}</div>`;
+  });
+  let html = lineHtml.join('');
   // Swap tokens back in.
   for (let i = 0; i < _imgTokens.length; i++) {
-    t = t.replace('@@CLImg' + i + '@@', _imgTokens[i]);
+    html = html.replace('@@CLImg' + i + '@@', _imgTokens[i]);
   }
-  return t;
+  return html;
 }
 
 
