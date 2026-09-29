@@ -893,3 +893,27 @@ def test_review12_localhost_text_is_not_a_local_destination(monkeypatch, tmp_pat
 ])
 def test_review12_local_sends_stay_exempt(command):
     assert not fence._touches_nonlocal_network(command).blocked
+
+
+@pytest.mark.parametrize('have_pass', [True, False])
+@pytest.mark.parametrize('command', [
+    'iwr -UseBasicParsing -Method POST -Uri:https://example.invalid/single -Body http://localhost',
+    'iwr -Method POST -Uri https://example.invalid/single -Body http://localhost',
+    'iwr -Method POST -Uri:https://example.invalid/single -Body fixture',
+])
+def test_review13_attached_uri_is_the_destination(monkeypatch, tmp_path, command, have_pass):
+    # Fenn's review #13 N19: `-Uri:URL` must count as a destination, so
+    # local-looking body text can never be the only one.
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass',
+                        lambda: spent.append(1) or have_pass)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2 and spent == []
+
+
+def test_review13_attached_local_uri_stays_exempt():
+    assert not fence._touches_nonlocal_network(
+        'iwr -Method POST -Uri:http://localhost:5199/local -Body fixture').blocked

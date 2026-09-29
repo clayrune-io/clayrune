@@ -762,6 +762,14 @@ def _httpie_mutates(args: list) -> bool:
     return False
 
 
+# KNOWN GAPS (accepted 2026-09-28, MC-994, after 13 second-vendor reviews).
+# This detector stops ACCIDENTAL external sends by a well-meaning unattended
+# agent using an ordinary curl/wget/httpie/iwr spelling. It is not an evasion
+# barrier (2026-09-12 position): any unknown executable (python -c requests,
+# node, a script file) already sends unchecked by design. Remaining misses are
+# unusual argument spellings of the four named tools (per-tool argument roles
+# are approximated, not fully parsed). A new CLASS of miss still blocks a
+# merge; another spelling of these does not. Reviews: _scratch/mc994-review3-*.
 def _segment_mutates(seg: str) -> bool:
     """True when this shell segment runs a named HTTP tool that sends a
     mutating request. Parsed from argv with each tool's own option rules
@@ -799,7 +807,12 @@ def _segment_mutates(seg: str) -> bool:
         # Own API calls are exempt only when every destination-shaped
         # argument is a local hostname (review #12 N19). A filename that
         # looks like a host fails closed.
-        dests = [a for a in args if not a.startswith('-')
+        # PowerShell binds a value with a colon (`-Uri:URL`); that value is
+        # a candidate destination too (review #13 N19), or the real URI
+        # vanishes and a local-looking body decides.
+        cands = [a.split(':', 1)[1] if a.startswith('-') and not a.startswith('--')
+                 and ':' in a else a for a in args]
+        dests = [a for a in cands if not a.startswith('-')
                  and ('://' in a or _DEST_LIKE_RE.match(a))]
         return not _all_local(dests)
     return False
