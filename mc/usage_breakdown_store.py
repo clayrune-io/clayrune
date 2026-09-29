@@ -34,7 +34,15 @@ Four tables, schema-versioned via `PRAGMA user_version`:
     completing) has no measurable delta yet -- callers treat that as
     incomplete coverage, never as zero.
   - code_delta: one row per session_id, LOC added/deleted or an `unavailable`
-    reason.
+    reason. `added`/`deleted` are always the SUM of the session's
+    code_delta_lifetime rows.
+  - code_delta_lifetime (schema v4): one row per (session_id, base_commit)
+    -- one per worktree lifetime, since a session's worktree can be removed
+    after merge-back and re-created at a new baseline. Each capture
+    replaces only its own lifetime's cumulative count, so repeated captures
+    are idempotent and an earlier lifetime is never overwritten (round 3,
+    P2-5: accumulating onto a single row lost the prior lifetime on the
+    next same-baseline capture, 1 -> 0).
 
 No OAuth token, credential, prompt, transcript, source text, or task summary
 is ever written here — only the normalized facts the spec's tables define.
@@ -47,12 +55,35 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 APPLICATION_ID = 0x4D435542  # 'MCUB'
 DB_FILENAME = 'usage_breakdown.sqlite'
 
-_TABLES = {'allowance_sample', 'session_fact', 'session_checkpoint', 'code_delta'}
+_TABLES = {'allowance_sample', 'session_fact', 'session_checkpoint', 'code_delta',
+           'code_delta_lifetime'}
+_V3_TABLES = {'allowance_sample', 'session_fact', 'session_checkpoint', 'code_delta'}
 _V1_TABLES = {'allowance_sample', 'session_fact', 'code_delta'}
+
+_CODE_DELTA_LIFETIME_TABLE_SQL = (
+    'CREATE TABLE code_delta_lifetime ('
+    ' session_id TEXT NOT NULL,'
+    ' base_commit TEXT NOT NULL,'
+    ' added INTEGER NOT NULL,'
+    ' deleted INTEGER NOT NULL,'
+    ' head_commits TEXT,'
+    ' updated_at TEXT NOT NULL,'
+    ' PRIMARY KEY(session_id, base_commit)'
+    ')'
+)
+# v3 -> v4 seed: every pre-v4 'ok' row becomes its session's single
+# lifetime. Exact for v1/v2 rows (they only ever overwrote). A v3 row that
+# had already accumulated a recreated worktree stays one lifetime at its
+# latest baseline -- v3 existed only on the unmerged MC-998 branch.
+_CODE_DELTA_LIFETIME_SEED_SQL = (
+    'INSERT INTO code_delta_lifetime (session_id, base_commit, added, deleted, head_commits, updated_at) '
+    "SELECT session_id, base_commit, COALESCE(added, 0), COALESCE(deleted, 0), head_commits, created_at "
+    "FROM code_delta WHERE status='ok' AND base_commit IS NOT NULL"
+)
 
 # Schema v3 shape (docs/_journal/4668eafc-mc998-fenn-review.md finding 3,
 # P1-3): no table-level UNIQUE(session_id, checkpoint_type) -- that froze
@@ -191,17 +222,20 @@ class UsageBreakdownStore:
             db.execute(_SESSION_CHECKPOINT_TABLE_SQL)
             for stmt in _SESSION_CHECKPOINT_INDEX_SQL:
                 db.execute(stmt)
+            db.execute(_CODE_DELTA_LIFETIME_TABLE_SQL)
             db.execute(f'PRAGMA application_id={APPLICATION_ID}')
             db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
-        elif version == 1 and app == APPLICATION_ID and (tables - {'sqlite_sequence'}) == _V1_TABLES:
+            return
+        if version == 1 and app == APPLICATION_ID and (tables - {'sqlite_sequence'}) == _V1_TABLES:
             # Pre-existing v1 install (no session_checkpoint table yet): add it
             # in place rather than raising, so a dev/test db created before
             # P1-3 doesn't need to be deleted by hand.
             db.execute(_SESSION_CHECKPOINT_TABLE_SQL)
             for stmt in _SESSION_CHECKPOINT_INDEX_SQL:
                 db.execute(stmt)
-            db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
-        elif version == 2 and app == APPLICATION_ID and (tables - {'sqlite_sequence'}) == _TABLES:
+            version = 3
+            db.execute('PRAGMA user_version=3')
+        elif version == 2 and app == APPLICATION_ID and (tables - {'sqlite_sequence'}) == _V3_TABLES:
             # v2->v3: the v2 table carried a table-level
             # `UNIQUE(session_id, checkpoint_type)`, which silently discarded
             # every completion checkpoint after the session's FIRST turn
@@ -223,8 +257,17 @@ class UsageBreakdownStore:
             db.execute('DROP TABLE session_checkpoint_v2')
             for stmt in _SESSION_CHECKPOINT_INDEX_SQL:
                 db.execute(stmt)
+            version = 3
+            db.execute('PRAGMA user_version=3')
+        if version == 3 and app == APPLICATION_ID and (
+                {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                - {'sqlite_sequence'}) == _V3_TABLES:
+            # v3->v4 (round 3, P2-5): per-worktree-lifetime LOC rows.
+            db.execute(_CODE_DELTA_LIFETIME_TABLE_SQL)
+            db.execute(_CODE_DELTA_LIFETIME_SEED_SQL)
             db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
-        elif (app != APPLICATION_ID or version != SCHEMA_VERSION
+            return
+        if (app != APPLICATION_ID or version != SCHEMA_VERSION
               or (tables - {'sqlite_sequence'}) != _TABLES):
             raise SchemaError(
                 f'Unsupported usage_breakdown schema: version={version}, '
@@ -437,16 +480,18 @@ class UsageBreakdownStore:
 
     def upsert_code_delta(self, session_id: str, fields: dict) -> None:
         """Reviewer re-review finding #5 (P2-5, docs/_journal/4668eafc-mc998-
-        fenn-review.md "2026-09-28 re-review"): the dispatch path allows a
-        session_id's worktree to be removed and RE-created (e.g. after an
-        earlier merge-back), which captures a fresh baseline at the new
-        worktree's own HEAD -- a valid 'ok' zero for that new lifetime, not a
-        correction of the earlier one. Overwriting used to erase the earlier
-        lifetime's real added/deleted the moment that happened. Detect a new
-        lifetime by `base_commit` changing and ACCUMULATE onto the prior
-        totals instead of replacing them, so a session's code_delta row
-        always reflects everything it has contributed across every worktree
-        it has ever had, never just the most recent one."""
+        fenn-review.md "2026-09-28 re-review" and "round 3"): the dispatch
+        path allows a session_id's worktree to be removed and RE-created
+        (e.g. after an earlier merge-back), which captures a fresh baseline
+        at the new worktree's own HEAD -- a valid 'ok' count for that new
+        lifetime, not a correction of the earlier one. An 'ok' capture is
+        the cumulative count for ITS baseline's lifetime only, so it
+        replaces just that (session_id, base_commit) row in
+        code_delta_lifetime; the code_delta row is then rewritten as the sum
+        over every lifetime. Repeating a capture is idempotent, and no
+        lifetime's count is ever overwritten by another's. (Accumulating
+        onto the single code_delta row, as round 2 did, let the next
+        same-baseline capture replace the sum with one lifetime's count.)"""
         if not session_id:
             raise ValueError('session_id is required')
         cols = ['added', 'deleted', 'status', 'reason', 'branch', 'base_commit', 'head_commits']
@@ -462,16 +507,26 @@ class UsageBreakdownStore:
                     # clobber an already-captured LOC count with
                     # 'unavailable' (MC-998 review finding #5).
                     return
-            elif existing and existing['status'] == 'ok' and existing['base_commit'] != row['base_commit']:
-                # Same session, a DIFFERENT baseline than what's on record --
-                # a new worktree lifetime for this session_id. This capture's
-                # added/deleted are only for the lifetime since ITS baseline;
-                # fold them onto the running total instead of replacing it.
-                row['added'] = (existing['added'] or 0) + (row['added'] or 0)
-                row['deleted'] = (existing['deleted'] or 0) + (row['deleted'] or 0)
-                prior_commits = (existing['head_commits'] or '').split(',') if existing['head_commits'] else []
-                new_commits = (row['head_commits'] or '').split(',') if row['head_commits'] else []
-                row['head_commits'] = ','.join([c for c in prior_commits if c] + [c for c in new_commits if c])
+            elif row['base_commit']:
+                db.execute(
+                    'INSERT INTO code_delta_lifetime (session_id, base_commit, added, deleted, '
+                    ' head_commits, updated_at) VALUES (?,?,?,?,?,?) '
+                    'ON CONFLICT(session_id, base_commit) DO UPDATE SET added=excluded.added, '
+                    ' deleted=excluded.deleted, head_commits=excluded.head_commits, '
+                    ' updated_at=excluded.updated_at',
+                    (session_id, row['base_commit'], row['added'] or 0, row['deleted'] or 0,
+                     row['head_commits'], _now()))
+                lifetimes = db.execute(
+                    'SELECT added, deleted, head_commits FROM code_delta_lifetime '
+                    'WHERE session_id=? ORDER BY rowid ASC', (session_id,)).fetchall()
+                row['added'] = sum(r['added'] for r in lifetimes)
+                row['deleted'] = sum(r['deleted'] for r in lifetimes)
+                commits: list[str] = []
+                for r in lifetimes:
+                    for c in (r['head_commits'] or '').split(','):
+                        if c and c not in commits:
+                            commits.append(c)
+                row['head_commits'] = ','.join(commits)
             placeholders = ', '.join(f':{c}' for c in cols)
             assignments = ', '.join(f'{c}=excluded.{c}' for c in cols)
             params = dict(row)
@@ -525,6 +580,8 @@ class UsageBreakdownStore:
                 db.executemany('DELETE FROM code_delta WHERE session_id=?',
                                 [(s,) for s in sids])
                 removed['code_delta'] += db.execute('SELECT changes()').fetchone()[0]
+                db.executemany('DELETE FROM code_delta_lifetime WHERE session_id=?',
+                                [(s,) for s in sids])
                 db.executemany('DELETE FROM session_checkpoint WHERE session_id=?',
                                 [(s,) for s in sids])
                 removed['session_checkpoint'] += db.execute('SELECT changes()').fetchone()[0]

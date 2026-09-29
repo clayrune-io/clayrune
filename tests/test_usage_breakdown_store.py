@@ -19,7 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from mc.usage_breakdown_store import (  # noqa: E402
-    APPLICATION_ID, UsageBreakdownStore, db_path_for, SchemaError,
+    APPLICATION_ID, SCHEMA_VERSION, UsageBreakdownStore, db_path_for, SchemaError,
 )
 
 
@@ -345,4 +345,65 @@ def test_schema_v2_migration_preserves_rows_and_unfreezes_later_turns(tmp_path):
     assert [c['input_processed_total'] for c in completions] == [100, 500]
 
     with sqlite3.connect(db_path) as raw:
-        assert raw.execute('PRAGMA user_version').fetchone()[0] == 3
+        # v2 -> v3 -> v4 in one open (v4 adds code_delta_lifetime, round 3 P2-5).
+        assert raw.execute('PRAGMA user_version').fetchone()[0] == SCHEMA_VERSION == 4
+
+
+# ── round 3 (docs/_journal/4668eafc-mc998-fenn-review.md "Round 3") ─────
+
+def _ok(base, added, deleted=0, head='h'):
+    return {'status': 'ok', 'added': added, 'deleted': deleted, 'branch': 'b',
+            'base_commit': base, 'head_commits': head}
+
+
+def test_code_delta_recreated_worktree_sums_lifetimes_across_repeat_captures(store):
+    """Round 3 #5 (P2-5): lifetime 1 (baseline b1) contributed 1 line; the
+    worktree was merged, removed and re-created at baseline b2. Every later
+    capture is the cumulative count for b2's lifetime only. aa0f99f folded
+    b2 onto the total only when the baseline CHANGED, so the next b2
+    capture overwrote the sum (1 -> 0) and a new b2 line read 1, not 2."""
+    store.upsert_code_delta('s1', _ok('b1', 1, head='c1'))
+    store.upsert_code_delta('s1', _ok('b2', 0, head=''))
+    assert store.get_code_delta('s1')['added'] == 1
+    store.upsert_code_delta('s1', _ok('b2', 0, head=''))
+    assert store.get_code_delta('s1')['added'] == 1
+    store.upsert_code_delta('s1', _ok('b2', 1, head='c2'))
+    row = store.get_code_delta('s1')
+    assert (row['added'], row['deleted']) == (2, 0)
+    assert row['base_commit'] == 'b2'
+    assert row['head_commits'] == 'c1,c2'
+    # A same-lifetime recapture replaces, never double-counts.
+    store.upsert_code_delta('s1', _ok('b2', 1, head='c2'))
+    assert store.get_code_delta('s1')['added'] == 2
+
+
+def test_schema_v3_migration_seeds_one_lifetime_per_ok_row(tmp_path):
+    """A v3 db (no code_delta_lifetime) opens as v4 with each 'ok' code_delta
+    row as its session's first lifetime, so a later recreated-worktree
+    capture adds to it instead of replacing it."""
+    db_path = tmp_path / 'usage_breakdown.sqlite'
+    UsageBreakdownStore(db_path).upsert_code_delta('s1', _ok('b1', 3, 1))
+    with sqlite3.connect(db_path) as raw:
+        raw.execute('DROP TABLE code_delta_lifetime')
+        raw.execute('PRAGMA user_version=3')
+        raw.commit()
+
+    migrated = UsageBreakdownStore(db_path)  # schema runs on first connection
+    migrated.upsert_code_delta('s1', _ok('b2', 2))
+    row = migrated.get_code_delta('s1')
+    assert row is not None
+    assert (row['added'], row['deleted']) == (5, 1)
+    with sqlite3.connect(db_path) as raw:
+        assert raw.execute('PRAGMA user_version').fetchone()[0] == 4
+
+
+def test_prune_removes_code_delta_lifetime_rows_with_their_session(store):
+    store.upsert_code_delta('old', _ok('b1', 4))
+    store.upsert_session_fact('old', {'provider': 'claude', 'status': 'completed',
+                                      'started_at': '2020-01-01T00:00:00Z',
+                                      'ended_at': '2020-01-01T00:05:00Z',
+                                      'token_coverage': 'complete'})
+    store.prune_older_than()
+    with sqlite3.connect(store.db_path) as raw:
+        assert raw.execute('SELECT COUNT(*) FROM code_delta_lifetime').fetchone()[0] == 0
+
