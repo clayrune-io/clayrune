@@ -102,6 +102,7 @@ def _doc(name, nodes, edges=None, trigger=None):
 def wf(tmp_path, monkeypatch):
     import server  # noqa: F401  (registers the blueprint + runs wire() on import)
     from mc import workflows as m
+    from mc.blueprints import workflow_routes as wr
 
     monkeypatch.setattr(m, 'WORKFLOWS_PATH', tmp_path / 'workflows.json')
     monkeypatch.setattr(m, 'WORKFLOW_RUNS_DIR', tmp_path / 'workflow_runs')
@@ -109,6 +110,13 @@ def wf(tmp_path, monkeypatch):
     monkeypatch.setattr(m, '_dispatch_agent_internal', dispatch)
     agent_logs = {}  # project_id -> list of entries
     monkeypatch.setattr(m, '_load_agent_log', lambda pid: agent_logs.get(pid, []))
+    # MC-995: workflow CRUD/decision/cancel also require the retyped dashboard
+    # passcode (_require_human_passcode) on top of the Origin check this file
+    # already exercises. This file's tests are about workflow CRUD/run
+    # semantics, not the passcode gate itself — bypass it here and exercise
+    # the real gate (missing/wrong/correct passcode, per route) in
+    # tests/test_human_proof_guard.py instead.
+    monkeypatch.setattr(wr, '_require_human_passcode', lambda data: None)
 
     class Ctx:
         pass

@@ -93,6 +93,25 @@ const ok = (m) => console.log('  ✓ ' + m);
 let bad = 0;
 const fail = (m) => { console.error('  ✗ ' + m); bad++; };
 
+// Workflow Save now routes through the human-proof passcode modal (MC-995)
+// instead of firing POST /api/workflows directly. Every page fixture in this
+// file mocks /api/local-auth/status -> {configured:true}, so the modal
+// always shows in plain-passcode mode; answer it with the fixture passcode
+// if it appears (a no-op where the action being driven doesn't save).
+const HP_PASSCODE = 'smoke-dash-passcode';
+async function answerHumanProofModalIfShown(page, timeout = 1500) {
+  const win = await page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout })
+    .catch(() => null);
+  if (!win) return false;
+  await page.evaluate((passcode) => {
+    const el = document.querySelector('[data-modal-id^="__human-proof-"]');
+    const modalId = el.dataset.modalId;
+    document.getElementById(`hp-passcode-${modalId}`).value = passcode;
+    window._hpSubmit(modalId);
+  }, HP_PASSCODE);
+  return true;
+}
+
 async function setValue(page, selector, value) {
   await page.evaluate(({ selector, value }) => {
     const el = document.querySelector(selector);
@@ -391,6 +410,7 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
@@ -408,6 +428,11 @@ try {
     // only ever authors a brand-new workflow.
     if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    // Unmocked, these abort forever and agent-log.js's rail poller retries
+    // in an unbounded tight loop -- enough iterations across a section's
+    // many DOM waits crashed the renderer outright (page5, deterministic).
+    if (path === `/api/project/${PID}/agent/log`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/conversations`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === '/api/workflows' && req.method() === 'POST') {
       const body = JSON.parse(req.postData() || '{}');
       workflowPosts.push(body);
@@ -1553,11 +1578,17 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    // Unmocked, these abort forever and agent-log.js's rail poller retries
+    // in an unbounded tight loop -- enough iterations across a section's
+    // many DOM waits crashed the renderer outright (page5, deterministic).
+    if (path === `/api/project/${PID}/agent/log`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/conversations`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     return route.abort();
   });
   await mpage.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -1801,6 +1832,7 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
@@ -1808,6 +1840,11 @@ try {
     // assertion below confirm a save makes the workflow's tab appear.
     if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedWorkflows2) });
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    // Unmocked, these abort forever and agent-log.js's rail poller retries
+    // in an unbounded tight loop -- enough iterations across a section's
+    // many DOM waits crashed the renderer outright (page5, deterministic).
+    if (path === `/api/project/${PID}/agent/log`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/conversations`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === '/api/workflows' && req.method() === 'POST') {
       const body = JSON.parse(req.postData() || '{}');
       workflowPosts2.push(body);
@@ -1957,6 +1994,7 @@ try {
   await page2.waitForTimeout(80);
 
   await page2.click('.wfb-toolbar .btn-sched-save');
+  await answerHumanProofModalIfShown(page2);
   await page2.waitForTimeout(250);
   workflowPosts2.length === 1 ? ok('POST /api/workflows fired exactly once on Save')
                               : fail(`expected exactly 1 POST /api/workflows, got ${workflowPosts2.length}`);
@@ -2017,6 +2055,7 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
@@ -2042,6 +2081,11 @@ try {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedSchedule3) });
     }
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    // Unmocked, these abort forever and agent-log.js's rail poller retries
+    // in an unbounded tight loop -- enough iterations across a section's
+    // many DOM waits crashed the renderer outright (page5, deterministic).
+    if (path === `/api/project/${PID}/agent/log`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/conversations`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     return route.abort();
   });
   await page3.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -2145,6 +2189,7 @@ try {
   await page3.waitForSelector('.sched-day-btn[data-day="3"]', { timeout: 3000 });
   await page3.click('.sched-day-btn[data-day="3"]');
   await page3.click('.wfb-toolbar .btn-sched-save');
+  await answerHumanProofModalIfShown(page3);
   await page3.waitForFunction(() => {
     const btn = document.querySelector('.wfb-toolbar .btn-sched-save');
     return btn && btn.textContent.trim() === 'Update';
@@ -2205,11 +2250,17 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    // Unmocked, these abort forever and agent-log.js's rail poller retries
+    // in an unbounded tight loop -- enough iterations across a section's
+    // many DOM waits crashed the renderer outright (page5, deterministic).
+    if (path === `/api/project/${PID}/agent/log`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/conversations`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     return route.abort();
   });
   await page4.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -2346,11 +2397,17 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    // Unmocked, these abort forever and agent-log.js's rail poller retries
+    // in an unbounded tight loop -- enough iterations across a section's
+    // many DOM waits crashed the renderer outright (page5, deterministic).
+    if (path === `/api/project/${PID}/agent/log`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/conversations`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === '/api/workflows' && req.method() === 'POST') {
       const body = JSON.parse(req.postData() || '{}');
       workflowPosts5.push(body);
@@ -2399,7 +2456,15 @@ try {
   await closeInspector(page5);
 
   await setValue(page5, '#wfb-name', 'Wait smoke workflow');
-  await page5.evaluate(() => window._wfSave());
+  // _wfSave() now awaits humanProofFetch() internally, which does not
+  // resolve until the modal below is answered -- `await page.evaluate(() =>
+  // window._wfSave())` would return that unresolved promise to Playwright
+  // and deadlock forever (the very next line, which answers the modal, would
+  // never get to run). Discard the inner promise so evaluate() returns
+  // immediately; the modal exists in the page regardless of what page.evaluate
+  // awaits.
+  await page5.evaluate(() => { window._wfSave(); });
+  await answerHumanProofModalIfShown(page5);
   await page5.waitForTimeout(150);
   const savedWaitNode = workflowPosts5.length
     ? (workflowPosts5[workflowPosts5.length - 1].nodes || []).find(n => n.type === 'wait') : null;
@@ -2475,7 +2540,8 @@ try {
     : fail('expected the message field to carry the highlight-flash class immediately after inserting');
 
   await setValue(page5, '#wfb-name', 'Renamed action smoke workflow');
-  await page5.evaluate(() => window._wfSave());
+  await page5.evaluate(() => { window._wfSave(); });
+  await answerHumanProofModalIfShown(page5);
   await page5.waitForTimeout(150);
   const savedActionNode = workflowPosts5.length
     ? (workflowPosts5[workflowPosts5.length - 1].nodes || []).find(n => n.name === 'Send email') : null;
@@ -2593,11 +2659,17 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') { floorReqCount6++; return route.fulfill({ status: 200, contentType: 'application/json', body: floorBody6 }); }
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    // Unmocked, these abort forever and agent-log.js's rail poller retries
+    // in an unbounded tight loop -- enough iterations across a section's
+    // many DOM waits crashed the renderer outright (page5, deterministic).
+    if (path === `/api/project/${PID}/agent/log`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/conversations`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     return route.abort();
   });
   await page6.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -2714,6 +2786,7 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path === '/api/schedules') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
@@ -2728,6 +2801,11 @@ try {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, run: cancelled }) });
     }
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    // Unmocked, these abort forever and agent-log.js's rail poller retries
+    // in an unbounded tight loop -- enough iterations across a section's
+    // many DOM waits crashed the renderer outright (page5, deterministic).
+    if (path === `/api/project/${PID}/agent/log`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/conversations`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     return route.abort();
   });
   await page7.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -2773,6 +2851,10 @@ try {
 
   if (strip7) {
     await page7.click('.wfb-live-run-cancel');
+    // MC-995: cancel POSTs /api/workflow-runs/<id>/cancel, gated too -- answer
+    // the dashboard-passcode modal (after the native confirm dialog) before
+    // the request actually fires.
+    await answerHumanProofModalIfShown(page7);
     await page7.waitForTimeout(250);
     cancelPosts7.length === 1
       ? ok('Cancel run POSTed /api/workflow-runs/<id>/cancel exactly once (after the confirm)')
@@ -2817,6 +2899,7 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path === '/api/schedules') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
@@ -2827,6 +2910,11 @@ try {
       return route.fulfill({ status: 404, contentType: 'text/html; charset=utf-8', body: '<!doctype html><title>404 Not Found</title><h1>Not Found</h1>' });
     }
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    // Unmocked, these abort forever and agent-log.js's rail poller retries
+    // in an unbounded tight loop -- enough iterations across a section's
+    // many DOM waits crashed the renderer outright (page5, deterministic).
+    if (path === `/api/project/${PID}/agent/log`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/conversations`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     return route.abort();
   });
   await page8.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -2842,6 +2930,7 @@ try {
     fail('expected the live-run strip for run-5de9dfa5 before cancelling');
   } else {
     await page8.click('.wfb-live-run-cancel');
+    await answerHumanProofModalIfShown(page8);
     await page8.waitForTimeout(250);
     (await page8.$('.wfb-live-run'))
       ? ok('a cancel that hit a missing route (HTML 404) leaves the live-run strip up')
@@ -2879,11 +2968,17 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedWorkflows9) });
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    // Unmocked, these abort forever and agent-log.js's rail poller retries
+    // in an unbounded tight loop -- enough iterations across a section's
+    // many DOM waits crashed the renderer outright (page5, deterministic).
+    if (path === `/api/project/${PID}/agent/log`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/conversations`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === '/api/workflows' && req.method() === 'POST') {
       const body = JSON.parse(req.postData() || '{}');
       const saved = { ...body, id: 'wf-smoke9', format: 2, created: '2026-09-27T00:00:00Z', updated: '2026-09-27T00:00:00Z' };
@@ -2955,7 +3050,8 @@ try {
   await setValue(page9, '#wfb-inspector .wfb-prompt', 'Persisted prompt text, MC-963 check 3.');
   await closeInspector(page9);
   await setValue(page9, '#wfb-name', 'MC-963 check 3');
-  await page9.evaluate(() => window._wfSave());
+  await page9.evaluate(() => { window._wfSave(); });
+  await answerHumanProofModalIfShown(page9);
   await page9.waitForTimeout(200);
   (savedWorkflows9.length === 1)
     ? ok('the workflow POSTed to the server on Save (check 3 setup)')
@@ -3016,11 +3112,17 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedWorkflows9) });
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    // Unmocked, these abort forever and agent-log.js's rail poller retries
+    // in an unbounded tight loop -- enough iterations across a section's
+    // many DOM waits crashed the renderer outright (page5, deterministic).
+    if (path === `/api/project/${PID}/agent/log`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/conversations`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === '/api/workflows/wf-smoke9/runs') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path.startsWith('/api/schedules')) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     return route.abort();
@@ -3074,11 +3176,17 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    // Unmocked, these abort forever and agent-log.js's rail poller retries
+    // in an unbounded tight loop -- enough iterations across a section's
+    // many DOM waits crashed the renderer outright (page5, deterministic).
+    if (path === `/api/project/${PID}/agent/log`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/conversations`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === '/api/workflows' && req.method() === 'POST') {
       const body = JSON.parse(req.postData() || '{}');
       workflowPosts10.push(body);
@@ -3173,6 +3281,10 @@ try {
   draftDelayMs10 = 250;
   await setValue(page10, '#wfb-describe-input', 'Every morning, triage new backlog items.');
   await page10.click('.wfb-describe-row .btn-add');
+  // MC-995: drafting is gated too (humanProofFetch shows the modal and holds
+  // the promise BEFORE the real request fires) -- the simulated server delay
+  // below doesn't start counting until the modal is answered.
+  await answerHumanProofModalIfShown(page10);
   await page10.waitForTimeout(80); // mid-flight: the 250ms server delay hasn't resolved yet
   const midFlight10 = await page10.evaluate(() => ({
     textareaDisabled: (document.getElementById('wfb-describe-input') || {}).disabled,
@@ -3208,6 +3320,7 @@ try {
     },
   };
   await page10.click('.wfb-describe-row .btn-add');
+  await answerHumanProofModalIfShown(page10);
   await page10.waitForTimeout(200);
   const afterDraft10 = await page10.evaluate(() => {
     const st = window._wfEntry()._wf;
@@ -3223,6 +3336,7 @@ try {
   // ── Save persists the draft -- still gated the ordinary way; Save is the
   // human action the standing position requires. ──────────────────────────
   await page10.click('.btn-sched-save');
+  await answerHumanProofModalIfShown(page10);
   await page10.waitForTimeout(200);
   const savedBody10 = workflowPosts10[workflowPosts10.length - 1] || {};
   const afterSave10 = await page10.evaluate(() => {
@@ -3349,6 +3463,7 @@ try {
   };
   await setValue(page10, '#wfb-describe-input', 'Every morning, triage new backlog items and branch on whether any were found.');
   await page10.click('.wfb-describe-row .btn-add');
+  await answerHumanProofModalIfShown(page10);
   await page10.waitForTimeout(200);
   const branchLayout10 = await page10.evaluate(() => {
     const boxes = [...document.querySelectorAll('.wfb-node')].map(el => {
@@ -3423,6 +3538,7 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
@@ -3431,6 +3547,11 @@ try {
       return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     }
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    // Unmocked, these abort forever and agent-log.js's rail poller retries
+    // in an unbounded tight loop -- enough iterations across a section's
+    // many DOM waits crashed the renderer outright (page5, deterministic).
+    if (path === `/api/project/${PID}/agent/log`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/conversations`) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     return route.abort();
   });
   await page11.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });

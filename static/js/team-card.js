@@ -307,12 +307,22 @@ async function _teamCreate(st) {
   _teamRerenderAll(st.key);
   let res, data = {};
   try {
-    res = await fetch(API_BASE + '/api/characters/team', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    // MC-995: creating a team is human-only-gated server-side.
+    const result = await humanProofFetch(API_BASE + '/api/characters/team', {
+      method: 'POST',
       body: JSON.stringify({ members, project_id: st.projectId || null,
         overwrite: [...st.overwrite], hire_new: !!(st.projectId && st.hireNew) }),
+    }, {
+      title: 'Create team',
+      description: 'Re-enter your dashboard passcode to create this team.',
     });
-    data = await res.json().catch(() => ({}));
+    if (result === null) {
+      st.status = 'draft';
+      _teamRerenderAll(st.key);
+      return;
+    }
+    res = { status: result.status };
+    data = result.body;
   } catch (e) {
     st.status = 'error'; st.message = 'Network error: ' + (e.message || e);
     _teamRerenderAll(st.key);

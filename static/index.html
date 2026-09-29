@@ -2987,28 +2987,28 @@ function autoSizeNameInput(input) {
 // ── Global Settings ──────────────────────────────────────────────────────────
 
 async function saveSetting(key, value) {
-  try {
-    const res = await fetch(API_BASE + '/api/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ [key]: value }),
-    });
-    if (!res.ok) {
-      // A validating key (e.g. backup_dest_dir refusing a repo-internal
-      // path) returns {error} instead of silently rewriting the value —
-      // surface that instead of the generic failure toast.
-      const data = await res.json().catch(() => ({}));
-      showToast(data.error || 'Failed to save setting', 4000);
-      return;
-    }
-    // Mirror into the in-memory config so anything reading _globalConfig
-    // (e.g. the mobile-brief-replies gate that tags outgoing messages with
-    // client="mobile") picks up the new value without a page reload.
-    try { _globalConfig[key] = value; } catch (_) {}
-    showToast('Setting saved');
-  } catch(e) {
-    showToast('Failed to save setting', 4000);
+  // MC-995: PUT /api/config is human-only-gated server-side (the sharpest
+  // route in the inventory -- it can flip an agent's own fence off).
+  const result = await humanProofFetch(API_BASE + '/api/config', {
+    method: 'PUT',
+    body: JSON.stringify({ [key]: value }),
+  }, {
+    title: 'Save setting',
+    description: 'Re-enter your dashboard passcode to change this setting.',
+  });
+  if (result === null) return; // cancelled
+  if (!result.ok) {
+    // A validating key (e.g. backup_dest_dir refusing a repo-internal
+    // path) returns {error} instead of silently rewriting the value —
+    // surface that instead of the generic failure toast.
+    showToast(result.body.error || 'Failed to save setting', 4000);
+    return;
   }
+  // Mirror into the in-memory config so anything reading _globalConfig
+  // (e.g. the mobile-brief-replies gate that tags outgoing messages with
+  // client="mobile") picks up the new value without a page reload.
+  try { _globalConfig[key] = value; } catch (_) {}
+  showToast('Setting saved');
 }
 
 function toggleSetting(el, key) {
@@ -3026,18 +3026,19 @@ async function setBriefRepliesMode(mode) {
     mobile_brief_replies_enabled: (mode === 'phone'),
     brief_replies_always_enabled: (mode === 'all'),
   };
-  try {
-    await fetch(API_BASE + '/api/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    try { Object.assign(_globalConfig, body); } catch (_) {}
-    showToast('Setting saved');
-    if (document.getElementById('settings-body')) _renderSettings();
-  } catch (e) {
-    showToast('Failed to save setting', 4000);
-  }
+  // MC-995: same gated PUT /api/config as saveSetting above.
+  const result = await humanProofFetch(API_BASE + '/api/config', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  }, {
+    title: 'Save setting',
+    description: 'Re-enter your dashboard passcode to change brief-replies mode.',
+  });
+  if (result === null) return; // cancelled
+  if (!result.ok) { showToast(result.body.error || 'Failed to save setting', 4000); return; }
+  try { Object.assign(_globalConfig, body); } catch (_) {}
+  showToast('Setting saved');
+  if (document.getElementById('settings-body')) _renderSettings();
 }
 
 // The model picker merges the old Default-Model dropdown and the Auto-pick
@@ -3047,12 +3048,17 @@ async function saveModelChoice(v) {
   const body = (v === '__auto__')
     ? { auto_model_enabled: true }
     : { auto_model_enabled: false, agent_model: v };
+  // MC-995: same gated PUT /api/config as saveSetting above.
   try {
-    await fetch(API_BASE + '/api/config', {
+    const result = await humanProofFetch(API_BASE + '/api/config', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+    }, {
+      title: 'Save setting',
+      description: 'Re-enter your dashboard passcode to change the model choice.',
     });
+    if (result === null) return; // cancelled
+    if (!result.ok) { showToast(result.body.error || 'Failed to save setting', 4000); return; }
     try { Object.assign(_globalConfig, body); } catch (_) {}
     showToast('Setting saved');
   } catch (e) {
@@ -3897,6 +3903,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 </script>
+<script type="module" src="/static/js/human-proof-modal.js"></script>
 <script type="module" src="/static/js/claydo.js"></script>
 <script type="module" src="/static/js/mobile-pairing.js"></script>
 <script type="module" src="/static/js/walkthrough.js"></script>

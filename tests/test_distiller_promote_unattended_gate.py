@@ -54,6 +54,13 @@ def ctx(tmp_path, monkeypatch):
 
     from mc.blueprints import distiller_routes
     agent_sessions.clear()
+    # MC-995: POST /api/distiller/promote also requires the retyped dashboard
+    # passcode (_require_human_passcode) on top of is_unattended_caller,
+    # which this file already exercises. This file is about the
+    # unattended-caller gate itself, not the passcode gate — bypass it here
+    # and exercise the real gate (missing/wrong/correct passcode) in
+    # tests/test_human_proof_guard.py.
+    monkeypatch.setattr(distiller_routes, '_require_human_passcode', lambda data: None)
     app = Flask(__name__)
     app.register_blueprint(distiller_routes.bp)
 

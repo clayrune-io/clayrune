@@ -66,6 +66,12 @@ def client(lab, monkeypatch):
     import server
     from mc.blueprints import system_routes as sr
     monkeypatch.setattr(sr, '_APP_DIR', lab['checkout'])
+    # MC-995: the {"stash": true} branch also requires the retyped dashboard
+    # passcode (_require_human_passcode) on top of the Origin check this file
+    # already exercises. This file is about the stash-before-update mechanics,
+    # not the passcode gate itself — bypass it here and exercise the real
+    # gate (missing/wrong/correct passcode) in tests/test_human_proof_guard.py.
+    monkeypatch.setattr(sr, '_require_human_passcode', lambda data: None)
     server.app.config['TESTING'] = True
     return server.app.test_client()
 

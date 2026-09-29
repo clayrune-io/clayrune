@@ -48,6 +48,11 @@ const BEACON_CSS = readFileSync(resolve(REPO_ROOT, 'static', 'css', 'beacon.css'
 // Every extracted /static/js/*.js must be fulfilled here or the hermetic
 // harness aborts its request and the SPA boots without that feature.
 const CLAYDO_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'claydo.js'), 'utf8');
+// Human-proof guard shared passcode modal (MC-995) — same rule as claydo.js
+// above; claydo.js's persona-editor Save and other call sites now depend on
+// window.humanProofFetch existing, so an unregistered module here doesn't
+// just skip its own feature, it breaks every gated Save button.
+const HUMAN_PROOF_MODAL_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'human-proof-modal.js'), 'utf8');
 // Mobile pairing ES module (Phase 3 module 3) — same rule as claydo.js above.
 const MOBILE_PAIRING_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'mobile-pairing.js'), 'utf8');
 // Walkthrough / tour ES module (Phase 3 module 4) — same rule as claydo.js above.
@@ -157,6 +162,7 @@ const STATIC_MAP = {
   '/static/css/app.css': ['text/css; charset=utf-8', APP_CSS],
   '/static/css/beacon.css': ['text/css; charset=utf-8', BEACON_CSS],
   '/static/js/claydo.js': ['text/javascript; charset=utf-8', CLAYDO_JS],
+  '/static/js/human-proof-modal.js': ['text/javascript; charset=utf-8', HUMAN_PROOF_MODAL_JS],
   '/static/js/mobile-pairing.js': ['text/javascript; charset=utf-8', MOBILE_PAIRING_JS],
   '/static/js/walkthrough.js': ['text/javascript; charset=utf-8', WALKTHROUGH_JS],
   '/static/js/skills-panel.js': ['text/javascript; charset=utf-8', SKILLS_PANEL_JS],
@@ -640,6 +646,7 @@ async function runIdentityPrefillGuard(browser) {
       createCalls.push(JSON.parse(req.postData() || '{}'));
       return json({ name: 'terse-reviewer', scope: 'global' });
     }
+    if (path === '/api/local-auth/status') return json({ configured: true });
     return fulfillStaticOrAbort(route);
   });
   const pageErrors = [];
@@ -696,6 +703,20 @@ async function runIdentityPrefillGuard(browser) {
       model.value = 'gpt-6-astra';
       panel.querySelector('#claydo-save-effort').value = 'high';
       goBtn.click();
+      // Save now routes through the human-proof passcode modal (MC-995) —
+      // the click's async handler awaits humanProofFetch(), which does not
+      // resolve until the modal is answered. Poll for it and submit a
+      // fixture passcode before checking whether POST /api/characters fired.
+      for (let i = 0; i < 20 && !document.querySelector('[data-modal-id^="__human-proof-"]'); i++) {
+        await settle(50);
+      }
+      const hpWin = document.querySelector('[data-modal-id^="__human-proof-"]');
+      if (hpWin) {
+        const modalId = hpWin.dataset.modalId;
+        const input = document.getElementById(`hp-passcode-${modalId}`);
+        if (input) input.value = 'smoke-dash-passcode';
+        window._hpSubmit(modalId);
+      }
       await settle(500);
       const errEl = panel.querySelector('#claydo-save-err');
       r.saveErr = errEl && errEl.style.display !== 'none' ? errEl.textContent : '';
@@ -2431,6 +2452,7 @@ async function runAgentFaceGuard(browser) {
     if (path.startsWith('/api/avatars/')) return route.fulfill({
       status: 200, contentType: 'image/png',
       body: Buffer.from(PNG.split(',')[1], 'base64') });
+    if (path === '/api/local-auth/status') return json({ configured: true });
     return fulfillStaticOrAbort(route);
   });
   const pageErrors = [];
@@ -2447,6 +2469,22 @@ async function runAgentFaceGuard(browser) {
   const out = await page.evaluate(async () => {
     const r = { err: null };
     const settle = (ms) => new Promise((res) => setTimeout(res, ms || 400));
+    // Face picks save via saveSetting(), which now routes through the
+    // human-proof passcode modal (MC-995) instead of firing PUT /api/config
+    // directly — poll for the modal and answer it with a fixture passcode.
+    const answerHumanProofModal = async () => {
+      let win = null;
+      for (let i = 0; i < 20 && !win; i++) {
+        win = document.querySelector('[data-modal-id^="__human-proof-"]');
+        if (!win) await settle(50);
+      }
+      if (!win) return false;
+      const modalId = win.dataset.modalId;
+      const input = document.getElementById(`hp-passcode-${modalId}`);
+      if (input) input.value = 'smoke-dash-passcode';
+      window._hpSubmit(modalId);
+      return true;
+    };
     try {
       sidebarNav('settings');
       await settle(700);
@@ -2466,6 +2504,7 @@ async function runAgentFaceGuard(browser) {
       // Picking a different one saves immediately — no Save button to forget.
       const wizard = row.querySelector('[data-face="fig:wizard"]');
       wizard.click();
+      await answerHumanProofModal();
       await settle(250);
       r.afterPick = input.value;
       r.selectedAfter = Array.from(row.querySelectorAll('.settings-fig.sel'))
@@ -2473,6 +2512,7 @@ async function runAgentFaceGuard(browser) {
       // Clicking the one you already wear takes it off, so the strip is not a
       // one-way door for someone who never guesses the field can be emptied.
       wizard.click();
+      await answerHumanProofModal();
       await settle(250);
       r.afterUnpick = input.value;
     } catch (e) {

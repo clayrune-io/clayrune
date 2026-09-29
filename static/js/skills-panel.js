@@ -569,34 +569,56 @@ function toggleProposedReadByIdx(i, rowId) {
 async function promoteProposed(directory, scope, projectId) {
   const payload = { directory, scope };
   if (scope === 'project' && projectId) payload.project_id = projectId;
-  const ok = await _distillerPost('/api/distiller/promote', payload);
-  if (ok) {
-    showToast('Promoted to ' + (scope === 'global' ? 'global' : 'project') + ' skills');
-    _allSkillsCache.loaded = false;
-    loadAllSkills();
-    loadDistillerQueue();
+  // MC-995: promoting a learning artifact into a live skill is human-only-
+  // gated server-side (this is the literal self-install path the authority
+  // guard exists to block) — not routed through _distillerPost, which
+  // /api/distiller/reject also shares and must stay ungated.
+  const result = await humanProofFetch(API_BASE + '/api/distiller/promote', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }, {
+    title: 'Promote skill',
+    description: 'Re-enter your dashboard passcode to promote this into a live skill.',
+  });
+  if (result === null) return;
+  const data = result.body;
+  if (!result.ok || data.ok === false) {
+    showToast((data && data.error) ? data.error : 'Action failed');
+    return;
   }
+  showToast('Promoted to ' + (scope === 'global' ? 'global' : 'project') + ' skills');
+  _allSkillsCache.loaded = false;
+  loadAllSkills();
+  loadDistillerQueue();
 }
 
 async function reframeProposed(directory, scope, projectId) {
   // Dedicated fetch (not _distillerPost) so the REFUSE case (422) gets its own
   // message instead of a generic failure toast. Reframe runs an LLM call
   // server-side, so it's slower than a plain promote — signal that.
-  showToast('Reframing exploration into a skill…');
+  //
+  // MC-995: same route as promoteProposed above — human-only-gated
+  // server-side via the shared humanProofFetch modal. Note: a 422 "refused"
+  // response (no reusable procedure — a legitimate business outcome, not a
+  // bad passcode) surfaces as an error line inside the passcode-retry modal
+  // rather than as the dedicated toast this function used to give it, same
+  // as every other non-2xx case in this shared modal (see workflow-builder.js
+  // saveWorkflow for the identical, already-shipped tradeoff).
   const payload = { directory, scope, reframe: true };
   if (scope === 'project' && projectId) payload.project_id = projectId;
   try {
-    const res = await fetch(API_BASE + '/api/distiller/promote', {
+    const result = await humanProofFetch(API_BASE + '/api/distiller/promote', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+    }, {
+      title: 'Reframe into skill',
+      description: 'Re-enter your dashboard passcode to reframe this into a skill.',
     });
-    const data = await res.json().catch(() => ({}));
-    if (res.status === 422 && data.refused) {
-      showToast('Reframe declined — no reusable procedure to make a skill from. Left as a reference note.');
-      return;
-    }
-    if (!res.ok || data.ok === false) {
+    if (result === null) return;
+    showToast('Reframing exploration into a skill…');
+    if (!result.ok) throw new Error(result.body.error || ('HTTP ' + result.status));
+    const data = result.body;
+    if (data.ok === false) {
       showToast((data && data.error) ? data.error : 'Reframe failed');
       return;
     }

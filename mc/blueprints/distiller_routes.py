@@ -19,6 +19,7 @@ from flask import Blueprint, jsonify, request
 from mc import state
 from mc.core import _log
 from mc.unattended import is_unattended_caller
+from mc.blueprints.secrets_routes import _require_human_passcode
 
 import mc.distiller as _distiller
 import mc.skills as _skills
@@ -133,6 +134,12 @@ def post_distiller_promote():
                         'session cannot promote a proposed artifact into a '
                         'skill; ask the user to promote it from the UI'}), 403
     body = request.get_json(silent=True) or {}
+    # MC-995: this is the literal 2026-07-11 authority-guard incident's
+    # route — also require the retyped dashboard passcode, not just the
+    # forgeable Origin-derived is_unattended_caller() above.
+    refusal = _require_human_passcode(body)
+    if refusal is not None:
+        return refusal
     directory = body.get('directory', '')
     scope = (body.get('scope') or 'project').strip()
     project_id = body.get('project_id') or None

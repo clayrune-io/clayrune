@@ -426,7 +426,7 @@ def test_schedule_status_route_overdue_survives_a_failed_attempt(fake_install, c
 # ── PUT /api/config validates backup_schedule / backup_keep ────────────────
 
 @pytest.fixture
-def config_client(fake_install, tmp_path):
+def config_client(fake_install, tmp_path, monkeypatch):
     from mc.blueprints import settings_routes
     app = Flask(__name__)
     app.register_blueprint(settings_routes.bp)
@@ -435,6 +435,11 @@ def config_client(fake_install, tmp_path):
         projects_base=tmp_path / 'projects',
         settings_path=tmp_path / 'settings.json',
     )
+    # MC-995: PUT /api/config now also requires the retyped dashboard
+    # passcode (_require_human_passcode). This file is about backup_schedule/
+    # backup_keep validation, not the passcode gate itself — bypass it here
+    # and exercise the real gate in tests/test_human_proof_guard.py.
+    monkeypatch.setattr(settings_routes, '_require_human_passcode', lambda data: None)
     return app.test_client()
 
 

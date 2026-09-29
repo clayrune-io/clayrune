@@ -1362,9 +1362,9 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
     const body = _claydoMergeVoiceSection(baseBody, voiceTa.value);
     goBtn.disabled = true;
     try {
-      const res = await fetch(API_BASE + '/api/characters', {
+      // MC-995: creating a character is human-only-gated server-side.
+      const result = await humanProofFetch(API_BASE + '/api/characters', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           name: nameVal, description: descVal, body,
           scope: isGlobal ? 'global' : 'project',
@@ -1376,8 +1376,13 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
           effort: panel.querySelector('#claydo-save-effort').value,
           overwrite,
         }),
+      }, {
+        title: 'Create character',
+        description: `Re-enter your dashboard passcode to save "${nameVal}".`,
       });
-      const data = await res.json().catch(() => ({}));
+      if (result === null) { goBtn.disabled = false; return; }
+      const res = { ok: result.ok, status: result.status };
+      const data = result.body;
       if (res.status === 409 && !overwrite) {
         overwrite = true;
         goBtn.disabled = false;
@@ -1735,13 +1740,18 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
     const [toScope, toProject] = homeSel.value.split(':');
     const qs = scope === 'project' && projectId
       ? '?project_id=' + encodeURIComponent(projectId) : '';
-    const res = await fetch(API_BASE
+    // MC-995: moving a character is human-only-gated server-side.
+    const result = await humanProofFetch(API_BASE
       + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}/move` + qs, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
+      method: 'POST',
       body: JSON.stringify({to_scope: toScope, to_project_id: toProject || null}),
+    }, {
+      title: 'Move character',
+      description: `Re-enter your dashboard passcode to move "${name}".`,
     });
-    const out = await res.json().catch(() => ({}));
-    if (!res.ok || !out.ok) throw new Error(out.error || `move failed (${res.status})`);
+    if (result === null) { moveBtn.disabled = false; return false; }
+    const out = result.body;
+    if (!result.ok || !out.ok) throw new Error(out.error || `move failed (${result.status})`);
     close();
     if (typeof onDone === 'function') onDone();
     // `window.` — floor.js is a module, so its top-level names are not
@@ -1752,6 +1762,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
     // Reopen at the NEW home. Closing on a move and leaving the user staring
     // at the board is the moment they wonder whether it worked.
     openPersonaEditor(toProject || null, toScope, name, onDone);
+    return true;
   };
 
   homeSel.onchange = () => { moveBtn.disabled = !homeChanged(); };
@@ -1785,9 +1796,9 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
     const btn = panel.querySelector('#pe-save');
     btn.disabled = true;
     try {
-      const res = await fetch(API_BASE + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}`, {
+      // MC-995: editing a character is human-only-gated server-side.
+      const result = await humanProofFetch(API_BASE + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}`, {
         method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
         // Always send all three keys, including empty ones: the API treats an
         // ABSENT key as "leave it alone" and an EMPTY one as "clear the pin".
         // Omitting them would make the pins unclearable from this editor.
@@ -1804,9 +1815,13 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
           skills: panel.querySelector('#pe-skills').value,
           project_id: scope === 'project' ? projectId : null,
         }),
+      }, {
+        title: 'Save character',
+        description: `Re-enter your dashboard passcode to save "${name}".`,
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) { btn.disabled = false; return showErr(data.error || `Save failed (${res.status})`); }
+      if (result === null) { btn.disabled = false; return; }
+      const data = result.body;
+      if (!result.ok) { btn.disabled = false; return showErr(data.error || `Save failed (${result.status})`); }
       _announceCharacterChange(scope, name, 'save');
       // "Belongs to" sits among the fields and reads like one, so a changed
       // home has to be part of Save — leaving it to the separate Move button
@@ -1815,7 +1830,8 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       // there is nothing unsaved left to strand at the old home.
       if (homeChanged()) {
         try {
-          await doMove();   // closes + reopens at the new home
+          const moved = await doMove();   // closes + reopens at the new home
+          if (!moved) btn.disabled = false;   // move's own passcode prompt was cancelled
           return;
         } catch (e) {
           btn.disabled = false;
@@ -1846,13 +1862,17 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
     btn.disabled = true;
     btn.textContent = 'Thinking…';
     try {
-      const res = await fetch(API_BASE + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}/name`, {
+      // MC-995: self-naming persists a value server-side, so it's gated too.
+      const result = await humanProofFetch(API_BASE + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}/name`, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({project_id: scope === 'project' ? projectId : null}),
+      }, {
+        title: 'Choose a name',
+        description: `Re-enter your dashboard passcode to let "${name}" pick its own agent name.`,
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) { showErr(data.error || `Naming failed (${res.status})`); return; }
+      if (result === null) return;
+      const data = result.body;
+      if (!result.ok) { showErr(data.error || `Naming failed (${result.status})`); return; }
       // The endpoint already persisted it; reflect that in the field so a
       // subsequent Save does not send a stale value back over it.
       nameEl.value = data.agent_name || '';
@@ -1875,13 +1895,17 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
     btn.disabled = true;
     btn.textContent = 'Thinking…';
     try {
-      const res = await fetch(API_BASE + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}/avatar`, {
+      // MC-995: self-facing persists a value server-side, so it's gated too.
+      const result = await humanProofFetch(API_BASE + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}/avatar`, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({project_id: scope === 'project' ? projectId : null}),
+      }, {
+        title: 'Choose a face',
+        description: `Re-enter your dashboard passcode to let "${name}" pick its own face.`,
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) { showErr(data.error || `Choosing a face failed (${res.status})`); return; }
+      if (result === null) return;
+      const data = result.body;
+      if (!result.ok) { showErr(data.error || `Choosing a face failed (${result.status})`); return; }
       // Already persisted server-side; mirror it into the field so a later
       // Save does not push a stale value back over it.
       setFace(data.avatar || '');
@@ -1901,11 +1925,17 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
     const btn = panel.querySelector('#pe-delete');
     btn.disabled = true;
     try {
-      const res = await fetch(API_BASE + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}` + qs, {method: 'DELETE'});
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+      // MC-995: deleting a character is human-only-gated server-side.
+      const result = await humanProofFetch(API_BASE + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}` + qs, {
+        method: 'DELETE',
+      }, {
+        title: 'Delete character',
+        description: `Re-enter your dashboard passcode to delete "${name}".`,
+      });
+      if (result === null) { btn.disabled = false; return; }
+      if (!result.ok) {
         btn.disabled = false;
-        return showErr(data.error || `Delete failed (${res.status})`);
+        return showErr(result.body.error || `Delete failed (${result.status})`);
       }
       close();
       if (typeof window.clearCharacterIfSelected === 'function') {

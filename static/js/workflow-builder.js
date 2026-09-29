@@ -4238,9 +4238,16 @@ async function _wfSave() {
   try {
     const url = st.workflowId ? `${API_BASE}/api/workflows/${st.workflowId}` : `${API_BASE}/api/workflows`;
     const method = st.workflowId ? 'PUT' : 'POST';
-    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    // MC-995: workflow definition CRUD is human-only-gated server-side; the
+    // shared modal collects the retyped dashboard passcode and merges it in.
+    const result = await humanProofFetch(url, { method, body: JSON.stringify(body) }, {
+      title: st.workflowId ? 'Save workflow' : 'Create workflow',
+      description: 'Re-enter your dashboard passcode to save this workflow.',
+    });
+    if (result === null) { st.saving = false; _wfRender(); return; }
+    if (!result.ok) throw new Error(result.body.error || ('HTTP ' + result.status));
+    const data = result.body;
+    if (!data.ok) throw new Error(data.error || 'save failed');
     st.workflowId = data.workflow.id;
     st.def = JSON.parse(JSON.stringify(data.workflow));
     await _wfSaveLinkedSchedule(st);
@@ -4476,17 +4483,23 @@ async function _wfDraftFromDescription() {
   _wfRender();
   let data;
   try {
-    const res = await fetch(`${API_BASE}/api/workflows/draft`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    // MC-995: drafting is an authorship act (MC-962) even though nothing is
+    // persisted -- gated server-side, so collect the passcode here too.
+    const result = await humanProofFetch(`${API_BASE}/api/workflows/draft`, {
+      method: 'POST',
       body: JSON.stringify({ description, project_id: st.hintProjectId || '' }),
+    }, {
+      title: 'Describe workflow',
+      description: 'Re-enter your dashboard passcode to draft a workflow from this description.',
     });
-    data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) {
+    if (result === null) { st.drafting = false; _wfRender(); return; }
+    data = result.body;
+    if (!result.ok || !data.ok) {
       const msg = data.error === 'draft_parse_failed'
         ? 'The engine could not produce a usable workflow. Try describing it differently.'
         : data.error === 'draft_call_failed'
         ? 'The engine is unavailable right now. Try again shortly.'
-        : (data.error || `HTTP ${res.status}`);
+        : (data.error || `HTTP ${result.status}`);
       st.drafting = false;
       st.draftError = msg;
       _wfRender();
@@ -4738,8 +4751,15 @@ async function _wfCancelRun() {
   st.cancellingRun = true;
   _wfRender();
   try {
-    const res = await fetch(`${API_BASE}/api/workflow-runs/${encodeURIComponent(run.id)}/cancel`, { method: 'POST' });
-    const data = await res.json().catch(() => null);
+    const result = await humanProofFetch(`${API_BASE}/api/workflow-runs/${encodeURIComponent(run.id)}/cancel`, {
+      method: 'POST',
+    }, {
+      title: 'Cancel run',
+      description: 'Re-enter your dashboard passcode to cancel this run.',
+    });
+    if (result === null) { st.cancellingRun = false; _wfRender(); return; }
+    const res = { ok: result.ok, status: result.status };
+    const data = result.body;
     if (!res.ok || !data || !data.ok) {
       // Only the cancel route's OWN JSON answer proves the run is no longer
       // live. A 404 with no JSON body is the server saying the route does not

@@ -670,13 +670,18 @@ async function _backupRestoreConfirm(path) {
   st.restoreError = null; st.restoreResult = null;
   _backupRender(modalId);
   try {
-    const res = await fetch(API_BASE + '/api/backup/restore', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    // MC-995: overwriting live project state from a snapshot is human-only-
+    // gated server-side.
+    const result = await humanProofFetch(API_BASE + '/api/backup/restore', {
+      method: 'POST',
       body: JSON.stringify({ path }),
+    }, {
+      title: 'Restore from backup',
+      description: 'Re-enter your dashboard passcode to restore from this archive.',
     });
-    const data = await res.json();
-    if (!res.ok) st.restoreError = data.error || `Restore failed (HTTP ${res.status})`;
-    else st.restoreResult = data;
+    if (result === null) return;
+    if (!result.ok) throw new Error(result.body.error || ('HTTP ' + result.status));
+    st.restoreResult = result.body;
   } catch (e) {
     st.restoreError = 'Restore failed: ' + e.message;
   } finally {
@@ -864,8 +869,11 @@ async function _backupImportApply() {
   st.busy = true; st.error = null;
   _backupRender(modalId);
   try {
-    const res = await fetch(API_BASE + '/api/backup/import', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    // MC-995: the dry-run above never mutates anything and stays ungated;
+    // only this apply=true commit needs the retyped dashboard passcode
+    // (human-only-gated server-side).
+    const result = await humanProofFetch(API_BASE + '/api/backup/import', {
+      method: 'POST',
       body: JSON.stringify({
         path: st.path, apply: true,
         project_resolution: st.projectResolution,
@@ -873,10 +881,13 @@ async function _backupImportApply() {
         new_project_path: st.newProjectPath || undefined,
         vault_passphrase: st.vaultPassphrase || undefined,
       }),
+    }, {
+      title: 'Import backup archive',
+      description: 'Re-enter your dashboard passcode to apply this import.',
     });
-    const data = await res.json();
-    if (!res.ok) { st.error = data.error || `Import failed (HTTP ${res.status})`; }
-    else { st.result = data; st.stage = 'done'; }
+    if (result === null) { st.busy = false; _backupRender(modalId); return; }
+    if (!result.ok) { st.error = result.body.error || `Import failed (HTTP ${result.status})`; }
+    else { st.result = result.body; st.stage = 'done'; }
   } catch (e) {
     st.error = 'Import failed: ' + e.message;
   } finally {

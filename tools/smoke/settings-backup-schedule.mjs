@@ -64,6 +64,7 @@ await page.route('**/*', (route) => {
   }
 
   if (path === '/api/projects') return json([]);
+  if (path === '/api/local-auth/status') return json({ configured: true });
   if (path === '/api/config' && route.request().method() === 'GET') return json(config);
   if (path === '/api/config' && route.request().method() === 'PUT') {
     const body = JSON.parse(route.request().postData() || '{}');
@@ -100,6 +101,21 @@ const openSystemSettings = async () => {
     { timeout: 5000 });
 };
 
+// Segment/Keep saves now route through the human-proof passcode modal
+// (MC-995) instead of firing PUT /api/config directly — answer it if shown.
+const answerHumanProofModalIfShown = async () => {
+  const win = await page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout: 2000 })
+    .catch(() => null);
+  if (!win) return false;
+  await page.evaluate(() => {
+    const el = document.querySelector('[data-modal-id^="__human-proof-"]');
+    const modalId = el.dataset.modalId;
+    document.getElementById(`hp-passcode-${modalId}`).value = 'smoke-dash-passcode';
+    window._hpSubmit(modalId);
+  });
+  return true;
+};
+
 try {
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => typeof window.openSettings === 'function', { timeout: 20000 });
@@ -125,6 +141,8 @@ try {
   await page.waitForFunction(
     () => document.querySelector('#mc-backup-schedule-seg button.active')?.textContent?.trim() === 'Daily',
     { timeout: 5000 });
+  await answerHumanProofModalIfShown();
+  await page.waitForTimeout(150);
   (configPuts.length === 1 && configPuts[0].backup_schedule === 'daily')
     ? ok('clicking Daily PUTs /api/config {backup_schedule:"daily"}')
     : fail(`unexpected config PUT(s): ${JSON.stringify(configPuts)}`);
@@ -139,7 +157,8 @@ try {
     input.value = '7';
     input.dispatchEvent(new Event('change'));
   });
-  await page.waitForFunction(() => true, { timeout: 100 }).catch(() => {});
+  await answerHumanProofModalIfShown();
+  await page.waitForTimeout(150);
   (configPuts.length === 1 && configPuts[0].backup_keep === 7)
     ? ok('changing Keep PUTs /api/config {backup_keep:7}')
     : fail(`unexpected config PUT(s) for keep: ${JSON.stringify(configPuts)}`);

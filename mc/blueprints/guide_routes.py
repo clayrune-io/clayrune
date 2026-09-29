@@ -1069,6 +1069,7 @@ def brainstorm_transfer(project_id):
     docs/BRAINSTORM_HANDOFF_SPEC.md."""
     from mc.blueprints.agent_routes import resolve_transcript_messages
     from mc.blueprints.workflow_routes import _is_agent_caller
+    from mc.blueprints.secrets_routes import _require_human_passcode
     from mc.blueprints.project_routes import (
         _refuse_project_path_in_install_dir, _ensure_backlog_numbers, _format_backlog_key,
     )
@@ -1081,6 +1082,11 @@ def brainstorm_transfer(project_id):
         }), 403
 
     body = request.get_json(silent=True) or {}
+    # MC-995: Origin check alone is forgeable — also require the retyped
+    # dashboard passcode, same gate as every other human-only mutation.
+    refusal = _require_human_passcode(body)
+    if refusal is not None:
+        return refusal
     p_source = load_project(project_id)
     if p_source is None:
         return jsonify({'error': 'source project not found'}), 404
