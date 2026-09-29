@@ -497,7 +497,13 @@ def compute_calibration(samples: list[dict], checkpoints: dict[str, dict], facts
     """
     intervals = _eligible_intervals(samples, checkpoints, facts_by_session,
                                      provider=provider, window_scope=window_scope)
-    calibratable = [iv for iv in intervals if iv['coverage_complete'] and len(iv['session_ids']) == 1]
+    # Ron, 2026-09-29: any number of concurrent Clayrune sessions may share an
+    # interval. Tokens-per-point is a property of the plan, not of concurrency:
+    # the interval already sums every overlapping session's measured delta, and
+    # coverage_complete refuses the interval if ANY of them is unmeasured. The
+    # old single-session rule left ~17% of intervals usable on a box that runs
+    # up to 9 agents at once, so calibration never qualified.
+    calibratable = [iv for iv in intervals if iv['coverage_complete'] and iv['session_ids']]
     distinct_sessions = set().union(*(iv['session_ids'] for iv in calibratable)) if calibratable else set()
     if len(calibratable) < _MIN_ELIGIBLE_INTERVALS or len(distinct_sessions) < _MIN_ELIGIBLE_SESSIONS:
         return {'status': 'insufficient_samples', 'eligible_interval_count': len(calibratable),

@@ -316,10 +316,11 @@ def test_calibration_no_session_activity_excluded_not_counted_as_eligible():
     assert cal['eligible_interval_count'] == 0
 
 
-def test_calibration_two_active_sessions_in_one_interval_excludes_it():
-    """P1-2 finding 2: "exactly one active session" -- a second, concurrent
-    session inside an otherwise-clean interval must remove it from
-    calibratable, not just average its counters in."""
+def test_calibration_two_active_sessions_in_one_interval_sums_them():
+    """Ron, 2026-09-29 (reverses P1-2 finding 2's single-session rule): a
+    second, fully measured concurrent session keeps the interval
+    calibratable, and the interval charges BOTH sessions' deltas -- the
+    tokens-per-point ratio does not depend on how many agents ran."""
     samples, checkpoints, facts = _calibration_fixture()
     t0 = datetime(2026, 9, 28, 10, 0, 0, tzinfo=timezone.utc)  # sess-0's own interval
     checkpoints['sess-0-concurrent'] = _checkpoint(
@@ -329,9 +330,11 @@ def test_calibration_two_active_sessions_in_one_interval_excludes_it():
                         ended_at=(t0 + timedelta(minutes=2)).isoformat()))
     cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
                                provider='claude', window_scope='all')
-    # 5 raw intervals, but sess-0's is no longer single-session -> only 4 calibratable
-    assert cal['status'] == 'insufficient_samples'
-    assert cal['eligible_interval_count'] == 4
+    assert cal['status'] == 'ok'
+    assert cal['eligible_interval_count'] == 5
+    shared = [iv for iv in cal['all_intervals'] if len(iv['session_ids']) == 2]
+    assert len(shared) == 1
+    assert shared[0]['input_processed_total'] == 200 and shared[0]['output_tokens'] == 100
 
 
 def test_calibration_partially_overlapping_session_marks_interval_incomplete():
