@@ -31,8 +31,11 @@
     // documentation only, never read by the router itself.
     project:       { parent: 'home',    label: _projectLabel,  render: () => window.deskV1RenderProject },
     campaign:      { parent: 'project', label: _campaignLabel,  render: () => _renderCampaignSkeleton },
-    // IA1 stub (§5 row IA1: "piece (stub)") — full facets land in IA5.
-    piece:         { parent: 'campaign', label: _pieceLabel,   render: () => window.deskV1RenderPiece },
+    // IA5 (§2.4, §5 row IA5): shell-owned skeleton (header/facet-strip/
+    // body/Posy rightcol), same T2 persistent-frame pattern as the campaign
+    // route below — desk-v1-piece.js fills the slots via deskV1FillPiece*
+    // hooks, it never owns the skeleton itself.
+    piece:         { parent: 'campaign', label: _pieceLabel,   render: () => _renderPieceSkeleton },
     // IA1 stub (§5 row IA1: "presence (stub)") — settings UI lands in IA3.
     presence:      { parent: 'project', label: 'Presence',     render: () => window.deskV1RenderPresence },
     // IA1 stub (§5 row IA1: "engagement (stub)") — dashboard lands in IA7.
@@ -76,15 +79,18 @@
     return p ? p.name : 'Project';
   }
 
-  // IA1: a piece's crumb title (and so a child review/video route's Back
+  // IA1/IA5: a piece's crumb title (and so a child review/video route's Back
   // label, per §1's "review/video -> piece") is the content family's own
-  // title — resolved by versionId since that's what the existing Needs-you
-  // deep link already carries (desk-v1-home.js), same lookup shape as
-  // _videoLabel below (by familyId) but keyed the other way round.
+  // title. IA5 resolves it by `familyId` first (every real piece-page nav
+  // now carries one) and falls back to the `versionId` lookup IA1 shipped
+  // (Home's deep link, desk-v1-home.js's deskV1HomeGotoReview, still only
+  // carries versionId), same lookup shape as _videoLabel below but keyed
+  // the other way round.
   function _pieceLabel(params) {
     const families = (window.DeskV1Fixtures && window.DeskV1Fixtures.families) || [];
-    const versionId = (params || {}).versionId;
-    const fam = families.find(f => (f.versions || []).some(v => v.id === versionId));
+    const p = params || {};
+    let fam = p.familyId ? families.find(f => f.id === p.familyId) : null;
+    if (!fam && p.versionId) fam = families.find(f => (f.versions || []).some(v => v.id === p.versionId));
     return fam ? fam.title : 'Piece';
   }
 
@@ -260,6 +266,66 @@
     }
   }
 
+  // IA5 (§2.4, §5 row IA5): piece skeleton — same "shell owns the frame,
+  // caller fills slots" contract as `_renderCampaignSkeleton` above (T2's
+  // own precedent, §4 table: "reused for the project page and the piece
+  // page"). Header + Posy rightcol are filled ONLY here (a full mount),
+  // never by `_renderPieceFacet` below — so a facet switch through the
+  // in-place `_gotoPieceFacet` branch leaves both as the SAME DOM node
+  // (IA5 acceptance: "switch 4 facets keeps header + Posy DOM node, same
+  // node identity").
+  function _renderPieceSkeleton(el, params) {
+    if (!params.facet) params.facet = 'what';
+    el.innerHTML = `
+      <div class="desk-v1-piece">
+        <div class="desk-v1-piece-header" id="desk-v1-piece-header"></div>
+        <div class="desk-v1-camp-tabstrip" id="desk-v1-piece-facetstrip"></div>
+        <div class="desk-v1-camp-main">
+          <div class="desk-v1-piece-body" id="desk-v1-piece-body"></div>
+          <div class="desk-v1-camp-rightcol" id="desk-v1-piece-rightcol"></div>
+        </div>
+      </div>`;
+    const headerEl = document.getElementById('desk-v1-piece-header');
+    if (headerEl && typeof window.deskV1FillPieceHeader === 'function') window.deskV1FillPieceHeader(headerEl, params);
+    const rightEl = document.getElementById('desk-v1-piece-rightcol');
+    if (rightEl && typeof window.deskV1FillPieceRightColumn === 'function') window.deskV1FillPieceRightColumn(rightEl, params);
+    _renderPieceFacet(params);
+  }
+
+  // Fills ONLY the facet strip + body — mirrors `_renderCampaignPanel`'s own
+  // "never touch summary/rightcol" comment above, for the same reason.
+  function _renderPieceFacet(params) {
+    const stripEl = document.getElementById('desk-v1-piece-facetstrip');
+    if (stripEl && typeof window.deskV1FillPieceFacetStrip === 'function') window.deskV1FillPieceFacetStrip(stripEl, params);
+    const bodyEl = document.getElementById('desk-v1-piece-body');
+    if (!bodyEl) return;
+    if (typeof window.deskV1FillPieceBody === 'function') {
+      window.deskV1FillPieceBody(bodyEl, params);
+    } else {
+      bodyEl.innerHTML = `<div class="desk-v1-stub-inline">${esc(params.facet || 'what')} is not built yet.</div>`;
+    }
+  }
+
+  // Same same-target in-place switch as `_gotoCampaignPanel` above: a facet
+  // click from the piece currently on screen patches the stack entry's
+  // params in place (no push, no header/Posy rebuild); a facet request for
+  // a DIFFERENT piece (or from elsewhere) pushes a fresh piece entry the
+  // same way a plain `deskV1Nav('piece', ...)` always has. Identity is by
+  // `familyId` — every caller inside desk-v1-piece.js resolves and passes it.
+  function deskV1GotoPieceFacet(facet, params) { _gotoPieceFacet(facet, params || {}); }
+
+  function _gotoPieceFacet(facet, params) {
+    const top = _stack[_stack.length - 1];
+    const nextParams = Object.assign({}, params, { facet });
+    if (top && top.route === 'piece' && top.params.familyId && top.params.familyId === nextParams.familyId) {
+      top.params = nextParams;
+      _renderPieceFacet(nextParams);
+      return;
+    }
+    _stack.push({ route: 'piece', params: nextParams });
+    deskV1Render();
+  }
+
   function deskV1Open() {
     if (openModals.has(MODAL_ID)) {
       const entry = openModals.get(MODAL_ID);
@@ -307,4 +373,5 @@
   window.deskV1PatchParams = deskV1PatchParams;
   window.deskV1PopTo = deskV1PopTo;
   window.deskV1GotoCampaignPanel = deskV1GotoCampaignPanel;
+  window.deskV1GotoPieceFacet = deskV1GotoPieceFacet;
 })();
