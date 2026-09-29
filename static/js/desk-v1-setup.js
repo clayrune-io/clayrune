@@ -73,10 +73,36 @@
   // — reuses IA3's own settings page verbatim (deskV1RenderPresence), mounted
   // into a sub-host so this file never re-derives account/ceiling markup.
   // ────────────────────────────────────────────────────────────────────────
+  // A Draft campaign (steps 0-2) had no More/Delete anywhere — the campaign
+  // page shows ONLY this wizard while `camp.state === 'draft'`
+  // (desk-v1-campaign.js:126), and the project page's own card has no
+  // more-menu either (only an archived card does, Restore-only). Delete was
+  // already meant to cover draft (`_isPrePublish` in desk-v1-campaign.js
+  // treats 'proposed' and 'draft' identically), it just had no trigger to
+  // reach it before Proposed. Reuses the SAME menu/confirm/commandBus path
+  // the Proposed/Active summary uses (`deskV1OpenCampaignMoreMenu`) so the
+  // draft/proposed boundary can't drift into two implementations.
+  function _moreBtnHTML() {
+    return `<div class="desk-v1-camp-card-more">
+      <button type="button" class="desk-v1-camp-card-morebtn" data-camp-more-btn aria-haspopup="menu" aria-label="More actions">&#8942;</button>
+    </div>`;
+  }
+  function _wireMoreBtn(el, camp, rerender) {
+    const moreBtn = el.querySelector('[data-camp-more-btn]');
+    if (!moreBtn || typeof window.deskV1OpenCampaignMoreMenu !== 'function') return;
+    moreBtn.onclick = (e) => {
+      e.stopPropagation();
+      window.deskV1OpenCampaignMoreMenu(moreBtn, camp.id, {
+        onDone: (result) => { if (result === 'deleted') deskV1Nav('home', {}); else rerender(); },
+      });
+    };
+  }
+
   function _fillStep0(el, params, camp, project) {
     el.innerHTML = `
       <div class="desk-v1-camp-summary-top">
         <span class="desk-v1-camp-state-pill">Setup — Presence</span>
+        ${_moreBtnHTML()}
       </div>
       <div class="desk-v1-rules-hint">${esc(project ? project.name : 'This project')} has no accounts connected yet — connect at least one before setting up a campaign.</div>
       <div id="desk-v1-setup-presence-host"></div>
@@ -90,6 +116,7 @@
       if (!DeskV1Kit.validatePresence(project).ok) { DeskV1Kit.toast('Connect at least one account first.'); return; }
       deskV1FillDraftSetup(el, params, camp);
     };
+    _wireMoreBtn(el, camp, () => deskV1FillDraftSetup(el, params, camp));
   }
 
   // ── Step 1: Subject + goal (§2.3 table row 1) — subject chips default to
@@ -117,6 +144,7 @@
     el.innerHTML = `
       <div class="desk-v1-camp-summary-top">
         <span class="desk-v1-camp-state-pill">Setup 1 of 3 — Subject + goal</span>
+        ${_moreBtnHTML()}
       </div>
       <div class="desk-v1-rules-group">
         <div class="desk-v1-rules-group-title">Subject</div>
@@ -164,6 +192,7 @@
       camp.setup.done = [1];
       deskV1FillDraftSetup(el, params, camp);
     };
+    _wireMoreBtn(el, camp, () => deskV1FillDraftSetup(el, params, camp));
   }
 
   // ── Step 2: Plan (§2.3 table row 2) — "Draft the plan" (Posy task,
@@ -189,6 +218,7 @@
     el.innerHTML = `
       <div class="desk-v1-camp-summary-top">
         <span class="desk-v1-camp-state-pill">Setup 2 of 3 — Plan</span>
+        ${_moreBtnHTML()}
       </div>
       <div class="desk-v1-rules-group">
         <div class="desk-v1-rules-group-title">Accounts</div>
@@ -239,6 +269,7 @@
       DeskV1Kit.toast(`Plan drafted — 3 planned pieces added to "${plan.title}".`);
       if (typeof window.deskV1Render === 'function') window.deskV1Render();
     };
+    _wireMoreBtn(el, camp, () => deskV1FillDraftSetup(el, params, camp));
   }
 
   // ── Dispatch (§2.3: step 0 presence gate, then steps 1/2; step 3 is the
