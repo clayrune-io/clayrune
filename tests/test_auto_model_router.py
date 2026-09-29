@@ -254,3 +254,13 @@ class TestLoadProjectsExclusion:
         ids = [p.get('id') for p in projects]
         assert 'proj7_agent_log' not in ids
         assert 'proj7_scribe_stats' not in ids
+
+def test_tier_ids_are_the_current_family_heads():
+    # Each auto-router tier should be the newest catalog id in its family, so
+    # a routed dispatch never lands on an older model than a hand pick would.
+    from mc.agent_runtime import get_runtime
+    from mc.blueprints.agent_routes import _AUTO_MODEL_VALID
+    rt = get_runtime('claude')
+    assert _AUTO_MODEL_VALID['O'] == rt.catalog_head_for('best')
+    assert _AUTO_MODEL_VALID['S'] == rt.catalog_head_for('balanced')
+    assert _AUTO_MODEL_VALID['H'] == rt.catalog_head_for('fast')
