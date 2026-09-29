@@ -311,6 +311,10 @@ R2-13, probing: which stage is this campaign at; is it on track; where do you ch
 
 ## 9. Open questions for Ron (the tickets assume each recommendation)
 
+**Answered 2026-09-29 (Ron): all three recommendations accepted.** Q1 measurable goal required before Launch, `manual`
+allowed as the source. Q2 long campaigns run in ≤90-day terms, each renewed with one tap. Q3 project-funded budgets
+are earmarked at Launch, never a shared pot.
+
 1. **Must a goal be measurable before Launch?** Your item 2 says yes; the shipped Desk treats an untracked goal as a
    warning (CMP-03, `desk-v1-fixtures.js:591`), because no real conversion source exists yet.
    **Recommend: require a target number and a source, and allow `manual` as the source** (you type the current
