@@ -37,7 +37,15 @@ def store(tmp_path):
 
 # Wall-clock anchor: mark_session_running stamps updated_at with the real
 # clock, so the fixture's times hang off real now, not a fixed date.
+# Re-anchored per test: an import-time anchor drifts behind the real clock
+# while a full suite runs, and the 120s grace / 24h fallback checks flip.
 NOW = datetime.now(timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_now():
+    global NOW
+    NOW = datetime.now(timezone.utc)
 
 
 def _iso(dt):
