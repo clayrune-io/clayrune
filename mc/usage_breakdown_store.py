@@ -383,46 +383,80 @@ class UsageBreakdownStore:
             )
 
     def mark_session_running(self, session_id: str) -> bool:
-        """Flip an existing fact back to status='running' when a RESUMED
-        session starts a new turn (round 3, P1-2). The fact otherwise stays
-        'completed' at its previous turn's end until the new turn completes,
-        and the aggregate would read the last completion as the session's
-        end while it is visibly working. Counters and `ended_at` (the last
-        completion) are kept: the aggregate treats everything after that
-        completion as one unmeasured, still-open span, and the prune bound
-        on `ended_at` still retires a fact whose session died mid-turn.
-        Returns False when no fact exists yet (a first turn -- its baseline
-        checkpoint alone already marks it live)."""
+        """Mark `session_id` as mid-turn: flip its fact to status='running'
+        when a RESUMED session starts a new turn (round 3, P1-2), or when an
+        automatic wake starts one nobody sent (round 4). The fact otherwise
+        stays 'completed' at its previous turn's end until the new turn
+        completes, and the aggregate would read the last completion as the
+        session's end while it is visibly working. Counters and `ended_at`
+        are kept: the aggregate treats everything after the last completion
+        as one unmeasured, still-open span. Any status is reopened, including
+        'ended_unknown' -- a session reconcile closed that is in fact still
+        working must come back.
+
+        A first turn with no fact yet gets a counter-less 'running' fact
+        started at its baseline (round 4). The baseline alone already reads
+        as open, but it never changes, so a turn start on a baseline-only
+        session left nothing newer for `close_session_ended_unknown` to see:
+        a reconcile working from an older live-set snapshot closed a session
+        that had just started a turn. Returns False only when there is no
+        fact and no baseline."""
         if not session_id:
             raise ValueError('session_id is required')
+        now = _now()
         with self._connection(write=True) as db:
             db.execute("UPDATE session_fact SET status='running', updated_at=? WHERE session_id=?",
-                       (_now(), session_id))
-            return db.execute('SELECT changes()').fetchone()[0] > 0
+                       (now, session_id))
+            if db.execute('SELECT changes()').fetchone()[0] > 0:
+                return True
+            base = db.execute("SELECT provider, observed_at FROM session_checkpoint "
+                              "WHERE session_id=? AND checkpoint_type='baseline'",
+                              (session_id,)).fetchone()
+            if not base:
+                return False
+            db.execute(
+                'INSERT INTO session_fact (session_id, provider, status, started_at, '
+                ' token_coverage, updated_at, created_at) '
+                "VALUES (?, ?, 'running', ?, 'unavailable', ?, ?)",
+                (session_id, base['provider'] or 'claude', base['observed_at'], now, now))
+            return True
 
     def list_open_sessions(self) -> list[dict]:
         """Every session the aggregate reads as still running: a fact with
         status 'running' (or no ended_at), or a first turn -- a baseline
         checkpoint with no fact and no completion yet. Each row is
-        {'session_id', 'provider', 'started_at', 'last_activity_at'};
-        `last_activity_at` is the newest durable time held for it (the
-        fact's updated_at, which the resume writer sets at turn start, or
-        the baseline's observed_at). `reconcile_dead_sessions` reads this."""
+        {'session_id', 'provider', 'started_at', 'last_activity_at',
+        'generation'}; `last_activity_at` is the newest durable time held for
+        it (the fact's updated_at, which every turn start sets, or the
+        baseline's observed_at). `generation` is the fact's updated_at, None
+        for a fact-less first turn -- pass it back to
+        `close_session_ended_unknown` so a turn that starts after this read
+        is never closed on its strength. `reconcile_dead_sessions` reads this."""
         with self._connection(write=False) as db:
             rows = [dict(r) for r in db.execute(
-                'SELECT session_id, provider, started_at, updated_at AS last_activity_at '
+                'SELECT session_id, provider, started_at, updated_at AS last_activity_at, '
+                ' updated_at AS generation '
                 "FROM session_fact WHERE status='running' OR ended_at IS NULL").fetchall()]
             rows += [dict(r) for r in db.execute(
                 'SELECT c.session_id, c.provider, c.observed_at AS started_at, '
-                ' c.observed_at AS last_activity_at FROM session_checkpoint c '
+                ' c.observed_at AS last_activity_at, NULL AS generation FROM session_checkpoint c '
                 "WHERE c.checkpoint_type='baseline' "
                 ' AND NOT EXISTS (SELECT 1 FROM session_fact f WHERE f.session_id=c.session_id) '
                 ' AND NOT EXISTS (SELECT 1 FROM session_checkpoint d '
                 "  WHERE d.session_id=c.session_id AND d.checkpoint_type='completion')").fetchall()]
             return rows
 
+    def list_ended_unknown_session_ids(self) -> list[str]:
+        """Sessions `close_session_ended_unknown` closed and nothing has
+        overwritten since -- the candidates `reconcile_dead_sessions`
+        reopens when their MC session turns out to be live after all."""
+        with self._connection(write=False) as db:
+            return [r[0] for r in db.execute(
+                "SELECT session_id FROM session_fact WHERE status='ended_unknown'").fetchall()]
+
     def close_session_ended_unknown(self, session_id: str, *, provider: str,
-                                    started_at: Optional[str], ended_at: str) -> bool:
+                                    started_at: Optional[str], ended_at: str,
+                                    generation: Optional[str] = None) -> bool:
         """Close a session that is still open in the store but no longer
         live (it crashed mid-turn, or the server restarted under it):
         status 'ended_unknown', ended_at = when it was observed gone. Left
@@ -433,20 +467,24 @@ class UsageBreakdownStore:
         actually overlapped stay incomplete. A first turn (no fact yet) gets
         a counter-less fact carrying the same status.
 
-        Conditional on the row still being open, so a completion that lands
-        between listing and closing wins. A later turn of the same session
-        re-marks it 'running' (mark_session_running) and its completion
+        Conditional on nothing newer having been written since
+        `list_open_sessions` produced `generation` (round 4): a fact is closed
+        only while still open AND its updated_at still equals `generation`,
+        so a completion or a new turn start (mark_session_running) landing
+        between the read and this write wins. `generation=None` is a
+        fact-less first turn: closed only while it still has no fact and no
+        completion. A later turn re-marks it 'running' and its completion
         overwrites the whole fact. Returns True when a row was closed."""
         if not session_id:
             raise ValueError('session_id is required')
         now = _now()
         with self._connection(write=True) as db:
-            db.execute(
-                "UPDATE session_fact SET status='ended_unknown', ended_at=?, updated_at=? "
-                "WHERE session_id=? AND (status='running' OR ended_at IS NULL)",
-                (ended_at, now, session_id))
-            if db.execute('SELECT changes()').fetchone()[0] > 0:
-                return True
+            if generation is not None:
+                db.execute(
+                    "UPDATE session_fact SET status='ended_unknown', ended_at=?, updated_at=? "
+                    "WHERE session_id=? AND (status='running' OR ended_at IS NULL) AND updated_at=?",
+                    (ended_at, now, session_id, generation))
+                return db.execute('SELECT changes()').fetchone()[0] > 0
             if db.execute('SELECT 1 FROM session_fact WHERE session_id=?',
                           (session_id,)).fetchone():
                 return False

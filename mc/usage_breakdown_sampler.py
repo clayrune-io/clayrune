@@ -14,7 +14,7 @@ or a real vendor credential.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional, Union
 
 from mc.usage_breakdown_store import UsageBreakdownStore
 
@@ -242,15 +242,19 @@ def should_sample_interval_seconds(*, any_session_active: bool) -> int:
     return 60 if any_session_active else 300
 
 
-# A session is registered as 'running' in agent_sessions only AFTER its
-# dispatch-pending write (agent_routes writes the durable record, baseline
-# checkpoint included, before Popen), so a reconcile tick can land between
-# the two. Anything with durable activity newer than this is left alone.
+# Backstop for a launch the caller's live set cannot see yet. The server's
+# live set already includes every dispatch whose durable record (baseline
+# checkpoint included) was written before Popen and whose session is not
+# registered yet (state.pending_launches); this only covers a writer that
+# does not register there. Anything with durable activity newer than this
+# is left alone.
 RECONCILE_GRACE_SECONDS = 120
 # Used ONLY when the live-session registry could not be read at all: close
 # an open session once its newest durable activity is a day old. Longer
 # than any single agent turn this install has run, and it caps what one
-# crash can block at a day instead of the 90-day retention window.
+# crash can block at a day instead of the 90-day retention window. A
+# heuristic, not proof of death -- which is why it never runs while the
+# registry answers.
 RECONCILE_FALLBACK_MAX_AGE_SECONDS = 24 * 3600
 
 
@@ -264,23 +268,33 @@ def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def reconcile_dead_sessions(store: UsageBreakdownStore, *, live_session_ids: Optional[set],
+def reconcile_dead_sessions(store: UsageBreakdownStore, *,
+                            live_session_ids: Union[Optional[set], Callable[[], Optional[set]]],
                             now: Optional[datetime] = None,
                             process_started_at: Optional[str] = None) -> list[str]:
     """Close every session the store still holds open (a 'running' fact, or
     a baseline-only first turn) whose MC session is no longer live -- it
     crashed mid-turn, or the server restarted and nothing re-adopted it.
     Left open, its span never ends and overlaps every later calibration
-    interval and window until the 90-day prune.
+    interval and window until the 90-day prune. And reopen any session this
+    closed earlier that turns out to be live after all.
 
-    Liveness is `live_session_ids`: the server's agent_sessions entries
-    with status 'running'. A session is closed at `now`, the first moment
-    it was observed gone -- not at its last checkpoint, which for a resumed
-    turn predates the whole crashed turn and would leave the interval it
-    died in looking isolated. The overshoot is at most one sampler tick
-    (60s while any session runs); across a server restart the gap has no
-    allowance samples, and a sample pair spanning it exceeds the 10-minute
-    interval limit anyway.
+    Liveness is `live_session_ids`: every MC session whose provider process
+    is still alive, whatever its status -- a Mode B session is 'idle'
+    between turns and while it waits on an mc:question, with the process
+    (and its automatic next turn) still there -- plus every launch whose
+    durable record exists but whose session is not registered yet (round
+    4). Pass it as a zero-argument CALLABLE: it is then read AFTER the store
+    snapshot, so a turn that starts in between is either seen live or has
+    written a newer generation that makes the close a no-op
+    (`close_session_ended_unknown`). A plain set is accepted for tests.
+
+    A session is closed at `now`, the first moment it was observed gone --
+    not at its last checkpoint, which for a resumed turn predates the whole
+    crashed turn and would leave the interval it died in looking isolated.
+    The overshoot is at most one sampler tick (60s while any session runs);
+    across a server restart the gap has no allowance samples, and a sample
+    pair spanning it exceeds the 10-minute interval limit anyway.
 
     `process_started_at` (this server process's start) tightens that for a
     session whose newest activity predates it: it belonged to the previous
@@ -288,24 +302,32 @@ def reconcile_dead_sessions(store: UsageBreakdownStore, *, live_session_ids: Opt
     closed at this process's start rather than at `now` -- a server left
     off for a day must not mark that whole day's windows incomplete.
 
-    `live_session_ids=None` means the registry could not be read: fall back
-    to RECONCILE_FALLBACK_MAX_AGE_SECONDS of durable inactivity. Returns
-    the closed session ids."""
+    A live set of None means the registry could not be read: fall back to
+    RECONCILE_FALLBACK_MAX_AGE_SECONDS of durable inactivity, and reopen
+    nothing. Returns the closed session ids."""
     now = now or datetime.now(timezone.utc)
     booted = _parse_ts(process_started_at)
+    rows = store.list_open_sessions()
+    ended_unknown = store.list_ended_unknown_session_ids()
+    live = live_session_ids() if callable(live_session_ids) else live_session_ids
+    if live is not None:
+        for sid in ended_unknown:
+            if sid in live:
+                store.mark_session_running(sid)
     closed = []
-    for row in store.list_open_sessions():
+    for row in rows:
         sid = row['session_id']
         last = _parse_ts(row.get('last_activity_at'))
         age = (now - last).total_seconds() if last else None
-        if live_session_ids is None:
+        if live is None:
             if age is None or age < RECONCILE_FALLBACK_MAX_AGE_SECONDS:
                 continue
-        elif sid in live_session_ids or (age is not None and age < RECONCILE_GRACE_SECONDS):
+        elif sid in live or (age is not None and age < RECONCILE_GRACE_SECONDS):
             continue
         end = booted if (booted and last and last < booted < now) else now
         if store.close_session_ended_unknown(sid, provider=row.get('provider') or 'claude',
                                              started_at=row.get('started_at'),
-                                             ended_at=end.isoformat()):
+                                             ended_at=end.isoformat(),
+                                             generation=row.get('generation')):
             closed.append(sid)
     return closed

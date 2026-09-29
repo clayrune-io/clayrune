@@ -1023,12 +1023,37 @@ def _usage_breakdown_any_session_active() -> bool:
 
 
 def _usage_breakdown_live_session_ids():
-    """MC session ids currently mid-turn -- the liveness source for
+    """MC session ids that are live -- the liveness source for
     `reconcile_dead_sessions`. None when the registry can't be read, which
     switches the reconcile to its max-age fallback instead of treating
-    every session as dead."""
+    every session as dead.
+
+    Live = mid-turn OR its provider process is still alive, whatever its
+    status: Mode B flips to 'idle' on every `result` and while it waits on
+    an mc:question, with the process (and any automatic next turn) still
+    there, so status alone declared living sessions dead (round 4, Fenn).
+    A proc without poll() falls back to the session's process_alive flag; a
+    poll() that raises counts as alive -- wrongly keeping a span open costs
+    an incomplete window, wrongly closing it costs a false calibration.
+    Plus every launch whose durable record is written but whose session is
+    not registered yet (state.pending_launches)."""
+    from mc.state import pending_launches
+
+    def _live(s):
+        if s.get('status') == 'running':
+            return True
+        poll = getattr(s.get('proc'), 'poll', None)
+        if callable(poll):
+            try:
+                return poll() is None
+            except Exception:
+                return True
+        return bool(s.get('process_alive'))
+
     try:
-        return {sid for sid, s in list(agent_sessions.items()) if s.get('status') == 'running'}
+        live = {sid for sid, s in list(agent_sessions.items()) if _live(s)}
+        live.update(list(pending_launches))
+        return live
     except Exception as e:
         _log(f"[usage-breakdown] live-session read failed: {e}", flush=True)
         return None
@@ -1056,7 +1081,7 @@ def usage_breakdown_sample_once() -> dict:
         _log(f"[usage-breakdown] codex allowance sample failed: {e}", flush=True)
     try:
         closed = _sampler.reconcile_dead_sessions(
-            store, live_session_ids=_usage_breakdown_live_session_ids(),
+            store, live_session_ids=_usage_breakdown_live_session_ids,
             process_started_at=_SERVER_STARTED_AT)
         if closed:
             _log(f"[usage-breakdown] closed {len(closed)} session(s) no longer live: "

@@ -49,6 +49,7 @@ _get_mem_write_lock or writes MEMORY.md.
 """
 
 import concurrent.futures
+import contextlib
 from mc import engine_selection
 from mc.runtime_attempt_owner import DispatchFacts
 import hashlib
@@ -87,6 +88,7 @@ from mc.state import (
     _managers_lock,
     _provider_env_lock,
     agent_sessions,
+    pending_launches,
     process_tracker_lock,
     terminal_sessions,
     tracked_processes,
@@ -7479,6 +7481,22 @@ def _note_self_started_turn(session):
     session['status'] = 'running'
     session['last_status_change_time'] = _time.time()
     session.pop(_bg_tasks.RESUME_PENDING_KEY, None)
+    # MC-998 round 4: this turn never passes the dispatch-pending writer, so
+    # the usage store still held the previous turn's 'completed' fact (or a
+    # reconcile-closed one) while it ran -- every automatic wake, not only
+    # the INTERIM-latched one below, reopens it. Same exclusions as that
+    # writer, same best-effort write.
+    if (session.get('project_id') and session.get('session_id')
+            and not session.get('incognito') and not session.get('housekeeping')):
+        try:
+            _store = _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite')
+            _store.record_session_checkpoint(**_usage_breakdown_sampler.baseline_checkpoint_fields(
+                session['session_id'], provider=session.get('provider') or 'claude',
+                observed_at=session.get('started_at') or now_iso()))
+            _store.mark_session_running(session['session_id'])
+        except Exception as e:
+            _log(f"[usage-breakdown] self-started turn not recorded for "
+                 f"{session.get('session_id', '')}: {e}")
     if session.pop(_bg_tasks.INTERIM_KEY, None):
         try:
             _rearm_notify_for_new_turn(session)
@@ -9927,6 +9945,19 @@ def _model_quota_blocked(provider_name: str, model: str) -> str:
             f"— it will fail again until the quota resets; pick a different model")
 
 
+@contextlib.contextmanager
+def _pending_launch_scope():
+    """Yields a list; every session id appended to it is removed from
+    state.pending_launches when the block exits, normally or by exception
+    -- so a Popen failure never leaves a launch counted live forever."""
+    sids = []
+    try:
+        yield sids
+    finally:
+        for sid in sids:
+            pending_launches.pop(sid, None)
+
+
 def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              trigger_type='manual', trigger_id='',
                              reuse_session_id='', provider_override='',
@@ -10409,7 +10440,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     else:
         _agent_cwd, _isolated = _maybe_isolate_worktree(p, _planned_sid, incognito)
 
-    with mgr.lock:
+    with mgr.lock, _pending_launch_scope() as _pending_launch:
         # Reuse the prior run's id (continued scheduled thread) unless that id is
         # somehow still a live session — never clobber a running session dict.
         if reuse_session_id and (
@@ -10447,6 +10478,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # setup fails, reconciliation can see an in-progress launch and retain
         # the unknown outcome instead of leaving an untracked child process.
         if notify_session and not incognito:
+            # Live to the usage-breakdown reconcile from here until this
+            # `with` block exits -- by then the session is in agent_sessions,
+            # or the launch failed (MC-998 round 4).
+            _pending_launch.append(session_id)
+            pending_launches[session_id] = _time.time()
             _log_agent_dispatch_pending({
                 'project_id': project_id, 'session_id': session_id,
                 'task': task, 'provider': provider_name,
