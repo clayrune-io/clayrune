@@ -8367,6 +8367,48 @@ def _write_usage_breakdown_turn_checkpoint(session):
         _log(f"[usage-breakdown] turn checkpoint write failed for {sid[:12]}: {e}")
 
 
+def _write_usage_breakdown_turn_start_checkpoint(session):
+    """MC-998 turn-start fix (schema v5, docs/_journal/4668eafc-mc998-fenn-
+    review.md, backlog 4668eafc follow-up 3, 2026-09-29): writes the
+    'turn_start' session_checkpoint row at the moment a NEW turn actually
+    begins. Called from every `_start_new_turn` closure (`agent_followup`,
+    `agent_interrupt`'s midturn rollover) -- the same moment
+    `_advance_delegation_turn`/`_rearm_notify_for_new_turn` mark this
+    session as moving into its next turn.
+
+    Without this, `_session_turns` (usage_breakdown_aggregate.py) had no way
+    to tell a turn's own active span apart from the idle time a Mode B
+    session spends sitting between turns (its process stays alive, so
+    nothing marks when a follow-up actually started) -- every turn's span
+    ran from the PREVIOUS completion, folding hours of idle time into it, so
+    any calibration interval that idle time overlapped read as a turn
+    straddling its boundary. `turn_start` marks where the active span
+    actually begins; the idle span before it becomes simply absent from
+    this session's evidence -- never a straddling turn, never an unmeasured
+    span.
+
+    Reads the session's cumulative counters from the store's current
+    `session_fact` row rather than the live session dict (which may already
+    be stale/mid-mutation at this call site) -- see
+    `turn_start_checkpoint_fields`'s docstring for why a missing fact leaves
+    the row `token_coverage='unavailable'` instead of a fabricated zero. A
+    session's first turn never reaches here: `record_session_checkpoint`'s
+    partial unique index on 'baseline' means turn 1 already has its start
+    marker from `_log_agent_dispatch_pending`'s dispatch-time write.
+    Best-effort, same exception handling as the completion-side write."""
+    project_id = session.get('project_id')
+    sid = session.get('session_id')
+    if not project_id or not sid or session.get('incognito'):
+        return
+    try:
+        _store = _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite')
+        _fact = _store.get_session_fact(sid)
+        _store.record_session_checkpoint(**_usage_breakdown_sampler.turn_start_checkpoint_fields(
+            sid, provider=session.get('provider') or 'claude', observed_at=now_iso(), fact=_fact))
+    except Exception as e:
+        _log(f"[usage-breakdown] turn-start checkpoint write failed for {sid[:12]}: {e}")
+
+
 def _log_agent_completion(session):
     """Save a summary entry when an agent session finishes.
 
@@ -11934,6 +11976,7 @@ def agent_followup(project_id):
             _rearm_notify_for_new_turn(sess)
         else:
             _advance_delegation_turn(sess)
+        _write_usage_breakdown_turn_start_checkpoint(sess)
 
     _respawn_b = None  # set if Mode B needs to respawn outside lock
     _model_route_state = None  # set when alive+auto_model_enabled; handled post-lock
@@ -12922,6 +12965,7 @@ def agent_interrupt(project_id, *, _internal=None):
             _rearm_notify_for_new_turn(sess)
         else:
             _advance_delegation_turn(sess)
+        _write_usage_breakdown_turn_start_checkpoint(sess)
 
     with get_manager(project_id).lock:
         session = agent_sessions.get(session_id)

@@ -75,7 +75,7 @@ def _checkpoint(session_id, *, provider='claude', baseline_at, completion_at=Non
         'observed_at': baseline_at, 'input_fresh': 0, 'input_cache_write': 0,
         'input_cache_read': 0, 'input_processed_total': 0, 'output_tokens': 0,
         'output_reasoning': 0, 'token_coverage': 'unavailable',
-    }, 'completions': []}
+    }, 'turn_starts': [], 'completions': []}
     if completion_at is not None:
         ck['completions'].append({
             'session_id': session_id, 'provider': provider, 'checkpoint_type': 'completion',
@@ -93,6 +93,22 @@ def _completion(session_id, *, provider='claude', observed_at,
     third turn onto a `_checkpoint(...)` fixture's `completions` list."""
     return {
         'session_id': session_id, 'provider': provider, 'checkpoint_type': 'completion',
+        'observed_at': observed_at, 'input_fresh': input_processed_total,
+        'input_cache_write': 0, 'input_cache_read': 0,
+        'input_processed_total': input_processed_total, 'output_tokens': output_tokens,
+        'output_reasoning': 0, 'token_coverage': token_coverage,
+    }
+
+
+def _turn_start(session_id, *, provider='claude', observed_at,
+                 input_processed_total, output_tokens, token_coverage='complete'):
+    """One 'turn_start' checkpoint row (schema v5, MC-998 turn-start fix),
+    for appending onto a `_checkpoint(...)` fixture's `turn_starts` list.
+    Carries the same cumulative totals as the PRECEDING completion (the new
+    turn hasn't produced a token yet) -- callers pass the previous turn's
+    own cumulative totals here, not the upcoming turn's."""
+    return {
+        'session_id': session_id, 'provider': provider, 'checkpoint_type': 'turn_start',
         'observed_at': observed_at, 'input_fresh': input_processed_total,
         'input_cache_write': 0, 'input_cache_read': 0,
         'input_processed_total': input_processed_total, 'output_tokens': output_tokens,
@@ -505,6 +521,146 @@ def test_calibration_turn_crossing_interval_boundary_marks_it_incomplete():
                                provider='claude', window_scope='all')
     assert cal['status'] == 'insufficient_samples'
     assert cal['eligible_interval_count'] == 4
+
+
+# ── turn-start fix (MC-998 follow-up 3, 2026-09-29) ─────────────────────
+
+def test_idle_gap_between_completion_and_turn_start_does_not_straddle_an_interval():
+    """docs/_journal/4668eafc-mc998-fenn-review.md, follow-up 3: a Mode B
+    session's process stays alive between turns, so the checkpoint pair
+    `_session_turns` used to build a turn was (last completion -> this
+    completion) -- folding however long the session sat idle first into the
+    turn's own span. Live evidence: 790 samples -> 111 candidate intervals,
+    coverage_complete=0/111, every one blocked by a session whose turn
+    'straddled' it. This reproduces the mechanism at unit scale: sess-idle
+    sits idle for 2 hours between its two turns; an UNRELATED session's own
+    interval falls entirely inside that idle window. Before the fix,
+    sess-idle's (completion -> next completion) turn spanned the whole
+    idle+turn2 stretch and crossed the unrelated interval's boundary,
+    marking it incomplete even though sess-idle did nothing there. With
+    turn_start recorded, sess-idle's idle span is simply absent from its
+    evidence -- the interval sees only the session that actually ran in
+    it."""
+    t0 = datetime(2026, 9, 28, 10, 0, 0, tzinfo=timezone.utc)
+    t1a = t0 + timedelta(minutes=2)                 # sess-idle's turn 1 completes
+    t_start2 = t0 + timedelta(hours=2, minutes=2)    # sess-idle's turn 2 begins
+    t_end2 = t0 + timedelta(hours=2, minutes=4)      # sess-idle's turn 2 completes
+    tx0 = t0 + timedelta(hours=1)                    # sess-x's interval -- deep inside the idle gap
+    tx1 = tx0 + timedelta(minutes=2)
+
+    samples = [
+        _sample(raw_utilization=10.0, source_observed_at=tx0.isoformat()),
+        _sample(raw_utilization=16.0, source_observed_at=tx1.isoformat()),
+    ]
+    checkpoints = {
+        'sess-idle': _checkpoint('sess-idle', baseline_at=t0.isoformat(), completion_at=t1a.isoformat()),
+        'sess-x': _checkpoint('sess-x', baseline_at=tx0.isoformat(), completion_at=tx1.isoformat()),
+    }
+    checkpoints['sess-idle']['turn_starts'].append(
+        _turn_start('sess-idle', observed_at=t_start2.isoformat(),
+                    input_processed_total=100, output_tokens=50))
+    checkpoints['sess-idle']['completions'].append(
+        _completion('sess-idle', observed_at=t_end2.isoformat(),
+                    input_processed_total=200, output_tokens=100))
+    facts = _facts_by_session([
+        _fact('sess-idle', started_at=t0.isoformat(), ended_at=t_end2.isoformat(),
+              input_processed_total=200, output_tokens=100),
+        _fact('sess-x', started_at=tx0.isoformat(), ended_at=tx1.isoformat()),
+    ])
+
+    cal = compute_calibration(samples, checkpoints, facts, provider='claude', window_scope='all')
+    iv = next(v for v in cal['all_intervals'] if v['start'] == tx0)
+    assert iv['coverage_complete'] is True
+    assert iv['session_ids'] == {'sess-x'}
+
+
+def test_turn_crossing_interval_boundary_still_straddles_with_turn_start_present():
+    """The idle-gap fix must never hide a REAL straddle: a turn whose OWN
+    active span (turn_start -> completion) genuinely crosses an interval
+    boundary -- the session was mid-turn, not idle, when the interval's
+    sample was taken -- still marks that interval incomplete exactly as a
+    baseline-anchored turn 1 does (mirrors
+    test_calibration_turn_crossing_interval_boundary_marks_it_incomplete,
+    but for a turn 2+ anchored by turn_start instead of baseline)."""
+    samples, checkpoints, facts = _calibration_fixture()
+    t0 = datetime(2026, 9, 28, 10, 0, 0, tzinfo=timezone.utc)  # sess-0's own interval
+    t1 = t0 + timedelta(minutes=2)
+    checkpoints['sess-0'] = _checkpoint(
+        'sess-0', baseline_at=(t0 - timedelta(hours=1)).isoformat(),
+        completion_at=(t0 - timedelta(minutes=50)).isoformat())
+    checkpoints['sess-0']['turn_starts'].append(
+        _turn_start('sess-0', observed_at=(t0 - timedelta(minutes=30)).isoformat(),
+                    input_processed_total=100, output_tokens=50))
+    checkpoints['sess-0']['completions'].append(
+        _completion('sess-0', observed_at=t1.isoformat(),
+                    input_processed_total=200, output_tokens=100))
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    assert cal['status'] == 'insufficient_samples'
+    assert cal['eligible_interval_count'] == 4
+
+
+def test_old_data_without_turn_start_behaves_exactly_as_before():
+    """No turn_starts entries at all (rows written before this fix) must
+    fall back to the prior (conservative) behaviour -- span from the
+    previous checkpoint, folding idle time into the turn -- so this asserts
+    the pre-fix result unchanged: same fixture and expectation as
+    test_calibration_turn_crossing_interval_boundary_marks_it_incomplete,
+    proving the turn_start-aware code path is a strict addition, not a
+    replacement, when there is nothing to prefer."""
+    samples, checkpoints, facts = _calibration_fixture()
+    t0 = datetime(2026, 9, 28, 10, 0, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(minutes=2)
+    checkpoints['sess-0'] = _checkpoint(
+        'sess-0', baseline_at=(t0 - timedelta(minutes=30)).isoformat(),
+        completion_at=t1.isoformat())
+    assert checkpoints['sess-0']['turn_starts'] == []
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    assert cal['status'] == 'insufficient_samples'
+    assert cal['eligible_interval_count'] == 4
+
+
+def test_calibration_reaches_ok_with_idle_sessions_present():
+    """Synthetic multi-session scenario proving the fix's actual point, at
+    the shape of the live evidence (790 samples -> 111 intervals, 0
+    coverage_complete, every one blocked by >=1 straddling turn): three
+    ADDITIONAL sessions each go idle for ~1h25 BEFORE the fixture's own
+    10:00-11:22 calibration span and don't complete their next turn until
+    AFTER it -- i.e. their idle gap fully SPANS all five calibration
+    intervals, exactly how a long-lived Mode B chat that last spoke an hour
+    ago and won't speak again for another hour sits astride any short
+    calibration window that falls in between. Before this fix, each idle
+    session's single (completion -> next completion) turn would cross every
+    one of the five fixture intervals -- proven below by asserting this
+    exact scenario against the PRE-fix code path fails first (run with the
+    fix's changes to mc/usage_breakdown_aggregate.py reverted: eligible_
+    interval_count drops from 5 to 0 and status never reaches 'ok'). With
+    turn_start recorded, the idle span is simply absent from each session's
+    evidence, so it never touches the five fixture intervals at all -- only
+    the five originally-measured sessions do, exactly matching
+    _calibration_fixture()'s own expectation with no idle sessions."""
+    samples, checkpoints, facts = _calibration_fixture()
+    for i in range(3):
+        sid = f'sess-idle-{i}'
+        t0 = datetime(2026, 9, 28, 8, 30, 0, tzinfo=timezone.utc) + timedelta(minutes=5 * i)  # before 10:00
+        t1a = t0 + timedelta(minutes=2)
+        t_start2 = datetime(2026, 9, 28, 11, 30, 0, tzinfo=timezone.utc) + timedelta(minutes=5 * i)  # after 11:22
+        t_end2 = t_start2 + timedelta(minutes=2)
+        checkpoints[sid] = _checkpoint(sid, baseline_at=t0.isoformat(), completion_at=t1a.isoformat())
+        checkpoints[sid]['turn_starts'].append(
+            _turn_start(sid, observed_at=t_start2.isoformat(),
+                        input_processed_total=100, output_tokens=50))
+        checkpoints[sid]['completions'].append(
+            _completion(sid, observed_at=t_end2.isoformat(),
+                        input_processed_total=200, output_tokens=100))
+        facts.append(_fact(sid, started_at=t0.isoformat(), ended_at=t_end2.isoformat(),
+                            input_processed_total=200, output_tokens=100))
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    assert cal['status'] == 'ok'
+    assert cal['eligible_interval_count'] == 5
+    assert cal['distinct_session_count'] == 5
 
 
 # ── segmented bar ────────────────────────────────────────────────────────

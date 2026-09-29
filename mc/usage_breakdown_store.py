@@ -18,13 +18,30 @@ Four tables, schema-versioned via `PRAGMA user_version`:
     housekeeping/internal sessions stay visible-but-markable per spec §4.
   - session_checkpoint: exactly one 'baseline' row (written at dispatch, zero
     cumulative tokens -- a partial unique index on session_id makes a
-    repeated dispatch-pending call a no-op) and one 'completion' row PER
-    TURN (Mode-A completions fire per turn, not once per session; a unique
+    repeated dispatch-pending call a no-op), one 'completion' row PER TURN
+    (Mode-A completions fire per turn, not once per session; a unique
     index on (session_id, observed_at) only dedupes an exact retry, never a
-    later turn's new timestamp). Schema v3 (was: table-level
-    `UNIQUE(session_id, checkpoint_type)`, which froze the FIRST completion
-    forever and silently discarded every later turn's row while
-    `session_fact` kept advancing to the latest cumulative total --
+    later turn's new timestamp), and one 'turn_start' row per follow-up/
+    resume into an EXISTING session (schema v5, MC-998 turn-start fix,
+    docs/_journal/4668eafc-mc998-fenn-review.md, backlog 4668eafc reopened
+    2026-09-29): a Mode B session's process stays alive between turns, so
+    the checkpoint pair `_session_turns` used to build a turn was (last
+    completion -> this completion) -- for a resumed turn that spans however
+    long the session sat IDLE first, folding that idle time into the turn's
+    own span, so any calibration interval it overlapped "straddled" a turn
+    that was mostly idle. `turn_start` marks the moment a new turn actually
+    BEGAN, carrying forward the session's cumulative counters AS OF THAT
+    MOMENT (unchanged since the last completion, so the idle span
+    (last completion -> this turn_start) always deltas to zero -- known
+    idle, never straddling, never unmeasured) so the ACTIVE span
+    (turn_start -> this turn's completion) is the only one that can ever
+    straddle a boundary. Same dedup shape as 'completion' (a partial unique
+    index on (session_id, observed_at), never one-per-session): the
+    dispatch-time 'baseline' already serves as turn 1's start marker, so
+    'turn_start' is never written for a session's first turn. Schema v3
+    (was: table-level `UNIQUE(session_id, checkpoint_type)`, which froze the
+    FIRST completion forever and silently discarded every later turn's row
+    while `session_fact` kept advancing to the latest cumulative total --
     docs/_journal/4668eafc-mc998-fenn-review.md "2026-09-28 re-review"
     finding 3, P1-3). The tokens-per-point calibration in
     mc/usage_breakdown_aggregate.py walks each session's full checkpoint
@@ -55,7 +72,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 APPLICATION_ID = 0x4D435542  # 'MCUB'
 DB_FILENAME = 'usage_breakdown.sqlite'
 
@@ -89,14 +106,14 @@ _CODE_DELTA_LIFETIME_SEED_SQL = (
 # P1-3): no table-level UNIQUE(session_id, checkpoint_type) -- that froze
 # every session's completion checkpoint at its first turn. A 'baseline' row
 # stays unique per session (a partial index, checked only for that type);
-# 'completion' rows append one per turn, deduped only against an exact
-# repeated (session_id, observed_at) retry.
+# 'completion' and 'turn_start' (schema v5) rows each append one per turn,
+# deduped only against an exact repeated (session_id, observed_at) retry.
 _SESSION_CHECKPOINT_TABLE_SQL = (
     'CREATE TABLE session_checkpoint ('
     ' id INTEGER PRIMARY KEY AUTOINCREMENT,'
     ' session_id TEXT NOT NULL,'
     ' provider TEXT NOT NULL,'
-    ' checkpoint_type TEXT NOT NULL,'  # 'baseline' | 'completion'
+    ' checkpoint_type TEXT NOT NULL,'  # 'baseline' | 'turn_start' | 'completion'
     ' observed_at TEXT NOT NULL,'
     ' input_fresh INTEGER,'
     ' input_cache_write INTEGER,'
@@ -117,6 +134,12 @@ _SESSION_CHECKPOINT_INDEX_SQL = (
     "ON session_checkpoint(session_id) WHERE checkpoint_type='baseline'",
     'CREATE UNIQUE INDEX idx_session_checkpoint_completion_dedup '
     "ON session_checkpoint(session_id, observed_at) WHERE checkpoint_type='completion'",
+    # Schema v5 (MC-998 turn-start fix): same dedup shape as 'completion' --
+    # one row per turn's start, never one per session -- an exact retry (the
+    # same turn-start call landing twice) is a no-op; a later turn's new
+    # observed_at always inserts.
+    'CREATE UNIQUE INDEX idx_session_checkpoint_turn_start_dedup '
+    "ON session_checkpoint(session_id, observed_at) WHERE checkpoint_type='turn_start'",
 )
 
 
@@ -265,6 +288,23 @@ class UsageBreakdownStore:
             # v3->v4 (round 3, P2-5): per-worktree-lifetime LOC rows.
             db.execute(_CODE_DELTA_LIFETIME_TABLE_SQL)
             db.execute(_CODE_DELTA_LIFETIME_SEED_SQL)
+            version = 4
+            db.execute('PRAGMA user_version=4')
+        if version == 4 and app == APPLICATION_ID and (
+                {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                - {'sqlite_sequence'}) == _TABLES:
+            # v4->v5 (MC-998 turn-start fix): additive-only -- session_checkpoint's
+            # shape doesn't change (checkpoint_type has no CHECK constraint, so
+            # existing rows already tolerate a future 'turn_start' value), only
+            # the dedup index is new. A v1/v2-origin db reaches this point via
+            # the version==1/2 branches above, which already ran the full
+            # _SESSION_CHECKPOINT_INDEX_SQL loop (this index included) before
+            # falling through -- so only create it if a genuine pre-existing
+            # v4 db is actually missing it.
+            existing_indexes = {r[0] for r in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'")}
+            if 'idx_session_checkpoint_turn_start_dedup' not in existing_indexes:
+                db.execute(_SESSION_CHECKPOINT_INDEX_SQL[-1])
             db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
             return
         if (app != APPLICATION_ID or version != SCHEMA_VERSION
@@ -541,7 +581,7 @@ class UsageBreakdownStore:
         before a still-running session ever gets a session_fact."""
         if not session_id:
             raise ValueError('session_id is required')
-        if checkpoint_type not in ('baseline', 'completion'):
+        if checkpoint_type not in ('baseline', 'turn_start', 'completion'):
             raise ValueError(f'invalid checkpoint_type: {checkpoint_type!r}')
         if not observed_at:
             raise ValueError('observed_at is required')
@@ -574,20 +614,25 @@ class UsageBreakdownStore:
             return [dict(r) for r in db.execute(q, params).fetchall()]
 
     def get_session_checkpoints(self, session_id: str) -> dict[str, Any]:
-        """{'baseline': row|None, 'completions': [row, ...] oldest first} for
-        one session_id. Callers must never assume `completions` has at most
-        one entry (P1-3, docs/_journal/4668eafc-mc998-fenn-review.md
-        "2026-09-28 re-review" finding 3): Mode-A completions fire per turn,
-        so a multi-turn session accumulates one completion row per turn."""
+        """{'baseline': row|None, 'turn_starts': [row, ...], 'completions':
+        [row, ...]} (each list oldest first) for one session_id. Callers
+        must never assume `completions` has at most one entry (P1-3,
+        docs/_journal/4668eafc-mc998-fenn-review.md "2026-09-28 re-review"
+        finding 3): Mode-A completions fire per turn, so a multi-turn
+        session accumulates one completion row per turn -- and, since
+        schema v5 (MC-998 turn-start fix), one 'turn_start' row per
+        follow-up/resume into an existing session."""
         with self._connection(write=False) as db:
             rows = db.execute(
                 'SELECT * FROM session_checkpoint WHERE session_id=? ORDER BY observed_at ASC',
                 (session_id,)).fetchall()
-            result: dict[str, Any] = {'baseline': None, 'completions': []}
+            result: dict[str, Any] = {'baseline': None, 'turn_starts': [], 'completions': []}
             for r in rows:
                 d = dict(r)
                 if d['checkpoint_type'] == 'baseline':
                     result['baseline'] = d
+                elif d['checkpoint_type'] == 'turn_start':
+                    result['turn_starts'].append(d)
                 else:
                     result['completions'].append(d)
             return result

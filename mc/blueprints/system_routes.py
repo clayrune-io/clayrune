@@ -1339,15 +1339,21 @@ def system_usage_breakdown_get():
     session_facts = store.list_session_facts(since=ninety_days_ago)
     code_deltas = {f['session_id']: (store.get_code_delta(f['session_id']) or {})
                    for f in session_facts if f.get('session_id')}
-    # {session_id: {'baseline': row|None, 'completions': [row, ...]}} -- a
-    # multi-turn session appends one completion row per turn (P1-3); the
-    # list stays in observed_at order because list_session_checkpoints is
-    # itself ordered (session_id ASC, observed_at ASC).
+    # {session_id: {'baseline': row|None, 'turn_starts': [row, ...], 'completions': [row, ...]}}
+    # -- a multi-turn session appends one 'turn_start' and one 'completion'
+    # row per follow-up turn (P1-3, MC-998 turn-start fix); both lists stay
+    # in observed_at order because list_session_checkpoints is itself
+    # ordered (session_id ASC, observed_at ASC). Every non-baseline row used
+    # to be bucketed as a completion -- that would silently treat a
+    # 'turn_start' row as if a turn had finished at that instant.
     checkpoints: dict[str, dict] = {}
     for row in store.list_session_checkpoints(since=ninety_days_ago):
-        entry = checkpoints.setdefault(row['session_id'], {'baseline': None, 'completions': []})
+        entry = checkpoints.setdefault(
+            row['session_id'], {'baseline': None, 'turn_starts': [], 'completions': []})
         if row['checkpoint_type'] == 'baseline':
             entry['baseline'] = row
+        elif row['checkpoint_type'] == 'turn_start':
+            entry['turn_starts'].append(row)
         else:
             entry['completions'].append(row)
 
