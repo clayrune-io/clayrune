@@ -198,7 +198,12 @@
     if (returnFocus && typeof returnFocus.focus === 'function') returnFocus.focus();
   }
   document.addEventListener('click', (e) => {
-    if (_openMenu && !_openMenu.el.contains(e.target) && e.target !== _openMenu.trigger) _closeAddToMenu();
+    // e.target is whatever child node the browser hit-tested (a shelf item's
+    // icon/badge span, a button's text), almost never the trigger element
+    // itself — an exact `!==` here closed the menu on the SAME click that
+    // opened it for any trigger with child markup. contains() matches what
+    // the menu-body check on the left already does.
+    if (_openMenu && !_openMenu.el.contains(e.target) && !_openMenu.trigger.contains(e.target)) _closeAddToMenu();
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && _openMenu) { e.stopPropagation(); _closeAddToMenu(); }

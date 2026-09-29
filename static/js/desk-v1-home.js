@@ -12,12 +12,14 @@
 
   // ── data resolution (same _fx() convention as desk-v1-review.js) ────────
   function _fx() { return window.DeskV1Fixtures || {}; }
+  function _projects() { return _fx().projects || []; }
   function _campaigns() { return _fx().campaigns || []; }
   function _channels() { return _fx().channels || []; }
   function _families() { return _fx().families || []; }
   function _conversations() { return _fx().conversations || []; }
   function _channel(id) { return _channels().find((c) => c.id === id); }
   function _campaign(id) { return _campaigns().find((c) => c.id === id); }
+  function _project(id) { return _projects().find((p) => p.id === id); }
 
   // A version is done concluding once it reaches one of these — a held
   // channel no longer "blocks" it (LIF-01/02/03).
@@ -30,15 +32,17 @@
     for (const fam of _families()) {
       for (const v of fam.versions) {
         if (v.state !== 'needs_review') continue;
+        const camp = _campaign(fam.campaignId);
         items.push({
           kind: fam.kind === 'video' ? 'video' : 'piece',
           campaignId: fam.campaignId, versionId: v.id,
+          projectId: camp && camp.projectId,
         });
       }
     }
     for (const c of _conversations()) {
       if (c.state !== 'needs_reply') continue;
-      items.push({ kind: 'reply', campaignId: c.campaignId, conversationId: c.id });
+      items.push({ kind: 'reply', campaignId: c.campaignId, conversationId: c.id, projectId: c.projectId });
     }
     return items;
   }
@@ -119,7 +123,7 @@
       return;
     }
     const cmd = _dropCommandFor(camp, dragData);
-    DeskV1Kit.commandBus.run({ label: cmd.label, do: () => { cmd.do(); _renderCards(); }, undo: () => { cmd.undo(); _renderCards(); } });
+    DeskV1Kit.commandBus.run({ label: cmd.label, do: () => { cmd.do(); _renderProjectCards(); }, undo: () => { cmd.undo(); _renderProjectCards(); } });
   }
 
   function _applyDropToNewCampaign(dragData) {
@@ -127,30 +131,10 @@
     const cmd = _dropCommandFor(camp, dragData);
     DeskV1Kit.commandBus.run({
       label: `Created “${camp.name}” and added ${dragData.label}`,
-      do: () => { _fx().campaigns.push(camp); cmd.do(); _renderCards(); },
-      undo: () => { cmd.undo(); const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); _renderCards(); },
+      do: () => { _fx().campaigns.push(camp); cmd.do(); _renderProjectCards(); },
+      undo: () => { cmd.undo(); const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); _renderProjectCards(); },
     });
     deskV1Nav('campaign', { campaignId: camp.id });
-  }
-
-  // "Which campaign? ▾ / New campaign" (UX-03) — reuses the kit's Add to…
-  // menu at an arbitrary screen point rather than forking a second dropdown;
-  // `addToMenu` always appends "+ New campaign" itself. `tempTrigger` carries
-  // `.desk-v1-addto-wrap` so the kit's own `closest('.desk-v1-addto-wrap')`
-  // resolves to itself instead of falling through to `document.body` — the
-  // kit sets `host.style.position = 'relative'` on whatever it resolves to,
-  // and doing that to <body> would be a real layout bug, not a cosmetic one.
-  function _chooseCampaign(x, y, onPick) {
-    const items = _campaigns().map((c) => ({ id: c.id, label: c.name }));
-    const tempTrigger = document.createElement('div');
-    tempTrigger.className = 'desk-v1-addto-wrap';
-    tempTrigger.style.cssText = `position:fixed; left:${x}px; top:${y}px; width:0; height:0;`;
-    document.body.appendChild(tempTrigger);
-    const mo = new MutationObserver(() => {
-      if (!tempTrigger.querySelector('.desk-v1-addto-menu')) { mo.disconnect(); tempTrigger.remove(); }
-    });
-    mo.observe(tempTrigger, { childList: true });
-    DeskV1Kit.addToMenu(tempTrigger, items, onPick);
   }
 
   function _onCampaignPicked(pickedId, dragData) {
@@ -158,59 +142,29 @@
     else _applyDropToCampaign(pickedId, dragData);
   }
 
-  // ── drag (pointer-drag.js, T0c) — shelf items are sources, campaign cards
-  // are the only targets on Home. One state slot, matching floor.js's own
+  // ── drag (pointer-drag.js, T0c) — one state slot, matching floor.js's own
   // "only one drag at a time" precedent. ───────────────────────────────────
   let _shelfDrag = null;
   let _lastShelfDragEnd = 0; // floor.js's _lastHireDragEnd precedent, same 300ms window
 
-  function _setCardResultText(card, text) {
-    const t = card.querySelector('.desk-v1-home-camp-result');
-    if (t) t.textContent = text || '';
-  }
-
-  function _hoverCampaignCardsAt(x, y, dragData) {
-    const el = document.elementFromPoint(x, y);
-    const card = el && el.closest && el.closest('.desk-v1-home-camp-card');
-    document.querySelectorAll('.desk-v1-home-camp-card').forEach((c) => {
-      if (c !== card) { c.classList.remove('pd-drop-hover'); _setCardResultText(c, ''); }
-    });
-    if (card) { card.classList.add('pd-drop-hover'); _setCardResultText(card, `Drop to add ${dragData.label} here`); }
-  }
-
-  function _resolveDropAt(x, y) {
-    const el = document.elementFromPoint(x, y);
-    const card = el && el.closest && el.closest('.desk-v1-home-camp-card');
-    if (card) return { type: 'card', campaignId: card.dataset.campaignId };
-    const inSection = el && el.closest && el.closest('#desk-v1-home-cards');
-    if (inSection) {
-      const camps = _campaigns();
-      if (camps.length > 1) return { type: 'ambiguous', x, y };
-      if (camps.length === 1) return { type: 'card', campaignId: camps[0].id };
-    }
-    return null; // a miss — teardown just cleans up, no toast (matches floor.js's refused-drop silence)
-  }
-
-  function _handleDrop(resolved, dragData) {
-    if (resolved.type === 'card') _applyDropToCampaign(resolved.campaignId, dragData);
-    else if (resolved.type === 'ambiguous') _chooseCampaign(resolved.x, resolved.y, (id) => _onCampaignPicked(id, dragData));
-  }
-
-  // Default target behaviour: Home's own campaign cards. T2a's Add tray
-  // (desk-v1-campaign.js) passes its own adapter into the exported
-  // deskV1RenderShelfPair/_wireShelfItem below instead — see that export's
-  // comment for why this had to become a parameter rather than staying
-  // hardcoded here.
+  // IA1 (§1's hierarchy): Home no longer renders a campaign-card grid — that
+  // moved to the project page — so a shelf item dragged on Home has nothing
+  // left to hover/land on and every drop is a miss (matches floor.js's own
+  // silent-refusal precedent for a drop with no target). The click/keyboard
+  // path (UX-05's `bindAddToTrigger`, `addToItems`/`onPick` below) still
+  // attaches a channel/asset to any campaign across every project — that
+  // capability doesn't require a visible card, only the picker menu.
   function _homeShelfAdapter() {
     return {
-      onActivate: () => { document.querySelectorAll('.desk-v1-home-camp-card').forEach((c) => c.classList.add('pd-drop-target')); },
-      onMove: (x, y, dragData) => _hoverCampaignCardsAt(x, y, dragData),
-      onDrop: (x, y) => _resolveDropAt(x, y),
-      afterDrop: (resolved, dragData) => { if (resolved) _handleDrop(resolved, dragData); },
-      onTeardown: () => {
-        document.querySelectorAll('.desk-v1-home-camp-card').forEach((c) => { c.classList.remove('pd-drop-target', 'pd-drop-hover'); _setCardResultText(c, ''); });
-      },
-      addToItems: () => _campaigns().map((c) => ({ id: c.id, label: c.name })),
+      onActivate: () => {},
+      onMove: () => {},
+      onDrop: () => null,
+      afterDrop: () => {},
+      onTeardown: () => {},
+      addToItems: () => _campaigns().map((c) => {
+        const proj = _projects().length > 1 ? _project(c.projectId) : null;
+        return { id: c.id, label: proj ? `${c.name} — ${proj.name}` : c.name };
+      }),
       onPick: (pickedId, dragData) => _onCampaignPicked(pickedId, dragData),
     };
   }
@@ -293,128 +247,73 @@
     }
   }
 
-  // ── render: campaign cards (3-up grid, drop targets) ─────────────────────
-  function _campCardHTML(c) {
-    const label = DeskV1Kit.stateLabelHTML(c.state);
-    // §5: "Home card shows ⟳ Posy working" — a live read of the shared task
-    // store at render time (mount, or any card-list re-render), not a push;
-    // covers "navigate away mid-ask and land on Home" for free since Home
-    // re-renders its cards on every mount. Prefix-matches every draftKey the
-    // campaign's own Posy box can use (`campaign:<id>:...`); review/video
-    // asks are scoped by version/family id, not campaign id, so they don't
-    // surface here (§5 doesn't ask for cross-linking those to a campaign).
-    const posyWorkingHTML = DeskV1Kit.anyPosyWorking(`campaign:${c.id}:`)
-      ? `<span class="desk-v1-home-camp-posyworking">${esc(DeskV1Kit.POSY_WORKING_LABEL)}</span>`
-      : '';
-    // §4/Dave review pass 1: target/metric read from `c.plan.goal` (the
-    // canonical copy) — `current` (live progress) has no plan field and
-    // stays on `c.goal`. Same split as desk-v1-campaign.js's summary bar.
-    const planGoal = (c.plan && c.plan.goal) || {};
-    const goalHTML = planGoal.tracked
-      ? (() => {
-          const current = (c.goal && c.goal.current) || 0;
-          const pct = planGoal.target ? Math.max(0, Math.min(100, Math.round((current / planGoal.target) * 100))) : 0;
-          return `<div class="desk-v1-home-camp-goal">
-            <div class="desk-v1-home-camp-goalbar"><div class="desk-v1-home-camp-goalfill" style="width:${pct}%"></div></div>
-            <span>${esc(current)}/${esc(planGoal.target)} ${esc(planGoal.outcome)}</span>
-          </div>`;
-        })()
-      : '<div class="desk-v1-home-camp-goal desk-v1-home-camp-goal-untracked">No goal tracked yet</div>';
-    const chans = (c.channelIds || []).map((id) => _channel(id)).filter(Boolean);
-    const badges = chans.length
-      ? chans.map((ch) => DeskV1Kit.channelBadge(ch, { reviewMode: c.rules && c.rules.reviewMode })).join('')
-      : '<span class="desk-v1-home-camp-nochannels">No channels yet</span>';
-    // .desk-v1-stub-link is kept alongside the real card class so T0a's
-    // desk-v1-harness.mjs (out of this ticket's file list — ground rule 2
-    // says don't touch it) keeps finding a generic "the fixture campaign
-    // renders as a clickable link on Home" element by that selector; its own
-    // T0a styling is overridden below by the more specific card rule.
-    //
-    // A plain <button> wrapper (T1's original shape) can't host the item-3
-    // More menu Dave's review added — a <button> inside a <button> is
-    // invalid HTML and browsers auto-close the outer one, which would kill
-    // the whole card's own click-to-open. Switched to a div with
-    // role="button" + tabindex so keyboard/AT users keep exactly the same
-    // affordance; _wireCards below adds the Enter/Space handler a real
-    // button gave for free.
+  // ── IA1 (§5 row IA1, §1's hierarchy): project cards. §1 states Home's grid
+  // is one card PER PROJECT, not per campaign — the campaign-card grid below
+  // stays exactly as T1-T3 built it (ground rule 2: desk-v1-home.mjs, out of
+  // this ticket's file list, still asserts on it directly), so this is
+  // additive: a new row above it, the first hop of the new Home -> project
+  // -> campaign path IA1's own acceptance test exercises.
+  //
+  // Dave's review pass 3 (§1: Home shows project cards, no campaign grid):
+  // the flat campaign grid + Archived section that used to sit below this
+  // row are RETIRED from Home, not just superseded — campaigns (active and
+  // archived) are only reachable from here by way of a project's own page
+  // (desk-v1-project.js). This card is now the sole "at a glance" surface
+  // Home offers per project, so it carries what the old campaign cards used
+  // to show in aggregate: how many campaigns, how many are active, and the
+  // earliest planned post across them (omitted where the fixture has none —
+  // §"no label without a value" from THE_DESK_V1_UI.md still holds). ───────
+  function _campaignsFor(projectId) { return _campaigns().filter((c) => c.projectId === projectId); }
+
+  function _nextPostFor(projectId) {
+    const campIds = new Set(_campaignsFor(projectId).map((c) => c.id));
+    const schedule = _fx().calendarSchedule || {};
+    let best = null;
+    for (const fam of _families()) {
+      if (!campIds.has(fam.campaignId)) continue;
+      for (const v of fam.versions) {
+        const when = schedule[v.id];
+        if (!when || v.state !== 'planned') continue;
+        const t = new Date(when).getTime();
+        if (!best || t < best.t) best = { t, when };
+      }
+    }
+    return best && best.when;
+  }
+
+  function _fmtNextPost(iso) {
+    try { return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(iso)); }
+    catch (e) { return iso; }
+  }
+
+  function _projectCardHTML(p) {
+    const camps = _campaignsFor(p.id).filter((c) => c.state !== 'archived');
+    const count = camps.length;
+    const activeCount = camps.filter((c) => c.state === 'active').length;
+    const nextPost = _nextPostFor(p.id);
     return `
-      <div class="desk-v1-home-camp-card desk-v1-stub-link" data-campaign-id="${esc(c.id)}"
-        role="button" tabindex="0">
-        <div class="desk-v1-home-camp-top">
-          ${label}<span class="desk-v1-home-camp-name">${esc(c.name)}</span>${posyWorkingHTML}
-          ${c.state !== 'archived' ? `<div class="desk-v1-camp-card-more">
-            <button type="button" class="desk-v1-camp-card-morebtn" data-camp-more-btn aria-haspopup="menu" aria-label="More actions">⋯</button>
-          </div>` : ''}
-        </div>
-        ${goalHTML}
-        <div class="desk-v1-home-camp-badges">${badges}</div>
-        <div class="desk-v1-home-camp-result" aria-live="polite"></div>
+      <div class="desk-v1-home-project-card" data-project-id="${esc(p.id)}" role="button" tabindex="0">
+        <span class="desk-v1-home-project-name">${esc(p.name)}</span>
+        <span class="desk-v1-home-project-meta">${count} campaign${count === 1 ? '' : 's'}${activeCount ? ` · ${activeCount} active` : ''}</span>
+        ${nextPost ? `<span class="desk-v1-home-project-nextpost">Next post ${esc(_fmtNextPost(nextPost))}</span>` : ''}
       </div>`;
   }
 
-  // Archived campaigns' "Archived view" (Dave's review note) — a plain
-  // <details> row list rather than a second grid/route: R0 is fixture-only
-  // and this is the one place archived campaigns need to be reachable at
-  // all, not a surface worth its own navigation. Re-rendered after every
-  // archive/restore so the count and membership stay live.
-  function _renderArchivedSection() {
-    const host = document.getElementById('desk-v1-home-archived');
+  function _renderProjectCards() {
+    const host = document.getElementById('desk-v1-home-projects');
     if (!host) return;
-    const archived = _campaigns().filter((c) => c.state === 'archived');
-    if (!archived.length) { host.innerHTML = ''; return; }
-    const wasOpen = !!host.querySelector('details[open]');
-    host.innerHTML = `
-      <details class="desk-v1-home-archived-details" ${wasOpen ? 'open' : ''}>
-        <summary class="desk-v1-home-archived-summary">Archived (${archived.length})</summary>
-        <div class="desk-v1-home-archived-list">
-          ${archived.map((c) => `
-            <button type="button" class="desk-v1-home-archived-row" data-campaign-id="${esc(c.id)}">
-              <span class="desk-v1-home-archived-name">${esc(c.name)}</span>
-              <span class="desk-v1-home-archived-hint">Results and receipts kept</span>
-            </button>`).join('')}
-        </div>
-      </details>`;
-    host.querySelectorAll('.desk-v1-home-archived-row').forEach((row) => {
-      row.onclick = () => deskV1Nav('campaign', { campaignId: row.dataset.campaignId });
-    });
-  }
-
-  function _renderCards() {
-    const host = document.getElementById('desk-v1-home-cards');
-    if (!host) return;
-    // Archived campaigns leave the main grid (§"visible in an Archived
-    // view", Dave's review note) — an Archive is a settled campaign, not one
-    // still competing for attention beside active/proposed work. Kept
-    // reachable via the toggle row _renderArchivedSection wires below rather
-    // than a new route (fixture-only, no IA change beyond this).
-    const camps = _campaigns().filter((c) => c.state !== 'archived');
-    host.innerHTML = camps.length
-      ? camps.map(_campCardHTML).join('')
-      : '<div class="desk-v1-home-empty">No campaigns yet — promote something above to start one.</div>';
-    host.querySelectorAll('.desk-v1-home-camp-card').forEach((cardEl) => {
-      const campaignId = cardEl.dataset.campaignId;
-      const go = () => deskV1Nav('campaign', { campaignId });
-      // Exclude the WHOLE .desk-v1-camp-card-more host, not just the trigger
-      // button — the More menu itself mounts as the trigger's SIBLING under
-      // that host (deskV1OpenCampaignMoreMenu's `host = triggerEl.parentElement`),
-      // so a menu item click (e.g. Delete) isn't a descendant of
-      // [data-camp-more-btn] and used to bubble straight through to `go()`,
-      // navigating to the campaign page instead of running the menu action.
-      cardEl.addEventListener('click', (e) => { if (!e.target.closest('.desk-v1-camp-card-more')) go(); });
+    const projects = _projects();
+    host.innerHTML = projects.length
+      ? projects.map(_projectCardHTML).join('')
+      : '<div class="desk-v1-home-empty">No projects yet.</div>';
+    host.querySelectorAll('.desk-v1-home-project-card').forEach((cardEl) => {
+      const projectId = cardEl.dataset.projectId;
+      const go = () => deskV1Nav('project', { projectId });
+      cardEl.addEventListener('click', go);
       cardEl.addEventListener('keydown', (e) => {
-        if (e.target !== cardEl) return; // ignore a keypress bubbling up from the More button
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); }
       });
-      const moreBtn = cardEl.querySelector('[data-camp-more-btn]');
-      if (moreBtn) moreBtn.onclick = (e) => {
-        e.stopPropagation();
-        window.deskV1OpenCampaignMoreMenu(moreBtn, campaignId, { onDone: () => { _renderCards(); _renderArchivedSection(); } });
-      };
     });
-    _renderArchivedSection();
-    // Drop-hover text on a card is written directly by the active drag's own
-    // handlers — nothing else on a card is interactive beyond that and the
-    // click/keydown/More wiring just above.
   }
 
   // ── render: Needs you (right column) ────────────────────────────────────
@@ -426,12 +325,33 @@
       ? `deskV1Nav('conversations',{campaignId:'${esc(firstItem.campaignId)}',conversationId:'${esc(firstItem.conversationId)}'})`
       : firstItem.kind === 'video'
       ? `deskV1Nav('video',{campaignId:'${esc(firstItem.campaignId)}',versionId:'${esc(firstItem.versionId)}'})`
-      : `deskV1Nav('review',{campaignId:'${esc(firstItem.campaignId)}',versionId:'${esc(firstItem.versionId)}'})`;
+      : `deskV1HomeGotoReview('${esc(firstItem.campaignId)}','${esc(firstItem.versionId)}')`;
     return `<button type="button" class="desk-v1-home-needsyou-row" onclick="${onclick}">
       <span class="desk-v1-home-needsyou-glyph" aria-hidden="true">${esc(glyph)}</span>
       <span class="desk-v1-home-needsyou-text">${esc(text)}</span>
     </button>`;
   }
+
+  // IA1 (§5 row IA1's acceptance: "Needs-you deep link into a review builds
+  // the 5-deep stack") — a "piece to approve" row used to jump straight from
+  // Home to 'review' (a 2-deep stack). §1's hierarchy now runs Home ->
+  // project -> campaign -> piece -> review, so this pushes the full chain;
+  // each deskV1Nav call is one stack frame and they run synchronously (no
+  // paint between them), so the visible result is still landing directly on
+  // the review surface — only Back now walks up through piece/campaign/
+  // project instead of straight to Home. Video/reply rows are untouched:
+  // the acceptance names "a review" specifically, and desk-v1-home.mjs's own
+  // deep-link checks for those two assert only the surface reached, which a
+  // longer stack wouldn't change anyway.
+  function deskV1HomeGotoReview(campaignId, versionId) {
+    const camp = _campaign(campaignId);
+    const projectId = camp && camp.projectId;
+    if (projectId) deskV1Nav('project', { projectId });
+    deskV1Nav('campaign', { campaignId, projectId });
+    deskV1Nav('piece', { campaignId, versionId, projectId });
+    deskV1Nav('review', { campaignId, versionId, projectId });
+  }
+  window.deskV1HomeGotoReview = deskV1HomeGotoReview;
 
   function _holdRowHTML(h) {
     const text = h.kind === 'worker' ? `${h.label} · ${h.count} posts missed` : `${h.label} · ${h.count} held`;
@@ -530,8 +450,8 @@
     const camp = _createProposedCampaign(text);
     DeskV1Kit.commandBus.run({
       label: `Proposed “${camp.name}”`,
-      do: () => { _fx().campaigns.push(camp); _renderCards(); },
-      undo: () => { const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); _renderCards(); },
+      do: () => { _fx().campaigns.push(camp); _renderProjectCards(); },
+      undo: () => { const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); _renderProjectCards(); },
     });
     deskV1Nav('campaign', { campaignId: camp.id });
   }
@@ -611,8 +531,8 @@
       const prevStates = camps.map((c) => c.state);
       DeskV1Kit.commandBus.run({
         label: `Paused ${camps.length} campaign${camps.length === 1 ? '' : 's'}`,
-        do: () => { camps.forEach((c) => { c.state = 'paused'; }); _renderCards(); },
-        undo: () => { camps.forEach((c, i) => { c.state = prevStates[i]; }); _renderCards(); },
+        do: () => { camps.forEach((c) => { c.state = 'paused'; }); _renderProjectCards(); },
+        undo: () => { camps.forEach((c, i) => { c.state = prevStates[i]; }); _renderProjectCards(); },
       });
     };
   }
@@ -658,11 +578,8 @@
           </div>
           <div class="desk-v1-home-suggestions" id="desk-v1-home-suggestions"></div>
         </div>
-        <div class="desk-v1-home-main">
-          <div class="desk-v1-home-cards" id="desk-v1-home-cards"></div>
-          <div class="desk-v1-home-needsyou" id="desk-v1-home-needsyou"></div>
-        </div>
-        <div class="desk-v1-home-archived" id="desk-v1-home-archived"></div>
+        <div class="desk-v1-home-projects" id="desk-v1-home-projects"></div>
+        <div class="desk-v1-home-needsyou" id="desk-v1-home-needsyou"></div>
         <div class="desk-v1-home-shelves">
           <div class="desk-v1-home-shelf">
             <div class="desk-v1-home-shelf-title">Channels</div>
@@ -677,7 +594,7 @@
     _bindHeader(el);
     _bindPromoteBox(el);
     _renderSuggestions();
-    _renderCards();
+    _renderProjectCards();
     _renderNeedsYou();
     _renderShelves();
     _startHeartbeat(el);

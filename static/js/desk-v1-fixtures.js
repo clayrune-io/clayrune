@@ -12,11 +12,58 @@
 // ── T0a: base fixtures (docs/desk_v1_r0_plan.md ground rule 3) ─────────────
 
 (function () {
+  // ── IA1 (MC-977 IA revision, docs/THE_DESK_V1_IA_REVISION.md §2.1, §5) ────
+  // The standing presence one level above campaigns — Ron's own ask: "the
+  // entire project is the campaign... campaign promoting a specific
+  // project/product/feature/target". Two projects (clayrune, engulfing_scanner)
+  // so Home's card grid and the Needs-you aggregate have more than one row to
+  // prove they're cross-project, not a re-skinned single-campaign fixture.
+  // `presence` carries only the §2.1 fields IA1's stub Presence route needs a
+  // real project record to point at — IA3 builds the settings UI that edits
+  // these; full field set (strategy, production, measurement, visual_default)
+  // is that ticket's own fixture addition, not re-derived here.
+  const PROJECTS = [
+    {
+      id: 'clayrune', name: 'Clayrune', state: 'active',
+      presence: {
+        accounts: [
+          { channel_id: 'ch-x-ron', voice: 'Ron (first person)' },
+          { channel_id: 'ch-li-page', voice: 'Clayrune page' },
+          { channel_id: 'ch-blog', voice: 'Clayrune blog' },
+        ],
+        audience: 'Developers running coding agents',
+        ceilings: {
+          'ch-x-ron': { per_week: 3, min_gap_h: 12 },
+          'ch-li-page': { per_week: 3, min_gap_h: 12 },
+          'ch-blog': { per_week: 3, min_gap_h: 12 },
+        },
+        replies: 'drafts',
+      },
+    },
+    // K1: @ron on X is a workspace asset shared across projects, never
+    // duplicated per project — this project's own accounts[] reuses the SAME
+    // ch-x-ron id the clayrune project above also binds, at its own ceiling.
+    {
+      id: 'engulfing_scanner', name: 'Engulfing scanner', state: 'active',
+      presence: {
+        accounts: [{ channel_id: 'ch-x-ron', voice: 'Ron (first person)' }],
+        audience: 'Day traders evaluating signal tools',
+        ceilings: { 'ch-x-ron': { per_week: 2, min_gap_h: 12 } },
+        replies: 'drafts',
+      },
+    },
+  ];
+
   const CAMPAIGNS = [
     {
       id: 'camp-1',
       name: 'Windows beta testers',
       state: 'active', // proposed | active | paused | completed | archived | draft
+      // IA1 §2.2/§3#40: the field Ron's ask turns on. `subject.kind` picks
+      // the project-page card glyph (◉ project · ▣ product · ✦ feature ·
+      // ◎ audience/event); this campaign promotes an AUDIENCE, not a feature.
+      projectId: 'clayrune',
+      subject: { kind: 'audience', label: 'Windows users trying Claude Code' },
       // §4/Dave review pass 1: `target`/`deadline`/`outcome` (was `metric`)
       // are NOT duplicated here — the summary bar reads those from
       // `plan.goal` below, the single canonical copy a plan edit (rules
@@ -135,11 +182,13 @@
     // comments[0].text) — a row can't promise one question and open on
     // another. T0a's placeholder text ('Does this work on ARM laptops?')
     // predates T6's thread content and never matched it.
-    { id: 'conv-1', campaignId: 'camp-1', source: 'our_posts', channelId: 'ch-x-ron',
+    // IA1 (K4): a conversation always has a project; campaign is optional
+    // (not exercised by these rows — all six T0a/T6 rows belong to camp-1).
+    { id: 'conv-1', projectId: 'clayrune', campaignId: 'camp-1', source: 'our_posts', channelId: 'ch-x-ron',
       excerpt: 'Does the restore include the agent’s memory or just files?', state: 'needs_reply' },
-    { id: 'conv-2', campaignId: 'camp-1', source: 'mentions', channelId: 'ch-li-page',
+    { id: 'conv-2', projectId: 'clayrune', campaignId: 'camp-1', source: 'mentions', channelId: 'ch-li-page',
       excerpt: 'Someone linked the restore-points post in a thread about backups.', state: 'reviewed' },
-    { id: 'conv-3', campaignId: 'camp-1', source: 'discussions', channelId: null,
+    { id: 'conv-3', projectId: 'clayrune', campaignId: 'camp-1', source: 'discussions', channelId: null,
       excerpt: 'A forum thread comparing beta programs mentions Clayrune in passing.',
       state: 'stale' },
   ];
@@ -391,9 +440,9 @@
   // and "Discussions" carries no number because conv-3's 'stale' isn't in
   // the countable set either — all three read straight off the frame.
   CONVERSATIONS.push(
-    { id: 'conv-4', campaignId: 'camp-1', source: 'our_posts', channelId: 'ch-li-page',
+    { id: 'conv-4', projectId: 'clayrune', campaignId: 'camp-1', source: 'our_posts', channelId: 'ch-li-page',
       excerpt: 'Installer failed twice and my key is gone.', state: 'needs_you' },
-    { id: 'conv-5', campaignId: 'camp-1', source: 'our_posts', channelId: 'ch-x-ron',
+    { id: 'conv-5', projectId: 'clayrune', campaignId: 'camp-1', source: 'our_posts', channelId: 'ch-x-ron',
       excerpt: 'signed up \u{1F64C}', state: 'no_reply' },
     // state is 'needs_you' rather than 'needs_reply' on purpose: the
     // Conversations badge counts by CONVERSATION_DETAIL's own `reasonKind`
@@ -403,7 +452,7 @@
     // 'needs_reply' here would silently bump Home's own "1 reply waiting"
     // fixture (conv-1) to 2 and break its smoke. 'needs_you' keeps this row
     // out of that unrelated aggregate while still counting for THIS badge.
-    { id: 'conv-6', campaignId: 'camp-1', source: 'mentions', channelId: 'ch-x-ron',
+    { id: 'conv-6', projectId: 'clayrune', campaignId: 'camp-1', source: 'mentions', channelId: 'ch-x-ron',
       excerpt: 'Quoted the restore-points post while comparing backup tools.', state: 'needs_you' },
   );
 
@@ -552,6 +601,10 @@
     id: 'camp-2',
     name: 'Restore points launch',
     state: 'proposed', // proposed | active | paused | completed | archived | draft
+    // IA1 §2.2/§3#40 (same field/comment as camp-1 above): this campaign
+    // promotes a FEATURE, not the whole project or an audience.
+    projectId: 'clayrune',
+    subject: { kind: 'feature', label: 'Restore points' },
     goal: { current: 0 },
     channelIds: ['ch-x-ron', 'ch-li-page'],
     rules: {
@@ -626,7 +679,48 @@
     },
   };
 
+  // ── IA1 (MC-977 IA revision, §5 row IA1): engulfing_scanner's own campaign
+  // + Needs-you item, so the Home project-card grid has a SECOND project
+  // with real content instead of an empty shell. State 'needs_you' (not
+  // 'needs_reply') on purpose (same convention conv-4/conv-6 above already
+  // established) — Home's global `_needsYouItems()` only counts
+  // `needs_reply`/`needs_review`, so this row surfaces on the PROJECT page's
+  // own Needs-you list without silently bumping desk-v1-home.mjs's fixed
+  // "1 reply waiting" / "1 piece to approve" assertions, which enumerate
+  // every fixture family/conversation regardless of project.
+  CAMPAIGNS.push({
+    id: 'camp-3',
+    name: 'Signal alerts for day traders',
+    state: 'active',
+    projectId: 'engulfing_scanner',
+    subject: { kind: 'product', label: 'Engulfing scanner' },
+    goal: { current: 4 },
+    channelIds: ['ch-x-ron'],
+    rules: { reviewMode: 'each_piece', frequencyPerWeek: 2, repliesMode: 'drafts', paid: false },
+    plan: {
+      brief: 'Day traders evaluating signal tools should see the scanner catch a real engulfing setup.',
+      title: 'Signal alerts for day traders',
+      source_projects: ['engulfing_scanner'],
+      audience: 'Day traders evaluating signal tools',
+      goal: { outcome: 'signups', target: 20, deadline: '2026-10-31', tracked: true },
+      destinations: [{ account: 'ch-x-ron', voice: 'Ron (first person)' }],
+      angle: 'Show one real scanned setup end to end, from alert to outcome.',
+      samples: [],
+      cadence: { per_week: 2, min_gap_h: 12 },
+      end: { date: '2026-10-31', post_cap: null },
+      replies: 'drafts',
+      paid: false,
+      generation: 'No video generation planned for this campaign',
+    },
+  });
+
+  CONVERSATIONS.push(
+    { id: 'conv-7', projectId: 'engulfing_scanner', campaignId: 'camp-3', source: 'our_posts', channelId: 'ch-x-ron',
+      excerpt: 'Backtest looks great — does this work on futures too?', state: 'needs_you' },
+  );
+
   window.DeskV1Fixtures = {
+    projects: PROJECTS,
     campaigns: CAMPAIGNS,
     channels: CHANNELS,
     families: FAMILIES,
