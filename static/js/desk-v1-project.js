@@ -28,7 +28,7 @@
         <div class="desk-v1-project-camp-top">
           ${label}
           <span class="desk-v1-project-camp-subject" aria-hidden="true">${glyph}</span>
-          <span class="desk-v1-project-camp-name">${esc(c.name)}</span>
+          <span class="desk-v1-project-camp-name">${esc(c.plan.title)}</span>
         </div>
         ${subj.label ? `<div class="desk-v1-project-camp-subject-label">${esc(subj.label)}</div>` : ''}
       </div>`;

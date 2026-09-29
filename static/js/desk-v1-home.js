@@ -170,7 +170,7 @@
       onTeardown: () => {},
       addToItems: () => _campaigns().map((c) => {
         const proj = _projects().length > 1 ? _project(c.projectId) : null;
-        return { id: c.id, label: proj ? `${c.name} — ${proj.name}` : c.name };
+        return { id: c.id, label: proj ? `${c.plan.title} — ${proj.name}` : c.plan.title };
       }),
       onPick: (pickedId, dragData) => _onCampaignPicked(pickedId, dragData),
     };
