@@ -229,12 +229,40 @@
     }
   }
 
+  function _fmtWhenShort(iso) {
+    try {
+      const cfg = (typeof _globalConfig !== 'undefined' && _globalConfig) || {};
+      return new Intl.DateTimeFormat(undefined, { timeZone: cfg.user_timezone || undefined, weekday: 'short', hour: 'numeric', minute: '2-digit' }).format(new Date(iso));
+    } catch (e) { return iso; }
+  }
+
+  // §6.1 empty state, before the first publish: "Results start after the
+  // first post goes out. Next: Tue 09:00 on 𝕏 · @ron." — reuses campaign.js's
+  // own next-scheduled lookup (`window.deskV1CampaignNextScheduled`) rather
+  // than re-deriving it, so the two surfaces can never disagree about which
+  // version is "next".
+  function _freshEmptyHTML(campaignId) {
+    const next = typeof window.deskV1CampaignNextScheduled === 'function' ? window.deskV1CampaignNextScheduled(campaignId) : null;
+    const channel = next ? _channel(next.channelId) : null;
+    const nextText = next
+      ? `Next: ${esc(_fmtWhenShort(next.publishAt))}${channel ? ` on ${esc(channel.label)}` : ''}.`
+      : '';
+    return `<div class="desk-v1-stub"><div class="desk-v1-stub-body">Results start after the first post goes out. ${nextText}</div></div>`;
+  }
+
   function deskV1RenderResults(el, params) {
     const campaignId = (params || {}).campaignId;
     const campaign = _campaign(campaignId);
     const results = _fx().results;
-    if (!campaign || !results || results.campaignId !== campaignId) {
+    if (!campaign) {
       el.innerHTML = '<div class="desk-v1-stub"><div class="desk-v1-stub-body">No results for this campaign yet.</div></div>';
+      return;
+    }
+    if (!results || results.campaignId !== campaignId) {
+      const fresh = typeof window.deskV1CampaignHasPublished === 'function' && !window.deskV1CampaignHasPublished(campaignId);
+      el.innerHTML = fresh
+        ? _freshEmptyHTML(campaignId)
+        : '<div class="desk-v1-stub"><div class="desk-v1-stub-body">No results for this campaign yet.</div></div>';
       return;
     }
     _st = { dismissed: false, acceptedFamId: null };
