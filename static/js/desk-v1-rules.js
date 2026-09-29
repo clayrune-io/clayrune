@@ -292,7 +292,8 @@
     const datesLabel = plan.end && (plan.end.date
       ? `Ends ${_fmtDateLong(plan.end.date)}`
       : (plan.end.post_cap ? `Ends after ${plan.end.post_cap} posts` : null));
-    const eff = DeskV1Kit.validatePlan(plan, project).effective;
+    const validity = DeskV1Kit.validatePlan(plan, project);
+    const eff = validity.effective;
     // IA4 (§5 row IA4 acceptance: "inherited rows labelled 'from <project>'")
     // — a presentation-only flag desk-v1-setup.js's step 2 stamps on the plan
     // when it defaulted a bound from the project, distinct from
@@ -325,17 +326,30 @@
     };
     const fromSuffix = ` · from ${project ? project.name : 'project'}`;
 
+    // §2.3 row 3: "inherited rows marked `from <project>` and a `Change for
+    // the project ›` link" — each row below that carries an inherited flag
+    // gets the link, opening IA3's Presence page for the campaign's own
+    // project (the same route desk-v1-project.js's own Presence button uses).
     const rows = [
-      ['Accounts', (auth.accounts || []).length ? (auth.accounts.join(', ') + (inherited.accounts ? fromSuffix : '')) : '—'],
+      ['Accounts', (auth.accounts || []).length ? (auth.accounts.join(', ') + (inherited.accounts ? fromSuffix : '')) : '—', !!inherited.accounts],
       ['Frequency ceiling', auth.frequencyPerWeek != null
         ? `Up to ${auth.frequencyPerWeek} a week${auth.frequencyFromProject ? fromSuffix : ''}`
-        : '—'],
-      ['Dates', auth.dates ? (auth.dates + (inherited.end ? fromSuffix : '')) : '—'],
-      ['Replies', auth.replies || '—'],
-      ['Paid', auth.paid || 'Off'],
-      ['Generation limits', auth.generationLimits || '—'],
-      ['Stop conditions', auth.stopConditions || '—'],
+        : '—', !!auth.frequencyFromProject || !!inherited.cadence],
+      ['Dates', auth.dates ? (auth.dates + (inherited.end ? fromSuffix : '')) : '—', !!inherited.end],
+      ['Replies', auth.replies || '—', false],
+      ['Paid', auth.paid || 'Off', false],
+      ['Generation limits', auth.generationLimits || '—', false],
+      ['Stop conditions', auth.stopConditions || '—', false],
     ];
+
+    // §2.3 row 3: `validatePlan` ok is required to leave step 3 — Confirm is
+    // disabled until every plan bound resolves, and the sheet names each
+    // missing one with the step (§2.3 table) it belongs to, same wording
+    // pattern as the Resume path's toast (desk-v1-campaign.js:239-240).
+    const missingLabel = validity.missing.map((m) => `${m.label} (step ${m.step})`).join(', ');
+    const noteHTML = validity.ok
+      ? 'Starting doesn’t approve any piece.'
+      : `Can’t start yet — missing ${esc(missingLabel)}.`;
 
     const wrap = document.createElement('div');
     wrap.className = 'desk-v1-rules-overlay';
@@ -344,15 +358,19 @@
       <div class="desk-v1-rules-sheet" role="dialog" aria-modal="true" aria-label="Start campaign">
         <div class="desk-v1-rules-sheet-title">Start “${esc(camp.plan.title)}”</div>
         <div class="desk-v1-rules-sheet-body">
-          ${rows.map(([label, val]) => `<div class="desk-v1-rules-authrow"><span class="desk-v1-rules-authrow-label">${esc(label)}</span><span class="desk-v1-rules-authrow-val">${esc(val)}</span></div>`).join('')}
+          ${rows.map(([label, val, isInherited]) => `<div class="desk-v1-rules-authrow"><span class="desk-v1-rules-authrow-label">${esc(label)}</span><span class="desk-v1-rules-authrow-val">${esc(val)}</span>${isInherited ? ' <button type="button" class="desk-v1-rules-changeproject-link" data-change-project>Change for the project ›</button>' : ''}</div>`).join('')}
         </div>
-        <div class="desk-v1-rules-sheet-note">Starting doesn’t approve any piece.</div>
+        <div class="desk-v1-rules-sheet-note">${noteHTML}</div>
         <div class="desk-v1-rules-sheet-actions">
           <button type="button" class="desk-v1-rules-sheet-cancel" data-sheet-cancel>Cancel</button>
-          <button type="button" class="desk-v1-rules-sheet-confirm" data-sheet-confirm>Confirm — Start campaign</button>
+          <button type="button" class="desk-v1-rules-sheet-confirm" data-sheet-confirm${validity.ok ? '' : ' disabled'}>Confirm — Start campaign</button>
         </div>
       </div>`;
     shell.appendChild(wrap);
+
+    wrap.querySelectorAll('[data-change-project]').forEach((link) => {
+      link.onclick = () => { close(); deskV1Nav('presence', { projectId: camp.projectId }); };
+    });
 
     // Capture phase, not bubble: index.html's own boot-time Escape handler
     // (`focusedModalId` -> closeModalById) is a bubble-phase listener on

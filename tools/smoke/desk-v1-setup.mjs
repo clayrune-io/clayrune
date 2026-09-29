@@ -247,12 +247,89 @@ async function runZeroConnectedAccountsManualCopy(browser) {
   await ctx.close();
 }
 
+// ── IA4 rework gap 1 (Dave's review): §2.3 row 3's "Required to leave:
+// validatePlan ok" was never enforced — Confirm had to be gated on it, and
+// the sheet has to name the missing bound with its step. Clear the end bound
+// a normal "Draft the plan" always sets, then re-open the sheet on the same
+// draft to force the gate. ──────────────────────────────────────────────────
+async function runStep3GateMissingEndCannotStart(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+
+  await openProject(page, 'engulfing_scanner');
+  await page.click('.desk-v1-project-newcamp-btn');
+  await page.waitForSelector('[data-setup-continue]', { timeout: 4000 });
+  await page.click('[data-setup-continue]');
+  await page.waitForSelector('[data-setup-draftplan]', { timeout: 4000 });
+  await page.click('[data-setup-draftplan]');
+  await page.waitForSelector('.desk-v1-camp-state-pill', { timeout: 4000 });
+
+  await page.evaluate(() => {
+    const camps = window.DeskV1Fixtures.campaigns;
+    camps[camps.length - 1].plan.end = { date: null, post_cap: null };
+  });
+
+  await page.click('[data-start-campaign]');
+  await page.waitForSelector('.desk-v1-rules-sheet', { timeout: 4000 });
+
+  const confirmDisabled = await page.$eval('[data-sheet-confirm]', (b) => b.disabled);
+  confirmDisabled
+    ? ok('step 3 Confirm is disabled when validatePlan is not ok (missing end)')
+    : fail('step 3 Confirm should be disabled when the plan is missing its end bound');
+
+  const noteText = (await page.textContent('.desk-v1-rules-sheet-note').catch(() => '') || '');
+  /end date/.test(noteText) && /step 2/.test(noteText)
+    ? ok(`step 3 sheet names the missing bound with its step: "${noteText.trim()}"`)
+    : fail(`step 3 sheet note wrong: ${JSON.stringify(noteText)}`);
+
+  reportUncaught(pageErrors, '[step3-gate-missing-end]');
+  await ctx.close();
+}
+
+// ── IA4 rework gap 2 (Dave's review): §2.3 row 3's "Change for the project
+// ›" link on inherited rows didn't exist. Click it from step 3 and land on
+// the campaign's own project's Presence page. ──────────────────────────────
+async function runChangeForProjectLinkNavigatesToPresence(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+
+  await openProject(page, 'engulfing_scanner');
+  await page.click('.desk-v1-project-newcamp-btn');
+  await page.waitForSelector('[data-setup-continue]', { timeout: 4000 });
+  await page.click('[data-setup-continue]');
+  await page.waitForSelector('[data-setup-draftplan]', { timeout: 4000 });
+  await page.click('[data-setup-draftplan]');
+  await page.waitForSelector('.desk-v1-camp-state-pill', { timeout: 4000 });
+  await page.click('[data-start-campaign]');
+  await page.waitForSelector('.desk-v1-rules-sheet', { timeout: 4000 });
+
+  const linkCount = await page.$$eval('[data-change-project]', (els) => els.length);
+  linkCount > 0
+    ? ok(`step 3 sheet renders ${linkCount} "Change for the project ›" link(s) on inherited rows`)
+    : fail('step 3 sheet has no "Change for the project ›" link on any inherited row');
+
+  await page.click('[data-change-project]');
+  await page.waitForSelector('.desk-v1-presence', { timeout: 4000 });
+  // engulfing_scanner's own presence fixture binds exactly 1 account
+  // (ch-x-ron); clayrune's binds 3 — a distinct row count is a stronger
+  // proof of "the right project's Presence page" than the crumb text, which
+  // reads the campaign's own title (the actual previous stack entry, per
+  // shell.js's own back-label rule), not the project name.
+  const accountRowCount = await page.$$eval('.desk-v1-presence-account-row', (els) => els.length);
+  accountRowCount === 1
+    ? ok(`"Change for the project ›" lands on Engulfing scanner's Presence page (${accountRowCount} bound account)`)
+    : fail(`"Change for the project ›" landed on the wrong project's Presence page (${accountRowCount} bound accounts, expected Engulfing scanner's 1)`);
+
+  reportUncaught(pageErrors, '[change-for-project-link]');
+  await ctx.close();
+}
+
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
   await runAcceptDefaultsToActive(browser);
   await runLeaveAtStepTwoResumes(browser);
   await runZeroConnectedAccountsManualCopy(browser);
+  await runStep3GateMissingEndCannotStart(browser);
+  await runChangeForProjectLinkNavigatesToPresence(browser);
   exitCode = bad === 0 ? 0 : 1;
 } catch (e) {
   console.error('harness error:', e);
