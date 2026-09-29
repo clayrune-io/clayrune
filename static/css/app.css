@@ -4887,6 +4887,14 @@
   .agent-output .hl-bullet { color: var(--accent); font-weight: 600; }
   .agent-output .hl-num { color: #c4b5fd; }
   .agent-output .hl-url { color: #60a5fa; text-decoration: underline; text-decoration-style: dotted; }
+  /* RTL: code, paths, URLs, file chips, numbering and the image-caption path
+     are inherently LTR content (identifiers, punctuation-sensitive) and must
+     stay LTR even when the surrounding line is Hebrew/Arabic — otherwise the
+     bidi algorithm mirrors path separators and digit order. MC-1000. */
+  .hl-code, .hl-path, .hl-url, .hl-file-link, .hl-num, .agent-img-path, .backlog-num {
+    direction: ltr;
+    unicode-bidi: embed;
+  }
   /* Agent file deep-links ([file:…] → /api/serve-file). A pill, not a raw
      underline, so it reads as a "here's a file" affordance rather than a URL. */
   .hl-file-link {
