@@ -315,9 +315,9 @@ async function runValidatePlanMissingEnd(browser) {
     const plan = Object.assign({}, camp.plan, { end: { date: null, post_cap: null } });
     return window.DeskV1Kit.validatePlan(plan);
   });
-  !result.ok && result.missing.some((m) => m.bound === 'end')
-    ? ok(`validatePlan() names the missing end date: ${JSON.stringify(result.missing)}`)
-    : fail(`validatePlan() did not flag the missing end date: ${JSON.stringify(result)}`);
+  !result.ok && result.missing.some((m) => m.bound === 'end' && m.step === 2)
+    ? ok(`validatePlan() names the missing end date with step 2: ${JSON.stringify(result.missing)}`)
+    : fail(`validatePlan() did not flag the missing end date at step 2: ${JSON.stringify(result)}`);
 
   const fullResult = await page.evaluate(() => {
     const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2');
