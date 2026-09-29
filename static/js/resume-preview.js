@@ -575,7 +575,18 @@ async function _reconcileAgentBuffer(projectId, sessionId) {
     const serverLines = sess.log_lines || [];
     const serverTs = sess.log_line_ts || [];
     const have = agentServerLines[sessionId] || 0;
-    if (serverLines.length < have) {
+    // MC backlog 7aeb4922: a revive-from-log rebuild replaces log_lines under
+    // this same session_id with history + revive markers + the new turn,
+    // which is often LONGER than `have` — so it never trips the shrink check
+    // below, and the slice-from-`have` "missing tail" logic then assumes
+    // serverLines[0..have-1] still matches what's on screen when the rebuild
+    // actually changed content at some of those positions. Treat an epoch
+    // change the same as a shrink: never trust the tail slice, always adopt
+    // (or merge-guard) the full array.
+    const _epoch = sess.log_epoch || 0;
+    const _epochChanged = (sessionId in agentLogEpoch) && agentLogEpoch[sessionId] !== _epoch;
+    agentLogEpoch[sessionId] = _epoch;
+    if (serverLines.length < have || _epochChanged) {
       // Server buffer shrank under our cursor (log_lines rebuilt by a
       // revive after restart/purge, capped server-side, or a forked copy).
       // Re-anchor the cursor so the slice recovery below can fire again, but

@@ -6039,17 +6039,29 @@ async function fetchAgentStatus(projectId) {
         // stale `since=` value and replays an already-rendered line. Genuine
         // server buffer rebuilds use the stream's explicit `reset` event.
         window._advanceAgentServerCursor?.(sid, s.log_lines.length);
+        // MC backlog 7aeb4922: a revive-from-log rebuild replaces log_lines
+        // under this SAME session_id (history + revive markers + the new
+        // turn), which is very often LONGER than what was on screen — so it
+        // never trips the shrink guard above, and the length-only growth
+        // check below reads it as ordinary incremental progress. The
+        // server bumps log_epoch only on that kind of in-place rebuild, so a
+        // change here is the one signal that "this poll changed CONTENT
+        // already covered by our cursor", not merely appended past it.
+        const _epochChanged = (sid in agentLogEpoch) && agentLogEpoch[sid] !== (s.log_epoch || 0);
+        agentLogEpoch[sid] = s.log_epoch || 0;
         // Render-gap recovery: if the buffer just GREW here (lines arrived while
         // this panel was inactive/backgrounded and its SSE was parked), the
         // refreshModal() at the end of this function PRESERVES the existing
         // agent-output node (scroll/perf) and won't repaint it from the grown
         // buffer — so the recovered lines stay invisible. Repaint from the buffer
         // now. Gated on (a) growth and (b) no live SSE, so the actively-streaming
-        // chat (kept in sync incrementally by appendAgentLine) never flickers.
-        if ((agentOutputBuffers[sid] || []).length > _prevBufLen
-            && !agentEventSources[sid]
-            && document.getElementById(`agent-output-${sid}`)) {
-          _repaintAgentOutput(sid);
+        // chat (kept in sync incrementally by appendAgentLine) never flickers —
+        // UNLESS the epoch just changed, in which case a live SSE stream is no
+        // guarantee the DOM is in sync (the rebuild happened server-side, not
+        // via any event this stream connection knows to replay).
+        if (((agentOutputBuffers[sid] || []).length > _prevBufLen && !agentEventSources[sid])
+            || _epochChanged) {
+          if (document.getElementById(`agent-output-${sid}`)) _repaintAgentOutput(sid);
         }
       }
       const existingHist = agentHistory.find(h => h.sessionId === sid);

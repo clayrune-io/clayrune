@@ -7136,6 +7136,10 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             'status': 'running',
             'task': entry.get('task', ''),
             'log_lines': TimestampedLines(seed_lines, ts=seed_ts),
+            # Bumped on every in-place rebuild (backlog 7aeb4922) so a client
+            # still holding the pre-revive cursor knows the array underneath
+            # it changed shape, not just grew — see agentLogEpoch in index.html.
+            'log_epoch': _time.time(),
             'started_at': now_iso(),
             'session_id': session_id,
             'project_id': project_id,
@@ -7241,6 +7245,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         'status': 'running',
         'task': entry.get('task', ''),
         'log_lines': TimestampedLines(seed_lines, ts=seed_ts),
+        # See the Mode B revive dict above — same in-place rebuild signal.
+        'log_epoch': _time.time(),
         'started_at': now_iso(),
         'session_id': session_id,
         'project_id': project_id,
@@ -13911,6 +13917,12 @@ def agent_status(project_id):
                 'task': s['task'],
                 'log_lines': _kept_lines,
                 'log_line_ts': _kept_ts,
+                # Backlog 7aeb4922: 0 for a session whose log_lines has only
+                # ever been appended to; bumped whenever revive-from-log
+                # replaced the array under this same session_id. Client uses
+                # a change here (not the line count) to know a poll's buffer
+                # growth is really a rebuild that needs a full repaint.
+                'log_epoch': s.get('log_epoch', 0),
                 'started_at': s['started_at'],
                 'plan_file': s.get('plan_file', ''),
                 'plan_files': _session_plan_files(s),
