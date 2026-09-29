@@ -518,6 +518,41 @@ async function runPauseResume(browser) {
 // STACK itself never grows — deskV1Back() after several tab clicks must land
 // on Home in ONE pop, not on campaign's own previous panel (which is what a
 // hidden per-tab push would produce). ──────────────────────────────────────
+// ── IA6 (docs/THE_DESK_V1_IA_REVISION.md §5 row IA6, §6.1 empty states) —
+// camp-4 is a genuinely fresh Active campaign (goal.current 0, no version
+// has ever published): the goal bar reads as plain text with no `0/30`-style
+// bar, and Results/Conversations show the UX_PASS §6.1 copy instead of the
+// generic "nothing yet" stubs. ─────────────────────────────────────────────
+async function runFreshEmptyStates(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-4' }));
+  await page.waitForSelector('.desk-v1-campaign', { timeout: 8000 });
+
+  const goalBar = await page.$('.desk-v1-camp-summary-goalbar');
+  goalBar === null ? ok('IA6: fresh Active (camp-4) shows no 0/ progress bar') : fail('IA6: fresh Active still rendered a 0/ progress bar');
+  const goalText = (await page.textContent('.desk-v1-camp-summary-goal').catch(() => '') || '');
+  /40 Discord joins.*starts counting at the first post/.test(goalText)
+    ? ok(`IA6: fresh Active goal reads as plain text: "${goalText.trim()}"`)
+    : fail(`IA6: fresh Active goal text wrong: ${JSON.stringify(goalText)}`);
+
+  await page.click('[data-tab="results"]');
+  await page.waitForSelector('#desk-v1-camp-tabbody .desk-v1-stub', { timeout: 2000 });
+  const resultsText = (await page.textContent('#desk-v1-camp-tabbody') || '');
+  /Results start after the first post goes out\. Next: .*on 𝕏 · @ron\./.test(resultsText)
+    ? ok(`IA6: fresh Active Results shows UX_PASS §6.1 copy: "${resultsText.trim()}"`)
+    : fail(`IA6: fresh Active Results copy wrong: ${JSON.stringify(resultsText)}`);
+
+  await page.click('[data-tab="conversations"]');
+  await page.waitForSelector('#desk-v1-camp-tabbody .desk-v1-conversations, #desk-v1-camp-tabbody .desk-v1-conv-empty', { timeout: 2000 });
+  const convText = (await page.textContent('#desk-v1-camp-tabbody') || '');
+  /Replies show up here once a post is live\./.test(convText)
+    ? ok('IA6: fresh Active Conversations shows UX_PASS §6.1 copy: "Replies show up here once a post is live."')
+    : fail(`IA6: fresh Active Conversations copy wrong: ${JSON.stringify(convText)}`);
+
+  reportUncaught(pageErrors, '[ia6-fresh-empty]');
+  await ctx.close();
+}
+
 async function runRouteStackUnchanged(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToCampaign(page);
@@ -668,6 +703,7 @@ try {
   await runAddTrayDrag(browser);
   await runCampaignPageMoreMenu(browser);
   await runPauseResume(browser);
+  await runFreshEmptyStates(browser);
   await runRouteStackUnchanged(browser);
   await runPosyDraftPersistence(browser);
   await runPhoneLayout(browser);
