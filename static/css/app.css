@@ -1328,7 +1328,12 @@
   /* ── MINIMIZED TRAY ──────────────────────────────────────────── */
   .minimized-tray {
     position: fixed;
-    bottom: 0; left: 0; right: 0;
+    /* left offset matches the sidebar's own collapsed width (same var
+       .agent-console uses, backlog 9227b94e) so the leftmost tab doesn't
+       start clipped underneath the fixed sidebar. Not raised via z-index —
+       the sidebar (z-index 200/400) still paints over the tray (180) on
+       hover-expand, same as it does over .agent-console. */
+    bottom: 0; left: var(--sidebar-w); right: 0;
     z-index: 180;
     display: flex; gap: 6px;
     padding: 6px 12px;
@@ -2310,6 +2315,9 @@
        it was awkward (only surfaced when the bottom bar was hidden) and the
        running sessions are reachable elsewhere. */
     .agent-console { display: none !important; }
+    /* Sidebar is display:none here, so the tray's desktop offset (left:
+       var(--sidebar-w)) must not apply — nothing to clip against. */
+    .minimized-tray { left: 0; }
     .card-summary { display: none !important; }
     /* Height tracks the visual viewport (var(--mc-app-vh), set by
        mcViewportHeightSync) so the modal shrinks above the soft keyboard and
