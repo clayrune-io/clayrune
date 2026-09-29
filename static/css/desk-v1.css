@@ -88,6 +88,28 @@
 .desk-v1-camp-rightcol { flex: 0 0 320px; overflow-y: auto; }
 .desk-v1-camp-addtray { flex: 0 0 auto; }
 
+/* IA5 (docs/THE_DESK_V1_IA_REVISION.md §2.4, §5 row IA5): piece-page
+   skeleton — same slot shape as the campaign skeleton above (header /
+   facet strip / facet body + Posy rightcol), see desk-v1-shell.js
+   _renderPieceSkeleton. `.desk-v1-camp-tabstrip`/`.desk-v1-camp-main`/
+   `.desk-v1-camp-rightcol` are reused as-is (byte-identical layout rules,
+   including the phone breakpoint below), not re-declared here. */
+.desk-v1-piece { display: flex; flex-direction: column; gap: 14px; height: 100%; min-height: 0; }
+.desk-v1-piece-header { flex: 0 0 auto; }
+.desk-v1-piece-header-top { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.desk-v1-piece-kind { font-size: 12px; font-weight: 600; color: var(--text-faint); }
+.desk-v1-piece-title { font-size: 20px; font-weight: 700; color: var(--text); margin: 0; }
+.desk-v1-piece-body { flex: 1 1 auto; min-width: 0; overflow-y: auto; }
+.desk-v1-piece-facetbody { display: flex; flex-direction: column; gap: 10px; }
+.desk-v1-piece-facetrow {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--border2); border-radius: 10px;
+}
+.desk-v1-piece-empty {
+  font-size: 13px; color: var(--text-faint); border: 1px dashed var(--border2); border-radius: 10px;
+  padding: 20px; text-align: center;
+}
+
 /* IA1 (docs/THE_DESK_V1_IA_REVISION.md §1, §5 row IA1): project page —
    header, this project's own campaign grid, this project's own Needs you.
    Reuses .desk-v1-home-needsyou-title/-list/-row/-empty as-is (same
