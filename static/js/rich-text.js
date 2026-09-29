@@ -101,14 +101,21 @@ function formatAgentText(raw) {
   t = t.replace(/^([-*])\s/, '<span class="hl-bullet">$1</span> ');
 
   // Inline code: `something`
-  t = t.replace(/`([^`]+)`/g, '<span class="hl-code">$1</span>');
+  // dir="ltr" (not just the CSS direction:ltr rule) matters here beyond
+  // rendering: the HTML auto-direction algorithm that dir="auto" on the
+  // parent .agent-line uses to detect Hebrew/Arabic vs English skips any
+  // descendant that carries its own dir attribute. Without it, an English
+  // identifier in the FIRST code span of an otherwise-Hebrew line would be
+  // read as the line's first strong character and mis-detect the whole
+  // block as LTR. Same reasoning for hl-path below. MC-1000.
+  t = t.replace(/`([^`]+)`/g, '<span class="hl-code" dir="ltr">$1</span>');
 
   // Bold: **text**
   t = t.replace(/\*\*([^*]+)\*\*/g, '<span class="hl-bold">$1</span>');
 
   // File paths: word.ext patterns (common code file extensions)
   t = t.replace(/(?<![&\w])([A-Za-z_][\w.-]*\.(py|js|ts|tsx|jsx|html|css|json|md|yml|yaml|toml|rs|go|java|c|cpp|h|sh|sql|vue|svelte|rb|php))(?![&\w])/g,
-    '<span class="hl-path">$1</span>');
+    '<span class="hl-path" dir="ltr">$1</span>');
 
   // Absolute paths: /path/to/file or C:\path\to\file
   // The dash MUST stay escaped. Unescaped, `[\w.-\\]` reads `.-\` as a
@@ -117,7 +124,7 @@ function formatAgentText(raw) {
   // just injected, producing `...memory\<span</span> class="hl-path">SKILL.md`
   // and printing raw markup at the user. Seen live on a Windows path ending
   // in SKILL.md.
-  t = t.replace(/((?:\/[\w.-]+){2,}|(?:[A-Z]:\\[\w.\-\\]+))/g, '<span class="hl-path">$1</span>');
+  t = t.replace(/((?:\/[\w.-]+){2,}|(?:[A-Z]:\\[\w.\-\\]+))/g, '<span class="hl-path" dir="ltr">$1</span>');
 
   // Swap image + file + URL tokens back in (kept opaque through the regexes above).
   if (_imgTokens.length) {

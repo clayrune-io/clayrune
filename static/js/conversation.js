@@ -5430,7 +5430,10 @@ function _dispatchQuestionAnswer(projectId, sessionId, container, answers) {
   if (container.dataset.qid) {
     (_answeredQuestionIds[sessionId] || (_answeredQuestionIds[sessionId] = new Set())).add(container.dataset.qid);
   }
-  const summary = `<div class="agent-question-answer" dir="auto">Answered: ${esc(answers.map(a => a.answer).join(', '))}</div>`;
+  // "Answered: " is a fixed English label — isolate it in its own dir="ltr"
+  // span so the outer dir="auto" detects direction from the actual answer
+  // text, not the label prefix (same fix as escPromptWithImages's "> Name:").
+  const summary = `<div class="agent-question-answer" dir="auto"><span dir="ltr">Answered: </span>${esc(answers.map(a => a.answer).join(', '))}</div>`;
   const actionsEl = container.querySelector('.agent-question-actions');
   if (actionsEl) actionsEl.innerHTML = summary;         // form mode
   else container.insertAdjacentHTML('beforeend', summary); // chip mode (no actions row)

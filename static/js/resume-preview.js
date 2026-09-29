@@ -1309,6 +1309,15 @@ function escPromptWithImages(raw) {
     /\[(?:Screenshot|Attachment):\s+((?:[A-Za-z]:[\\\/]|\/)[^\s"'`<>|\[\]]+?\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif))\s*\]/gi,
     '$1');
   let t = esc(stripped);
+  // RTL: a user line is literally "&gt; Label: message" once escaped — the
+  // label (config.user_name, always Latin) is the FIRST strong-directional
+  // text in the bubble, so a bare dir="auto" on the bubble div would detect
+  // LTR from "User:"/"Ron:" even when the actual message is Hebrew/Arabic.
+  // Isolating the prefix in its own dir="ltr" span makes the HTML auto-
+  // direction algorithm skip it (per the living standard, an "auto"-
+  // detecting ancestor ignores descendants that carry their own dir
+  // attribute) so detection runs against the message text instead. MC-1000.
+  t = t.replace(/^(&gt;\s?[^:\n]{0,60}:\s)/, '<span dir="ltr">$1</span>');
   const _imgTokens = [];
   // Same path detection regex as formatAgentText — keep the two in sync.
   t = t.replace(
