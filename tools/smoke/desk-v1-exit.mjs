@@ -140,6 +140,7 @@ const OTHER_SMOKES = [
   'desk-v1-calendar.mjs', 'desk-v1-video.mjs', 'desk-v1-conversations.mjs',
   'desk-v1-engagement.mjs',
   'desk-v1-results.mjs', 'desk.mjs', 'boot-smoke.mjs',
+  'desk-v1-journey.mjs',
 ];
 
 function runOtherSmokes() {
@@ -162,6 +163,27 @@ function runOtherSmokes() {
 const SURFACES = [
   { key: 'home', label: 'Home', wait: '.desk-v1-stub-link, .desk-v1-home',
     nav: async (page) => { await page.evaluate(() => { while (document.querySelector('.desk-v1-back')) document.querySelector('.desk-v1-back').click(); }); } },
+  // IA8: project/presence/setup/piece/engagement had no route in this
+  // sweep at all — T8's journey smoke (desk-v1-journey.mjs) drives them via
+  // real clicks, but that is a single default-tone pass, not the A1/A12/A15
+  // tone sweep every other surface here gets. Added so "exit 0 across all 3
+  // tones" actually covers what IA8 touched, not just what IA1-IA7 already had.
+  { key: 'project', label: 'Project (engulfing_scanner)', wait: '.desk-v1-project',
+    nav: async (page) => page.evaluate(() => window.deskV1Nav('project', { projectId: 'engulfing_scanner' })) },
+  { key: 'presence', label: 'Presence (engulfing_scanner)', wait: '.desk-v1-presence',
+    nav: async (page) => page.evaluate(() => window.deskV1Nav('presence', { projectId: 'engulfing_scanner' })) },
+  // No draft-state campaign exists in the fixtures, so the setup wizard is
+  // reached the same way a real user reaches it: Project -> "+ New campaign".
+  { key: 'setup', label: 'Setup step 1 (new draft campaign)', wait: '[data-setup-continue]',
+    nav: async (page) => {
+      await page.evaluate(() => window.deskV1Nav('project', { projectId: 'engulfing_scanner' }));
+      await page.waitForSelector('.desk-v1-project-newcamp-btn', { timeout: 8000 });
+      await page.click('.desk-v1-project-newcamp-btn');
+    } },
+  { key: 'piece', label: 'Piece (fam-restore-points)', wait: '.desk-v1-piece',
+    nav: async (page) => page.evaluate(() => window.deskV1Nav('piece', { familyId: 'fam-restore-points' })) },
+  { key: 'engagement', label: 'Engagement', wait: '.desk-v1-engagement',
+    nav: async (page) => page.evaluate(() => window.deskV1Nav('engagement', {})) },
   { key: 'campaign-active', label: 'Campaign (camp-1, Active)', wait: '.desk-v1-camp-summary',
     nav: async (page) => page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' })) },
   { key: 'rules-popover', label: 'Rules popover (camp-1)', wait: '.desk-v1-rules-pop',
