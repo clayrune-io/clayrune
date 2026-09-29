@@ -7317,11 +7317,20 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
     # `UNIQUE(session_id, checkpoint_type)` makes the second call for the
     # same session_id (native-provider INIT re-invocation, see docstring
     # above) a safe no-op. Best-effort, same as the completion-side write.
+    # A RESUMED session (the baseline already exists) also re-marks its
+    # completed fact 'running' (round 3, P1-2): every new turn passes
+    # through here, and without it the durable fact stays 'completed' at the
+    # previous turn's end while this turn runs, so calibration counted
+    # overlapping intervals as having exactly one active session. Not on an
+    # identity-only INIT backfill: that can land after the turn completed,
+    # and must no more reopen the fact than it resets the log row above.
     try:
         _store = _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite')
         _store.record_session_checkpoint(**_usage_breakdown_sampler.baseline_checkpoint_fields(
             sid, provider=(entry.get('provider') or 'claude'),
             observed_at=entry.get('started_at') or now_iso()))
+        if not identity_only:
+            _store.mark_session_running(sid)
     except Exception as e:
         _log(f"[usage-breakdown] baseline checkpoint write failed for {sid[:12]}: {e}")
 

@@ -382,6 +382,24 @@ class UsageBreakdownStore:
                 params,
             )
 
+    def mark_session_running(self, session_id: str) -> bool:
+        """Flip an existing fact back to status='running' when a RESUMED
+        session starts a new turn (round 3, P1-2). The fact otherwise stays
+        'completed' at its previous turn's end until the new turn completes,
+        and the aggregate would read the last completion as the session's
+        end while it is visibly working. Counters and `ended_at` (the last
+        completion) are kept: the aggregate treats everything after that
+        completion as one unmeasured, still-open span, and the prune bound
+        on `ended_at` still retires a fact whose session died mid-turn.
+        Returns False when no fact exists yet (a first turn -- its baseline
+        checkpoint alone already marks it live)."""
+        if not session_id:
+            raise ValueError('session_id is required')
+        with self._connection(write=True) as db:
+            db.execute("UPDATE session_fact SET status='running', updated_at=? WHERE session_id=?",
+                       (_now(), session_id))
+            return db.execute('SELECT changes()').fetchone()[0] > 0
+
     def get_session_fact(self, session_id: str) -> Optional[dict]:
         with self._connection(write=False) as db:
             row = db.execute('SELECT * FROM session_fact WHERE session_id=?',

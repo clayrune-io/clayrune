@@ -582,3 +582,28 @@ def test_usage_breakdown_store_failure_does_not_break_completion_logging(env, mo
     rows = _log_rows(env)
     assert len(rows) == 1
     assert rows[0]['status'] == 'completed'
+
+
+def test_resumed_turn_reopens_the_usage_breakdown_fact_until_it_completes(env):
+    """Round 3 #2 (P1-2, docs/_journal/4668eafc-mc998-fenn-review.md): every
+    new turn of a resumed session passes through the dispatch-pending
+    writer, which must re-mark the completed fact 'running' -- otherwise
+    the fact stays 'completed' at the previous turn's end while this turn
+    works, and calibration counts overlapping intervals as single-session.
+    The turn's own completion flips it back. A late identity-only INIT
+    backfill must NOT reopen it (it can arrive after the turn finished)."""
+    ar = env['ar']
+    sid, handle = _dispatch(env)
+    env['runtime'].run_turn(handle, ['turn one'])
+    store = _breakdown_store(env)
+    assert store.get_session_fact(sid)['status'] == 'completed'
+
+    ar._log_agent_dispatch_pending(env['sessions'][sid], identity_only=True)
+    assert store.get_session_fact(sid)['status'] == 'completed'
+
+    ar._log_agent_dispatch_pending(env['sessions'][sid])
+    assert store.get_session_fact(sid)['status'] == 'running'
+    assert _log_rows(env)[0]['status'] == 'in_progress'
+
+    env['runtime'].run_turn(handle, ['turn two'])
+    assert store.get_session_fact(sid)['status'] == 'completed'

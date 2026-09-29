@@ -407,3 +407,19 @@ def test_prune_removes_code_delta_lifetime_rows_with_their_session(store):
     with sqlite3.connect(store.db_path) as raw:
         assert raw.execute('SELECT COUNT(*) FROM code_delta_lifetime').fetchone()[0] == 0
 
+
+def test_mark_session_running_reopens_a_completed_fact(store):
+    """Round 3 #2 (P1-2): a resumed session's new turn re-marks its fact
+    'running' so the aggregate treats the time after its last completion
+    as still open. Counters and ended_at are kept."""
+    assert store.mark_session_running('nofact') is False
+    store.upsert_session_fact('s1', {'provider': 'claude', 'status': 'completed',
+                                     'started_at': '2026-09-28T10:00:00Z',
+                                     'ended_at': '2026-09-28T10:05:00Z',
+                                     'input_processed_total': 100,
+                                     'token_coverage': 'complete'})
+    assert store.mark_session_running('s1') is True
+    fact = store.get_session_fact('s1')
+    assert fact['status'] == 'running'
+    assert fact['ended_at'] == '2026-09-28T10:05:00Z'
+    assert fact['input_processed_total'] == 100

@@ -18,10 +18,11 @@ Plus the review fixes from docs/_journal/4668eafc-mc998-fenn-review.md:
   P1-3: token deltas come from timestamped session_checkpoint pairs
         (baseline -> completion), not a completed session's lifetime total
         charged to every interval it overlaps.
-  P2-4: window totals require the session's full measured span (checkpoint
-        pair, or started_at/ended_at fallback) to be CONTAINED in the
-        range; partial overlap is surfaced as "incomplete coverage", not
-        silently included or dropped.
+  P2-4: window totals sum each TURN (checkpoint -> next checkpoint) fully
+        contained in the range; a turn straddling the range, or any
+        unmeasured span overlapping it, is surfaced as "incomplete
+        coverage", never silently included or dropped (round 3 #4 moved
+        this from whole-session to per-turn containment).
 """
 import sys
 from datetime import datetime, timedelta, timezone
@@ -520,3 +521,97 @@ def test_build_breakdown_end_to_end_ok_path():
     assert out['bar_change']['status'] == 'ok'
     assert out['segmented_bar']['status'] in ('ok', 'estimate_exceeds_observed')
     assert out['totals']['session_count'] == len(session_facts)
+
+
+# ── round 3 (docs/_journal/4668eafc-mc998-fenn-review.md "Round 3") ─────
+
+def test_calibration_resumed_session_running_after_its_last_completion_blocks_isolation():
+    """Round 3 #2 (P1-2): a session that finished a turn BEFORE the five
+    intervals and was then resumed has a fact re-marked 'running' by the
+    dispatch writer, while its newest checkpoint is still the old
+    completion. Its unfinished turn overlaps every interval, so none of
+    them had exactly one active session. aa0f99f read the last completion
+    as the session's end and unlocked calibration (status 'ok')."""
+    samples, checkpoints, facts = _calibration_fixture()
+    t0 = datetime(2026, 9, 28, 10, 0, 0, tzinfo=timezone.utc)
+    prior_start = (t0 - timedelta(minutes=30)).isoformat()
+    prior_end = (t0 - timedelta(minutes=10)).isoformat()
+    checkpoints['resumed'] = _checkpoint('resumed', baseline_at=prior_start, completion_at=prior_end)
+    running = _fact('resumed', started_at=prior_start, ended_at=prior_end)
+    running['status'] = 'running'
+    facts.append(running)
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    assert cal['status'] == 'insufficient_samples'
+    assert cal['eligible_interval_count'] == 0
+
+
+def test_build_breakdown_live_first_turn_is_incomplete_not_no_runs():
+    """Round 3 #3a (P1-3): a first-turn session has only its dispatch
+    baseline checkpoint -- no completion, no fact yet. It is working inside
+    the window, so the window must say incomplete coverage, never 'No
+    runs'. aa0f99f only walked session_fact and returned 'no_runs'."""
+    out = build_breakdown(
+        provider='claude', window_kind='5h', window_scope='all',
+        range_start='2026-09-28T12:00:00Z', range_end='2026-09-28T13:00:00Z',
+        dimension='project', sort_by='input',
+        range_samples=[], calibration_samples=[], session_facts=[],
+        checkpoints={'live': _checkpoint('live', baseline_at='2026-09-28T12:10:00Z')},
+        code_deltas={}, coverage_begins=None,
+    )
+    assert out['empty_state'] != 'no_runs'
+    assert out['totals']['incomplete_coverage_session_count'] == 1
+    assert out['totals']['session_count'] == 0
+
+
+def test_filter_fact_ahead_of_checkpoint_history_marks_the_window_incomplete():
+    """Round 3 #3b (P1-3): a v2 store kept only the FIRST completion (100
+    at 12:05); the fact kept updating to 500 at 13:05. After migration the
+    history says 100 while the fact says 500 -- the 400 in between has no
+    checkpoint. The early window gets the measured 100 and is flagged
+    incomplete; aa0f99f charged the fact's 500 to it with no flag."""
+    ck = _checkpoint('mig', baseline_at='2026-09-28T12:00:00Z',
+                      completion_at='2026-09-28T12:05:00Z',
+                      input_processed_total=100, output_tokens=0)
+    fact = _fact('mig', started_at='2026-09-28T12:00:00Z', ended_at='2026-09-28T13:05:00Z',
+                  input_processed_total=500, output_tokens=0)
+    rows, incomplete = filter_facts_in_range(
+        [fact], {'mig': ck}, provider='claude',
+        range_start='2026-09-28T12:00:00Z', range_end='2026-09-28T12:30:00Z')
+    assert incomplete >= 1
+    assert [r['input_processed_total'] for r in rows] == [100]
+
+
+def test_filter_multiturn_later_window_gets_its_own_turn_delta():
+    """Round 3 #4 (P2-4): two turns -- cumulative 100 at 12:05, 500 at
+    13:05. A window holding only the second turn (12:05 -> 13:05) shows
+    that turn's own 400; one holding only the first shows 100. aa0f99f
+    required the whole session lifetime inside the window, so the later
+    window showed nothing (and a window holding both got the fact's 500
+    only because the lifetime happened to fit)."""
+    ck = _checkpoint('two', baseline_at='2026-09-28T12:00:00Z',
+                      completion_at='2026-09-28T12:05:00Z',
+                      input_processed_total=100, output_tokens=0)
+    ck['completions'].append(_completion('two', observed_at='2026-09-28T13:05:00Z',
+                                          input_processed_total=500, output_tokens=0))
+    fact = _fact('two', started_at='2026-09-28T12:00:00Z', ended_at='2026-09-28T13:05:00Z',
+                  input_processed_total=500, output_tokens=0)
+
+    def window(start, end):
+        rows, incomplete = filter_facts_in_range([fact], {'two': ck}, provider='claude',
+                                                 range_start=start, range_end=end)
+        return compute_totals(rows, {}, incomplete_coverage_session_count=incomplete)
+
+    later = window('2026-09-28T12:05:00Z', '2026-09-28T14:00:00Z')
+    assert later['tokens']['input_processed_total'] == 400
+    assert later['session_count'] == 1
+    assert later['incomplete_coverage_session_count'] == 0
+    earlier = window('2026-09-28T12:00:00Z', '2026-09-28T12:05:00Z')
+    assert earlier['tokens']['input_processed_total'] == 100
+    both = window('2026-09-28T12:00:00Z', '2026-09-28T14:00:00Z')
+    assert both['tokens']['input_processed_total'] == 500
+    # A window cutting the second turn in half can only show the first
+    # turn and must say the rest was not measurable.
+    cut = window('2026-09-28T12:00:00Z', '2026-09-28T12:30:00Z')
+    assert cut['tokens']['input_processed_total'] == 100
+    assert cut['incomplete_coverage_session_count'] == 1
