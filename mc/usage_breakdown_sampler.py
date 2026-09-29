@@ -168,7 +168,15 @@ def session_fact_from_entry(entry: dict, *, project_id: str,
         if top_in or top_out:
             fresh = int(top_in or 0)
             cache_read = int(entry.get('cache_read_tokens') or 0)
-            cache_write = int(nested.get('cache_creation_input_tokens') or 0)
+            # MC-998 follow-up 4 (Bug A): must come from the SAME source as
+            # fresh/cache_read/output above -- `entry`'s transcript-derived
+            # top level -- never from `nested` (`entry['usage']`). `nested`
+            # is the CLI's lifetime-cumulative usage for the whole Claude
+            # Code session, a different and non-monotonic scope; mixing it
+            # in here produced token totals ~25x too high (one session
+            # measured nested cache_creation at 29.0M over 1424 turns
+            # against a 1.9M ground truth for its actual transcript window).
+            cache_write = int(entry.get('cache_write_tokens') or 0)
             output = int(top_out or 0)
             processed_total = fresh + cache_write + cache_read
             token_source, coverage = 'transcript', 'complete'

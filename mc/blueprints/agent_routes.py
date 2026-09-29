@@ -8354,6 +8354,7 @@ def _write_usage_breakdown_turn_checkpoint(session):
         'input_tokens': _telemetry.get('input_tokens', 0),
         'output_tokens': _telemetry.get('output_tokens', 0),
         'cache_read_tokens': _telemetry.get('cache_read_tokens', 0),
+        'cache_write_tokens': _telemetry.get('cache_write_tokens', 0),
         'parent_session_id': session.get('_notify_session') or None,
     }
     try:
@@ -8617,6 +8618,7 @@ def _log_agent_completion_body(session):
         'input_tokens': _telemetry.get('input_tokens', 0),
         'output_tokens': _telemetry.get('output_tokens', 0),
         'cache_read_tokens': _telemetry.get('cache_read_tokens', 0),
+        'cache_write_tokens': _telemetry.get('cache_write_tokens', 0),
         'model_tokens': _telemetry.get('model_tokens', {}),
     }
     # Upsert: if a pending entry was written at dispatch time (non-manual trigger),

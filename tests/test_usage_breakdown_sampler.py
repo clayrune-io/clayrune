@@ -130,7 +130,14 @@ def test_claude_transcript_path_sums_processed_total_and_marks_complete():
         'provider': 'claude', 'status': 'completed', 'ts': '2026-09-28T12:00:00Z',
         'started_at': '2026-09-28T11:55:00Z',
         'input_tokens': 500, 'output_tokens': 200, 'cache_read_tokens': 100,
-        'usage': {'cache_creation_input_tokens': 50},
+        'cache_write_tokens': 50,
+        # A huge, unrelated cumulative here must NOT leak into cache_write --
+        # MC-998 follow-up 4 (Bug A): `nested` (`entry['usage']`) is a
+        # DIFFERENT, non-monotonic scope (the live session's running sum
+        # since its last respawn), and mixing it into a transcript-sourced
+        # fact inflated totals ~25x. All four fields must come from the
+        # entry's own top level once that level is present.
+        'usage': {'cache_creation_input_tokens': 99999999},
         'model': 'claude-sonnet-5', 'observed_model': 'claude-sonnet-5',
         'trigger_type': 'manual', 'character': {'name': 'Tobin'},
     }
