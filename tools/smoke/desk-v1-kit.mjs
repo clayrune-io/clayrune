@@ -717,6 +717,73 @@ async function runR21FixtureProductionKeyCheck(browser) {
   await ctx.close();
 }
 
+// ── R2-14 (§10 outcome learning loop): the §10.1 sample-size table via
+// DeskV1Kit.retroVerdict(), plus the fixture-side safety-rail invariant
+// (§10.5.2: an unattended-origin finding must never be state:'confirmed').
+async function runR214RetroVerdictChecks(browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await ctx.newPage();
+  const pageErrors = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
+  await page.route('**/*', fulfillOrAbort);
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#projects-col .card', { timeout: 15000 });
+
+  const result = await page.evaluate(() => {
+    const K = window.DeskV1Kit;
+    const F = window.DeskV1Fixtures;
+
+    // 6 vs 4 posts, both under the 10-per-arm floor.
+    const tooFew = K.retroVerdict('format',
+      { a: Array.from({ length: 6 }, () => 10), b: Array.from({ length: 4 }, () => 10) });
+
+    // 12 vs 12, means 1.2x apart (< 30% gap) -> No clear difference.
+    const arm12a = Array.from({ length: 12 }, () => 10);
+    const arm12b = Array.from({ length: 12 }, () => 12); // mean 12 / 10 = 1.2x
+    const noClear = K.retroVerdict('format', { a: arm12a, b: arm12b });
+
+    // One post = 60% of a 10-post arm's total; other arm clearly lower
+    // (ratio well over 1.3x, same direction by mean and median) so the
+    // check reaches "one post drives this", not "no clear difference".
+    const dominatedArm = [60, 4, 4, 4, 4, 4, 4, 4, 4, 4]; // total 100, post 0 = 60%
+    const otherArm = Array.from({ length: 10 }, () => 2);
+    const onePostDrives = K.retroVerdict('format', { a: dominatedArm, b: otherArm });
+
+    const platformMeta = K.RETRO_DIMENSIONS.platform_voice;
+
+    const findings = (F.playbook && F.playbook.findings) || [];
+    const confirmedUnattended = findings.filter((f) => f.state === 'confirmed' && f.origin === 'unattended');
+
+    return {
+      tooFew, noClear, onePostDrives,
+      platformLabel: platformMeta && platformMeta.label,
+      platformNote: platformMeta && platformMeta.note,
+      findingsCount: findings.length,
+      confirmedUnattendedCount: confirmedUnattended.length,
+    };
+  });
+
+  result.tooFew.verdict === 'too_few_posts' && result.tooFew.text === 'Too few posts to tell (6 and 4; need 10 each)'
+    ? ok(`retroVerdict: 6 vs 4 posts -> "${result.tooFew.text}"`)
+    : fail(`retroVerdict too-few-posts case wrong: ${JSON.stringify(result.tooFew)}`);
+  result.noClear.verdict === 'no_clear_difference' && result.noClear.text === 'No clear difference'
+    ? ok('retroVerdict: 12 vs 12 with a 1.2x gap -> "No clear difference"')
+    : fail(`retroVerdict no-clear-difference case wrong: ${JSON.stringify(result.noClear)}`);
+  result.onePostDrives.verdict === 'one_post_drives' && result.onePostDrives.text === 'One post drives this, not a pattern'
+    ? ok(`retroVerdict: one post = 60% of an arm -> "${result.onePostDrives.text}" (post_id=${result.onePostDrives.post_id})`)
+    : fail(`retroVerdict one-post-drives case wrong: ${JSON.stringify(result.onePostDrives)}`);
+  result.platformLabel === 'Platform + voice' && /can.t separate/i.test(result.platformNote || '')
+    ? ok(`RETRO_DIMENSIONS.platform_voice: label "${result.platformLabel}", can't-separate note present`)
+    : fail(`platform_voice dimension label/note wrong: ${JSON.stringify({ label: result.platformLabel, note: result.platformNote })}`);
+  result.findingsCount > 0 && result.confirmedUnattendedCount === 0
+    ? ok(`fixture load has 0 findings with state:'confirmed' and origin:'unattended' together (${result.findingsCount} findings checked)`)
+    : fail(`safety-rail invariant broken: ${result.confirmedUnattendedCount} finding(s) are confirmed+unattended`);
+
+  const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught.length) uncaught.forEach((e) => fail('[R2-14 retro verdict] uncaught page error: ' + e));
+  await ctx.close();
+}
+
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
@@ -726,6 +793,7 @@ try {
   await runProjectCampaignProjectNavDraftSurvival(browser);
   await runR21PlanBoundsChecks(browser);
   await runR21FixtureProductionKeyCheck(browser);
+  await runR214RetroVerdictChecks(browser);
   exitCode = bad ? 1 : 0;
 } catch (e) {
   console.error('❌ FAIL — smoke harness error: ' + (e && e.message ? e.message : e));
