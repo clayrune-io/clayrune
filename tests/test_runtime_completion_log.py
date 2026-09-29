@@ -515,3 +515,331 @@ def test_ordinary_text_with_no_mc_fence_is_unaffected(env):
     assert 'Reading the config now.' in session['log_lines']
     assert 'Done, config looks fine.' in session['log_lines']
     assert not any('Waiting for your answer' in ln for ln in session['log_lines'])
+
+
+# ── MC-998: completion hook writes a durable usage_breakdown session fact ──
+
+def _breakdown_store(env_):
+    from mc.usage_breakdown_store import UsageBreakdownStore
+    return UsageBreakdownStore(env_['tmp_path'] / 'usage_breakdown.sqlite')
+
+
+def test_completion_writes_a_usage_breakdown_session_fact(env):
+    """The wiring in `_log_agent_completion_body`, not the sampler's own
+    unit-tested logic (that's `tests/test_usage_breakdown_sampler.py`). This
+    pins that a real completion, through the real hook, produces a row the
+    dashboard can read — the thing the unit tests can't see since they call
+    `session_fact_from_entry` directly, never `_log_agent_completion_body`."""
+    sid, handle = _dispatch(env)
+    env['runtime'].run_turn(handle, ['did the thing'])
+
+    facts = _breakdown_store(env).list_session_facts()
+    assert len(facts) == 1, facts
+    assert facts[0]['session_id'] == sid
+    assert facts[0]['status'] == 'completed'
+    assert facts[0]['provider'] == 'fakeprov'
+
+
+def test_incognito_session_writes_no_usage_breakdown_fact(env):
+    sid, handle = _dispatch(env, incognito=True)
+    env['runtime'].run_turn(handle, ['secret'])
+
+    assert _breakdown_store(env).list_session_facts() == []
+
+
+def test_housekeeping_session_still_writes_a_usage_breakdown_fact(env):
+    """Spec §4: housekeeping is a visibility flag on the row, not an
+    exclusion — matches the agent-log parity in
+    `test_housekeeping_logs_a_row_but_writes_no_memory` above."""
+    sid, handle = _dispatch(env)
+    env['sessions'][sid]['housekeeping'] = True
+    env['runtime'].run_turn(handle, ['housekeeping output'])
+
+    facts = _breakdown_store(env).list_session_facts()
+    assert len(facts) == 1
+    assert facts[0]['housekeeping'] == 1  # sqlite stores bool as 0/1
+
+
+def test_error_exit_writes_a_usage_breakdown_fact_with_error_status(env):
+    sid, handle = _dispatch(env)
+    env['runtime'].run_turn(handle, ['partial work'], rc=1)
+
+    facts = _breakdown_store(env).list_session_facts()
+    assert len(facts) == 1
+    assert facts[0]['status'] == 'error'
+
+
+def test_usage_breakdown_store_failure_does_not_break_completion_logging(env, monkeypatch):
+    """Best-effort per the comment at the call site: a store exception must
+    not take down the agent-log write it rides alongside."""
+    def _boom(self, *a, **kw):
+        raise RuntimeError('disk full')
+    monkeypatch.setattr(env['ar']._UsageBreakdownStore, 'upsert_session_fact', _boom)
+
+    sid, handle = _dispatch(env)
+    env['runtime'].run_turn(handle, ['still works'])
+
+    rows = _log_rows(env)
+    assert len(rows) == 1
+    assert rows[0]['status'] == 'completed'
+
+
+def test_resumed_turn_reopens_the_usage_breakdown_fact_until_it_completes(env):
+    """Round 3 #2 (P1-2, docs/_journal/4668eafc-mc998-fenn-review.md): every
+    new turn of a resumed session passes through the dispatch-pending
+    writer, which must re-mark the completed fact 'running' -- otherwise
+    the fact stays 'completed' at the previous turn's end while this turn
+    works, and calibration counts overlapping intervals as single-session.
+    The turn's own completion flips it back. A late identity-only INIT
+    backfill must NOT reopen it (it can arrive after the turn finished)."""
+    ar = env['ar']
+    sid, handle = _dispatch(env)
+    env['runtime'].run_turn(handle, ['turn one'])
+    store = _breakdown_store(env)
+    assert store.get_session_fact(sid)['status'] == 'completed'
+
+    ar._log_agent_dispatch_pending(env['sessions'][sid], identity_only=True)
+    assert store.get_session_fact(sid)['status'] == 'completed'
+
+    ar._log_agent_dispatch_pending(env['sessions'][sid])
+    assert store.get_session_fact(sid)['status'] == 'running'
+    assert _log_rows(env)[0]['status'] == 'in_progress'
+
+    env['runtime'].run_turn(handle, ['turn two'])
+    assert store.get_session_fact(sid)['status'] == 'completed'
+
+
+# ── MC-998 round 4: liveness of the usage-breakdown reconcile ──────────────
+# Drives the REAL Mode B reader (`_read_agent_stream_b`), the real
+# `_note_self_started_turn`, the real server live set
+# (`system_routes._usage_breakdown_live_session_ids`) and the real store. A
+# generator-backed process yields a turn's `result`, lets the test run a
+# reconcile tick while the process is still alive, then continues.
+
+class _LiveModeBProc:
+    """Popen stand-in whose stdout is a generator: `between` runs after
+    `before` is consumed (the session is 'idle' after a result line, the
+    process still alive), `after_hook` after `after`."""
+
+    pid = -1
+
+    def __init__(self, before, between, after=(), after_hook=None):
+        self._before, self._between = before, between
+        self._after, self._after_hook = after, after_hook
+        self.exited = False
+
+    def poll(self):
+        return 0 if self.exited else None
+
+    def wait(self):
+        self.exited = True
+        return 0
+
+    @property
+    def stdout(self):
+        def gen():
+            yield from self._before
+            self._between()
+            yield from self._after
+            if self._after_hook:
+                self._after_hook()
+        return gen()
+
+
+def _mode_b_session(env_, sid):
+    from mc.core import TimestampedLines
+    s = {'session_id': sid, 'project_id': 'proj1', 'status': 'running', 'mode': 'B',
+         'provider': 'claude', 'process_alive': True, 'log_lines': TimestampedLines(),
+         'task': 'fixture', 'started_at': '2026-09-28T12:00:00+00:00'}
+    env_['sessions'][sid] = s
+    return s
+
+
+def _result_line():
+    return json.dumps({'type': 'result', 'usage': {'input_tokens': 100, 'output_tokens': 10}})
+
+
+def _assistant_line(text):
+    return json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': text}]}})
+
+
+def _reconcile(env_, **kw):
+    from mc.blueprints import system_routes as sr
+    from mc.usage_breakdown_sampler import reconcile_dead_sessions
+    return reconcile_dead_sessions(_breakdown_store(env_),
+                                   live_session_ids=sr._usage_breakdown_live_session_ids, **kw)
+
+
+def _open_ids(env_):
+    return sorted(r['session_id'] for r in _breakdown_store(env_).list_open_sessions())
+
+
+def _later(**delta):
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone.utc) + timedelta(**delta)
+
+
+def test_idle_mode_b_session_with_a_live_process_is_not_closed(env):
+    """Fenn round 4 LIVE_mode-b: the reader flips the session to 'idle' on
+    every result while the process lives; 1572b2c's status-only live set
+    closed it 'ended_unknown'. Checked well past the 120s grace."""
+    ar = env['ar']
+    seen = {}
+    s = _mode_b_session(env, 'mb-idle')
+    ar._log_agent_dispatch_pending(s)
+
+    def tick():
+        seen['status'] = s['status']
+        seen['closed'] = _reconcile(env, now=_later(minutes=30))
+        seen['open'] = _open_ids(env)
+
+    proc = _LiveModeBProc([_result_line()], tick)
+    s['proc'] = proc
+    ar._read_agent_stream_b(proc, s)
+    assert seen['status'] == 'idle'
+    assert seen['closed'] == []
+    assert seen['open'] == ['mb-idle']
+
+
+def test_mc_question_wait_is_not_closed(env):
+    """Fenn round 4 LIVE_question: a session parked on an mc:question is
+    idle with its process alive -- still live."""
+    ar = env['ar']
+    seen = {}
+    s = _mode_b_session(env, 'mb-question')
+    ar._log_agent_dispatch_pending(s)
+    text = '```mc:question\n' + json.dumps({'questions': [{
+        'header': 'Choice', 'question': 'Which?',
+        'options': [{'label': 'A'}, {'label': 'B'}]}]}) + '\n```'
+
+    def tick():
+        seen['waiting'] = s.get('waiting_for_question')
+        seen['status'] = s['status']
+        seen['closed'] = _reconcile(env, now=_later(minutes=30))
+
+    proc = _LiveModeBProc([_assistant_line(text), _result_line()], tick)
+    s['proc'] = proc
+    ar._read_agent_stream_b(proc, s)
+    assert seen['waiting']
+    assert seen['status'] == 'idle'
+    assert seen['closed'] == []
+
+
+def test_automatic_wake_marks_the_usage_turn_running(env):
+    """Fenn round 4 AUTO_WAKE: a background-task wake starts a turn nobody
+    sent. `_note_self_started_turn` must mark the usage fact running on
+    EVERY such turn, not only when the INTERIM latch is set -- here it is
+    not set, and the previous turn's fact is 'completed'."""
+    ar = env['ar']
+    store = _breakdown_store(env)
+    seen = {}
+    s = _mode_b_session(env, 'mb-wake')
+    ar._log_agent_dispatch_pending(s)
+    store.upsert_session_fact('mb-wake', {'provider': 'claude', 'status': 'completed',
+                                          'started_at': s['started_at'],
+                                          'ended_at': '2026-09-28T12:05:00+00:00',
+                                          'token_coverage': 'unavailable'})
+
+    def tick():
+        seen['before'] = store.get_session_fact('mb-wake')['status']
+
+    def after_wake():
+        seen['memory'] = s['status']
+        seen['after'] = store.get_session_fact('mb-wake')['status']
+
+    proc = _LiveModeBProc([_result_line()], tick,
+                          after=[_assistant_line('Background task finished, continuing.')],
+                          after_hook=after_wake)
+    s['proc'] = proc
+    ar._read_agent_stream_b(proc, s)
+    assert seen['before'] == 'completed'
+    assert seen['memory'] == 'running'
+    assert seen['after'] == 'running'
+
+
+def test_reconcile_reopens_a_wrongly_closed_live_session(env):
+    """A fact closed 'ended_unknown' whose session is live after all is
+    reopened by the next tick instead of staying closed until exit. With
+    the registry unreadable nothing is reopened (or closed)."""
+    from mc.usage_breakdown_sampler import reconcile_dead_sessions
+    ar = env['ar']
+    store = _breakdown_store(env)
+    s = _mode_b_session(env, 'mb-reopen')
+    s['status'] = 'idle'
+    s['proc'] = _LiveModeBProc([], lambda: None)
+    ar._log_agent_dispatch_pending(s)
+    gen = store.list_open_sessions()[0]['generation']
+    assert store.close_session_ended_unknown('mb-reopen', provider='claude', started_at=None,
+                                             ended_at='2026-09-28T12:01:00+00:00',
+                                             generation=gen)
+    assert reconcile_dead_sessions(store, live_session_ids=None) == []
+    assert store.get_session_fact('mb-reopen')['status'] == 'ended_unknown'
+    assert _reconcile(env, now=_later(minutes=30)) == []
+    assert store.get_session_fact('mb-reopen')['status'] == 'running'
+
+
+def test_pending_launch_is_live_past_the_grace(env):
+    """Fenn round 4 PENDING_121: a dispatch whose durable baseline is
+    written before Popen is live through state.pending_launches, not only
+    through the 120s grace, and leaves it when the launch block exits."""
+    from mc import state as mc_state
+    ar = env['ar']
+    ar._log_agent_dispatch_pending({'project_id': 'proj1', 'session_id': 'pending-1',
+                                    'task': 't', 'provider': 'claude'})
+    with ar._pending_launch_scope() as scope:
+        scope.append('pending-1')
+        mc_state.pending_launches['pending-1'] = 0.0
+        assert _reconcile(env, now=_later(seconds=121)) == []
+    assert 'pending-1' not in mc_state.pending_launches
+    assert _reconcile(env, now=_later(seconds=121)) == ['pending-1']
+
+
+def test_pending_launch_scope_clears_on_a_failed_launch(env):
+    from mc import state as mc_state
+    ar = env['ar']
+    with pytest.raises(OSError):
+        with ar._pending_launch_scope() as scope:
+            scope.append('pending-2')
+            mc_state.pending_launches['pending-2'] = 0.0
+            raise OSError('Popen failed')
+    assert 'pending-2' not in mc_state.pending_launches
+
+
+def test_close_loses_to_a_turn_that_started_after_the_snapshot(env):
+    """Fenn round 4 SNAPSHOT_RESUME_RACE: the store was read while the
+    first-turn session looked dead, then a new turn started. The turn start
+    now writes a newer generation (it opens a first turn's fact; bumps an
+    existing fact's updated_at), so the stale close is a no-op."""
+    from mc.usage_breakdown_sampler import reconcile_dead_sessions
+    store = _breakdown_store(env)
+    store.record_session_checkpoint(session_id='race', provider='claude',
+                                    checkpoint_type='baseline',
+                                    observed_at='2026-09-28T11:00:00+00:00')
+    snap = store.list_open_sessions()[0]
+    assert snap['generation'] is None
+    assert store.mark_session_running('race')
+    assert not store.close_session_ended_unknown('race', provider='claude', started_at=None,
+                                                 ended_at='2026-09-28T12:00:00+00:00',
+                                                 generation=snap['generation'])
+    snap = store.list_open_sessions()[0]
+    store.mark_session_running('race')
+    assert not store.close_session_ended_unknown('race', provider='claude', started_at=None,
+                                                 ended_at='2026-09-28T12:00:00+00:00',
+                                                 generation=snap['generation'])
+    assert store.get_session_fact('race')['status'] == 'running'
+    # The callable live set is read AFTER the store snapshot inside the
+    # reconcile itself: a turn registered in between is seen live.
+    assert reconcile_dead_sessions(store, live_session_ids=lambda: {'race'},
+                                   now=_later(hours=1)) == []
+
+
+def test_session_whose_process_exited_without_a_completion_is_closed(env):
+    """The crash case still closes: process gone (poll() returns a code),
+    status not running, no completion ever written."""
+    ar = env['ar']
+    s = _mode_b_session(env, 'mb-dead')
+    ar._log_agent_dispatch_pending(s)
+    s['status'] = 'idle'
+    s['proc'] = _FakeProc([], rc=1)
+    assert _reconcile(env, now=_later(minutes=5)) == ['mb-dead']
+    assert _breakdown_store(env).get_session_fact('mb-dead')['status'] == 'ended_unknown'

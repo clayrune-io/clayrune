@@ -2808,6 +2808,10 @@ app.register_blueprint(_bp_system.bp)
 _update_check_loop = _bp_system._update_check_loop
 # MC-991 Phase 2: server-side orphan CLI process sweep daemon (mc/process_sweep.py).
 _process_sweep_loop = _bp_system._process_sweep_loop
+# MC-998 phase 4: Usage Breakdown allowance sampler + 90-day retention prune
+# (docs/USAGE_BREAKDOWN_SPEC.md "Sampling and durable facts").
+_usage_breakdown_sample_loop = _bp_system._usage_breakdown_sample_loop
+_usage_breakdown_prune_loop = _bp_system._usage_breakdown_prune_loop
 
 # ── Per-vendor allowance state (VENDOR_AGNOSTIC_PROGRAM.md §4) ──────────────
 # Same sibling-file placement as SYSTEM_STATUS_PATH above: a file next to
@@ -3335,6 +3339,13 @@ def boot(check_port=True):
     # hourly tick, runs a full backup if overdue per config 'backup_schedule'.
     # Off by default (unset config == 'off', loop no-ops every tick).
     threading.Thread(target=_bp_backup._backup_schedule_loop, daemon=True, name='backup-schedule').start()
+    # MC-998 phase 4: Usage Breakdown allowance sampler (samples immediately
+    # at startup, then on the spec's 60s-active/5min-idle cadence) + its
+    # separate daily 90-day-retention prune. No off switch -- both loops are
+    # cheap (shared 60s vendor caches, local sqlite) and the whole feature is
+    # additive/read-only from the rest of the app's point of view.
+    threading.Thread(target=_usage_breakdown_sample_loop, daemon=True, name='usage-breakdown-sample').start()
+    threading.Thread(target=_usage_breakdown_prune_loop, daemon=True, name='usage-breakdown-prune').start()
     # Secrets vault idle-lock sweeper (MC-949 follow-up): clears the unwrapped
     # master key from memory after vault_idle_lock_minutes even if nothing
     # reads it in the meantime — the lazy check in load_master_key() only

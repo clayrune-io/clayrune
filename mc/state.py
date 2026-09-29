@@ -26,6 +26,13 @@ CONFIG: dict = {}
 # session_id → {proc, status, task, log_lines, started_at, session_id, project_id}
 agent_sessions = {}
 
+# session_id -> epoch: a dispatch whose durable record (agent_log row + the
+# usage-breakdown baseline checkpoint) is written BEFORE Popen, and whose
+# session dict is not in agent_sessions yet. Entered and cleared by
+# agent_routes._pending_launch_scope. The usage-breakdown reconcile counts
+# these as live, so a slow launch is never closed as dead (MC-998 round 4).
+pending_launches = {}
+
 # ── Per-project agent isolation ──────────────────────────────────────────────
 _managers = {}                       # project_id -> ProjectAgentManager
 _managers_lock = threading.Lock()    # ONLY for _managers dict mutation; never held during work

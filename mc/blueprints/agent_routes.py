@@ -49,6 +49,7 @@ _get_mem_write_lock or writes MEMORY.md.
 """
 
 import concurrent.futures
+import contextlib
 from mc import engine_selection
 from mc.runtime_attempt_owner import DispatchFacts
 import hashlib
@@ -87,6 +88,7 @@ from mc.state import (
     _managers_lock,
     _provider_env_lock,
     agent_sessions,
+    pending_launches,
     process_tracker_lock,
     terminal_sessions,
     tracked_processes,
@@ -110,6 +112,9 @@ import mc.agent_jobs as _agent_jobs  # MC-958 follow-up: engine-agnostic backgro
 import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
 import mc.artifact_coverage as _artifact_coverage  # substitution check: did the turn run what was asked
 import mc.vendor_context_sync as _vendor_context_sync  # mirrors CLAUDE.md into AGENTS.md/GEMINI.md/QWEN.md
+import mc.usage_breakdown_sampler as _usage_breakdown_sampler  # MC-998 session-fact capture
+from mc.usage_breakdown_store import UsageBreakdownStore as _UsageBreakdownStore  # MC-998
+import mc.project_sync as _project_sync  # MC-998 phase 3: LOC attribution git numstat
 from mc.delegation_delivery import (DeliveryStore, callback_payload,
                                     DeliveryBlocked, DeliveryDeferred,
                                     DeliveryUncertain, drain_once,
@@ -1230,6 +1235,134 @@ def _maybe_isolate_worktree(project, session_id, incognito=False):
     except Exception as e:
         _log(f"[worktree] isolation failed, using shared tree: {e}")
         return pp, False
+
+
+_LOC_EXTENSIONS = {
+    '.py', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.html', '.css',
+    '.scss', '.swift', '.kt', '.java', '.rs', '.go', '.sh', '.ps1',
+}
+
+# MC-998 review finding #5: an extension match alone still counted vendored/
+# generated files as session source (e.g. staged lines under `vendor/`).
+_LOC_VENDOR_DIR_PARTS = {
+    'node_modules', 'vendor', 'vendored', 'third_party', 'dist', 'build',
+    '.venv', 'venv', '__pycache__',
+}
+
+
+def _loc_path_excluded(path: str) -> bool:
+    lower = path.lower()
+    if lower.endswith('.min.js') or lower.endswith('.min.css'):
+        return True
+    return any(part in _LOC_VENDOR_DIR_PARTS for part in Path(path).parts)
+
+
+def _compute_code_delta(session):
+    """MC-998 phase 3 LOC attribution (docs/USAGE_BREAKDOWN_SPEC.md "Trigger
+    and code attribution"). Returns the `fields` dict for
+    `UsageBreakdownStore.upsert_code_delta`.
+
+    Only an isolated worktree gives an attributable diff — the shared
+    project tree can carry concurrent human/agent edits with no way to
+    separate this session's lines from them, so every non-isolated session
+    is `unavailable` by construction (acceptance check 3: "a shared dirty
+    worktree yields LOC unavailable"). Must be called BEFORE
+    `_worktree_merge_back_on_end` — the spec requires "the session's own
+    commit SHA set and a final isolated diff before any automatic
+    merge-back" — since merge-back can delete the worktree and its branch
+    once merged.
+
+    The baseline is the commit `agent_worktree._capture_loc_baseline` froze
+    at worktree creation, read back via `loc_baseline_commit` — NOT a fresh
+    `merge-base(HEAD, base_ref)` computed now. Recomputing it here would
+    collapse to HEAD once the agent's own commits land on base_ref (MC-998
+    review finding #5), silently zeroing out the diff for anyone who follows
+    the project's own "land your work" instruction before the chat ends.
+    Worktrees created before this fix have no frozen baseline, so those fall
+    back to the old merge-base behavior. The diff is taken directly against
+    the working tree (not just `HEAD`), so committed AND any still-
+    uncommitted changes are counted once, in one numstat pass. `-M` groups a
+    rename into one numstat line (added/deleted of the actual edit) instead
+    of counting the whole file as both a delete and an add. Untracked new
+    files are invisible to `git diff` entirely, so they're counted in a
+    separate pass over `git status`. Vendored/generated paths are excluded
+    from both passes (extension matching alone previously let a vendored
+    `.js` file count as session source).
+    """
+    branch = _agent_worktree.branch_name(session.get('session_id', ''))
+    if not session.get('_worktree_isolated'):
+        return {'status': 'unavailable', 'branch': branch,
+                'reason': "shared working tree, cannot isolate this session's commits"}
+    project = load_project(session.get('project_id'))
+    if not project:
+        return {'status': 'unavailable', 'branch': branch, 'reason': 'project not found'}
+    wt = _agent_worktree.worktree_path(project, session.get('session_id', ''))
+    if wt is None or not wt.exists():
+        return {'status': 'unavailable', 'branch': branch, 'reason': 'worktree missing at completion'}
+    wts = str(wt)
+    base_commit = _agent_worktree.loc_baseline_commit(wts)
+    if not base_commit:
+        # Re-review finding #5 (P2-5, "2026-09-28 re-review"): a worktree
+        # from before the frozen-baseline fix has no admin file to read, so
+        # this recomputes the same moving `merge-base(HEAD, base_ref)` that
+        # finding #5 originally reported. If the agent has ALREADY landed
+        # its own commits on base_ref by the time this runs, merge-base
+        # collapses to HEAD itself -- an empty diff that looks like a
+        # confirmed zero but is actually "we lost the ability to measure
+        # this," which the spec's "no fabricated zero" rule forbids passing
+        # off as real. Detect exactly that collapse and report unavailable
+        # instead of a wrong zero; every OTHER pre-fix worktree (base_ref
+        # not yet advanced) still gets a correct diff from this fallback.
+        base_ref = _agent_worktree._base_ref(project)
+        ok, head_commit = _project_sync.git_run(wts, ['rev-parse', 'HEAD'], timeout=10)
+        ok2, base_commit = _project_sync.git_run(wts, ['merge-base', 'HEAD', base_ref], timeout=15)
+        if not ok2 or not base_commit:
+            return {'status': 'unavailable', 'branch': branch,
+                    'reason': f'cannot resolve base commit: {base_commit}'}
+        if ok and head_commit and base_commit == head_commit:
+            return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
+                    'reason': 'no frozen baseline and merge-base has collapsed to HEAD '
+                              '(own commits already landed on base_ref) -- diff not measurable'}
+    ok, commits_out = _project_sync.git_run(wts, ['rev-list', f'{base_commit}..HEAD'], timeout=15)
+    head_commits = commits_out.splitlines() if ok else []
+    ok, diff_out = _project_sync.git_run(wts, ['diff', '--numstat', '-M', base_commit], timeout=30)
+    if not ok:
+        return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
+                'head_commits': ','.join(head_commits), 'reason': f'git diff failed: {diff_out}'}
+    added = deleted = 0
+    for line in diff_out.splitlines():
+        parts = line.split('\t')
+        if len(parts) < 3:
+            continue
+        a, d, path = parts[0], parts[1], parts[-1]
+        if a == '-' or d == '-':
+            continue  # numstat marks a binary file this way
+        path = path.split(' => ')[-1].strip('{}')
+        ext = Path(path).suffix.lower()
+        if ext not in _LOC_EXTENSIONS or _loc_path_excluded(path):
+            continue
+        added += int(a)
+        deleted += int(d)
+    ok, status_out = _project_sync.git_run(
+        wts, ['status', '--porcelain', '--untracked-files=all'], timeout=15)
+    if ok:
+        for line in status_out.splitlines():
+            if not line.startswith('?? '):
+                continue
+            rel = line[3:].strip()
+            if len(rel) >= 2 and rel[0] == '"' and rel[-1] == '"':
+                rel = rel[1:-1]
+            ext = Path(rel).suffix.lower()
+            if ext not in _LOC_EXTENSIONS or _loc_path_excluded(rel):
+                continue
+            try:
+                text = (wt / rel).read_text(encoding='utf-8')
+            except (UnicodeDecodeError, OSError):
+                continue  # binary or unreadable — not attributable source
+            if text:
+                added += text.count('\n') + (0 if text.endswith('\n') else 1)
+    return {'status': 'ok', 'branch': branch, 'base_commit': base_commit,
+            'head_commits': ','.join(head_commits), 'added': added, 'deleted': deleted}
 
 
 def _worktree_merge_back_on_end(session):
@@ -7483,6 +7616,33 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
         if strict:
             raise
 
+    # P1-3 fix (docs/_journal/4668eafc-mc998-fenn-review.md finding 3): a
+    # dispatch-time 'baseline' session_checkpoint row, zero cumulative tokens
+    # at dispatch time. Without this, a still-running session is completely
+    # invisible to usage_breakdown_aggregate.py (session_fact is only written
+    # at completion), so an allowance-sample interval overlapping its run
+    # looked "coverage complete" with zero active sessions -- exactly the
+    # review's "Running first-turn sessions have no fact at all" gap.
+    # `UNIQUE(session_id, checkpoint_type)` makes the second call for the
+    # same session_id (native-provider INIT re-invocation, see docstring
+    # above) a safe no-op. Best-effort, same as the completion-side write.
+    # A RESUMED session (the baseline already exists) also re-marks its
+    # completed fact 'running' (round 3, P1-2): every new turn passes
+    # through here, and without it the durable fact stays 'completed' at the
+    # previous turn's end while this turn runs, so calibration counted
+    # overlapping intervals as having exactly one active session. Not on an
+    # identity-only INIT backfill: that can land after the turn completed,
+    # and must no more reopen the fact than it resets the log row above.
+    try:
+        _store = _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite')
+        _store.record_session_checkpoint(**_usage_breakdown_sampler.baseline_checkpoint_fields(
+            sid, provider=(entry.get('provider') or 'claude'),
+            observed_at=entry.get('started_at') or now_iso()))
+        if not identity_only:
+            _store.mark_session_running(sid)
+    except Exception as e:
+        _log(f"[usage-breakdown] baseline checkpoint write failed for {sid[:12]}: {e}")
+
 def _last_reply_text(session):
     """The child's last real assistant text, for the spawner callback.
 
@@ -7628,6 +7788,22 @@ def _note_self_started_turn(session):
     session['status'] = 'running'
     session['last_status_change_time'] = _time.time()
     session.pop(_bg_tasks.RESUME_PENDING_KEY, None)
+    # MC-998 round 4: this turn never passes the dispatch-pending writer, so
+    # the usage store still held the previous turn's 'completed' fact (or a
+    # reconcile-closed one) while it ran -- every automatic wake, not only
+    # the INTERIM-latched one below, reopens it. Same exclusions as that
+    # writer, same best-effort write.
+    if (session.get('project_id') and session.get('session_id')
+            and not session.get('incognito') and not session.get('housekeeping')):
+        try:
+            _store = _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite')
+            _store.record_session_checkpoint(**_usage_breakdown_sampler.baseline_checkpoint_fields(
+                session['session_id'], provider=session.get('provider') or 'claude',
+                observed_at=session.get('started_at') or now_iso()))
+            _store.mark_session_running(session['session_id'])
+        except Exception as e:
+            _log(f"[usage-breakdown] self-started turn not recorded for "
+                 f"{session.get('session_id', '')}: {e}")
     if session.pop(_bg_tasks.INTERIM_KEY, None):
         try:
             _rearm_notify_for_new_turn(session)
@@ -8129,6 +8305,15 @@ def _log_agent_completion_body(session):
     if not project_id:
         return
 
+    # MC-998 phase 3: LOC attribution. Must run BEFORE the worktree merge-back
+    # immediately below — merge-back can merge and then delete the isolated
+    # branch/worktree, after which the diff this reads is gone. Best-effort;
+    # never let a git failure here block completion logging.
+    try:
+        _code_delta = _compute_code_delta(session)
+    except Exception as e:
+        _code_delta = {'status': 'unavailable', 'reason': f'LOC computation failed: {e}'}
+
     # Worktree isolation (b264200a): merge this agent's committed work back
     # into the base branch before anything else. Runs FIRST and outside the
     # incognito/housekeeping early-returns below, because stranding an agent's
@@ -8317,6 +8502,38 @@ def _log_agent_completion_body(session):
                     break
         log.insert(0, entry)
     _update_agent_log(project_id, complete)
+
+    # MC-998 Phase 2: durable session_fact for the Usage Breakdown dashboard.
+    # Written for every completed/errored/stopped session INCLUDING housekeeping
+    # (spec §4: "the default includes every persisted run... so the user can
+    # tell whether their work is included" -- the `housekeeping` column is the
+    # visibility flag, not an exclusion). Incognito never reaches this point
+    # (early return above). Best-effort: a store failure must never break the
+    # agent-log write it rides alongside.
+    if entry.get('session_id'):
+        try:
+            _fact = _usage_breakdown_sampler.session_fact_from_entry(
+                entry, project_id=project_id, housekeeping=is_housekeeping)
+            _store = _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite')
+            _store.upsert_session_fact(entry['session_id'], _fact)
+            # P1-3 fix (docs/_journal/4668eafc-mc998-fenn-review.md finding 3):
+            # the completion 'session_checkpoint' row -- paired with the
+            # dispatch-time 'baseline' row from _log_agent_dispatch_pending --
+            # is what lets usage_breakdown_aggregate.py derive this session's
+            # token delta instead of charging its lifetime total to every
+            # allowance-sample interval it overlaps.
+            _ckpt_at = _fact.get('ended_at') or entry.get('ts') or now_iso()
+            _store.record_session_checkpoint(**_usage_breakdown_sampler.completion_checkpoint_fields(
+                _fact, session_id=entry['session_id'], observed_at=_ckpt_at))
+            # MC-998 Phase 3: LOC attribution, computed pre-merge-back above.
+            # code_delta has a (non-enforced) FK on session_fact, so this
+            # write is ordered after it. Not gated on is_housekeeping — a
+            # housekeeping session's LOC is `unavailable` (it never isolates
+            # a worktree) but the row still belongs, same as its session_fact.
+            _store.upsert_code_delta(entry['session_id'], _code_delta)
+        except Exception as e:
+            _log(f"[usage-breakdown] session fact write failed for "
+                 f"{entry.get('session_id', '')[:12]}: {e}")
 
     if is_housekeeping:
         return
@@ -10035,6 +10252,19 @@ def _model_quota_blocked(provider_name: str, model: str) -> str:
             f"— it will fail again until the quota resets; pick a different model")
 
 
+@contextlib.contextmanager
+def _pending_launch_scope():
+    """Yields a list; every session id appended to it is removed from
+    state.pending_launches when the block exits, normally or by exception
+    -- so a Popen failure never leaves a launch counted live forever."""
+    sids = []
+    try:
+        yield sids
+    finally:
+        for sid in sids:
+            pending_launches.pop(sid, None)
+
+
 def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              trigger_type='manual', trigger_id='',
                              reuse_session_id='', provider_override='',
@@ -10517,7 +10747,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     else:
         _agent_cwd, _isolated = _maybe_isolate_worktree(p, _planned_sid, incognito)
 
-    with mgr.lock:
+    with mgr.lock, _pending_launch_scope() as _pending_launch:
         # Reuse the prior run's id (continued scheduled thread) unless that id is
         # somehow still a live session — never clobber a running session dict.
         if reuse_session_id and (
@@ -10555,6 +10785,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # setup fails, reconciliation can see an in-progress launch and retain
         # the unknown outcome instead of leaving an untracked child process.
         if notify_session and not incognito:
+            # Live to the usage-breakdown reconcile from here until this
+            # `with` block exits -- by then the session is in agent_sessions,
+            # or the launch failed (MC-998 round 4).
+            _pending_launch.append(session_id)
+            pending_launches[session_id] = _time.time()
             _log_agent_dispatch_pending({
                 'project_id': project_id, 'session_id': session_id,
                 'task': task, 'provider': provider_name,

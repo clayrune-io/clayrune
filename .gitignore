@@ -169,6 +169,13 @@ data/mc.db
 data/mc.db-wal
 data/mc.db-shm
 
+# MC-998: Usage Breakdown dashboard store (docs/USAGE_BREAKDOWN_SPEC.md).
+# Runtime state outside data/projects/ (never a "project" to load_projects()),
+# rebuilt by the sampler; never commit.
+data/usage_breakdown.sqlite
+data/usage_breakdown.sqlite-wal
+data/usage_breakdown.sqlite-shm
+
 # Firebase Admin SDK service-account key — used by server to send FCM pushes
 # to the native Android app. Contains a private RSA key; never commit.
 data/firebase_admin.json

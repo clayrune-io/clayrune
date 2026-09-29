@@ -590,18 +590,53 @@ def system_status_get():
     return jsonify(_build_system_status_payload())
 
 
+def _model_tokens_from_nested_usage(e):
+    """Fallback for entries with no transcript-derived `model_tokens` — the
+    case for every provider whose adapter doesn't write a Claude-shaped JSONL
+    transcript (Codex: 119/119 retained rows have empty model_tokens despite
+    61 having positive nested `usage`, per USAGE_BREAKDOWN_SPEC.md's baseline
+    audit). Vendor-agnostic: reads whatever `usage.input_tokens` /
+    `usage.output_tokens` the adapter recorded. `cached_input_tokens` (Codex)
+    is a subset of `input_tokens`, never added again. Returns {} when there's
+    no positive evidence — a missing/zero usage dict stays excluded, not 0.
+    """
+    usage = e.get('usage')
+    if not isinstance(usage, dict):
+        return {}
+    inp = int(usage.get('input_tokens') or 0)
+    out = int(usage.get('output_tokens') or 0)
+    if not inp and not out:
+        return {}
+    model = e.get('observed_model') or e.get('model') or 'unknown'
+    return {model: inp + out}
+
+
 def _mc_usage_from_agent_logs():
     """Aggregate token usage from MC's own agent_log files.
 
     Returns {'today': {model: tokens}, 'week': {...}, 'month': {...},
              'all_time': {model: tokens}, 'last_data_date': str}
-    Reads all *_agent_log.json in DATA_DIR. Entries without model_tokens are
-    skipped (pre-telemetry entries). Never raises.
+    Reads all *_agent_log.json in DATA_DIR. Entries without model_tokens fall
+    back to nested `usage` via `_model_tokens_from_nested_usage` (vendor-
+    agnostic — covers Codex and any other non-Claude adapter); entries with
+    neither are skipped (no evidence). Never raises.
 
-    Deduplicates by claude_session_id: Scribe checkpoints write multiple entries
-    for the same session (each with the cumulative token total from session start).
-    We keep only the latest entry per csid to avoid counting the same tokens N times.
-    Sessions without a csid are counted individually (legacy / non-CC providers).
+    Deduplicates by claude_session_id when present: Scribe checkpoints write
+    multiple entries for the same session (each with the cumulative token
+    total from session start). We keep only the latest entry per csid to
+    avoid counting the same tokens N times.
+
+    Non-CC providers (Codex, per the spec's baseline audit: 119/119 retained
+    rows have an empty claude_session_id) never get a csid, but their
+    completion rows are the SAME cumulative-snapshot shape -- `_mode_a_reader`
+    stores the thread's running total including rollover carry, and one row
+    is written per process exit/turn. Falling through to "count individually"
+    for these rows sums the same cumulative total repeatedly (100 then 200
+    becomes 300, not 200). Fall back to `session_id` -- the stable MC session
+    identity that outlives a Codex thread rollover (`provider_session_id`
+    does not) -- as the dedup key for any row with no claude_session_id.
+    Only a row with neither key is counted individually (no stable identity
+    to dedupe against).
     """
     today_str = datetime.now().strftime('%Y-%m-%d')
     try:
@@ -614,11 +649,12 @@ def _mc_usage_from_agent_logs():
     last_data_date = ''
 
     try:
-        # First pass: collect all entries across all log files, deduplicated by csid.
-        # For each csid, keep only the latest entry (highest ts = most complete snapshot).
-        # Entries without a csid are kept as-is (keyed by a unique fallback).
-        best_by_csid: dict = {}  # csid -> entry dict
-        _no_csid_counter = 0
+        # First pass: collect all entries across all log files, deduplicated by
+        # a stable session identity (claude_session_id, else session_id). For
+        # each key, keep only the latest entry (highest ts = most complete
+        # snapshot). Entries with neither key are kept as-is (unique fallback).
+        best_by_csid: dict = {}  # dedup key -> entry dict
+        _no_key_counter = 0
         for log_path in DATA_DIR.glob('*_agent_log.json'):
             try:
                 entries = json.loads(log_path.read_text(encoding='utf-8',
@@ -632,22 +668,40 @@ def _mc_usage_from_agent_logs():
                     continue
                 mt = e.get('model_tokens')
                 if not mt or not isinstance(mt, dict):
-                    continue
-                ts = (e.get('ts') or '')[:10]
-                if not ts:
+                    mt = _model_tokens_from_nested_usage(e)
+                    if not mt:
+                        continue
+                # Review re-review finding #1 (docs/_journal/4668eafc-mc998-
+                # fenn-review.md, "2026-09-28 re-review"): compare the FULL
+                # timestamp, never a date-truncated one. The log is
+                # newest-first (agent_routes.py's completion writer does
+                # `log.insert(0, entry)`), so on a day with more than one
+                # entry, a same-day OLDER row appears LATER in the list; a
+                # date-only `>=` comparison treats equal dates as "still the
+                # latest" and lets that older row overwrite the newer one
+                # that was already kept.
+                full_ts = e.get('ts') or ''
+                if not full_ts:
                     continue
                 csid = e.get('claude_session_id') or ''
+                mc_sid = e.get('session_id') or ''
                 if csid:
-                    prev = best_by_csid.get(csid)
-                    if prev is None or ts >= (prev.get('ts') or '')[:10]:
-                        best_by_csid[csid] = e
+                    dedup_key = ('csid', csid)
+                elif mc_sid:
+                    dedup_key = ('mc_sid', mc_sid)
                 else:
-                    # No csid — count individually (non-CC provider or legacy entry)
-                    _no_csid_counter += 1
-                    best_by_csid[f'__no_csid_{_no_csid_counter}'] = e
+                    dedup_key = None
+                if dedup_key is not None:
+                    prev = best_by_csid.get(dedup_key)
+                    if prev is None or full_ts >= (prev.get('ts') or ''):
+                        best_by_csid[dedup_key] = e
+                else:
+                    # No stable identity at all — count individually (legacy entry)
+                    _no_key_counter += 1
+                    best_by_csid[('none', _no_key_counter)] = e
 
         for e in best_by_csid.values():
-            mt = e.get('model_tokens') or {}
+            mt = e.get('model_tokens') or _model_tokens_from_nested_usage(e)
             ts = (e.get('ts') or '')[:10]
             if ts > last_data_date:
                 last_data_date = ts
@@ -930,6 +984,13 @@ def _fetch_codex_usage_detail() -> Optional[dict]:
                         'plan_type': plan_type,
                         'credits': credits,
                         'sampled_at': datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                        # The record's own `timestamp` field (real event time),
+                        # distinct from `sampled_at` (rollout file mtime, which
+                        # can lag or repeat across polls). USAGE_BREAKDOWN_SPEC.md's
+                        # sampler needs the true event identity to dedupe repeat
+                        # reads of an unchanged source; None when the line has no
+                        # timestamp (never invented from mtime).
+                        'event_at': rec.get('timestamp') if isinstance(rec, dict) else None,
                     }
                 break  # latest token_count record found — stop scanning
     except Exception as e:
@@ -938,6 +999,128 @@ def _fetch_codex_usage_detail() -> Optional[dict]:
     _codex_detail_cache['ts'] = now
     _codex_detail_cache['data'] = result
     return dict(result) if result else result
+
+
+# ── Usage Breakdown allowance sampler (MC-998 phase 4) ──────────────────────
+# docs/USAGE_BREAKDOWN_SPEC.md "Sampling and durable facts": sample at server
+# startup, every 60s while any session is running, every 5min while idle.
+# Deliberately reuses the two 60s vendor caches above rather than fetching --
+# a poll served from cache naturally yields zero new rows via
+# UsageBreakdownStore's (provider, window, source_observed_at) dedup, so this
+# loop can run on its own short cadence without ever over-sampling the vendor.
+
+
+def _usage_breakdown_store():
+    from mc.usage_breakdown_store import UsageBreakdownStore, db_path_for
+    return UsageBreakdownStore(db_path_for(_DATA_ROOT))
+
+
+def _usage_breakdown_any_session_active() -> bool:
+    try:
+        return any(s.get('status') == 'running' for s in agent_sessions.values())
+    except Exception:
+        return False
+
+
+def _usage_breakdown_live_session_ids():
+    """MC session ids that are live -- the liveness source for
+    `reconcile_dead_sessions`. None when the registry can't be read, which
+    switches the reconcile to its max-age fallback instead of treating
+    every session as dead.
+
+    Live = mid-turn OR its provider process is still alive, whatever its
+    status: Mode B flips to 'idle' on every `result` and while it waits on
+    an mc:question, with the process (and any automatic next turn) still
+    there, so status alone declared living sessions dead (round 4, Fenn).
+    A proc without poll() falls back to the session's process_alive flag; a
+    poll() that raises counts as alive -- wrongly keeping a span open costs
+    an incomplete window, wrongly closing it costs a false calibration.
+    Plus every launch whose durable record is written but whose session is
+    not registered yet (state.pending_launches)."""
+    from mc.state import pending_launches
+
+    def _live(s):
+        if s.get('status') == 'running':
+            return True
+        poll = getattr(s.get('proc'), 'poll', None)
+        if callable(poll):
+            try:
+                return poll() is None
+            except Exception:
+                return True
+        return bool(s.get('process_alive'))
+
+    try:
+        live = {sid for sid, s in list(agent_sessions.items()) if _live(s)}
+        live.update(list(pending_launches))
+        return live
+    except Exception as e:
+        _log(f"[usage-breakdown] live-session read failed: {e}", flush=True)
+        return None
+
+
+def usage_breakdown_sample_once() -> dict:
+    """Fetch both vendor caches and persist any new allowance samples, then
+    close store sessions whose MC session is no longer live (round 4: a
+    crashed session must not stay open for 90 days). Best-effort per step --
+    a Claude fetch failure must not block a Codex sample or vice versa.
+    Returns {'claude': n, 'codex': n} rows inserted."""
+    from mc import usage_breakdown_sampler as _sampler
+    store = _usage_breakdown_store()
+    claude_n = codex_n = 0
+    try:
+        usage_limits = _fetch_oauth_usage_limits()
+        claude_n = _sampler.sample_claude(
+            store, usage_limits=usage_limits, fetched_at_epoch=_oauth_usage_cache.get('ts'))
+    except Exception as e:
+        _log(f"[usage-breakdown] claude allowance sample failed: {e}", flush=True)
+    try:
+        detail = _fetch_codex_usage_detail()
+        codex_n = _sampler.sample_codex(store, detail=detail)
+    except Exception as e:
+        _log(f"[usage-breakdown] codex allowance sample failed: {e}", flush=True)
+    try:
+        closed = _sampler.reconcile_dead_sessions(
+            store, live_session_ids=_usage_breakdown_live_session_ids,
+            process_started_at=_SERVER_STARTED_AT)
+        if closed:
+            _log(f"[usage-breakdown] closed {len(closed)} session(s) no longer live: "
+                 f"{', '.join(s[:12] for s in closed)}", flush=True)
+    except Exception as e:
+        _log(f"[usage-breakdown] dead-session reconcile failed: {e}", flush=True)
+    return {'claude': claude_n, 'codex': codex_n}
+
+
+def _usage_breakdown_sample_loop():
+    """Daemon thread: sample immediately at startup, then re-sample on the
+    spec's active/idle cadence (`should_sample_interval_seconds`)."""
+    from mc import usage_breakdown_sampler as _sampler
+    while True:
+        obs.heartbeat('usage-breakdown-sample')
+        try:
+            usage_breakdown_sample_once()
+        except Exception as e:
+            _log(f"[usage-breakdown] sample loop error: {e}", flush=True)
+        interval = _sampler.should_sample_interval_seconds(
+            any_session_active=_usage_breakdown_any_session_active())
+        _time.sleep(interval)
+
+
+_USAGE_BREAKDOWN_PRUNE_INTERVAL_S = 24 * 3600  # once/day is enough for a 90-day retention window
+
+
+def _usage_breakdown_prune_loop():
+    """Daemon thread: enforce the spec's 90-day retention in bounded batches,
+    once a day (the store's own `prune_older_than` batches internally, so an
+    accumulated backlog from a long-stopped server still drains safely)."""
+    _time.sleep(_UPDATE_CHECK_BOOT_DELAY_S)  # let startup settle first
+    while True:
+        obs.heartbeat('usage-breakdown-prune')
+        try:
+            _usage_breakdown_store().prune_older_than(days=90)
+        except Exception as e:
+            _log(f"[usage-breakdown] prune loop error: {e}", flush=True)
+        _time.sleep(_USAGE_BREAKDOWN_PRUNE_INTERVAL_S)
 
 
 @bp.route('/api/system/usage', methods=['GET'])
@@ -1070,6 +1253,151 @@ def system_usage_refresh():
     _codex_usage_cache['ts'] = 0.0
     _codex_detail_cache['ts'] = 0.0
     return system_usage_get()
+
+
+# ── Usage Breakdown dashboard (MC-998 phase 4b) ─────────────────────────────
+_USAGE_BREAKDOWN_VALID_PROVIDERS = {'claude', 'codex'}
+_USAGE_BREAKDOWN_VALID_WINDOW_KINDS = {'5h', '7d'}
+_USAGE_BREAKDOWN_VALID_SCOPES = {'all', 'opus', 'sonnet'}
+_USAGE_BREAKDOWN_DEFAULT_WINDOW_SPAN = {'5h': timedelta(hours=5), '7d': timedelta(days=7)}
+
+
+def _usage_breakdown_default_range(store, *, provider: str, window_kind: str,
+                                    window_scope: str) -> tuple[str, str]:
+    """The spec's "default view is the current window": since the most
+    recent `resets_at` CHANGE (a fresh window beginning) in the last 90 days
+    of retained samples, through now. Falls back to a flat window-length
+    lookback (e.g. the last 5h/7d) when no samples exist yet at all, so a
+    fresh install still gets a sane, non-degenerate default range.
+
+    Uses `source_observed_at` (finding 8, P2-8), never `server_received_at`
+    -- network/disk receipt delay means the receipt time of the window's
+    first sample is always slightly AFTER that sample was actually
+    observed, and an exclusive-of-receipt-time-and-earlier bound would cut
+    that sample (and its data) out of its own default window."""
+    now = datetime.now(timezone.utc)
+    samples = store.list_allowance_samples(provider=provider, window_kind=window_kind,
+                                            window_scope=window_scope)
+    span = _USAGE_BREAKDOWN_DEFAULT_WINDOW_SPAN[window_kind]
+    if not samples:
+        return (now - span).isoformat(), now.isoformat()
+    current_resets_at = samples[-1].get('resets_at')
+    window_start = samples[-1]['source_observed_at']
+    for s in reversed(samples):
+        if s.get('resets_at') != current_resets_at:
+            break
+        window_start = s['source_observed_at']
+    return window_start, now.isoformat()
+
+
+@bp.route('/api/system/usage/breakdown', methods=['GET'])
+def system_usage_breakdown_get():
+    """docs/USAGE_BREAKDOWN_SPEC.md "Dashboard layout and states" -- one
+    provider/window/range Breakdown payload: totals, LOC, tokens-per-1%,
+    the segmented estimated/unattributed bar, and a ranking table. Query
+    params: provider (claude|codex), window_kind (5h|7d), window_scope
+    (all|opus|sonnet -- codex is always 'all'), range_start/range_end
+    (ISO8601, optional -- default is the current window), dimension
+    (project|character|trigger|model|provider), sort (input|output|added).
+    """
+    provider = (request.args.get('provider') or 'claude').lower()
+    window_kind = request.args.get('window_kind') or '5h'
+    window_scope = request.args.get('window_scope') or 'all'
+    dimension = request.args.get('dimension') or 'project'
+    sort_by = request.args.get('sort') or 'input'
+    if provider not in _USAGE_BREAKDOWN_VALID_PROVIDERS:
+        return jsonify({'error': f'invalid provider: {provider}'}), 400
+    if window_kind not in _USAGE_BREAKDOWN_VALID_WINDOW_KINDS:
+        return jsonify({'error': f'invalid window_kind: {window_kind}'}), 400
+    if window_scope not in _USAGE_BREAKDOWN_VALID_SCOPES:
+        return jsonify({'error': f'invalid window_scope: {window_scope}'}), 400
+    if provider == 'codex':
+        window_scope = 'all'  # Codex has one account-wide scope, no per-model split
+
+    from mc import usage_breakdown_aggregate as _agg
+    store = _usage_breakdown_store()
+    range_start = request.args.get('range_start')
+    range_end = request.args.get('range_end')
+    if not range_start or not range_end:
+        range_start, range_end = _usage_breakdown_default_range(
+            store, provider=provider, window_kind=window_kind, window_scope=window_scope)
+
+    ninety_days_ago = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    # source_observed_at, inclusive at both ends (finding 8, P2-8): the
+    # picker's range_start/range_end ARE a bounding sample's own source
+    # time for a completed window, and receipt time / an exclusive end
+    # would silently drop that sample from its own window.
+    range_samples = [
+        s for s in store.list_allowance_samples(provider=provider, window_kind=window_kind,
+                                                  window_scope=window_scope)
+        if range_start <= s['source_observed_at'] <= range_end
+    ]
+    calibration_samples = store.list_allowance_samples(
+        provider=provider, window_kind=window_kind, window_scope=window_scope, since=ninety_days_ago)
+    session_facts = store.list_session_facts(since=ninety_days_ago)
+    code_deltas = {f['session_id']: (store.get_code_delta(f['session_id']) or {})
+                   for f in session_facts if f.get('session_id')}
+    # {session_id: {'baseline': row|None, 'completions': [row, ...]}} -- a
+    # multi-turn session appends one completion row per turn (P1-3); the
+    # list stays in observed_at order because list_session_checkpoints is
+    # itself ordered (session_id ASC, observed_at ASC).
+    checkpoints: dict[str, dict] = {}
+    for row in store.list_session_checkpoints(since=ninety_days_ago):
+        entry = checkpoints.setdefault(row['session_id'], {'baseline': None, 'completions': []})
+        if row['checkpoint_type'] == 'baseline':
+            entry['baseline'] = row
+        else:
+            entry['completions'].append(row)
+
+    try:
+        payload = _agg.build_breakdown(
+            provider=provider, window_kind=window_kind, window_scope=window_scope,
+            range_start=range_start, range_end=range_end, dimension=dimension, sort_by=sort_by,
+            range_samples=range_samples, calibration_samples=calibration_samples,
+            session_facts=session_facts, checkpoints=checkpoints, code_deltas=code_deltas,
+            coverage_begins=store.coverage_begins(),
+        )
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify(payload)
+
+
+@bp.route('/api/system/usage/windows', methods=['GET'])
+def system_usage_windows_get():
+    """List distinct retained windows (grouped by `resets_at`) for the
+    provider/window_kind/window_scope range picker -- "the range can be the
+    current window or any completed window retained in the last 90 days."
+    A window is `completed` once its `resets_at` is in the past.
+
+    Bounds are `source_observed_at`, never `server_received_at` (finding 8,
+    P2-8) -- the breakdown route filters samples by their own source time,
+    so a picker built from receipt time hands back bounds that exclude the
+    very samples that define the window.
+    """
+    provider = (request.args.get('provider') or 'claude').lower()
+    window_kind = request.args.get('window_kind') or '5h'
+    window_scope = request.args.get('window_scope') or 'all'
+    if provider not in _USAGE_BREAKDOWN_VALID_PROVIDERS:
+        return jsonify({'error': f'invalid provider: {provider}'}), 400
+    if window_kind not in _USAGE_BREAKDOWN_VALID_WINDOW_KINDS:
+        return jsonify({'error': f'invalid window_kind: {window_kind}'}), 400
+    if provider == 'codex':
+        window_scope = 'all'
+
+    store = _usage_breakdown_store()
+    samples = store.list_allowance_samples(provider=provider, window_kind=window_kind,
+                                            window_scope=window_scope)
+    now = datetime.now(timezone.utc).isoformat()
+    windows: list[dict] = []
+    for s in samples:
+        if windows and windows[-1]['resets_at'] == s.get('resets_at'):
+            windows[-1]['range_end'] = s['source_observed_at']
+            continue
+        windows.append({'resets_at': s.get('resets_at'), 'range_start': s['source_observed_at'],
+                         'range_end': s['source_observed_at']})
+    for w in windows:
+        w['completed'] = bool(w['resets_at']) and w['resets_at'] < now
+    return jsonify({'windows': windows, 'coverage_begins': store.coverage_begins()})
 
 
 # MC-989 Part B — one bare-CLI terminal pop-out per provider that has an
