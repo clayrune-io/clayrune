@@ -511,6 +511,14 @@ renders as zero.
 
 ### 10.8 Questions for Ron (the §8 R2-14 to R2-17 and R1-L rows assume each recommendation)
 
+**Answered 2026-09-29 (Ron):**
+- **Q1, reframed:** "Goals should be measured as they go, each day brings its own data measured against the set
+  goal." Progress is tracked **daily**, not collected at term end. Consequence: the automatic metrics read (R1-E) is
+  what Ron actually wants, so it moves onto the critical path rather than trailing the UI. The manual per-post grid stays
+  only as the fallback for a platform or metric with no read, and may be filled any day, not just at term end. The
+  term-end retro still runs, over the daily series.
+- **Q2:** per project by default, with `Use in all projects` (recommendation accepted).
+
 1. **Will you type one number per post at term end?** Attribution by format, platform and posting time needs a
    per-post number, and none flows in until R1-E. **Recommend: yes, optional, one metric (clicks by default) in a
    paste-friendly grid, about 10 to 30 rows per term.** Skip it and retros are goal vs actual plus spend only until
