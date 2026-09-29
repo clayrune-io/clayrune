@@ -87,12 +87,19 @@
       return;
     }
     const stateHTML = DeskV1Kit.stateLabelHTML(camp.state, { className: 'desk-v1-camp-state-pill' });
-    const pct = camp.goal && camp.goal.tracked && camp.goal.target
-      ? Math.max(0, Math.min(100, Math.round((camp.goal.current / camp.goal.target) * 100))) : 0;
-    const goalHTML = camp.goal && camp.goal.tracked
+    // §4/Dave review pass 1: target/deadline/outcome/tracked are read from
+    // `camp.plan.goal` — the SAME object the rules popover and Resume's
+    // validatePlan gate read/write — so an edited plan never leaves this
+    // bar showing a stale number. `current` (live progress) has no plan
+    // field and stays on `camp.goal`.
+    const goal = (camp.plan && camp.plan.goal) || {};
+    const current = (camp.goal && camp.goal.current) || 0;
+    const pct = goal.tracked && goal.target
+      ? Math.max(0, Math.min(100, Math.round((current / goal.target) * 100))) : 0;
+    const goalHTML = goal.tracked
       ? `<button type="button" class="desk-v1-camp-summary-goal" data-goal-btn>
           <span class="desk-v1-camp-summary-label">GOAL</span>
-          <span class="desk-v1-camp-summary-goaltext">${esc(camp.goal.current)}/${esc(camp.goal.target)} ${esc(camp.goal.metric)}${camp.goal.deadline ? ' by ' + esc(_fmtDate(camp.goal.deadline)) : ''}</span>
+          <span class="desk-v1-camp-summary-goaltext">${esc(current)}/${esc(goal.target)} ${esc(goal.outcome)}${goal.deadline ? ' by ' + esc(_fmtDate(goal.deadline)) : ''}</span>
           <span class="desk-v1-camp-summary-goalbar"><span style="width:${pct}%"></span></span>
         </button>`
       : `<div class="desk-v1-camp-summary-goal desk-v1-camp-summary-goal-untracked">
@@ -116,7 +123,9 @@
       <div class="desk-v1-camp-summary-top">
         ${stateHTML}
         <div class="desk-v1-camp-summary-top-actions">
-          <button type="button" class="desk-v1-camp-pause-btn" data-pause-btn ${camp.state !== 'active' ? 'disabled' : ''}>⏸ Pause</button>
+          ${camp.state === 'paused'
+            ? `<button type="button" class="desk-v1-camp-pause-btn" data-resume-btn>▶ Resume</button>`
+            : `<button type="button" class="desk-v1-camp-pause-btn" data-pause-btn ${camp.state !== 'active' ? 'disabled' : ''}>⏸ Pause</button>`}
           ${camp.state !== 'archived' ? `<div class="desk-v1-camp-card-more">
             <button type="button" class="desk-v1-camp-card-morebtn" data-camp-more-btn aria-haspopup="menu" aria-label="More actions">⋯</button>
           </div>` : ''}
@@ -129,7 +138,7 @@
       </div>`;
 
     const goalBtn = el.querySelector('[data-goal-btn]');
-    if (goalBtn) goalBtn.onclick = () => deskV1Nav('results', { campaignId: camp.id });
+    if (goalBtn) goalBtn.onclick = () => window.deskV1GotoCampaignPanel('results', { campaignId: camp.id });
     const moreBtn = el.querySelector('[data-camp-more-btn]');
     if (moreBtn) moreBtn.onclick = (e) => {
       e.stopPropagation();
@@ -150,6 +159,8 @@
         undo: () => { camp.state = prev; deskV1FillCampaignSummary(el, params); },
       });
     };
+    const resumeBtn = el.querySelector('[data-resume-btn]');
+    if (resumeBtn) resumeBtn.onclick = () => _openResumeSheet(camp, el, params);
     // T2b owns the rules popover itself (docs/desk_v1_r0_plan.md T2a scope:
     // "Rule chips get an Edit hook only; the popover itself is T2b") — this
     // hook is the backward-compatible seam: undefined today, T2b defines
@@ -159,6 +170,73 @@
       if (typeof window.deskV1OpenRulesPopover === 'function') window.deskV1OpenRulesPopover(camp.id);
       else DeskV1Kit.toast('Editing rules lands with the rules popover (T2b).');
     };
+  }
+
+  // ── Pause / Resume (§6.2) ──────────────────────────────────────────────
+  // Resuming isn't a silent restart: it shows the upcoming work affected,
+  // then re-validates the plan (§4's shared `validatePlan` gate) plus an
+  // expiry check the bound table itself doesn't cover (an end date that has
+  // since passed, a post cap already reached, or a destination that went
+  // held while paused). `_isoToday()` mirrors desk-v1-rules.js's own
+  // `_isPastLocal` local-date convention rather than importing it (no
+  // cross-module import in static/js).
+  function _isoToday() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  function _planExpiryReason(plan) {
+    if (!plan) return null;
+    if (plan.end && plan.end.date && plan.end.date < _isoToday()) return 'its end date has passed';
+    if (plan.end && plan.end.post_cap != null && plan.end.post_cap <= 0) return 'its post cap is reached';
+    const held = (plan.destinations || []).find((d) => { const ch = _channel(d.account); return ch && ch.health === 'held'; });
+    if (held) return `${(_channel(held.account) || {}).label || held.account} is held`;
+    return null;
+  }
+
+  // "3 posts resume: Tue 09:00 …" (§6.2) — the earliest still-scheduled
+  // version's own slot, same `_fmtWhenShort` weekday/time formatting the
+  // content cards already use for a scheduled version's detail line.
+  function _upcomingResumeText(camp) {
+    const versions = [];
+    _familiesFor(camp.id).forEach((f) => (f.versions || []).forEach((v) => {
+      if (_SCHEDULED_STATES.has(v.state) && v.publishAt) versions.push(v);
+    }));
+    versions.sort((a, b) => (a.publishAt < b.publishAt ? -1 : 1));
+    if (!versions.length) return 'Resuming restarts this campaign’s cadence. Missed slots are skipped, never posted late.';
+    const first = _fmtWhenShort(versions[0].publishAt);
+    const ch = _channel(versions[0].channelId);
+    const plural = versions.length === 1 ? 'post resumes' : 'posts resume';
+    return `${versions.length} ${plural}: ${first}${ch ? ` on ${ch.label}` : ''}. Missed slots are skipped, never posted late.`;
+  }
+
+  function _openResumeSheet(camp, summaryEl, params) {
+    DeskV1Kit.openConfirmSheet({
+      title: `Resume “${camp.name}”?`,
+      body: _upcomingResumeText(camp),
+      confirmLabel: 'Resume', cancelLabel: 'Cancel',
+      onConfirm: () => {
+        const validity = DeskV1Kit.validatePlan(camp.plan);
+        const expiryReason = _planExpiryReason(camp.plan);
+        if (!validity.ok || expiryReason) {
+          const reason = expiryReason || `it's missing ${validity.missing.map((m) => m.label).join(', ')}`;
+          // §6.2: "Resume routes to step 4 with only the changed terms, not
+          // a silent restart." Setup's step 4 (Review + start) is T4/T5,
+          // not built on this branch (T2 depends only on T1) — rather than
+          // invent that page, the nearest already-built surface for
+          // changing plan terms (the rules-edit popover, T2b) opens
+          // instead, and the toast says exactly why Resume didn't happen.
+          if (typeof window.deskV1OpenRulesPopover === 'function') window.deskV1OpenRulesPopover(camp.id);
+          DeskV1Kit.toast(`Can’t resume “${camp.name}” — ${reason}. Fix it, then resume.`);
+          return;
+        }
+        const prev = camp.state;
+        DeskV1Kit.commandBus.run({
+          label: `Resumed “${camp.name}”`,
+          do: () => { camp.state = 'active'; deskV1FillCampaignSummary(summaryEl, params); },
+          undo: () => { camp.state = prev; deskV1FillCampaignSummary(summaryEl, params); },
+        });
+      },
+    });
   }
 
   // ── Delete / Archive (item 3, MC-977 R0 UX pass; scope note from Dave/
@@ -305,6 +383,7 @@
   // ────────────────────────────────────────────────────────────────────────
   function deskV1FillCampaignTabStrip(el, params) {
     const campaignId = params.campaignId;
+    const panel = params.panel || 'content';
     const contentCount = _needsYouCount(campaignId);
     // §3.1: "Badge counts are needs-you items only" — for BOTH tabs. A reply
     // waiting ('needs_reply') or a row flagged for you ('needs_you'); stale,
@@ -314,12 +393,17 @@
       .filter((c) => c.state === 'needs_reply' || c.state === 'needs_you').length;
     el.innerHTML = `
       <div class="desk-v1-camp-tabs" role="tablist">
-        <button type="button" class="desk-v1-camp-tab" aria-selected="true" data-tab="content">Content${contentCount ? ` <span class="desk-v1-camp-tab-badge">${esc(contentCount)}</span>` : ''}</button>
-        <button type="button" class="desk-v1-camp-tab" aria-selected="false" data-tab="conversations">Conversations${convCount ? ` <span class="desk-v1-camp-tab-badge">${esc(convCount)}</span>` : ''}</button>
-        <button type="button" class="desk-v1-camp-tab" aria-selected="false" data-tab="results">Results</button>
+        <button type="button" class="desk-v1-camp-tab" aria-selected="${panel === 'content'}" data-tab="content">Content${contentCount ? ` <span class="desk-v1-camp-tab-badge">${esc(contentCount)}</span>` : ''}</button>
+        <button type="button" class="desk-v1-camp-tab" aria-selected="${panel === 'conversations'}" data-tab="conversations">Conversations${convCount ? ` <span class="desk-v1-camp-tab-badge">${esc(convCount)}</span>` : ''}</button>
+        <button type="button" class="desk-v1-camp-tab" aria-selected="${panel === 'results'}" data-tab="results">Results</button>
       </div>`;
-    el.querySelector('[data-tab="conversations"]').onclick = () => deskV1Nav('conversations', { campaignId });
-    el.querySelector('[data-tab="results"]').onclick = () => deskV1Nav('results', { campaignId });
+    // §2: tabs switch the panel IN PLACE — `deskV1GotoCampaignPanel` patches
+    // the current `campaign` stack entry's params rather than pushing a new
+    // one, so the frame this tab strip lives in is never rebuilt by a click
+    // on itself (desk-v1-shell.js's `_gotoCampaignPanel`).
+    el.querySelector('[data-tab="content"]').onclick = () => window.deskV1GotoCampaignPanel('content', { campaignId });
+    el.querySelector('[data-tab="conversations"]').onclick = () => window.deskV1GotoCampaignPanel('conversations', { campaignId });
+    el.querySelector('[data-tab="results"]').onclick = () => window.deskV1GotoCampaignPanel('results', { campaignId });
   }
 
   // ────────────────────────────────────────────────────────────────────────
@@ -348,6 +432,11 @@
       return;
     }
     const st = _ensureState(params.campaignId);
+    // §2/§8 calendar alias: `deskV1Nav('calendar', {campaignId})` lands on
+    // this same Content panel and asks it to open in calendar view once —
+    // consumed and dropped here so a later plain Content-tab click doesn't
+    // keep forcing calendar view back on.
+    if (params.calendarView) { st.view = 'calendar'; delete params.calendarView; }
     st.el = el;
     _renderTabBody();
   }

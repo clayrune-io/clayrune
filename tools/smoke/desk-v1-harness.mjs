@@ -62,7 +62,18 @@ const PROJECTS = [{
 // opens the real rules POPOVER instead of painting a stub under a
 // "‹ <campaign>" crumb — it never has the page shape this loop asserts, so
 // it gets its own check below instead.
-const ITEM_ROUTES = ['review', 'calendar', 'video', 'conversations', 'results'];
+//
+// T2 (§2, §8): 'calendar', 'conversations' and 'results' stopped being real
+// pushed routes — `deskV1Nav` now resolves them to an IN-PLACE panel switch
+// on the current `campaign` stack entry (desk-v1-shell.js's PANEL_ALIASES),
+// so they never get their own crumb/back stub. They keep their own loop
+// below (PANEL_ALIAS_ROUTES); ITEM_ROUTES now covers only the routes that
+// still push a real stack entry.
+const ITEM_ROUTES = ['review', 'video'];
+const PANEL_ALIAS_ROUTES = ['calendar', 'conversations', 'results'];
+// The tab a given alias lands on — 'calendar' has no tab of its own (T2a: a
+// List/Calendar toggle inside Content), so it lands on 'content'.
+const PANEL_ALIAS_TAB = { calendar: 'content', conversations: 'conversations', results: 'results' };
 const TONES = [
   { name: 'default/dark', ls: {} },
   { name: 'tone-warm', ls: { mc_tone: 'warm' } },
@@ -208,6 +219,39 @@ async function runTone(browser, tone) {
     await page.waitForTimeout(30);
   }
 
+  // ── T2 (§2, §8): 'calendar' / 'conversations' / 'results' are panel
+  // aliases now, not pushed routes — `deskV1Nav` must land on the SAME
+  // `campaign` stack entry (crumb title stays the campaign name, Back skips
+  // straight to Home in one hop) with the matching tab selected, never a
+  // "‹ <campaign>" item stub. ──────────────────────────────────────────────
+  for (const route of PANEL_ALIAS_ROUTES) {
+    await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
+    await page.waitForTimeout(30);
+    await page.evaluate((r) => window.deskV1Nav(r, { campaignId: 'camp-1' }), route);
+    await page.waitForTimeout(30);
+    const title = (await page.textContent('.desk-v1-crumb-title').catch(() => '') || '').trim();
+    if (title === 'Windows beta testers') {
+      ok(`[${tone.name}] alias "${route}" stays on the campaign page (crumb title unchanged)`);
+    } else {
+      fail(`[${tone.name}] alias "${route}" changed the crumb title: ${JSON.stringify(title)}`);
+    }
+    const tab = PANEL_ALIAS_TAB[route];
+    const tabSelected = await page.$eval(`[data-tab="${tab}"]`, (el) => el.getAttribute('aria-selected') === 'true').catch(() => false);
+    if (tabSelected) {
+      ok(`[${tone.name}] alias "${route}" selects the "${tab}" tab`);
+    } else {
+      fail(`[${tone.name}] alias "${route}" did not select the "${tab}" tab`);
+    }
+    const back = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
+    if (back.includes('Home') && !back.includes('Windows beta testers')) {
+      ok(`[${tone.name}] alias "${route}" Back reads "${back}" (one hop, no item entry pushed)`);
+    } else {
+      fail(`[${tone.name}] alias "${route}" Back wrong: ${JSON.stringify(back)}`);
+    }
+    await page.click('.desk-v1-back'); // campaign (with panel) -> home, reset for the next route
+    await page.waitForTimeout(30);
+  }
+
   // ── 'rules' is not a page (Dave's review pass 3): navigating to it must
   // bounce straight back to the campaign page and open the real popover, with
   // Back reading the campaign's actual parent (Home) — never a "‹ Rules"
@@ -237,7 +281,7 @@ async function runTone(browser, tone) {
   // Re-visit every route (home already current after the loop's last Back)
   // and check the whole modal, not just the body, so a connector added to the
   // crumb or a future header would still be caught.
-  const routesToCheck = ['home', 'campaign', ...ITEM_ROUTES];
+  const routesToCheck = ['home', 'campaign', ...ITEM_ROUTES, ...PANEL_ALIAS_ROUTES];
   let svgFound = 0;
   for (const route of routesToCheck) {
     if (route === 'home') await page.evaluate(() => { while (true) { const btn = document.querySelector('.desk-v1-back'); if (!btn) break; btn.click(); } });

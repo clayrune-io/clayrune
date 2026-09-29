@@ -267,6 +267,42 @@ async function runGoalDateEdit(browser) {
   await ctx.close();
 }
 
+// ── T1 review carry-over (T2): the goal date field accepts a YEARLESS typed
+// date ("Dec 25") the same way runGoalDateEdit above proves for a full ISO
+// date — `_parseDateInput`'s no-year branch resolves against the plan's
+// CURRENT deadline year (camp-2's is 2026), so "Dec 25" must land on
+// 2026-12-25, not silently fail or roll to the wrong year. ─────────────────
+async function runGoalDateEditYearless(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCampaign(page, 'camp-2');
+
+  await page.click('[data-goal-field="dateLabel"]');
+  await page.keyboard.press('Control+A');
+  await page.keyboard.type('Dec 25');
+  await page.evaluate(() => document.activeElement && document.activeElement.blur());
+  await page.waitForTimeout(50);
+
+  const after = await page.evaluate(() => {
+    const chips = Array.from(document.querySelectorAll('[data-summary-group="rules"] .desk-v1-camp-rule-chip')).map((e) => e.textContent.trim());
+    const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2');
+    return {
+      summaryDate: document.querySelector('[data-goal-field="dateLabel"]').textContent.trim(),
+      endChip: chips.find((c) => c.startsWith('Ends')),
+      deadline: camp.plan.goal.deadline,
+    };
+  });
+
+  after.deadline === '2026-12-25'
+    ? ok(`typing the yearless "Dec 25" resolves against the plan's own year: camp.plan.goal.deadline = "${after.deadline}"`)
+    : fail(`yearless date did not resolve to 2026-12-25: camp.plan.goal.deadline = "${after.deadline}"`);
+  after.endChip === 'Ends Dec 25'
+    ? ok(`the rule chip reads "Ends Dec 25": "${after.endChip}"`)
+    : fail(`rule chip did not read "Ends Dec 25": got "${after.endChip}" (summary "${after.summaryDate}")`);
+
+  reportUncaught(pageErrors, '[goal-date-edit-yearless]');
+  await ctx.close();
+}
+
 // ── T1 (§4): "`validatePlan` is the single gate" — a plan missing its end
 // date (and only that bound) must be named by `missing`, not silently pass.
 // ────────────────────────────────────────────────────────────────────────
@@ -738,6 +774,7 @@ try {
   for (const tone of TONES) await runProposedRenderChecks(browser, tone);
   await runGoalEdit(browser);
   await runGoalDateEdit(browser);
+  await runGoalDateEditYearless(browser);
   await runValidatePlanMissingEnd(browser);
   await runBlockerAnswer(browser);
   await runStartSheet(browser);

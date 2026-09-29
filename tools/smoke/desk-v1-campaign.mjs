@@ -428,6 +428,116 @@ async function runCampaignPageMoreMenu(browser) {
   await ctx.close();
 }
 
+// ── Pause / Resume (§6.2, Dave review pass 2 on T2) — desk-v1-campaign.js's
+// commandBus mutation + confirm-sheet gate. T2 acceptance: Pause -> Undo ->
+// Resume-sheet -> Active, and a Resume blocked by an expired plan lands on
+// the interim (rules popover) instead of restarting silently. ch-li-page is
+// permanently 'held' in the T0a base fixtures (camp-1's ONE Active fixture
+// carries it as a plan destination), so the success-path resume below flips
+// it to 'ok' just long enough to isolate that path from the expired-end case
+// tested right after — restored implicitly by context teardown, not undone
+// in-test (nothing after this function reads it). ──────────────────────────
+async function runPauseResume(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCampaign(page);
+
+  // Toasts have no `key` on this bus (see commandBus.run's `toast()` call in
+  // desk-v1-kit.js), so they STACK rather than replace — and `.toast-out`'s
+  // removal depends on an `animationend` that a headless run of this suite
+  // does not reliably deliver in time, so an earlier toast can linger in the
+  // DOM. `.toast` alone would then resolve to the OLDEST (first-child, per
+  // `container.appendChild`) instead of the one the just-fired action
+  // produced — always read/act on `.last()` so a lingering toast never
+  // shadows the current one.
+  const lastToast = () => page.locator('.toast').last();
+
+  // (a) Pause -> Paused, Undo toast, Undo -> Active.
+  await page.click('[data-pause-btn]');
+  let state = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').state);
+  state === 'paused' ? ok('T2/6.2: Pause sets camp-1 to paused') : fail(`T2/6.2: state after Pause: ${state}`);
+  await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
+  const pauseToast = (await lastToast().textContent().catch(() => '') || '');
+  /Paused/.test(pauseToast) && /Undo/.test(pauseToast)
+    ? ok(`T2/6.2: Pause shows an Undo toast: "${pauseToast.trim()}"`)
+    : fail(`T2/6.2: pause toast missing/wrong: ${JSON.stringify(pauseToast)}`);
+  await lastToast().locator('.toast-btn.primary').click();
+  await page.waitForTimeout(50);
+  state = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').state);
+  state === 'active' ? ok('T2/6.2: Undo restores camp-1 to active') : fail(`T2/6.2: state after Undo: ${state}`);
+
+  // (b) Resume opens the sheet naming the upcoming work ("N posts resume:
+  // ...", missed slots skipped), confirm -> Active. Deliberately does NOT
+  // dismiss the resulting toast via its Undo button — that button's onclick
+  // IS the campaign's own undo (reverts the resume), not a plain toast
+  // dismiss; clicking it here would silently fail the very assertion it
+  // follows.
+  await page.evaluate(() => { window.DeskV1Fixtures.channels.find((c) => c.id === 'ch-li-page').health = 'ok'; });
+  await page.click('[data-pause-btn]');
+  await page.waitForSelector('[data-resume-btn]', { timeout: 2000 });
+  await page.click('[data-resume-btn]');
+  await page.waitForSelector('.desk-v1-rules-confirm-overlay', { timeout: 2000 });
+  const resumeBody = (await page.textContent('.desk-v1-rules-confirmtext').catch(() => '') || '');
+  /^1 post resumes: .+\. Missed slots are skipped, never posted late\.$/.test(resumeBody.trim())
+    ? ok(`T2/6.2: Resume sheet names the upcoming work: "${resumeBody.trim()}"`)
+    : fail(`T2/6.2: resume sheet body wrong: ${JSON.stringify(resumeBody)}`);
+  await page.click('[data-confirm-accept]');
+  await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
+  state = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').state);
+  state === 'active' ? ok('T2/6.2: confirming Resume sets camp-1 back to active') : fail(`T2/6.2: state after Resume confirm: ${state}`);
+
+  // (d) An expired end date isn't covered by validatePlan's own bound table
+  // (§4) — Resume catches it separately (_planExpiryReason) and must not
+  // silently restart. T4/T5 (Review + start) aren't built on this branch, so
+  // the accepted interim is the rules-edit popover (T2b) plus an explaining
+  // toast, not an invented step 4.
+  await page.click('[data-pause-btn]');
+  await page.waitForSelector('[data-resume-btn]', { timeout: 2000 });
+  await page.evaluate(() => { window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').plan.end.date = '2020-01-01'; });
+  await page.click('[data-resume-btn]');
+  await page.waitForSelector('.desk-v1-rules-confirm-overlay', { timeout: 2000 });
+  await page.click('[data-confirm-accept]');
+  await page.waitForSelector('.desk-v1-rules-pop-overlay', { timeout: 2000 }).catch(() => {});
+  const popOpen = await page.$('.desk-v1-rules-pop-overlay');
+  popOpen ? ok('T2/6.2: expired-end Resume opens the rules popover (T2’s accepted interim for T4/T5’s step 4)') : fail('T2/6.2: expired-end Resume did not open the rules popover');
+  const expiredToast = (await lastToast().textContent().catch(() => '') || '');
+  /its end date has passed/.test(expiredToast)
+    ? ok(`T2/6.2: expired-end Resume explains why via toast: "${expiredToast.trim()}"`)
+    : fail(`T2/6.2: expired-end toast missing/wrong: ${JSON.stringify(expiredToast)}`);
+  state = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').state);
+  state === 'paused' ? ok('T2/6.2: expired-end Resume leaves camp-1 paused, no silent restart') : fail(`T2/6.2: state after expired-end Resume: ${state}`);
+
+  reportUncaught(pageErrors, '[pause-resume]');
+  await ctx.close();
+}
+
+// ── §2's in-place panel switch must never push a route (T2 acceptance: "tab
+// click keeps header + Posy DOM node, no route push"). runPosyDraftPersistence
+// above proves DOM-node identity for the header/Posy box; this proves the
+// STACK itself never grows — deskV1Back() after several tab clicks must land
+// on Home in ONE pop, not on campaign's own previous panel (which is what a
+// hidden per-tab push would produce). ──────────────────────────────────────
+async function runRouteStackUnchanged(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCampaign(page);
+
+  await page.click('[data-tab="conversations"]');
+  await page.waitForSelector('.desk-v1-conversations, .desk-v1-stub', { timeout: 2000 });
+  await page.click('[data-tab="results"]');
+  await page.waitForSelector('.desk-v1-results', { timeout: 2000 });
+  await page.click('[data-tab="content"]');
+  await page.waitForSelector('.desk-v1-camp-card', { timeout: 2000 });
+
+  await page.evaluate(() => window.deskV1Back());
+  await page.waitForSelector('.desk-v1-home', { timeout: 2000 }).catch(() => {});
+  const onHome = await page.$('.desk-v1-home');
+  onHome
+    ? ok('T2/§2: three in-place tab switches left the route stack at [home, campaign] — one deskV1Back() lands on Home')
+    : fail('T2/§2: a tab click pushed a route onto the stack — deskV1Back() did not land on Home');
+
+  reportUncaught(pageErrors, '[route-stack]');
+  await ctx.close();
+}
+
 // ── item 5 (MC-977 R0 UX pass, Ron 2026-09-28: "I sent an ask to Posy,
 // switched to another tab and the existing data ... disappeared") — text
 // typed but not sent into the campaign's Posy box must survive a tab-strip
@@ -440,20 +550,23 @@ async function runPosyDraftPersistence(browser) {
   const DRAFT = 'draft text that must survive a rebuild';
   await page.fill('#desk-v1-camp-posy-input', DRAFT);
 
-  // Tab-strip switch NAVIGATES AWAY to a separate route (Conversations/Results
-  // are their own top-level pages, not a tab-body swap within Content — see
-  // desk-v1-shell.js ROUTES) and back via the crumb's Back button, which pops
-  // the stack and re-renders the campaign skeleton from scratch, including a
-  // brand-new Posy box — the exact rebuild item 5 reported losing the draft to.
+  // T2 (§2): a tab-strip switch is now an IN-PLACE panel swap on the SAME
+  // `campaign` stack entry (desk-v1-shell.js's `_gotoCampaignPanel`) — it
+  // never pushes a route or rebuilds the skeleton, so the Posy box is the
+  // SAME DOM node across a Content -> Conversations -> Content round trip,
+  // not merely one holding the same value. Capture the node identity via a
+  // marker property (a fresh element from a rebuild would not carry it).
+  await page.evaluate(() => { document.getElementById('desk-v1-camp-posy-input')._deskv1SmokeMarker = 'same-node'; });
   await page.click('[data-tab="conversations"]');
-  await page.waitForSelector('.desk-v1-back', { timeout: 2000 });
-  await page.click('.desk-v1-back');
+  await page.waitForSelector('.desk-v1-conversations, .desk-v1-stub', { timeout: 2000 });
+  await page.click('[data-tab="content"]');
   await page.waitForSelector('#desk-v1-camp-posy-input', { timeout: 2000 });
   await page.waitForTimeout(50);
   const afterTabSwitch = await page.$eval('#desk-v1-camp-posy-input', (ta) => ta.value).catch(() => '');
-  afterTabSwitch === DRAFT
-    ? ok('item 5: Posy draft survives a Content -> Conversations -> Content tab switch')
-    : fail(`item 5: draft lost across tab switch: ${JSON.stringify(afterTabSwitch)}`);
+  const sameNode = await page.evaluate(() => document.getElementById('desk-v1-camp-posy-input')._deskv1SmokeMarker === 'same-node').catch(() => false);
+  afterTabSwitch === DRAFT && sameNode
+    ? ok('item 5/T2: Posy draft survives a Content -> Conversations -> Content tab switch, same DOM node (no route push)')
+    : fail(`item 5/T2: draft or node identity lost across tab switch: value=${JSON.stringify(afterTabSwitch)}, sameNode=${sameNode}`);
 
   // Navigate away to Home and back — a harder rebuild than the tab strip
   // (the whole route unmounts).
@@ -541,6 +654,8 @@ try {
   await runCardMenu(browser);
   await runAddTrayDrag(browser);
   await runCampaignPageMoreMenu(browser);
+  await runPauseResume(browser);
+  await runRouteStackUnchanged(browser);
   await runPosyDraftPersistence(browser);
   await runPhoneLayout(browser);
   await captureScreenshots(browser);

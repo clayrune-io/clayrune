@@ -17,16 +17,46 @@
       id: 'camp-1',
       name: 'Windows beta testers',
       state: 'active', // proposed | active | paused | completed | archived | draft
-      goal: {
-        metric: 'tester signups', target: 30, current: 11,
-        deadline: '2026-10-20', tracked: true,
-      },
+      // §4/Dave review pass 1: `target`/`deadline`/`outcome` (was `metric`)
+      // are NOT duplicated here — the summary bar reads those from
+      // `plan.goal` below, the single canonical copy a plan edit (rules
+      // popover, Resume revalidation) actually writes to. `current` stays:
+      // it's live progress, which has no field in §4's plan shape at all.
+      goal: { current: 11 },
       channelIds: ['ch-x-ron', 'ch-li-page', 'ch-blog'],
       rules: {
+        // `reviewMode` stays here too — no plan field covers it (`_ruleChips`
+        // and the channel badge's review-mode marker both read it from here;
+        // out of scope for this pass, which only touches the goal group).
         reviewMode: 'each_piece', // 'each_piece' | 'themes'
         frequencyPerWeek: 3,
         repliesMode: 'drafts', // 'drafts' | 'auto_faq'
         paid: false,
+      },
+      // ── T2 (MC-977 UX pass §4/§6.2): Pause/Resume gates on `validatePlan`,
+      // which reads `plan`, not `rules`/`goal` — camp-1 is the one Active
+      // fixture campaign and had no `plan` yet (T1 only added it to camp-2).
+      // Values mirror the pre-existing goal/rules/channelIds so nothing
+      // user-visible changes; `end.date` matches `goal.deadline` since this
+      // campaign has always run to its goal date.
+      plan: {
+        brief: 'Windows users trying Claude Code should hear about the beta and sign up as testers.',
+        title: 'Windows beta testers',
+        source_projects: ['clayrune'],
+        audience: 'Windows users trying Claude Code',
+        goal: { outcome: 'tester signups', target: 30, deadline: '2026-10-20', tracked: true },
+        destinations: [
+          { account: 'ch-x-ron', voice: 'Ron (first person)' },
+          { account: 'ch-li-page', voice: 'Clayrune page' },
+          { account: 'ch-blog', voice: 'Clayrune blog' },
+        ],
+        angle: 'Show the restore-points and install flow working end to end so trying the beta feels low-risk.',
+        samples: [],
+        cadence: { per_week: 3, min_gap_h: 12 },
+        end: { date: '2026-10-20', post_cap: null },
+        replies: 'drafts',
+        paid: false,
+        generation: 'No video generation planned for this campaign',
       },
     },
   ];
@@ -533,12 +563,14 @@
     },
     // ── T1 (MC-977 UX pass §4): the one canonical plan object. Goal display,
     // rule chips and the Start sheet (desk-v1-rules.js) all read THIS, not
-    // the `goal`/`rules` fields above — those stay as-is (Home's card and
-    // the Active-state Rules popover still read them; unifying every state
-    // onto `plan` is T2-T5, out of this ticket). `goal.deadline` here starts
-    // equal to the legacy `goal.deadline` above by construction, not by any
-    // code that keeps them in sync — editing one in Setup wouldn't move the
-    // other today, same "not unified yet" boundary as the rest of this note.
+    // the `goal`/`rules` fields above — those stay as-is for camp-2 (the
+    // Active-state Rules popover still reads `rules`; Home's card now reads
+    // `plan.goal` too as of T2's Dave-review pass, harmless here since
+    // `tracked: false` bypasses target/outcome either way). `goal.deadline`
+    // here starts equal to the legacy `goal.deadline` above by construction,
+    // not by any code that keeps them in sync — editing one in Setup
+    // wouldn't move the other today, same "not unified yet" boundary as the
+    // rest of this note.
     plan: {
       brief: 'Restore points is live in Clayrune 2.1 — undo any agent mistake by rolling back to a saved snapshot.',
       title: 'Restore points launch',
