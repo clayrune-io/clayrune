@@ -151,6 +151,33 @@ def test_windows_groups_samples_by_resets_at(client, store):
     assert body['windows'][1]['resets_at'] == reset_b
 
 
+def test_windows_and_default_range_tolerate_resets_at_jitter(client, store):
+    """MC-998 follow-up: the Anthropic endpoint jitters resets_at by
+    sub-seconds on every poll. Three jittered readings of ONE window must be
+    one picker window, and the default (current-window) breakdown range must
+    start at the first of them, not at the latest sample."""
+    now = datetime.now(timezone.utc)
+    base = (now + timedelta(hours=4)).replace(microsecond=0)
+    jittered = [base + timedelta(microseconds=444543),
+                base - timedelta(microseconds=432330),
+                base + timedelta(microseconds=5273)]
+    observed = [now - timedelta(minutes=10), now - timedelta(minutes=5), now - timedelta(minutes=1)]
+    for util, r_at, obs in zip((10.0, 12.0, 15.0), jittered, observed):
+        store.record_allowance_sample(
+            provider='claude', window_kind='5h', window_scope='all',
+            raw_utilization=util, resets_at=_iso(r_at), source_observed_at=_iso(obs))
+
+    windows = client.get('/api/system/usage/windows').get_json()['windows']
+    assert len(windows) == 1
+    assert windows[0]['range_start'] == _iso(observed[0])
+    assert windows[0]['range_end'] == _iso(observed[2])
+
+    body = client.get('/api/system/usage/breakdown').get_json()
+    assert body['range_start'] == _iso(observed[0])
+    assert body['bar_change']['status'] == 'ok'
+    assert body['bar_change']['delta_pp'] == 5.0
+
+
 def test_windows_and_breakdown_use_source_time_not_receipt_time_for_bounds(client, store):
     """P2-8 (finding 8): the picker's range must be identified and bounded
     by source_observed_at, never server_received_at -- a sample observed
