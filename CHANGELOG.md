@@ -6,6 +6,21 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-29] — Right-to-left text in chat (MC-1000)
+
+- **Hebrew and Arabic rendered left-aligned everywhere.** Agent replies, user
+  bubbles and question cards now set direction per block (`dir="auto"`), so a
+  Hebrew paragraph reads right-to-left and aligns right while an English one
+  stays left-to-right. Inline code, paths, URLs, file chips and numbering stay
+  LTR inside an RTL line (`static/css/app.css`, `static/js/rich-text.js`).
+- Question cards get a real `dir` from their question text, so radios,
+  "Other" and the actions row mirror too; user bubbles take direction per line;
+  a Hebrew run quoted inside an English line is isolated so its quotes and
+  commas land on the right side; label colons ("Answered:", "Q:") stay next to
+  their label.
+- Smoke: `tools/smoke/rtl-support.mjs` measures computed direction, alignment
+  and geometry against the real renderer and CSS.
+
 ## [2026-09-29] — Auto-router Opus tier to Opus 5.5
 
 - `_AUTO_MODEL_VALID['O']` now `claude-opus-5-5` (was `claude-opus-5`). The tier
