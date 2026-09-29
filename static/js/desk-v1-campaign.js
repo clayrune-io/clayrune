@@ -49,7 +49,7 @@
     if (_st && _st.campaignId === campaignId) return _st;
     _st = {
       campaignId, view: 'list', filter: 'all', channelFilter: 'all',
-      selection: { scope: 'campaign', label: null },
+      selection: { scope: 'campaign', id: null, label: null },
     };
     return _st;
   }
@@ -645,7 +645,7 @@
       if (more) more.onclick = (e) => { e.stopPropagation(); _openCardMenu(e.currentTarget, fam, camp); };
       // Selecting the card (not its buttons) scopes the Posy box to it
       // (§3.4 INS-01: "the campaign, a card, a version").
-      cardEl.addEventListener('click', () => _setSelection('card', fam.title));
+      cardEl.addEventListener('click', () => _setSelection('card', fam.id, fam.title));
     });
   }
 
@@ -916,9 +916,9 @@
   // selected. Suggestion + chips come from CAMPAIGN_SUGGESTIONS (T2a's own
   // fixture section) keyed by campaignId.
   // ────────────────────────────────────────────────────────────────────────
-  function _setSelection(scope, label) {
+  function _setSelection(scope, id, label) {
     if (!_st) return;
-    _st.selection = { scope, label };
+    _st.selection = { scope, id, label };
     const host = document.getElementById('desk-v1-camp-rightcol');
     if (host) deskV1FillCampaignRightColumn(host, { campaignId: _st.campaignId });
   }
@@ -944,8 +944,11 @@
         DeskV1Kit.paintPosyReadyNoDiff(el.querySelector('.desk-v1-camp-posy'));
       }
     }, {
-      onScopeClick: () => _setSelection('campaign', null),
-      draftKey: `campaign:${camp.id}:${st.selection.scope}:${st.selection.label || ''}`,
+      onScopeClick: () => _setSelection('campaign', null, null),
+      // §5/T3: the key must be a stable id, never a label — two cards can
+      // share a title (same bug desk-v1-video.js's own _posyDraftKey fixed),
+      // which would collapse their Posy drafts onto one entry.
+      draftKey: `campaign:${camp.id}:${st.selection.scope}:${st.selection.id || ''}`,
       taskLifecycle: true,
     });
   }
