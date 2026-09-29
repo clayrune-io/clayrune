@@ -20,6 +20,7 @@
 
   function _fx() { return window.DeskV1Fixtures || {}; }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id) || null; }
+  function _project(id) { return (_fx().projects || []).find((p) => p.id === id) || null; }
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id) || null; }
   function _family(id) { return (_fx().families || []).find((f) => f.id === id) || null; }
   function _versionMeta(versionId) {
@@ -117,9 +118,10 @@
     if (st.dismissed) return '';
     const exp = insight.experiment;
     const channel = exp && _channel(exp.channelId);
+    const agentName = window.DeskV1Kit ? DeskV1Kit.deskAgentName({ project: _project(campaign.projectId), campaign }) : 'Your agent';
     return `
       <div class="desk-v1-results-posy">
-        <div class="desk-v1-results-posy-head">Posy</div>
+        <div class="desk-v1-results-posy-head">${esc(agentName)}</div>
         <div class="agent-output desk-v1-results-posy-text"><div class="agent-line">${esc(insight.read)}</div></div>
         ${st.acceptedFamId ? `
           <div class="desk-v1-results-posy-confirm">Added “${esc(exp.title)}” to Content as a planned piece.</div>
