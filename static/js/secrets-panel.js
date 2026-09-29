@@ -100,7 +100,7 @@ async function refreshSecretsList() {
     return;
   }
 
-  _renderVaultLockbar(lockData && lockData.state);
+  _renderVaultLockbar(lockData && lockData.state, lockData && lockData.legacy_key_copies_present);
   const addBtn = document.getElementById('secrets-add-btn');
   if (addBtn) addBtn.style.display = data.locked ? 'none' : '';
 
@@ -207,7 +207,28 @@ function _vaultLockErrorText(out) {
   return out.message || out.error || 'Request failed.';
 }
 
-function _renderVaultLockbar(state) {
+// A pre-passphrase-lock copy of the master key (DPAPI mirror, OS keyring
+// entry) can survive the initial set-passphrase quarantine attempt — see
+// _quarantine_legacy_key_material's retry in secrets_store.py (MC 503edfe4
+// follow-up, clayrune.log 2026-09-24T16:18Z). The server now retries on
+// every unlock too, but a vault left locked never unlocks to trigger that,
+// so this line + button is the fallback path a human can always reach.
+function _vaultLegacyWarningHtml(legacyPresent) {
+  if (!legacyPresent) return '';
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;
+                flex-wrap:wrap;margin-top:8px;padding:8px 10px;border:1px solid var(--border);
+                border-left:3px solid var(--warn,#c9852a);border-radius:4px">
+      <span style="font-size:10px;color:var(--text-faint);flex:1;min-width:160px">
+        A legacy copy of the master key is still on this machine outside the
+        passphrase lock.
+      </span>
+      <button class="btn-header-action" style="padding:3px 8px;font-size:10px;flex-shrink:0"
+              onclick="openVaultRetireLegacy()">Retire legacy key copies</button>
+    </div>`;
+}
+
+function _renderVaultLockbar(state, legacyPresent) {
   const bar = document.getElementById('secrets-lockbar');
   if (!bar) return;
   if (state === 'locked') {
@@ -244,6 +265,7 @@ function _renderVaultLockbar(state) {
           </button>
           <span id="vault-unlock-status" style="font-size:11px;color:var(--danger,#c94a3a)"></span>
         </div>
+        ${_vaultLegacyWarningHtml(legacyPresent)}
       </div>`;
     const input = document.getElementById('vault-unlock-input');
     if (input) input.focus();
@@ -267,7 +289,8 @@ function _renderVaultLockbar(state) {
                 onclick="openVaultLockNow()">Lock now</button>
         <button class="btn-header-action" style="padding:3px 8px;font-size:10px"
                 onclick="openVaultChangePassphrase()">Change passphrase</button>
-      </div>`;
+      </div>
+      ${_vaultLegacyWarningHtml(legacyPresent)}`;
   } else {
     bar.innerHTML = '';
   }
@@ -335,6 +358,73 @@ async function submitVaultLockNow(modalId) {
     await refreshSecretsList();
   } catch (e) {
     statusEl.textContent = 'Lock failed: ' + e.message;
+  }
+}
+
+function openVaultRetireLegacy() {
+  // Same human-passcode gate as the other vault-lock actions — this MOVES
+  // the legacy copies into quarantine, never deletes (secrets_store.py's
+  // _quarantine_legacy_key_material).
+  const modalId = '__vault-retire-legacy';
+  if (openModals.has(modalId)) closeModalById(modalId);
+  const win = document.createElement('div');
+  win.className = 'modal-window';
+  win.dataset.modalId = modalId;
+  const content = document.createElement('div');
+  content.className = 'modal-content';
+  _clampModalSize(content, 420);
+  content.innerHTML = `
+    <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
+      <span style="font-size:16px;font-weight:700;color:var(--text)">Retire legacy key copies</span>
+      <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
+        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+      </div>
+    </div>
+    <div style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
+      <div style="font-size:11px;color:var(--text-faint);line-height:1.55">
+        Moves the legacy master-key copy (DPAPI mirror / OS keyring entry)
+        into a quarantine directory outside the passphrase lock's reach. It
+        is moved, not deleted. Re-enter your dashboard passcode to continue.
+      </div>
+      <div>
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">Dashboard passcode</label>
+        <input type="password" id="vrl-passcode" autocomplete="current-password"
+          style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
+                 border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)"
+          onkeydown="if(event.key==='Enter')submitVaultRetireLegacy('${modalId}')">
+      </div>
+      <div id="vrl-status" style="font-size:11px;color:var(--danger,#c94a3a);min-height:14px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn-secondary" onclick="closeModalById('${modalId}')">Cancel</button>
+        <button class="btn-add" onclick="submitVaultRetireLegacy('${modalId}')">Retire</button>
+      </div>
+    </div>`;
+  win.appendChild(content);
+  document.getElementById('modal-layer').appendChild(win);
+  const z = nextModalZ++;
+  win.style.zIndex = z;
+  openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
+  centerModalElement(win);
+  focusModal(modalId);
+  document.getElementById('vrl-passcode').focus();
+}
+
+async function submitVaultRetireLegacy(modalId) {
+  const passcode = document.getElementById('vrl-passcode').value;
+  const statusEl = document.getElementById('vrl-status');
+  if (!passcode) { statusEl.textContent = 'Dashboard passcode required.'; return; }
+  try {
+    const res = await fetch(API_BASE + '/api/secrets/vault-lock/retire-legacy', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passcode }),
+    });
+    const out = await res.json();
+    if (!res.ok) { statusEl.textContent = _vaultLockErrorText(out); return; }
+    closeModalById(modalId);
+    showToast(out.had_legacy_copies ? 'Legacy key copies retired' : 'Nothing to retire');
+    await refreshSecretsList();
+  } catch (e) {
+    statusEl.textContent = 'Retire failed: ' + e.message;
   }
 }
 
