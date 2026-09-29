@@ -284,10 +284,28 @@ try {
     return route.abort();
   });
 
-  // "Open in X"/"Open in LinkedIn" must call window.open — the real browser,
-  // a NEW TAB, never the Clayrune browser pane. Stub it to record calls
-  // instead of actually popping windows in headless Chromium.
-  await page.addInitScript(() => { window.__openCalls = []; window.open = (url, target, feats) => { window.__openCalls.push({ url, target, feats }); return null; }; });
+  // "Open in X"/"Open in LinkedIn" must open the real browser in a NEW TAB,
+  // never the Clayrune browser pane. Since MC-1002 (Mac Download-update
+  // fix), the app drives this via index.html's openExternal(url) — a real
+  // <a target=_blank rel=noopener>.click() — instead of window.open(), so a
+  // script-invoked pywebview navigation isn't silently swallowed on macOS.
+  // A page-scope `function openExternal(){}` declaration overwrites anything
+  // addInitScript assigns to window.openExternal before the page's own
+  // scripts run, so stub at the DOM level instead: patch
+  // HTMLAnchorElement.prototype.click to record target=_blank anchor clicks,
+  // which survives regardless of how openExternal is (re)declared.
+  await page.addInitScript(() => {
+    window.__openCalls = [];
+    const realClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      if (this.target === '_blank' && this.href) {
+        window.__openCalls.push({ url: this.href, target: this.target, feats: this.rel });
+        return;
+      }
+      return realClick.call(this);
+    };
+    window.open = (url, target, feats) => { window.__openCalls.push({ url, target, feats }); return null; };
+  });
 
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });

@@ -2574,6 +2574,25 @@ function esc(str) {
   return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// Open an external URL in the user's system browser. Frozen macOS builds run
+// on pywebview/WKWebView, whose createWebViewWithConfiguration delegate only
+// forwards navigation to the system browser when WKNavigationType is
+// LinkActivated — a script-invoked window.open() carries type "Other" and is
+// silently swallowed (returns nil, no error, no tab). Driving a real <a>
+// click gives WebCore a genuine link-activation event, so pywebview hands it
+// to webbrowser.open() as intended. Safe everywhere else too (Chromium/Tauri
+// treat it identically to window.open).
+function openExternal(url) {
+  if (!url) return;
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 // ── Token Usage Helpers ─────────────────────────────────────────────────────
 
 const TOKEN_MODES = [
