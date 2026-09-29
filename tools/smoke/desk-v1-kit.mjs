@@ -592,6 +592,48 @@ async function runR21PlanBoundsChecks(browser) {
     const widenedHash = K.nextBoundsHash(prevHash, prevBounds, widenedBounds);
     const loweredHash = K.nextBoundsHash(prevHash, prevBounds, loweredBounds);
 
+    // Dave's review (2026-09-29): every §141 bounds-table dimension must
+    // widen the hash, not just budget — an account add (R2-10), a cadence
+    // raise (R2-9), an end date/post-cap raise or cap removal, and a term
+    // extension (R2-11) all count. One prev/next pair per dimension, each
+    // checked against a shared baseline so "widen" and "narrow" both
+    // exercise the same field in isolation.
+    const dims = {
+      accounts: {
+        prev: { accounts: [{ channel_id: 'ch-x-ron' }] },
+        widen: { accounts: [{ channel_id: 'ch-x-ron' }, { channel_id: 'ch-li-page' }] },
+        narrow: { accounts: [{ channel_id: 'ch-x-ron' }] },
+      },
+      cadence: {
+        prev: { cadence: { per_week: 2 } },
+        widen: { cadence: { per_week: 5 } },
+        narrow: { cadence: { per_week: 1 } },
+      },
+      end_date: {
+        prev: { end: { date: '2026-10-01' } },
+        widen: { end: { date: '2026-12-25' } },
+        narrow: { end: { date: '2026-09-15' } },
+      },
+      end_cap: {
+        prev: { end: { post_cap: 10 } },
+        widen: { end: { post_cap: null } }, // cap removed = unbounded = wider
+        narrow: { end: { post_cap: 5 } },
+      },
+      term: {
+        prev: { term: { ends: '2026-10-20' } },
+        widen: { term: { ends: '2026-12-01' } },
+        narrow: { term: { ends: '2026-10-10' } },
+      },
+    };
+    const dimResults = {};
+    for (const [name, { prev, widen, narrow }] of Object.entries(dims)) {
+      const h0 = K.computeBoundsHash(prev);
+      dimResults[name] = {
+        widenChanged: K.nextBoundsHash(h0, prev, widen) !== h0,
+        narrowUnchanged: K.nextBoundsHash(h0, prev, narrow) === h0,
+      };
+    }
+
     return {
       noTargetMissing: noTarget.missing.map((m) => m.bound),
       noTargetStop: (noTarget.missing.find((m) => m.bound === 'goal') || {}).stop,
@@ -599,6 +641,7 @@ async function runR21PlanBoundsChecks(browser) {
       shortMissing: short.missing.find((m) => m.bound === 'how_budget'),
       coveredMissing: covered.missing.some((m) => m.bound === 'how_budget'),
       prevHash, widenedHash, loweredHash,
+      dimResults,
     };
   });
 
@@ -620,6 +663,14 @@ async function runR21PlanBoundsChecks(browser) {
   result.loweredHash === result.prevHash
     ? ok(`lowering how.budget.amount (60 -> 40) keeps the bounds hash: ${result.loweredHash}`)
     : fail(`lowering changed the bounds hash: ${result.prevHash} -> ${result.loweredHash}`);
+  for (const [name, { widenChanged, narrowUnchanged }] of Object.entries(result.dimResults)) {
+    widenChanged
+      ? ok(`boundsWiden: widening '${name}' changes the bounds hash`)
+      : fail(`boundsWiden: widening '${name}' did NOT change the bounds hash`);
+    narrowUnchanged
+      ? ok(`boundsWiden: narrowing '${name}' keeps the bounds hash`)
+      : fail(`boundsWiden: narrowing '${name}' changed the bounds hash`);
+  }
 
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught.length) uncaught.forEach((e) => fail('[R2-1 plan bounds] uncaught page error: ' + e));

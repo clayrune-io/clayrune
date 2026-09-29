@@ -840,16 +840,62 @@
     for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
     return h.toString(16).padStart(8, '0');
   }
-  // Widening rule, §5.2: budget.amount raised, or budget.source switches
-  // 'own' -> 'project' (a pool that can be larger than the fixed own
-  // amount), is a widening. Equal or lower amount, or 'project' -> 'own',
-  // never widens on the budget dimension.
-  function boundsWiden(prevBounds, nextBounds) {
+  // Widening rule — §141's bounds table (accounts, cadence, end/cap,
+  // budget, term). Dave's review (2026-09-29): the R2-1 version only
+  // checked budget, so a cadence raise (R2-9), an account add (R2-10) or a
+  // term extension (R2-11) would silently keep the old approval's hash —
+  // the one direction this must never get wrong. Every dimension below is
+  // additive-OR: ANY widening move on ANY dimension widens the whole
+  // envelope; narrowing every dimension at once is the only way to keep
+  // the old hash. Each dimension only fires when BOTH sides carry that
+  // field — a bound neither side sets yet isn't this function's problem
+  // (validatePlan gates presence, this only gates "did an existing bound
+  // get looser").
+  function _accountsWiden(prevBounds, nextBounds) {
+    const idOf = (a) => (typeof a === 'string' ? a : a && a.channel_id);
+    const prev = new Set(((prevBounds && prevBounds.accounts) || []).map(idOf));
+    const next = ((nextBounds && nextBounds.accounts) || []).map(idOf);
+    return next.some((id) => !prev.has(id));
+  }
+  function _cadenceWiden(prevBounds, nextBounds) {
+    const prev = (prevBounds && prevBounds.cadence) || {};
+    const next = (nextBounds && nextBounds.cadence) || {};
+    return next.per_week != null && prev.per_week != null && next.per_week > prev.per_week;
+  }
+  // end.date later, end.post_cap raised, or a cap removed entirely
+  // (post_cap: null after having one — an unbounded run is looser than any
+  // finite cap) all widen.
+  function _endWiden(prevBounds, nextBounds) {
+    const prev = (prevBounds && prevBounds.end) || {};
+    const next = (nextBounds && nextBounds.end) || {};
+    if (prev.date && next.date && new Date(next.date).getTime() > new Date(prev.date).getTime()) return true;
+    if (prev.post_cap != null) {
+      if (next.post_cap == null) return true;
+      if (next.post_cap > prev.post_cap) return true;
+    }
+    return false;
+  }
+  function _termWiden(prevBounds, nextBounds) {
+    const prev = (prevBounds && prevBounds.term) || {};
+    const next = (nextBounds && nextBounds.term) || {};
+    return !!(prev.ends && next.ends && new Date(next.ends).getTime() > new Date(prev.ends).getTime());
+  }
+  // §5.2: budget.amount raised, or budget.source switches 'own' -> 'project'
+  // (a pool that can be larger than the fixed own amount), is a widening.
+  // Equal or lower amount, or 'project' -> 'own', never widens.
+  function _budgetWiden(prevBounds, nextBounds) {
     const prevBudget = (prevBounds && prevBounds.budget) || {};
     const nextBudget = (nextBounds && nextBounds.budget) || {};
     if ((nextBudget.amount || 0) > (prevBudget.amount || 0)) return true;
     if (prevBudget.source === 'own' && nextBudget.source === 'project') return true;
     return false;
+  }
+  function boundsWiden(prevBounds, nextBounds) {
+    return _accountsWiden(prevBounds, nextBounds)
+      || _cadenceWiden(prevBounds, nextBounds)
+      || _endWiden(prevBounds, nextBounds)
+      || _termWiden(prevBounds, nextBounds)
+      || _budgetWiden(prevBounds, nextBounds);
   }
   function nextBoundsHash(prevHash, prevBounds, nextBounds) {
     return boundsWiden(prevBounds, nextBounds) ? computeBoundsHash(nextBounds) : prevHash;
