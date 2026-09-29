@@ -707,6 +707,75 @@
       excerpt: 'Backtest looks great — does this work on futures too?', state: 'needs_you' },
   );
 
+  // ── IA6 (MC-977 IA revision, §5 row IA6): a genuinely FRESH Active
+  // campaign — goal.current 0, no version has ever gone out — so the
+  // Overview empty states (UX_PASS §6.1: no `0/` bar; Results/Conversations
+  // copy) have a real case to render against. camp-1's own "Active" fixture
+  // already has 11/30 progress and publication history, so it can't stand
+  // in for "before the first publish". One SCHEDULED piece (no
+  // verified_published/you_reported anywhere in this campaign) gives the
+  // project page's "next post across campaigns" a real slot to surface too.
+  CAMPAIGNS.push({
+    id: 'camp-4',
+    state: 'active',
+    projectId: 'clayrune',
+    subject: { kind: 'feature', label: 'Community Discord' },
+    goal: { current: 0 },
+    rules: {},
+    plan: {
+      brief: 'Clayrune users looking for community should find the Discord and join.',
+      title: 'Community Discord launch',
+      audience: 'Clayrune users looking for community',
+      goal: { outcome: 'Discord joins', target: 40, deadline: '2026-11-15', tracked: true },
+      accounts: ['ch-x-ron'],
+      angle: 'Announce the Discord and invite people in.',
+      samples: [],
+      cadence: { per_week: 2 },
+      end: { date: '2026-11-15', post_cap: null },
+      replies: 'drafts',
+      paid: false,
+      generation: 'No video generation planned for this campaign',
+    },
+  });
+  FAMILIES.push({
+    id: 'fam-discord-announce', campaignId: 'camp-4', kind: 'post',
+    title: 'Join the Clayrune Discord',
+    versions: [
+      { id: 'v-discord-x', channelId: 'ch-x-ron', state: 'scheduled', revision: 0,
+        publishAt: '2026-10-06T09:00:00-07:00' },
+    ],
+  });
+
+  // ── IA6 (§5 row IA6): an ARCHIVED campaign, unreachable since IA1 removed
+  // Home's archived section (§1: "archived campaigns are unreachable until
+  // this lands"). `_preArchiveState` mirrors `_prePauseState`'s convention
+  // (desk-v1-project.js Pause/Resume) — Restore needs to know what state to
+  // put it back to, and this one never went through `_archiveCampaign`'s own
+  // do() this session, so nothing else records that for it.
+  CAMPAIGNS.push({
+    id: 'camp-archived-1',
+    state: 'archived',
+    projectId: 'clayrune',
+    subject: { kind: 'feature', label: 'Legacy import wizard' },
+    goal: { current: 22 },
+    rules: {},
+    _preArchiveState: 'completed',
+    plan: {
+      brief: 'Users migrating from the old importer should find the new wizard.',
+      title: 'Legacy import wizard launch',
+      audience: 'Users migrating from the old importer',
+      goal: { outcome: 'imports completed', target: 25, deadline: '2026-08-01', tracked: true },
+      accounts: ['ch-x-ron'],
+      angle: 'Show the wizard fixing a real broken import.',
+      samples: [],
+      cadence: { per_week: 2 },
+      end: { date: '2026-08-01', post_cap: null },
+      replies: 'drafts',
+      paid: false,
+      generation: 'No video generation planned for this campaign',
+    },
+  });
+
   window.DeskV1Fixtures = {
     projects: PROJECTS,
     campaigns: CAMPAIGNS,
