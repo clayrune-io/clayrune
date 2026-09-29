@@ -57,7 +57,6 @@
   const CAMPAIGNS = [
     {
       id: 'camp-1',
-      name: 'Windows beta testers',
       state: 'active', // proposed | active | paused | completed | archived | draft
       // IA1 §2.2/§3#40: the field Ron's ask turns on. `subject.kind` picks
       // the project-page card glyph (◉ project · ▣ product · ✦ feature ·
@@ -70,36 +69,32 @@
       // popover, Resume revalidation) actually writes to. `current` stays:
       // it's live progress, which has no field in §4's plan shape at all.
       goal: { current: 11 },
-      channelIds: ['ch-x-ron', 'ch-li-page', 'ch-blog'],
-      rules: {
-        // `reviewMode` stays here too — no plan field covers it (`_ruleChips`
-        // and the channel badge's review-mode marker both read it from here;
-        // out of scope for this pass, which only touches the goal group).
-        reviewMode: 'each_piece', // 'each_piece' | 'themes'
-        frequencyPerWeek: 3,
-        repliesMode: 'drafts', // 'drafts' | 'auto_faq'
-        paid: false,
-      },
+      // IA2 (THE_DESK_V1_IA_REVISION.md §3): `customChips` (row 11) is the
+      // only field this object still owns — the per-piece approval toggle,
+      // the weekly-count duplicate, the reply-mode toggle and the paid
+      // duplicate (rows 7-10) were duplicates of a project/plan field or
+      // had no replacement; deleted, not merely emptied.
+      rules: {},
       // ── T2 (MC-977 UX pass §4/§6.2): Pause/Resume gates on `validatePlan`,
-      // which reads `plan`, not `rules`/`goal` — camp-1 is the one Active
-      // fixture campaign and had no `plan` yet (T1 only added it to camp-2).
-      // Values mirror the pre-existing goal/rules/channelIds so nothing
-      // user-visible changes; `end.date` matches `goal.deadline` since this
-      // campaign has always run to its goal date.
+      // which reads `plan`, not `rules`/`goal`. `end.date` matches
+      // `goal.deadline` since this campaign has always run to its goal date.
+      // IA2 §3: the fixture's `name` field retired (row 2, `plan.title` is
+      // the only copy); the per-campaign channel-id list retired (row 6,
+      // replaced by `plan.accounts`, a subset of the project's own
+      // `presence.accounts` — camp-1 uses all 3); `source_projects` retired
+      // (row 14, owner is the parent project, implicit); destination voice
+      // moved to `project.accounts[].voice` (row 20) so `plan.accounts` is
+      // bare channel ids; `cadence.min_gap_h`
+      // moved to the project's own `presence.ceilings` (row 22).
       plan: {
         brief: 'Windows users trying Claude Code should hear about the beta and sign up as testers.',
         title: 'Windows beta testers',
-        source_projects: ['clayrune'],
         audience: 'Windows users trying Claude Code',
         goal: { outcome: 'tester signups', target: 30, deadline: '2026-10-20', tracked: true },
-        destinations: [
-          { account: 'ch-x-ron', voice: 'Ron (first person)' },
-          { account: 'ch-li-page', voice: 'Clayrune page' },
-          { account: 'ch-blog', voice: 'Clayrune blog' },
-        ],
+        accounts: ['ch-x-ron', 'ch-li-page', 'ch-blog'],
         angle: 'Show the restore-points and install flow working end to end so trying the beta feels low-risk.',
         samples: [],
-        cadence: { per_week: 3, min_gap_h: 12 },
+        cadence: { per_week: 3 },
         end: { date: '2026-10-20', post_cap: null },
         replies: 'drafts',
         paid: false,
@@ -585,8 +580,8 @@
   // Ron's personal LinkedIn is never a Desk destination.
   //
   // §8's worked example is "in · Ron (personal) excluded" — an included/
-  // excluded row needs a channel that exists but isn't on the campaign's
-  // channelIds. camp-2 below uses 2 of the 3 pre-existing global channels
+  // excluded row needs a channel that exists but isn't in the campaign's
+  // own accounts subset. camp-2 below uses 2 of the 3 pre-existing global channels
   // (ch-x-ron, ch-li-page), leaving the 3rd (ch-blog) naturally "excluded"
   // for it — no new channel, no touching camp-1's Add-tray shelf count
   // (camp-1 already holds all 3, T0a's own invariant).
@@ -599,39 +594,34 @@
   // new product surface (ground rule 3's own precedent).
   CAMPAIGNS.push({
     id: 'camp-2',
-    name: 'Restore points launch',
     state: 'proposed', // proposed | active | paused | completed | archived | draft
     // IA1 §2.2/§3#40 (same field/comment as camp-1 above): this campaign
     // promotes a FEATURE, not the whole project or an audience.
     projectId: 'clayrune',
     subject: { kind: 'feature', label: 'Restore points' },
     goal: { current: 0 },
-    channelIds: ['ch-x-ron', 'ch-li-page'],
-    rules: {
-      reviewMode: 'each_piece', frequencyPerWeek: 2,
-      repliesMode: 'drafts', paid: false,
-    },
+    // IA2 §3: the per-piece approval toggle, weekly-count duplicate,
+    // reply-mode toggle and paid duplicate all retired (see camp-1's
+    // comment above) — `customChips` is the only field left.
+    rules: {},
     // ── T1 (MC-977 UX pass §4): the one canonical plan object. Goal display,
-    // rule chips and the Start sheet (desk-v1-rules.js) all read THIS, not
-    // the `goal` field above — `rules` above stays as-is (the Active-state
-    // Rules popover still reads it). `goal` above is reduced to `{current}`,
-    // same as camp-1 (T3 review carry-over, MC-977): nothing reads
-    // metric/target/deadline/audience/tracked off `camp.goal` any more, only
-    // `camp.goal.current` (desk-v1-campaign.js's summary bar, Home's card) —
-    // grepped every `.goal` site across static/js/desk-v1-*.js to confirm.
+    // rule chips and the Start sheet (desk-v1-rules.js) all read THIS.
+    // `goal` above is reduced to `{current}` (T3 review carry-over,
+    // MC-977): nothing reads metric/target/deadline/audience/tracked off
+    // `camp.goal` any more, only `camp.goal.current`.
+    // IA2 §3: `source_projects` retired, the per-campaign channel-id list
+    // becomes `plan.accounts` (bare ids, voice moved to `project.
+    // accounts[].voice`), `cadence.min_gap_h` moved to the project's own
+    // `presence.ceilings` — same rescope as camp-1 above.
     plan: {
       brief: 'Restore points is live in Clayrune 2.1 — undo any agent mistake by rolling back to a saved snapshot.',
       title: 'Restore points launch',
-      source_projects: ['clayrune'],
       audience: 'the developer audience',
       goal: { outcome: 'beta signups', target: 60, deadline: '2026-10-20', tracked: false },
-      destinations: [
-        { account: 'ch-x-ron', voice: 'Ron (first person)' },
-        { account: 'ch-li-page', voice: 'Clayrune page' },
-      ],
+      accounts: ['ch-x-ron', 'ch-li-page'],
       angle: 'Frame restore points as the cheap insurance that makes trying agent changes low-risk.',
       samples: [],
-      cadence: { per_week: 2, min_gap_h: 12 },
+      cadence: { per_week: 2 },
       end: { date: '2026-10-20', post_cap: null },
       replies: 'drafts',
       paid: false,
@@ -690,23 +680,21 @@
   // every fixture family/conversation regardless of project.
   CAMPAIGNS.push({
     id: 'camp-3',
-    name: 'Signal alerts for day traders',
     state: 'active',
     projectId: 'engulfing_scanner',
     subject: { kind: 'product', label: 'Engulfing scanner' },
     goal: { current: 4 },
-    channelIds: ['ch-x-ron'],
-    rules: { reviewMode: 'each_piece', frequencyPerWeek: 2, repliesMode: 'drafts', paid: false },
+    // IA2 §3: same rescope as camp-1/camp-2 above.
+    rules: {},
     plan: {
       brief: 'Day traders evaluating signal tools should see the scanner catch a real engulfing setup.',
       title: 'Signal alerts for day traders',
-      source_projects: ['engulfing_scanner'],
       audience: 'Day traders evaluating signal tools',
       goal: { outcome: 'signups', target: 20, deadline: '2026-10-31', tracked: true },
-      destinations: [{ account: 'ch-x-ron', voice: 'Ron (first person)' }],
+      accounts: ['ch-x-ron'],
       angle: 'Show one real scanned setup end to end, from alert to outcome.',
       samples: [],
-      cadence: { per_week: 2, min_gap_h: 12 },
+      cadence: { per_week: 2 },
       end: { date: '2026-10-31', post_cap: null },
       replies: 'drafts',
       paid: false,
