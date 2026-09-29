@@ -73,14 +73,21 @@
   // drop) — a pure factory; callers decide when/how to commit + undo so both
   // call sites can wrap it in their own commandBus entry (§10). ───────────
   function _createProposedCampaign(rawName) {
-    let name = (rawName || '').trim() || 'New campaign';
-    if (name.length > 60) name = name.slice(0, 57) + '…';
+    let title = (rawName || '').trim() || 'New campaign';
+    if (title.length > 60) title = title.slice(0, 57) + '…';
     return {
       id: 'camp-proposed-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
-      name, state: 'proposed',
-      goal: { metric: '', target: null, current: 0, deadline: null, tracked: false },
-      channelIds: [],
-      rules: { reviewMode: 'each_piece', frequencyPerWeek: null, repliesMode: 'drafts', paid: false },
+      state: 'proposed',
+      goal: { current: 0 },
+      rules: {},
+      plan: {
+        title,
+        goal: { outcome: '', target: null, deadline: null, tracked: false },
+        accounts: [],
+        cadence: { per_week: null },
+        end: { date: null, post_cap: null },
+        paid: false,
+      },
     };
   }
 
@@ -94,9 +101,9 @@
   function _channelAttachCommand(camp, channelId) {
     const ch = _channel(channelId);
     return {
-      label: `Added ${ch ? ch.label : channelId} to “${camp.name}”`,
-      do: () => { camp.channelIds.push(channelId); },
-      undo: () => { const i = camp.channelIds.indexOf(channelId); if (i >= 0) camp.channelIds.splice(i, 1); },
+      label: `Added ${ch ? ch.label : channelId} to “${camp.plan.title}”`,
+      do: () => { camp.plan.accounts.push(channelId); },
+      undo: () => { const i = camp.plan.accounts.indexOf(channelId); if (i >= 0) camp.plan.accounts.splice(i, 1); },
     };
   }
   function _assetAttachCommand(camp, asset) {
@@ -106,7 +113,7 @@
       versions: [{ id: famId + '-v1', channelId: null, state: 'drafting', revision: 0 }],
     };
     return {
-      label: `Added “${asset.title}” to “${camp.name}”`,
+      label: `Added “${asset.title}” to “${camp.plan.title}”`,
       do: () => { _fx().families.push(family); },
       undo: () => { const arr = _fx().families; const i = arr.findIndex((f) => f.id === famId); if (i >= 0) arr.splice(i, 1); },
     };
@@ -118,8 +125,8 @@
   function _applyDropToCampaign(campaignId, dragData) {
     const camp = _campaign(campaignId);
     if (!camp) return;
-    if (dragData.type === 'channel' && camp.channelIds.includes(dragData.channelId)) {
-      DeskV1Kit.toast(`${dragData.label} is already on “${camp.name}”.`);
+    if (dragData.type === 'channel' && camp.plan.accounts.includes(dragData.channelId)) {
+      DeskV1Kit.toast(`${dragData.label} is already on “${camp.plan.title}”.`);
       return;
     }
     const cmd = _dropCommandFor(camp, dragData);
@@ -130,7 +137,7 @@
     const camp = _createProposedCampaign('New campaign');
     const cmd = _dropCommandFor(camp, dragData);
     DeskV1Kit.commandBus.run({
-      label: `Created “${camp.name}” and added ${dragData.label}`,
+      label: `Created “${camp.plan.title}” and added ${dragData.label}`,
       do: () => { _fx().campaigns.push(camp); cmd.do(); _renderProjectCards(); },
       undo: () => { cmd.undo(); const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); _renderProjectCards(); },
     });
@@ -382,7 +389,7 @@
   function _channelShelfItemHTML(ch) {
     return `<div class="desk-v1-shelf-item" data-channel-id="${esc(ch.id)}" tabindex="0" role="button" aria-haspopup="menu" aria-label="${esc(ch.label)} — drag to a campaign, or press Enter for Add to…">
       <span class="desk-v1-shelf-grip" aria-hidden="true">⠿</span>
-      ${DeskV1Kit.channelBadge(ch, { reviewMode: 'each_piece' })}
+      ${DeskV1Kit.channelBadge(ch)}
       <span class="desk-v1-shelf-add" aria-hidden="true">＋</span>
     </div>`;
   }
@@ -449,7 +456,7 @@
     if (ta) ta.value = '';
     const camp = _createProposedCampaign(text);
     DeskV1Kit.commandBus.run({
-      label: `Proposed “${camp.name}”`,
+      label: `Proposed “${camp.plan.title}”`,
       do: () => { _fx().campaigns.push(camp); _renderProjectCards(); },
       undo: () => { const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); _renderProjectCards(); },
     });

@@ -137,7 +137,7 @@
   // ── What went out (§7: per-VERSION rows — channel · title · status ·
   // metrics · goal contribution. Missing data reads delayed/n/a, never a
   // fabricated 0, MET-01/E12). ─────────────────────────────────────────────
-  function _versionRowHTML(row, reviewMode) {
+  function _versionRowHTML(row) {
     const meta = _versionMeta(row.versionId);
     const version = meta && meta.version;
     const family = meta && meta.family;
@@ -151,7 +151,7 @@
     return `
       <div class="desk-v1-results-version-row">
         <div class="desk-v1-results-version-main">
-          ${channel ? window.DeskV1Kit.channelBadge(channel, { reviewMode }) : '<span class="desk-v1-results-version-nochannel">No channel</span>'}
+          ${channel ? window.DeskV1Kit.channelBadge(channel) : '<span class="desk-v1-results-version-nochannel">No channel</span>'}
           <span class="desk-v1-results-version-title">${esc(family ? family.title : row.versionId)}</span>
         </div>
         ${_outcomeHTML(row.outcome)}
@@ -198,7 +198,7 @@
         <div class="desk-v1-results-section">
           <div class="desk-v1-results-section-title">What went out</div>
           <div class="desk-v1-results-versions">
-            ${(results.versions || []).map((r) => _versionRowHTML(r, campaign.rules && campaign.rules.reviewMode)).join('') ||
+            ${(results.versions || []).map((r) => _versionRowHTML(r)).join('') ||
               '<div class="desk-v1-results-empty">Nothing has gone out yet.</div>'}
           </div>
         </div>

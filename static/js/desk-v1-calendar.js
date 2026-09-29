@@ -170,10 +170,10 @@
     const channels = _fx().channels || [];
     if (st.scope === 'all') {
       const ids = new Set();
-      (_fx().campaigns || []).forEach((c) => (c.channelIds || []).forEach((id) => ids.add(id)));
+      (_fx().campaigns || []).forEach((c) => (c.plan.accounts || []).forEach((id) => ids.add(id)));
       return channels.filter((c) => ids.has(c.id));
     }
-    return (campaign.channelIds || []).map((id) => _channel(id)).filter(Boolean);
+    return (campaign.plan.accounts || []).map((id) => _channel(id)).filter(Boolean);
   }
 
   function _familiesInScope(st, campaign) {
@@ -225,12 +225,12 @@
       </button>`;
   }
 
-  function _rowHeaderHTML(channel, reviewMode) {
+  function _rowHeaderHTML(channel) {
     const kit = window.DeskV1Kit;
     const held = channel.health === 'held';
-    const badge = kit ? kit.channelBadge(channel, { reviewMode }) : esc(channel.label || channel.identity || '');
+    const badge = kit ? kit.channelBadge(channel) : esc(channel.label || channel.identity || '');
     const holdLine = held && kit
-      ? `<div class="desk-v1-cal-row-hold">${esc(kit.channelCapabilityCopy(channel, reviewMode))}</div>`
+      ? `<div class="desk-v1-cal-row-hold">${esc(kit.channelCapabilityCopy(channel))}</div>`
       : '';
     return `
       <div class="desk-v1-cal-rowhead${held ? ' desk-v1-cal-rowhead-held' : ''}">
@@ -267,7 +267,7 @@
           ${items.map((it) => _chipHTML(it, ch)).join('')}
         </div>`;
       }).join('');
-      return `<div class="desk-v1-cal-row">${_rowHeaderHTML(ch, campaign.rules && campaign.rules.reviewMode)}${cellsHTML}</div>`;
+      return `<div class="desk-v1-cal-row">${_rowHeaderHTML(ch)}${cellsHTML}</div>`;
     }).join('');
     return `<div class="desk-v1-cal-grid-wrap"><div class="desk-v1-cal-grid" style="--desk-v1-cal-cols:${days.length}">${header}${body}</div></div>`;
   }

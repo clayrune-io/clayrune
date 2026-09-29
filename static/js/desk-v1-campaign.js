@@ -19,6 +19,7 @@
   function _channels() { return _fx().channels || []; }
   function _channel(id) { return _channels().find((c) => c.id === id); }
   function _campaign(id) { return _campaigns().find((c) => c.id === id) || null; }
+  function _project(id) { return (_fx().projects || []).find((p) => p.id === id) || null; }
   function _families() { return _fx().families || []; }
   function _familiesFor(campaignId) { return _families().filter((f) => f.campaignId === campaignId); }
   function _conversations() { return _fx().conversations || []; }
@@ -60,17 +61,28 @@
   // state pill + Pause, then the Goal / Channels / Rules groups. Not
   // duplicating the name avoids two "Windows beta testers" on screen.
   // ────────────────────────────────────────────────────────────────────────
+  // IA2 (THE_DESK_V1_IA_REVISION.md §3): the "approve themes" review-mode
+  // toggle (row 7) retired with no replacement; the replies toggle (row 9)
+  // moved to project.replies; paid (row 10, the `rules` duplicate) retired
+  // in favor of the one copy at `plan.paid` (row 25, stays campaign). The
+  // frequency chip now reads the EFFECTIVE
+  // cadence (`validatePlan`'s inherit+clamp, kit.js `_effectiveCadence`) —
+  // "from <project>" names where a tighter number came from (§5 IA2
+  // acceptance: "campaign cadence 5 under project ceiling 3 -> effective 3
+  // with chip '≤3/wk · from Clayrune'").
   function _ruleChips(camp) {
-    const r = camp.rules || {};
+    const plan = camp.plan || {};
+    const project = _project(camp.projectId);
     const chips = [];
-    chips.push(r.paid ? 'Paid' : 'Organic');
-    chips.push(r.reviewMode === 'themes' ? 'Approve themes, then run' : 'You approve each piece');
-    if (r.frequencyPerWeek != null) chips.push(`≤${esc(r.frequencyPerWeek)}/wk`);
-    if (r.repliesMode) chips.push(r.repliesMode === 'auto_faq' ? 'Auto-answer FAQ' : 'Replies: drafts');
+    chips.push(plan.paid ? 'Paid' : 'Organic');
+    const eff = (DeskV1Kit.validatePlan(plan, project) || {}).effective || {};
+    if (eff.cadence_per_week != null) {
+      chips.push(`≤${esc(eff.cadence_per_week)}/wk${eff.cadence_from_project ? ` · from ${esc(project ? project.name : 'project')}` : ''}`);
+    }
     // INS-02 (T2b): "a durable instruction appears as a new rule chip" —
     // additive-only (`customChips` is undefined until a Posy instruction
     // handler writes one, so today's camp-1 renders byte-identically).
-    (r.customChips || []).forEach((c) => chips.push(c));
+    ((camp.rules && camp.rules.customChips) || []).forEach((c) => chips.push(c));
     return chips;
   }
 
@@ -106,10 +118,10 @@
           <span class="desk-v1-camp-summary-label">GOAL</span>
           <span class="desk-v1-camp-summary-goaltext">⚠ not tracked yet</span>
         </div>`;
-    const chans = (camp.channelIds || []).map(_channel).filter(Boolean);
+    const chans = (camp.plan.accounts || []).map(_channel).filter(Boolean);
     const channelsHTML = `<div class="desk-v1-camp-summary-group" data-summary-group="channels">
         <span class="desk-v1-camp-summary-label">CHANNELS</span>
-        <div class="desk-v1-camp-summary-badges">${chans.length ? chans.map((ch) => DeskV1Kit.channelBadge(ch, { reviewMode: camp.rules && camp.rules.reviewMode })).join('') : '<span class="desk-v1-home-camp-nochannels">No channels yet</span>'}</div>
+        <div class="desk-v1-camp-summary-badges">${chans.length ? chans.map((ch) => DeskV1Kit.channelBadge(ch)).join('') : '<span class="desk-v1-home-camp-nochannels">No channels yet</span>'}</div>
       </div>`;
     const rulesHTML = `<div class="desk-v1-camp-summary-group" data-summary-group="rules">
         <span class="desk-v1-camp-summary-label">RULES</span>
@@ -154,7 +166,7 @@
       if (camp.state !== 'active') return;
       const prev = camp.state;
       DeskV1Kit.commandBus.run({
-        label: `Paused “${camp.name}”`,
+        label: `Paused “${camp.plan.title}”`,
         do: () => { camp.state = 'paused'; deskV1FillCampaignSummary(el, params); },
         undo: () => { camp.state = prev; deskV1FillCampaignSummary(el, params); },
       });
@@ -211,7 +223,7 @@
 
   function _openResumeSheet(camp, summaryEl, params) {
     DeskV1Kit.openConfirmSheet({
-      title: `Resume “${camp.name}”?`,
+      title: `Resume “${camp.plan.title}”?`,
       body: _upcomingResumeText(camp),
       confirmLabel: 'Resume', cancelLabel: 'Cancel',
       onConfirm: () => {
@@ -226,12 +238,12 @@
           // changing plan terms (the rules-edit popover, T2b) opens
           // instead, and the toast says exactly why Resume didn't happen.
           if (typeof window.deskV1OpenRulesPopover === 'function') window.deskV1OpenRulesPopover(camp.id);
-          DeskV1Kit.toast(`Can’t resume “${camp.name}” — ${reason}. Fix it, then resume.`);
+          DeskV1Kit.toast(`Can’t resume “${camp.plan.title}” — ${reason}. Fix it, then resume.`);
           return;
         }
         const prev = camp.state;
         DeskV1Kit.commandBus.run({
-          label: `Resumed “${camp.name}”`,
+          label: `Resumed “${camp.plan.title}”`,
           do: () => { camp.state = 'active'; deskV1FillCampaignSummary(summaryEl, params); },
           undo: () => { camp.state = prev; deskV1FillCampaignSummary(summaryEl, params); },
         });
@@ -264,7 +276,7 @@
     const conversations = _conversations();
     let campIdx, famRemoved, convRemoved;
     DeskV1Kit.commandBus.run({
-      label: `Deleted “${camp.name}”`,
+      label: `Deleted “${camp.plan.title}”`,
       do: () => {
         campIdx = campaigns.indexOf(camp);
         famRemoved = [];
@@ -293,7 +305,7 @@
   function _archiveCampaign(camp, onDone) {
     const prevState = camp.state;
     DeskV1Kit.commandBus.run({
-      label: `Archived “${camp.name}”`,
+      label: `Archived “${camp.plan.title}”`,
       do: () => { camp.state = 'archived'; if (onDone) onDone('archived'); },
       undo: () => { camp.state = prevState; if (onDone) onDone('restored'); },
     });
@@ -339,7 +351,7 @@
       e.stopPropagation();
       close();
       DeskV1Kit.openConfirmSheet({
-        title: `Delete “${camp.name}”?`,
+        title: `Delete “${camp.plan.title}”?`,
         body: 'This removes the campaign and its draft content. Nothing here has published yet, so there is nothing on any platform to clean up. You can undo right after.',
         confirmLabel: 'Delete', cancelLabel: 'Cancel',
         onConfirm: () => _deleteCampaignCascade(camp, opts.onDone),
@@ -350,7 +362,7 @@
       e.stopPropagation();
       close();
       DeskV1Kit.openConfirmSheet({
-        title: `Archive “${camp.name}”?`,
+        title: `Archive “${camp.plan.title}”?`,
         body: 'Archiving stops future activity on this campaign and keeps its results and receipts. It does not remove any posts already on a platform. You can undo right after.',
         confirmLabel: 'Archive', cancelLabel: 'Cancel',
         onConfirm: () => _archiveCampaign(camp, opts.onDone),
@@ -835,11 +847,11 @@
       }
     } else if (resolved.type === 'listarea') {
       if (dragData.type === 'channel') {
-        if (camp.channelIds.includes(dragData.channelId)) { DeskV1Kit.toast(`${dragData.label} is already on “${camp.name}”.`); return; }
+        if (camp.plan.accounts.includes(dragData.channelId)) { DeskV1Kit.toast(`${dragData.label} is already on “${camp.plan.title}”.`); return; }
         DeskV1Kit.commandBus.run({
-          label: `Added ${dragData.label} to “${camp.name}”`,
-          do: () => { camp.channelIds.push(dragData.channelId); deskV1FillCampaignSummary(document.getElementById('desk-v1-camp-summary'), { campaignId: camp.id }); },
-          undo: () => { const i = camp.channelIds.indexOf(dragData.channelId); if (i >= 0) camp.channelIds.splice(i, 1); deskV1FillCampaignSummary(document.getElementById('desk-v1-camp-summary'), { campaignId: camp.id }); },
+          label: `Added ${dragData.label} to “${camp.plan.title}”`,
+          do: () => { camp.plan.accounts.push(dragData.channelId); deskV1FillCampaignSummary(document.getElementById('desk-v1-camp-summary'), { campaignId: camp.id }); },
+          undo: () => { const i = camp.plan.accounts.indexOf(dragData.channelId); if (i >= 0) camp.plan.accounts.splice(i, 1); deskV1FillCampaignSummary(document.getElementById('desk-v1-camp-summary'), { campaignId: camp.id }); },
         });
       } else {
         const asset = dragData.asset;
@@ -916,7 +928,7 @@
     if (!camp) { el.innerHTML = ''; return; }
     const st = _ensureState(camp.id);
     const sugg = (_fx().campaignSuggestions || {})[camp.id] || {};
-    const scopeLabel = st.selection.scope === 'card' ? st.selection.label : camp.name;
+    const scopeLabel = st.selection.scope === 'card' ? st.selection.label : camp.plan.title;
     el.innerHTML = `<div class="desk-v1-camp-posy">${DeskV1Kit.posyBoxHTML({
       inputId: 'desk-v1-camp-posy-input', scopeLabel, suggestion: sugg.suggestion, chips: sugg.chips,
     })}</div>`;
@@ -966,7 +978,7 @@
       channelsHost: document.getElementById('desk-v1-camp-addtray-channels'),
       materialHost: document.getElementById('desk-v1-camp-addtray-material'),
     }, {
-      hideChannelIds: camp.channelIds || [],
+      hideChannelIds: camp.plan.accounts || [],
       targetAdapter: _addTrayAdapter(camp),
     });
   }
