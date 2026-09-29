@@ -53,8 +53,8 @@ def _fact(session_id, *, provider='claude', started_at, ended_at=None,
     }
 
 
-def _sample(*, raw_utilization, source_observed_at, resets_at='2026-10-05T00:00:00+00:00',
-            quality='ok'):
+def _sample(*, raw_utilization, source_observed_at,
+            resets_at: 'str | None' = '2026-10-05T00:00:00+00:00', quality='ok'):
     return {'raw_utilization': raw_utilization, 'source_observed_at': source_observed_at,
             'resets_at': resets_at, 'quality': quality}
 
@@ -250,6 +250,41 @@ def test_bar_change_single_sample_is_insufficient():
     assert bc['status'] == 'insufficient_samples'
 
 
+def test_bar_change_jittered_resets_at_within_window_is_ok():
+    """MC-998 follow-up: the vendor endpoint returns resets_at with
+    sub-second jitter across polls of the SAME window (measured 2026-09-29:
+    241/241 distinct raw values) -- string equality treated every sample
+    pair as a reset, so the bar never became measurable. A handful of
+    seconds of drift must not read as a reset crossing."""
+    samples = [_sample(raw_utilization=10.0, source_observed_at='2026-09-28T10:00:00Z',
+                        resets_at='2026-09-28T19:00:00.444543+00:00'),
+               _sample(raw_utilization=15.0, source_observed_at='2026-09-28T10:05:00Z',
+                       resets_at='2026-09-28T18:59:59.567670+00:00'),
+               _sample(raw_utilization=18.0, source_observed_at='2026-09-28T10:08:00Z',
+                       resets_at='2026-09-28T19:00:00.005273+00:00')]
+    bc = compute_bar_change(samples, range_start='2026-09-28T00:00:00Z', range_end='2026-09-29T00:00:00Z')
+    assert bc == {'status': 'ok', 'delta_pp': 8.0,
+                  'earliest': '2026-09-28T10:00:00Z', 'latest': '2026-09-28T10:08:00Z'}
+
+
+def test_bar_change_genuine_reset_beyond_tolerance_still_crossed():
+    samples = [_sample(raw_utilization=95.0, source_observed_at='2026-09-28T09:59:00Z',
+                        resets_at='2026-09-28T10:00:00+00:00'),
+               _sample(raw_utilization=2.0, source_observed_at='2026-09-28T10:01:00Z',
+                       resets_at='2026-09-28T15:00:03+00:00')]  # +5h reset, not jitter
+    bc = compute_bar_change(samples, range_start='2026-09-28T00:00:00Z', range_end='2026-09-29T00:00:00Z')
+    assert bc['status'] == 'reset_crossed'
+    assert bc['delta_pp'] is None
+
+
+def test_bar_change_none_resets_at_fails_closed():
+    samples = [_sample(raw_utilization=10.0, source_observed_at='2026-09-28T10:00:00Z', resets_at=None),
+               _sample(raw_utilization=15.0, source_observed_at='2026-09-28T10:05:00Z', resets_at=None)]
+    bc = compute_bar_change(samples, range_start='2026-09-28T00:00:00Z', range_end='2026-09-29T00:00:00Z')
+    assert bc['status'] == 'reset_crossed'
+    assert bc['delta_pp'] is None
+
+
 # ── calibration eligibility / AC2 + P1-2/P1-3 ───────────────────────────
 
 def _calibration_fixture(n_pairs=5):
@@ -299,6 +334,38 @@ def test_calibration_reset_between_pair_excludes_that_interval():
     cal = compute_calibration(samples, {}, {}, provider='claude', window_scope='all')
     assert cal['status'] == 'insufficient_samples'
     assert cal['eligible_interval_count'] == 0
+
+
+def test_calibration_none_resets_at_fails_closed():
+    samples = [_sample(raw_utilization=10.0, source_observed_at='2026-09-28T10:00:00Z', resets_at=None),
+               _sample(raw_utilization=20.0, source_observed_at='2026-09-28T10:05:00Z', resets_at=None)]
+    cal = compute_calibration(samples, {}, {}, provider='claude', window_scope='all')
+    assert cal['status'] == 'insufficient_samples'
+    assert cal['eligible_interval_count'] == 0
+
+
+def test_calibration_jittered_resets_at_keeps_interval():
+    """Same jitter as compute_bar_change, at the calibration pairing site
+    (~line 426 pre-fix): a.resets_at != b.resets_at discarded every interval
+    under vendor jitter, so tokens_per_point sample_count stayed 0 forever."""
+    samples, checkpoints, facts = [], {}, []
+    base = datetime(2026, 9, 28, 10, 0, 0, tzinfo=timezone.utc)
+    jittered_resets = ['2026-10-05T00:00:00.444543+00:00', '2026-10-04T23:59:59.567670+00:00',
+                        '2026-10-05T00:00:00.005273+00:00']
+    for i in range(5):
+        sid = f'sess-{i}'
+        t0 = base + timedelta(minutes=20 * i)
+        t1 = t0 + timedelta(minutes=2)
+        samples.append(_sample(raw_utilization=float(i * 10), source_observed_at=t0.isoformat(),
+                                resets_at=jittered_resets[i % len(jittered_resets)]))
+        samples.append(_sample(raw_utilization=float(i * 10 + 5), source_observed_at=t1.isoformat(),
+                                resets_at=jittered_resets[(i + 1) % len(jittered_resets)]))
+        checkpoints[sid] = _checkpoint(sid, baseline_at=t0.isoformat(), completion_at=t1.isoformat())
+        facts.append(_fact(sid, started_at=t0.isoformat(), ended_at=t1.isoformat()))
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    assert cal['status'] == 'ok'
+    assert cal['eligible_interval_count'] == 5
 
 
 def test_calibration_gap_over_ten_minutes_excludes_interval():

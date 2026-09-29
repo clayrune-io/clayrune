@@ -13,7 +13,7 @@ or a real vendor credential.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional, Union
 
 from mc.usage_breakdown_store import UsageBreakdownStore
@@ -35,6 +35,29 @@ CODEX_WINDOWS = (
 
 def _iso_from_epoch(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
+def _normalize_resets_at(resets_at: Optional[str]) -> Optional[str]:
+    """Round `resets_at` to the nearest minute before it's ever stored.
+
+    The Anthropic usage endpoint returns this value with sub-second jitter
+    on every poll of the SAME window (measured 2026-09-29: 241 samples, 241
+    distinct raw values), so two samples of one window rarely carry the
+    identical string. `mc.usage_breakdown_aggregate` now tolerates jitter
+    when comparing existing rows, but new rows should be written clean --
+    leaves the raw value untouched (never guess) if it doesn't parse."""
+    if not resets_at:
+        return resets_at
+    try:
+        dt = datetime.fromisoformat(resets_at.replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return resets_at
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    rounded = dt.replace(second=0, microsecond=0)
+    if dt.second >= 30:
+        rounded += timedelta(minutes=1)
+    return rounded.isoformat()
 
 
 def sample_claude(store: UsageBreakdownStore, *, usage_limits: Optional[dict],
@@ -61,7 +84,7 @@ def sample_claude(store: UsageBreakdownStore, *, usage_limits: Optional[dict],
             continue
         if store.record_allowance_sample(
             provider='claude', window_kind=window_kind, window_scope=window_scope,
-            raw_utilization=util, resets_at=win.get('resets_at'),
+            raw_utilization=util, resets_at=_normalize_resets_at(win.get('resets_at')),
             source_observed_at=observed_at, source_version='oauth_usage_v1',
         ):
             inserted += 1
@@ -93,7 +116,7 @@ def sample_codex(store: UsageBreakdownStore, *, detail: Optional[dict]) -> int:
             continue
         if store.record_allowance_sample(
             provider='codex', window_kind=window_kind, window_scope='all',
-            raw_utilization=util, resets_at=win.get('resets_at'),
+            raw_utilization=util, resets_at=_normalize_resets_at(win.get('resets_at')),
             source_observed_at=observed_at, source_version='rollout_rate_limits_v1',
         ):
             inserted += 1
