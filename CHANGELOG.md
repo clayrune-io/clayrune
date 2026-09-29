@@ -6,6 +6,14 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-29] — Auto-router Opus tier to Opus 5.5
+
+- `_AUTO_MODEL_VALID['O']` now `claude-opus-5-5` (was `claude-opus-5`). The tier
+  has always tracked the current flagship (4.7, 4.8, 5 via 8f3ed8b); 65d3e44 held
+  it back without a stated reason. Opus 5.5 is also cheaper ($4/$20 vs $5/$25).
+- New test pins every auto-router tier to its family's catalog head, so a future
+  model bump that forgets the router fails loudly.
+
 ## [2026-09-29] — Sonnet 5.5 in the model pickers
 
 - Added `claude-sonnet-5-5` ("Sonnet 5.5") above `claude-sonnet-5` in
