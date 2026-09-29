@@ -341,14 +341,32 @@
   // Archive never touches families/conversations/results — §"keeps results
   // and receipts" means literally nothing else in fixture data moves; only
   // camp.state changes, same one-field mutation Pause already makes.
+  // `_preArchiveState` mirrors project.js's `_prePauseState` convention: the
+  // commandBus Undo toast (below) restores it immediately, but a project
+  // page's `More › Restore` (IA6, §5 row IA6) may act long after that toast
+  // has expired, so the field has to outlive it.
   function _archiveCampaign(camp, onDone) {
     const prevState = camp.state;
     DeskV1Kit.commandBus.run({
       label: `Archived “${camp.plan.title}”`,
-      do: () => { camp.state = 'archived'; if (onDone) onDone('archived'); },
-      undo: () => { camp.state = prevState; if (onDone) onDone('restored'); },
+      do: () => { camp._preArchiveState = prevState; camp.state = 'archived'; if (onDone) onDone('archived'); },
+      undo: () => { camp.state = prevState; delete camp._preArchiveState; if (onDone) onDone('restored'); },
     });
   }
+
+  // Restore (IA6, §5 row IA6): the project page's "More › Restore" on an
+  // archived campaign's card (desk-v1-project.js). Puts the campaign back to
+  // whatever state Archive found it in (`_preArchiveState` above) rather than
+  // assuming "active" — an archived Paused campaign restores to Paused.
+  function _restoreCampaign(camp, onDone) {
+    const restoredState = camp._preArchiveState || 'active';
+    DeskV1Kit.commandBus.run({
+      label: `Restored “${camp.plan.title}”`,
+      do: () => { camp.state = restoredState; delete camp._preArchiveState; if (onDone) onDone('restored'); },
+      undo: () => { camp._preArchiveState = restoredState; camp.state = 'archived'; if (onDone) onDone('archived'); },
+    });
+  }
+  window.deskV1RestoreCampaign = _restoreCampaign;
 
   // triggerEl's own parent becomes the positioned host (same convention as
   // _openCardMenu below) — works whether triggerEl sits in the campaign

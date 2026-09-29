@@ -18,6 +18,7 @@
   function _campaigns() { return _fx().campaigns || []; }
   function _families() { return _fx().families || []; }
   function _conversations() { return _fx().conversations || []; }
+  function _channels() { return _fx().channels || []; }
   function _project(id) { return _projects().find((p) => p.id === id); }
 
   // §1's wireframe glyphs: "◉ project · ▣ product · ✦ feature · ◎ audience/event".
@@ -50,6 +51,147 @@
         </div>
         ${subj.label ? `<div class="desk-v1-project-camp-subject-label">${esc(subj.label)}</div>` : ''}
       </div>`;
+  }
+
+  // ── Next post across campaigns (IA6, §5 row IA6: "project Next post =
+  // earliest across its campaigns"). Reuses campaign.js's own next-scheduled
+  // lookup per campaign (same helper the campaign Overview/Results panels
+  // read) so the project page can never disagree with a campaign page about
+  // which version is next. Archived campaigns are excluded — same scope as
+  // `_renderCampaigns`. ─────────────────────────────────────────────────────
+  function _nextPostAcrossCampaigns(projectId) {
+    if (typeof window.deskV1CampaignNextScheduled !== 'function') return null;
+    let best = null;
+    _campaigns().filter((c) => c.projectId === projectId && c.state !== 'archived').forEach((c) => {
+      const v = window.deskV1CampaignNextScheduled(c.id);
+      if (v && (!best || v.publishAt < best.version.publishAt)) best = { campaign: c, version: v };
+    });
+    return best;
+  }
+
+  function _fmtWhenShort(iso) {
+    try {
+      const cfg = (typeof _globalConfig !== 'undefined' && _globalConfig) || {};
+      return new Intl.DateTimeFormat(undefined, { timeZone: cfg.user_timezone || undefined, weekday: 'short', hour: 'numeric', minute: '2-digit' }).format(new Date(iso));
+    } catch (e) { return iso; }
+  }
+
+  function _renderNextPost(projectId) {
+    const host = document.getElementById('desk-v1-project-nextpost');
+    if (!host) return;
+    const best = _nextPostAcrossCampaigns(projectId);
+    if (!best) {
+      host.innerHTML = `<div class="desk-v1-project-nextpost-empty">Nothing scheduled yet across this project’s campaigns.</div>`;
+      return;
+    }
+    const channel = _channels().find((ch) => ch.id === best.version.channelId);
+    host.innerHTML = `
+      <button type="button" class="desk-v1-project-nextpost" data-nextpost-btn>
+        <span class="desk-v1-project-nextpost-label">NEXT POST</span>
+        <span class="desk-v1-project-nextpost-text">${esc(_fmtWhenShort(best.version.publishAt))}${channel ? ` on ${esc(channel.label)}` : ''} · ${esc(best.campaign.plan.title)}</span>
+      </button>`;
+    const btn = host.querySelector('[data-nextpost-btn]');
+    if (btn) btn.onclick = () => deskV1Nav('campaign', { campaignId: best.campaign.id, projectId });
+  }
+
+  // ── Engagement strip (IA6, §5 row IA6 · IA_REVISION §7 "v1 ... three
+  // lanes"): project-scoped counts for the same three lanes the Engagement
+  // dashboard itself will render in full once IA7 lands. `Open ›` goes to the
+  // existing `engagement` stub route (IA1) — the dashboard's own filtered
+  // rendering is IA7's job, not this ticket's (§5 row IA6: "'Open ›' may go
+  // to the existing stub route"). Conversations are matched by `projectId`
+  // directly (K4: a conversation always has a project, campaign optional),
+  // never through a campaign join, so a "No campaign" mention still counts.
+  const _ENGAGEMENT_LANES = [
+    { key: 'incoming', glyph: '💬', label: 'Incoming', match: (c) => c.state === 'needs_you' },
+    { key: 'suggested', glyph: '✎', label: 'Suggested · awaiting you', match: (c) => c.state === 'needs_reply' },
+    { key: 'sent', glyph: '✓', label: 'Sent', match: (c) => c.state === 'sent' },
+  ];
+  function _renderEngagementStrip(projectId) {
+    const host = document.getElementById('desk-v1-project-engagement');
+    if (!host) return;
+    const convs = _conversations().filter((c) => c.projectId === projectId);
+    const rows = _ENGAGEMENT_LANES.map((lane) => `
+      <div class="desk-v1-project-engagement-row">
+        <span class="desk-v1-project-engagement-glyph" aria-hidden="true">${esc(lane.glyph)}</span>
+        <span class="desk-v1-project-engagement-label">${esc(lane.label)}</span>
+        <span class="desk-v1-project-engagement-count">${convs.filter(lane.match).length}</span>
+      </div>`).join('');
+    host.innerHTML = `
+      <div class="desk-v1-project-engagement-head">Engagement</div>
+      ${rows}
+      <button type="button" class="desk-v1-project-engagement-open" data-engagement-open>Open &rsaquo;</button>`;
+    const openBtn = host.querySelector('[data-engagement-open]');
+    if (openBtn) openBtn.onclick = () => deskV1Nav('engagement', { projectId });
+  }
+
+  // ── Archived campaigns (IA6, §5 row IA6: "archived campaigns reachable on
+  // the project page behind a toggle with `More › Restore`" — IA1 removed
+  // Home's archived section, so this toggle is the only way back to one
+  // until IA7). Collapsed by default; toggling reveals the archived cards,
+  // each with a `More ›` trigger offering the single `Restore` action
+  // (`window.deskV1RestoreCampaign`, campaign.js — same commandBus/Undo
+  // contract Archive itself uses). ────────────────────────────────────────
+  let _archivedOpen = false;
+  function _archivedCardHTML(c) {
+    const subj = c.subject || {};
+    const glyph = SUBJECT_GLYPH[subj.kind] || '◉';
+    return `
+      <div class="desk-v1-project-camp-card desk-v1-project-camp-card-archived" data-campaign-id="${esc(c.id)}">
+        <div class="desk-v1-project-camp-top">
+          <span class="desk-v1-state-label" data-state="archived"><span class="desk-v1-state-word">Archived</span></span>
+          <span class="desk-v1-project-camp-subject" aria-hidden="true">${glyph}</span>
+          <span class="desk-v1-project-camp-name">${esc(c.plan.title)}</span>
+          <div class="desk-v1-project-archived-more">
+            <button type="button" class="desk-v1-project-archived-morebtn" data-archived-more-btn aria-haspopup="menu">More &rsaquo;</button>
+          </div>
+        </div>
+        ${subj.label ? `<div class="desk-v1-project-camp-subject-label">${esc(subj.label)}</div>` : ''}
+      </div>`;
+  }
+
+  function _renderArchived(projectId) {
+    const host = document.getElementById('desk-v1-project-archived');
+    if (!host) return;
+    const archived = _campaigns().filter((c) => c.projectId === projectId && c.state === 'archived');
+    if (!archived.length) { host.innerHTML = ''; return; }
+    host.innerHTML = `
+      <button type="button" class="desk-v1-project-archived-toggle" data-archived-toggle aria-expanded="${_archivedOpen}">
+        ${_archivedOpen ? '▾' : '▸'} Archived campaigns (${archived.length})
+      </button>
+      ${_archivedOpen ? `<div class="desk-v1-project-camps desk-v1-project-archived-list">${archived.map(_archivedCardHTML).join('')}</div>` : ''}`;
+    const toggle = host.querySelector('[data-archived-toggle]');
+    if (toggle) toggle.onclick = () => { _archivedOpen = !_archivedOpen; _renderArchived(projectId); };
+    if (!_archivedOpen) return;
+    host.querySelectorAll('[data-archived-more-btn]').forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const cardEl = btn.closest('.desk-v1-project-camp-card');
+        const campaignId = cardEl.dataset.campaignId;
+        const host2 = btn.parentElement;
+        const existing = host2.querySelector(':scope > .desk-v1-camp-cardmenu');
+        if (existing) { existing.remove(); return; }
+        host2.style.position = 'relative';
+        const menu = document.createElement('div');
+        menu.className = 'desk-v1-camp-cardmenu';
+        menu.setAttribute('role', 'menu');
+        menu.innerHTML = `<button type="button" data-restore-btn>Restore</button>`;
+        host2.appendChild(menu);
+        const close = () => { menu.remove(); document.removeEventListener('click', closer); };
+        const closer = (ev) => { if (!menu.contains(ev.target) && ev.target !== btn) close(); };
+        setTimeout(() => document.addEventListener('click', closer), 0);
+        menu.querySelector('[data-restore-btn]').onclick = (ev) => {
+          ev.stopPropagation();
+          close();
+          const camp = _campaigns().find((c) => c.id === campaignId);
+          if (!camp || typeof window.deskV1RestoreCampaign !== 'function') return;
+          window.deskV1RestoreCampaign(camp, () => {
+            _renderCampaigns(projectId);
+            _renderArchived(projectId);
+          });
+        };
+      };
+    });
   }
 
   function _renderCampaigns(projectId) {
@@ -187,16 +329,22 @@
             <button type="button" class="desk-v1-project-presence-btn">&#9881; Presence</button>
           </div>
         </div>
+        <div class="desk-v1-project-nextpost-wrap" id="desk-v1-project-nextpost"></div>
         <div class="desk-v1-project-camps-head">
           <span>Campaigns</span>
           <button type="button" class="desk-v1-project-newcamp-btn">＋ New campaign</button>
         </div>
         <div class="desk-v1-project-camps" id="desk-v1-project-camps"></div>
+        <div class="desk-v1-project-archived-wrap" id="desk-v1-project-archived"></div>
         <div class="desk-v1-project-needsyou" id="desk-v1-project-needsyou"></div>
+        <div class="desk-v1-project-engagement" id="desk-v1-project-engagement"></div>
         <div class="desk-v1-project-posy" id="desk-v1-project-posy"></div>
       </div>`;
+    _renderNextPost(projectId);
     _renderCampaigns(projectId);
+    _renderArchived(projectId);
     _renderNeedsYou(projectId);
+    _renderEngagementStrip(projectId);
     _renderPosyBox(projectId, p);
     const presenceBtn = el.querySelector('.desk-v1-project-presence-btn');
     if (presenceBtn) presenceBtn.onclick = () => deskV1Nav('presence', { projectId });
