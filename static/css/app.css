@@ -210,6 +210,7 @@
   }
   .sidebar:hover .logo-text, .sidebar.expanded .logo-text { opacity: 1; }
   .sidebar-nav { flex: 1; padding: 8px 0; overflow-y: auto; }
+  .sidebar-footer { flex-shrink: 0; padding: 8px 0; border-top: 1px solid var(--border); }
   .sidebar-item {
     display: flex; align-items: center; gap: 12px;
     padding: 8px 14px; margin: 1px 6px; border-radius: 6px;
@@ -2886,6 +2887,9 @@
   }
   .mobile-drawer-divider {
     height: 1px; background: var(--border); margin: 8px 12px;
+  }
+  .mobile-drawer-footer {
+    flex-shrink: 0; padding: 8px 0; border-top: 1px solid var(--border);
   }
   @media (max-width: 960px) {
     .mc-hamburger-btn { display: inline-flex; }

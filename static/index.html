@@ -450,6 +450,7 @@
     <symbol id="ic-incognito" viewBox="0 0 24 24"><circle cx="6" cy="15" r="4"/><circle cx="18" cy="15" r="4"/><path d="M14 15a2 2 0 0 0-2-2 2 2 0 0 0-2 2"/><path d="M2.5 13 5 7c.7-1.3 1.4-2 3-2"/><path d="M21.5 13 19 7c-.7-1.3-1.5-2-3-2"/></symbol>
     <symbol id="ic-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
     <symbol id="ic-power" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></symbol>
+    <symbol id="ic-feedback" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
     <symbol id="ic-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
     <symbol id="ic-user" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
     <symbol id="ic-usage" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></symbol>
@@ -598,6 +599,12 @@
     <div class="sidebar-divider"></div>
     <div class="sidebar-section-label">Projects</div>
     <div class="sidebar-projects" id="sidebar-projects"></div>
+  </div>
+  <div class="sidebar-footer">
+    <div class="sidebar-item" data-nav="feedback" onclick="openFeedbackModal()" title="Send feedback to Clayrune">
+      <span class="si-icon"><svg class="si-svg"><use href="#ic-feedback"/></svg></span>
+      <span class="si-label">Send feedback</span>
+    </div>
   </div>
 </nav>
 
@@ -899,6 +906,11 @@
     <div class="mobile-drawer-divider"></div>
     <div class="mobile-drawer-item" onclick="mobileDrawerNav('incognito')" title="Ephemeral scratch agent — skips memory and rules">
       <span class="mdi-icon"><svg class="mdi-svg"><use href="#ic-incognito"/></svg></span><span class="mdi-label">Incognito</span>
+    </div>
+  </div>
+  <div class="mobile-drawer-footer">
+    <div class="mobile-drawer-item" onclick="closeMobileDrawer();openFeedbackModal()">
+      <span class="mdi-icon"><svg class="mdi-svg"><use href="#ic-feedback"/></svg></span><span class="mdi-label">Send feedback</span>
     </div>
   </div>
 </aside>
@@ -3922,6 +3934,7 @@ window.addEventListener('beforeunload', () => {
 
 </script>
 <script type="module" src="/static/js/human-proof-modal.js"></script>
+<script type="module" src="/static/js/feedback-modal.js"></script>
 <script type="module" src="/static/js/claydo.js"></script>
 <script type="module" src="/static/js/mobile-pairing.js"></script>
 <script type="module" src="/static/js/walkthrough.js"></script>
