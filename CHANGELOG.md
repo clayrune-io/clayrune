@@ -6,6 +6,19 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-29] — Sonnet 5.5 in the model pickers
+
+- Added `claude-sonnet-5-5` ("Sonnet 5.5") above `claude-sonnet-5` in
+  `ClaudeRuntime.MODEL_CHOICES` (`mc/agent_runtime.py`), `MC_MODEL_CHOICES`
+  (`static/js/modal-manager.js`) and Settings > Agent (`static/js/settings-drill.js`),
+  so it is now the Sonnet family head for `catalog_head_for('balanced')` and the
+  model auto-upgrade gate. Verified live on Claude Code 2.1.283: a `-p` turn with
+  `--model claude-sonnet-5-5` answered and reported that id (2.1.283 logs an
+  `unrecognized_model` notice; 2.1.284 is the release that knows the id).
+- Auto-router Sonnet tier (`_AUTO_MODEL_VALID['S']`) now `claude-sonnet-5-5`.
+  Same price as Sonnet 5 ($2 in / $10 out per Mtok). The Opus tier is unchanged.
+- OpenCode and Goose catalogs left alone: their Claude ids are unverified there.
+
 ## [2026-09-28] — Sweep leaked pane-Chromium processes a restart orphans (MC-997)
 
 - **A server restart could leak headless Chromium trees forever.** Dave's
