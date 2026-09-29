@@ -137,6 +137,7 @@ const OTHER_SMOKES = [
   'desk-v1-harness.mjs', 'desk-v1-kit.mjs', 'desk-v1-home.mjs',
   'desk-v1-campaign.mjs', 'desk-v1-rules.mjs', 'desk-v1-review.mjs',
   'desk-v1-calendar.mjs', 'desk-v1-video.mjs', 'desk-v1-conversations.mjs',
+  'desk-v1-engagement.mjs',
   'desk-v1-results.mjs', 'desk.mjs', 'boot-smoke.mjs',
 ];
 
