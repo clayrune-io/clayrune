@@ -71,9 +71,11 @@ const PROJECTS = [{
 // still push a real stack entry.
 const ITEM_ROUTES = ['review', 'video'];
 const PANEL_ALIAS_ROUTES = ['calendar', 'conversations', 'results'];
-// The tab a given alias lands on — 'calendar' has no tab of its own (T2a: a
-// List/Calendar toggle inside Content), so it lands on 'content'.
-const PANEL_ALIAS_TAB = { calendar: 'content', conversations: 'conversations', results: 'results' };
+// R2-3: the tab strip is now the six-stop map — 'results' lands on ① Goal
+// and 'calendar' lands on ④ When (desk-v1-shell.js's PANEL_ALIASES).
+// 'conversations' has no map stop of its own (§6, moves to Engagement at
+// R2-12), so it's checked separately below, not through this stop lookup.
+const PANEL_ALIAS_STOP = { calendar: 'when', results: 'goal' };
 const TONES = [
   { name: 'default/dark', ls: {} },
   { name: 'tone-warm', ls: { mc_tone: 'warm' } },
@@ -258,12 +260,20 @@ async function runTone(browser, tone) {
     } else {
       fail(`[${tone.name}] alias "${route}" changed the crumb title: ${JSON.stringify(title)}`);
     }
-    const tab = PANEL_ALIAS_TAB[route];
-    const tabSelected = await page.$eval(`[data-tab="${tab}"]`, (el) => el.getAttribute('aria-selected') === 'true').catch(() => false);
-    if (tabSelected) {
-      ok(`[${tone.name}] alias "${route}" selects the "${tab}" tab`);
+    // R2-3: 'conversations' has no map stop (checked via the rendered panel
+    // body); 'calendar'/'results' land on a real stop button, "here" state.
+    if (route === 'conversations') {
+      const convShown = await page.$('.desk-v1-conv-layout, .desk-v1-conversations, .desk-v1-conv-empty, .desk-v1-stub');
+      if (convShown) ok(`[${tone.name}] alias "${route}" selects the conversations panel`);
+      else fail(`[${tone.name}] alias "${route}" did not select the conversations panel`);
     } else {
-      fail(`[${tone.name}] alias "${route}" did not select the "${tab}" tab`);
+      const stop = PANEL_ALIAS_STOP[route];
+      const stopSelected = await page.$eval(`[data-stop="${stop}"]`, (el) => el.dataset.state === 'here').catch(() => false);
+      if (stopSelected) {
+        ok(`[${tone.name}] alias "${route}" selects the "${stop}" stop`);
+      } else {
+        fail(`[${tone.name}] alias "${route}" did not select the "${stop}" stop`);
+      }
     }
     const back = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
     // This loop pushes 'campaign' directly onto whatever's on top of the

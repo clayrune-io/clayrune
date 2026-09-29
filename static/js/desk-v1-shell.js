@@ -57,12 +57,17 @@
   // `deskV1Nav('results'|'conversations'|'calendar', params)` still works
   // (existing deep links: Home's Needs-you row, the goal button, old smoke
   // navigation) but now resolves to the persistent `campaign` frame with a
-  // panel switch instead of pushing a whole new stack entry/page. `calendar`
-  // has no tab of its own (it is the Content tab's List/Calendar toggle,
-  // T2a) — its alias lands on the `content` panel and asks it to switch to
-  // calendar view once (`calendarView`, consumed by
-  // deskV1FillCampaignTabBody and then dropped).
-  const PANEL_ALIASES = { results: 'results', conversations: 'conversations', calendar: 'content' };
+  // panel switch instead of pushing a whole new stack entry/page.
+  //
+  // R2-3 (IA revision 2 §4.1, §7): the tab strip becomes the ①-⑥ map, so the
+  // three old panel names retire onto the stop that now absorbs them —
+  // `results` -> ① goal (`desk-v1-results.js`), `content` -> ③ what (T2a's
+  // own content list, unchanged), `calendar` -> ④ when. `when` now renders
+  // `desk-v1-calendar.js` directly as its own panel (§4.1's "Absorbs" column)
+  // rather than the old content-tab's List/Calendar toggle, so the toggle-once
+  // `calendarView` flag this alias used to set is retired with it — nothing
+  // sets or reads it any more. `conversations` is untouched (R2-12 moves it).
+  const PANEL_ALIASES = { results: 'goal', content: 'what', conversations: 'conversations', calendar: 'when' };
 
   function _campaignLabel(params) {
     const camps = (window.DeskV1Fixtures && window.DeskV1Fixtures.campaigns) || [];
@@ -115,8 +120,7 @@
   function deskV1Nav(route, params) {
     params = params || {};
     if (Object.prototype.hasOwnProperty.call(PANEL_ALIASES, route)) {
-      const panelParams = route === 'calendar' ? Object.assign({}, params, { calendarView: true }) : params;
-      _gotoCampaignPanel(PANEL_ALIASES[route], panelParams);
+      _gotoCampaignPanel(PANEL_ALIASES[route], params);
       return;
     }
     if (!ROUTES[route]) return;
@@ -211,18 +215,37 @@
     }
   }
 
-  // The campaign route is a skeleton with 5 fixed slots (summary / tab strip
-  // / tab body / right column / add tray), owned by THIS file. Each slot is
-  // filled by a `deskV1FillCampaign*` hook that the surface owning it
-  // (desk-v1-campaign.js in T0a, replaced in place by T2a/T2b) provides — the
-  // skeleton itself never changes when those hooks grow real content.
+  // The campaign route is a skeleton with 6 fixed slots (summary / tab strip
+  // / tab body / map foot / right column / add tray), owned by THIS file.
+  // Each slot is filled by a `deskV1FillCampaign*` hook that the surface
+  // owning it (desk-v1-campaign.js, replaced in place ticket by ticket)
+  // provides — the skeleton itself never changes when those hooks grow real
+  // content. `desk-v1-camp-mapfoot` is new (R2-3, IA revision 2 §3): the
+  // Next/Back pair sits "at the foot of each stop" (§4.1's Movement row), so
+  // it lives below the tab body rather than inside the tab strip header.
   function _renderCampaignSkeleton(el, params) {
-    // §2: "route stays campaign with params.panel" — a fresh/full mount
-    // (Home -> campaign, or a different campaign) always lands on Content
-    // unless the caller asked for another panel (an aliased deep link).
+    // §2/R2-3: "route stays campaign with params.panel" — a fresh/full mount
+    // (Home -> campaign, or a different campaign) lands on ③ what (T2a's
+    // content list, the same default the old tab strip always opened on),
+    // unless the caller asked for another panel (an aliased deep link). A
+    // Draft campaign is the one exception (§3 table: "Draft · at <stop> ...
+    // Continue lands on that stop") — it resumes at `camp.map.stop`, or ①
+    // goal for a campaign that has never touched the map (`deskV1
+    // CreateDraftCampaign` seeds `map.stop: 'goal'`, but this falls back the
+    // same way for any older/hand-built draft fixture missing the field).
+    // Non-draft states ignore `map.stop` here on purpose: it is not a resume
+    // cursor for them (Active's own "stage" text is goal pace, not a stop,
+    // per the same table row), so opening camp-1 (map.stop:'launch',
+    // state:'active') from Home must still land on What, not Launch.
     // Mutating `params` in place (the same object the stack entry holds) so
     // a later in-place switch reads the same default without a second nav.
-    if (!params.panel) params.panel = 'content';
+    if (!params.panel) {
+      const camps = (window.DeskV1Fixtures && window.DeskV1Fixtures.campaigns) || [];
+      const camp = camps.find((c) => c.id === params.campaignId);
+      params.panel = (camp && camp.state === 'draft')
+        ? ((camp.map && camp.map.stop) || 'goal')
+        : 'what';
+    }
     el.innerHTML = `
       <div class="desk-v1-campaign">
         <div class="desk-v1-camp-summary" id="desk-v1-camp-summary"></div>
@@ -231,6 +254,7 @@
           <div class="desk-v1-camp-tabbody" id="desk-v1-camp-tabbody"></div>
           <div class="desk-v1-camp-rightcol" id="desk-v1-camp-rightcol"></div>
         </div>
+        <div class="desk-v1-camp-mapfoot" id="desk-v1-camp-mapfoot"></div>
         <div class="desk-v1-camp-addtray" id="desk-v1-camp-addtray"></div>
       </div>`;
     const slots = [
@@ -245,20 +269,35 @@
     _renderCampaignPanel(params);
   }
 
-  // Fills ONLY the tab strip + tab body — never touches summary/rightcol/
-  // addtray, so a same-campaign panel switch (`_gotoCampaignPanel`'s
-  // in-place branch) leaves the header, summary bar and Posy box as the SAME
-  // DOM elements (T2 acceptance: "tab click keeps header + Posy DOM node").
+  // Fills ONLY the tab strip + tab body + map foot — never touches
+  // summary/rightcol/addtray, so a same-campaign panel switch
+  // (`_gotoCampaignPanel`'s in-place branch) leaves the header, summary bar
+  // and Posy box as the SAME DOM elements (T2 acceptance: "tab click keeps
+  // header + Posy DOM node").
   function _renderCampaignPanel(params) {
     const tabstripEl = document.getElementById('desk-v1-camp-tabstrip');
     if (tabstripEl && typeof window.deskV1FillCampaignTabStrip === 'function') window.deskV1FillCampaignTabStrip(tabstripEl, params);
+    const mapfootEl = document.getElementById('desk-v1-camp-mapfoot');
+    if (mapfootEl && typeof window.deskV1FillCampaignMapFoot === 'function') window.deskV1FillCampaignMapFoot(mapfootEl, params);
     const tabbodyEl = document.getElementById('desk-v1-camp-tabbody');
     if (!tabbodyEl) return;
-    const panel = params.panel || 'content';
+    const panel = params.panel || 'what';
+    // R2-3 (§4.1 Absorbs column): ① reads `desk-v1-results.js` and ④ reads
+    // `desk-v1-calendar.js` directly, same standalone-panel shape
+    // `conversations` already had — ② how / ⑤ where have no dedicated
+    // renderer yet (placeholders) and ③ what / ⑥ launch are
+    // desk-v1-campaign.js's own job, so both fall through to the generic hook.
     if (panel === 'conversations' && typeof window.deskV1RenderConversations === 'function') {
       window.deskV1RenderConversations(tabbodyEl, params);
-    } else if (panel === 'results' && typeof window.deskV1RenderResults === 'function') {
+    } else if (panel === 'goal' && typeof window.deskV1RenderResults === 'function') {
       window.deskV1RenderResults(tabbodyEl, params);
+    } else if (panel === 'when' && typeof window.deskV1RenderCalendar === 'function') {
+      window.deskV1RenderCalendar(tabbodyEl, params);
+    } else if (panel === 'how' || panel === 'where') {
+      // §4.1 Absorbs column: no dedicated renderer ships until R2-6 (how)
+      // and R2-10 (where) — a one-line placeholder, not a silent blank body.
+      const label = panel === 'how' ? 'Strategy (How)' : 'Platforms (Where)';
+      tabbodyEl.innerHTML = `<div class="desk-v1-stub-inline">${esc(label)} isn't built yet.</div>`;
     } else if (typeof window.deskV1FillCampaignTabBody === 'function') {
       window.deskV1FillCampaignTabBody(tabbodyEl, params);
     } else {

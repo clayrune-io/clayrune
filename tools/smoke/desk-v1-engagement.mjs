@@ -197,10 +197,13 @@ async function runNoCampaignRow(browser) {
 async function runCampaignHandoff(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
 
-  // Path 1: campaign page's own Conversations tab click.
+  // Path 1: campaign page's own Conversations panel, deep-linked in place.
+  // R2-3: Conversations has no map-stop button of its own (§6, moves to
+  // Engagement at R2-12) — it's reachable the same way a piece's "Review"
+  // link reaches it, not via a stepper click.
   await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
-  await page.waitForSelector('.desk-v1-camp-tab', { timeout: 4000 });
-  await page.click('[data-tab="conversations"]');
+  await page.waitForSelector('.desk-v1-map-stop', { timeout: 4000 });
+  await page.evaluate(() => window.deskV1GotoCampaignPanel('conversations', { campaignId: 'camp-1' }));
   await page.waitForSelector('.desk-v1-conv-layout', { timeout: 4000 });
   const tabRowIds = await page.$$eval('.desk-v1-conv-row', (els) => els.map((e) => e.dataset.convId));
 
