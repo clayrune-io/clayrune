@@ -154,14 +154,21 @@ try {
       ? ok('strip is visible at 1440px')
       : fail('strip should be visible at 1440px, computed display is none');
 
-    // ── click opens the existing system-status popover on the Usage tab ────
+    // ── MC-998 follow-up (Ron, 2026-09-28): the bar no longer navigates —
+    // hover/click shows a small anchored popup instead. usage-bar-popup.mjs
+    // owns the popup's CONTENT (calibrated/uncalibrated/incomplete/empty/
+    // error fixtures, Esc, outside-click); this just asserts the old
+    // navigation is gone and the popup element exists after a click. ────────
     await page.click('#usage-bar-strip .usage-bar-item');
-    await page.waitForSelector('#sys-status-popover.open', { timeout: 3000 }).catch(() => {});
-    const popoverOpen = await page.$eval('#sys-status-popover', (el) => el.classList.contains('open')).catch(() => false);
-    const activeTabLabel = await page.$eval('#sys-status-popover .ssp-tab.active', (el) => el.textContent.trim()).catch(() => null);
-    (popoverOpen && activeTabLabel === 'Usage')
-      ? ok('clicking a bar opens the system-status popover on the Usage tab')
-      : fail(`click should open the popover on Usage tab, open=${popoverOpen} activeTab=${activeTabLabel}`);
+    await page.waitForTimeout(200);
+    const popoverOpenAfterClick = await page.$eval('#sys-status-popover', (el) => el.classList.contains('open')).catch(() => false);
+    !popoverOpenAfterClick
+      ? ok('clicking a bar no longer opens the full system-status popover')
+      : fail('click should NOT open the system-status popover anymore');
+    const barPopupOpen = await page.$eval('#usage-bar-popup', (el) => el.classList.contains('open')).catch(() => false);
+    barPopupOpen
+      ? ok('clicking a bar opens the small anchored summary popup instead')
+      : fail('#usage-bar-popup should be open after clicking a bar');
 
     const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
     uncaught.length === 0
@@ -239,7 +246,10 @@ try {
   {
     const calls = [];
     const { ctx, page } = await newPage(browser, { width: 1440, height: 900 }, USAGE_FIXTURE, calls);
-    await page.click('#usage-bar-strip .usage-bar-item');
+    // MC-998 follow-up: the bar no longer opens this popover (it shows the
+    // small anchored summary instead) — reach the Usage tab via the header
+    // pill, same as usage-breakdown.mjs's openDesktopPopover helper.
+    await page.evaluate(() => { toggleSysStatusPopover(); _sysStatusSwitchTab('usage'); });
     await page.waitForSelector('#sys-status-popover.open', { timeout: 3000 });
 
     const sectionHeads = await page.$$eval('.ssp-section-head', (els) => els.map((el) => el.textContent.trim()));

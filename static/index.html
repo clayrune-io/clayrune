@@ -564,6 +564,10 @@
         <span class="si-icon"><svg class="si-svg"><use href="#ic-backup"/></svg></span>
         <span class="si-label">Backup</span>
       </div>
+      <div class="sidebar-item si-advanced" data-nav="usage-report" onclick="sidebarNav('usage-report')" title="Who and what is using your allowance, by agent, model and project">
+        <span class="si-icon"><svg class="si-svg"><use href="#ic-usage"/></svg></span>
+        <span class="si-label">Usage report</span>
+      </div>
       <div class="sidebar-item si-advanced" data-nav="personas" onclick="sidebarNav('personas')" title="Reusable system prompts you can attach to a new chat">
         <span class="si-icon"><svg class="si-svg"><use href="#ic-personas"/></svg></span>
         <span class="si-label">Personas</span>
@@ -888,6 +892,9 @@
          pill) is display:none below 960px, so this is the sole way in there. -->
     <div class="mobile-drawer-item" data-nav="usage" onclick="mobileDrawerNav('usage')" title="Subscription usage limits and system status">
       <span class="mdi-icon"><svg class="mdi-svg"><use href="#ic-usage"/></svg></span><span class="mdi-label">Usage &amp; limits</span>
+    </div>
+    <div class="mobile-drawer-item" data-nav="usage-report" onclick="mobileDrawerNav('usage-report')" title="Who and what is using your allowance, by agent, model and project">
+      <span class="mdi-icon"><svg class="mdi-svg"><use href="#ic-usage"/></svg></span><span class="mdi-label">Usage report</span>
     </div>
     <div class="mobile-drawer-divider"></div>
     <div class="mobile-drawer-item" onclick="mobileDrawerNav('incognito')" title="Ephemeral scratch agent — skips memory and rules">
@@ -1690,6 +1697,7 @@ function sidebarNav(target) {
   else if (target === 'skills') openAllSkills();
   else if (target === 'secrets') openSecretsVault();
   else if (target === 'backup') openBackupSurface();
+  else if (target === 'usage-report') openUsageReport();
   else if (target === 'mcp') openAllMCP();
   else if (target === 'personas') openAllPersonas();
   else if (target === 'media') openMediaSurface(null);

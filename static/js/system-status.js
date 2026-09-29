@@ -54,6 +54,17 @@ let _ubDimension = 'project';
 let _ubSort = 'input';
 let _ubRangeKey = '';  // '' = current window (server default); else 'range_start|range_end'
 
+// MC-998 follow-up (Ron, 2026-09-28): the bar no longer navigates anywhere —
+// it shows a small hover/click summary popup anchored to itself. Own cache,
+// own fetch, deliberately independent of the full-report controls above (the
+// popup always shows the bar's OWN window — provider + weekly — never
+// whatever provider/window_kind the report page happens to have selected).
+let _ubPopupProvider = null;      // which provider's popup is open, or null
+const _ubPopupData = {};          // provider -> {ts, character, model, error}
+let _ubPopupReqSeq = 0;
+const _UB_POPUP_TTL_MS = 60000;
+const _UB_POPUP_MIN_SAMPLES = 5;  // mirrors _MIN_ELIGIBLE_INTERVALS, mc/usage_breakdown_aggregate.py
+
 async function fetchSystemStatus() {
   try {
     const res = await fetchFailFast(API_BASE + '/api/system/status');
@@ -379,7 +390,9 @@ function _renderUsageBreakdownSection() {
     </select>`;
 
   const controlsHTML = `
-    <div class="ub-controls">${provSel}${windowSel}${scopeSel}${rangeSel}${dimSel}${sortSel}</div>`;
+    <div class="ub-controls">${provSel}${windowSel}${scopeSel}${rangeSel}${dimSel}${sortSel}
+      <button class="ssp-refresh" id="ssp-usage-refresh-btn" onclick="_ubRefreshBreakdown()" ${_ubBreakdownFetching ? 'disabled' : ''}>${_ubBreakdownFetching ? 'Refreshing…' : 'Refresh'}</button>
+    </div>`;
 
   if (_ubBreakdownFetching && !b) {
     return `<div class="ssp-section-head">Breakdown</div>${controlsHTML}<div class="ssp-empty">Loading breakdown…</div>`;
@@ -657,7 +670,9 @@ function _renderUsageTab() {
     <div class="ssp-section-head">Gemini</div>
     ${geminiHTML}
 
-    ${_renderUsageBreakdownSection()}
+    <div class="ssp-action-row">
+      <button class="ssp-refresh" onclick="openUsageReport()">Usage report — who and what used it →</button>
+    </div>
 
     <div class="ssp-section-head">${esc(periodLabel)} · tokens by model</div>
     ${periodHTML}
@@ -716,10 +731,6 @@ function _sysStatusSwitchTab(tab, ev) {
   if (tab === 'usage' && !systemUsageCache && !_sysUsageFetching) {
     fetchSystemUsage();
   }
-  if (tab === 'usage' && !systemUsageBreakdownCache && !_ubBreakdownFetching) {
-    fetchUsageBreakdown();
-    fetchUsageWindows();
-  }
   _rerenderSysStatusSurfaces();
 }
 
@@ -748,11 +759,10 @@ async function _ubRefreshUsage(ev) {
     if (res.ok) systemUsageCache = await res.json();
   } catch { /* leave cache as-is */ }
   _sysUsageRefreshing = false;
-  // Review finding #7: this button only lived on the Usage tab, yet only
-  // ever refreshed the OLD usage cache — Breakdown stayed on whatever it
-  // last fetched, arbitrarily stale, until a control change forced it.
-  fetchUsageBreakdown();
-  fetchUsageWindows();
+  // MC-998 follow-up: Breakdown no longer lives on this tab (moved to its own
+  // Advanced-sidebar report page), so this button only ever refreshes the
+  // Usage tab's own OAuth/Codex/bar data now — the report page refetches on
+  // its own open/control-change, same as before.
   _rerenderSysStatusSurfaces();
 }
 
@@ -853,6 +863,14 @@ function _ubBreakdownControlChange(field, ev) {
   if (field === 'provider' || field === 'window_kind' || field === 'window_scope') fetchUsageWindows();
 }
 window._ubBreakdownControlChange = _ubBreakdownControlChange;
+
+// The report page's own manual-refresh button (unlike the controls above,
+// the selection doesn't change — just re-fetch the current one).
+function _ubRefreshBreakdown() {
+  fetchUsageBreakdown();
+  fetchUsageWindows();
+}
+window._ubRefreshBreakdown = _ubRefreshBreakdown;
 
 // MC-989 Part B — opens a bare-CLI terminal pop-out for a provider's
 // interactive reset flow (Claude /limit-reset, Codex "Redeem usage limit
@@ -981,12 +999,6 @@ function openSystemUsage() {
   // Land on Usage (the reason this surface exists); the other tabs stay usable.
   _sysStatusActiveTab = 'usage';
   if (!systemUsageCache && !_sysUsageFetching) fetchSystemUsage();
-  // Review finding #7: gating on "cache is null" meant Breakdown refreshed
-  // only the FIRST time this modal opened — every later reopen (including
-  // restoring a minimized one) showed whatever it had, however stale.
-  // Unconditional, same as fetchSystemStatus() below.
-  fetchUsageBreakdown();
-  fetchUsageWindows();
   fetchSystemStatus();
 
   if (openModals.has(modalId)) {
@@ -1025,16 +1037,71 @@ function openSystemUsage() {
   _rerenderSysStatusSurfaces();
 }
 
+// MC-998 follow-up (Dave, Ron 2026-09-28): the full Breakdown — who/what used
+// the allowance, by agent/model/project — moved OUT of the Usage modal into
+// its own Advanced-sidebar page, so the Usage modal (above) can stay a quick
+// bars-and-windows glance. Same renderer (`_renderUsageBreakdownSection`),
+// own modal, own mount point (`#usage-report-surface`, handled in
+// `_rerenderSysStatusSurfaces`).
+function openUsageReport() {
+  const modalId = '__usage_report';
+  // Review finding #7 (carried over): refresh unconditionally on every open/
+  // reopen, not just the first — a stale Breakdown sitting behind a restored
+  // minimized modal is exactly the bug that finding fixed.
+  fetchUsageBreakdown();
+  fetchUsageWindows();
+
+  if (openModals.has(modalId)) {
+    const entry = openModals.get(modalId);
+    if (entry.minimized) restoreModal(modalId);
+    focusModal(modalId);
+    _rerenderSysStatusSurfaces();
+    return;
+  }
+
+  const win = document.createElement('div');
+  win.className = 'modal-window';
+  win.dataset.modalId = modalId;
+  const content = document.createElement('div');
+  content.className = 'modal-content';
+  _clampModalSize(content, 760);
+  content.innerHTML = `
+    <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
+      <span style="font-size:16px;font-weight:700;color:var(--text)">
+        <svg class="menu-svg" style="display:inline-block;vertical-align:-3px"><use href="#ic-usage"/></svg> Usage report
+      </span>
+      <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
+        <button class="modal-minimize" onclick="minimizeModal('${modalId}')" title="Minimize">&#x2015;</button>
+        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+      </div>
+    </div>
+    <div style="padding:4px 24px 20px 28px;overflow-y:auto">
+      <div class="sys-status-popover ssp-inline" id="usage-report-surface"></div>
+    </div>`;
+  win.appendChild(content);
+  document.getElementById('modal-layer').appendChild(win);
+
+  const z = nextModalZ++;
+  win.style.zIndex = z;
+  openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
+  centerModalElement(win);
+  focusModal(modalId);
+  _rerenderSysStatusSurfaces();
+}
+
 function _rerenderSysStatusSurfaces() {
-  // Two possible surfaces now: the desktop header popover and the standalone
-  // Usage modal (mobile's only route in). Both render the same panel; either
-  // may be absent, so each is guarded independently.
+  // Three possible surfaces now: the desktop header popover, the standalone
+  // Usage modal (mobile's only route in), and the standalone Usage report
+  // modal (MC-998 follow-up — Breakdown moved out of the Usage popover into
+  // its own Advanced-sidebar page). Each is guarded independently.
   if (_sysStatusPopoverOpen) {
     renderSysStatusPopover();
     _positionSysStatusPopover();
   }
   const surface = document.getElementById('sys-status-surface');
   if (surface) surface.innerHTML = renderSysStatusPanel();
+  const reportSurface = document.getElementById('usage-report-surface');
+  if (reportSurface) reportSurface.innerHTML = _renderUsageBreakdownSection();
   _renderUsageBarStrip();
 }
 
@@ -1056,42 +1123,185 @@ function _ubProviderLabel(name) {
   return (p && p.display_name) || (name.charAt(0).toUpperCase() + name.slice(1));
 }
 
-// Review finding #6 (docs/_journal/4668eafc-mc998-fenn-review.md): the strip
-// is a WEEKLY bar per provider, but only ever opened the Usage tab's old
-// endpoint and kept whatever provider/window_kind the controls already had
-// (default Claude/5h) — clicking Codex's bar showed Claude's 5-hour
-// Breakdown. `providerName` is the strip's own dict key (systemUsageCache
-// .provider_weekly_usage — 'claude'/'codex'; other providers with no
-// Breakdown support are simply left on the current selection), and the
-// strip is always weekly, so window_kind moves to '7d' to match what was
-// clicked, same as picking it from the controls (_ubBreakdownControlChange).
-function _ubOpenUsagePopover(providerName, ev) {
-  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
-  const pop = document.getElementById('sys-status-popover');
-  if (!pop) return;
-  _sysStatusActiveTab = 'usage';
-  let selectionChanged = false;
-  if (['claude', 'codex'].includes(providerName) && (providerName !== _ubProvider || _ubWindowKind !== '7d')) {
-    _ubProvider = providerName;
-    _ubWindowKind = '7d';
-    _ubRangeKey = '';
-    if (providerName === 'codex') _ubWindowScope = 'all';
-    selectionChanged = true;
-  }
-  if (!pop.classList.contains('open')) {
-    _sysStatusPopoverOpen = true;
-    pop.classList.add('open');
-    _positionSysStatusPopover();
-    fetchSystemStatus();
-  }
-  if (!systemUsageCache && !_sysUsageFetching) fetchSystemUsage();
-  if (selectionChanged || (!systemUsageBreakdownCache && !_ubBreakdownFetching)) {
-    fetchUsageBreakdown();
-    fetchUsageWindows();
-  }
-  renderSysStatusPopover();
+// MC-998 follow-up (Ron, 2026-09-28): the bar itself no longer navigates
+// anywhere — hover (or focus, or a tap) shows a small ~280px summary popup
+// anchored to the bar; the full report is a `Full report ->` link inside it.
+// Always the provider's WEEKLY window, all-models scope, matching what the
+// bar itself displays (docs/_journal/4668eafc-mc998-fenn-review.md finding
+// #6 — a click must never show a DIFFERENT provider/window than the one
+// under the cursor). Two dimension fetches per open (character for the
+// consumer ranking + the calibration/segmented-bar fields, model for the
+// top-2-models line) — own cache, own 60s TTL, own sequence guard,
+// deliberately independent of the full-report controls (`_ubProvider` /
+// `_ubBreakdown*` above), which the user may have left on a different
+// selection entirely.
+function _ubPopupStale(provider) {
+  const e = _ubPopupData[provider];
+  return !e || e.fetching || (Date.now() - (e.ts || 0) > _UB_POPUP_TTL_MS);
 }
-window._ubOpenUsagePopover = _ubOpenUsagePopover;
+
+async function _ubFetchBarPopup(provider) {
+  const seq = ++_ubPopupReqSeq;
+  _ubPopupData[provider] = { ..._ubPopupData[provider], fetching: true };
+  const qs = `provider=${encodeURIComponent(provider)}&window_kind=7d&window_scope=all`;
+  let charData = null, modelData = null, error = false;
+  try {
+    const [charRes, modelRes] = await Promise.all([
+      fetchFailFast(API_BASE + '/api/system/usage/breakdown?' + qs + '&dimension=character'),
+      fetchFailFast(API_BASE + '/api/system/usage/breakdown?' + qs + '&dimension=model'),
+    ]);
+    if (!charRes.ok || !modelRes.ok) throw new Error('bad status');
+    charData = await charRes.json();
+    modelData = await modelRes.json();
+  } catch {
+    error = true;
+  }
+  if (seq !== _ubPopupReqSeq) return; // superseded by a newer open meanwhile
+  _ubPopupData[provider] = { ts: Date.now(), fetching: false, charData, modelData, error };
+  if (_ubPopupProvider === provider) _ubRerenderBarPopup();
+}
+
+const _UB_POPUP_EMPTY_LABEL = new Set(['no_runs', 'sampling_not_begun', 'no_vendor_percentage']);
+
+function _ubPopupState(b) {
+  if (!b) return 'loading';
+  if (b.empty_state === 'incomplete_coverage') return 'incomplete';
+  if (_UB_POPUP_EMPTY_LABEL.has(b.empty_state)) return 'empty';
+  return (b.tokens_per_point && b.tokens_per_point.status === 'ok') ? 'calibrated' : 'uncalibrated';
+}
+
+function _ubPopupFooter() {
+  return `<div class="ssp-action-row"><a class="ssp-link" href="javascript:void(0)" onclick="_ubClosePopup(); openUsageReport();">Full report &rarr;</a></div>`;
+}
+
+function _ubRenderBarPopup(provider) {
+  const usage = (systemUsageCache && systemUsageCache.provider_weekly_usage && systemUsageCache.provider_weekly_usage[provider]) || {};
+  const exhausted = !!usage.exhausted;
+  const pct = exhausted ? 100 : Math.max(0, Math.min(100, Number(usage.utilization) || 0));
+  const until = _ssUntil(usage.resets_at);
+  const header = `<div class="ssp-row"><span class="ssp-k">${esc(_ubProviderLabel(provider))} &middot; weekly</span><span class="ssp-v">${exhausted ? esc(usage.exhausted_display || 'exhausted') : pct.toFixed(0) + '%'}${until ? ' &middot; ' + esc(until) : ''}</span></div>`;
+
+  const entry = _ubPopupData[provider];
+  if (entry && entry.error) {
+    return header + '<div class="ssp-hint-line">Couldn’t load usage details — try again.</div>' + _ubPopupFooter();
+  }
+  const b = entry && entry.charData;
+  const state = _ubPopupState(b);
+  if (state === 'loading') {
+    return header + '<div class="ssp-empty">Loading…</div>' + _ubPopupFooter();
+  }
+  if (state === 'empty') {
+    const since = b.coverage_begins ? new Date(b.coverage_begins).toLocaleString() : 'session start';
+    return header + `<div class="ssp-hint-line">Collecting since ${esc(since)}. Numbers appear after the first chat turn completes.</div>` + _ubPopupFooter();
+  }
+  if (state === 'incomplete') {
+    const n = (b.totals && b.totals.incomplete_coverage_session_count) || 0;
+    return header + `<div class="ssp-hint-line">${n} session(s) overlap this window but aren’t measurable yet.</div>` + _ubPopupFooter();
+  }
+
+  const rows = (b.rankings && b.rankings.rows) || [];
+  const tok = (r) => (r.input_processed_total || 0) + (r.output_tokens || 0);
+  const named = rows.filter(r => r.label !== 'Unknown');
+  const unattributedRow = rows.find(r => r.label === 'Unknown');
+  const totalMeasured = rows.reduce((s, r) => s + tok(r), 0);
+  const top3 = named.slice(0, 3);
+  const otherTok = named.slice(3).reduce((s, r) => s + tok(r), 0);
+  const unattributedTok = unattributedRow ? tok(unattributedRow) : 0;
+
+  const tpp = b.tokens_per_point || {};
+  const calibrated = state === 'calibrated';
+  const valFor = (t) => calibrated
+    ? (tpp.median ? (t / tpp.median).toFixed(1) : '0.0') + '% of allowance'
+    : (totalMeasured > 0 ? ((t / totalMeasured) * 100).toFixed(0) : '0') + '% of measured';
+  const row = (label, t) => `<div class="ssp-row"><span class="ssp-k">${esc(label)}</span><span class="ssp-v">${valFor(t)}</span></div>`;
+
+  const consumersHTML = top3.map(r => row(r.label, tok(r))).join('');
+
+  const modelRows = (entry.modelData && entry.modelData.rankings && entry.modelData.rankings.rows) || [];
+  const modelsHTML = modelRows.slice(0, 2).map(r => `<div class="ssp-row"><span class="ssp-k">${esc(r.label)}</span><span class="ssp-v">${_ubFmtTok(tok(r))}</span></div>`).join('');
+
+  const sc = (b.totals && b.totals.session_count) || 0;
+  const avg = sc > 0 ? Math.round(totalMeasured / sc) : 0;
+  const sessionLine = `<div class="ssp-row"><span class="ssp-k">Sessions</span><span class="ssp-v">${sc} &middot; avg ${_ubFmtTok(avg)}</span></div>`;
+
+  const gateNote = calibrated ? '' : `<div class="ssp-hint-line">Allowance % estimates start after ${Math.max(0, _UB_POPUP_MIN_SAMPLES - (tpp.sample_count || 0))} more clean samples.</div>`;
+
+  return header + consumersHTML + modelsHTML + row('Other', otherTok) + row('Unattributed', unattributedTok) + sessionLine + gateNote + _ubPopupFooter();
+}
+
+function _ubRerenderBarPopup() {
+  const el = document.getElementById('usage-bar-popup');
+  if (el && _ubPopupProvider) el.innerHTML = _ubRenderBarPopup(_ubPopupProvider);
+}
+
+function _ubPositionBarPopup(anchorEl) {
+  const el = document.getElementById('usage-bar-popup');
+  if (!el || !anchorEl) return;
+  const r = anchorEl.getBoundingClientRect();
+  el.style.position = 'fixed';
+  el.style.left = Math.max(8, Math.min(window.innerWidth - 296, r.left)) + 'px';
+  el.style.bottom = (window.innerHeight - r.top + 8) + 'px';
+  el.style.top = 'auto';
+}
+
+let _ubPopupAnchorEl = null;
+let _ubPopupPinned = false;
+
+function _ubOpenBarPopup(provider, anchorEl) {
+  let el = document.getElementById('usage-bar-popup');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'usage-bar-popup';
+    // Shares `.sys-status-popover .ssp-*` styling (row/hint/link/empty rules)
+    // for free — `.ub-bar-popup` below only overrides size/position.
+    el.className = 'sys-status-popover ub-bar-popup';
+    document.body.appendChild(el);
+  }
+  _ubPopupProvider = provider;
+  _ubPopupAnchorEl = anchorEl || _ubPopupAnchorEl;
+  _ubPositionBarPopup(_ubPopupAnchorEl);
+  el.classList.add('open');
+  el.innerHTML = _ubRenderBarPopup(provider);
+  if (_ubPopupStale(provider)) _ubFetchBarPopup(provider);
+}
+
+function _ubClosePopup() {
+  _ubPopupProvider = null;
+  _ubPopupPinned = false;
+  const el = document.getElementById('usage-bar-popup');
+  if (el) el.classList.remove('open');
+}
+window._ubClosePopup = _ubClosePopup;
+
+function _ubBarMouseEnter(provider, ev) { _ubOpenBarPopup(provider, ev.currentTarget); }
+function _ubBarMouseLeave() { if (!_ubPopupPinned) _ubClosePopup(); }
+function _ubBarFocus(provider, ev) { _ubOpenBarPopup(provider, ev.currentTarget); }
+function _ubBarBlur() { if (!_ubPopupPinned) _ubClosePopup(); }
+function _ubBarClick(provider, ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  if (_ubPopupProvider === provider && _ubPopupPinned) { _ubClosePopup(); return; }
+  _ubPopupPinned = true;
+  _ubOpenBarPopup(provider, ev.currentTarget);
+}
+window._ubBarMouseEnter = _ubBarMouseEnter;
+window._ubBarMouseLeave = _ubBarMouseLeave;
+window._ubBarFocus = _ubBarFocus;
+window._ubBarBlur = _ubBarBlur;
+window._ubBarClick = _ubBarClick;
+
+window.addEventListener('resize', () => {
+  if (_ubPopupProvider && _ubPopupAnchorEl) _ubPositionBarPopup(_ubPopupAnchorEl);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && _ubPopupProvider) _ubClosePopup();
+});
+document.addEventListener('click', (e) => {
+  if (!_ubPopupProvider) return;
+  const pop = document.getElementById('usage-bar-popup');
+  if (pop && pop.contains(e.target)) return;
+  if (e.target.closest && e.target.closest('.usage-bar-item')) return; // own onclick handles this
+  _ubClosePopup();
+});
 
 function _renderUsageBarStrip() {
   const el = document.getElementById('usage-bar-strip');
@@ -1111,7 +1321,10 @@ function _renderUsageBarStrip() {
       ? `${_ubProviderLabel(name)} — ${win.exhausted_display || 'exhausted'}`
       : `${_ubProviderLabel(name)} — ${pct.toFixed(0)}% of weekly quota${until ? ' · ' + until : ''}`;
     return `
-      <div class="usage-bar-item" title="${esc(title)}" onclick="_ubOpenUsagePopover('${name}', event)">
+      <div class="usage-bar-item" tabindex="0" aria-label="${esc(title)}"
+        onmouseenter="_ubBarMouseEnter('${name}', event)" onmouseleave="_ubBarMouseLeave()"
+        onfocus="_ubBarFocus('${name}', event)" onblur="_ubBarBlur()"
+        onclick="_ubBarClick('${name}', event)">
         <span class="usage-bar-label">${esc(_ubProviderLabel(name))}</span>
         <div class="usage-bar-track"><div class="usage-bar-fill ${cls}" style="width:${pct}%"></div></div>
         <span class="usage-bar-pct">${exhausted ? 'full' : pct.toFixed(0) + '%'}</span>
@@ -1171,6 +1384,7 @@ setInterval(() => {
 //    outside refs). ──
 window.toggleSysStatusPopover = toggleSysStatusPopover;   // pill static onclick
 window.openSystemUsage = openSystemUsage;                 // sidebarNav('usage') + mobile drawer
+window.openUsageReport = openUsageReport;                 // sidebarNav('usage-report') + mobile drawer + popup footer link
 window._rerenderSysStatusSurfaces = _rerenderSysStatusSurfaces; // typeof-guarded token-usage caller
 // region-generated on*= handler targets:
 window._sysStatusSwitchTab = _sysStatusSwitchTab;
