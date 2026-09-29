@@ -82,6 +82,28 @@ def _int_arg(name: str, default: int, *, lo: int = 1, hi: int = 1000) -> int:
         return default
 
 
+# ── Agent of choice (R1-A, MC-977 IA revision 2 §5.3) ────────────────────────
+#
+# Every dispatch below used to hardcode the same character — social-media
+# -strategist, always — a silent default no project ever chose. Resolve the
+# project's own pick
+# instead: `presence.desk_agent` first, a campaign's own `how.agent` second
+# (multi-project campaigns, or a caller with no project presence at hand) —
+# same precedence as the frontend's `deskAgentRef` (static/js/desk-v1-kit.js).
+# A project that never picked anyone gets a 409 naming the project, not a
+# silent default — the same substitution the agent rules forbid.
+
+def _desk_agent_ref(project: dict, campaign: Optional[dict] = None) -> Optional[str]:
+    presence = _desk.get_presence(project.get('id') or '') or {}
+    return presence.get('desk_agent') or ((campaign or {}).get('how') or {}).get('agent') or None
+
+
+def _pick_agent_error(project: dict):
+    name = project.get('name') or project.get('id')
+    return jsonify({'error': f'no agent picked for {name} yet — pick who plans for this project',
+                    'pick_agent': True, 'project_id': project.get('id')}), 409
+
+
 # ── Signal feed ──────────────────────────────────────────────────────────────
 
 @bp.route('/api/desk/signals', methods=['GET'])
@@ -244,6 +266,9 @@ def seed_voice(name):
     project = load_project(pid) if (load_project and pid) else None
     if project is None:
         return jsonify({'error': f'project {pid!r} not found'}), 404
+    agent_ref = _desk_agent_ref(project)
+    if not agent_ref:
+        return _pick_agent_error(project)
     if dispatch_agent is None:
         return jsonify({'error': 'dispatch not wired'}), 503
 
@@ -251,7 +276,7 @@ def seed_voice(name):
         session_id = dispatch_agent(
             pid, brief, '',
             display_task=f'Seed the "{name}" voice from {len(samples)} of your own messages',
-            character='global:social-media-strategist',
+            character=agent_ref,
             source='agent', strict_character=True)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -390,15 +415,17 @@ def record_outcome(post_id):
 def draft():
     """Turn a signal into a PENDING draft, by dispatching the roster's writer.
 
-    `{signal_id, voice?, campaign_id?}` -> a real agent session for **Posy**
-    (`social-media-strategist`), briefed by `mc.desk_brief`, which POSTs its
-    draft onto the project's existing social queue.
+    `{signal_id, voice?, campaign_id?}` -> a real agent session for whoever the
+    project picked to plan/write for it (R1-A: `presence.desk_agent`, or a
+    campaign's own `how.agent` — see `_desk_agent_ref`), briefed by
+    `mc.desk_brief`, which POSTs its draft onto the project's existing social
+    queue.
 
     Two things this route does NOT do, and both are deliberate:
 
-      * It does not generate. The Desk is the office, not a persona — Posy holds
-        the platform judgement, per the standing position of 2026-08-29 that
-        declined a separate marketing agent.
+      * It does not generate. The Desk is the office, not a persona — the
+        chosen agent holds the platform judgement, per the standing position
+        of 2026-08-29 that declined a separate marketing agent.
       * It does not publish, and it cannot widen its own permission to. The
         draft lands as `pending` and a human releases it. This is a platform
         TERM, not our caution.
@@ -435,6 +462,9 @@ def draft():
     project = load_project(pid) if (load_project and pid) else None
     if project is None:
         return jsonify({'error': f'project {pid!r} not found'}), 404
+    agent_ref = _desk_agent_ref(project, campaign)
+    if not agent_ref:
+        return _pick_agent_error(project)
 
     brief = _brief.build_brief(signal, voice=voice, campaign=campaign,
                                project_name=project.get('name'))
@@ -445,15 +475,16 @@ def draft():
         return jsonify({'error': 'dispatch not wired', 'brief': brief}), 503
 
     try:
-        # strict_character: a fresh, explicit pick, so an unresolvable Posy must
-        # REFUSE rather than silently run personaless (MC-925). A draft written
-        # in the default agent's voice, landing on the queue looking like hers,
-        # is exactly the substitution the agent rules forbid.
+        # strict_character: a fresh, explicit pick, so an unresolvable agent
+        # ref must REFUSE rather than silently run personaless (MC-925). A
+        # draft written in the default agent's voice, landing on the queue
+        # looking like the project's chosen writer's, is exactly the
+        # substitution the agent rules forbid.
         session_id = dispatch_agent(
             pid, brief, '',
             display_task=f'Draft a {_brief.platform_for(voice)} post: '
                          f'{(signal.get("summary") or "")[:70]}',
-            character='global:social-media-strategist',
+            character=agent_ref,
             source='agent', strict_character=True)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -506,6 +537,12 @@ def dispatch_rework(project_id: str, item: dict, note: str) -> dict:
         return {'dispatched': False, 'session_id': None,
                 'reason': f'project {project_id!r} not found'}
 
+    agent_ref = _desk_agent_ref(project)
+    if not agent_ref:
+        return {'dispatched': False, 'session_id': None,
+                'reason': f'no agent picked for {project.get("name") or project_id} yet '
+                          '— pick who plans for this project, then push back again'}
+
     if dispatch_agent is None:
         return {'dispatched': False, 'session_id': None,
                 'reason': 'dispatch not wired'}
@@ -517,7 +554,7 @@ def dispatch_rework(project_id: str, item: dict, note: str) -> dict:
             project_id, brief, '',
             display_task=f'Rework a {item.get("platform") or "draft"} post '
                          'after push-back',
-            character='global:social-media-strategist',
+            character=agent_ref,
             source='agent', strict_character=True)
     except Exception as e:
         _log(f'[desk] rework dispatch failed for {item.get("id")}: {e}')
@@ -568,6 +605,9 @@ def triage():
     project = load_project(pid) if (load_project and pid) else None
     if project is None:
         return jsonify({'error': f'project {pid!r} not found'}), 404
+    agent_ref = _desk_agent_ref(project, camp)
+    if not agent_ref:
+        return _pick_agent_error(project)
     if dispatch_agent is None:
         return jsonify({'error': 'dispatch not wired', 'brief': brief}), 503
 
@@ -575,7 +615,7 @@ def triage():
         session_id = dispatch_agent(
             pid, brief, '',
             display_task=f'Triage {len(pool)} signals — what is worth posting?',
-            character='global:social-media-strategist',
+            character=agent_ref,
             source='agent', strict_character=True)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -647,6 +687,9 @@ def accept_proposal(proposal_id):
 
     camp = next((c for c in _desk.list_campaigns()
                  if c['id'] == prop.get('campaign_id')), None)
+    agent_ref = _desk_agent_ref(project, camp)
+    if not agent_ref:
+        return _pick_agent_error(project)
     brief = _brief.build_brief(signal, voice=prop['voice'], campaign=camp,
                                project_name=project.get('name'))
     if dispatch_agent is None:
@@ -656,7 +699,7 @@ def accept_proposal(proposal_id):
             pid, brief, '',
             display_task=f'Draft a {_brief.platform_for(prop["voice"])} post: '
                          f'{(signal.get("summary") or "")[:70]}',
-            character='global:social-media-strategist',
+            character=agent_ref,
             source='agent', strict_character=True)
     except Exception as e:
         _log(f'[desk] accept dispatch failed for {proposal_id}: {e}')

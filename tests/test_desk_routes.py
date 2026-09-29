@@ -268,11 +268,13 @@ def test_seeding_dispatches_with_the_sample_and_never_into_a_pseudo_project(
     monkeypatch.setattr(desk_routes, 'load_projects',
                         lambda: [{'id': '_incognito'}, {'id': 'real_project'}])
     monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid})
+    _desk.upsert_presence('real_project', {'desk_agent': 'global:claydo'})
     seen = {}
 
     def _dispatch(pid, brief, _x, **kw):
         seen['pid'] = pid
         seen['brief'] = brief
+        seen['character'] = kw.get('character')
         return 'sess-1'
     monkeypatch.setattr(desk_routes, 'dispatch_agent', _dispatch)
 
@@ -280,5 +282,156 @@ def test_seeding_dispatches_with_the_sample_and_never_into_a_pseudo_project(
     assert r.status_code == 202
     assert r.get_json()['samples'] == 80
     assert seen['pid'] == 'real_project'
+    assert seen['character'] == 'global:claydo'
     assert 'DESCRIBE, DO NOT QUOTE' in seen['brief']
+
+
+# -- R1-A: backend agent of choice (MC-977 IA revision 2 §5.3) ----------------
+#
+# `presence.desk_agent` (or a campaign's own `how.agent`) replaces the
+# hardcoded `global:social-media-strategist` at every dispatch site. A project
+# that never picked anyone gets a 409 naming the project, never a silent
+# default — see `desk_routes._desk_agent_ref` / `_pick_agent_error`.
+
+def _dispatch_capture(monkeypatch, seen):
+    def _dispatch(pid, brief, _x, **kw):
+        seen['pid'] = pid
+        seen['brief'] = brief
+        seen['character'] = kw.get('character')
+        return 'sess-1'
+    monkeypatch.setattr(desk_routes, 'dispatch_agent', _dispatch)
+
+
+def test_draft_dispatches_the_projects_picked_agent(client, monkeypatch):
+    sig = client.post('/api/desk/signals', json={
+        'project_id': 'proj-1', 'kind': 'release',
+        'summary': 'Shipped the Desk'}).get_json()
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid, 'name': 'Proj One'})
+    _desk.upsert_presence('proj-1', {'desk_agent': 'global:claydo'})
+    seen = {}
+    _dispatch_capture(monkeypatch, seen)
+
+    r = client.post('/api/desk/draft', json={'signal_id': sig['id'], 'voice': 'personal'})
+    assert r.status_code == 202
+    assert seen['character'] == 'global:claydo'
+
+
+def test_draft_without_a_picked_agent_is_409_pick_agent(client, monkeypatch):
+    sig = client.post('/api/desk/signals', json={
+        'project_id': 'proj-2', 'kind': 'release',
+        'summary': 'Shipped something else'}).get_json()
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid, 'name': 'Proj Two'})
+    seen = {}
+    _dispatch_capture(monkeypatch, seen)
+
+    r = client.post('/api/desk/draft', json={'signal_id': sig['id'], 'voice': 'personal'})
+    assert r.status_code == 409
+    body = r.get_json()
+    assert body['pick_agent'] is True
+    assert body['project_id'] == 'proj-2'
+    assert 'Proj Two' in body['error']
+    assert seen == {}  # never reached dispatch
+
+
+def test_draft_falls_back_to_the_campaigns_agent_with_no_project_presence(client, monkeypatch):
+    cid = client.post('/api/desk/campaigns', json={
+        'title': 'a', 'thesis': 'th', 'how': {'agent': 'global:claydo'}}).get_json()['id']
+    sig = client.post('/api/desk/signals', json={
+        'project_id': 'proj-3', 'kind': 'release',
+        'summary': 'Shipped a thing'}).get_json()
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid, 'name': 'Proj Three'})
+    seen = {}
+    _dispatch_capture(monkeypatch, seen)
+
+    r = client.post('/api/desk/draft', json={
+        'signal_id': sig['id'], 'voice': 'personal', 'campaign_id': cid})
+    assert r.status_code == 202
+    assert seen['character'] == 'global:claydo'
+
+
+def test_triage_resolves_the_running_campaigns_agent(client, monkeypatch):
+    client.post('/api/desk/signals', json={
+        'project_id': 'proj-4', 'kind': 'release', 'summary': 'Shipped triage-worthy work'})
+    cid = client.post('/api/desk/campaigns', json={
+        'title': 'a', 'thesis': 'th', 'how': {'agent': 'global:claydo'}}).get_json()['id']
+    client.patch(f'/api/desk/campaigns/{cid}', json={'state': 'running'})
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid, 'name': 'Proj Four'})
+    seen = {}
+    _dispatch_capture(monkeypatch, seen)
+
+    r = client.post('/api/desk/triage', json={'project_id': 'proj-4'})
+    assert r.status_code == 202
+    assert seen['character'] == 'global:claydo'
+
+
+def test_triage_without_a_picked_agent_is_409_pick_agent(client, monkeypatch):
+    client.post('/api/desk/signals', json={
+        'project_id': 'proj-4b', 'kind': 'release', 'summary': 'Shipped more triage-worthy work'})
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid, 'name': 'Proj Four B'})
+    r = client.post('/api/desk/triage', json={'project_id': 'proj-4b'})
+    assert r.status_code == 409
+    assert r.get_json()['pick_agent'] is True
+
+
+def test_accept_proposal_resolves_the_picked_agent(client, monkeypatch):
+    sig = client.post('/api/desk/signals', json={
+        'project_id': 'proj-5', 'kind': 'release',
+        'summary': 'Shipped a proposal-worthy thing'}).get_json()
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid, 'name': 'Proj Five'})
+    _desk.upsert_presence('proj-5', {'desk_agent': 'global:claydo'})
+    prop = client.post('/api/desk/proposals', json={
+        'signal_id': sig['id'], 'why': 'worth saying', 'voice': 'personal'}).get_json()
+    seen = {}
+    _dispatch_capture(monkeypatch, seen)
+
+    r = client.post(f'/api/desk/proposals/{prop["id"]}/accept')
+    assert r.status_code == 202
+    assert seen['character'] == 'global:claydo'
+
+
+def test_accept_proposal_without_a_picked_agent_is_409_pick_agent(client, monkeypatch):
+    sig = client.post('/api/desk/signals', json={
+        'project_id': 'proj-5b', 'kind': 'release',
+        'summary': 'Shipped another proposal-worthy thing'}).get_json()
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid, 'name': 'Proj Five B'})
+    prop = client.post('/api/desk/proposals', json={
+        'signal_id': sig['id'], 'why': 'worth saying', 'voice': 'personal'}).get_json()
+
+    r = client.post(f'/api/desk/proposals/{prop["id"]}/accept')
+    assert r.status_code == 409
+    assert r.get_json()['pick_agent'] is True
+
+
+def test_dispatch_rework_refuses_without_a_picked_agent(client, monkeypatch):
+    sig = client.post('/api/desk/signals', json={
+        'project_id': 'proj-6', 'kind': 'release',
+        'summary': 'Shipped a rework-worthy thing'}).get_json()
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid, 'name': 'Proj Six'})
+    item = {'signal_id': sig['id'], 'voice': 'personal', 'platform': 'x'}
+
+    result = desk_routes.dispatch_rework('proj-6', item, 'make it punchier')
+    assert result['dispatched'] is False
+    assert 'pick' in result['reason'].lower()
+
+
+def test_dispatch_rework_resolves_the_picked_agent(client, monkeypatch):
+    sig = client.post('/api/desk/signals', json={
+        'project_id': 'proj-7', 'kind': 'release',
+        'summary': 'Shipped a rework-worthy thing'}).get_json()
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid, 'name': 'Proj Seven'})
+    _desk.upsert_presence('proj-7', {'desk_agent': 'global:claydo'})
+    item = {'signal_id': sig['id'], 'voice': 'personal', 'platform': 'x'}
+    seen = {}
+    _dispatch_capture(monkeypatch, seen)
+
+    result = desk_routes.dispatch_rework('proj-7', item, 'make it punchier')
+    assert result['dispatched'] is True
+    assert seen['character'] == 'global:claydo'
+
+
+def test_no_dispatch_site_hardcodes_the_old_default_agent():
+    """R1-A's acceptance line: no route string names the old default."""
+    src = Path(desk_routes.__file__).read_text(encoding='utf-8')
+    assert "'global:social-media-strategist'" not in src
+    assert '"global:social-media-strategist"' not in src
 
