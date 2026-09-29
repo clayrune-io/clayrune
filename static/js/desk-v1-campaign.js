@@ -87,12 +87,19 @@
       return;
     }
     const stateHTML = DeskV1Kit.stateLabelHTML(camp.state, { className: 'desk-v1-camp-state-pill' });
-    const pct = camp.goal && camp.goal.tracked && camp.goal.target
-      ? Math.max(0, Math.min(100, Math.round((camp.goal.current / camp.goal.target) * 100))) : 0;
-    const goalHTML = camp.goal && camp.goal.tracked
+    // §4/Dave review pass 1: target/deadline/outcome/tracked are read from
+    // `camp.plan.goal` — the SAME object the rules popover and Resume's
+    // validatePlan gate read/write — so an edited plan never leaves this
+    // bar showing a stale number. `current` (live progress) has no plan
+    // field and stays on `camp.goal`.
+    const goal = (camp.plan && camp.plan.goal) || {};
+    const current = (camp.goal && camp.goal.current) || 0;
+    const pct = goal.tracked && goal.target
+      ? Math.max(0, Math.min(100, Math.round((current / goal.target) * 100))) : 0;
+    const goalHTML = goal.tracked
       ? `<button type="button" class="desk-v1-camp-summary-goal" data-goal-btn>
           <span class="desk-v1-camp-summary-label">GOAL</span>
-          <span class="desk-v1-camp-summary-goaltext">${esc(camp.goal.current)}/${esc(camp.goal.target)} ${esc(camp.goal.metric)}${camp.goal.deadline ? ' by ' + esc(_fmtDate(camp.goal.deadline)) : ''}</span>
+          <span class="desk-v1-camp-summary-goaltext">${esc(current)}/${esc(goal.target)} ${esc(goal.outcome)}${goal.deadline ? ' by ' + esc(_fmtDate(goal.deadline)) : ''}</span>
           <span class="desk-v1-camp-summary-goalbar"><span style="width:${pct}%"></span></span>
         </button>`
       : `<div class="desk-v1-camp-summary-goal desk-v1-camp-summary-goal-untracked">

@@ -55,7 +55,9 @@
   // ⓘ") ─────────────────────────────────────────────────────────────────────
   function _goalHTML(campaign, results) {
     const g = results.goal || {};
-    const metricLabel = (campaign.goal && campaign.goal.metric) || 'goal';
+    // §4/Dave review pass 1: the metric name reads from `plan.goal.outcome`
+    // (the canonical copy), not a `campaign.goal.metric` duplicate.
+    const metricLabel = (campaign.plan && campaign.plan.goal && campaign.plan.goal.outcome) || 'goal';
     const pct = g.target ? Math.max(0, Math.min(100, Math.round((g.current / g.target) * 100))) : 0;
     return `
       <div class="desk-v1-results-goal">

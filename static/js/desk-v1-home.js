@@ -296,12 +296,17 @@
   // ── render: campaign cards (3-up grid, drop targets) ─────────────────────
   function _campCardHTML(c) {
     const label = DeskV1Kit.stateLabelHTML(c.state);
-    const goalHTML = c.goal && c.goal.tracked
+    // §4/Dave review pass 1: target/metric read from `c.plan.goal` (the
+    // canonical copy) — `current` (live progress) has no plan field and
+    // stays on `c.goal`. Same split as desk-v1-campaign.js's summary bar.
+    const planGoal = (c.plan && c.plan.goal) || {};
+    const goalHTML = planGoal.tracked
       ? (() => {
-          const pct = c.goal.target ? Math.max(0, Math.min(100, Math.round((c.goal.current / c.goal.target) * 100))) : 0;
+          const current = (c.goal && c.goal.current) || 0;
+          const pct = planGoal.target ? Math.max(0, Math.min(100, Math.round((current / planGoal.target) * 100))) : 0;
           return `<div class="desk-v1-home-camp-goal">
             <div class="desk-v1-home-camp-goalbar"><div class="desk-v1-home-camp-goalfill" style="width:${pct}%"></div></div>
-            <span>${esc(c.goal.current)}/${esc(c.goal.target)} ${esc(c.goal.metric)}</span>
+            <span>${esc(current)}/${esc(planGoal.target)} ${esc(planGoal.outcome)}</span>
           </div>`;
         })()
       : '<div class="desk-v1-home-camp-goal desk-v1-home-camp-goal-untracked">No goal tracked yet</div>';
