@@ -320,7 +320,8 @@ def test_guide_transfer_correct_passcode_reaches_past_the_guard(guide_client, mo
 # ── system update stash branch (1): mc/blueprints/system_routes.py ────────
 
 def _run(args, cwd):
-    r = subprocess.run(args, cwd=str(cwd), capture_output=True, text=True)
+    r = subprocess.run(args, cwd=str(cwd), capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL)
     assert r.returncode == 0, f"{args} failed in {cwd}: {r.stdout}{r.stderr}"
     return r.stdout.strip()
 

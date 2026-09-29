@@ -226,6 +226,10 @@ def test_route_dest_dir_reports_configured_and_effective(fake_install, tmp_path,
 @pytest.fixture
 def config_client(fake_install, tmp_path, monkeypatch):
     from mc.blueprints import settings_routes
+    # MC-995: PUT /api/config also requires the retyped dashboard passcode.
+    # These tests pin backup_dest_dir validation, not the gate; the gate is
+    # exercised per route in tests/test_human_proof_guard.py.
+    monkeypatch.setattr(settings_routes, '_require_human_passcode', lambda data: None)
     app = Flask(__name__)
     app.register_blueprint(settings_routes.bp)
     settings_routes.wire(

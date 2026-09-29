@@ -1885,6 +1885,9 @@ def _git(args, cwd, timeout=30):
             ['git', *args],
             cwd=str(cwd),
             capture_output=True, text=True,
+            # No inherited stdin: under a headless parent whose stdin handle
+            # is invalid, Windows fails the spawn with WinError 6/50.
+            stdin=subprocess.DEVNULL,
             encoding='utf-8', errors='replace',
             timeout=timeout,
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
