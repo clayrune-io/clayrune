@@ -119,7 +119,10 @@ async function runToneRenderChecks(browser, tone) {
   else fail(`[${tone.name}] expected 2 project cards, got ${projectCardCount}`);
 
   const projectsText = (await page.textContent('#desk-v1-home-projects').catch(() => '') || '');
-  if (/Clayrune/.test(projectsText) && /2 campaigns/.test(projectsText) && /1 active/.test(projectsText)) {
+  // IA6 (§5 row IA6): fixtures added camp-4 (active, under clayrune) and
+  // camp-archived-1 (archived, excluded from this count) — clayrune's Home
+  // card went from "2 campaigns · 1 active" to "3 campaigns · 2 active".
+  if (/Clayrune/.test(projectsText) && /3 campaigns/.test(projectsText) && /2 active/.test(projectsText)) {
     ok(`[${tone.name}] Clayrune project card shows campaign count + active count`);
   } else {
     fail(`[${tone.name}] Clayrune project card content wrong: ${JSON.stringify(projectsText)}`);
