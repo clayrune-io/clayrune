@@ -67,7 +67,7 @@ def test_respawn_in_flight_exempts_state1(monkeypatch):
     monkeypatch.setattr(ar, '_pid_is_alive', lambda pid: False)
     old_proc = _FakeProc(pid=11111, alive=False)
     session = _base_session(old_proc, status='running', last_change_ago=10)
-    session['_respawn_in_flight'] = True
+    session['_respawn_in_flight'] = time.time()
 
     ar._guardian_check_session('mc1002a', session, time.time())
 
@@ -79,7 +79,7 @@ def test_respawn_in_flight_exempts_state7(monkeypatch):
     """Same handoff window, but past State 7's 15s threshold with no proc
     assigned at all (the Popen-hasn't-returned-yet case)."""
     session = _base_session(None, status='running', last_change_ago=20)
-    session['_respawn_in_flight'] = True
+    session['_respawn_in_flight'] = time.time()
 
     ar._guardian_check_session('mc1002b', session, time.time())
 
@@ -97,7 +97,7 @@ def test_respawn_completes_during_guardian_tick_stays_running(monkeypatch):
     session = _base_session(None, status='running', last_change_ago=10)
     old_proc = _FakeProc(pid=22222, alive=False)
     session['proc'] = old_proc
-    session['_respawn_in_flight'] = True
+    session['_respawn_in_flight'] = time.time()
 
     new_proc = _FakeProc(pid=33333, alive=True)
 
@@ -142,3 +142,15 @@ def test_genuine_dead_process_state7_without_respawn_flag_still_errors():
 
     assert session['status'] == 'error'
     assert len(_found_dead_lines(session)) == 1
+
+
+def test_stale_respawn_flag_does_not_blind_guardian(monkeypatch):
+    """A handoff flag left set past _RESPAWN_WINDOW_MAX_S (a path that forgot
+    to clear it) must not hide a genuinely dead session forever."""
+    monkeypatch.setattr(ar, '_pid_is_alive', lambda pid: False)
+    session = _base_session(None, status='running', last_change_ago=20)
+    session['_respawn_in_flight'] = time.time() - ar._RESPAWN_WINDOW_MAX_S - 5
+
+    ar._guardian_check_session('mc1002s', session, time.time())
+
+    assert session['status'] == 'error'

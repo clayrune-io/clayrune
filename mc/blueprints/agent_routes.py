@@ -12479,7 +12479,7 @@ def agent_followup(project_id):
                 # 'running' status and misreads it as a crash — this flag is
                 # the same kind of safety-net exemption as
                 # waiting_for_question/evicted, scoped to the handoff window.
-                existing['_respawn_in_flight'] = True
+                existing['_respawn_in_flight'] = _time.time()
                 existing['last_status_change_time'] = _time.time()
                 existing['last_output_time'] = _time.time()
                 existing.pop('evicted', None)  # respawned from idle-eviction → clear the State-1 skip flag
@@ -12577,7 +12577,7 @@ def agent_followup(project_id):
                     except Exception as _se:
                         _log(f"[sticky-respawn] context rebuild failed: {_se}")
                     existing['process_alive'] = False
-                    existing['_respawn_in_flight'] = True  # MC-1002 — see auto-fresh respawn above
+                    existing['_respawn_in_flight'] = _time.time()  # MC-1002 — see auto-fresh respawn above
                     existing['log_lines'].append('[Settings changed — applying via resume]')
                     _sticky_old = existing.get('proc')
                     if _sticky_old:
@@ -12662,7 +12662,7 @@ def agent_followup(project_id):
             # MC-1002: Mode A's `proc` is still the PREVIOUS turn's (already-
             # exited) process until `_start_followup`'s Popen below replaces
             # it — same handoff-window exemption as the Mode B respawn.
-            existing['_respawn_in_flight'] = True
+            existing['_respawn_in_flight'] = _time.time()
             existing['last_status_change_time'] = _time.time()
             existing['last_output_time'] = _time.time()
             existing['pending_recovery_message'] = message
@@ -12714,7 +12714,7 @@ def agent_followup(project_id):
                     _route_existing['model'] = new_model
                     _route_existing['model_source'] = new_source
                     _route_existing['process_alive'] = False
-                    _route_existing['_respawn_in_flight'] = True  # MC-1002 — see auto-fresh respawn above
+                    _route_existing['_respawn_in_flight'] = _time.time()  # MC-1002 — see auto-fresh respawn above
                     _route_existing['log_lines'].append(
                         (f'[Model pinned: switching {current_model} → {new_model}]'
                          if _pinned else
@@ -16276,6 +16276,24 @@ def _should_evict_idle_session(session, now, enabled, idle_minutes,
     return (now - session.get('last_output_time', now)) > idle_minutes * 60
 
 
+# MC-1002: upper bound on the respawn handoff exemption. `_respawn_in_flight`
+# holds the time the handoff began; every known exit clears it, but a path
+# that forgets to would otherwise blind the guardian to a genuinely dead
+# session forever (status stuck 'running'). Past this bound the guardian
+# treats the session normally again.
+_RESPAWN_WINDOW_MAX_S = 300
+
+
+def _respawn_window_open(session, now):
+    started = session.get('_respawn_in_flight')
+    if not started:
+        return False
+    try:
+        return now - float(started) < _RESPAWN_WINDOW_MAX_S
+    except (TypeError, ValueError):
+        return False
+
+
 def _guardian_check_session(sid, session, now):
     status = session['status']
     proc = session.get('proc')
@@ -16297,13 +16315,13 @@ def _guardian_check_session(sid, session, now):
             # is the same kind of exemption as waiting_for_question/evicted
             # below, scoped to that window (set/cleared in agent_routes.py's
             # respawn call sites).
-            if session.get('_respawn_in_flight'):
+            if _respawn_window_open(session, now):
                 return
             _log(f"[guardian] Session {sid[:8]}: stuck running, process dead/missing")
             with get_manager(session['project_id']).lock:
                 # Re-check under lock: a respawn may have completed (or
                 # started) while this thread was deciding/logging above.
-                if session.get('_respawn_in_flight') or session.get('proc') is not proc:
+                if _respawn_window_open(session, now) or session.get('proc') is not proc:
                     return
                 session['status'] = 'error'
                 session['last_status_change_time'] = now
@@ -16326,7 +16344,7 @@ def _guardian_check_session(sid, session, now):
             # dead (killed on purpose), the new one just hasn't been assigned
             # to `session['proc']` yet.
             if (session.get('waiting_for_question') or session.get('waiting_for_plan_approval')
-                    or session.get('evicted') or session.get('_respawn_in_flight')):
+                    or session.get('evicted') or _respawn_window_open(session, now)):
                 return
             old_status = status
             _log(f"[guardian] Session {sid[:8]}: PID {proc.pid} dead, was {old_status}")
@@ -16338,7 +16356,7 @@ def _guardian_check_session(sid, session, now):
                 # `session['status'] in (...)` was being re-checked before,
                 # which a fresh 'running' from a successful respawn also
                 # satisfies.
-                if session.get('_respawn_in_flight') or session.get('proc') is not proc:
+                if _respawn_window_open(session, now) or session.get('proc') is not proc:
                     return
                 if mode == 'B':
                     session['process_alive'] = False
