@@ -23,10 +23,24 @@
   // §1's wireframe glyphs: "◉ project · ▣ product · ✦ feature · ◎ audience/event".
   const SUBJECT_GLYPH = { project: '◉', product: '▣', feature: '✦', audience: '◎', event: '◎' };
 
+  // §5 IA4 acceptance: "leave at step 2 -> card 'Setup 2 of 3'" — a draft
+  // campaign's card names the checklist step it stopped at instead of the
+  // generic "✎ Draft" state word, so the project page itself tells you
+  // setup is unfinished and where it left off (desk-v1-setup.js owns the
+  // step counter this reads, `camp.setup.step`).
+  function _draftCardLabel(c) {
+    const step = (c.setup && c.setup.step) || 1;
+    return `<span class="desk-v1-state-label" data-state="draft">` +
+      `<span class="desk-v1-state-glyph" aria-hidden="true">✎</span>` +
+      `<span class="desk-v1-state-word">Setup ${esc(step)} of 3</span></span>`;
+  }
+
   function _campCardHTML(c) {
     const subj = c.subject || {};
     const glyph = SUBJECT_GLYPH[subj.kind] || '◉';
-    const label = DeskV1Kit && DeskV1Kit.stateLabelHTML ? DeskV1Kit.stateLabelHTML(c.state) : esc(c.state);
+    const label = c.state === 'draft'
+      ? _draftCardLabel(c)
+      : (DeskV1Kit && DeskV1Kit.stateLabelHTML ? DeskV1Kit.stateLabelHTML(c.state) : esc(c.state));
     return `
       <div class="desk-v1-project-camp-card" data-campaign-id="${esc(c.id)}" role="button" tabindex="0">
         <div class="desk-v1-project-camp-top">
@@ -191,7 +205,7 @@
     const resumeBtn = el.querySelector('[data-resume-project-btn]');
     if (resumeBtn) resumeBtn.onclick = () => _resumeProject(projectId, el, params);
     const newCampBtn = el.querySelector('.desk-v1-project-newcamp-btn');
-    if (newCampBtn) newCampBtn.onclick = () => DeskV1Kit.toast('Campaign setup (3 steps) lands in IA4.');
+    if (newCampBtn) newCampBtn.onclick = () => window.deskV1NewCampaignInProject(projectId);
   }
 
   window.deskV1RenderProject = deskV1RenderProject;
