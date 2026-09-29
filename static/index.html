@@ -1071,6 +1071,14 @@ let agentOutputBuffers = {};   // session_id → string[]
 // day dividers only render where a real date is known — never guessed).
 let agentOutputTimestamps = {};
 let agentServerLines = {};     // session_id → count of lines received from server (for SSE since param)
+// session_id → last-seen server log_epoch (MC backlog 7aeb4922). Bumped
+// server-side only when log_lines is REBUILT in place (revive-from-log
+// replaces the whole array under the same session_id) rather than appended
+// to — a growth-based heuristic can't tell the two apart, because a rebuild
+// can come back LONGER than the client's cursor (history + revive markers +
+// the new turn) and so never trips the shrink guard. An epoch change forces
+// a full repaint from the fresh buffer regardless of whether SSE looks live.
+let agentLogEpoch = {};
 let agentStatusCache = {};     // session_id → {status, task, projectId, startedAt}
 let agentHistory = [];         // [{projectId, sessionId, projectName, task, status, startedAt}]
 let activeAgentTab = {};       // project_id → session_id (which tab is active in modal)
