@@ -1170,7 +1170,10 @@ def _quarantine_legacy_key_material() -> None:
 
     kp = key_file_path()
     try:
-        if kp.is_file():
+        if _is_reparse_point(kp):
+            _log(f"[secrets] refusing to quarantine {kp} — it is a reparse "
+                 f"point, not the plaintext key file")
+        elif kp.is_file():
             dest = qdir / kp.name
             os.replace(kp, dest)
             _harden_secret_perms(dest)
@@ -1180,7 +1183,10 @@ def _quarantine_legacy_key_material() -> None:
 
     dp = dpapi_mirror_path()
     try:
-        if dp.is_file():
+        if _is_reparse_point(dp):
+            _log(f"[secrets] refusing to quarantine {dp} — it is a reparse "
+                 f"point, not the DPAPI key mirror")
+        elif dp.is_file():
             dest = qdir / dp.name
             os.replace(dp, dest)
             _harden_secret_perms(dest)
@@ -1622,17 +1628,51 @@ def _icacls_grant_and_verify(path: Path, sid: str, account: str) -> tuple[bool, 
     return False, f"failed twice (retried once): first={detail!r} retry={retry_detail!r}"
 
 
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def _is_reparse_point(p: Path) -> bool:
+    """True if ``p`` is itself a symlink or NTFS junction, checked without
+    following it. An agent that can write into a directory this module is
+    about to re-ACL could otherwise drop a junction/symlink pointing at any
+    path it merely has WRITE_DAC on, and have the next unlock hand that
+    target a fresh, wide-open ACL (MC 503edfe4 security review).
+
+    ``Path.is_symlink()`` alone is not enough on Windows: a junction sets
+    the mount-point reparse tag, not the symlink one, so ``os.path.islink``
+    (and therefore ``is_symlink``) misses it — only ``os.lstat``'s
+    ``st_file_attributes`` (set for every reparse point, junction or
+    symlink alike) catches both. Using that directly, rather than
+    ``Path.is_junction()`` (3.12+), keeps this working on the older
+    Pythons this repo's pyright config targets. Fails closed: anything that
+    can't be determined safely is treated as a reparse point and skipped."""
+    try:
+        if p.is_symlink():
+            return True
+    except OSError:
+        return True
+    if os.name == 'nt':
+        try:
+            attrs = os.lstat(p).st_file_attributes  # type: ignore[attr-defined]
+        except OSError:
+            return True
+        except AttributeError:
+            return False
+        return bool(attrs & _FILE_ATTRIBUTE_REPARSE_POINT)
+    return False
+
+
 def _repair_broken_legacy_acls_windows(sid: str, account: str) -> None:
     """Best-effort repair for the specific paths a PRE-FIX run of
     ``_icacls_grant_and_verify_once`` could have left with an empty DACL —
     see that function's docstring for how a non-inheritable grant on the
     Clayrune home directory does this to whatever children already existed
-    under it. Scoped deliberately to only the legacy-key paths THIS module
-    owns (``key_file_path()``, ``dpapi_mirror_path()``,
-    ``legacy_key_quarantine_dir()`` and whatever it already contains from
-    an earlier attempt) — never the wider ``~/.clayrune`` tree, which other
-    subsystems (named browser profiles among them) also live under and this
-    module has no business re-ACLing.
+    under it. Scoped deliberately to only the legacy-key/vault paths THIS
+    module owns (``key_file_path()``, ``dpapi_mirror_path()``,
+    ``store_path()``, ``audit_path()``, ``legacy_key_quarantine_dir()`` and
+    whatever it already contains from an earlier attempt) — never the wider
+    ``~/.clayrune`` tree, which other subsystems (named browser profiles
+    among them) also live under and this module has no business re-ACLing.
 
     The owner keeps WRITE_DAC even when a DACL is completely empty, so
     ``icacls /grant:r`` still succeeds against a path already broken this
@@ -1641,12 +1681,45 @@ def _repair_broken_legacy_acls_windows(sid: str, account: str) -> None:
     this function exists to clear. Idempotent and cheap to call on an
     already-healthy tree: re-granting an ACL that's already correct is a
     no-op. Never raises; a single path failing to repair is logged and does
-    not stop the rest."""
-    candidates = [key_file_path(), dpapi_mirror_path(), legacy_key_quarantine_dir()]
+    not stop the rest.
+
+    Every candidate is checked with :func:`_is_reparse_point` and refused if
+    it is one — a junction or symlink dropped anywhere in the quarantine
+    tree is never descended into and never re-ACL'd itself, so its TARGET
+    can never inherit a grant meant for a legacy-key copy (MC 503edfe4
+    security review, finding 1). Anything found while walking the
+    quarantine tree is additionally required to resolve to somewhere inside
+    it before its ACL is touched."""
+    fixed_candidates = [key_file_path(), dpapi_mirror_path(), store_path(),
+                         audit_path(), legacy_key_quarantine_dir()]
+    candidates: list[Path] = list(fixed_candidates)
     qroot = legacy_key_quarantine_dir()
-    if qroot.is_dir():
+    try:
+        qroot_resolved = qroot.resolve()
+    except OSError as e:
+        qroot_resolved = None
+        _log(f"[secrets] could not resolve {qroot} to repair legacy ACLs: {e}")
+    if qroot.is_dir() and not _is_reparse_point(qroot):
         try:
-            candidates.extend(qroot.rglob('*'))
+            for dirpath, dirnames, filenames in os.walk(qroot, followlinks=False):
+                dirpath_p = Path(dirpath)
+                kept_dirnames = []
+                for name in dirnames:
+                    d = dirpath_p / name
+                    if _is_reparse_point(d):
+                        _log(f"[secrets] not descending into a reparse point "
+                             f"found in the legacy-key quarantine tree: {d}")
+                        continue
+                    kept_dirnames.append(name)
+                    candidates.append(d)
+                dirnames[:] = kept_dirnames
+                for name in filenames:
+                    f = dirpath_p / name
+                    if _is_reparse_point(f):
+                        _log(f"[secrets] skipping a reparse point found in "
+                             f"the legacy-key quarantine tree: {f}")
+                        continue
+                    candidates.append(f)
         except OSError as e:
             _log(f"[secrets] could not list {qroot} to repair legacy ACLs: {e}")
     for p in candidates:
@@ -1656,6 +1729,24 @@ def _repair_broken_legacy_acls_windows(sid: str, account: str) -> None:
             exists = False
         if not exists:
             continue
+        if _is_reparse_point(p):
+            _log(f"[secrets] refusing to repair the ACL of a reparse point: {p}")
+            continue
+        is_fixed = p in fixed_candidates
+        if not is_fixed:
+            try:
+                resolved = p.resolve()
+            except OSError as e:
+                _log(f"[secrets] could not resolve {p} to repair its ACL: {e}")
+                continue
+            if qroot_resolved is None:
+                continue
+            try:
+                resolved.relative_to(qroot_resolved)
+            except ValueError:
+                _log(f"[secrets] refusing to repair {p} — resolved path "
+                     f"{resolved} is outside the quarantine root")
+                continue
         ok, detail = _icacls_grant_and_verify_once(p, sid, account)
         if not ok:
             _log(f"[secrets] could not repair a possibly-broken ACL on {p}: {detail}")
