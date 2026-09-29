@@ -105,6 +105,7 @@ async function scenario(name, { config, configPutHandler = null, dest = { config
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === '/api/agent/providers') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ONE_PROVIDER_OK) });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: false }) });
+    if (path === '/api/local-auth/set' && req.method() === 'POST') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
     if (path === '/api/system/update/status') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ is_git_repo: true, behind: 0, ahead: 0, has_local_changes: false, update_available: false, projects_in_install_dir: [] }) });
     return route.abort();
   });
@@ -133,6 +134,32 @@ async function walkToProtectStep(page) {
   if (title.trim() !== 'Protect your work') { fail(`expected 'Protect your work' step, got: "${title.trim()}"`); return false; }
   ok('reached the "Protect your work" step after essentials-detail');
   return true;
+}
+
+// Advances from the Protect step to the tour offer, then declines it
+// ("Not now" -> setupFinish) — the point where the batched PUT /api/config
+// fires (MC-995 follow-up). The overlay closes as part of setupFinish
+// itself, before the request is even sent.
+async function declineToFinish(page) {
+  await page.click('#setup-overlay .wt-btn-primary'); // Next -> tour offer
+  await page.waitForTimeout(200);
+  await page.click('#setup-overlay .setup-btn-secondary'); // "Not now" -> setupFinish()
+  await page.waitForTimeout(150);
+}
+
+// The passcode modal (human-proof-modal.js) humanProofFetch shows for the
+// batched write. /api/local-auth/status is mocked {configured:false} for
+// every scenario here (fresh install), so this always lands in "set" mode
+// first: type a new passcode, then a second click submits the real request
+// with it pre-filled into the "confirm" form.
+async function submitFreshPasscode(page, passcode = 'smoke-pass-1') {
+  const newInput = page.locator('input[id^="hp-new-"]');
+  await newInput.waitFor({ state: 'visible', timeout: 5000 });
+  await newInput.fill(passcode);
+  await page.click('button:has-text("Set passcode & continue")');
+  await page.waitForTimeout(150);
+  await page.click('button:has-text("Confirm")');
+  await page.waitForTimeout(150);
 }
 
 try {
@@ -164,8 +191,12 @@ try {
     else ok('no em-dashes in step copy');
   });
 
-  // ── 2. Bad destination surfaces the server's validation error inline ────
-  await scenario('bad destination shows the validation error inline', {
+  // ── 2. Bad destination: held locally, validation error surfaces at Finish
+  // (MC-995 follow-up: no per-field save left to validate on blur — the
+  // whole batch goes out once, at setupFinish, so a rejection can only
+  // surface there too, as a toast rather than inline in the (by then closed)
+  // overlay).
+  await scenario('bad destination: no immediate error, surfaces as a toast after Finish', {
     config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' },
     configPutHandler: (body) => {
       if ('backup_dest_dir' in body) {
@@ -173,19 +204,27 @@ try {
       }
       return null;
     },
-  }, async (page) => {
+  }, async (page, { configPuts }) => {
     if (!(await walkToProtectStep(page))) return;
     const input = page.locator('#setup-overlay input.path-input');
     await input.fill('C:\\Users\\smoke\\mission-control\\data\\projects');
     await input.blur();
     await page.waitForTimeout(200);
-    const errText = await page.locator('#setup-overlay').textContent();
-    if (!/cannot be inside the Clayrune install/.test(errText)) fail(`server validation error text not surfaced: "${errText.slice(0, 200)}"`);
-    else ok('server-side validate_backup_dest_dir error text surfaced inline');
+    if (configPuts.length) fail(`no PUT /api/config should fire on blur anymore (held for the batched Finish write), got: ${JSON.stringify(configPuts)}`);
+    else ok('no PUT /api/config fired on blur — destination is held locally until Finish');
+    await declineToFinish(page);
+    await submitFreshPasscode(page);
+    const saved = configPuts.filter((p) => p.backup_dest_dir === 'C:\\Users\\smoke\\mission-control\\data\\projects');
+    if (saved.length !== 1) fail(`expected exactly one batched PUT /api/config carrying the bad backup_dest_dir, got ${saved.length}: ${JSON.stringify(configPuts)}`);
+    else ok('the batched Finish write carried the bad backup_dest_dir');
+    const toastText = await page.locator('#toast-container .toast-msg').last().textContent().catch(() => '');
+    if (!/cannot be inside the Clayrune install/.test(toastText || '')) fail(`server validation error text not surfaced as a toast: "${toastText}"`);
+    else ok('server-side validate_backup_dest_dir error text surfaced as a toast, not silently lost');
   });
 
-  // ── 3. Good destination persists through the same /api/config path ──────
-  await scenario('good destination saves through PUT /api/config', {
+  // ── 3. Good destination is held locally, then persists through the single
+  // batched PUT /api/config at Finish, alongside the passcode confirmation.
+  await scenario('good destination is held locally and saves in the batched Finish write', {
     config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' },
   }, async (page, { configPuts }) => {
     if (!(await walkToProtectStep(page))) return;
@@ -193,12 +232,19 @@ try {
     await input.fill('D:\\Backups\\clayrune');
     await input.blur();
     await page.waitForTimeout(200);
-    const saved = configPuts.filter((p) => p.backup_dest_dir === 'D:\\Backups\\clayrune');
-    if (saved.length !== 1) fail(`expected exactly one PUT /api/config {backup_dest_dir:'D:\\\\Backups\\\\clayrune'}, got ${saved.length}: ${JSON.stringify(configPuts)}`);
-    else ok('PUT /api/config sent with the new backup_dest_dir');
-    const errText = await page.locator('#setup-overlay').textContent();
-    if (/cannot be inside/.test(errText)) fail('a stale validation error is still shown after a good save');
-    else ok('no validation error shown after a good save');
+    if (configPuts.length) fail(`no PUT /api/config should fire before Finish, got: ${JSON.stringify(configPuts)}`);
+    else ok('no PUT /api/config fired on blur');
+    await declineToFinish(page);
+    await submitFreshPasscode(page);
+    if (configPuts.length !== 1) fail(`expected exactly one batched PUT /api/config at Finish, got ${configPuts.length}: ${JSON.stringify(configPuts)}`);
+    else ok('exactly one PUT /api/config fired, at Finish');
+    const put = configPuts[0] || {};
+    if (put.backup_dest_dir !== 'D:\\Backups\\clayrune') fail(`batched write missing backup_dest_dir: ${JSON.stringify(put)}`);
+    else ok('batched write carries the new backup_dest_dir');
+    if (put.setup_completed !== true) fail(`batched write missing setup_completed:true: ${JSON.stringify(put)}`);
+    else ok('batched write also carries setup_completed:true');
+    if (!('passcode' in put)) fail(`batched write missing the passcode the modal collected: ${JSON.stringify(put)}`);
+    else ok('batched write carries the dashboard passcode the modal collected');
   });
 
   // ── 4. "Back up now" starts the async job, shows progress, then result ──
@@ -224,19 +270,24 @@ try {
     ok('result shown once the job reports done (42 files)');
   });
 
-  // ── 5. Cadence pick sends backup_schedule; not yet in _CONFIG_EDITABLE_KEYS on this branch ──
-  await scenario('cadence pick sends backup_schedule through the same config path', {
+  // ── 5. Cadence pick is held locally, sends backup_schedule in the batched
+  // Finish write (MC-995 follow-up: no per-click save left to fire here).
+  await scenario('cadence pick is held locally, saves in the batched Finish write', {
     config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' },
   }, async (page, { configPuts }) => {
     if (!(await walkToProtectStep(page))) return;
     await page.click('#setup-backup-schedule-seg button[data-cadence="daily"]');
     await page.waitForTimeout(150);
-    const sent = configPuts.filter((p) => p.backup_schedule === 'daily');
-    if (sent.length !== 1) fail(`expected one PUT /api/config {backup_schedule:'daily'}, got ${sent.length}: ${JSON.stringify(configPuts)}`);
-    else ok('PUT /api/config sent with backup_schedule=\'daily\' (server-side persistence is MC-983, built in parallel — this only proves the client sends the key on the shared config path)');
+    if (configPuts.length) fail(`no PUT /api/config should fire on a cadence click, got: ${JSON.stringify(configPuts)}`);
+    else ok('no PUT /api/config fired on the cadence click — held locally until Finish');
     const activeClass = await page.locator('#setup-backup-schedule-seg button[data-cadence="daily"]').getAttribute('class');
     if (!/active/.test(activeClass || '')) fail('Daily did not become the active selection client-side');
-    else ok('Daily becomes the active selection immediately, regardless of server persistence');
+    else ok('Daily becomes the active selection immediately, regardless of when it is persisted');
+    await declineToFinish(page);
+    await submitFreshPasscode(page);
+    const sent = configPuts.filter((p) => p.backup_schedule === 'daily');
+    if (sent.length !== 1) fail(`expected one batched PUT /api/config carrying backup_schedule:'daily', got ${sent.length}: ${JSON.stringify(configPuts)}`);
+    else ok('the batched Finish write carried backup_schedule=\'daily\'');
   });
 
   // ── 6. Step is skippable like the other essentials steps ────────────────
@@ -256,44 +307,96 @@ try {
     else ok('protect step advances to the tour offer with nothing filled in (skippable, like the other essentials steps)');
   });
 
-  // ── 7. Pre-selected Weekly persists on step-enter, no click needed ───────
-  // Regression coverage for the review of c392e85: a user who accepts the
-  // highlighted default and clicks Next (the common path) must still get an
-  // explicit backup_schedule saved, not silently leave the key unset.
-  await scenario('pre-selected Weekly is saved automatically when the step is first shown', {
+  // ── 7. Pre-selected Weekly reaches the server in the batched Finish write,
+  // even though nothing was clicked (MC-995 follow-up: step-enter no longer
+  // auto-persists anything — regression coverage for c392e85 now lives at
+  // Finish instead, since that is the only place a write happens at all).
+  await scenario('pre-selected Weekly is included in the batched Finish write with no click', {
     config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' },
   }, async (page, { configPuts }) => {
     if (!(await walkToProtectStep(page))) return;
+    if (configPuts.length) fail(`no PUT /api/config should fire on step-enter anymore, got: ${JSON.stringify(configPuts)}`);
+    else ok('no auto-PUT on step-enter — the pre-selected default is only held locally');
+    await declineToFinish(page);
+    await submitFreshPasscode(page);
     const sent = configPuts.filter((p) => p.backup_schedule === 'weekly');
-    if (sent.length !== 1) fail(`expected one auto PUT /api/config {backup_schedule:'weekly'} on step-enter, got ${sent.length}: ${JSON.stringify(configPuts)}`);
-    else ok('Weekly auto-persisted on step-enter with no click');
+    if (sent.length !== 1) fail(`expected one batched PUT /api/config carrying backup_schedule:'weekly', got ${sent.length}: ${JSON.stringify(configPuts)}`);
+    else ok('Weekly reaches the server in the batched Finish write despite no click');
   });
 
-  // ── 8. A saved schedule is shown and left alone, never reset to Weekly ──
-  await scenario('a saved backup_schedule is shown as-is and not overwritten', {
+  // ── 8. A saved schedule is shown and left alone, never re-sent ──────────
+  await scenario('a saved backup_schedule is shown as-is and not re-sent at Finish', {
     config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced', backup_schedule: 'daily' },
   }, async (page, { configPuts }) => {
     if (!(await walkToProtectStep(page))) return;
     const dailyActive = await page.locator('#setup-overlay #setup-backup-schedule-seg button[data-cadence="daily"]').getAttribute('class');
     if (!/active/.test(dailyActive || '')) fail(`saved 'daily' should be pre-selected, class was: "${dailyActive}"`);
     else ok('saved backup_schedule=\'daily\' is shown as the active selection, not reset to Weekly');
-    if (configPuts.some((p) => 'backup_schedule' in p)) fail(`an already-saved schedule must not be re-PUT on step-enter, got: ${JSON.stringify(configPuts)}`);
-    else ok('no auto-PUT fired — the saved choice was left alone');
+    await declineToFinish(page);
+    await submitFreshPasscode(page);
+    if (configPuts.some((p) => 'backup_schedule' in p)) fail(`an already-saved, untouched schedule must not be re-sent in the batched write, got: ${JSON.stringify(configPuts)}`);
+    else ok('the unchanged, already-saved schedule is left out of the batched write entirely');
+    if (!configPuts.length || configPuts[0].setup_completed !== true) fail(`expected the batched write to still carry setup_completed:true, got: ${JSON.stringify(configPuts)}`);
+    else ok('setup_completed:true still goes out even with backup_schedule omitted');
   });
 
-  // ── 9. A cadence PUT that genuinely fails surfaces an inline note ───────
-  await scenario('a failed cadence save shows an inline error, not silence', {
+  // ── 9. A batched write that genuinely fails at Finish surfaces a toast ──
+  await scenario('a failed batched save at Finish shows a toast, not silence', {
     config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' },
-    configPutHandler: (body) => {
-      if ('backup_schedule' in body) return { status: 500, contentType: 'application/json', body: '{}' };
-      return null;
-    },
+    configPutHandler: () => ({ status: 500, contentType: 'application/json', body: '{}' }),
   }, async (page) => {
-    if (!(await walkToProtectStep(page))) return; // step-enter's own auto-persist already fails here
+    if (!(await walkToProtectStep(page))) return;
+    await declineToFinish(page);
+    await submitFreshPasscode(page);
+    const toastText = await page.locator('#toast-container .toast-msg').last().textContent().catch(() => '');
+    if (!/not saved.*HTTP 500/.test(toastText || '')) fail(`expected a toast reporting the failed save, got: "${toastText}"`);
+    else ok('a failed batched save surfaces a toast instead of being swallowed');
+  });
+
+  // ── 10. Full acceptance: fresh install (NO passcode), one interaction ───
+  // MC-995 follow-up's own acceptance criterion — a fixture with no passcode
+  // configured, walking the whole wizard, must see exactly ONE passcode
+  // interaction (not one per field), a config carrying all three keys, and a
+  // reload that does not reopen the wizard (setup_completed stuck server-side,
+  // not just in memory). `config` here is a single object mutated in place by
+  // configPutHandler so the GET a reload triggers reflects the PUT that just
+  // happened — the other scenarios above only assert the request body, this
+  // one proves the round trip.
+  const liveConfig = { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' };
+  await scenario('acceptance: fresh install with NO passcode — one interaction, full config, survives reload', {
+    config: liveConfig,
+    configPutHandler: (body) => { Object.assign(liveConfig, body); delete liveConfig.passcode; return null; },
+  }, async (page, { configPuts }) => {
+    if (!(await walkToProtectStep(page))) return;
+    const input = page.locator('#setup-overlay input.path-input');
+    await input.fill('D:\\Backups\\clayrune');
+    await input.blur();
     await page.waitForTimeout(150);
-    const cardText = await page.locator('#setup-overlay').textContent();
-    if (!/Could not save/.test(cardText)) fail(`expected an inline "Could not save" note after the PUT failed, card text: "${cardText.slice(0, 300)}"`);
-    else ok('a failed backup_schedule save surfaces an inline note instead of being swallowed');
+    await page.click('#setup-backup-schedule-seg button[data-cadence="daily"]');
+    await page.waitForTimeout(150);
+    await declineToFinish(page);
+    const passcodeModalsBefore = await page.locator('input[id^="hp-new-"], input[id^="hp-passcode-"]').count();
+    if (passcodeModalsBefore === 0) fail('no passcode modal appeared at Finish on a fresh (no-passcode) install');
+    else ok('exactly one passcode interaction point reached at Finish');
+    await submitFreshPasscode(page, 'smoke-acceptance-pass');
+    if (configPuts.length !== 1) fail(`expected exactly one PUT /api/config for the whole fresh-install walk, got ${configPuts.length}: ${JSON.stringify(configPuts)}`);
+    else ok('exactly one PUT /api/config for the entire fresh-install walk (one passcode interaction, not one per field)');
+    const put = configPuts[0] || {};
+    if (put.backup_dest_dir !== 'D:\\Backups\\clayrune' || put.backup_schedule !== 'daily' || put.setup_completed !== true) {
+      fail(`batched write missing an expected key: ${JSON.stringify(put)}`);
+    } else ok('config carries backup_dest_dir, backup_schedule, and setup_completed together');
+    if (liveConfig.backup_dest_dir !== 'D:\\Backups\\clayrune' || liveConfig.backup_schedule !== 'daily' || liveConfig.setup_completed !== true) {
+      fail(`server-side config after the write is missing an expected key: ${JSON.stringify(liveConfig)}`);
+    } else ok('server-side config actually holds all three keys after the write (not just the request body)');
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(500); // past the boot-gate's own delay
+    const setupVisible = await page.evaluate(() => {
+      const el = document.getElementById('setup-overlay');
+      return !!(el && el.style.display !== 'none');
+    });
+    if (setupVisible) fail('the wizard reopened on reload despite setup_completed:true being persisted');
+    else ok('reload does not reopen the wizard — setup_completed:true stuck server-side');
   });
 
   console.log(bad === 0 ? '\n✅ PASS — "Protect your work" first-run step: render, validation error, save, back-up-now, cadence, skippable.'

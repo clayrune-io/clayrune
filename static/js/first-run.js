@@ -348,35 +348,20 @@ function _setupBackupDestInput(v) {
   _setupBackupDest.saveError = null;
 }
 
-// Persists through the SAME config path Settings uses (PUT /api/config),
-// which runs validate_backup_dest_dir server-side (settings_routes.py) and
-// refuses a destination inside the repo or data/projects/ — that error text
-// is surfaced here verbatim rather than re-validated client-side.
-async function _setupSaveBackupDestDir(path) {
+// Held locally, not persisted here (MC-995 follow-up): PUT /api/config is
+// now human-only-gated on every call, and a fresh install has no passcode
+// yet, so a save per field meant one passcode prompt per field. This value
+// instead travels in the single batched write setupFinish makes through
+// _setupPersistCompleted — validate_backup_dest_dir (settings_routes.py)
+// still runs server-side there, refusing a destination inside the repo or
+// data/projects/; that error surfaces from the same place the passcode
+// prompt does, not here.
+function _setupSaveBackupDestDir(path) {
   const p = (path || '').trim();
   if (!p || p === _setupBackupDest.configured) return;
-  _setupBackupDest.saving = true;
+  _setupBackupDest.override = p;
   _setupBackupDest.saveError = null;
   if (setupActive) setupShow(setupStep);
-  try {
-    const res = await fetch(API_BASE + '/api/config', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ backup_dest_dir: p }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      _setupBackupDest.saveError = data.error || `Could not save (HTTP ${res.status})`;
-    } else {
-      try { _globalConfig.backup_dest_dir = p; } catch (_) {}
-      _setupBackupDest.configured = p;
-      _setupBackupDest.override = '';
-    }
-  } catch (e) {
-    _setupBackupDest.saveError = 'Could not save: ' + e.message;
-  } finally {
-    _setupBackupDest.saving = false;
-    if (setupActive) setupShow(setupStep);
-  }
 }
 
 // Same folder-picker dialog and route the Backup panel's destination field
@@ -474,25 +459,16 @@ async function _setupPollBackupJob(jobId) {
   setTimeout(() => _setupPollBackupJob(jobId), 700);
 }
 
-// Persisted through the same config path as the destination above
-// (backup_schedule is on settings_routes.py _CONFIG_EDITABLE_KEYS; MC-983's
-// scheduler daemon reads it). A failure (network error, non-2xx) is surfaced
-// inline, same as the destination field's saveError above; it does not gate
-// finishing setup, since cadence can also be set later in Settings > Backup.
-async function _setupPickBackupSchedule(v, btn) {
+// Held locally, same reasoning as _setupSaveBackupDestDir above: persisted
+// through the same config path as the destination field (backup_schedule is
+// on settings_routes.py _CONFIG_EDITABLE_KEYS; MC-983's scheduler daemon
+// reads it), but not until setupFinish's single batched write — a per-click
+// save here was the second of the three passcode prompts a fresh install
+// used to hit on this step alone.
+function _setupPickBackupSchedule(v, btn) {
   _setupBackupSchedule = v;
   _setupBackupScheduleError = null;
   if (btn) _setupHighlight(btn);
-  try {
-    const res = await fetch(API_BASE + '/api/config', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ backup_schedule: v }),
-    });
-    if (res.ok) { try { _globalConfig.backup_schedule = v; } catch (_) {} }
-    else _setupBackupScheduleError = `Could not save (HTTP ${res.status}). Your pick still applies for this setup run.`;
-  } catch (e) {
-    _setupBackupScheduleError = 'Could not save: ' + e.message;
-  }
   if (setupActive) setupShow(setupStep);
 }
 
@@ -843,11 +819,20 @@ function startFirstRun(opts) {
 function firstRunNeeded() {
   if (!_globalConfig || !('setup_completed' in _globalConfig)) return false;
   if (_globalConfig.setup_completed) return false;
-  if (localStorage.getItem('walkthrough_done')) { _setupPersistCompleted(); return false; }
+  if (localStorage.getItem('walkthrough_done')) { _setupPersistMigration(); return false; }
   return true;
 }
 
-async function _setupPersistCompleted() {
+// Fires on BOOT, unprompted, for any browser carrying the old combined-tour
+// flag — unlike setupFinish's write below, there is no user action here to
+// hang a passcode modal off, so this stays the plain best-effort fetch it
+// always was rather than routing through humanProofFetch. On an install with
+// the human-proof guard's passcode configured (MC-995), this now 403s and is
+// swallowed same as any other unconfigured caller of the gated route; that
+// matches every other pre-existing PUT /api/config caller outside this
+// wizard (out of scope here — only the wizard's own three writes were asked
+// for) and is strictly no worse than before this fix.
+async function _setupPersistMigration() {
   try {
     const res = await fetch(API_BASE + '/api/config', {
       method: 'PUT',
@@ -857,6 +842,67 @@ async function _setupPersistCompleted() {
     if (res.ok) { try { _globalConfig.setup_completed = true; } catch (_) {} }
     else console.warn('setup_completed not saved: HTTP ' + res.status);
   } catch (e) { console.warn('setup_completed not saved', e); }
+}
+
+// The three config writes this flow used to fire one at a time — backup_dest_dir
+// (destination field onchange), backup_schedule (cadence pick) and
+// setup_completed (this function) — are batched into this ONE PUT /api/config,
+// fired only from setupFinish. PUT /api/config is human-only-gated on every
+// call (MC-995): a fresh install has no passcode yet, so three separate calls
+// meant three passcode prompts (the first of them a dead end, since a fresh
+// install can't type a passcode that doesn't exist). humanProofFetch already
+// detects the unconfigured case and offers the host-only "set one now" form
+// (POST /api/local-auth/set) before retrying this call with it — that IS the
+// "set your dashboard passcode" step the fix asked for, not a new wizard
+// screen; reusing it here means exactly one passcode interaction either way.
+//
+// Builds the body from whatever actually changed so a re-run from Settings
+// with nothing new to say makes no call at all (no passcode prompt for a
+// no-op save), and so setup_completed is only included when it isn't already
+// true — the existing "first run cannot be skipped, but a re-run never
+// re-persists" contract (see firstRunNeeded/setupFinish below).
+function _setupPendingConfigBody() {
+  const body = {};
+  const destOverride = (_setupBackupDest.override || '').trim();
+  if (destOverride && destOverride !== _setupBackupDest.configured) body.backup_dest_dir = destOverride;
+  const curSchedule = String((_globalConfig && _globalConfig.backup_schedule) || '').trim();
+  if (_setupBackupSchedule && _setupBackupSchedule !== curSchedule) body.backup_schedule = _setupBackupSchedule;
+  if (!(_globalConfig && _globalConfig.setup_completed)) body.setup_completed = true;
+  return body;
+}
+
+async function _setupPersistCompleted() {
+  const body = _setupPendingConfigBody();
+  if (!Object.keys(body).length) return; // nothing changed — no call, no prompt
+  const result = await humanProofFetch(API_BASE + '/api/config', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  }, {
+    title: 'Save your setup',
+    description: 'Re-enter your dashboard passcode to save your setup choices.',
+  });
+  // Cancelling the passcode step (or a wrong passcode exhausting attempts)
+  // must never look like a silent 403 — the wizard has already closed by the
+  // time this runs (setupFinish removes the overlay first), so a toast is
+  // the only way left to say the choices did not stick. A re-run from
+  // Settings, or the header "?" -> startFirstRun, offers another attempt.
+  if (result === null) {
+    showToast('Settings were not saved: dashboard passcode was not confirmed.', 6000);
+    return;
+  }
+  if (!result.ok) {
+    showToast((result.body && result.body.error) || `Settings were not saved (HTTP ${result.status}).`, 6000);
+    return;
+  }
+  try {
+    if (body.backup_dest_dir) {
+      _globalConfig.backup_dest_dir = body.backup_dest_dir;
+      _setupBackupDest.configured = body.backup_dest_dir;
+      _setupBackupDest.override = '';
+    }
+    if (body.backup_schedule) _globalConfig.backup_schedule = body.backup_schedule;
+    if (body.setup_completed) _globalConfig.setup_completed = true;
+  } catch (_) {}
 }
 
 async function setupShow(idx) {
@@ -983,7 +1029,7 @@ function setupFinish() {
   _setupCloseOpenedTerminals();
   const el = document.getElementById('setup-overlay');
   if (el) el.remove();
-  if (!(_globalConfig && _globalConfig.setup_completed)) _setupPersistCompleted();
+  _setupPersistCompleted();
 }
 
 function setupTakeTour() {
