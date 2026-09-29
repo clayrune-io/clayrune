@@ -431,9 +431,9 @@ async function runTaskLifecycleChecks(browser) {
   } else fail(`Posy task lifecycle: Working state wrong: ${failWorking.html}`);
   await page.clock.fastForward(4200);
   const failed = await boxState('lc:fail');
-  if (/Posy couldn.t finish: Simulated failure \(R0 test hook\)\. Nothing was changed\./.test(failed.html)
+  if (/your agent couldn.t finish: Simulated failure \(R0 test hook\)\. Nothing was changed\./.test(failed.html)
       && failed.html.includes('data-posy-retry') && failed.html.includes('data-posy-edit')) {
-    ok('Posy task lifecycle: forced fail shows the exact §5 Failed copy + Retry/Edit request');
+    ok('Posy task lifecycle: forced fail shows the exact §5 Failed copy (agent-of-choice name) + Retry/Edit request');
   } else fail(`Posy task lifecycle: forced fail copy wrong: ${failed.html}`);
   if (!failed.onSendFired) ok('Posy task lifecycle: onSend never fires on a Failed task (only on Ready)');
   else fail('Posy task lifecycle: onSend fired on a Failed task');
@@ -451,8 +451,8 @@ async function runTaskLifecycleChecks(browser) {
   await page.clock.fastForward(300);
   await page.clock.fastForward(4200);
   const timedOut = await boxState('lc:timeout');
-  if (/Posy couldn.t finish: timed out\. Nothing was changed\./.test(timedOut.html) && timedOut.html.includes('data-posy-keepwaiting')) {
-    ok('Posy task lifecycle: forced timeout shows the exact §5 copy + "Keep waiting"');
+  if (/your agent couldn.t finish: timed out\. Nothing was changed\./.test(timedOut.html) && timedOut.html.includes('data-posy-keepwaiting')) {
+    ok('Posy task lifecycle: forced timeout shows the exact §5 copy (agent-of-choice name) + "Keep waiting"');
   } else fail(`Posy task lifecycle: forced timeout copy wrong: ${timedOut.html}`);
 
   // ── forced question: exact §5 copy, Yes/No, resolves to Ready on answer ─
@@ -461,9 +461,9 @@ async function runTaskLifecycleChecks(browser) {
   await page.clock.fastForward(300);
   await page.clock.fastForward(4200);
   const question = await boxState('lc:question');
-  if (/This would widen what Posy can do — go ahead\?/.test(question.html)
+  if (/This would widen what your agent can do — go ahead\?/.test(question.html)
       && /data-posy-answer="Yes"/.test(question.html) && /data-posy-answer="No"/.test(question.html)) {
-    ok('Posy task lifecycle: forced question shows the exact §5 question text + Yes/No');
+    ok('Posy task lifecycle: forced question shows the exact §5 question text (agent-of-choice name) + Yes/No');
   } else fail(`Posy task lifecycle: forced question copy wrong: ${question.html}`);
   await page.evaluate((key) => {
     document.querySelector(`[data-lc-box="${key}"] [data-posy-answer="Yes"]`).click();
@@ -485,9 +485,9 @@ async function runTaskLifecycleChecks(browser) {
   const stillWorking = await page.evaluate(() => window.DeskV1Kit.anyPosyWorking('lc:nav'));
   if (stillWorking) ok('Posy task lifecycle: anyPosyWorking(prefix) is true while a task is in flight');
   else fail('Posy task lifecycle: anyPosyWorking(prefix) false while a task is still working');
-  const labelOk = await page.evaluate(() => window.DeskV1Kit.POSY_WORKING_LABEL === '⟳ Posy working');
-  if (labelOk) ok('Posy task lifecycle: POSY_WORKING_LABEL is exactly "⟳ Posy working"');
-  else fail('Posy task lifecycle: POSY_WORKING_LABEL wrong');
+  const labelOk = await page.evaluate(() => window.DeskV1Kit.deskAgentWorkingLabel() === '⟳ your agent working');
+  if (labelOk) ok('Posy task lifecycle: deskAgentWorkingLabel() is exactly "⟳ your agent working" with no agent resolved');
+  else fail('Posy task lifecycle: deskAgentWorkingLabel() wrong');
   const remount = await page.evaluate((key) => {
     document.querySelector(`[data-lc-box="${key}"]`).remove(); // simulate navigating away (DOM torn down)
     const K = window.DeskV1Kit;
