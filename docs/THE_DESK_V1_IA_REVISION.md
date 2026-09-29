@@ -29,7 +29,7 @@ position:
 | # | Dave's reading | Correction | Why (evidence) |
 |---|---|---|---|
 | K1 | Project owns connected channels/accounts and voices | The **account and its learned voice are workspace assets**; the project owns the **binding** (which accounts it uses, which voice each carries for this project) | `@ron` on X is one account used by any project Ron promotes. Voice learning is keyed per voice (`mc/desk.py:451` `record_edit`, `:489` `voice_brief`); per-project copies would fork the learning loop. Voices already carry `scope: global \| <project_id>` (`desk.py:319,372`), so a Clayrune-page voice can be project-scoped and Ron's voice stays global. |
-| K2 | Cadence ceilings set once per project | Ceilings stack: **account ceiling ≥ project ceiling ≥ campaign cadence** | Two projects each at "≤3/wk on @ron" put 6/wk on one account. The account ceiling is the only one that protects the account. Q1. |
+| K2 | Cadence ceilings set once per project | Ceilings stack: **project ceiling ≥ campaign cadence** (no cross-project account ceiling, Ron 2026-09-28 Q1) | Two projects each at "≤3/wk on @ron" put 6/wk on one account. The account ceiling is the only one that protects the account. Q1. |
 | K3 | Release/review policy set once per project | **Approval stays per campaign.** The project holds the ceilings and defaults a campaign inherits; a campaign may only narrow them | The standing position requires a **bounded** approval (end date and/or post cap). A project has no end, so a per-project approval would be open-ended, which the position forbids. Q2. |
 | K4 | Engagement filterable by project/campaign/channel | A conversation always has a **project**; its **campaign is optional** | A mention or discussion of the product in the wild belongs to no campaign. Today every conversation requires `campaignId` (`desk-v1-conversations.js:22,104`); that cannot represent it. |
 
@@ -89,7 +89,7 @@ Engagement dashboard  ‹ Desk        (filters: project · campaign · channel �
 | `accounts[] {channel_id, voice}` | Which workspace accounts this project may publish through, and the voice each carries **for this project** | 𝕏 → Ron (first person); LinkedIn → Clayrune page voice (2026-09-14 split) |
 | `audience` | Who the project is for, in words | Posy's read of the project |
 | `strategy` | The standing angle for the project: what it is, what it never claims, proof points | Posy draft from the repo/README, `? Assumed` until edited |
-| `ceilings {per_week, min_gap_h}` per account | Project ceiling, ≤ the account ceiling | 3/wk, 12 h |
+| `ceilings {per_week, min_gap_h}` per account | Project ceiling (no account-level ceiling, Q1) | 3/wk, 12 h |
 | `replies` | Reply policy for everything on this project's posts and mentions | `Drafted for your review` |
 | `production {per_job, per_period, period, kinds[]}` | Media budget and which generation kinds are allowed | `$0`, no video generation |
 | `measurement[]` | Where outcomes are measured (conversion event, source) | none (goal shows `⚠ not tracked yet`) |
@@ -162,7 +162,7 @@ to piece · **S** split · **R** retired.
 | 18 | `plan.goal.tracked` | P | derived from `project.measurement` |
 | 19 | `plan.destinations[].account` / setup step 2 destinations / `validatePlan` bound | S | pool → `project.accounts`; campaign keeps `accounts[]` subset (default all) |
 | 20 | `plan.destinations[].voice` / setup step 2 voice / backend `voices`, `voice` | P | `project.accounts[].voice`; learning stays per workspace voice (K1) |
-| 21 | `plan.cadence.per_week` / step 3 cadence / `validatePlan` bound | C | ≤ project ceiling ≤ account ceiling (K2) |
+| 21 | `plan.cadence.per_week` / step 3 cadence / `validatePlan` bound | C | ≤ project ceiling (K2) |
 | 22 | `plan.cadence.min_gap_h` | P | per account in `project.ceilings`; spacing protects the account, not the campaign |
 | 23 | `plan.end {date, post_cap}` / step 3 end / `validatePlan` bound / "Ends" chip | C | the bound that keeps approval finite |
 | 24 | `plan.replies` / step 4 Replies row | P | `project.replies` |
@@ -274,7 +274,11 @@ release, then drop. The one live campaign is `running` without an approval recor
   broken, and "automated responses" visibly shows as off.
 - Out of v1: auto-answer, cross-platform identity merge, sentiment, assignment to people other than you.
 
-## 8. Open questions for Ron (3)
+## 8. Ron's decisions (2026-09-28)
+
+**Answered:** Q1 **No**, no per-account cap across projects; ceilings stack project ≥ campaign only. Q2 **per campaign** (standing position holds). Q3 **out of v1**; Engagement shows `Replies: drafted for your review`.
+
+Original questions, for the record:
 
 1. **One account, several projects.** `@ron` on X can carry Clayrune and Engulfing scanner. Do we cap posts per
    **account** across projects (weekly ceiling in Settings → Connections; each project's ceiling must fit under it)?
