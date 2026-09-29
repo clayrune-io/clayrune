@@ -1499,3 +1499,92 @@ def test_quarantine_repairs_a_home_dir_broken_by_a_prior_pre_fix_run(
     assert len(quarantined) == 1, (
         "the legacy key file should have been quarantined once the "
         "pre-existing empty-DACL damage was repaired")
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='ACL propagation is Windows-only')
+def test_repair_does_not_follow_a_junction_into_the_quarantine_tree(
+        tmp_path, monkeypatch):
+    """MC 503edfe4 security review, finding 1: _repair_broken_legacy_acls_windows
+    used to walk the quarantine tree with plain ``rglob('*')`` and no
+    reparse-point check, then run ``icacls /grant:r`` on every hit. Measured
+    directly (2026-09-29): ``icacls`` on the junction PATH ITSELF re-ACLs
+    only the reparse point's own security descriptor and leaves its target
+    alone — but ``rglob`` follows the junction when walking, so it yields
+    paths like ``.../evil_junction/secret.txt`` one level down, and the OS
+    resolves the junction transparently for that intermediate component —
+    ``icacls`` on THAT path strips and re-grants the real target FILE's ACL.
+    So the file one level inside the junction, not the junction's own root,
+    is where the vulnerability actually lands; that's what this test checks.
+    Fails on pre-fix code (a7859b5/ec8583f): the target file's ACL changes.
+    Passes once :func:`secrets_store._is_reparse_point` refuses to descend
+    into the junction at all."""
+    import subprocess
+    from mc import secrets_store
+    home = tmp_path / '.clayrune'
+    home.mkdir()
+    qdir = home / 'legacy_key_quarantine'
+    qdir.mkdir()
+    monkeypatch.setenv('CLAYRUNE_HOME', str(home))
+
+    outside_target = tmp_path / 'outside_target_junction'
+    outside_target.mkdir()
+    target_file = outside_target / 'secret.txt'
+    target_file.write_text('not yours', encoding='utf-8')
+    before = subprocess.run(
+        ['icacls', str(target_file)], capture_output=True, text=True,
+        check=True, stdin=subprocess.DEVNULL).stdout
+
+    junction = qdir / 'evil_junction'
+    mk = subprocess.run(
+        ['cmd', '/c', 'mklink', '/J', str(junction), str(outside_target)],
+        capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert mk.returncode == 0, f"could not create test junction: {mk.stdout} {mk.stderr}"
+
+    sid, account = secrets_store._current_user_sid_and_name()
+    secrets_store._repair_broken_legacy_acls_windows(sid, account)
+
+    after = subprocess.run(
+        ['icacls', str(target_file)], capture_output=True, text=True,
+        check=True, stdin=subprocess.DEVNULL).stdout
+    assert after == before, (
+        "the junction target's file ACL changed — the repair walk followed "
+        "the junction out of the quarantine tree")
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='ACL propagation is Windows-only')
+def test_repair_does_not_follow_a_symlink_into_the_quarantine_tree(
+        tmp_path, monkeypatch):
+    """Same guard as the junction test above, for a plain NTFS symlink.
+    Skips cleanly if this account lacks permission to create one
+    (SeCreateSymbolicLinkPrivilege / Developer Mode) — that permission is an
+    environment property, not something this fix controls."""
+    import subprocess
+    from mc import secrets_store
+    home = tmp_path / '.clayrune'
+    home.mkdir()
+    qdir = home / 'legacy_key_quarantine'
+    qdir.mkdir()
+    monkeypatch.setenv('CLAYRUNE_HOME', str(home))
+
+    outside_target = tmp_path / 'outside_target_symlink'
+    outside_target.mkdir()
+    (outside_target / 'secret.txt').write_text('not yours', encoding='utf-8')
+    before = subprocess.run(
+        ['icacls', str(outside_target)], capture_output=True, text=True,
+        check=True, stdin=subprocess.DEVNULL).stdout
+
+    link = qdir / 'evil_symlink'
+    try:
+        link.symlink_to(outside_target, target_is_directory=True)
+    except OSError as e:
+        pytest.skip(f"cannot create a symlink on this account: {e}")
+
+    sid, account = secrets_store._current_user_sid_and_name()
+    secrets_store._repair_broken_legacy_acls_windows(sid, account)
+
+    after = subprocess.run(
+        ['icacls', str(outside_target)], capture_output=True, text=True,
+        check=True, stdin=subprocess.DEVNULL).stdout
+    assert after == before, (
+        "the symlink target's ACL changed — the repair walk followed the "
+        "symlink out of the quarantine tree")
