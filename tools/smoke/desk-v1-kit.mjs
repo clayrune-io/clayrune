@@ -624,6 +624,22 @@ async function runR21PlanBoundsChecks(browser) {
         widen: { term: { ends: '2026-12-01' } },
         narrow: { term: { ends: '2026-10-10' } },
       },
+      // A bound removed is looser than any finite value.
+      cadence_removed: {
+        prev: { cadence: { per_week: 2 } },
+        widen: { cadence: {} },
+        narrow: { cadence: { per_week: 2 } },
+      },
+      end_date_removed: {
+        prev: { end: { date: '2026-10-01' } },
+        widen: { end: {} },
+        narrow: { end: { date: '2026-10-01' } },
+      },
+      term_removed: {
+        prev: { term: { ends: '2026-10-20' } },
+        widen: { term: {} },
+        narrow: { term: { ends: '2026-10-20' } },
+      },
     };
     const dimResults = {};
     for (const [name, { prev, widen, narrow }] of Object.entries(dims)) {

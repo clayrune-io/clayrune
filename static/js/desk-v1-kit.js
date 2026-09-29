@@ -860,7 +860,9 @@
   function _cadenceWiden(prevBounds, nextBounds) {
     const prev = (prevBounds && prevBounds.cadence) || {};
     const next = (nextBounds && nextBounds.cadence) || {};
-    return next.per_week != null && prev.per_week != null && next.per_week > prev.per_week;
+    if (prev.per_week == null) return false;
+    // A ceiling removed is looser than any finite one.
+    return next.per_week == null || next.per_week > prev.per_week;
   }
   // end.date later, end.post_cap raised, or a cap removed entirely
   // (post_cap: null after having one — an unbounded run is looser than any
@@ -868,7 +870,11 @@
   function _endWiden(prevBounds, nextBounds) {
     const prev = (prevBounds && prevBounds.end) || {};
     const next = (nextBounds && nextBounds.end) || {};
-    if (prev.date && next.date && new Date(next.date).getTime() > new Date(prev.date).getTime()) return true;
+    if (prev.date) {
+      // An end date removed is looser than any date.
+      if (!next.date) return true;
+      if (new Date(next.date).getTime() > new Date(prev.date).getTime()) return true;
+    }
     if (prev.post_cap != null) {
       if (next.post_cap == null) return true;
       if (next.post_cap > prev.post_cap) return true;
@@ -878,7 +884,8 @@
   function _termWiden(prevBounds, nextBounds) {
     const prev = (prevBounds && prevBounds.term) || {};
     const next = (nextBounds && nextBounds.term) || {};
-    return !!(prev.ends && next.ends && new Date(next.ends).getTime() > new Date(prev.ends).getTime());
+    if (!prev.ends) return false;
+    return !next.ends || new Date(next.ends).getTime() > new Date(prev.ends).getTime();
   }
   // §5.2: budget.amount raised, or budget.source switches 'own' -> 'project'
   // (a pool that can be larger than the fixed own amount), is a widening.
