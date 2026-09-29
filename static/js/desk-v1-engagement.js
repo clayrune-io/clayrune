@@ -119,6 +119,23 @@
       </div>`;
   }
 
+  // §7 v1 / §8 Q3 ("out of v1; Engagement shows `Replies: drafted for your
+  // review`"): per-project banner off `project.presence.replies` so an
+  // empty Sent lane never reads as broken, and "automated responses" reads
+  // as visibly off. Same copy rule as desk-v1-presence.js's own
+  // `_repliesCopy` — kept as its own copy here (not a shared export), same
+  // reasoning as the LANES duplication above. Shown only once a single
+  // project is in scope — "per project" has nothing to say for "all".
+  function _repliesBannerCopy(replies) {
+    return (replies === 'drafts' || !replies) ? 'drafted for your review' : String(replies);
+  }
+  function _repliesBannerHTML(st) {
+    if (st.project === 'all') return '';
+    const proj = _project(st.project);
+    const replies = proj && proj.presence ? proj.presence.replies : null;
+    return `<div class="desk-v1-eng-replies-banner">Replies: ${esc(_repliesBannerCopy(replies))}</div>`;
+  }
+
   let _mountEl = null;
   let _mountParams = null;
 
@@ -140,6 +157,7 @@
       <div class="desk-v1-engagement">
         <div class="desk-v1-eng-lanes" role="tablist">${lanesHTML}</div>
         ${_filterSelectsHTML(st)}
+        ${_repliesBannerHTML(st)}
         <div class="desk-v1-eng-rows">${rowsHTML}</div>
       </div>`;
     _bind(el);

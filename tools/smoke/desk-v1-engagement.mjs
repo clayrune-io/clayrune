@@ -136,11 +136,26 @@ async function runProjectFilter(browser) {
     ? ok(`all-projects Incoming lane mixes both projects: ${JSON.stringify(allIds)}`)
     : fail(`expected both projects mixed in the unfiltered lane, got ${JSON.stringify(allIds)}`);
 
+  // §7 v1 / §8 Q3: no banner while scope is "all projects" — "per project"
+  // has nothing to say for "all".
+  const noBannerAtAll = await page.$('.desk-v1-eng-replies-banner');
+  !noBannerAtAll
+    ? ok('no Replies banner while the project filter is "All projects"')
+    : fail('Replies banner should not render before a single project is selected');
+
   await page.selectOption('[data-eng-filter="project"]', 'clayrune');
   const clayruneIds = await rowIds(page);
   !clayruneIds.includes('conv-7') && clayruneIds.length > 0
     ? ok(`project filter "Clayrune" hides engulfing_scanner's conv-7: ${JSON.stringify(clayruneIds)}`)
     : fail(`project filter "Clayrune" should hide conv-7, got ${JSON.stringify(clayruneIds)}`);
+
+  // §7 v1 / §8 Q3 ("Engagement shows `Replies: drafted for your review`"):
+  // once a project is in scope, the banner names its reply policy off
+  // `project.presence.replies` — both fixture projects are 'drafts'.
+  const bannerText = (await page.textContent('.desk-v1-eng-replies-banner').catch(() => '') || '').trim();
+  bannerText === 'Replies: drafted for your review'
+    ? ok(`Replies banner reads "${bannerText}" with the project filter set to Clayrune`)
+    : fail(`Replies banner wrong for Clayrune: ${JSON.stringify(bannerText)}`);
 
   await page.selectOption('[data-eng-filter="project"]', 'engulfing_scanner');
   const scannerIds = await rowIds(page);
