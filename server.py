@@ -1114,6 +1114,10 @@ _bp_beacon.wire(
 )
 app.register_blueprint(_bp_beacon.bp)
 
+from mc.blueprints import feedback_routes as _bp_feedback  # noqa: E402
+
+app.register_blueprint(_bp_feedback.bp)
+
 
 # /api/router/stats ── moved to mc/blueprints/agent_routes.py (1.12).
 
