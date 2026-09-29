@@ -99,3 +99,25 @@ def test_any_session_active_true_only_when_a_session_is_running(sr):
 def test_prune_loop_interval_is_daily():
     from mc.blueprints import system_routes as sr_mod
     assert sr_mod._USAGE_BREAKDOWN_PRUNE_INTERVAL_S == 24 * 3600
+
+
+def test_sample_once_closes_a_store_session_whose_mc_session_is_gone(sr, monkeypatch):
+    """Round 4: the sampler tick is the reconcile point. A session still
+    open in the store but absent from agent_sessions (crashed, or the server
+    restarted and nothing re-adopted it) is closed 'ended_unknown'; one
+    agent_sessions still has running is left alone."""
+    from datetime import datetime, timedelta, timezone
+    monkeypatch.setattr(sr, '_fetch_oauth_usage_limits', lambda: None)
+    monkeypatch.setattr(sr, '_fetch_codex_usage_detail', lambda: None)
+    store = sr._usage_breakdown_store()
+    old = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    for sid in ('gone-session', 'live-session'):
+        store.record_session_checkpoint(session_id=sid, provider='claude',
+                                        checkpoint_type='baseline', observed_at=old)
+    monkeypatch.setattr(sr, 'agent_sessions', {'live-session': {'status': 'running'}})
+
+    sr.usage_breakdown_sample_once()
+
+    assert store.get_session_fact('gone-session')['status'] == 'ended_unknown'
+    assert store.get_session_fact('live-session') is None
+    assert [r['session_id'] for r in store.list_open_sessions()] == ['live-session']

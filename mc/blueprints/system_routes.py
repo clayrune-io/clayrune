@@ -1022,10 +1022,24 @@ def _usage_breakdown_any_session_active() -> bool:
         return False
 
 
+def _usage_breakdown_live_session_ids():
+    """MC session ids currently mid-turn -- the liveness source for
+    `reconcile_dead_sessions`. None when the registry can't be read, which
+    switches the reconcile to its max-age fallback instead of treating
+    every session as dead."""
+    try:
+        return {sid for sid, s in list(agent_sessions.items()) if s.get('status') == 'running'}
+    except Exception as e:
+        _log(f"[usage-breakdown] live-session read failed: {e}", flush=True)
+        return None
+
+
 def usage_breakdown_sample_once() -> dict:
-    """Fetch both vendor caches and persist any new allowance samples.
-    Best-effort per source -- a Claude fetch failure must not block a Codex
-    sample or vice versa. Returns {'claude': n, 'codex': n} rows inserted."""
+    """Fetch both vendor caches and persist any new allowance samples, then
+    close store sessions whose MC session is no longer live (round 4: a
+    crashed session must not stay open for 90 days). Best-effort per step --
+    a Claude fetch failure must not block a Codex sample or vice versa.
+    Returns {'claude': n, 'codex': n} rows inserted."""
     from mc import usage_breakdown_sampler as _sampler
     store = _usage_breakdown_store()
     claude_n = codex_n = 0
@@ -1040,6 +1054,15 @@ def usage_breakdown_sample_once() -> dict:
         codex_n = _sampler.sample_codex(store, detail=detail)
     except Exception as e:
         _log(f"[usage-breakdown] codex allowance sample failed: {e}", flush=True)
+    try:
+        closed = _sampler.reconcile_dead_sessions(
+            store, live_session_ids=_usage_breakdown_live_session_ids(),
+            process_started_at=_SERVER_STARTED_AT)
+        if closed:
+            _log(f"[usage-breakdown] closed {len(closed)} session(s) no longer live: "
+                 f"{', '.join(s[:12] for s in closed)}", flush=True)
+    except Exception as e:
+        _log(f"[usage-breakdown] dead-session reconcile failed: {e}", flush=True)
     return {'claude': claude_n, 'codex': codex_n}
 
 

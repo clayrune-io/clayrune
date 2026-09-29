@@ -151,6 +151,10 @@ def _session_evidence(ck: Optional[dict], fact: Optional[dict]) -> tuple[list[di
         makes that last turn's delta untrustworthy (round 3, P1-3b).
       - no baseline but completions (baseline aged out by retention):
         everything before the first completion.
+      - closed by `reconcile_dead_sessions` (status 'ended_unknown', the
+        session died mid-turn): `(last, ended_at)` through the branch
+        above, ended_at being when it was observed gone -- bounded, so it
+        no longer overlaps anything after that.
 
     A fact with no checkpoint at all (housekeeping, pre-checkpoint history)
     is one `fact_only` turn from started_at to ended_at carrying the fact's
@@ -167,6 +171,8 @@ def _session_evidence(ck: Optional[dict], fact: Optional[dict]) -> tuple[list[di
             return [], []
         if _fact_is_running(fact) or f_end is None:
             return [], [(f_start, None)]
+        if fact.get('status') == 'ended_unknown':
+            return [], [(f_start, f_end)]  # closed by reconcile: never a measured turn
         turn = {'start': f_start, 'end': f_end, 'fact_only': True,
                 'token_coverage': fact.get('token_coverage') or 'unavailable'}
         for k in _TOKEN_KEYS:

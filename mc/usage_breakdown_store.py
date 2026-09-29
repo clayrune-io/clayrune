@@ -400,6 +400,66 @@ class UsageBreakdownStore:
                        (_now(), session_id))
             return db.execute('SELECT changes()').fetchone()[0] > 0
 
+    def list_open_sessions(self) -> list[dict]:
+        """Every session the aggregate reads as still running: a fact with
+        status 'running' (or no ended_at), or a first turn -- a baseline
+        checkpoint with no fact and no completion yet. Each row is
+        {'session_id', 'provider', 'started_at', 'last_activity_at'};
+        `last_activity_at` is the newest durable time held for it (the
+        fact's updated_at, which the resume writer sets at turn start, or
+        the baseline's observed_at). `reconcile_dead_sessions` reads this."""
+        with self._connection(write=False) as db:
+            rows = [dict(r) for r in db.execute(
+                'SELECT session_id, provider, started_at, updated_at AS last_activity_at '
+                "FROM session_fact WHERE status='running' OR ended_at IS NULL").fetchall()]
+            rows += [dict(r) for r in db.execute(
+                'SELECT c.session_id, c.provider, c.observed_at AS started_at, '
+                ' c.observed_at AS last_activity_at FROM session_checkpoint c '
+                "WHERE c.checkpoint_type='baseline' "
+                ' AND NOT EXISTS (SELECT 1 FROM session_fact f WHERE f.session_id=c.session_id) '
+                ' AND NOT EXISTS (SELECT 1 FROM session_checkpoint d '
+                "  WHERE d.session_id=c.session_id AND d.checkpoint_type='completion')").fetchall()]
+            return rows
+
+    def close_session_ended_unknown(self, session_id: str, *, provider: str,
+                                    started_at: Optional[str], ended_at: str) -> bool:
+        """Close a session that is still open in the store but no longer
+        live (it crashed mid-turn, or the server restarted under it):
+        status 'ended_unknown', ended_at = when it was observed gone. Left
+        open, its span has no end and overlaps every later interval, so one
+        crash blocked the calibration gate and marked every window
+        incomplete until the 90-day prune. Counters are kept; the aggregate
+        reads last checkpoint -> ended_at as unmeasured, so the windows it
+        actually overlapped stay incomplete. A first turn (no fact yet) gets
+        a counter-less fact carrying the same status.
+
+        Conditional on the row still being open, so a completion that lands
+        between listing and closing wins. A later turn of the same session
+        re-marks it 'running' (mark_session_running) and its completion
+        overwrites the whole fact. Returns True when a row was closed."""
+        if not session_id:
+            raise ValueError('session_id is required')
+        now = _now()
+        with self._connection(write=True) as db:
+            db.execute(
+                "UPDATE session_fact SET status='ended_unknown', ended_at=?, updated_at=? "
+                "WHERE session_id=? AND (status='running' OR ended_at IS NULL)",
+                (ended_at, now, session_id))
+            if db.execute('SELECT changes()').fetchone()[0] > 0:
+                return True
+            if db.execute('SELECT 1 FROM session_fact WHERE session_id=?',
+                          (session_id,)).fetchone():
+                return False
+            if db.execute("SELECT 1 FROM session_checkpoint WHERE session_id=? "
+                          "AND checkpoint_type='completion'", (session_id,)).fetchone():
+                return False
+            db.execute(
+                'INSERT INTO session_fact (session_id, provider, status, started_at, ended_at, '
+                ' token_coverage, updated_at, created_at) '
+                "VALUES (?, ?, 'ended_unknown', ?, ?, 'unavailable', ?, ?)",
+                (session_id, provider or 'claude', started_at, ended_at, now, now))
+            return True
+
     def get_session_fact(self, session_id: str) -> Optional[dict]:
         with self._connection(write=False) as db:
             row = db.execute('SELECT * FROM session_fact WHERE session_id=?',
