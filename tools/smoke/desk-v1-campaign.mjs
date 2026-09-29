@@ -133,8 +133,10 @@ async function runToneRenderChecks(browser, tone) {
 
   // A12: rule chips are real rule values, and the popover itself is out of
   // scope for T2a (docs/desk_v1_r0_plan.md) — only the Edit hook exists.
+  // IA2 (THE_DESK_V1_IA_REVISION.md §3): the review-mode chip ("You approve
+  // each piece") retired with reviewMode itself — no replacement chip.
   const ruleChips = await page.$$eval('.desk-v1-camp-rule-chip', (els) => els.map((e) => e.textContent.trim()));
-  ruleChips.includes('Organic') && ruleChips.includes('You approve each piece') && ruleChips.includes('≤3/wk')
+  ruleChips.includes('Organic') && ruleChips.includes('≤3/wk')
     ? ok(`[${tone.name}] rule chips reflect the fixture's real rules: ${JSON.stringify(ruleChips)}`)
     : fail(`[${tone.name}] rule chips wrong: ${JSON.stringify(ruleChips)}`);
   const editBtn = await page.$('[data-rules-edit]');

@@ -315,9 +315,9 @@ async function runValidatePlanMissingEnd(browser) {
     const plan = Object.assign({}, camp.plan, { end: { date: null, post_cap: null } });
     return window.DeskV1Kit.validatePlan(plan);
   });
-  !result.ok && result.missing.some((m) => m.bound === 'end')
-    ? ok(`validatePlan() names the missing end date: ${JSON.stringify(result.missing)}`)
-    : fail(`validatePlan() did not flag the missing end date: ${JSON.stringify(result)}`);
+  !result.ok && result.missing.some((m) => m.bound === 'end' && m.step === 2)
+    ? ok(`validatePlan() names the missing end date with step 2: ${JSON.stringify(result.missing)}`)
+    : fail(`validatePlan() did not flag the missing end date at step 2: ${JSON.stringify(result)}`);
 
   const fullResult = await page.evaluate(() => {
     const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2');
@@ -368,10 +368,12 @@ async function runStartSheet(browser) {
     ? ok(`sheet title names the campaign: "${title.trim()}"`)
     : fail(`sheet title wrong: ${JSON.stringify(title)}`);
 
+  // IA2 (§3 row 7): "Review mode" retired with no replacement — 7 rows now,
+  // not 8.
   const rowLabels = await page.$$eval('.desk-v1-rules-authrow-label', (els) => els.map((e) => e.textContent.trim()));
-  ['Accounts', 'Frequency ceiling', 'Dates', 'Review mode', 'Replies', 'Paid', 'Generation limits', 'Stop conditions']
-    .every((l) => rowLabels.includes(l))
-    ? ok(`all 8 CMP-05 authority rows render: ${JSON.stringify(rowLabels)}`)
+  ['Accounts', 'Frequency ceiling', 'Dates', 'Replies', 'Paid', 'Generation limits', 'Stop conditions']
+    .every((l) => rowLabels.includes(l)) && !rowLabels.includes('Review mode')
+    ? ok(`all 7 CMP-05 authority rows render, Review mode retired: ${JSON.stringify(rowLabels)}`)
     : fail(`authority rows missing/wrong: ${JSON.stringify(rowLabels)}`);
 
   const note = (await page.textContent('.desk-v1-rules-sheet-note').catch(() => '') || '');
@@ -422,18 +424,29 @@ async function runStartSheet(browser) {
   await ctx.close();
 }
 
-// ── §8 Rules popover (C1: both review modes) via the REAL entry point —
-// T2a's Edit hook ([data-rules-edit]) on camp-1's (Active) summary, matching
-// how a user actually gets here rather than a direct nav shortcut. Verifies
-// it opens a floating popover (not a `‹ <campaign>` page/breadcrumb), that
-// changing a control shows a visible effect preview + Apply step (no
-// mutation until Apply — the fixture must still read the OLD value right
-// after `change`), that Apply on a widening choice still confirms, and that
-// the applied change round-trips into the campaign summary's rule chip AND
-// the A12 channel-badge copy. ────────────────────────────────────────────────
-async function runReviewModeToggle(browser) {
+// ── §8 Rules popover via the REAL entry point — T2a's Edit hook
+// ([data-rules-edit]) on camp-1's (Active) summary, matching how a user
+// actually gets here rather than a direct nav shortcut. Verifies it opens a
+// floating popover (not a `‹ <campaign>` page/breadcrumb), that changing the
+// cadence control shows a visible effect preview + Apply step (no mutation
+// until Apply), that raising cadence above the project ceiling still
+// confirms (widening), and that the applied change round-trips into the
+// EFFECTIVE cadence — IA2 (THE_DESK_V1_IA_REVISION.md §3 row 7): the old
+// "approve themes" review mode retired with no replacement, so this now
+// covers the acceptance case §5 IA2 names instead: "campaign cadence 5 under
+// project ceiling 3 -> effective 3, chip '≤3/wk · from Clayrune'". camp-1's
+// project (clayrune) ceilings every account at 3/wk; the fixture's own
+// plan.cadence.per_week also starts at 3, so the unclamped chip carries no
+// "from Clayrune" suffix until the campaign asks for more than its project
+// allows. ─────────────────────────────────────────────────────────────────
+async function runCadenceEffectiveClamp(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToCampaign(page, 'camp-1');
+
+  const chipsBefore = await page.$$eval('.desk-v1-camp-rule-chip', (els) => els.map((e) => e.textContent));
+  chipsBefore.some((c) => c === '≤3/wk')
+    ? ok(`unclamped: campaign cadence (3) matches the project ceiling (3), chip carries no "from" suffix: ${JSON.stringify(chipsBefore)}`)
+    : fail(`unclamped chip wrong: ${JSON.stringify(chipsBefore)}`);
 
   await page.click('[data-rules-edit]');
   await page.waitForSelector('.desk-v1-rules-pop', { timeout: 4000 });
@@ -444,61 +457,59 @@ async function runReviewModeToggle(browser) {
     ? ok('opening the popover does not add a "Rules" breadcrumb — the campaign page stays underneath')
     : fail('a "Rules" breadcrumb appeared — the popover regressed to a full-page route');
 
-  const checkedDefault = await page.$eval('input[name="reviewMode"]:checked', (el) => el.value);
-  checkedDefault === 'each_piece'
-    ? ok('C1: fixture default review mode is "You approve each piece"')
-    : fail(`default review mode wrong: ${JSON.stringify(checkedDefault)}`);
+  const freqDefault = await page.$eval('[data-freq-input]', (el) => el.value);
+  freqDefault === '3'
+    ? ok('fixture default cadence renders in the Frequency ceiling input')
+    : fail(`default cadence wrong: ${JSON.stringify(freqDefault)}`);
 
-  await page.check('input[name="reviewMode"][value="themes"]');
+  const hintBefore = await page.$('[data-cadence-hint]');
+  !hintBefore
+    ? ok('no "Effective: …" hint shown while the campaign is not clamped')
+    : fail('an effective-cadence hint rendered even though nothing is clamped');
+
+  await page.fill('[data-freq-input]', '5');
+  await page.keyboard.press('Tab');
   await page.waitForTimeout(30);
 
   const previewText = (await page.textContent('.desk-v1-rules-pop-previewtext').catch(() => '') || '');
-  /themes/i.test(previewText)
-    ? ok(`§8: changing a control shows a visible effect preview before applying: "${previewText.trim()}"`)
+  /5/.test(previewText)
+    ? ok(`§8: raising cadence shows a visible effect preview before applying: "${previewText.trim()}"`)
     : fail(`effect preview missing/wrong: ${JSON.stringify(previewText)}`);
 
-  const unappliedYet = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').rules.reviewMode);
-  unappliedYet !== 'themes'
+  const unappliedYet = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').plan.cadence.per_week);
+  unappliedYet !== 5
     ? ok('the fixture is NOT mutated until Apply is clicked')
-    : fail(`fixture mutated before Apply: reviewMode=${JSON.stringify(unappliedYet)}`);
+    : fail(`fixture mutated before Apply: cadence=${JSON.stringify(unappliedYet)}`);
 
   await page.click('[data-pop-preview-apply]');
   const confirmText = await waitForWideningSheet(page).catch(() => null);
   confirmText
-    ? ok(`Apply on "Approve themes, then run" (widening) opens the confirm sheet: "${confirmText}"`)
+    ? ok(`Apply on a raised cadence (widening) opens the confirm sheet: "${confirmText}"`)
     : fail('Apply on a widening choice should have opened the confirm sheet');
   await respondToWideningSheet(page, true);
 
-  const appliedNow = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').rules.reviewMode);
-  appliedNow === 'themes'
-    ? ok('confirming Apply commits the mutation')
-    : fail(`Apply did not commit: reviewMode=${JSON.stringify(appliedNow)}`);
+  const appliedNow = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').plan.cadence.per_week);
+  appliedNow === 5
+    ? ok('confirming Apply commits the campaign\'s own (unclamped) cadence ask')
+    : fail(`Apply did not commit: cadence=${JSON.stringify(appliedNow)}`);
 
   await page.keyboard.press('Escape');
   await navToCampaign(page, 'camp-1');
-  const chipsAfterWiden = await page.$$eval('.desk-v1-camp-rule-chip', (els) => els.map((e) => e.textContent));
-  chipsAfterWiden.some((c) => /Approve themes, then run/.test(c))
-    ? ok(`campaign summary's rule chip reflects the new review mode: ${JSON.stringify(chipsAfterWiden)}`)
-    : fail(`rule chip did not update: ${JSON.stringify(chipsAfterWiden)}`);
+  const chipsAfter = await page.$$eval('.desk-v1-camp-rule-chip', (els) => els.map((e) => e.textContent));
+  chipsAfter.some((c) => c === '≤3/wk · from Clayrune')
+    ? ok(`clamped: cadence 5 under project ceiling 3 -> effective 3, chip names the project: ${JSON.stringify(chipsAfter)}`)
+    : fail(`clamped chip missing/wrong: ${JSON.stringify(chipsAfter)}`);
 
-  const badgeAfterWiden = await page.$eval('.desk-v1-camp-summary-badges .desk-v1-channel-badge', (el) => el.title).catch(() => '');
-  /Publishes automatically/.test(badgeAfterWiden)
-    ? ok(`A12: themes review mode → channel badge flips to "Publishes automatically": ${JSON.stringify(badgeAfterWiden)}`)
-    : fail(`channel badge did not flip for themes mode: ${JSON.stringify(badgeAfterWiden)}`);
-
-  // Narrowing back applies with no confirmation.
   await page.click('[data-rules-edit]');
   await page.waitForSelector('.desk-v1-rules-pop', { timeout: 4000 });
-  await page.check('input[name="reviewMode"][value="each_piece"]');
-  await page.waitForTimeout(30);
-  await page.click('[data-pop-preview-apply]');
-  const noSheetOnNarrow = await noWideningSheetAppears(page);
-  noSheetOnNarrow
-    ? ok('narrowing back to "each piece" applies without confirmation')
-    : fail('narrowing should not open the confirm sheet');
+  const freqAfter = await page.$eval('[data-freq-input]', (el) => el.value);
+  const hintAfter = (await page.textContent('.desk-v1-rules-hint').catch(() => '') || '');
+  freqAfter === '5' && /≤3\/wk · from Clayrune/.test(hintAfter)
+    ? ok(`re-opening the popover shows the campaign's own ask (5) plus the effective hint: "${hintAfter.trim()}"`)
+    : fail(`popover re-open wrong: input=${JSON.stringify(freqAfter)}, hint=${JSON.stringify(hintAfter)}`);
 
   await page.keyboard.press('Escape');
-  reportUncaught(pageErrors, '[review-mode]');
+  reportUncaught(pageErrors, '[cadence-effective-clamp]');
   await ctx.close();
 }
 
@@ -592,7 +603,7 @@ async function runDeclineWidening(browser) {
   await respondToWideningSheet(page, false);
 
   const stillOff = await page.$eval('input[name="paid"][value="off"]', (el) => el.checked);
-  const fixtureStillOff = await page.evaluate(() => !window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').rules.paid);
+  const fixtureStillOff = await page.evaluate(() => !window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').plan.paid);
   stillOff && fixtureStillOff
     ? ok('declining the Paid-on widening confirm reverts the radio to Off, and the fixture is untouched')
     : fail(`decline did not revert cleanly: radioOff=${stillOff}, fixtureOff=${fixtureStillOff}`);
@@ -603,7 +614,7 @@ async function runDeclineWidening(browser) {
 }
 
 // ── Channels row (§8: "included / excluded accounts, e.g. 'in · Ron
-// (personal) excluded'") — camp-2's channelIds is ['ch-x-ron', 'ch-li-page']
+// (personal) excluded'") — camp-2's plan.accounts is ['ch-x-ron', 'ch-li-page']
 // (Dave's review pass 2: v1 is X + LinkedIn, X = Ron's voice, LinkedIn =
 // the Clayrune page's own voice), so the 3rd pre-existing global channel,
 // ch-blog, is naturally unattached; no 4th global channel needed (see the
@@ -633,8 +644,8 @@ async function runChannelsExcluded(browser) {
     ? ok('attaching a new channel (widening) opens the confirm sheet')
     : fail('attaching a channel should have opened the confirm sheet');
   await respondToWideningSheet(page, true);
-  const nowIncluded = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2').channelIds.includes('ch-blog'));
-  nowIncluded ? ok('confirmed attach adds the channel to campaign.channelIds') : fail('channel not added after confirm');
+  const nowIncluded = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2').plan.accounts.includes('ch-blog'));
+  nowIncluded ? ok('confirmed attach adds the channel to campaign.plan.accounts') : fail('channel not added after confirm');
 
   await page.keyboard.press('Escape');
   reportUncaught(pageErrors, '[channels]');
@@ -791,7 +802,7 @@ try {
   await runValidatePlanMissingEnd(browser);
   await runBlockerAnswer(browser);
   await runStartSheet(browser);
-  await runReviewModeToggle(browser);
+  await runCadenceEffectiveClamp(browser);
   await runPerJobBudget(browser);
   await runRaiseBudgetCrumb(browser);
   await runDeclineWidening(browser);

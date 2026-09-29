@@ -232,7 +232,7 @@ async function runNeedsYouDeepLinks(browser) {
 async function runAddToMenuAttach(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
 
-  const before = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').channelIds.length);
+  const before = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').plan.accounts.length);
   const channelItem = await page.$('#desk-v1-home-shelf-channels .desk-v1-shelf-item[data-channel-id="ch-x-ron"]');
   await channelItem.click();
   await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
@@ -249,9 +249,9 @@ async function runAddToMenuAttach(browser) {
   const toastText = (await page.$eval('.toast:last-of-type', (el) => el.textContent).catch(() => '') || '');
   if (/already on/.test(toastText)) ok(`Add to…: attaching a channel already on the campaign is refused: "${toastText.trim()}"`);
   else fail(`Add to…: expected an "already on" refusal toast, got: ${JSON.stringify(toastText)}`);
-  const after = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').channelIds.length);
-  if (after === before) ok('Add to…: refused attach does not mutate channelIds');
-  else fail(`Add to…: channelIds mutated on a refused attach: ${before} -> ${after}`);
+  const after = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').plan.accounts.length);
+  if (after === before) ok('Add to…: refused attach does not mutate plan.accounts');
+  else fail(`Add to…: plan.accounts mutated on a refused attach: ${before} -> ${after}`);
 
   // Material asset -> a real campaign DOES add a new family (the literal
   // "adds a version" case per §13/A4), and IS undo-able via the command bus.

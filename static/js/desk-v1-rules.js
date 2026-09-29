@@ -16,6 +16,7 @@
   function _fx() { return window.DeskV1Fixtures || {}; }
   function _campaigns() { return _fx().campaigns || []; }
   function _campaign(id) { return _campaigns().find((c) => c.id === id) || null; }
+  function _project(id) { return (_fx().projects || []).find((p) => p.id === id) || null; }
   function _channels() { return _fx().channels || []; }
   function _channel(id) { return _channels().find((c) => c.id === id); }
   function _families() { return _fx().families || []; }
@@ -114,7 +115,7 @@
     const plan = camp.plan = camp.plan || {};
     const goal = plan.goal = plan.goal || {};
     const stateHTML = DeskV1Kit.stateLabelHTML(camp.state, { className: 'desk-v1-camp-state-pill' });
-    const chans = (camp.channelIds || []).map(_channel).filter(Boolean);
+    const chans = (camp.plan.accounts || []).map(_channel).filter(Boolean);
 
     el.innerHTML = `
       <div class="desk-v1-camp-summary-top">
@@ -139,7 +140,7 @@
         </div>
         <div class="desk-v1-camp-summary-group" data-summary-group="channels">
           <span class="desk-v1-camp-summary-label">CHANNELS</span>
-          <div class="desk-v1-camp-summary-badges">${chans.length ? chans.map((ch) => DeskV1Kit.channelBadge(ch, { reviewMode: camp.rules && camp.rules.reviewMode })).join('') : '<span class="desk-v1-home-camp-nochannels">No channels yet</span>'}</div>
+          <div class="desk-v1-camp-summary-badges">${chans.length ? chans.map((ch) => DeskV1Kit.channelBadge(ch)).join('') : '<span class="desk-v1-home-camp-nochannels">No channels yet</span>'}</div>
         </div>
         <div class="desk-v1-camp-summary-group" data-summary-group="rules">
           <span class="desk-v1-camp-summary-label">RULES</span>
@@ -286,11 +287,15 @@
     const datesLabel = plan.end && (plan.end.date
       ? `Ends ${_fmtDateLong(plan.end.date)}`
       : (plan.end.post_cap ? `Ends after ${plan.end.post_cap} posts` : null));
+    const project = _project(camp.projectId);
+    const eff = DeskV1Kit.validatePlan(plan, project).effective;
     const auth = {
       accounts: dests,
-      frequencyPerWeek: plan.cadence && plan.cadence.per_week,
+      frequencyPerWeek: eff.cadence_per_week,
+      frequencyFromProject: eff.cadence_from_project,
       dates: datesLabel,
-      reviewMode: camp.rules && camp.rules.reviewMode === 'themes' ? 'Approve themes, then run' : 'You approve each piece',
+      // §3 row 7: review mode is retired with no replacement — every piece
+      // needs approval (§8 position), so the Start sheet no longer names it.
       replies: plan.replies === 'auto_faq' ? 'Auto-answer verified FAQ' : 'Drafts for review',
       paid: plan.paid ? 'On' : 'Off',
       generationLimits: plan.generation,
@@ -301,9 +306,10 @@
 
     const rows = [
       ['Accounts', (auth.accounts || []).join(', ') || '—'],
-      ['Frequency ceiling', auth.frequencyPerWeek != null ? `Up to ${auth.frequencyPerWeek} a week` : '—'],
+      ['Frequency ceiling', auth.frequencyPerWeek != null
+        ? `Up to ${auth.frequencyPerWeek} a week${auth.frequencyFromProject ? ` · from ${project ? project.name : 'project'}` : ''}`
+        : '—'],
       ['Dates', auth.dates || '—'],
-      ['Review mode', auth.reviewMode || '—'],
       ['Replies', auth.replies || '—'],
       ['Paid', auth.paid || 'Off'],
       ['Generation limits', auth.generationLimits || '—'],
@@ -315,7 +321,7 @@
     wrap.innerHTML = `
       <div class="desk-v1-rules-scrim" data-overlay-scrim></div>
       <div class="desk-v1-rules-sheet" role="dialog" aria-modal="true" aria-label="Start campaign">
-        <div class="desk-v1-rules-sheet-title">Start “${esc(camp.name)}”</div>
+        <div class="desk-v1-rules-sheet-title">Start “${esc(camp.plan.title)}”</div>
         <div class="desk-v1-rules-sheet-body">
           ${rows.map(([label, val]) => `<div class="desk-v1-rules-authrow"><span class="desk-v1-rules-authrow-label">${esc(label)}</span><span class="desk-v1-rules-authrow-val">${esc(val)}</span></div>`).join('')}
         </div>
@@ -347,7 +353,7 @@
     const prevState = camp.state;
     const policyRecord = Object.assign({}, auth, { createdAt: new Date().toISOString() });
     DeskV1Kit.commandBus.run({
-      label: `Started “${camp.name}”`,
+      label: `Started “${camp.plan.title}”`,
       do: () => { camp.state = 'active'; camp.policyRecord = policyRecord; if (typeof window.deskV1Render === 'function') window.deskV1Render(); },
       undo: () => { camp.state = prevState; delete camp.policyRecord; if (typeof window.deskV1Render === 'function') window.deskV1Render(); },
     });
@@ -410,8 +416,8 @@
     wrap.className = 'desk-v1-rules-pop-overlay';
     wrap.innerHTML = `
       <div class="desk-v1-rules-pop-scrim" data-pop-scrim></div>
-      <div class="desk-v1-rules-pop" role="dialog" aria-modal="false" aria-label="Rules for ${esc(camp.name)}">
-        <div class="desk-v1-rules-pop-title">Rules — ${esc(camp.name)}</div>
+      <div class="desk-v1-rules-pop" role="dialog" aria-modal="false" aria-label="Rules for ${esc(camp.plan.title)}">
+        <div class="desk-v1-rules-pop-title">Rules — ${esc(camp.plan.title)}</div>
         <div class="desk-v1-rules-pop-body"></div>
       </div>`;
     document.body.appendChild(wrap);
@@ -495,46 +501,42 @@
     else if (typeof window.deskV1FillCampaignSummary === 'function') window.deskV1FillCampaignSummary(summaryHost, { campaignId: camp.id });
   }
 
-  // §8: "Auto-answer verified FAQ on <account>" — the first attached
-  // channel's identity, since replies aren't per-channel in this fixture set.
-  function _repliesAccountLabel(camp) {
-    const ch = (camp.channelIds || []).map(_channel).filter(Boolean)[0];
-    return ch ? ` on ${esc(ch.identity || ch.label)}` : '';
-  }
-
   function _campaignAccountsLabel(camp) {
-    return (camp.channelIds || []).map(_channel).filter(Boolean).map((ch) => ch.label).join(', ');
+    return (camp.plan.accounts || []).map(_channel).filter(Boolean).map((ch) => ch.label).join(', ');
   }
 
+  // IA2 (§3): review mode (row 7) is retired with no replacement — every
+  // piece needs approval, contradicting the old "approve themes" bypass —
+  // and replies (row 9) moved to `project.replies`, an IA3 settings-page
+  // field this popover no longer owns. The frequency group now edits the
+  // campaign's own `plan.cadence.per_week` bound (row 21, C) and shows the
+  // EFFECTIVE ceiling (inherit+clamp against `project.presence.ceilings`,
+  // kit.js `_effectiveCadence`) so a campaign asking for more than its
+  // project allows sees the real number, not its own unclamped input. Paid
+  // (row 25, C) now reads/writes `plan.paid` — `rules.paid` (row 10) was a
+  // dead duplicate.
   function _fillRulesPopoverBody(bodyEl, camp) {
-    const r = camp.rules = camp.rules || {};
+    const plan = camp.plan = camp.plan || {};
+    const project = _project(camp.projectId);
     const budget = _fx().renderBudget || {};
     const chans = _channels();
     const currency = budget.currency === 'USD' ? '$' : (budget.currency || '');
+    const eff = DeskV1Kit.validatePlan(plan, project).effective;
 
     bodyEl.innerHTML = `
       <div class="desk-v1-rules-group">
-        <div class="desk-v1-rules-group-title">Review mode</div>
-        <label class="desk-v1-rules-radio"><input type="radio" name="reviewMode" value="each_piece" ${r.reviewMode !== 'themes' ? 'checked' : ''}> You approve each piece</label>
-        <label class="desk-v1-rules-radio"><input type="radio" name="reviewMode" value="themes" ${r.reviewMode === 'themes' ? 'checked' : ''}> Approve themes, then run</label>
-      </div>
-      <div class="desk-v1-rules-group">
         <div class="desk-v1-rules-group-title">Frequency ceiling ${DeskV1Kit.infoIconHTML('freq')}</div>
-        <div class="desk-v1-rules-inlinerow">Up to <input type="number" min="0" max="30" class="desk-v1-rules-numinput" data-freq-input value="${esc(r.frequencyPerWeek != null ? r.frequencyPerWeek : 0)}"> a week</div>
+        <div class="desk-v1-rules-inlinerow">Up to <input type="number" min="0" max="30" class="desk-v1-rules-numinput" data-freq-input value="${esc(plan.cadence && plan.cadence.per_week != null ? plan.cadence.per_week : 0)}"> a week</div>
+        ${eff.cadence_from_project ? `<div class="desk-v1-rules-hint" data-cadence-hint>Effective: ≤${esc(eff.cadence_per_week)}/wk · from ${esc(project ? project.name : 'project')}</div>` : ''}
       </div>
       <div class="desk-v1-rules-group">
         <div class="desk-v1-rules-group-title">Channels</div>
-        ${chans.map((ch) => `<label class="desk-v1-rules-checkrow"><input type="checkbox" data-channel-toggle="${esc(ch.id)}" ${camp.channelIds.includes(ch.id) ? 'checked' : ''}> ${esc(ch.label)}${!camp.channelIds.includes(ch.id) ? ' <span class="desk-v1-rules-excluded">excluded</span>' : ''}</label>`).join('')}
-      </div>
-      <div class="desk-v1-rules-group">
-        <div class="desk-v1-rules-group-title">Replies</div>
-        <label class="desk-v1-rules-radio"><input type="radio" name="repliesMode" value="drafts" ${r.repliesMode !== 'auto_faq' ? 'checked' : ''}> Drafts for review</label>
-        <label class="desk-v1-rules-radio"><input type="radio" name="repliesMode" value="auto_faq" ${r.repliesMode === 'auto_faq' ? 'checked' : ''}> Auto-answer verified FAQ${_repliesAccountLabel(camp)}</label>
+        ${chans.map((ch) => `<label class="desk-v1-rules-checkrow"><input type="checkbox" data-channel-toggle="${esc(ch.id)}" ${camp.plan.accounts.includes(ch.id) ? 'checked' : ''}> ${esc(ch.label)}${!camp.plan.accounts.includes(ch.id) ? ' <span class="desk-v1-rules-excluded">excluded</span>' : ''}</label>`).join('')}
       </div>
       <div class="desk-v1-rules-group">
         <div class="desk-v1-rules-group-title">Paid</div>
-        <label class="desk-v1-rules-radio"><input type="radio" name="paid" value="off" ${!r.paid ? 'checked' : ''}> Off</label>
-        <label class="desk-v1-rules-radio"><input type="radio" name="paid" value="on" ${r.paid ? 'checked' : ''}> On</label>
+        <label class="desk-v1-rules-radio"><input type="radio" name="paid" value="off" ${!plan.paid ? 'checked' : ''}> Off</label>
+        <label class="desk-v1-rules-radio"><input type="radio" name="paid" value="on" ${plan.paid ? 'checked' : ''}> On</label>
       </div>
       <div class="desk-v1-rules-group">
         <div class="desk-v1-rules-group-title">Production budget</div>
@@ -576,62 +578,34 @@
       if (_rulesPop) _rulesPop.pending = { revert };
     }
 
-    bodyEl.querySelectorAll('input[name="reviewMode"]').forEach((radio) => {
-      radio.addEventListener('change', () => {
-        const prevVal = r.reviewMode === 'themes' ? 'themes' : 'each_piece';
-        const next = radio.value;
-        if (next === prevVal) return;
-        const widening = next === 'themes';
-        const effect = next === 'themes'
-          ? 'Posy approves whole themes and runs them without a per-piece check.'
-          : 'Every piece needs your approval again before it goes out.';
-        const prevRadio = bodyEl.querySelector(`input[name="reviewMode"][value="${prevVal}"]`);
-        setPending(() => { r.reviewMode = next; }, effect, widening, () => { if (prevRadio) prevRadio.checked = true; });
-      });
-    });
-
     const freqInput = bodyEl.querySelector('[data-freq-input]');
     if (freqInput) freqInput.addEventListener('change', () => {
-      const prev = r.frequencyPerWeek || 0;
+      const prev = (plan.cadence && plan.cadence.per_week) || 0;
       const next = parseInt(freqInput.value, 10) || 0;
       if (next === prev) return;
       const accounts = _campaignAccountsLabel(camp);
       const effect = `Posy will publish at most ${next} post${next === 1 ? '' : 's'} a week${accounts ? ` on ${accounts}` : ''} — was ${prev}.`;
-      setPending(() => { r.frequencyPerWeek = next; }, effect, next > prev, () => { freqInput.value = String(prev); });
+      setPending(() => { plan.cadence = plan.cadence || {}; plan.cadence.per_week = next; }, effect, next > prev, () => { freqInput.value = String(prev); });
     });
 
     bodyEl.querySelectorAll('[data-channel-toggle]').forEach((cb) => {
       cb.addEventListener('change', () => {
         const chId = cb.dataset.channelToggle;
         const ch = _channel(chId);
-        const included = camp.channelIds.includes(chId);
+        const included = camp.plan.accounts.includes(chId);
         if (cb.checked === included) return;
         const label = ch ? ch.label : chId;
         const effect = cb.checked ? `${label} can now be used by this campaign.` : `${label} is excluded from this campaign.`;
         setPending(() => {
-          if (cb.checked) camp.channelIds.push(chId);
-          else camp.channelIds = camp.channelIds.filter((id) => id !== chId);
+          if (cb.checked) camp.plan.accounts.push(chId);
+          else camp.plan.accounts = camp.plan.accounts.filter((id) => id !== chId);
         }, effect, cb.checked, () => { cb.checked = included; });
-      });
-    });
-
-    bodyEl.querySelectorAll('input[name="repliesMode"]').forEach((radio) => {
-      radio.addEventListener('change', () => {
-        const prevVal = r.repliesMode === 'auto_faq' ? 'auto_faq' : 'drafts';
-        const next = radio.value;
-        if (next === prevVal) return;
-        const widening = next === 'auto_faq';
-        const effect = next === 'auto_faq'
-          ? `Verified FAQ replies go out without a draft review${_repliesAccountLabel(camp)}.`
-          : 'Every reply goes back to drafts for your review.';
-        const prevRadio = bodyEl.querySelector(`input[name="repliesMode"][value="${prevVal}"]`);
-        setPending(() => { r.repliesMode = next; }, effect, widening, () => { if (prevRadio) prevRadio.checked = true; });
       });
     });
 
     bodyEl.querySelectorAll('input[name="paid"]').forEach((radio) => {
       radio.addEventListener('change', () => {
-        const prevVal = r.paid ? 'on' : 'off';
+        const prevVal = plan.paid ? 'on' : 'off';
         const next = radio.value;
         if (next === prevVal) return;
         const widening = next === 'on';
@@ -639,7 +613,7 @@
           ? 'Paid distribution turns on — this opens paid terms (out of scope this release; nothing spends here).'
           : 'Paid distribution turns off.';
         const prevRadio = bodyEl.querySelector(`input[name="paid"][value="${prevVal}"]`);
-        setPending(() => { r.paid = next === 'on'; }, effect, widening, () => { if (prevRadio) prevRadio.checked = true; });
+        setPending(() => { plan.paid = next === 'on'; }, effect, widening, () => { if (prevRadio) prevRadio.checked = true; });
       });
     });
 
@@ -701,7 +675,7 @@
   }
 
   window.deskV1HandlePosyInstruction = function (camp, text, posyBoxEl, selection) {
-    const scopeLabel = (selection && selection.scope === 'card' && selection.label) || camp.name;
+    const scopeLabel = (selection && selection.scope === 'card' && selection.label) || camp.plan.title;
     const before = `${scopeLabel} follows the existing rules.`;
     const widening = _WIDENING_RE.test(text);
     const durable = _DURABLE_RE.test(text);

@@ -76,14 +76,16 @@
   }
 
   // Capability × permission (§9): combines what the connection CAN do
-  // (channel.capability) with what review mode currently ALLOWS (reviewMode).
+  // (channel.capability) with the standing per-campaign release position
+  // (every piece is approved — IA2/THE_DESK_V1_IA_REVISION.md §3 row 7
+  // retired the "approve themes, then run" review mode with no replacement).
   // `held` overrides either — a disconnected/rate-limited/expired channel
-  // can't publish regardless of capability or rules.
-  function channelCapabilityCopy(channel, reviewMode) {
+  // can't publish regardless of capability.
+  function channelCapabilityCopy(channel) {
     if (!channel) return '';
     if (channel.health === 'held') return `⚠ Held — ${channel.holdReason || 'disconnected'}`;
     if (channel.capability === 'manual') return '✋ You publish it';
-    return reviewMode === 'themes' ? 'Publishes automatically' : 'Publishes after approval';
+    return 'Publishes after approval';
   }
 
   // Money (§9): never "free" — usage stays behind the ℹ popover.
@@ -118,7 +120,7 @@
   function channelBadge(channel, opts) {
     if (!channel) return '';
     opts = opts || {};
-    const copy = channelCapabilityCopy(channel, opts.reviewMode);
+    const copy = channelCapabilityCopy(channel);
     const suffix = channel.health === 'held' ? ' ⚠' : (channel.capability === 'manual' ? ' ✋' : '');
     return `<span class="desk-v1-channel-badge" data-platform="${esc(channel.platform || '')}" ` +
       `data-capability="${esc(channel.capability || '')}" data-health="${esc(channel.health || 'ok')}" ` +
@@ -697,30 +699,66 @@
     }
   }
 
-  // ── validatePlan (§4: "one canonical plan object") — the single gate the
-  // checklist state, the Start button, Resume and Renew all share (those
-  // callers are T2-T4; T1 only introduces the function itself, wired into
-  // desk-v1-rules.js's `validatePlan().missing` check). Checks exactly the
-  // §3.1 bound table's "Required: yes" rows — Destinations + voices, Source
-  // projects, Cadence ceiling + min gap, End date and/or post cap (≥1) — the
-  // rest of that table (spend, replies, paid, generation, stop conditions)
-  // is either derived or has a real default, never a blocker.
+  // ── validatePresence (IA2, THE_DESK_V1_IA_REVISION.md §5) — the project's
+  // own required bound: at least one workspace account bound to it. A
+  // campaign can't set up until its project clears this (§2.3 step 0).
+  function validatePresence(project) {
+    const presence = (project && project.presence) || {};
+    const missing = [];
+    if (!(presence.accounts && presence.accounts.length)) missing.push({ bound: 'accounts', label: 'accounts' });
+    return { ok: missing.length === 0, missing };
+  }
+
+  // Effective cadence (§5 IA2 acceptance: "campaign cadence 5 under project
+  // ceiling 3 -> effective 3") — inherit the project's per-account ceiling
+  // when the campaign hasn't set its own, clamp DOWN to it when the campaign
+  // asks for more; never widen past what the project allows (§2.1: "Widening
+  // a project field... never widens a running campaign" runs the other
+  // direction, but a campaign may never exceed today's project ceiling
+  // either — one direction of the same inherit+clamp rule).
+  function _effectiveCadence(plan, project) {
+    const campPerWeek = plan && plan.cadence ? plan.cadence.per_week : null;
+    const ceilings = (project && project.presence && project.presence.ceilings) || {};
+    const accounts = (plan && plan.accounts) || [];
+    let projCeiling = null;
+    accounts.forEach((chId) => {
+      const c = ceilings[chId];
+      if (c && c.per_week != null) projCeiling = projCeiling == null ? c.per_week : Math.min(projCeiling, c.per_week);
+    });
+    if (campPerWeek == null) return { value: projCeiling, fromProject: projCeiling != null };
+    if (projCeiling != null && projCeiling < campPerWeek) return { value: projCeiling, fromProject: true };
+    return { value: campPerWeek, fromProject: false };
+  }
+
+  // ── validatePlan (§4: "one canonical plan object"; rescoped IA2 §5) — the
+  // single gate the checklist state, the Start button, Resume and Renew all
+  // share. Checks the §2.3 step-2 bound table's "Required to leave" rows —
+  // accounts, cadence, end date and/or post cap (>=1). `source_projects` is
+  // retired (§3 row 14: owner is the parent project, implicit, no bound) and
+  // `min_gap_h` moved to the project's own ceilings (§3 row 22) — neither is
+  // a campaign-level plan bound any more. `project` is optional so callers
+  // without a resolved project (e.g. a just-created draft campaign) still
+  // get a usable result; effective cadence then falls back to the
+  // campaign's own value with no clamp.
   const _PLAN_BOUNDS = [
-    { bound: 'destinations', step: 2, label: 'destinations',
-      missing: (p) => !(p.destinations && p.destinations.length) },
-    { bound: 'source_projects', step: 1, label: 'source project',
-      missing: (p) => !(p.source_projects && p.source_projects.length) },
-    { bound: 'cadence', step: 3, label: 'cadence',
-      missing: (p) => !(p.cadence && p.cadence.per_week != null && p.cadence.min_gap_h != null) },
-    { bound: 'end', step: 3, label: 'end date',
+    { bound: 'accounts', step: 2, label: 'accounts',
+      missing: (p) => !(p.accounts && p.accounts.length) },
+    { bound: 'cadence', step: 2, label: 'cadence',
+      missing: (p) => !(p.cadence && p.cadence.per_week != null) },
+    { bound: 'end', step: 2, label: 'end date',
       missing: (p) => !(p.end && (p.end.date != null || p.end.post_cap != null)) },
   ];
-  function validatePlan(plan) {
+  function validatePlan(plan, project) {
     plan = plan || {};
     const missing = _PLAN_BOUNDS
       .filter((b) => b.missing(plan))
       .map((b) => ({ bound: b.bound, step: b.step, label: b.label }));
-    return { ok: missing.length === 0, missing };
+    const eff = _effectiveCadence(plan, project);
+    return {
+      ok: missing.length === 0,
+      missing,
+      effective: { cadence_per_week: eff.value, cadence_from_project: eff.fromProject },
+    };
   }
 
   window.DeskV1Kit = {
@@ -735,6 +773,6 @@
     posyBoxHTML, bindPosyBox,
     anyPosyWorking, POSY_WORKING_LABEL, paintPosyReadyNoDiff,
     openConfirmSheet,
-    validatePlan,
+    validatePlan, validatePresence,
   };
 })();
