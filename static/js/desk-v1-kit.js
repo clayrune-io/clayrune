@@ -59,6 +59,14 @@
   };
   const ALL_STATES = Object.assign({}, VERSION_STATES, CAMPAIGN_STATES);
 
+  // ── Map stops (R2-3, IA revision 2 §3/§4.1) — the six-stop vocabulary the
+  // campaign map stepper (desk-v1-campaign.js `deskV1FillCampaignTabStrip`)
+  // and the project page's draft card label (desk-v1-project.js
+  // `_draftCardLabel`) both read, so a stop never gets two names. Order
+  // matters: it drives Next/Back and `validatePlan`'s `missing[].stop` links.
+  const MAP_STOPS = ['goal', 'how', 'what', 'when', 'where', 'launch'];
+  const MAP_STOP_WORDS = { goal: 'Goal', how: 'How', what: 'What', when: 'When', where: 'Where', launch: 'Launch' };
+
   function stateLabel(state) {
     return ALL_STATES[state] || { glyph: '?', word: state ? String(state) : 'Unknown' };
   }
@@ -910,6 +918,7 @@
 
   window.DeskV1Kit = {
     VERSION_STATES, CAMPAIGN_STATES,
+    MAP_STOPS, MAP_STOP_WORDS,
     channelCapabilityCopy, noChargeYetCopy,
     BANNED_PHRASES, lintCopy,
     stateLabel, stateLabelHTML,
