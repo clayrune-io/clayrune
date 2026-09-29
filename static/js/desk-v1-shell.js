@@ -64,7 +64,7 @@
   function _campaignLabel(params) {
     const camps = (window.DeskV1Fixtures && window.DeskV1Fixtures.campaigns) || [];
     const c = camps.find(x => x.id === (params || {}).campaignId);
-    return c ? c.name : 'Campaign';
+    return c ? c.plan.title : 'Campaign';
   }
 
   // IA1: dynamic like _campaignLabel above — a project page's own crumb

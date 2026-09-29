@@ -527,7 +527,7 @@
       <div class="desk-v1-rules-group">
         <div class="desk-v1-rules-group-title">Frequency ceiling ${DeskV1Kit.infoIconHTML('freq')}</div>
         <div class="desk-v1-rules-inlinerow">Up to <input type="number" min="0" max="30" class="desk-v1-rules-numinput" data-freq-input value="${esc(plan.cadence && plan.cadence.per_week != null ? plan.cadence.per_week : 0)}"> a week</div>
-        ${eff.cadence_from_project ? `<div class="desk-v1-rules-hint">Effective: ≤${esc(eff.cadence_per_week)}/wk · from ${esc(project ? project.name : 'project')}</div>` : ''}
+        ${eff.cadence_from_project ? `<div class="desk-v1-rules-hint" data-cadence-hint>Effective: ≤${esc(eff.cadence_per_week)}/wk · from ${esc(project ? project.name : 'project')}</div>` : ''}
       </div>
       <div class="desk-v1-rules-group">
         <div class="desk-v1-rules-group-title">Channels</div>
