@@ -1424,3 +1424,78 @@ def test_icacls_grant_and_verify_still_fails_closed_after_two_failures(monkeypat
     assert len(calls) == 2
     assert 'attempt 1 denied' in detail
     assert 'attempt 2 denied' in detail
+
+
+# ── Empty-DACL cascade — the REAL cause behind MC 503edfe4's WinError 5 ────
+# (rework, 2026-09-29). The first pass at this fix called the quarantine
+# dir's mkdir failure a transient hiccup and only added a retry. It isn't
+# transient: _harden_clayrune_home_windows granted a NON-inheritable ACE on
+# the home directory, and icacls /inheritance:r on that directory propagates
+# the inheritance removal to whatever children already existed under it,
+# leaving them with an EMPTY DACL — no ACEs at all, not even for the owner.
+# `mkdir` inside such a directory fails WinError 5 on every attempt, forever;
+# no retry count reaches a directory the ACL itself has locked everyone out
+# of. Real subprocess/filesystem calls on purpose — this is exactly the
+# class of bug a mocked icacls call cannot reproduce.
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='ACL propagation is Windows-only')
+def test_home_lock_used_to_strand_preexisting_children_with_an_empty_dacl(
+        tmp_path, monkeypatch):
+    """Reproduces the exact live-item shape: legacy_key_quarantine/ already
+    exists (empty, left over from an earlier attempt) and a legacy
+    secrets.key file sits next to it — both from before ACL hardening ever
+    touched this home dir, same as a box that has been running Clayrune for
+    a while before ever calling set_passphrase. Fails on pre-fix code: the
+    home-lock call strands both paths with an empty DACL, so the quarantine
+    dir's own mkdir fails WinError 5 and the legacy key file can't even be
+    read. Passes once directory grants are inheritable and pre-existing
+    children are repaired before home gets re-hardened."""
+    from mc import secrets_store
+    home = tmp_path / '.clayrune'
+    home.mkdir()
+    qdir = home / 'legacy_key_quarantine'
+    qdir.mkdir()
+    keyfile = home / 'secrets.key'
+    keyfile.write_text('legacy-key-bytes', encoding='utf-8')
+    monkeypatch.setenv('CLAYRUNE_HOME', str(home))
+
+    secrets_store._harden_clayrune_home_windows(home)
+
+    # This is exactly what _quarantine_legacy_key_material's own mkdir does
+    # next — WinError 5 here pre-fix, permanently, on every attempt.
+    (qdir / 'probe').mkdir()
+    # The legacy key file must still be readable — Errno 13 pre-fix.
+    assert keyfile.read_text(encoding='utf-8') == 'legacy-key-bytes'
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='ACL propagation is Windows-only')
+def test_quarantine_repairs_a_home_dir_broken_by_a_prior_pre_fix_run(
+        tmp_path, monkeypatch):
+    """Same empty-DACL damage as above, but simulated directly (bypassing
+    _harden_clayrune_home_windows so this test doesn't depend on that
+    function already being fixed) to pin _quarantine_legacy_key_material's
+    OWN repair-before-mkdir step, independent of the home-lock function's."""
+    import subprocess
+    from mc import secrets_store
+    home = tmp_path / '.clayrune'
+    home.mkdir()
+    qdir = home / 'legacy_key_quarantine'
+    qdir.mkdir()
+    keyfile = home / 'secrets.key'
+    keyfile.write_text('legacy-key-bytes', encoding='utf-8')
+    monkeypatch.setenv('CLAYRUNE_HOME', str(home))
+    monkeypatch.setenv('CLAYRUNE_SECRETS_KEY_BACKEND', 'file')
+
+    sid, _account = secrets_store._current_user_sid_and_name()
+    # The exact pre-fix grant shape: non-inheritable, stripping inheritance
+    # on the way — this is what left qdir/keyfile with an empty DACL.
+    subprocess.run(
+        ['icacls', str(home), '/inheritance:r', '/grant:r', f'*{sid}:F', '*S-1-5-18:F'],
+        capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL)
+
+    secrets_store._quarantine_legacy_key_material()
+
+    quarantined = list(qdir.rglob('secrets.key'))
+    assert len(quarantined) == 1, (
+        "the legacy key file should have been quarantined once the "
+        "pre-existing empty-DACL damage was repaired")

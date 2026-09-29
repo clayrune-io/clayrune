@@ -1084,17 +1084,33 @@ def _quarantine_legacy_key_material() -> None:
     the pre-fix all-of-them-live state. Every step is logged so a partial
     failure is visible, not silent.
 
-    The initial ``qdir.mkdir`` retries once after a short pause (MC
-    503edfe4 follow-up): clayrune.log 2026-09-24T16:18Z caught a bare,
-    un-retried ``mkdir`` failing with ``WinError 5 Access is denied``
-    immediately after ``_write_wrapped_key`` had just rewritten this same
-    parent directory's ACL via icacls — the same class of transient
-    Windows filesystem/ACL hiccup ``_icacls_grant_and_verify`` already
-    retries once for elsewhere in this module. Because ``set_passphrase``
-    only ever calls this function once (guarded by the "already
-    configured" check), that single un-retried failure was permanent for
-    the life of the vault until :func:`_retry_quarantine_if_needed` was
-    added to retry on every successful unlock too."""
+    Real root cause of the mkdir failure clayrune.log caught at
+    2026-09-24T16:18Z, ``WinError 5 Access is denied`` (MC 503edfe4
+    rework — the first pass at this fix mis-called it a transient hiccup
+    and only added a retry, which cannot succeed against this): the
+    ``_write_wrapped_key`` call immediately before this one rewrote the
+    Clayrune home directory's ACL with a NON-inheritable grant, and
+    ``icacls /inheritance:r`` on that directory propagates the
+    inheritance removal to whatever children already existed under it —
+    this quarantine dir among them — leaving those children with an EMPTY
+    DACL (no ACEs, not even for the owner). `mkdir` inside an empty-DACL
+    directory fails ``WinError 5`` on every attempt, forever, so no retry
+    count fixes it. :func:`_repair_broken_legacy_acls_windows` runs first,
+    below, to put a working ACL back on any child left this way before the
+    mkdir is even attempted; :func:`_icacls_grant_and_verify_once`'s
+    directory grants are now inheritable so a correctly-hardened directory
+    never does this to its children again.
+
+    The ``qdir.mkdir`` loop still retries once after a short pause — kept
+    as a residual guard against a genuinely transient filesystem hiccup,
+    now that the permanent cause above has its own fix."""
+    if os.name == 'nt':
+        try:
+            sid, account = _current_user_sid_and_name()
+            _repair_broken_legacy_acls_windows(sid, account)
+        except Exception as e:
+            _log(f"[secrets] could not resolve current user SID to repair "
+                 f"legacy-key ACLs before quarantine: {e}")
     ts = now_iso().replace(':', '').replace('+00:00', 'Z')
     qdir = legacy_key_quarantine_dir() / ts
     mkdir_err: OSError | None = None
@@ -1477,11 +1493,29 @@ def _current_user_sid_and_name() -> tuple[str, str]:
 
 def _icacls_grant_and_verify_once(path: Path, sid: str, account: str) -> tuple[bool, str]:
     """One attempt at :func:`_icacls_grant_and_verify` — see that function for
-    the retry wrapper callers actually use. Never raises; returns (ok, detail)."""
+    the retry wrapper callers actually use. Never raises; returns (ok, detail).
+
+    Directories grant ``(OI)(CI)F`` (object-inherit, container-inherit) —
+    files keep plain ``F``. Measured 2026-09-29 (MC 503edfe4 rework): a bare
+    ``F`` grant on a DIRECTORY is not inheritable, and ``/inheritance:r`` on
+    that directory still propagates the inheritance-removal to any children
+    that already existed (a legacy ``legacy_key_quarantine`` dir, leftover
+    key files from before this module's ACL hardening ever ran) — those
+    children end up with an EMPTY DACL: no ACEs at all, not even for the
+    owner. `mkdir` inside such a directory then fails ``WinError 5 Access is
+    denied`` on every attempt, and reading/moving a pre-existing file inside
+    it fails ``Errno 13`` — permanently, since nothing about that failure is
+    transient. The inheritable grant makes new directories correctly pass
+    permissions to whatever gets created under them afterward; see
+    :func:`_repair_broken_legacy_acls_windows` for repairing directories a
+    pre-fix run already broke this way."""
     p = str(path)
+    is_dir = path.is_dir()
+    sid_grant = f'*{sid}:(OI)(CI)F' if is_dir else f'*{sid}:F'
+    system_grant = '*S-1-5-18:(OI)(CI)F' if is_dir else '*S-1-5-18:F'
     try:
         grant = subprocess.run(
-            ['icacls', p, '/inheritance:r', '/grant:r', f'*{sid}:F', '*S-1-5-18:F'],
+            ['icacls', p, '/inheritance:r', '/grant:r', sid_grant, system_grant],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
             stdin=subprocess.DEVNULL,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -1503,6 +1537,9 @@ def _icacls_grant_and_verify_once(path: Path, sid: str, account: str) -> tuple[b
     system_present = ('s-1-5-18' in low) or ('system' in low)
     if not (owner_present and system_present):
         return False, f"unexpected ACL after icacls grant: {(verify.stdout or '').strip()!r}"
+    if is_dir and low.count('(oi)(ci)') < 2:
+        return False, (f"expected an inheritable (OI)(CI)F grant on a "
+                        f"directory but got: {(verify.stdout or '').strip()!r}")
     return True, ''
 
 
@@ -1530,12 +1567,58 @@ def _icacls_grant_and_verify(path: Path, sid: str, account: str) -> tuple[bool, 
     return False, f"failed twice (retried once): first={detail!r} retry={retry_detail!r}"
 
 
+def _repair_broken_legacy_acls_windows(sid: str, account: str) -> None:
+    """Best-effort repair for the specific paths a PRE-FIX run of
+    ``_icacls_grant_and_verify_once`` could have left with an empty DACL —
+    see that function's docstring for how a non-inheritable grant on the
+    Clayrune home directory does this to whatever children already existed
+    under it. Scoped deliberately to only the legacy-key paths THIS module
+    owns (``key_file_path()``, ``dpapi_mirror_path()``,
+    ``legacy_key_quarantine_dir()`` and whatever it already contains from
+    an earlier attempt) — never the wider ``~/.clayrune`` tree, which other
+    subsystems (named browser profiles among them) also live under and this
+    module has no business re-ACLing.
+
+    The owner keeps WRITE_DAC even when a DACL is completely empty, so
+    ``icacls /grant:r`` still succeeds against a path already broken this
+    way — this must run BEFORE a `mkdir` or file move into any of these
+    paths, or that mkdir/move hits the exact permanent WinError 5 / Errno 13
+    this function exists to clear. Idempotent and cheap to call on an
+    already-healthy tree: re-granting an ACL that's already correct is a
+    no-op. Never raises; a single path failing to repair is logged and does
+    not stop the rest."""
+    candidates = [key_file_path(), dpapi_mirror_path(), legacy_key_quarantine_dir()]
+    qroot = legacy_key_quarantine_dir()
+    if qroot.is_dir():
+        try:
+            candidates.extend(qroot.rglob('*'))
+        except OSError as e:
+            _log(f"[secrets] could not list {qroot} to repair legacy ACLs: {e}")
+    for p in candidates:
+        try:
+            exists = p.exists()
+        except OSError:
+            exists = False
+        if not exists:
+            continue
+        ok, detail = _icacls_grant_and_verify_once(p, sid, account)
+        if not ok:
+            _log(f"[secrets] could not repair a possibly-broken ACL on {p}: {detail}")
+
+
 def _harden_clayrune_home_windows(home: Path) -> None:
     """Best-effort: strip ACL inheritance on ~/.clayrune itself and grant
-    only (owner, SYSTEM), so a file created under it no longer inherits
-    whatever the parent directory happens to grant. Logged, not raised: the
-    wrapped-key FILE's own ACL is independently verified and fail-closed
-    (see _write_private_text_fail_closed_windows below)."""
+    only (owner, SYSTEM) — inheritable, so directories created under it pass
+    permissions on to whatever gets created under THEM too — no longer
+    inheriting whatever the parent directory happens to grant. Logged, not
+    raised: the wrapped-key FILE's own ACL is independently verified and
+    fail-closed (see _write_private_text_fail_closed_windows below).
+
+    Runs :func:`_repair_broken_legacy_acls_windows` first: this call used to
+    grant a non-inheritable ACE, which strips existing children of `home`
+    down to an empty DACL (MC 503edfe4 rework) — repairing them before
+    re-hardening `home` means a box already broken by the pre-fix code heals
+    the next time a passphrase is set or changed, not just going forward."""
     if os.name != 'nt':
         return
     try:
@@ -1543,6 +1626,7 @@ def _harden_clayrune_home_windows(home: Path) -> None:
     except Exception as e:
         _log(f"[secrets] could not resolve current user SID to harden {home}: {e}")
         return
+    _repair_broken_legacy_acls_windows(sid, account)
     ok, detail = _icacls_grant_and_verify(home, sid, account)
     if not ok:
         _log(f"[secrets] could not harden {home}'s ACL: {detail}")
