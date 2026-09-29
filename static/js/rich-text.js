@@ -72,7 +72,7 @@ function formatAgentText(raw) {
     const labelHtml = labelEsc ? labelEsc.trim() : esc(fname);  // labelEsc already escaped
     const tok = '@@CLFile' + _fileTokens.length + '@@';
     _fileTokens.push(
-      `<a class="hl-file-link" href="${href}" target="_blank" rel="noopener" ` +
+      `<a class="hl-file-link" dir="ltr" href="${href}" target="_blank" rel="noopener" ` +
       `title="Download ${pathEsc.trim()}"><span class="hl-file-ic">&#128196;</span>${labelHtml}</a>`);
     return tok;
   });
@@ -84,13 +84,18 @@ function formatAgentText(raw) {
   // URL pass can no longer recognise — which is why links *with a path*
   // silently stopped being linkified. Swapped back in just before return;
   // trailing sentence punctuation is kept outside the anchor.
+  // dir="ltr" on the anchor (not just the CSS unicode-bidi rule) for the same
+  // reason as hl-code above: "https" is a strong-LTR first character, so a
+  // Hebrew line starting with a URL would otherwise mis-detect the WHOLE line
+  // as LTR. Verified: CSS `direction:ltr` alone does NOT stop the dir="auto"
+  // algorithm from reading it, only the HTML attribute does. MC-1000.
   const _urlTokens = [];
   t = t.replace(/(https?:\/\/[^\s<]+)/g, (m) => {
     let url = m, trail = '';
     const tm = url.match(/[.,;:!?)\]]+$/);
     if (tm) { trail = tm[0]; url = url.slice(0, -trail.length); }
     const tok = '@@CLUrl' + _urlTokens.length + '@@';
-    _urlTokens.push('<a class="hl-url" href="' + url + '" target="_blank" rel="noopener">' + url + '</a>');
+    _urlTokens.push('<a class="hl-url" dir="ltr" href="' + url + '" target="_blank" rel="noopener">' + url + '</a>');
     return tok + trail;
   });
 

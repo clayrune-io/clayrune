@@ -124,6 +124,25 @@ try {
       };
     }
 
+    // 1b. Hebrew line where a URL is the FIRST token — "https" is a strong-LTR
+    //     character, so if the anchor lacks its own dir attribute the whole
+    //     line mis-detects as LTR even though the CSS forces the URL itself
+    //     ltr (verified live: CSS-only does not stop dir="auto" detection).
+    {
+      const line = `https://example.com/docs ${HE}`;
+      const div = document.createElement('div');
+      div.className = 'agent-line';
+      div.setAttribute('dir', 'auto');
+      div.innerHTML = window.formatAgentText(line);
+      root.appendChild(div);
+      const url = div.querySelector('.hl-url');
+      out.heReplyLeadingUrl = {
+        direction: dirOf(div),
+        urlDirection: url ? dirOf(url) : null,
+        urlFound: !!url,
+      };
+    }
+
     // 2. Agent reply, English — must stay LTR.
     {
       const line = `${EN} \`getUserById\` more text`;
@@ -274,6 +293,11 @@ try {
   result.heReply.direction === 'rtl' ? ok('Hebrew agent reply: direction=rtl') : fail(`Hebrew agent reply direction=${result.heReply.direction}`);
   notLeft(result.heReply.align) ? ok(`Hebrew agent reply: text-align=${result.heReply.align} (right-aligned)`) : fail(`Hebrew agent reply text-align=${result.heReply.align} (should not be left)`);
   result.heReply.codeDirection === 'ltr' ? ok(`inline code stays LTR inside Hebrew line (text="${result.heReply.codeText}")`) : fail(`inline code direction=${result.heReply.codeDirection}, expected ltr`);
+
+  const lu = result.heReplyLeadingUrl;
+  lu.urlFound ? ok('leading-URL Hebrew line: URL linkified') : fail('leading-URL Hebrew line: no .hl-url anchor found');
+  lu.direction === 'rtl' ? ok('Hebrew line starting with a URL still detects rtl (URL prefix does not bleed)') : fail(`Hebrew line starting with a URL detected direction=${lu.direction} — the URL prefix is bleeding into direction detection`);
+  lu.urlDirection === 'ltr' ? ok('leading URL span itself stays ltr') : fail(`leading URL span direction=${lu.urlDirection}, expected ltr`);
 
   // 2. English reply
   result.enReply.direction === 'ltr' ? ok('English agent reply: direction=ltr (unaffected)') : fail(`English agent reply direction=${result.enReply.direction}`);
