@@ -5269,6 +5269,12 @@ function renderAgentQuestion(sessionId, projectId, questions, questionId) {
   container.className = 'agent-question';
   container.id = formId;
   if (questionId) container.dataset.qid = questionId;
+  // Round-1's per-element dir="auto" gets the TEXT right, but radios,
+  // 'Other', and the actions row have no text of their own to auto-detect
+  // from — they need a real `dir` on the card so flexbox reverses their
+  // layout. Detected once from the first question's text (a card is one
+  // language, not a per-option mix). MC-1000 round 2.
+  container.dir = window._firstStrongDir ? window._firstStrongDir(questions[0].question || questions[0].header || '') : 'ltr';
 
   let html = '';
   // §6: a single short-option single-select question renders as one-tap chips
