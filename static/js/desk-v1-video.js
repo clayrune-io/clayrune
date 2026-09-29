@@ -287,6 +287,17 @@
     return 'Whole video';
   }
 
+  // §5's draft-store key must be a stable id, "never a label or shared
+  // textarea id" — `_st.scope` is `{type, id, label}`; template-interpolating
+  // the object itself (pre-T3) always stringified to the literal
+  // "[object Object]", collapsing every scope onto one key so a Working task
+  // in one scope silently blocked/leaked into every other scope of the same
+  // family. `_st.scope.id` is already the stable per-scope id `_scopeOptions`
+  // hands out (scene id / version id / null for 'whole').
+  function _posyDraftKey(family) {
+    return `video:${family.id}:${_st.scope.type}:${_st.scope.id || 'whole'}`;
+  }
+
   const VIDEO_TABS = [['source', 'Source'], ['storyboard', 'Storyboard'], ['renders', 'Renders']];
 
   function _directorHTML() {
@@ -458,7 +469,7 @@
       window.DeskV1Kit.bindInfoIcons(el, {});
       window.DeskV1Kit.bindPosyBox(el.querySelector('#desk-v1-video-posy'), 'desk-v1-video-posy-input', (text) => {
         _sendToPosy(family, detail, text);
-      }, { onScopeClick: (trigger) => _openScopeMenu(trigger, family, detail), draftKey: `video:${family.id}:${_st.scope}`, taskLifecycle: true });
+      }, { onScopeClick: (trigger) => _openScopeMenu(trigger, family, detail), draftKey: _posyDraftKey(family), taskLifecycle: true });
     }
 
     _wireSceneDrag(el, detail);
