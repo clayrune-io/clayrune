@@ -16019,16 +16019,20 @@ def _guardian_check_session(sid, session, now):
     # State 3: stuck gate flags (approval/question)
     if session.get('waiting_for_plan_approval') and now - last_change > GUARDIAN_STUCK_FLAG_TIMEOUT:
         last_sse = session.get('_last_sse_poll_time', 0)
-        if now - last_sse > 60:
+        # Once per stuck episode, not once per tick (Ron 2026-09-29: the
+        # chat filled with copies). A status change starts a new episode.
+        if now - last_sse > 60 and session.get('_guardian_plan_nudged_at') != last_change:
             with proj_lock:
+                session['_guardian_plan_nudged_at'] = last_change
                 session['log_lines'].append(
                     '[Guardian: plan approval may have been missed — re-check session]')
                 session['guardian_state'] = 'needs_attention'
 
     if session.get('waiting_for_question') and now - last_change > GUARDIAN_STUCK_FLAG_TIMEOUT:
         last_sse = session.get('_last_sse_poll_time', 0)
-        if now - last_sse > 60:
+        if now - last_sse > 60 and session.get('_guardian_q_nudged_at') != last_change:
             with proj_lock:
+                session['_guardian_q_nudged_at'] = last_change
                 session['log_lines'].append(
                     '[Guardian: question may have been missed — re-check session]')
                 session['guardian_state'] = 'needs_attention'
