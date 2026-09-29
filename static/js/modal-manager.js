@@ -348,6 +348,12 @@ function closeModalById(modalId) {
   if (modalId === '__floor' && typeof window._floorTeardown === 'function') {
     window._floorTeardown();
   }
+  // Human-proof passcode prompt (MC-995 follow-up, Fenn R2): Escape and other
+  // generic close paths land here directly, not through _hpCancel — resolve
+  // its pending promise as a cancel so the caller isn't stranded waiting.
+  if (modalId.startsWith('__human-proof-') && typeof window._hpTeardown === 'function') {
+    window._hpTeardown(modalId);
+  }
   // Clean up terminal pop-out resources
   cleanupTerminalModal(modalId);
   if (entry._statusBarObserver) { entry._statusBarObserver.disconnect(); delete entry._statusBarObserver; }

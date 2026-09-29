@@ -1022,6 +1022,13 @@
      hover-expand over modals; while a modal is maximized we raise the layer
      above the sidebar and header so nothing paints over the full-screen window. */
   body.mc-modal-maximized .modal-layer { z-index: 500; }
+  /* Human-proof passcode prompt (_hpShow, human-proof-modal.js) mounts inside
+     .modal-layer, so its own z-index can never outrank a fixed overlay that
+     lives OUTSIDE that stacking context — the persona editor (z-index 1200)
+     and workflow-builder menus/scrims (up to 100000) both painted over it,
+     making the prompt's own Confirm/Cancel unclickable (Fenn R1, MC-995
+     follow-up). Raise the whole layer past everything while the prompt is up. */
+  body.human-proof-active .modal-layer { z-index: 200000; }
   .modal-window.is-maximized { filter: none; }
   .modal-window.is-maximized .modal-content {
     border-radius: 0;

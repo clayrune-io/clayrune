@@ -88,9 +88,19 @@ function _hpRenderBody(modalId, mode, description, errorText) {
 
 const _hpPending = new Map(); // modalId -> { url, fetchOptions, bodyObj, title, description, mode, resolve }
 
+// Drives `body.human-proof-active .modal-layer` (app.css) so the prompt's
+// own layer outranks whatever fixed overlay summoned it (persona editor,
+// workflow-builder menus, ...) — see Fenn R1. Keyed off _hpPending.size
+// rather than a bool so it survives more than one prompt ever existing at
+// once without going stale.
+function _hpSyncBodyClass() {
+  document.body.classList.toggle('human-proof-active', _hpPending.size > 0);
+}
+
 function _hpShow(modalId) {
   const p = _hpPending.get(modalId);
   if (!p) return;
+  _hpSyncBodyClass();
   let win = document.querySelector(`[data-modal-id="${modalId}"]`);
   if (!win) {
     win = document.createElement('div');
@@ -151,6 +161,7 @@ window.humanProofFetch = humanProofFetch;
 function _hpCleanup(modalId, result) {
   const p = _hpPending.get(modalId);
   _hpPending.delete(modalId);
+  _hpSyncBodyClass();
   closeModalById(modalId);
   if (p) p.resolve(result);
 }
@@ -159,6 +170,23 @@ function _hpCancel(modalId) {
   _hpCleanup(modalId, null);
 }
 window._hpCancel = _hpCancel;
+
+// Fenn R2: Escape and other generic close paths (Home, mobile back) call
+// closeModalById directly, never _hpCancel — without this hook the pending
+// promise was left unresolved forever and the caller (Save, a settings
+// toggle, ...) stayed stuck in its busy/disabled state. modal-manager.js
+// calls this from closeModalById for any '__human-proof-' modal id.
+// _hpPending is deleted BEFORE closeModalById runs in _hpCleanup above, so
+// when THAT path re-enters here the map lookup below is already empty and
+// this is a no-op — safe against the two paths calling each other.
+function _hpTeardown(modalId) {
+  const p = _hpPending.get(modalId);
+  if (!p) return;
+  _hpPending.delete(modalId);
+  _hpSyncBodyClass();
+  p.resolve(null);
+}
+window._hpTeardown = _hpTeardown;
 
 async function _hpSubmit(modalId) {
   const p = _hpPending.get(modalId);

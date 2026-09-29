@@ -1155,7 +1155,10 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
       <label>3. Face <span class="claydo-save-hint">(a figure, or any emoji — chosen from the role, edit freely)</span></label>
       <div id="claydo-save-figs" class="persona-fig-row"></div>
       <input id="claydo-save-avatar" type="text" maxlength="40" spellcheck="false" placeholder="choosing…">
-      <div class="claydo-save-voice-status" id="claydo-save-identity-status">Choosing a name and a face for this role&hellip;</div>
+      <div class="claydo-save-voice-status" id="claydo-save-identity-status">Not chosen yet &mdash; click Choose, or type your own above.</div>
+      <div class="claydo-save-voice-actions">
+        <button type="button" class="claydo-ready-btn" id="claydo-save-identity-gen">Choose name &amp; face</button>
+      </div>
       <label>4. Description <span class="claydo-save-hint">(when should the agent use it?)</span></label>
       <input id="claydo-save-desc" type="text" value="${esc(description)}">
       <label>5. Where</label>
@@ -1170,12 +1173,12 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
       <select id="claydo-save-effort">${_peEffortOptions('')}</select>
       <div class="claydo-save-hint">Default follows the project's settings. These choices apply to the saved agent; this workshop uses Claude.</div>
       <label>7. Voice <span class="claydo-save-hint">(how it sounds — generated from the role, edit freely)</span></label>
-      <div class="claydo-save-voice-status" id="claydo-save-voice-status">Writing a voice for this role&hellip;</div>
+      <div class="claydo-save-voice-status" id="claydo-save-voice-status">Not generated yet &mdash; click Generate, or write your own below.</div>
       <textarea id="claydo-save-voice" class="claydo-save-voice" spellcheck="true" rows="7"
         placeholder="## Voice&#10;&#10;Concrete speech habits go here once generated — or write your own."
       >${esc(existingVoice)}</textarea>
       <div class="claydo-save-voice-actions">
-        <button type="button" class="claydo-ready-btn" id="claydo-save-voice-regen">&#x1F504; Regenerate</button>
+        <button type="button" class="claydo-ready-btn" id="claydo-save-voice-regen">Generate voice</button>
       </div>
       </div>
       <div class="claydo-save-err" id="claydo-save-err" style="display:none"></div>
@@ -1229,21 +1232,25 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
 
   const goBtn = panel.querySelector('#claydo-save-go');
 
-  // Two generations run at once on open (voice below, identity further down)
-  // and Save must wait for BOTH to settle — a fast click while either is still
-  // in flight could save a hire with an empty voice or a blank name/face
-  // nobody saw generate. Each holds the button disabled for as long as it is
-  // running; Save only re-enables once nothing is left pending.
+  // Voice and identity generation can each be in flight from their own
+  // button (see below) and Save must wait for whichever is running — a fast
+  // click mid-generation could save a hire with a half-written voice or a
+  // blank name/face nobody saw finish. Each holds the button disabled for as
+  // long as it is running; Save re-enables once nothing is left pending.
+  // Neither starts pending until its button is clicked, so Save opens
+  // enabled (below) rather than waiting on generation that hasn't started.
   let _genPending = 0;
   const _beginGen = () => { _genPending++; goBtn.disabled = true; };
   const _endGen = () => { _genPending = Math.max(0, _genPending - 1); if (!_genPending) goBtn.disabled = false; };
 
   // ── Voice generation (MC-943) ─────────────────────────────────────────
-  // Runs automatically on open — "in singular flow" means the user is never
-  // required to click a separate button to get one, unlike the post-hoc
-  // self-naming/self-facing pickers in the persona editor. Save stays
-  // disabled until the first attempt settles (success OR failure) so a fast
-  // click can't save an empty voice nobody saw generate.
+  // Used to run automatically on open ("singular flow" — no separate click
+  // needed, unlike the post-hoc self-naming/self-facing pickers in the
+  // persona editor). /api/characters/voice is now human-proof-gated
+  // server-side (MC-995): auto-firing it on every open popped a passcode
+  // prompt nobody asked for, and every opened-then-abandoned panel burned an
+  // attempt out of the guard's shared ten-per-window budget (Fenn R3) — so
+  // this now only ever runs from an explicit click on Generate.
   const voiceStatusEl = panel.querySelector('#claydo-save-voice-status');
   const voiceTa = panel.querySelector('#claydo-save-voice');
   const regenBtn = panel.querySelector('#claydo-save-voice-regen');
@@ -1257,38 +1264,42 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
     setVoiceStatus('Writing a voice for this role…', false);
     const descNow = panel.querySelector('#claydo-save-desc').value.trim() || description;
     try {
-      const res = await fetch(API_BASE + '/api/characters/voice', {
+      const result = await humanProofFetch(API_BASE + '/api/characters/voice', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({description: descNow, body: baseBody}),
+      }, {
+        title: 'Generate voice',
+        description: 'Re-enter your dashboard passcode to generate a voice for this role.',
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `voice generation failed (${res.status})`);
-      voiceTa.value = data.voice || '';
+      if (result === null) {
+        setVoiceStatus('Cancelled — write one by hand, or click Generate again.', false);
+        return;
+      }
+      if (!result.ok) throw new Error((result.body && result.body.error) || `voice generation failed (${result.status})`);
+      voiceTa.value = result.body.voice || '';
       setVoiceStatus('Generated — edit freely before saving.', false);
     } catch (e) {
       // Fail gracefully: an honest message, an empty/editable field, and a
       // hire that still completes — never a silent generic block, never a
       // blocked Save.
-      setVoiceStatus('Could not auto-generate a voice (' + (e.message || e)
-        + '). Write one by hand, or try Regenerate again.', true);
+      setVoiceStatus('Could not generate a voice (' + (e.message || e)
+        + '). Write one by hand, or try Generate again.', true);
     } finally {
       regenBtn.disabled = false;
       _endGen();
     }
   };
   regenBtn.onclick = runVoiceGen;
-  runVoiceGen();
 
   // ── Identity suggestion (MC-871 defect B) ────────────────────────────
-  // A hire arrives with a name and a face already chosen, same singular-flow
-  // reasoning as Voice above — the persona editor's post-hoc "Let it choose"
-  // buttons are for CHANGING an existing persona's identity later, not for
-  // the first one. /api/characters/identity never comes back empty (it falls
-  // back to a deterministic, roster-deduped pick rather than a blank), so
-  // this never needs its own error state — just fill the fields once it
-  // answers, same as Voice.
+  // Same auto-on-open history and same MC-995 gating problem as Voice above
+  // (Fenn R3) — now fires only from the Choose name & face button.
+  // /api/characters/identity never comes back empty (it falls back to a
+  // deterministic, roster-deduped pick rather than a blank), so this never
+  // needs its own error state — just fill the fields once it answers, same
+  // as Voice.
   const identityStatusEl = panel.querySelector('#claydo-save-identity-status');
+  const identityGenBtn = panel.querySelector('#claydo-save-identity-gen');
   const agentNameInput = panel.querySelector('#claydo-save-agent-name');
   const avatarInput = panel.querySelector('#claydo-save-avatar');
   const figsRow = panel.querySelector('#claydo-save-figs');
@@ -1319,34 +1330,48 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
     });
   })();
   const runIdentityGen = async () => {
+    identityGenBtn.disabled = true;
     _beginGen();
+    identityStatusEl.classList.remove('err');
+    identityStatusEl.textContent = 'Choosing a name and a face for this role…';
     const descNow = panel.querySelector('#claydo-save-desc').value.trim() || description;
     try {
-      const res = await fetch(API_BASE + '/api/characters/identity', {
+      const result = await humanProofFetch(API_BASE + '/api/characters/identity', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           description: descNow, body: baseBody,
           scope: scopeSel.value === 'global' ? 'global' : 'project',
           project_id: scopeSel.value === 'global' ? null : scopeSel.value,
         }),
+      }, {
+        title: 'Choose name & face',
+        description: 'Re-enter your dashboard passcode to choose a name and face for this role.',
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `identity suggestion failed (${res.status})`);
-      agentNameInput.value = data.agent_name || '';
-      if (data.avatar) setChosenFace(data.avatar);
+      if (result === null) {
+        identityStatusEl.textContent = 'Cancelled — set them by hand, or click Choose again.';
+        return;
+      }
+      if (!result.ok) throw new Error((result.body && result.body.error) || `identity suggestion failed (${result.status})`);
+      agentNameInput.value = result.body.agent_name || '';
+      if (result.body.avatar) setChosenFace(result.body.avatar);
       identityStatusEl.textContent = 'Chosen — edit freely before saving.';
     } catch (e) {
       // Same non-blocking failure discipline as Voice: an honest message, two
       // empty/editable fields, and a hire that still completes.
-      identityStatusEl.textContent = 'Could not auto-choose a name or face ('
+      identityStatusEl.textContent = 'Could not choose a name or face ('
         + (e.message || e) + '). Set them by hand.';
       identityStatusEl.classList.add('err');
     } finally {
+      identityGenBtn.disabled = false;
       _endGen();
     }
   };
-  runIdentityGen();
+  identityGenBtn.onclick = runIdentityGen;
+
+  // Nothing is generating yet (both are click-triggered now, Fenn R3) — Save
+  // opens enabled; the user may hand-fill every field without ever
+  // generating anything, same graceful-degradation contract as a failed gen.
+  goBtn.disabled = false;
 
   let overwrite = false;
   goBtn.onclick = async () => {

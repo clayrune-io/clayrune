@@ -520,20 +520,41 @@ function setupSelectProvider(name, selected) {
   if (setupActive) setupShow(setupStep);
 }
 
+// Does NOT call the shared applyDefaultProvider (provider-auth.js) — that
+// persists via saveSetting('default_provider', ...) immediately, which is
+// right for its other caller (the Settings > Connections picker, post-setup)
+// but on a fresh install popped a passcode prompt the moment this radio was
+// checked, ahead of the wizard's own passcode step, then AGAIN a second time
+// at Finish's batched write (found by the same regression class as
+// setupPickModelTier above, MC-995 follow-up). setupExplicitDefault now
+// travels in that single batched write (_setupPendingConfigBody) instead;
+// the provider-inventory refresh + repaint below are unrelated to the config
+// write and still need to run so the row reflects the new default live.
 async function setupSetDefaultProvider(name) {
   if (!setupSelectedProviders.has(name)) return;
   setupExplicitDefault = name;
-  await applyDefaultProvider(name);
+  _agentProviders = null;
+  try { await _ensureAgentProviders(); } catch (e) { /* auth refresh still uses config */ }
+  if (typeof refreshAuthStatus === 'function') refreshAuthStatus();
+  _repaintProviderRows();
 }
 
 // Provider-neutral: the server resolves each tier per runtime via
 // latest_for() (engine_selection.py), so this never names a model id.
-// `btn` is omitted on the initial auto-persist (onEnter) — only a real click
-// moves the highlight.
-async function setupPickModelTier(tier, btn) {
+// `btn` is omitted on the initial auto-persist-in-memory (onEnter) — only a
+// real click moves the highlight.
+//
+// Held locally, not persisted here (MC-995 follow-up, Dave review of
+// feea79d): PUT /api/config is human-only-gated on every call, and onEnter
+// below calls this with no click at all the moment the connections step
+// first renders — on a fresh install with no passcode yet, that alone popped
+// a passcode prompt before the wizard had asked for one, a second
+// interaction on top of Finish's batched write. This value now travels in
+// that same single batched write (_setupPendingConfigBody /
+// _setupPersistCompleted), same as the backup destination/schedule fields.
+function setupPickModelTier(tier, btn) {
   setupModelTier = tier;
   if (btn) _setupHighlight(btn);
-  await saveSetting('agent_model', 'tier:' + tier);
 }
 
 async function setupInstallSelected(btn) {
@@ -867,6 +888,14 @@ function _setupPendingConfigBody() {
   if (destOverride && destOverride !== _setupBackupDest.configured) body.backup_dest_dir = destOverride;
   const curSchedule = String((_globalConfig && _globalConfig.backup_schedule) || '').trim();
   if (_setupBackupSchedule && _setupBackupSchedule !== curSchedule) body.backup_schedule = _setupBackupSchedule;
+  // setupModelTier only reflects a TIER pick (see startFirstRun: an existing
+  // exact-model pin leaves it '' and untouched) — an empty value here means
+  // "user never touched this control while pinned", not "clear the pin".
+  const curModel = String((_globalConfig && _globalConfig.agent_model) || '').trim();
+  const wantModel = setupModelTier ? 'tier:' + setupModelTier : '';
+  if (wantModel && wantModel !== curModel) body.agent_model = wantModel;
+  const curDefault = String((_globalConfig && _globalConfig.default_provider) || '').trim();
+  if (setupExplicitDefault && setupExplicitDefault !== curDefault) body.default_provider = setupExplicitDefault;
   if (!(_globalConfig && _globalConfig.setup_completed)) body.setup_completed = true;
   return body;
 }
@@ -901,6 +930,8 @@ async function _setupPersistCompleted() {
       _setupBackupDest.override = '';
     }
     if (body.backup_schedule) _globalConfig.backup_schedule = body.backup_schedule;
+    if (body.agent_model) _globalConfig.agent_model = body.agent_model;
+    if (body.default_provider) _globalConfig.default_provider = body.default_provider;
     if (body.setup_completed) _globalConfig.setup_completed = true;
   } catch (_) {}
 }

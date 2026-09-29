@@ -667,10 +667,6 @@ async function runIdentityPrefillGuard(browser) {
       const saveBtn = document.querySelector('[data-act="save"]');
       if (!saveBtn) throw new Error('the editor never opened, or has no Save action');
       saveBtn.click();
-      // Checked with NO await in between: _claydoOpenSavePanel builds the
-      // panel and kicks off both generations synchronously, so this reads the
-      // DOM before either fetch has had any chance to resolve — the state a
-      // fast real click would actually see.
       const panel = document.querySelector('.claydo-save-panel');
       if (!panel) throw new Error('the save panel never opened');
       // Read, not filled: _claydoOpenSavePanel's description-frontmatter regex
@@ -681,10 +677,35 @@ async function runIdentityPrefillGuard(browser) {
       // so this now asserts the prefill instead of papering over it.
       r.descField = panel.querySelector('#claydo-save-desc').value;
       const goBtn = panel.querySelector('#claydo-save-go');
-      r.goDisabledWhileGenerating = !!goBtn && goBtn.disabled;
-      // The identity + voice fetches both fire on open; give them a real round
-      // trip through the mocked route rather than assuming they've landed.
-      await settle(600);
+      // Neither generation auto-fires on open any more (MC-995/Fenn R3): each
+      // burned a passcode-guard attempt on every panel open, even one the
+      // user abandoned without ever hitting Save. Save must therefore open
+      // enabled — there is nothing pending to wait for yet.
+      r.goEnabledOnOpen = !!goBtn && !goBtn.disabled;
+      const answerHumanProof = async (passcode) => {
+        for (let i = 0; i < 20 && !document.querySelector('[data-modal-id^="__human-proof-"]'); i++) {
+          await settle(50);
+        }
+        const hpWin = document.querySelector('[data-modal-id^="__human-proof-"]');
+        if (!hpWin) return false;
+        const modalId = hpWin.dataset.modalId;
+        const input = document.getElementById(`hp-passcode-${modalId}`);
+        if (input) input.value = passcode;
+        window._hpSubmit(modalId);
+        await settle(300);
+        return true;
+      };
+      const regenBtn = panel.querySelector('#claydo-save-voice-regen');
+      const identityGenBtn = panel.querySelector('#claydo-save-identity-gen');
+      regenBtn.click();
+      // Checked with NO await in between the click and this read: _beginGen
+      // disables Save synchronously, before the passcode modal even mounts.
+      r.goDisabledDuringVoiceGen = !!goBtn && goBtn.disabled;
+      r.voiceModalAnswered = await answerHumanProof('smoke-dash-passcode');
+      identityGenBtn.click();
+      r.goDisabledDuringIdentityGen = !!goBtn && goBtn.disabled;
+      r.identityModalAnswered = await answerHumanProof('smoke-dash-passcode');
+      await settle(300);
       r.agentNameField = panel.querySelector('#claydo-save-agent-name')?.value || '';
       r.avatarField = panel.querySelector('#claydo-save-avatar')?.value || '';
       r.figChips = panel.querySelectorAll('#claydo-save-figs .pe-fig').length;
@@ -731,6 +752,15 @@ async function runIdentityPrefillGuard(browser) {
   if (out.err) fails.push('threw - ' + out.err);
   pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))
     .forEach((e) => fails.push('uncaught: ' + e));
+  if (!out.goEnabledOnOpen)
+    fails.push('Save opened disabled with nothing generating yet — neither generation '
+      + 'auto-fires any more (MC-995/Fenn R3), so there is nothing to wait for');
+  if (!out.voiceModalAnswered)
+    fails.push('clicking Generate voice never raised the human-proof passcode prompt — '
+      + '/api/characters/voice is server-gated and must go through humanProofFetch');
+  if (!out.identityModalAnswered)
+    fails.push('clicking Choose name & face never raised the human-proof passcode prompt '
+      + '— /api/characters/identity is server-gated and must go through humanProofFetch');
   if (!identityCalls.length)
     fails.push('the save panel never called /api/characters/identity — a hire would '
       + 'land with no name and no face suggested at all');
@@ -746,9 +776,12 @@ async function runIdentityPrefillGuard(browser) {
   if (!out.figChips) fails.push('the face-chip row never rendered any figures to pick from');
   if (!out.selectedChip)
     fails.push('the suggested face is not shown as selected among the figure chips');
-  if (!out.goDisabledWhileGenerating)
-    fails.push('Save was clickable WHILE identity/voice were still generating — a fast '
-      + 'click could ship a hire with no name and no face nobody saw chosen');
+  if (!out.goDisabledDuringVoiceGen)
+    fails.push('Save was clickable WHILE voice was still generating — a fast click could '
+      + 'ship a hire with a half-written voice nobody saw finish');
+  if (!out.goDisabledDuringIdentityGen)
+    fails.push('Save was clickable WHILE identity was still generating — a fast click '
+      + 'could ship a hire with no name and no face nobody saw chosen');
   if (!out.goEnabledAfterGeneration)
     fails.push('Save stayed disabled after both generations settled');
   if (!out.modelDisabledByDefault || !out.modelResetOnProviderChange || !out.noClaudeModelsInCodex)

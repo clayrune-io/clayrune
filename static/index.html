@@ -2996,12 +2996,22 @@ async function saveSetting(key, value) {
     title: 'Save setting',
     description: 'Re-enter your dashboard passcode to change this setting.',
   });
-  if (result === null) return; // cancelled
+  if (result === null) {
+    // toggleSetting flips its switch's `on` class BEFORE this call resolves
+    // (optimistic UI); selects/text inputs calling this via onchange already
+    // show the new value the same way. Cancelling the passcode prompt must
+    // not leave that visible but never actually saved (Fenn R4) — re-render
+    // from the server's real config, same recovery already used below on a
+    // successful cross-field save.
+    if (document.getElementById('settings-body')) _renderSettings();
+    return; // cancelled
+  }
   if (!result.ok) {
     // A validating key (e.g. backup_dest_dir refusing a repo-internal
     // path) returns {error} instead of silently rewriting the value —
     // surface that instead of the generic failure toast.
     showToast(result.body.error || 'Failed to save setting', 4000);
+    if (document.getElementById('settings-body')) _renderSettings();
     return;
   }
   // Mirror into the in-memory config so anything reading _globalConfig
