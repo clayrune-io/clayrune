@@ -32,6 +32,20 @@
  * pattern), not a hand-maintained map, so a new module never silently falls
  * through to `route.abort()`.
  *
+ * ROUND 2 (MC-1000): the card's radios/'Other'/actions row have no text of
+ * their own to auto-detect direction from, so `renderAgentQuestion` now sets
+ * a real `dir` attribute on the card (`_firstStrongDir`, rich-text.js) and
+ * flexbox reverses their layout for it — tested here via radio bounding-rect
+ * x-position, not just computed `direction`. The "Answered:" summary line
+ * moved from a baked-in trailing space to flex `gap` + a `<bdi>`-isolated
+ * answer. `escPromptWithImages` moved from ONE dir="auto" block per bubble to
+ * one per LINE, so a mixed "Q: <Hebrew>?\nA: <English>" bubble can't have one
+ * line's direction leak into the other. `formatAgentText` and
+ * `escPromptWithImages` also now isolate Hebrew/Arabic runs EMBEDDED in an
+ * English-base line (`_isolateRtlRuns`) — the mirror of round 1's LTR-
+ * isolated code/path spans — so quote marks/commas at the RTL boundary don't
+ * resolve against the outer LTR paragraph.
+ *
  * RUN: cd tools/smoke && node rtl-support.mjs
  */
 import { readFileSync, readdirSync } from 'node:fs';
@@ -202,24 +216,72 @@ try {
       const qtext = card?.querySelector('.agent-question-text');
       const optLabel = card?.querySelector('.agent-question-option label');
       const desc = card?.querySelector('.aq-desc');
+      // ROUND 2: card-level dir + radio/Other flex-order.
+      const cardRect = card?.getBoundingClientRect();
+      const firstOption = card?.querySelector('.agent-question-option');
+      const firstRadio = firstOption?.querySelector('input');
+      const otherOption = card ? card.querySelectorAll('.agent-question-option')[card.querySelectorAll('.agent-question-option').length - 1] : null;
+      const otherRadio = otherOption?.querySelector('input');
       out.question = {
         found: !!card,
+        cardDir: card ? card.getAttribute('dir') : null,
         headerDir: header ? dirOf(header) : null,
         qtextDir: qtext ? dirOf(qtext) : null,
         optLabelDir: optLabel ? dirOf(optLabel) : null,
         descDir: desc ? dirOf(desc) : null,
+        radioOnRightHalf: (cardRect && firstRadio)
+          ? (firstRadio.getBoundingClientRect().left - cardRect.left) > (cardRect.width / 2)
+          : null,
+        otherRadioOnRightHalf: (cardRect && otherRadio)
+          ? (otherRadio.getBoundingClientRect().left - cardRect.left) > (cardRect.width / 2)
+          : null,
       };
 
-      // "Answered: " summary line — the prefix-bleed fix under test.
-      const answerLine = document.createElement('div');
-      answerLine.className = 'agent-question-answer';
-      answerLine.setAttribute('dir', 'auto');
-      answerLine.innerHTML = `<span dir="ltr">Answered: </span>${window.esc(HE)}`;
-      root.appendChild(answerLine);
-      const prefixSpan = answerLine.querySelector('span');
+      // English card, same shape — radio must stay on the LEFT half. A
+      // description on the options forces full radio-form mode (matching
+      // the Hebrew card above) instead of the one-tap chip layout, which
+      // has no `.agent-question-option` radios at all.
+      const sidEn = 'rtl_smoke_sess_en';
+      const out3 = document.createElement('div');
+      out3.id = `agent-output-${sidEn}`;
+      root.appendChild(out3);
+      window.renderAgentQuestion(sidEn, 'smoke_pid', [{
+        header: 'English header', question: `${EN}?`,
+        options: [{ label: 'Option A', description: 'English description' }, { label: 'Option B' }],
+      }], 'qid-smoke-en-1');
+      const cardEn = out3.querySelector('.agent-question');
+      const cardEnRect = cardEn?.getBoundingClientRect();
+      const firstRadioEn = cardEn?.querySelector('.agent-question-option input');
+      out.questionEn = {
+        found: !!cardEn,
+        cardDir: cardEn ? cardEn.getAttribute('dir') : null,
+        radioOnLeftHalf: (cardEnRect && firstRadioEn)
+          ? (firstRadioEn.getBoundingClientRect().left - cardEnRect.left) < (cardEnRect.width / 2)
+          : null,
+      };
+
+      // "Answered:" summary line — drive the REAL submit path
+      // (submitQuestionAnswer -> _dispatchQuestionAnswer) against the
+      // already-rendered Hebrew card, exactly as a user checking a radio and
+      // clicking Submit would. The resulting fetch() has nothing to talk to
+      // in this hermetic page but is fire-and-forget (.catch(()=>{})), so it
+      // doesn't block the summary from being inserted.
+      const firstOptionInput = card.querySelector('.agent-question-option input');
+      if (firstOptionInput) firstOptionInput.checked = true;
+      window.submitQuestionAnswer('smoke_pid', sid, card.id, questions.length);
+      const answerLine = card.querySelector('.agent-question-answer');
+      const prefixSpan = answerLine?.querySelector('span[dir="ltr"]');
+      const bdiEl = answerLine?.querySelector('bdi');
+      const gapPx = (prefixSpan && bdiEl)
+        ? Math.abs(bdiEl.getBoundingClientRect().left - prefixSpan.getBoundingClientRect().right)
+        : null;
       out.answeredLine = {
-        direction: dirOf(answerLine),
+        found: !!answerLine,
+        direction: answerLine ? dirOf(answerLine) : null,
         prefixDirection: prefixSpan ? dirOf(prefixSpan) : null,
+        prefixText: prefixSpan ? prefixSpan.textContent : null,
+        bdiText: bdiEl ? bdiEl.textContent : null,
+        gapPx,
       };
     }
 
@@ -232,11 +294,51 @@ try {
       div.setAttribute('dir', 'auto');
       div.innerHTML = window.escPromptWithImages(raw);
       root.appendChild(div);
+      const lineDiv = div.querySelector('div[dir="auto"]');
       const prefixSpan = div.querySelector('span[dir="ltr"]');
       out.userBubble = {
-        direction: dirOf(div),
+        lineCount: div.querySelectorAll('div[dir="auto"]').length,
+        direction: lineDiv ? dirOf(lineDiv) : null,
         prefixDirection: prefixSpan ? dirOf(prefixSpan) : null,
         prefixText: prefixSpan ? prefixSpan.textContent : null,
+      };
+    }
+
+    // 5b. ROUND 2 — a bubble mixing a Hebrew Q line and an English A line
+    //     (exactly what renderAgentQuestion's answer message sends:
+    //     "Q: <question>\nA: <answer>"). Each line must compute its OWN
+    //     direction; one line's language must never leak into the other's.
+    {
+      const raw = `Q: ${HE}?\nA: ${EN}`;
+      const div = document.createElement('div');
+      div.className = 'agent-line agent-line-prompt';
+      div.setAttribute('dir', 'auto');
+      div.innerHTML = window.escPromptWithImages(raw);
+      root.appendChild(div);
+      const lines = Array.from(div.querySelectorAll('div[dir="auto"]'));
+      out.mixedBubble = {
+        lineCount: lines.length,
+        qLineDir: lines[0] ? dirOf(lines[0]) : null,
+        aLineDir: lines[1] ? dirOf(lines[1]) : null,
+        qPrefixText: lines[0]?.querySelector('span[dir="ltr"]')?.textContent ?? null,
+        aPrefixText: lines[1]?.querySelector('span[dir="ltr"]')?.textContent ?? null,
+      };
+    }
+
+    // 5c. English-only bubble must render exactly as before: every line ltr,
+    //     no stray isolate markup, image path handling untouched.
+    {
+      const raw = `${EN} line one\n${EN} line two`;
+      const div = document.createElement('div');
+      div.className = 'agent-line agent-line-prompt';
+      div.setAttribute('dir', 'auto');
+      div.innerHTML = window.escPromptWithImages(raw);
+      root.appendChild(div);
+      const lines = Array.from(div.querySelectorAll('div[dir="auto"]'));
+      out.englishBubble = {
+        lineCount: lines.length,
+        allLtr: lines.every((l) => dirOf(l) === 'ltr'),
+        text: lines.map((l) => l.textContent).join('|'),
       };
     }
 
@@ -281,6 +383,47 @@ try {
       out.backlogEn = { direction: dirOf(enDiv) };
     }
 
+    // 9. ROUND 2 fix 4 — an ENGLISH agent line quoting a Hebrew phrase in
+    //    double quotes must isolate the Hebrew run (quotes included) as one
+    //    element, and must not disturb an unrelated "Answered:" label's own
+    //    internal colon adjacency.
+    {
+      const HE_PHRASE = 'כן, נראה טוב';
+      const line = `The reply was "${HE_PHRASE}" — looks fine.`;
+      const div = document.createElement('div');
+      div.className = 'agent-line';
+      div.setAttribute('dir', 'auto');
+      div.innerHTML = window.formatAgentText(line);
+      root.appendChild(div);
+      const bdis = div.querySelectorAll('bdi');
+      out.englishQuotingHebrew = {
+        lineDirection: dirOf(div),
+        bdiCount: bdis.length,
+        bdiText: bdis.length ? bdis[0].textContent : null,
+      };
+
+      // Colon adjacency: "Answered:" must render with no gap/reorder between
+      // "Answered" and ":" — built via the real _dispatchQuestionAnswer
+      // shape (isolated label span) next to an isolated Hebrew answer, the
+      // exact case the original bug photo showed.
+      const answerLine2 = document.createElement('div');
+      answerLine2.className = 'agent-question-answer';
+      answerLine2.setAttribute('dir', 'auto');
+      answerLine2.innerHTML = `<span dir="ltr">Answered:</span><bdi>${window.esc(HE_PHRASE)}</bdi>`;
+      root.appendChild(answerLine2);
+      const labelTextNode = answerLine2.querySelector('span').firstChild;
+      const r1 = document.createRange();
+      r1.setStart(labelTextNode, 0); r1.setEnd(labelTextNode, 8); // "Answered"
+      const r2 = document.createRange();
+      r2.setStart(labelTextNode, 8); r2.setEnd(labelTextNode, 9); // ":"
+      const rect1 = r1.getClientRects()[0];
+      const rect2 = r2.getClientRects()[0];
+      out.colonAdjacency = {
+        labelText: labelTextNode.textContent,
+        gapBetweenAnsweredAndColon: (rect1 && rect2) ? Math.abs(rect2.left - rect1.right) : null,
+      };
+    }
+
     root.remove();
     return out;
   }, { HE, AR, EN });
@@ -317,17 +460,46 @@ try {
   // 4. Question card
   const q = result.question;
   q.found ? ok('mc:question card rendered via the real renderAgentQuestion()') : fail('renderAgentQuestion() produced no .agent-question card');
+  q.cardDir === 'rtl' ? ok('question card: dir="rtl" set on the container') : fail(`question card dir="${q.cardDir}", expected rtl`);
   q.headerDir === 'rtl' ? ok('question header: direction=rtl') : fail(`question header direction=${q.headerDir}`);
   q.qtextDir === 'rtl' ? ok('question text: direction=rtl') : fail(`question text direction=${q.qtextDir}`);
   q.optLabelDir === 'rtl' ? ok('question option label: direction=rtl') : fail(`question option label direction=${q.optLabelDir}`);
   q.descDir === 'rtl' ? ok('question option description: direction=rtl') : fail(`question option description direction=${q.descDir}`);
-  result.answeredLine.direction === 'rtl' ? ok('"Answered:" line detects rtl from the Hebrew answer, not the English label') : fail(`"Answered:" line direction=${result.answeredLine.direction} — the "Answered: " prefix is bleeding into direction detection`);
-  result.answeredLine.prefixDirection === 'ltr' ? ok('"Answered: " label span stays ltr') : fail(`"Answered: " label span direction=${result.answeredLine.prefixDirection}`);
+  q.radioOnRightHalf === true ? ok('RTL card: first option\'s radio sits on the RIGHT half of the row') : fail(`RTL card radio not on right half (radioOnRightHalf=${q.radioOnRightHalf})`);
+  q.otherRadioOnRightHalf === true ? ok('RTL card: "Other" row radio sits on the RIGHT half too') : fail(`RTL card "Other" radio not on right half (otherRadioOnRightHalf=${q.otherRadioOnRightHalf})`);
+
+  const qEn = result.questionEn;
+  qEn.found ? ok('English question card rendered') : fail('English renderAgentQuestion() produced no card');
+  qEn.cardDir === 'ltr' ? ok('English card: dir="ltr" (unaffected)') : fail(`English card dir="${qEn.cardDir}", expected ltr`);
+  qEn.radioOnLeftHalf === true ? ok('English card: radio stays on the LEFT half of the row') : fail(`English card radio not on left half (radioOnLeftHalf=${qEn.radioOnLeftHalf})`);
+
+  const al = result.answeredLine;
+  al.found ? ok('"Answered:" summary line rendered by the real submit path') : fail('"Answered:" summary line not found after submitQuestionAnswer()');
+  al.direction === 'rtl' ? ok('"Answered:" line detects rtl from the Hebrew answer, not the English label') : fail(`"Answered:" line direction=${al.direction} — the "Answered:" prefix is bleeding into direction detection`);
+  al.prefixDirection === 'ltr' ? ok('"Answered:" label span stays ltr') : fail(`"Answered:" label span direction=${al.prefixDirection}`);
+  (al.prefixText === 'Answered:') ? ok('"Answered:" label carries no baked-in trailing space (spacing comes from flex gap)') : fail(`"Answered:" label text=${JSON.stringify(al.prefixText)}`);
+  const HE_OPT = HE.slice(0, 6);
+  al.bdiText === HE_OPT ? ok('answer text is isolated in its own <bdi>, text intact') : fail(`answer <bdi> text=${JSON.stringify(al.bdiText)}, expected ${JSON.stringify(HE_OPT)}`);
+  (al.gapPx !== null && al.gapPx >= 4) ? ok(`"Answered:" keeps a visible gap from the answer (${al.gapPx.toFixed(1)}px)`) : fail(`"Answered:" / answer gap=${al.gapPx}px — no visible gap`);
 
   // 5. User bubble
   const ub = result.userBubble;
+  ub.lineCount === 1 ? ok('single-line user bubble: exactly one per-line dir="auto" block') : fail(`single-line user bubble produced ${ub.lineCount} line blocks, expected 1`);
   ub.direction === 'rtl' ? ok('mixed user bubble ("> Ron: <Hebrew>") detects rtl from the message, not "Ron:"') : fail(`user bubble direction=${ub.direction} — the "> Ron: " prefix is bleeding into direction detection`);
   ub.prefixDirection === 'ltr' ? ok(`"> Ron: " prefix span stays ltr (text=${JSON.stringify(ub.prefixText)})`) : fail(`user bubble prefix span direction=${ub.prefixDirection} (found: ${JSON.stringify(ub.prefixText)})`);
+
+  // 5b. Mixed-language bubble: Q line (Hebrew) rtl, A line (English) ltr, independently.
+  const mb = result.mixedBubble;
+  mb.lineCount === 2 ? ok('mixed "Q:/A:" bubble: two independent per-line blocks') : fail(`mixed bubble produced ${mb.lineCount} line blocks, expected 2`);
+  mb.qLineDir === 'rtl' ? ok('"Q: <Hebrew>?" line computes direction=rtl on its own') : fail(`"Q:" line direction=${mb.qLineDir}, expected rtl`);
+  mb.aLineDir === 'ltr' ? ok('"A: <English>" line stays direction=ltr, unaffected by the Hebrew Q line') : fail(`"A:" line direction=${mb.aLineDir}, expected ltr — leaked from the other line`);
+  mb.qPrefixText === 'Q: ' ? ok('"Q: " prefix isolated ltr (generalized from "> Name:")') : fail(`"Q:" prefix text=${JSON.stringify(mb.qPrefixText)}`);
+  mb.aPrefixText === 'A: ' ? ok('"A: " prefix isolated ltr') : fail(`"A:" prefix text=${JSON.stringify(mb.aPrefixText)}`);
+
+  // 5c. English-only bubble unaffected.
+  const eb = result.englishBubble;
+  eb.lineCount === 2 ? ok('English-only bubble: two per-line blocks (one per source line)') : fail(`English bubble produced ${eb.lineCount} line blocks, expected 2`);
+  eb.allLtr ? ok('English-only bubble: every line direction=ltr') : fail(`English-only bubble had a non-ltr line (text=${eb.text})`);
 
   // 6. Composer
   result.composer.direction === 'rtl' ? ok('composer textarea: direction=rtl while typing Hebrew') : fail(`composer textarea direction=${result.composer.direction}`);
@@ -339,6 +511,22 @@ try {
   result.backlog.direction === 'rtl' ? ok('backlog item text: direction=rtl for Hebrew') : fail(`backlog item direction=${result.backlog.direction}`);
   result.backlog.numDirection === 'ltr' ? ok('backlog item key (MC-1000) stays ltr inside the rtl item') : fail(`backlog key direction=${result.backlog.numDirection}`);
   result.backlogEn.direction === 'ltr' ? ok('backlog item text: direction=ltr for English (unaffected)') : fail(`backlog item (English) direction=${result.backlogEn.direction}`);
+
+  // 9. Round 2 fix 4 — RTL run isolation inside an English-base line.
+  const eqh = result.englishQuotingHebrew;
+  eqh.lineDirection === 'ltr' ? ok('English line quoting Hebrew: line direction stays ltr') : fail(`English-quoting-Hebrew line direction=${eqh.lineDirection}, expected ltr`);
+  eqh.bdiCount === 1 ? ok('English line quoting Hebrew: exactly one isolated <bdi> run') : fail(`English-quoting-Hebrew line has ${eqh.bdiCount} <bdi> elements, expected 1`);
+  // The surrounding double quotes are wrapped INTO the isolated run (not left
+  // outside as neutrals) — per the round-2 spec, "do the same inside
+  // double-quoted spans that contain RTL" — so the quote marks stay attached
+  // to the correct edge of the Hebrew text instead of resolving against the
+  // outer LTR paragraph.
+  eqh.bdiText === '"כן, נראה טוב"' ? ok(`isolated run text includes its wrapping quotes, attached to the Hebrew phrase: ${JSON.stringify(eqh.bdiText)}`) : fail(`isolated <bdi> text=${JSON.stringify(eqh.bdiText)}, expected the quote-wrapped phrase`);
+
+  const ca = result.colonAdjacency;
+  (ca.gapBetweenAnsweredAndColon !== null && ca.gapBetweenAnsweredAndColon < 2)
+    ? ok(`"Answered:" colon sits immediately right of "Answered" (${ca.gapBetweenAnsweredAndColon.toFixed(2)}px gap)`)
+    : fail(`"Answered" / ":" gap=${ca.gapBetweenAnsweredAndColon}px — colon is not immediately adjacent`);
 
 } catch (e) {
   fail(`harness error: ${e.message}`);

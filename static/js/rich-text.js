@@ -1,4 +1,132 @@
 // ── Rich text formatting for agent output ────────────────────────────────────
+
+// RTL helpers (MC-1000). Hebrew + Arabic (+ presentation forms) ranges —
+// deliberately NOT a full Unicode bidi-class table, just enough to answer
+// "is this the first strong-directional character" for the two scripts this
+// product actually needs to support.
+const _RTL_CHAR_RE = /[֑-߿יִ-﷽ﹰ-ﻼ]/;
+const _LATIN_CHAR_RE = /[A-Za-z]/;
+
+// Round 1 (per-block dir="auto") handles direction for TEXT — the browser's
+// own bidi algorithm reads the first strong character. But a card's layout
+// (radio position, chip flex order, the actions row) has no text of its own
+// to auto-detect from, so it needs the direction computed once, in JS, from
+// the question text, and applied as a real `dir` attribute on the container.
+function _firstStrongDir(text) {
+  const s = String(text == null ? '' : text);
+  for (const ch of s) {
+    if (_RTL_CHAR_RE.test(ch)) return 'rtl';
+    if (_LATIN_CHAR_RE.test(ch)) return 'ltr';
+  }
+  return 'ltr';
+}
+
+// Same first-strong-char scan as _firstStrongDir, but over already-built HTML
+// and SKIPPING text inside any element carrying its own `dir` attribute —
+// i.e. the same content a browser's own dir="auto" would skip. Used to GATE
+// whether a line needs _isolateRtlRuns: gating on the raw line's first
+// strong char (a plain _firstStrongDir(raw) call) is wrong whenever the line
+// starts with something Latin that's ALSO going to be isolated in its own
+// dir="ltr" span (a leading URL, "Q: "/"> Name: " prefix, etc) — that Latin
+// prefix isn't actually the block's base direction once isolated, so gating
+// on it wrongly treats a genuinely Hebrew-first line as English-quoting-
+// Hebrew and bdi-wraps the Hebrew. A <bdi> is itself excluded from the
+// outer dir="auto" scan (same rule as an explicit dir=), so with BOTH the
+// prefix span and the bdi excluded, nothing strong is left and the whole
+// line flips to ltr. Found live: "https://example.com/docs <Hebrew>" and
+// "> Ron: <Hebrew>" both mis-detected as ltr this way. MC-1000 round 2.
+// Tag-stack step shared by the two walkers below: tracks how many OPEN
+// elements carry their own `dir` (so text inside them is isolated). A stack,
+// not a counter -- a nested non-dir element's close tag (e.g. the
+// hl-file-ic span inside a dir="ltr" file link) must not end the protection
+// early. Void tags never push. Returns the new protected count.
+const _VOID_TAG_RE = /^<(img|br|hr|input|wbr|meta|link|source)\b/i;
+function _dirTagStep(stack, tok) {
+  if (tok.startsWith('</')) { stack.pop(); }
+  else if (!_VOID_TAG_RE.test(tok) && !tok.endsWith('/>') && !tok.startsWith('<!')) { stack.push(/\sdir=/.test(tok)); }
+  return stack.filter(Boolean).length;
+}
+
+function _baseDirIgnoringIsolated(html) {
+  const s = String(html == null ? '' : html);
+  const tokens = s.match(/<[^>]+>|&[#a-zA-Z0-9]+;|[\s\S]/g) || [];
+  const dirStack = [];
+  let protectedDepth = 0;
+  for (const tok of tokens) {
+    if (tok[0] === '<') {
+      protectedDepth = _dirTagStep(dirStack, tok);
+      continue;
+    }
+    if (protectedDepth > 0) continue;
+    if (tok.length === 1) {
+      if (_RTL_CHAR_RE.test(tok)) return 'rtl';
+      if (_LATIN_CHAR_RE.test(tok)) return 'ltr';
+    }
+  }
+  return 'ltr';
+}
+
+// Mirrors round 1's LTR-isolation of code/path/URL spans inside an RTL line,
+// but for the opposite case: an ENGLISH-base line (dir="auto" → ltr) that
+// quotes a Hebrew/Arabic phrase. Without isolating the RTL run, neutrals at
+// its boundary (quotes, commas, colons) resolve against the outer LTR
+// paragraph instead of the phrase itself, e.g. `"Answered:" renders as
+// "כן, נראה טובAnswered:"`. MC-1000 round 2.
+//
+// Operates on an HTML string via a tag/entity-aware token walk — never
+// touches markup or entity codes, only bare-character text tokens — so it's
+// safe to run after code/path/bold spans have already been injected. Any
+// element that already carries its own `dir` attribute (hl-code, hl-path,
+// hl-url, hl-file-link — all dir="ltr") is left alone: same "auto skips a
+// descendant with its own dir" rule those spans exist to exploit.
+function _isolateRtlRuns(html) {
+  if (!html) return html;
+  const tokens = html.match(/<[^>]+>|&[#a-zA-Z0-9]+;|[\s\S]/g) || [];
+  const isRtlTok = (t) => t.length === 1 && _RTL_CHAR_RE.test(t);
+  const isLatinTok = (t) => t.length === 1 && _LATIN_CHAR_RE.test(t);
+  const isQuoteTok = (t) => t === '"' || t === '&quot;';
+
+  let out = [];
+  const dirStack = [];
+  let protectedDepth = 0;
+  let i = 0;
+  while (i < tokens.length) {
+    const tok = tokens[i];
+    if (tok[0] === '<') {
+      protectedDepth = _dirTagStep(dirStack, tok);
+      out.push(tok);
+      i++;
+      continue;
+    }
+    if (protectedDepth === 0 && isRtlTok(tok)) {
+      // Extend to the LAST rtl char reachable without crossing a Latin
+      // letter or a tag boundary — spaces/punctuation/digits/entities
+      // between two rtl letters are included in the run.
+      let j = i + 1, lastRtl = i;
+      while (j < tokens.length) {
+        const t2 = tokens[j];
+        if (t2[0] === '<' || isLatinTok(t2)) break;
+        if (isRtlTok(t2)) lastRtl = j;
+        j++;
+      }
+      const prevOut = out[out.length - 1];
+      const nextTok = tokens[lastRtl + 1];
+      let wrapQuote = false;
+      if (prevOut && isQuoteTok(prevOut) && nextTok && isQuoteTok(nextTok)) {
+        out.pop();
+        wrapQuote = true;
+      }
+      const run = tokens.slice(i, lastRtl + 1).join('');
+      out.push('<bdi>' + (wrapQuote ? prevOut : '') + run + (wrapQuote ? nextTok : '') + '</bdi>');
+      i = wrapQuote ? lastRtl + 2 : lastRtl + 1;
+      continue;
+    }
+    out.push(tok);
+    i++;
+  }
+  return out.join('');
+}
+
 function formatAgentText(raw) {
   // Already escaped by esc() before calling — we operate on safe HTML
   let t = esc(raw);
@@ -141,6 +269,21 @@ function formatAgentText(raw) {
   if (_urlTokens.length) {
     t = t.replace(/@@CLUrl(\d+)@@/g, (_, i) => _urlTokens[+i] || '');
   }
+
+  // Isolate embedded Hebrew/Arabic runs (see _isolateRtlRuns above) — must
+  // run after ALL token restoration above, so the gate below sees the real
+  // dir="ltr" URL/path/file spans, not opaque @@CLUrl0@@-style placeholders
+  // (whose own Latin letters would otherwise fool the gate the same way a
+  // real leading URL does). MC-1000 round 2.
+  //
+  // ONLY when the line's own base direction (ignoring isolated content) is
+  // ltr. A <bdi> establishes its own directionality unconditionally (per
+  // spec, regardless of any dir attribute) — wrapping a Hebrew-FIRST line's
+  // entire content in one would hide it from the parent's dir="auto" scan
+  // the same way an explicit dir does, flipping the whole block back to ltr.
+  // This fix is only for the opposite case: an English-base line that
+  // quotes a Hebrew run.
+  if (_baseDirIgnoringIsolated(t) === 'ltr') t = _isolateRtlRuns(t);
 
   return t;
 }
@@ -391,3 +534,6 @@ window.isStopHookRedoLine = isStopHookRedoLine;
 window.expandAgentOutput = expandAgentOutput;
 window._isAgentOutputPinned = _isAgentOutputPinned;
 window._scheduleAgentPinScroll = _scheduleAgentPinScroll;
+window._firstStrongDir = _firstStrongDir;
+window._isolateRtlRuns = _isolateRtlRuns;
+window._baseDirIgnoringIsolated = _baseDirIgnoringIsolated;

@@ -5269,6 +5269,12 @@ function renderAgentQuestion(sessionId, projectId, questions, questionId) {
   container.className = 'agent-question';
   container.id = formId;
   if (questionId) container.dataset.qid = questionId;
+  // Round-1's per-element dir="auto" gets the TEXT right, but radios,
+  // 'Other', and the actions row have no text of their own to auto-detect
+  // from — they need a real `dir` on the card so flexbox reverses their
+  // layout. Detected once from the first question's text (a card is one
+  // language, not a per-option mix). MC-1000 round 2.
+  container.dir = window._firstStrongDir ? window._firstStrongDir(questions[0].question || questions[0].header || '') : 'ltr';
 
   let html = '';
   // §6: a single short-option single-select question renders as one-tap chips
@@ -5430,10 +5436,23 @@ function _dispatchQuestionAnswer(projectId, sessionId, container, answers) {
   if (container.dataset.qid) {
     (_answeredQuestionIds[sessionId] || (_answeredQuestionIds[sessionId] = new Set())).add(container.dataset.qid);
   }
-  // "Answered: " is a fixed English label — isolate it in its own dir="ltr"
-  // span so the outer dir="auto" detects direction from the actual answer
-  // text, not the label prefix (same fix as escPromptWithImages's "> Name:").
-  const summary = `<div class="agent-question-answer" dir="auto"><span dir="ltr">Answered: </span>${esc(answers.map(a => a.answer).join(', '))}</div>`;
+  // Deliberately NO dir="auto" here (unlike round 1) — it must follow the
+  // CARD's direction (container.dir, set once in renderAgentQuestion), not
+  // detect its own: the answer text below is wrapped in a <bdi>, and a
+  // <bdi> establishes its own directionality unconditionally, so a bare
+  // dir="auto" on this div would find nothing BUT isolated descendants
+  // (the ltr label span, the bdi answer) and default to ltr regardless of
+  // the actual answer language. Leaving dir unset lets it inherit the
+  // CSS `direction` the card already carries.
+  // "Answered:" is a fixed English label, isolated in its own dir="ltr"
+  // span so it never affects surrounding detection. Spacing comes from flex
+  // `gap` (see .agent-question-answer), not a trailing space baked into the
+  // isolated span — a trailing space right at an isolate/bidi-run boundary
+  // is exactly the kind of whitespace a browser can collapse away, which is
+  // what "Answered:כן, נראה טוב" (no gap) turned out to be. The answer text
+  // itself is isolated in a <bdi> so ITS punctuation reads correctly instead
+  // of resolving against whichever side "Answered:" landed on. MC-1000 round 2.
+  const summary = `<div class="agent-question-answer"><span dir="ltr">Answered:</span><bdi>${esc(answers.map(a => a.answer).join(', '))}</bdi></div>`;
   const actionsEl = container.querySelector('.agent-question-actions');
   if (actionsEl) actionsEl.innerHTML = summary;         // form mode
   else container.insertAdjacentHTML('beforeend', summary); // chip mode (no actions row)

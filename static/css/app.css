@@ -4848,7 +4848,11 @@
   }
   .agent-question-actions button:hover { background: #5db3ff; }
   .agent-question-actions button:disabled { opacity: 0.5; cursor: default; }
-  .agent-question-answer { font-size: 11px; color: var(--green); margin-top: 6px; }
+  /* flex + gap (not a margin) so the "Answered:" label keeps a visible gap
+     from the answer on whichever side it lands on — flex order reverses
+     automatically for an rtl card, a fixed margin-right would not. MC-1000. */
+  .agent-question-answer { font-size: 11px; color: var(--green); margin-top: 6px; display: flex; gap: 6px; align-items: baseline; }
+  .agent-question-answer bdi { min-width: 0; }
 
   /* §6 quick-reply chips — a short single-select question renders as tap pills
      (one tap = answer). Modeled on .claydo-chip; token-driven, no accent-fill
