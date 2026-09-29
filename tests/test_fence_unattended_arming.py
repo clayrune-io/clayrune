@@ -806,7 +806,7 @@ def test_review9_option_value_next_is_not_a_transfer(monkeypatch, tmp_path, comm
     'curl --data fixture -H "Content-Type: application/json; charset=utf-8" https://example.invalid/single',
     'curl --proxy-header --get --data fixture https://example.invalid/single',
     'curl --proxy-header "X-Test: fixture" --data fixture https://example.invalid/single',
-    'curl -H X-Debug:\ --get --data fixture https://example.invalid/single',
+    r'curl -H X-Debug:\ --get --data fixture https://example.invalid/single',
     'curl -H "X-Debug: --get" --data fixture https://example.invalid/single',
     'curl --some-future-option --get --data fixture https://example.invalid/single',
     'echo ok; curl -X POST https://example.invalid/single',
@@ -858,4 +858,38 @@ def test_review11_nested_program_sends_are_blocked(monkeypatch, tmp_path, comman
     'bash -c "curl -X POST http://localhost:5199/api/x"',
 ])
 def test_review11_nested_reads_are_allowed(command):
+    assert not fence._touches_nonlocal_network(command).blocked
+
+
+@pytest.mark.parametrize('have_pass', [True, False])
+@pytest.mark.parametrize('command', [
+    'curl -H "X-Source: localhost" --data fixture https://example.invalid/single',
+    'curl http://localhost:5199/local --next --data fixture https://example.invalid/external',
+    'curl -X POST http://localhost.example.invalid/single',
+    'curl -X POST -x http://proxy.example.invalid:8080 http://localhost:5199/x',
+    'bash -c "curl -X POST http://localhost:5199/x; curl -X POST https://example.invalid/b"',
+    'wget --post-data=x --header="Host: localhost" https://example.invalid/single',
+])
+def test_review12_localhost_text_is_not_a_local_destination(monkeypatch, tmp_path, command, have_pass):
+    # Fenn's review #12 N19: locality comes from each transfer's parsed URL
+    # hostname, never from text elsewhere in the command.
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass',
+                        lambda: spent.append(1) or have_pass)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2 and spent == []
+
+
+@pytest.mark.parametrize('command', [
+    'curl -s -X POST http://localhost:5199/api/x -H "Content-Type: application/json" -d "{}"',
+    'curl -X POST http://127.0.0.1:5199/api/x -d x',
+    'curl -X POST --url http://localhost:5199/api/x',
+    'wget --post-data=x http://localhost:5199/api/x',
+    'iwr -Method POST -Uri http://localhost:5199/api/x -Body "{}"',
+    'curl https://example.invalid/a --next -d x http://localhost:5199/b',
+])
+def test_review12_local_sends_stay_exempt(command):
     assert not fence._touches_nonlocal_network(command).blocked

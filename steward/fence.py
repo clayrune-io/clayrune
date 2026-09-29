@@ -571,26 +571,55 @@ def _net_tokens(seg: str) -> list:
     return toks
 
 
+_LOCAL_HOSTNAMES = {'localhost', '127.0.0.1', '0.0.0.0', '::1'}
+# Options that send a request somewhere other than its URL's host, so a
+# local URL no longer proves a local destination.
+_CURL_REROUTE = {'--proxy', '--preproxy', '--socks4', '--socks4a', '--socks5',
+                 '--socks5-hostname', '--resolve', '--connect-to', '-x'}
+_DEST_LIKE_RE = re.compile(r'^(\[[0-9A-Fa-f:.]+\]|[\w-]+(\.[\w-]+)+|[\w-]+:\d+)(:\d+)?([/?#].*)?$')
+
+
+def _is_local_url(url: str) -> bool:
+    """Locality from the parsed HOSTNAME, never from text anywhere in the
+    command (review #12 N19: `-H "X-Source: localhost"` exempted an
+    external POST, and so did `localhost.example.com`)."""
+    try:
+        host = urllib.parse.urlsplit(url if '://' in url else 'http://' + url).hostname
+    except ValueError:
+        return False
+    return host in _LOCAL_HOSTNAMES
+
+
+def _all_local(targets: list) -> bool:
+    return bool(targets) and all(_is_local_url(u) for u in targets)
+
+
 def _curl_mutates(args: list) -> bool:
     """Each `--next` / `:` starts a new transfer with its own method and
     data (reviews #8-#9, N10), so each transfer is judged on its own and
     any mutating one makes the invocation a send. The separator is found
     while walking options, never by scanning raw tokens: `-s:` ends a
-    transfer, but `--data --next` is the data value `--next` (N14)."""
+    transfer, but `--data --next` is the data value `--next` (N14).
+    True means a NON-LOCAL send: a transfer is exempt only when every URL
+    of THAT transfer is a local hostname and nothing reroutes it (N19)."""
     state = {'method': None, 'body': False, 'upload': False, 'get': False,
-             'verb_seen': False, 'unknown': False}
+             'verb_seen': False, 'unknown': False, 'urls': [],
+             'rerouted': False}
 
-    def mutates() -> bool:
+    def sends() -> bool:
         if state['unknown'] and (state['body'] or state['upload']
                                  or state['verb_seen']):
-            return True  # an option of unknown arity: no read downgrade
-        if state['method'] is not None:
-            return state['method'].upper() in _MUTATING_VERBS
-        return state['upload'] or (state['body'] and not state['get'])
+            pass  # an option of unknown arity: no read downgrade
+        elif state['method'] is not None:
+            if state['method'].upper() not in _MUTATING_VERBS:
+                return False
+        elif not (state['upload'] or (state['body'] and not state['get'])):
+            return False
+        return state['rerouted'] or not _all_local(state['urls'])
 
     def reset() -> None:
         state.update(method=None, body=False, upload=False, get=False,
-                     verb_seen=False, unknown=False)
+                     verb_seen=False, unknown=False, urls=[], rerouted=False)
 
     def set_method(val: str) -> None:
         state['method'] = val
@@ -602,7 +631,7 @@ def _curl_mutates(args: list) -> bool:
         tok = args[i]
         i += 1
         if tok == '--next':
-            if mutates():
+            if sends():
                 return True
             reset()
             continue
@@ -616,7 +645,11 @@ def _curl_mutates(args: list) -> bool:
                 i += 1
             elif name not in _CURL_LONG_ARG and name not in _CURL_LONG_FLAG:
                 state['unknown'] = True
-            if name == '--request':
+            if name in _CURL_REROUTE:
+                state['rerouted'] = True
+            if name == '--url':
+                state['urls'].append(val)
+            elif name == '--request':
                 set_method(val)
             elif name in _CURL_BODY_LONG:
                 state['body'] = True
@@ -629,7 +662,7 @@ def _curl_mutates(args: list) -> bool:
             letters = tok[1:]
             for j, ch in enumerate(letters):
                 if ch == ':':
-                    if mutates():
+                    if sends():
                         return True
                     reset()
                     continue
@@ -643,6 +676,8 @@ def _curl_mutates(args: list) -> bool:
                 if not val:
                     val = args[i] if i < len(args) else ''
                     i += 1
+                if ch == 'x':
+                    state['rerouted'] = True
                 if ch == 'X':
                     set_method(val)
                 elif ch == 'd':
@@ -650,7 +685,9 @@ def _curl_mutates(args: list) -> bool:
                 elif ch in 'FT':
                     state['upload'] = True
                 break
-    return mutates()
+            continue
+        state['urls'].append(tok)
+    return sends()
 
 
 def _wget_mutates(args: list) -> bool:
@@ -750,8 +787,8 @@ def _segment_mutates(seg: str) -> bool:
         head = m.group(1).lower()
         args = toks[idx + 1:]
         if head == 'curl':
-            mutates = _curl_mutates(args)
-        elif head == 'wget':
+            return _curl_mutates(args)
+        if head == 'wget':
             mutates = _wget_mutates(args)
         elif head in ('http', 'https'):
             mutates = _httpie_mutates(args)
@@ -759,8 +796,12 @@ def _segment_mutates(seg: str) -> bool:
             mutates = _ps_web_mutates(args)
         if not mutates:
             return False
-        target = ' '.join(args).lower()
-        return not any(h in target for h in _LOCAL_HOSTS)  # own API calls
+        # Own API calls are exempt only when every destination-shaped
+        # argument is a local hostname (review #12 N19). A filename that
+        # looks like a host fails closed.
+        dests = [a for a in args if not a.startswith('-')
+                 and ('://' in a or _DEST_LIKE_RE.match(a))]
+        return not _all_local(dests)
     return False
 
 
