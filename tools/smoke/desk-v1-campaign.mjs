@@ -142,17 +142,21 @@ async function runToneRenderChecks(browser, tone) {
   const editBtn = await page.$('[data-rules-edit]');
   editBtn ? ok(`[${tone.name}] Rules "Edit" hook renders (popover itself is T2b)`) : fail(`[${tone.name}] Rules Edit hook missing`);
 
-  // Tab strip: both badges are needs-you-only (§3.1). Content: 2 families
-  // (restore-points, install-video). Conversations: conv-1 needs_reply +
-  // conv-4/conv-6 needs_you = 3 of camp-1's 6 rows (frame 12a also says 3).
-  const tabText = await page.textContent('[data-tab="content"]').catch(() => '');
-  const convText = await page.textContent('[data-tab="conversations"]').catch(() => '');
-  /Content\s*2/.test(tabText.replace(/\s+/g, ' '))
-    ? ok(`[${tone.name}] Content tab badge is needs-you-only: "${tabText.trim()}"`)
-    : fail(`[${tone.name}] Content tab badge wrong: ${JSON.stringify(tabText)}`);
-  /Conversations\s*3/.test(convText.replace(/\s+/g, ' '))
-    ? ok(`[${tone.name}] Conversations tab badge is needs-you-only: "${convText.trim()}"`)
-    : fail(`[${tone.name}] Conversations tab badge wrong: ${JSON.stringify(convText)}`);
+  // R2-3: the old Content/Conversations/Results tab strip is now the ①-⑥ map
+  // stepper (IA revision 2 §3/§4.1). camp-1's fixture map (`map: {stop:
+  // 'launch', done:[goal,how,what,when,where]}`) puts five stops done and
+  // Launch "here" — Conversations is no longer one of the six stops (§6:
+  // moves into Engagement at R2-12), so its old badge assertion is retired
+  // with the tab it lived on, not rewritten onto a stop that doesn't exist.
+  const stopWords = await page.$$eval('.desk-v1-map-stop .desk-v1-map-stop-word', (els) => els.map((e) => e.textContent.trim()));
+  JSON.stringify(stopWords) === JSON.stringify(['Goal', 'How', 'What', 'When', 'Where', 'Launch'])
+    ? ok(`[${tone.name}] map stepper shows all 6 stops in order: ${JSON.stringify(stopWords)}`)
+    : fail(`[${tone.name}] map stepper stops wrong: ${JSON.stringify(stopWords)}`);
+  const launchState = await page.$eval('.desk-v1-map-stop[data-stop="launch"]', (el) => el.dataset.state).catch(() => null);
+  const goalState = await page.$eval('.desk-v1-map-stop[data-stop="goal"]', (el) => el.dataset.state).catch(() => null);
+  launchState === 'here' && goalState === 'done'
+    ? ok(`[${tone.name}] map stepper reflects camp.map (launch=here, goal=done)`)
+    : fail(`[${tone.name}] map stepper state wrong: launch=${launchState} goal=${goalState}`);
 
   // A2/A3: grouped "All content" — needs-you group holds both multi-claim
   // article and multi-version video families; each card lists every
@@ -535,14 +539,18 @@ async function runFreshEmptyStates(browser) {
     ? ok(`IA6: fresh Active goal reads as plain text: "${goalText.trim()}"`)
     : fail(`IA6: fresh Active goal text wrong: ${JSON.stringify(goalText)}`);
 
-  await page.click('[data-tab="results"]');
+  // R2-3: 'results'/'conversations' aren't tab-strip buttons any more — ①
+  // Goal is a map stop (`[data-stop="goal"]`); Conversations has no stop at
+  // all (§6, moves to Engagement at R2-12) and stays reachable only through
+  // the same deep-link call a Home/piece "Review" link would make.
+  await page.click('[data-stop="goal"]');
   await page.waitForSelector('#desk-v1-camp-tabbody .desk-v1-stub', { timeout: 2000 });
   const resultsText = (await page.textContent('#desk-v1-camp-tabbody') || '');
   /Results start after the first post goes out\. Next: .*on 𝕏 · @ron\./.test(resultsText)
     ? ok(`IA6: fresh Active Results shows UX_PASS §6.1 copy: "${resultsText.trim()}"`)
     : fail(`IA6: fresh Active Results copy wrong: ${JSON.stringify(resultsText)}`);
 
-  await page.click('[data-tab="conversations"]');
+  await page.evaluate(() => window.deskV1GotoCampaignPanel('conversations', { campaignId: 'camp-4' }));
   await page.waitForSelector('#desk-v1-camp-tabbody .desk-v1-conversations, #desk-v1-camp-tabbody .desk-v1-conv-empty', { timeout: 2000 });
   const convText = (await page.textContent('#desk-v1-camp-tabbody') || '');
   /Replies show up here once a post is live\./.test(convText)
@@ -557,19 +565,22 @@ async function runRouteStackUnchanged(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToCampaign(page);
 
-  await page.click('[data-tab="conversations"]');
+  // R2-3: Conversations has no stop of its own any more — a deep-link call
+  // is the same in-place `_gotoCampaignPanel` path a tab click used to be
+  // (desk-v1-shell.js), so it still belongs in this same-stack-entry check.
+  await page.evaluate(() => window.deskV1GotoCampaignPanel('conversations', { campaignId: 'camp-1' }));
   await page.waitForSelector('.desk-v1-conversations, .desk-v1-stub', { timeout: 2000 });
-  await page.click('[data-tab="results"]');
+  await page.click('[data-stop="goal"]');
   await page.waitForSelector('.desk-v1-results', { timeout: 2000 });
-  await page.click('[data-tab="content"]');
+  await page.click('[data-stop="what"]');
   await page.waitForSelector('.desk-v1-camp-card', { timeout: 2000 });
 
   await page.evaluate(() => window.deskV1Back());
   await page.waitForSelector('.desk-v1-home', { timeout: 2000 }).catch(() => {});
   const onHome = await page.$('.desk-v1-home');
   onHome
-    ? ok('T2/§2: three in-place tab switches left the route stack at [home, campaign] — one deskV1Back() lands on Home')
-    : fail('T2/§2: a tab click pushed a route onto the stack — deskV1Back() did not land on Home');
+    ? ok('T2/§2: three in-place panel switches left the route stack at [home, campaign] — one deskV1Back() lands on Home')
+    : fail('T2/§2: a panel switch pushed a route onto the stack — deskV1Back() did not land on Home');
 
   reportUncaught(pageErrors, '[route-stack]');
   await ctx.close();
@@ -587,23 +598,25 @@ async function runPosyDraftPersistence(browser) {
   const DRAFT = 'draft text that must survive a rebuild';
   await page.fill('#desk-v1-camp-posy-input', DRAFT);
 
-  // T2 (§2): a tab-strip switch is now an IN-PLACE panel swap on the SAME
-  // `campaign` stack entry (desk-v1-shell.js's `_gotoCampaignPanel`) — it
-  // never pushes a route or rebuilds the skeleton, so the Posy box is the
-  // SAME DOM node across a Content -> Conversations -> Content round trip,
-  // not merely one holding the same value. Capture the node identity via a
-  // marker property (a fresh element from a rebuild would not carry it).
+  // T2 (§2): a panel switch is now an IN-PLACE swap on the SAME `campaign`
+  // stack entry (desk-v1-shell.js's `_gotoCampaignPanel`) — it never pushes
+  // a route or rebuilds the skeleton, so the Posy box is the SAME DOM node
+  // across a What -> Conversations -> What round trip, not merely one
+  // holding the same value. Capture the node identity via a marker property
+  // (a fresh element from a rebuild would not carry it). R2-3: Conversations
+  // has no stop button any more, so the middle leg is the same deep-link
+  // call a Home/piece "Review" link would make, not a tab click.
   await page.evaluate(() => { document.getElementById('desk-v1-camp-posy-input')._deskv1SmokeMarker = 'same-node'; });
-  await page.click('[data-tab="conversations"]');
+  await page.evaluate(() => window.deskV1GotoCampaignPanel('conversations', { campaignId: 'camp-1' }));
   await page.waitForSelector('.desk-v1-conversations, .desk-v1-stub', { timeout: 2000 });
-  await page.click('[data-tab="content"]');
+  await page.click('[data-stop="what"]');
   await page.waitForSelector('#desk-v1-camp-posy-input', { timeout: 2000 });
   await page.waitForTimeout(50);
   const afterTabSwitch = await page.$eval('#desk-v1-camp-posy-input', (ta) => ta.value).catch(() => '');
   const sameNode = await page.evaluate(() => document.getElementById('desk-v1-camp-posy-input')._deskv1SmokeMarker === 'same-node').catch(() => false);
   afterTabSwitch === DRAFT && sameNode
-    ? ok('item 5/T2: Posy draft survives a Content -> Conversations -> Content tab switch, same DOM node (no route push)')
-    : fail(`item 5/T2: draft or node identity lost across tab switch: value=${JSON.stringify(afterTabSwitch)}, sameNode=${sameNode}`);
+    ? ok('item 5/T2: Posy draft survives a What -> Conversations -> What panel switch, same DOM node (no route push)')
+    : fail(`item 5/T2: draft or node identity lost across panel switch: value=${JSON.stringify(afterTabSwitch)}, sameNode=${sameNode}`);
 
   // Navigate away to Home and back — a harder rebuild than the tab strip
   // (the whole route unmounts).
