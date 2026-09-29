@@ -214,12 +214,12 @@ async function runNeedsYouDeepLinks(browser) {
   await page.click('#desk-v1-home-needsyou .desk-v1-home-needsyou-row:has-text("reply waiting")');
   await page.waitForSelector('.desk-v1-stub, .desk-v1-conversations', { timeout: 8000 });
   // T2 (§2, §8): 'conversations' is a panel alias now, not a pushed route —
-  // it lands on the SAME campaign crumb (the campaign's own name) with the
-  // Conversations tab selected, rather than painting its own "Conversations"
-  // crumb title. See desk-v1-shell.js's PANEL_ALIASES.
+  // it lands on the SAME campaign crumb (the campaign's own name). R2-3:
+  // Conversations has no map-stop button (§6, moves to Engagement at
+  // R2-12), so "selected" is read off the rendered panel body, not a tab.
   const crumbTitle = (await page.textContent('#desk-v1-crumb .desk-v1-crumb-title').catch(() => '') || '');
-  const convTabSelected = await page.$eval('[data-tab="conversations"]', (el) => el.getAttribute('aria-selected') === 'true').catch(() => false);
-  if (convTabSelected) ok(`A12: "1 reply waiting" deep-links to the conversations panel (campaign crumb "${crumbTitle.trim()}")`);
+  const convPanelShown = await page.$('.desk-v1-conv-layout, .desk-v1-conversations, .desk-v1-conv-empty');
+  if (convPanelShown) ok(`A12: "1 reply waiting" deep-links to the conversations panel (campaign crumb "${crumbTitle.trim()}")`);
   else fail(`A12: reply row did not select the conversations panel: crumb ${JSON.stringify(crumbTitle)}`);
 
   reportUncaught(pageErrors, '[deep-links]');
