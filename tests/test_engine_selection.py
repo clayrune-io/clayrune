@@ -250,6 +250,15 @@ def test_stale_pin_false_for_current_head():
     assert es.is_stale_pin('claude', 'claude-opus-5-5') is False
 
 
+def test_sonnet_5_5_is_the_balanced_head():
+    # Sonnet 5.5 must sit above Sonnet 5 in MODEL_CHOICES, or the upgrade
+    # gate reads claude-sonnet-5 as the head and never moves a Sonnet pin.
+    from mc.agent_runtime import get_runtime
+    assert get_runtime('claude').catalog_head_for('balanced') == 'claude-sonnet-5-5'
+    assert es.is_stale_pin('claude', 'claude-sonnet-5') is True
+    assert es.is_stale_pin('claude', 'claude-sonnet-5-5') is False
+
+
 def test_stale_pin_false_for_tier_value():
     assert es.is_stale_pin('claude', 'tier:best') is False
 
