@@ -296,6 +296,16 @@
   // ── render: campaign cards (3-up grid, drop targets) ─────────────────────
   function _campCardHTML(c) {
     const label = DeskV1Kit.stateLabelHTML(c.state);
+    // §5: "Home card shows ⟳ Posy working" — a live read of the shared task
+    // store at render time (mount, or any card-list re-render), not a push;
+    // covers "navigate away mid-ask and land on Home" for free since Home
+    // re-renders its cards on every mount. Prefix-matches every draftKey the
+    // campaign's own Posy box can use (`campaign:<id>:...`); review/video
+    // asks are scoped by version/family id, not campaign id, so they don't
+    // surface here (§5 doesn't ask for cross-linking those to a campaign).
+    const posyWorkingHTML = DeskV1Kit.anyPosyWorking(`campaign:${c.id}:`)
+      ? `<span class="desk-v1-home-camp-posyworking">${esc(DeskV1Kit.POSY_WORKING_LABEL)}</span>`
+      : '';
     // §4/Dave review pass 1: target/metric read from `c.plan.goal` (the
     // canonical copy) — `current` (live progress) has no plan field and
     // stays on `c.goal`. Same split as desk-v1-campaign.js's summary bar.
@@ -331,7 +341,7 @@
       <div class="desk-v1-home-camp-card desk-v1-stub-link" data-campaign-id="${esc(c.id)}"
         role="button" tabindex="0">
         <div class="desk-v1-home-camp-top">
-          ${label}<span class="desk-v1-home-camp-name">${esc(c.name)}</span>
+          ${label}<span class="desk-v1-home-camp-name">${esc(c.name)}</span>${posyWorkingHTML}
           ${c.state !== 'archived' ? `<div class="desk-v1-camp-card-more">
             <button type="button" class="desk-v1-camp-card-morebtn" data-camp-more-btn aria-haspopup="menu" aria-label="More actions">⋯</button>
           </div>` : ''}

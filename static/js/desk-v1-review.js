@@ -460,7 +460,8 @@
     if (window.DeskV1Kit) {
       window.DeskV1Kit.bindPosyBox(el.querySelector('#desk-v1-review-posy'), 'desk-v1-review-posy-input', (text) => {
         window.DeskV1Kit.toast('Sent to Posy: "' + text + '"', {});
-      }, { draftKey: `review:${version.id}` });
+        window.DeskV1Kit.paintPosyReadyNoDiff(el.querySelector('#desk-v1-review-posy'));
+      }, { draftKey: `review:${version.id}`, taskLifecycle: true });
       // §4: "Say this once in an ⓘ tooltip; don't print it permanently."
       window.DeskV1Kit.bindInfoIcons(el, {
         'review-approve-binding': 'Approving binds this revision, destination, link, schedule and policy version together — changing any of them invalidates the approval.',

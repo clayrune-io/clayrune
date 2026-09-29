@@ -651,19 +651,31 @@ async function runPosyInstructions(browser) {
   const input = '#desk-v1-camp-posy-input';
   await page.waitForSelector(input, { timeout: 4000 });
 
-  // Plain (non-widening, non-durable) instruction.
+  // Plain (non-widening, non-durable) instruction. T3: Send now starts the
+  // §5 task lifecycle — deskV1HandlePosyInstruction (and so the confirm
+  // sheet / rule chip / posyreply it paints) only fires once the simulated
+  // ask reaches Ready, up to ~4.1s later (120ms Sending->Working + up to
+  // 4000ms Working->Ready, real wall-clock — this harness doesn't mock the
+  // clock like desk-v1-kit.mjs does). Every wait below uses a 6500ms
+  // timeout for ~2.4s of margin over that worst case.
   await page.fill(input, 'Focus this week on the video piece');
   await page.keyboard.press('Enter');
-  await page.waitForSelector('.desk-v1-rules-posyreply', { timeout: 2000 });
+  await page.waitForSelector('.desk-v1-rules-posyreply', { timeout: 6500 });
   const reply = (await page.textContent('.desk-v1-rules-posyreply').catch(() => '') || '');
   /Before/.test(reply) && /After/.test(reply)
     ? ok(`plain instruction renders Before/After: "${reply.replace(/\s+/g, ' ').trim().slice(0, 90)}..."`)
     : fail(`Before/After reply missing: ${JSON.stringify(reply)}`);
 
-  // Durable instruction → visible rule chip (INS-02).
+  // Durable instruction → visible rule chip (INS-02). `.desk-v1-camp-rule-chip`
+  // already exists at mount (the fixture's baseline chips: Organic/review
+  // mode/frequency/replies) — waiting for the bare selector is a no-op that
+  // resolves instantly. Wait for the specific new chip's text instead.
   await page.fill(input, 'Always keep replies short from now on');
   await page.keyboard.press('Enter');
-  await page.waitForTimeout(50);
+  await page.waitForFunction(
+    () => [...document.querySelectorAll('.desk-v1-camp-rule-chip')].some((e) => /keep replies short/.test(e.textContent)),
+    null, { timeout: 6500 },
+  ).catch(() => {});
   const chips = await page.$$eval('.desk-v1-camp-rule-chip', (els) => els.map((e) => e.textContent));
   chips.some((c) => /keep replies short/.test(c))
     ? ok(`INS-02: a durable instruction becomes a new rule chip: ${JSON.stringify(chips)}`)
@@ -672,7 +684,8 @@ async function runPosyInstructions(browser) {
   // Undo removes the chip again. `.last()`, not the bare selector: the
   // plain instruction above left its own un-dismissed toast in the stack
   // (no auto-dismiss, no toast `key`, so commandBus never replaces one
-  // in place) — the durable instruction's toast is the newest one.
+  // in place) — the durable instruction's toast is the newest one. Its
+  // apply() (and so the toast) lands in the same tick as the chip above.
   await page.waitForSelector('.toast .toast-btn.primary', { timeout: 2000 }).catch(() => {});
   await page.locator('.toast .toast-btn.primary').last().click();
   await page.waitForTimeout(50);
@@ -684,7 +697,7 @@ async function runPosyInstructions(browser) {
   // Widening instruction → confirm sheet first.
   await page.fill(input, 'Turn on paid promotion for this');
   await page.keyboard.press('Enter');
-  const posyConfirmText = await waitForWideningSheet(page).catch(() => null);
+  const posyConfirmText = await waitForWideningSheet(page, 6500).catch(() => null);
   posyConfirmText
     ? ok('a widening Posy instruction opens the confirm sheet before applying')
     : fail('widening instruction should have opened the confirm sheet');

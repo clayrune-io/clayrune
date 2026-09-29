@@ -552,10 +552,7 @@
     id: 'camp-2',
     name: 'Restore points launch',
     state: 'proposed', // proposed | active | paused | completed | archived | draft
-    goal: {
-      metric: 'beta signups', target: 60, current: 0,
-      deadline: '2026-10-20', audience: 'the developer audience', tracked: false,
-    },
+    goal: { current: 0 },
     channelIds: ['ch-x-ron', 'ch-li-page'],
     rules: {
       reviewMode: 'each_piece', frequencyPerWeek: 2,
@@ -563,14 +560,12 @@
     },
     // ── T1 (MC-977 UX pass §4): the one canonical plan object. Goal display,
     // rule chips and the Start sheet (desk-v1-rules.js) all read THIS, not
-    // the `goal`/`rules` fields above — those stay as-is for camp-2 (the
-    // Active-state Rules popover still reads `rules`; Home's card now reads
-    // `plan.goal` too as of T2's Dave-review pass, harmless here since
-    // `tracked: false` bypasses target/outcome either way). `goal.deadline`
-    // here starts equal to the legacy `goal.deadline` above by construction,
-    // not by any code that keeps them in sync — editing one in Setup
-    // wouldn't move the other today, same "not unified yet" boundary as the
-    // rest of this note.
+    // the `goal` field above — `rules` above stays as-is (the Active-state
+    // Rules popover still reads it). `goal` above is reduced to `{current}`,
+    // same as camp-1 (T3 review carry-over, MC-977): nothing reads
+    // metric/target/deadline/audience/tracked off `camp.goal` any more, only
+    // `camp.goal.current` (desk-v1-campaign.js's summary bar, Home's card) —
+    // grepped every `.goal` site across static/js/desk-v1-*.js to confirm.
     plan: {
       brief: 'Restore points is live in Clayrune 2.1 — undo any agent mistake by rolling back to a saved snapshot.',
       title: 'Restore points launch',

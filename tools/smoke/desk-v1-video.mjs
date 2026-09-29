@@ -336,6 +336,16 @@ async function runInsertAndScopeFlow(browser) {
   const initialScope = (await scopeBtn.textContent()).trim();
   if (/Whole video/.test(initialScope)) ok(`Posy scope: defaults to "Whole video"`);
   else fail(`Posy scope default wrong: ${JSON.stringify(initialScope)}`);
+
+  // T3/§5 regression: draftKey used to template-interpolate the `_st.scope`
+  // OBJECT (`video:${family.id}:${_st.scope}`), which always stringifies to
+  // the literal "[object Object]" — every scope collapsed onto one key, so
+  // a draft (or a Working task) on one scope leaked into every other scope
+  // of the same family. Prove isolation: draft on "Whole video" must NOT
+  // appear once switched to "Scene 1", and must reappear switching back.
+  const WHOLE_DRAFT = 'note for the whole video';
+  await page.fill('#desk-v1-video-posy-input', WHOLE_DRAFT);
+
   await scopeBtn.click();
   await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
   const menuItems = await page.$$eval('.desk-v1-addto-menu button', (els) => els.map((e) => e.textContent.trim()));
@@ -345,6 +355,19 @@ async function runInsertAndScopeFlow(browser) {
   const scopeAfter = (await page.textContent('[data-scope-trigger]').catch(() => '') || '').trim();
   if (/Scene 1/.test(scopeAfter)) ok(`Posy scope: switches to "${scopeAfter}" after picking it from the menu`);
   else fail(`Posy scope did not update: ${JSON.stringify(scopeAfter)}`);
+
+  const sceneInput = await page.$eval('#desk-v1-video-posy-input', (ta) => ta.value).catch(() => '__missing__');
+  sceneInput === ''
+    ? ok('T3/§5: Scene 1\'s box is empty, not leaking "Whole video"\'s draft (per-scope draftKey isolation)')
+    : fail(`T3/§5: draft leaked across scopes: Scene 1 box has ${JSON.stringify(sceneInput)}`);
+
+  await page.click('[data-scope-trigger]');
+  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
+  await page.click('.desk-v1-addto-menu button:has-text("Whole video")');
+  const wholeInputAfter = await page.$eval('#desk-v1-video-posy-input', (ta) => ta.value).catch(() => '__missing__');
+  wholeInputAfter === WHOLE_DRAFT
+    ? ok('T3/§5: switching back to "Whole video" restores its own draft (stable key, not lost)')
+    : fail(`T3/§5: "Whole video" draft not restored: ${JSON.stringify(wholeInputAfter)}`);
 
   reportUncaught(pageErrors, '[insert-scope]');
   await ctx.close();
