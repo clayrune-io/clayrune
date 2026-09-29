@@ -270,18 +270,29 @@ try {
       if (firstOptionInput) firstOptionInput.checked = true;
       window.submitQuestionAnswer('smoke_pid', sid, card.id, questions.length);
       const answerLine = card.querySelector('.agent-question-answer');
-      const prefixSpan = answerLine?.querySelector('span[dir="ltr"]');
-      const bdiEl = answerLine?.querySelector('bdi');
+      const prefixSpan = answerLine?.querySelector('.aq-label');
+      const labelWord = prefixSpan?.querySelector('bdi');
+      const bdiEl = answerLine?.querySelector(':scope > bdi');
+      // Colon position: in an rtl card it must sit LEFT of "Answered"
+      // (between label and answer), never on the far right edge.
+      let colonLeftOfWord = null;
+      if (prefixSpan && labelWord && labelWord.nextSibling) {
+        const cr = document.createRange();
+        cr.setStart(labelWord.nextSibling, 0); cr.setEnd(labelWord.nextSibling, 1);
+        const c = cr.getClientRects()[0], w = labelWord.getBoundingClientRect();
+        colonLeftOfWord = c ? (c.right <= w.left + 1) : null;
+      }
       const gapPx = (prefixSpan && bdiEl)
         ? Math.abs(bdiEl.getBoundingClientRect().left - prefixSpan.getBoundingClientRect().right)
         : null;
       out.answeredLine = {
         found: !!answerLine,
         direction: answerLine ? dirOf(answerLine) : null,
-        prefixDirection: prefixSpan ? dirOf(prefixSpan) : null,
+        prefixDirection: labelWord ? dirOf(labelWord) : null,
         prefixText: prefixSpan ? prefixSpan.textContent : null,
         bdiText: bdiEl ? bdiEl.textContent : null,
         gapPx,
+        colonLeftOfWord,
       };
     }
 
@@ -316,7 +327,17 @@ try {
       div.innerHTML = window.escPromptWithImages(raw);
       root.appendChild(div);
       const lines = Array.from(div.querySelectorAll('div[dir="auto"]'));
+      // Colon after "Q" must sit LEFT of the isolated "Q" in the rtl line.
+      let qColonLeftOfLabel = null;
+      const qSpan = lines[0]?.querySelector('span[dir="ltr"]');
+      if (qSpan && qSpan.nextSibling && qSpan.nextSibling.nodeType === 3) {
+        const cr = document.createRange();
+        cr.setStart(qSpan.nextSibling, 0); cr.setEnd(qSpan.nextSibling, 1);
+        const c = cr.getClientRects()[0], w = qSpan.getBoundingClientRect();
+        qColonLeftOfLabel = c ? (c.right <= w.left + 1) : null;
+      }
       out.mixedBubble = {
+        qColonLeftOfLabel,
         lineCount: lines.length,
         qLineDir: lines[0] ? dirOf(lines[0]) : null,
         aLineDir: lines[1] ? dirOf(lines[1]) : null,
@@ -408,18 +429,17 @@ try {
       // exact case the original bug photo showed.
       const answerLine2 = document.createElement('div');
       answerLine2.className = 'agent-question-answer';
-      answerLine2.setAttribute('dir', 'auto');
-      answerLine2.innerHTML = `<span dir="ltr">Answered:</span><bdi>${window.esc(HE_PHRASE)}</bdi>`;
+      answerLine2.setAttribute('dir', 'ltr');
+      answerLine2.innerHTML = `<span class="aq-label"><bdi>Answered</bdi>:</span><bdi>${window.esc(HE_PHRASE)}</bdi>`;
       root.appendChild(answerLine2);
-      const labelTextNode = answerLine2.querySelector('span').firstChild;
-      const r1 = document.createRange();
-      r1.setStart(labelTextNode, 0); r1.setEnd(labelTextNode, 8); // "Answered"
+      // English (ltr) card: the colon must sit immediately RIGHT of "Answered".
+      const word = answerLine2.querySelector('.aq-label bdi');
       const r2 = document.createRange();
-      r2.setStart(labelTextNode, 8); r2.setEnd(labelTextNode, 9); // ":"
-      const rect1 = r1.getClientRects()[0];
+      r2.setStart(word.nextSibling, 0); r2.setEnd(word.nextSibling, 1); // ":"
+      const rect1 = word.getBoundingClientRect();
       const rect2 = r2.getClientRects()[0];
       out.colonAdjacency = {
-        labelText: labelTextNode.textContent,
+        labelText: answerLine2.querySelector('.aq-label').textContent,
         gapBetweenAnsweredAndColon: (rect1 && rect2) ? Math.abs(rect2.left - rect1.right) : null,
       };
     }
@@ -478,6 +498,7 @@ try {
   al.direction === 'rtl' ? ok('"Answered:" line detects rtl from the Hebrew answer, not the English label') : fail(`"Answered:" line direction=${al.direction} — the "Answered:" prefix is bleeding into direction detection`);
   al.prefixDirection === 'ltr' ? ok('"Answered:" label span stays ltr') : fail(`"Answered:" label span direction=${al.prefixDirection}`);
   (al.prefixText === 'Answered:') ? ok('"Answered:" label carries no baked-in trailing space (spacing comes from flex gap)') : fail(`"Answered:" label text=${JSON.stringify(al.prefixText)}`);
+  al.colonLeftOfWord === true ? ok('rtl "Answered:" line: colon sits LEFT of "Answered", between label and answer') : fail(`rtl "Answered:" colon not between label and answer (colonLeftOfWord=${al.colonLeftOfWord})`);
   const HE_OPT = HE.slice(0, 6);
   al.bdiText === HE_OPT ? ok('answer text is isolated in its own <bdi>, text intact') : fail(`answer <bdi> text=${JSON.stringify(al.bdiText)}, expected ${JSON.stringify(HE_OPT)}`);
   (al.gapPx !== null && al.gapPx >= 4) ? ok(`"Answered:" keeps a visible gap from the answer (${al.gapPx.toFixed(1)}px)`) : fail(`"Answered:" / answer gap=${al.gapPx}px — no visible gap`);
@@ -493,8 +514,9 @@ try {
   mb.lineCount === 2 ? ok('mixed "Q:/A:" bubble: two independent per-line blocks') : fail(`mixed bubble produced ${mb.lineCount} line blocks, expected 2`);
   mb.qLineDir === 'rtl' ? ok('"Q: <Hebrew>?" line computes direction=rtl on its own') : fail(`"Q:" line direction=${mb.qLineDir}, expected rtl`);
   mb.aLineDir === 'ltr' ? ok('"A: <English>" line stays direction=ltr, unaffected by the Hebrew Q line') : fail(`"A:" line direction=${mb.aLineDir}, expected ltr — leaked from the other line`);
-  mb.qPrefixText === 'Q: ' ? ok('"Q: " prefix isolated ltr (generalized from "> Name:")') : fail(`"Q:" prefix text=${JSON.stringify(mb.qPrefixText)}`);
-  mb.aPrefixText === 'A: ' ? ok('"A: " prefix isolated ltr') : fail(`"A:" prefix text=${JSON.stringify(mb.aPrefixText)}`);
+  mb.qPrefixText === 'Q' ? ok('"Q" label isolated ltr, its ": " left outside the isolate') : fail(`"Q" prefix text=${JSON.stringify(mb.qPrefixText)}`);
+  mb.aPrefixText === 'A' ? ok('"A" label isolated ltr') : fail(`"A" prefix text=${JSON.stringify(mb.aPrefixText)}`);
+  mb.qColonLeftOfLabel === true ? ok('rtl "Q:" line: colon sits LEFT of "Q", between label and Hebrew text') : fail(`rtl "Q:" colon on the wrong side (qColonLeftOfLabel=${mb.qColonLeftOfLabel})`);
 
   // 5c. English-only bubble unaffected.
   const eb = result.englishBubble;
@@ -525,7 +547,7 @@ try {
 
   const ca = result.colonAdjacency;
   (ca.gapBetweenAnsweredAndColon !== null && ca.gapBetweenAnsweredAndColon < 2)
-    ? ok(`"Answered:" colon sits immediately right of "Answered" (${ca.gapBetweenAnsweredAndColon.toFixed(2)}px gap)`)
+    ? ok(`ltr "Answered:" colon sits immediately right of "Answered" (${ca.gapBetweenAnsweredAndColon.toFixed(2)}px gap)`)
     : fail(`"Answered" / ":" gap=${ca.gapBetweenAnsweredAndColon}px — colon is not immediately adjacent`);
 
 } catch (e) {

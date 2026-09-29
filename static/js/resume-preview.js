@@ -1326,7 +1326,11 @@ function escPromptWithImages(raw) {
     // to the "Q: "/"A: " prefixes renderAgentQuestion's answer message uses.
     // The char class is Latin-only, so a Hebrew/Arabic word before a colon
     // never matches — this only ever isolates genuine fixed English labels.
-    t = t.replace(/^(&gt;\s?[^:\n]{0,60}:\s|[A-Za-z]{1,12}:\s)/, '<span dir="ltr">$1</span>');
+    // Only the label is isolated, not its ": " -- a colon inside the ltr
+    // isolate sits on the far edge of an rtl line ("Q:" reads as ":Q" to a
+    // Hebrew reader); left outside, it resolves to the line's direction and
+    // lands between label and content. MC-1000 round 3.
+    t = t.replace(/^(&gt;\s?[^:\n]{0,60}|[A-Za-z]{1,12})(:\s)/, '<span dir="ltr">$1</span>$2');
     // Same path detection regex as formatAgentText — keep the two in sync.
     t = t.replace(
       /(?<![\w:/%])((?:[A-Za-z]:(?!\/\/)[\\/]|\/)[^\s"'`<>|]+?\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif))(?![A-Za-z0-9])/gi,

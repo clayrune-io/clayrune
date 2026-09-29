@@ -5452,7 +5452,11 @@ function _dispatchQuestionAnswer(projectId, sessionId, container, answers) {
   // what "Answered:כן, נראה טוב" (no gap) turned out to be. The answer text
   // itself is isolated in a <bdi> so ITS punctuation reads correctly instead
   // of resolving against whichever side "Answered:" landed on. MC-1000 round 2.
-  const summary = `<div class="agent-question-answer"><span dir="ltr">Answered:</span><bdi>${esc(answers.map(a => a.answer).join(', '))}</bdi></div>`;
+  // Only the WORD is isolated; the colon stays outside the isolate so it
+  // resolves to the card's direction and lands between label and answer
+  // (left of "Answered" in an rtl card). Isolating "Answered:" whole put the
+  // colon on the far edge in rtl -- Ron, 2026-09-29. MC-1000 round 3.
+  const summary = `<div class="agent-question-answer"><span class="aq-label"><bdi>Answered</bdi>:</span><bdi>${esc(answers.map(a => a.answer).join(', '))}</bdi></div>`;
   const actionsEl = container.querySelector('.agent-question-actions');
   if (actionsEl) actionsEl.innerHTML = summary;         // form mode
   else container.insertAdjacentHTML('beforeend', summary); // chip mode (no actions row)
