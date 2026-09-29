@@ -379,3 +379,31 @@ def test_recreated_worktree_accumulates_onto_prior_contribution(env, project, re
     stored = store.get_code_delta(sid)
     assert stored['added'] == 2, stored  # first lifetime's contribution preserved, not zeroed
     assert stored['deleted'] == 0
+
+
+def test_committed_on_a_differently_named_branch_still_reports_added_deleted(env, project):
+    """MC-998 follow-up 4 (Bug B, backlog 4668eafc): a builder inside an
+    isolated worktree often does `git checkout -b <own-name>` and commits
+    there instead of staying on the default `clayrune/agent/<sid>` branch
+    `w.create` checked out. The diff/rev-list in `_compute_code_delta` must
+    key off `base_commit..HEAD` of the WORKTREE, never a branch name, so this
+    must report the real added/deleted regardless of what branch HEAD is on."""
+    sid = 'mb11'
+    ok, path = w.create(project, sid)
+    assert ok, path
+    assert _git(path, 'rev-parse', '--abbrev-ref', 'HEAD') == w.branch_name(sid)
+
+    _git(path, 'checkout', '-b', 'mc951-my-own-branch-name')
+    (Path(path) / 'app.py').write_text(
+        'def one():\n    return "orig one"\n\n\ndef two():\n    return "NEW two"\n'
+        'def three():\n    return "added"\n',
+        encoding='utf-8')
+    _git(path, 'add', '.')
+    _git(path, 'commit', '-q', '-m', 'work on my own branch')
+
+    assert _git(path, 'rev-parse', '--abbrev-ref', 'HEAD') == 'mc951-my-own-branch-name'
+    result = ar._compute_code_delta(_session(sid, project['id'], isolated=True))
+    assert result['status'] == 'ok', result
+    assert result['added'] == 3
+    assert result['deleted'] == 1
+    assert result['head_commits']

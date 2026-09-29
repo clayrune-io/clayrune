@@ -5484,16 +5484,26 @@ def _scribe_call(model, instruction, body):
 
 
 def _extract_transcript_telemetry(path):
-    """Read a JSONL transcript and extract cumulative token usage by model.
+    """Read a JSONL transcript and extract cumulative token usage by model,
+    DEDUPED by `message.id` -- CC writes one JSONL line per content block of
+    an assistant message, and every one of those lines repeats the SAME
+    `usage` snapshot for the whole message (verified against a real
+    transcript, MC-998 follow-up 4: a message with 2 content blocks wrote 2
+    identical-usage lines). Summing raw lines double(+)-counts a message with
+    N content blocks by Nx; keeping only the first line seen per `message.id`
+    makes this sum equal the sum of each message's own cost exactly once.
 
     Returns {'model': str, 'input_tokens': int, 'output_tokens': int,
-             'cache_read_tokens': int, 'model_tokens': {model: total_tokens}}
+             'cache_read_tokens': int, 'cache_write_tokens': int,
+             'model_tokens': {model: total_tokens}}
     or {} on any failure. Never raises. Indicative, not billing-accurate.
     """
     if not path:
         return {}
     try:
         model_tokens = {}  # model -> {input, output}
+        totals = {'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0}
+        seen_ids = set()
         with open(path, encoding='utf-8', errors='replace') as fh:
             for line in fh:
                 line = line.strip()
@@ -5510,21 +5520,31 @@ def _extract_transcript_telemetry(path):
                 usage = msg.get('usage')
                 if not model or not isinstance(usage, dict):
                     continue
+                mid = msg.get('id')
+                if mid:
+                    if mid in seen_ids:
+                        continue
+                    seen_ids.add(mid)
                 if model not in model_tokens:
-                    model_tokens[model] = {'input': 0, 'output': 0, 'cache_read': 0}
-                model_tokens[model]['input'] += int(usage.get('input_tokens') or 0)
-                model_tokens[model]['output'] += int(usage.get('output_tokens') or 0)
-                model_tokens[model]['cache_read'] += int(
-                    usage.get('cache_read_input_tokens') or 0)
+                    model_tokens[model] = {'input': 0, 'output': 0}
+                in_tok = int(usage.get('input_tokens') or 0)
+                out_tok = int(usage.get('output_tokens') or 0)
+                model_tokens[model]['input'] += in_tok
+                model_tokens[model]['output'] += out_tok
+                totals['input'] += in_tok
+                totals['output'] += out_tok
+                totals['cache_read'] += int(usage.get('cache_read_input_tokens') or 0)
+                totals['cache_write'] += int(usage.get('cache_creation_input_tokens') or 0)
         if not model_tokens:
             return {}
         dominant = max(model_tokens.items(),
                        key=lambda x: x[1]['input'] + x[1]['output'])[0]
         return {
             'model': dominant,
-            'input_tokens': sum(v['input'] for v in model_tokens.values()),
-            'output_tokens': sum(v['output'] for v in model_tokens.values()),
-            'cache_read_tokens': sum(v['cache_read'] for v in model_tokens.values()),
+            'input_tokens': totals['input'],
+            'output_tokens': totals['output'],
+            'cache_read_tokens': totals['cache_read'],
+            'cache_write_tokens': totals['cache_write'],
             'model_tokens': {m: v['input'] + v['output']
                              for m, v in model_tokens.items()},
         }
