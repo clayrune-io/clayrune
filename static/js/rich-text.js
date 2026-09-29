@@ -35,14 +35,26 @@ function _firstStrongDir(text) {
 // prefix span and the bdi excluded, nothing strong is left and the whole
 // line flips to ltr. Found live: "https://example.com/docs <Hebrew>" and
 // "> Ron: <Hebrew>" both mis-detected as ltr this way. MC-1000 round 2.
+// Tag-stack step shared by the two walkers below: tracks how many OPEN
+// elements carry their own `dir` (so text inside them is isolated). A stack,
+// not a counter -- a nested non-dir element's close tag (e.g. the
+// hl-file-ic span inside a dir="ltr" file link) must not end the protection
+// early. Void tags never push. Returns the new protected count.
+const _VOID_TAG_RE = /^<(img|br|hr|input|wbr|meta|link|source)\b/i;
+function _dirTagStep(stack, tok) {
+  if (tok.startsWith('</')) { stack.pop(); }
+  else if (!_VOID_TAG_RE.test(tok) && !tok.endsWith('/>') && !tok.startsWith('<!')) { stack.push(/\sdir=/.test(tok)); }
+  return stack.filter(Boolean).length;
+}
+
 function _baseDirIgnoringIsolated(html) {
   const s = String(html == null ? '' : html);
   const tokens = s.match(/<[^>]+>|&[#a-zA-Z0-9]+;|[\s\S]/g) || [];
+  const dirStack = [];
   let protectedDepth = 0;
   for (const tok of tokens) {
     if (tok[0] === '<') {
-      if (tok.startsWith('</')) protectedDepth = Math.max(0, protectedDepth - 1);
-      else if (/\sdir=/.test(tok)) protectedDepth++;
+      protectedDepth = _dirTagStep(dirStack, tok);
       continue;
     }
     if (protectedDepth > 0) continue;
@@ -75,13 +87,13 @@ function _isolateRtlRuns(html) {
   const isQuoteTok = (t) => t === '"' || t === '&quot;';
 
   let out = [];
+  const dirStack = [];
   let protectedDepth = 0;
   let i = 0;
   while (i < tokens.length) {
     const tok = tokens[i];
     if (tok[0] === '<') {
-      if (tok.startsWith('</')) protectedDepth = Math.max(0, protectedDepth - 1);
-      else if (/\sdir=/.test(tok)) protectedDepth++;
+      protectedDepth = _dirTagStep(dirStack, tok);
       out.push(tok);
       i++;
       continue;
