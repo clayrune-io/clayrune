@@ -149,6 +149,46 @@
   border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px;
 }
 
+/* IA6 (§5 row IA6): project page — Next post (earliest across campaigns),
+   Engagement strip, and the archived-campaigns toggle. Same card/label
+   conventions as the blocks above rather than inventing new ones. */
+.desk-v1-project-nextpost {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%;
+  background: var(--surface); border: 1px solid var(--border2); border-radius: 10px;
+  padding: 10px 12px; text-align: left; cursor: pointer; font-family: inherit;
+}
+.desk-v1-project-nextpost:hover { background: var(--surface2); border-color: var(--border); }
+.desk-v1-project-nextpost-label { font-size: 11px; font-weight: 700; color: var(--text-faint); letter-spacing: 0.03em; }
+.desk-v1-project-nextpost-text { font-size: 13px; color: var(--text); }
+.desk-v1-project-nextpost-empty { font-size: 12.5px; color: var(--text-faint); }
+
+.desk-v1-project-engagement {
+  flex: 0 0 auto; background: var(--surface); border: 1px solid var(--border2);
+  border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 6px;
+}
+.desk-v1-project-engagement-head { font-size: 13px; font-weight: 700; color: var(--text); }
+.desk-v1-project-engagement-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); }
+.desk-v1-project-engagement-glyph { flex: 0 0 auto; }
+.desk-v1-project-engagement-label { flex: 1 1 auto; }
+.desk-v1-project-engagement-count { font-weight: 700; color: var(--text); }
+.desk-v1-project-engagement-open {
+  align-self: flex-start; background: none; border: none; color: var(--accent-soft);
+  font-size: 12.5px; font-weight: 600; cursor: pointer; padding: 2px 0; font-family: inherit;
+}
+
+.desk-v1-project-archived-toggle {
+  background: none; border: none; color: var(--text-faint); font-size: 12px;
+  font-weight: 600; cursor: pointer; padding: 2px 0; font-family: inherit; text-align: left;
+}
+.desk-v1-project-archived-toggle:hover { color: var(--text-dim); }
+.desk-v1-project-archived-list { margin-top: 8px; }
+.desk-v1-project-camp-card-archived { opacity: 0.85; }
+.desk-v1-project-archived-more { margin-left: auto; position: relative; }
+.desk-v1-project-archived-morebtn {
+  background: none; border: 1px solid var(--border2); border-radius: 6px; color: var(--text-dim);
+  font-size: 11.5px; cursor: pointer; padding: 3px 8px; font-family: inherit;
+}
+
 /* Mobile (≤960px, ground rule 7): the fixed 320px right column would push
    the tab body off-screen — stack it below instead. Hit targets ≥44px are
    each surface ticket's own job; the shell only owns this reflow. */

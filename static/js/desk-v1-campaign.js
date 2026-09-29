@@ -27,6 +27,28 @@
 
   const _TERMINAL_STATES = new Set(['verified_published', 'you_reported', 'failed', 'skipped', 'archived']);
   const _SCHEDULED_STATES = new Set(['scheduled', 'approved', 'sending', 'submitted']);
+  const _PUBLISHED_STATES = new Set(['verified_published', 'you_reported']);
+
+  // §6.1's "before the first publish" empty state, shared by the goal bar,
+  // Results and Conversations panels: true once any version of any family in
+  // this campaign has actually gone out.
+  function _hasPublished(campaignId) {
+    return _familiesFor(campaignId).some((f) => _familyHasState(f, _PUBLISHED_STATES));
+  }
+  window.deskV1CampaignHasPublished = _hasPublished;
+
+  // Earliest still-scheduled version's slot, campaign-scoped (§6.1 "Next:
+  // Tue 09:00 on 𝕏 · @ron."). Shared with the Results empty state and the
+  // project page's "next post across campaigns" (IA6).
+  function _nextScheduledVersion(campaignId) {
+    const versions = [];
+    _familiesFor(campaignId).forEach((f) => (f.versions || []).forEach((v) => {
+      if (_SCHEDULED_STATES.has(v.state) && v.publishAt) versions.push(v);
+    }));
+    versions.sort((a, b) => (a.publishAt < b.publishAt ? -1 : 1));
+    return versions[0] || null;
+  }
+  window.deskV1CampaignNextScheduled = _nextScheduledVersion;
 
   function _familyHasState(fam, states) { return (fam.versions || []).some((v) => states.has ? states.has(v.state) : v.state === states); }
   function _familyNeedsYou(fam) { return _familyHasState(fam, new Set(['needs_review'])); }
@@ -115,12 +137,22 @@
     const current = (camp.goal && camp.goal.current) || 0;
     const pct = goal.tracked && goal.target
       ? Math.max(0, Math.min(100, Math.round((current / goal.target) * 100))) : 0;
+    // §6.1 empty state: "before the first publish ... (no `0/30` bar)" — a
+    // campaign that has never had a version go out shows the goal as plain
+    // text instead of a bar reading 0/<target>, which would otherwise imply
+    // measured zero rather than "not started counting yet" (MET-01).
+    const fresh = !_hasPublished(camp.id);
     const goalHTML = goal.tracked
-      ? `<button type="button" class="desk-v1-camp-summary-goal" data-goal-btn>
-          <span class="desk-v1-camp-summary-label">GOAL</span>
-          <span class="desk-v1-camp-summary-goaltext">${esc(current)}/${esc(goal.target)} ${esc(goal.outcome)}${goal.deadline ? ' by ' + esc(_fmtDate(goal.deadline)) : ''}</span>
-          <span class="desk-v1-camp-summary-goalbar"><span style="width:${pct}%"></span></span>
-        </button>`
+      ? (fresh
+        ? `<div class="desk-v1-camp-summary-goal">
+            <span class="desk-v1-camp-summary-label">GOAL</span>
+            <span class="desk-v1-camp-summary-goaltext">${esc(goal.target)} ${esc(goal.outcome)}${goal.deadline ? ' by ' + esc(_fmtDate(goal.deadline)) : ''} · starts counting at the first post</span>
+          </div>`
+        : `<button type="button" class="desk-v1-camp-summary-goal" data-goal-btn>
+            <span class="desk-v1-camp-summary-label">GOAL</span>
+            <span class="desk-v1-camp-summary-goaltext">${esc(current)}/${esc(goal.target)} ${esc(goal.outcome)}${goal.deadline ? ' by ' + esc(_fmtDate(goal.deadline)) : ''}</span>
+            <span class="desk-v1-camp-summary-goalbar"><span style="width:${pct}%"></span></span>
+          </button>`)
       : `<div class="desk-v1-camp-summary-goal desk-v1-camp-summary-goal-untracked">
           <span class="desk-v1-camp-summary-label">GOAL</span>
           <span class="desk-v1-camp-summary-goaltext">⚠ not tracked yet</span>
@@ -309,14 +341,32 @@
   // Archive never touches families/conversations/results — §"keeps results
   // and receipts" means literally nothing else in fixture data moves; only
   // camp.state changes, same one-field mutation Pause already makes.
+  // `_preArchiveState` mirrors project.js's `_prePauseState` convention: the
+  // commandBus Undo toast (below) restores it immediately, but a project
+  // page's `More › Restore` (IA6, §5 row IA6) may act long after that toast
+  // has expired, so the field has to outlive it.
   function _archiveCampaign(camp, onDone) {
     const prevState = camp.state;
     DeskV1Kit.commandBus.run({
       label: `Archived “${camp.plan.title}”`,
-      do: () => { camp.state = 'archived'; if (onDone) onDone('archived'); },
-      undo: () => { camp.state = prevState; if (onDone) onDone('restored'); },
+      do: () => { camp._preArchiveState = prevState; camp.state = 'archived'; if (onDone) onDone('archived'); },
+      undo: () => { camp.state = prevState; delete camp._preArchiveState; if (onDone) onDone('restored'); },
     });
   }
+
+  // Restore (IA6, §5 row IA6): the project page's "More › Restore" on an
+  // archived campaign's card (desk-v1-project.js). Puts the campaign back to
+  // whatever state Archive found it in (`_preArchiveState` above) rather than
+  // assuming "active" — an archived Paused campaign restores to Paused.
+  function _restoreCampaign(camp, onDone) {
+    const restoredState = camp._preArchiveState || 'active';
+    DeskV1Kit.commandBus.run({
+      label: `Restored “${camp.plan.title}”`,
+      do: () => { camp.state = restoredState; delete camp._preArchiveState; if (onDone) onDone('restored'); },
+      undo: () => { camp._preArchiveState = restoredState; camp.state = 'archived'; if (onDone) onDone('archived'); },
+    });
+  }
+  window.deskV1RestoreCampaign = _restoreCampaign;
 
   // triggerEl's own parent becomes the positioned host (same convention as
   // _openCardMenu below) — works whether triggerEl sits in the campaign

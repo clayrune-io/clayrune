@@ -404,6 +404,68 @@ async function runProjectPauseResume(browser) {
   await ctx.close();
 }
 
+// ── IA6 (docs/THE_DESK_V1_IA_REVISION.md §5 row IA6) — project Next post is
+// the EARLIEST scheduled version across the project's own campaigns, not
+// just the newest/freshest one. camp-1's "30 Windows testers wanted" is
+// scheduled 2026-09-30; the fresh camp-4 fixture (added for the campaign-page
+// empty-state case) schedules later, 2026-10-06 — so this only passes if the
+// project page actually compares across campaigns instead of picking one. ──
+async function runNextPostAcrossCampaigns(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+
+  await page.evaluate(() => window.deskV1Nav('project', { projectId: 'clayrune' }));
+  await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
+  const nextText = (await page.textContent('.desk-v1-project-nextpost').catch(() => '') || '');
+  // camp-1's "30 Windows testers wanted" piece is scheduled 2026-09-30, on
+  // camp-1 (title "Windows beta testers"); camp-4's own piece is scheduled
+  // later, 2026-10-06 (title "Community Discord launch") — the earliest one
+  // wins only if the project page actually compares across campaigns.
+  /Windows beta testers/.test(nextText) && !/Community Discord/.test(nextText)
+    ? ok(`IA6: project Next post = earliest across campaigns: "${nextText.trim().replace(/\s+/g, ' ')}"`)
+    : fail(`IA6: project Next post picked the wrong campaign: ${JSON.stringify(nextText)}`);
+
+  reportUncaught(pageErrors, '[next-post]');
+  await ctx.close();
+}
+
+// ── IA6 — archived campaigns, unreachable since IA1 removed Home's archived
+// section, are reachable again via a project-page toggle; `More › Restore`
+// puts one back on the live campaign grid. ─────────────────────────────────
+async function runArchivedToggleRestore(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+
+  await page.evaluate(() => window.deskV1Nav('project', { projectId: 'clayrune' }));
+  await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
+
+  const beforeLive = await page.$('.desk-v1-project-camps [data-campaign-id="camp-archived-1"]');
+  beforeLive === null ? ok('IA6: archived campaign is not on the live grid before Restore') : fail('IA6: archived campaign already on the live grid');
+  const beforeToggle = await page.$('.desk-v1-project-archived-list');
+  beforeToggle === null ? ok('IA6: archived list is collapsed by default') : fail('IA6: archived list rendered expanded by default');
+
+  await page.click('[data-archived-toggle]');
+  await page.waitForSelector('.desk-v1-project-archived-list [data-campaign-id="camp-archived-1"]', { timeout: 2000 });
+  ok('IA6: archived toggle reveals the archived campaign (camp-archived-1)');
+
+  await page.click('.desk-v1-project-archived-list [data-archived-more-btn]');
+  await page.waitForSelector('.desk-v1-camp-cardmenu', { timeout: 2000 });
+  const menuText = (await page.textContent('.desk-v1-camp-cardmenu').catch(() => '') || '');
+  /Restore/.test(menuText) ? ok('IA6: archived card\'s More menu offers Restore') : fail(`IA6: More menu wrong: ${JSON.stringify(menuText)}`);
+
+  await page.click('.desk-v1-camp-cardmenu [data-restore-btn]');
+  await page.waitForTimeout(80);
+  const afterLive = await page.$('.desk-v1-project-camps [data-campaign-id="camp-archived-1"]');
+  afterLive !== null
+    ? ok('IA6: More › Restore brings the campaign back to the live list')
+    : fail('IA6: campaign missing from the live list after Restore');
+  const state = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-archived-1').state);
+  state === 'completed'
+    ? ok('IA6: Restore returns the campaign to its pre-archive state ("completed"), not a bare "active"')
+    : fail(`IA6: restored state wrong: ${state}`);
+
+  reportUncaught(pageErrors, '[archived-restore]');
+  await ctx.close();
+}
+
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
@@ -415,6 +477,8 @@ try {
   await runPresenceCeilingClamp(browser);
   await runPresenceAddAccountConfirm(browser);
   await runProjectPauseResume(browser);
+  await runNextPostAcrossCampaigns(browser);
+  await runArchivedToggleRestore(browser);
   exitCode = bad === 0 ? 0 : 1;
 } catch (e) {
   console.error('harness error:', e);

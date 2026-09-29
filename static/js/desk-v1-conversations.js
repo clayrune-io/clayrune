@@ -139,6 +139,18 @@
       </button>`;
   }
 
+  // §6.1 empty state, before the first publish: "Replies show up here once a
+  // post is live." — overrides the per-source EMPTY_COPY only when the whole
+  // campaign (every source) has nothing yet AND has never published, so a
+  // campaign that's merely quiet on one source still gets its normal,
+  // source-specific empty line (§6: "must never read as 'no one is
+  // talking'").
+  function _freshEmpty(st, counts) {
+    if (st.scope !== 'campaign') return false;
+    if (typeof window.deskV1CampaignHasPublished !== 'function' || window.deskV1CampaignHasPublished(st.campaignId)) return false;
+    return SOURCES.every((s) => !counts[s.key]) && _allConversations().every((c) => c.campaignId !== st.campaignId);
+  }
+
   function _listHTML(st) {
     const counts = _sourceCounts(st);
     const tabsHTML = SOURCES.map((s) => `
@@ -147,7 +159,7 @@
     const rows = _bySource(st, st.source);
     const rowsHTML = rows.length
       ? rows.map((c) => _rowHTML(c, st)).join('')
-      : `<div class="desk-v1-conv-empty">${esc(EMPTY_COPY[st.source] || 'Nothing here right now.')}</div>`;
+      : `<div class="desk-v1-conv-empty">${esc(_freshEmpty(st, counts) ? 'Replies show up here once a post is live.' : (EMPTY_COPY[st.source] || 'Nothing here right now.'))}</div>`;
     const gaps = _coverageGaps(st.campaignId);
     const gapsHTML = gaps.length
       ? `<div class="desk-v1-conv-gaps">${gaps.map((g, i) => `
