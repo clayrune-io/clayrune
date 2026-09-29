@@ -407,3 +407,37 @@ def test_committed_on_a_differently_named_branch_still_reports_added_deleted(env
     assert result['added'] == 3
     assert result['deleted'] == 1
     assert result['head_commits']
+
+
+def test_side_branch_commits_survive_checkout_back_to_base(env, project):
+    """MC-998 follow-up 5, Gap 2 (Dave's finding on session a8560130c26b): a
+    session commits on a side branch inside its worktree, then checks the
+    BASE branch back out before completion (e.g. to leave the worktree
+    clean) -- current HEAD's ancestry then has no path to those commits at
+    all, so a `base_commit..HEAD` rev-list/diff sees nothing and silently
+    reports zero even though the worktree unambiguously made real commits.
+    The worktree's own HEAD reflog must still surface them."""
+    sid = 'mb12'
+    ok, path = w.create(project, sid)
+    assert ok, path
+    base_branch = _git(path, 'rev-parse', '--abbrev-ref', 'HEAD')
+    base_commit = _git(path, 'rev-parse', 'HEAD')
+
+    _git(path, 'checkout', '-b', 'split-view-agents')
+    (Path(path) / 'app.py').write_text(
+        'def one():\n    return "orig one"\n\n\ndef two():\n    return "NEW two"\n'
+        'def three():\n    return "added"\n',
+        encoding='utf-8')
+    _git(path, 'add', '.')
+    _git(path, 'commit', '-q', '-m', 'side branch work')
+
+    # Return HEAD to the base branch/commit before completion runs -- this is
+    # exactly the state that made session a8560130c26b record added=0.
+    _git(path, 'checkout', base_branch)
+    assert _git(path, 'rev-parse', 'HEAD') == base_commit
+
+    result = ar._compute_code_delta(_session(sid, project['id'], isolated=True))
+    assert result['status'] == 'ok', result
+    assert result['added'] == 3
+    assert result['deleted'] == 1
+    assert result['head_commits']  # the side-branch commit must still surface
