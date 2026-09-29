@@ -13,6 +13,12 @@
   function _fx() { return window.DeskV1Fixtures || {}; }
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id); }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id); }
+  function _project(id) { return (_fx().projects || []).find((p) => p.id === id); }
+  // R2-5: resolves whoever the project/campaign actually picked, falling
+  // back to 'your agent' — same convention every other desk-v1-*.js uses.
+  function _agentName(campaign) {
+    return window.DeskV1Kit ? DeskV1Kit.deskAgentName({ project: _project(campaign && campaign.projectId), campaign }) : 'your agent';
+  }
 
   // Every {family, version} pair in campaignId with state 'needs_review', in
   // fixture array order — the stepper's "n of m to review" list (§4 header).
@@ -284,12 +290,13 @@
 
   function _claimBarHTML(claimId, meta, st) {
     const copy = CLAIM_COPY[st.status] || CLAIM_COPY.blocked;
+    const agentName = _agentName(_campaign(_st && _st.campaignId));
     if (st.status === 'blocked') {
       return `<div class="desk-v1-claimbar desk-v1-claimbar-blocked" data-claim-bar="${esc(claimId)}">
         <div class="desk-v1-claimbar-head">${copy.word}</div>
         ${st.addingSource ? _sourceFormHTML(claimId, st) : `
           <div class="desk-v1-claimbar-actions">
-            <button type="button" data-claim-fixposy="${esc(claimId)}">Fix with Posy</button>
+            <button type="button" data-claim-fixposy="${esc(claimId)}">Fix with ${esc(agentName)}</button>
             <button type="button" data-claim-remove="${esc(claimId)}">Remove</button>
             <button type="button" data-claim-addsource="${esc(claimId)}">Add source</button>
           </div>`}
@@ -310,7 +317,7 @@
     if (st.status === 'checked') {
       return `<div class="desk-v1-claimbar desk-v1-claimbar-checked" data-claim-bar="${esc(claimId)}">
         <div class="desk-v1-claimbar-head">${copy.word} <span class="desk-v1-claimbar-source">${esc(st.sourceName || '')} · you added it</span></div>
-        <div class="desk-v1-claimbar-reason">It doesn’t fully support the claim as written. Posy suggests the revision shown above. The block clears only when you accept a revision.</div>
+        <div class="desk-v1-claimbar-reason">It doesn’t fully support the claim as written. ${esc(agentName)} suggests the revision shown above. The block clears only when you accept a revision.</div>
         <div class="desk-v1-claimbar-actions">
           <button type="button" class="desk-v1-claimbar-accept" data-claim-accept="${esc(claimId)}">Accept → r${st.revision + 1}</button>
           <button type="button" data-claim-editself="${esc(claimId)}">Edit it myself</button>
@@ -385,6 +392,7 @@
     const posyHTML = window.DeskV1Kit ? window.DeskV1Kit.posyBoxHTML({
       inputId: 'desk-v1-review-posy-input', scopeLabel: 'This article',
       compact: true, sendStyle: 'arrow',
+      agentRef: window.DeskV1Kit.deskAgentRef({ project: _project((_campaign(_st.campaignId) || {}).projectId), campaign: _campaign(_st.campaignId) }),
     }) : '';
 
     return `
@@ -460,7 +468,7 @@
 
     if (window.DeskV1Kit) {
       window.DeskV1Kit.bindPosyBox(el.querySelector('#desk-v1-review-posy'), 'desk-v1-review-posy-input', (text) => {
-        window.DeskV1Kit.toast('Sent to Posy: "' + text + '"', {});
+        window.DeskV1Kit.toast('Sent to ' + _agentName(_campaign(family.campaignId)) + ': "' + text + '"', {});
         window.DeskV1Kit.paintPosyReadyNoDiff(el.querySelector('#desk-v1-review-posy'));
       }, { draftKey: `project:${(_campaign(family.campaignId) || {}).projectId}:review:${version.id}`, taskLifecycle: true });
       // §4: "Say this once in an ⓘ tooltip; don't print it permanently."
@@ -590,7 +598,7 @@
     const rN = st.revision + 1;
     const hedge = p.text.replace(p.before, 'keeps recent snapshots automatically — exact retention varies by project size');
     window.DeskV1Kit.commandBus.run({
-      label: 'Posy rephrased the claim to remove the unsupported number → r' + rN,
+      label: _agentName(_campaign(family.campaignId)) + ' rephrased the claim to remove the unsupported number → r' + rN,
       do: () => { st.status = 'resolved_by_posy'; st.revisedText = hedge; st.revision = rN; version.revision = rN; _renderAll(); },
       undo: () => { st.status = 'blocked'; st.revisedText = null; st.revision = rN - 1; version.revision = rN - 1; _renderAll(); },
     });
@@ -679,11 +687,12 @@
     _closeSelToolbar();
     const rect = range.getBoundingClientRect();
     const hostRect = articleEl.getBoundingClientRect();
+    const agentName = _agentName(_campaign(_st.campaignId));
     const bar = document.createElement('div');
     bar.className = 'desk-v1-review-seltoolbar';
     bar.innerHTML = `
       <div class="desk-v1-review-seltoolbar-askposy">
-        <button type="button" data-sel-askposy>Ask Posy ▾</button>
+        <button type="button" data-sel-askposy>Ask ${esc(agentName)} ▾</button>
         <div class="desk-v1-review-askposy-menu" hidden>
           <button type="button" data-sel-style="shorter">Shorter</button>
           <button type="button" data-sel-style="less_technical">Less technical</button>
@@ -741,7 +750,7 @@
     const before = _st.editValues[paraId] != null ? _st.editValues[paraId] : p.text;
     const after = _rewriteFor(paraId, style, before);
     window.DeskV1Kit.commandBus.run({
-      label: 'Applied Posy’s "' + style.replace('_', ' ') + '" rewrite',
+      label: 'Applied ' + _agentName(_campaign(_st.campaignId)) + '’s "' + style.replace('_', ' ') + '" rewrite',
       do: () => { _st.editValues[paraId] = after; _renderAll(); },
       undo: () => { delete _st.editValues[paraId]; _renderAll(); },
     });
@@ -761,7 +770,7 @@
       const text = box.querySelector('textarea').value.trim();
       if (!text) return;
       box.innerHTML = `<div class="desk-v1-review-comment-posted"><strong>You:</strong> ${esc(text)}</div>
-        <div class="desk-v1-review-comment-reply"><strong>Posy:</strong> Noted — I’ll flag this on the next pass.</div>`;
+        <div class="desk-v1-review-comment-reply"><strong>${esc(_agentName(_campaign(_st.campaignId)))}:</strong> Noted — I’ll flag this on the next pass.</div>`;
     };
   }
 
