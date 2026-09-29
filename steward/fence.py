@@ -487,7 +487,39 @@ _CURL_LONG_ARG = {
     '--range', '--dump-header', '--limit-rate', '--max-filesize', '--config',
     '--retry', '--retry-delay', '--retry-max-time', '--output-dir', '--trace',
     '--trace-ascii', '--stderr', '--interface', '--connect-to', '--max-redirs',
+    '--proxy-header', '--proxy-user', '--proxy-cacert', '--proxy-cert',
+    '--proxy-key', '--proxy-pass', '--preproxy', '--noproxy', '--socks4',
+    '--socks4a', '--socks5', '--socks5-hostname', '--unix-socket',
+    '--abstract-unix-socket', '--aws-sigv4', '--ciphers', '--dns-servers',
+    '--doh-url', '--engine', '--expect100-timeout', '--keepalive-time',
+    '--local-port', '--login-options', '--mail-auth', '--mail-from',
+    '--mail-rcpt', '--netrc-file', '--pinnedpubkey', '--proto',
+    '--proto-default', '--proto-redir', '--pubkey', '--quote',
+    '--request-target', '--service-name', '--speed-limit', '--speed-time',
+    '--tls-max', '--variable', '--url-query', '--etag-save', '--etag-compare',
+    '--capath', '--crlfile', '--cert-type', '--key-type', '--pass',
+    '--time-cond', '--continue-at', '--telnet-option', '--alt-svc', '--hsts',
+    '--parallel-max', '--create-file-mode', '--ftp-port', '--delegation',
+    '--happy-eyeballs-timeout-ms', '--ip-tos', '--trace-config',
 }
+# Known value-less curl options. A long option in NEITHER table has unknown
+# arity, so the next token might be its value; a group holding one may not
+# downgrade a visible send to a read (review #10 N16).
+_CURL_LONG_FLAG = {
+    '--silent', '--show-error', '--fail', '--fail-with-body', '--fail-early',
+    '--compressed', '--insecure', '--include', '--verbose', '--http1.0',
+    '--http1.1', '--http2', '--http2-prior-knowledge', '--http3', '--globoff',
+    '--get', '--no-get', '--head', '--no-progress-meter', '--progress-bar',
+    '--remote-name', '--remote-name-all', '--remote-header-name', '--no-buffer',
+    '--ipv4', '--ipv6', '--location', '--location-trusted', '--create-dirs',
+    '--path-as-is', '--no-keepalive', '--tcp-nodelay', '--raw', '--ssl-reqd',
+    '--netrc', '--netrc-optional', '--anyauth', '--basic', '--digest',
+    '--ntlm', '--negotiate', '--post301', '--post302', '--post303',
+    '--junk-session-cookies', '--styled-output', '--no-styled-output',
+    '--tlsv1', '--tlsv1.2', '--tlsv1.3', '--disable', '--parallel',
+    '--retry-all-errors', '--retry-connrefused', '--no-sessionid', '--next',
+}
+_CURL_SHORT_FLAG = set('sSfkivIgGjlnNOR0123469#JLpqZMV')
 _CURL_BODY_LONG = {'--data', '--data-raw', '--data-binary', '--data-urlencode',
                    '--data-ascii', '--json'}
 _CURL_UPLOAD_LONG = {'--form', '--form-string', '--upload-file'}
@@ -498,8 +530,9 @@ def _net_tokens(seg: str) -> list:
     whitespace INSIDE its argument (review #9 N13: splitting first and
     stripping quotes after turned `--header="X: --get"` into a real
     `--get`). Single quotes are literal; inside double quotes `\"` and `\\`
-    are escapes. Outside quotes a backslash is kept, so a Windows path
-    (`C:\tools\curl.exe`) still names its tool. An unterminated quote runs
+    are escapes. Outside quotes a backslash escapes only whitespace, a
+    quote or another backslash; any other backslash is kept, so a Windows
+    path (`C:\tools\curl.exe`) still names its tool. An unterminated quote runs
     to the end of the segment."""
     toks, cur, have = [], [], False
     i, n = 0, len(seg)
@@ -527,6 +560,10 @@ def _net_tokens(seg: str) -> list:
                 i += 1
             i += 1
             continue
+        if ch == '\\' and i + 1 < n and (seg[i + 1].isspace() or seg[i + 1] in '"\'\\'):
+            cur.append(seg[i + 1])  # `X:\ --get` is one argument (review #10 N17)
+            i += 2
+            continue
         cur.append(ch)
         i += 1
     if have:
@@ -540,15 +577,25 @@ def _curl_mutates(args: list) -> bool:
     any mutating one makes the invocation a send. The separator is found
     while walking options, never by scanning raw tokens: `-s:` ends a
     transfer, but `--data --next` is the data value `--next` (N14)."""
-    state = {'method': None, 'body': False, 'upload': False, 'get': False}
+    state = {'method': None, 'body': False, 'upload': False, 'get': False,
+             'verb_seen': False, 'unknown': False}
 
     def mutates() -> bool:
+        if state['unknown'] and (state['body'] or state['upload']
+                                 or state['verb_seen']):
+            return True  # an option of unknown arity: no read downgrade
         if state['method'] is not None:
             return state['method'].upper() in _MUTATING_VERBS
         return state['upload'] or (state['body'] and not state['get'])
 
     def reset() -> None:
-        state.update(method=None, body=False, upload=False, get=False)
+        state.update(method=None, body=False, upload=False, get=False,
+                     verb_seen=False, unknown=False)
+
+    def set_method(val: str) -> None:
+        state['method'] = val
+        if val.upper() in _MUTATING_VERBS:
+            state['verb_seen'] = True
 
     i = 0
     while i < len(args):
@@ -567,8 +614,10 @@ def _curl_mutates(args: list) -> bool:
             if name in _CURL_LONG_ARG and not eq:
                 val = args[i] if i < len(args) else ''
                 i += 1
+            elif name not in _CURL_LONG_ARG and name not in _CURL_LONG_FLAG:
+                state['unknown'] = True
             if name == '--request':
-                state['method'] = val
+                set_method(val)
             elif name in _CURL_BODY_LONG:
                 state['body'] = True
             elif name in _CURL_UPLOAD_LONG:
@@ -587,13 +636,15 @@ def _curl_mutates(args: list) -> bool:
                 if ch == 'G':
                     state['get'] = True
                 if ch not in _CURL_SHORT_ARG:
+                    if ch not in _CURL_SHORT_FLAG:
+                        state['unknown'] = True
                     continue
                 val = letters[j + 1:]
                 if not val:
                     val = args[i] if i < len(args) else ''
                     i += 1
                 if ch == 'X':
-                    state['method'] = val
+                    set_method(val)
                 elif ch == 'd':
                     state['body'] = True
                 elif ch in 'FT':
@@ -703,6 +754,47 @@ def _segment_mutates(seg: str) -> bool:
     return False
 
 
+def _net_segments(cmd: str) -> list:
+    """Split at `&&`, `||`, `|`, `;` and newline only OUTSIDE quotes and
+    escapes (review #10 N15: `-H "Content-Type: a/json; charset=utf-8"`
+    cut curl off from its `--data`). Local to the network check; the
+    shared _SHELL_SPLIT_RE keeps its other callers' behaviour."""
+    segs, cur, quote = [], [], ''
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if quote:
+            if ch == '\\' and quote == '"' and i + 1 < n:
+                cur.append(cmd[i:i + 2])
+                i += 2
+                continue
+            if ch == quote:
+                quote = ''
+            cur.append(ch)
+            i += 1
+            continue
+        if ch in '"\'':
+            quote = ch
+        elif ch == '\\' and i + 1 < n:
+            cur.append(cmd[i:i + 2])
+            i += 2
+            continue
+        elif cmd.startswith(('&&', '||'), i):
+            segs.append(''.join(cur))
+            cur = []
+            i += 2
+            continue
+        elif ch in '|;\n':
+            segs.append(''.join(cur))
+            cur = []
+            i += 1
+            continue
+        cur.append(ch)
+        i += 1
+    segs.append(''.join(cur))
+    return segs
+
+
 def _touches_nonlocal_network(cmd: str) -> FenceDecision:
     """Block external network SENDS (mutating HTTP verbs / uploads to a non-local
     host). Reads (plain GET) and anything targeting localhost are allowed.
@@ -720,7 +812,7 @@ def _touches_nonlocal_network(cmd: str) -> FenceDecision:
     `curl localhost:5199/api/browser/launch` + `/read` handed a steward any
     hostile page straight past the mcp__browser__* block. Verb-shape must not
     be a way round it, and neither must segment position."""
-    for seg in _SHELL_SPLIT_RE.split(cmd):
+    for seg in _net_segments(cmd):
         if not _NET_TOOL_RE.search(seg):
             continue
         if re.search(r'/api/browser/(launch|read|input|navigate)', seg, re.I):

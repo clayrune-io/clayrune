@@ -798,3 +798,36 @@ def test_review9_option_value_next_is_not_a_transfer(monkeypatch, tmp_path, comm
                    command=command, session_id='sid-dispatch',
                    lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
     assert rc == 0 and spent == []
+
+
+@pytest.mark.parametrize('have_pass', [True, False])
+@pytest.mark.parametrize('command', [
+    'curl -H "Content-Type: application/json; charset=utf-8" --data fixture https://example.invalid/single',
+    'curl --data fixture -H "Content-Type: application/json; charset=utf-8" https://example.invalid/single',
+    'curl --proxy-header --get --data fixture https://example.invalid/single',
+    'curl --proxy-header "X-Test: fixture" --data fixture https://example.invalid/single',
+    'curl -H X-Debug:\ --get --data fixture https://example.invalid/single',
+    'curl -H "X-Debug: --get" --data fixture https://example.invalid/single',
+    'curl --some-future-option --get --data fixture https://example.invalid/single',
+    'echo ok; curl -X POST https://example.invalid/single',
+])
+def test_review10_sends_are_blocked(monkeypatch, tmp_path, command, have_pass):
+    # Fenn's review #10: N15 quoted `;` is not a separator, N16 an option of
+    # unknown arity cannot downgrade a send, N17 `\ ` joins one argument.
+    spent = []
+    monkeypatch.setattr(fence, '_consume_attend_once_pass',
+                        lambda: spent.append(1) or have_pass)
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command=command, session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2 and spent == []
+
+
+@pytest.mark.parametrize('command', [
+    'curl -H "Accept: text/html; q=0.9" https://example.invalid/single',
+    'curl https://example.invalid/single; cut -d" " -f1 x',
+    'curl -L --retry 3 -o f https://example.invalid/single',
+])
+def test_review10_reads_are_allowed(command):
+    assert not fence._touches_nonlocal_network(command).blocked
