@@ -749,6 +749,25 @@
 }
 .desk-v1-rules-pop-apply:hover { opacity: 0.9; }
 
+/* IA3 (docs/THE_DESK_V1_IA_REVISION.md §5 row IA3): Presence settings page.
+   Reuses .desk-v1-rules-group/-group-title/-inlinerow/-numinput/-hint/
+   -pop-preview* as-is (same component set the rules popover already
+   established) — only the two controls that popover never needed
+   (a per-row account block, a free-text area) get their own rules here. */
+.desk-v1-presence { display: flex; flex-direction: column; gap: 14px; height: 100%; min-height: 0; overflow-y: auto; }
+.desk-v1-presence-account-row {
+  display: flex; flex-direction: column; gap: 6px; padding: 10px 0;
+  border-bottom: 1px solid var(--border2);
+}
+.desk-v1-presence-account-row:last-child { border-bottom: none; }
+.desk-v1-presence-account-head { display: flex; align-items: center; gap: 8px; }
+.desk-v1-presence-account-voice { font-size: 12.5px; color: var(--text-dim); font-weight: 600; }
+.desk-v1-rules-textarea, .desk-v1-rules-textinput {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px;
+  color: var(--text); font-size: 13px; padding: 6px 8px; font-family: inherit; resize: vertical;
+}
+.desk-v1-rules-textinput { resize: none; }
+
 /* §3.4 Posy instruction reply — before/after + affected, in the Posy box's
    own output slot (kit's posyBoxHTML), not a new bubble type. */
 .desk-v1-rules-posyreply { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text); }

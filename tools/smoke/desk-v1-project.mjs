@@ -248,16 +248,21 @@ async function runStubRoutes(browser) {
   await page.click('.desk-v1-home-project-card[data-project-id="clayrune"]');
   await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
 
+  // IA3 landed the real Presence page — no longer a stub route (was
+  // asserted as one in IA1; re-check on master before calling this a
+  // regression if it ever fails).
   await page.click('.desk-v1-project-presence-btn');
-  await page.waitForSelector('.desk-v1-stub', { timeout: 4000 });
-  let stubText = (await page.textContent('.desk-v1-stub-body').catch(() => '') || '');
-  /Presence is not built yet/.test(stubText)
-    ? ok(`presence route: honest stub placeholder — "${stubText.trim()}"`)
-    : fail(`presence stub wrong: ${JSON.stringify(stubText)}`);
+  await page.waitForSelector('.desk-v1-presence', { timeout: 4000 });
+  const accountCount = await page.$$eval('.desk-v1-presence-account-row', (els) => els.length);
+  accountCount === 3
+    ? ok(`presence route: real page renders Clayrune's 3 bound accounts`)
+    : fail(`presence route wrong account count: ${accountCount}`);
+  await page.click('.desk-v1-back');
+  await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
 
   await page.evaluate(() => window.deskV1Nav('engagement', {}));
   await page.waitForSelector('.desk-v1-stub', { timeout: 4000 });
-  stubText = (await page.textContent('.desk-v1-stub-body').catch(() => '') || '');
+  let stubText = (await page.textContent('.desk-v1-stub-body').catch(() => '') || '');
   /Engagement is not built yet/.test(stubText)
     ? ok(`engagement route: honest stub placeholder — "${stubText.trim()}"`)
     : fail(`engagement stub wrong: ${JSON.stringify(stubText)}`);
@@ -275,6 +280,125 @@ async function runStubRoutes(browser) {
   await ctx.close();
 }
 
+// ── IA3 acceptance row: lowering a Presence ceiling narrows at once (no
+// confirm sheet — narrowing needs none) and clamps camp-1's effective-cadence
+// chip on the campaign page, with a log line left on the Presence page
+// itself (§2.1: "narrowing... clamps that campaign at once and logs it"). ──
+async function runPresenceCeilingClamp(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+
+  await page.click('.desk-v1-home-project-card[data-project-id="clayrune"]');
+  await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
+  await page.click('.desk-v1-project-presence-btn');
+  await page.waitForSelector('.desk-v1-presence', { timeout: 4000 });
+
+  // Leave the input focused after fill() and the ceiling still fires a
+  // real blur-driven 'change' when the Apply click below steals focus —
+  // re-running the handler and replacing the preview mid-click. Tab off
+  // first so the one real 'change' happens here, not during the click.
+  const ceilInput = page.locator('[data-ceiling-input="ch-x-ron"]');
+  await ceilInput.fill('2');
+  await ceilInput.press('Tab');
+  await page.waitForSelector('[data-ceiling-preview="ch-x-ron"] [data-preview-apply]', { timeout: 2000 });
+  await page.click('[data-ceiling-preview="ch-x-ron"] [data-preview-apply]');
+  await page.waitForTimeout(50);
+
+  const logLine = (await page.textContent('#desk-v1-presence-log-list').catch(() => '') || '');
+  /lowered to 2\/wk — was 3/.test(logLine)
+    ? ok(`presence: narrowing ch-x-ron to 2/wk applies at once and logs it: "${logLine.trim().slice(0, 80)}"`)
+    : fail(`presence ceiling-narrow log wrong: ${JSON.stringify(logLine)}`);
+
+  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
+  await page.waitForSelector('.desk-v1-campaign', { timeout: 4000 });
+  const chipsText = (await page.textContent('.desk-v1-camp-summary').catch(() => '') || '');
+  /≤2\/wk/.test(chipsText)
+    ? ok('presence: camp-1 chip clamps to "≤2/wk" from the lowered project ceiling')
+    : fail(`camp-1 chip not clamped: ${JSON.stringify(chipsText)}`);
+
+  reportUncaught(pageErrors, '[presence-ceiling-clamp]');
+  await ctx.close();
+}
+
+// ── IA3 acceptance row: adding a Presence account widens what the project
+// can publish, so it requires the same confirm-sheet pattern as the Rules
+// popover's widening path (desk-v1-kit.js's openConfirmSheet). ─────────────
+async function runPresenceAddAccountConfirm(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+
+  await page.click('.desk-v1-home-project-card[data-project-id="engulfing_scanner"]');
+  await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
+  await page.click('.desk-v1-project-presence-btn');
+  await page.waitForSelector('.desk-v1-presence', { timeout: 4000 });
+
+  const before = await page.$$eval('.desk-v1-presence-account-row', (els) => els.length);
+  await page.click('[data-addacct-trigger]');
+  await page.waitForSelector('.desk-v1-addto-menu button', { timeout: 2000 });
+  await page.click('.desk-v1-addto-menu button');
+
+  await page.waitForSelector('.desk-v1-rules-confirm-overlay', { timeout: 2000 });
+  const sheetTitle = (await page.textContent('.desk-v1-rules-confirm-overlay').catch(() => '') || '');
+  /widens what/.test(sheetTitle)
+    ? ok('presence: adding an account opens the widening confirm sheet')
+    : fail(`add-account confirm sheet wrong: ${JSON.stringify(sheetTitle)}`);
+
+  await page.click('[data-confirm-accept]');
+  await page.waitForSelector('.desk-v1-rules-confirm-overlay', { state: 'detached', timeout: 2000 });
+  const after = await page.$$eval('.desk-v1-presence-account-row', (els) => els.length);
+  after === before + 1
+    ? ok(`presence: confirming the sheet actually adds the account (${before} -> ${after})`)
+    : fail(`add-account count wrong after confirm: ${before} -> ${after}`);
+
+  reportUncaught(pageErrors, '[presence-addaccount-confirm]');
+  await ctx.close();
+}
+
+// ── IA3 acceptance row: project Pause pauses both clayrune campaigns;
+// Resume runs each through validatePlan (not a blind flip back). ──────────
+async function runProjectPauseResume(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+
+  await page.click('.desk-v1-home-project-card[data-project-id="clayrune"]');
+  await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
+
+  await page.click('[data-pause-project-btn]');
+  await page.waitForTimeout(50);
+  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
+  await page.waitForSelector('.desk-v1-campaign', { timeout: 4000 });
+  let pillText = (await page.textContent('.desk-v1-camp-state-pill').catch(() => '') || '');
+  /Paused/i.test(pillText)
+    ? ok('project Pause: camp-1 (was active) shows Paused')
+    : fail(`camp-1 not paused: ${JSON.stringify(pillText)}`);
+
+  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-2' }));
+  await page.waitForSelector('.desk-v1-campaign', { timeout: 4000 });
+  pillText = (await page.textContent('.desk-v1-camp-state-pill').catch(() => '') || '');
+  /Paused/i.test(pillText)
+    ? ok('project Pause: camp-2 (was proposed) shows Paused too')
+    : fail(`camp-2 not paused: ${JSON.stringify(pillText)}`);
+
+  await page.evaluate(() => window.deskV1Nav('project', { projectId: 'clayrune' }));
+  await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
+  await page.click('[data-resume-project-btn]');
+  await page.waitForTimeout(50);
+
+  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
+  await page.waitForSelector('.desk-v1-campaign', { timeout: 4000 });
+  pillText = (await page.textContent('.desk-v1-camp-state-pill').catch(() => '') || '');
+  /Active/i.test(pillText)
+    ? ok('project Resume: camp-1 goes through validatePlan and returns to Active (it has a full plan)')
+    : fail(`camp-1 not resumed: ${JSON.stringify(pillText)}`);
+
+  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-2' }));
+  await page.waitForSelector('.desk-v1-campaign', { timeout: 4000 });
+  pillText = (await page.textContent('.desk-v1-camp-state-pill').catch(() => '') || '');
+  /Proposed/i.test(pillText)
+    ? ok('project Resume: camp-2 goes through validatePlan and returns to its pre-pause Proposed state')
+    : fail(`camp-2 not resumed: ${JSON.stringify(pillText)}`);
+
+  reportUncaught(pageErrors, '[project-pause-resume]');
+  await ctx.close();
+}
+
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
@@ -283,6 +407,9 @@ try {
   await runSecondProject(browser);
   await runNeedsYouDeepStack(browser);
   await runStubRoutes(browser);
+  await runPresenceCeilingClamp(browser);
+  await runPresenceAddAccountConfirm(browser);
+  await runProjectPauseResume(browser);
   exitCode = bad === 0 ? 0 : 1;
 } catch (e) {
   console.error('harness error:', e);
