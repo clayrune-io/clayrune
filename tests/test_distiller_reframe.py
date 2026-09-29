@@ -130,6 +130,36 @@ def test_reframe_missing_frontmatter_falls_back(tmp_path, monkeypatch):
     assert 'do x then y' in out['body']
 
 
+def test_reframe_unfenced_header_not_duplicated_into_body(tmp_path, monkeypatch):
+    # Real-world shape behind the 2026-08-15 soak-cohort bug: the model omits
+    # the `---` fence and emits a bare name:/description: header directly.
+    # Old _split_frontmatter required a literal leading `---`, so this header
+    # survived untouched as body text; write_skill's own real frontmatter
+    # (built from the correctly-extracted name) then landed IN FRONT of it,
+    # baking a duplicate header into the installed skill while the fallback
+    # description picked up the bogus "## Operating procedure" heading
+    # instead of the real TRIGGER line sitting unparsed in the body.
+    _setup(tmp_path)
+    model_out = (
+        "name: scanner-zero-detections-diagnosis\n"
+        "description: TRIGGER when a scanner reports zero detections during "
+        "a session and you need to distinguish root cause.\n\n"
+        "## Operating procedure\n\n"
+        "1. Funnel test.\n"
+    )
+    monkeypatch.setattr(distiller, '_scribe_call', lambda *a, **k: model_out)
+    d = _make_exploration(tmp_path / 'skills', 'myproj',
+                          'scanner-zero-detections-diagnosis')
+    out = distiller.reframe_exploration_to_skill(str(d))
+    assert out is not None
+    assert out['name'] == 'scanner-zero-detections-diagnosis'
+    assert out['description'].startswith(
+        'TRIGGER when a scanner reports zero detections')
+    assert 'name: scanner-zero-detections-diagnosis' not in out['body']
+    assert 'description: TRIGGER' not in out['body']
+    assert '## Operating procedure' in out['body']
+
+
 def test_reframe_not_found_returns_none(tmp_path, monkeypatch):
     _setup(tmp_path)
     monkeypatch.setattr(distiller, '_scribe_call', lambda *a, **k: '# x')

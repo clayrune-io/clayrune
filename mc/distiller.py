@@ -812,10 +812,16 @@ _REFRAME_EXPLORATION_TO_SKILL_PREAMBLE = (
     "action. If you cannot invert it (no reusable recognize→act pattern "
     "exists), REFUSE.\n\n"
     "REQUIRED ELEMENTS:\n"
-    "  1. **Frontmatter** with `name:` (kebab-case) and `description:` that "
-    "begins `TRIGGER when <observable symptom / file / error / condition a "
-    "future agent will SEE in incoming context>`. The trigger must be "
-    "recognizable WITHOUT re-reading this exploration.\n"
+    "  1. **Frontmatter block, exactly this shape** — both fields required, "
+    "the `---` fences included, and nothing else inside them:\n"
+    "     ---\n"
+    "     name: <kebab-case-name>\n"
+    "     description: TRIGGER when <observable symptom / file / error / "
+    "condition a future agent will SEE in incoming context>\n"
+    "     ---\n"
+    "     The trigger must be recognizable WITHOUT re-reading this "
+    "exploration. Do not put the name or description anywhere else "
+    "(no restating them as a body heading).\n"
     "  2. **Operating procedure** — `do this, then this` steps distilled from "
     "what worked. Not a narrative of what happened.\n"
     "  3. **## Anti-patterns** — the dead-ends from 'paths tried' that did NOT "
@@ -2022,7 +2028,15 @@ def reframe_exploration_to_skill(directory: str) -> dict | None:
         return None
     name = (_extract_name_from_frontmatter(text)
             or art.get('name') or f"reframed-{(art.get('exact') or '')[:8]}")
-    desc = (fm.get('description', '')
+    # A short/degenerate frontmatter description (e.g. a bare section title
+    # like "Operating procedure" left over from a mis-parsed header — see
+    # _split_frontmatter) must fall through to the body instead of installing
+    # verbatim; mirrors the same guard in read_proposed_artifact (2026-07-16:
+    # a `description: "Why"` artifact overwrote a good skill's trigger).
+    fm_desc = (fm.get('description', '') or '').strip()
+    if len(fm_desc) < 12:
+        fm_desc = ''
+    desc = (fm_desc or _first_substantial_line(sk_body)
             or _first_heading(sk_body) or name.replace('-', ' '))
     return {'name': name, 'description': desc, 'body': sk_body}
 
@@ -2586,12 +2600,40 @@ def _is_within_proposed(directory: str) -> Path | None:
     return None
 
 
+_RE_UNFENCED_FM_LINE = re.compile(r'^(name|description):\s*(.*)$')
+
+
 def _split_frontmatter(text: str) -> tuple[dict, str]:
     fm = _parse_frontmatter(text)
     if text.startswith('---'):
         end = text.find('\n---', 4)
         if end >= 0:
             return fm, text[end + 4:].lstrip('\n')
+        return fm, text
+    # The model sometimes omits the `---` fence and emits a bare
+    # `name: ...` / `description: ...` header directly at the top. Without
+    # this, that header survives untouched as body text, and the caller's
+    # own real frontmatter (written later, from the correctly-extracted
+    # name) gets prepended IN FRONT of it — a duplicate header baked into
+    # the installed skill (2026-08-15: 3/11 reframed-skill soak cohort —
+    # scanner-zero-detections-diagnosis, distinguish-health-timeout-from-
+    # outage, metric-denominator-audit — un-triggerable this way, their
+    # real description stuck unparsed in the body under a bogus one).
+    lines = text.splitlines()
+    i = 0
+    unfenced: dict = {}
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if not stripped:
+            i += 1
+            continue
+        m = _RE_UNFENCED_FM_LINE.match(stripped)
+        if not m:
+            break
+        unfenced[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+        i += 1
+    if unfenced:
+        return unfenced, '\n'.join(lines[i:]).lstrip('\n')
     return fm, text
 
 
