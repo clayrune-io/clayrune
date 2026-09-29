@@ -235,10 +235,28 @@
         <button type="button" class="desk-v1-rules-start-btn" data-setup-draftplan>Draft the plan</button>
       </div>`;
 
-    const btn = el.querySelector('[data-setup-draftplan]');
-    if (btn) btn.onclick = () => {
+    const actionsHost = el.querySelector('.desk-v1-camp-summary-top-actions');
+    function attemptDraftPlan() {
       const picked = Array.from(el.querySelectorAll('[data-setup-account]:checked')).map((c) => c.dataset.setupAccount);
       if (!picked.length) { DeskV1Kit.toast('Pick at least one account.'); return; }
+
+      // §5 UX_PASS Posy task lifecycle's Failed+Retry, reusing the same
+      // window.__deskV1PosyForce test hook desk-v1-kit.js:539 documents
+      // (IA8 journey forces a failure here before Start). This step has no
+      // free-text ask, only Go/no-go, so it renders the shared Failed markup
+      // directly rather than routing through bindPosyBox's chat-box
+      // machinery — the success path below is UNCHANGED (still synchronous)
+      // so the IA4 acceptance smoke's timing is untouched.
+      if (window.__deskV1PosyForce === 'fail') {
+        actionsHost.innerHTML = `
+          <div class="desk-v1-posy-failed" aria-live="polite">&#9888; Posy couldn't finish: Simulated failure (R0 test hook). Nothing was changed.</div>
+          <div class="desk-v1-posy-failed-actions">
+            <button type="button" class="btn-secondary" data-posy-retry="1">Retry</button>
+          </div>`;
+        actionsHost.querySelector('[data-posy-retry]').onclick = attemptDraftPlan;
+        return;
+      }
+
       const postCap = parseInt(el.querySelector('[data-setup-postcap]').value, 10) || 12;
       const plan = camp.plan;
       plan.accounts = picked;
@@ -268,7 +286,10 @@
       camp.setup.done = [1, 2];
       DeskV1Kit.toast(`Plan drafted — 3 planned pieces added to "${plan.title}".`);
       if (typeof window.deskV1Render === 'function') window.deskV1Render();
-    };
+    }
+
+    const btn = el.querySelector('[data-setup-draftplan]');
+    if (btn) btn.onclick = attemptDraftPlan;
     _wireMoreBtn(el, camp, () => deskV1FillDraftSetup(el, params, camp));
   }
 
