@@ -929,10 +929,12 @@
         window.deskV1HandlePosyInstruction(camp, text, el.querySelector('.desk-v1-camp-posy'), st.selection);
       } else {
         DeskV1Kit.toast('Sent to Posy: “' + text + '”');
+        DeskV1Kit.paintPosyReadyNoDiff(el.querySelector('.desk-v1-camp-posy'));
       }
     }, {
       onScopeClick: () => _setSelection('campaign', null),
       draftKey: `campaign:${camp.id}:${st.selection.scope}:${st.selection.label || ''}`,
+      taskLifecycle: true,
     });
   }
 

@@ -579,15 +579,41 @@ async function runPosyDraftPersistence(browser) {
     : fail(`item 5: draft lost across Home nav: ${JSON.stringify(afterNavAway)}`);
 
   // Sending clears the draft (no stale text left behind for the next open).
+  // T3: the draft clears on the Accepted transition (§5), 120ms after Send
+  // (desk-v1-kit.js's `_startPosyTask`), not synchronously — wait past it.
   await page.click('[data-posy-send="desk-v1-camp-posy-input"]');
-  await page.waitForTimeout(50);
+  await page.waitForTimeout(200);
   await page.evaluate(() => window.deskV1Nav('home', {}));
   await page.waitForSelector('.desk-v1-home', { timeout: 8000 });
+
+  // T3/§5: "Home card shows ⟳ Posy working" — the task fired 200ms ago and
+  // resolves in 1.5-4.1s (fixtures' simulated Posy), so it's still in
+  // flight; camp-1's Home card must carry the label live off the shared
+  // task store, no push needed (desk-v1-home.js's _campCardHTML reads
+  // DeskV1Kit.anyPosyWorking on every render, including this Home mount).
+  const homeWorkingLabel = (await page.textContent(
+    '.desk-v1-home-camp-card[data-campaign-id="camp-1"] .desk-v1-home-camp-posyworking'
+  ).catch(() => '') || '');
+  homeWorkingLabel.trim() === '⟳ Posy working'
+    ? ok('T3/§5: Home card for camp-1 shows "⟳ Posy working" while its Posy task is in flight')
+    : fail(`T3/§5: Home card missing/wrong Posy-working label: ${JSON.stringify(homeWorkingLabel)}`);
+
   await navToCampaign(page);
   const afterSend = await page.$eval('#desk-v1-camp-posy-input', (ta) => ta.value).catch(() => '');
   afterSend === ''
     ? ok('item 5: sending clears the draft (no stale leftover on reopen)')
     : fail(`item 5: draft not cleared after send: ${JSON.stringify(afterSend)}`);
+
+  // Wait past the task's worst-case resolution (4.1s) and confirm the Home
+  // label clears once the task reaches Ready — anyPosyWorking must not
+  // stick forever.
+  await page.waitForTimeout(4300);
+  await page.evaluate(() => window.deskV1Nav('home', {}));
+  await page.waitForSelector('.desk-v1-home', { timeout: 8000 });
+  const homeWorkingLabelAfter = await page.$('.desk-v1-home-camp-card[data-campaign-id="camp-1"] .desk-v1-home-camp-posyworking');
+  !homeWorkingLabelAfter
+    ? ok('T3/§5: Home card\'s Posy-working label clears once the task resolves to Ready')
+    : fail('T3/§5: Home card still shows Posy-working after the task resolved');
 
   reportUncaught(pageErrors, '[posy-draft]');
   await ctx.close();

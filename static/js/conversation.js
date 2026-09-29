@@ -6061,6 +6061,7 @@ window.selectResumeSession = selectResumeSession;
 window.appendAgentLine = appendAgentLine;
 window.showTypingIndicator = showTypingIndicator;
 window.hideTypingIndicator = hideTypingIndicator;
+window.actIndicatorHTML = _actIndicatorInner;  // interop: desk-v1-kit.js Posy task lifecycle (MC-977 T3, reuse not fork)
 window.setAgentActivity = setAgentActivity;   // interop: resume-preview.js SSE handler
 window._isGenerating = _isGenerating;         // interop: resume-preview.js SSE handler
 window._msgAttrResetPending = _msgAttrResetPending;  // interop: resume-preview.js _repaintAgentOutput

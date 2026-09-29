@@ -388,17 +388,217 @@
       </div>`;
   }
 
-  // ── Draft persistence (item 5, MC-977 R0 UX pass). Text typed into a Posy
-  // box but not yet sent used to live only in the DOM node's `.value` — every
-  // caller rebuilds that DOM wholesale (a commandBus re-render, a tab-strip
-  // navigation to Conversations/Results and back, a Home round-trip, a
-  // different card selected in the campaign rail), so the draft vanished on
-  // all of those, not just a real navigation-away. A plain Map keyed by the
-  // caller's own `draftKey` survives every one of those rebuilds because it
-  // lives here in the module closure, not in the element bindPosyBox mounted
-  // last time. Callers that pass no draftKey (none exist today, but a future
-  // one might) get the exact old behaviour — no restore, no persistence.
+  // ── Draft + Posy task lifecycle store (item 5 + T3, MC-977 R0 UX pass).
+  // Text typed into a Posy box but not yet sent used to live only in the DOM
+  // node's `.value` — every caller rebuilds that DOM wholesale (a commandBus
+  // re-render, a tab-strip navigation to Conversations/Results and back, a
+  // Home round-trip, a different card selected in the campaign rail), so the
+  // draft vanished on all of those, not just a real navigation-away. A plain
+  // Map keyed by the caller's own `draftKey` survives every one of those
+  // rebuilds because it lives here in the module closure, not in the element
+  // bindPosyBox mounted last time. Callers that pass no draftKey get the
+  // exact old behaviour — no restore, no persistence, no durable task.
+  //
+  // T3 extends the same Map's entries (never a second store) from a bare
+  // draft string to `{draftText, asks:[{id, clientReqId, state, stage,
+  // startedAt, request, result, error}]}` — one array slot per Send, but
+  // only the LAST one is ever active (§5: "Posy is still on the last one",
+  // enforced in send() below). `_posyRenderers` is a separate, non-persisted
+  // Map (key -> the currently mounted box's {containerEl, ta, key, onSend})
+  // so a running ask can keep repainting whichever box is mounted RIGHT NOW
+  // for that key, and mounting a fresh box (tab switch, navigate back) picks
+  // up an in-flight ask instead of showing blank.
   const _posyDrafts = new Map();
+  const _posyRenderers = new Map();
+  const _POSY_TERMINAL = ['ready', 'failed', 'cancelled', 'timed_out'];
+  function _isPosyTerminal(state) { return _POSY_TERMINAL.indexOf(state) !== -1; }
+  function _entryFor(key) {
+    if (!key) return { draftText: '', asks: [] };
+    let e = _posyDrafts.get(key);
+    if (!e) { e = { draftText: '', asks: [] }; _posyDrafts.set(key, e); }
+    return e;
+  }
+  function _fmtElapsed(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }
+
+  // Renders the current ask's state into `ctx.containerEl`'s
+  // `.desk-v1-posy-output` per §5's exact copy. `ready` is deliberately left
+  // untouched here: the word "applied" and the before/after diff belong to
+  // the caller's own apply logic (deskV1HandlePosyInstruction and friends),
+  // invoked via `ctx.onSend` below — kit renders every OTHER state so those
+  // callers don't each reimplement Sending/Working/Failed/the question card.
+  function _paintPosyOutput(ctx, ask) {
+    const output = ctx && ctx.containerEl && ctx.containerEl.querySelector('.desk-v1-posy-output');
+    if (!output || !ask) return;
+    const bubble = `<div class="desk-v1-posy-sent-bubble">${esc(ask.request)}</div>`;
+    if (ask.state === 'sending') {
+      output.innerHTML = `${bubble}<div class="desk-v1-posy-status" aria-live="polite">Sending&hellip;</div>`;
+    } else if (ask.state === 'accepted') {
+      output.innerHTML = `${bubble}<div class="desk-v1-posy-status" aria-live="polite">Posy has it</div>`;
+    } else if (ask.state === 'working') {
+      const elapsed = Date.now() - ask.startedAt;
+      const indicator = typeof window.actIndicatorHTML === 'function' ? window.actIndicatorHTML('tool') : '';
+      let extra = '';
+      if (elapsed >= 30000) {
+        extra = `<div class="desk-v1-posy-status" aria-live="polite">Taking longer than usual. You can leave; the answer will wait here.</div>
+          <button type="button" class="btn-secondary desk-v1-posy-cancel" data-posy-cancel="1">Cancel</button>`;
+      } else if (elapsed >= 10000) {
+        extra = `<div class="desk-v1-posy-status" aria-live="polite">Still working &middot; ${_fmtElapsed(elapsed)}</div>`;
+      }
+      output.innerHTML = `${bubble}
+        <div class="agent-line typing-indicator" data-act="tool">${indicator}</div>
+        <div class="desk-v1-posy-stage">${esc(ask.stage || '')}</div>${extra}`;
+      const cancelBtn = output.querySelector('[data-posy-cancel]');
+      if (cancelBtn) cancelBtn.onclick = () => _cancelPosyTask(ctx.key, ctx);
+    } else if (ask.state === 'needs_answer') {
+      const q = ask.question || {};
+      const options = q.options || ['Yes', 'No'];
+      output.innerHTML = `${bubble}
+        <div class="desk-v1-posy-question">${esc(q.text || 'Needs your answer')}</div>
+        <div class="desk-v1-posy-chips agent-question-chips">${
+          options.map((o) => `<button type="button" class="agent-question-chip" data-posy-answer="${esc(o)}">${esc(o)}</button>`).join('')
+        }</div>`;
+      output.querySelectorAll('[data-posy-answer]').forEach((btn) => {
+        btn.onclick = () => _answerPosyQuestion(ctx.key, ctx, btn.dataset.posyAnswer);
+      });
+    } else if (ask.state === 'failed' || ask.state === 'cancelled' || ask.state === 'timed_out') {
+      const reason = ask.error || (ask.state === 'cancelled' ? 'cancelled' : 'unknown error');
+      output.innerHTML = `
+        <div class="desk-v1-posy-failed" aria-live="polite">&#9888; Posy couldn't finish: ${esc(reason)}. Nothing was changed.</div>
+        <div class="desk-v1-posy-failed-actions">
+          <button type="button" class="btn-secondary" data-posy-retry="1">Retry</button>
+          <button type="button" class="btn-secondary" data-posy-edit="1">Edit request</button>
+          ${ask.state === 'timed_out' ? '<button type="button" class="btn-secondary" data-posy-keepwaiting="1">Keep waiting</button>' : ''}
+        </div>`;
+      const retryBtn = output.querySelector('[data-posy-retry]');
+      if (retryBtn) retryBtn.onclick = () => { _entryFor(ctx.key).asks.pop(); _startPosyTask(ctx.key, ask.request, ctx); };
+      const editBtn = output.querySelector('[data-posy-edit]');
+      if (editBtn) editBtn.onclick = () => {
+        _entryFor(ctx.key).asks.pop();
+        _entryFor(ctx.key).draftText = ask.request;
+        if (ctx.ta) { ctx.ta.value = ask.request; ctx.ta.focus(); }
+        output.innerHTML = '';
+      };
+      const kwBtn = output.querySelector('[data-posy-keepwaiting]');
+      if (kwBtn) kwBtn.onclick = () => _keepWaitingPosyTask(ctx.key, ctx, ask);
+    }
+    // 'ready': nothing painted here — see comment above the function.
+  }
+
+  // §5 Ready row's no-diff fallback ("Posy answered; nothing changed.") for
+  // callers whose own apply logic (unlike rules.js's deskV1HandlePosyInstruction,
+  // which paints a real before/after) has nothing to show — without this the
+  // box is left stuck on its last "Working…" frame forever, since kit never
+  // paints Ready on its own (see _paintPosyOutput above).
+  function paintPosyReadyNoDiff(boxEl) {
+    const output = boxEl && boxEl.querySelector('.desk-v1-posy-output');
+    if (output) output.innerHTML = '<div class="desk-v1-posy-status" aria-live="polite">Posy answered; nothing changed.</div>';
+  }
+
+  function _clearPosyTimers(ask) {
+    if (ask._tick) clearInterval(ask._tick);
+    if (ask._resolve) clearTimeout(ask._resolve);
+    ask._tick = null; ask._resolve = null;
+  }
+
+  function _resolvePosyTask(key, ask, state, patch) {
+    if (ask.state === state) return;
+    _clearPosyTimers(ask);
+    ask.state = state;
+    Object.assign(ask, patch || {});
+    const ctx = key && _posyRenderers.get(key);
+    if (state === 'ready' && ctx && typeof ctx.onSend === 'function') {
+      ctx.onSend(ask.request, ask);
+      return; // Ready rendering is the caller's own apply logic, not kit's.
+    }
+    if (ctx) _paintPosyOutput(ctx, ask);
+  }
+
+  function _runWorkingPhase(key, ask, latencyMs, onDone) {
+    ask.state = 'working';
+    ask.stage = ask.stage || 'Working on it';
+    const ctx = key && _posyRenderers.get(key);
+    if (ctx) _paintPosyOutput(ctx, ask);
+    ask._tick = setInterval(() => {
+      const c = key && _posyRenderers.get(key);
+      if (ask.state === 'working' && c) _paintPosyOutput(c, ask);
+    }, 1000);
+    ask._resolve = setTimeout(onDone, latencyMs);
+  }
+
+  // §5 R0 simulation: no network, same state names R1's real `/ask` poll
+  // will use. `window.__deskV1PosyForce` ('fail'|'timeout'|'slow'|'question')
+  // is the only test seam — 'slow' runs the real 35s scripted clock the doc
+  // calls out (a real setTimeout; the smoke fast-forwards Playwright's clock
+  // instead of sleeping 35s of wall time).
+  function _startPosyTask(key, text, ctx) {
+    const entry = _entryFor(key);
+    const cur = entry.asks[entry.asks.length - 1];
+    if (cur && !_isPosyTerminal(cur.state)) return { blocked: true, ask: cur };
+    const ask = {
+      id: 'ask-' + Math.random().toString(36).slice(2),
+      clientReqId: 'creq-' + Date.now().toString(36) + Math.random().toString(36).slice(2),
+      state: 'sending', stage: '', startedAt: Date.now(), request: text, result: null, error: null, question: null,
+    };
+    entry.asks.push(ask);
+    if (key) _posyRenderers.set(key, ctx);
+    _paintPosyOutput(ctx, ask); // Sending renders synchronously, well under 100ms.
+    ask._resolve = setTimeout(() => {
+      if (ask.state !== 'sending') return;
+      ask.state = 'accepted';
+      if (ctx && ctx.ta) ctx.ta.value = ''; // draft cleared NOW, not at Send.
+      entry.draftText = '';
+      _paintPosyOutput(ctx, ask);
+      const force = window.__deskV1PosyForce;
+      if (force === 'slow') {
+        _runWorkingPhase(key, ask, 35000, () => _resolvePosyTask(key, ask, 'ready', { result: { affected: [] } }));
+        return;
+      }
+      _runWorkingPhase(key, ask, 1500 + Math.random() * 2500, () => {
+        if (force === 'fail') _resolvePosyTask(key, ask, 'failed', { error: 'Simulated failure (R0 test hook)' });
+        else if (force === 'timeout') _resolvePosyTask(key, ask, 'timed_out', { error: 'timed out' });
+        else if (force === 'question') _resolvePosyTask(key, ask, 'needs_answer', { question: { text: 'This would widen what Posy can do — go ahead?', options: ['Yes', 'No'] } });
+        else _resolvePosyTask(key, ask, 'ready', { result: { affected: [] } });
+      });
+    }, 120);
+    return { blocked: false, ask };
+  }
+
+  function _answerPosyQuestion(key, ctx, answer) {
+    const entry = _entryFor(key);
+    const ask = entry.asks[entry.asks.length - 1];
+    if (!ask || ask.state !== 'needs_answer') return;
+    ask.answer = answer;
+    _runWorkingPhase(key, ask, 800 + Math.random() * 700, () => _resolvePosyTask(key, ask, 'ready', { result: { affected: [] } }));
+  }
+
+  function _keepWaitingPosyTask(key, ctx, ask) {
+    ask.startedAt = Date.now();
+    _runWorkingPhase(key, ask, 1500 + Math.random() * 2500, () => _resolvePosyTask(key, ask, 'ready', { result: { affected: [] } }));
+  }
+
+  function _cancelPosyTask(key, ctx) {
+    const entry = _entryFor(key);
+    const ask = entry.asks[entry.asks.length - 1];
+    if (!ask) return;
+    _resolvePosyTask(key, ask, 'cancelled', { error: 'cancelled' });
+  }
+
+  // True while any stored ask under a key starting with `prefix` (or any key
+  // at all, with no prefix) is not yet settled — the query a Home card (T7)
+  // uses for "⟳ Posy working"; kept as a query rather than a push model so
+  // T7 can call it from its own render pass without kit knowing Home exists.
+  function anyPosyWorking(prefix) {
+    for (const [k, entry] of _posyDrafts) {
+      if (prefix && k.indexOf(prefix) !== 0) continue;
+      const cur = entry.asks[entry.asks.length - 1];
+      if (cur && !_isPosyTerminal(cur.state)) return true;
+    }
+    return false;
+  }
+  const POSY_WORKING_LABEL = '⟳ Posy working';
 
   // Wires a mounted posyBoxHTML() instance: chips FILL the input (never
   // auto-send — same fixed-set convention as the Queue thread's quick
@@ -415,30 +615,71 @@
   // "campaign:camp-1:card:My piece", "review:v-42", "video:fam-9") — stable
   // across re-renders of the same logical box, distinct across different
   // ones (so selecting a different card doesn't leak its neighbour's draft).
+  //
+  // opts.taskLifecycle (T3, opt-in, additive, default OFF — same convention
+  // as compact/sendStyle above): when true, Send starts the §5 Posy task
+  // lifecycle (Sending -> Accepted -> Working -> Ready/Needs your answer/
+  // Failed) instead of calling onSend(text) synchronously. `onSend` then
+  // fires once, when the simulated task reaches Ready — never on Send —
+  // so a caller's own apply logic (before/after, "applied", Undo) can never
+  // land before Posy has actually "finished". The draftKey also keys the ask
+  // store, so remounting the SAME box (tab switch, navigate back) resumes
+  // whatever ask was in flight instead of showing blank. Every T3 caller
+  // (desk-v1-campaign.js/-review.js/-video.js) now passes this; a caller
+  // that doesn't (there are none left) stays byte-identical to before T3:
+  // instant onSend, no ask, no lifecycle, no footer.
   function bindPosyBox(containerEl, inputId, onSend, opts) {
     if (!containerEl) return;
     opts = opts || {};
+    const key = opts.draftKey || null;
+    const simulate = !!opts.taskLifecycle;
     containerEl.querySelectorAll('.desk-v1-posy-chips .agent-question-chip').forEach((btn) => {
       btn.onclick = () => {
         const ta = document.getElementById(inputId);
         if (ta) { ta.value = btn.dataset.chip || ''; ta.focus(); }
       };
     });
+    // §5: "R0 is simulated and says so" — a durable footer, not tied to any
+    // one ask's render, since R0 has no other way to say "this isn't real".
+    if (simulate && !containerEl.querySelector('.desk-v1-posy-footer')) {
+      const footer = document.createElement('div');
+      footer.className = 'desk-v1-posy-footer';
+      footer.textContent = 'Simulated reply (R0)';
+      containerEl.appendChild(footer);
+    }
     const ta = document.getElementById(inputId);
-    if (ta && opts.draftKey) {
-      const draft = _posyDrafts.get(opts.draftKey);
-      if (draft) ta.value = draft;
-      ta.addEventListener('input', () => {
-        if (ta.value) _posyDrafts.set(opts.draftKey, ta.value);
-        else _posyDrafts.delete(opts.draftKey);
-      });
+    const ctx = { containerEl, ta, key, onSend };
+    if (ta && key) {
+      const entry = _entryFor(key);
+      if (entry.draftText) ta.value = entry.draftText;
+      ta.addEventListener('input', () => { entry.draftText = ta.value || ''; });
+    }
+    if (simulate && key) {
+      const entry = _entryFor(key);
+      const cur = entry.asks[entry.asks.length - 1];
+      if (cur && cur.state !== 'ready') {
+        // A box remounted while its ask is still going (or sitting on a
+        // question/failure the user hasn't acted on yet) repaints that state
+        // immediately instead of showing blank (§5: "still Working").
+        _posyRenderers.set(key, ctx);
+        _paintPosyOutput(ctx, cur);
+      }
     }
     const send = () => {
       const text = (ta && ta.value.trim()) || '';
       if (!text) return;
-      if (ta) ta.value = '';
-      if (opts.draftKey) _posyDrafts.delete(opts.draftKey);
-      onSend(text);
+      if (!simulate) {
+        if (ta) ta.value = '';
+        if (key) _entryFor(key).draftText = '';
+        onSend(text);
+        return;
+      }
+      if (key) {
+        const entry = _entryFor(key);
+        const cur = entry.asks[entry.asks.length - 1];
+        if (cur && !_isPosyTerminal(cur.state)) { toast('Posy is still on the last one.'); return; }
+      }
+      _startPosyTask(key, text, ctx);
     };
     const sendBtn = containerEl.querySelector(`[data-posy-send="${inputId}"]`);
     if (sendBtn) sendBtn.onclick = send;
@@ -487,6 +728,7 @@
     addToMenu, bindAddToTrigger,
     infoIconHTML, bindInfoIcons,
     posyBoxHTML, bindPosyBox,
+    anyPosyWorking, POSY_WORKING_LABEL, paintPosyReadyNoDiff,
     openConfirmSheet,
     validatePlan,
   };

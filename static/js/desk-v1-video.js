@@ -458,7 +458,7 @@
       window.DeskV1Kit.bindInfoIcons(el, {});
       window.DeskV1Kit.bindPosyBox(el.querySelector('#desk-v1-video-posy'), 'desk-v1-video-posy-input', (text) => {
         _sendToPosy(family, detail, text);
-      }, { onScopeClick: (trigger) => _openScopeMenu(trigger, family, detail), draftKey: `video:${family.id}:${_st.scope}` });
+      }, { onScopeClick: (trigger) => _openScopeMenu(trigger, family, detail), draftKey: `video:${family.id}:${_st.scope}`, taskLifecycle: true });
     }
 
     _wireSceneDrag(el, detail);
@@ -494,6 +494,7 @@
       });
     }
     window.DeskV1Kit.toast('Sent to Posy for ' + (affected.length ? affected.join(', ') : 'this video') + ': "' + text + '"', {});
+    window.DeskV1Kit.paintPosyReadyNoDiff(document.getElementById('desk-v1-video-posy'));
   }
 
   function _insertScene(detail, index) {

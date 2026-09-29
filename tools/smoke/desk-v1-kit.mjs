@@ -366,11 +366,158 @@ async function runInteractionChecks(browser) {
   await ctx.close();
 }
 
+// ── T3: Posy task lifecycle (§5) — Sending -> Working -> Ready / failed /
+// timed out / question, built on Tilda's item-5 draft store extended (never
+// forked). Uses Playwright's fake clock (installed after boot) so the
+// ~1.5-4s simulated latency never costs real wall time — same "the smoke
+// never sleeps" rule the doc calls out for the 35s 'slow' hook. ───────────
+async function runTaskLifecycleChecks(browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await ctx.newPage();
+  const pageErrors = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
+  await page.route('**/*', fulfillOrAbort);
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#projects-col .card', { timeout: 15000 });
+  await page.clock.install();
+
+  const mountAndSend = (key, text) => page.evaluate(({ key, text }) => {
+    const K = window.DeskV1Kit;
+    const id = 'lc-input-' + key.replace(/[^a-z0-9]/gi, '-');
+    const host = document.createElement('div');
+    host.innerHTML = K.posyBoxHTML({ inputId: id });
+    document.body.appendChild(host);
+    const box = host.querySelector('.desk-v1-posy-box');
+    box.setAttribute('data-lc-box', key);
+    K.bindPosyBox(box, id, () => { box.setAttribute('data-lc-onsend', '1'); }, { draftKey: key, taskLifecycle: true });
+    const ta = document.getElementById(id);
+    ta.value = text;
+    const t0 = performance.now();
+    box.querySelector('[data-posy-send]').click();
+    return {
+      elapsed: performance.now() - t0,
+      sendingHTML: box.querySelector('.desk-v1-posy-output').innerHTML,
+      footerText: (box.querySelector('.desk-v1-posy-footer') || {}).textContent || null,
+    };
+  }, { key, text });
+  const boxState = (key) => page.evaluate((key) => {
+    const box = document.querySelector(`[data-lc-box="${key}"]`);
+    return {
+      html: box.querySelector('.desk-v1-posy-output').innerHTML,
+      onSendFired: box.getAttribute('data-lc-onsend') === '1',
+      taValue: box.querySelector('textarea').value,
+    };
+  }, key);
+  const setForce = (force) => page.evaluate((force) => { window.__deskV1PosyForce = force; }, force);
+
+  // ── Send -> Sending bubble, < 100ms, R0 footer present ─────────────────
+  await setForce(undefined);
+  const sendTiming = await mountAndSend('lc:send', 'Make it shorter');
+  if (sendTiming.elapsed < 100) ok(`Posy task lifecycle: Sending bubble paints in ${sendTiming.elapsed.toFixed(1)}ms (< 100ms)`);
+  else fail(`Posy task lifecycle: Sending bubble took ${sendTiming.elapsed}ms (>= 100ms)`);
+  if (/Make it shorter/.test(sendTiming.sendingHTML) && /Sending/.test(sendTiming.sendingHTML)) {
+    ok('Posy task lifecycle: Send shows the request bubble + "Sending…" immediately');
+  } else fail(`Posy task lifecycle: Sending state wrong: ${sendTiming.sendingHTML}`);
+  if (sendTiming.footerText === 'Simulated reply (R0)') ok('Posy task lifecycle: R0 "Simulated reply (R0)" footer present');
+  else fail(`Posy task lifecycle: R0 footer missing/wrong: ${JSON.stringify(sendTiming.footerText)}`);
+
+  // ── forced fail: exact §5 copy, no "applied", text restored via Edit request ─
+  await setForce('fail');
+  await mountAndSend('lc:fail', 'Widen the audience');
+  await page.clock.fastForward(300);
+  const failWorking = await boxState('lc:fail');
+  if (/data-act="tool"/.test(failWorking.html) && /Working on it/.test(failWorking.html)) {
+    ok('Posy task lifecycle: Working state shows the typing indicator + stage text');
+  } else fail(`Posy task lifecycle: Working state wrong: ${failWorking.html}`);
+  await page.clock.fastForward(4200);
+  const failed = await boxState('lc:fail');
+  if (/Posy couldn.t finish: Simulated failure \(R0 test hook\)\. Nothing was changed\./.test(failed.html)
+      && failed.html.includes('data-posy-retry') && failed.html.includes('data-posy-edit')) {
+    ok('Posy task lifecycle: forced fail shows the exact §5 Failed copy + Retry/Edit request');
+  } else fail(`Posy task lifecycle: forced fail copy wrong: ${failed.html}`);
+  if (!failed.onSendFired) ok('Posy task lifecycle: onSend never fires on a Failed task (only on Ready)');
+  else fail('Posy task lifecycle: onSend fired on a Failed task');
+  const editResult = await page.evaluate((key) => {
+    const box = document.querySelector(`[data-lc-box="${key}"]`);
+    box.querySelector('[data-posy-edit]').click();
+    return { taValue: box.querySelector('textarea').value };
+  }, 'lc:fail');
+  if (editResult.taValue === 'Widen the audience') ok('Posy task lifecycle: "Edit request" restores the original text into the box');
+  else fail(`Posy task lifecycle: text not restored on Edit request: ${JSON.stringify(editResult.taValue)}`);
+
+  // ── forced timeout: exact §5 copy + "Keep waiting" ──────────────────────
+  await setForce('timeout');
+  await mountAndSend('lc:timeout', 'Post every day');
+  await page.clock.fastForward(300);
+  await page.clock.fastForward(4200);
+  const timedOut = await boxState('lc:timeout');
+  if (/Posy couldn.t finish: timed out\. Nothing was changed\./.test(timedOut.html) && timedOut.html.includes('data-posy-keepwaiting')) {
+    ok('Posy task lifecycle: forced timeout shows the exact §5 copy + "Keep waiting"');
+  } else fail(`Posy task lifecycle: forced timeout copy wrong: ${timedOut.html}`);
+
+  // ── forced question: exact §5 copy, Yes/No, resolves to Ready on answer ─
+  await setForce('question');
+  await mountAndSend('lc:question', 'Auto-answer every reply');
+  await page.clock.fastForward(300);
+  await page.clock.fastForward(4200);
+  const question = await boxState('lc:question');
+  if (/This would widen what Posy can do — go ahead\?/.test(question.html)
+      && /data-posy-answer="Yes"/.test(question.html) && /data-posy-answer="No"/.test(question.html)) {
+    ok('Posy task lifecycle: forced question shows the exact §5 question text + Yes/No');
+  } else fail(`Posy task lifecycle: forced question copy wrong: ${question.html}`);
+  await page.evaluate((key) => {
+    document.querySelector(`[data-lc-box="${key}"] [data-posy-answer="Yes"]`).click();
+  }, 'lc:question');
+  await page.clock.fastForward(1600);
+  const answered = await boxState('lc:question');
+  if (answered.onSendFired) ok('Posy task lifecycle: answering the question resolves to Ready and fires onSend');
+  else fail('Posy task lifecycle: answering the question never reached Ready/onSend');
+
+  // ── no "applied" text anywhere except Ready (which kit never paints itself) ─
+  const nonReadyHTML = [sendTiming.sendingHTML, failWorking.html, failed.html, timedOut.html, question.html].join('\n');
+  if (!/applied/i.test(nonReadyHTML)) ok('Posy task lifecycle: no "applied" text in any non-Ready state');
+  else fail(`Posy task lifecycle: "applied" leaked into a non-Ready state: ${nonReadyHTML}`);
+
+  // ── navigate away mid-ask and back -> still Working; Home's anyPosyWorking ─
+  await setForce('slow');
+  await mountAndSend('lc:nav', 'Draft a longer plan');
+  await page.clock.fastForward(300); // past Sending -> Working
+  const stillWorking = await page.evaluate(() => window.DeskV1Kit.anyPosyWorking('lc:nav'));
+  if (stillWorking) ok('Posy task lifecycle: anyPosyWorking(prefix) is true while a task is in flight');
+  else fail('Posy task lifecycle: anyPosyWorking(prefix) false while a task is still working');
+  const labelOk = await page.evaluate(() => window.DeskV1Kit.POSY_WORKING_LABEL === '⟳ Posy working');
+  if (labelOk) ok('Posy task lifecycle: POSY_WORKING_LABEL is exactly "⟳ Posy working"');
+  else fail('Posy task lifecycle: POSY_WORKING_LABEL wrong');
+  const remount = await page.evaluate((key) => {
+    document.querySelector(`[data-lc-box="${key}"]`).remove(); // simulate navigating away (DOM torn down)
+    const K = window.DeskV1Kit;
+    const id = 'lc-input-nav-remount';
+    const host = document.createElement('div');
+    host.innerHTML = K.posyBoxHTML({ inputId: id });
+    document.body.appendChild(host);
+    const box = host.querySelector('.desk-v1-posy-box');
+    K.bindPosyBox(box, id, () => {}, { draftKey: key, taskLifecycle: true }); // navigating back: fresh mount, same draftKey
+    return { html: box.querySelector('.desk-v1-posy-output').innerHTML };
+  }, 'lc:nav');
+  if (/data-act="tool"/.test(remount.html) && /Working on it/.test(remount.html)) {
+    ok('Posy task lifecycle: navigating away mid-ask and back still shows Working (not blank)');
+  } else fail(`Posy task lifecycle: remount after navigate-away lost the in-flight ask: ${remount.html}`);
+  await page.clock.fastForward(35200); // let the slow task resolve so it stops reporting as working
+  const doneWorking = await page.evaluate(() => window.DeskV1Kit.anyPosyWorking('lc:nav'));
+  if (!doneWorking) ok('Posy task lifecycle: anyPosyWorking(prefix) is false once the task reaches Ready');
+  else fail('Posy task lifecycle: anyPosyWorking(prefix) still true after the task resolved');
+
+  const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught.length) uncaught.forEach((e) => fail('uncaught page error: ' + e));
+  await ctx.close();
+}
+
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
   for (const tone of TONES) await runToneRenderChecks(browser, tone);
   await runInteractionChecks(browser);
+  await runTaskLifecycleChecks(browser);
   exitCode = bad ? 1 : 0;
 } catch (e) {
   console.error('❌ FAIL — smoke harness error: ' + (e && e.message ? e.message : e));
