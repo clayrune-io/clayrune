@@ -474,7 +474,7 @@ function backlogItemsListHTML(p, items, backlog, backlogLoaded) {
       <div style="flex:1;min-width:0">
         ${item.key ? `<span class="backlog-num" title="Click to copy ${esc(item.key)}"
           onclick="copyBacklogKey(event,'${esc(item.key)}')">${esc(item.key)}</span>` : ''}
-        <span class="backlog-text" contenteditable="true" spellcheck="true"
+        <span class="backlog-text" contenteditable="true" spellcheck="true" dir="auto"
           onblur="saveBacklogText(event,'${esc(p.id)}','${esc(item.id)}')"
           onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
         >${esc(item.text)}</span>

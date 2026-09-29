@@ -1356,7 +1356,7 @@ function agentPanelHTML(p) {
     ondrop="${_pcaps.image_attach ? `handleAgentDrop(event,'${esc(p.id)}')` : 'event.preventDefault()'}">
     ${_attachInput}
     ${mobileMode ? '' : _dispatchPlusBtn}
-    <textarea spellcheck="true" class="agent-task-input" id="agent-task-${esc(p.id)}" rows="1"
+    <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-task-${esc(p.id)}" rows="1"
       data-project="${esc(p.id)}"
       placeholder="${_dispatchPlaceholder}"
       onkeydown="handleInputEnter(event,()=>dispatchAgent('${esc(p.id)}'),'${esc(p.id)}')"
@@ -1703,7 +1703,7 @@ function agentPanelHTML(p) {
               ondrop="${_pcaps.image_attach ? `handleAgentDrop(event,'fu_${esc(activeSessionId)}')` : 'event.preventDefault()'}">
             ${_fuAttachInput}
             ${mobileMode ? '' : _fuPlusBtn}
-            <textarea spellcheck="true" class="agent-task-input" id="agent-followup-${esc(activeSessionId)}" rows="1"
+            <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-followup-${esc(activeSessionId)}" rows="1"
               data-project="${esc(p.id)}"
               placeholder="${st === 'error' ? 'Type to continue from where it stopped...' : st === 'stopped' ? 'Type to resume conversation...' : st === 'running' ? (mobileMode ? 'Interrupt and redirect agent...' : 'Interrupt and redirect agent... (Enter to send)') : 'Send follow-up...'}"
               onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(activeSessionId)}'),'${esc(p.id)}')"
@@ -2735,7 +2735,7 @@ function mobileUserConversationsHTML(p, convos, opts) {
       ${face}
       <div class="conv-main">
         <div class="conv-top">
-          <span class="conv-name">${dot}${incIcon}${label}</span>
+          <span class="conv-name" dir="auto">${dot}${incIcon}${label}</span>
           <span class="conv-time">${badge || esc(c.ts_relative || '')}</span>
         </div>
         <div class="conv-bot"><span class="conv-sub">${
@@ -4252,7 +4252,7 @@ function splitPaneHTML(p, sid, isPrimary) {
           ondrop="${_spCaps.image_attach ? `handleAgentDrop(event,'${esc(_spKey)}')` : 'event.preventDefault()'}">
         ${_spAttachInput}
         ${_spPlusBtn}
-        <textarea spellcheck="true" class="agent-task-input" id="agent-followup-${esc(sid)}" rows="1"
+        <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-followup-${esc(sid)}" rows="1"
           data-project="${esc(p.id)}"
           placeholder="${isRunning ? 'Redirect…' : 'Reply…'}"
           onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(sid)}'),'${esc(p.id)}')"
