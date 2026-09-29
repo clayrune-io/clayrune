@@ -1256,6 +1256,53 @@ def _loc_path_excluded(path: str) -> bool:
     return any(part in _LOC_VENDOR_DIR_PARTS for part in Path(path).parts)
 
 
+# Dave's MC-998 follow-up 5 review of the first reflog-based fix: matching
+# EVERY commit `rev-list --walk-reflogs HEAD` can reach overcounts three ways
+# -- (a) `commit --amend` leaves the original AND the amended commit in the
+# reflog, (b) a rebase leaves the originals AND the rewritten copies, (c) a
+# walk from a fast-forward reflog position pulls in that ref's WHOLE ancestry,
+# including commits someone else made that this worktree never touched. This
+# regex instead matches only the reflog SUBJECT of an action that authors or
+# rewrites a commit in place -- `git reflog HEAD --format='%H %gs'` gives one
+# entry per action, not a walk, so a fast-forward's foreign ancestry is never
+# visited at all. Confirmed against a real repo (2026-09-29): `commit:`,
+# `commit (initial):`, `commit (amend):`, `cherry-pick:`, `rebase (pick):`,
+# `rebase (squash):`; a real (non-fast-forward) `merge <ref>: Merge made
+# by...` also authors a genuine new commit here and counts, while
+# `merge <ref>: Fast-forward` (no new commit, just a ref move — exactly
+# Dave's case (c)) is excluded by the negative lookahead. Administrative
+# entries ("checkout: ...", "reset: ...", "rebase (start)"/"(finish)") never
+# match and are correctly excluded. (a) and (b) still leave the SUPERSEDED
+# original in this filtered list, and are handled separately by keeping only
+# commits still reachable from a current branch (see `_compute_code_delta`).
+_AUTHORED_REFLOG_SUBJECT_RE = re.compile(
+    r'^(commit\b|cherry-pick\b|revert\b|rebase\b.*\((pick|squash|fixup|edit|reword)\)'
+    r'|merge\b(?!.*fast-forward))',
+    re.IGNORECASE)
+
+
+def _loc_numstat_delta(numstat_out: str) -> tuple[int, int]:
+    """Sum added/deleted from one `git diff/diff-tree --numstat -M` output,
+    applying the same extension + vendor-path filtering used everywhere else
+    in LOC attribution (MC-998 follow-up 5 factor-out — previously duplicated
+    inline at each call site)."""
+    added = deleted = 0
+    for line in numstat_out.splitlines():
+        parts = line.split('\t')
+        if len(parts) < 3:
+            continue
+        a, d, path = parts[0], parts[1], parts[-1]
+        if a == '-' or d == '-':
+            continue  # numstat marks a binary file this way
+        path = path.split(' => ')[-1].strip('{}')
+        ext = Path(path).suffix.lower()
+        if ext not in _LOC_EXTENSIONS or _loc_path_excluded(path):
+            continue
+        added += int(a)
+        deleted += int(d)
+    return added, deleted
+
+
 def _compute_code_delta(session):
     """MC-998 phase 3 LOC attribution (docs/USAGE_BREAKDOWN_SPEC.md "Trigger
     and code attribution"). Returns the `fields` dict for
@@ -1278,15 +1325,33 @@ def _compute_code_delta(session):
     review finding #5), silently zeroing out the diff for anyone who follows
     the project's own "land your work" instruction before the chat ends.
     Worktrees created before this fix have no frozen baseline, so those fall
-    back to the old merge-base behavior. The diff is taken directly against
-    the working tree (not just `HEAD`), so committed AND any still-
-    uncommitted changes are counted once, in one numstat pass. `-M` groups a
-    rename into one numstat line (added/deleted of the actual edit) instead
-    of counting the whole file as both a delete and an add. Untracked new
-    files are invisible to `git diff` entirely, so they're counted in a
-    separate pass over `git status`. Vendored/generated paths are excluded
-    from both passes (extension matching alone previously let a vendored
-    `.js` file count as session source).
+    back to the old merge-base behavior.
+
+    Committed changes are found via the WORKTREE'S OWN `HEAD` reflog
+    (MC-998 follow-up 5), not `base_commit..HEAD` — a session can commit on a
+    side branch and then check the base branch back out before completion
+    (e.g. to leave the worktree clean), which moves current `HEAD` away from
+    those commits entirely; diffing `base_commit..HEAD` at that point sees no
+    ancestry between them and silently reports zero. `git reflog HEAD
+    --format='%H %gs'` lists one entry per action this worktree's `HEAD` ever
+    took, filtered by `_AUTHORED_REFLOG_SUBJECT_RE` to only those that author
+    or rewrite a commit (not a plain checkout/reset/fast-forward), further
+    filtered to commits still reachable from a CURRENT branch — a
+    `commit --amend` or rebase leaves both the original and the
+    rewritten/superseded commit in the reflog, and only the one nothing still
+    points to is the stale duplicate (Dave's follow-up-5 review). Each
+    surviving commit is diffed individually against its own parent
+    (`diff-tree`) rather than diffing each tip against `base_commit`, so a
+    commit reachable from more than one reflog position (e.g. after a later
+    merge-back) is still counted exactly once. Uncommitted working-tree
+    changes are diffed separately against current `HEAD` (not `base_commit`)
+    since committed changes are already fully accounted for by the per-commit
+    pass above. `-M` groups a rename into one numstat line (added/deleted of
+    the actual edit) instead of counting the whole file as both a delete and
+    an add. Untracked new files are invisible to `git diff` entirely, so
+    they're counted in a separate pass over `git status`. Vendored/generated
+    paths are excluded from every pass (extension matching alone previously
+    let a vendored `.js` file count as session source).
     """
     branch = _agent_worktree.branch_name(session.get('session_id', ''))
     if not session.get('_worktree_isolated'):
@@ -1322,26 +1387,70 @@ def _compute_code_delta(session):
             return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
                     'reason': 'no frozen baseline and merge-base has collapsed to HEAD '
                               '(own commits already landed on base_ref) -- diff not measurable'}
-    ok, commits_out = _project_sync.git_run(wts, ['rev-list', f'{base_commit}..HEAD'], timeout=15)
-    head_commits = commits_out.splitlines() if ok else []
-    ok, diff_out = _project_sync.git_run(wts, ['diff', '--numstat', '-M', base_commit], timeout=30)
+    # MC-998 follow-up 5: the worktree's OWN reflog, not `base_commit..HEAD` —
+    # a session can commit on a side branch then check the base branch back
+    # out before completion, which makes current HEAD's ancestry alone blind
+    # to those commits even though this worktree made them. `--walk-reflogs`
+    # treats every positional arg as a ref-with-a-reflog (git rejects a bare
+    # commit SHA there with "cannot walk reflogs for <sha>"), so the baseline
+    # exclusion can't be a `--not <commit>` on the same invocation — resolve
+    # each set separately and diff them in Python instead.
+    ok, reflog_out = _project_sync.git_run(
+        wts, ['reflog', 'HEAD', '--format=%H %gs'], timeout=15)
     if not ok:
         return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
-                'head_commits': ','.join(head_commits), 'reason': f'git diff failed: {diff_out}'}
+                'reason': f'reflog failed: {reflog_out}'}
+    candidate_commits = []
+    for line in reflog_out.splitlines():
+        c, _, subject = line.partition(' ')
+        if c and subject and _AUTHORED_REFLOG_SUBJECT_RE.search(subject):
+            candidate_commits.append(c)
+    ok, reachable_now_out = _project_sync.git_run(wts, ['rev-list', '--branches', 'HEAD'], timeout=15)
+    if not ok:
+        return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
+                'reason': f'branch reachability rev-list failed: {reachable_now_out}'}
+    reachable_now = set(reachable_now_out.splitlines())
+    ok, base_reachable_out = _project_sync.git_run(wts, ['rev-list', base_commit], timeout=15)
+    if not ok:
+        return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
+                'reason': f'base rev-list failed: {base_reachable_out}'}
+    base_reachable = set(base_reachable_out.splitlines())
+    head_commits = []
+    seen = set()
+    for c in candidate_commits:
+        # A `commit --amend` or a rebase leaves BOTH the pre-edit and the
+        # rewritten commit as reflog entries matching the subject filter
+        # above -- only the one a current branch still points to (or has as
+        # an ancestor) is real; the superseded original is dropped here so
+        # the same edit isn't diffed twice (Dave's follow-up-5 review).
+        if c in seen or c not in reachable_now or c in base_reachable:
+            continue
+        seen.add(c)
+        head_commits.append(c)
     added = deleted = 0
-    for line in diff_out.splitlines():
-        parts = line.split('\t')
-        if len(parts) < 3:
-            continue
-        a, d, path = parts[0], parts[1], parts[-1]
-        if a == '-' or d == '-':
-            continue  # numstat marks a binary file this way
-        path = path.split(' => ')[-1].strip('{}')
-        ext = Path(path).suffix.lower()
-        if ext not in _LOC_EXTENSIONS or _loc_path_excluded(path):
-            continue
-        added += int(a)
-        deleted += int(d)
+    for c in head_commits:
+        # Each commit diffed against its own parent individually (rather than
+        # each branch tip against base_commit) so a commit reachable from more
+        # than one reflog position — e.g. after a later merge-back — is still
+        # counted exactly once, since `head_commits` is already a deduped set.
+        ok, diff_out = _project_sync.git_run(
+            wts, ['diff-tree', '--no-commit-id', '--numstat', '-r', '-M', c], timeout=15)
+        if not ok:
+            return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
+                    'head_commits': ','.join(head_commits),
+                    'reason': f'git diff-tree failed for {c}: {diff_out}'}
+        a, d = _loc_numstat_delta(diff_out)
+        added += a
+        deleted += d
+    # Uncommitted working-tree changes against current HEAD — committed
+    # changes are already fully counted by the per-commit pass above.
+    ok, wt_diff_out = _project_sync.git_run(wts, ['diff', '--numstat', '-M', 'HEAD'], timeout=30)
+    if not ok:
+        return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
+                'head_commits': ','.join(head_commits), 'reason': f'git diff failed: {wt_diff_out}'}
+    a, d = _loc_numstat_delta(wt_diff_out)
+    added += a
+    deleted += d
     ok, status_out = _project_sync.git_run(
         wts, ['status', '--porcelain', '--untracked-files=all'], timeout=15)
     if ok:
@@ -7480,6 +7589,15 @@ def _note_claude_sid(session, sid):
     with _CSID_LOCK:
         prev = session.get('claude_session_id')
         session['claude_session_id'] = sid
+        # MC-998 follow-up 5: a respawn/resume starts a NEW claude_session_id
+        # (new transcript .jsonl); retain every one this MC session has run
+        # under so `_session_cumulative_transcript_telemetry` can sum all of
+        # them instead of only the current transcript. See that function's
+        # docstring for why a single-transcript read undercounts.
+        if prev and prev != sid:
+            hist = session.setdefault('_claude_transcript_history', [])
+            if prev not in hist:
+                hist.append(prev)
     if prev == sid:
         return
     try:
@@ -7508,6 +7626,91 @@ def _note_claude_sid(session, sid):
         _log_agent_dispatch_pending(session, identity_only=True)
     except Exception as ex:
         _log(f"[csid-backfill] {pid}: {ex}")
+
+
+def _session_transcript_history(session):
+    """Every claude_session_id this live `session` dict has run under so far,
+    oldest first, current last, deduped (MC-998 follow-up 5).
+
+    In-memory only -- durability comes from `claude_session_ids` written onto
+    every agent_log row (see `_log_agent_dispatch_pending` / `_log_agent_completion_body`
+    below), seeded from this list. `_session_all_claude_session_ids` unions
+    both so a server restart that dropped this list still recovers every
+    csid a prior completion already logged."""
+    hist = list(session.get('_claude_transcript_history') or [])
+    cur = (session.get('claude_session_id') or '').strip()
+    if cur and cur not in hist:
+        hist.append(cur)
+    return hist
+
+
+def _session_all_claude_session_ids(project_id, session):
+    """Every claude_session_id (transcript) this MC session
+    (`session['session_id']`) has EVER run under, oldest first, deduped.
+
+    Unions `_session_transcript_history` (this process's live record) with a
+    scan of this session_id's own agent_log rows -- recovers history recorded
+    before this fix, or lost to a server restart between respawns, from the
+    `claude_session_ids` field each row now carries (or, for legacy rows
+    written before that field existed, the row's own singular
+    `claude_session_id`)."""
+    sid = session.get('session_id')
+    seen = []
+
+    def _add(csid):
+        csid = (csid or '').strip()
+        if csid and csid not in seen:
+            seen.append(csid)
+
+    for csid in _session_transcript_history(session):
+        _add(csid)
+    if project_id and sid:
+        try:
+            for entry in _load_agent_log(project_id):
+                if entry.get('session_id') != sid:
+                    continue
+                for csid in (entry.get('claude_session_ids') or []):
+                    _add(csid)
+                _add(entry.get('claude_session_id'))
+        except Exception:
+            pass
+    _add(session.get('claude_session_id'))
+    return seen
+
+
+def _session_cumulative_transcript_telemetry(project_id, session):
+    """Sum transcript-derived token telemetry across EVERY claude_session_id
+    this MC session has ever run under (MC-998 follow-up 5), deduped by
+    `message.id` globally across those transcripts.
+
+    Before this fix, `_extract_transcript_telemetry` read only the CURRENT
+    transcript (`session['claude_session_id']`) -- correct for a session that
+    never respawns, but a respawn/resume starts a new claude_session_id (new
+    .jsonl), so the read reset to that new transcript's own total on every
+    respawn, silently dropping every earlier transcript's tokens from the
+    session-lifetime count (example: MC session 5edd10858aec ran 3 distinct
+    claude_session_ids; reading only the latest undercounted by the other
+    two transcripts' full totals).
+
+    Returns {} (never fabricates zero) if the project path or no transcript
+    file resolves. Best-effort: never raises."""
+    from mc.memory import _extract_transcript_telemetry_multi
+    try:
+        _tp = load_project(project_id)
+        _pp = (_tp or {}).get('project_path', '')
+        if not _pp:
+            return {}
+        paths = []
+        for csid in _session_all_claude_session_ids(project_id, session):
+            tf = _find_transcript_file(_pp, csid)
+            if tf:
+                paths.append(tf)
+        if not paths:
+            return {}
+        return _extract_transcript_telemetry_multi(paths)
+    except Exception:
+        return {}
+
 
 def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
     """Write a placeholder agent_log row at dispatch time so trigger correlation
@@ -7548,6 +7751,11 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
         'delivery_generation': int(session.get('_delivery_generation', 1)),
         'project_generation': int(session.get('project_generation', 1)),
         'claude_session_id': session.get('claude_session_id') or '',
+        # MC-998 follow-up 5: every claude_session_id (transcript) this MC
+        # session has run under so far, so a later read can sum ALL of this
+        # session's transcripts instead of only the current one -- see
+        # `_session_cumulative_transcript_telemetry`.
+        'claude_session_ids': _session_transcript_history(session),
         'provider_session_id': session.get('provider_session_id') or '',
         'started_at': session.get('started_at', ''),
         'usage': {},
@@ -7606,10 +7814,26 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
                 for field in ('claude_session_id', 'provider_session_id'):
                     if entry[field]:
                         prev[field] = entry[field]
+                if entry.get('claude_session_ids'):
+                    merged = list(prev.get('claude_session_ids') or [])
+                    for csid in entry['claude_session_ids']:
+                        if csid not in merged:
+                            merged.append(csid)
+                    prev['claude_session_ids'] = merged
                 return
             entry['claude_session_id'] = entry['claude_session_id'] or prev.get('claude_session_id', '')
             entry['provider_session_id'] = entry['provider_session_id'] or prev.get('provider_session_id', '')
             entry['started_at'] = prev.get('started_at', '') or entry['started_at']
+            # Union with the outgoing row's history rather than replacing it
+            # -- a new process reusing this session_id (server restart across
+            # a scheduled cadence tick) starts with an empty in-memory
+            # `_claude_transcript_history`, so `entry`'s own list alone would
+            # drop every csid the previous process already recorded.
+            _merged_csids = list(prev.get('claude_session_ids') or [])
+            for csid in (entry.get('claude_session_ids') or []):
+                if csid not in _merged_csids:
+                    _merged_csids.append(csid)
+            entry['claude_session_ids'] = _merged_csids
             log.pop(existing_i)
             log.insert(0, entry)
         else:
@@ -8330,15 +8554,13 @@ def _write_usage_breakdown_turn_checkpoint(session):
     if not project_id or not sid or session.get('incognito'):
         return
     is_housekeeping = session.get('housekeeping', False)
-    _telemetry = {}
     try:
-        _tp = load_project(project_id)
-        _pp = (_tp or {}).get('project_path', '')
-        _csid = session.get('claude_session_id', '')
-        if _pp and _csid:
-            _tf = _find_transcript_file(_pp, _csid)
-            _telemetry = _extract_transcript_telemetry(_tf)
+        # MC-998 follow-up 5: sum every transcript this MC session has run
+        # under, not just the current one -- see
+        # `_session_cumulative_transcript_telemetry`'s docstring.
+        _telemetry = _session_cumulative_transcript_telemetry(project_id, session)
     except Exception as e:
+        _telemetry = {}
         _log(f"[usage-breakdown] turn checkpoint transcript read failed for {sid[:12]}: {e}")
     entry = {
         'provider': session.get('provider', 'claude'),
@@ -8518,12 +8740,10 @@ def _log_agent_completion_body(session):
     _telemetry = {}
     if not is_housekeeping and not session.get('incognito'):
         try:
-            _tp = load_project(project_id)
-            _pp = (_tp or {}).get('project_path', '')
-            _csid = session.get('claude_session_id', '')
-            if _pp and _csid:
-                _tf = _find_transcript_file(_pp, _csid)
-                _telemetry = _extract_transcript_telemetry(_tf)
+            # MC-998 follow-up 5: sum every transcript this MC session has
+            # run under, not just the current one -- see
+            # `_session_cumulative_transcript_telemetry`'s docstring.
+            _telemetry = _session_cumulative_transcript_telemetry(project_id, session)
         except Exception:
             pass
 
@@ -8556,6 +8776,9 @@ def _log_agent_completion_body(session):
             else ''
         ),
         'claude_session_id': session.get('claude_session_id', ''),
+        # MC-998 follow-up 5: durable record of every transcript this MC
+        # session has run under -- see `_session_cumulative_transcript_telemetry`.
+        'claude_session_ids': _session_transcript_history(session),
         # Provider-neutral equivalent of claude_session_id for Mode-A runtimes
         # (currently Codex). Captured at dispatch/turn time into the session
         # dict (mc/agent_runtime.py _mode_a_reader, INIT branch) and otherwise

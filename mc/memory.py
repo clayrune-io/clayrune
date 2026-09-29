@@ -5493,6 +5493,9 @@ def _extract_transcript_telemetry(path):
     N content blocks by Nx; keeping only the first line seen per `message.id`
     makes this sum equal the sum of each message's own cost exactly once.
 
+    Single-transcript convenience wrapper around `_extract_transcript_telemetry_multi`
+    (MC-998 follow-up 5) -- identical output for one file.
+
     Returns {'model': str, 'input_tokens': int, 'output_tokens': int,
              'cache_read_tokens': int, 'cache_write_tokens': int,
              'model_tokens': {model: total_tokens}}
@@ -5500,56 +5503,79 @@ def _extract_transcript_telemetry(path):
     """
     if not path:
         return {}
-    try:
-        model_tokens = {}  # model -> {input, output}
-        totals = {'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0}
-        seen_ids = set()
-        with open(path, encoding='utf-8', errors='replace') as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    m = json.loads(line)
-                except Exception:
-                    continue
-                msg = m.get('message') if isinstance(m.get('message'), dict) else None
-                if not msg:
-                    continue
-                model = msg.get('model', '')
-                usage = msg.get('usage')
-                if not model or not isinstance(usage, dict):
-                    continue
-                mid = msg.get('id')
-                if mid:
-                    if mid in seen_ids:
+    return _extract_transcript_telemetry_multi([path])
+
+
+def _extract_transcript_telemetry_multi(paths):
+    """Same token extraction as `_extract_transcript_telemetry`, but over
+    MULTIPLE transcript files treated as one logical session, deduped by
+    `message.id` GLOBALLY across all of them (MC-998 follow-up 5).
+
+    An MC session spans one .jsonl transcript per `claude_session_id`; every
+    respawn/resume starts a NEW one. Summing each transcript's own total and
+    keeping only the current one (the pre-fix behaviour) resets the session's
+    counters to whatever that latest transcript alone contains, silently
+    dropping every earlier transcript's tokens from the session-lifetime
+    total. A resume can also REPLAY a message already present in an earlier
+    transcript (same `message.id`) into the new one, so the dedup set must be
+    shared across files, not reset per file, or that message double-counts.
+
+    Returns the same shape as `_extract_transcript_telemetry`; {} if no path
+    yielded any usable usage. Never raises.
+    """
+    model_tokens = {}  # model -> {input, output}
+    totals = {'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0}
+    seen_ids = set()
+    for path in (paths or []):
+        if not path:
+            continue
+        try:
+            with open(path, encoding='utf-8', errors='replace') as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
                         continue
-                    seen_ids.add(mid)
-                if model not in model_tokens:
-                    model_tokens[model] = {'input': 0, 'output': 0}
-                in_tok = int(usage.get('input_tokens') or 0)
-                out_tok = int(usage.get('output_tokens') or 0)
-                model_tokens[model]['input'] += in_tok
-                model_tokens[model]['output'] += out_tok
-                totals['input'] += in_tok
-                totals['output'] += out_tok
-                totals['cache_read'] += int(usage.get('cache_read_input_tokens') or 0)
-                totals['cache_write'] += int(usage.get('cache_creation_input_tokens') or 0)
-        if not model_tokens:
-            return {}
-        dominant = max(model_tokens.items(),
-                       key=lambda x: x[1]['input'] + x[1]['output'])[0]
-        return {
-            'model': dominant,
-            'input_tokens': totals['input'],
-            'output_tokens': totals['output'],
-            'cache_read_tokens': totals['cache_read'],
-            'cache_write_tokens': totals['cache_write'],
-            'model_tokens': {m: v['input'] + v['output']
-                             for m, v in model_tokens.items()},
-        }
-    except Exception:
+                    try:
+                        m = json.loads(line)
+                    except Exception:
+                        continue
+                    msg = m.get('message') if isinstance(m.get('message'), dict) else None
+                    if not msg:
+                        continue
+                    model = msg.get('model', '')
+                    usage = msg.get('usage')
+                    if not model or not isinstance(usage, dict):
+                        continue
+                    mid = msg.get('id')
+                    if mid:
+                        if mid in seen_ids:
+                            continue
+                        seen_ids.add(mid)
+                    if model not in model_tokens:
+                        model_tokens[model] = {'input': 0, 'output': 0}
+                    in_tok = int(usage.get('input_tokens') or 0)
+                    out_tok = int(usage.get('output_tokens') or 0)
+                    model_tokens[model]['input'] += in_tok
+                    model_tokens[model]['output'] += out_tok
+                    totals['input'] += in_tok
+                    totals['output'] += out_tok
+                    totals['cache_read'] += int(usage.get('cache_read_input_tokens') or 0)
+                    totals['cache_write'] += int(usage.get('cache_creation_input_tokens') or 0)
+        except Exception:
+            continue
+    if not model_tokens:
         return {}
+    dominant = max(model_tokens.items(),
+                   key=lambda x: x[1]['input'] + x[1]['output'])[0]
+    return {
+        'model': dominant,
+        'input_tokens': totals['input'],
+        'output_tokens': totals['output'],
+        'cache_read_tokens': totals['cache_read'],
+        'cache_write_tokens': totals['cache_write'],
+        'model_tokens': {m: v['input'] + v['output']
+                         for m, v in model_tokens.items()},
+    }
 
 
 # ── MC-964 Step E: habit-statement classifier (RC2, plan §6 Step E) ──────────

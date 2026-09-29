@@ -407,3 +407,79 @@ def test_committed_on_a_differently_named_branch_still_reports_added_deleted(env
     assert result['added'] == 3
     assert result['deleted'] == 1
     assert result['head_commits']
+
+
+def test_side_branch_commits_survive_checkout_back_to_base(env, project):
+    """MC-998 follow-up 5, Gap 2 (Dave's finding on session a8560130c26b): a
+    session commits on a side branch inside its worktree, then checks the
+    BASE branch back out before completion (e.g. to leave the worktree
+    clean) -- current HEAD's ancestry then has no path to those commits at
+    all, so a `base_commit..HEAD` rev-list/diff sees nothing and silently
+    reports zero even though the worktree unambiguously made real commits.
+    The worktree's own HEAD reflog must still surface them."""
+    sid = 'mb12'
+    ok, path = w.create(project, sid)
+    assert ok, path
+    base_branch = _git(path, 'rev-parse', '--abbrev-ref', 'HEAD')
+    base_commit = _git(path, 'rev-parse', 'HEAD')
+
+    _git(path, 'checkout', '-b', 'split-view-agents')
+    (Path(path) / 'app.py').write_text(
+        'def one():\n    return "orig one"\n\n\ndef two():\n    return "NEW two"\n'
+        'def three():\n    return "added"\n',
+        encoding='utf-8')
+    _git(path, 'add', '.')
+    _git(path, 'commit', '-q', '-m', 'side branch work')
+
+    # Return HEAD to the base branch/commit before completion runs -- this is
+    # exactly the state that made session a8560130c26b record added=0.
+    _git(path, 'checkout', base_branch)
+    assert _git(path, 'rev-parse', 'HEAD') == base_commit
+
+    result = ar._compute_code_delta(_session(sid, project['id'], isolated=True))
+    assert result['status'] == 'ok', result
+    assert result['added'] == 3
+    assert result['deleted'] == 1
+    assert result['head_commits']  # the side-branch commit must still surface
+
+
+def test_amended_commit_is_not_double_counted(env, project):
+    """MC-998 follow-up 5, Dave's review of the Gap 2 fix: `commit --amend`
+    leaves BOTH the pre-amend commit and the amended commit in
+    `git reflog HEAD` (the amend doesn't change the commit's parent, so both
+    still diff against the same base). The naive "every reflog entry that
+    looks like a commit" filter counted both -- double-counting every line
+    they share. Only the commit a current branch still points to (the
+    amended one) may be counted; the superseded original must be dropped."""
+    sid = 'mb13'
+    ok, path = w.create(project, sid)
+    assert ok, path
+
+    (Path(path) / 'app.py').write_text(
+        'def one():\n    return "orig one"\n\n\ndef two():\n    return "NEW two"\n'
+        'def three():\n    return "added"\n',
+        encoding='utf-8')
+    _git(path, 'add', '.')
+    _git(path, 'commit', '-q', '-m', 'first pass')
+    pre_amend_sha = _git(path, 'rev-parse', 'HEAD')
+
+    (Path(path) / 'app.py').write_text(
+        'def one():\n    return "orig one"\n\n\ndef two():\n    return "NEW two"\n'
+        'def three():\n    return "added"\n'
+        'def four():\n    return "added too"\n',
+        encoding='utf-8')
+    _git(path, 'add', '.')
+    _git(path, 'commit', '-q', '--amend', '-m', 'first pass (amended)')
+    amended_sha = _git(path, 'rev-parse', 'HEAD')
+    assert amended_sha != pre_amend_sha
+
+    result = ar._compute_code_delta(_session(sid, project['id'], isolated=True))
+    assert result['status'] == 'ok', result
+    # Final diff vs base: two() modified (1 add/1 delete) + three() added (2
+    # lines) + four() added (2 lines) = 5 added, 1 deleted -- counted ONCE.
+    # The pre-fix bug summed this commit's diff AND the superseded
+    # pre-amend commit's diff (also against base, since amend keeps the same
+    # parent) against the same base, reporting 8/2.
+    assert result['added'] == 5
+    assert result['deleted'] == 1
+    assert result['head_commits'] == amended_sha

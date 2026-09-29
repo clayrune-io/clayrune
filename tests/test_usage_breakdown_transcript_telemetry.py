@@ -11,11 +11,11 @@ was the dominant contributor to totals reading ~25x too high. The fixture
 below is trimmed from that real shape: two content-block lines for the same
 message, plus one line for a second message.
 """
-from mc.memory import _extract_transcript_telemetry
+from mc.memory import _extract_transcript_telemetry, _extract_transcript_telemetry_multi
 
 
-def _write(tmp_path, lines):
-    p = tmp_path / 'transcript.jsonl'
+def _write(tmp_path, lines, name='transcript.jsonl'):
+    p = tmp_path / name
     p.write_text('\n'.join(lines), encoding='utf-8')
     return str(p)
 
@@ -76,3 +76,54 @@ def test_lines_without_message_id_still_counted_no_dedup_key(tmp_path):
 def test_empty_or_missing_file_returns_empty_dict(tmp_path):
     assert _extract_transcript_telemetry(None) == {}
     assert _extract_transcript_telemetry(str(tmp_path / 'nope.jsonl')) == {}
+
+
+# ── MC-998 follow-up 5, Gap 1: multi-transcript session totals ─────────────
+
+def test_multi_transcript_sums_across_respawns_and_dedupes_replayed_message(tmp_path):
+    """A respawn/resume starts a NEW claude_session_id -- a NEW .jsonl -- so
+    one MC session can span several transcripts. `_extract_transcript_telemetry`
+    alone only ever reads the current one, silently dropping every earlier
+    transcript's tokens from the session-lifetime total on every respawn.
+    `_extract_transcript_telemetry_multi` must sum every transcript belonging
+    to the session, deduping `message.id` GLOBALLY across files too -- a
+    resume can replay a message already present in an earlier transcript
+    (msg_B below appears, byte-identical, at the tail of transcript 1 AND the
+    head of transcript 2, which is exactly what a resume replay looks like)."""
+    t1 = _write(tmp_path, [
+        '{"timestamp": "t1", "message": {"id": "msg_A", "model": "claude-sonnet-5", '
+        '"usage": {"input_tokens": 10, "cache_creation_input_tokens": 100, '
+        '"cache_read_input_tokens": 1000, "output_tokens": 20}}}',
+        '{"timestamp": "t2", "message": {"id": "msg_B", "model": "claude-sonnet-5", '
+        '"usage": {"input_tokens": 5, "cache_creation_input_tokens": 50, '
+        '"cache_read_input_tokens": 500, "output_tokens": 15}}}',
+    ], name='transcript1.jsonl')
+    t2 = _write(tmp_path, [
+        # msg_B replayed into the new transcript by the resume -- must not
+        # add a second time to the session total.
+        '{"timestamp": "t2-replay", "message": {"id": "msg_B", "model": "claude-sonnet-5", '
+        '"usage": {"input_tokens": 5, "cache_creation_input_tokens": 50, '
+        '"cache_read_input_tokens": 500, "output_tokens": 15}}}',
+        '{"timestamp": "t3", "message": {"id": "msg_C", "model": "claude-sonnet-5", '
+        '"usage": {"input_tokens": 7, "cache_creation_input_tokens": 70, '
+        '"cache_read_input_tokens": 700, "output_tokens": 25}}}',
+    ], name='transcript2.jsonl')
+
+    per_transcript_1 = _extract_transcript_telemetry(t1)
+    per_transcript_2 = _extract_transcript_telemetry(t2)
+    # Each transcript read alone (the pre-fix behaviour) totals correctly for
+    # itself -- proves the bug is the reset-per-respawn, not a math error.
+    assert per_transcript_1['input_tokens'] == 15   # msg_A 10 + msg_B 5
+    assert per_transcript_2['input_tokens'] == 12   # msg_B replay + msg_C 7 (would double-count if not deduped)
+
+    combined = _extract_transcript_telemetry_multi([t1, t2])
+    assert combined['input_tokens'] == 22           # msg_A 10 + msg_B 5 + msg_C 7, msg_B once
+    assert combined['cache_write_tokens'] == 220     # 100 + 50 + 70
+    assert combined['cache_read_tokens'] == 2200     # 1000 + 500 + 700
+    assert combined['output_tokens'] == 60           # 20 + 15 + 25
+
+
+def test_multi_transcript_empty_list_or_all_missing_returns_empty_dict(tmp_path):
+    assert _extract_transcript_telemetry_multi([]) == {}
+    assert _extract_transcript_telemetry_multi([str(tmp_path / 'nope1.jsonl'),
+                                                 str(tmp_path / 'nope2.jsonl')]) == {}
