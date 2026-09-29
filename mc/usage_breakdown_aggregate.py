@@ -115,35 +115,65 @@ def _session_provider(ck: Optional[dict], fact: Optional[dict]) -> Optional[str]
 
 def _session_turns(ck: Optional[dict]) -> list[dict]:
     """[{'start','end', <each _TOKEN_KEYS delta>, 'token_coverage','fact_only'}]
-    -- one entry per TURN (P1-3, finding 3): consecutive checkpoint pairs
-    (baseline -> completions[0], completions[0] -> completions[1], ...),
-    each holding that turn's OWN token delta, never the session's cumulative
-    lifetime total charged again to every interval it overlaps. With no
-    baseline (aged out by 90-day retention while later completions remain)
-    the pairs start at completions[0]; the span before it is unmeasured and
-    `_session_evidence` reports it as such. A session with no completions
-    yet (still running, mid-turn) has no turn evidence at all -- an empty
-    list, not a fabricated one spanning "start to now".
+    -- one entry per TURN (P1-3, finding 3), each holding that turn's OWN
+    token delta, never the session's cumulative lifetime total charged again
+    to every interval it overlaps.
 
-    A delta needs a counter at BOTH ends: a turn whose previous checkpoint
-    carried no counter (an `unavailable` completion) is itself
-    `unavailable`, never "this cumulative minus zero"."""
+    A turn's span is (this turn's start marker -> its completion). The start
+    marker is the most recent 'turn_start' row observed_at strictly after
+    the PREVIOUS completion (or baseline, for turn 1) and at-or-before this
+    completion -- i.e. the turn_start a Mode B session writes when a
+    follow-up send actually begins the turn (schema v5, MC-998 turn-start
+    fix). When no such row exists (old data written before this fix, or a
+    turn_start that was itself aged out by 90-day retention) the span falls
+    back to the previous checkpoint, exactly the prior (conservative)
+    behaviour: idle time between turns gets folded into the turn.
+
+    The point of preferring turn_start: the span BETWEEN a completion and
+    the next turn's turn_start -- a Mode B session sitting idle, sometimes
+    for hours, between turns -- is simply never emitted as a turn or an
+    unmeasured span here. It isn't zero-length coverage, it's absent: a
+    calibration interval that falls entirely inside it never sees this
+    session at all, so it can never straddle or block that interval.
+
+    With no baseline (aged out by 90-day retention while later completions
+    remain) the pairs start at completions[0]; the span before it is
+    unmeasured and `_session_evidence` reports it as such. A session with no
+    completions yet (still running, mid-turn) has no turn evidence at all --
+    an empty list, not a fabricated one spanning "start to now".
+
+    A delta needs a counter at BOTH ends: a turn whose start marker carried
+    no counter (an `unavailable` row) is itself `unavailable`, never "this
+    cumulative minus zero"."""
     baseline = (ck or {}).get('baseline')
     completions = (ck or {}).get('completions') or []
-    chain = ([baseline] if baseline else []) + list(completions)
+    turn_starts = (ck or {}).get('turn_starts') or []
     turns = []
-    for prev, cur in zip(chain, chain[1:]):
-        p_at, c_at = _parse_iso(prev.get('observed_at')), _parse_iso(cur.get('observed_at'))
-        if p_at is None or c_at is None:
+    prev = baseline
+    prev_at = _parse_iso(prev.get('observed_at')) if prev else None
+    for cur in completions:
+        c_at = _parse_iso(cur.get('observed_at'))
+        if c_at is None:
             continue
-        turn = {'start': p_at, 'end': c_at, 'fact_only': False,
-                'token_coverage': cur.get('token_coverage') or 'unavailable'}
-        for k in _TOKEN_KEYS:
-            a, b = prev.get(k), cur.get(k)
-            turn[k] = max(b - a, 0) if (a is not None and b is not None) else None
-        if turn['input_processed_total'] is None and turn['output_tokens'] is None:
-            turn['token_coverage'] = 'unavailable'
-        turns.append(turn)
+        start_row, start_at = prev, prev_at
+        if prev_at is not None:
+            candidates = []
+            for ts in turn_starts:
+                ts_at = _parse_iso(ts.get('observed_at'))
+                if ts_at is not None and prev_at < ts_at <= c_at:
+                    candidates.append((ts_at, ts))
+            if candidates:
+                start_at, start_row = max(candidates, key=lambda pair: pair[0])
+        if start_at is not None and start_row is not None:
+            turn = {'start': start_at, 'end': c_at, 'fact_only': False,
+                    'token_coverage': cur.get('token_coverage') or 'unavailable'}
+            for k in _TOKEN_KEYS:
+                a, b = start_row.get(k), cur.get(k)
+                turn[k] = max(b - a, 0) if (a is not None and b is not None) else None
+            if turn['input_processed_total'] is None and turn['output_tokens'] is None:
+                turn['token_coverage'] = 'unavailable'
+            turns.append(turn)
+        prev, prev_at = cur, c_at
     return turns
 
 
@@ -186,6 +216,7 @@ def _session_evidence(ck: Optional[dict], fact: Optional[dict]) -> tuple[list[di
     placeable span and is skipped, as before."""
     baseline = (ck or {}).get('baseline')
     completions = (ck or {}).get('completions') or []
+    turn_starts = (ck or {}).get('turn_starts') or []
     if not baseline and not completions:
         if not fact:
             return [], []
@@ -207,8 +238,23 @@ def _session_evidence(ck: Optional[dict], fact: Optional[dict]) -> tuple[list[di
     if not baseline:
         unmeasured.append((_parse_iso(fact.get('started_at')) if fact else None,
                            _parse_iso(completions[0].get('observed_at'))))
-    last = (completions[-1] if completions else baseline) or {}
-    last_at = _parse_iso(last.get('observed_at'))
+    completion_last = (completions[-1] if completions else baseline) or {}
+    completion_last_at = _parse_iso(completion_last.get('observed_at'))
+    # MC-998 turn-start fix: a turn_start written AFTER the last completion
+    # (or after baseline, for a session still on turn 1) marks a NEW turn
+    # that has begun but not yet completed -- the "still running"/"ahead of
+    # checkpoint history" spans below must start there, not at the last
+    # completion, or the idle time before that turn_start gets folded into
+    # "unmeasured" and blocks every interval it happened to sit through --
+    # exactly the bug this fix removes from the measured-turn path above.
+    open_start_at, open_start = None, None
+    for ts in turn_starts:
+        ts_at = _parse_iso(ts.get('observed_at'))
+        if ts_at is not None and completion_last_at is not None and ts_at > completion_last_at:
+            if open_start_at is None or ts_at > open_start_at:
+                open_start_at, open_start = ts_at, ts
+    last = open_start if open_start is not None else completion_last
+    last_at = open_start_at if open_start is not None else completion_last_at
     if (fact and _fact_is_running(fact)) or (not fact and not completions):
         unmeasured.append((last_at, None))
     elif fact:

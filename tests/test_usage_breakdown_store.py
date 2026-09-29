@@ -277,6 +277,68 @@ def test_checkpoint_exact_retry_completion_is_a_noop(store):
     assert len(store.get_session_checkpoints('s1')['completions']) == 1
 
 
+def test_checkpoint_turn_start_buckets_separately_from_completions(store):
+    """MC-998 turn-start fix: a 'turn_start' row must land in its own
+    'turn_starts' list, never fall into 'completions' -- the pre-fix route
+    builder (system_routes.py ~1345) treated every non-baseline row as a
+    completion, which would have miscounted a turn's START as if it were
+    that turn's END."""
+    store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='baseline',
+        observed_at='2026-09-28T10:00:00Z', token_coverage='unavailable')
+    store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='completion',
+        observed_at='2026-09-28T10:05:00Z', input_processed_total=100,
+        output_tokens=50, token_coverage='complete')
+    ts_ok = store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='turn_start',
+        observed_at='2026-09-28T12:00:00Z', input_processed_total=100,
+        output_tokens=50, token_coverage='complete')
+    assert ts_ok is True
+    ck = store.get_session_checkpoints('s1')
+    assert [c['observed_at'] for c in ck['completions']] == ['2026-09-28T10:05:00Z']
+    assert [t['observed_at'] for t in ck['turn_starts']] == ['2026-09-28T12:00:00Z']
+
+    # An exact-retry turn_start is a no-op, same dedup shape as completion.
+    retry = store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='turn_start',
+        observed_at='2026-09-28T12:00:00Z', token_coverage='complete')
+    assert retry is False
+    assert len(store.get_session_checkpoints('s1')['turn_starts']) == 1
+
+
+def test_route_checkpoints_builder_routes_turn_start_correctly(store):
+    """The route's inline dict builder (system_routes.py ~1350-1358) walks
+    list_session_checkpoints() and must bucket 'turn_start' into its own
+    key, not append it to 'completions' -- reproduces exactly what the
+    route does, using the store's raw ordered row list rather than the
+    per-session get_session_checkpoints() helper."""
+    store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='baseline',
+        observed_at='2026-09-28T10:00:00Z', token_coverage='unavailable')
+    store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='completion',
+        observed_at='2026-09-28T10:05:00Z', token_coverage='complete')
+    store.record_session_checkpoint(
+        session_id='s1', provider='claude', checkpoint_type='turn_start',
+        observed_at='2026-09-28T12:00:00Z', token_coverage='complete')
+
+    checkpoints: dict = {}
+    for row in store.list_session_checkpoints():
+        entry = checkpoints.setdefault(
+            row['session_id'], {'baseline': None, 'turn_starts': [], 'completions': []})
+        if row['checkpoint_type'] == 'baseline':
+            entry['baseline'] = row
+        elif row['checkpoint_type'] == 'turn_start':
+            entry['turn_starts'].append(row)
+        else:
+            entry['completions'].append(row)
+
+    assert len(checkpoints['s1']['completions']) == 1
+    assert len(checkpoints['s1']['turn_starts']) == 1
+    assert checkpoints['s1']['turn_starts'][0]['observed_at'] == '2026-09-28T12:00:00Z'
+
+
 def test_schema_v2_migration_preserves_rows_and_unfreezes_later_turns(tmp_path):
     """A pre-existing v2 install (table-level
     UNIQUE(session_id, checkpoint_type)) must migrate in place: its one
@@ -345,8 +407,9 @@ def test_schema_v2_migration_preserves_rows_and_unfreezes_later_turns(tmp_path):
     assert [c['input_processed_total'] for c in completions] == [100, 500]
 
     with sqlite3.connect(db_path) as raw:
-        # v2 -> v3 -> v4 in one open (v4 adds code_delta_lifetime, round 3 P2-5).
-        assert raw.execute('PRAGMA user_version').fetchone()[0] == SCHEMA_VERSION == 4
+        # v2 -> v3 -> v4 -> v5 in one open (v4 adds code_delta_lifetime, round 3
+        # P2-5; v5 adds the turn_start dedup index, MC-998 turn-start fix).
+        assert raw.execute('PRAGMA user_version').fetchone()[0] == SCHEMA_VERSION == 5
 
 
 # ── round 3 (docs/_journal/4668eafc-mc998-fenn-review.md "Round 3") ─────
@@ -394,7 +457,9 @@ def test_schema_v3_migration_seeds_one_lifetime_per_ok_row(tmp_path):
     assert row is not None
     assert (row['added'], row['deleted']) == (5, 1)
     with sqlite3.connect(db_path) as raw:
-        assert raw.execute('PRAGMA user_version').fetchone()[0] == 4
+        # v3 -> v4 -> v5 in one open (v5 adds the turn_start dedup index,
+        # MC-998 turn-start fix).
+        assert raw.execute('PRAGMA user_version').fetchone()[0] == SCHEMA_VERSION == 5
 
 
 def test_prune_removes_code_delta_lifetime_rows_with_their_session(store):

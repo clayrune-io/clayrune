@@ -242,6 +242,36 @@ def baseline_checkpoint_fields(session_id: str, *, provider: str, observed_at: s
     }
 
 
+def turn_start_checkpoint_fields(session_id: str, *, provider: str, observed_at: str,
+                                  fact: Optional[dict] = None) -> dict:
+    """The 'turn_start' `session_checkpoint` row written at the moment a NEW
+    turn begins -- a follow-up send or a respawn-resume into an EXISTING
+    session (schema v5, MC-998 turn-start fix). A session's very first turn
+    never gets one: the dispatch-time 'baseline' already serves as turn 1's
+    start marker.
+
+    Carries forward the session's cumulative counters AS OF THIS INSTANT --
+    unchanged since its last completion, because the new turn hasn't
+    produced a single token yet -- read from `fact` (the store's current
+    `session_fact` row for this session, passed in by the caller) so the
+    idle span before this row always deltas to zero in `_session_turns`.
+    With no `fact` (a first-completion-never-landed edge case) every token
+    field stays None and `token_coverage='unavailable'`, the same
+    no-fabricated-zero rule `completion_checkpoint_fields` follows --
+    `_session_turns` then reports that turn's delta as unavailable rather
+    than a false zero, never a false zero disguised as measured idle time."""
+    fact = fact or {}
+    return {
+        'session_id': session_id, 'provider': provider or fact.get('provider') or 'claude',
+        'checkpoint_type': 'turn_start', 'observed_at': observed_at,
+        'input_fresh': fact.get('input_fresh'), 'input_cache_write': fact.get('input_cache_write'),
+        'input_cache_read': fact.get('input_cache_read'),
+        'input_processed_total': fact.get('input_processed_total'),
+        'output_tokens': fact.get('output_tokens'), 'output_reasoning': fact.get('output_reasoning'),
+        'token_coverage': fact.get('token_coverage') or 'unavailable',
+    }
+
+
 def completion_checkpoint_fields(fact: dict, *, session_id: str, observed_at: str) -> dict:
     """The completion-time 'completion' `session_checkpoint` row, built from
     the same `fact` dict `session_fact_from_entry` just produced -- the
