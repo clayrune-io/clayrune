@@ -24,16 +24,19 @@
   // §1's wireframe glyphs: "◉ project · ▣ product · ✦ feature · ◎ audience/event".
   const SUBJECT_GLYPH = { project: '◉', product: '▣', feature: '✦', audience: '◎', event: '◎' };
 
-  // §5 IA4 acceptance: "leave at step 2 -> card 'Setup 2 of 3'" — a draft
-  // campaign's card names the checklist step it stopped at instead of the
-  // generic "✎ Draft" state word, so the project page itself tells you
-  // setup is unfinished and where it left off (desk-v1-setup.js owns the
-  // step counter this reads, `camp.setup.step`).
+  // R2-3 (IA revision 2 §3 table: "Draft · at <stop>", "Continue lands on
+  // that stop") — a draft campaign's card names the map stop it stopped at,
+  // replacing IA4's "Setup N of 3" step counter (`camp.setup.step`, still
+  // read by desk-v1-setup.js's own in-page checklist, untouched by this
+  // ticket — this label is the project page's own read of `camp.map.stop`,
+  // a separate field). No `map` yet (a pre-R2-3 fixture) reads as ① Goal,
+  // the same fallback `_renderCampaignSkeleton` (desk-v1-shell.js) uses.
   function _draftCardLabel(c) {
-    const step = (c.setup && c.setup.step) || 1;
+    const stop = (c.map && c.map.stop) || 'goal';
+    const word = (DeskV1Kit && DeskV1Kit.MAP_STOP_WORDS && DeskV1Kit.MAP_STOP_WORDS[stop]) || stop;
     return `<span class="desk-v1-state-label" data-state="draft">` +
       `<span class="desk-v1-state-glyph" aria-hidden="true">✎</span>` +
-      `<span class="desk-v1-state-word">Setup ${esc(step)} of 3</span></span>`;
+      `<span class="desk-v1-state-word">Draft · at ${esc(word)}</span></span>`;
   }
 
   function _campCardHTML(c) {

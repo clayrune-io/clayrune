@@ -23,7 +23,6 @@
   function _families() { return _fx().families || []; }
   function _familiesFor(campaignId) { return _families().filter((f) => f.campaignId === campaignId); }
   function _conversations() { return _fx().conversations || []; }
-  function _conversationsFor(campaignId) { return _conversations().filter((c) => c.campaignId === campaignId); }
 
   const _TERMINAL_STATES = new Set(['verified_published', 'you_reported', 'failed', 'skipped', 'archived']);
   const _SCHEDULED_STATES = new Set(['scheduled', 'approved', 'sending', 'submitted']);
@@ -52,14 +51,6 @@
 
   function _familyHasState(fam, states) { return (fam.versions || []).some((v) => states.has ? states.has(v.state) : v.state === states); }
   function _familyNeedsYou(fam) { return _familyHasState(fam, new Set(['needs_review'])); }
-
-  // Content-tab badge count (§3.1: "Badge counts are needs-you items only") —
-  // one per FAMILY with at least one needs-review version, matching frame
-  // 12a's "Content 2" against the two visible needs-you cards exactly (same
-  // per-family counting Home.js's own _needsYouItems() uses for its "pieces
-  // to approve" row, kept local here rather than imported since no cross-
-  // module import exists in static/js).
-  function _needsYouCount(campaignId) { return _familiesFor(campaignId).filter(_familyNeedsYou).length; }
 
   // ── module state — one campaign-page mount at a time (same single-slot
   // precedent as desk-v1-review.js's `_st`). Rebuilt fresh whenever the
@@ -189,7 +180,10 @@
       </div>`;
 
     const goalBtn = el.querySelector('[data-goal-btn]');
-    if (goalBtn) goalBtn.onclick = () => window.deskV1GotoCampaignPanel('results', { campaignId: camp.id });
+    // R2-3: 'results' is now the deep-link alias for ① goal (PANEL_ALIASES,
+    // shell.js) — this call bypasses `deskV1Nav`'s alias table, so it must
+    // already name the real panel or the tab body falls through to ③ what.
+    if (goalBtn) goalBtn.onclick = () => window.deskV1GotoCampaignPanel('goal', { campaignId: camp.id });
     const moreBtn = el.querySelector('[data-camp-more-btn]');
     if (moreBtn) moreBtn.onclick = (e) => {
       e.stopPropagation();
@@ -442,37 +436,131 @@
   }
 
   // ────────────────────────────────────────────────────────────────────────
-  // Tab strip (§3.1: "Content [n] · Conversations [n] · Results"). Content
-  // IS this route (deskV1FillCampaignTabBody below); Conversations/Results
-  // are separate top-level routes (desk-v1-shell.js ROUTES, T6/T7's own
-  // full-page surfaces with parent:'campaign') — clicking those tabs
-  // navigates away rather than swapping a local slot, exactly like T4's
-  // calendar comment describes for its own `deskV1Nav('calendar', ...)` deep
-  // link. Content stays active the whole time this skeleton is on screen.
+  // Map stepper (R2-3, IA revision 2 §3/§4.1) — replaces the old
+  // Content · Conversations · Results tab strip with the six-stop map
+  // (`DeskV1Kit.MAP_STOPS`: goal/how/what/when/where/launch). Every stop is
+  // clickable (§3 table: "guided, never locked") — a click both switches the
+  // panel IN PLACE (same `deskV1GotoCampaignPanel` contract the old tabs
+  // used) and records the campaign's current position (`camp.map.stop`),
+  // which is what the project page's draft card + "Continue" read (§3
+  // "Continue lands on that stop", desk-v1-project.js `_draftCardLabel`).
+  // `conversations` is no longer a stop here (§6: moves into the Engagement
+  // menu at R2-12) — its route stays reachable exactly as before through
+  // PANEL_ALIASES/deep links, just not from this strip.
   // ────────────────────────────────────────────────────────────────────────
+  function _campMap(camp) {
+    // A pre-R2-3 fixture, or a draft that predates `deskV1CreateDraftCampaign`
+    // seeding `map.stop: 'goal'` — falls back the same way either way.
+    if (!camp.map) camp.map = { stop: 'goal', done: [] };
+    return camp.map;
+  }
+
+  function _gotoMapStop(camp, stop) {
+    _campMap(camp).stop = stop;
+    window.deskV1GotoCampaignPanel(stop, { campaignId: camp.id });
+  }
+
+  // §3 table: "✓ done · ● you are here · ○ not started · ⚠ needs you (each
+  // glyph + word, never colour alone)". The visible word on each stop button
+  // is the stop's own name (Goal/How/...); the state is the glyph that
+  // precedes it, with the state spelled out in `title`/`data-state` for
+  // anything that needs it unambiguous (screen reader, smoke assertion) —
+  // same "glyph conveys state, name identifies the stop" split a numbered
+  // wizard step normally uses.
+  const _STOP_STATE_GLYPH = { done: '✓', here: '●', needs_you: '⚠', not_started: '○' };
+  const _STOP_STATE_WORD = { done: 'Done', here: 'You are here', needs_you: 'Needs you', not_started: 'Not started' };
+
+  // "here" is read off `params.panel` — the panel actually on screen — not
+  // `map.stop` (that field is only the Draft resume cursor `_gotoMapStop`
+  // writes; `_renderCampaignSkeleton`'s own comment is explicit that a
+  // non-draft campaign's `map.stop` is NOT a resume cursor, so a deep link
+  // via PANEL_ALIASES — which sets `params.panel` without touching
+  // `map.stop` — must still highlight the stop it actually landed on).
+  function _stopState(stop, currentPanel, map, missingStops) {
+    if (currentPanel === stop) return 'here';
+    if ((map.done || []).includes(stop)) return 'done';
+    if (missingStops.has(stop)) return 'needs_you';
+    return 'not_started';
+  }
+
   function deskV1FillCampaignTabStrip(el, params) {
-    const campaignId = params.campaignId;
-    const panel = params.panel || 'content';
-    const contentCount = _needsYouCount(campaignId);
-    // §3.1: "Badge counts are needs-you items only" — for BOTH tabs. A reply
-    // waiting ('needs_reply') or a row flagged for you ('needs_you'); stale,
-    // reviewed and no-reply rows don't count. A total count read 6 once T6
-    // added rows; this reads 3, which is also frame 12a's number.
-    const convCount = _conversationsFor(campaignId)
-      .filter((c) => c.state === 'needs_reply' || c.state === 'needs_you').length;
+    const camp = _campaign(params.campaignId);
+    if (!camp) { el.innerHTML = ''; return; }
+    const map = _campMap(camp);
+    const project = _project(camp.projectId);
+    const missing = (DeskV1Kit.validatePlan(camp.plan, project) || { missing: [] }).missing;
+    const missingStops = new Set(missing.map((m) => m.stop));
+    const stopsHTML = DeskV1Kit.MAP_STOPS.map((stop) => {
+      const state = _stopState(stop, params.panel, map, missingStops);
+      const word = DeskV1Kit.MAP_STOP_WORDS[stop];
+      return `<button type="button" class="desk-v1-map-stop" data-stop="${esc(stop)}" data-state="${esc(state)}" aria-current="${state === 'here'}" title="${esc(word)} — ${esc(_STOP_STATE_WORD[state])}">` +
+        `<span class="desk-v1-map-stop-glyph" aria-hidden="true">${_STOP_STATE_GLYPH[state]}</span>` +
+        `<span class="desk-v1-map-stop-word">${esc(word)}</span></button>`;
+    }).join('');
     el.innerHTML = `
-      <div class="desk-v1-camp-tabs" role="tablist">
-        <button type="button" class="desk-v1-camp-tab" aria-selected="${panel === 'content'}" data-tab="content">Content${contentCount ? ` <span class="desk-v1-camp-tab-badge">${esc(contentCount)}</span>` : ''}</button>
-        <button type="button" class="desk-v1-camp-tab" aria-selected="${panel === 'conversations'}" data-tab="conversations">Conversations${convCount ? ` <span class="desk-v1-camp-tab-badge">${esc(convCount)}</span>` : ''}</button>
-        <button type="button" class="desk-v1-camp-tab" aria-selected="${panel === 'results'}" data-tab="results">Results</button>
+      <div class="desk-v1-map-tabs" role="tablist">
+        ${DeskV1Kit.stateLabelHTML(camp.state, { className: 'desk-v1-map-pill' })}
+        <div class="desk-v1-map-stops">${stopsHTML}</div>
       </div>`;
-    // §2: tabs switch the panel IN PLACE — `deskV1GotoCampaignPanel` patches
-    // the current `campaign` stack entry's params rather than pushing a new
-    // one, so the frame this tab strip lives in is never rebuilt by a click
-    // on itself (desk-v1-shell.js's `_gotoCampaignPanel`).
-    el.querySelector('[data-tab="content"]').onclick = () => window.deskV1GotoCampaignPanel('content', { campaignId });
-    el.querySelector('[data-tab="conversations"]').onclick = () => window.deskV1GotoCampaignPanel('conversations', { campaignId });
-    el.querySelector('[data-tab="results"]').onclick = () => window.deskV1GotoCampaignPanel('results', { campaignId });
+    el.querySelectorAll('[data-stop]').forEach((btn) => {
+      btn.onclick = () => _gotoMapStop(camp, btn.getAttribute('data-stop'));
+    });
+  }
+
+  // Movement (§3 table: "`Next: <stop> ›` / `‹ Back` at the foot of each
+  // stop"). Draft only, per R2-3a scope — Proposed/Active/Paused/Completed/
+  // Archived move solely through the stop buttons above (free, no gate); the
+  // fuller table also gives Proposed the same Next/Back, left for whichever
+  // later ticket wires Proposed's own map behaviour (§8 doesn't test it here).
+  function deskV1FillCampaignMapFoot(el, params) {
+    const camp = _campaign(params.campaignId);
+    if (!camp || camp.state !== 'draft') { el.innerHTML = ''; return; }
+    const map = _campMap(camp);
+    const idx = DeskV1Kit.MAP_STOPS.indexOf(map.stop);
+    const backStop = idx > 0 ? DeskV1Kit.MAP_STOPS[idx - 1] : null;
+    const nextStop = (idx >= 0 && idx < DeskV1Kit.MAP_STOPS.length - 1) ? DeskV1Kit.MAP_STOPS[idx + 1] : null;
+    if (!backStop && !nextStop) { el.innerHTML = ''; return; }
+    el.innerHTML = `
+      <div class="desk-v1-map-foot-nav">
+        ${backStop ? `<button type="button" class="desk-v1-map-back" data-map-back>‹ Back</button>` : ''}
+        ${nextStop ? `<button type="button" class="desk-v1-map-next" data-map-next>Next: ${esc(DeskV1Kit.MAP_STOP_WORDS[nextStop])} ›</button>` : ''}
+      </div>`;
+    const backBtn = el.querySelector('[data-map-back]');
+    if (backBtn) backBtn.onclick = () => _gotoMapStop(camp, backStop);
+    const nextBtn = el.querySelector('[data-map-next]');
+    if (nextBtn) nextBtn.onclick = () => {
+      const doneArr = map.done || (map.done = []);
+      if (!doneArr.includes(map.stop)) doneArr.push(map.stop);
+      _gotoMapStop(camp, nextStop);
+    };
+  }
+
+  // ⑥ Launch (§4.1 row): validatePlan gates Start, each missing bound links
+  // to the stop that fixes it (`missing[].stop`, kit.js R2-1). Reuses
+  // desk-v1-rules.js's existing Start sheet (`deskV1OpenStartSheet`) rather
+  // than a second Start flow. This ticket wires the frame + the gate only —
+  // the Active-state half of the row (approval record, Pause/Resume, Renew
+  // term) is R2-11's job; a running campaign sees the same missing/Start
+  // body here until then.
+  function _renderLaunchPanel(el, params, camp) {
+    if (!camp) { el.innerHTML = '<div class="desk-v1-stub-inline">Campaign not found.</div>'; return; }
+    const project = _project(camp.projectId);
+    const result = DeskV1Kit.validatePlan(camp.plan, project) || { ok: true, missing: [] };
+    const missingHTML = result.missing.length
+      ? `<ul class="desk-v1-map-launch-missing">${result.missing.map((m) => `
+          <li><button type="button" class="desk-v1-map-launch-missing-link" data-missing-stop="${esc(m.stop)}">${esc(m.label)}${m.detail ? ` — ${esc(m.detail)}` : ''}</button></li>`).join('')}</ul>`
+      : '<div class="desk-v1-stub-inline">Everything needed to launch is filled in.</div>';
+    el.innerHTML = `
+      <div class="desk-v1-map-launch">
+        <div class="desk-v1-map-launch-status">${result.ok ? '✓ Ready to launch' : `⚠ ${esc(result.missing.length)} to fix before Start`}</div>
+        ${missingHTML}
+        <button type="button" class="desk-v1-map-launch-start" data-map-start-btn ${result.ok ? '' : 'disabled'}>Start campaign</button>
+      </div>`;
+    el.querySelectorAll('[data-missing-stop]').forEach((btn) => {
+      btn.onclick = () => _gotoMapStop(camp, btn.getAttribute('data-missing-stop'));
+    });
+    const startBtn = el.querySelector('[data-map-start-btn]');
+    if (startBtn && result.ok) startBtn.onclick = () => window.deskV1OpenStartSheet(camp.id);
   }
 
   // ────────────────────────────────────────────────────────────────────────
@@ -492,6 +580,10 @@
 
   function deskV1FillCampaignTabBody(el, params) {
     const camp = _campaign(params.campaignId);
+    // shell.js only falls through to this hook for 'what' (the default) and
+    // 'launch' (no dedicated renderer of its own) — 'goal'/'when'/'how'/
+    // 'where'/'conversations' are all handled before reaching here.
+    if (params.panel === 'launch') { _renderLaunchPanel(el, params, camp); return; }
     // Same backward-compatible seam as deskV1FillCampaignSummary above: a
     // Proposed campaign's Content tab shows Posy's proposed pieces plus a
     // blocker card and "? Assumed" popovers (§3.5), not the ordinary grouped
@@ -1054,6 +1146,7 @@
 
   window.deskV1FillCampaignSummary = deskV1FillCampaignSummary;
   window.deskV1FillCampaignTabStrip = deskV1FillCampaignTabStrip;
+  window.deskV1FillCampaignMapFoot = deskV1FillCampaignMapFoot;
   window.deskV1FillCampaignTabBody = deskV1FillCampaignTabBody;
   window.deskV1FillCampaignRightColumn = deskV1FillCampaignRightColumn;
   window.deskV1FillCampaignAddTray = deskV1FillCampaignAddTray;

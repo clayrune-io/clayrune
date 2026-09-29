@@ -43,6 +43,12 @@
       goal: { current: 0 },
       rules: {},
       setup: { step: 1, done: [] },
+      // R2-3 (IA revision 2 §3 table): the map stepper's own resume cursor,
+      // separate from `setup` above (IA4's own checklist, untouched by this
+      // ticket) — a fresh draft starts the map at ① Goal, same stop the
+      // project page's draft card and `_renderCampaignSkeleton` fall back to
+      // for any older draft fixture that predates this field.
+      map: { stop: 'goal', done: [] },
       plan: {
         brief: '', title: '', audience: '',
         goal: { outcome: '', target: null, deadline: null, tracked: false },
@@ -286,6 +292,17 @@
       camp.setup.step = 3;
       camp.setup.done = [1, 2];
       DeskV1Kit.toast(`Plan drafted — 3 planned pieces added to "${plan.title}".`);
+      // R2-3: a draft's map panel starts (and stays) at ① Goal through IA4's
+      // own steps, which never touch the map — but Proposed's summary lives
+      // on ③ What (desk-v1-rules.js's `deskV1FillProposedContent`, the same
+      // "what" default every non-draft state opens to). `deskV1GotoCampaignPanel`
+      // alone only refills tabstrip/tabbody/mapfoot (by design, T2's "same
+      // DOM node" contract) — it never touches the summary slot this Setup
+      // UI lives in, so it must run BEFORE the full `deskV1Render()` below,
+      // not instead of it: this updates the stack's `params.panel` to 'what'
+      // first, so the full remount's slot loop (desk-v1-shell.js) fills
+      // Proposed's own summary AND resolves tabbody against the right panel.
+      if (typeof window.deskV1GotoCampaignPanel === 'function') window.deskV1GotoCampaignPanel('what', { campaignId: camp.id });
       if (typeof window.deskV1Render === 'function') window.deskV1Render();
     }
 

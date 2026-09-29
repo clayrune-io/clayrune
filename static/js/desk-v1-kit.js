@@ -101,6 +101,14 @@
   };
   const ALL_STATES = Object.assign({}, VERSION_STATES, CAMPAIGN_STATES);
 
+  // ── Map stops (R2-3, IA revision 2 §3/§4.1) — the six-stop vocabulary the
+  // campaign map stepper (desk-v1-campaign.js `deskV1FillCampaignTabStrip`)
+  // and the project page's draft card label (desk-v1-project.js
+  // `_draftCardLabel`) both read, so a stop never gets two names. Order
+  // matters: it drives Next/Back and `validatePlan`'s `missing[].stop` links.
+  const MAP_STOPS = ['goal', 'how', 'what', 'when', 'where', 'launch'];
+  const MAP_STOP_WORDS = { goal: 'Goal', how: 'How', what: 'What', when: 'When', where: 'Where', launch: 'Launch' };
+
   function stateLabel(state) {
     return ALL_STATES[state] || { glyph: '?', word: state ? String(state) : 'Unknown' };
   }
@@ -979,8 +987,106 @@
     return boundsWiden(prevBounds, nextBounds) ? computeBoundsHash(nextBounds) : prevHash;
   }
 
+  // ── R2-14 (§10 outcome learning loop) — retro dimension table + the
+  // sample-size verdict rules. Fixtures + kit shapes only, same ground rule
+  // as R2-1 above: R2-15 wires the ① Retro section UI, R1-L wires the
+  // backend `mc/desk_retro.py` that must reproduce this byte-for-byte
+  // (§8 R1-L acceptance) — this is the ONE place the verdict rule lives so
+  // both sides read the same table. `unit` picks the §10.1 dimension-table
+  // row: 'post' dimensions gate on post count, 'campaign' dimensions gate
+  // on distinct campaign count (angle/spend kind — almost always too few in
+  // v1, per spec, shown anyway so the gap is visible).
+  const RETRO_DIMENSIONS = {
+    format: { label: 'Piece format', unit: 'post', note: '' },
+    // §10.1 honesty rule: the voice split fixes Ron to 𝕏 and Clayrune to
+    // LinkedIn, so v1 cannot separate "LinkedIn worked" from "the Clayrune
+    // voice worked" — one dimension, not two.
+    platform_voice: {
+      label: 'Platform + voice', unit: 'post',
+      note: 'one dimension, not two: the voice split fixes Ron to \u{1D54F} and Clayrune to LinkedIn, ' +
+        'so v1 can’t separate “LinkedIn worked” from “the Clayrune voice worked”.',
+    },
+    slot: { label: 'Posting day / time slot', unit: 'post',
+      note: 'compared within one account only (platforms have different audiences at different hours)' },
+    angle: { label: 'Angle / strategy', unit: 'campaign',
+      note: 'n = campaigns, so almost always “Too few campaigns to tell” in v1; shown anyway so the gap is visible' },
+    spend_kind: { label: 'Spend kind', unit: 'campaign', note: 'cost per outcome, same n caveat' },
+  };
+
+  // arm item: a number, or {value, id, campaign_id} — id links "one post
+  // drives this" back to the post; campaign_id groups a campaign-unit arm's
+  // distinct-campaign count. Plain numbers get a synthetic id.
+  function _armStats(items) {
+    const norm = (items || []).map((it, i) => (typeof it === 'number' ? { value: it, id: 'item-' + i } : it));
+    const n = norm.length;
+    const total = norm.reduce((s, it) => s + (it.value || 0), 0);
+    const mean = n ? total / n : 0;
+    const sorted = norm.map((it) => it.value).sort((a, b) => a - b);
+    const median = n ? (n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2) : 0;
+    let dominant = null;
+    if (total > 0) {
+      for (const it of norm) {
+        const share = it.value / total;
+        if (!dominant || share > dominant.share) dominant = { id: it.id, share };
+      }
+    }
+    const campaignIds = new Set(norm.map((it) => it.campaign_id).filter(Boolean));
+    return { n, mean, median, dominant, campaignCount: campaignIds.size || n };
+  }
+
+  // §10.1 sample-size table, in order — the model never picks a winner this
+  // table didn't already produce (§10.1: "The model only words the retro
+  // summary ... it never picks a winner the table did not already produce").
+  function retroVerdict(dimension, arms) {
+    const meta = RETRO_DIMENSIONS[dimension] || { unit: 'post' };
+    const a = _armStats(arms && arms.a);
+    const b = _armStats(arms && arms.b);
+
+    if (meta.unit === 'campaign') {
+      if (a.campaignCount < 3 || b.campaignCount < 3) {
+        return { verdict: 'too_few_campaigns', dimension,
+          text: `Too few campaigns to tell (${a.campaignCount} and ${b.campaignCount}; need 3 each)` };
+      }
+    } else if (a.n < 10 || b.n < 10) {
+      return { verdict: 'too_few_posts', dimension,
+        text: `Too few posts to tell (${a.n} and ${b.n}; need 10 each)` };
+    }
+
+    const meanDir = a.mean >= b.mean ? 'a' : 'b';
+    const medianDir = a.median >= b.median ? 'a' : 'b';
+    const hi = Math.max(a.mean, b.mean), lo = Math.min(a.mean, b.mean);
+    const ratio = lo > 0 ? hi / lo : (hi > 0 ? Infinity : 1);
+    if (ratio < 1.3 || meanDir !== medianDir) {
+      return { verdict: 'no_clear_difference', dimension, text: 'No clear difference' };
+    }
+
+    const bestA = a.dominant, bestB = b.dominant;
+    const dominant = (bestA && (!bestB || bestA.share >= bestB.share)) ? bestA : bestB;
+    if (dominant && dominant.share > 0.5) {
+      return { verdict: 'one_post_drives', dimension, post_id: dominant.id,
+        text: 'One post drives this, not a pattern' };
+    }
+
+    // §10.2 confidence: low = one campaign/term; medium = same direction in
+    // >=2 campaigns, pooled n>=20/arm; high = >=3 campaigns, pooled n>=30/arm
+    // (the "no confirmed retro pointing the other way" clause is R1-L's own
+    // read of the playbook store, not a kit-level concern).
+    const minCampaigns = Math.min(a.campaignCount, b.campaignCount);
+    const minN = Math.min(a.n, b.n);
+    let confidence = 'low';
+    if (minCampaigns >= 3 && minN >= 30) confidence = 'high';
+    else if (minCampaigns >= 2 && minN >= 20) confidence = 'medium';
+
+    return {
+      verdict: 'finding', dimension, confidence,
+      effect: { ratio, direction: `${meanDir}>${meanDir === 'a' ? 'b' : 'a'}` },
+      n_total: a.n + b.n,
+    };
+  }
+
   window.DeskV1Kit = {
     VERSION_STATES, CAMPAIGN_STATES,
+    MAP_STOPS, MAP_STOP_WORDS,
     channelCapabilityCopy, noChargeYetCopy,
     BANNED_PHRASES, lintCopy,
     stateLabel, stateLabelHTML,
@@ -994,5 +1100,6 @@
     openConfirmSheet,
     validatePlan, validatePresence,
     computeBoundsHash, boundsWiden, nextBoundsHash,
+    RETRO_DIMENSIONS, retroVerdict,
   };
 })();

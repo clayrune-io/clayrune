@@ -844,6 +844,119 @@
     },
   };
 
+  // ── R2-14 (§10 outcome learning loop) — fixture shapes only (kit's
+  // retroVerdict() implements the sample-size table; R2-15 wires the ①
+  // Retro UI, R1-L the backend). Field names are snake_case throughout,
+  // matching §10's schemas verbatim and `mc/desk.py`'s existing ledger rows
+  // (`campaign_id`/`project_id`/`published_at`) — unlike CAMPAIGNS/FAMILIES
+  // above, these mirror a real backend store, not a frontend-only shape.
+
+  // §8 R1-L: ledger rows gain `piece_id/format/account/term/cost`; per-post
+  // `outcome` dict becomes `outcomes[]`. §10.8 Q1 (Ron, binding): goals are
+  // measured DAILY as they go, so each post's `outcomes[]` is a dated daily
+  // series for its per-post metric (default `clicks`), not one number —
+  // `source:'manual'` is the fallback until R1-E's automatic feed read
+  // lands (`source:'feed'`, §10.7). camp-1 / term 1 (still active — these
+  // are the RETRO fixture's own Interim-only evidence, not a closed term).
+  const LEDGER = [
+    { id: 'post-101', piece_id: 'piece-fam-launch-x', format: 'post', account: 'ch-x-ron',
+      campaign_id: 'camp-1', project_id: 'clayrune', term: 1, platform: 'x', voice: 'Ron (first person)',
+      cost: 0.015, published_at: '2026-09-08T15:00:00Z',
+      outcomes: [
+        { metric: 'clicks', value: 12, at: '2026-09-08T23:59:00Z', source: 'manual' },
+        { metric: 'clicks', value: 21, at: '2026-09-09T23:59:00Z', source: 'manual' },
+      ] },
+    { id: 'post-102', piece_id: 'piece-fam-launch-x-2', format: 'image', account: 'ch-x-ron',
+      campaign_id: 'camp-1', project_id: 'clayrune', term: 1, platform: 'x', voice: 'Ron (first person)',
+      cost: 0.015, published_at: '2026-09-11T15:00:00Z',
+      outcomes: [
+        { metric: 'clicks', value: 9, at: '2026-09-11T23:59:00Z', source: 'manual' },
+      ] },
+    // LinkedIn page is currently `held` (CHANNELS above) — this row predates
+    // the hold. No per-post number typed yet: demonstrates §10.7's "a
+    // dimension with no numbers never renders as zero", not a 0-value entry.
+    { id: 'post-103', piece_id: 'piece-fam-launch-li', format: 'post', account: 'ch-li-page',
+      campaign_id: 'camp-1', project_id: 'clayrune', term: 1, platform: 'linkedin', voice: 'Clayrune page',
+      cost: 0, published_at: '2026-09-09T16:00:00Z', outcomes: [] },
+  ];
+
+  // §10.1: `Run retro now` mid-term is labelled Interim, numbers only,
+  // **never proposes findings** — camp-1's term 1 hasn't closed (CAMPAIGNS
+  // above: `state:'active'`), so this is the only honest status for it.
+  // `dimensions` entries carry the verdict `DeskV1Kit.retroVerdict()` would
+  // return for this fixture's own LEDGER rows (2 X posts vs 1 LinkedIn post
+  // — both well under the 10-per-arm floor).
+  const RETRO = {
+    campaign_id: 'camp-1', project_id: 'clayrune', term: 1, status: 'interim',
+    computed_at: '2026-09-15T09:00:00Z',
+    goal: { metric: 'tester signups', target: 30, actual: 11, baseline: 0 },
+    // R2-1 renamed the project-level `production` field to `presence.budget`
+    // (line 47 above) — `media_cost` here (§10.1: "production (media jobs)")
+    // is a different, spend-breakdown field, named to not collide with that
+    // retired key.
+    spend: { publishing: 0.03, media_cost: 0, total: 0.03, ceiling: 60, cost_per_outcome: 0.003 },
+    dimensions: [
+      { dimension: 'platform_voice', verdict: 'too_few_posts',
+        text: 'Too few posts to tell (2 and 1; need 10 each)' },
+    ],
+    summary: 'Interim: 11 of 30 tester signups so far, $0.03 spent. Not enough posts yet to say what’s working.',
+    findings: [],
+  };
+
+  // §10.2 finding schema, verbatim field set. States cover the full
+  // proposed -> confirmed | rejected -> stale lifecycle; origins cover both
+  // sides of §10.5's human-in-the-loop rule. Evidence points at
+  // `camp-archived-1` (CAMPAIGNS above, `state:'completed'` pre-archive) —
+  // the one fixture campaign that has actually closed a term, unlike camp-1.
+  const FINDINGS = [
+    // proposed, origin:unattended — a fresh unconfirmed retro output. Never
+    // paired with state:'confirmed' (§10.5.2: unstamped/unattended output
+    // never becomes autonomous input; only Ron's Confirm can flip the
+    // origin to 'interactive').
+    { id: 'F1', project_id: 'clayrune', scope: 'project', dimension: 'format',
+      arms: { a: 'post', b: 'image' }, account: 'x:ron', metric: 'clicks',
+      effect: { ratio: 1.8, direction: 'a>b' },
+      evidence: [{ campaign_id: 'camp-archived-1', term: 1, n_a: 14, n_b: 11 }],
+      n_total: 25, confidence: 'low',
+      state: 'proposed', origin: 'unattended', decided_at: null, decided_by: null },
+    // confirmed, origin:interactive — Ron confirmed as-is, so it reaches the
+    // playbook and the Suggest brief (§10.3).
+    { id: 'F2', project_id: 'clayrune', scope: 'project', dimension: 'slot',
+      arms: { a: 'Tue/Thu 08-10', b: 'other slots' }, account: 'x:ron', metric: 'clicks',
+      effect: { ratio: 2.1, direction: 'a>b' },
+      evidence: [{ campaign_id: 'camp-archived-1', term: 1, n_a: 22, n_b: 19 }],
+      n_total: 41, confidence: 'medium', maybe_why: 'Morning posts may catch more of the US dev day.',
+      state: 'confirmed', origin: 'interactive', decided_at: '2026-08-05T10:00:00Z', decided_by: 'ron' },
+    // rejected, origin:interactive — durable "no" (§10.5.3); REJECTIONS
+    // below carries the matching suppression record.
+    { id: 'F3', project_id: 'clayrune', scope: 'project', dimension: 'platform_voice',
+      arms: { a: 'x:ron', b: 'linkedin:clayrune_page' }, account: null, metric: 'clicks',
+      effect: { ratio: 1.4, direction: 'a>b' },
+      evidence: [{ campaign_id: 'camp-archived-1', term: 1, n_a: 12, n_b: 12 }],
+      n_total: 24, confidence: 'low',
+      state: 'rejected', origin: 'interactive', decided_at: '2026-08-06T09:00:00Z', decided_by: 'ron' },
+    // stale, origin:interactive — a later retro pointed the other way
+    // (§10.2 states: `confirmed` -> `stale` when a newer retro contradicts
+    // it); `edited_text` demonstrates Ron's own wording surviving the state
+    // change.
+    { id: 'F4', project_id: 'clayrune', scope: 'project', dimension: 'format',
+      arms: { a: 'video', b: 'post' }, account: 'x:ron', metric: 'clicks',
+      effect: { ratio: 1.5, direction: 'a>b' },
+      evidence: [{ campaign_id: 'camp-archived-1', term: 1, n_a: 15, n_b: 15 }],
+      n_total: 30, confidence: 'medium', edited_text: 'Video clips out-clicked plain posts early on.',
+      state: 'stale', origin: 'interactive', decided_at: '2026-07-01T09:00:00Z', decided_by: 'ron' },
+  ];
+
+  // §10.5.3: `{project_id, dimension, arms, direction, evidence_key}` —
+  // `evidence_key` is a hash of the sorted (campaign_id, term) set, so the
+  // SAME evidence never re-proposes; new evidence (>=10 more posts from
+  // outside this set) is the only way F3 can return. Matches F3 above.
+  const REJECTIONS = [
+    { project_id: 'clayrune', dimension: 'platform_voice',
+      arms: { a: 'x:ron', b: 'linkedin:clayrune_page' }, direction: 'a>b',
+      evidence_key: 'camp-archived-1:1', rejected_at: '2026-08-06T09:00:00Z' },
+  ];
+
   window.DeskV1Fixtures = {
     projects: PROJECTS,
     campaigns: CAMPAIGNS,
@@ -864,5 +977,8 @@
     conversationCoverageGaps: CONVERSATION_COVERAGE_GAPS,
     resultsInsight: RESULTS_INSIGHT,
     proposedExtras: PROPOSED_EXTRAS,
+    ledger: LEDGER,
+    retro: RETRO,
+    playbook: { findings: FINDINGS, rejections: REJECTIONS },
   };
 })();
