@@ -440,20 +440,23 @@ async function runPosyDraftPersistence(browser) {
   const DRAFT = 'draft text that must survive a rebuild';
   await page.fill('#desk-v1-camp-posy-input', DRAFT);
 
-  // Tab-strip switch NAVIGATES AWAY to a separate route (Conversations/Results
-  // are their own top-level pages, not a tab-body swap within Content — see
-  // desk-v1-shell.js ROUTES) and back via the crumb's Back button, which pops
-  // the stack and re-renders the campaign skeleton from scratch, including a
-  // brand-new Posy box — the exact rebuild item 5 reported losing the draft to.
+  // T2 (§2): a tab-strip switch is now an IN-PLACE panel swap on the SAME
+  // `campaign` stack entry (desk-v1-shell.js's `_gotoCampaignPanel`) — it
+  // never pushes a route or rebuilds the skeleton, so the Posy box is the
+  // SAME DOM node across a Content -> Conversations -> Content round trip,
+  // not merely one holding the same value. Capture the node identity via a
+  // marker property (a fresh element from a rebuild would not carry it).
+  await page.evaluate(() => { document.getElementById('desk-v1-camp-posy-input')._deskv1SmokeMarker = 'same-node'; });
   await page.click('[data-tab="conversations"]');
-  await page.waitForSelector('.desk-v1-back', { timeout: 2000 });
-  await page.click('.desk-v1-back');
+  await page.waitForSelector('.desk-v1-conversations, .desk-v1-stub', { timeout: 2000 });
+  await page.click('[data-tab="content"]');
   await page.waitForSelector('#desk-v1-camp-posy-input', { timeout: 2000 });
   await page.waitForTimeout(50);
   const afterTabSwitch = await page.$eval('#desk-v1-camp-posy-input', (ta) => ta.value).catch(() => '');
-  afterTabSwitch === DRAFT
-    ? ok('item 5: Posy draft survives a Content -> Conversations -> Content tab switch')
-    : fail(`item 5: draft lost across tab switch: ${JSON.stringify(afterTabSwitch)}`);
+  const sameNode = await page.evaluate(() => document.getElementById('desk-v1-camp-posy-input')._deskv1SmokeMarker === 'same-node').catch(() => false);
+  afterTabSwitch === DRAFT && sameNode
+    ? ok('item 5/T2: Posy draft survives a Content -> Conversations -> Content tab switch, same DOM node (no route push)')
+    : fail(`item 5/T2: draft or node identity lost across tab switch: value=${JSON.stringify(afterTabSwitch)}, sameNode=${sameNode}`);
 
   // Navigate away to Home and back — a harder rebuild than the tab strip
   // (the whole route unmounts).

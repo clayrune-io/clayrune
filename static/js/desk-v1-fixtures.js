@@ -28,6 +28,35 @@
         repliesMode: 'drafts', // 'drafts' | 'auto_faq'
         paid: false,
       },
+      // ── T2 (MC-977 UX pass §4/§6.2): Pause/Resume gates on `validatePlan`,
+      // which reads `plan`, not `rules`/`goal` — camp-1 is the one Active
+      // fixture campaign and had no `plan` yet (T1 only added it to camp-2).
+      // `goal`/`rules` above are LEFT AS-IS, not deleted: `reviewMode` has no
+      // field in §4's plan shape, and `goal.current` (live progress) has no
+      // plan equivalent either — deleting them would blank the summary bar's
+      // review-mode chip and progress bar, which this ticket doesn't touch.
+      // Values mirror the existing goal/rules/channelIds above so nothing
+      // user-visible changes; `end.date` matches `goal.deadline` since this
+      // campaign has always run to its goal date.
+      plan: {
+        brief: 'Windows users trying Claude Code should hear about the beta and sign up as testers.',
+        title: 'Windows beta testers',
+        source_projects: ['clayrune'],
+        audience: 'Windows users trying Claude Code',
+        goal: { outcome: 'tester signups', target: 30, deadline: '2026-10-20', tracked: true },
+        destinations: [
+          { account: 'ch-x-ron', voice: 'Ron (first person)' },
+          { account: 'ch-li-page', voice: 'Clayrune page' },
+          { account: 'ch-blog', voice: 'Clayrune blog' },
+        ],
+        angle: 'Show the restore-points and install flow working end to end so trying the beta feels low-risk.',
+        samples: [],
+        cadence: { per_week: 3, min_gap_h: 12 },
+        end: { date: '2026-10-20', post_cap: null },
+        replies: 'drafts',
+        paid: false,
+        generation: 'No video generation planned for this campaign',
+      },
     },
   ];
 

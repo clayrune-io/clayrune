@@ -26,14 +26,22 @@
     // route's back-button text (see _routeLabel/deskV1Render above), so a
     // future child of review would need a real label again.
     review:        { parent: 'campaign', label: '',             render: () => window.deskV1RenderReview },
-    calendar:      { parent: 'campaign', label: 'Calendar',     render: () => window.deskV1RenderCalendar },
     // Dynamic like _campaignLabel above: frame 12d's crumb title is the video
     // family's own title ("Install in two minutes"), not the static word
     // "Video" — falls back to it during intake (no family picked yet).
     video:         { parent: 'campaign', label: _videoLabel,   render: () => window.deskV1RenderVideo },
-    conversations: { parent: 'campaign', label: 'Conversations', render: () => window.deskV1RenderConversations },
-    results:       { parent: 'campaign', label: 'Results',      render: () => window.deskV1RenderResults },
   };
+
+  // T2 (§2, §8): conversations/results/calendar stop being separate routes —
+  // `deskV1Nav('results'|'conversations'|'calendar', params)` still works
+  // (existing deep links: Home's Needs-you row, the goal button, old smoke
+  // navigation) but now resolves to the persistent `campaign` frame with a
+  // panel switch instead of pushing a whole new stack entry/page. `calendar`
+  // has no tab of its own (it is the Content tab's List/Calendar toggle,
+  // T2a) — its alias lands on the `content` panel and asks it to switch to
+  // calendar view once (`calendarView`, consumed by
+  // deskV1FillCampaignTabBody and then dropped).
+  const PANEL_ALIASES = { results: 'results', conversations: 'conversations', calendar: 'content' };
 
   function _campaignLabel(params) {
     const camps = (window.DeskV1Fixtures && window.DeskV1Fixtures.campaigns) || [];
@@ -60,8 +68,37 @@
   let _stack = [];
 
   function deskV1Nav(route, params) {
+    params = params || {};
+    if (Object.prototype.hasOwnProperty.call(PANEL_ALIASES, route)) {
+      const panelParams = route === 'calendar' ? Object.assign({}, params, { calendarView: true }) : params;
+      _gotoCampaignPanel(PANEL_ALIASES[route], panelParams);
+      return;
+    }
     if (!ROUTES[route]) return;
-    _stack.push({ route, params: params || {} });
+    _stack.push({ route, params });
+    deskV1Render();
+  }
+
+  // Same-campaign panel switch stays on the `campaign` stack entry (in place:
+  // no push, header/summary/Posy DOM untouched — only tabstrip + tabbody
+  // refill, §2's "route stays campaign with params.panel"); a panel request
+  // from anywhere else (Home, a different campaign) pushes a fresh campaign
+  // entry the same way a plain `deskV1Nav('campaign', ...)` always has.
+  // Params are REPLACED, not merged, on every call — carrying forward a
+  // stale `conversationId`/`versionId` from a previous visit across an
+  // in-place switch would silently keep re-selecting it.
+  function deskV1GotoCampaignPanel(panel, params) { _gotoCampaignPanel(panel, params || {}); }
+
+  function _gotoCampaignPanel(panel, params) {
+    const campaignId = params.campaignId;
+    const top = _stack[_stack.length - 1];
+    const nextParams = Object.assign({ campaignId }, params, { panel });
+    if (top && top.route === 'campaign' && top.params.campaignId === campaignId) {
+      top.params = nextParams;
+      _renderCampaignPanel(nextParams);
+      return;
+    }
+    _stack.push({ route: 'campaign', params: nextParams });
     deskV1Render();
   }
 
@@ -135,6 +172,12 @@
   // (desk-v1-campaign.js in T0a, replaced in place by T2a/T2b) provides — the
   // skeleton itself never changes when those hooks grow real content.
   function _renderCampaignSkeleton(el, params) {
+    // §2: "route stays campaign with params.panel" — a fresh/full mount
+    // (Home -> campaign, or a different campaign) always lands on Content
+    // unless the caller asked for another panel (an aliased deep link).
+    // Mutating `params` in place (the same object the stack entry holds) so
+    // a later in-place switch reads the same default without a second nav.
+    if (!params.panel) params.panel = 'content';
     el.innerHTML = `
       <div class="desk-v1-campaign">
         <div class="desk-v1-camp-summary" id="desk-v1-camp-summary"></div>
@@ -147,14 +190,34 @@
       </div>`;
     const slots = [
       ['desk-v1-camp-summary', window.deskV1FillCampaignSummary],
-      ['desk-v1-camp-tabstrip', window.deskV1FillCampaignTabStrip],
-      ['desk-v1-camp-tabbody', window.deskV1FillCampaignTabBody],
       ['desk-v1-camp-rightcol', window.deskV1FillCampaignRightColumn],
       ['desk-v1-camp-addtray', window.deskV1FillCampaignAddTray],
     ];
     for (const [id, fill] of slots) {
       const slotEl = document.getElementById(id);
       if (slotEl && typeof fill === 'function') fill(slotEl, params);
+    }
+    _renderCampaignPanel(params);
+  }
+
+  // Fills ONLY the tab strip + tab body — never touches summary/rightcol/
+  // addtray, so a same-campaign panel switch (`_gotoCampaignPanel`'s
+  // in-place branch) leaves the header, summary bar and Posy box as the SAME
+  // DOM elements (T2 acceptance: "tab click keeps header + Posy DOM node").
+  function _renderCampaignPanel(params) {
+    const tabstripEl = document.getElementById('desk-v1-camp-tabstrip');
+    if (tabstripEl && typeof window.deskV1FillCampaignTabStrip === 'function') window.deskV1FillCampaignTabStrip(tabstripEl, params);
+    const tabbodyEl = document.getElementById('desk-v1-camp-tabbody');
+    if (!tabbodyEl) return;
+    const panel = params.panel || 'content';
+    if (panel === 'conversations' && typeof window.deskV1RenderConversations === 'function') {
+      window.deskV1RenderConversations(tabbodyEl, params);
+    } else if (panel === 'results' && typeof window.deskV1RenderResults === 'function') {
+      window.deskV1RenderResults(tabbodyEl, params);
+    } else if (typeof window.deskV1FillCampaignTabBody === 'function') {
+      window.deskV1FillCampaignTabBody(tabbodyEl, params);
+    } else {
+      tabbodyEl.innerHTML = `<div class="desk-v1-stub-inline">${esc(panel)} is not built yet.</div>`;
     }
   }
 
@@ -204,4 +267,5 @@
   window.deskV1Render = deskV1Render;
   window.deskV1PatchParams = deskV1PatchParams;
   window.deskV1PopTo = deskV1PopTo;
+  window.deskV1GotoCampaignPanel = deskV1GotoCampaignPanel;
 })();
