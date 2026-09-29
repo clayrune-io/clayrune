@@ -3,9 +3,13 @@
 //
 // Minimal IA1 build: header (name + state), campaign cards scoped to this
 // project (subject-glyph per §1's wireframe), and a project-scoped Needs-you
-// list. Presence settings (⚙) and the Posy box are later tickets (§5: IA3,
-// IA1's own row only asks for the `presence` route as a stub) — this file
-// only wires the ⚙ button to that stub route so the affordance exists.
+// list. Presence settings (⚙) itself is a later ticket (§5: IA3, IA1's own
+// row only asks for the `presence` route as a stub) — this file only wires
+// the ⚙ button to that stub route so the affordance exists.
+// IA2 (§4 T3 row, §1 wireframe "Posy box scoped About: <project>"): the
+// project-level Posy box, keyed `project:<pid>:project` so a draft/ask
+// started here is a distinct entry from any campaign/review/video scope
+// under the same project, per anyPosyWorking's prefix-match contract.
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -88,6 +92,17 @@
         : '<div class="desk-v1-home-needsyou-empty">Nothing needs you right now.</div>');
   }
 
+  function _renderPosyBox(projectId, p) {
+    const host = document.getElementById('desk-v1-project-posy');
+    if (!host || !window.DeskV1Kit) return;
+    const inputId = 'desk-v1-project-posy-input';
+    host.innerHTML = DeskV1Kit.posyBoxHTML({ inputId, scopeLabel: p ? p.name : 'Project' });
+    DeskV1Kit.bindPosyBox(host, inputId, (text) => {
+      DeskV1Kit.toast('Sent to Posy: “' + text + '”');
+      DeskV1Kit.paintPosyReadyNoDiff(host);
+    }, { draftKey: `project:${projectId}:project`, taskLifecycle: true });
+  }
+
   function deskV1RenderProject(el, params) {
     const projectId = (params || {}).projectId;
     const p = _project(projectId);
@@ -108,9 +123,11 @@
         </div>
         <div class="desk-v1-project-camps" id="desk-v1-project-camps"></div>
         <div class="desk-v1-project-needsyou" id="desk-v1-project-needsyou"></div>
+        <div class="desk-v1-project-posy" id="desk-v1-project-posy"></div>
       </div>`;
     _renderCampaigns(projectId);
     _renderNeedsYou(projectId);
+    _renderPosyBox(projectId, p);
     const presenceBtn = el.querySelector('.desk-v1-project-presence-btn');
     if (presenceBtn) presenceBtn.onclick = () => deskV1Nav('presence', { projectId });
     const pauseBtn = el.querySelector('.desk-v1-project-pause-btn');
