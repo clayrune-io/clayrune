@@ -275,41 +275,62 @@
     if (!shell.style.position) shell.style.position = 'relative';
     _closeOverlay();
 
-    // Dave's review (2026-09-28): `plan.destinations[].account` is a channel
-    // id ('ch-x-ron'), not display text — resolve it through the channel
-    // fixture so Accounts reads the same badge label it always has ("𝕏 ·
-    // @ron"), voice appended rather than replacing it.
-    const dests = (plan.destinations || []).map((d) => {
-      const ch = _channel(d.account);
-      const label = ch ? ch.label : d.account;
-      return d.voice ? `${label} (${d.voice})` : label;
+    const project = _project(camp.projectId);
+    // IA2 §3 row 20 (fixtures comment, desk-v1-fixtures.js): `plan.accounts`
+    // is bare channel ids since the T1 `plan.destinations[].account`/`.voice`
+    // shape was retired in favor of the project's own `presence.accounts[]`
+    // — no fixture has ever written `plan.destinations` (verified against
+    // camp-1/camp-3), so the old read here always showed "—" for Accounts.
+    // Resolve the label AND per-account voice through that same seam.
+    const pickedChannels = (plan.accounts || []).map(_channel).filter(Boolean);
+    const dests = (plan.accounts || []).map((chId) => {
+      const ch = _channel(chId);
+      const label = ch ? ch.label : chId;
+      const acct = ((project && project.presence && project.presence.accounts) || []).find((a) => a.channel_id === chId);
+      return acct && acct.voice ? `${label} (${acct.voice})` : label;
     });
     const datesLabel = plan.end && (plan.end.date
       ? `Ends ${_fmtDateLong(plan.end.date)}`
       : (plan.end.post_cap ? `Ends after ${plan.end.post_cap} posts` : null));
-    const project = _project(camp.projectId);
     const eff = DeskV1Kit.validatePlan(plan, project).effective;
+    // IA4 (§5 row IA4 acceptance: "inherited rows labelled 'from <project>'")
+    // — a presentation-only flag desk-v1-setup.js's step 2 stamps on the plan
+    // when it defaulted a bound from the project, distinct from
+    // `_effectiveCadence`'s own clamp-comparison flag (which stays false
+    // when a campaign's own value already equals the ceiling it inherited,
+    // as a freshly-drafted plan's does) — never a second validator/clamp,
+    // purely which label this sheet prints beside an already-computed value.
+    const inherited = plan._inheritedFields || {};
+    // §5 IA4 acceptance ("zero connected accounts completes via '✋ You
+    // publish it'"): when every picked account is manual-capability (no
+    // account here can be posted to via API), there is nothing for Posy to
+    // draft into review — the Replies row names the real mechanism instead
+    // of the API-review default.
+    const allManual = pickedChannels.length > 0 && pickedChannels.every((ch) => ch.capability === 'manual');
     const auth = {
       accounts: dests,
       frequencyPerWeek: eff.cadence_per_week,
-      frequencyFromProject: eff.cadence_from_project,
+      frequencyFromProject: eff.cadence_from_project || !!inherited.cadence,
       dates: datesLabel,
       // §3 row 7: review mode is retired with no replacement — every piece
       // needs approval (§8 position), so the Start sheet no longer names it.
-      replies: plan.replies === 'auto_faq' ? 'Auto-answer verified FAQ' : 'Drafts for review',
+      replies: allManual
+        ? DeskV1Kit.channelCapabilityCopy(pickedChannels[0])
+        : (plan.replies === 'auto_faq' ? 'Auto-answer verified FAQ' : 'Drafts for review'),
       paid: plan.paid ? 'On' : 'Off',
       generationLimits: plan.generation,
       // §4: "spend + stop conditions derived" — never a fixture field of its
       // own, so this stays "—" unless there's a real end bound to name.
       stopConditions: _stopConditionsLabel(plan),
     };
+    const fromSuffix = ` · from ${project ? project.name : 'project'}`;
 
     const rows = [
-      ['Accounts', (auth.accounts || []).join(', ') || '—'],
+      ['Accounts', (auth.accounts || []).length ? (auth.accounts.join(', ') + (inherited.accounts ? fromSuffix : '')) : '—'],
       ['Frequency ceiling', auth.frequencyPerWeek != null
-        ? `Up to ${auth.frequencyPerWeek} a week${auth.frequencyFromProject ? ` · from ${project ? project.name : 'project'}` : ''}`
+        ? `Up to ${auth.frequencyPerWeek} a week${auth.frequencyFromProject ? fromSuffix : ''}`
         : '—'],
-      ['Dates', auth.dates || '—'],
+      ['Dates', auth.dates ? (auth.dates + (inherited.end ? fromSuffix : '')) : '—'],
       ['Replies', auth.replies || '—'],
       ['Paid', auth.paid || 'Off'],
       ['Generation limits', auth.generationLimits || '—'],

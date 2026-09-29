@@ -98,6 +98,13 @@
       window.deskV1FillProposedSummary(el, params, camp);
       return;
     }
+    // IA4 (§2.3, §5 row IA4): a Draft campaign is mid-checklist, not a
+    // finished summary to render — same backward-compatible seam as the
+    // Proposed branch above, one state earlier.
+    if (camp.state === 'draft' && typeof window.deskV1FillDraftSetup === 'function') {
+      window.deskV1FillDraftSetup(el, params, camp);
+      return;
+    }
     const stateHTML = DeskV1Kit.stateLabelHTML(camp.state, { className: 'desk-v1-camp-state-pill' });
     // §4/Dave review pass 1: target/deadline/outcome/tracked are read from
     // `camp.plan.goal` — the SAME object the rules popover and Resume's
