@@ -1,6 +1,6 @@
 # The Desk v1 — UX pass: binding build spec (items 2, 4, 6 + review blockers)
 
-**Status:** BINDING build spec, 2026-09-28. MC-977 / backlog 8f64d565. R0 stays parked until ticket T8 passes.
+**Status:** BINDING build spec, 2026-09-28. **IA revision 2026-09-28: T4 to T8 ON HOLD, replaced by `THE_DESK_V1_IA_REVISION.md` §5 (IA1 to IA8); §1, §3, §4, §7 amended there.** MC-977 / backlog 8f64d565. R0 stays parked until ticket T8 passes.
 **Owner:** Merrin (plan). Builders per ticket, §9. Doc only; no code changed by this revision.
 **Inputs (kept, not authority):** Merrin's first spec (this file at `e23cec8`) and Kestrel's independent review,
 `docs/THE_DESK_V1_UX_PASS_kestrel.md` (`c60953b`). Where they disagreed, Ron decided (below).
