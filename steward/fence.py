@@ -21,6 +21,7 @@ Self-contained (stdlib only) so it runs as a standalone hook script from any cwd
 import json
 import os
 import re
+import shlex
 import sys
 import urllib.parse
 import urllib.request
@@ -31,6 +32,9 @@ from typing import NamedTuple, Optional
 class FenceDecision(NamedTuple):
     blocked: bool
     reason: str
+    # False = a human's one-shot "Allow once" pass can never let this through
+    # (MC-994 follow-up): changes to the guard itself or to what agents load.
+    overridable: bool = True
 
 
 # ── Install-dir write guard (2026-09-14, Amit's "update blocked" report) ────
@@ -464,7 +468,395 @@ _SHELL_SPLIT_RE = re.compile(r'&&|\|\||[|;\n]')
 
 
 _NET_TOOL_RE = re.compile(
-    r'\b(curl|wget|http|invoke-webrequest|invoke-restmethod|iwr)\b', re.I)
+    r'\b(curl|wget|http|invoke-webrequest|invoke-restmethod|iwr|irm)\b', re.I)
+
+
+_MUTATING_VERBS = {'POST', 'PUT', 'PATCH', 'DELETE'}
+_NET_HEAD_RE = re.compile(
+    r'(?:^|[\\/])(curl|wget|http|https|invoke-webrequest|invoke-restmethod|iwr|irm)'
+    r'(?:\.exe)?$', re.I)
+# curl short options that take a value (the rest are flags), so a cluster
+# like `-sdfixture` is walked letter by letter: `s` flag, `d` + "fixture".
+_CURL_SHORT_ARG = set('dHXouFAebcTwmxErCyYzQUtDPK')
+_CURL_LONG_ARG = {
+    '--data', '--data-raw', '--data-binary', '--data-urlencode', '--data-ascii',
+    '--json', '--header', '--request', '--output', '--user', '--form',
+    '--form-string', '--user-agent', '--referer', '--cookie', '--cookie-jar',
+    '--upload-file', '--write-out', '--max-time', '--connect-timeout', '--cacert',
+    '--cert', '--key', '--oauth2-bearer', '--proxy', '--resolve', '--url',
+    '--range', '--dump-header', '--limit-rate', '--max-filesize', '--config',
+    '--retry', '--retry-delay', '--retry-max-time', '--output-dir', '--trace',
+    '--trace-ascii', '--stderr', '--interface', '--connect-to', '--max-redirs',
+    '--proxy-header', '--proxy-user', '--proxy-cacert', '--proxy-cert',
+    '--proxy-key', '--proxy-pass', '--preproxy', '--noproxy', '--socks4',
+    '--socks4a', '--socks5', '--socks5-hostname', '--unix-socket',
+    '--abstract-unix-socket', '--aws-sigv4', '--ciphers', '--dns-servers',
+    '--doh-url', '--engine', '--expect100-timeout', '--keepalive-time',
+    '--local-port', '--login-options', '--mail-auth', '--mail-from',
+    '--mail-rcpt', '--netrc-file', '--pinnedpubkey', '--proto',
+    '--proto-default', '--proto-redir', '--pubkey', '--quote',
+    '--request-target', '--service-name', '--speed-limit', '--speed-time',
+    '--tls-max', '--variable', '--url-query', '--etag-save', '--etag-compare',
+    '--capath', '--crlfile', '--cert-type', '--key-type', '--pass',
+    '--time-cond', '--continue-at', '--telnet-option', '--alt-svc', '--hsts',
+    '--parallel-max', '--create-file-mode', '--ftp-port', '--delegation',
+    '--happy-eyeballs-timeout-ms', '--ip-tos', '--trace-config',
+}
+# Known value-less curl options. A long option in NEITHER table has unknown
+# arity, so the next token might be its value; a group holding one may not
+# downgrade a visible send to a read (review #10 N16).
+_CURL_LONG_FLAG = {
+    '--silent', '--show-error', '--fail', '--fail-with-body', '--fail-early',
+    '--compressed', '--insecure', '--include', '--verbose', '--http1.0',
+    '--http1.1', '--http2', '--http2-prior-knowledge', '--http3', '--globoff',
+    '--get', '--no-get', '--head', '--no-progress-meter', '--progress-bar',
+    '--remote-name', '--remote-name-all', '--remote-header-name', '--no-buffer',
+    '--ipv4', '--ipv6', '--location', '--location-trusted', '--create-dirs',
+    '--path-as-is', '--no-keepalive', '--tcp-nodelay', '--raw', '--ssl-reqd',
+    '--netrc', '--netrc-optional', '--anyauth', '--basic', '--digest',
+    '--ntlm', '--negotiate', '--post301', '--post302', '--post303',
+    '--junk-session-cookies', '--styled-output', '--no-styled-output',
+    '--tlsv1', '--tlsv1.2', '--tlsv1.3', '--disable', '--parallel',
+    '--retry-all-errors', '--retry-connrefused', '--no-sessionid', '--next',
+}
+_CURL_SHORT_FLAG = set('sSfkivIgGjlnNOR0123469#JLpqZMV')
+_CURL_BODY_LONG = {'--data', '--data-raw', '--data-binary', '--data-urlencode',
+                   '--data-ascii', '--json'}
+_CURL_UPLOAD_LONG = {'--form', '--form-string', '--upload-file'}
+
+
+def _net_tokens(seg: str) -> list:
+    r"""Split a segment into argv the way a shell does, keeping quoted
+    whitespace INSIDE its argument (review #9 N13: splitting first and
+    stripping quotes after turned `--header="X: --get"` into a real
+    `--get`). Single quotes are literal; inside double quotes `\"` and `\\`
+    are escapes. Outside quotes a backslash escapes only whitespace, a
+    quote or another backslash; any other backslash is kept, so a Windows
+    path (`C:\tools\curl.exe`) still names its tool. An unterminated quote runs
+    to the end of the segment."""
+    toks, cur, have = [], [], False
+    i, n = 0, len(seg)
+    while i < n:
+        ch = seg[i]
+        if ch.isspace():
+            if have:
+                toks.append(''.join(cur))
+                cur, have = [], False
+            i += 1
+            continue
+        have = True
+        if ch == "'":
+            j = seg.find("'", i + 1)
+            j = n if j < 0 else j
+            cur.append(seg[i + 1:j])
+            i = j + 1
+            continue
+        if ch == '"':
+            i += 1
+            while i < n and seg[i] != '"':
+                if seg[i] == '\\' and i + 1 < n and seg[i + 1] in '"\\':
+                    i += 1
+                cur.append(seg[i])
+                i += 1
+            i += 1
+            continue
+        if ch == '\\' and i + 1 < n and (seg[i + 1].isspace() or seg[i + 1] in '"\'\\'):
+            cur.append(seg[i + 1])  # `X:\ --get` is one argument (review #10 N17)
+            i += 2
+            continue
+        cur.append(ch)
+        i += 1
+    if have:
+        toks.append(''.join(cur))
+    return toks
+
+
+_LOCAL_HOSTNAMES = {'localhost', '127.0.0.1', '0.0.0.0', '::1'}
+# Options that send a request somewhere other than its URL's host, so a
+# local URL no longer proves a local destination.
+_CURL_REROUTE = {'--proxy', '--preproxy', '--socks4', '--socks4a', '--socks5',
+                 '--socks5-hostname', '--resolve', '--connect-to', '-x'}
+_DEST_LIKE_RE = re.compile(r'^(\[[0-9A-Fa-f:.]+\]|[\w-]+(\.[\w-]+)+|[\w-]+:\d+)(:\d+)?([/?#].*)?$')
+
+
+def _is_local_url(url: str) -> bool:
+    """Locality from the parsed HOSTNAME, never from text anywhere in the
+    command (review #12 N19: `-H "X-Source: localhost"` exempted an
+    external POST, and so did `localhost.example.com`)."""
+    try:
+        host = urllib.parse.urlsplit(url if '://' in url else 'http://' + url).hostname
+    except ValueError:
+        return False
+    return host in _LOCAL_HOSTNAMES
+
+
+def _all_local(targets: list) -> bool:
+    return bool(targets) and all(_is_local_url(u) for u in targets)
+
+
+def _curl_mutates(args: list) -> bool:
+    """Each `--next` / `:` starts a new transfer with its own method and
+    data (reviews #8-#9, N10), so each transfer is judged on its own and
+    any mutating one makes the invocation a send. The separator is found
+    while walking options, never by scanning raw tokens: `-s:` ends a
+    transfer, but `--data --next` is the data value `--next` (N14).
+    True means a NON-LOCAL send: a transfer is exempt only when every URL
+    of THAT transfer is a local hostname and nothing reroutes it (N19)."""
+    state = {'method': None, 'body': False, 'upload': False, 'get': False,
+             'verb_seen': False, 'unknown': False, 'urls': [],
+             'rerouted': False}
+
+    def sends() -> bool:
+        if state['unknown'] and (state['body'] or state['upload']
+                                 or state['verb_seen']):
+            pass  # an option of unknown arity: no read downgrade
+        elif state['method'] is not None:
+            if state['method'].upper() not in _MUTATING_VERBS:
+                return False
+        elif not (state['upload'] or (state['body'] and not state['get'])):
+            return False
+        return state['rerouted'] or not _all_local(state['urls'])
+
+    def reset() -> None:
+        state.update(method=None, body=False, upload=False, get=False,
+                     verb_seen=False, unknown=False, urls=[], rerouted=False)
+
+    def set_method(val: str) -> None:
+        state['method'] = val
+        if val.upper() in _MUTATING_VERBS:
+            state['verb_seen'] = True
+
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        i += 1
+        if tok == '--next':
+            if sends():
+                return True
+            reset()
+            continue
+        if tok == '--no-get':
+            state['get'] = False
+            continue
+        if tok.startswith('--') and len(tok) > 2:
+            name, eq, val = tok.partition('=')
+            if name in _CURL_LONG_ARG and not eq:
+                val = args[i] if i < len(args) else ''
+                i += 1
+            elif name not in _CURL_LONG_ARG and name not in _CURL_LONG_FLAG:
+                state['unknown'] = True
+            if name in _CURL_REROUTE:
+                state['rerouted'] = True
+            if name == '--url':
+                state['urls'].append(val)
+            elif name == '--request':
+                set_method(val)
+            elif name in _CURL_BODY_LONG:
+                state['body'] = True
+            elif name in _CURL_UPLOAD_LONG:
+                state['upload'] = True
+            elif name == '--get':
+                state['get'] = True
+            continue
+        if tok.startswith('-') and len(tok) > 1:
+            letters = tok[1:]
+            for j, ch in enumerate(letters):
+                if ch == ':':
+                    if sends():
+                        return True
+                    reset()
+                    continue
+                if ch == 'G':
+                    state['get'] = True
+                if ch not in _CURL_SHORT_ARG:
+                    if ch not in _CURL_SHORT_FLAG:
+                        state['unknown'] = True
+                    continue
+                val = letters[j + 1:]
+                if not val:
+                    val = args[i] if i < len(args) else ''
+                    i += 1
+                if ch == 'x':
+                    state['rerouted'] = True
+                if ch == 'X':
+                    set_method(val)
+                elif ch == 'd':
+                    state['body'] = True
+                elif ch in 'FT':
+                    state['upload'] = True
+                break
+            continue
+        state['urls'].append(tok)
+    return sends()
+
+
+def _wget_mutates(args: list) -> bool:
+    method = None
+    body = False
+    for i, tok in enumerate(args):
+        name, eq, val = tok.partition('=')
+        if name == '--method':
+            method = val if eq else (args[i + 1] if i + 1 < len(args) else '')
+        elif name in ('--post-data', '--post-file', '--body-data', '--body-file'):
+            body = True
+    if method is not None:
+        return method.upper() in _MUTATING_VERBS
+    return body
+
+
+def _ps_web_mutates(args: list) -> bool:
+    method = None
+    body = False
+    for i, tok in enumerate(args):
+        if not tok.startswith('-'):
+            continue
+        name, colon, val = tok[1:].partition(':')
+        name = name.lower()
+        if name in ('method', 'custommethod'):
+            method = val if colon else (args[i + 1] if i + 1 < len(args) else '')
+        elif name in ('body', 'infile', 'form'):
+            body = True
+    if method is not None:
+        return method.upper() in _MUTATING_VERBS
+    return body
+
+
+_HTTPIE_VALUE_OPTS = {
+    '--auth', '-a', '--auth-type', '-A', '--timeout', '--output', '-o',
+    '--session', '--session-read-only', '--verify', '--cert', '--cert-key',
+    '--cert-key-pass', '--proxy', '--print', '-p', '--pretty', '--style', '-s',
+    '--format-options', '--max-redirects', '--max-headers', '--boundary',
+    '--ssl', '--ciphers', '--default-scheme', '--response-charset',
+    '--response-mime', '--raw', '--history-print', '-P',
+}
+# Earliest separator wins; `==` is a query parameter and `:` a header, the
+# rest are body items (review #8 N12).
+_HTTPIE_ITEM_RE = re.compile(r'^(?:[^=:@\\]|\\.)*?(==|:=@|=@|:=|=|@|:)')
+
+
+def _httpie_mutates(args: list) -> bool:
+    pos, form = [], False
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        i += 1
+        if tok.startswith('-') and len(tok) > 1:
+            name, eq, _ = tok.partition('=')
+            if name in ('--raw',) or tok in ('-f', '--form', '--multipart'):
+                form = True
+            if name in _HTTPIE_VALUE_OPTS and not eq:
+                i += 1  # its value is not the method (review #8 N11)
+            continue
+        pos.append(tok)
+    method = None
+    if len(pos) >= 2 and re.fullmatch(r'[A-Za-z]+', pos[0]):
+        method, pos = pos[0], pos[1:]
+    if method is not None:
+        return method.upper() in _MUTATING_VERBS
+    if form:
+        return True
+    for item in pos[1:]:
+        m = _HTTPIE_ITEM_RE.match(item)
+        if m and m.group(1) not in ('==', ':'):
+            return True
+    return False
+
+
+# KNOWN GAPS (accepted 2026-09-28, MC-994, after 13 second-vendor reviews).
+# This detector stops ACCIDENTAL external sends by a well-meaning unattended
+# agent using an ordinary curl/wget/httpie/iwr spelling. It is not an evasion
+# barrier (2026-09-12 position): any unknown executable (python -c requests,
+# node, a script file) already sends unchecked by design. Remaining misses are
+# unusual argument spellings of the four named tools (per-tool argument roles
+# are approximated, not fully parsed). A new CLASS of miss still blocks a
+# merge; another spelling of these does not. Reviews: _scratch/mc994-review3-*.
+def _segment_mutates(seg: str) -> bool:
+    """True when this shell segment runs a named HTTP tool that sends a
+    mutating request. Parsed from argv with each tool's own option rules
+    (Fenn's reviews #6-#7, N6-N8): an option counts as a method only when it
+    IS the tool's method option, so `--output`, `-o post.json` or
+    `-OutFile delete.txt` never read as sends, and curl short clusters
+    (`-sdfixture`) are walked the way curl walks them. These are the tools'
+    documented forms; the 2026-09-12 position against chasing evasions
+    still stands. A quoted argument that itself names a tool (`bash -c
+    "curl -X POST ...; curl -X GET ..."`) is a program: it is split at its
+    OWN operators and each command judged alone (review #11 N18), so a
+    later GET cannot overwrite an earlier POST's method. The local-host
+    exemption is judged per command too, so a nested localhost call
+    cannot exempt a nested external one. True means a NON-LOCAL send."""
+    toks = _net_tokens(seg)
+    for idx, tok in enumerate(toks):
+        m = _NET_HEAD_RE.search(tok)
+        if not m:
+            if _NET_TOOL_RE.search(tok) and ' ' in tok and any(
+                    _segment_mutates(inner) for inner in _net_segments(tok)):
+                return True
+            continue
+        head = m.group(1).lower()
+        args = toks[idx + 1:]
+        if head == 'curl':
+            return _curl_mutates(args)
+        if head == 'wget':
+            mutates = _wget_mutates(args)
+        elif head in ('http', 'https'):
+            mutates = _httpie_mutates(args)
+        else:
+            mutates = _ps_web_mutates(args)
+        if not mutates:
+            return False
+        # Own API calls are exempt only when every destination-shaped
+        # argument is a local hostname (review #12 N19). A filename that
+        # looks like a host fails closed.
+        # PowerShell binds a value with a colon (`-Uri:URL`); that value is
+        # a candidate destination too (review #13 N19), or the real URI
+        # vanishes and a local-looking body decides.
+        cands = [a.split(':', 1)[1] if a.startswith('-') and not a.startswith('--')
+                 and ':' in a else a for a in args]
+        dests = [a for a in cands if not a.startswith('-')
+                 and ('://' in a or _DEST_LIKE_RE.match(a))]
+        return not _all_local(dests)
+    return False
+
+
+def _net_segments(cmd: str) -> list:
+    """Split at `&&`, `||`, `|`, `;` and newline only OUTSIDE quotes and
+    escapes (review #10 N15: `-H "Content-Type: a/json; charset=utf-8"`
+    cut curl off from its `--data`). Local to the network check; the
+    shared _SHELL_SPLIT_RE keeps its other callers' behaviour."""
+    segs, cur, quote = [], [], ''
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if quote:
+            if ch == '\\' and quote == '"' and i + 1 < n:
+                cur.append(cmd[i:i + 2])
+                i += 2
+                continue
+            if ch == quote:
+                quote = ''
+            cur.append(ch)
+            i += 1
+            continue
+        if ch in '"\'':
+            quote = ch
+        elif ch == '\\' and i + 1 < n:
+            cur.append(cmd[i:i + 2])
+            i += 2
+            continue
+        elif cmd.startswith(('&&', '||'), i):
+            segs.append(''.join(cur))
+            cur = []
+            i += 2
+            continue
+        elif ch in '|;\n':
+            segs.append(''.join(cur))
+            cur = []
+            i += 1
+            continue
+        cur.append(ch)
+        i += 1
+    segs.append(''.join(cur))
+    return segs
 
 
 def _touches_nonlocal_network(cmd: str) -> FenceDecision:
@@ -484,30 +876,15 @@ def _touches_nonlocal_network(cmd: str) -> FenceDecision:
     `curl localhost:5199/api/browser/launch` + `/read` handed a steward any
     hostile page straight past the mcp__browser__* block. Verb-shape must not
     be a way round it, and neither must segment position."""
-    for seg in _SHELL_SPLIT_RE.split(cmd):
+    for seg in _net_segments(cmd):
         if not _NET_TOOL_RE.search(seg):
             continue
         if re.search(r'/api/browser/(launch|read|input|navigate)', seg, re.I):
             return FenceDecision(True, "autonomous web browsing is out of steward scope - "
                                        "the browser HTTP API is the same capability as the "
                                        "browser MCP tools, which are blocked")
-        # curl -G/--get turns --data*/-d into GET query params, not a body
-        # (false-positive incident, 2026-09-27: `curl -G --data-urlencode`
-        # read as a mutating send). An explicit -X still overrides it.
-        get_override = bool(re.search(r'(^|\s)(-G\b|--get\b)', seg, re.I))
-        mutating = (
-            bool(re.search(r'-X\s*(POST|PUT|PATCH|DELETE)', seg, re.I))
-            or (not get_override and bool(re.search(
-                r'(^|\s)(--data\b|--data-raw\b|--data-binary\b|--data-ascii\b|'
-                r'--data-urlencode\b|-d\b|--upload-file\b|-T\b|-F\b|--form\b|'
-                r'--post-data\b|--post-file\b)', seg, re.I)))
-            or bool(re.search(r'-Method\s+(POST|PUT|PATCH|DELETE)', seg, re.I))
-            or bool(re.search(r'(^|\s)(-Body\b|-InFile\b)', seg, re.I))
-        )
-        if not mutating:
+        if not _segment_mutates(seg):
             continue
-        if any(h in seg.lower() for h in _LOCAL_HOSTS):
-            continue  # steward's own API calls
         return FenceDecision(True, "external network send (mutating HTTP to a non-local host)")
     return FenceDecision(False, '')
 
@@ -708,7 +1085,8 @@ def _enabling_construct(cmd: str) -> FenceDecision:
                      (_DASH_C_EXPANSION_RE, "interpreter -c on an expansion")):
         if pat.search(cmd):
             return FenceDecision(True, f"{why} - the program text that runs is "
-                                        "a runtime VALUE the fence cannot read")
+                                        "a runtime VALUE the fence cannot read",
+                                 overridable=False)
     if _B64_TO_INTERPRETER_RE.search(cmd):
         return FenceDecision(True, "base64/decode piped into an interpreter "
                                     "(decode-then-execute hides the command "
@@ -750,6 +1128,9 @@ def _enabling_construct(cmd: str) -> FenceDecision:
     return FenceDecision(False, '')
 
 
+_HUMAN_GATE_ROUTE_RE = re.compile(r'local-auth/set|/attend-once(?!/consume)', re.IGNORECASE)
+
+
 def classify_bash(command: str) -> FenceDecision:
     """Classify a Bash command string. Returns (blocked, reason).
 
@@ -759,6 +1140,14 @@ def classify_bash(command: str) -> FenceDecision:
     blocked before, it still blocks."""
     if not command or not command.strip():
         return FenceDecision(False, '')
+    # The human-proof gate's own routes (Fenn's re-review N2, 2026-09-28): an
+    # armed agent setting the first dashboard passcode, or calling the grant,
+    # would mint its own "Allow once". Checked on the raw text, before masking,
+    # so a heredoc'd URL still counts.
+    if _HUMAN_GATE_ROUTE_RE.search(command):
+        return FenceDecision(True, "calls the dashboard-passcode or Allow-once "
+                                   "grant route (the human-proof gate — "
+                                   "human-owned)", overridable=False)
     try:
         cmd = _mask_inert_prose(command.strip())
     except Exception:
@@ -1035,14 +1424,14 @@ def _bash_touches_vault_file(cmd: str) -> bool:
     return False
 
 
+# Any shell mention of the passcode store is refused, no exceptions (Fenn's
+# reviews #3-#5, N1). Every round of listing dangerous verbs left a spelling
+# out (`printf > store`, `curl -o store`, `-OutFile store`), and the one
+# "source search" exception that replaced them was itself read-bypassed by
+# `grep -e. local_auth.json other.txt`. To search source for the filename use
+# the Grep tool: its content `pattern` is not a path and is never checked.
 def _bash_touches_local_auth_file(cmd: str) -> bool:
-    for seg in _SHELL_SPLIT_RE.split(cmd):
-        if not _LOCAL_AUTH_NAME_RE.search(seg):
-            continue
-        seg_norm = seg.replace('\\', '/').lower()
-        if _VAULT_READ_VERB_RE.search(seg) or 'data/local_auth.json' in seg_norm:
-            return True
-    return False
+    return bool(_LOCAL_AUTH_NAME_RE.search(cmd or ''))
 
 
 def check_vault_file_access(tool_name: str, tool_input: dict,
@@ -1077,7 +1466,7 @@ def check_vault_file_access(tool_name: str, tool_input: dict,
         True, "reads the secrets vault's key/store file directly — use the "
               "vault API (GET /api/secrets) instead, never the raw file")
     local_auth_refusal = FenceDecision(
-        True, "reads the LAN dashboard passcode store directly — that "
+        True, "reads or writes the LAN dashboard passcode store directly — that "
               "passcode gates the vault-lock set/change routes, so this is "
               "a stepping-stone to the vault, not a separate file")
     if name == 'Read':
@@ -1102,12 +1491,30 @@ def check_vault_file_access(tool_name: str, tool_input: dict,
             return refusal
         if _is_local_auth_filename(filter_val):
             return local_auth_refusal
-    elif name == 'Bash':
+    elif name in ('Bash', 'PowerShell'):
         cmd = str(ti.get('command', '') or '')
         if _bash_touches_vault_file(cmd):
             return refusal
         if _bash_touches_local_auth_file(cmd):
             return local_auth_refusal
+    # Writes to the passcode store (Fenn's re-review N1, 2026-09-28): the
+    # agent need not read the code if it can REPLACE the verifier with one it
+    # chose, then pass the passcode-gated "Allow once" grant with it. Same
+    # obvious-path scope as the reads above.
+    write_paths = []
+    if name in ('Write', 'Edit', 'MultiEdit', 'NotebookEdit'):
+        write_paths.append(str(ti.get('file_path', '') or ti.get('notebook_path', '') or ''))
+    if name in _PATCH_TOOL_NAMES or name in ('Bash', 'PowerShell'):
+        try:
+            write_paths.extend(patch_target_paths(ti))
+        except Exception:
+            pass
+    for raw in write_paths:
+        if _path_resolves_into_local_auth(raw, cwd):
+            return FenceDecision(
+                True, "writes the LAN dashboard passcode store directly — "
+                      "replacing its verifier would let an agent mint the "
+                      "code that proves a human")
     return FenceDecision(False, '')
 
 
@@ -1138,7 +1545,8 @@ def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
         path = str(ti.get('file_path', '') or ti.get('notebook_path', '') or '')
         low = path.replace('\\', '/').lower()
         if '/.claude/' in low or low.endswith('/.claude'):
-            return FenceDecision(True, "editing global ~/.claude config (out of project scope)")
+            return FenceDecision(True, "editing global ~/.claude config (out of project scope)",
+                                 overridable=False)
         # Fence supply chain (MC-914, 2026-08-31): this hook script is re-read
         # from disk fresh on EVERY tool call (invoked as a fresh subprocess per
         # PreToolUse event, no caching) — the exact "hot re-read of a mutable
@@ -1151,7 +1559,7 @@ def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
                 low.rsplit('/', 1)[-1] in _fence_names:
             return FenceDecision(True, "editing the steward fence's own "
                                        "enforcement code (safety-rail supply "
-                                       "chain — human-owned)")
+                                       "chain — human-owned)", overridable=False)
         # Learning-loop supply chain (committee M3, 2026-07-16): proposal
         # frontmatter and the skill-stats signal store are the INPUTS that
         # decide what enters agent loadouts. An unattended agent editing its
@@ -1161,7 +1569,8 @@ def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
                 or low.endswith('_skill_stats.json')
                 or low.endswith('_skill_stats_archive.jsonl')):
             return FenceDecision(True, "editing learning-loop artifacts/telemetry "
-                                       "(loadout supply chain — human-owned)")
+                                       "(loadout supply chain — human-owned)",
+                                 overridable=False)
     # Autonomous web browsing is high blast-radius for an unattended agent: the
     # browser MCP is unrestricted (all sites) with in-page JS execution, so
     # prompt-injecting page content can steer a steward cycle. The steward does
@@ -1322,6 +1731,126 @@ def _should_arm_for_unattended_trigger() -> bool:
     return info['fence_unattended_enabled']
 
 
+# One-shot "Allow once" pass (MC-994 follow-up, 2026-09-28). A human click in
+# the chat header (POST .../agent/<sid>/attend-once, human-only) grants ONE
+# pass; this hook spends it on the single blocked call it permits. The consume
+# route can only SPEND an existing pass, never create one. Fails CLOSED: any
+# lookup failure means no pass, so the action stays blocked.
+#
+# Fenn's review (2026-09-28): the pass is spent only when the WHOLE tool call
+# holds exactly one blocked operation and that operation is overridable. The
+# block loop in main() stops at the first hit, so judging the pass on that one
+# decision let `git push && <patch fence.py>` spend a pass on the push and
+# carry the fence edit through with it.
+#
+# Threat model (both reviews): this is a backstop against a confused or
+# prompt-injected agent taking an irreversible step, not an OS sandbox. An
+# agent running arbitrary same-user code can reach anything the server can.
+_PASS_META_CHARS = set('$`(){};|&<>\n\r')
+_PASS_WRAPPER_HEADS = {
+    'bash', 'sh', 'zsh', 'dash', 'cmd', 'powershell', 'pwsh', 'python', 'python3',
+    'py', 'node', 'perl', 'ruby', 'env', 'xargs', 'iex', 'invoke-expression',
+    'eval', 'exec', 'source', 'start-process', 'wsl', 'ssh',
+}
+
+
+def _pass_head_name(tok: str) -> str:
+    head = (tok or '').strip('"\'').lower().replace('\\', '/').rsplit('/', 1)[-1]
+    return re.sub(r'\.(exe|cmd|bat|ps1)$', '', head)
+
+
+def _is_plain_single_invocation(cmd: str) -> bool:
+    text = (cmd or '').strip()
+    if not text or any(c in _PASS_META_CHARS for c in text):
+        return False
+    low = text.lower()
+    if re.search(r'(^|\s)(eval|iex|--next|-exec)(\s|$)', low):
+        return False
+    try:
+        argv = shlex.split(text, posix=True)
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    # Judge the head both ways: POSIX quoting strips `"curl"` to `curl`
+    # (Fenn's review #4), but also eats Windows backslashes, which the raw
+    # first token keeps. Either reading naming a wrapper or transfer tool counts.
+    heads = {_pass_head_name(argv[0]), _pass_head_name(text.split()[0])}
+    if heads & _PASS_WRAPPER_HEADS:
+        return False
+    return not heads & _PASS_TRANSFER_HEADS
+
+
+# No HTTP transfer tool can spend a pass (Fenn's reviews #3-#6, N4). A single
+# invocation is not a single request for them: extra URLs, globs, config
+# files, redirect-follow and retry each turned one pass into 2-3 POSTs, and
+# after an argv allowlist closed those, curl's default config file
+# (`.curlrc` with `location` or `retry`) restored replay with nothing on the
+# command line. The pass is not bound to a command, so the only bound that
+# holds is not covering these tools at all. A blocked external send stays
+# blocked; the human can run it themselves.
+_PASS_TRANSFER_HEADS = {
+    'curl', 'wget', 'http', 'https', 'httpie', 'invoke-webrequest', 'iwr',
+    'invoke-restmethod', 'irm',
+}
+
+
+def _blocked_leaves(tool_name: str, tool_input: dict) -> list:
+    """Every blocked operation inside one call: patch tools recurse into their
+    writes, a chained shell command counts as more than one. Over-counting only
+    ever refuses a pass, never grants one."""
+    if tool_name in _PATCH_TOOL_NAMES:
+        out = []
+        for sub_name, sub_input in as_write_calls(tool_name, tool_input or {}):
+            if sub_name in _PATCH_TOOL_NAMES:
+                d = classify_action(sub_name, sub_input)
+                out.extend([d] if d.blocked else [])
+            else:
+                out.extend(_blocked_leaves(sub_name, sub_input))
+        return out
+    if tool_name in ('Bash', 'PowerShell'):
+        cmd = (tool_input or {}).get('command', '') or ''
+        whole = classify_bash(cmd)
+        if not whole.blocked:
+            return []
+        # Only a plain single invocation is passable (Fenn's re-review N4):
+        # counting separators let eval, loops, a push nested in $(...) and
+        # curl --next through as "one" operation. So the check is positive:
+        # no shell metacharacter at all, and not handed to a shell or
+        # interpreter. Anything else stays blocked, just never passable.
+        if not _is_plain_single_invocation(cmd):
+            return [whole, whole]
+        return [whole]
+    d = classify_action(tool_name, tool_input)
+    return [d] if d.blocked else []
+
+
+def _pass_can_cover(calls) -> bool:
+    try:
+        leaves = []
+        for call_name, call_input in calls:
+            leaves.extend(_blocked_leaves(call_name, call_input))
+    except Exception:
+        return False
+    return len(leaves) == 1 and leaves[0].overridable
+
+
+def _consume_attend_once_pass() -> bool:
+    sid = _session_id_from_env()
+    if not sid:
+        return False
+    try:
+        req = urllib.request.Request(
+            f'{_MC_API_BASE}/api/session/attend-once/consume',
+            data=json.dumps({'claude_session_id': sid}).encode('utf-8'),
+            headers={'Content-Type': 'application/json'}, method='POST')
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+    except Exception:
+        return False
+    return data.get('consumed') is True
+
+
 def main(argv=None) -> int:
     """PreToolUse hook entrypoint. Reads the hook JSON on stdin.
 
@@ -1405,7 +1934,8 @@ def main(argv=None) -> int:
     # Same unconditional posture as the install-dir guard above — see
     # check_vault_file_access's docstring.
     try:
-        vault_access = check_vault_file_access(tool_name, tool_input)
+        vault_access = check_vault_file_access(tool_name, tool_input,
+                                               payload.get('cwd') or None)
     except Exception:
         vault_access = FenceDecision(False, '')
     if vault_access.blocked:
@@ -1416,9 +1946,19 @@ def main(argv=None) -> int:
     # Confirmed steward (marker=True) always enforces. Everything else
     # (confirmed non-steward OR genuinely unknown) falls through to the
     # generalized trigger_type signal — see the corrected gate above.
-    if not armed_by_launcher and _session_is_steward(payload) is not True:
+    # Only a session armed purely by the server-recorded trigger_type may spend
+    # a human's one-shot "Allow once" pass (MC-994 follow-up). A confirmed
+    # steward cycle or a launcher-armed (Codex --armed) run never can.
+    #
+    # Eligibility needs a POSITIVELY confirmed non-steward (marker False): an
+    # unreadable transcript (None) still arms through trigger_type below, but
+    # must not open the pass to what may be a real steward cycle (Fenn).
+    pass_eligible = False
+    steward = None if armed_by_launcher else _session_is_steward(payload)
+    if not armed_by_launcher and steward is not True:
         if not _should_arm_for_unattended_trigger():
             return 0
+        pass_eligible = steward is False
 
     decision = FenceDecision(False, '')
     for call_name, call_input in calls:
@@ -1432,10 +1972,23 @@ def main(argv=None) -> int:
     if not decision.blocked:
         return 0
 
+    # Supply-chain and global-config edits are never passable, and a call that
+    # bundles more than one blocked operation is refused whole: one click, one
+    # operation. Those need a genuinely attended session.
+    passable = pass_eligible and _pass_can_cover(calls)
+    if passable and _consume_attend_once_pass():
+        return 0
+
+    if passable:
+        how = ('The human can click "Allow once" in the chat header to permit '
+               'the next blocked action (one action, expires in 10 minutes). '
+               'Do NOT retry it until they say they have.')
+    else:
+        how = ('Do NOT retry it. Instead post a `DECISION NEEDED:` note to your '
+               'charter with the exact command so the human can approve it.')
     msg = (f"STEWARD FENCE blocked this action: {decision.reason}. "
            f"This is irreversible/mutating and you are running unattended. "
-           f"Do NOT retry it. Instead post a `DECISION NEEDED:` note to your "
-           f"charter with the exact command so the human can approve it.")
+           f"{how}")
     # Exit 2 + stderr is the fail-CLOSED block contract: it denies the tool call
     # across all CLI versions (verified against hooks.md — exit 2 blocks even
     # under --dangerously-skip-permissions). JSON permissionDecision is the

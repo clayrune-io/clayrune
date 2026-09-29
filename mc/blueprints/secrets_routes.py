@@ -110,35 +110,6 @@ def _exec_gate_refusal():
         return jsonify({'error': 'bad_exec_token'}), 403
     return None
 
-# Per-source-IP throttle on vault-lock passcode attempts (set/change/unlock) —
-# same shape as local_auth's own login throttle and f6a8159's recovery-key
-# throttle, kept as a separate dict because a wrong passcode here is an
-# attempt to own or relock the key that opens every secret, not just the
-# dashboard session. Best-effort; resets on restart.
-_VAULT_LOCK_FAIL_CAP = 5
-_VAULT_LOCK_FAIL_WINDOW = 300  # seconds
-_VAULT_LOCK_FAILS: dict[str, list[float]] = {}
-
-
-def _vault_lock_throttled(ip: str) -> bool:
-    rec = _VAULT_LOCK_FAILS.get(ip)
-    if not rec:
-        return False
-    if time.time() - rec[1] > _VAULT_LOCK_FAIL_WINDOW:
-        _VAULT_LOCK_FAILS.pop(ip, None)
-        return False
-    return rec[0] >= _VAULT_LOCK_FAIL_CAP
-
-
-def _vault_lock_note_fail(ip: str) -> None:
-    now = time.time()
-    rec = _VAULT_LOCK_FAILS.get(ip)
-    if not rec or now - rec[1] > _VAULT_LOCK_FAIL_WINDOW:
-        _VAULT_LOCK_FAILS[ip] = [1, now]
-    else:
-        rec[0] += 1
-
-
 def _err(e: Exception, code: int = 400):
     return jsonify({'error': str(e)}), code
 
@@ -172,22 +143,35 @@ def _require_human_passcode(data: dict):
     to return immediately on refusal. If no passcode is configured yet, the
     action is refused outright — nothing else on this local,
     unauthenticated API surface proves a human, as opposed to an agent
-    sharing the same machine, is the one asking."""
-    ip = request.remote_addr or '?'
-    if _vault_lock_throttled(ip):
-        return jsonify({'error': 'too_many_attempts',
-                        'message': 'too many attempts — wait a few minutes '
-                                   'and try again'}), 429
+    sharing the same machine, is the one asking.
+
+    Shares local_auth's ONE per-IP guessing budget (MC-994 re-review finding
+    N3, second pass — Fenn, 2026-09-28), not a separate ``_VAULT_LOCK_FAILS``
+    counter. That separate dict let a caller already shut out of /login (or
+    /set, or the attend-once grant — every one of them gates through this
+    same function) keep an unthrottled run at the SAME passcode against the
+    vault-lock routes instead; merged, a wrong guess anywhere against this
+    passcode counts against every route that checks it.
+
+    The guess goes through ``local_auth._local_auth_try_passcode`` (MC-994
+    re-review finding N3, review #3 — Fenn): it reserves a slot before PBKDF2
+    and always releases it, so concurrent guesses cannot overrun the shared
+    cap and a malformed body cannot leak a slot. ``passcode_required`` is
+    checked first because it spends no guess."""
     if not local_auth._local_auth_is_configured():
         return jsonify({'error': 'passcode_required',
                         'message': 'set a local dashboard passcode in '
                                    'Settings > Connectivity > Network access '
                                    'before changing the vault lock'}), 403
-    passcode = (data.get('passcode') or '').strip()
-    if not passcode or not local_auth._local_auth_verify_passcode(passcode):
-        _vault_lock_note_fail(ip)
+    passcode = data.get('passcode') if isinstance(data, dict) else None
+    ok = local_auth._local_auth_try_passcode(
+        passcode.strip() if isinstance(passcode, str) else '')
+    if ok is None:
+        return jsonify({'error': 'too_many_attempts',
+                        'message': 'too many attempts — wait a few minutes '
+                                   'and try again'}), 429
+    if not ok:
         return jsonify({'error': 'bad_passcode'}), 403
-    _VAULT_LOCK_FAILS.pop(ip, None)
     return None
 
 

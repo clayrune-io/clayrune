@@ -167,3 +167,61 @@ class TestExemptCallerStillProvesCurrentToChange:
         r = client.post('/api/local-auth/login', json={'passcode': 'newpass77'},
                         environ_base=LAN)
         assert r.status_code == 200
+
+
+class TestSetSharesLoginThrottle:
+    """MC-994 re-review finding N3 (Fenn, 2026-09-28): the /set route's
+    `current`-passcode check used to run with NO attempt cap of its own, so a
+    caller already shut out of /login by _local_auth_throttled could keep
+    guessing the SAME passcode here — an online oracle the cap on /login was
+    supposed to close. Both routes now share one counter (_LOCAL_AUTH_FAILS,
+    keyed by source IP)."""
+
+    def test_wrong_current_counts_toward_shared_cap(self, client):
+        client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        from mc.blueprints import local_auth as la
+        for _ in range(la._LOCAL_AUTH_FAIL_CAP):
+            r = client.post('/api/local-auth/set',
+                            json={'passcode': 'stolen99', 'current': 'nope-nope'},
+                            environ_base=LAN)
+            assert r.status_code == 403
+            assert r.get_json()['error'] == 'bad_current_passcode'
+        # Cap reached via /set alone — even the CORRECT current passcode is
+        # now throttled, same as /login would be.
+        r = client.post('/api/local-auth/set',
+                        json={'passcode': 'stolen99', 'current': 'hunter22'},
+                        environ_base=LAN)
+        assert r.status_code == 429
+        assert r.get_json()['error'] == 'too_many_attempts'
+
+    def test_wrong_login_attempts_also_throttle_set(self, client):
+        client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        from mc.blueprints import local_auth as la
+        for _ in range(la._LOCAL_AUTH_FAIL_CAP):
+            r = client.post('/api/local-auth/login', json={'passcode': 'bad'},
+                            environ_base=LAN)
+            assert r.status_code == 403
+        # /login's own cap is now spent — /set's current-passcode check must
+        # see the SAME counter, not a fresh one.
+        r = client.post('/api/local-auth/set',
+                        json={'passcode': 'newpass77', 'current': 'hunter22'},
+                        environ_base=LAN)
+        assert r.status_code == 429
+        assert r.get_json()['error'] == 'too_many_attempts'
+
+    def test_successful_change_clears_the_shared_counter(self, client):
+        client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        r = client.post('/api/local-auth/set',
+                        json={'passcode': 'nope-nope', 'current': 'wrong'},
+                        environ_base=LAN)
+        assert r.status_code == 403
+        r = client.post('/api/local-auth/set',
+                        json={'passcode': 'newpass77', 'current': 'hunter22'},
+                        environ_base=LAN)
+        assert r.status_code == 200
+        # The prior failure was cleared by the success — /login for the NEW
+        # passcode is not pre-throttled by it.
+        client.delete_cookie('mc_local_auth')
+        r = client.post('/api/local-auth/login', json={'passcode': 'newpass77'},
+                        environ_base=LAN)
+        assert r.status_code == 200

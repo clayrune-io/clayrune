@@ -32,7 +32,9 @@ def client(tmp_path, monkeypatch):
     from mc.blueprints import local_auth, secrets_routes
     from mc.state import agent_sessions
     monkeypatch.setattr(local_auth, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
-    secrets_routes._VAULT_LOCK_FAILS.clear()
+    # MC-994 re-review N3, second pass: vault-lock throttling now shares
+    # local_auth's ONE per-IP budget instead of its own _VAULT_LOCK_FAILS.
+    local_auth._LOCAL_AUTH_FAILS.clear()
     secrets_store._dispensed.clear()
     secrets_store._unlocked_key = None
     secrets_store._lock_notified = False

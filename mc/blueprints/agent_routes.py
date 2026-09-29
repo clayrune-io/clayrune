@@ -129,6 +129,8 @@ from mc.blueprints.push_mobile import _notify_push  # MC-961 loud engine-fallbac
 from mc.blueprints.system_routes import _capture_system_init   # re-homed 1.6 shim
 from mc.blueprints.terminal_routes import launch_pty_session, launch_pipe_session    # MC-928
 from mc.blueprints.workflow_routes import _is_agent_caller  # MC-994 agent-caller guard reuse
+from mc.blueprints.secrets_routes import _require_human_passcode  # MC-994 follow-up: Fenn finding 1
+from mc.blueprints.local_auth import _local_auth_passcode_set_at  # MC-994 follow-up: Fenn finding N2(b)
 from mc import pty_backend
 
 bp = Blueprint('agent_routes', __name__)
@@ -6104,11 +6106,21 @@ def attend_session(project_id, session_id):
     behavior is unaffected. This only overwrites what ONE session's own
     trigger_type says, live and on disk, so it survives a restart.
 
+    SUPERSEDED as the chat header's live control (MC-994 follow-up,
+    2026-09-28 — Ron: "every time the gate opens only for that single
+    iteration, that is the safer approach"): a permanent re-stamp left a
+    handed-over session unguarded for its entire remaining lifetime, wider
+    than Ron asked for. The header pill now calls `attend_once_session`
+    below instead, which grants a single-use pass and leaves trigger_type
+    untouched.
+
     DISABLED 2026-09-28 (Fenn's review of the one-shot follow-up, P1):
     `_is_agent_caller` only checks that an Origin header is present, so an
     agent's `curl -H "Origin: http://localhost"` passed it and could
-    permanently disarm its own fence with one call. Refused outright until the
-    passcode-gated one-shot "Allow once" replacement lands.
+    permanently disarm its own fence with one call. Refused outright — the
+    passcode-gated `attend_once_session` below is now the only live control.
+    Sessions already flipped to 'manual' by this route before it was
+    disabled stay as they are — no migration.
     """
     if True:
         return jsonify({
@@ -6147,6 +6159,281 @@ def attend_session(project_id, session_id):
          f"trigger_type {prior} -> manual at {now_iso()}")
     return jsonify({'ok': True, 'session_id': session_id, 'trigger_type': 'manual',
                     'persisted': persisted})
+
+
+# ── One-shot "Allow once" pass (MC-994 follow-up, 2026-09-28) ────────────────
+# Ron's correction to attend_session above: a human confirming they're
+# reading right now should open the fence for exactly the ONE action it's
+# currently blocking, not disarm the session permanently. trigger_type is
+# never touched here, so steward/fence.py's _should_arm_for_unattended_trigger
+# keeps arming on every subsequent tool call — only the single blocked call
+# the pass was spent on gets through.
+#
+# In-memory only, deliberately not persisted: losing an unconsumed pass on a
+# server restart is the SAFE direction (a session that goes back to fully
+# fenced), so there is no durability work to do here — unlike trigger_type on
+# attend_session, which has to survive a restart because 'manual' is meant to
+# stick.
+_ATTEND_ONCE_TTL_SECONDS = 600  # 10 minutes
+# Guards claude_session_id writes (_note_claude_sid) against consume's scan.
+_CSID_LOCK = threading.Lock()
+
+# Literal copy of steward/fence.py's `_UNATTENDED_TRIGGER_TYPES` and
+# `STEWARD_MARKER` — same idiom as the JS mirror above
+# (`_UNATTENDED_FENCE_TRIGGERS`, conversation.js), for the same reason: the
+# grant route needs this synchronously in-process and fence.py is a
+# subprocess hook script, not an importable server module (it has no
+# `mc.*` package shape and is invoked as `__main__`). Keep all three copies
+# in sync by hand; they change rarely. Fenn finding 4 (server side): grant
+# must refuse a session the fence could never honor a pass for, so the pill
+# never promises something it can't deliver.
+_ATTEND_ONCE_ELIGIBLE_TRIGGER_TYPES = {
+    'schedule', 'workflow', 'dispatch', 'hivemind_orchestrator', 'hivemind_worker',
+}
+_ATTEND_ONCE_STEWARD_MARKER = '[Steward cycle]'
+
+
+def _attend_once_ineligibility_reason(session: dict) -> Optional[str]:
+    """None if `session` is a candidate for an "Allow once" pass; else a
+    human-readable reason to refuse the grant outright (Fenn finding 4).
+
+    Two of fence.py's three eligibility gates are checkable here:
+      - trigger_type must be one `_should_arm_for_unattended_trigger` actually
+        arms for — granting a pass to a 'manual' session would be inert (the
+        fence never blocks it) but misleadingly implies the control does
+        something.
+      - a steward-cycle session's task always starts with the marker
+        (steward/core.py's build_cycle_task) — same check agent_routes.py's
+        own conversation-list steward tag uses, `str(...).lstrip().startswith(...)`.
+    The third — Codex `--armed` — is NOT checked: guardrail_hooks.py decides
+    it at dispatch time but nothing persists it onto the live session dict,
+    so the server genuinely cannot tell here. Moot in practice: Codex has no
+    CLAUDE_CODE_SESSION_ID, so an armed Codex session can never reach
+    consume_attend_once_pass in the first place (it's keyed on that env var).
+    """
+    trigger_type = session.get('trigger_type') or 'manual'
+    if trigger_type not in _ATTEND_ONCE_ELIGIBLE_TRIGGER_TYPES:
+        return f"session trigger_type '{trigger_type}' is not fence-gated — a pass would never be spent"
+    if str(session.get('task') or '').lstrip().startswith(_ATTEND_ONCE_STEWARD_MARKER):
+        return 'steward-cycle sessions are never eligible for an "Allow once" pass'
+    return None
+
+
+def _attend_once_pass_view(session: dict) -> Optional[dict]:
+    """Pure read: {'open': True, 'expires_at': iso} while an unconsumed,
+    unexpired pass is recorded on `session`; else None. Never mutates —
+    expired-pass EVICTION happens only under a project lock, in
+    `_evict_expired_attend_once_pass` below, called from the grant/consume
+    routes that already hold one. This function used to pop the expired
+    entry itself, which ran it unlocked from GET /agent/status (that route
+    never takes a project lock while building the sessions list) — Fenn:
+    that lazy write can race a concurrent grant and silently discard it.
+    Status reads must stay pure; only grant/consume mutate."""
+    info = session.get('_attend_once_pass')
+    if not info:
+        return None
+    try:
+        expires_at = datetime.fromisoformat(info['expires_at'])
+    except Exception:
+        return None
+    if datetime.now(timezone.utc) >= expires_at:
+        return None
+    return {'open': True, 'expires_at': info['expires_at']}
+
+
+def _evict_expired_attend_once_pass(session: dict) -> None:
+    """Pop `session`'s pass if it's corrupt or past expiry. Caller MUST hold
+    that session's project manager lock — this is the mutation
+    `_attend_once_pass_view` used to perform unlocked (see its docstring)."""
+    info = session.get('_attend_once_pass')
+    if not info:
+        return
+    try:
+        if datetime.now(timezone.utc) < datetime.fromisoformat(info['expires_at']):
+            return
+    except Exception:
+        pass
+    session.pop('_attend_once_pass', None)
+
+
+def _passcode_changed_after_session_start(session: dict) -> bool:
+    """True iff the local dashboard passcode was set/changed AFTER this
+    session started (MC-994 re-review finding N2(b), Fenn 2026-09-28).
+
+    `_require_human_passcode` proves the CALLER of the grant request knows
+    the current passcode — it says nothing about whether the DISPATCHED
+    CHAT the pass would be granted to is the one that chat is about. A
+    passcode changed mid-chat (e.g. after a suspected compromise, or simply
+    rotated) means this session's own history never saw or proved the new
+    value; granting it a pass on the strength of someone else typing the new
+    passcode elsewhere would let that someone reach into an unrelated,
+    already-dispatched chat. Refusing forces a fresh chat, started after the
+    change, to be the one attended instead.
+
+    A missing/unparseable `started_at`, or a passcode store with no
+    `updated_at` yet (pre-existing installs), both read as "before" — never
+    as a reason to refuse. Losing this check on old data is the safe
+    direction; locking out every session on an upgraded server is not."""
+    started_ts = session.get('started_at')
+    if not started_ts:
+        return False
+    try:
+        started_epoch = datetime.fromisoformat(started_ts.replace('Z', '+00:00')).timestamp()
+    except Exception:
+        return False
+    set_at = _local_auth_passcode_set_at()
+    if set_at is None:
+        return False
+    return set_at > started_epoch
+
+
+@bp.route('/api/project/<project_id>/agent/<session_id>/attend-once', methods=['POST'])
+def attend_once_session(project_id, session_id):
+    """Human-click control: grant ONE pass letting the next fence-blocked
+    irreversible action through for this session, then it's spent — the
+    session goes right back to fully fenced (MC-994 follow-up, 2026-09-28).
+
+    Human-only. Fenn's review of the first cut (`_is_agent_caller`, an Origin
+    header check) found any agent `curl -H "Origin: http://localhost"` passed
+    it and could grant itself unlimited passes forever. Gated the same way as
+    the vault lock (`secrets_routes._require_human_passcode`, Ron 2026-09-28):
+    the LOCAL DASHBOARD PASSCODE, re-entered in the request body and verified
+    server-side. No agent-reachable path mints or observes that passcode.
+    Only *spending* an already-granted pass is agent/hook-reachable, via
+    consume_attend_once_pass below.
+
+    A second click while a pass is already open does NOT stack or extend
+    it — same pass, same expiry, returned as `status: 'already_open'`.
+
+    Refuses a session the fence could never spend a pass for (Fenn finding
+    4, `_attend_once_ineligibility_reason`) — the pill must not promise an
+    approval that can't be delivered.
+    """
+    data = request.get_json(silent=True) or {}
+    refusal = _require_human_passcode(data)
+    if refusal:
+        return refusal
+    with get_manager(project_id).lock:
+        session = agent_sessions.get(session_id)
+        if not session:
+            return jsonify({'error': 'session not found'}), 404
+        if session.get('project_id') != project_id:
+            return jsonify({'error': 'session not found'}), 404
+        ineligible = _attend_once_ineligibility_reason(session)
+        if ineligible:
+            return jsonify({'error': ineligible}), 409
+        if _passcode_changed_after_session_start(session):
+            return jsonify({'error': 'the dashboard passcode was set or changed during this '
+                                      'chat; re-grant from a chat started after it'}), 409
+        _evict_expired_attend_once_pass(session)
+        existing = _attend_once_pass_view(session)
+        if existing:
+            return jsonify({'ok': True, 'session_id': session_id,
+                            'status': 'already_open', 'expires_at': existing['expires_at']})
+        expires_iso = (datetime.now(timezone.utc)
+                       + timedelta(seconds=_ATTEND_ONCE_TTL_SECONDS)).isoformat()
+        # mc_session_id pins WHICH session record the pass belongs to (Fenn
+        # finding 5) — consume checks it, not just that some record happens
+        # to share the Claude conversation id.
+        session['_attend_once_pass'] = {'expires_at': expires_iso, 'mc_session_id': session_id}
+    _log(f"[attend-once] session={session_id} project={project_id} pass granted, "
+         f"expires {expires_iso}")
+    return jsonify({'ok': True, 'session_id': session_id, 'status': 'granted',
+                    'expires_at': expires_iso})
+
+
+@bp.route('/api/session/attend-once/consume', methods=['POST'])
+def consume_attend_once_pass():
+    """Hook-facing: atomically SPEND an already-open one-shot pass for the
+    Claude session named by `claude_session_id`, so steward/fence.py can let
+    exactly one blocked tool call through after a human clicks "Allow once"
+    (MC-994 follow-up). Keyed on claude_session_id, not the MC session_id or
+    project_id, because that's the only identity the PreToolUse hook
+    subprocess has (CLAUDE_CODE_SESSION_ID) — same lookup shape as GET
+    /api/session/trigger-type above.
+
+    Deliberately NOT gated by _is_agent_caller: the hook calls this as a bare
+    subprocess with no Origin header, same posture as the trigger-type
+    lookup. That's safe specifically because this route has no path to
+    CREATE a pass — attend_once_session above is the only place one is
+    granted, and it's human-only. An agent calling this endpoint can spend a
+    pass a human already handed it, never conjure one for itself.
+
+    Atomic: the read-check-pop happens while holding this session's project
+    lock (the same one attend_once_session grants under), so two concurrent
+    hook calls for the same session can't both observe the pass present —
+    the second sees it already gone and reports `consumed: False`.
+
+    Bound to the exact MC session, not just the Claude ID (Fenn finding 5):
+    picking "the first record matching claude_session_id" let a second MC
+    chat that happens to share a Claude conversation ID spend a human's
+    approval that was granted to a DIFFERENT chat — B's hook consuming A's
+    pass. `claude_session_id` is the only identity a PreToolUse hook
+    subprocess has (CLAUDE_CODE_SESSION_ID), so there is no server-issued
+    launch identity to bind to instead without a hook-payload change; refusing
+    outright whenever the mapping is ambiguous is the interim fix Fenn asked
+    for.
+
+    Re-review (Fenn, 2026-09-28, N5): the FIRST cut's ambiguity check ran only
+    on the unlocked snapshot above, before `project_id`'s lock was even known —
+    a second session B claiming the same csid, inserted into THIS project
+    between that snapshot and the `with get_manager(project_id).lock:` below,
+    was invisible to it, so consume still spent A's pass for a now-ambiguous
+    csid. Every write site that gives a session a claude_session_id
+    (`_note_claude_sid`, and every session-dict literal that seeds one at
+    creation/revive time) does so while holding — or, for the hot stream-reader
+    path, WITHOUT holding — this same project's manager lock; re-running the
+    scan restricted to `project_id` immediately after acquiring that lock
+    closes the specific interleaving Fenn's test hook reproduced (an insertion
+    into the SAME project between snapshot and lock). Residual: a csid is a
+    Claude-CLI-issued UUID scoped to one spawned process for one project's cwd
+    (see `_sessions_sharing_csid`'s own project_id scoping) and this codebase
+    already assumes it cannot span projects, so a genuinely CROSS-project
+    collision — which would need a global lock over every project's session
+    dict, matched by nothing else in this file — stays out of scope, same as
+    Fenn's report says.
+    """
+    data = request.get_json(silent=True) or {}
+    csid = (data.get('claude_session_id') or '').strip()
+    if not csid:
+        return jsonify({'consumed': False, 'error': 'claude_session_id required'}), 400
+    matches = [(sid, s) for sid, s in list(agent_sessions.items())
+               if s.get('claude_session_id') == csid]
+    if not matches:
+        return jsonify({'consumed': False, 'error': 'session not found'}), 404
+    # project_id is read from the (possibly stale) snapshot purely to know
+    # WHICH manager lock to take; every decision that matters is re-derived
+    # from `agent_sessions` again immediately below, inside that lock.
+    project_id = matches[0][1].get('project_id')
+    with get_manager(project_id).lock, _CSID_LOCK:
+        # Every project, not just this one: _CSID_LOCK makes the scan atomic
+        # with every _note_claude_sid write, so a collision anywhere refuses.
+        live_matches = [(sid, s) for sid, s in list(agent_sessions.items())
+                        if s.get('claude_session_id') == csid]
+        if len(live_matches) > 1 or (live_matches and live_matches[0][1].get('project_id') != project_id):
+            ambiguous_sids = [sid for sid, _ in live_matches]
+            _log(f"[attend-once] consume REFUSED: claude_session {csid[:12]} maps to "
+                 f"{len(live_matches)} MC sessions {ambiguous_sids} — ambiguous, "
+                 f"refusing rather than guessing which one the human approved")
+            return jsonify({'consumed': False,
+                            'error': 'ambiguous claude_session_id: more than one MC session '
+                                     'shares it'}), 409
+        if not live_matches:
+            return jsonify({'consumed': False, 'error': 'session not found'}), 404
+        sid, live = live_matches[0]
+        _evict_expired_attend_once_pass(live)
+        if not _attend_once_pass_view(live):
+            return jsonify({'consumed': False, 'error': 'no open pass'})
+        # Belt-and-braces on top of the ambiguity refusal above: the pass
+        # itself records which MC session it was granted to
+        # (attend_once_session's mc_session_id), so even a pass found by
+        # walking to `sid`/`live` above only spends if it agrees this is
+        # that same record (Fenn finding 5).
+        if (live.get('_attend_once_pass') or {}).get('mc_session_id') != sid:
+            return jsonify({'consumed': False, 'error': 'pass is bound to a different session'}), 409
+        live.pop('_attend_once_pass', None)
+    _log(f"[attend-once] session={sid} project={project_id} pass consumed at {now_iso()}")
+    return jsonify({'consumed': True, 'session_id': sid})
 
 
 _agent_log_mutation_locks = {}
@@ -7030,11 +7317,31 @@ def _note_claude_sid(session, sid):
     an empty csid on the pending row and every scheduled fire cold-starts a new
     conversation. Called from both stream readers on every message carrying a
     session_id; the prev==sid early-out makes it a cheap no-op after the first
-    capture (no repeated agent_log IO on the hot path)."""
+    capture (no repeated agent_log IO on the hot path).
+
+    Fenn re-review, N5 (2026-09-28): both stream readers call this WITHOUT
+    holding the project's manager lock (deliberately — the read loop must
+    never block on it across model I/O), so consume_attend_once_pass's
+    re-scan of `agent_sessions` under that same lock was racing an unlocked
+    writer, not just an unlocked reader. The read-modify-write of
+    `claude_session_id` itself is now taken under that lock (RLock, so this
+    is safe even if a future caller already holds it) — cheap, no I/O inside
+    — so by the time consume's locked re-scan runs, every completed
+    `_note_claude_sid` write for this project is either fully visible or
+    hasn't started; there is no window where it can observe a half-applied
+    identity change. Everything below this block (agent_log I/O, transcript
+    marking) stays unlocked, same as before."""
     if not sid:
         return
-    prev = session.get('claude_session_id')
-    session['claude_session_id'] = sid
+    # Dave, reviewing the above: NOT the project manager lock. That lock is
+    # held across proc.stdin.write in the send paths; a stream reader waiting
+    # on it while the child waits on the reader to drain stdout is the
+    # respawn-stdin deadlock shape. _CSID_LOCK guards only this dict write
+    # and consume's scan+spend, and nothing holding it does I/O or takes
+    # another lock.
+    with _CSID_LOCK:
+        prev = session.get('claude_session_id')
+        session['claude_session_id'] = sid
     if prev == sid:
         return
     try:
@@ -13008,6 +13315,12 @@ def agent_status(project_id):
                 'hivemind_role': s.get('hivemind_role', ''),
                 'trigger_type': s.get('trigger_type', 'manual'),
                 'trigger_id': s.get('trigger_id', ''),
+                # {'open': True, 'expires_at': iso} while a granted "Allow
+                # once" pass (MC-994 follow-up) is unconsumed and unexpired,
+                # else None — chat header polls this rather than tracking a
+                # local timer, so a spend/expiry from another tab or the
+                # fence hook itself shows up here on the next poll.
+                'attend_once_pass': _attend_once_pass_view(s),
                 'waiting_for_plan_approval': s.get('waiting_for_plan_approval', False),
                 'waiting_for_question': s.get('waiting_for_question', False),
                 # Mirror pending_questions so the FE can re-render the form on
