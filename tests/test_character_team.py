@@ -46,6 +46,14 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(sr, 'load_project', _load)
     monkeypatch.setattr(pr, 'save_project', lambda pid, data: saves.append((pid, [dict(r) for r in data.get('roster', [])])))
 
+    # MC-995: character mutations also require the retyped dashboard
+    # passcode (_require_human_passcode, shared with secrets_routes) on top
+    # of the Origin check below. This file's tests exercise team-creation
+    # business logic, not the passcode gate itself — bypass it here and
+    # exercise the real gate (missing/wrong/correct passcode, per route) in
+    # tests/test_human_proof_guard.py instead, matching test_character_routes.py.
+    monkeypatch.setattr(cr, '_require_human_passcode', lambda data: None)
+
     server.app.config['TESTING'] = True
     c = server.app.test_client()
     c.environ_base['HTTP_ORIGIN'] = BROWSER
