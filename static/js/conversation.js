@@ -1292,11 +1292,17 @@ function agentPanelHTML(p) {
   // the thread-shell case where the header above already names the person),
   // then the headline follows the same selection.
   const _personPickerHTML = _composerPersonPickerHTML(p, resumeId, _threadShellKey);
+  // Thread-shell "no conversations yet" reads off the SAME two caches the rail
+  // does, and openChannelPerson (which sets _threadShellKey) can run before
+  // either has landed — e.g. a drag-to-hire or a channel-row click right after
+  // a refresh. Same loading/failure gate as the rail's own empty slot.
+  const _threadShellLoading = _threadShellKey && !window._railSourcesLoaded(p.id);
+  const _threadShellFailed = _threadShellKey && !_threadShellLoading && window._railSourcesFailed(p.id);
   const emptyStateHTML = showEmptyState ? `<div class="composer-empty-state">
     ${_personPickerHTML}
     ${_threadShellKey || _personPickerHTML ? '' : '<div class="ces-icon">&#128172;</div>'}
-    <div class="ces-heading">${_threadShellKey ? 'No conversations yet' : `What should ${esc(_personName)} work on?`}</div>
-    <div class="ces-sub">${_threadShellKey ? 'Say something to start the thread.' : 'Describe a task in plain language.<br>The agent plans, edits files, and reports back.'}</div>
+    <div class="ces-heading">${_threadShellKey ? (_threadShellLoading ? 'Loading conversations&#8230;' : _threadShellFailed ? "Couldn't load conversations." : 'No conversations yet') : `What should ${esc(_personName)} work on?`}</div>
+    <div class="ces-sub">${_threadShellKey ? (_threadShellLoading ? 'Checking for earlier messages&#8230;' : _threadShellFailed ? 'Try again in a moment.' : 'Say something to start the thread.') : 'Describe a task in plain language.<br>The agent plans, edits files, and reports back.'}</div>
     <div class="ces-chips">${_threadShellKey ? '' :
       `<button type="button" class="ces-chip ces-chip-brainstorm" onclick="startBrainstormThis('${esc(p.id)}')" title="Switch this new chat to the Brainstorm persona and describe the idea below">
         <span class="ces-chip-icon">&#128161;</span>
@@ -1880,8 +1886,8 @@ function agentPanelHTML(p) {
     // Rail = ALL the project's user conversations (durable, transcript-derived,
     // + agent-log entries for old chats aged out of /conversations) — same source
     // as the mobile Layer-2 list, not just the open tabs.
-    if (!conversationsCache[p.id]) loadConversations(p.id);
-    if (!agentLogCache[p.id]) loadAgentLog(p.id);
+    if (!conversationsCache[p.id] || !window._railSourceStatus?.(p.id, 'conv')) loadConversations(p.id);
+    if (!agentLogCache[p.id] || !window._railSourceStatus?.(p.id, 'log')) loadAgentLog(p.id);
     // _mode is computed once at the top of this function — the mobile Layer-2
     // list needs it too, and two declarations would drift.
     const _railConvos = (_mode === 'chats' && typeof _userInitiatedConvos === 'function')
@@ -1892,7 +1898,7 @@ function agentPanelHTML(p) {
       ? _railChannelHTML(p)
       : (_railConvos.length
           ? mobileUserConversationsHTML(p, _railConvos)
-          : '<div class="agent-rail-empty">No conversations yet.</div>');
+          : railEmptyStateHTML(p.id, '<div class="agent-rail-empty">No conversations yet.</div>'));
     const _railW = parseInt(localStorage.getItem('mc_rail_w') || '', 10);
     const _railStyle = (_railW >= 200 && _railW <= 560) ? ` style="width:${_railW}px"` : '';
     // Split-view: two conversation panes side by side. Active only when a 2nd
@@ -3025,7 +3031,7 @@ function _railChannelHTML(p) {
     // conversations yet" with no toggle left to bring them back.
     const list = (convos.length || _hiddenHere.length)
       ? mobileUserConversationsHTML(p, convos, { listKey: p.id + '|ch|' + r.key, hiddenPool: _hiddenHere })
-      : `<div class="agent-rail-empty">No conversations with ${who} yet.</div>`;
+      : railEmptyStateHTML(p.id, `<div class="agent-rail-empty">No conversations with ${who} yet.</div>`);
     return rowHTML + `<div class="channel-expanded">${list}</div>`;
   }).join('');
   const roomHTML = inRoom.length
