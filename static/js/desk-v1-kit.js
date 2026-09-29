@@ -4,26 +4,68 @@
 // off `window.DeskV1Kit`, replacing the T0a stub whole (that stub's own
 // comment: "callers must not depend on this shape past T0a").
 (function () {
-  // ── Posy's face for posyBoxHTML() below (T8, MC-977 R0 exit cosmetic fix).
-  // desk.js resolves this the same way for the LEGACY Queue thread
-  // (_deskPosyAvatar, desk.js:116-119: /api/floor's bench, the global
-  // 'social-media-strategist' entry's `avatar` field, e.g. "fig:courier") —
-  // but that resolution runs from _loadDeskShell(), which openDesk() never
-  // reaches once desk_v1 is on (it returns via deskV1Open() first). Without
-  // a v1 copy of the same lookup, every posyBoxHTML() call fell through
-  // avatarHTML()'s "absence" branch and drew the neutral dashed circle
-  // instead of Posy's face. Fetched once, cached; failure leaves '' (same
-  // neutral-dot fallback as before this fix, never a guessed face).
-  let _posyAvatar = '';
-  fetch('/api/floor').then((r) => r.json()).then((floor) => {
-    const posy = ((floor && floor.bench) || []).find(
-      (b) => (b.scope || 'global') === 'global' && b.name === 'social-media-strategist');
-    _posyAvatar = posy ? (posy.avatar || '') : '';
-    if (typeof window.avatarHTML !== 'function') return;
-    document.querySelectorAll('.desk-v1-posy-box:not(.desk-v1-posy-box-compact) .desk-thread-head').forEach((head) => {
-      if (head.firstElementChild) head.firstElementChild.outerHTML = window.avatarHTML(_posyAvatar, 24);
+  // ── Agent of choice (R2-5, MC-977 IA revision 2 §5.3). The chat box below
+  // used to hardcode "Posy" (`social-media-strategist`) for every project;
+  // it now draws whoever the project actually picked — `presence.desk_agent`,
+  // or a campaign's own `how.agent` when the box has no project presence to
+  // read — resolved against the real roster via GET /api/characters. Fetched
+  // ONCE and cached by "scope:name" ref (same one-shot-fetch-then-repaint
+  // shape the old avatar lookup used, replaced here since it only ever
+  // resolved Posy's face, never her name). A ref this fetch doesn't
+  // recognise — never chosen, or a deleted character — resolves to `name:
+  // null`; callers paint UNRESOLVED_AGENT_LABEL for that, never a guess or
+  // the old hardcoded default.
+  let _agentsByRef = null; // null = the one fetch below hasn't landed yet
+  fetch('/api/characters').then((r) => r.json()).then((list) => {
+    const map = {};
+    (list || []).forEach((c) => { map[`${c.scope || 'global'}:${c.name}`] = c; });
+    _agentsByRef = map;
+    _repaintDeskAgentBoxes();
+  }).catch(() => { _agentsByRef = {}; });
+
+  const UNRESOLVED_AGENT_LABEL = 'Pick who plans for this project ›';
+
+  // opts: {project, campaign}. Precedence matches the row's own wording —
+  // the project's standing pick first, a campaign's own (multi-project
+  // campaigns, or a box with no project presence at hand) second.
+  function deskAgentRef(opts) {
+    opts = opts || {};
+    const presence = (opts.project && opts.project.presence) || {};
+    return presence.desk_agent || (opts.campaign && opts.campaign.how && opts.campaign.how.agent) || null;
+  }
+
+  // {ref, name, avatar} once the roster fetch has landed and recognises the
+  // ref; {ref, name: null, avatar: ''} while the fetch is still in flight,
+  // `ref` was never set, or nothing installed matches it.
+  function resolveDeskAgent(ref) {
+    if (!ref || !_agentsByRef) return { ref: ref || null, name: null, avatar: '' };
+    const rec = _agentsByRef[ref];
+    if (!rec) return { ref, name: null, avatar: '' };
+    return { ref, name: rec.agent_name || rec.display_name || rec.name, avatar: rec.avatar || '' };
+  }
+
+  // Convenience for the many sentence-embedded copy spots ("Tell X what to
+  // change…", "X has it") that need a plain string, never the header's
+  // pick-agent prompt — `fallback` defaults to a lowercase generic term that
+  // reads fine mid-sentence regardless of where it lands.
+  function deskAgentName(opts, fallback) {
+    return resolveDeskAgent(deskAgentRef(opts)).name || (fallback === undefined ? 'your agent' : fallback);
+  }
+
+  // Re-resolves every mounted box once the roster fetch lands — the same
+  // deferred-patch shape the old avatar-only version of this used, now also
+  // correcting the name text, not just the face.
+  function _repaintDeskAgentBoxes() {
+    document.querySelectorAll('.desk-v1-posy-box[data-agent-ref]:not(.desk-v1-posy-box-compact)').forEach((box) => {
+      const resolved = resolveDeskAgent(box.getAttribute('data-agent-ref') || null);
+      const nameEl = box.querySelector('.desk-thread-name');
+      if (nameEl) nameEl.textContent = resolved.name || UNRESOLVED_AGENT_LABEL;
+      const head = box.querySelector('.desk-thread-head');
+      if (head && head.firstElementChild && resolved.name && typeof window.avatarHTML === 'function') {
+        head.firstElementChild.outerHTML = window.avatarHTML(resolved.avatar, 24);
+      }
     });
-  }).catch(() => {});
+  }
 
   // ── §9 vocabulary: 15 version states + 6 campaign states, glyph + word ───
   // (LIF-01/02/03). Never a kind-local string — every surface renders status
@@ -358,16 +400,25 @@
   // and wires `onSend`; the kit doesn't invent a suggestion source. ────────
   //
   // opts.compact / opts.sendStyle are opt-in (frame 12b): compact drops the
-  // avatar+"Posy" name row so the scope chip is the box's only top-row
-  // content; sendStyle:'arrow' swaps the text Send button for a round icon
-  // one. Both default OFF, producing byte-identical markup to before either
-  // option existed — callers that don't pass them are unaffected.
+  // avatar+name row so the scope chip is the box's only top-row content;
+  // sendStyle:'arrow' swaps the text Send button for a round icon one. Both
+  // default OFF, producing byte-identical markup to before either option
+  // existed — callers that don't pass them are unaffected.
+  //
+  // opts.agentRef (R2-5): the "scope:name" character ref this box speaks
+  // as — pass `DeskV1Kit.deskAgentRef({project, campaign})`'s result. Drives
+  // both the name row and the avatar; `data-agent-ref` carries it into the
+  // DOM so `_repaintDeskAgentBoxes` can correct a box mounted before the one
+  // roster fetch above landed. No ref (nothing chosen) or an unrecognised one
+  // both render UNRESOLVED_AGENT_LABEL, never a guessed or hardcoded name.
   function posyBoxHTML(opts) {
     opts = opts || {};
     const inputId = opts.inputId || ('desk-v1-posy-input-' + Math.random().toString(36).slice(2));
     const compact = !!opts.compact;
-    const avatar = (!compact && typeof window.avatarHTML === 'function') ? window.avatarHTML(opts.avatar || _posyAvatar, 24) : '';
-    const nameHTML = compact ? '' : '<span class="desk-thread-name">Posy</span>';
+    const ref = opts.agentRef || null;
+    const resolved = resolveDeskAgent(ref);
+    const avatar = (!compact && resolved.name && typeof window.avatarHTML === 'function') ? window.avatarHTML(resolved.avatar, 24) : '';
+    const nameHTML = compact ? '' : `<span class="desk-thread-name">${esc(resolved.name || UNRESOLVED_AGENT_LABEL)}</span>`;
     const scope = opts.scopeLabel
       ? `<button type="button" class="desk-v1-posy-scope" data-scope-trigger="1">About: ${esc(opts.scopeLabel)} &#9662;</button>`
       : '';
@@ -384,12 +435,12 @@
       ? `<button type="button" class="desk-v1-posy-send-arrow" data-posy-send="${esc(inputId)}" aria-label="Send">&#10148;</button>`
       : `<button class="btn-dispatch" data-posy-send="${esc(inputId)}">Send</button>`;
     return `
-      <div class="desk-v1-posy-box${compact ? ' desk-v1-posy-box-compact' : ''}">
+      <div class="desk-v1-posy-box${compact ? ' desk-v1-posy-box-compact' : ''}" data-agent-ref="${esc(ref || '')}">
         <div class="desk-thread-head">${avatar}${nameHTML}${scope}</div>
         <div class="agent-output desk-v1-posy-output">${suggestionHTML}</div>
         ${chipsHTML}
         <div class="agent-input-row">
-          <textarea class="agent-task-input" id="${esc(inputId)}" rows="1" placeholder="Tell Posy what to change…"></textarea>
+          <textarea class="agent-task-input" id="${esc(inputId)}" rows="1" placeholder="Tell ${esc(resolved.name || 'your agent')} what to change…"></textarea>
           ${sendBtnHTML}
         </div>
       </div>`;
@@ -443,7 +494,7 @@
     if (ask.state === 'sending') {
       output.innerHTML = `${bubble}<div class="desk-v1-posy-status" aria-live="polite">Sending&hellip;</div>`;
     } else if (ask.state === 'accepted') {
-      output.innerHTML = `${bubble}<div class="desk-v1-posy-status" aria-live="polite">Posy has it</div>`;
+      output.innerHTML = `${bubble}<div class="desk-v1-posy-status" aria-live="polite">${esc(ctx.agentName || 'Your agent')} has it</div>`;
     } else if (ask.state === 'working') {
       const elapsed = Date.now() - ask.startedAt;
       const indicator = typeof window.actIndicatorHTML === 'function' ? window.actIndicatorHTML('tool') : '';
@@ -473,7 +524,7 @@
     } else if (ask.state === 'failed' || ask.state === 'cancelled' || ask.state === 'timed_out') {
       const reason = ask.error || (ask.state === 'cancelled' ? 'cancelled' : 'unknown error');
       output.innerHTML = `
-        <div class="desk-v1-posy-failed" aria-live="polite">&#9888; Posy couldn't finish: ${esc(reason)}. Nothing was changed.</div>
+        <div class="desk-v1-posy-failed" aria-live="polite">&#9888; ${esc(ctx.agentName || 'Your agent')} couldn't finish: ${esc(reason)}. Nothing was changed.</div>
         <div class="desk-v1-posy-failed-actions">
           <button type="button" class="btn-secondary" data-posy-retry="1">Retry</button>
           <button type="button" class="btn-secondary" data-posy-edit="1">Edit request</button>
@@ -501,7 +552,20 @@
   // paints Ready on its own (see _paintPosyOutput above).
   function paintPosyReadyNoDiff(boxEl) {
     const output = boxEl && boxEl.querySelector('.desk-v1-posy-output');
-    if (output) output.innerHTML = '<div class="desk-v1-posy-status" aria-live="polite">Posy answered; nothing changed.</div>';
+    if (!output) return;
+    const name = resolveDeskAgent(_refFromContainer(boxEl)).name || 'Your agent';
+    output.innerHTML = `<div class="desk-v1-posy-status" aria-live="polite">${esc(name)} answered; nothing changed.</div>`;
+  }
+
+  // The box's own ref lives on posyBoxHTML()'s `data-agent-ref` — read it
+  // back off the DOM rather than asking every caller to pass it a second
+  // time to bindPosyBox()/paintPosyReadyNoDiff() (both always operate on the
+  // same element posyBoxHTML() rendered into, or a direct ancestor of it).
+  function _refFromContainer(containerEl) {
+    if (!containerEl) return null;
+    const el = containerEl.matches && containerEl.matches('[data-agent-ref]')
+      ? containerEl : containerEl.querySelector('[data-agent-ref]');
+    return el ? (el.getAttribute('data-agent-ref') || null) : null;
   }
 
   function _clearPosyTimers(ask) {
@@ -566,7 +630,7 @@
       _runWorkingPhase(key, ask, 1500 + Math.random() * 2500, () => {
         if (force === 'fail') _resolvePosyTask(key, ask, 'failed', { error: 'Simulated failure (R0 test hook)' });
         else if (force === 'timeout') _resolvePosyTask(key, ask, 'timed_out', { error: 'timed out' });
-        else if (force === 'question') _resolvePosyTask(key, ask, 'needs_answer', { question: { text: 'This would widen what Posy can do — go ahead?', options: ['Yes', 'No'] } });
+        else if (force === 'question') _resolvePosyTask(key, ask, 'needs_answer', { question: { text: `This would widen what ${ctx.agentName || 'your agent'} can do — go ahead?`, options: ['Yes', 'No'] } });
         else _resolvePosyTask(key, ask, 'ready', { result: { affected: [] } });
       });
     }, 120);
@@ -605,7 +669,13 @@
     }
     return false;
   }
-  const POSY_WORKING_LABEL = '⟳ Posy working';
+  // R2-5: was a fixed '⟳ Posy working' string; now built per-caller from the
+  // resolved agent so Home's project-card badge (the one caller) names
+  // whoever the project actually picked. Same deskAgentName(opts, fallback)
+  // resolution as every other sentence-embedded label in this file.
+  function deskAgentWorkingLabel(opts) {
+    return `⟳ ${deskAgentName(opts)} working`;
+  }
 
   // Wires a mounted posyBoxHTML() instance: chips FILL the input (never
   // auto-send — same fixed-set convention as the Queue thread's quick
@@ -655,7 +725,8 @@
       containerEl.appendChild(footer);
     }
     const ta = document.getElementById(inputId);
-    const ctx = { containerEl, ta, key, onSend };
+    const agentName = resolveDeskAgent(_refFromContainer(containerEl)).name || 'your agent';
+    const ctx = { containerEl, ta, key, onSend, agentName };
     if (ta && key) {
       const entry = _entryFor(key);
       if (entry.draftText) ta.value = entry.draftText;
@@ -918,7 +989,8 @@
     addToMenu, bindAddToTrigger,
     infoIconHTML, bindInfoIcons,
     posyBoxHTML, bindPosyBox,
-    anyPosyWorking, POSY_WORKING_LABEL, paintPosyReadyNoDiff,
+    deskAgentRef, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL,
+    anyPosyWorking, deskAgentWorkingLabel, paintPosyReadyNoDiff,
     openConfirmSheet,
     validatePlan, validatePresence,
     computeBoundsHash, boundsWiden, nextBoundsHash,

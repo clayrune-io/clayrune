@@ -990,8 +990,10 @@
     const st = _ensureState(camp.id);
     const sugg = (_fx().campaignSuggestions || {})[camp.id] || {};
     const scopeLabel = st.selection.scope === 'card' ? st.selection.label : camp.plan.title;
+    const project = _project(camp.projectId);
+    const agentRef = DeskV1Kit.deskAgentRef({ project, campaign: camp });
     el.innerHTML = `<div class="desk-v1-camp-posy">${DeskV1Kit.posyBoxHTML({
-      inputId: 'desk-v1-camp-posy-input', scopeLabel, suggestion: sugg.suggestion, chips: sugg.chips,
+      inputId: 'desk-v1-camp-posy-input', scopeLabel, suggestion: sugg.suggestion, chips: sugg.chips, agentRef,
     })}</div>`;
     // §3.4 INS-01/02/03/04 (before → after, widening confirm, durable rule
     // chips) is T2b's Posy-instruction handler — backward-compatible seam,
@@ -1001,7 +1003,7 @@
       if (typeof window.deskV1HandlePosyInstruction === 'function') {
         window.deskV1HandlePosyInstruction(camp, text, el.querySelector('.desk-v1-camp-posy'), st.selection);
       } else {
-        DeskV1Kit.toast('Sent to Posy: “' + text + '”');
+        DeskV1Kit.toast('Sent to ' + DeskV1Kit.deskAgentName({ project, campaign: camp }) + ': “' + text + '”');
         DeskV1Kit.paintPosyReadyNoDiff(el.querySelector('.desk-v1-camp-posy'));
       }
     }, {
