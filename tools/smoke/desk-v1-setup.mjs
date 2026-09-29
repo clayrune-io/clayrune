@@ -9,8 +9,13 @@
  * Start -> Active; leaving setup at step 2 shows 'Setup 2 of 3' on the
  * project page's campaign card, and Continue lands back on step 2; a
  * campaign whose picked accounts are all manual-capability (no API-
- * connected account) completes via the '✋ You publish it' Replies copy
- * instead of the API-review default.
+ * connected account) COMPLETES via the '✋ You publish it' Replies copy
+ * instead of the API-review default — Confirm still takes it Active.
+ *
+ * IA4 rework (Dave's review): step 3's Confirm is gated on validatePlan ok,
+ * naming each missing bound with its step when it isn't; every inherited
+ * ('from <project>') row carries a 'Change for the project ›' link to that
+ * project's Presence page.
  *
  * Real headless boot (real index.html + real static/js|css, no network), same
  * hermetic shape as desk-v1-project.mjs / desk-v1-rules.mjs.
@@ -242,6 +247,18 @@ async function runZeroConnectedAccountsManualCopy(browser) {
   repliesVal === '✋ You publish it'
     ? ok(`zero connected (all-manual) accounts: Replies row reads "${repliesVal}"`)
     : fail(`Replies row wrong for all-manual accounts: ${JSON.stringify(repliesVal)}`);
+
+  // IA4 rework gap 3 (Dave's review): the acceptance row's own wording says
+  // zero connected accounts COMPLETES via "✋ You publish it" — the manual
+  // Replies copy is not a dead end. Confirm should still take the campaign
+  // Active (the draft's plan has accounts/cadence/end all set by "Draft the
+  // plan" above, so validatePlan is ok despite every account being manual).
+  await page.click('[data-sheet-confirm]');
+  await page.waitForSelector('.desk-v1-camp-state-pill', { timeout: 4000 });
+  const activeText = (await page.textContent('.desk-v1-camp-state-pill').catch(() => '') || '');
+  /Active/.test(activeText)
+    ? ok(`zero connected (all-manual) accounts: Confirm — Start campaign still completes to Active: "${activeText.trim()}"`)
+    : fail(`zero connected (all-manual) accounts: campaign not Active after Start confirm: ${JSON.stringify(activeText)}`);
 
   reportUncaught(pageErrors, '[zero-connected-accounts-manual-copy]');
   await ctx.close();
