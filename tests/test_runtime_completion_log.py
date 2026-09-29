@@ -682,7 +682,17 @@ def _later(**delta):
 def test_idle_mode_b_session_with_a_live_process_is_not_closed(env):
     """Fenn round 4 LIVE_mode-b: the reader flips the session to 'idle' on
     every result while the process lives; 1572b2c's status-only live set
-    closed it 'ended_unknown'. Checked well past the 120s grace."""
+    closed it 'ended_unknown'. Checked well past the 120s grace.
+
+    MC-998 reopened: `open` is now `[]`, not `['mb-idle']` -- the per-turn
+    checkpoint write (`_write_usage_breakdown_turn_checkpoint`) now stamps a
+    terminal 'completed' status with `ended_at` set at the turn's own end
+    (Dave's review of the first version of this fix), so `list_open_sessions`
+    correctly stops treating the idle-between-turns session as open; the
+    next turn's `mark_session_running` reopens it. `closed == []` still
+    holds and is what this test actually protects: reconcile has nothing to
+    wrongly close here because the store already reflects the turn as done,
+    not because it never looked."""
     ar = env['ar']
     seen = {}
     s = _mode_b_session(env, 'mb-idle')
@@ -698,7 +708,7 @@ def test_idle_mode_b_session_with_a_live_process_is_not_closed(env):
     ar._read_agent_stream_b(proc, s)
     assert seen['status'] == 'idle'
     assert seen['closed'] == []
-    assert seen['open'] == ['mb-idle']
+    assert seen['open'] == []
 
 
 def test_mc_question_wait_is_not_closed(env):
@@ -931,14 +941,78 @@ def test_mode_b_turn_boundary_writes_a_completion_checkpoint_per_turn(env):
     ar._read_agent_stream_b(proc, s)
 
     assert seen['counts'] == [1, 2, 3], seen
-    # Status stays 'running'/no ended_at between turns — this is a mid-
-    # session snapshot, not the session's end (mark_session_running already
-    # covers that half; this pins the checkpoint doesn't fight it).
-    assert seen['status'] == ['running', 'running', 'running'], seen
-    assert seen['ended_at'] == [None, None, None], seen
+    # Status is terminal 'completed' with ended_at stamped at each turn's
+    # own end — an open 'running' fact between turns made every window
+    # touching a live-but-idle Mode B chat read incomplete (Dave's review
+    # of the first version of this fix). The next turn's
+    # `_log_agent_dispatch_pending` -> `mark_session_running` reopens it.
+    assert seen['status'] == ['completed', 'completed', 'completed'], seen
+    assert all(v is not None for v in seen['ended_at']), seen
     # `_accumulate_session_usage` sums each turn's usage into a running
     # session total (Mode B's `result` carries only that turn's own
     # counts) — so each checkpoint's cumulative total climbs, and the
     # aggregate derives turn 2's own delta by diffing checkpoint N-1 from N.
     rows = sorted(_completion_checkpoints(env, 'mb-multiturn'), key=lambda r: r['observed_at'])[:3]
     assert [r['output_tokens'] for r in rows] == [10, 20, 30], rows
+
+
+def test_mode_b_idle_window_between_turns_is_measurable_not_incomplete(env):
+    """Dave's review of the first version of this fix: writing the per-turn
+    checkpoint with non-terminal status 'in_progress' left `ended_at` unset,
+    so `_session_evidence` (usage_breakdown_aggregate.py) treated everything
+    after the LAST completion as one open unmeasured span forever -- a
+    window covering only an already-finished turn plus the idle time after
+    it still read incomplete, the exact symptom MC-998 exists to fix. The
+    terminal 'completed' status (this file's current code) stamps `ended_at`
+    at each turn's own end, closing its span there. Fails on the
+    'in_progress' version: `incomplete` would be 1, not 0, for `window_a`.
+
+    Range boundaries are the checkpoints' OWN `observed_at` values, read
+    from inside each turn's hook (before the harness's end-of-generator
+    exit path can append its own artifact completion -- see the sibling
+    `test_mode_b_turn_boundary_writes_a_completion_checkpoint_per_turn`'s
+    `[:3]` slice for the same caveat) -- never a hook's own wall-clock
+    capture, which races the checkpoint write's `load_project` /
+    transcript-telemetry read and can land a few hundred ms after it,
+    inside the NEXT turn's span, falsely flagging it as crossing."""
+    from datetime import timedelta
+    from mc.usage_breakdown_aggregate import _parse_iso, filter_facts_in_range
+    ar = env['ar']
+    s = _mode_b_session(env, 'mb-window')
+    ar._log_agent_dispatch_pending(s)
+    store = _breakdown_store(env)
+    observed = {}
+
+    def snap(n):
+        def _hook():
+            rows = sorted(_completion_checkpoints(env, 'mb-window'), key=lambda r: r['observed_at'])
+            observed[n] = rows[-1]['observed_at']
+        return _hook
+
+    proc = _MultiTurnModeBProc([
+        (_result_line(), snap(1)),
+        (_result_line(), snap(2)),
+        (_result_line(), snap(3)),
+    ])
+    s['proc'] = proc
+    ar._read_agent_stream_b(proc, s)
+
+    checkpoints = {'mb-window': store.get_session_checkpoints('mb-window')}
+    idle_after = (_parse_iso(observed[3]) + timedelta(hours=1)).isoformat()
+
+    # window_a: turn 1's own end through well past turn 3's end (the idle
+    # tail) -- fully contains turns 2 and 3, no open span anywhere inside.
+    rows_a, incomplete_a = filter_facts_in_range(
+        store.list_session_facts(), checkpoints, provider='claude',
+        range_start=observed[1], range_end=idle_after)
+    assert incomplete_a == 0, (rows_a, incomplete_a)
+    assert rows_a and rows_a[0]['output_tokens'] == 20, rows_a  # turn2 + turn3: 10 + 10
+
+    # A 4th turn starts (mark_session_running) with no completion yet -- a
+    # window still reaching into the idle tail must now read incomplete:
+    # that turn is open, unmeasured.
+    store.mark_session_running('mb-window')
+    rows_b, incomplete_b = filter_facts_in_range(
+        store.list_session_facts(), checkpoints, provider='claude',
+        range_start=observed[1], range_end=idle_after)
+    assert incomplete_b == 1, (rows_b, incomplete_b)

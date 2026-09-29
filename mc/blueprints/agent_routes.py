@@ -8304,17 +8304,26 @@ def _write_usage_breakdown_turn_checkpoint(session):
     `record_session_checkpoint` below), but independently, so it never
     touches the agent_log (no completion row -- the session is not done) and
     never fires spawner callbacks (`_maybe_notify_spawner` already ran for
-    this turn in the 'result' handler). `status` is passed as the
-    non-terminal 'in_progress' so `session_fact_from_entry` leaves `status`
-    'running' and `ended_at` unset -- this is a mid-session snapshot, not
-    the session's end; `mark_session_running` (already called at this
-    turn's START via `_log_agent_dispatch_pending`) is what durably marks
-    it live, this only adds the turn's measured delta to the checkpoint
-    history so `_session_turns` can derive it instead of leaving the whole
-    span unmeasured. `record_session_checkpoint`'s 'completion' index is
-    keyed on (session_id, checkpoint_type, observed_at), not unique per
-    session (round 3 fix) -- exactly designed for one row per turn; this is
-    the first caller that actually writes more than one per session.
+    this turn in the 'result' handler).
+
+    `status` is 'completed' (terminal), NOT the non-terminal 'in_progress'
+    an earlier version of this fix used -- Dave's review of 963d4bd caught
+    that 'in_progress' maps to `session_fact.status='running'` with no
+    `ended_at`, which makes `_fact_is_running` (usage_breakdown_aggregate.py)
+    true and `_session_evidence` append an OPEN `(last_completion, None)`
+    span after EVERY turn -- so the CURRENT window read incomplete
+    whenever a Mode B chat sat idle between turns, the exact symptom this
+    bugfix exists to remove. A terminal 'completed' status stamps
+    `ended_at` at this turn's own end, closing the span there; the next
+    turn's `_log_agent_dispatch_pending` -> `mark_session_running` (round
+    3/4, already shipped) reopens it as 'running' with `ended_at` cleared
+    when that turn starts, and THIS write closes it again when it ends --
+    matching a real Mode-A session's baseline->completion->baseline cycle
+    turn for turn, just without a process exit between them.
+    `record_session_checkpoint`'s 'completion' index is keyed on
+    (session_id, checkpoint_type, observed_at), not unique per session
+    (round 3 fix) -- exactly designed for one row per turn; this is the
+    first caller that actually writes more than one per session.
     Best-effort, same exception handling as the process-exit write."""
     project_id = session.get('project_id')
     sid = session.get('session_id')
@@ -8329,11 +8338,11 @@ def _write_usage_breakdown_turn_checkpoint(session):
         if _pp and _csid:
             _tf = _find_transcript_file(_pp, _csid)
             _telemetry = _extract_transcript_telemetry(_tf)
-    except Exception:
-        pass
+    except Exception as e:
+        _log(f"[usage-breakdown] turn checkpoint transcript read failed for {sid[:12]}: {e}")
     entry = {
         'provider': session.get('provider', 'claude'),
-        'status': 'in_progress',
+        'status': 'completed',
         'started_at': session.get('started_at', ''),
         'ts': now_iso(),
         'usage': session.get('usage', {}),
