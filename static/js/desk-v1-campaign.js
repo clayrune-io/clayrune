@@ -948,7 +948,10 @@
       // §5/T3: the key must be a stable id, never a label — two cards can
       // share a title (same bug desk-v1-video.js's own _posyDraftKey fixed),
       // which would collapse their Posy drafts onto one entry.
-      draftKey: `campaign:${camp.id}:${st.selection.scope}:${st.selection.id || ''}`,
+      // §3 T3 row: every draft key is prefixed `project:<pid>:` so Home's
+      // project card (`anyPosyWorking('project:<pid>:')`) sees work in flight
+      // anywhere under that project, not just this one campaign scope.
+      draftKey: `project:${camp.projectId}:campaign:${camp.id}:${st.selection.scope}:${st.selection.id || ''}`,
       taskLifecycle: true,
     });
   }

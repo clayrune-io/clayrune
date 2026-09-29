@@ -12,6 +12,7 @@
   // ── data resolution ────────────────────────────────────────────────────
   function _fx() { return window.DeskV1Fixtures || {}; }
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id); }
+  function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id); }
 
   // Every {family, version} pair in campaignId with state 'needs_review', in
   // fixture array order — the stepper's "n of m to review" list (§4 header).
@@ -461,7 +462,7 @@
       window.DeskV1Kit.bindPosyBox(el.querySelector('#desk-v1-review-posy'), 'desk-v1-review-posy-input', (text) => {
         window.DeskV1Kit.toast('Sent to Posy: "' + text + '"', {});
         window.DeskV1Kit.paintPosyReadyNoDiff(el.querySelector('#desk-v1-review-posy'));
-      }, { draftKey: `review:${version.id}`, taskLifecycle: true });
+      }, { draftKey: `project:${(_campaign(family.campaignId) || {}).projectId}:review:${version.id}`, taskLifecycle: true });
       // §4: "Say this once in an ⓘ tooltip; don't print it permanently."
       window.DeskV1Kit.bindInfoIcons(el, {
         'review-approve-binding': 'Approving binds this revision, destination, link, schedule and policy version together — changing any of them invalidates the approval.',

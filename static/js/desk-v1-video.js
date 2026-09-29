@@ -295,7 +295,8 @@
   // family. `_st.scope.id` is already the stable per-scope id `_scopeOptions`
   // hands out (scene id / version id / null for 'whole').
   function _posyDraftKey(family) {
-    return `video:${family.id}:${_st.scope.type}:${_st.scope.id || 'whole'}`;
+    const camp = _campaign(family.campaignId);
+    return `project:${camp ? camp.projectId : ''}:video:${family.id}:${_st.scope.type}:${_st.scope.id || 'whole'}`;
   }
 
   const VIDEO_TABS = [['source', 'Source'], ['storyboard', 'Storyboard'], ['renders', 'Renders']];
