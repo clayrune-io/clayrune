@@ -57,8 +57,82 @@ let _deskLedger30 = null;          // wider ledger pull for the 30-day panel (ov
 
 async function _deskFetch(path, opts) {
   const res = await fetch(API_BASE + path, opts);
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(`${path} -> ${res.status}`);
+    err.status = res.status;
+    // Attach the JSON body (e.g. {pick_agent:true, project_id}) so a caller
+    // can act on WHY a call failed, not just that it did — existing callers
+    // only ever read `.message`, so this is additive.
+    try { err.body = await res.clone().json(); } catch (_) { /* not JSON */ }
+    throw err;
+  }
   return res.json();
+}
+
+// ── Agent of choice — 409 pick_agent handoff (MC-977 IA revision 2, R1-A/R2-5
+// follow-up). draft/seed_voice/triage now 409 with {pick_agent:true,
+// project_id} instead of a silent default when a project never picked who
+// plans for it. The v1 Desk sends this to a Presence page; legacy desk.js has
+// no such page, so this shows a small inline chooser off the same
+// /api/characters roster, PATCHes the pick onto presence, and retries the
+// original call once. Never bypasses _deskReadOnly — the retry re-enters the
+// same guarded function that made the original call.
+let _deskAgentChoices = null;
+async function _deskAgentChoiceList() {
+  if (_deskAgentChoices) return _deskAgentChoices;
+  try { _deskAgentChoices = await _deskFetch('/api/characters'); }
+  catch (e) { _deskAgentChoices = []; }
+  return _deskAgentChoices;
+}
+
+function _deskPickAgentOverlay(projectId, message) {
+  return new Promise((resolve) => {
+    _deskAgentChoiceList().then((list) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'desk-pickagent-overlay';
+      wrap.innerHTML = `
+        <div class="desk-pickagent-panel">
+          <div class="desk-pickagent-title">${esc(message || 'Pick who plans for this project')}</div>
+          <div class="desk-pickagent-list">${(list || []).map((c) =>
+            `<button type="button" class="desk-pickagent-choice" data-ref="${esc((c.scope || 'global') + ':' + c.name)}">${c.avatar ? esc(c.avatar) + ' ' : ''}${esc(c.agent_name || c.display_name || c.name)}</button>`
+          ).join('') || '<div class="desk-pickagent-empty">No agents available.</div>'}</div>
+          <button type="button" class="desk-pickagent-cancel" data-cancel>Cancel</button>
+        </div>`;
+      document.body.appendChild(wrap);
+      const cleanup = () => wrap.remove();
+      wrap.querySelector('[data-cancel]').onclick = () => { cleanup(); resolve(false); };
+      wrap.addEventListener('click', (e) => { if (e.target === wrap) { cleanup(); resolve(false); } });
+      wrap.querySelectorAll('[data-ref]').forEach((btn) => {
+        btn.onclick = async () => {
+          const ref = btn.dataset.ref;
+          cleanup();
+          try {
+            await _deskFetch(`/api/desk/presence/${encodeURIComponent(projectId)}`, {
+              method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ desk_agent: ref }),
+            });
+            resolve(true);
+          } catch (e) {
+            if (typeof showToast === 'function') showToast('Could not save that pick: ' + e.message, 4000);
+            resolve(false);
+          }
+        };
+      });
+    });
+  });
+}
+
+// Call from a catch block: `if (_deskHandlePickAgent(e, retry)) return;` —
+// true means this WAS a pick_agent 409 (chooser shown, `retry` re-runs on a
+// successful pick; the caller's own error handling should stop here). False
+// means it wasn't, and the caller's normal catch logic applies.
+function _deskHandlePickAgent(err, retry, onCancel) {
+  const body = err && err.body;
+  if (!body || !body.pick_agent || !body.project_id) return false;
+  _deskPickAgentOverlay(body.project_id, body.error).then((picked) => {
+    if (picked) retry(); else if (onCancel) onCancel();
+  });
+  return true;
 }
 
 async function _loadDesk() {
@@ -314,8 +388,9 @@ async function deskDraft(signalId, voice, campaignId) {
         : `Posy is drafting a ${out.platform} post — it lands in the Queue.`);
     }
   } catch (e) {
-    // A 409 means the signal was already drafted from, which is a real answer
-    // and not a failure — say which, rather than a generic error.
+    if (_deskHandlePickAgent(e, () => deskDraft(signalId, voice, campaignId))) return;
+    // A plain 409 means the signal was already drafted from, which is a real
+    // answer and not a failure — say which, rather than a generic error.
     const msg = /409/.test(e.message) ? 'Already drafted from that one.'
                                       : 'Could not brief the writer: ' + e.message;
     if (typeof showToast === 'function') showToast(msg);
@@ -549,8 +624,10 @@ async function deskSeedVoice(name) {
       showToast(`Reading ${out.samples} of your own messages to seed the "${name}" voice.`);
     }
   } catch (e) {
+    const reset = () => { if (btn) { btn.disabled = false; btn.textContent = 'Learn from how I write'; } };
+    if (_deskHandlePickAgent(e, () => deskSeedVoice(name), reset)) return;
     show('Could not start it: ' + e.message);
-    if (btn) { btn.disabled = false; btn.textContent = 'Learn from how I write'; }
+    reset();
   }
 }
 
@@ -915,6 +992,7 @@ async function deskTriage() {
         : `Posy is weighing ${out.considering} signals. Her picks land here.`);
     }
   } catch (e) {
+    if (_deskHandlePickAgent(e, () => deskTriage())) return;
     if (typeof showToast === 'function') showToast('Could not start triage: ' + e.message, 4000);
   } finally {
     _deskTriaging = false;
