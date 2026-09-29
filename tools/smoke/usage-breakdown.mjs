@@ -163,6 +163,12 @@ function routeHandler(breakdownBody, windowsBody, calls) {
   };
 }
 
+// MC-998 follow-up (Dave, Ron 2026-09-28): the Breakdown section moved OUT of
+// the Usage modal/popover into its own Advanced-sidebar page (`usage-report`,
+// `openUsageReport()`, `#usage-report-surface`) — same content/renderer,
+// reached identically from desktop sidebar and mobile drawer. Both helpers
+// below now open THAT surface; names kept as-is to avoid touching every call
+// site in this file.
 async function openDesktopPopover(browser, breakdownBody, windowsBody, calls) {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
@@ -171,9 +177,8 @@ async function openDesktopPopover(browser, breakdownBody, windowsBody, calls) {
   await page.route('**/*', routeHandler(breakdownBody, windowsBody, calls));
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
-  await page.evaluate(() => { toggleSysStatusPopover(); _sysStatusSwitchTab('usage'); });
-  await page.waitForSelector('#sys-status-popover.open', { timeout: 3000 });
-  await page.waitForSelector('.ub-controls', { state: 'attached', timeout: 5000 });
+  await page.evaluate(() => { sidebarNav('usage-report'); });
+  await page.waitForSelector('#usage-report-surface .ub-controls', { state: 'attached', timeout: 5000 });
   return { ctx, page, pageErrors };
 }
 
@@ -185,8 +190,8 @@ async function openMobileModal(browser, breakdownBody, windowsBody, calls) {
   await page.route('**/*', routeHandler(breakdownBody, windowsBody, calls));
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
-  await page.evaluate(() => { openSystemUsage(); });
-  await page.waitForSelector('.ub-controls', { state: 'attached', timeout: 5000 });
+  await page.evaluate(() => { mobileDrawerNav('usage-report'); });
+  await page.waitForSelector('#usage-report-surface .ub-controls', { state: 'attached', timeout: 5000 });
   return { ctx, page, pageErrors };
 }
 
@@ -310,8 +315,13 @@ try {
     await ctx.close();
   }
 
-  // ── 6. Finding #6: the desktop weekly-strip entry loads Breakdown for the
-  //      CLICKED provider, not the Claude/5h defaults ─────────────────────
+  // ── 6. Finding #6 SUPERSEDED (MC-998 follow-up, Ron 2026-09-28): the strip
+  //      no longer opens this report at all -- it shows its own small anchored
+  //      popup with its OWN independent fetch (own dimension queries, own
+  //      cache; see usage-bar-popup.mjs). What the original finding protected
+  //      against (a click filling the report with the wrong provider) is now
+  //      structural: clicking a bar cannot touch the report's `_ubProvider`
+  //      selection at all. Assert exactly that decoupling. ─────────────────
   {
     const calls = [];
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -319,25 +329,28 @@ try {
     await page.route('**/*', routeHandler(POPULATED_FIXTURE, WINDOWS_FIXTURE, calls));
     await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#usage-bar-strip .usage-bar-item', { state: 'attached', timeout: 15000 });
-    calls.length = 0;
+
+    // Click the codex bar (opens the small popup, its own fetch pipeline)...
     await page.click('#usage-bar-strip .usage-bar-item');
-    await page.waitForSelector('#sys-status-popover.open', { timeout: 3000 }).catch(() => {});
-
-    const popoverOpen = await page.$eval('#sys-status-popover', (el) => el.classList.contains('open')).catch(() => false);
-    const activeTabLabel = await page.$eval('#sys-status-popover .ssp-tab.active', (el) => el.textContent.trim()).catch(() => null);
-    (popoverOpen && activeTabLabel === 'Usage')
-      ? ok('strip click opens the popover on the Usage tab')
-      : fail(`strip click should open Usage tab, open=${popoverOpen} activeTab=${activeTabLabel}`);
-
     await page.waitForTimeout(200);
-    calls.some((c) => c.includes('/api/system/usage/breakdown') && c.includes('provider=codex') && c.includes('window_kind=7d'))
-      ? ok('strip click fetches Breakdown for the clicked provider (codex) at 7d, not Claude/5h defaults')
-      : fail(`strip click did not fetch codex/7d breakdown, saw: ${JSON.stringify(calls)}`);
+    const reportOpenedByBarClick = await page.$eval('#usage-report-surface', () => true).catch(() => false);
+    !reportOpenedByBarClick
+      ? ok('clicking the codex bar never opens the Usage report at all')
+      : fail('clicking a bar should not open the Usage report');
 
+    // ...then open the report separately: it must still default to claude/5h,
+    // completely unaffected by which bar was just clicked.
+    calls.length = 0;
+    await page.evaluate(() => { sidebarNav('usage-report'); });
+    await page.waitForSelector('#usage-report-surface .ub-controls', { state: 'attached', timeout: 5000 });
+    await page.waitForTimeout(200);
+    calls.some((c) => c.includes('/api/system/usage/breakdown') && c.includes('provider=claude') && c.includes('window_kind=5h'))
+      ? ok('the report opens on its own claude/5h default, unaffected by the earlier codex bar click')
+      : fail(`report should fetch claude/5h on its own, saw: ${JSON.stringify(calls)}`);
     const providerSelected = await page.$eval('.ub-select:has(option[value="claude"])', (el) => el.value).catch(() => null);
-    providerSelected === 'codex'
-      ? ok('provider control reflects the clicked provider (codex)')
-      : fail(`provider control should show codex selected, saw "${providerSelected}"`);
+    providerSelected === 'claude'
+      ? ok('report provider control stays on its own default (claude), not the bar’s codex')
+      : fail(`provider control should still show claude, saw "${providerSelected}"`);
 
     await ctx.close();
   }
@@ -365,9 +378,8 @@ try {
     });
     await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
-    await page.evaluate(() => { toggleSysStatusPopover(); _sysStatusSwitchTab('usage'); });
-    await page.waitForSelector('#sys-status-popover.open', { timeout: 3000 });
-    await page.waitForSelector('.ub-controls', { state: 'attached', timeout: 5000 });
+    await page.evaluate(() => { sidebarNav('usage-report'); });
+    await page.waitForSelector('#usage-report-surface .ub-controls', { state: 'attached', timeout: 5000 });
     // The initial claude/5h fetch (delayed 400ms) is now in flight; switch
     // to codex before it resolves.
     await page.selectOption('.ub-select:has(option[value="claude"])', 'codex');
@@ -398,10 +410,9 @@ try {
     });
     await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
-    await page.evaluate(() => { toggleSysStatusPopover(); _sysStatusSwitchTab('usage'); });
-    await page.waitForSelector('#sys-status-popover.open', { timeout: 3000 });
-    await page.waitForSelector('.ub-controls', { state: 'attached', timeout: 5000 });
-    await page.waitForSelector('.ub-table-wrap', { state: 'attached', timeout: 5000 });
+    await page.evaluate(() => { sidebarNav('usage-report'); });
+    await page.waitForSelector('#usage-report-surface .ub-controls', { state: 'attached', timeout: 5000 });
+    await page.waitForSelector('#usage-report-surface .ub-table-wrap', { state: 'attached', timeout: 5000 });
 
     fail500 = true;
     await page.click('#ssp-usage-refresh-btn');
@@ -430,9 +441,8 @@ try {
     });
     await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
-    await page.evaluate(() => { toggleSysStatusPopover(); _sysStatusSwitchTab('usage'); });
-    await page.waitForSelector('#sys-status-popover.open', { timeout: 3000 });
-    await page.waitForSelector('.ub-controls', { state: 'attached', timeout: 5000 });
+    await page.evaluate(() => { sidebarNav('usage-report'); });
+    await page.waitForSelector('#usage-report-surface .ub-controls', { state: 'attached', timeout: 5000 });
     await page.waitForTimeout(300);
     const text3 = await page.$eval('.sys-status-popover', (el) => el.textContent);
     /failed to load/i.test(text3)
@@ -459,9 +469,8 @@ try {
     });
     await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
-    await page.evaluate(() => { toggleSysStatusPopover(); _sysStatusSwitchTab('usage'); });
-    await page.waitForSelector('#sys-status-popover.open', { timeout: 3000 });
-    await page.waitForSelector('.ub-controls', { state: 'attached', timeout: 5000 });
+    await page.evaluate(() => { sidebarNav('usage-report'); });
+    await page.waitForSelector('#usage-report-surface .ub-controls', { state: 'attached', timeout: 5000 });
     await page.waitForTimeout(200);
     await page.selectOption('.ub-select:has(option[value="claude"])', 'codex');
     await page.waitForTimeout(300);

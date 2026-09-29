@@ -1401,6 +1401,18 @@
   }
   @media (max-width: 960px) { .usage-bar-strip { display: none !important; } }
 
+  /* MC-998 follow-up: the hover/click/focus summary popup anchored to a bar
+     item (static/js/system-status.js `_ubOpenBarPopup`). Composes with
+     `.sys-status-popover` for its ssp-row/ssp-hint-line/ssp-link styling —
+     this block only overrides size + position; positioning itself (left/
+     bottom, pixel values) is set inline by `_ubPositionBarPopup`. */
+  .ub-bar-popup {
+    width: 280px; max-width: calc(100vw - 16px);
+    max-height: none; overflow: visible;
+    padding: 10px 12px; font-size: 11px;
+  }
+  .ub-bar-popup .ssp-row { padding: 3px 0; }
+
   .modal-header {
     /* Bottom padding is deliberately tight: the name row is the LAST thing in
        the header now (status row removed, path/summary hidden unconditionally),
