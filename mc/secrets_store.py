@@ -1082,14 +1082,34 @@ def _quarantine_legacy_key_material() -> None:
     quarantine must not unwind the wrapped-key write that already
     succeeded, and a half-retired legacy set is still strictly safer than
     the pre-fix all-of-them-live state. Every step is logged so a partial
-    failure is visible, not silent."""
+    failure is visible, not silent.
+
+    The initial ``qdir.mkdir`` retries once after a short pause (MC
+    503edfe4 follow-up): clayrune.log 2026-09-24T16:18Z caught a bare,
+    un-retried ``mkdir`` failing with ``WinError 5 Access is denied``
+    immediately after ``_write_wrapped_key`` had just rewritten this same
+    parent directory's ACL via icacls — the same class of transient
+    Windows filesystem/ACL hiccup ``_icacls_grant_and_verify`` already
+    retries once for elsewhere in this module. Because ``set_passphrase``
+    only ever calls this function once (guarded by the "already
+    configured" check), that single un-retried failure was permanent for
+    the life of the vault until :func:`_retry_quarantine_if_needed` was
+    added to retry on every successful unlock too."""
     ts = now_iso().replace(':', '').replace('+00:00', 'Z')
     qdir = legacy_key_quarantine_dir() / ts
-    try:
-        qdir.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
+    mkdir_err: OSError | None = None
+    for attempt in range(2):
+        try:
+            qdir.mkdir(parents=True, exist_ok=True)
+            mkdir_err = None
+            break
+        except OSError as e:
+            mkdir_err = e
+            if attempt == 0:
+                time.sleep(0.25)
+    if mkdir_err is not None:
         _log(f"[secrets] could not create legacy-key quarantine dir "
-             f"({qdir}) — leaving legacy key copies in place: {e}")
+             f"({qdir}) — leaving legacy key copies in place: {mkdir_err}")
         return
     if os.name == 'nt':
         # Fail CLOSED, SID-based (Wren's review of MC 503edfe4): this dir is
@@ -1153,6 +1173,60 @@ def _quarantine_legacy_key_material() -> None:
         except Exception as e:
             _log(f"[secrets] could not quarantine/remove the OS keyring "
                  f"master-key entry: {e}")
+
+
+def legacy_key_copies_present() -> bool:
+    """True if a pre-passphrase-lock copy of the master key is still live
+    on disk or in the OS keyring — i.e. :func:`_quarantine_legacy_key_material`
+    has not (yet) fully succeeded. Metadata-only (a boolean, never key
+    material or a path with key content) — safe for the vault-lock status
+    route any caller, including agents, can read (MC 503edfe4 follow-up)."""
+    if key_file_path().is_file() or dpapi_mirror_path().is_file():
+        return True
+    if not _keyring_disabled():
+        try:
+            import keyring
+            if keyring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _retry_quarantine_if_needed() -> None:
+    """Best-effort retry of :func:`_quarantine_legacy_key_material`, called
+    on every successful unlock (MC 503edfe4 follow-up). ``set_passphrase``
+    only ever runs the quarantine once — guarded by the "already
+    configured" check — so its original attempt failing (clayrune.log
+    2026-09-24T16:18Z: ``WinError 5`` on the quarantine dir's ``mkdir``) had
+    no other path to recover on. A no-op once
+    :func:`legacy_key_copies_present` is False. Never raises into the
+    caller's unlock path — a failed retry here is no worse than the
+    original failure, just logged again."""
+    try:
+        if wrapped_key_path().is_file() and legacy_key_copies_present():
+            _quarantine_legacy_key_material()
+    except Exception as e:
+        _log(f"[secrets] legacy-key quarantine retry failed: {e}")
+
+
+def retire_legacy_key_copies(*, caller_addr: str = '') -> bool:
+    """Human-triggered retry of the legacy-key quarantine — the Settings >
+    Vault "Retire legacy key copies" button (MC 503edfe4 follow-up). Only
+    meaningful once the vault is passphrase-configured; the underlying
+    quarantine step is the same best-effort, MOVE-never-delete operation
+    :func:`_quarantine_legacy_key_material` always was. Returns whether any
+    legacy copies were present to retire (``False`` is a legitimate no-op,
+    not a failure)."""
+    if not wrapped_key_path().is_file():
+        raise SecretsError("no passphrase is set yet — use set-passphrase")
+    with _lock:
+        had_legacy = legacy_key_copies_present()
+        if had_legacy:
+            _quarantine_legacy_key_material()
+    _audit('vault_legacy_key_retire_requested', caller_addr=caller_addr,
+           had_legacy_copies=had_legacy)
+    return had_legacy
 
 
 def set_passphrase(passphrase: str, *, caller_addr: str = '') -> str:
@@ -1273,6 +1347,7 @@ def unlock_with_passphrase(passphrase: str) -> None:
         _mark_key_used()
     _audit('vault_unlocked', method='passphrase')
     _log("[secrets] vault unlocked (passphrase)")
+    _retry_quarantine_if_needed()
 
 
 def unlock_with_recovery_key(recovery_key: str, *, caller_addr: str = '') -> None:
@@ -1297,6 +1372,7 @@ def unlock_with_recovery_key(recovery_key: str, *, caller_addr: str = '') -> Non
     _audit('vault_unlocked', method='recovery_key', caller_addr=caller_addr)
     _notify_vault_tamper('unlocked with the recovery key', caller_addr)
     _log("[secrets] vault unlocked (recovery key)")
+    _retry_quarantine_if_needed()
 
 
 def _read_wrapped_key() -> dict[str, Any]:

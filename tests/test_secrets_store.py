@@ -977,6 +977,85 @@ def test_set_passphrase_quarantine_failure_does_not_block_the_lock(vault, monkey
     assert vault.key_file_path().is_file()
 
 
+def test_quarantine_retries_a_transient_mkdir_failure(vault, monkeypatch):
+    """MC 503edfe4: clayrune.log 2026-09-24T16:18Z caught the quarantine
+    dir's mkdir failing once with ``WinError 5 Access is denied`` and no
+    retry — permanent, since set_passphrase only ever runs the quarantine
+    once. Fails on pre-fix code (a single un-retried attempt leaves the
+    legacy key file live); passes once the mkdir retries."""
+    from pathlib import Path as _Path
+    qroot = vault.legacy_key_quarantine_dir()
+    calls = {'n': 0}
+    orig_mkdir = _Path.mkdir
+
+    def flaky_mkdir(self, *args, **kwargs):
+        if str(self).startswith(str(qroot)):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                raise OSError(5, 'Access is denied')
+        return orig_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(_Path, 'mkdir', flaky_mkdir)
+
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+
+    assert not vault.key_file_path().is_file(), (
+        "legacy key file should have been quarantined once the retry succeeded")
+    quarantined = list(qroot.rglob('secrets.key'))
+    assert len(quarantined) == 1
+
+
+def test_unlock_retries_quarantine_when_legacy_copies_remain(vault, monkeypatch, tmp_path):
+    """set_passphrase's own quarantine attempt can fail permanently (it never
+    retries itself) — the recovery path is retrying on the NEXT unlock,
+    which happens on every restart. Simulate the original failure with the
+    same unwritable-quarantine-dir blocker the failure test above uses,
+    then clear it and confirm a later unlock finishes the job."""
+    from mc import secrets_store
+    blocker = tmp_path / 'quarantine_blocker'
+    blocker.write_text('in the way')
+    real_qdir = secrets_store.clayrune_home() / 'legacy_key_quarantine'
+    state = {'dir': blocker}
+    monkeypatch.setattr(secrets_store, 'legacy_key_quarantine_dir', lambda: state['dir'])
+
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    assert vault.key_file_path().is_file()
+    assert vault.legacy_key_copies_present() is True
+
+    state['dir'] = real_qdir
+    _relock(vault)
+    vault.unlock_with_passphrase('correct horse battery staple')
+
+    assert vault.legacy_key_copies_present() is False
+    assert not vault.key_file_path().is_file()
+
+
+def test_retire_legacy_key_copies_retries_and_reports(vault, monkeypatch, tmp_path):
+    from mc import secrets_store
+    blocker = tmp_path / 'quarantine_blocker'
+    blocker.write_text('in the way')
+    real_qdir = secrets_store.clayrune_home() / 'legacy_key_quarantine'
+    state = {'dir': blocker}
+    monkeypatch.setattr(secrets_store, 'legacy_key_quarantine_dir', lambda: state['dir'])
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    assert vault.legacy_key_copies_present() is True
+
+    state['dir'] = real_qdir
+    had_legacy = vault.retire_legacy_key_copies()
+    assert had_legacy is True
+    assert vault.legacy_key_copies_present() is False
+    # Nothing left to retire — a legitimate no-op, not an error.
+    assert vault.retire_legacy_key_copies() is False
+
+
+def test_retire_legacy_key_copies_refuses_before_passphrase_set(vault):
+    with pytest.raises(vault.SecretsError):
+        vault.retire_legacy_key_copies()
+
+
 def test_set_passphrase_refuses_short_passphrase(vault):
     with pytest.raises(vault.SecretsError):
         vault.set_passphrase('short')
