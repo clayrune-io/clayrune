@@ -537,6 +537,8 @@
     // R0 fixtures model exactly one project — a real switcher needs the
     // multi-project fixture data R1 adds (layout choice, see final report).
     if (scopeBtn) scopeBtn.onclick = () => DeskV1Kit.toast('Project switching lands with real multi-project data (R1).');
+    const engagementBtn = el.querySelector('.desk-v1-home-engagement-btn');
+    if (engagementBtn) engagementBtn.onclick = () => deskV1Nav('engagement', {});
     const pauseBtn = el.querySelector('.desk-v1-home-pause-btn');
     if (pauseBtn) pauseBtn.onclick = () => {
       const camps = _campaigns().filter((c) => c.state === 'active');
@@ -568,12 +570,21 @@
   // Test-only: forces one heartbeat re-check without waiting HEARTBEAT_MS.
   window.__deskV1HomeTickHeartbeatNow = () => _renderNeedsYou();
 
+  // §1 header count: "💬 Engagement · n" — every conversation across every
+  // project still sitting in Incoming or Suggested (desk-v1-engagement.js
+  // owns the actual definition; this just reads it).
+  function _engagementCountSuffix() {
+    const n = typeof window.deskV1EngagementCount === 'function' ? window.deskV1EngagementCount() : 0;
+    return n ? ` &middot; ${n}` : '';
+  }
+
   function deskV1RenderHome(el) {
     el.innerHTML = `
       <div class="desk-v1-home">
         <div class="desk-v1-home-header">
           <button type="button" class="desk-v1-home-scope">Clayrune &#9662;</button>
           <div class="desk-v1-home-header-actions">
+            <button type="button" class="desk-v1-home-engagement-btn">&#128172; Engagement${_engagementCountSuffix()}</button>
             <button type="button" class="desk-v1-home-settings-btn">&#9881; Settings</button>
             <button type="button" class="desk-v1-home-pause-btn">&#9208; Pause all</button>
           </div>

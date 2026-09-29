@@ -121,9 +121,12 @@ async function runTone(browser, tone) {
   else fail(`[${tone.name}] legacy desk-tabs rendered even though desk_v1 is on`);
 
   // ── Home: root of the stack, no Back ─────────────────────────────────────
+  // IA1 (docs/THE_DESK_V1_IA_REVISION.md §5 row IA1): Home's crumb label
+  // renamed 'Home' -> 'Desk' when IA1 replaced Home's campaign grid with
+  // project cards (§1's hierarchy: Home -> project -> campaign).
   const homeTitle = await page.textContent('.desk-v1-crumb-title');
   const homeBack = await page.$('.desk-v1-back');
-  if ((homeTitle || '').trim() === 'Home' && !homeBack) {
+  if ((homeTitle || '').trim() === 'Desk' && !homeBack) {
     ok(`[${tone.name}] Home is the stack root: no Back button`);
   } else {
     fail(`[${tone.name}] Home crumb wrong: title=${JSON.stringify(homeTitle)}, hasBack=${!!homeBack}`);
@@ -131,12 +134,26 @@ async function runTone(browser, tone) {
   const homeToolsEmpty = await page.$eval('#desk-v1-crumb-tools', (el) => el.children.length === 0).catch(() => null);
   if (homeToolsEmpty) ok(`[${tone.name}] Home: #desk-v1-crumb-tools stays empty (one-row crumb, T3's optional slot unused)`);
   else fail(`[${tone.name}] Home: #desk-v1-crumb-tools is not empty: ${JSON.stringify(homeToolsEmpty)}`);
-  const homeLink = await page.$('.desk-v1-stub-link');
-  if (homeLink) ok(`[${tone.name}] Home renders the fixture campaign as a link`);
+  // IA1 replaced Home's direct campaign links with project cards (one per
+  // project with a presence) — the fixture campaign camp-1 now sits under
+  // the 'clayrune' project card, not a bare link on Home itself.
+  const homeProjectCard = await page.$('.desk-v1-home-project-card[data-project-id="clayrune"]');
+  if (homeProjectCard) ok(`[${tone.name}] Home renders the fixture project as a card`);
   else fail(`[${tone.name}] Home did not render the fixture campaign`);
 
-  // ── Home -> campaign: skeleton's 5 slots + Back reads "‹ Home" ──────────
-  await page.click('.desk-v1-stub-link');
+  // ── Home -> project -> campaign: skeleton's 5 slots + Back reads the real
+  // previous stack entry at each hop (IA1: an extra project layer sits
+  // between Home and campaign now). ───────────────────────────────────────
+  await page.click('.desk-v1-home-project-card[data-project-id="clayrune"]');
+  await page.waitForSelector('.desk-v1-project', { timeout: 8000 });
+  const projTitle = (await page.textContent('.desk-v1-crumb-title').catch(() => '') || '').trim();
+  const projBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
+  if (projTitle === 'Clayrune' && projBack.includes('Desk')) {
+    ok(`[${tone.name}] project page: title "${projTitle}", Back reads "${projBack}"`);
+  } else {
+    fail(`[${tone.name}] project page crumb wrong: title=${JSON.stringify(projTitle)}, back=${JSON.stringify(projBack)}`);
+  }
+  await page.click('.desk-v1-project-camp-card[data-campaign-id="camp-1"]');
   await page.waitForSelector('.desk-v1-campaign', { timeout: 8000 });
   const campSlots = await page.$$eval(
     '.desk-v1-camp-summary, .desk-v1-camp-tabstrip, .desk-v1-camp-tabbody, .desk-v1-camp-rightcol, .desk-v1-camp-addtray',
@@ -145,7 +162,9 @@ async function runTone(browser, tone) {
   else fail(`[${tone.name}] expected 5 campaign slots, got ${campSlots}`);
   const campBack = await page.textContent('.desk-v1-back').catch(() => null);
   const campTitle = await page.textContent('.desk-v1-crumb-title');
-  if ((campBack || '').includes('Home') && (campTitle || '').includes('Windows beta testers')) {
+  // IA1: campaign's real parent is now the project page (Back reads the
+  // ACTUAL previous stack entry, per _renderCrumb — "Clayrune", not "Home").
+  if ((campBack || '').includes('Clayrune') && (campTitle || '').includes('Windows beta testers')) {
     ok(`[${tone.name}] campaign Back reads "${campBack.trim()}", title is the real campaign name`);
   } else {
     fail(`[${tone.name}] campaign crumb wrong: back=${JSON.stringify(campBack)}, title=${JSON.stringify(campTitle)}`);
@@ -169,10 +188,14 @@ async function runTone(browser, tone) {
   if (posyLineFont && !/mono/i.test(posyLineFont)) ok(`[${tone.name}] Desk v1 .agent-line uses the body font, not monospace: "${posyLineFont}"`);
   else fail(`[${tone.name}] Desk v1 .agent-line font-family: ${JSON.stringify(posyLineFont)}`);
 
-  // Back from campaign returns to Home.
+  // Back from campaign returns to the project page, then Home (IA1's extra
+  // hierarchy layer — two hops, not one).
   await page.click('.desk-v1-back');
-  await page.waitForFunction(() => (document.querySelector('.desk-v1-crumb-title') || {}).textContent === 'Home', null, { timeout: 5000 });
-  ok(`[${tone.name}] Back from campaign lands on Home`);
+  await page.waitForFunction(() => (document.querySelector('.desk-v1-crumb-title') || {}).textContent === 'Clayrune', null, { timeout: 5000 });
+  ok(`[${tone.name}] Back from campaign lands on the project page`);
+  await page.click('.desk-v1-back');
+  await page.waitForFunction(() => (document.querySelector('.desk-v1-crumb-title') || {}).textContent === 'Desk', null, { timeout: 5000 });
+  ok(`[${tone.name}] Back from the project page lands on Home`);
 
   // ── Every item-level route: reached from the campaign that is its declared
   // parent (ROUTES[route].parent === 'campaign' in desk-v1-shell.js) — the
@@ -243,7 +266,11 @@ async function runTone(browser, tone) {
       fail(`[${tone.name}] alias "${route}" did not select the "${tab}" tab`);
     }
     const back = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
-    if (back.includes('Home') && !back.includes('Windows beta testers')) {
+    // This loop pushes 'campaign' directly onto whatever's on top of the
+    // stack (home, at this point) via deskV1Nav, bypassing the project page
+    // real callers go through — so campaign's real previous entry here is
+    // still Home ('Desk', IA1's renamed label), one hop, no item pushed.
+    if (back.includes('Desk') && !back.includes('Windows beta testers')) {
       ok(`[${tone.name}] alias "${route}" Back reads "${back}" (one hop, no item entry pushed)`);
     } else {
       fail(`[${tone.name}] alias "${route}" Back wrong: ${JSON.stringify(back)}`);
@@ -268,7 +295,7 @@ async function runTone(browser, tone) {
     fail(`[${tone.name}] "rules" did not land on the campaign page + popover: popoverOpen=${rulesPopOpen}, title=${JSON.stringify(rulesTitle)}`);
   }
   const rulesBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
-  if (rulesBack.includes('Home')) {
+  if (rulesBack.includes('Desk')) {
     ok(`[${tone.name}] "rules" Back crumb names the campaign's real parent: "${rulesBack}"`);
   } else {
     fail(`[${tone.name}] "rules" Back crumb wrong: ${JSON.stringify(rulesBack)}`);

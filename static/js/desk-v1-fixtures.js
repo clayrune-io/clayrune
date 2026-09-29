@@ -776,6 +776,25 @@
     },
   });
 
+  // ── IA7 (MC-977 IA revision, §5 row IA7 · IA_REVISION §7): a mention that
+  // belongs to a project but no campaign (K4: "a conversation always has a
+  // project; its campaign is optional") — the Engagement dashboard's own
+  // campaign filter needs one real row to prove its `No campaign` option
+  // actually surfaces something, not just an empty option in the dropdown.
+  CONVERSATIONS.push(
+    { id: 'conv-8', projectId: 'clayrune', campaignId: null, source: 'mentions', channelId: 'ch-x-ron',
+      excerpt: 'Anyone running Clayrune solo, without a team behind it?', state: 'needs_you' },
+  );
+  CONVERSATION_DETAIL['conv-8'] = {
+    author: '@solo_dev_ok', platform: 'x', ageLabel: '2h',
+    reasonKind: 'needs_you', reasonDetail: 'no campaign yet',
+    thread: {
+      parentPost: { label: 'Mentioned by', platform: 'x', identity: '@solo_dev_ok', ageLabel: '2h',
+        text: 'Anyone running Clayrune solo, without a team behind it?', link: '#' },
+      comments: [], reply: null,
+    },
+  };
+
   window.DeskV1Fixtures = {
     projects: PROJECTS,
     campaigns: CAMPAIGNS,
