@@ -298,11 +298,17 @@
     const count = camps.length;
     const activeCount = camps.filter((c) => c.state === 'active').length;
     const nextPost = _nextPostFor(p.id);
+    // T3 row (§4): every draft key under this project is prefixed
+    // `project:<pid>:` — this card's own "⟳ Posy working" badge is the
+    // one place that prefix match actually reads, per anyPosyWorking's doc
+    // comment ("the query a Home card uses").
+    const working = window.DeskV1Kit && DeskV1Kit.anyPosyWorking(`project:${p.id}:`);
     return `
       <div class="desk-v1-home-project-card" data-project-id="${esc(p.id)}" role="button" tabindex="0">
         <span class="desk-v1-home-project-name">${esc(p.name)}</span>
         <span class="desk-v1-home-project-meta">${count} campaign${count === 1 ? '' : 's'}${activeCount ? ` · ${activeCount} active` : ''}</span>
         ${nextPost ? `<span class="desk-v1-home-project-nextpost">Next post ${esc(_fmtNextPost(nextPost))}</span>` : ''}
+        ${working ? `<span class="desk-v1-home-project-posyworking">${esc(DeskV1Kit.POSY_WORKING_LABEL)}</span>` : ''}
       </div>`;
   }
 
