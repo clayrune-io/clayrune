@@ -43,6 +43,12 @@
       goal: { current: 0 },
       rules: {},
       setup: { step: 1, done: [] },
+      // R2-3 (IA revision 2 §3 table): the map stepper's own resume cursor,
+      // separate from `setup` above (IA4's own checklist, untouched by this
+      // ticket) — a fresh draft starts the map at ① Goal, same stop the
+      // project page's draft card and `_renderCampaignSkeleton` fall back to
+      // for any older draft fixture that predates this field.
+      map: { stop: 'goal', done: [] },
       plan: {
         brief: '', title: '', audience: '',
         goal: { outcome: '', target: null, deadline: null, tracked: false },
