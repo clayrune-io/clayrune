@@ -29,6 +29,13 @@ from typing import Optional
 _MAX_INTERVAL_MINUTES = 10
 _MIN_ELIGIBLE_INTERVALS = 5
 _MIN_ELIGIBLE_SESSIONS = 3
+# MC-998 follow-up: the Anthropic usage endpoint returns resets_at with
+# sub-second jitter on every poll (measured 2026-09-29: 241 samples inside
+# one 5h/7d window, 241 distinct raw values -- e.g. 19:00:00.444543,
+# 18:59:59.567670, 19:00:00.005273). A genuine reset moves resets_at by a
+# whole window (5h or 7d), so any tolerance well under that can never merge
+# two real windows together.
+_RESET_JITTER_TOLERANCE_S = 120
 
 RANKING_DIMENSIONS = ('project', 'character', 'trigger', 'model', 'provider')
 _DIMENSION_FACT_KEY = {
@@ -48,6 +55,22 @@ def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return None
+
+
+def _same_reset(a: Optional[str], b: Optional[str],
+                 tolerance_s: float = _RESET_JITTER_TOLERANCE_S) -> bool:
+    """True when two `resets_at` values are the same reset boundary within
+    jitter, not a genuine reset. String equality (the original check) treats
+    every single sample pair as a reset crossing once jitter is present --
+    live proof: GET /api/system/usage/breakdown with 241/241 distinct
+    resets_at values in-window returned `reset_crossed` for a range where no
+    reset happened. Fails closed: unparseable or missing values are never
+    treated as the same reset, matching the prior (conservative) behaviour
+    on bad data."""
+    dt_a, dt_b = _parse_iso(a), _parse_iso(b)
+    if dt_a is None or dt_b is None:
+        return False
+    return abs((dt_a - dt_b).total_seconds()) <= tolerance_s
 
 
 def _in_range(ts: Optional[str], start: Optional[datetime], end: Optional[datetime]) -> bool:
@@ -423,7 +446,7 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
                       key=lambda s: s['source_observed_at'])
     all_sids = set(checkpoints.keys()) | set(facts_by_session.keys())
     for a, b in zip(ordered, ordered[1:]):
-        if a.get('resets_at') != b.get('resets_at'):
+        if not _same_reset(a.get('resets_at'), b.get('resets_at')):
             continue  # a reset happened between these two readings
         t_a, t_b = _parse_iso(a['source_observed_at']), _parse_iso(b['source_observed_at'])
         if t_a is None or t_b is None or t_b <= t_a:
@@ -549,7 +572,8 @@ def compute_bar_change(samples: list[dict], *, range_start: Optional[str],
         key=lambda s: s['source_observed_at'])
     if len(in_range) < 2:
         return {'status': 'insufficient_samples', 'delta_pp': None}
-    if len({s.get('resets_at') for s in in_range}) > 1:
+    anchor = in_range[0].get('resets_at')
+    if any(not _same_reset(anchor, s.get('resets_at')) for s in in_range[1:]):
         return {'status': 'reset_crossed', 'delta_pp': None}
     delta = in_range[-1]['raw_utilization'] - in_range[0]['raw_utilization']
     return {'status': 'ok', 'delta_pp': delta,

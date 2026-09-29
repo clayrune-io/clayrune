@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from mc.usage_breakdown_sampler import (  # noqa: E402
-    sample_claude, sample_codex, session_fact_from_entry,
+    _normalize_resets_at, sample_claude, sample_codex, session_fact_from_entry,
     should_sample_interval_seconds,
 )
 from mc.usage_breakdown_store import UsageBreakdownStore  # noqa: E402
@@ -67,6 +67,34 @@ def test_sample_claude_new_fetch_time_inserts_again(store):
 def test_sample_claude_no_data_or_no_fetch_time_is_a_noop(store):
     assert sample_claude(store, usage_limits=None, fetched_at_epoch=1.0) == 0
     assert sample_claude(store, usage_limits={'five_hour': {'utilization': 1.0}}, fetched_at_epoch=None) == 0
+
+
+def test_sample_claude_normalizes_jittered_resets_at_before_storing(store):
+    """MC-998 follow-up: the vendor endpoint returns resets_at with
+    sub-second jitter on every poll; round to the nearest minute at ingest
+    so new rows are clean (the aggregate-side tolerance is what fixes rows
+    already in the DB)."""
+    sample_claude(store, usage_limits={
+        'five_hour': {'utilization': 12.0, 'resets_at': '2026-09-28T19:00:00.444543+00:00'},
+    }, fetched_at_epoch=1_000_000.0)
+    rows = store.list_allowance_samples(provider='claude', window_kind='5h', window_scope='all')
+    assert rows[0]['resets_at'] == '2026-09-28T19:00:00+00:00'
+
+
+# ── _normalize_resets_at ────────────────────────────────────────────────
+
+def test_normalize_resets_at_rounds_down_under_30_seconds():
+    assert _normalize_resets_at('2026-09-28T18:59:59.567670+00:00') == '2026-09-28T19:00:00+00:00'
+
+
+def test_normalize_resets_at_rounds_up_at_30_seconds_or_more():
+    assert _normalize_resets_at('2026-09-28T19:00:29.999999+00:00') == '2026-09-28T19:00:00+00:00'
+    assert _normalize_resets_at('2026-09-28T19:00:30.000001+00:00') == '2026-09-28T19:01:00+00:00'
+
+
+def test_normalize_resets_at_passes_through_none_and_unparseable():
+    assert _normalize_resets_at(None) is None
+    assert _normalize_resets_at('r1') == 'r1'  # e.g. a test fixture placeholder -- never guessed at
 
 
 # ── sample_codex ────────────────────────────────────────────────────────

@@ -30,6 +30,7 @@ from mc import obs, process_sweep, state
 from mc.blueprints.terminal_routes import launch_pty_session
 from mc.blueprints.workflow_routes import _is_agent_caller
 from mc.blueprints.secrets_routes import _require_human_passcode
+from mc.usage_breakdown_aggregate import _same_reset as _ub_same_reset  # MC-998 resets_at jitter
 from mc import slash_commands as slash_cmds
 from mc.atomic_json import write_json_atomic
 from mc.core import _atomic_write_text, _log, now_iso, path_is_within, time_ago
@@ -1285,7 +1286,7 @@ def _usage_breakdown_default_range(store, *, provider: str, window_kind: str,
     current_resets_at = samples[-1].get('resets_at')
     window_start = samples[-1]['source_observed_at']
     for s in reversed(samples):
-        if s.get('resets_at') != current_resets_at:
+        if not _ub_same_reset(s.get('resets_at'), current_resets_at):
             break
         window_start = s['source_observed_at']
     return window_start, now.isoformat()
@@ -1391,7 +1392,7 @@ def system_usage_windows_get():
     now = datetime.now(timezone.utc).isoformat()
     windows: list[dict] = []
     for s in samples:
-        if windows and windows[-1]['resets_at'] == s.get('resets_at'):
+        if windows and _ub_same_reset(windows[-1]['resets_at'], s.get('resets_at')):
             windows[-1]['range_end'] = s['source_observed_at']
             continue
         windows.append({'resets_at': s.get('resets_at'), 'range_start': s['source_observed_at'],
