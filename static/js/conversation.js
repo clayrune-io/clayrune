@@ -1886,8 +1886,8 @@ function agentPanelHTML(p) {
     // Rail = ALL the project's user conversations (durable, transcript-derived,
     // + agent-log entries for old chats aged out of /conversations) — same source
     // as the mobile Layer-2 list, not just the open tabs.
-    if (!conversationsCache[p.id]) loadConversations(p.id);
-    if (!agentLogCache[p.id]) loadAgentLog(p.id);
+    if (!conversationsCache[p.id] || !window._railSourceStatus?.(p.id, 'conv')) loadConversations(p.id);
+    if (!agentLogCache[p.id] || !window._railSourceStatus?.(p.id, 'log')) loadAgentLog(p.id);
     // _mode is computed once at the top of this function — the mobile Layer-2
     // list needs it too, and two declarations would drift.
     const _railConvos = (_mode === 'chats' && typeof _userInitiatedConvos === 'function')

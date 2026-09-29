@@ -201,6 +201,11 @@ function _railSourcesLoaded(projectId) {
   return !!_railAgentLogStatus[projectId] && !!_railConversationsStatus[projectId];
 }
 window._railSourcesLoaded = _railSourcesLoaded;
+// Per-source status for the rail's load triggers: upsertConversationCache
+// creates conversationsCache[pid] before any fetch, so `!cache` alone would
+// skip the first load and leave the rail on "Loading" for good.
+window._railSourceStatus = (projectId, which) =>
+  (which === 'log' ? _railAgentLogStatus : _railConversationsStatus)[projectId];
 
 // True only when NEITHER source has EVER produced cached data and at least
 // one of them just failed — i.e. the rail is empty because the fetch failed,
