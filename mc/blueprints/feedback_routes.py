@@ -37,6 +37,7 @@ send failure never depends on whether the sender was abusive.
 """
 from __future__ import annotations
 
+import platform
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,7 @@ from pathlib import Path
 
 from flask import Blueprint, jsonify, request
 
+from mc.backup import _clayrune_version
 from mc.core import _log
 from mc import secrets_store
 
@@ -133,6 +135,17 @@ def _send(message: str, reply_to: str) -> tuple[bool, str]:
              f"{(proc.stderr or '').strip()[:300]}")
         return False, 'send_failed'
     return True, ''
+
+
+def _os_label() -> str:
+    return f"{platform.system()} {platform.release()}".strip() or 'unknown OS'
+
+
+@bp.route('/api/feedback/context')
+def feedback_context():
+    """Version + OS for the modal's prefilled, editable first line — never
+    appended server-side to the message itself (privacy constraint (c))."""
+    return jsonify({'version': _clayrune_version(), 'os': _os_label()})
 
 
 @bp.route('/api/feedback', methods=['POST'])
