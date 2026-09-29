@@ -1075,6 +1075,8 @@ let agentStatusCache = {};     // session_id → {status, task, projectId, start
 let agentHistory = [];         // [{projectId, sessionId, projectName, task, status, startedAt}]
 let activeAgentTab = {};       // project_id → session_id (which tab is active in modal)
 let splitAgentTab = {};        // project_id → session_id shown in the 2nd (split) pane, or unset. Desktop split-view.
+let splitAgentTabProject = {}; // project_id → the OTHER project id that owns splitAgentTab[project_id]'s
+                                // session, only set when the split pane is cross-project (MC-backlog 321d8efc).
 let agentConvNew = {};         // project_id → true when the user explicitly chose
 let agentPendingImages = {};   // key (projectId or sessionId) → [{file, objectUrl, serverPath}]
 let acOpenSessions = new Set(); // session_id → expanded in console
@@ -2313,7 +2315,10 @@ function refreshModalById(modalId) {
   // same discipline as the switch-back repaint (commit fdb8eeb/6244401).
   if (_splitSid && curTab === 'agent') {
     sizeAgentChat(entry.element, _splitSid);
-    _rerenderPendingQuestions(entry.projectId, _splitSid);
+    // The split pane's session may belong to a DIFFERENT project than this
+    // modal (splitAgentTabProject) — an answer button baked with the wrong
+    // project id would POST to the wrong project's API route.
+    _rerenderPendingQuestions(splitAgentTabProject[entry.projectId] || entry.projectId, _splitSid);
     const _so = document.getElementById(`agent-output-${_splitSid}`);
     if (_so && _so.childElementCount === 0 && (agentOutputBuffers[_splitSid] || []).length) {
       try { window._repaintAgentOutput(_splitSid); } catch (_) {}

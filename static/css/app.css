@@ -3036,6 +3036,34 @@
     background: var(--accent); color: #fff; border: 1px solid var(--accent); border-radius: 10px;
     font-size: 13px; font-weight: 600; cursor: pointer; text-align: center; line-height: 1.2;
   }
+  /* "Split with another project" — secondary to the New button (outline, not
+     filled) since it's an occasional cross-project action, not the primary CTA. */
+  .agent-3pane .agent-rail-crossproj-btn {
+    margin: 0 12px 8px; width: auto; flex-shrink: 0; padding: 7px 12px;
+    background: transparent; color: var(--text-dim); border: 1px solid var(--border); border-radius: 10px;
+    font-size: 12px; font-weight: 600; cursor: pointer; text-align: center; line-height: 1.2;
+  }
+  .agent-3pane .agent-rail-crossproj-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .agent-3pane .agent-rail-crossproj-panel {
+    margin: 0 12px 8px; max-height: 220px; overflow-y: auto;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  }
+  .agent-3pane .agent-rail-crossproj-empty {
+    padding: 10px 11px; color: var(--text-faint); font-size: 12px;
+  }
+  .agent-3pane .agent-rail-crossproj-row {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+    width: 100%; padding: 7px 11px; border: none; border-bottom: 1px solid var(--border);
+    background: transparent; cursor: pointer; text-align: left; font-family: inherit;
+  }
+  .agent-3pane .agent-rail-crossproj-row:last-child { border-bottom: none; }
+  .agent-3pane .agent-rail-crossproj-row:hover { background: var(--bg); }
+  .agent-3pane .agent-rail-crossproj-proj {
+    font-size: 10.5px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .3px;
+  }
+  .agent-3pane .agent-rail-crossproj-task {
+    font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+  }
   .agent-3pane .agent-rail-search-wrap {
     margin: 0 12px 10px; flex-shrink: 0; position: relative; display: flex; align-items: center;
   }
