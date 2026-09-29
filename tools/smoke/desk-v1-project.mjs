@@ -238,10 +238,10 @@ async function runNeedsYouDeepStack(browser) {
   await ctx.close();
 }
 
-// ── presence/engagement/piece stub routes (§5 row IA1: "presence (stub),
-// engagement (stub), piece (stub)") — each renders an honest placeholder,
-// never a blank pane, when reached directly rather than via the review
-// chain above. ──────────────────────────────────────────────────────────
+// ── presence/engagement/piece routes reached directly rather than via the
+// review chain above (§5 row IA1: "presence (stub), engagement (stub), piece
+// (stub)"). Presence (IA3) and piece (IA5) are real pages now; engagement
+// remains an honest placeholder, never a blank pane. ──────────────────────
 async function runStubRoutes(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
 
@@ -267,14 +267,19 @@ async function runStubRoutes(browser) {
     ? ok(`engagement route: honest stub placeholder — "${stubText.trim()}"`)
     : fail(`engagement stub wrong: ${JSON.stringify(stubText)}`);
 
-  // Reached directly (not via deskV1HomeGotoReview's chain), so _pieceLabel
-  // falls back to a real family's title when given its versionId.
+  // IA5 landed the real piece page — no longer a stub route (was asserted as
+  // one in IA1/IA3; re-check on master before calling this a regression if
+  // it ever fails). Reached directly (not via deskV1HomeGotoReview's chain
+  // or a campaign card, which both carry familyId) with ONLY a versionId —
+  // the IA1-era deep-link shape Home's deskV1HomeGotoReview still uses —
+  // so this exercises _pieceLabel's/desk-v1-piece.js's own versionId
+  // fallback resolution, not just the familyId-first common path.
   await page.evaluate(() => window.deskV1Nav('piece', { versionId: 'v-restore-blog' }));
-  await page.waitForSelector('.desk-v1-stub', { timeout: 4000 });
-  stubText = (await page.textContent('.desk-v1-stub-body').catch(() => '') || '');
-  /Undo anything: restore points in Clayrune 2\.1 is not built yet/.test(stubText)
-    ? ok(`piece route: honest stub placeholder, titled from the fixture family — "${stubText.trim()}"`)
-    : fail(`piece stub wrong: ${JSON.stringify(stubText)}`);
+  await page.waitForSelector('.desk-v1-piece', { timeout: 4000 });
+  const pieceTitle = (await page.textContent('.desk-v1-piece-title').catch(() => '') || '').trim();
+  pieceTitle === 'Undo anything: restore points in Clayrune 2.1'
+    ? ok(`piece route: real page renders, titled from the fixture family via versionId fallback — "${pieceTitle}"`)
+    : fail(`piece route wrong: ${JSON.stringify(pieceTitle)}`);
 
   reportUncaught(pageErrors, '[stub-routes]');
   await ctx.close();
