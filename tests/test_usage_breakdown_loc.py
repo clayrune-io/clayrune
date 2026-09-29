@@ -441,3 +441,45 @@ def test_side_branch_commits_survive_checkout_back_to_base(env, project):
     assert result['added'] == 3
     assert result['deleted'] == 1
     assert result['head_commits']  # the side-branch commit must still surface
+
+
+def test_amended_commit_is_not_double_counted(env, project):
+    """MC-998 follow-up 5, Dave's review of the Gap 2 fix: `commit --amend`
+    leaves BOTH the pre-amend commit and the amended commit in
+    `git reflog HEAD` (the amend doesn't change the commit's parent, so both
+    still diff against the same base). The naive "every reflog entry that
+    looks like a commit" filter counted both -- double-counting every line
+    they share. Only the commit a current branch still points to (the
+    amended one) may be counted; the superseded original must be dropped."""
+    sid = 'mb13'
+    ok, path = w.create(project, sid)
+    assert ok, path
+
+    (Path(path) / 'app.py').write_text(
+        'def one():\n    return "orig one"\n\n\ndef two():\n    return "NEW two"\n'
+        'def three():\n    return "added"\n',
+        encoding='utf-8')
+    _git(path, 'add', '.')
+    _git(path, 'commit', '-q', '-m', 'first pass')
+    pre_amend_sha = _git(path, 'rev-parse', 'HEAD')
+
+    (Path(path) / 'app.py').write_text(
+        'def one():\n    return "orig one"\n\n\ndef two():\n    return "NEW two"\n'
+        'def three():\n    return "added"\n'
+        'def four():\n    return "added too"\n',
+        encoding='utf-8')
+    _git(path, 'add', '.')
+    _git(path, 'commit', '-q', '--amend', '-m', 'first pass (amended)')
+    amended_sha = _git(path, 'rev-parse', 'HEAD')
+    assert amended_sha != pre_amend_sha
+
+    result = ar._compute_code_delta(_session(sid, project['id'], isolated=True))
+    assert result['status'] == 'ok', result
+    # Final diff vs base: two() modified (1 add/1 delete) + three() added (2
+    # lines) + four() added (2 lines) = 5 added, 1 deleted -- counted ONCE.
+    # The pre-fix bug summed this commit's diff AND the superseded
+    # pre-amend commit's diff (also against base, since amend keeps the same
+    # parent) against the same base, reporting 8/2.
+    assert result['added'] == 5
+    assert result['deleted'] == 1
+    assert result['head_commits'] == amended_sha

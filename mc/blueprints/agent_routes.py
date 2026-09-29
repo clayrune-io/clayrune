@@ -1256,6 +1256,31 @@ def _loc_path_excluded(path: str) -> bool:
     return any(part in _LOC_VENDOR_DIR_PARTS for part in Path(path).parts)
 
 
+# Dave's MC-998 follow-up 5 review of the first reflog-based fix: matching
+# EVERY commit `rev-list --walk-reflogs HEAD` can reach overcounts three ways
+# -- (a) `commit --amend` leaves the original AND the amended commit in the
+# reflog, (b) a rebase leaves the originals AND the rewritten copies, (c) a
+# walk from a fast-forward reflog position pulls in that ref's WHOLE ancestry,
+# including commits someone else made that this worktree never touched. This
+# regex instead matches only the reflog SUBJECT of an action that authors or
+# rewrites a commit in place -- `git reflog HEAD --format='%H %gs'` gives one
+# entry per action, not a walk, so a fast-forward's foreign ancestry is never
+# visited at all. Confirmed against a real repo (2026-09-29): `commit:`,
+# `commit (initial):`, `commit (amend):`, `cherry-pick:`, `rebase (pick):`,
+# `rebase (squash):`; a real (non-fast-forward) `merge <ref>: Merge made
+# by...` also authors a genuine new commit here and counts, while
+# `merge <ref>: Fast-forward` (no new commit, just a ref move — exactly
+# Dave's case (c)) is excluded by the negative lookahead. Administrative
+# entries ("checkout: ...", "reset: ...", "rebase (start)"/"(finish)") never
+# match and are correctly excluded. (a) and (b) still leave the SUPERSEDED
+# original in this filtered list, and are handled separately by keeping only
+# commits still reachable from a current branch (see `_compute_code_delta`).
+_AUTHORED_REFLOG_SUBJECT_RE = re.compile(
+    r'^(commit\b|cherry-pick\b|revert\b|rebase\b.*\((pick|squash|fixup|edit|reword)\)'
+    r'|merge\b(?!.*fast-forward))',
+    re.IGNORECASE)
+
+
 def _loc_numstat_delta(numstat_out: str) -> tuple[int, int]:
     """Sum added/deleted from one `git diff/diff-tree --numstat -M` output,
     applying the same extension + vendor-path filtering used everywhere else
@@ -1303,25 +1328,30 @@ def _compute_code_delta(session):
     back to the old merge-base behavior.
 
     Committed changes are found via the WORKTREE'S OWN `HEAD` reflog
-    (`rev-list --walk-reflogs HEAD --not base_commit`), not `base_commit..HEAD`
-    (MC-998 follow-up 5) — a session can commit on a side branch and then
-    check the base branch back out before completion (e.g. to leave the
-    worktree clean), which moves current `HEAD` away from those commits
-    entirely; diffing `base_commit..HEAD` at that point sees no ancestry
-    between them and silently reports zero. The reflog remembers every commit
-    this worktree's `HEAD` ever pointed at regardless of which branch it
-    ended on, so those commits still surface. Each is diffed individually
-    against its own parent (`diff-tree`) rather than diffing each tip against
-    `base_commit`, so a commit reachable from more than one reflog position
-    (e.g. after a later merge-back) is still counted exactly once. Uncommitted
-    working-tree changes are diffed separately against current `HEAD` (not
-    `base_commit`) since committed changes are already fully accounted for by
-    the per-commit pass above. `-M` groups a rename into one numstat line
-    (added/deleted of the actual edit) instead of counting the whole file as
-    both a delete and an add. Untracked new files are invisible to `git diff`
-    entirely, so they're counted in a separate pass over `git status`.
-    Vendored/generated paths are excluded from every pass (extension matching
-    alone previously let a vendored `.js` file count as session source).
+    (MC-998 follow-up 5), not `base_commit..HEAD` — a session can commit on a
+    side branch and then check the base branch back out before completion
+    (e.g. to leave the worktree clean), which moves current `HEAD` away from
+    those commits entirely; diffing `base_commit..HEAD` at that point sees no
+    ancestry between them and silently reports zero. `git reflog HEAD
+    --format='%H %gs'` lists one entry per action this worktree's `HEAD` ever
+    took, filtered by `_AUTHORED_REFLOG_SUBJECT_RE` to only those that author
+    or rewrite a commit (not a plain checkout/reset/fast-forward), further
+    filtered to commits still reachable from a CURRENT branch — a
+    `commit --amend` or rebase leaves both the original and the
+    rewritten/superseded commit in the reflog, and only the one nothing still
+    points to is the stale duplicate (Dave's follow-up-5 review). Each
+    surviving commit is diffed individually against its own parent
+    (`diff-tree`) rather than diffing each tip against `base_commit`, so a
+    commit reachable from more than one reflog position (e.g. after a later
+    merge-back) is still counted exactly once. Uncommitted working-tree
+    changes are diffed separately against current `HEAD` (not `base_commit`)
+    since committed changes are already fully accounted for by the per-commit
+    pass above. `-M` groups a rename into one numstat line (added/deleted of
+    the actual edit) instead of counting the whole file as both a delete and
+    an add. Untracked new files are invisible to `git diff` entirely, so
+    they're counted in a separate pass over `git status`. Vendored/generated
+    paths are excluded from every pass (extension matching alone previously
+    let a vendored `.js` file count as session source).
     """
     branch = _agent_worktree.branch_name(session.get('session_id', ''))
     if not session.get('_worktree_isolated'):
@@ -1365,16 +1395,38 @@ def _compute_code_delta(session):
     # commit SHA there with "cannot walk reflogs for <sha>"), so the baseline
     # exclusion can't be a `--not <commit>` on the same invocation — resolve
     # each set separately and diff them in Python instead.
-    ok, reflog_out = _project_sync.git_run(wts, ['rev-list', '--walk-reflogs', 'HEAD'], timeout=15)
+    ok, reflog_out = _project_sync.git_run(
+        wts, ['reflog', 'HEAD', '--format=%H %gs'], timeout=15)
     if not ok:
         return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
-                'reason': f'reflog rev-list failed: {reflog_out}'}
+                'reason': f'reflog failed: {reflog_out}'}
+    candidate_commits = []
+    for line in reflog_out.splitlines():
+        c, _, subject = line.partition(' ')
+        if c and subject and _AUTHORED_REFLOG_SUBJECT_RE.search(subject):
+            candidate_commits.append(c)
+    ok, reachable_now_out = _project_sync.git_run(wts, ['rev-list', '--branches', 'HEAD'], timeout=15)
+    if not ok:
+        return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
+                'reason': f'branch reachability rev-list failed: {reachable_now_out}'}
+    reachable_now = set(reachable_now_out.splitlines())
     ok, base_reachable_out = _project_sync.git_run(wts, ['rev-list', base_commit], timeout=15)
     if not ok:
         return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
                 'reason': f'base rev-list failed: {base_reachable_out}'}
     base_reachable = set(base_reachable_out.splitlines())
-    head_commits = [c for c in reflog_out.splitlines() if c not in base_reachable]
+    head_commits = []
+    seen = set()
+    for c in candidate_commits:
+        # A `commit --amend` or a rebase leaves BOTH the pre-edit and the
+        # rewritten commit as reflog entries matching the subject filter
+        # above -- only the one a current branch still points to (or has as
+        # an ancestor) is real; the superseded original is dropped here so
+        # the same edit isn't diffed twice (Dave's follow-up-5 review).
+        if c in seen or c not in reachable_now or c in base_reachable:
+            continue
+        seen.add(c)
+        head_commits.append(c)
     added = deleted = 0
     for c in head_commits:
         # Each commit diffed against its own parent individually (rather than
