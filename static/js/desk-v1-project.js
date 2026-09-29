@@ -103,17 +103,73 @@
     }, { draftKey: `project:${projectId}:project`, taskLifecycle: true });
   }
 
+  // ── Pause/Resume (IA3, §2.1: "state ... (pauses every campaign in it)").
+  // Pause records each non-archived/completed campaign's own state in
+  // `_prePauseState` before forcing it to `paused`, so Resume knows what to
+  // put each one BACK to (an active campaign returns to active, a proposed
+  // one to proposed) rather than assuming every campaign was running.
+  // Resume runs every one of them through the same `DeskV1Kit.validatePlan`
+  // gate Start/Renew already use (§5 IA3 acceptance: "Resume runs each
+  // through validatePlan") — a campaign that no longer validates against
+  // the (possibly narrowed) project stays paused instead of silently
+  // reactivating with a bound it can no longer meet.
+  function _pausableCampaigns(projectId) {
+    return _campaigns().filter((c) => c.projectId === projectId && c.state !== 'archived' && c.state !== 'completed');
+  }
+
+  function _pauseProject(projectId, el, params) {
+    const p = _project(projectId);
+    if (!p) return;
+    p.presence = p.presence || {};
+    p.presence.state = 'paused';
+    let paused = 0;
+    _pausableCampaigns(projectId).forEach((c) => {
+      if (c.state === 'paused') return;
+      c._prePauseState = c.state;
+      c.state = 'paused';
+      paused++;
+    });
+    DeskV1Kit.toast(`Paused ${p.name} — ${paused} campaign${paused === 1 ? '' : 's'} paused with it.`);
+    deskV1RenderProject(el, params);
+  }
+
+  function _resumeProject(projectId, el, params) {
+    const p = _project(projectId);
+    if (!p) return;
+    p.presence = p.presence || {};
+    p.presence.state = 'active';
+    let resumed = 0, held = 0;
+    _pausableCampaigns(projectId).forEach((c) => {
+      if (!c._prePauseState) return;
+      const result = DeskV1Kit.validatePlan(c.plan, p);
+      if (result.ok) {
+        c.state = c._prePauseState;
+        delete c._prePauseState;
+        resumed++;
+      } else {
+        held++;
+      }
+    });
+    DeskV1Kit.toast(held
+      ? `Resumed ${p.name} — ${resumed} campaign${resumed === 1 ? '' : 's'} back running, ${held} still needs setup fixed before it can resume.`
+      : `Resumed ${p.name} — ${resumed} campaign${resumed === 1 ? '' : 's'} back running.`);
+    deskV1RenderProject(el, params);
+  }
+
   function deskV1RenderProject(el, params) {
     const projectId = (params || {}).projectId;
     const p = _project(projectId);
-    const stateLabel = p && p.presence && p.presence.state === 'paused' ? 'Paused' : 'Active';
+    const paused = !!(p && p.presence && p.presence.state === 'paused');
+    const stateLabel = paused ? 'Paused' : 'Active';
     el.innerHTML = `
       <div class="desk-v1-project">
         <div class="desk-v1-project-header">
           <span class="desk-v1-project-name">${esc(p ? p.name : 'Project')}</span>
           <span class="desk-v1-project-state">${esc(stateLabel)}</span>
           <div class="desk-v1-project-header-actions">
-            <button type="button" class="desk-v1-project-pause-btn">&#9208; Pause project</button>
+            ${paused
+              ? `<button type="button" class="desk-v1-project-pause-btn" data-resume-project-btn>&#9654; Resume project</button>`
+              : `<button type="button" class="desk-v1-project-pause-btn" data-pause-project-btn>&#9208; Pause project</button>`}
             <button type="button" class="desk-v1-project-presence-btn">&#9881; Presence</button>
           </div>
         </div>
@@ -130,8 +186,10 @@
     _renderPosyBox(projectId, p);
     const presenceBtn = el.querySelector('.desk-v1-project-presence-btn');
     if (presenceBtn) presenceBtn.onclick = () => deskV1Nav('presence', { projectId });
-    const pauseBtn = el.querySelector('.desk-v1-project-pause-btn');
-    if (pauseBtn) pauseBtn.onclick = () => DeskV1Kit.toast('Pausing a project lands with the Presence settings ticket (IA3).');
+    const pauseBtn = el.querySelector('[data-pause-project-btn]');
+    if (pauseBtn) pauseBtn.onclick = () => _pauseProject(projectId, el, params);
+    const resumeBtn = el.querySelector('[data-resume-project-btn]');
+    if (resumeBtn) resumeBtn.onclick = () => _resumeProject(projectId, el, params);
     const newCampBtn = el.querySelector('.desk-v1-project-newcamp-btn');
     if (newCampBtn) newCampBtn.onclick = () => DeskV1Kit.toast('Campaign setup (3 steps) lands in IA4.');
   }
