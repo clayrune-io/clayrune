@@ -39,6 +39,12 @@ def _brief(n):
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     import server  # noqa: F401 -- registers blueprints + runs wire() on import
+    # MC-995: the transfer route now also requires the retyped dashboard
+    # passcode. This file is about the handoff itself, not the gate, so bypass
+    # it here; tests/test_human_proof_guard.py exercises the real gate.
+    # guide_routes imports the helper inside the route, so patch its source.
+    from mc.blueprints import secrets_routes as _secrets
+    monkeypatch.setattr(_secrets, '_require_human_passcode', lambda data: None)
     from mc.blueprints import guide_routes as gr
     from mc.blueprints import local_auth as la
 

@@ -83,6 +83,10 @@ def ctx(tmp_path, monkeypatch):
     monkeypatch.setattr(sr, 'SETTINGS_PATH', settings_path)
     monkeypatch.setattr(sr, 'CONFIG_PATH', config_path)
     monkeypatch.setattr(sr, 'PROJECTS_BASE', projects_base)
+    # MC-995: PUT /api/config now also requires the retyped dashboard passcode.
+    # Bypassed here as in test_settings_routes.py; the real gate is exercised
+    # in tests/test_human_proof_guard.py.
+    monkeypatch.setattr(sr, '_require_human_passcode', lambda data: None)
 
     cfg_snapshot = dict(state.CONFIG)
     sess_snapshot = dict(state.agent_sessions)
