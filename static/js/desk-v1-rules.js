@@ -26,6 +26,11 @@
   // and Start-sheet authority fields that used to share that map now read
   // straight off `camp.plan` below.
   function _proposedExtras(campaignId) { return (_fx().proposedExtras || {})[campaignId] || null; }
+  // R2-5: same deskAgentName(opts, fallback) resolution every other
+  // desk-v1-*.js uses, keyed off the campaign's own project.
+  function _agentName(camp) {
+    return window.DeskV1Kit ? DeskV1Kit.deskAgentName({ project: _project(camp && camp.projectId), campaign: camp }) : 'your agent';
+  }
 
   // §3.5: "the same page... shows the same chips" as T2a's summary bar.
   // `window.deskV1RuleChips` is a one-line backward-compatible export added
@@ -205,17 +210,18 @@
   function deskV1FillProposedContent(el, params, camp) {
     const detail = _proposedExtras(camp.id) || {};
     const fams = _familiesFor(camp.id);
+    const agentName = _agentName(camp);
     el.innerHTML = `
       <div class="desk-v1-rules-proposed">
-        ${detail.blocker ? _blockerCardHTML(detail.blocker) : ''}
-        <div class="desk-v1-camp-cards">${fams.map((f) => _proposedCardHTML(f, detail)).join('') || '<div class="desk-v1-camp-empty">Posy hasn’t proposed any pieces yet.</div>'}</div>
+        ${detail.blocker ? _blockerCardHTML(detail.blocker, agentName) : ''}
+        <div class="desk-v1-camp-cards">${fams.map((f) => _proposedCardHTML(f, detail)).join('') || `<div class="desk-v1-camp-empty">${esc(agentName)} hasn’t proposed any pieces yet.</div>`}</div>
       </div>`;
     if (detail.blocker) _wireBlocker(el, camp, detail.blocker);
   }
 
-  function _blockerCardHTML(blocker) {
+  function _blockerCardHTML(blocker, agentName) {
     return `<div class="desk-v1-rules-blocker" data-blocker-id="${esc(blocker.id)}">
-      <div class="desk-v1-rules-blocker-head">⛔ Posy’s one question</div>
+      <div class="desk-v1-rules-blocker-head">⛔ ${esc(agentName)}’s one question</div>
       <div class="desk-v1-rules-blocker-q">${esc(blocker.question)}</div>
       <div class="desk-v1-rules-blocker-answers">
         ${blocker.answers.map((a) => `<button type="button" class="desk-v1-rules-blocker-answer" data-answer-id="${esc(a.id)}">${esc(a.label)}</button>`).join('')}
@@ -230,7 +236,7 @@
       btn.onclick = () => {
         const ans = blocker.answers.find((a) => a.id === btn.dataset.answerId);
         DeskV1Kit.commandBus.run({
-          label: `Answered Posy’s question: “${ans ? ans.label : ''}”`,
+          label: `Answered ${_agentName(camp)}’s question: “${ans ? ans.label : ''}”`,
           do: () => { card.remove(); },
           undo: () => { deskV1FillProposedContent(el, { campaignId: camp.id }, camp); },
         });
@@ -585,7 +591,8 @@
       </div>
       <div class="desk-v1-rules-pop-preview" id="desk-v1-rules-pop-preview" aria-live="polite" hidden></div>`;
 
-    DeskV1Kit.bindInfoIcons(bodyEl, { freq: 'A ceiling, not a quota — Posy won’t post more than this, but may post fewer.' });
+    const agentName = _agentName(camp);
+    DeskV1Kit.bindInfoIcons(bodyEl, { freq: `A ceiling, not a quota — ${agentName} won’t post more than this, but may post fewer.` });
 
     // §8: "Every change shows its effect before applying" — a control's
     // 'change' event never mutates the fixture directly; it stages one
@@ -610,7 +617,7 @@
         const commit = () => { mutate(); clear(); DeskV1Kit.toast(effectText); _refreshRuleChips(camp); };
         if (!widening) { commit(); return; }
         _openWideningConfirm(
-          'This widens what Posy can do', effectText, 'An authorized user must confirm. Continue?',
+          `This widens what ${agentName} can do`, effectText, 'An authorized user must confirm. Continue?',
           commit, () => { revert(); clear(); },
         );
       };
@@ -623,7 +630,7 @@
       const next = parseInt(freqInput.value, 10) || 0;
       if (next === prev) return;
       const accounts = _campaignAccountsLabel(camp);
-      const effect = `Posy will publish at most ${next} post${next === 1 ? '' : 's'} a week${accounts ? ` on ${accounts}` : ''} — was ${prev}.`;
+      const effect = `${_agentName(camp)} will publish at most ${next} post${next === 1 ? '' : 's'} a week${accounts ? ` on ${accounts}` : ''} — was ${prev}.`;
       setPending(() => { plan.cadence = plan.cadence || {}; plan.cadence.per_week = next; }, effect, next > prev, () => { freqInput.value = String(prev); });
     });
 
@@ -718,12 +725,13 @@
     const before = `${scopeLabel} follows the existing rules.`;
     const widening = _WIDENING_RE.test(text);
     const durable = _DURABLE_RE.test(text);
+    const agentName = _agentName(camp);
 
     const apply = () => {
       const after = `“${text}” applied to ${scopeLabel}.`;
       let addedChip = null;
       DeskV1Kit.commandBus.run({
-        label: `Posy: ${text}`,
+        label: `${agentName}: ${text}`,
         do: () => {
           if (durable) {
             camp.rules = camp.rules || {};
@@ -748,8 +756,8 @@
 
     if (widening) {
       _openWideningConfirm(
-        'Widen what Posy can do?',
-        `This instruction would widen what Posy can do:\n“${text}”`,
+        `Widen what ${agentName} can do?`,
+        `This instruction would widen what ${agentName} can do:\n“${text}”`,
         'An authorized user must confirm before it applies.',
         apply,
         () => _renderPosyReply(posyBoxEl, before, 'Not applied — needs an authorized user to confirm.', [scopeLabel]),
