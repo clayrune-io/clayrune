@@ -185,6 +185,45 @@ async function toggleAgentLog(projectId) {
 const _agentLogInFlight = {};
 const _conversationsInFlight = {};
 
+// Per-project rail-fetch-completion tracking (MC, 2026-09-28: the rail said
+// "No conversations with Dave yet." while the very first fetch was still in
+// flight, right after a server restart / page refresh). Written ONLY when a
+// response lands, success or failure — never optimistically — so "loaded"
+// genuinely means "we heard back at least once" for BOTH sources the rail
+// merges (agentLogCache supplies ~139/141 rows, conversationsCache the rest).
+// conversation.js reads these across the module boundary, hence window.
+// (discovery_es_module_cross_boundary_globals: top-level `const` here is
+// module-scoped, not global).
+const _railAgentLogStatus = {};        // projectId -> 'ok' | 'error'
+const _railConversationsStatus = {};   // projectId -> 'ok' | 'error'
+
+function _railSourcesLoaded(projectId) {
+  return !!_railAgentLogStatus[projectId] && !!_railConversationsStatus[projectId];
+}
+window._railSourcesLoaded = _railSourcesLoaded;
+
+// True only when NEITHER source has EVER produced cached data and at least
+// one of them just failed — i.e. the rail is empty because the fetch failed,
+// not because the project genuinely has no conversations. Once either cache
+// has ever been populated this is permanently false, so a later transient
+// failure can't relabel a real (possibly stale) list as a load error.
+function _railSourcesFailed(projectId) {
+  if (agentLogCache[projectId] !== undefined || conversationsCache[projectId] !== undefined) return false;
+  return _railAgentLogStatus[projectId] === 'error' || _railConversationsStatus[projectId] === 'error';
+}
+window._railSourcesFailed = _railSourcesFailed;
+
+// Shared empty-slot renderer for the rail: loading text before the first
+// completion, the failure text if nothing ever loaded, else the caller's own
+// (already-correct) empty-state HTML. Never called for a non-empty list, so
+// it can't blank a real list on a later refetch (see rail-no-empty-flash.mjs).
+function railEmptyStateHTML(projectId, emptyHTML) {
+  if (!_railSourcesLoaded(projectId)) return '<div class="agent-rail-empty">Loading conversations&#8230;</div>';
+  if (_railSourcesFailed(projectId)) return '<div class="agent-rail-empty">Couldn&#39;t load conversations.</div>';
+  return emptyHTML;
+}
+window.railEmptyStateHTML = railEmptyStateHTML;
+
 async function loadAgentLog(projectId) {
   if (_agentLogInFlight[projectId]) return _agentLogInFlight[projectId];
   const run = _loadAgentLogInner(projectId);
@@ -201,6 +240,7 @@ async function _loadAgentLogInner(projectId) {
     // cache with garbage.
     const fresh = await res.json();
     agentLogCache[projectId] = fresh;
+    _railAgentLogStatus[projectId] = 'ok';
     // Populate planFile in status cache from agent log entries
     for (const entry of agentLogCache[projectId]) {
       if (entry.plan_file && entry.session_id) {
@@ -225,6 +265,7 @@ async function _loadAgentLogInner(projectId) {
     // here was how the rail's dominant row source (agent-log entries supply
     // ~139 of 141 rail rows) went empty and stayed empty (f_6506aeb9).
     console.warn(`[Clayrune] agent/log refetch failed for ${projectId}:`, e);
+    _railAgentLogStatus[projectId] = 'error';
   }
 }
 
@@ -246,6 +287,7 @@ async function _loadConversationsInner(projectId) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const fresh = await res.json();
     conversationsCache[projectId] = fresh;
+    _railConversationsStatus[projectId] = 'ok';
     refreshModal();
     // refreshModal keeps an already-mounted output node, so a chain that only
     // becomes known now (cold open raced this fetch) needs the control added.
@@ -255,6 +297,7 @@ async function _loadConversationsInner(projectId) {
     // Same reasoning as _loadAgentLogInner above: leave the previous list
     // standing on failure instead of silently going blank (f_6506aeb9).
     console.warn(`[Clayrune] conversations refetch failed for ${projectId}:`, e);
+    _railConversationsStatus[projectId] = 'error';
   }
 }
 
