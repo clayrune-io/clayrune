@@ -1638,8 +1638,8 @@ function deskQueueReleaseUnedited(projectId, itemId) {
 // The Desk writes the content and offers every way to get it onto the
 // platform; a HUMAN always clicks Post. Nothing below makes an outbound call
 // to X or LinkedIn — Open-in-X/LinkedIn build a URL and hand it to
-// window.open, which opens a NEW TAB in Ron's own browser (never the
-// Clayrune browser pane an agent could drive). "Post via API" stays a toast
+// openExternal (index.html), which opens a NEW TAB in Ron's own browser
+// (never the Clayrune browser pane an agent could drive). "Post via API" stays a toast
 // stub: mc/desk_publish.py exists but step 4's human-only approval gate does
 // not, so nothing here may call it yet (see THE_DESK_SIMPLIFICATION_PLAN.md
 // §4, "why the Desk cannot grant itself release").
@@ -1663,7 +1663,7 @@ function deskOpenInX(projectId, itemId) {
   if (body.length > 280 && typeof showToast === 'function') {
     showToast(`This post is ${body.length} characters — over X's 280 limit. It opens anyway; shorten it before you click Post.`, 6000);
   }
-  window.open(`${_DESK_X_INTENT_BASE}?text=${encodeURIComponent(body)}`, '_blank', 'noopener');
+  openExternal(`${_DESK_X_INTENT_BASE}?text=${encodeURIComponent(body)}`);
 }
 
 // LinkedIn has no documented equivalent of X's web intent — Microsoft Learn's
@@ -1692,7 +1692,7 @@ function deskOpenInLinkedIn(projectId, itemId) {
   if (!item) return;
   const body = item.body || '';
   if (_deskIsPersonalVoice(item.voice || '')) {
-    window.open(`${_DESK_LINKEDIN_PERSONAL_BASE}&text=${encodeURIComponent(body)}`, '_blank', 'noopener');
+    openExternal(`${_DESK_LINKEDIN_PERSONAL_BASE}&text=${encodeURIComponent(body)}`);
     return;
   }
   // Company Page: no URL prefills its composer (verified above), so this is
@@ -1707,7 +1707,7 @@ function deskOpenInLinkedIn(projectId, itemId) {
   const voice = (_deskAllVoices || []).find(v => v.name === item.voice);
   const dest = ((voice && voice.destination) || '').trim();
   if (dest) {
-    window.open(dest, '_blank', 'noopener');
+    openExternal(dest);
   } else if (typeof showToast === 'function') {
     showToast('Copied to clipboard. No admin page URL is saved for this voice yet — '
       + 'add one under Voices → destination, or open the Company Page yourself and paste.', 7000);

@@ -164,8 +164,14 @@ async function performClayruneUpdate() {
   // Frozen Mac .app: no git pull to run. Open the download in the system
   // browser instead of hitting POST /api/system/update (which, for this
   // install, just hands back the same download_url anyway).
+  // openExternal (not window.open) — pywebview on macOS silently drops a
+  // script-invoked window.open() for external URLs; see its definition in
+  // index.html for why.
   if (btn.dataset.frozen === '1') {
-    if (btn.dataset.downloadUrl) window.open(btn.dataset.downloadUrl, '_blank', 'noopener');
+    if (btn.dataset.downloadUrl) {
+      openExternal(btn.dataset.downloadUrl);
+      hint.innerHTML = `<span style="color:var(--text-dim)">Opening download in your browser&hellip;</span>`;
+    }
     return;
   }
 
