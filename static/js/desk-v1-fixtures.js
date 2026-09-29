@@ -890,7 +890,11 @@
     campaign_id: 'camp-1', project_id: 'clayrune', term: 1, status: 'interim',
     computed_at: '2026-09-15T09:00:00Z',
     goal: { metric: 'tester signups', target: 30, actual: 11, baseline: 0 },
-    spend: { publishing: 0.03, production: 0, total: 0.03, ceiling: 60, cost_per_outcome: 0.003 },
+    // R2-1 renamed the project-level `production` field to `presence.budget`
+    // (line 47 above) — `media_cost` here (§10.1: "production (media jobs)")
+    // is a different, spend-breakdown field, named to not collide with that
+    // retired key.
+    spend: { publishing: 0.03, media_cost: 0, total: 0.03, ceiling: 60, cost_per_outcome: 0.003 },
     dimensions: [
       { dimension: 'platform_voice', verdict: 'too_few_posts',
         text: 'Too few posts to tell (2 and 1; need 10 each)' },
