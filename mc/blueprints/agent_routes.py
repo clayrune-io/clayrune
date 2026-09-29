@@ -12471,6 +12471,15 @@ def agent_followup(project_id):
                     existing['log_lines'].append(f"\n> {user_label}: {message}\n")
                 _start_new_turn(existing)
                 existing['status'] = 'running'
+                # MC-1002: the old process is about to be killed and the new
+                # one spawned outside this lock (Popen for a Mode B respawn
+                # can take several seconds — full context rebuild, MCP
+                # fleet start). Guardian's dirty read of `proc`/`status` in
+                # that window sees a legitimately-dead old proc under a
+                # 'running' status and misreads it as a crash — this flag is
+                # the same kind of safety-net exemption as
+                # waiting_for_question/evicted, scoped to the handoff window.
+                existing['_respawn_in_flight'] = _time.time()
                 existing['last_status_change_time'] = _time.time()
                 existing['last_output_time'] = _time.time()
                 existing.pop('evicted', None)  # respawned from idle-eviction → clear the State-1 skip flag
@@ -12568,6 +12577,7 @@ def agent_followup(project_id):
                     except Exception as _se:
                         _log(f"[sticky-respawn] context rebuild failed: {_se}")
                     existing['process_alive'] = False
+                    existing['_respawn_in_flight'] = _time.time()  # MC-1002 — see auto-fresh respawn above
                     existing['log_lines'].append('[Settings changed — applying via resume]')
                     _sticky_old = existing.get('proc')
                     if _sticky_old:
@@ -12649,6 +12659,10 @@ def agent_followup(project_id):
             # Mark as running and return quickly — spawn process in background
             _start_new_turn(existing)
             existing['status'] = 'running'
+            # MC-1002: Mode A's `proc` is still the PREVIOUS turn's (already-
+            # exited) process until `_start_followup`'s Popen below replaces
+            # it — same handoff-window exemption as the Mode B respawn.
+            existing['_respawn_in_flight'] = _time.time()
             existing['last_status_change_time'] = _time.time()
             existing['last_output_time'] = _time.time()
             existing['pending_recovery_message'] = message
@@ -12700,6 +12714,7 @@ def agent_followup(project_id):
                     _route_existing['model'] = new_model
                     _route_existing['model_source'] = new_source
                     _route_existing['process_alive'] = False
+                    _route_existing['_respawn_in_flight'] = _time.time()  # MC-1002 — see auto-fresh respawn above
                     _route_existing['log_lines'].append(
                         (f'[Model pinned: switching {current_model} → {new_model}]'
                          if _pinned else
@@ -12753,6 +12768,7 @@ def agent_followup(project_id):
                         rb['existing']['log_lines'].append(
                             f'[Not resumed here: this conversation is already running '
                             f'in session {_dup_owner}. Open that copy to continue.]')
+                        rb['existing'].pop('_respawn_in_flight', None)  # MC-1002 — handoff window over (duplicate)
                         rb['existing']['status'] = 'idle'
                         rb['existing']['process_alive'] = False
                         rb['existing']['last_status_change_time'] = _time.time()
@@ -12783,6 +12799,12 @@ def agent_followup(project_id):
                     rb['existing']['stdin_lock'] = threading.Lock()
                     rb['existing']['pending_recovery_message'] = None
                     rb['existing']['_resume_id'] = None  # clear resume context for future follow-ups
+                    # MC-1002: the new process is up — end the handoff window
+                    # and make status right even if Guardian raced in and set
+                    # 'error' on the old (intentionally-killed) proc while
+                    # this Popen was still starting up.
+                    rb['existing'].pop('_respawn_in_flight', None)
+                    rb['existing']['status'] = 'running'
                     # The respawned process's system prompt was just built
                     # fresh (full read floor, full behaviour tail) — reset the
                     # live-turn compact state so the NEXT direct stdin write
@@ -12813,6 +12835,7 @@ def agent_followup(project_id):
             except Exception as e:
                 _log(f"[respawn-B] {rb['project_id']}: FAILED — {e}")
                 rb['existing']['log_lines'].append(f'[respawn error: {e}]')
+                rb['existing'].pop('_respawn_in_flight', None)  # MC-1002 — handoff window over (failed)
                 rb['existing']['status'] = 'error'
                 rb['existing']['last_status_change_time'] = _time.time()
                 rb['existing']['process_alive'] = False
@@ -12901,12 +12924,18 @@ def agent_followup(project_id):
                 _unregister_process(old_proc.pid)
             existing['proc'] = proc
             existing['pending_recovery_message'] = None
+            # MC-1002: handoff window over — the new process is up. Force
+            # 'running' even if Guardian raced in on the old (already-exited)
+            # proc and set 'error' while this Popen was still starting.
+            existing.pop('_respawn_in_flight', None)
+            existing['status'] = 'running'
             _register_process(proc, 'Agent followup (A)', 'agent',
                               session_id, project_id, followup_msg[:80])
             threading.Thread(target=_read_agent_stream, args=(proc, existing), daemon=True).start()
         except Exception as e:
             with get_manager(project_id).lock:
                 existing['log_lines'].append(f'[follow-up process failed: {e}]')
+                existing.pop('_respawn_in_flight', None)  # MC-1002 — handoff window over (failed)
                 existing['status'] = 'error'
                 existing['last_status_change_time'] = _time.time()
             # Popen may have raised before sysprompt cleanup was wired — sweep.
@@ -16247,6 +16276,24 @@ def _should_evict_idle_session(session, now, enabled, idle_minutes,
     return (now - session.get('last_output_time', now)) > idle_minutes * 60
 
 
+# MC-1002: upper bound on the respawn handoff exemption. `_respawn_in_flight`
+# holds the time the handoff began; every known exit clears it, but a path
+# that forgets to would otherwise blind the guardian to a genuinely dead
+# session forever (status stuck 'running'). Past this bound the guardian
+# treats the session normally again.
+_RESPAWN_WINDOW_MAX_S = 300
+
+
+def _respawn_window_open(session, now):
+    started = session.get('_respawn_in_flight')
+    if not started:
+        return False
+    try:
+        return now - float(started) < _RESPAWN_WINDOW_MAX_S
+    except (TypeError, ValueError):
+        return False
+
+
 def _guardian_check_session(sid, session, now):
     status = session['status']
     proc = session.get('proc')
@@ -16261,8 +16308,21 @@ def _guardian_check_session(sid, session, now):
     if status == 'running' and now - last_change > 15:
         proc_dead = proc is None or proc.poll() is not None
         if proc_dead:
+            # MC-1002: a rollover/respawn intentionally kills the old proc
+            # and spawns a new one outside this loop's lock — that handoff
+            # can outrun 15s (full context rebuild, MCP fleet start) and
+            # look identical to a genuine Popen failure. `_respawn_in_flight`
+            # is the same kind of exemption as waiting_for_question/evicted
+            # below, scoped to that window (set/cleared in agent_routes.py's
+            # respawn call sites).
+            if _respawn_window_open(session, now):
+                return
             _log(f"[guardian] Session {sid[:8]}: stuck running, process dead/missing")
             with get_manager(session['project_id']).lock:
+                # Re-check under lock: a respawn may have completed (or
+                # started) while this thread was deciding/logging above.
+                if _respawn_window_open(session, now) or session.get('proc') is not proc:
+                    return
                 session['status'] = 'error'
                 session['last_status_change_time'] = now
                 if mode == 'B':
@@ -16279,13 +16339,25 @@ def _guardian_check_session(sid, session, now):
             # Safety net: if the session is waiting for user input (question /
             # plan approval), the process was killed intentionally by the reader
             # thread as part of that flow. Don't mark it 'error' — the follow-up
-            # (user's answer) will respawn it.
+            # (user's answer) will respawn it. MC-1002: same treatment for a
+            # rollover/respawn handoff in flight — the old proc IS legitimately
+            # dead (killed on purpose), the new one just hasn't been assigned
+            # to `session['proc']` yet.
             if (session.get('waiting_for_question') or session.get('waiting_for_plan_approval')
-                    or session.get('evicted')):
+                    or session.get('evicted') or _respawn_window_open(session, now)):
                 return
             old_status = status
             _log(f"[guardian] Session {sid[:8]}: PID {proc.pid} dead, was {old_status}")
             with get_manager(session['project_id']).lock:
+                # Re-check under lock (MC-1002): the respawn this session was
+                # mid-handoff for may have finished — or started — while this
+                # thread waited for the lock. A `proc` we captured before
+                # acquiring it is not proof the CURRENT proc is dead; only
+                # `session['status'] in (...)` was being re-checked before,
+                # which a fresh 'running' from a successful respawn also
+                # satisfies.
+                if _respawn_window_open(session, now) or session.get('proc') is not proc:
+                    return
                 if mode == 'B':
                     session['process_alive'] = False
                 if session['status'] in ('running', 'idle'):
