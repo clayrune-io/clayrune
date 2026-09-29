@@ -1356,7 +1356,7 @@ function agentPanelHTML(p) {
     ondrop="${_pcaps.image_attach ? `handleAgentDrop(event,'${esc(p.id)}')` : 'event.preventDefault()'}">
     ${_attachInput}
     ${mobileMode ? '' : _dispatchPlusBtn}
-    <textarea spellcheck="true" class="agent-task-input" id="agent-task-${esc(p.id)}" rows="1"
+    <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-task-${esc(p.id)}" rows="1"
       data-project="${esc(p.id)}"
       placeholder="${_dispatchPlaceholder}"
       onkeydown="handleInputEnter(event,()=>dispatchAgent('${esc(p.id)}'),'${esc(p.id)}')"
@@ -1562,7 +1562,7 @@ function agentPanelHTML(p) {
           }
           planBlock = ''; planRawLines = [];
           const cls = agentLineCls(line);
-          result += `<div class="${cls}">${esc(line)}</div>`;
+          result += `<div class="${cls}" dir="auto">${esc(line)}</div>`;
           continue;
         }
         if (isTableLine(line)) {
@@ -1596,7 +1596,7 @@ function agentPanelHTML(p) {
                 data-source-label="${esc(_activeSessionPersonName(activeSession, p))}"
                 onclick="brainstormFromMessage('${esc(p.id)}', this)">&#128161;</button>`
             : '';
-          const div = `<div class="${cls}">${html}${_brainstormBtn}</div>`;
+          const div = `<div class="${cls}" dir="auto">${html}${_brainstormBtn}</div>`;
           // Tool lines and user prompts reset plan-block accumulator
           if (cls.includes('agent-line-tool') || cls.includes('agent-line-prompt')) {
             result += planBlock + div;
@@ -1703,7 +1703,7 @@ function agentPanelHTML(p) {
               ondrop="${_pcaps.image_attach ? `handleAgentDrop(event,'fu_${esc(activeSessionId)}')` : 'event.preventDefault()'}">
             ${_fuAttachInput}
             ${mobileMode ? '' : _fuPlusBtn}
-            <textarea spellcheck="true" class="agent-task-input" id="agent-followup-${esc(activeSessionId)}" rows="1"
+            <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-followup-${esc(activeSessionId)}" rows="1"
               data-project="${esc(p.id)}"
               placeholder="${st === 'error' ? 'Type to continue from where it stopped...' : st === 'stopped' ? 'Type to resume conversation...' : st === 'running' ? (mobileMode ? 'Interrupt and redirect agent...' : 'Interrupt and redirect agent... (Enter to send)') : 'Send follow-up...'}"
               onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(activeSessionId)}'),'${esc(p.id)}')"
@@ -2735,7 +2735,7 @@ function mobileUserConversationsHTML(p, convos, opts) {
       ${face}
       <div class="conv-main">
         <div class="conv-top">
-          <span class="conv-name">${dot}${incIcon}${label}</span>
+          <span class="conv-name" dir="auto">${dot}${incIcon}${label}</span>
           <span class="conv-time">${badge || esc(c.ts_relative || '')}</span>
         </div>
         <div class="conv-bot"><span class="conv-sub">${
@@ -4252,7 +4252,7 @@ function splitPaneHTML(p, sid, isPrimary) {
           ondrop="${_spCaps.image_attach ? `handleAgentDrop(event,'${esc(_spKey)}')` : 'event.preventDefault()'}">
         ${_spAttachInput}
         ${_spPlusBtn}
-        <textarea spellcheck="true" class="agent-task-input" id="agent-followup-${esc(sid)}" rows="1"
+        <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-followup-${esc(sid)}" rows="1"
           data-project="${esc(p.id)}"
           placeholder="${isRunning ? 'Redirect…' : 'Reply…'}"
           onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(sid)}'),'${esc(p.id)}')"
@@ -5012,6 +5012,7 @@ function appendAgentLine(sessionId, text, dateHint) {
   const div = document.createElement('div');
   const cls = agentLineCls(text);
   div.className = cls;
+  div.setAttribute('dir', 'auto');
   // Reset stuck-plan counter only when a non-plan-related tool appears
   if (cls.includes('agent-line-tool') && !text.includes('ExitPlanMode') && !text.includes('EnterPlanMode')) {
     exitPlanModeCount[sessionId] = 0;
@@ -5279,14 +5280,14 @@ function renderAgentQuestion(sessionId, projectId, questions, questionId) {
     && (q0.options || []).length >= 1 && (q0.options || []).length <= 4
     && (q0.options || []).every(o => (o.label || '').length <= 24 && !o.description);
   if (useChips) {
-    html += `<div class="agent-question-header">${esc(q0.header || 'Question')}</div>`;
-    html += `<div class="agent-question-text">${esc(q0.question)}</div>`;
+    html += `<div class="agent-question-header" dir="auto">${esc(q0.header || 'Question')}</div>`;
+    html += `<div class="agent-question-text" dir="auto">${esc(q0.question)}</div>`;
     html += `<div class="agent-question-chips">`;
     (q0.options || []).forEach(opt => {
       // Pass `this` (not the label) into the handler and read data-label — the
       // attribute is HTML-escaped safely, avoiding the nested-quote break a
       // label with an apostrophe would cause inside an onclick JS string.
-      html += `<button type="button" class="agent-question-chip" data-label="${esc(opt.label)}" onclick="submitQuestionChip('${esc(projectId)}','${esc(sessionId)}','${formId}',0,this)">${esc(opt.label)}</button>`;
+      html += `<button type="button" class="agent-question-chip" dir="auto" data-label="${esc(opt.label)}" onclick="submitQuestionChip('${esc(projectId)}','${esc(sessionId)}','${formId}',0,this)">${esc(opt.label)}</button>`;
     });
     html += `<button type="button" class="agent-question-chip agent-question-chip-other" onclick="submitQuestionOther('${esc(projectId)}','${esc(sessionId)}','${formId}',0)">Other&#8230;</button>`;
     html += `</div>`;
@@ -5298,13 +5299,13 @@ function renderAgentQuestion(sessionId, projectId, questions, questionId) {
     questions.forEach((q, qi) => {
       const inputType = q.multiSelect ? 'checkbox' : 'radio';
       const groupName = `${formId}-q${qi}`;
-      html += `<div class="agent-question-header">${esc(q.header || 'Question')}</div>`;
-      html += `<div class="agent-question-text">${esc(q.question)}</div>`;
+      html += `<div class="agent-question-header" dir="auto">${esc(q.header || 'Question')}</div>`;
+      html += `<div class="agent-question-text" dir="auto">${esc(q.question)}</div>`;
       html += `<div class="agent-question-options" data-qidx="${qi}">`;
       (q.options || []).forEach((opt, oi) => {
         html += `<div class="agent-question-option">
           <input type="${inputType}" name="${groupName}" id="${groupName}-o${oi}" value="${esc(opt.label)}" data-desc="${esc(opt.description || '')}">
-          <label for="${groupName}-o${oi}">${esc(opt.label)}${opt.description ? `<span class="aq-desc">${esc(opt.description)}</span>` : ''}</label>
+          <label for="${groupName}-o${oi}" dir="auto">${esc(opt.label)}${opt.description ? `<span class="aq-desc" dir="auto">${esc(opt.description)}</span>` : ''}</label>
         </div>`;
       });
       // "Other" option
@@ -5429,7 +5430,10 @@ function _dispatchQuestionAnswer(projectId, sessionId, container, answers) {
   if (container.dataset.qid) {
     (_answeredQuestionIds[sessionId] || (_answeredQuestionIds[sessionId] = new Set())).add(container.dataset.qid);
   }
-  const summary = `<div class="agent-question-answer">Answered: ${esc(answers.map(a => a.answer).join(', '))}</div>`;
+  // "Answered: " is a fixed English label — isolate it in its own dir="ltr"
+  // span so the outer dir="auto" detects direction from the actual answer
+  // text, not the label prefix (same fix as escPromptWithImages's "> Name:").
+  const summary = `<div class="agent-question-answer" dir="auto"><span dir="ltr">Answered: </span>${esc(answers.map(a => a.answer).join(', '))}</div>`;
   const actionsEl = container.querySelector('.agent-question-actions');
   if (actionsEl) actionsEl.innerHTML = summary;         // form mode
   else container.insertAdjacentHTML('beforeend', summary); // chip mode (no actions row)
