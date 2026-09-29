@@ -479,3 +479,95 @@ def test_voices_can_be_changed_after_the_fact(store):
     assert up['voices'] == ['product'] and up['voice'] == 'product'
     with pytest.raises(ValueError):
         store.update_campaign(c['id'], {'voices': []})
+
+
+# -- R1-P amend: presence store + goal/term/how/map + bounds (IA revision 2) --
+
+def test_v1_store_migrates_to_v2_and_is_idempotent(store):
+    raw = {
+        'version': 1,
+        'campaigns': {
+            'camp-1': {
+                'id': 'camp-1',
+                'setup': {'step': 'audience', 'done': ['thesis']},
+                'goal': {'outcome': 'signups', 'tracked': True},
+            },
+        },
+        'presences': {'proj-1': {'project_id': 'proj-1', 'production': {'amount': 500}}},
+    }
+    store.STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    store.STORE_PATH.write_text(json.dumps(raw), encoding='utf-8')
+
+    once = store._read_store()
+    camp = once['campaigns']['camp-1']
+    assert camp['map'] == {'stop': 'audience', 'done': ['thesis']}
+    assert 'setup' not in camp
+    assert camp['goal'] == {'metric': 'signups', 'source': 'manual'}
+    assert 'outcome' not in camp['goal'] and 'tracked' not in camp['goal']
+    assert once['presences']['proj-1']['budget'] == {'amount': 500}
+    assert 'production' not in once['presences']['proj-1']
+
+    twice = store._migrate_store(json.loads(json.dumps(once)))
+    assert twice == once, 'migrating an already-migrated store is a no-op'
+
+
+def test_presence_upsert_and_get(store):
+    assert store.get_presence('proj-1') is None
+    rec = store.upsert_presence('proj-1', {'audience': 'founders', 'budget': {'amount': 300}})
+    assert rec['project_id'] == 'proj-1' and rec['audience'] == 'founders'
+    again = store.upsert_presence('proj-1', {'audience': 'operators'})
+    assert again['audience'] == 'operators'
+    assert again['budget'] == {'amount': 300}, 'unrelated fields survive a partial patch'
+
+
+def test_earmark_sum_may_not_exceed_project_budget(store):
+    store.upsert_presence('proj-1', {'budget': {'amount': 100}})
+    store.create_campaign('a', 'th', project_id='proj-1',
+                          how={'budget': {'source': 'project', 'amount': 60}})
+    with pytest.raises(ValueError):
+        store.create_campaign('b', 'th', project_id='proj-1',
+                              how={'budget': {'source': 'project', 'amount': 50}})
+    # own-funded budgets are never counted against the project pool
+    ok = store.create_campaign('c', 'th', project_id='proj-1',
+                               how={'budget': {'source': 'own', 'amount': 1000}})
+    assert ok['id']
+
+
+def test_earmark_check_excludes_the_campaign_being_updated(store):
+    store.upsert_presence('proj-1', {'budget': {'amount': 100}})
+    c = store.create_campaign('a', 'th', project_id='proj-1',
+                              how={'budget': {'source': 'project', 'amount': 60}})
+    # Raising its own earmark within the pool it already occupies must not
+    # double-count itself against the limit.
+    up = store.update_campaign(c['id'], {'how': {'budget': {'source': 'project', 'amount': 90}}})
+    assert up['how']['budget']['amount'] == 90
+    with pytest.raises(ValueError):
+        store.update_campaign(c['id'], {'how': {'budget': {'source': 'project', 'amount': 200}}})
+
+
+def test_budget_raise_changes_bounds_hash_lowering_does_not(store):
+    c = store.create_campaign('a', 'th', how={'budget': {'source': 'own', 'amount': 50}})
+    h0 = c['approval']['bounds_hash']
+    lowered = store.update_campaign(c['id'], {'how': {'budget': {'source': 'own', 'amount': 20}}})
+    assert lowered['approval']['bounds_hash'] == h0, 'a lower budget never re-widens the envelope'
+    raised = store.update_campaign(c['id'], {'how': {'budget': {'source': 'own', 'amount': 80}}})
+    assert raised['approval']['bounds_hash'] != h0, 'a higher budget widens and rehashes'
+
+
+def test_removing_a_cadence_end_or_term_bound_widens(store):
+    base_plan = {'cadence': {'per_week': 2}, 'end': {'date': '2026-01-01T00:00:00Z'}}
+    c = store.create_campaign('a', 'th', plan=base_plan, term={'starts': '2026-01-01', 'ends': '2026-02-01'})
+    h0 = c['approval']['bounds_hash']
+
+    no_cadence = store.update_campaign(c['id'], {'plan': {'end': base_plan['end']}})
+    assert no_cadence['approval']['bounds_hash'] != h0, 'dropping the cadence ceiling widens'
+
+    c2 = store.create_campaign('b', 'th', plan=base_plan, term={'starts': '2026-01-01', 'ends': '2026-02-01'})
+    h2 = c2['approval']['bounds_hash']
+    no_end = store.update_campaign(c2['id'], {'plan': {'cadence': base_plan['cadence']}})
+    assert no_end['approval']['bounds_hash'] != h2, 'dropping the end date/cap widens'
+
+    c3 = store.create_campaign('c', 'th', plan=base_plan, term={'starts': '2026-01-01', 'ends': '2026-02-01'})
+    h3 = c3['approval']['bounds_hash']
+    no_term = store.update_campaign(c3['id'], {'term': {}})
+    assert no_term['approval']['bounds_hash'] != h3, 'dropping the term end date widens'

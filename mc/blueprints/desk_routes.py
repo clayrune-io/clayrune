@@ -320,7 +320,10 @@ def create_campaign():
             d['title'], d['thesis'],
             voices=d.get('voices') or d.get('voice'),
             agenda=d.get('agenda') or '', project_ids=d.get('project_ids') or [],
-            planned=d.get('planned') or [], visual=d.get('visual'))
+            planned=d.get('planned') or [], visual=d.get('visual'),
+            project_id=d.get('project_id'), plan=d.get('plan'),
+            goal=d.get('goal'), term=d.get('term'), how=d.get('how'),
+            map_=d.get('map'), subject=d.get('subject'))
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     return jsonify(camp), 201

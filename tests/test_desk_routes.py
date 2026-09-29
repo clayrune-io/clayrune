@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from mc.blueprints import desk_routes  # noqa: E402
+from mc import desk as _desk  # noqa: E402
 
 
 @pytest.fixture
@@ -121,6 +122,20 @@ def test_campaign_crud(client):
     assert len(client.get('/api/desk/campaigns?state=running').get_json()) == 1
     assert client.delete(f'/api/desk/campaigns/{cid}').status_code == 200
     assert client.get('/api/desk/campaigns').get_json() == []
+
+
+def test_earmark_over_project_budget_is_a_400_at_the_route(client):
+    _desk.upsert_presence('proj-1', {'budget': {'amount': 100}})
+    ok = client.post('/api/desk/campaigns', json={
+        'title': 'a', 'thesis': 'th', 'project_id': 'proj-1',
+        'how': {'budget': {'source': 'project', 'amount': 60}}})
+    assert ok.status_code == 201
+
+    over = client.post('/api/desk/campaigns', json={
+        'title': 'b', 'thesis': 'th', 'project_id': 'proj-1',
+        'how': {'budget': {'source': 'project', 'amount': 50}}})
+    assert over.status_code == 400
+    assert 'earmark' in over.get_json()['error']
 
 
 def test_a_campaign_without_a_thesis_is_refused(client):

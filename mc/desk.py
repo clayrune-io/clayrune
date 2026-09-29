@@ -49,6 +49,7 @@ for the same reason `automation_suggestions` has no code path to the scheduler.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 import difflib
@@ -68,7 +69,11 @@ SIGNALS_PATH: Path | None = None
 _store_lock = threading.Lock()
 _signals_lock = threading.Lock()
 
-STORE_VERSION = 1
+# v2 (MC-977 IA revision 2 amend, R1-P): adds the presence store and the
+# campaign goal/term/how/map/approval shapes docs/THE_DESK_V1_IA_REVISION_2.md
+# §5 freezes (fixture-identical, see static/js/desk-v1-fixtures.js). `_migrate`
+# below carries any v1 record forward on read.
+STORE_VERSION = 2
 
 # VOICES ARE USER DATA, NOT SOURCE. This was `VOICES = ('ron', 'clayrune')` — one
 # operator's identity, hardcoded in a file that ships to strangers, which is
@@ -121,7 +126,49 @@ def _empty_store() -> dict:
         'voices_seeded': False,
         'platforms': {},
         'platforms_seeded': False,
+        'presences': {},
     }
+
+
+def _migrate_presence_record(rec: dict) -> dict:
+    """§5.2: `presence.production` -> `presence.budget`, renamed only.
+
+    Guarded by absence of the new key, so running this on an already-migrated
+    (or freshly-created v2) record is a no-op — required for idempotency.
+    """
+    if 'production' in rec and 'budget' not in rec:
+        rec['budget'] = rec.pop('production')
+    return rec
+
+
+def _migrate_campaign_record(camp: dict) -> dict:
+    """§5.1: `setup{step,done}` -> `map{stop,done}`; `goal.outcome` ->
+    `goal.metric`, `goal.tracked` folded into `goal.source` (`manual` when the
+    old goal was tracked, absent when it was not — §9 Q1's "manual is a real
+    source", the closest a boolean has to one). Each half only fires when the
+    OLD key is present and the NEW one is not, so re-running is a no-op.
+    """
+    if 'setup' in camp and 'map' not in camp:
+        setup = camp.pop('setup') or {}
+        camp['map'] = {'stop': setup.get('step'), 'done': list(setup.get('done') or [])}
+    goal = camp.get('goal')
+    if isinstance(goal, dict) and 'outcome' in goal and 'metric' not in goal:
+        goal['metric'] = goal.pop('outcome')
+        tracked = goal.pop('tracked', None)
+        if 'source' not in goal:
+            goal['source'] = 'manual' if tracked else None
+    return camp
+
+
+def _migrate_store(data: dict) -> dict:
+    presences: dict = data.get('presences') or {}
+    for pid, rec in list(presences.items()):
+        presences[pid] = _migrate_presence_record(rec)
+    campaigns: dict = data.get('campaigns') or {}
+    for cid, camp in list(campaigns.items()):
+        campaigns[cid] = _migrate_campaign_record(camp)
+    data['version'] = STORE_VERSION
+    return data
 
 
 def _read_store() -> dict:
@@ -147,7 +194,8 @@ def _read_store() -> dict:
     data.setdefault('voices_seeded', False)
     data.setdefault('platforms', {})
     data.setdefault('platforms_seeded', False)
-    return data
+    data.setdefault('presences', {})
+    return _migrate_store(data)
 
 
 def _write_store(store: dict) -> None:
@@ -159,6 +207,157 @@ def _write_store(store: dict) -> None:
 
 def _new_id(prefix: str) -> str:
     return f'{prefix}-{uuid.uuid4().hex[:8]}'
+
+
+# -- presence (IA revision 2 §5.3; docs/THE_DESK_V1_IA_REVISION_2.md) --------
+#
+# The project-level record IA1 stubbed and R2-1 froze the fixture shape for
+# (static/js/desk-v1-fixtures.js PROJECTS[].presence): who plans/writes for
+# this project (`desk_agent`), the accounts bound to it, and the promotion
+# `budget` (§5.2 rename of `production` — see `_migrate_presence_record`).
+
+_DEFAULT_PRESENCE_BUDGET = {'amount': 0, 'period': 'month', 'per_job': 0, 'kinds': []}
+
+
+def _empty_presence(project_id: str) -> dict:
+    return {
+        'project_id': project_id,
+        'accounts': [],
+        'audience': '',
+        'ceilings': {},
+        'replies': 'drafts',
+        'desk_agent': None,
+        'budget': dict(_DEFAULT_PRESENCE_BUDGET),
+        'measurement': [],
+        'updated_at': None,
+    }
+
+
+def get_presence(project_id: str) -> dict | None:
+    with _store_lock:
+        store = _read_store()
+    return store['presences'].get(project_id)
+
+
+def upsert_presence(project_id: str, patch: dict) -> dict:
+    """Merge `patch` onto the project's presence record, creating it if new.
+
+    Accepts an old-shaped `production` key defensively (a caller PUTting a
+    payload it read before this ticket's rename) — folded into `budget`
+    before the merge so it never lands in the store under its old name.
+    """
+    patch = dict(patch or {})
+    if 'production' in patch and 'budget' not in patch:
+        patch['budget'] = patch.pop('production')
+    with _store_lock:
+        store = _read_store()
+        rec = store['presences'].get(project_id) or _empty_presence(project_id)
+        for k, v in patch.items():
+            if k == 'project_id':
+                continue
+            rec[k] = v
+        rec['project_id'] = project_id
+        rec['updated_at'] = now_iso()
+        store['presences'][project_id] = rec
+        _write_store(store)
+        return rec
+
+
+# -- bounds hash + widening (IA revision 2 §5.1/§5.2; the R2-1 kit's own
+# `computeBoundsHash`/`boundsWiden`/`nextBoundsHash`, static/js/desk-v1-kit.js)
+#
+# Ported line-for-line so the backend's widening call matches the UI's exactly
+# — Dave's review of the UI version (2026-09-29) found the original only
+# checked budget, missing a cadence raise, an account add or a term extension;
+# every dimension here is additive-OR, same as the kit's.
+
+def _stable_stringify(v) -> str:
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return json.dumps(v)
+    if isinstance(v, list):
+        return '[' + ','.join(_stable_stringify(x) for x in v) + ']'
+    if isinstance(v, dict):
+        keys = sorted(v.keys())
+        return '{' + ','.join(json.dumps(k) + ':' + _stable_stringify(v[k]) for k in keys) + '}'
+    return json.dumps(v)
+
+
+def compute_bounds_hash(bounds: dict | None) -> str:
+    s = _stable_stringify(bounds or {})
+    h = 5381
+    for ch in s:
+        h = ((h * 33) ^ ord(ch)) & 0xFFFFFFFF
+    return format(h, 'x').rjust(8, '0')
+
+
+def _parse_dt(s: str) -> datetime:
+    return datetime.fromisoformat(s.replace('Z', '+00:00'))
+
+
+def _accounts_widen(prev: dict, nxt: dict) -> bool:
+    def id_of(a):
+        return a if isinstance(a, str) else (a or {}).get('channel_id')
+    prev_ids = {id_of(a) for a in (prev.get('accounts') or [])}
+    next_ids = [id_of(a) for a in (nxt.get('accounts') or [])]
+    return any(i not in prev_ids for i in next_ids)
+
+
+def _cadence_widen(prev: dict, nxt: dict) -> bool:
+    p = prev.get('cadence') or {}
+    n = nxt.get('cadence') or {}
+    prev_per_week = p.get('per_week')
+    next_per_week = n.get('per_week')
+    if prev_per_week is None:
+        return False
+    # A ceiling removed is looser than any finite one.
+    return next_per_week is None or next_per_week > prev_per_week
+
+
+def _end_widen(prev: dict, nxt: dict) -> bool:
+    p = prev.get('end') or {}
+    n = nxt.get('end') or {}
+    if p.get('date'):
+        if not n.get('date'):
+            return True
+        if _parse_dt(n['date']) > _parse_dt(p['date']):
+            return True
+    prev_cap = p.get('post_cap')
+    next_cap = n.get('post_cap')
+    if prev_cap is not None:
+        if next_cap is None or next_cap > prev_cap:
+            return True
+    return False
+
+
+def _term_widen(prev: dict, nxt: dict) -> bool:
+    p = prev.get('term') or {}
+    n = nxt.get('term') or {}
+    if not p.get('ends'):
+        return False
+    return not n.get('ends') or _parse_dt(n['ends']) > _parse_dt(p['ends'])
+
+
+def _budget_widen(prev: dict, nxt: dict) -> bool:
+    pb = prev.get('budget') or {}
+    nb = nxt.get('budget') or {}
+    if (nb.get('amount') or 0) > (pb.get('amount') or 0):
+        return True
+    if pb.get('source') == 'own' and nb.get('source') == 'project':
+        return True
+    return False
+
+
+def bounds_widen(prev_bounds: dict | None, next_bounds: dict | None) -> bool:
+    prev = prev_bounds or {}
+    nxt = next_bounds or {}
+    return (_accounts_widen(prev, nxt) or _cadence_widen(prev, nxt)
+            or _end_widen(prev, nxt) or _term_widen(prev, nxt) or _budget_widen(prev, nxt))
+
+
+def next_bounds_hash(prev_hash: str | None, prev_bounds: dict | None, next_bounds: dict | None) -> str:
+    if bounds_widen(prev_bounds, next_bounds):
+        return compute_bounds_hash(next_bounds)
+    return prev_hash or compute_bounds_hash(prev_bounds)
 
 
 # -- signal feed --------------------------------------------------------------
@@ -793,9 +992,76 @@ DEFAULT_VISUAL_REQUIREMENT = (
 )
 
 
+def _campaign_bounds(camp: dict) -> dict:
+    """The approval envelope (§5.1: "bounds now include how.budget and term").
+
+    Bare fields, not the whole campaign — this dict is exactly what
+    `bounds_widen`/`compute_bounds_hash` above compare, mirroring the kit's
+    own bounds object (accounts/cadence/end from `plan`, term/budget layered
+    on from the campaign's own `term`/`how.budget`).
+    """
+    plan = camp.get('plan') or {}
+    how = camp.get('how') or {}
+    return {
+        'accounts': plan.get('accounts') or [],
+        'cadence': plan.get('cadence') or {},
+        'end': plan.get('end') or {},
+        'term': camp.get('term') or {},
+        'budget': how.get('budget') or {},
+    }
+
+
+def _earmarked_total_locked(store: dict, project_id: str, *, exclude_campaign_id: str | None = None) -> float:
+    total = 0.0
+    for c in store['campaigns'].values():
+        if c.get('project_id') != project_id:
+            continue
+        if exclude_campaign_id and c.get('id') == exclude_campaign_id:
+            continue
+        if c.get('state') in ('archived', 'dropped', 'done', 'completed'):
+            continue
+        b = (c.get('how') or {}).get('budget') or {}
+        if b.get('source') == 'project':
+            total += float(b.get('amount') or 0)
+    return total
+
+
+def project_earmarked_total(project_id: str, *, exclude_campaign_id: str | None = None) -> float:
+    """Sum of live campaigns' project-sourced earmarks for this project (§5.2)."""
+    with _store_lock:
+        store = _read_store()
+    return _earmarked_total_locked(store, project_id, exclude_campaign_id=exclude_campaign_id)
+
+
+def _check_earmark_locked(store: dict, project_id: str | None, budget: dict | None, *,
+                          exclude_campaign_id: str | None = None) -> None:
+    """§5.2: "Launch refuses an earmark the project cannot cover and says by
+    how much." Only fires for a `source: 'project'` budget against a project
+    that has its own budget set — a project with no presence/budget yet has
+    nothing to enforce against (validatePlan's own project-optional stance).
+    """
+    if not project_id or not budget or budget.get('source') != 'project':
+        return
+    presence = store.get('presences', {}).get(project_id)
+    if not presence:
+        return
+    proj_amount = (presence.get('budget') or {}).get('amount')
+    if proj_amount is None:
+        return
+    other = _earmarked_total_locked(store, project_id, exclude_campaign_id=exclude_campaign_id)
+    amount = float(budget.get('amount') or 0)
+    short = (other + amount) - float(proj_amount)
+    if short > 0:
+        raise ValueError(f'earmark exceeds project budget: short by ${short:g}')
+
+
 def create_campaign(title: str, thesis: str, *, voice=None, voices=None,
                     agenda: str = '', project_ids: Iterable[str] = (),
-                    planned: Iterable[str] = (), visual: str | None = None) -> dict:
+                    planned: Iterable[str] = (), visual: str | None = None,
+                    project_id: str | None = None, plan: dict | None = None,
+                    goal: dict | None = None, term: dict | None = None,
+                    how: dict | None = None, map_: dict | None = None,
+                    subject: dict | None = None) -> dict:
     # A CAMPAIGN CARRIES A SET OF VOICES, NOT ONE. Ron asked whether a campaign
     # should also pick a platform; the sharper version of his question is that a
     # single-voice campaign can only ever reach ONE room, and a thesis usually
@@ -827,9 +1093,26 @@ def create_campaign(title: str, thesis: str, *, voice=None, voices=None,
         'state': 'proposed',
         'created_at': now_iso(),
         'updated_at': now_iso(),
+        # IA revision 2 §5.1 (R1-P amend): additive alongside the legacy
+        # fields above — `project_id` is the parent project, `plan` carries
+        # the accounts/cadence/end bounds `_campaign_bounds` reads.
+        'project_id': project_id,
+        'subject': subject or None,
+        'plan': plan or {},
+        'goal': goal or {},
+        'term': term or {},
+        'how': how or {},
+        'map': map_ or {},
     }
     with _store_lock:
         store = _read_store()
+        # §5.2: Launch refuses an earmark the project cannot cover — checked
+        # here too, since create_campaign is the only entry point a caller
+        # can hand a `how.budget` to on day one (no separate Launch route
+        # exists yet; this ticket is the backend shapes, not R2-11).
+        _check_earmark_locked(store, project_id, (camp['how'] or {}).get('budget'))
+        bounds = _campaign_bounds(camp)
+        camp['approval'] = {'bounds': bounds, 'bounds_hash': compute_bounds_hash(bounds)}
         store['campaigns'][camp['id']] = camp
         _write_store(store)
     return camp
@@ -837,7 +1120,8 @@ def create_campaign(title: str, thesis: str, *, voice=None, voices=None,
 
 def update_campaign(campaign_id: str, patch: dict) -> dict | None:
     allowed = {'title', 'thesis', 'agenda', 'voice', 'voices', 'project_ids',
-               'planned', 'state', 'visual'}
+               'planned', 'state', 'visual',
+               'project_id', 'subject', 'plan', 'goal', 'term', 'how', 'map'}
     patch = dict(patch or {})
     if 'state' in patch and patch['state'] not in CAMPAIGN_STATES:
         raise ValueError(f"unknown state {patch['state']!r}")
@@ -862,9 +1146,22 @@ def update_campaign(campaign_id: str, patch: dict) -> dict | None:
         camp = store['campaigns'].get(campaign_id)
         if not camp:
             return None
+        prev_bounds = (camp.get('approval') or {}).get('bounds') or _campaign_bounds(camp)
+        prev_hash = (camp.get('approval') or {}).get('bounds_hash') or compute_bounds_hash(prev_bounds)
         for k, v in (patch or {}).items():
             if k in allowed:
                 camp[k] = v
+        # §5.2: re-checked on every update that touches how.budget, not just
+        # at creation — a PATCH is how a later Launch/edit raises the
+        # earmark, and the project pool it's checked against may itself have
+        # changed since create_campaign's own check.
+        _check_earmark_locked(store, camp.get('project_id'), (camp.get('how') or {}).get('budget'),
+                              exclude_campaign_id=campaign_id)
+        next_bounds = _campaign_bounds(camp)
+        camp['approval'] = {
+            'bounds': next_bounds,
+            'bounds_hash': next_bounds_hash(prev_hash, prev_bounds, next_bounds),
+        }
         camp['updated_at'] = now_iso()
         _write_store(store)
         return camp
