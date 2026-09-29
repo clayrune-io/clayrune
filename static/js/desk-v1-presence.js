@@ -105,6 +105,58 @@
     };
   }
 
+  // ── Agent of choice (R1-A/R2-5 follow-up, MC-977 IA revision 2 §5.3).
+  // Presence is the spec-correct home for this pick (THE_DESK_V1_IA_REVISION_2
+  // §233/299 — Presence settings / setup wizard Step 0, not the campaign map's
+  // ② How stop, which is a per-campaign draft not project-level identity).
+  // Roster comes from /api/characters, same one-shot-fetch shape kit.js's own
+  // box uses; PATCHes `/api/desk/presence/<id>` (R1-A backend) AND mutates
+  // `project.presence.desk_agent` directly so smokes stay deterministic
+  // without a live server (ground rule 3 — fixtures over live calls).
+  let _agentsList = null; // [{ref, name, avatar}], fetched once
+  function _fetchAgentsList(cb) {
+    if (_agentsList) { cb(_agentsList); return; }
+    fetch('/api/characters').then((r) => r.json()).then((list) => {
+      _agentsList = (list || []).map((c) => ({
+        ref: `${c.scope || 'global'}:${c.name}`,
+        name: c.agent_name || c.display_name || c.name,
+        avatar: c.avatar || '',
+      }));
+      cb(_agentsList);
+    }).catch(() => { _agentsList = []; cb(_agentsList); });
+  }
+
+  function _agentHTML(p) {
+    const ref = DeskV1Kit.deskAgentRef({ project: p });
+    const resolved = DeskV1Kit.resolveDeskAgent(ref);
+    const label = resolved.name ? `${resolved.avatar ? resolved.avatar + ' ' : ''}${resolved.name}` : DeskV1Kit.UNRESOLVED_AGENT_LABEL;
+    return `
+      <div class="desk-v1-rules-group" id="desk-v1-presence-agent">
+        <div class="desk-v1-rules-group-title">Agent of choice ${DeskV1Kit.infoIconHTML('agent')}</div>
+        <button type="button" class="desk-v1-project-newcamp-btn" data-agent-trigger>${esc(label)}</button>
+      </div>`;
+  }
+
+  function _bindAgent(el, p) {
+    const btn = el.querySelector('[data-agent-trigger]');
+    if (!btn) return;
+    _fetchAgentsList((list) => {
+      DeskV1Kit.bindAddToTrigger(btn, () => list.map((a) => ({ id: a.ref, label: `${a.avatar ? a.avatar + ' ' : ''}${a.name}` })), (ref) => {
+        const picked = list.find((a) => a.ref === ref);
+        const name = picked ? picked.name : ref;
+        p.presence.desk_agent = ref;
+        fetch(`/api/desk/presence/${encodeURIComponent(p.id)}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ desk_agent: ref }),
+        }).catch(() => { /* fixture already applied; presence route is best-effort in v1 */ });
+        const effect = `${name} now plans for ${p.name}.`;
+        _log(p, effect);
+        DeskV1Kit.toast(effect);
+        _rerender();
+      }, { noAppendNew: true });
+    });
+  }
+
   // ── Accounts + voice ────────────────────────────────────────────────────
   function _accountRowHTML(p, a) {
     const ch = _channel(a.channel_id);
@@ -281,6 +333,7 @@
 
     el.innerHTML = `
       <div class="desk-v1-presence">
+        ${_agentHTML(p)}
         <div class="desk-v1-rules-group" id="desk-v1-presence-accounts">
           <div class="desk-v1-rules-group-title">Accounts + voice ${DeskV1Kit.infoIconHTML('accounts')}</div>
           <div id="desk-v1-presence-accounts-list">${accountsHTML}</div>
@@ -314,7 +367,11 @@
         </div>
       </div>`;
 
-    DeskV1Kit.bindInfoIcons(el, { accounts: 'Which workspace accounts this project may publish through, and the voice each carries for this project.' });
+    DeskV1Kit.bindInfoIcons(el, {
+      accounts: 'Which workspace accounts this project may publish through, and the voice each carries for this project.',
+      agent: 'Who plans and drafts for this project — the writer dispatched off signals and triage picks.',
+    });
+    _bindAgent(el, p);
     _bindAccountRows(el, p);
     _bindAddAccount(el, p);
     _bindAudienceStrategy(el, p);
