@@ -1022,6 +1022,86 @@ try {
   if (roUncaught.length) roUncaught.forEach((e) => fail('flag-on case: uncaught page error: ' + e));
   await roCtx.close().catch(() => {});
 
+  // ── 409 pick_agent chooser (R1-A/R2-5 follow-up, MC-977) ────────────────
+  // draft/seed_voice/triage now 409 with {pick_agent:true, project_id} when a
+  // project never picked who plans for it. Legacy desk.js has no Presence
+  // page to send that to, so it shows its own small chooser instead. Own
+  // context so it can't interact with the mutated queueState above; triage
+  // has no UI button left to click (see desk.js's own comment near line 946
+  // — it moved to the cadence's Run now), so this drives it the same way
+  // the read-only case above drives deskHarvest/deskQueueRelease directly.
+  const paCtx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+  const paPage = await paCtx.newPage();
+  const paErrors = [];
+  paPage.on('pageerror', (e) => paErrors.push(e.message || String(e)));
+  const paTriageCalls = [];
+  const paPatchCalls = [];
+  const PICK_AGENT_409 = { error: 'no agent picked for Acme yet — pick who plans for this project',
+                            pick_agent: true, project_id: 'proj-acme' };
+  await paPage.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    const J = (body, status) => route.fulfill({ status: status || 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return J(PROJECTS);
+    if (path === '/api/config') return J({});
+    if (path === '/api/characters') return J([
+      { scope: 'global', name: 'writer-x', agent_name: 'Writer X', avatar: '📝' },
+      { scope: 'global', name: 'writer-y', agent_name: 'Writer Y', avatar: '🖋' },
+    ]);
+    if (path === '/api/desk/overview') return J(OVERVIEW);
+    if (path === '/api/desk/signals') return J(SIGNALS);
+    if (path === '/api/desk/triage' && req.method() === 'POST') {
+      paTriageCalls.push(1);
+      // First call 409s for a missing pick; the retry (post-PATCH) succeeds.
+      return paTriageCalls.length === 1 ? J(PICK_AGENT_409, 409) : J({ ok: true, considering: 3 });
+    }
+    if (path === '/api/desk/presence/proj-acme' && req.method() === 'PATCH') {
+      paPatchCalls.push(JSON.parse(req.postData() || '{}'));
+      return J({ project_id: 'proj-acme', desk_agent: 'global:writer-x' });
+    }
+    if (path === '/api/desk/proposals') return J([]);
+    if (path === '/api/workflows') return J(WORKFLOWS);
+    if (path === '/api/schedules') return J(SCHEDULES);
+    if (path === '/api/floor') return J(FLOOR);
+    if (path === `/api/project/${PID}/social/queue`) return J(QUEUE);
+    if (path.endsWith('/social/queue')) return J([]);
+    return route.abort();
+  });
+  await paPage.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await paPage.waitForSelector('#projects-col .card', { timeout: 15000 });
+  await paPage.click('.sidebar-item[data-nav="social"]');
+  await paPage.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-tabs', { timeout: 8000 });
+
+  await paPage.evaluate(() => { window.deskTriage(); });
+  await paPage.waitForSelector('.desk-pickagent-overlay', { timeout: 4000 }).catch(() => {});
+  const overlayText = await paPage.textContent('.desk-pickagent-title').catch(() => '');
+  if (/pick who plans/i.test(overlayText || '')) ok(`409 pick_agent shows the chooser: "${(overlayText || '').trim()}"`);
+  else fail(`expected the pick-agent chooser after a 409, got title ${JSON.stringify(overlayText)}`);
+
+  const choices = await paPage.$$eval('.desk-pickagent-choice', (els) => els.map((e) => e.textContent.trim()));
+  if (choices.length === 2 && choices[0].includes('Writer X')) ok(`chooser lists the /api/characters roster: ${JSON.stringify(choices)}`);
+  else fail(`chooser roster wrong: ${JSON.stringify(choices)}`);
+
+  await paPage.locator('.desk-pickagent-choice').first().click();
+  await paPage.waitForTimeout(200);
+  if (paPatchCalls.length === 1 && paPatchCalls[0].desk_agent === 'global:writer-x')
+    ok(`picking an agent PATCHes presence: ${JSON.stringify(paPatchCalls[0])}`);
+  else fail(`presence PATCH wrong: ${JSON.stringify(paPatchCalls)}`);
+
+  if (paTriageCalls.length === 2) ok('the original call (triage) retries once after the pick lands');
+  else fail(`expected triage to retry exactly once after the pick, got ${paTriageCalls.length} call(s)`);
+
+  const overlayGone = await paPage.$('.desk-pickagent-overlay');
+  if (!overlayGone) ok('chooser closes itself after a pick');
+  else fail('chooser is still open after a pick');
+
+  const paUncaught = paErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (paUncaught.length) paUncaught.forEach((e) => fail('pick-agent case: uncaught page error: ' + e));
+  await paCtx.close().catch(() => {});
+
   exitCode = bad ? 1 : 0;
 } catch (e) {
   console.error('❌ FAIL — smoke harness error: ' + (e && e.message ? e.message : e));
