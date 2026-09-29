@@ -43,23 +43,61 @@
     return endLabel ? base.concat(endLabel) : base;
   }
 
+  // Dave's review (2026-09-28): `new Date('2026-10-20')` parses a bare
+  // YYYY-MM-DD as UTC midnight; formatting that in a host timezone behind
+  // UTC (e.g. America/Los_Angeles) rolls it back to the previous local day
+  // ("Oct 19"). Every plan date in this file is a calendar day, not an
+  // instant, so parse it as a LOCAL date instead (same fix needed in
+  // desk-v1-campaign.js's own copy of this helper).
+  function _localDateFromISO(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+    return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(iso);
+  }
   function _fmtDate(iso) {
-    try { return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(iso)); }
+    try { return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(_localDateFromISO(iso)); }
     catch (e) { return iso; }
   }
   function _fmtDateLong(iso) {
-    try { return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(iso)); }
+    try { return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(_localDateFromISO(iso)); }
     catch (e) { return iso; }
   }
-  // Accepts the dashed date field's free-typed text: a literal YYYY-MM-DD
-  // passes straight through; anything else goes through Date parsing and
-  // back out as YYYY-MM-DD (UTC, so a bare "2026-11-15" round-trips without
-  // a local-timezone day shift). Returns null on anything unparsable — the
-  // caller leaves the plan untouched rather than writing a bad date.
-  function _parseDateInput(val) {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(val)) return val;
-    const d = new Date(val);
-    return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  function _isoOf(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  function _isPastLocal(iso) { return iso < _isoOf(new Date()); }
+  // Accepts the dashed date field's free-typed text. The field itself
+  // DISPLAYS a yearless shape ("Oct 20"), so a user types back in that same
+  // shape — `new Date('Nov 15')` defaults to year 2001 in V8, which would
+  // silently write a garbage date. `refIso` is the plan's own deadline
+  // BEFORE this edit: a yearless input first assumes that year, then rolls
+  // to the next occurrence if that lands in the past. A literal YYYY-MM-DD
+  // (or any string carrying an explicit year) is parsed as its own local
+  // calendar day. Anything that still lands in the past, or fails to parse
+  // at all, returns null — the caller leaves the plan untouched.
+  function _parseDateInput(val, refIso) {
+    val = (val || '').trim();
+    if (!val) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(val)) return _isPastLocal(val) ? null : val;
+    if (/\d{4}/.test(val)) {
+      const d = new Date(val);
+      if (isNaN(d.getTime())) return null;
+      const iso = _isoOf(d);
+      return _isPastLocal(iso) ? null : iso;
+    }
+    const refYear = /^\d{4}-/.test(refIso || '') ? parseInt(refIso.slice(0, 4), 10) : new Date().getFullYear();
+    const tryYear = (y) => { const d = new Date(`${val} ${y}`); return isNaN(d.getTime()) ? null : _isoOf(d); };
+    let iso = tryYear(refYear);
+    if (iso === null) return null;
+    if (_isPastLocal(iso)) iso = tryYear(refYear + 1);
+    return iso === null || _isPastLocal(iso) ? null : iso;
+  }
+  // §4: "spend + stop conditions derived" — never its own fixture field.
+  // Built from the same two bounds the "Ends …" rule chip already reads.
+  function _stopConditionsLabel(plan) {
+    const end = plan && plan.end;
+    if (!end) return null;
+    const bound = end.date ? `${_fmtDateLong(end.date)} passes` : (end.post_cap ? `${end.post_cap} posts go out` : null);
+    return bound ? `Pause automatically once the goal is reached or ${bound}.` : null;
   }
 
   // ────────────────────────────────────────────────────────────────────────
@@ -127,7 +165,7 @@
           const n = parseInt(val, 10);
           if (!isNaN(n)) goal.target = n;
         } else if (field === 'dateLabel') {
-          const parsed = _parseDateInput(val);
+          const parsed = _parseDateInput(val, goal.deadline);
           if (parsed) {
             goal.deadline = parsed;
             if (plan.end) plan.end.date = parsed;
@@ -236,7 +274,15 @@
     if (!shell.style.position) shell.style.position = 'relative';
     _closeOverlay();
 
-    const dests = (plan.destinations || []).map((d) => d.voice ? `${d.account} (${d.voice})` : d.account);
+    // Dave's review (2026-09-28): `plan.destinations[].account` is a channel
+    // id ('ch-x-ron'), not display text — resolve it through the channel
+    // fixture so Accounts reads the same badge label it always has ("𝕏 ·
+    // @ron"), voice appended rather than replacing it.
+    const dests = (plan.destinations || []).map((d) => {
+      const ch = _channel(d.account);
+      const label = ch ? ch.label : d.account;
+      return d.voice ? `${label} (${d.voice})` : label;
+    });
     const datesLabel = plan.end && (plan.end.date
       ? `Ends ${_fmtDateLong(plan.end.date)}`
       : (plan.end.post_cap ? `Ends after ${plan.end.post_cap} posts` : null));
@@ -248,7 +294,9 @@
       replies: plan.replies === 'auto_faq' ? 'Auto-answer verified FAQ' : 'Drafts for review',
       paid: plan.paid ? 'On' : 'Off',
       generationLimits: plan.generation,
-      stopConditions: null,
+      // §4: "spend + stop conditions derived" — never a fixture field of its
+      // own, so this stays "—" unless there's a real end bound to name.
+      stopConditions: _stopConditionsLabel(plan),
     };
 
     const rows = [
