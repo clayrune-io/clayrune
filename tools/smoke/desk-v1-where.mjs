@@ -7,7 +7,7 @@
  *   - Render, all 3 tones: Messages column lists every piece of the campaign
  *     with an `on N channels` pill; one column per account the campaign uses
  *     (avatar + platform badge + handle + platform + ✕); version cards read
- *     `<kind> → <platform format>` + a time; the rule line sits under the
+ *     `<kind> → <platform format>` and NO time (R2-19: times are When's); the rule line sits under the
  *     board; SOURCES lists one card per connected account (the 2 X accounts
  *     stay 2 cards with distinct handles), YouTube/Discord carry the
  *     `Preview · not connected` label, Reddit is `not connected` + `Connect ›`.
@@ -157,7 +157,8 @@ async function readBoard(page) {
         familyId: v.dataset.familyId,
         title: txt(v.querySelector('.desk-v1-where-vtitle')),
         format: txt(v.querySelector('.desk-v1-where-vformat')),
-        time: txt(v.querySelector('.desk-v1-where-vtime')),
+        text: txt(v),
+        timeEls: v.querySelectorAll('.desk-v1-where-vtime, .desk-v1-where-vplat, .desk-v1-where-notime').length,
       })),
     }));
     const sources = [...document.querySelectorAll('[data-where-source]')].map((s) => ({
@@ -248,9 +249,16 @@ async function runRender(browser, tone) {
     `${tag} a column header is missing a part: ${JSON.stringify(b.columns)}`);
   const ron = col(b, 'ch-x-ron');
   const installX = ron.versions.find((v) => v.title === 'Install in two minutes');
-  check(installX && installX.format === 'Video → X clip' && /^𝕏 [A-Z][a-z]{2} \d\d:\d\d$/.test(installX.time),
-    `${tag} version card reads "${installX && installX.format}" + "${installX && installX.time}" (platform glyph + time)`,
+  check(installX && installX.format === 'Video → X clip',
+    `${tag} version card reads "${installX && installX.format}"`,
     `${tag} version card wrong: ${JSON.stringify(installX)}`);
+  // R2-19: Where owns channel placement only. No card in any column carries a
+  // time element, a `Wed 10:00` / `No time yet` text, or an hh:mm anywhere.
+  const allCards = b.columns.flatMap((c) => c.versions);
+  const timed = allCards.filter((v) => v.timeEls > 0 || /\b\d{1,2}:\d{2}\b|\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b|No time yet/.test(v.text));
+  check(allCards.length > 0 && timed.length === 0,
+    `${tag} R2-19: none of the ${allCards.length} Where version cards carries a time`,
+    `${tag} R2-19: Where cards still show a time: ${JSON.stringify(timed)}`);
   check(/Dragging from Messages always ADDS a version/.test(b.rule) && /MOVES it/.test(b.rule),
     `${tag} rule line under the board: "${b.rule}"`, `${tag} rule line wrong: ${JSON.stringify(b.rule)}`);
 

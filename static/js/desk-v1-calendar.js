@@ -284,17 +284,26 @@
       undo: () => { const arr = _ownSlots(campaign); const i = arr.findIndex((s) => s.id === slot.id); if (i >= 0) arr.splice(i, 1); _render(campaign); },
     });
   }
-  // Test/Suggest seam: fills the first unfilled user slot (or a named one)
-  // with a suggested piece, WITHOUT touching that slot's id/at/origin — the
-  // real ② How "Suggest" task (desk-v1-how.js) is the eventual caller; this
-  // is the same contract the calendar itself needs regardless of caller.
+  // Test/Suggest seam: proposes a TIME — fills the first unfilled user slot (or
+  // a named one) with a version Where already placed, WITHOUT touching that
+  // slot's id/at/origin. R2-19 (Ron 2026-09-30): it never creates a version and
+  // never moves one across accounts; title/platform/channel are read off the
+  // placed version, not taken from the caller, so a suggestion can't invent a
+  // placement. Returns null when nothing is placed (or the named version isn't).
   function deskV1CalendarSuggestFill(campaignId, fill) {
     const campaign = _campaign(campaignId);
     if (!campaign) return null;
     const slots = _ownSlots(campaign).filter((s) => s.origin === 'user');
     const target = (fill && fill.slotId) ? slots.find((s) => s.id === fill.slotId) : slots.find((s) => !s.filled);
     if (!target) return null;
-    target.filled = { title: (fill && fill.title) || 'Suggested piece', platform: (fill && fill.platform) || '', channelId: (fill && fill.channelId) || null };
+    const placed = _placedVersions({ scope: 'campaign' }, campaign);
+    const taken = new Set(slots.filter((s) => s.filled && s.filled.versionId).map((s) => s.filled.versionId));
+    const pick = (fill && fill.versionId)
+      ? placed.find((it) => it.version.id === fill.versionId)
+      : (placed.find((it) => !taken.has(it.version.id) && !_versionWhen(it.version)) || placed.find((it) => !taken.has(it.version.id)));
+    if (!pick) return null;
+    const ch = _channel(pick.version.channelId);
+    target.filled = { title: pick.family.title, platform: ch ? ch.platform : '', channelId: pick.version.channelId, versionId: pick.version.id };
     if (_mountEl && _state && _state.campaignId === campaignId) _render(campaign);
     return target;
   }
@@ -405,14 +414,25 @@
   // date, via the SAME `_reschedule` command every other drop already uses
   // (Undo/toast/announce included), just with no "moving FROM a day" side
   // to gate on approval. ────────────────────────────────────────────────────
-  function _unscheduledItems(st, campaign) {
+  // R2-19: a version is PLACED once Where has put it on one of the campaign's
+  // accounts (`plan.accounts`) and it is still live. When only ever times
+  // placed versions — it never creates one and never changes its account.
+  function _isPlaced(v, camp) {
+    return !!(v.channelId && camp && camp.plan && (camp.plan.accounts || []).includes(v.channelId)
+      && v.state !== 'archived' && v.state !== 'skipped');
+  }
+  function _placedVersions(st, campaign) {
     const items = [];
     for (const fam of _familiesInScope(st, campaign)) {
+      const camp = _campaign(fam.campaignId);
       for (const v of (fam.versions || [])) {
-        if (!_versionWhen(v)) items.push({ family: fam, version: v });
+        if (_isPlaced(v, camp)) items.push({ family: fam, version: v });
       }
     }
     return items;
+  }
+  function _unscheduledItems(st, campaign) {
+    return _placedVersions(st, campaign).filter((it) => !_versionWhen(it.version));
   }
   function _unscheduledHTML(st, campaign) {
     const items = _unscheduledItems(st, campaign);
@@ -448,8 +468,8 @@
   // via desk-v1-campaign.js's `_runSuggestTask`) writes a cadence proposal
   // into `campaign.how.suggested.when` — no dedicated accept/edit UI yet
   // (R2-9's job, same as the rest of this stop's real controls), so this
-  // ticket only has to prove the suggestion reaches ④ (row acceptance:
-  // "④ a cadence proposal").
+  // ticket only has to prove the suggestion reaches ⑤ When (row acceptance:
+  // "a cadence proposal").
   function _suggestedWhenBannerHTML(campaign) {
     const when = campaign.how && campaign.how.suggested && campaign.how.suggested.when;
     if (!when) return '';
@@ -706,6 +726,28 @@
     const todayKey = _dayKey(new Date());
     const project = _project(campaign.projectId);
 
+    // R2-19: When only times versions Where has placed. Nothing placed in
+    // scope = nothing to time, so the grid (and its slots band) gives way to an
+    // empty state that points back to Where; the cadence/term fields stay (they
+    // are When's own bounds) and so does the scope toolbar.
+    if (!_placedVersions(st, campaign).length) {
+      el.innerHTML = `
+      <div class="desk-v1-calendar">
+        ${_suggestedWhenBannerHTML(campaign)}
+        ${_fieldsHTML(campaign, project)}
+        ${_toolbarHTML(st, days)}
+        <div class="desk-v1-stub-inline desk-v1-cal-empty-where" data-cal-empty-where>
+          <strong>Nothing is placed yet.</strong> When sets times for the messages you place on accounts in Where.
+          <button type="button" class="btn-secondary" data-cal-to-where>Go to Where ›</button>
+        </div>
+      </div>`;
+      _bindFields(el, campaign);
+      _bindToolbar(el, campaign);
+      const toWhere = el.querySelector('[data-cal-to-where]');
+      if (toWhere) toWhere.onclick = () => window.deskV1GotoCampaignPanel('where', { campaignId: campaign.id });
+      return;
+    }
+
     el.innerHTML = `
       <div class="desk-v1-calendar">
         ${_suggestedWhenBannerHTML(campaign)}
@@ -723,9 +765,8 @@
     _bind(el, campaign, days, rows, cells, project);
   }
 
-  function _bind(el, campaign, days, rows, cells, project) {
+  function _bindToolbar(el, campaign) {
     const st = _state;
-
     const scopeSel = el.querySelector('[data-cal-scope-select]');
     if (scopeSel) scopeSel.onchange = () => { st.scope = scopeSel.value; _render(campaign); };
     el.querySelectorAll('[data-cal-shift]').forEach((b) => b.onclick = () => {
@@ -737,8 +778,12 @@
     });
     const viewSel = el.querySelector('[data-cal-view]');
     if (viewSel) viewSel.onchange = () => { st.view = viewSel.value; _render(campaign); };
+  }
 
-    el.querySelectorAll('[data-chip-version], [data-chip-version]').forEach((chip) => {
+  function _bind(el, campaign, days, rows, cells, project) {
+    _bindToolbar(el, campaign);
+
+    el.querySelectorAll('[data-chip-version],[data-chip-version]').forEach((chip) => {
       chip.onclick = (e) => {
         if (chip.classList.contains('desk-v1-cal-drag-suppress-click')) { chip.classList.remove('desk-v1-cal-drag-suppress-click'); return; }
         window.deskV1Nav('review', { campaignId: campaign.id, versionId: chip.dataset.chipVersion });

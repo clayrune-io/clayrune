@@ -72,7 +72,7 @@ Project page  ‹ Desk                             (item 3)
 
 Campaign page  ‹ <project>                       (items 4, 5, 6)
  ├─ Header: subject chip · title · lifecycle pill · ⏸/▶ · More ▾
- ├─ THE MAP:  ① Brief  ›  ② Goal  ›  ③ What  ›  ④ When  ›  ⑤ Where  ›  ⑥ Launch   (R2-18: Brief = the old How, route key `how`, moved first)
+ ├─ THE MAP:  ① Brief  ›  ② Goal  ›  ③ What  ›  ④ Where  ›  ⑤ When  ›  ⑥ Launch   (R2-18: Brief = the old How, route key `how`, moved first; R2-19: Where before When, §11.7)
  └─ Stop body (in place, T2 persistent frame) + agent box (right column)
 
 Piece page   ‹ <campaign> · What                 (piece drill-in, §4.3)
@@ -582,7 +582,7 @@ commit; nothing else in either frame changed. Feedback trail: journal `8f64d565-
 
 R2-2, R2-6, R2-7, R2-8, R2-9, R2-10, R2-11, R2-12 (deferred), R2-13 amended in place, each marked `(amended §11)`.
 **R2-3b** (retire IA4 steps, rules popover, campaign Conversations tab; mobile stepper) and **R2-18** (① Plan with
-agent) are new rows. R2-18 (reshaped 2026-09-30) puts Brief first: six stops, Brief, Goal, What, When, Where, Launch;
+agent) are new rows. R2-18 (reshaped 2026-09-30) puts Brief first: six stops, Brief, Goal, What, When, Where, Launch (R2-19 then swapped When and Where, §11.7);
 circled numbers in §2 to §4 are the pre-Brief numbering (② How there = ① Brief now, ① Goal = ② Goal). Route names do
 not change, so deep links and `PANEL_ALIASES` hold. §4.1 item 1 ("Goal is written by the user") still holds.
 
@@ -660,3 +660,14 @@ deferred; its frame 9 waits in the folder.
    publishes, reads or authenticates. ⑥ Launch lists placed preview-only accounts as `Not published in v1` and does
    not block Start on them. Real connectors stay separate backlog items. v1 still PUBLISHES to X + LinkedIn only.
 2. **Home Needs-you: the column replaces the section** (Dave's call, reversible, per the §11.5 Q2 recommendation).
+
+### 11.7 R2-19: When and Where split (Ron 2026-09-30, branch `desk-r2-19`)
+
+Ron spotted that When and Where both placed by channel **and** by time. Root cause: When came before Where, so When
+had to handle channels the campaign had not picked yet (its Suggest assigned platforms, its grid rows are per
+account) while Where showed times it could not change. Option A adopted (standing position "Desk: When and Where
+overlap"); merging into one stop (option B) would have redone R2-9 and R2-10.
+
+| Ticket | Change | Builds on | Acceptance (smokes) |
+|---|---|---|---|
+| **R2-19** | Stop order becomes **Brief, Goal, What, Where, When, Launch** (`DeskV1Kit.MAP_STOPS`; stepper, Next/Back, project draft label and Home stage column all read it; route keys unchanged). **Where owns channel placement only** (which accounts, which messages go to each): version cards read `<kind> → <platform format>` and carry no time. **When owns time only**, for versions already placed in Where: its rows come from `plan.accounts`, its chips and Unscheduled tray list only versions placed on those accounts, and with nothing placed it shows an empty state `Nothing is placed yet` with `Go to Where ›` (cadence/term fields stay; grid and own-slots band give way). **When Suggest never creates a version and never moves one across accounts**: `deskV1CalendarSuggestFill` fills a slot only from a version Where placed (title, platform, account read off that version, never taken from the caller) and returns null otherwise. The §8 R2-10 frame-7b wording "time with platform glyph" on a version card is superseded. | R2-9, R2-10 | `desk-v1-map` (order Brief, Goal, What, Where, When, Launch; Back from When lands on Where), `desk-v1-campaign` (stepper words), `desk-v1-where` (0 of 11 cards carry a time, 3 tones), `desk-v1-calendar` (Suggest leaves every version's id/account/state identical; unplaced and unknown versions fill nothing; empty state + `Go to Where ›`) |

@@ -151,7 +151,7 @@ async function runToneRenderChecks(browser, tone) {
   // moves into Engagement at R2-12), so its old badge assertion is retired
   // with the tab it lived on, not rewritten onto a stop that doesn't exist.
   const stopWords = await page.$$eval('.desk-v1-map-stop .desk-v1-map-stop-word', (els) => els.map((e) => e.textContent.trim()));
-  JSON.stringify(stopWords) === JSON.stringify(['Brief', 'Goal', 'What', 'When', 'Where', 'Launch'])
+  JSON.stringify(stopWords) === JSON.stringify(['Brief', 'Goal', 'What', 'Where', 'When', 'Launch'])
     ? ok(`[${tone.name}] map stepper shows all 6 stops in order: ${JSON.stringify(stopWords)}`)
     : fail(`[${tone.name}] map stepper stops wrong: ${JSON.stringify(stopWords)}`);
   const whatState = await page.$eval('.desk-v1-map-stop[data-stop="what"]', (el) => el.dataset.state).catch(() => null);

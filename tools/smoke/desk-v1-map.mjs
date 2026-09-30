@@ -137,7 +137,8 @@ async function stopState(page, stop) {
   return page.$eval(`.desk-v1-map-stop[data-stop="${stop}"]`, (el) => el.dataset.state).catch(() => null);
 }
 
-const MAP_STOPS = ['how', 'goal', 'what', 'when', 'where', 'launch'];
+// R2-19: Where (channel placement) comes BEFORE When (time).
+const MAP_STOPS = ['how', 'goal', 'what', 'where', 'when', 'launch'];
 const MAP_STOP_WORDS = { goal: 'Goal', how: 'Brief', what: 'What', when: 'When', where: 'Where', launch: 'Launch' };
 
 // ── New campaign opens at ① Brief (R2-18; route key `how`); `Next ›` carries a Draft through every
@@ -157,6 +158,10 @@ async function runNewCampaignStepperFlow(browser) {
   JSON.stringify(stopWords) === JSON.stringify(MAP_STOPS.map((s) => MAP_STOP_WORDS[s]))
     ? ok(`map shows all six stops in order: ${JSON.stringify(stopWords)}`)
     : fail(`map stop order wrong: ${JSON.stringify(stopWords)}`);
+  // R2-19: the literal order, independent of the MAP_STOPS constant above.
+  JSON.stringify(stopWords) === JSON.stringify(['Brief', 'Goal', 'What', 'Where', 'When', 'Launch'])
+    ? ok('R2-19: stop order reads Brief, Goal, What, Where, When, Launch (Where before When)')
+    : fail(`R2-19: stop order is not Brief, Goal, What, Where, When, Launch: ${JSON.stringify(stopWords)}`);
 
   // Next through every stop with no data entry (§4.1: ②⑤ are placeholders
   // this ticket, ①③④ show their absorbed panel) — pure movement mechanics.
@@ -172,23 +177,30 @@ async function runNewCampaignStepperFlow(browser) {
       : fail(`Next: ${from} -> ${to} wrong states: ${from}=${JSON.stringify(fromState)}, ${to}=${JSON.stringify(toState)}`);
   }
 
-  // At ⑥ Launch, no Next (last stop) — Back retreats to ⑤ Where.
+  // At ⑥ Launch, no Next (last stop) — Back retreats to ⑤ When.
   const noNext = await page.$('[data-map-next]');
   !noNext
     ? ok('⑥ Launch has no "Next" button (last stop)')
     : fail('⑥ Launch still shows a "Next" button');
   await page.click('[data-map-back]');
   await page.waitForTimeout(30);
-  const whereState = await stopState(page, 'where');
-  whereState === 'here'
-    ? ok('‹ Back from ⑥ Launch returns to ⑤ Where')
-    : fail(`Back from Launch landed wrong: where=${JSON.stringify(whereState)}`);
+  const whenState = await stopState(page, 'when');
+  whenState === 'here'
+    ? ok('‹ Back from ⑥ Launch returns to ⑤ When')
+    : fail(`Back from Launch landed wrong: when=${JSON.stringify(whenState)}`);
+  // R2-19: and one more Back from When lands on Where (When follows Where).
+  await page.click('[data-map-back]');
+  await page.waitForTimeout(30);
+  const whereBack = await stopState(page, 'where');
+  whereBack === 'here'
+    ? ok('R2-19: ‹ Back from When returns to Where')
+    : fail(`R2-19: Back from When landed wrong: where=${JSON.stringify(whereBack)}`);
 
   reportUncaught(pageErrors, '[stepper-flow]');
   await ctx.close();
 }
 
-// ── Leaving a draft mid-map (at ④ When) — the project page's own card names
+// ── Leaving a draft mid-map (at ⑤ When) — the project page's own card names
 // the stop, and clicking the card (Continue) resumes exactly there, not back
 // at ① or forward past it. §3 table: "Draft · at <stop>" / "Continue lands
 // on that stop". ────────────────────────────────────────────────────────
@@ -196,14 +208,14 @@ async function runLeaveAtWhenDraftCard(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
 
   const campaignId = await newCampaign(page, 'engulfing_scanner');
-  // how (Brief) -> goal -> what -> when: 3 Next clicks.
-  for (let i = 0; i < 3; i++) {
+  // how (Brief) -> goal -> what -> where -> when: 4 Next clicks.
+  for (let i = 0; i < 4; i++) {
     await page.click('[data-map-next]');
     await page.waitForTimeout(30);
   }
   const whenHere = await stopState(page, 'when');
   whenHere === 'here'
-    ? ok('reached ④ When via 3 Next clicks')
+    ? ok('reached ⑤ When via 4 Next clicks')
     : fail(`did not reach When: data-state=${JSON.stringify(whenHere)}`);
 
   await page.click('.desk-v1-back');
@@ -211,14 +223,14 @@ async function runLeaveAtWhenDraftCard(browser) {
   const cardSel = `.desk-v1-project-camp-card[data-campaign-id="${campaignId}"]`;
   const cardLabel = (await page.textContent(`${cardSel} .desk-v1-state-word`).catch(() => '') || '');
   /Draft · at When/.test(cardLabel)
-    ? ok(`left at ④ When: project card reads "${cardLabel.trim()}"`)
+    ? ok(`left at ⑤ When: project card reads "${cardLabel.trim()}"`)
     : fail(`project card label wrong after leaving at When: ${JSON.stringify(cardLabel)}`);
 
   await page.click(cardSel);
   await page.waitForSelector('.desk-v1-campaign', { timeout: 4000 });
   const resumedWhen = await stopState(page, 'when');
   resumedWhen === 'here'
-    ? ok('Continue (card click) resumes at ④ When')
+    ? ok('Continue (card click) resumes at ⑤ When')
     : fail(`Continue did not resume at When: data-state=${JSON.stringify(resumedWhen)}`);
 
   reportUncaught(pageErrors, '[leave-at-when]');

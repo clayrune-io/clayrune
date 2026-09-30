@@ -419,7 +419,7 @@
   // ────────────────────────────────────────────────────────────────────────
   // Map stepper (R2-3, IA revision 2 §3/§4.1) — replaces the old
   // Content · Conversations · Results tab strip with the six-stop map
-  // (`DeskV1Kit.MAP_STOPS`: goal/how/what/when/where/launch). Every stop is
+  // (`DeskV1Kit.MAP_STOPS`: how/goal/what/where/when/launch). Every stop is
   // clickable (§3 table: "guided, never locked") — a click both switches the
   // panel IN PLACE (same `deskV1GotoCampaignPanel` contract the old tabs
   // used) and records the campaign's current position (`camp.map.stop`),
@@ -652,7 +652,7 @@
   // menu and its commands, the Suggest banner, and the Posy selection — and
   // hands them over through `window.deskV1CampaignWhatBridge`. The grouped
   // list, channel filter, List/Calendar toggle, `+ New piece` and the Material
-  // Add tray are retired (calendar is ④ When; new pieces come from the tray).
+  // Add tray are retired (calendar is ⑤ When; new pieces come from the tray).
   // ────────────────────────────────────────────────────────────────────────
   function deskV1FillCampaignTabBody(el, params) {
     const camp = _campaign(params.campaignId);
@@ -734,7 +734,7 @@
   // desk-v1-how.js driving the rightcol Posy box's real Send). Writes
   // DRAFT suggestions only (§4.2 item 3: "never commitments") — ③'s own
   // `_suggestedWhatBannerHTML`/`_acceptSuggestedWhat` above turn `what`
-  // into real pieces; ④/⑤ read `how.suggested.when`/`.where` directly
+  // into real pieces; ⑤ When and ④ Where read `how.suggested.when`/`.where` directly
   // (desk-v1-calendar.js, desk-v1-shell.js's 'where' branch) since neither
   // has a dedicated accept flow yet (R2-9/R2-10). Only refreshes the
   // Content tab body if it's the one currently mounted AND currently the
