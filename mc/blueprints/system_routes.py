@@ -1734,6 +1734,42 @@ def _has_visible_console() -> bool:
         return True
 
 
+def _redirect_restart_child_output(popen_kwargs):
+    """Point the restarted server's stdout/stderr at data/logs, in place.
+
+    The launcher (start.bat / start-hidden.vbs on Windows) already holds
+    clayrune.log open with a share mode that denies a second writer, so on
+    Windows the first open() reliably raises PermissionError — and until
+    2026-07-27 that meant the restarted server logged NOWHERE. Every restart
+    silently blinded us to exactly the boot we most wanted to inspect. Fall
+    back to a per-instance file rather than losing the output; the path is
+    echoed into the OLD process's log so it's findable. If neither opens,
+    output is discarded (DEVNULL) rather than left inherited: on POSIX an
+    inherited terminal may be gone by the time the child writes (ce1292a3).
+    """
+    _log_dir = os.path.join(os.getcwd(), 'data', 'logs')
+    _candidates = [
+        os.path.join(_log_dir, 'clayrune.log'),
+        os.path.join(_log_dir, f'clayrune-restart-{os.getpid()}.log'),
+    ]
+    for _cand in _candidates:
+        try:
+            os.makedirs(_log_dir, exist_ok=True)
+            # leaked intentionally; we os._exit shortly
+            _restart_log = open(_cand, 'ab')
+            popen_kwargs['stdout'] = _restart_log
+            popen_kwargs['stderr'] = subprocess.STDOUT
+            if _cand != _candidates[0]:
+                _log(f"[restart] main log busy; new instance logs to {_cand}")
+            return
+        except Exception as e:
+            _log(f"[restart] log redirect to {_cand} failed: {e}")
+    _log("[restart] no writable log target; new instance output is discarded")
+    if sys.platform != 'win32':
+        popen_kwargs['stdout'] = subprocess.DEVNULL
+        popen_kwargs['stderr'] = subprocess.STDOUT
+
+
 def _perform_server_restart_async(audit_entry):
     """Run after the HTTP response flushes: stop everything, then re-exec.
 
@@ -1796,38 +1832,19 @@ def _perform_server_restart_async(audit_entry):
                 )
                 if _windowless:
                     # No console to print into — persist logs like the VBS path.
-                    #
-                    # The launcher (start.bat / start-hidden.vbs) already holds
-                    # clayrune.log open with a share mode that denies a second
-                    # writer, so on Windows this open() reliably raises
-                    # PermissionError — and until 2026-07-27 that meant the
-                    # restarted server logged NOWHERE. Every restart silently
-                    # blinded us to exactly the boot we most wanted to inspect.
-                    # Fall back to a per-instance file rather than losing the
-                    # output; the path is echoed into the OLD process's log so
-                    # it's findable.
-                    _log_dir = os.path.join(os.getcwd(), 'data', 'logs')
-                    _candidates = [
-                        os.path.join(_log_dir, 'clayrune.log'),
-                        os.path.join(_log_dir, f'clayrune-restart-{os.getpid()}.log'),
-                    ]
-                    _restart_log = None
-                    for _cand in _candidates:
-                        try:
-                            os.makedirs(_log_dir, exist_ok=True)
-                            # leaked intentionally; we os._exit shortly
-                            _restart_log = open(_cand, 'ab')
-                            popen_kwargs['stdout'] = _restart_log
-                            popen_kwargs['stderr'] = subprocess.STDOUT
-                            if _cand != _candidates[0]:
-                                _log(f"[restart] main log busy; new instance logs to {_cand}")
-                            break
-                        except Exception as e:
-                            _log(f"[restart] log redirect to {_cand} failed: {e}")
-                    if _restart_log is None:
-                        _log("[restart] no writable log target; new instance output is discarded")
+                    _redirect_restart_child_output(popen_kwargs)
             else:
                 popen_kwargs['start_new_session'] = True
+                # Never hand the child the terminal we were launched from.
+                # start.sh/start.command `exec python server.py` inside a
+                # terminal (the Linux .desktop has Terminal=true); when the old
+                # process exits that terminal closes, and the inherited pty's
+                # master is gone. Every later write to it fails with EIO, so
+                # the new server died on its first log line (ce1292a3; measured
+                # on Linux and macOS, _scratch/pty_child_probe.py). stdin goes
+                # to /dev/null, output to data/logs like the Windows branch.
+                popen_kwargs['stdin'] = subprocess.DEVNULL
+                _redirect_restart_child_output(popen_kwargs)
             subprocess.Popen([sys.executable] + sys.argv, **popen_kwargs)
             spawned = True
             _log("[restart] spawned new server process")
