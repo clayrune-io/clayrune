@@ -642,3 +642,13 @@ deferred; its frame 9 waits in the folder.
    shows the top one + `+n`; `Retro ready: n findings to confirm` becomes that campaign's pill; the project page
    keeps its own Needs-you list** (§2), so nothing becomes unreachable. R2-15's "removes the Needs-you row" then reads
    "removes the pill".
+
+### 11.6 Ron's answers (2026-09-29)
+
+1. **Channels beyond X + LinkedIn: build the tiles and placeholders so the mocked-up view is there.** Supersedes the
+   §11.5 Q1 recommendation. YouTube, Discord and Reddit source cards, the `YouTube` content-type tile, and the Online
+   source body (YouTube, Google Drive, Dropbox) all render as in the frames, on fixture data, and behave in the UI
+   (drag, drop, remove) like the X/LinkedIn ones. Each carries a small `Preview · not connected` label; nothing
+   publishes, reads or authenticates. ⑥ Launch lists placed preview-only accounts as `Not published in v1` and does
+   not block Start on them. Real connectors stay separate backlog items. v1 still PUBLISHES to X + LinkedIn only.
+2. **Home Needs-you: the column replaces the section** (Dave's call, reversible, per the §11.5 Q2 recommendation).
