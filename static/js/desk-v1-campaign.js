@@ -983,7 +983,11 @@
       <div class="desk-v1-camp-suggested-banner">
         <span>${esc(items.length)} suggested</span>
         <button type="button" class="btn-secondary" data-suggested-accept-all>Accept all</button>
-      </div>`;
+      </div>
+      <div class="desk-v1-suggested-list">${items.map((it, i) => `
+        <div class="desk-v1-suggested-item" data-suggested-item="${i}">
+          <span class="desk-v1-suggested-title">${esc(it.title)}</span>${DeskV1Kit.becauseChipsHTML(it.because, camp.projectId)}
+        </div>`).join('')}</div>`;
   }
 
   function _acceptSuggestedWhat(camp) {
@@ -1031,10 +1035,34 @@
     const accounts = plan.accounts || [];
     const title = plan.title || (camp.subject && camp.subject.label) || 'New campaign';
     camp.how = camp.how || {};
+    // R2-17: every suggestion carries the agent's `because` (§10.3); the UI
+    // resolves it against the confirmed playbook when it paints (kit
+    // `resolveBecause`), so a stale or invented id never reaches a chip.
+    const reply = (_fx().suggestReply) || {};
+    const replyWhat = reply.what || [];
+    const replyWhen = reply.when || {};
+    const when = { label: `${(plan.cadence && plan.cadence.per_week) || 3}x/week`, because: replyWhen.because };
+    // §5 data addendum: an agent's proposed slot is an `origin:'agent',
+    // state:'suggested'` entry in `when.slots` (calendar.js R2-9). Re-running
+    // Suggest replaces the still-suggested one; accepted ones stay.
+    camp.when = camp.when || {};
+    camp.when.slots = (camp.when.slots || []).filter((sl) => !(sl.origin === 'agent' && sl.state === 'suggested'));
+    if (replyWhen.weekday != null) {
+      const at = new Date();
+      at.setDate(at.getDate() + 1 + ((replyWhen.weekday - at.getDay() - 1 + 7) % 7));
+      const [hh, mm] = String(replyWhen.time || '09:00').split(':').map((x) => parseInt(x, 10));
+      at.setHours(hh, mm || 0, 0, 0);
+      const slot = { id: 'slot-agent-' + Date.now().toString(36), at: at.toISOString(), origin: 'agent', state: 'suggested', because: replyWhen.because };
+      camp.when.slots.push(slot);
+      when.slotId = slot.id;
+    }
     camp.how.suggested = {
-      what: [1, 2, 3].map((n) => ({ title: `${title} — post ${n}`, channelId: accounts[(n - 1) % (accounts.length || 1)] || null })),
-      when: { label: `${(plan.cadence && plan.cadence.per_week) || 3}x/week` },
-      where: { channelId: accounts[0] || null, label: accounts[0] ? (_channel(accounts[0]) || {}).label || accounts[0] : null },
+      what: [1, 2, 3].map((n) => ({
+        title: `${title} — post ${n}`, channelId: accounts[(n - 1) % (accounts.length || 1)] || null,
+        because: (replyWhat[n - 1] || {}).because,
+      })),
+      when,
+      where: { channelId: accounts[0] || null, label: accounts[0] ? (_channel(accounts[0]) || {}).label || accounts[0] : null, because: (reply.where || {}).because },
     };
     DeskV1Kit.toast(`${DeskV1Kit.deskAgentName({ project, campaign: camp })} suggested 3 pieces, a cadence and a placement.`);
     if (_st && _st.campaignId === camp.id && _st.el && document.body.contains(_st.el) && _st.el.dataset.panel === 'what') _renderTabBody();
