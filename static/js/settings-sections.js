@@ -787,7 +787,7 @@ async function copyInstalledAppLink() {
     await navigator.clipboard.writeText('chrome://apps');
     showToast('Copied chrome://apps');
   } catch (_) {
-    showToast('Could not copy — select and copy the text manually.', 4000);
+    showToast('Could not copy. Select and copy the text manually.', 4000);
   }
 }
 
@@ -801,8 +801,17 @@ async function forceUpdateServiceWorker() {
     const reg = await navigator.serviceWorker.getRegistration('/');
     if (!reg) {
       showToast('No service worker registered.', 4000);
+      await refreshInstalledAppSection();
       return;
     }
+    // Listen BEFORE update(): install() calls skipWaiting() itself, so a new
+    // worker can activate before we ever see it in reg.installing/waiting.
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloaded) return;
+      reloaded = true;
+      location.reload();
+    });
     await reg.update();
     let waiting = reg.waiting;
     if (!waiting && reg.installing) {
@@ -817,16 +826,11 @@ async function forceUpdateServiceWorker() {
       });
     }
     if (!waiting) {
+      if (reloaded) return;
       showToast('Already up to date.');
       await refreshInstalledAppSection();
       return;
     }
-    let reloaded = false;
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (reloaded) return;
-      reloaded = true;
-      location.reload();
-    });
     waiting.postMessage({ type: 'SKIP_WAITING' });
     setTimeout(() => { if (!reloaded) { reloaded = true; location.reload(); } }, 6000);
   } catch (e) {
