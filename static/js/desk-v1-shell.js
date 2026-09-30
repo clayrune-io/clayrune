@@ -156,6 +156,26 @@
     deskV1Render();
   }
 
+  // R2-2 (§8 amended row): `Projects: All ▾` lives in the Desk header on
+  // EVERY Desk route (not just Home) — one click from anywhere, including a
+  // campaign page, lands on the picked project's own page. Rendered by
+  // `_renderCrumb` itself (called on every `deskV1Render`) rather than a
+  // per-route crumb-tool, since `#desk-v1-crumb-tools` gets overwritten by
+  // whichever route owns it (e.g. desk-v1-review.js) and this must survive
+  // that. "All" is a label only in R0 — fixtures model two projects and
+  // Home always shows both; picking one navigates, it doesn't filter.
+  function _projectsPickerHTML() {
+    return `<button type="button" class="desk-v1-projects-picker" aria-haspopup="menu">Projects: All &#9662;</button>`;
+  }
+  function _bindProjectsPicker(crumb) {
+    const btn = crumb.querySelector('.desk-v1-projects-picker');
+    if (!btn || !window.DeskV1Kit) return;
+    window.DeskV1Kit.bindAddToTrigger(btn, () => {
+      const projects = (window.DeskV1Fixtures && window.DeskV1Fixtures.projects) || [];
+      return projects.map((p) => ({ id: p.id, label: p.name }));
+    }, (projectId) => { deskV1Nav('project', { projectId }); }, { noAppendNew: true });
+  }
+
   function _renderCrumb(entry) {
     const crumb = document.getElementById('desk-v1-crumb');
     if (!crumb) return false;
@@ -165,7 +185,9 @@
         ? `<button type="button" class="desk-v1-back" onclick="deskV1Back()">&lsaquo; ${esc(_routeLabel(parentEntry))}</button>`
         : ''}
       <span class="desk-v1-crumb-title">${esc(_routeLabel(entry))}</span>
+      ${_projectsPickerHTML()}
       <div class="desk-v1-crumb-tools" id="desk-v1-crumb-tools"></div>`;
+    _bindProjectsPicker(crumb);
     return true;
   }
 

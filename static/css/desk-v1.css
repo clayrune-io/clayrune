@@ -30,6 +30,16 @@
 .desk-v1-back:hover { background: var(--surface3); color: var(--text); }
 .desk-v1-crumb-title { font-size: 15px; font-weight: 700; color: var(--text); }
 .desk-v1-crumb-title:empty { display: none; }
+/* R2-2 (mockups_r2/1-home.png frame 1 top bar): a picker, not a filter — R0
+   fixtures always render both projects on Home; picking one here navigates
+   straight to its project page from anywhere, same one-click contract as a
+   Home block header's own name button. */
+.desk-v1-projects-picker {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 999px;
+  color: var(--text-dim); font-size: 12px; font-weight: 600; cursor: pointer;
+  padding: 5px 12px; white-space: nowrap;
+}
+.desk-v1-projects-picker:hover { background: var(--surface3); color: var(--text); }
 /* Optional per-route trailing content (e.g. T3's doc label/count + review
    controls, frame 12b's one-row header) — empty on every other route, so it
    must take no space and add no gap there. */
@@ -337,21 +347,134 @@
 .desk-v1-home-promote-input::placeholder { color: var(--text-faint); }
 .desk-v1-home-promote-btn { flex: 0 0 auto; }
 
-/* IA1 (docs/THE_DESK_V1_IA_REVISION.md §1, §5 row IA1): project cards — the
-   sole "at a glance" row now that the flat campaign grid is retired from
-   Home (Dave's review pass 3: campaigns only reachable via a project's own
-   page). A compact wrapping row, not a grid — it doesn't need its own flex
-   budget since Needs you below is the only other content row. */
-.desk-v1-home-projects { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 8px; }
-.desk-v1-home-projects:empty { display: none; margin-bottom: 0; }
-.desk-v1-home-project-card {
-  display: flex; flex-direction: row; align-items: baseline; gap: 6px;
-  background: var(--surface); border: 1px solid var(--border2); border-radius: 8px;
-  padding: 3px 10px; cursor: pointer;
+/* R2-2 (§8 amended row, mockups_r2/1-home.png): the status board replaces
+   IA1's project cards + the old Needs-you section below — one column header
+   for the page, one bordered block per project, one row per campaign. */
+.desk-v1-home-board { flex: 0 0 auto; display: flex; flex-direction: column; gap: 10px; }
+.desk-v1-home-board-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.desk-v1-home-board-heading { font-size: 20px; font-weight: 700; color: var(--text); margin: 0; }
+.desk-v1-home-legend { font-size: 11.5px; color: var(--text-faint); display: flex; align-items: center; gap: 8px; }
+.desk-v1-home-legend-bar {
+  display: inline-block; width: 18px; height: 6px; border-radius: 3px;
+  background: var(--accent-soft);
 }
-.desk-v1-home-project-card:hover { background: var(--surface2); border-color: var(--border); }
-.desk-v1-home-project-name { font-size: 12.5px; font-weight: 700; color: var(--text); }
-.desk-v1-home-project-meta { font-size: 11px; color: var(--text-faint); }
+.desk-v1-home-legend-sep { color: var(--border2); }
+
+.desk-v1-home-worker-banner {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--amber-dim); border: 1px solid var(--amber-text); border-radius: 8px;
+  padding: 8px 12px; font-size: 12.5px; color: var(--amber-text);
+}
+.desk-v1-home-worker-banner span:nth-child(2) { flex: 1 1 auto; }
+.desk-v1-home-hold-fix {
+  flex: 0 0 auto; background: none; border: 1px solid var(--amber-text); border-radius: 6px;
+  color: var(--amber-text); font-size: 11px; font-weight: 600; cursor: pointer;
+  padding: 4px 8px; font-family: inherit;
+}
+.desk-v1-home-hold-fix:hover { background: var(--amber-text); color: var(--bg); }
+
+.desk-v1-home-empty {
+  font-size: 13px; color: var(--text-faint);
+  border: 1px dashed var(--border2); border-radius: 10px; padding: 20px; text-align: center;
+}
+
+/* One column header for the whole page (not per block) — grid columns
+   shared with every .desk-v1-home-row below so cells line up. */
+.desk-v1-home-board-head, .desk-v1-home-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1.6fr 0.9fr 1.1fr 1.4fr;
+  align-items: center; gap: 12px;
+}
+.desk-v1-home-board-head {
+  padding: 0 14px; font-size: 11px; font-weight: 700; color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.desk-v1-home-board-blocks { display: flex; flex-direction: column; gap: 14px; }
+
+/* Each project is its own bordered block with a visible gap between blocks
+   (Ron r2 (a)) — the gap comes from .desk-v1-home-board-blocks' own `gap`
+   above, not margin, so it survives however many blocks render. */
+.desk-v1-home-block {
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface);
+  overflow: hidden;
+}
+.desk-v1-home-block-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border2); background: var(--surface2);
+}
+.desk-v1-home-block-name {
+  background: none; border: none; color: var(--text); font-size: 14px; font-weight: 700;
+  cursor: pointer; padding: 0; font-family: inherit;
+}
+.desk-v1-home-block-name:hover { color: var(--accent); }
+.desk-v1-home-block-agent {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--surface3); border: 1px solid var(--border2); border-radius: 999px;
+  color: var(--text-dim); font-size: 11.5px; font-weight: 600; cursor: pointer;
+  padding: 4px 10px; font-family: inherit;
+}
+.desk-v1-home-block-agent:hover { background: var(--surface); color: var(--text); }
+.desk-v1-home-block-agent-unresolved { border-color: var(--amber-text); color: var(--amber-text); }
+.desk-v1-home-block-newcamp {
+  background: none; border: none; color: var(--accent); font-size: 12.5px; font-weight: 600;
+  cursor: pointer; padding: 0; font-family: inherit; margin-left: auto;
+}
+.desk-v1-home-block-newcamp:hover { text-decoration: underline; }
+.desk-v1-home-block-rows { display: flex; flex-direction: column; }
+.desk-v1-home-block-empty { padding: 14px; font-size: 12.5px; color: var(--text-faint); }
+
+.desk-v1-home-row {
+  padding: 12px 14px; border-top: 1px solid var(--border2); cursor: pointer;
+}
+.desk-v1-home-block-rows .desk-v1-home-row:first-child { border-top: none; }
+.desk-v1-home-row:hover { background: var(--surface2); }
+.desk-v1-home-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.desk-v1-home-row-title { font-size: 13.5px; font-weight: 700; color: var(--text); }
+.desk-v1-home-row-subject { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
+
+/* Goal progress: fill = current/target, the tick = fraction of term elapsed
+   — two independent readings on one bar (A15: never colour alone, so the
+   real numbers live in the bar's own aria-label, not just position/width). */
+.desk-v1-home-goal-bar {
+  position: relative; height: 6px; border-radius: 3px; background: var(--surface3);
+  overflow: visible;
+}
+.desk-v1-home-goal-fill {
+  position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px;
+  background: var(--accent-soft);
+}
+.desk-v1-home-goal-tick {
+  position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text-dim);
+  transform: translateX(-1px);
+}
+.desk-v1-home-goal-bar-untracked {
+  height: 6px; border-radius: 3px; border: 1px dashed var(--border2); background: none;
+}
+.desk-v1-home-goal-text { font-size: 11px; color: var(--text-dim); margin-top: 5px; }
+.desk-v1-home-goal-untracked { font-style: italic; color: var(--text-faint); }
+
+.desk-v1-home-pace-pill {
+  display: inline-block; border-radius: 999px; padding: 3px 9px;
+  font-size: 11px; font-weight: 700; background: var(--surface3); color: var(--text-dim);
+}
+.desk-v1-home-pace-pill[data-pace="on_track"], .desk-v1-home-pace-pill[data-pace="ahead"] {
+  background: var(--green-dim); color: var(--green-text);
+}
+.desk-v1-home-pace-pill[data-pace="behind"] { background: var(--amber-dim); color: var(--amber-text); }
+.desk-v1-home-pace-empty, .desk-v1-home-nextpost-empty, .desk-v1-home-needsyou-empty {
+  font-size: 12px; color: var(--text-faint);
+}
+
+.desk-v1-home-nextpost { font-size: 12.5px; color: var(--text); }
+.desk-v1-home-nextpost-draft { color: var(--text-dim); }
+
+.desk-v1-home-needsyou-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--amber-dim); border: 1px solid var(--amber-text); border-radius: 999px;
+  color: var(--amber-text); font-size: 11.5px; font-weight: 600; cursor: pointer;
+  padding: 4px 10px; font-family: inherit; max-width: 100%;
+}
+.desk-v1-home-needsyou-pill:hover { background: var(--amber-text); color: var(--bg); }
 
 /* Phone-only intake path (§2, §11: "no drag" on phone — the shelves' own
    drag doesn't work on touch, so this row is the phone equivalent of
@@ -364,43 +487,6 @@
   padding: 8px 10px; font-family: inherit;
 }
 .desk-v1-home-suggestions:empty { display: none; }
-
-/* Dave's review pass 3 (§1: Home shows project cards, no campaign grid) —
-   the campaign-card grid + rail layout retired from Home; desk-v1-home.js
-   no longer renders .desk-v1-home-cards/-camp-card/-archived* at all, so
-   their rules are gone with them. Needs you (below) is now the only content
-   row in the .desk-v1-home flex column, full width, sized to its content. */
-.desk-v1-home-empty {
-  font-size: 13px; color: var(--text-faint);
-  border: 1px dashed var(--border2); border-radius: 10px; padding: 20px; text-align: center;
-}
-
-.desk-v1-home-needsyou {
-  flex: 0 0 auto; overflow-y: auto; background: var(--surface); border: 1px solid var(--border2);
-  border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px;
-}
-.desk-v1-home-needsyou-title { font-size: 13px; font-weight: 700; color: var(--text); }
-.desk-v1-home-needsyou-list { display: flex; flex-direction: column; gap: 6px; }
-.desk-v1-home-needsyou-empty { font-size: 12px; color: var(--text-faint); }
-.desk-v1-home-needsyou-row {
-  display: flex; align-items: center; gap: 8px; width: 100%;
-  background: var(--surface2); border: 1px solid var(--border); border-radius: 7px;
-  padding: 8px 10px; text-align: left; cursor: pointer; font-family: inherit;
-}
-.desk-v1-home-needsyou-row:hover { background: var(--surface3); }
-.desk-v1-home-needsyou-glyph { flex: 0 0 auto; font-size: 13px; }
-.desk-v1-home-needsyou-text { flex: 1 1 auto; min-width: 0; font-size: 12.5px; color: var(--text); }
-/* Holds are tinted, not clickable (§2: "holds tinted in the same card") —
-   the row itself is a <div>, only its Fix button is interactive. */
-.desk-v1-home-needsyou-hold {
-  cursor: default; background: var(--amber-dim); border-color: var(--amber-text);
-}
-.desk-v1-home-hold-fix {
-  flex: 0 0 auto; background: none; border: 1px solid var(--amber-text); border-radius: 6px;
-  color: var(--amber-text); font-size: 11px; font-weight: 600; cursor: pointer;
-  padding: 4px 8px; font-family: inherit;
-}
-.desk-v1-home-hold-fix:hover { background: var(--amber-text); color: var(--bg); }
 
 /* Shelves (bottom): two equal columns, each a wrapping row of pill items —
    the Channels + Material sources every drop target above accepts. */
@@ -457,16 +543,21 @@
 @media (max-width: 960px) {
   .desk-v1-home-promote-phone-actions { display: flex; gap: 8px; }
   .desk-v1-home-promote-icon-btn { min-height: 44px; }
-  /* flex:0 0 auto (not just flex-direction:column) — otherwise this keeps
-     flex-grow:1/shrink:1 from the desktop rule — moot now that Home's own
-     campaign grid is retired (Dave's review pass 3) and .desk-v1-home-main
-     is gone with it: .desk-v1-home-needsyou is a direct column child at
-     every width, so it already takes its natural height with no rail-width
-     rule to override here. */
-  .desk-v1-home-needsyou { overflow-y: visible; }
   .desk-v1-home-shelves { grid-template-columns: 1fr; }
-  .desk-v1-home-needsyou-row, .desk-v1-shelf-item, .desk-v1-home-material-tile,
+  .desk-v1-shelf-item, .desk-v1-home-material-tile,
   .desk-v1-home-engagement-btn, .desk-v1-home-settings-btn, .desk-v1-home-pause-btn, .desk-v1-home-hold-fix { min-height: 44px; }
+  /* R2-2: the 6-column board grid has no room at phone width — no frame
+     names a phone status-board layout (§11.1's `10-goal-mobile` is the map
+     stepper, not Home), so each row stacks to a single column instead; the
+     shared column header (labels the desktop grid needs) would just repeat
+     those same labels per stacked cell, so it's hidden here rather than
+     reading as a second, misaligned row. */
+  .desk-v1-home-board-head { display: none; }
+  .desk-v1-home-row {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+    min-height: 44px;
+  }
+  .desk-v1-home-needsyou-pill { min-height: 32px; }
 }
 
 /* ── T2a: Campaign page + Content list ───────────────────────────────────── */

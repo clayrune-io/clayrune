@@ -764,6 +764,12 @@
     projectId: 'engulfing_scanner',
     subject: { kind: 'product', label: 'Engulfing scanner' },
     goal: { current: 4 },
+    // R2-2 (§8 amended row, mockups_r2/1-home.png): the Home status board's
+    // GOAL PROGRESS/PACE columns read `plan.goal.tracked` + `plan.goal.target`
+    // for campaigns that predate R2-4's full measurable-goal shape (only
+    // camp-1 has `goal.source` set) — `term` is additive here so this row has
+    // a real elapsed fraction to pace against, same shape as camp-1's own.
+    term: { index: 1, starts: '2026-09-15', ends: '2026-10-31', post_cap: null },
     // IA2 §3: same rescope as camp-1/camp-2 above.
     rules: {},
     plan: {
@@ -786,6 +792,18 @@
     { id: 'conv-7', projectId: 'engulfing_scanner', campaignId: 'camp-3', source: 'our_posts', channelId: 'ch-x-ron',
       excerpt: 'Backtest looks great — does this work on futures too?', state: 'needs_you' },
   );
+
+  // R2-2: camp-3 had no family/version at all — the Home row's NEXT POST
+  // column had nothing scheduled to show. One scheduled post (mirrors
+  // camp-1's fam-30-testers/camp-4's fam-discord-announce shape exactly).
+  FAMILIES.push({
+    id: 'fam-signal-alert', campaignId: 'camp-3', kind: 'post',
+    title: 'Real engulfing setup caught live',
+    versions: [
+      { id: 'v-signal-x', channelId: 'ch-x-ron', state: 'scheduled', revision: 0,
+        publishAt: '2026-10-05T09:00:00-07:00' },
+    ],
+  });
 
   // ── IA6 (MC-977 IA revision, §5 row IA6): a genuinely FRESH Active
   // campaign — goal.current 0, no version has ever gone out — so the

@@ -99,14 +99,13 @@ async function crumb(page) {
 async function runHomeProjectCards(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
 
-  const cards = await page.$$eval('#desk-v1-home-projects .desk-v1-home-project-card', (els) =>
+  const cards = await page.$$eval('#desk-v1-home-board .desk-v1-home-block', (els) =>
     els.map((e) => ({
       id: e.dataset.projectId,
-      name: e.querySelector('.desk-v1-home-project-name').textContent.trim(),
-      meta: e.querySelector('.desk-v1-home-project-meta').textContent.trim(),
+      name: e.querySelector('.desk-v1-home-block-name').textContent.trim(),
     })));
   cards.length === 2 && cards.some((c) => c.id === 'clayrune') && cards.some((c) => c.id === 'engulfing_scanner')
-    ? ok(`Home shows both fixture projects as cards: ${JSON.stringify(cards)}`)
+    ? ok(`Home shows both fixture projects as blocks: ${JSON.stringify(cards)}`)
     : fail(`Home project cards wrong: ${JSON.stringify(cards)}`);
 
   reportUncaught(pageErrors, '[home-projects]');
@@ -118,7 +117,7 @@ async function runHomeProjectCards(browser) {
 async function runProjectToCampaignAndBack(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
 
-  await page.click('.desk-v1-home-project-card[data-project-id="clayrune"]');
+  await page.click('.desk-v1-home-block-name[data-project-id="clayrune"]');
   await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
   let c = await crumb(page);
   c.title === 'Clayrune' && c.back === '‹ Desk'
@@ -171,7 +170,7 @@ async function runProjectToCampaignAndBack(browser) {
 async function runSecondProject(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
 
-  await page.click('.desk-v1-home-project-card[data-project-id="engulfing_scanner"]');
+  await page.click('.desk-v1-home-block-name[data-project-id="engulfing_scanner"]');
   await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
   const c = await crumb(page);
   c.title === 'Engulfing scanner'
@@ -199,7 +198,15 @@ async function runSecondProject(browser) {
 async function runNeedsYouDeepStack(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
 
-  await page.click('#desk-v1-home-needsyou .desk-v1-home-needsyou-row:has-text("piece to approve")');
+  // camp-1's unmutated fixture state has a held channel (ch-li-page) that
+  // outranks its pending piece (§11.6 item 2 priority: blocker > held >
+  // piece/video/reply) — un-hold it first so the piece bucket surfaces,
+  // same technique desk-v1-home.mjs's A12 deep-link test already uses.
+  await page.evaluate(() => {
+    window.DeskV1Fixtures.channels.find((c) => c.id === 'ch-li-page').health = 'ok';
+    window.__deskV1HomeTickHeartbeatNow();
+  });
+  await page.click('.desk-v1-home-row[data-campaign-id="camp-1"] .desk-v1-home-needsyou-pill');
   await page.waitForSelector('.desk-v1-review', { timeout: 4000 });
   let c = await crumb(page);
   c.back === '‹ Undo anything: restore points in Clayrune 2.1'
@@ -245,7 +252,7 @@ async function runNeedsYouDeepStack(browser) {
 async function runStubRoutes(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
 
-  await page.click('.desk-v1-home-project-card[data-project-id="clayrune"]');
+  await page.click('.desk-v1-home-block-name[data-project-id="clayrune"]');
   await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
 
   // IA3 landed the real Presence page — no longer a stub route (was
@@ -296,7 +303,7 @@ async function runStubRoutes(browser) {
 async function runPresenceCeilingClamp(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
 
-  await page.click('.desk-v1-home-project-card[data-project-id="clayrune"]');
+  await page.click('.desk-v1-home-block-name[data-project-id="clayrune"]');
   await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
   await page.click('.desk-v1-project-presence-btn');
   await page.waitForSelector('.desk-v1-presence', { timeout: 4000 });
@@ -334,7 +341,7 @@ async function runPresenceCeilingClamp(browser) {
 async function runPresenceAddAccountConfirm(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
 
-  await page.click('.desk-v1-home-project-card[data-project-id="engulfing_scanner"]');
+  await page.click('.desk-v1-home-block-name[data-project-id="engulfing_scanner"]');
   await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
   await page.click('.desk-v1-project-presence-btn');
   await page.waitForSelector('.desk-v1-presence', { timeout: 4000 });
@@ -366,7 +373,7 @@ async function runPresenceAddAccountConfirm(browser) {
 async function runProjectPauseResume(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
 
-  await page.click('.desk-v1-home-project-card[data-project-id="clayrune"]');
+  await page.click('.desk-v1-home-block-name[data-project-id="clayrune"]');
   await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
 
   await page.click('[data-pause-project-btn]');

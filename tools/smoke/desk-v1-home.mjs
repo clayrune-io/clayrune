@@ -105,57 +105,101 @@ function reportUncaught(pageErrors, tag) {
   if (uncaught.length) uncaught.forEach((e) => fail(`${tag} uncaught page error: ${e}`));
 }
 
-// ── render checks, one per tone: header, promote box, campaign card, Needs
-// you (grouped counts + holds), shelves. ────────────────────────────────────
+// ── render checks, one per tone: header, promote box, status board (ONE
+// column header, bordered per-project blocks, per-row Needs-you column),
+// shelves. R2-2 (§8 amended row, §11.6 item 2): the old flat project-card
+// grid + grouped Needs-you section are retired — each project is its own
+// bordered block of campaign rows, and Needs-you is a COLUMN in that row
+// showing the top reason (blocker > held channel > piece/video/reply,
+// highest first) plus "+n" for the other kinds present. ────────────────────
 async function runToneRenderChecks(browser, tone) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, tone);
 
-  // IA1 (Dave's review pass 3): Home's own "at a glance" row is now one
-  // card per project, not a flat campaign grid — the grid + Archived section
-  // are retired from Home entirely (only reachable via a project's own page,
-  // covered by desk-v1-project.mjs). Both fixture projects render here.
-  const projectCardCount = await page.$$eval('.desk-v1-home-project-card', (els) => els.length);
-  if (projectCardCount === 2) ok(`[${tone.name}] both fixture project cards render`);
-  else fail(`[${tone.name}] expected 2 project cards, got ${projectCardCount}`);
+  // ONE column header for the whole page, not one per block (§8 amended row).
+  const headCount = await page.$$eval('.desk-v1-home-board-head', (els) => els.length);
+  if (headCount === 1) ok(`[${tone.name}] exactly one page-wide column header`);
+  else fail(`[${tone.name}] expected 1 column header, got ${headCount}`);
+  const headText = (await page.textContent('.desk-v1-home-board-head').catch(() => '') || '');
+  if (/CAMPAIGN/.test(headText) && /STAGE/.test(headText) && /GOAL PROGRESS/.test(headText) && /PACE/.test(headText) && /NEXT POST/.test(headText) && /NEEDS YOU/.test(headText)) {
+    ok(`[${tone.name}] column header names all six columns`);
+  } else {
+    fail(`[${tone.name}] column header missing a column: ${JSON.stringify(headText)}`);
+  }
 
-  const projectsText = (await page.textContent('#desk-v1-home-projects').catch(() => '') || '');
-  // IA6 (§5 row IA6): fixtures added camp-4 (active, under clayrune) and
-  // camp-archived-1 (archived, excluded from this count) — clayrune's Home
-  // card went from "2 campaigns · 1 active" to "3 campaigns · 2 active".
-  if (/Clayrune/.test(projectsText) && /3 campaigns/.test(projectsText) && /2 active/.test(projectsText)) {
-    ok(`[${tone.name}] Clayrune project card shows campaign count + active count`);
-  } else {
-    fail(`[${tone.name}] Clayrune project card content wrong: ${JSON.stringify(projectsText)}`);
-  }
-  if (/Engulfing scanner/.test(projectsText) && /1 campaign/.test(projectsText)) {
-    ok(`[${tone.name}] Engulfing scanner project card shows its own campaign count`);
-  } else {
-    fail(`[${tone.name}] Engulfing scanner project card content wrong: ${JSON.stringify(projectsText)}`);
-  }
+  // Two bordered project blocks (both fixture projects), campaign grid retired.
+  const blockCount = await page.$$eval('.desk-v1-home-block', (els) => els.length);
+  if (blockCount === 2) ok(`[${tone.name}] both fixture project blocks render`);
+  else fail(`[${tone.name}] expected 2 project blocks, got ${blockCount}`);
   const campCardsGone = await page.$('.desk-v1-home-camp-card');
   !campCardsGone ? ok(`[${tone.name}] no flat campaign-card grid on Home`) : fail(`[${tone.name}] a retired .desk-v1-home-camp-card still rendered`);
 
-  // Needs you: 1 piece (fam-restore-points), 1 video (fam-install-video),
-  // 1 reply (conv-1), plus the held ch-li-page hold row and the offline
-  // worker-heartbeat hold row (A13). Held count is 3, not 2 (MC-977 T2b,
-  // Dave's review pass 2): camp-2's fam-launch-li put a second piece on the
-  // same globally-disconnected ch-li-page, so the count is real, not stale.
-  const needsYouText = (await page.textContent('#desk-v1-home-needsyou').catch(() => '') || '');
-  if (/1 piece to approve/.test(needsYouText)) ok(`[${tone.name}] Needs you: "1 piece to approve"`);
-  else fail(`[${tone.name}] Needs you missing piece row: ${JSON.stringify(needsYouText)}`);
-  if (/1 video to watch/.test(needsYouText)) ok(`[${tone.name}] Needs you: "1 video to watch"`);
-  else fail(`[${tone.name}] Needs you missing video row: ${JSON.stringify(needsYouText)}`);
-  if (/1 reply waiting/.test(needsYouText)) ok(`[${tone.name}] Needs you: "1 reply waiting"`);
-  else fail(`[${tone.name}] Needs you missing reply row: ${JSON.stringify(needsYouText)}`);
-  if (/LinkedIn page disconnected/.test(needsYouText) && /3 held/.test(needsYouText)) {
-    ok(`[${tone.name}] A13: held-channel hold row tinted in the same card: "LinkedIn page disconnected · 3 held"`);
+  // IA6: clayrune's block holds camp-1/camp-2/camp-4 (camp-archived-1 excluded,
+  // its state is 'archived'); engulfing_scanner's block holds camp-3 alone.
+  const blockRowTitles = await page.evaluate(() => {
+    const out = {};
+    document.querySelectorAll('.desk-v1-home-block').forEach((b) => {
+      const name = b.querySelector('.desk-v1-home-block-name').textContent.trim();
+      out[name] = Array.from(b.querySelectorAll('.desk-v1-home-row-title')).map((t) => t.textContent.trim());
+    });
+    return out;
+  });
+  const clayruneTitles = blockRowTitles['Clayrune'] || [];
+  if (['Windows beta testers', 'Restore points launch', 'Community Discord launch'].every((t) => clayruneTitles.includes(t)) && clayruneTitles.length === 3) {
+    ok(`[${tone.name}] Clayrune block: camp-1/camp-2/camp-4 rows, camp-archived-1 excluded`);
   } else {
-    fail(`[${tone.name}] A13: held-channel hold row missing/wrong: ${JSON.stringify(needsYouText)}`);
+    fail(`[${tone.name}] Clayrune block rows wrong: ${JSON.stringify(clayruneTitles)}`);
   }
-  if (/Scheduling paused/.test(needsYouText) && /worker offline since 14:02/.test(needsYouText) && /2 posts missed/.test(needsYouText)) {
-    ok(`[${tone.name}] A13: worker-offline hold row: "Scheduling paused — worker offline since 14:02 · 2 posts missed"`);
+  const engulfingTitles = blockRowTitles['Engulfing scanner'] || [];
+  if (engulfingTitles.length === 1 && engulfingTitles[0] === 'Signal alerts for day traders') {
+    ok(`[${tone.name}] Engulfing scanner block: camp-3 row alone`);
   } else {
-    fail(`[${tone.name}] A13: worker-offline hold row missing/wrong: ${JSON.stringify(needsYouText)}`);
+    fail(`[${tone.name}] Engulfing scanner block rows wrong: ${JSON.stringify(engulfingTitles)}`);
+  }
+
+  // Needs-you column, per row, unmutated fixture state:
+  //  - camp-1: ch-li-page (held) is one of its accounts — held beats the
+  //    needs_review piece/video also sitting on this campaign (§11.6 item 2
+  //    priority: blocker > held > piece/video/reply).
+  //  - camp-2 (proposed): its own sequencing blocker beats everything.
+  //  - camp-3: no held channel, no needs_review family — its one needs_you
+  //    conversation is the only bucket, so no "+n" suffix.
+  //  - camp-4: nothing pending — empty dash, no pill.
+  const needsYouByRow = await page.evaluate(() => {
+    const out = {};
+    document.querySelectorAll('.desk-v1-home-row').forEach((r) => {
+      const pill = r.querySelector('.desk-v1-home-needsyou-pill');
+      out[r.dataset.campaignId] = pill ? { kind: pill.dataset.needsyouKind, text: pill.textContent.trim() } : { empty: !!r.querySelector('.desk-v1-home-needsyou-empty') };
+    });
+    return out;
+  });
+  if (needsYouByRow['camp-1'] && needsYouByRow['camp-1'].kind === 'held' && /LinkedIn disconnected/.test(needsYouByRow['camp-1'].text)) {
+    ok(`[${tone.name}] camp-1 Needs you: held channel wins over its own pending piece/video: "${needsYouByRow['camp-1'].text}"`);
+  } else {
+    fail(`[${tone.name}] camp-1 Needs you wrong: ${JSON.stringify(needsYouByRow['camp-1'])}`);
+  }
+  if (needsYouByRow['camp-2'] && needsYouByRow['camp-2'].kind === 'blocker' && /Needs your answer/.test(needsYouByRow['camp-2'].text)) {
+    ok(`[${tone.name}] camp-2 Needs you: proposed sequencing blocker: "${needsYouByRow['camp-2'].text}"`);
+  } else {
+    fail(`[${tone.name}] camp-2 Needs you wrong: ${JSON.stringify(needsYouByRow['camp-2'])}`);
+  }
+  if (needsYouByRow['camp-3'] && needsYouByRow['camp-3'].kind === 'reply' && /^\S\s1 reply waiting$/.test(needsYouByRow['camp-3'].text)) {
+    ok(`[${tone.name}] camp-3 Needs you: "1 reply waiting" (no held channel, no "+n")`);
+  } else {
+    fail(`[${tone.name}] camp-3 Needs you wrong: ${JSON.stringify(needsYouByRow['camp-3'])}`);
+  }
+  if (needsYouByRow['camp-4'] && needsYouByRow['camp-4'].empty) {
+    ok(`[${tone.name}] camp-4 Needs you: empty dash (nothing pending)`);
+  } else {
+    fail(`[${tone.name}] camp-4 Needs you should be empty: ${JSON.stringify(needsYouByRow['camp-4'])}`);
+  }
+
+  // A13 worker-offline: a banner above the board, not a per-row hold (it's a
+  // worker-wide condition, §11.6/A13 comment in desk-v1-home.js).
+  const bannerText = (await page.textContent('.desk-v1-home-worker-banner').catch(() => '') || '');
+  if (/Scheduling paused/.test(bannerText) && /worker offline since 14:02/.test(bannerText) && /2 posts missed/.test(bannerText)) {
+    ok(`[${tone.name}] A13: worker-offline banner: "Scheduling paused — worker offline since 14:02 · 2 posts missed"`);
+  } else {
+    fail(`[${tone.name}] A13: worker-offline banner missing/wrong: ${JSON.stringify(bannerText)}`);
   }
 
   // Shelves: 3 channels, 2 recent assets, four Material intake tiles.
@@ -183,11 +227,25 @@ async function runToneRenderChecks(browser, tone) {
 }
 
 // ── A12 on Home: Needs-you rows deep-link to review/conversations with the
-// params those surfaces expect. ─────────────────────────────────────────────
+// params those surfaces expect. camp-1's unmutated fixture state has a held
+// channel that outranks its own pending piece/video (§11.6 item 2 priority,
+// verified above in runToneRenderChecks) — so exercising the 'piece' and
+// 'video' kinds here first un-holds ch-li-page to let those buckets surface,
+// the same fixture mutation technique the Add-to test below already uses. ──
 async function runNeedsYouDeepLinks(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
 
-  await page.click('#desk-v1-home-needsyou .desk-v1-home-needsyou-row:has-text("piece to approve")');
+  // Un-hold ch-li-page: camp-1 now has 3 live buckets (piece, video, reply);
+  // priority puts piece first, so its pill reads "1 piece to approve +2".
+  await page.evaluate(() => {
+    window.DeskV1Fixtures.channels.find((c) => c.id === 'ch-li-page').health = 'ok';
+    window.__deskV1HomeTickHeartbeatNow();
+  });
+  const camp1PillText = (await page.textContent('.desk-v1-home-row[data-campaign-id="camp-1"] .desk-v1-home-needsyou-pill').catch(() => '') || '');
+  if (/1 piece to approve \+2/.test(camp1PillText)) ok(`A12 setup: camp-1 Needs you shows top bucket + "+n": "${camp1PillText.trim()}"`);
+  else fail(`A12 setup: camp-1 pill did not read "1 piece to approve +2": ${JSON.stringify(camp1PillText)}`);
+
+  await page.click('.desk-v1-home-row[data-campaign-id="camp-1"] .desk-v1-home-needsyou-pill');
   await page.waitForSelector('.desk-v1-review', { timeout: 8000 });
   let onReview = await page.evaluate(() => document.querySelector('[data-act-primary]') ? true : false);
   if (onReview) ok('A12: "1 piece to approve" deep-links straight into the review surface (12b)');
@@ -196,9 +254,18 @@ async function runNeedsYouDeepLinks(browser) {
   if (/No source for this/.test(claimBar)) ok('A12: piece deep-link resolved to v-restore-blog (its own blocked claim renders)');
   else fail(`A12: piece deep-link landed on the wrong version: ${JSON.stringify(claimBar)}`);
 
+  // Resolve the piece so video becomes camp-1's top bucket ("1 video to watch +1").
   await page.evaluate(() => window.deskV1Nav('home', {}));
   await page.waitForSelector('.desk-v1-home', { timeout: 8000 });
-  await page.click('#desk-v1-home-needsyou .desk-v1-home-needsyou-row:has-text("video to watch")');
+  await page.evaluate(() => {
+    const fam = window.DeskV1Fixtures.families.find((f) => f.id === 'fam-restore-points');
+    fam.versions.find((v) => v.id === 'v-restore-blog').state = 'approved';
+    window.__deskV1HomeTickHeartbeatNow();
+  });
+  const camp1PillText2 = (await page.textContent('.desk-v1-home-row[data-campaign-id="camp-1"] .desk-v1-home-needsyou-pill').catch(() => '') || '');
+  if (/1 video to watch \+1/.test(camp1PillText2)) ok(`A12 setup: with the piece resolved, camp-1 Needs you promotes video: "${camp1PillText2.trim()}"`);
+  else fail(`A12 setup: camp-1 pill did not read "1 video to watch +1": ${JSON.stringify(camp1PillText2)}`);
+  await page.click('.desk-v1-home-row[data-campaign-id="camp-1"] .desk-v1-home-needsyou-pill');
   await page.waitForSelector('.desk-v1-stub-title:has-text("Video"), .desk-v1-video', { timeout: 8000 });
   // Route-name assertion (Dave's review): a video row must land on the
   // 'video' route (12d, T5's surface — still a stub in this ticket's tree),
@@ -209,9 +276,11 @@ async function runNeedsYouDeepLinks(browser) {
   if (/^Video$/.test(crumbAfterVideo.trim())) ok(`A12: "1 video to watch" deep-links to route 'video' (12d), not 'review': crumb "${crumbAfterVideo.trim()}"`);
   else fail(`A12: video row landed on the wrong route: crumb ${JSON.stringify(crumbAfterVideo)}`);
 
+  // camp-3 is naturally reply-only (no held channel, no needs_review family)
+  // — no mutation needed to isolate the 'reply' kind.
   await page.evaluate(() => window.deskV1Nav('home', {}));
   await page.waitForSelector('.desk-v1-home', { timeout: 8000 });
-  await page.click('#desk-v1-home-needsyou .desk-v1-home-needsyou-row:has-text("reply waiting")');
+  await page.click('.desk-v1-home-row[data-campaign-id="camp-3"] .desk-v1-home-needsyou-pill');
   await page.waitForSelector('.desk-v1-stub, .desk-v1-conversations', { timeout: 8000 });
   // T2 (§2, §8): 'conversations' is a panel alias now, not a pushed route —
   // it lands on the SAME campaign crumb (the campaign's own name). R2-3:
@@ -296,24 +365,34 @@ async function runAddToMenuAttach(browser) {
   await ctx.close();
 }
 
-// ── Desktop layout (Dave's review): with the campaign grid retired, Needs
-// you is the only content row left in the .desk-v1-home column — it must
-// still size to its own content (flex:0 0 auto), not stretch to fill
-// whatever height the column has free, and a channel shelf item renders as
-// ONE pill (grip + badge + add inside a single outline), not a badge-pill
-// nested inside the shelf-item's own pill. ─────────────────────────────────
+// ── Desktop layout (§8 amended row: "each project is its own bordered block
+// with a visible gap between blocks", Ron r2 (a)) — each block must actually
+// be bordered and have visible daylight before the next one, and a channel
+// shelf item renders as ONE pill (grip + badge + add inside a single
+// outline), not a badge-pill nested inside the shelf-item's own pill. ──────
 async function runDesktopLayoutChecks(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
 
-  const needsyouFit = await page.evaluate(() => {
-    const needsyou = document.querySelector('.desk-v1-home-needsyou');
-    const home = document.querySelector('.desk-v1-home');
-    return { needsyouHeight: needsyou.getBoundingClientRect().height, homeHeight: home.getBoundingClientRect().height };
+  const blockLayout = await page.evaluate(() => {
+    const blocks = Array.from(document.querySelectorAll('.desk-v1-home-block'));
+    const [first, second] = blocks;
+    const firstStyle = getComputedStyle(first);
+    return {
+      count: blocks.length,
+      borderStyle: firstStyle.borderStyle,
+      borderWidth: parseFloat(firstStyle.borderWidth) || 0,
+      gap: second ? second.getBoundingClientRect().top - first.getBoundingClientRect().bottom : null,
+    };
   });
-  if (needsyouFit.needsyouHeight < needsyouFit.homeHeight - 40) {
-    ok(`Needs you sizes to its own content, not stretched to fill the Home column (${needsyouFit.needsyouHeight.toFixed(0)}px vs ${needsyouFit.homeHeight.toFixed(0)}px column)`);
+  if (blockLayout.borderStyle !== 'none' && blockLayout.borderWidth > 0) {
+    ok(`Each project block is bordered (${blockLayout.borderStyle}, ${blockLayout.borderWidth}px)`);
   } else {
-    fail(`Needs you stretched to fill the Home column: ${needsyouFit.needsyouHeight.toFixed(0)}px vs ${needsyouFit.homeHeight.toFixed(0)}px`);
+    fail(`Project block has no visible border: ${blockLayout.borderStyle} ${blockLayout.borderWidth}px`);
+  }
+  if (blockLayout.count === 2 && blockLayout.gap !== null && blockLayout.gap > 0) {
+    ok(`Visible gap between project blocks: ${blockLayout.gap.toFixed(0)}px`);
+  } else {
+    fail(`No visible gap between project blocks: ${JSON.stringify(blockLayout)}`);
   }
 
   const badgeBorders = await page.evaluate(() => {
@@ -341,15 +420,13 @@ async function runPhoneLayout(browser) {
     const phoneActions = document.querySelector('.desk-v1-home-promote-phone-actions');
     const shelves = document.querySelector('.desk-v1-home-shelves');
     const promote = document.querySelector('.desk-v1-home-promote');
-    const projects = document.querySelector('.desk-v1-home-projects');
-    const needsyou = document.querySelector('.desk-v1-home-needsyou');
+    const board = document.querySelector('.desk-v1-home-board');
     return {
       phoneActionsDisplay: getComputedStyle(phoneActions).display,
       shelvesColumns: getComputedStyle(shelves).gridTemplateColumns.split(' ').length,
       promoteTop: promote.getBoundingClientRect().top,
-      projectsTop: projects.getBoundingClientRect().top,
-      needsyouTop: needsyou.getBoundingClientRect().top,
-      needsyouWidth: needsyou.getBoundingClientRect().width,
+      boardTop: board.getBoundingClientRect().top,
+      boardWidth: board.getBoundingClientRect().width,
       homeWidth: document.querySelector('.desk-v1-home').getBoundingClientRect().width,
     };
   });
@@ -357,25 +434,28 @@ async function runPhoneLayout(browser) {
   else fail('§11: promote box icon row hidden at phone width');
   if (layout.shelvesColumns === 1) ok('§11: Channels + Material shelves stack to a single column');
   else fail(`§11: shelves did not stack to one column: ${layout.shelvesColumns} columns`);
-  if (layout.promoteTop < layout.projectsTop && layout.projectsTop < layout.needsyouTop) {
-    ok('§11: phone stack order is promote, project cards, then Needs you');
+  if (layout.promoteTop < layout.boardTop) {
+    ok('§11: phone stack order is promote, then the status board');
   } else {
-    fail(`§11: phone stack order wrong — promote@${layout.promoteTop} projects@${layout.projectsTop} needsyou@${layout.needsyouTop}`);
+    fail(`§11: phone stack order wrong — promote@${layout.promoteTop} board@${layout.boardTop}`);
   }
-  if (Math.abs(layout.needsyouWidth - layout.homeWidth) < 2) ok(`§11: Needs you is full width on phone, no fixed rail (${layout.needsyouWidth.toFixed(0)}px)`);
-  else fail(`§11: Needs you is not full width: ${layout.needsyouWidth}px vs ${layout.homeWidth}px column`);
+  if (Math.abs(layout.boardWidth - layout.homeWidth) < 2) ok(`§11: status board is full width on phone, no fixed rail (${layout.boardWidth.toFixed(0)}px)`);
+  else fail(`§11: status board is not full width: ${layout.boardWidth}px vs ${layout.homeWidth}px column`);
 
+  // .desk-v1-home-needsyou-pill is deliberately smaller (32px, CSS comment
+  // at desk-v1.css's phone media query) — it's a secondary jump-straight-in
+  // control nested inside the row, which is itself the 44px primary target.
   const hitTargets = await page.evaluate(() => {
     const els = [
       document.querySelector('.desk-v1-home-settings-btn'),
       document.querySelector('.desk-v1-home-pause-btn'),
       document.querySelector('.desk-v1-home-promote-icon-btn'),
-      document.querySelector('.desk-v1-home-needsyou-row'),
+      document.querySelector('.desk-v1-home-row'),
       document.querySelector('.desk-v1-shelf-item'),
     ].filter(Boolean);
     return els.map((el) => el.getBoundingClientRect().height);
   });
-  if (hitTargets.every((h) => h >= 44)) ok(`§11: header/promote/Needs-you/shelf hit targets all >=44px (${hitTargets.map((h) => h.toFixed(0)).join(', ')})`);
+  if (hitTargets.every((h) => h >= 44)) ok(`§11: header/promote/row/shelf hit targets all >=44px (${hitTargets.map((h) => h.toFixed(0)).join(', ')})`);
   else fail(`§11: a hit target is under 44px: ${JSON.stringify(hitTargets)}`);
 
   reportUncaught(pageErrors, '[phone]');

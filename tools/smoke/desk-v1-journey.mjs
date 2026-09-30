@@ -111,8 +111,8 @@ async function run(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
 
   // ── Home -> engulfing_scanner ────────────────────────────────────────────
-  await page.waitForSelector('.desk-v1-home-project-card[data-project-id="engulfing_scanner"]', { timeout: 8000 });
-  await page.click('.desk-v1-home-project-card[data-project-id="engulfing_scanner"]');
+  await page.waitForSelector('.desk-v1-home-block-name[data-project-id="engulfing_scanner"]', { timeout: 8000 });
+  await page.click('.desk-v1-home-block-name[data-project-id="engulfing_scanner"]');
   await page.waitForSelector('.desk-v1-project', { timeout: 8000 });
   const projectTitle = (await page.textContent('.desk-v1-crumb-title, .desk-v1-project-title').catch(() => '') || '');
   /Engulfing scanner/.test(projectTitle)
