@@ -5032,7 +5032,41 @@
     font-size: 12px; color: #6b6b6b; min-width: 50px;
     text-align: center; font-family: var(--mono, Consolas, monospace);
   }
-  .mermaid-viewer-close { margin-left: auto; font-size: 18px; padding: 5px 10px; }
+  /* Minimize/Maximize/Close group — reuses the project modal header's own
+     button classes (.modal-minimize/.modal-maximize/.modal-close,
+     render-core.js/interactions.js) so the viewer's window controls look
+     native instead of inventing a second button style. The group overrides
+     .modal-window-controls' absolute top/right positioning (inline style,
+     same override Desk's header already uses) since here it sits inside the
+     toolbar's own flex row rather than floating over the content. */
+  .mermaid-viewer-wincontrols { flex-shrink: 0; }
+  .iv-counter {
+    font-size: 12px; color: #6b6b6b; min-width: 44px;
+    text-align: center; font-family: var(--mono, Consolas, monospace);
+  }
+  /* Windowing (drag/minimize/maximize) is desktop-only — _ivWindowify skips
+     all of it on mobile, so a wired-but-inert button there would be dead
+     weight. .modal-maximize already hides ≤960px globally; scope the same
+     hide to minimize WITHOUT touching every other .modal-minimize on the
+     page (Desk, project modals) that mobile still wants working. */
+  @media (max-width: 960px) { .mermaid-viewer-wincontrols .modal-minimize { display: none; } }
+  /* Prev/Next — siblings of .mermaid-viewer-scroll (not children of it), so
+     they stay pinned to the WINDOW edges instead of panning away with a
+     zoomed/scrolled image; an absolutely-positioned descendant of an
+     overflow:auto ancestor scrolls with that ancestor's content, which is
+     exactly the bug this sidesteps. Hidden by JS when the open image has no
+     folder siblings (mermaid diagrams, data: URLs) or the API 403s. */
+  .iv-nav-btn {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    width: 40px; height: 40px; border-radius: 50%;
+    background: rgba(0, 0, 0, 0.45); color: #fff; border: none;
+    font-size: 22px; line-height: 1; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 5; transition: background 0.15s;
+  }
+  .iv-nav-btn:hover { background: rgba(0, 0, 0, 0.7); }
+  .iv-nav-prev { left: 10px; }
+  .iv-nav-next { right: 10px; }
   /* Canvas behind the image/diagram. WHITE by default — the checkerboard (the
      conventional "this pixel is transparent" indicator) was the default, and it
      fought with the artwork badly enough that images were hard to read. It's now
