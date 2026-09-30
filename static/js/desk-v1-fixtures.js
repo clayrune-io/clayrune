@@ -1139,7 +1139,20 @@
       effect: { ratio: 1.5, direction: 'a>b' },
       evidence: [{ campaign_id: 'camp-archived-1', term: 1, n_a: 15, n_b: 15 }],
       n_total: 30, confidence: 'medium', edited_text: 'Video clips out-clicked plain posts early on.',
-      state: 'stale', origin: 'interactive', decided_at: '2026-07-01T09:00:00Z', decided_by: 'ron' },
+      state: 'stale', origin: 'interactive', decided_at: '2026-07-01T09:00:00Z', decided_by: 'ron',
+      stale_at: '2026-09-01T09:00:00Z', stale_reason: 'A newer retro pointed the other way.' },
+    // R2-16: the project page Playbook's second confirmed finding, so the
+    // Confirmed list shows two dimensions (F2 slot, F6 format) and one
+    // finding with evidence from two campaigns (F2..F4 cite only
+    // camp-archived-1). Id F6 rather than F5: R2-17's acceptance uses F5 as
+    // its own rejected-citation case.
+    { id: 'F6', project_id: 'clayrune', scope: 'project', dimension: 'format',
+      arms: { a: 'article', b: 'post' }, account: 'linkedin:clayrune_page', metric: 'clicks',
+      effect: { ratio: 1.6, direction: 'a>b' },
+      evidence: [{ campaign_id: 'camp-archived-1', term: 1, n_a: 16, n_b: 15 },
+                 { campaign_id: 'camp-1', term: 1, n_a: 12, n_b: 14 }],
+      n_total: 57, confidence: 'medium',
+      state: 'confirmed', origin: 'interactive', decided_at: '2026-08-10T10:00:00Z', decided_by: 'ron' },
   ];
 
   // §10.5.3: `{project_id, dimension, arms, direction, evidence_key}` —

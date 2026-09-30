@@ -197,6 +197,202 @@
     });
   }
 
+  // ── Playbook (R2-16, docs/THE_DESK_V1_IA_REVISION_2.md §10.4 "Project page"
+  // row): confirmed findings grouped by dimension, a Stale sub-list
+  // (Re-confirm / Retire), rejected findings collapsed with `Undo reject`.
+  // No Home line — a retro with findings to confirm is already a Needs-you
+  // row (§10.4), so this page is the only place the confirmed set shows.
+  //
+  // Fixtures only, same as desk-v1-retro.js (see its banner): every state
+  // change mutates `DeskV1Fixtures.playbook` through DeskV1Kit.commandBus,
+  // mirroring what `/api/desk/findings/<id>/{reconfirm,retire,undo-reject}`
+  // (R1-L) do — the fixture ids (F1..) were never posted to that store, so
+  // calling the routes here would 404. Only Ron's click moves a finding
+  // between states (§10.2); nothing here runs unattended.
+  //
+  // Every row carries `data-finding-id` and an evidence disclosure so a
+  // `Based on F3 ›` chip (R2-17) has a stable target to open.
+  let _rejectedOpen = false;
+  const _evidenceOpen = new Set();
+
+  function _playbook() { const fx = _fx(); fx.playbook = fx.playbook || { findings: [], rejections: [] }; return fx.playbook; }
+  function _findingsIn(projectId, state) {
+    return (_playbook().findings || []).filter((f) => f.project_id === projectId && f.state === state);
+  }
+  function _campaignTitle(id) {
+    const c = _campaigns().find((x) => x.id === id);
+    return c ? (c.plan.title || 'Campaign') : id;
+  }
+  function _sentence(f) {
+    return typeof window.deskV1FindingSentence === 'function'
+      ? window.deskV1FindingSentence(f)
+      : esc(f.edited_text || `${f.dimension}: ${f.arms && f.arms.a} vs ${f.arms && f.arms.b}`);
+  }
+  function _dimLabel(dim) {
+    const d = DeskV1Kit && DeskV1Kit.RETRO_DIMENSIONS && DeskV1Kit.RETRO_DIMENSIONS[dim];
+    return d ? d.label : dim;
+  }
+  function _campaignIds(f) {
+    return Array.from(new Set((f.evidence || []).map((e) => e.campaign_id)));
+  }
+
+  function _evidenceHTML(f) {
+    if (!_evidenceOpen.has(f.id)) return '';
+    const rows = (f.evidence || []).map((e) =>
+      `<div class="desk-v1-playbook-evidence-row">${esc(_campaignTitle(e.campaign_id))} · term ${esc(e.term)} · ${esc(e.n_a)} vs ${esc(e.n_b)} posts</div>`).join('');
+    return `<div class="desk-v1-playbook-evidence" data-finding-evidence>${rows || '<div class="desk-v1-playbook-evidence-row">No evidence recorded.</div>'}</div>`;
+  }
+
+  function _findingRowHTML(f, actionsHTML) {
+    const links = _campaignIds(f).map((cid) =>
+      `<button type="button" class="desk-v1-playbook-camplink" data-playbook-campaign="${esc(cid)}">${esc(_campaignTitle(cid))} ›</button>`).join('');
+    const open = _evidenceOpen.has(f.id);
+    return `
+      <div class="desk-v1-playbook-finding" data-finding-id="${esc(f.id)}" data-finding-state="${esc(f.state)}">
+        <div class="desk-v1-playbook-sentence"><span class="desk-v1-playbook-fid">${esc(f.id)}</span> ${_sentence(f)}</div>
+        <div class="desk-v1-playbook-meta">
+          <span class="desk-v1-playbook-chip" data-playbook-confidence>${esc(f.confidence)}</span>
+          <span class="desk-v1-playbook-chip" data-playbook-n>n=${esc(f.n_total)}</span>
+          ${links}
+          <button type="button" class="desk-v1-playbook-camplink" data-playbook-evidence-toggle aria-expanded="${open}">${open ? 'Hide' : 'Show'} evidence</button>
+        </div>
+        ${_evidenceHTML(f)}
+        ${actionsHTML || ''}
+      </div>`;
+  }
+
+  function _renderPlaybook(projectId) {
+    const host = document.getElementById('desk-v1-project-playbook');
+    if (!host) return;
+    const confirmed = _findingsIn(projectId, 'confirmed');
+    const stale = _findingsIn(projectId, 'stale');
+    const rejected = _findingsIn(projectId, 'rejected');
+
+    const dims = [];
+    confirmed.forEach((f) => { if (!dims.includes(f.dimension)) dims.push(f.dimension); });
+    const known = Object.keys((DeskV1Kit && DeskV1Kit.RETRO_DIMENSIONS) || {});
+    dims.sort((a, b) => (known.indexOf(a) + 1 || 99) - (known.indexOf(b) + 1 || 99));
+
+    const confirmedHTML = confirmed.length
+      ? dims.map((dim) => `
+          <div class="desk-v1-playbook-group" data-playbook-dimension="${esc(dim)}">
+            <div class="desk-v1-playbook-group-head">${esc(_dimLabel(dim))}</div>
+            ${confirmed.filter((f) => f.dimension === dim).map((f) => _findingRowHTML(f)).join('')}
+          </div>`).join('')
+      : '<div class="desk-v1-home-needsyou-empty">No confirmed findings yet — they land here once you confirm what a retro proposes.</div>';
+
+    const staleHTML = stale.length
+      ? `<div class="desk-v1-playbook-group" data-playbook-stale>
+          <div class="desk-v1-playbook-group-head">Stale · not reaching the agent until you decide</div>
+          ${stale.map((f) => _findingRowHTML(f, `
+            <div class="desk-v1-playbook-actions">
+              ${f.stale_reason ? `<span class="desk-v1-playbook-why">${esc(f.stale_reason)}</span>` : ''}
+              <button type="button" class="desk-v1-retro-btn desk-v1-retro-btn--primary" data-finding-reconfirm>Re-confirm</button>
+              <button type="button" class="desk-v1-retro-btn desk-v1-retro-btn--danger" data-finding-retire>Retire</button>
+            </div>`)).join('')}
+        </div>`
+      : '';
+
+    const rejectedHTML = rejected.length
+      ? `<div class="desk-v1-playbook-group" data-playbook-rejected>
+          <button type="button" class="desk-v1-project-archived-toggle" data-rejected-toggle aria-expanded="${_rejectedOpen}">
+            ${_rejectedOpen ? '▾' : '▸'} Rejected (${rejected.length})
+          </button>
+          ${_rejectedOpen ? rejected.map((f) => _findingRowHTML(f, `
+            <div class="desk-v1-playbook-actions">
+              <button type="button" class="desk-v1-retro-btn" data-finding-undo-reject>Undo reject</button>
+            </div>`)).join('') : ''}
+        </div>`
+      : '';
+
+    host.innerHTML = `<div class="desk-v1-project-camps-head"><span>Playbook</span></div>${confirmedHTML}${staleHTML}${rejectedHTML}`;
+
+    host.querySelectorAll('[data-playbook-campaign]').forEach((btn) => {
+      // First stop = the map's first entry (Brief), not the What default a
+      // plain campaign nav lands on for a non-draft campaign.
+      btn.onclick = () => deskV1Nav('campaign', {
+        campaignId: btn.dataset.playbookCampaign, projectId,
+        panel: (DeskV1Kit.MAP_STOPS && DeskV1Kit.MAP_STOPS[0]) || 'how',
+      });
+    });
+    host.querySelectorAll('[data-playbook-evidence-toggle]').forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.closest('[data-finding-id]').dataset.findingId;
+        if (_evidenceOpen.has(id)) _evidenceOpen.delete(id); else _evidenceOpen.add(id);
+        _renderPlaybook(projectId);
+      };
+    });
+    const rt = host.querySelector('[data-rejected-toggle]');
+    if (rt) rt.onclick = () => { _rejectedOpen = !_rejectedOpen; _renderPlaybook(projectId); };
+    const byId = (btn) => (_playbook().findings || []).find((x) => x.id === btn.closest('[data-finding-id]').dataset.findingId);
+    host.querySelectorAll('[data-finding-reconfirm]').forEach((btn) => { btn.onclick = () => { const f = byId(btn); if (f) _reconfirm(f, projectId); }; });
+    host.querySelectorAll('[data-finding-retire]').forEach((btn) => { btn.onclick = () => { const f = byId(btn); if (f) _retire(f, projectId); }; });
+    host.querySelectorAll('[data-finding-undo-reject]').forEach((btn) => { btn.onclick = () => { const f = byId(btn); if (f) _undoReject(f, projectId); }; });
+  }
+
+  // stale -> confirmed (R1-L `reconfirm_finding`): origin back to
+  // 'interactive', stale markers cleared, decided by Ron.
+  function _reconfirm(f, projectId) {
+    const prev = { state: f.state, origin: f.origin, decided_at: f.decided_at, decided_by: f.decided_by, stale_at: f.stale_at, stale_reason: f.stale_reason };
+    DeskV1Kit.commandBus.run({
+      label: `Re-confirmed finding ${f.id}`,
+      do: () => {
+        f.state = 'confirmed'; f.origin = 'interactive';
+        f.decided_at = new Date().toISOString(); f.decided_by = 'ron';
+        f.stale_at = null; f.stale_reason = null;
+        _renderPlaybook(projectId);
+      },
+      undo: () => { Object.assign(f, prev); _renderPlaybook(projectId); },
+    });
+  }
+
+  // stale -> retired (R1-L `retire_finding`): a closed chapter, records no
+  // rejection and blocks nothing; a retired finding shows nowhere on this page.
+  function _retire(f, projectId) {
+    const prev = { state: f.state, decided_at: f.decided_at, decided_by: f.decided_by };
+    DeskV1Kit.commandBus.run({
+      label: `Retired finding ${f.id}`,
+      do: () => {
+        f.state = 'retired'; f.decided_at = new Date().toISOString(); f.decided_by = 'ron';
+        _renderPlaybook(projectId);
+      },
+      undo: () => { Object.assign(f, prev); _renderPlaybook(projectId); },
+    });
+  }
+
+  function _sameRejection(f, r) {
+    return r.project_id === f.project_id && r.dimension === f.dimension &&
+      JSON.stringify(r.arms) === JSON.stringify(f.arms);
+  }
+
+  // rejected -> proposed (R1-L `undo_reject`): drops the finding's rejection
+  // records (the only thing that lifts a `Don't suggest again`). Also lists
+  // the id on the retro it came from, so the proposed finding has a
+  // Confirm / Reject card to go to instead of being orphaned.
+  function _undoReject(f, projectId) {
+    const prev = { state: f.state, decided_at: f.decided_at, decided_by: f.decided_by };
+    const pb = _playbook();
+    const prevRejections = (pb.rejections || []).slice();
+    const evCamp = (f.evidence && f.evidence[0]) || null;
+    const retro = evCamp ? (_fx().retros || {})[`${evCamp.campaign_id}:${evCamp.term}`] : null;
+    const listed = !!(retro && (retro.findings || []).includes(f.id));
+    DeskV1Kit.commandBus.run({
+      label: `Undid reject on finding ${f.id}`,
+      do: () => {
+        f.state = 'proposed'; f.decided_at = null; f.decided_by = null;
+        pb.rejections = (pb.rejections || []).filter((r) => !_sameRejection(f, r));
+        if (retro && !listed) { retro.findings = retro.findings || []; retro.findings.push(f.id); }
+        _renderPlaybook(projectId);
+      },
+      undo: () => {
+        Object.assign(f, prev);
+        pb.rejections = prevRejections;
+        if (retro && !listed) retro.findings = (retro.findings || []).filter((id) => id !== f.id);
+        _renderPlaybook(projectId);
+      },
+    });
+  }
+
   function _renderCampaigns(projectId) {
     const host = document.getElementById('desk-v1-project-camps');
     if (!host) return;
@@ -340,6 +536,7 @@
         </div>
         <div class="desk-v1-project-camps" id="desk-v1-project-camps"></div>
         <div class="desk-v1-project-archived-wrap" id="desk-v1-project-archived"></div>
+        <div class="desk-v1-project-playbook" id="desk-v1-project-playbook"></div>
         <div class="desk-v1-project-needsyou" id="desk-v1-project-needsyou"></div>
         <div class="desk-v1-project-engagement" id="desk-v1-project-engagement"></div>
         <div class="desk-v1-project-posy" id="desk-v1-project-posy"></div>
@@ -347,6 +544,7 @@
     _renderNextPost(projectId);
     _renderCampaigns(projectId);
     _renderArchived(projectId);
+    _renderPlaybook(projectId);
     _renderNeedsYou(projectId);
     _renderEngagementStrip(projectId);
     _renderPosyBox(projectId, p);
