@@ -184,12 +184,16 @@
     const detail = _proposedExtras(camp.id) || {};
     const fams = _familiesFor(camp.id);
     const agentName = _agentName(camp);
+    // R2-11: one question, two places it can be answered (here and on
+    // Launch); the answer is a record on the campaign, so neither shows it
+    // again once it is answered in the other.
+    const blocker = detail.blocker && !(camp.answers || []).some((a) => a.id === detail.blocker.id) ? detail.blocker : null;
     el.innerHTML = `
       <div class="desk-v1-rules-proposed">
-        ${detail.blocker ? _blockerCardHTML(detail.blocker, agentName) : ''}
+        ${blocker ? _blockerCardHTML(blocker, agentName) : ''}
         <div class="desk-v1-camp-cards">${fams.map((f) => _proposedCardHTML(f, detail)).join('') || `<div class="desk-v1-camp-empty">${esc(agentName)} hasn’t proposed any pieces yet.</div>`}</div>
       </div>`;
-    if (detail.blocker) _wireBlocker(el, camp, detail.blocker);
+    if (blocker) _wireBlocker(el, camp, blocker);
   }
 
   function _blockerCardHTML(blocker, agentName) {
@@ -208,11 +212,9 @@
     card.querySelectorAll('[data-answer-id]').forEach((btn) => {
       btn.onclick = () => {
         const ans = blocker.answers.find((a) => a.id === btn.dataset.answerId);
-        DeskV1Kit.commandBus.run({
-          label: `Answered ${_agentName(camp)}’s question: “${ans ? ans.label : ''}”`,
-          do: () => { card.remove(); },
-          undo: () => { deskV1FillProposedContent(el, { campaignId: camp.id }, camp); },
-        });
+        // R2-11: the answer is recorded on the campaign (`camp.answers`), the
+        // same record the Launch page's `Needs your answer` card writes.
+        window.deskV1CampaignAnswerQuestion(camp, blocker, ans, () => deskV1FillProposedContent(el, { campaignId: camp.id }, camp));
       };
     });
   }
@@ -271,7 +273,12 @@
     const datesLabel = plan.end && (plan.end.date
       ? `Ends ${_fmtDateLong(plan.end.date)}`
       : (plan.end.post_cap ? `Ends after ${plan.end.post_cap} posts` : null));
-    const validity = DeskV1Kit.validatePlan(plan, project);
+    // R2-11: the Launch page's own gate (goal target + source, term <= 90 d,
+    // plus the plan bounds) when campaign.js is loaded; the kit's plan-only
+    // gate otherwise.
+    const validity = typeof window.deskV1LaunchMissing === 'function'
+      ? window.deskV1LaunchMissing(camp, project)
+      : DeskV1Kit.validatePlan(plan, project);
     const eff = validity.effective;
     // IA4 (§5 row IA4 acceptance: "inherited rows labelled 'from <project>'")
     // — a presentation-only flag desk-v1-setup.js's step 2 stamps on the plan
@@ -378,10 +385,32 @@
   function _startCampaign(camp, auth) {
     const prevState = camp.state;
     const policyRecord = Object.assign({}, auth, { createdAt: new Date().toISOString() });
+    const prev = { term: camp.term, terms: camp.terms, approval: camp.approval, approvals: camp.approvals, startedAt: camp.startedAt };
     DeskV1Kit.commandBus.run({
       label: `Started “${camp.plan.title}”`,
-      do: () => { camp.state = 'active'; camp.policyRecord = policyRecord; if (typeof window.deskV1Render === 'function') window.deskV1Render(); },
-      undo: () => { camp.state = prevState; delete camp.policyRecord; if (typeof window.deskV1Render === 'function') window.deskV1Render(); },
+      do: () => {
+        camp.state = 'active'; camp.policyRecord = policyRecord;
+        // R2-11 (Launch, Live state): Start opens term 1 (today to the plan's
+        // end date, unless a term was already set on When) and records the
+        // approval — the bounds as they stand, hashed — that Renew / the
+        // widening check compare against from here on.
+        const now = new Date();
+        const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        const end = camp.plan && camp.plan.end;
+        camp.startedAt = now.toISOString();
+        if (!camp.term) camp.term = { index: 1, starts: today, ends: end && end.date ? end.date : null, post_cap: end && end.post_cap != null ? end.post_cap : null };
+        if (typeof window.deskV1CampaignBounds === 'function') {
+          const bounds = window.deskV1CampaignBounds(camp);
+          camp.approval = { bounds, bounds_hash: DeskV1Kit.computeBoundsHash(bounds), at: camp.startedAt, term: camp.term.index || 1 };
+          camp.approvals = [camp.approval];
+        }
+        if (typeof window.deskV1Render === 'function') window.deskV1Render();
+      },
+      undo: () => {
+        camp.state = prevState; delete camp.policyRecord;
+        Object.keys(prev).forEach((k) => { if (prev[k] === undefined) delete camp[k]; else camp[k] = prev[k]; });
+        if (typeof window.deskV1Render === 'function') window.deskV1Render();
+      },
     });
   }
 

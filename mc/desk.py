@@ -1056,6 +1056,50 @@ def signal_is_ruled_on(signal_id: str) -> bool:
 CAMPAIGN_STATES = ('proposed', 'running', 'paused', 'done', 'dropped')
 
 
+MAX_TERM_DAYS = 90
+
+
+def _parse_term_date(value) -> datetime:
+    """A `term.starts`/`term.ends` value as a datetime. Accepts 'YYYY-MM-DD'
+    and full ISO timestamps (a trailing 'Z' included)."""
+    text = str(value).strip()
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    dt = datetime.fromisoformat(text)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _start_gate_problems(camp: dict) -> list[str]:
+    """Server-side mirror of the client's Start gate (`DeskV1Kit.validatePlan`'s
+    `_goalMissing` + `_termMissing`, IA revision 2 §9 Q1/Q2, both binding).
+
+    Until R2-11 these were enforced only in the browser, so a PATCH straight to
+    `state: running` skipped them. Gated on the new field shapes exactly as the
+    client is, so a legacy campaign with no `goal.metric` / `term` (the old
+    Board's "Start it") keeps activating as before:
+      - a goal that has been set needs a target AND a measurement source;
+      - a term runs at most 90 days (a long horizon renews, it does not stay
+        open-ended under one approval).
+    """
+    problems = []
+    goal = camp.get('goal')
+    if isinstance(goal, dict) and 'metric' in goal:
+        if goal.get('target') is None:
+            problems.append('goal has no target')
+        if not goal.get('source'):
+            problems.append('goal has no measurement source')
+    term = camp.get('term')
+    if isinstance(term, dict) and term.get('starts') and term.get('ends'):
+        try:
+            days = (_parse_term_date(term['ends']) - _parse_term_date(term['starts'])).total_seconds() / 86400
+        except (ValueError, TypeError):
+            problems.append('term dates are not valid ISO dates')
+        else:
+            if days > MAX_TERM_DAYS:
+                problems.append(f'term is {round(days)} days (max {MAX_TERM_DAYS})')
+    return problems
+
+
 def list_campaigns(state: str | None = None) -> list[dict]:
     with _store_lock:
         rows = list(_read_store()['campaigns'].values())
@@ -1262,9 +1306,16 @@ def update_campaign(campaign_id: str, patch: dict) -> dict | None:
             return None
         prev_bounds = (camp.get('approval') or {}).get('bounds') or _campaign_bounds(camp)
         prev_hash = (camp.get('approval') or {}).get('bounds_hash') or compute_bounds_hash(prev_bounds)
+        prev_state = camp.get('state')
         for k, v in (patch or {}).items():
             if k in allowed:
                 camp[k] = v
+        # R2-11: activating (Start, or Resume from paused) is gated on the
+        # post-patch campaign, so one PATCH can fix the goal and start it.
+        if camp.get('state') == 'running' and prev_state != 'running':
+            problems = _start_gate_problems(camp)
+            if problems:
+                raise ValueError('cannot start: ' + '; '.join(problems))
         # §5.2: re-checked on every update that touches how.budget, not just
         # at creation — a PATCH is how a later Launch/edit raises the
         # earmark, and the project pool it's checked against may itself have

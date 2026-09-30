@@ -214,7 +214,10 @@
     return `${versions.length} ${plural}: ${first}${ch ? ` on ${ch.label}` : ''}. Missed slots are skipped, never posted late.`;
   }
 
-  function _openResumeSheet(camp, summaryEl, params) {
+  // `after` (R2-11): the Launch page's own Resume also has to repaint the
+  // panel it sits on, not just the summary bar.
+  function _openResumeSheet(camp, summaryEl, params, after) {
+    const repaint = () => { if (summaryEl) deskV1FillCampaignSummary(summaryEl, params); if (after) after(); };
     DeskV1Kit.openConfirmSheet({
       title: `Resume “${camp.plan.title}”?`,
       body: _upcomingResumeText(camp),
@@ -236,8 +239,8 @@
         const prev = camp.state;
         DeskV1Kit.commandBus.run({
           label: `Resumed “${camp.plan.title}”`,
-          do: () => { camp.state = 'active'; deskV1FillCampaignSummary(summaryEl, params); },
-          undo: () => { camp.state = prev; deskV1FillCampaignSummary(summaryEl, params); },
+          do: () => { camp.state = 'active'; repaint(); },
+          undo: () => { camp.state = prev; repaint(); },
         });
       },
     });
@@ -460,8 +463,11 @@
   // `map.stop` — must still highlight the stop it actually landed on).
   function _stopState(stop, currentPanel, map, missingStops) {
     if (currentPanel === stop) return 'here';
-    if ((map.done || []).includes(stop)) return 'done';
+    // R2-11: a stop with an unmet Launch bound reads ⚠ even after Next marked
+    // it done — "✓" would tell the user the very thing Start is refusing over
+    // is fine.
     if (missingStops.has(stop)) return 'needs_you';
+    if ((map.done || []).includes(stop)) return 'done';
     return 'not_started';
   }
 
@@ -570,10 +576,41 @@
   // all, and a plan that doesn't fit the picked project — cadence over its
   // per-account ceiling, or an account it hasn't connected. Only for a
   // not-yet-started campaign; a running one keeps validatePlan's clamp.
+  //
+  // R2-11 adds the two bounds the kit's own gate never saw on a real
+  // campaign: the kit reads `plan.term`, but a term lives on `camp.term`, so
+  // it is overlaid here (and its fix is the When stop's Term field, not
+  // Launch itself); and the goal's target + measurement source (§9 Q1) are
+  // read off `camp.goal`, falling back to the legacy `plan.goal` the R0
+  // fixtures still carry (`outcome`/`target`/`tracked`). A goal nobody has
+  // started (a fresh draft) is not gated, same as the kit and the server
+  // mirror (`mc/desk.py::_start_gate_problems`).
+  function _goalReading(camp) {
+    const g = camp.goal || {};
+    const pg = (camp.plan && camp.plan.goal) || {};
+    const metric = g.metric || pg.outcome || '';
+    const target = g.target != null ? g.target : (pg.target != null ? pg.target : null);
+    const source = g.source || (pg.tracked ? 'manual' : '');
+    return { metric, target, source, started: !!(metric || target != null) };
+  }
+  function _goalPhrase(r) {
+    return [r.target != null ? r.target : '', r.metric].filter((x) => x !== '').join(' ');
+  }
   function _launchMissing(camp, project) {
-    const planResult = DeskV1Kit.validatePlan(camp.plan, project) || { ok: true, missing: [] };
+    // A campaign that has not started has no term yet: Start will open one
+    // from today to `plan.end.date`, so that is the span the 90-day cap judges.
+    const prospective = camp.term || (camp.plan && camp.plan.end && camp.plan.end.date ? { starts: _isoToday(), ends: camp.plan.end.date } : undefined);
+    const plan = Object.assign({}, camp.plan, { term: prospective });
+    const planResult = DeskV1Kit.validatePlan(plan, project) || { ok: true, missing: [] };
+    planResult.missing.forEach((m) => { if (m.bound === 'term') m.stop = 'when'; });
     if (!_projectEditable(camp)) return planResult;
     const extra = [];
+    const goal = _goalReading(camp);
+    if (goal.started && goal.target == null) {
+      extra.push({ bound: 'goal', stop: 'goal', label: 'target for the goal', detail: 'no target', inline: `${goal.metric || 'goal'}, no target` });
+    } else if (goal.started && !goal.source) {
+      extra.push({ bound: 'goal', stop: 'goal', label: 'measurement source for the goal', detail: 'not tracked', inline: `${_goalPhrase(goal)}, not tracked`, action: 'Set a source' });
+    }
     if (!project) {
       extra.push({ bound: 'project', stop: 'launch', label: 'Project', detail: 'pick one' });
     } else {
@@ -597,14 +634,175 @@
   // ⑥ Launch (§4.1 row): validatePlan gates Start, each missing bound links
   // to the stop that fixes it (`missing[].stop`, kit.js R2-1). Reuses
   // desk-v1-rules.js's existing Start sheet (`deskV1OpenStartSheet`) rather
-  // than a second Start flow. This ticket wires the frame + the gate only —
-  // the Active-state half of the row (approval record, Pause/Resume, Renew
-  // term) is R2-11's job; a running campaign sees the same missing/Start
-  // body here until then, EXCEPT for the one bound R2-6 does wire on an
-  // Active campaign: `camp.approval.bounds` vs the live plan, so a How-stop
-  // budget widen is visible somewhere before R2-11 builds the rest of this
-  // row. A campaign with no `approval` recorded yet (draft, or a fixture
-  // that predates this ticket) skips the check exactly as before.
+  // than a second Start flow.
+  //
+  // R2-11 (frame 8): the page IS the review. A Bounds table with exactly the
+  // eight rows the approval covers; a missing item shows inline on its own
+  // row AND in the sentence under the disabled Start; a waiting agent
+  // question is a `Needs your answer` card in the panel's right column. Once
+  // the campaign has started the same table stays (same bounds shown) under
+  // a Live block: Live since, the term, the approval on file, Pause/Resume
+  // and — for a long-horizon goal — `Renew term`.
+  //
+  // The Awaiting-approval branch is R2-6's: `camp.approval.bounds` vs the live
+  // plan, so a How-stop budget widen on a running campaign is visible here. A
+  // campaign with no `approval` recorded yet (draft, or a fixture that
+  // predates it) skips the check exactly as before.
+  const _BOUND_ROW = { accounts: 'accounts', cadence: 'cadence', end: 'term', term: 'term', goal: 'goal', how_budget: 'budget' };
+  const _DERIVED_COST_PER_POST = 0.2; // §5.2: post cap × $0.20 (the link-post rate, the dearest case)
+  const _MS_DAY = 86400000;
+
+  function _fmtDateLong(iso) {
+    try { return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(_localDateFromISO(iso)); }
+    catch (e) { return iso; }
+  }
+  function _money(n) { return `$${(Math.round(n * 100) / 100).toFixed(2).replace(/\.00$/, '')}`; }
+
+  function _launchRows(camp, project) {
+    const plan = camp.plan || {};
+    const presence = (project && project.presence) || {};
+    const accounts = plan.accounts || [];
+    const accountsText = accounts.length
+      ? accounts.map((id) => {
+        const ch = _channel(id);
+        const acct = (presence.accounts || []).find((a) => a.channel_id === id);
+        const label = ch ? ch.label : id;
+        return acct && acct.voice ? `${label} (${acct.voice})` : label;
+      }).join(' · ')
+      : '—';
+    const eff = (DeskV1Kit.validatePlan(plan, project) || {}).effective || {};
+    const gaps = accounts.map((id) => ((presence.ceilings || {})[id] || {}).min_gap_h).filter((g) => g != null);
+    const cadenceText = `${eff.cadence_per_week != null ? eff.cadence_per_week : '—'} / wk${gaps.length ? ` · ${Math.max.apply(null, gaps)}h` : ''}`;
+    const ends = (camp.term && camp.term.ends) || (plan.end && plan.end.date) || null;
+    const cap = plan.end && plan.end.post_cap;
+    const termText = ends
+      ? `${camp.term && camp.term.index > 1 ? `term ${camp.term.index} · ` : ''}ends ${_fmtDateLong(ends)} (${cap ? `${cap} post cap` : 'no post cap'})`
+      : (cap ? `${cap} post cap (no end date)` : '—');
+    // Derived ceiling: the post cap, else cadence × the weeks the term covers.
+    const perWeek = eff.cadence_per_week;
+    const startMs = camp.term && camp.term.starts ? _localDateFromISO(camp.term.starts).getTime() : Date.now();
+    const weeks = ends ? Math.max(0, (_localDateFromISO(ends).getTime() - startMs) / (7 * _MS_DAY)) : 0;
+    const posts = cap || (perWeek != null && ends ? Math.ceil(perWeek * weeks) : null);
+    const derived = posts != null ? posts * _DERIVED_COST_PER_POST : null;
+    const spendText = derived != null ? `derived · up to ${_money(derived)} (${posts} posts × ${_money(_DERIVED_COST_PER_POST)} link rate)` : 'derived · needs a cadence and an end date';
+    const budget = (plan.how && plan.how.budget) || (camp.how && camp.how.budget) || { source: 'none' };
+    let budgetText = 'none set · spend ceiling is the derived one';
+    if (budget.source === 'project') budgetText = `${_money(budget.amount || 0)} earmarked from ${project ? project.name : 'the project'}`;
+    else if (budget.source === 'own') budgetText = `${_money(budget.amount || 0)} own budget`;
+    if (budget.source !== 'none' && derived != null && (budget.amount || 0) < derived) budgetText += ` · below the derived ${_money(derived)}, publishing would stop early`;
+    const goal = _goalReading(camp);
+    const goalText = goal.started
+      ? `${_goalPhrase(goal)} · ${goal.source ? (goal.source === 'manual' ? 'manual entry' : goal.source) : 'not tracked'}`
+      : 'no goal set';
+    const stopText = ends ? `Ends ${_fmtDateLong(ends)} · Pause stops it at any time` : (cap ? `Ends after ${cap} posts · Pause stops it at any time` : 'Pause stops it at any time');
+    return [
+      ['accounts', 'Accounts + voices', accountsText],
+      ['cadence', 'Cadence / min gap', cadenceText],
+      ['term', 'Term', termText],
+      ['scope', 'Source scope', plan.audience || (camp.subject && camp.subject.label) || '—'],
+      ['spend', 'Spend ceiling', spendText],
+      ['budget', 'Budget', budgetText],
+      ['goal', 'Goal / measurement', goalText],
+      ['stop', 'Stop conditions', stopText],
+    ];
+  }
+
+  function _launchNeedsSentence(missing) {
+    const names = missing.map((m) => (m.bound === 'project' ? 'a project' : m.label));
+    return `Set ${missing.length} thing${missing.length === 1 ? '' : 's'} first: ${names.join(', ')}.`;
+  }
+
+  // The agent's one waiting question (fixtures: `proposedExtras[camp].blocker`).
+  // "Answered" is a record on the campaign (`camp.answers`), not DOM state, so
+  // it survives a repaint and the What stop's own blocker card reads it too.
+  function _pendingQuestion(camp) {
+    const blocker = ((_fx().proposedExtras || {})[camp.id] || {}).blocker;
+    if (!blocker) return null;
+    return (camp.answers || []).some((a) => a.id === blocker.id) ? null : blocker;
+  }
+  function _answerQuestion(camp, blocker, answer, repaint) {
+    DeskV1Kit.commandBus.run({
+      label: `Answered ${DeskV1Kit.deskAgentName({ project: _project(camp.projectId), campaign: camp })}’s question: “${answer.label}”`,
+      do: () => { (camp.answers = camp.answers || []).push({ id: blocker.id, question: blocker.question, answer_id: answer.id, answer: answer.label, at: new Date().toISOString() }); repaint(); },
+      undo: () => { camp.answers = (camp.answers || []).filter((a) => a.id !== blocker.id); repaint(); },
+    });
+  }
+  // The Start sheet (desk-v1-rules.js) judges with the SAME gate as this page,
+  // so the Proposed summary's own Start button cannot walk past it.
+  window.deskV1LaunchMissing = _launchMissing;
+  window.deskV1CampaignPendingQuestion = _pendingQuestion;
+  window.deskV1CampaignAnswerQuestion = _answerQuestion;
+
+  function _approvalLine(camp) {
+    const a = camp.approval;
+    if (!a || !a.bounds) return '';
+    const hash = a.bounds_hash || DeskV1Kit.computeBoundsHash(a.bounds);
+    const term = (camp.term && camp.term.index) || 1;
+    return `Approval on file: term ${term}${a.at ? `, approved ${_fmtDateLong(String(a.at).slice(0, 10))}` : ''} · bounds ${hash}`;
+  }
+
+  // Renew (§9 Q2: a long-horizon goal renews; it never holds one open-ended
+  // approval). The next term starts where this one ended and runs to the goal
+  // deadline or 90 days, whichever is sooner; the bounds shown are unchanged
+  // but the approval is a NEW record (`camp.approvals[]`, `camp.approval`).
+  function _termEnded(camp) {
+    return !!(camp.term && camp.term.ends && _localDateFromISO(camp.term.ends).getTime() <= Date.now());
+  }
+  function _renewTerm(camp, repaint) {
+    const prevTerm = camp.term;
+    const prevTerms = camp.terms;
+    const prevApproval = camp.approval;
+    const prevApprovals = camp.approvals;
+    const deadline = camp.goal && camp.goal.deadline;
+    const startsMs = _localDateFromISO(prevTerm.ends).getTime();
+    const capMs = startsMs + DeskV1Kit.MAX_TERM_DAYS * _MS_DAY;
+    const endMs = deadline ? Math.min(capMs, _localDateFromISO(deadline).getTime()) : capMs;
+    if (!(endMs > startsMs)) { DeskV1Kit.toast('The goal deadline has passed, so there is no next term to renew.'); return; }
+    const iso = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+    const next = { index: (prevTerm.index || 1) + 1, starts: iso(startsMs), ends: iso(endMs), post_cap: prevTerm.post_cap != null ? prevTerm.post_cap : null };
+    DeskV1Kit.commandBus.run({
+      label: `Renewed “${camp.plan.title}”: term ${next.index}`,
+      do: () => {
+        camp.terms = (prevTerms && prevTerms.length ? prevTerms : [prevTerm]).concat([next]);
+        camp.term = next;
+        const bounds = _currentBounds(camp);
+        // Same bounds, new approval: the record is what a new term needs, the
+        // bounds it holds are exactly what the campaign already runs on.
+        camp.approval = { bounds, bounds_hash: DeskV1Kit.computeBoundsHash(bounds), at: new Date().toISOString(), term: next.index };
+        camp.approvals = (prevApprovals || (prevApproval ? [prevApproval] : [])).concat([camp.approval]);
+        repaint();
+      },
+      undo: () => { camp.term = prevTerm; camp.terms = prevTerms; camp.approval = prevApproval; camp.approvals = prevApprovals; repaint(); },
+    });
+  }
+
+  // §5.2: "A project budget cut below live earmarks clamps those campaigns
+  // (narrowing rule) and logs it". Called by Presence after it applies a
+  // budget change. A clamp only ever lowers an earmark, so a running
+  // campaign keeps its approval; the entry lands in `camp.log`, shown on the
+  // Launch page. Campaigns are served in list order: earlier ones keep their
+  // earmark, later ones absorb the cut.
+  function _clampEarmarks(project) {
+    const pool = project && project.presence && project.presence.budget && project.presence.budget.amount;
+    if (pool == null) return [];
+    const clamped = [];
+    let used = 0;
+    _campaigns().filter((c) => c.projectId === project.id && !['archived', 'completed'].includes(c.state)).forEach((c) => {
+      const b = c.how && c.how.budget;
+      if (!b || b.source !== 'project') return;
+      const allowed = Math.max(0, pool - used);
+      if ((b.amount || 0) > allowed) {
+        const was = b.amount || 0;
+        b.amount = allowed;
+        (c.log = c.log || []).push({ at: new Date().toISOString(), text: `Earmark clamped from ${_money(was)} to ${_money(allowed)}: ${project.name}'s budget was cut to ${_money(pool)}.` });
+        clamped.push(c);
+      }
+      used += b.amount || 0;
+    });
+    return clamped;
+  }
+  window.deskV1ClampEarmarks = _clampEarmarks;
+
   function _renderLaunchPanel(el, params, camp) {
     if (!camp) { el.innerHTML = '<div class="desk-v1-stub-inline">Campaign not found.</div>'; return; }
     if (camp.state !== 'draft' && camp.approval && camp.approval.bounds
@@ -618,31 +816,113 @@
     }
     const project = _project(camp.projectId);
     const result = _launchMissing(camp, project);
-    // R2-2g: the project is chosen HERE, not up front. Missing "project" is a
-    // plain row (the select right above it is the fix); the rest link to the
-    // stop that fixes them. The select is editable while the campaign hasn't
-    // started (draft / proposed), a read-only line after.
+    // R2-2g: the project is chosen HERE, not up front. Missing "project" has
+    // no row in the table (the select right above it is the fix); every other
+    // missing bound shows inline on its own row. The select is editable while
+    // the campaign hasn't started (draft / proposed), a read-only line after.
     const projectEditable = _projectEditable(camp);
-    const missingHTML = result.missing.length
-      ? `<ul class="desk-v1-map-launch-missing">${result.missing.map((m) => m.bound === 'project'
-        ? `<li class="desk-v1-map-launch-missing-project" data-missing-project>${esc(m.label)} — ${esc(m.detail)}</li>`
-        : `<li><button type="button" class="desk-v1-map-launch-missing-link" data-missing-stop="${esc(m.stop)}">${esc(m.label)}${m.detail ? ` — ${esc(m.detail)}` : ''}</button></li>`).join('')}</ul>`
-      : '<div class="desk-v1-stub-inline">Everything needed to launch is filled in.</div>';
-    el.innerHTML = `
-      <div class="desk-v1-map-launch">
-        ${projectEditable ? '' : `<div class="desk-v1-rules-hint" data-launch-project-ro>Project: ${esc(project ? project.name : 'none')}</div>`}
-        <div class="desk-v1-map-launch-status">${result.ok ? '✓ Ready to launch' : `⚠ ${esc(result.missing.length)} to fix before Start`}</div>
-        ${missingHTML}
+    const missingByRow = {};
+    result.missing.forEach((m) => { if (_BOUND_ROW[m.bound]) missingByRow[_BOUND_ROW[m.bound]] = m; });
+    const rowsHTML = _launchRows(camp, project).map(([key, label, text]) => {
+      const m = missingByRow[key];
+      const valHTML = m
+        ? `<span class="desk-v1-launch-warn">⚠ ${esc(m.inline || `${m.label}${m.detail ? `, ${m.detail}` : ''}`)}</span> · <button type="button" class="desk-v1-launch-fix" data-missing-stop="${esc(m.stop)}">${esc(m.action || `Fix in ${DeskV1Kit.MAP_STOP_WORDS[m.stop]}`)} ›</button>`
+        : esc(text);
+      return `<div class="desk-v1-launch-row" data-launch-row="${esc(key)}"${m ? ' data-missing="true"' : ''}><span class="desk-v1-launch-label">${esc(label)}</span><span class="desk-v1-launch-val">${valHTML}</span></div>`;
+    }).join('');
+    const projectMissing = result.missing.find((m) => m.bound === 'project');
+    const projectHTML = projectMissing
+      ? `<ul class="desk-v1-map-launch-missing"><li class="desk-v1-map-launch-missing-project" data-missing-project>${esc(projectMissing.label)} — ${esc(projectMissing.detail)}</li></ul>`
+      : '';
+
+    const question = projectEditable ? _pendingQuestion(camp) : null;
+    const questionHTML = question
+      ? `<aside class="desk-v1-launch-side"><div class="desk-v1-launch-question" data-needs-answer data-blocker-id="${esc(question.id)}">
+          <div class="desk-v1-launch-question-head">⛔ Needs your answer</div>
+          <div class="desk-v1-launch-question-q">${esc(question.question)}</div>
+          <div class="desk-v1-launch-question-answers">${question.answers.map((a) => `<button type="button" class="desk-v1-launch-answer" data-answer-id="${esc(a.id)}">${esc(a.label)}</button>`).join('')}</div>
+        </div></aside>`
+      : '';
+
+    let footHTML;
+    if (projectEditable) {
+      footHTML = `
         <button type="button" class="desk-v1-map-launch-start" data-map-start-btn ${result.ok ? '' : 'disabled'}>Start campaign</button>
+        <div class="desk-v1-launch-need" data-launch-need${result.ok ? ' hidden' : ''}>${result.ok ? '' : esc(_launchNeedsSentence(result.missing))}</div>`;
+    } else {
+      const since = camp.startedAt ? String(camp.startedAt).slice(0, 10) : (camp.term && camp.term.starts) || null;
+      const long = camp.goal && camp.goal.horizon === 'long' && camp.term;
+      const ended = long && _termEnded(camp);
+      const live = camp.state === 'paused' ? '⏸ Paused' : (camp.state === 'active' ? '● Live' : DeskV1Kit.stateLabel(camp.state).word);
+      footHTML = `
+        <div class="desk-v1-launch-live" data-launch-live>
+          <div class="desk-v1-launch-live-head">${esc(live)}${since ? `${camp.state === 'paused' ? ' · live' : ''} since ${esc(_fmtDateLong(since))}` : ''}</div>
+          ${camp.term ? `<div class="desk-v1-rules-hint" data-launch-term>Term ${esc(camp.term.index || 1)}: ${esc(_fmtDateLong(camp.term.starts))} to ${esc(_fmtDateLong(camp.term.ends))}</div>` : ''}
+          ${_approvalLine(camp) ? `<div class="desk-v1-rules-hint" data-launch-approval>${esc(_approvalLine(camp))}</div>` : ''}
+          <div class="desk-v1-launch-live-actions">
+            ${camp.state === 'paused'
+              ? '<button type="button" class="desk-v1-camp-pause-btn" data-launch-resume>▶ Resume</button>'
+              : `<button type="button" class="desk-v1-camp-pause-btn" data-launch-pause ${camp.state !== 'active' ? 'disabled' : ''}>⏸ Pause</button>`}
+            ${long ? `<button type="button" class="desk-v1-camp-pause-btn" data-renew-term ${ended ? '' : 'disabled'}>Renew term</button>` : ''}
+          </div>
+          ${long && !ended ? `<div class="desk-v1-rules-hint">Renew opens when this term ends, ${esc(_fmtDateLong(camp.term.ends))}.</div>` : ''}
+        </div>`;
+    }
+
+    el.innerHTML = `
+      <div class="desk-v1-launch${question ? ' desk-v1-launch-has-side' : ''}">
+        <div class="desk-v1-launch-main">
+          ${projectEditable ? '' : `<div class="desk-v1-rules-hint" data-launch-project-ro>Project: ${esc(project ? project.name : 'none')}</div>`}
+          ${projectHTML}
+          <div class="desk-v1-launch-bounds" role="table" aria-label="Bounds">
+            <div class="desk-v1-launch-bounds-title">Bounds</div>
+            ${rowsHTML}
+          </div>
+          ${footHTML}
+          ${(camp.log || []).length ? `<div class="desk-v1-launch-log" data-launch-log><div class="desk-v1-launch-bounds-title">Log</div>${camp.log.map((l) => `<div class="desk-v1-rules-hint">${esc(String(l.at).slice(0, 10))} · ${esc(l.text)}</div>`).join('')}</div>` : ''}
+        </div>
+        ${questionHTML}
       </div>`;
     if (projectEditable && typeof window.deskV1MountProjectField === 'function') {
-      window.deskV1MountProjectField(el.querySelector('.desk-v1-map-launch'), camp);
+      window.deskV1MountProjectField(el.querySelector('.desk-v1-launch-main'), camp);
     }
+    const repaint = () => {
+      _renderLaunchPanel(el, params, camp);
+      const summaryEl = document.getElementById('desk-v1-camp-summary');
+      if (summaryEl) deskV1FillCampaignSummary(summaryEl, params);
+      const stripEl = document.getElementById('desk-v1-camp-tabstrip');
+      if (stripEl) deskV1FillCampaignTabStrip(stripEl, params);
+    };
     el.querySelectorAll('[data-missing-stop]').forEach((btn) => {
-      btn.onclick = () => _gotoMapStop(camp, btn.getAttribute('data-missing-stop'));
+      btn.onclick = () => {
+        const stop = btn.getAttribute('data-missing-stop');
+        _gotoMapStop(camp, stop);
+        // "Set a source ›" lands ON the field, not just on the stop.
+        if (stop === 'goal') {
+          const field = document.querySelector('[data-goal-field="source"]');
+          if (field) field.focus();
+        }
+      };
     });
     const startBtn = el.querySelector('[data-map-start-btn]');
     if (startBtn && result.ok) startBtn.onclick = () => window.deskV1OpenStartSheet(camp.id);
+    el.querySelectorAll('[data-answer-id]').forEach((btn) => {
+      btn.onclick = () => _answerQuestion(camp, question, question.answers.find((a) => a.id === btn.dataset.answerId), repaint);
+    });
+    const pauseBtn = el.querySelector('[data-launch-pause]');
+    if (pauseBtn) pauseBtn.onclick = () => {
+      if (camp.state !== 'active') return;
+      const prev = camp.state;
+      DeskV1Kit.commandBus.run({
+        label: `Paused “${camp.plan.title}”`,
+        do: () => { camp.state = 'paused'; repaint(); },
+        undo: () => { camp.state = prev; repaint(); },
+      });
+    };
+    const resumeBtn = el.querySelector('[data-launch-resume]');
+    if (resumeBtn) resumeBtn.onclick = () => _openResumeSheet(camp, document.getElementById('desk-v1-camp-summary'), params, repaint);
+    const renewBtn = el.querySelector('[data-renew-term]');
+    if (renewBtn && !renewBtn.disabled) renewBtn.onclick = () => _renewTerm(camp, repaint);
   }
 
   // ────────────────────────────────────────────────────────────────────────

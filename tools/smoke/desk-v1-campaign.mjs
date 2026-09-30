@@ -545,7 +545,7 @@ async function runPauseResume(browser) {
   await page.click('[data-resume-btn]');
   await page.waitForSelector('.desk-v1-rules-confirm-overlay', { timeout: 2000 });
   await page.click('[data-confirm-accept]');
-  await page.waitForSelector('.desk-v1-map-launch', { timeout: 2000 }).catch(() => {});
+  await page.waitForSelector('.desk-v1-launch', { timeout: 2000 }).catch(() => {});
   const onLaunch = await page.$eval('[data-stop="launch"]', (el) => el.dataset.state === 'here').catch(() => false);
   const popOpen = await page.$('.desk-v1-rules-pop-overlay');
   onLaunch && !popOpen ? ok('T2/6.2: expired-end Resume routes to ⑥ Launch (no rules popover any more)') : fail(`T2/6.2: expired-end Resume did not land on ⑥ Launch: onLaunch=${onLaunch}, popover=${!!popOpen}`);
@@ -810,7 +810,7 @@ async function runProjectSelect(browser) {
     prompt: document.querySelector('[data-setup-project]').selectedOptions[0].textContent,
     options: Array.from(document.querySelector('[data-setup-project]').options).filter((o) => o.value).map((o) => o.textContent),
     startDisabled: document.querySelector('[data-map-start-btn]').disabled,
-    missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li')).map((b) => b.textContent.trim()),
+    missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li, .desk-v1-launch-row[data-missing] .desk-v1-launch-val')).map((b) => b.textContent.trim()),
     launchState: document.querySelector('.desk-v1-map-stop[data-stop="launch"]').dataset.state,
   }));
   launch.selects === 1 && launch.crumb === 0 && launch.value === '' && /Pick a project/.test(launch.prompt) && launch.options.includes('Clayrune') && launch.options.includes('Engulfing scanner')
@@ -831,7 +831,7 @@ async function runProjectSelect(browser) {
   const conflict = await page.evaluate(() => ({
     value: document.querySelector('[data-setup-project]').value,
     startDisabled: document.querySelector('[data-map-start-btn]').disabled,
-    missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li')).map((b) => b.textContent.trim()),
+    missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li, .desk-v1-launch-row[data-missing] .desk-v1-launch-val')).map((b) => b.textContent.trim()),
     toast: (document.querySelector('.toast') || {}).textContent || '',
   }));
   (await pid()) === 'engulfing_scanner' && conflict.value === 'engulfing_scanner' && /Set campaign project to Engulfing scanner/.test(conflict.toast)
@@ -844,7 +844,7 @@ async function runProjectSelect(browser) {
   // Undo reverts the pick: back to no project, Project listed again.
   await page.locator('.toast .toast-btn.primary').last().click();
   await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
-  const undone = await page.evaluate(() => ({ value: document.querySelector('[data-setup-project]').value, startDisabled: document.querySelector('[data-map-start-btn]').disabled, missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li')).map((b) => b.textContent.trim()) }));
+  const undone = await page.evaluate(() => ({ value: document.querySelector('[data-setup-project]').value, startDisabled: document.querySelector('[data-map-start-btn]').disabled, missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li, .desk-v1-launch-row[data-missing] .desk-v1-launch-val')).map((b) => b.textContent.trim()) }));
   (await pid()) === null && undone.value === '' && undone.startDisabled && undone.missing.some((m) => /^Project/.test(m)) && !undone.missing.some((m) => /cadence/.test(m))
     ? ok('R2-2g: Undo reverts the Launch pick (camp.projectId null, select empty, conflict gone, project listed again)')
     : fail(`R2-2g: Undo did not revert: ${JSON.stringify({ pid: await pid(), undone })}`);
@@ -852,7 +852,7 @@ async function runProjectSelect(browser) {
   // Clayrune (x ceiling 3/wk): no conflict, Start enabled.
   await page.selectOption('[data-setup-project]', 'clayrune');
   await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
-  const okPick = await page.evaluate(() => ({ startDisabled: document.querySelector('[data-map-start-btn]').disabled, missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li')).map((b) => b.textContent.trim()) }));
+  const okPick = await page.evaluate(() => ({ startDisabled: document.querySelector('[data-map-start-btn]').disabled, missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li, .desk-v1-launch-row[data-missing] .desk-v1-launch-val')).map((b) => b.textContent.trim()) }));
   (await pid()) === 'clayrune' && !okPick.startDisabled && okPick.missing.length === 0
     ? ok('R2-2g: a project whose ceilings fit (Clayrune 3/wk) leaves nothing missing and enables Start')
     : fail(`R2-2g: Clayrune pick wrong: ${JSON.stringify({ pid: await pid(), okPick })}`);
@@ -863,7 +863,7 @@ async function runProjectSelect(browser) {
   await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
   const noAgent = await page.evaluate(() => ({
     startDisabled: document.querySelector('[data-map-start-btn]').disabled,
-    missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li')).map((b) => b.textContent.trim()),
+    missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li, .desk-v1-launch-row[data-missing] .desk-v1-launch-val')).map((b) => b.textContent.trim()),
     agentLabel: (document.querySelector('.desk-v1-camp-posy .desk-thread-name') || {}).textContent || '',
     picker: document.querySelectorAll('[data-agent-pick], .desk-v1-posy-agentpick').length,
   }));

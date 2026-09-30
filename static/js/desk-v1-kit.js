@@ -1173,7 +1173,7 @@
     deskAgentRef, projectAgentChoices, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL, onAgentsReady,
     anyPosyWorking, deskAgentWorkingLabel, paintPosyReadyNoDiff,
     openConfirmSheet,
-    validatePlan, validatePresence,
+    validatePlan, validatePresence, MAX_TERM_DAYS: _MAX_TERM_DAYS,
     computeBoundsHash, boundsWiden, nextBoundsHash,
     RETRO_DIMENSIONS, retroVerdict,
   };

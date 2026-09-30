@@ -55,6 +55,7 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 const JS_DIR = resolve(REPO_ROOT, 'static', 'js');
 const CSS_DIR = resolve(REPO_ROOT, 'static', 'css');
 const ASSETS_DIR = resolve(REPO_ROOT, 'assets');
+const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const ORIGIN = 'http://mc.smoke.test';
 
@@ -172,8 +173,12 @@ async function runNewCampaignStepperFlow(browser) {
     await page.waitForTimeout(30);
     const fromState = await stopState(page, from);
     const toState = await stopState(page, to);
-    fromState === 'done' && toState === 'here'
-      ? ok(`Next: ${from} -> ${to} (${from}=done, ${to}=here)`)
+    // R2-11: a stop whose Launch bound is unmet reads ⚠ (needs_you) even
+    // after Next marked it done — a fresh draft has no accounts (Where) and no
+    // end date (When), so those two stay ⚠ and the rest read ✓.
+    const wantFrom = from === 'where' || from === 'when' ? 'needs_you' : 'done';
+    fromState === wantFrom && toState === 'here'
+      ? ok(`Next: ${from} -> ${to} (${from}=${wantFrom}, ${to}=here)`)
       : fail(`Next: ${from} -> ${to} wrong states: ${from}=${JSON.stringify(fromState)}, ${to}=${JSON.stringify(toState)}`);
   }
 
@@ -250,7 +255,7 @@ async function runLaunchMissingLinks(browser) {
     camp.plan.cadence.per_week = 3; // leaves accounts + end date missing
     window.deskV1GotoCampaignPanel('launch', { campaignId: id });
   }, campaignId);
-  await page.waitForSelector('.desk-v1-map-launch', { timeout: 4000 });
+  await page.waitForSelector('.desk-v1-launch', { timeout: 4000 });
 
   const startBtn = await page.$('[data-map-start-btn]');
   const startDisabled = startBtn ? await startBtn.evaluate((b) => b.disabled) : null;
@@ -265,7 +270,7 @@ async function runLaunchMissingLinks(browser) {
 
   for (const { stop } of missingLinks) {
     await page.evaluate((id) => window.deskV1GotoCampaignPanel('launch', { campaignId: id }), campaignId);
-    await page.waitForSelector('.desk-v1-map-launch', { timeout: 4000 });
+    await page.waitForSelector('.desk-v1-launch', { timeout: 4000 });
     await page.click(`[data-missing-stop="${stop}"]`);
     await page.waitForTimeout(30);
     const landed = await stopState(page, stop);
@@ -353,9 +358,9 @@ async function runR23bRetirements(browser) {
   // 5. Launch is one click from the top stepper on a fresh Draft; Project
   // select shown, "Project" first in the missing list.
   await page.click('.desk-v1-map-stop[data-stop="launch"]');
-  await page.waitForSelector('.desk-v1-map-launch', { timeout: 4000 });
+  await page.waitForSelector('.desk-v1-launch', { timeout: 4000 });
   const launch = await page.evaluate(() => ({
-    hasSelect: !!document.querySelector('.desk-v1-map-launch [data-setup-project]'),
+    hasSelect: !!document.querySelector('.desk-v1-launch [data-setup-project]'),
     firstMissing: ((document.querySelector('.desk-v1-map-launch-missing li') || {}).textContent || '').trim(),
     startDisabled: !!(document.querySelector('[data-map-start-btn]') || {}).disabled,
   }));
@@ -629,6 +634,22 @@ async function runStartSheet(browser) {
   const { ctx, page, pageErrors } = await newTonePage(browser, { ls: {} });
   await navToProposedCampaign(page, 'camp-2');
 
+  // R2-11: camp-2's goal has no measurement source (frame 8's campaign), so
+  // the sheet judges it with the Launch page's gate — Confirm disabled and the
+  // note names the missing item. Set a source (what the Goal stop does) and the
+  // rest of this check proceeds as before.
+  await page.click('[data-start-campaign]');
+  await page.waitForSelector('.desk-v1-rules-sheet', { timeout: 2000 });
+  const gated = await page.evaluate(() => ({
+    note: (document.querySelector('.desk-v1-rules-sheet-note') || {}).textContent || '',
+    confirmDisabled: !!(document.querySelector('[data-sheet-confirm]') || {}).disabled,
+  }));
+  gated.confirmDisabled && /measurement source for the goal/.test(gated.note)
+    ? ok('R2-11: Start sheet refuses an untracked goal — Confirm disabled, note names "measurement source for the goal"')
+    : fail(`R2-11: Start sheet did not gate an untracked goal: ${JSON.stringify(gated)}`);
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => { window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2').goal.source = 'manual'; });
+
   await page.click('[data-start-campaign]');
   await page.waitForSelector('.desk-v1-rules-sheet', { timeout: 2000 });
   ok('"Start campaign" opens the review sheet');
@@ -711,7 +732,7 @@ async function draftInProject(page, projectId, plan) {
     return c.id;
   }, plan);
   await page.click('.desk-v1-map-stop[data-stop="launch"]');
-  await page.waitForSelector('.desk-v1-map-launch', { timeout: 4000 });
+  await page.waitForSelector('.desk-v1-launch', { timeout: 4000 });
   return id;
 }
 
@@ -852,6 +873,206 @@ async function runPosyInstructions(browser) {
   await ctx.close();
 }
 
+
+// ── R2-11 (frame 8): Launch = the Bounds table, the Needs-your-answer card,
+// the Live block, Renew term, and the project-budget clamp. ──────────────
+async function launchRows(page) {
+  return page.$$eval('.desk-v1-launch-row', (els) => els.map((e) => ({
+    key: e.dataset.launchRow,
+    label: (e.querySelector('.desk-v1-launch-label') || {}).textContent,
+    text: ((e.querySelector('.desk-v1-launch-val') || {}).textContent || '').trim(),
+    missing: e.dataset.missing === 'true',
+  })));
+}
+
+async function gotoLaunch(page, campaignId) {
+  await page.evaluate((id) => window.deskV1GotoCampaignPanel('launch', { campaignId: id }), campaignId);
+  await page.waitForSelector('.desk-v1-launch', { timeout: 4000 });
+}
+
+async function runR211LaunchBounds(browser) {
+  const { ctx, page, pageErrors } = await newTonePage(browser, { ls: {} });
+  await navToProposedCampaign(page, 'camp-2');
+  await gotoLaunch(page, 'camp-2');
+
+  const rows = await launchRows(page);
+  JSON.stringify(rows.map((r) => r.label)) === JSON.stringify(['Accounts + voices', 'Cadence / min gap', 'Term', 'Source scope', 'Spend ceiling', 'Budget', 'Goal / measurement', 'Stop conditions'])
+    ? ok('R2-11: the Bounds table has exactly the eight rows, in frame-8 order')
+    : fail(`R2-11: Bounds rows wrong: ${JSON.stringify(rows.map((r) => r.label))}`);
+  const accountsText = (rows.find((r) => r.key === 'accounts') || {}).text || '';
+  /@ron/.test(accountsText) && /Ron/.test(accountsText)
+    ? ok(`R2-11: Accounts + voices reads Where's placements ("${accountsText}")`)
+    : fail(`R2-11: Accounts + voices row wrong: ${JSON.stringify(accountsText)}`);
+
+  // A missing item shows inline on its own row AND in the sentence under Start.
+  const goalRow = rows.find((r) => r.key === 'goal') || {};
+  goalRow.missing && /60 beta signups, not tracked/.test(goalRow.text) && /Set a source ›/.test(goalRow.text)
+    ? ok(`R2-11: untracked goal shows inline on its row: "${goalRow.text}"`)
+    : fail(`R2-11: goal row wrong: ${JSON.stringify(goalRow)}`);
+  const need = (await page.textContent('[data-launch-need]').catch(() => '') || '').trim();
+  need === 'Set 1 thing first: measurement source for the goal.'
+    ? ok(`R2-11: sentence under the disabled Start: "${need}"`)
+    : fail(`R2-11: needs-sentence wrong: ${JSON.stringify(need)}`);
+  (await page.$eval('[data-map-start-btn]', (b) => b.disabled)) ? ok('R2-11: Start is disabled with no measurement source') : fail('R2-11: Start enabled with an untracked goal');
+  const glyph = await page.$eval('.desk-v1-map-stop[data-stop="goal"]', (el) => ({ state: el.dataset.state, text: el.textContent.trim() }));
+  glyph.state === 'needs_you' && /⚠/.test(glyph.text) && /Goal/.test(glyph.text)
+    ? ok(`R2-11: the Goal stop's map glyph is ⚠ with its word ("${glyph.text.replace(/\s+/g, ' ')}")`)
+    : fail(`R2-11: Goal glyph wrong: ${JSON.stringify(glyph)}`);
+  await page.screenshot({ path: resolve(SHOT_DIR, 'r2_11_launch_1440.png') });
+  ok('screenshot saved: r2_11_launch_1440.png');
+
+  // The waiting agent question is a card in the right column with answer buttons.
+  const card = await page.$eval('[data-needs-answer]', (el) => ({
+    head: el.querySelector('.desk-v1-launch-question-head').textContent,
+    answers: Array.from(el.querySelectorAll('[data-answer-id]')).map((b) => b.textContent.trim()),
+    inSide: !!el.closest('.desk-v1-launch-side'),
+  })).catch(() => null);
+  card && /Needs your answer/.test(card.head) && card.inSide && JSON.stringify(card.answers) === JSON.stringify(['X first', 'LinkedIn first'])
+    ? ok(`R2-11: a waiting question renders as "Needs your answer" in the right column with ${JSON.stringify(card.answers)}`)
+    : fail(`R2-11: question card wrong: ${JSON.stringify(card)}`);
+
+  // "Set a source ›" lands ON the Goal stop's source field.
+  await page.click('[data-launch-row="goal"] [data-missing-stop]');
+  await page.waitForSelector('[data-goal-field="source"]', { timeout: 4000 });
+  const focused = await page.evaluate(() => (document.activeElement && document.activeElement.dataset.goalField) || null);
+  focused === 'source'
+    ? ok('R2-11: "Set a source ›" lands on Goal with the source field focused')
+    : fail(`R2-11: "Set a source" landed elsewhere: focused=${JSON.stringify(focused)}`);
+  await page.selectOption('[data-goal-field="source"]', 'manual');
+  await page.waitForTimeout(60);
+  await gotoLaunch(page, 'camp-2');
+  const afterSource = await page.evaluate(() => ({
+    disabled: document.querySelector('[data-map-start-btn]').disabled,
+    needHidden: document.querySelector('[data-launch-need]').hidden,
+    goalState: document.querySelector('.desk-v1-map-stop[data-stop="goal"]').dataset.state,
+  }));
+  !afterSource.disabled && afterSource.needHidden && afterSource.goalState !== 'needs_you'
+    ? ok('R2-11: setting a source on Goal enables Start, clears the sentence and the ⚠ glyph')
+    : fail(`R2-11: source did not clear the gate: ${JSON.stringify(afterSource)}`);
+
+  // Answering `X first` removes the card and records the answer on the campaign.
+  await page.click('[data-needs-answer] [data-answer-id="a-x-first"]');
+  await page.waitForTimeout(60);
+  const answered = await page.evaluate(() => ({
+    card: !!document.querySelector('[data-needs-answer]'),
+    rec: (window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2').answers || []).map((a) => a.answer_id),
+  }));
+  !answered.card && JSON.stringify(answered.rec) === JSON.stringify(['a-x-first'])
+    ? ok('R2-11: answering "X first" removes the card and records the answer on the campaign')
+    : fail(`R2-11: answer not recorded: ${JSON.stringify(answered)}`);
+
+  // Start with defaults -> Live since (and term 1 + its approval record).
+  await page.click('[data-map-start-btn]');
+  await page.waitForSelector('[data-sheet-confirm]', { timeout: 4000 });
+  await page.click('[data-sheet-confirm]');
+  await page.waitForSelector('[data-launch-live]', { timeout: 4000 });
+  const live = await page.evaluate(() => {
+    const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2');
+    return {
+      head: document.querySelector('.desk-v1-launch-live-head').textContent,
+      state: camp.state, term: camp.term && camp.term.index, approvals: (camp.approvals || []).length,
+      hash: !!(camp.approval && camp.approval.bounds_hash), rows: document.querySelectorAll('.desk-v1-launch-row').length,
+      pause: !!document.querySelector('[data-launch-pause]'),
+    };
+  });
+  /Live since/.test(live.head) && live.state === 'active' && live.term === 1 && live.approvals === 1 && live.hash && live.rows === 8 && live.pause
+    ? ok(`R2-11: Start -> "${live.head.trim()}", term 1 opened, 1 approval record, same 8 bounds shown, Pause offered`)
+    : fail(`R2-11: Live state wrong: ${JSON.stringify(live)}`);
+  await page.screenshot({ path: resolve(SHOT_DIR, 'r2_11_launch_live_1440.png') });
+  ok('screenshot saved: r2_11_launch_live_1440.png');
+
+  // Pause -> Resume from the Launch page.
+  await page.click('[data-launch-pause]');
+  await page.waitForSelector('[data-launch-resume]', { timeout: 2000 });
+  const pausedHead = await page.textContent('.desk-v1-launch-live-head');
+  /Paused/.test(pausedHead) ? ok(`R2-11: Pause -> "${pausedHead.trim()}", Resume offered`) : fail(`R2-11: Pause wrong: ${JSON.stringify(pausedHead)}`);
+  await page.click('[data-launch-resume]');
+  await page.waitForSelector('[data-confirm-accept]', { timeout: 2000 });
+  await page.click('[data-confirm-accept]');
+  await page.waitForSelector('[data-launch-pause]', { timeout: 2000 });
+  ok('R2-11: Resume returns the page to Live');
+
+  reportUncaught(pageErrors, '[r2-11-launch]');
+  await ctx.close();
+}
+
+// A long-horizon goal at its term end: Renew term opens term 2 with a NEW
+// approval record, the bounds unchanged.
+async function runR211RenewTerm(browser) {
+  const { ctx, page, pageErrors } = await newTonePage(browser, { ls: {} });
+  await navToProposedCampaign(page, 'camp-1');
+  await page.evaluate(() => {
+    const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1');
+    const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const now = new Date();
+    const ended = new Date(now.getTime() - 86400000);
+    const began = new Date(now.getTime() - 61 * 86400000);
+    const deadline = new Date(now.getTime() + 200 * 86400000);
+    camp.goal.horizon = 'long';
+    camp.goal.deadline = iso(deadline);
+    camp.term = { index: 1, starts: iso(began), ends: iso(ended), post_cap: null };
+    camp.approval = undefined; camp.approvals = undefined;
+    if (window.deskV1CampaignBounds) camp.approval = { bounds: window.deskV1CampaignBounds(camp), at: began.toISOString(), term: 1 };
+  });
+  await gotoLaunch(page, 'camp-1');
+  const enabled = await page.$eval('[data-renew-term]', (b) => !b.disabled).catch(() => null);
+  enabled === true ? ok('R2-11: a long-horizon goal at its term end offers Renew term') : fail(`R2-11: Renew term missing/disabled: ${JSON.stringify(enabled)}`);
+  const before = await launchRows(page);
+  await page.click('[data-renew-term]');
+  await page.waitForTimeout(80);
+  const after = await page.evaluate(() => {
+    const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1');
+    return {
+      term: camp.term, terms: (camp.terms || []).length, approvals: (camp.approvals || []).length,
+      approvalTerm: camp.approval && camp.approval.term,
+      line: (document.querySelector('[data-launch-approval]') || {}).textContent || '',
+    };
+  });
+  const days = (Date.parse(after.term.ends) - Date.parse(after.term.starts)) / 86400000;
+  after.term.index === 2 && after.terms === 2 && after.approvals === 2 && after.approvalTerm === 2 && days > 0 && days <= 90 && /term 2/.test(after.line)
+    ? ok(`R2-11: Renew term -> term 2 (${after.term.starts} to ${after.term.ends}, ${days} d), a new approval record: "${after.line.trim()}"`)
+    : fail(`R2-11: Renew wrong: ${JSON.stringify(after)}`);
+  const afterRows = await launchRows(page);
+  const sameBounds = ['accounts', 'cadence', 'scope', 'budget', 'goal'].every((k) => (before.find((r) => r.key === k) || {}).text === (afterRows.find((r) => r.key === k) || {}).text);
+  sameBounds ? ok('R2-11: the bounds shown after Renew are the same bounds') : fail('R2-11: bounds changed across Renew');
+
+  reportUncaught(pageErrors, '[r2-11-renew]');
+  await ctx.close();
+}
+
+// §5.2: a project budget cut below the campaigns' earmarks clamps them and logs.
+async function runR211EarmarkClamp(browser) {
+  const { ctx, page, pageErrors } = await newTonePage(browser, { ls: {} });
+  await page.evaluate(() => {
+    const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1');
+    camp.how = camp.how || {};
+    camp.how.budget = { source: 'project', amount: 80 };
+    // the $80 earmark is part of what was approved, so the clamp narrows it.
+    camp.approval = { bounds: window.deskV1CampaignBounds(camp), at: new Date().toISOString(), term: 1 };
+  });
+  await page.click('.desk-v1-home-block-name[data-project-id="clayrune"]');
+  await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
+  await page.click('.desk-v1-project-presence-btn');
+  await page.waitForSelector('[data-budget-perperiod-input]', { timeout: 4000 });
+  await page.fill('[data-budget-perperiod-input]', '50');
+  await page.keyboard.press('Tab');
+  await page.click('[data-preview-apply]');
+  await page.waitForTimeout(80);
+  const res = await page.evaluate(() => {
+    const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1');
+    return { amount: camp.how.budget.amount, log: (camp.log || []).map((l) => l.text) };
+  });
+  res.amount === 50 && res.log.length === 1 && /Earmark clamped from \$80 to \$50/.test(res.log[0])
+    ? ok(`R2-11: a project budget cut to $50 clamps the $80 earmark and logs it ("${res.log[0]}")`)
+    : fail(`R2-11: clamp wrong: ${JSON.stringify(res)}`);
+  await navToProposedCampaign(page, 'camp-1');
+  await gotoLaunch(page, 'camp-1');
+  (await page.$('[data-launch-log]')) ? ok('R2-11: the clamp shows in the Launch page log') : fail('R2-11: no log block on Launch after the clamp');
+
+  reportUncaught(pageErrors, '[r2-11-clamp]');
+  await ctx.close();
+}
+
 async function main() {
   const browser = await chromium.launch();
   try {
@@ -882,6 +1103,10 @@ async function main() {
     await runDraftStartSheetFromLaunch(browser);
     await runAllManualAccountsReplies(browser);
     await runStartSheetGateMissingEnd(browser);
+    console.log('desk-v1-map: R2-11 Launch (bounds table, answer card, live, renew, clamp)');
+    await runR211LaunchBounds(browser);
+    await runR211RenewTerm(browser);
+    await runR211EarmarkClamp(browser);
   } finally {
     await browser.close();
   }

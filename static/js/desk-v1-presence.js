@@ -363,7 +363,8 @@
       if (next === prev) return;
       const widening = next > prev;
       const effect = `Production budget set to $${next} per ${budget.period || 'month'} — was $${prev}.`;
-      _stageChange(previewEl, () => { budget.amount = next; }, effect, widening, () => { perPeriod.value = String(prev); }, p);
+      // R2-11 (§5.2): a cut below the campaigns' earmarks clamps them and logs.
+      _stageChange(previewEl, () => { budget.amount = next; if (!widening && typeof window.deskV1ClampEarmarks === 'function') window.deskV1ClampEarmarks(p); }, effect, widening, () => { perPeriod.value = String(prev); }, p);
     });
   }
 
