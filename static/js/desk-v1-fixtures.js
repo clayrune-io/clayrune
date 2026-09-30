@@ -79,11 +79,18 @@
   // and `campaign.plan.how` both point at it, so kit's two different `.how`
   // readers (deskAgentRef on campaign.how, validatePlan/nextBoundsHash on
   // plan.how) see the same data instead of drifting.
+  // R2-6: budget starts 'none' — R2-1 gave this object a `budget.source:
+  // 'project', amount: 60` placeholder before any UI ever read or wrote it;
+  // that value was never approved as a bound (the How stop's budget picker,
+  // and `camp.approval.bounds` below, are both new in this ticket). Starting
+  // both at 'none' means the fixture opens in the plain (non-awaiting) ⑥
+  // state, so the R2-6 smoke's own budget edit is what first creates a
+  // divergence from `camp.approval.bounds` — not a pre-existing one.
   const _CAMP1_HOW = {
     strategy: 'Show the beta working end to end, not just announce it.',
     angle: 'Show the restore-points and install flow working end to end so trying the beta feels low-risk.',
     agent: null,
-    budget: { source: 'project', amount: 60, period: 'term' },
+    budget: { source: 'none' },
   };
 
   const CAMPAIGNS = [
@@ -154,6 +161,22 @@
         replies: 'drafts',
         paid: false,
         generation: 'No video generation planned for this campaign',
+      },
+      // R2-6: the bounds snapshot `DeskV1Kit.boundsWiden`/`nextBoundsHash`
+      // (kit.js, shipped by R2-1, never wired to a real caller until this
+      // ticket) compares the live plan against — "what was last approved".
+      // Mirrors `plan`'s own accounts/cadence/end/term/budget exactly, so
+      // camp-1 opens on ⑥ in its normal (non-awaiting) state; the How
+      // stop's budget picker is what first moves the live bounds away from
+      // this snapshot.
+      approval: {
+        bounds: {
+          accounts: ['ch-x-ron', 'ch-li-page', 'ch-blog'],
+          cadence: { per_week: 3 },
+          end: { date: '2026-10-20', post_cap: null },
+          term: { ends: '2026-10-20' },
+          budget: { source: 'none' },
+        },
       },
     },
   ];
