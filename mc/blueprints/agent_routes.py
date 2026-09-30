@@ -10922,7 +10922,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              cross_provider_handoff=False,
                              runtime_callbacks=None, session_metadata=None,
                              session_dict_override=None,
-                             max_turns_override=None):
+                             max_turns_override=None,
+                             agent_cwd_override=None,
+                             isolated_override=False):
     """Core dispatch logic shared by HTTP endpoint and scheduler.
 
     Returns session_id on success, raises ValueError on error.
@@ -11161,7 +11163,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                            if (reuse_session_id and reuse_session_id not in agent_sessions)
                            else uuid.uuid4().hex[:12])
         _rt_resume_tree = _resume_cwd_for(pp, resume_id, provider_name) if resume_id else None
-        if _rt_resume_tree:
+        if agent_cwd_override:
+            _rt_agent_cwd, _rt_isolated = agent_cwd_override, bool(isolated_override)
+        elif _rt_resume_tree:
             _rt_agent_cwd, _rt_isolated = _rt_resume_tree, False
         else:
             _rt_agent_cwd, _rt_isolated = _maybe_isolate_worktree(p, _rt_planned_sid, incognito)
@@ -11291,8 +11295,16 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # choosing reuse_session_id instead, the unused tree is reaped by gc_stale
     # (it holds no work).
     _fresh_sid = uuid.uuid4().hex[:12]
+    # Same adoption rule as the `with mgr.lock` block below: a caller that
+    # pre-registered `reuse_session_id` and hands us that very dict
+    # (`session_dict_override`, e.g. a Hivemind worker) owns the id, so the
+    # planned id — and any worktree keyed on it — must be that id, not a
+    # fresh one the lock block will then discard.
     _planned_sid = (reuse_session_id
-                    if (reuse_session_id and reuse_session_id not in agent_sessions)
+                    if (reuse_session_id and (
+                        reuse_session_id not in agent_sessions
+                        or (session_dict_override is not None
+                            and agent_sessions.get(reuse_session_id) is session_dict_override)))
                     else _fresh_sid)
     _sp_path = None
     _router_fallback_reason = ''
@@ -11406,7 +11418,14 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # own tree). Not marked isolated, so this session ending never merges or
     # removes a tree it does not own.
     _resume_tree = _resume_cwd_for(pp, resume_id) if resume_id else None
-    if _resume_tree:
+    if agent_cwd_override:
+        # The caller already chose this session's working tree (a Hivemind
+        # worker's `hm_*` worktree, or the orchestrator's shared tree). A second
+        # `_maybe_isolate_worktree` here would mint a stray
+        # `clayrune/agent/<id>` tree that the process runs in while the
+        # integrator merges the empty `hm_*` branch (MC-1013 follow-up).
+        _agent_cwd, _isolated = agent_cwd_override, bool(isolated_override)
+    elif _resume_tree:
         _agent_cwd, _isolated = _resume_tree, False
     else:
         _agent_cwd, _isolated = _maybe_isolate_worktree(p, _planned_sid, incognito)

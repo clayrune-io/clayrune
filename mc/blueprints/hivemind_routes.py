@@ -1455,6 +1455,9 @@ def _hm_dispatch_orchestrator(hivemind_id, task_type, extra_context=''):
         'requested_effort': effort,
         'process_alive': True, 'last_output_time': _time.time(),
         'last_status_change_time': _time.time(), '_dispatch_time': _time.time(),
+        # The orchestrator works in the shared tree and writes only under the
+        # hivemind dir; stamping the decision stops dispatch isolating it.
+        '_agent_cwd': pp, '_worktree_isolated': False,
     }
 
     def _run():

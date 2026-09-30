@@ -2969,6 +2969,12 @@ def _claude_dispatch_hook(**kwargs):
     trigger_id = kwargs.get('trigger_id') or ''
     mc_session_id = kwargs.get('mc_session_id') or ''
 
+    # A caller that supplies a pre-registered session dict already decided the
+    # working tree (Hivemind stamps `_agent_cwd`/`_worktree_isolated` on it).
+    # Forward that decision; do not let dispatch isolate a second tree.
+    supplied = kwargs.get('session_dict')
+    supplied_cwd = (supplied or {}).get('_agent_cwd') or None
+
     # Preserve the full provider-neutral dispatch contract. Hivemind and
     # other runtime callers must not lose model, effort, context, lifecycle
     # callbacks or housekeeping metadata merely because Claude uses a server
@@ -2990,6 +2996,8 @@ def _claude_dispatch_hook(**kwargs):
         session_metadata=kwargs.get('session_metadata') or {},
         session_dict_override=kwargs.get('session_dict'),
         max_turns_override=kwargs.get('max_turns'),
+        agent_cwd_override=supplied_cwd,
+        isolated_override=bool((supplied or {}).get('_worktree_isolated')),
     )
     session = agent_sessions.get(session_id, {})
     p = load_project(project_id) or {}
