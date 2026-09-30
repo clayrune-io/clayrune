@@ -113,16 +113,35 @@ def _session_provider(ck: Optional[dict], fact: Optional[dict]) -> Optional[str]
     return None
 
 
+def _segment_delta(start_row: dict, start_at: datetime, end_row: dict, end_at: datetime) -> dict:
+    """One measured segment between two consecutive checkpoints of ANY type
+    (turn_start/sample_tick/completion) -- the per-key token delta plus the
+    END row's own `token_coverage` (whether ITS cumulative snapshot was
+    trustworthy; the start row already had to carry usable counters or the
+    caller would not have paired it here). A delta needs a counter at BOTH
+    ends: `None` at either side makes the key `None`, never "cumulative
+    minus zero"."""
+    turn = {'start': start_at, 'end': end_at, 'fact_only': False,
+            'token_coverage': end_row.get('token_coverage') or 'unavailable'}
+    for k in _TOKEN_KEYS:
+        a, b = start_row.get(k), end_row.get(k)
+        turn[k] = max(b - a, 0) if (a is not None and b is not None) else None
+    if turn['input_processed_total'] is None and turn['output_tokens'] is None:
+        turn['token_coverage'] = 'unavailable'
+    return turn
+
+
 def _session_turns(ck: Optional[dict]) -> list[dict]:
     """[{'start','end', <each _TOKEN_KEYS delta>, 'token_coverage','fact_only'}]
-    -- one entry per TURN (P1-3, finding 3), each holding that turn's OWN
-    token delta, never the session's cumulative lifetime total charged again
-    to every interval it overlaps.
+    -- one entry per SEGMENT (P1-3 finding 3, extended by the sample_tick
+    follow-up below), each holding that segment's OWN token delta, never the
+    session's cumulative lifetime total charged again to every interval it
+    overlaps.
 
-    A turn's span is (this turn's start marker -> its completion). The start
-    marker is the most recent 'turn_start' row observed_at strictly after
-    the PREVIOUS completion (or baseline, for turn 1) and at-or-before this
-    completion -- i.e. the turn_start a Mode B session writes when a
+    A turn's OUTER span is (this turn's start marker -> its completion). The
+    start marker is the most recent 'turn_start' row observed_at strictly
+    after the PREVIOUS completion (or baseline, for turn 1) and at-or-before
+    this completion -- i.e. the turn_start a Mode B session writes when a
     follow-up send actually begins the turn (schema v5, MC-998 turn-start
     fix). When no such row exists (old data written before this fix, or a
     turn_start that was itself aged out by 90-day retention) the span falls
@@ -136,18 +155,29 @@ def _session_turns(ck: Optional[dict]) -> list[dict]:
     calibration interval that falls entirely inside it never sees this
     session at all, so it can never straddle or block that interval.
 
+    Schema v6 (backlog 4668eafc follow-up, sample_tick checkpoints): the
+    outer (start marker -> completion) span is then SPLIT at every
+    'sample_tick' row that landed strictly inside it, in timestamp order --
+    one segment per (boundary -> next boundary) pair instead of one segment
+    the whole turn must fit inside. A tick is stamped with the SAME
+    `source_observed_at` an allowance sample used for its own reading, so a
+    turn spanning several allowance samples yields one segment ending
+    exactly at each interval boundary it was alive for, letting
+    `_eligible_intervals` find it fully contained without requiring the
+    entire turn to fit in one <=10-minute pair (measured 2026-09-29: without
+    this, 165/166 shape-eligible interval pairs were refused because a
+    Clayrune turn routinely outlives the sampler's own pairing window).
+
     With no baseline (aged out by 90-day retention while later completions
     remain) the pairs start at completions[0]; the span before it is
     unmeasured and `_session_evidence` reports it as such. A session with no
-    completions yet (still running, mid-turn) has no turn evidence at all --
-    an empty list, not a fabricated one spanning "start to now".
-
-    A delta needs a counter at BOTH ends: a turn whose start marker carried
-    no counter (an `unavailable` row) is itself `unavailable`, never "this
-    cumulative minus zero"."""
+    completions yet (still running, mid-turn) has no turn evidence at all
+    from this function -- `_session_evidence` handles that OPEN turn's own
+    ticks separately, since there is no completion here to pair them with."""
     baseline = (ck or {}).get('baseline')
     completions = (ck or {}).get('completions') or []
     turn_starts = (ck or {}).get('turn_starts') or []
+    sample_ticks = (ck or {}).get('sample_ticks') or []
     turns = []
     prev = baseline
     prev_at = _parse_iso(prev.get('observed_at')) if prev else None
@@ -165,14 +195,17 @@ def _session_turns(ck: Optional[dict]) -> list[dict]:
             if candidates:
                 start_at, start_row = max(candidates, key=lambda pair: pair[0])
         if start_at is not None and start_row is not None:
-            turn = {'start': start_at, 'end': c_at, 'fact_only': False,
-                    'token_coverage': cur.get('token_coverage') or 'unavailable'}
-            for k in _TOKEN_KEYS:
-                a, b = start_row.get(k), cur.get(k)
-                turn[k] = max(b - a, 0) if (a is not None and b is not None) else None
-            if turn['input_processed_total'] is None and turn['output_tokens'] is None:
-                turn['token_coverage'] = 'unavailable'
-            turns.append(turn)
+            ticks_in_span = []
+            for tk in sample_ticks:
+                tk_at = _parse_iso(tk.get('observed_at'))
+                if tk_at is not None and start_at < tk_at < c_at:
+                    ticks_in_span.append((tk_at, tk))
+            ticks_in_span.sort(key=lambda pair: pair[0])
+            boundary_row, boundary_at = start_row, start_at
+            for tk_at, tk in ticks_in_span:
+                turns.append(_segment_delta(boundary_row, boundary_at, tk, tk_at))
+                boundary_row, boundary_at = tk, tk_at
+            turns.append(_segment_delta(boundary_row, boundary_at, cur, c_at))
         prev, prev_at = cur, c_at
     return turns
 
@@ -209,6 +242,17 @@ def _session_evidence(ck: Optional[dict], fact: Optional[dict]) -> tuple[list[di
         above, ended_at being when it was observed gone -- bounded, so it
         no longer overlaps anything after that.
 
+    Schema v6 (backlog 4668eafc follow-up, sample_tick checkpoints): before
+    any of the above, every 'sample_tick' row observed strictly after `last`
+    further measures the still-open turn in boundary-aligned segments (same
+    `_segment_delta` pairing `_session_turns` uses for closed turns) and
+    pushes `last`/`last_at` forward to the LATEST tick -- only the span
+    after that final tick is genuinely unmeasured/open. A session with no
+    ticks after `last` behaves exactly as before (the whole open span is one
+    unmeasured tuple); this is what lets a long-running or crashed
+    (ended_unknown) session's PRIOR ticked segments count toward calibration
+    even though its final, tick-less tail still can't.
+
     A fact with no checkpoint at all (housekeeping, pre-checkpoint history)
     is one `fact_only` turn from started_at to ended_at carrying the fact's
     own totals once it has finished, so window totals can still show it;
@@ -217,6 +261,7 @@ def _session_evidence(ck: Optional[dict], fact: Optional[dict]) -> tuple[list[di
     baseline = (ck or {}).get('baseline')
     completions = (ck or {}).get('completions') or []
     turn_starts = (ck or {}).get('turn_starts') or []
+    sample_ticks = (ck or {}).get('sample_ticks') or []
     if not baseline and not completions:
         if not fact:
             return [], []
@@ -255,6 +300,21 @@ def _session_evidence(ck: Optional[dict], fact: Optional[dict]) -> tuple[list[di
                 open_start_at, open_start = ts_at, ts
     last = open_start if open_start is not None else completion_last
     last_at = open_start_at if open_start is not None else completion_last_at
+
+    # Schema v6 follow-up: measure the still-open turn's OWN ticks, in
+    # timestamp order, exactly like `_session_turns` splits a closed turn --
+    # only the span after the final tick stays in `unmeasured` below.
+    if last_at is not None:
+        open_ticks = []
+        for tk in sample_ticks:
+            tk_at = _parse_iso(tk.get('observed_at'))
+            if tk_at is not None and tk_at > last_at:
+                open_ticks.append((tk_at, tk))
+        open_ticks.sort(key=lambda pair: pair[0])
+        for tk_at, tk in open_ticks:
+            turns.append(_segment_delta(last, last_at, tk, tk_at))
+            last, last_at = tk, tk_at
+
     if (fact and _fact_is_running(fact)) or (not fact and not completions):
         unmeasured.append((last_at, None))
     elif fact:
@@ -476,14 +536,26 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
 
     Per finding 3 (P1-3, "2026-09-28 re-review"): a session's lifetime may
     now span several completion checkpoints (one per TURN, not one per
-    session). `_session_turns` derives each turn's own delta; a turn is only
-    counted toward an interval when it is FULLY CONTAINED in [t_a, t_b).
-    Any turn that overlaps the interval WITHOUT being fully contained (the
-    session was mid-turn across a boundary) marks the interval incomplete --
-    that turn's tokens cannot be split between intervals, so they are
-    withheld here rather than fabricated as belonging to this one. A session
-    can contribute turns to more than one interval; each interval only ever
-    sees the turns that actually happened inside it.
+    session). `_session_turns`/`_session_evidence` derive each SEGMENT's own
+    delta; a segment is only counted toward an interval when it is FULLY
+    CONTAINED in [t_a, t_b]. Any segment that overlaps the interval WITHOUT
+    being fully contained (the session was mid-turn across a boundary) marks
+    the interval incomplete -- its tokens cannot be split between intervals,
+    so they are withheld here rather than fabricated as belonging to this
+    one. A session can contribute segments to more than one interval; each
+    interval only ever sees the segments that actually happened inside it.
+
+    Backlog 4668eafc follow-up (schema v6, sample_tick checkpoints): a
+    Clayrune turn routinely outlives this function's own <=10-minute pairing
+    window and up to 9 sessions run at once, so requiring the WHOLE turn to
+    fit inside one interval left almost nothing containable (measured
+    2026-09-29: 165/166 shape-eligible pairs refused). `_session_turns` now
+    splits a turn at every 'sample_tick' row -- stamped with the SAME
+    `source_observed_at` an allowance sample used for t_a/t_b -- into
+    segments that end exactly at each interval boundary the turn was alive
+    for, so a long turn contributes several small contained segments instead
+    of one that can never fit. A session with no tick at BOTH t_a and t_b
+    still can't be measured for that interval and correctly stays excluded.
     """
     out = []
     ordered = sorted((s for s in samples if s.get('quality') == 'ok'
@@ -521,10 +593,18 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
             # checkpoint history) overlap exactly like a session does --
             # the last completion is not the session's end.
             turns, unmeasured = _session_evidence(ck, fact)
-            gap = any((s is None or s < t_b) and (e is None or e >= t_a) for s, e in unmeasured)
+            # `_window_overlaps` (exclusive touch -- a span ending exactly at
+            # t_a belongs to the PRIOR interval, not this one), not a
+            # `>=`/inclusive check: schema v6 sample_tick segments are, by
+            # construction, stamped at the SAME source_observed_at as the
+            # allowance samples that define t_a/t_b, so a segment ending
+            # exactly at t_a is the routine case now, not an edge case. An
+            # inclusive check here made EVERY interval's immediately
+            # preceding segment misread as "crossing" it.
+            gap = any(_window_overlaps(s, e, t_a, t_b) for s, e in unmeasured)
             contained = [t for t in turns if t['start'] >= t_a and t['end'] <= t_b]
             crossing = [t for t in turns if t not in contained
-                        and t['start'] < t_b and t['end'] >= t_a]
+                        and _window_overlaps(t['start'], t['end'], t_a, t_b)]
             if not (gap or contained or crossing):
                 continue  # doesn't overlap this interval at all
             session_ids.add(sid)

@@ -21,7 +21,7 @@ Four tables, schema-versioned via `PRAGMA user_version`:
     repeated dispatch-pending call a no-op), one 'completion' row PER TURN
     (Mode-A completions fire per turn, not once per session; a unique
     index on (session_id, observed_at) only dedupes an exact retry, never a
-    later turn's new timestamp), and one 'turn_start' row per follow-up/
+    later turn's new timestamp), one 'turn_start' row per follow-up/
     resume into an EXISTING session (schema v5, MC-998 turn-start fix,
     docs/_journal/4668eafc-mc998-fenn-review.md, backlog 4668eafc reopened
     2026-09-29): a Mode B session's process stays alive between turns, so
@@ -35,21 +35,32 @@ Four tables, schema-versioned via `PRAGMA user_version`:
     (last completion -> this turn_start) always deltas to zero -- known
     idle, never straddling, never unmeasured) so the ACTIVE span
     (turn_start -> this turn's completion) is the only one that can ever
-    straddle a boundary. Same dedup shape as 'completion' (a partial unique
-    index on (session_id, observed_at), never one-per-session): the
-    dispatch-time 'baseline' already serves as turn 1's start marker, so
-    'turn_start' is never written for a session's first turn. Schema v3
-    (was: table-level `UNIQUE(session_id, checkpoint_type)`, which froze the
-    FIRST completion forever and silently discarded every later turn's row
-    while `session_fact` kept advancing to the latest cumulative total --
-    docs/_journal/4668eafc-mc998-fenn-review.md "2026-09-28 re-review"
-    finding 3, P1-3). The tokens-per-point calibration in
+    straddle a boundary -- and one 'sample_tick' row per RUNNING session PER
+    allowance sample (schema v6, backlog 4668eafc follow-up, measured
+    2026-09-29: with turn_start already shipped, 165/166 shape-eligible
+    interval pairs were STILL refused because a Clayrune turn routinely runs
+    longer than the sampler's own <=10-minute pairing window, so almost no
+    turn was ever "fully contained" in an interval no matter how idle time
+    was handled). `sample_tick` snapshots a running session's cumulative
+    counters at the SAME `source_observed_at` an allowance sample was taken
+    at, so a turn that spans several allowance samples gets a tick exactly
+    at each interval boundary it's alive for -- splitting one long turn into
+    several short, boundary-aligned segments that CAN be fully contained,
+    instead of requiring the whole turn to fit inside one <=10-minute pair.
+    Same dedup shape as 'completion'/'turn_start' (a partial unique index on
+    (session_id, observed_at), never one-per-session, since a session gets
+    one per sampler tick for as long as it stays running).
+    Schema v3 (was: table-level `UNIQUE(session_id, checkpoint_type)`, which
+    froze the FIRST completion forever and silently discarded every later
+    turn's row while `session_fact` kept advancing to the latest cumulative
+    total -- docs/_journal/4668eafc-mc998-fenn-review.md "2026-09-28
+    re-review" finding 3, P1-3). The tokens-per-point calibration in
     mc/usage_breakdown_aggregate.py walks each session's full checkpoint
-    HISTORY as consecutive (turn) pairs to derive a per-turn delta, instead
-    of charging a session's lifetime total to every interval it overlaps. A
-    session with only a baseline row (still running, or ended without ever
-    completing) has no measurable delta yet -- callers treat that as
-    incomplete coverage, never as zero.
+    HISTORY as consecutive (turn/tick) pairs to derive a per-segment delta,
+    instead of charging a session's lifetime total to every interval it
+    overlaps. A session with only a baseline row (still running, or ended
+    without ever completing) has no measurable delta yet -- callers treat
+    that as incomplete coverage, never as zero.
   - code_delta: one row per session_id, LOC added/deleted or an `unavailable`
     reason. `added`/`deleted` are always the SUM of the session's
     code_delta_lifetime rows.
@@ -72,7 +83,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 APPLICATION_ID = 0x4D435542  # 'MCUB'
 DB_FILENAME = 'usage_breakdown.sqlite'
 
@@ -106,14 +117,15 @@ _CODE_DELTA_LIFETIME_SEED_SQL = (
 # P1-3): no table-level UNIQUE(session_id, checkpoint_type) -- that froze
 # every session's completion checkpoint at its first turn. A 'baseline' row
 # stays unique per session (a partial index, checked only for that type);
-# 'completion' and 'turn_start' (schema v5) rows each append one per turn,
-# deduped only against an exact repeated (session_id, observed_at) retry.
+# 'completion', 'turn_start' (schema v5), and 'sample_tick' (schema v6) rows
+# each append one per turn/tick, deduped only against an exact repeated
+# (session_id, observed_at) retry.
 _SESSION_CHECKPOINT_TABLE_SQL = (
     'CREATE TABLE session_checkpoint ('
     ' id INTEGER PRIMARY KEY AUTOINCREMENT,'
     ' session_id TEXT NOT NULL,'
     ' provider TEXT NOT NULL,'
-    ' checkpoint_type TEXT NOT NULL,'  # 'baseline' | 'turn_start' | 'completion'
+    ' checkpoint_type TEXT NOT NULL,'  # 'baseline'|'turn_start'|'completion'|'sample_tick'
     ' observed_at TEXT NOT NULL,'
     ' input_fresh INTEGER,'
     ' input_cache_write INTEGER,'
@@ -125,21 +137,45 @@ _SESSION_CHECKPOINT_TABLE_SQL = (
     ' created_at TEXT NOT NULL'
     ')'
 )
-_SESSION_CHECKPOINT_INDEX_SQL = (
+_IDX_SESSION_CHECKPOINT_SESSION = (
     'CREATE INDEX idx_session_checkpoint_session '
-    'ON session_checkpoint(session_id, observed_at)',
+    'ON session_checkpoint(session_id, observed_at)'
+)
+_IDX_SESSION_CHECKPOINT_OBSERVED = (
     'CREATE INDEX idx_session_checkpoint_observed '
-    'ON session_checkpoint(observed_at)',
+    'ON session_checkpoint(observed_at)'
+)
+_IDX_SESSION_CHECKPOINT_BASELINE_ONCE = (
     'CREATE UNIQUE INDEX idx_session_checkpoint_baseline_once '
-    "ON session_checkpoint(session_id) WHERE checkpoint_type='baseline'",
+    "ON session_checkpoint(session_id) WHERE checkpoint_type='baseline'"
+)
+_IDX_SESSION_CHECKPOINT_COMPLETION_DEDUP = (
     'CREATE UNIQUE INDEX idx_session_checkpoint_completion_dedup '
-    "ON session_checkpoint(session_id, observed_at) WHERE checkpoint_type='completion'",
-    # Schema v5 (MC-998 turn-start fix): same dedup shape as 'completion' --
-    # one row per turn's start, never one per session -- an exact retry (the
-    # same turn-start call landing twice) is a no-op; a later turn's new
-    # observed_at always inserts.
+    "ON session_checkpoint(session_id, observed_at) WHERE checkpoint_type='completion'"
+)
+# Schema v5 (MC-998 turn-start fix): same dedup shape as 'completion' -- one
+# row per turn's start, never one per session -- an exact retry (the same
+# turn-start call landing twice) is a no-op; a later turn's new observed_at
+# always inserts.
+_IDX_SESSION_CHECKPOINT_TURN_START_DEDUP = (
     'CREATE UNIQUE INDEX idx_session_checkpoint_turn_start_dedup '
-    "ON session_checkpoint(session_id, observed_at) WHERE checkpoint_type='turn_start'",
+    "ON session_checkpoint(session_id, observed_at) WHERE checkpoint_type='turn_start'"
+)
+# Schema v6 (backlog 4668eafc follow-up: sample-tick checkpoints): same
+# dedup shape again -- one row per sampler tick a session was running for,
+# an exact retry (two sampler passes reusing the same cached vendor
+# observation) is a no-op, a later tick's new observed_at always inserts.
+_IDX_SESSION_CHECKPOINT_SAMPLE_TICK_DEDUP = (
+    'CREATE UNIQUE INDEX idx_session_checkpoint_sample_tick_dedup '
+    "ON session_checkpoint(session_id, observed_at) WHERE checkpoint_type='sample_tick'"
+)
+# NOTE: referenced by POSITION in the v4->v5 and v5->v6 migration branches
+# below via the named constants (never by tuple index) -- appending a new
+# index here is always safe for those branches, but keep using the name.
+_SESSION_CHECKPOINT_INDEX_SQL = (
+    _IDX_SESSION_CHECKPOINT_SESSION, _IDX_SESSION_CHECKPOINT_OBSERVED,
+    _IDX_SESSION_CHECKPOINT_BASELINE_ONCE, _IDX_SESSION_CHECKPOINT_COMPLETION_DEDUP,
+    _IDX_SESSION_CHECKPOINT_TURN_START_DEDUP, _IDX_SESSION_CHECKPOINT_SAMPLE_TICK_DEDUP,
 )
 
 
@@ -304,7 +340,19 @@ class UsageBreakdownStore:
             existing_indexes = {r[0] for r in db.execute(
                 "SELECT name FROM sqlite_master WHERE type='index'")}
             if 'idx_session_checkpoint_turn_start_dedup' not in existing_indexes:
-                db.execute(_SESSION_CHECKPOINT_INDEX_SQL[-1])
+                db.execute(_IDX_SESSION_CHECKPOINT_TURN_START_DEDUP)
+            version = 5
+            db.execute('PRAGMA user_version=5')
+        if version == 5 and app == APPLICATION_ID and (
+                {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                - {'sqlite_sequence'}) == _TABLES:
+            # v5->v6 (backlog 4668eafc follow-up, sample-tick checkpoints):
+            # additive-only, same reasoning as v4->v5 above -- only the dedup
+            # index is new, checkpoint_type already tolerates any string.
+            existing_indexes = {r[0] for r in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'")}
+            if 'idx_session_checkpoint_sample_tick_dedup' not in existing_indexes:
+                db.execute(_IDX_SESSION_CHECKPOINT_SAMPLE_TICK_DEDUP)
             db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
             return
         if (app != APPLICATION_ID or version != SCHEMA_VERSION
@@ -581,7 +629,7 @@ class UsageBreakdownStore:
         before a still-running session ever gets a session_fact."""
         if not session_id:
             raise ValueError('session_id is required')
-        if checkpoint_type not in ('baseline', 'turn_start', 'completion'):
+        if checkpoint_type not in ('baseline', 'turn_start', 'completion', 'sample_tick'):
             raise ValueError(f'invalid checkpoint_type: {checkpoint_type!r}')
         if not observed_at:
             raise ValueError('observed_at is required')
@@ -615,24 +663,35 @@ class UsageBreakdownStore:
 
     def get_session_checkpoints(self, session_id: str) -> dict[str, Any]:
         """{'baseline': row|None, 'turn_starts': [row, ...], 'completions':
-        [row, ...]} (each list oldest first) for one session_id. Callers
-        must never assume `completions` has at most one entry (P1-3,
-        docs/_journal/4668eafc-mc998-fenn-review.md "2026-09-28 re-review"
-        finding 3): Mode-A completions fire per turn, so a multi-turn
-        session accumulates one completion row per turn -- and, since
-        schema v5 (MC-998 turn-start fix), one 'turn_start' row per
-        follow-up/resume into an existing session."""
+        [row, ...], 'sample_ticks': [row, ...]} (each list oldest first) for
+        one session_id. Callers must never assume `completions` has at most
+        one entry (P1-3, docs/_journal/4668eafc-mc998-fenn-review.md
+        "2026-09-28 re-review" finding 3): Mode-A completions fire per turn,
+        so a multi-turn session accumulates one completion row per turn --
+        and, since schema v5 (MC-998 turn-start fix), one 'turn_start' row
+        per follow-up/resume into an existing session, and since schema v6
+        (backlog 4668eafc follow-up), one 'sample_tick' row per allowance
+        sample taken while the session was running. The dispatch table below
+        is exhaustive over the 4 known checkpoint_type values -- a 5th type
+        added later must get its own branch here, or it silently falls into
+        `completions` (the old bug this fix replaced, when 'sample_tick' had
+        no branch and landed there)."""
         with self._connection(write=False) as db:
             rows = db.execute(
                 'SELECT * FROM session_checkpoint WHERE session_id=? ORDER BY observed_at ASC',
                 (session_id,)).fetchall()
-            result: dict[str, Any] = {'baseline': None, 'turn_starts': [], 'completions': []}
+            result: dict[str, Any] = {
+                'baseline': None, 'turn_starts': [], 'completions': [], 'sample_ticks': [],
+            }
             for r in rows:
                 d = dict(r)
-                if d['checkpoint_type'] == 'baseline':
+                ctype = d['checkpoint_type']
+                if ctype == 'baseline':
                     result['baseline'] = d
-                elif d['checkpoint_type'] == 'turn_start':
+                elif ctype == 'turn_start':
                     result['turn_starts'].append(d)
+                elif ctype == 'sample_tick':
+                    result['sample_ticks'].append(d)
                 else:
                     result['completions'].append(d)
             return result

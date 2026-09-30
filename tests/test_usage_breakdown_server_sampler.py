@@ -96,6 +96,60 @@ def test_any_session_active_true_only_when_a_session_is_running(sr):
         agent_sessions.clear()
 
 
+def test_tick_running_sessions_only_writes_running_same_provider_non_incognito(sr, monkeypatch):
+    """Backlog 4668eafc follow-up (schema v6): `_usage_breakdown_tick_running_
+    sessions` is the routing layer between one allowance sample and the
+    per-session 'sample_tick' writer -- it must call the writer for every
+    RUNNING session on the sample's OWN provider, and skip idle sessions,
+    other-provider sessions, and incognito sessions. `observed_at=None` (no
+    fresh vendor reading) is a no-op regardless of what's running."""
+    from mc.blueprints import agent_routes as ar_mod
+    from mc.state import agent_sessions
+    ticked = []
+    monkeypatch.setattr(ar_mod, '_write_usage_breakdown_sample_tick',
+                         lambda session, observed_at: ticked.append((session['session_id'], observed_at)))
+    agent_sessions.clear()
+    try:
+        agent_sessions['running-claude'] = {'session_id': 'running-claude', 'status': 'running', 'provider': 'claude'}
+        agent_sessions['running-codex'] = {'session_id': 'running-codex', 'status': 'running', 'provider': 'codex'}
+        agent_sessions['idle-claude'] = {'session_id': 'idle-claude', 'status': 'idle', 'provider': 'claude'}
+        agent_sessions['incognito-claude'] = {'session_id': 'incognito-claude', 'status': 'running',
+                                               'provider': 'claude', 'incognito': True}
+
+        n = sr._usage_breakdown_tick_running_sessions(provider='claude', observed_at='2026-09-29T10:00:00Z')
+
+        assert n == 1
+        assert ticked == [('running-claude', '2026-09-29T10:00:00Z')]
+
+        ticked.clear()
+        n_none = sr._usage_breakdown_tick_running_sessions(provider='claude', observed_at=None)
+        assert n_none == 0
+        assert ticked == []
+    finally:
+        agent_sessions.clear()
+
+
+def test_sample_once_calls_tick_running_sessions_for_each_provider_sampled(sr, monkeypatch):
+    """`usage_breakdown_sample_once` must tick running sessions at the SAME
+    source_observed_at each allowance sample used for its own row -- a
+    different timestamp could never line up with an interval boundary."""
+    ticks = []
+    monkeypatch.setattr(sr, '_usage_breakdown_tick_running_sessions',
+                         lambda *, provider, observed_at: ticks.append((provider, observed_at)) or 0)
+    monkeypatch.setattr(sr, '_fetch_oauth_usage_limits',
+                         lambda: {'five_hour': {'utilization': 12.5, 'resets_at': '2026-10-01T00:00:00Z'}})
+    sr._oauth_usage_cache['ts'] = 1000.0
+    monkeypatch.setattr(sr, '_fetch_codex_usage_detail',
+                         lambda: {'event_at': '2026-09-28T12:00:00Z',
+                                  'weekly': {'utilization': 5.0, 'resets_at': '2026-10-05T00:00:00Z'}})
+
+    sr.usage_breakdown_sample_once()
+
+    from mc.usage_breakdown_sampler import _iso_from_epoch
+    assert ('claude', _iso_from_epoch(1000.0)) in ticks
+    assert ('codex', '2026-09-28T12:00:00Z') in ticks
+
+
 def test_prune_loop_interval_is_daily():
     from mc.blueprints import system_routes as sr_mod
     assert sr_mod._USAGE_BREAKDOWN_PRUNE_INTERVAL_S == 24 * 3600
