@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 /**
  * Desk v1 (MC-977, R2-6) — the ② How stop of the campaign map
- * (docs/THE_DESK_V1_IA_REVISION_2.md §3 row ② How, §8 R2-6 acceptance).
+ * (docs/THE_DESK_V1_IA_REVISION_2.md §11 amended row R2-6, §11.3 item 4).
  *
  * Drives camp-1 (Active, `approval.bounds` snapshot already recorded) through:
- *   How stop renders (strategy/angle/agent/budget) -> Suggest What/When/Where
- *   -> Working -> Ready -> ③ shows "3 suggested" -> Accept all creates 3
- *   Planned pieces -> ④ shows the suggested cadence -> ⑥ shows the suggested
- *   placement -> forced Posy failure -> Retry recovers -> budget own $50 on
- *   the Active campaign flips ⑥ Launch to "Awaiting approval" -> lowering to
- *   $40 does not clear it.
+ *   How stop renders (angle/strategy/never claim/budget), no agent picker and
+ *   no /api/characters request from this panel -> Never claim survives a stop
+ *   switch -> a $60 project earmark against a $100 pool with no other
+ *   earmarks reads "$40 remaining" -> Suggest What/When/Where -> Working ->
+ *   Ready -> ③ shows "3 suggested" -> Accept all creates 3 Planned pieces ->
+ *   ④ shows the suggested cadence -> ⑤ shows the suggested placement ->
+ *   forced Posy failure -> Retry recovers -> budget own $50 on the Active
+ *   campaign flips ⑥ Launch to "Awaiting approval" -> lowering to $40 does
+ *   not clear it.
  *
  * Real headless boot (real index.html + real static/js|css, no network), same
  * hermetic shape as every other desk-v1-*.mjs smoke.
@@ -53,9 +56,11 @@ const PROJECTS = [{
   distiller_max_explorations_per_session: 3, distiller_min_turns: 5,
   distiller_skip_errors: true, roster: [],
 }];
-// One character so desk-v1-how.js's agent picker (`/api/characters`) has a
-// real entry to resolve, matching what the live app serves — an empty list
-// would silently hide a broken fetch instead of exercising it.
+// desk-v1-kit.js fetches this ONCE at module load, for every panel that
+// resolves an agent name (the right-column box, §11.3's read-only
+// DeskV1Kit.deskAgentRef) — desk-v1-how.js itself no longer fetches or
+// renders a picker (§11.3 item 1), so this stub stays for kit.js's own
+// fetch, not for the How panel.
 const CHARACTERS = [{ scope: 'global', name: 'dave', agent_name: 'Dave', avatar: '🛡️' }];
 
 let bad = 0;
@@ -81,12 +86,18 @@ async function newBootedPage(browser) {
   const page = await ctx.newPage();
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
+  // §11.3 item 4: "the How panel makes no /api/characters request" — tracked
+  // for the WHOLE page (kit.js's own one-shot boot fetch is expected and
+  // happens before any How-stop nav below), so callers diff a count taken
+  // right before entering How against one taken right after.
+  const charRequests = [];
+  page.on('request', (req) => { if (new URL(req.url()).pathname === '/api/characters') charRequests.push(req.url()); });
   await page.route('**/*', fulfillOrAbort);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
-  return { ctx, page, pageErrors };
+  return { ctx, page, pageErrors, charRequests };
 }
 
 function reportUncaught(pageErrors, tag) {
@@ -122,24 +133,61 @@ async function nextToastText(page, triggerFn, timeout) {
 }
 
 async function run(browser) {
-  const { ctx, page, pageErrors } = await newBootedPage(browser);
+  const { ctx, page, pageErrors, charRequests } = await newBootedPage(browser);
   await navToCampaign(page);
 
-  // ── ② How stop renders strategy/angle/agent/budget ──────────────────────
+  // ── ② How stop renders angle/strategy/never-claim/budget, no agent picker ─
+  const charReqsBeforeHow = charRequests.length;
   await gotoStop(page, 'how');
   await page.waitForSelector('.desk-v1-how', { timeout: 8000 });
   const strategyVal = await page.inputValue('[data-how-strategy]').catch(() => '');
   /Show the beta working end to end/.test(strategyVal)
     ? ok(`How stop: strategy textarea reads the fixture: "${strategyVal.trim()}"`)
     : fail(`How stop: strategy textarea wrong: ${JSON.stringify(strategyVal)}`);
-  const agentLabel = (await page.textContent('[data-how-agent-trigger]').catch(() => '') || '').trim();
-  agentLabel.length > 0 && agentLabel !== 'undefined'
-    ? ok(`How stop: agent picker trigger renders a label: "${agentLabel}"`)
-    : fail(`How stop: agent picker trigger empty: ${JSON.stringify(agentLabel)}`);
-  const budgetSource = await page.inputValue('[data-how-budget-source]').catch(() => '');
-  budgetSource === 'none'
+  const neverClaimVal = await page.inputValue('[data-how-never-claim]').catch(() => '');
+  /Feature completeness on ARM/.test(neverClaimVal)
+    ? ok(`How stop: Never claim reads the fixture: "${neverClaimVal.trim()}"`)
+    : fail(`How stop: Never claim wrong: ${JSON.stringify(neverClaimVal)}`);
+
+  // §11.3 item 1: the agent picker moved to R2-18's Plan stop — How renders
+  // none, and fetches nothing to feed one.
+  const agentTriggerCount = await page.locator('[data-how-agent-trigger]').count();
+  agentTriggerCount === 0
+    ? ok('How stop: no agent picker trigger ([data-how-agent-trigger] count 0)')
+    : fail(`How stop: agent picker trigger still renders, count ${agentTriggerCount}`);
+  const charReqsAfterHow = charRequests.length - charReqsBeforeHow;
+  charReqsAfterHow === 0
+    ? ok('How stop: the How panel makes no /api/characters request')
+    : fail(`How stop: /api/characters requested ${charReqsAfterHow} time(s) after entering How`);
+
+  const budgetNonePressed = await page.getAttribute('[data-how-budget-btn="none"]', 'aria-pressed').catch(() => '');
+  budgetNonePressed === 'true'
     ? ok('How stop: budget starts at "None" (fixture default)')
-    : fail(`How stop: budget source should start "none", got: ${JSON.stringify(budgetSource)}`);
+    : fail(`How stop: budget source should start "none", got aria-pressed=${JSON.stringify(budgetNonePressed)}`);
+
+  // ── Never claim survives a stop switch ───────────────────────────────────
+  await page.fill('[data-how-never-claim]', 'Never claim: guaranteed uptime');
+  await page.keyboard.press('Tab'); // blur fires the real 'change' exactly once
+  await gotoStop(page, 'what');
+  await page.waitForSelector('[data-filter-trigger]', { timeout: 4000 });
+  await gotoStop(page, 'how');
+  await page.waitForSelector('[data-how-never-claim]', { timeout: 4000 });
+  const neverClaimAfterSwitch = await page.inputValue('[data-how-never-claim]').catch(() => '');
+  neverClaimAfterSwitch === 'Never claim: guaranteed uptime'
+    ? ok('Never claim: survives a stop switch')
+    : fail(`Never claim: lost after stop switch: ${JSON.stringify(neverClaimAfterSwitch)}`);
+
+  // ── $60 project earmark against a $100 pool, no other earmarks -> $40 remaining
+  await page.click('[data-how-budget-btn="project"]');
+  await page.waitForSelector('[data-how-budget-amount]', { timeout: 4000 });
+  await page.fill('[data-how-budget-amount]', '60');
+  await page.keyboard.press('Tab');
+  const poolLine = (await page.textContent('[data-how-budget-card] .desk-v1-rules-hint').catch(() => '') || '').trim();
+  /\$60 \/ term earmarked from Clayrune's \$100\/month budget .* \$40 remaining for other campaigns/.test(poolLine)
+    ? ok(`How stop: $60 earmark against a $100 pool reads "${poolLine}"`)
+    : fail(`How stop: pool line wrong: ${JSON.stringify(poolLine)}`);
+  // Reset to 'none' so the later ⑥ own-budget section below starts clean.
+  await page.click('[data-how-budget-btn="none"]');
 
   // ── Suggest What/When/Where -> Working -> Ready ──────────────────────────
   const famCountBefore = await familyCountFor(page, 'camp-1');
@@ -223,7 +271,7 @@ async function run(browser) {
   // ── ⑥ budget own $50 on an Active campaign -> Awaiting approval ─────────
   await gotoStop(page, 'how');
   await page.waitForSelector('.desk-v1-how', { timeout: 4000 });
-  await page.selectOption('[data-how-budget-source]', 'own');
+  await page.click('[data-how-budget-btn="own"]');
   await page.waitForSelector('[data-how-budget-amount]', { timeout: 4000 });
   await page.fill('[data-how-budget-amount]', '50');
   await page.keyboard.press('Tab'); // blur fires the real 'change' exactly once

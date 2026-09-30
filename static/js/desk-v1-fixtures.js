@@ -89,6 +89,8 @@
   const _CAMP1_HOW = {
     strategy: 'Show the beta working end to end, not just announce it.',
     angle: 'Show the restore-points and install flow working end to end so trying the beta feels low-risk.',
+    // R2-6 (§11.3 item 2): matches mockup frame 4's fixture value exactly.
+    never_claim: 'Feature completeness on ARM (not verified yet)',
     agent: null,
     budget: { source: 'none' },
   };

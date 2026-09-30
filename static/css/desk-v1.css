@@ -1683,13 +1683,31 @@
   .desk-v1-eng-filters { flex-direction: column; }
 }
 
-/* R2-6 (THE_DESK_V1_IA_REVISION_2.md §8 row): ② How stop panel. Reuses
-   .desk-v1-rules-group/-group-title/-textarea/-numinput/-inlinerow/-hint
-   and .desk-v1-project-newcamp-btn as-is (same component set the rules
-   popover and Presence page already established) — only the panel's own
-   scroll wrapper and the "n suggested" banner (also used by ④'s calendar
-   and shared with ③'s Content-tab list) are new. */
+/* R2-6 (THE_DESK_V1_IA_REVISION_2.md §11 amended row, §11.3): ② How stop
+   panel. Two boxed cards (Strategy, Budget) matching mockup frame 4 —
+   .desk-v1-how-card is the same surface/border/radius language as
+   .desk-v1-project-camp-card, just with a bold title row instead of a
+   click target. Reuses .desk-v1-rules-textarea/-textinput/-numinput/
+   -inlinerow/-hint as-is (same component set the rules popover and
+   Presence page already established) — only the card wrapper, the field
+   label row, the Budget segmented toggle and the panel's own scroll
+   wrapper + "n suggested" banner (also used by ④'s calendar and shared
+   with ③'s Content-tab list) are new. */
 .desk-v1-how { display: flex; flex-direction: column; gap: 14px; height: 100%; min-height: 0; overflow-y: auto; }
+.desk-v1-how-card {
+  display: flex; flex-direction: column; gap: 12px;
+  background: var(--surface); border: 1px solid var(--border2); border-radius: 10px; padding: 16px;
+}
+.desk-v1-how-card-title { font-size: 14px; font-weight: 700; color: var(--text); }
+.desk-v1-how-field { display: flex; flex-direction: column; gap: 4px; }
+.desk-v1-how-field-label { font-size: 12px; font-weight: 600; color: var(--text-dim); }
+.desk-v1-how-budget-toggle { display: flex; flex-wrap: wrap; gap: 8px; }
+.desk-v1-how-budget-toggle button {
+  background: var(--surface3); border: 1px solid var(--border2); border-radius: 999px; color: var(--text-dim);
+  font-size: 12.5px; font-weight: 600; padding: 6px 14px; cursor: pointer; font-family: inherit;
+}
+.desk-v1-how-budget-toggle button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.desk-v1-how-suggest { display: flex; flex-direction: column; gap: 6px; }
 .desk-v1-camp-suggested-banner {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px;
