@@ -311,6 +311,18 @@
       </div>`;
   }
 
+  // Same letter-glyph convention `_platformGlyph` uses in
+  // desk-v1-conversations.js — duplicated locally (not shared via
+  // DeskV1Kit) rather than reaching into a parallel builder's file; it's
+  // two lines and the two call sites can drift independently. Reads
+  // `filled.platform` directly, same as the title-line's own `· platform`
+  // suffix below — NOT the resolved channel, which only exists when
+  // `filled.channelId` is also set and would leave most filled slots (a
+  // platform without a specific channel picked yet) with no glyph at all.
+  // An unfilled slot has no platform yet, so it gets a neutral dot.
+  const _SLOT_PLATFORM_GLYPH = { x: '𝕏', linkedin: 'in', blog: '≡', web: '◉' };
+  function _slotGlyph(platform) { return platform ? (_SLOT_PLATFORM_GLYPH[platform] || '◉') : '•'; }
+
   // ── R2-9: a slot chip — solid "Your slot" (origin:'user') or dashed
   // "Agent suggested" (origin:'agent'); once filled it also shows the
   // piece + platform, and a held DESTINATION channel still overrides to
@@ -328,15 +340,26 @@
     const originWord = isUser ? 'Your slot' : 'Agent suggested';
     const cls = ['desk-v1-cal-slotchip', isUser ? 'desk-v1-cal-slotchip-user' : 'desk-v1-cal-slotchip-agent'];
     if (!isUser) cls.push('desk-v1-cal-chip-dashed');
+    // Dave review pass 4: line 1 is glyph + time ONLY and must never
+    // truncate ("2:00… Your …" was line 1 carrying time+origin+held all
+    // at once). The label — origin word when unfilled, piece title (+
+    // held) once filled — is line 2, where an ellipsis is allowed. Title
+    // no longer carries a "· platform" suffix (dropped, not just moved):
+    // the glyph on line 1 already says platform, and mockup examples
+    // ("Install video", "Retro FAQ ⚠ held") have no suffix — keeping it
+    // was pushing "⚠ held" past the ellipsis at a ~98px month column
+    // (measured: "Retro FAQ · li…" with held silently gone).
+    const line2 = slot.filled
+      ? `<span class="desk-v1-cal-slotchip-title">${esc(slot.filled.title)}${held ? ' <span class="desk-v1-cal-slotchip-held">⚠ held</span>' : ''}</span>`
+      : `<span class="desk-v1-cal-slotchip-origin">${esc(originWord)}</span>`;
     return `
       <button type="button" class="${cls.join(' ')}" data-slot-id="${esc(slot.id)}" data-slot-origin="${esc(slot.origin)}"
           aria-label="${esc(isUser ? 'your own slot' : 'agent-suggested')}${held ? ' · held' : ''}, ${esc(_fmtTime(at))}">
         <span class="desk-v1-cal-slotchip-line1">
+          <span class="desk-v1-cal-slotchip-glyph" aria-hidden="true">${esc(_slotGlyph(slot.filled && slot.filled.platform))}</span>
           <span class="desk-v1-cal-slotchip-time">${esc(_fmtTime(at))}</span>
-          <span class="desk-v1-cal-slotchip-origin">${esc(originWord)}</span>
-          ${held ? '<span class="desk-v1-cal-slotchip-held">⚠ held</span>' : ''}
         </span>
-        ${slot.filled ? `<span class="desk-v1-cal-slotchip-title">${esc(slot.filled.title)}${slot.filled.platform ? ' · ' + esc(slot.filled.platform) : ''}</span>` : ''}
+        ${line2}
       </button>`;
   }
 
@@ -348,11 +371,14 @@
   // a day cell to create an own slot (§8: "the user drags on the calendar
   // to create OWN slots") — dragging FROM a day cell itself would collide
   // with the existing reschedule-drag surface those same cells already are.
-  function _slotRowHTML(days, campaign) {
-    const slots = _ownSlots(campaign);
+  function _slotsByDay(campaign) {
     const byDay = {};
-    slots.forEach((s) => { const k = _dayKey(new Date(s.at)); (byDay[k] = byDay[k] || []).push(s); });
+    _ownSlots(campaign).forEach((s) => { const k = _dayKey(new Date(s.at)); (byDay[k] = byDay[k] || []).push(s); });
     Object.values(byDay).forEach((arr) => arr.sort((a, b) => new Date(a.at) - new Date(b.at)));
+    return byDay;
+  }
+  function _slotRowHTML(days, campaign) {
+    const byDay = _slotsByDay(campaign);
     const cellsHTML = days.map((d) => {
       const key = _dayKey(d.date);
       const items = byDay[key] || [];
@@ -552,6 +578,58 @@
     return `<div class="desk-v1-cal-grid-wrap"><div class="desk-v1-cal-grid" style="--desk-v1-cal-cols:${days.length}">${header}${slotRow}${body}</div></div>`;
   }
 
+  // ── R2-9b (Dave follow-up): Month is a REAL 7-column calendar grid
+  // (Mon..Sun, every week of the month visible, chips inside day cells) —
+  // not the week grid's per-channel-row technique stretched to ~30 columns,
+  // which only ever showed ~6 days before needing a horizontal scroll the
+  // modal's ~690px never gives it. A month cell has no single channel to key
+  // on (frame 6 mixes @ron/LinkedIn/blog content and both own+agent slots in
+  // the SAME cell), so this is a plain 2D grid instead of `_gridHTML`'s row
+  // stack: 7 weekday header cells then N*7 day cells, all direct children of
+  // one `grid-template-columns: repeat(7, ...)` container — CSS Grid's own
+  // row-wrapping needs no JS-computed grid-row/-column math.
+  //
+  // Each day cell still carries `.desk-v1-cal-cell.pd-drop-target` (content
+  // reschedule drop target, `_bindDrag`) AND `.desk-v1-cal-slotcell` +
+  // `data-slot-cell-add` (own-slot-create drag, `_bindSlotCreate`) — both
+  // existing drag flows target those classes by selector regardless of which
+  // grid shape rendered them, so own-slot drag keeps working on these cells
+  // with no changes to either binder.
+  function _monthCellsFlat(days) {
+    const first = days[0].date;
+    const wd = first.getDay();
+    const lead = wd === 0 ? 6 : wd - 1; // Monday-start pad, same rule _rangeDays uses
+    const flat = new Array(lead).fill(null).concat(days);
+    while (flat.length % 7 !== 0) flat.push(null);
+    return flat;
+  }
+  const _MONTH_WEEKDAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  function _monthDayCellHTML(day, rows, cells, todayKey, slotsByDay) {
+    if (!day) return '<div class="desk-v1-cal-cell desk-v1-cal-monthcell desk-v1-cal-monthcell-outmonth"></div>';
+    const key = _dayKey(day.date);
+    const entries = [];
+    rows.forEach((ch) => (cells[ch.id + '|' + key] || []).forEach((it) => entries.push({ when: it.when, html: _chipHTML(it, ch) })));
+    (slotsByDay[key] || []).forEach((s) => entries.push({ when: new Date(s.at), html: _slotChipHTML(s) }));
+    entries.sort((a, b) => a.when - b.when);
+    const cls = ['desk-v1-cal-cell', 'desk-v1-cal-monthcell', 'desk-v1-cal-slotcell', 'pd-drop-target'];
+    if (key === todayKey) cls.push('desk-v1-cal-cell-today');
+    if (_isWeekend(day.date)) cls.push('desk-v1-cal-cell-weekend');
+    return `<div class="${cls.join(' ')}" data-day-key="${esc(key)}">
+      <span class="desk-v1-cal-cell-preview"></span>
+      <div class="desk-v1-cal-monthcell-head">
+        <span class="desk-v1-cal-monthcell-daynum">${new Intl.DateTimeFormat(undefined, { timeZone: _userTz(), day: 'numeric' }).format(day.date)}</span>
+        <span class="desk-v1-cal-slotcell-add" data-slot-cell-add aria-label="Drag to add your own slot" title="Drag to add your own slot">+</span>
+      </div>
+      <div class="desk-v1-cal-monthcell-items">${entries.map((e) => e.html).join('')}</div>
+    </div>`;
+  }
+  function _monthGridHTML(campaign, days, rows, cells, todayKey) {
+    const slotsByDay = _slotsByDay(campaign);
+    const header = _MONTH_WEEKDAY_NAMES.map((w) => `<div class="desk-v1-cal-monthgrid-headcell">${esc(w)}</div>`).join('');
+    const body = _monthCellsFlat(days).map((d) => _monthDayCellHTML(d, rows, cells, todayKey, slotsByDay)).join('');
+    return `<div class="desk-v1-cal-grid-wrap desk-v1-cal-grid-wrap-month"><div class="desk-v1-cal-monthgrid-head">${header}</div><div class="desk-v1-cal-monthgrid">${body}</div></div>`;
+  }
+
   // Phone (§11): "Calendar on phone defaults to an agenda list grouped by
   // day." Same cell data, transposed grouping — day, then channel — which a
   // CSS reflow of the grid markup can't produce (it's a different axis), so
@@ -635,7 +713,7 @@
         <div class="desk-v1-cal-slot-refusal" data-slot-refusal></div>
         ${_toolbarHTML(st, days)}
         ${_legendHTML()}
-        ${_gridHTML(st, campaign, days, rows, cells, todayKey)}
+        ${st.view === 'month' ? _monthGridHTML(campaign, days, rows, cells, todayKey) : _gridHTML(st, campaign, days, rows, cells, todayKey)}
         ${_agendaHTML(days, rows, cells, todayKey)}
         ${_unscheduledHTML(st, campaign)}
         <div class="desk-v1-cal-footnote">Calendar is a view of Content, not a separate place. Dragging a chip reschedules it (approval covers content, not time, within your rules). Click a chip to open its review.</div>
@@ -826,7 +904,11 @@
       data: {},
       draggingClass: 'desk-v1-cal-slot-handle-dragging',
       ghostClass: 'pd-ghost desk-v1-cal-slotchip-ghost',
-      ghostHTML: () => '<span class="desk-v1-cal-slotchip-time">New</span><span class="desk-v1-cal-slotchip-origin">Your slot</span>',
+      // Dave review pass 3, point 2 (superseded by pass 4's line1/line2
+      // split, `_slotChipHTML` below): line 1 is glyph + time only, "Your
+      // slot" is line 2 — matches the real chip's structure so the ghost
+      // previews what will actually land.
+      ghostHTML: () => '<span class="desk-v1-cal-slotchip-line1"><span class="desk-v1-cal-slotchip-glyph" aria-hidden="true">•</span><span class="desk-v1-cal-slotchip-time">New</span></span><span class="desk-v1-cal-slotchip-origin">Your slot</span>',
       ghostRotationDeg: -3,
       ghostOffsetX: 18, ghostOffsetY: 18,
       onMove: (st, x, y) => {
