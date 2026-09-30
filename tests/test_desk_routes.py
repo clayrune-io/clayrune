@@ -572,6 +572,54 @@ def test_finding_state_routes_refuse_an_unattended_caller(client, unattended):
     assert _desk.get_finding(fid)['state'] == 'proposed'
 
 
+def test_reconfirm_and_retire_routes(client):
+    fid = _propose()
+    client.post(f'/api/desk/findings/{fid}/confirm', json={'decided_by': 'ron'})
+    assert client.post(f'/api/desk/findings/{fid}/reconfirm', json={}).status_code == 404, \
+        'not stale yet'
+    assert client.post(f'/api/desk/findings/{fid}/retire', json={}).status_code == 404, \
+        'not stale yet'
+
+    assert _desk.mark_stale(fid, reason='test') is not None
+
+    r = client.post(f'/api/desk/findings/{fid}/reconfirm',
+                    json={'decided_by': 'ron', 'edited_text': 'Still holds.'})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body['state'] == 'confirmed' and body['edited_text'] == 'Still holds.'
+    assert body['stale_at'] is None
+
+    _desk.mark_stale(fid, reason='test again')
+    r2 = client.post(f'/api/desk/findings/{fid}/retire', json={'decided_by': 'ron'})
+    assert r2.status_code == 200 and r2.get_json()['state'] == 'retired'
+
+    assert client.post('/api/desk/findings/nope/reconfirm', json={}).status_code == 404
+    assert client.post('/api/desk/findings/nope/retire', json={}).status_code == 404
+
+
+def test_reconfirm_and_retire_refuse_a_field_naming_a_bound(client):
+    fid = _propose()
+    client.post(f'/api/desk/findings/{fid}/confirm', json={'decided_by': 'ron'})
+    _desk.mark_stale(fid, reason='test')
+    for route in ('reconfirm', 'retire'):
+        for field in ('cadence', 'budget', 'accounts', 'approval', 'end', 'post_cap'):
+            r = client.post(f'/api/desk/findings/{fid}/{route}', json={field: 'anything'})
+            assert r.status_code == 400, f'{route}: {field!r} must be refused'
+    assert _desk.get_finding(fid)['state'] == 'stale'
+
+
+def test_reconfirm_and_retire_refuse_an_unattended_caller(client, unattended):
+    # confirm/mark_stale go through the store directly, not the (also-gated)
+    # confirm route — the unattended fixture is active for this whole test,
+    # and only reconfirm/retire's own refusal is under test here.
+    fid = _propose()
+    _desk.confirm_finding(fid, decided_by='ron')
+    _desk.mark_stale(fid, reason='test')
+    assert client.post(f'/api/desk/findings/{fid}/reconfirm', json={}).status_code == 403
+    assert client.post(f'/api/desk/findings/{fid}/retire', json={}).status_code == 403
+    assert _desk.get_finding(fid)['state'] == 'stale'
+
+
 def test_retro_route_computes_too_few_posts_verdict_and_proposes_nothing(client):
     r = client.post('/api/desk/retro', json={
         'project_id': 'mc', 'metric': 'clicks',

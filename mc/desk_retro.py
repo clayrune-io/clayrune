@@ -180,11 +180,24 @@ def run_retro(project_id: str, *, dimension_arms: dict[str, dict], account: str 
         evidence_key = _desk.evidence_key(evidence)
         if _desk.is_finding_suppressed(project_id, dimension, arm_labels, direction, evidence_key):
             continue
+        # §10.2: "confirmed -> stale when a newer retro points the other way."
+        # A confirmed finding on this exact project/dimension/arms whose
+        # direction disagrees with what this retro just found is stale news —
+        # mark it before proposing the new one, and link the new finding back
+        # to it (`contradicts`) so the evidence trail survives to the UI.
+        contradicts = None
+        for existing in _desk.list_findings(project_id=project_id, state='confirmed'):
+            if (existing.get('dimension') == dimension
+                    and existing.get('arms') == arm_labels
+                    and (existing.get('effect') or {}).get('direction') != direction):
+                stale = _desk.mark_stale(existing['id'], reason=f'Contradicts new evidence ({direction})')
+                if stale:
+                    contradicts = existing['id']
         fid = _desk.propose_finding(
             project_id=project_id, dimension=dimension, arms=arm_labels,
             account=account, metric=metric, effect=verdict['effect'],
             evidence=evidence, n_total=verdict['n_total'],
-            confidence=verdict['confidence'],
+            confidence=verdict['confidence'], contradicts=contradicts,
         )
         if fid:
             proposed.append(fid)

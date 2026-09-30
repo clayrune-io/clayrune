@@ -49,7 +49,7 @@ for the same reason `automation_suggestions` has no code path to the scheduler.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 import difflib
@@ -1408,13 +1408,20 @@ def is_finding_suppressed(project_id: str | None, dimension: str, arms,
 def propose_finding(*, project_id: str | None, dimension: str, arms,
                     account: str | None = None, metric: str | None = None,
                     effect: dict, evidence: list[dict], n_total: int,
-                    confidence: str, maybe_why: str | None = None) -> str:
+                    confidence: str, maybe_why: str | None = None,
+                    contradicts: str | None = None) -> str:
     """Add a `proposed` finding. ALWAYS `origin: 'unattended'` (§10.5.2): the
     retro that produces this is code-computed, not a human judgement, so its
     output starts on the unattended side of the loop no matter who or what
     triggered the retro run. It only becomes `origin: 'interactive'` when Ron
     confirms it (`confirm_finding` below) — autonomous output never becomes
-    autonomous input, the same rule `exploration_read_floor` enforces."""
+    autonomous input, the same rule `exploration_read_floor` enforces.
+
+    `contradicts` (R2-16, §10.2): the id of a CONFIRMED finding this one
+    points the opposite direction from — `desk_retro.run_retro` passes it
+    when it has already called `mark_stale` on that finding for the same
+    reason. Purely descriptive (evidence trail for the UI's `Contradicts F3`
+    line); it carries no authority of its own."""
     fid = _new_id('finding')
     finding = {
         'id': fid, 'project_id': project_id, 'scope': 'project',
@@ -1423,6 +1430,7 @@ def propose_finding(*, project_id: str | None, dimension: str, arms,
         'confidence': confidence, 'maybe_why': _guarded_text(maybe_why),
         'state': 'proposed', 'origin': 'unattended',
         'decided_at': None, 'decided_by': None, 'edited_text': None,
+        'stale_at': None, 'stale_reason': None, 'contradicts': contradicts,
     }
     with _store_lock:
         store = _read_store()
@@ -1524,6 +1532,98 @@ def undo_reject(finding_id: str) -> dict | None:
         f['decided_by'] = None
         store['playbook']['rejections'] = [
             r for r in store['playbook']['rejections'] if r.get('finding_id') != finding_id]
+        _write_store(store)
+        return dict(f)
+
+
+# ── Stale (R2-16, §10.2) ──────────────────────────────────────────────────────
+#
+# "confirmed -> stale when a newer retro points the other way ... or after 180
+# days -> Ron re-confirms or retires." Two ways IN (a contradicting retro via
+# `mark_stale`, called by `desk_retro.run_retro`; age, via the sweep below),
+# both system-triggered — neither stamps `decided_by`, because going stale is
+# not a decision, it is the trigger for one. Only `reconfirm_finding` and
+# `retire_finding` are decisions, and (like confirm/reject/undo above) only
+# Ron may make them — `desk_routes.py` refuses an unattended caller on both.
+
+STALE_AGE_DAYS = 180
+
+
+def mark_stale(finding_id: str, *, reason: str) -> dict | None:
+    """Only a `confirmed` finding can go stale — mirrors `undo_reject` only
+    operating on `rejected`. Returns None (no-op) for any other state, so a
+    caller need not check state first."""
+    with _store_lock:
+        store = _read_store()
+        f = store['playbook']['findings'].get(finding_id)
+        if f is None or f.get('state') != 'confirmed':
+            return None
+        f['state'] = 'stale'
+        f['stale_at'] = now_iso()
+        f['stale_reason'] = reason
+        _write_store(store)
+        return dict(f)
+
+
+def sweep_stale_findings(*, now: str | None = None, age_days: int = STALE_AGE_DAYS) -> list[str]:
+    """The 180-day half of §10.2's stale trigger (the other half — a newer
+    retro pointing the other way — is `mark_stale`, called from
+    `desk_retro.run_retro`). Not wired to any request; a scheduled/steward
+    cycle calls this directly. Returns the ids just marked stale."""
+    now_dt = datetime.fromisoformat(now) if now else datetime.now(timezone.utc)
+    marked: list[str] = []
+    with _store_lock:
+        store = _read_store()
+        for f in store['playbook']['findings'].values():
+            if f.get('state') != 'confirmed' or not f.get('decided_at'):
+                continue
+            decided_dt = datetime.fromisoformat(f['decided_at'])
+            if (now_dt - decided_dt).days >= age_days:
+                f['state'] = 'stale'
+                f['stale_at'] = now_iso()
+                f['stale_reason'] = f'{age_days} days since last confirmation'
+                marked.append(f['id'])
+        if marked:
+            _write_store(store)
+    return marked
+
+
+def reconfirm_finding(finding_id: str, *, edited_text: str | None = None,
+                      decided_by: str | None = None) -> dict | None:
+    """Ron's response to a stale finding that still holds (§10.2): stale ->
+    confirmed, resetting the 180-day clock. Only operates on a `stale`
+    finding — the same "only its own prior state" guard `undo_reject`
+    applies to `rejected`."""
+    with _store_lock:
+        store = _read_store()
+        f = store['playbook']['findings'].get(finding_id)
+        if f is None or f.get('state') != 'stale':
+            return None
+        f['state'] = 'confirmed'
+        f['origin'] = 'interactive'
+        f['decided_at'] = now_iso()
+        f['decided_by'] = decided_by
+        f['stale_at'] = None
+        f['stale_reason'] = None
+        if edited_text is not None:
+            f['edited_text'] = _guarded_text(edited_text)
+        _write_store(store)
+        return dict(f)
+
+
+def retire_finding(finding_id: str, *, decided_by: str | None = None) -> dict | None:
+    """Ron's other response to a stale finding: drop it for good. Distinct
+    from `reject_finding` — a retired finding was once confirmed and earned
+    real evidence, so retiring it records no rejection and blocks nothing;
+    it is a closed chapter, not a "no". Only operates on a `stale` finding."""
+    with _store_lock:
+        store = _read_store()
+        f = store['playbook']['findings'].get(finding_id)
+        if f is None or f.get('state') != 'stale':
+            return None
+        f['state'] = 'retired'
+        f['decided_at'] = now_iso()
+        f['decided_by'] = decided_by
         _write_store(store)
         return dict(f)
 

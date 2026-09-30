@@ -226,27 +226,56 @@ def _post_signal(client):
         'summary': 'Shipped drag-to-hire, now live'}).get_json()
 
 
-def test_draft_dispatches_posy_not_the_default_agent(client):
+def _pick_agent(project_id='p', agent='global:dave'):
+    """R1-A: a draft/dispatch route 409s until the project has picked who
+    plans/writes for it (`presence.desk_agent`) — `desk.upsert_presence`
+    writes straight to the store `desk_routes.wire()` pointed at, bypassing
+    the HTTP route's character-existence check, which is exactly right for a
+    unit test that fakes dispatch and never touches the real roster."""
+    desk.upsert_presence(project_id, {'desk_agent': agent})
+
+
+def test_draft_dispatches_the_picked_agent_not_a_hardcoded_default(client):
+    """R1-A (MC-977 §5.3): the draft route used to hardcode
+    `global:social-media-strategist` for every project. It now resolves
+    `presence.desk_agent` — proved here by picking a DIFFERENT agent
+    (`global:dave`) and asserting that one is dispatched, not the old
+    hardcoded name."""
+    _pick_agent(agent='global:dave')
     sig = _post_signal(client)
     r = client.post('/api/desk/draft', json={'signal_id': sig['id'], 'voice': 'personal'})
     assert r.status_code == 202
     assert r.get_json()['session_id'] == 'sess-123'
 
     call = client.dispatch_calls[0]
-    assert call['character'] == 'global:social-media-strategist'
+    assert call['character'] == 'global:dave'
     assert call['strict_character'] is True, \
-        'an unresolvable Posy must refuse, not write in the default voice'
+        'an unresolvable pick must refuse, not write in the default voice'
     assert call['source'] == 'agent'
     assert '$0.200' in call['task'], 'the brief itself was handed over'
 
 
+def test_draft_with_no_agent_picked_names_the_project_not_a_silent_default(client):
+    """The other half of R1-A: a project that never picked anyone gets a
+    structured 409 naming it, rather than the pre-R1-A silent default."""
+    sig = _post_signal(client)
+    r = client.post('/api/desk/draft', json={'signal_id': sig['id'], 'voice': 'personal'})
+    assert r.status_code == 409
+    body = r.get_json()
+    assert body['pick_agent'] is True
+    assert body['project_id'] == 'p'
+    assert client.dispatch_calls == []
+
+
 def test_platform_follows_the_voice(client):
+    _pick_agent()
     sig = _post_signal(client)
     r = client.post('/api/desk/draft', json={'signal_id': sig['id'], 'voice': 'product'})
     assert r.get_json()['platform'] == 'linkedin'
 
 
 def test_a_signal_is_drafted_from_once(client):
+    _pick_agent()
     sig = _post_signal(client)
     assert client.post('/api/desk/draft', json={'signal_id': sig['id']}).status_code == 202
     desk.mark_signal_consumed(sig['id'], 'draft-1')
@@ -281,6 +310,7 @@ def test_platform_rules_crud_reaches_the_draft_brief(client):
     assert r.get_json()['char_limit'] == 500
 
     assert desk.create_voice('fb_route_test', platform='facebook')
+    _pick_agent()
     sig = _post_signal(client)
     r = client.post('/api/desk/draft', json={'signal_id': sig['id'], 'voice': 'fb_route_test'})
     assert r.status_code == 202
@@ -306,6 +336,10 @@ def test_unwired_dispatch_says_so_rather_than_pretending(tmp_path):
         load_project_fn=lambda pid: {'id': 'p', 'name': 'Proj'},
         store_path=tmp_path / 'd.json', signals_path=tmp_path / 'd.jsonl')
     desk_routes.dispatch_agent = None
+    # R1-A's pick-agent gate runs before the wiring check (draft() checks
+    # agent_ref, then dispatch_agent) — without a pick this 409s before ever
+    # reaching the unwired-dispatch branch this test exists to exercise.
+    desk.upsert_presence('p', {'desk_agent': 'global:dave'})
     app.register_blueprint(desk_routes.bp)
     c = app.test_client()
     sig = c.post('/api/desk/signals', json={'project_id': 'p', 'summary': 'x'}).get_json()

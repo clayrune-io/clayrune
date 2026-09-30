@@ -581,6 +581,39 @@ def undo_reject(finding_id):
     return jsonify(f)
 
 
+@bp.route('/api/desk/findings/<finding_id>/reconfirm', methods=['POST'])
+def reconfirm_finding(finding_id):
+    """R2-16 (§10.2): Ron's response to a `stale` finding that still holds."""
+    if is_unattended_caller():
+        return _unattended_refusal()
+    d = request.get_json(silent=True) or {}
+    violation = _bound_field_violation(d)
+    if violation is not None:
+        return violation
+    f = _desk.reconfirm_finding(finding_id, edited_text=d.get('edited_text'),
+                                decided_by=d.get('decided_by'))
+    if f is None:
+        return jsonify({'error': 'finding not found or not stale'}), 404
+    return jsonify(f)
+
+
+@bp.route('/api/desk/findings/<finding_id>/retire', methods=['POST'])
+def retire_finding(finding_id):
+    """R2-16 (§10.2): Ron's other response to a `stale` finding — drop it for
+    good, distinct from Reject (§10.5.3's durable "no" is for a finding that
+    never earned confidence; this one already did)."""
+    if is_unattended_caller():
+        return _unattended_refusal()
+    d = request.get_json(silent=True) or {}
+    violation = _bound_field_violation(d)
+    if violation is not None:
+        return violation
+    f = _desk.retire_finding(finding_id, decided_by=d.get('decided_by'))
+    if f is None:
+        return jsonify({'error': 'finding not found or not stale'}), 404
+    return jsonify(f)
+
+
 # ── Drafting ─────────────────────────────────────────────────────────────────
 
 @bp.route('/api/desk/draft', methods=['POST'])
