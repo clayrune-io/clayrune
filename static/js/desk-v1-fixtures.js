@@ -1165,6 +1165,20 @@
       evidence_key: 'camp-archived-1:1', rejected_at: '2026-08-06T09:00:00Z' },
   ];
 
+  // ── R2-17: what a desk agent's Suggest task RETURNS (§10.3): each suggestion
+  // carries `because: [finding ids]` or `because: 'untested'`. These are the
+  // agent's own claims, deliberately not all valid, so the UI's drop rule is
+  // exercised by the default fixtures: F5 and F99 do not exist, F3 is
+  // `rejected` (so the Tue 09:00 slot shows no chip until F3 is confirmed),
+  // F6 is confirmed. 2 of the 5 suggestions read `Trying` (§10.3: at least 1
+  // in 5 tries something the playbook does not favour). desk-v1-campaign.js's
+  // `_runSuggestTask` reads this; a real agent's reply would replace it.
+  const SUGGEST_REPLY = {
+    what: [{ because: ['F6'] }, { because: ['F5', 'F99'] }, { because: 'untested' }],
+    when: { weekday: 2, time: '09:00', because: ['F3'] },
+    where: { because: 'untested' },
+  };
+
   // ── R2-7: the What stop's source-first bodies (frames 15, 16b, 5b). Folder
   // thumbnails are real captures of the product, like the piece assets above.
   const MATERIAL_LIBRARY = {
@@ -1279,5 +1293,6 @@
     ledger: LEDGER,
     retros: RETROS,
     playbook: { findings: FINDINGS, rejections: REJECTIONS },
+    suggestReply: SUGGEST_REPLY,
   };
 })();
