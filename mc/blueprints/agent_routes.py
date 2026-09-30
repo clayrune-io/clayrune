@@ -8155,6 +8155,14 @@ def _note_self_started_turn(session):
         except Exception as e:
             _log(f"[usage-breakdown] self-started turn not recorded for "
                  f"{session.get('session_id', '')}: {e}")
+        # Backlog 4668eafc calibration fix, defect 2: the `baseline` write
+        # above is a no-op past this session's first turn (partial unique
+        # index), so a wake past turn 1 reached `mark_session_running` with
+        # nothing to mark where the new turn's active span actually starts --
+        # the same missing-turn_start shape as the queued-follow-up path in
+        # `_auto_dispatch_followup`. This is exactly the wake `_session_turns`
+        # needs a `turn_start` row for.
+        _write_usage_breakdown_turn_start_checkpoint(session)
     if session.pop(_bg_tasks.INTERIM_KEY, None):
         try:
             _rearm_notify_for_new_turn(session)
@@ -9046,21 +9054,52 @@ def _log_agent_completion_body(session):
             _fact = _usage_breakdown_sampler.session_fact_from_entry(
                 entry, project_id=project_id, housekeeping=is_housekeeping)
             _store = _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite')
-            _store.upsert_session_fact(entry['session_id'], _fact)
-            # P1-3 fix (docs/_journal/4668eafc-mc998-fenn-review.md finding 3):
-            # the completion 'session_checkpoint' row -- paired with the
-            # dispatch-time 'baseline' row from _log_agent_dispatch_pending --
-            # is what lets usage_breakdown_aggregate.py derive this session's
-            # token delta instead of charging its lifetime total to every
-            # allowance-sample interval it overlaps.
-            _ckpt_at = _fact.get('ended_at') or entry.get('ts') or now_iso()
-            _store.record_session_checkpoint(**_usage_breakdown_sampler.completion_checkpoint_fields(
-                _fact, session_id=entry['session_id'], observed_at=_ckpt_at))
+            # Backlog 4668eafc calibration fix, defect 1 (PHANTOM HOUR-LONG
+            # TURN): Mode B keeps its process alive between turns, so the
+            # REAL completion already landed via `_write_usage_breakdown_
+            # turn_checkpoint` at the turn boundary. If that process is later
+            # killed idle (eviction, server shutdown, a guardian recovery) --
+            # sometimes an hour later -- this function still runs from the
+            # reader thread's `finally` and would write a SECOND 'completion'
+            # checkpoint here, stamped at kill time, with the SAME cumulative
+            # totals (no turn happened in between). `_session_turns` then
+            # pairs the real completion with this phantom one and reports an
+            # hour-long turn that "crosses" every calibration interval inside
+            # the gap (measured: 3 sessions, exactly this shape, 82/110
+            # interval checks refused as crossing). The prior fact is already
+            # closed with identical totals, so this write adds no information
+            # -- skip it rather than let it poison calibration.
+            _prior_fact = _store.get_session_fact(entry['session_id'])
+            _prior_ended_at = _prior_fact.get('ended_at') if _prior_fact else None
+            _is_phantom_reap = bool(
+                _prior_fact and _prior_ended_at
+                and _prior_fact.get('status') in ('completed', 'error')
+                and _prior_fact.get('input_processed_total') is not None
+                and _prior_fact.get('input_processed_total') == _fact.get('input_processed_total')
+                and _prior_fact.get('output_tokens') is not None
+                and _prior_fact.get('output_tokens') == _fact.get('output_tokens'))
+            if _is_phantom_reap:
+                _log(f"[usage-breakdown] skipping duplicate completion checkpoint for "
+                     f"{entry['session_id'][:12]} -- already closed with identical totals "
+                     f"at {_prior_ended_at}")
+            else:
+                _store.upsert_session_fact(entry['session_id'], _fact)
+                # P1-3 fix (docs/_journal/4668eafc-mc998-fenn-review.md finding 3):
+                # the completion 'session_checkpoint' row -- paired with the
+                # dispatch-time 'baseline' row from _log_agent_dispatch_pending --
+                # is what lets usage_breakdown_aggregate.py derive this session's
+                # token delta instead of charging its lifetime total to every
+                # allowance-sample interval it overlaps.
+                _ckpt_at = _fact.get('ended_at') or entry.get('ts') or now_iso()
+                _store.record_session_checkpoint(**_usage_breakdown_sampler.completion_checkpoint_fields(
+                    _fact, session_id=entry['session_id'], observed_at=_ckpt_at))
             # MC-998 Phase 3: LOC attribution, computed pre-merge-back above.
             # code_delta has a (non-enforced) FK on session_fact, so this
             # write is ordered after it. Not gated on is_housekeeping — a
             # housekeeping session's LOC is `unavailable` (it never isolates
             # a worktree) but the row still belongs, same as its session_fact.
+            # Written regardless of the phantom-reap skip above -- LOC is a
+            # separate table and this session's code delta is still real.
             _store.upsert_code_delta(entry['session_id'], _code_delta)
         except Exception as e:
             _log(f"[usage-breakdown] session fact write failed for "
@@ -9286,6 +9325,16 @@ def _auto_dispatch_followup(session, message):
     # Guardian/queue replay of an already-received message, not a fresh
     # caller decision -- never re-arms (see _advance_delegation_turn).
     _advance_delegation_turn(session)
+    # Backlog 4668eafc calibration fix, defect 2 (WAKE TURNS WITH NO
+    # turn_start): this dispatches a fresh turn exactly like agent_followup's
+    # own `_start_new_turn` does, but historically skipped the matching
+    # checkpoint write -- so a queued follow-up drained through here left
+    # `_session_turns` nothing to pair against but the session's LAST
+    # completion, folding the queueing delay into the turn and leaving no
+    # 'running' session for the sampler to tick (measured: session c11ea2b1,
+    # the scheduled backlog runner, had 5 completions a minute apart with no
+    # turn_start and no ticks between any of them).
+    _write_usage_breakdown_turn_start_checkpoint(session)
     session['status'] = 'running'
     session['last_status_change_time'] = _time.time()
     session['last_output_time'] = _time.time()

@@ -1016,3 +1016,129 @@ def test_mode_b_idle_window_between_turns_is_measurable_not_incomplete(env):
         store.list_session_facts(), checkpoints, provider='claude',
         range_start=observed[1], range_end=idle_after)
     assert incomplete_b == 1, (rows_b, incomplete_b)
+
+
+# ── Backlog 4668eafc (MC-998 calibration fix): phantom idle-reap checkpoint
+# and missing turn_start on internal wakes ─────────────────────────────────
+
+def _turn_start_checkpoints(env_, sid):
+    return [c for c in _breakdown_store(env_).list_session_checkpoints()
+            if c['session_id'] == sid and c['checkpoint_type'] == 'turn_start']
+
+
+def test_idle_reap_completion_is_not_double_logged_as_a_checkpoint(env, monkeypatch):
+    """Defect 1 (PHANTOM HOUR-LONG TURN): a Mode B process is killed idle
+    long after its real last turn completed (eviction, server shutdown, a
+    guardian recovery) and `_log_agent_completion` runs a SECOND time from
+    the reader thread's `finally` -- same cumulative totals, no turn in
+    between. Before the fix this wrote a second 'completion' checkpoint
+    stamped at reap time, and `_session_turns` paired it with the real
+    completion as an hour-long turn that crossed every calibration interval
+    inside the gap (measured live: 82/110 interval checks refused as
+    'crossing', 3 sessions with exactly this two-completion, identical-totals
+    shape). Reproduces the reap by calling the real completion hook again
+    with nothing in the session changed. The phantom guard only fires on a
+    REAL matching total (`is not None` on both sides) -- `fakeprov` has no
+    transcript for `_session_cumulative_transcript_telemetry` to read, so
+    tokens stay None and the guard can never trip; stub a fixed non-zero
+    total and relabel the session 'claude' (session_fact_from_entry only
+    trusts the stubbed top-level fields for that provider) so this test
+    actually exercises the same-totals path instead of vacuously passing."""
+    ar = env['ar']
+
+    def _fake_telemetry(project_id, session):
+        return {'input_tokens': 500, 'output_tokens': 50}
+
+    monkeypatch.setattr(ar, '_session_cumulative_transcript_telemetry', _fake_telemetry)
+
+    sid, handle = _dispatch(env)
+    env['sessions'][sid]['provider'] = 'claude'
+    env['runtime'].run_turn(handle, ['did the thing'])
+    store = _breakdown_store(env)
+    assert len(_completion_checkpoints(env, sid)) == 1
+
+    ar._log_agent_completion(env['sessions'][sid])  # the idle-reap re-fire
+
+    completions = _completion_checkpoints(env, sid)
+    assert len(completions) == 1, completions
+    fact = store.get_session_fact(sid)
+    assert fact['status'] == 'completed'
+
+
+def test_completion_pair_with_real_delta_is_not_treated_as_phantom(env, monkeypatch):
+    """The phantom-reap guard must be narrow: a genuine second turn (new
+    tokens, no turn_start row -- old data written before the turn-start fix
+    shipped) still produces its own real completion checkpoint, never
+    silently dropped alongside the phantom shape above. `fakeprov` has no
+    real transcript for `_session_cumulative_transcript_telemetry` to read,
+    so it stubs in increasing per-turn totals directly -- the same call the
+    real completion path makes to get token counts. `session_fact_from_entry`
+    only trusts those top-level fields for `provider == 'claude'`, so the
+    session is relabelled post-dispatch (fakeprov still drives the actual
+    reader/runtime -- this only affects which token branch the fact builder
+    takes)."""
+    ar = env['ar']
+    telemetry_calls = {'n': 0}
+
+    def _fake_telemetry(project_id, session):
+        telemetry_calls['n'] += 1
+        n = telemetry_calls['n']
+        return {'input_tokens': 100 * n, 'output_tokens': 10 * n}
+
+    monkeypatch.setattr(ar, '_session_cumulative_transcript_telemetry', _fake_telemetry)
+
+    sid, handle = _dispatch(env)
+    env['sessions'][sid]['provider'] = 'claude'
+    env['runtime'].run_turn(handle, ['turn one'])
+    env['runtime'].run_turn(handle, ['turn two, more output this time'])
+
+    completions = _completion_checkpoints(env, sid)
+    assert len(completions) == 2, completions
+    assert completions[0]['output_tokens'] != completions[1]['output_tokens']
+
+
+def test_auto_dispatch_followup_writes_a_turn_start_checkpoint(env, monkeypatch):
+    """Defect 2 (WAKE TURNS WITH NO turn_start): a queued follow-up drained
+    through `_auto_dispatch_followup` (guardian recovery retry, or a stuck
+    `pending_followups` queue -- see the Guardian states in agent_routes.py)
+    dispatches a fresh turn exactly like agent_followup's own
+    `_start_new_turn`, but historically wrote no matching checkpoint --
+    `_session_turns` had nothing to pair the new turn against but the
+    session's LAST completion, folding the entire queueing delay into the
+    turn (measured live: session c11ea2b1, the scheduled backlog runner, had
+    5 completions a minute apart with no turn_start and no ticks between any
+    of them). Popen and the CLI-flag builders are faked; only the
+    checkpoint-write side effect is under test."""
+    ar = env['ar']
+    s = _mode_b_session(env, 'mb-followup')
+    ar._log_agent_dispatch_pending(s)  # baseline
+    store = _breakdown_store(env)
+    store.upsert_session_fact('mb-followup', {
+        'provider': 'claude', 'status': 'completed', 'started_at': s['started_at'],
+        'ended_at': '2026-09-30T03:45:00+00:00', 'input_processed_total': 100,
+        'output_tokens': 10, 'token_coverage': 'complete'})
+    store.record_session_checkpoint(
+        session_id='mb-followup', provider='claude', checkpoint_type='completion',
+        observed_at='2026-09-30T03:45:00+00:00', input_processed_total=100,
+        output_tokens=10, token_coverage='complete')
+    assert _turn_start_checkpoints(env, 'mb-followup') == []
+
+    class _FakeFollowupProc:
+        pid = 999999
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(ar, '_resolve_claude', lambda: 'fake')
+    monkeypatch.setattr(ar, '_respawn_sysprompt_args', lambda *a: ([], None))
+    monkeypatch.setattr(ar, '_build_claude_flags', lambda *a, **k: [])
+    monkeypatch.setattr(ar, '_read_agent_stream', lambda *a, **k: None)
+    monkeypatch.setattr(ar.subprocess, 'Popen', lambda *a, **k: _FakeFollowupProc())
+
+    ar._auto_dispatch_followup(s, 'continue please')
+
+    assert s['status'] == 'running'
+    turn_starts = _turn_start_checkpoints(env, 'mb-followup')
+    assert len(turn_starts) == 1, turn_starts
+    assert turn_starts[0]['input_processed_total'] == 100
+    assert turn_starts[0]['output_tokens'] == 10
