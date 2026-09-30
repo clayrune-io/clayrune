@@ -52,6 +52,7 @@ import concurrent.futures
 import contextlib
 from mc import engine_selection
 from mc.runtime_attempt_owner import DispatchFacts
+from mc.unix_path import augment_unix_path
 import hashlib
 import inspect
 import json
@@ -2056,8 +2057,13 @@ def _merge_registry_path():
     process started. The first-run chooser installs Node and the vendor CLIs
     while the server runs, and every child (claude.cmd/gemini.cmd call bare
     `node`) inherits our PATH — so without this they fail until a restart
-    (clean-VM run, 2026-09-18). Additive only; never drops an entry."""
+    (clean-VM run, 2026-09-18). Additive only; never drops an entry.
+
+    macOS/Linux: re-run the shared user-bin augmentation (mc/unix_path.py) so
+    a CLI — and the nvm `node` its `#!/usr/bin/env node` shim needs — installed
+    while the server runs resolves without a restart (backlog b4b2e068)."""
     if sys.platform != 'win32':
+        augment_unix_path()
         return
     try:
         import winreg
@@ -2900,6 +2906,7 @@ def agent_provider_install_launch(name):
         return jsonify({'ok': False,
                         'error': f'no automatic install available for {name}',
                         'command': ''}), 200
+    _merge_registry_path()  # npm/node from an nvm install made after boot
     command, prerequisite = _provider_install_command(name, hint)
     if prerequisite == 'unsupported':
         return jsonify({'ok': False,
@@ -2947,6 +2954,7 @@ def agent_providers_install_launch_batch():
     # duplicate its install line in the composed command.
     seen = set()
     names = [n for n in names if not (n in seen or seen.add(n))]
+    _merge_registry_path()  # npm/node from an nvm install made after boot
     plan = _provider_install_plan(names)
     unsupported, prereq_added = plan['unsupported'], plan['prerequisite_added']
     command = _compose_install_batch(plan['prereqs'], plan['items'])
