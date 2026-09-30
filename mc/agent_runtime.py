@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Callable, cast, Dict, Iterator, List, Literal, Optional, Tuple
 
 from mc.core import TimestampedLines
+from mc.unix_path import nvm_bin_dirs as _nvm_bin_dirs
 
 # Reused, not re-derived (UNATTENDED_AGENT_PERMISSIONS_AUDIT §4/§3c): the exact
 # set of trigger_types steward/fence.py already treats as "nobody is reading
@@ -2029,6 +2030,7 @@ class ClaudeRuntime(AgentRuntime):
                 home / '.npm-global' / 'bin' / 'claude',
                 Path('/usr/local/bin/claude'),
                 Path('/opt/homebrew/bin/claude'),
+                *(d / 'claude' for d in _nvm_bin_dirs(home)),
             ]
         for c in candidates:
             try:
@@ -3827,6 +3829,7 @@ class GeminiRuntime(AgentRuntime):
                 home / '.npm-global' / 'bin' / 'gemini',
                 Path('/usr/local/bin/gemini'),
                 Path('/opt/homebrew/bin/gemini'),
+                *(d / 'gemini' for d in _nvm_bin_dirs(home)),
             ]:
                 try:
                     if c.exists():
@@ -6552,6 +6555,7 @@ class QwenRuntime(AgentRuntime):
                 home / '.npm-global' / 'bin' / 'qwen',
                 Path('/usr/local/bin/qwen'),
                 Path('/opt/homebrew/bin/qwen'),
+                *(d / 'qwen' for d in _nvm_bin_dirs(home)),
             ]:
                 try:
                     if c.exists():
@@ -7785,6 +7789,7 @@ class CodexRuntime(AgentRuntime):
                 home / '.local' / 'bin' / 'codex',
                 Path('/usr/local/bin/codex'),
                 Path('/opt/homebrew/bin/codex'),
+                *(d / 'codex' for d in _nvm_bin_dirs(home)),
             ]
         # Whatever `npm config get prefix` says, in whichever layout npm uses
         # on this platform (Windows puts binaries in the prefix root; POSIX in
@@ -9176,6 +9181,7 @@ class OpenCodeRuntime(AgentRuntime):
                     home / '.npm-global' / 'bin' / 'opencode',
                     Path('/usr/local/bin/opencode'),
                     Path('/opt/homebrew/bin/opencode'),
+                    *(d / 'opencode' for d in _nvm_bin_dirs(home)),
                 ]
             for c in candidates:
                 try:

@@ -3229,6 +3229,11 @@ def boot(check_port=True):
     """
     global _BOOT_T0
     _BOOT_T0 = _time.time()
+    # start.sh runs `python server.py` directly and never went through
+    # app.py's PATH augmentation, so a CLI under ~/.nvm (or ~/.npm-global,
+    # ~/.local/bin) stayed cli_not_found. Shared with app.py via mc.unix_path.
+    from mc.unix_path import augment_unix_path
+    augment_unix_path()
     _register_claude_runtime_hooks()
     if check_port:
         _boot_phase('port-conflict wait', _check_port_conflict)

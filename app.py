@@ -180,33 +180,13 @@ def _refresh_path():
 
 
 def _augment_unix_path():
-    """Make Homebrew/npm/native-installer binaries visible on macOS/Linux.
+    """Make Homebrew/npm/nvm/native-installer binaries visible on macOS/Linux.
 
-    GUI apps launched from Finder/Dock inherit launchd's minimal PATH
-    (/usr/bin:/bin:/usr/sbin:/sbin), so node/npm/claude installed under
-    Homebrew, ~/.local/bin or ~/.claude/bin are invisible — both to our own
-    `claude --version` check and to the `claude` shim when it execs `node`.
-    Prepend the standard user binary dirs that actually exist. No-op on
-    Windows (PATH there is refreshed from the registry by _refresh_path)."""
-    if sys.platform == 'win32':
-        return
-    home = Path(os.environ.get('HOME', str(Path.home())))
-    candidates = [
-        '/opt/homebrew/bin',                  # Homebrew (Apple Silicon)
-        '/usr/local/bin',                     # Homebrew (Intel) / npm default
-        str(home / '.local' / 'bin'),         # native installer / pipx
-        str(home / '.claude' / 'bin'),        # Claude native installer
-        str(home / '.npm-global' / 'bin'),    # npm custom prefix
-        str(home / '.nvm' / 'current' / 'bin'),
-    ]
-    parts = os.environ.get('PATH', '').split(os.pathsep)
-    changed = False
-    for d in candidates:
-        if d and os.path.isdir(d) and d not in parts:
-            parts.insert(0, d)
-            changed = True
-    if changed:
-        os.environ['PATH'] = os.pathsep.join(p for p in parts if p)
+    Thin wrapper: the implementation lives in mc/unix_path.py so server.py's
+    boot() and the provider runtimes share it (start.sh runs server.py
+    directly and never reached this function). No-op on Windows."""
+    from mc.unix_path import augment_unix_path
+    augment_unix_path()
 
 
 def _install_claude_cli(status_callback=None):
