@@ -8646,6 +8646,27 @@
   }
   .desk-voice-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
+  /* Pick-agent chooser (MC-977 R1-A/R2-5 follow-up): 409 pick_agent handoff
+     for legacy desk.js, which has no Presence page of its own. */
+  .desk-pickagent-overlay {
+    position: fixed; inset: 0; z-index: 3000;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .desk-pickagent-panel {
+    background: var(--bg-panel, #1e1e1e); border: 1px solid var(--border2);
+    border-radius: 10px; padding: 16px; min-width: 260px; max-width: 360px;
+  }
+  .desk-pickagent-title { font-weight: 600; margin-bottom: 10px; }
+  .desk-pickagent-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+  .desk-pickagent-choice {
+    text-align: left; padding: 8px 10px; border: 1px solid var(--border2);
+    border-radius: 8px; background: transparent; cursor: pointer;
+  }
+  .desk-pickagent-choice:hover { border-color: var(--accent); }
+  .desk-pickagent-empty { color: var(--text-dim); }
+  .desk-pickagent-cancel { background: transparent; border: none; color: var(--text-dim); cursor: pointer; }
+
   /* The honest status. A voice with nothing learned is guessing, and `cold`
      says so next to the button that fixes it rather than in a tooltip. */
   .desk-voice-learned {

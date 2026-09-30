@@ -308,7 +308,7 @@
         <span class="desk-v1-home-project-name">${esc(p.name)}</span>
         <span class="desk-v1-home-project-meta">${count} campaign${count === 1 ? '' : 's'}${activeCount ? ` · ${activeCount} active` : ''}</span>
         ${nextPost ? `<span class="desk-v1-home-project-nextpost">Next post ${esc(_fmtNextPost(nextPost))}</span>` : ''}
-        ${working ? `<span class="desk-v1-home-project-posyworking">${esc(DeskV1Kit.POSY_WORKING_LABEL)}</span>` : ''}
+        ${working ? `<span class="desk-v1-home-project-posyworking">${esc(DeskV1Kit.deskAgentWorkingLabel({ project: p }))}</span>` : ''}
       </div>`;
   }
 

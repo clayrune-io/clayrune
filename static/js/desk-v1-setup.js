@@ -254,8 +254,9 @@
       // machinery — the success path below is UNCHANGED (still synchronous)
       // so the IA4 acceptance smoke's timing is untouched.
       if (window.__deskV1PosyForce === 'fail') {
+        const agentName = window.DeskV1Kit ? DeskV1Kit.deskAgentName({ project, campaign: camp }) : 'Your agent';
         actionsHost.innerHTML = `
-          <div class="desk-v1-posy-failed" aria-live="polite">&#9888; Posy couldn't finish: Simulated failure (R0 test hook). Nothing was changed.</div>
+          <div class="desk-v1-posy-failed" aria-live="polite">&#9888; ${esc(agentName)} couldn't finish: Simulated failure (R0 test hook). Nothing was changed.</div>
           <div class="desk-v1-posy-failed-actions">
             <button type="button" class="btn-secondary" data-posy-retry="1">Retry</button>
           </div>`;

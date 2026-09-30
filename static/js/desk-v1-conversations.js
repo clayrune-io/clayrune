@@ -20,7 +20,13 @@
   // ── data resolution (same _fx() convention as every other desk-v1-*.js) ──
   function _fx() { return window.DeskV1Fixtures || {}; }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id) || null; }
+  function _project(id) { return (_fx().projects || []).find((p) => p.id === id) || null; }
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id) || null; }
+  // R2-5: whoever the project actually picked (or the campaign's own
+  // how.agent) — fallback stays 'your agent', never the old hardcoded name.
+  function _agentName(campaign) {
+    return window.DeskV1Kit ? DeskV1Kit.deskAgentName({ project: _project(campaign && campaign.projectId), campaign }) : 'your agent';
+  }
   function _allConversations() { return _fx().conversations || []; }
   function _detail(id) { return (_fx().conversationDetail || {})[id] || {}; }
   function _coverageGaps(campaignId) { return (_fx().conversationCoverageGaps || {})[campaignId] || []; }
@@ -220,6 +226,7 @@
     const alreadySent = conv.state === 'sent';
     const canSend = !!reply && !thread.hold && !takenOver && conv.state !== 'ignored' && !alreadySent;
     const sendReason = !reply ? 'No reply drafted' : (thread.hold ? thread.hold : (takenOver ? 'Taken over — resume to send again' : (alreadySent ? 'Already sent' : '')));
+    const agentName = _agentName(_campaign(conv.campaignId));
 
     return `
       <div class="desk-v1-conv-thread">
@@ -232,7 +239,7 @@
         ${replyHTML}
         <div class="desk-v1-conv-actions">
           <button type="button" class="desk-v1-conv-send" data-conv-send ${canSend ? '' : `disabled title="${esc(sendReason)}"`}>Send</button>
-          <button type="button" class="desk-v1-conv-revise" data-conv-revise ${(reply && !takenOver) ? '' : 'disabled'}>Ask Posy to revise</button>
+          <button type="button" class="desk-v1-conv-revise" data-conv-revise ${(reply && !takenOver) ? '' : 'disabled'}>Ask ${esc(agentName)} to revise</button>
           <button type="button" data-conv-ignore ${takenOver ? 'disabled' : ''}>Ignore</button>
           <button type="button" data-conv-assign ${takenOver ? 'disabled' : ''}>Assign ▾</button>
           <button type="button" class="desk-v1-conv-takeover" data-conv-takeover>${takenOver ? '✅ Resume' : '✋ Take over'}</button>
@@ -326,9 +333,10 @@
     if (reviseBtn && !reviseBtn.disabled) reviseBtn.onclick = () => {
       if (!thread.reply) return;
       const priorText = thread.reply.text;
+      const agentName = _agentName(campaign || _campaign(conv.campaignId));
       window.DeskV1Kit.commandBus.run({
-        label: 'Asked Posy to revise the reply',
-        do: () => { thread.reply.text = priorText + ' (revised for tone by Posy)'; _render(campaign); },
+        label: `Asked ${agentName} to revise the reply`,
+        do: () => { thread.reply.text = priorText + ` (revised for tone by ${agentName})`; _render(campaign); },
         undo: () => { thread.reply.text = priorText; _render(campaign); },
       });
     };

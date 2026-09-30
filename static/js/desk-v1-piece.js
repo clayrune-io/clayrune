@@ -181,13 +181,15 @@
   function deskV1FillPieceRightColumn(el, params) {
     const fam = _resolveFamily(params);
     if (!fam) { el.innerHTML = ''; return; }
-    const projectId = params.projectId || ((_campaign(fam.campaignId) || {}).projectId);
+    const camp = _campaign(fam.campaignId);
+    const projectId = params.projectId || ((camp || {}).projectId);
+    const agentRef = window.DeskV1Kit ? window.DeskV1Kit.deskAgentRef({ project: _project(projectId), campaign: camp }) : null;
     el.innerHTML = `<div class="desk-v1-camp-posy">${window.DeskV1Kit ? window.DeskV1Kit.posyBoxHTML({
-      inputId: 'desk-v1-piece-posy-input', scopeLabel: fam.title,
+      inputId: 'desk-v1-piece-posy-input', scopeLabel: fam.title, agentRef,
     }) : ''}</div>`;
     if (!window.DeskV1Kit) return;
     window.DeskV1Kit.bindPosyBox(el.querySelector('.desk-v1-camp-posy'), 'desk-v1-piece-posy-input', (text) => {
-      window.DeskV1Kit.toast('Sent to Posy: “' + text + '”');
+      window.DeskV1Kit.toast('Sent to ' + window.DeskV1Kit.deskAgentName({ project: _project(projectId), campaign: camp }) + ': “' + text + '”');
       window.DeskV1Kit.paintPosyReadyNoDiff(el.querySelector('.desk-v1-camp-posy'));
     }, {
       draftKey: `project:${projectId}:piece:${fam.id}:`,

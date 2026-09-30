@@ -21,7 +21,14 @@
   // ── data resolution ────────────────────────────────────────────────────
   function _fx() { return window.DeskV1Fixtures || {}; }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id); }
+  function _project(id) { return (_fx().projects || []).find((p) => p.id === id); }
   function _family(id) { return (_fx().families || []).find((f) => f.id === id); }
+  // R2-5: same deskAgentName(opts, fallback) resolution every other
+  // desk-v1-*.js uses, keyed off the family's own campaign/project.
+  function _agentNameFor(family) {
+    const camp = family && _campaign(family.campaignId);
+    return window.DeskV1Kit ? DeskV1Kit.deskAgentName({ project: _project(camp && camp.projectId), campaign: camp }) : 'your agent';
+  }
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id); }
   function _detail(familyId) { return (_fx().videoDetail || {})[familyId] || {}; }
   function _budget() { return _fx().renderBudget || { rate: 0, spent: 0, limit: 0, currency: 'USD' }; }
@@ -381,6 +388,7 @@
     const posyHTML = window.DeskV1Kit ? window.DeskV1Kit.posyBoxHTML({
       inputId: 'desk-v1-video-posy-input', scopeLabel: _scopeLabelFor(_st.scope, detail),
       compact: true, sendStyle: 'arrow',
+      agentRef: window.DeskV1Kit.deskAgentRef({ project: _project((_campaign(family.campaignId) || {}).projectId), campaign: _campaign(family.campaignId) }),
     }) : '';
 
     const pendingHTML = (detail.pendingEdits || []).length
@@ -505,7 +513,7 @@
         return (ch && (ch.label || ch.identity)) || v.id;
       });
     }
-    window.DeskV1Kit.toast('Sent to Posy for ' + (affected.length ? affected.join(', ') : 'this video') + ': "' + text + '"', {});
+    window.DeskV1Kit.toast('Sent to ' + _agentNameFor(family) + ' for ' + (affected.length ? affected.join(', ') : 'this video') + ': "' + text + '"', {});
     window.DeskV1Kit.paintPosyReadyNoDiff(document.getElementById('desk-v1-video-posy'));
   }
 

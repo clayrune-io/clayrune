@@ -255,9 +255,10 @@
     const host = document.getElementById('desk-v1-project-posy');
     if (!host || !window.DeskV1Kit) return;
     const inputId = 'desk-v1-project-posy-input';
-    host.innerHTML = DeskV1Kit.posyBoxHTML({ inputId, scopeLabel: p ? p.name : 'Project' });
+    const agentRef = DeskV1Kit.deskAgentRef({ project: p });
+    host.innerHTML = DeskV1Kit.posyBoxHTML({ inputId, scopeLabel: p ? p.name : 'Project', agentRef });
     DeskV1Kit.bindPosyBox(host, inputId, (text) => {
-      DeskV1Kit.toast('Sent to Posy: “' + text + '”');
+      DeskV1Kit.toast('Sent to ' + DeskV1Kit.deskAgentName({ project: p }) + ': “' + text + '”');
       DeskV1Kit.paintPosyReadyNoDiff(host);
     }, { draftKey: `project:${projectId}:project`, taskLifecycle: true });
   }
