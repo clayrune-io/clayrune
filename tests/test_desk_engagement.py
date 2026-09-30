@@ -94,7 +94,7 @@ def test_no_credential_reads_not_connected_and_never_touches_transport(store, mo
     b = eng.project_bundle(PID, readers=rd, now=NOW)
     assert b['status'] == 'not_connected'
     assert b['unread'] is None and b['awaiting'] is None and b['total'] is None
-    assert b['message'] == "Not connected: replies on \U0001D54F aren't read yet"
+    assert b['message'] == 'Not connected (no API token)'
     assert eng.overview(readers=rd, now=NOW)['unread_total'] is None
 
 
@@ -103,7 +103,7 @@ def test_linkedin_is_gap_only_with_its_own_reason(store):
     rd = {'linkedin': eng.LinkedInReader()}
     b = eng.project_bundle(PID, readers=rd, now=NOW)
     assert b['status'] == 'not_connected'
-    assert b['message'] == "Not connected: replies on LinkedIn aren't read yet"
+    assert b['message'] == 'Not connected (LinkedIn read access needs API approval)'
     assert 'Community Management' in b['coverage'][0]['reason']
     assert eng.poll_project(PID, readers=rd, now=NOW)['platforms']['linkedin']['spent'] == 0
 
@@ -328,7 +328,7 @@ def client(store):
 
 def test_routes_overview_read_and_poll_validation(client, monkeypatch):
     _project()
-    monkeypatch.setattr(eng, 'default_readers', lambda: _reader(FakeX(mentions=[REPLY])))
+    monkeypatch.setattr(eng, 'readers_for_project', lambda _pid: _reader(FakeX(mentions=[REPLY])))
     _post()
     assert client.post('/api/desk/engagement/poll', json={}).status_code == 400
     assert client.get('/api/desk/engagement/overview?period=year').status_code == 400

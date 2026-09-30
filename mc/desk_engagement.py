@@ -21,9 +21,25 @@ network call in one small file so "what can reach api.x.com" stays a grep.
   room for its worst case, and its actual cost lands in the read ledger
   (`mc.desk.record_read`). Budget 0 means no paid reads, not unlimited.
 - **No substitute.** A platform with no read credential/approval reports the
-  gap. There is no scraper fallback.
+  gap. There is no scraper fallback, and no silent switch between the two
+  routes below: an account is read the way its user chose, or not at all.
 
-## What read access exists (verified 2026-09-30, metadata only)
+## Two ways to read an account (user's choice per account, Ron 2026-09-30)
+
+`presence.accounts[].read_via` is `pane` (DEFAULT; absent = pane) or `api`.
+
+- `pane`: free (0 against the budget). Reads the signed-in page text of the
+  account's own named browser profile (`accounts[].browser_profile`) through
+  `browser_routes.ProfilePageReader`, the in-process twin of
+  `POST /api/browser/read`. Read-only: navigate + read, never a click. Page text
+  is untrusted third-party data and is only ever parsed, never acted on. A read
+  failure is recorded as a gap, never retried through another HTTP client.
+- `api`: paid per read ($0.005/resource), costed against the budget, needs the
+  vault token below.
+
+Broad listening (search, discussions) is not built here and stays pane-only.
+
+## What the API route needs (verified 2026-09-30, metadata only)
 
 - X: a read needs a user-context token in the vault under `X_READ_SECRET`
   (the same entry `desk_publish` posts with). The vault held only an `x.com`
@@ -45,6 +61,7 @@ on import or on a schedule — `poll_project` runs only from its route.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import urllib.error
@@ -84,7 +101,15 @@ _STATUS_ID = re.compile(r'/status/(\d+)')
 
 
 class ReadError(Exception):
-    """A platform read failed. `str(e)` is the verbatim reason to show."""
+    """A platform read failed. `str(e)` is the verbatim reason to show.
+    `kind` tags a failure the UI words specially (`not_signed_in`)."""
+    kind: str | None = None
+
+
+class NotSignedIn(ReadError):
+    """The pane's profile reached the site's login wall: a coverage gap with its
+    own wording (`Not connected (sign in to X in the browser pane)`)."""
+    kind = 'not_signed_in'
 
 
 # -- readers --------------------------------------------------------------------
@@ -106,9 +131,15 @@ def _urllib_transport(url: str, params: dict, token: str) -> dict:
 
 class Reader:
     """One platform's inbound read. `capability()` must never touch the
-    network and never dispense a secret value."""
+    network and never dispense a secret value. `via` is the route this reader
+    takes (`api` paid, `pane` free); it is stamped on the coverage record.
+
+    `capability()` -> `{connected, reason, short}`: `reason` is the specific
+    why, `short` the parenthetical the UI shows (`Not connected (<short>)`)."""
     platform = ''
+    via = 'api'
     unit_cost = 0.0
+    sign_in_short = ''
 
     def capability(self) -> dict:
         raise NotImplementedError
@@ -119,21 +150,38 @@ class Reader:
         raise ReadError(f'{self.platform} replies are not readable')
 
     def fetch_metrics(self, external_ids: list[str]) -> dict:
-        """-> {resources: int, metrics: {external_id: {metric: number}}}."""
+        """-> {resources: int, metrics: {external_id: {metric: number}},
+        unavailable: {external_id: reason}}. A post whose numbers could not be
+        read goes in `unavailable`, never in `metrics` as 0."""
         raise ReadError(f'{self.platform} post metrics are not readable')
+
+    def close(self) -> None:
+        """Release anything a read opened (a pane Chromium). Never raises."""
 
 
 class LinkedInReader(Reader):
+    """Gap-only on both routes: the API route needs Community Management API
+    approval we lack, and no LinkedIn page parser exists for the pane route."""
     platform = 'linkedin'
 
+    def __init__(self, via: str = 'api'):
+        self.via = via
+
     def capability(self) -> dict:
+        if self.via == 'pane':
+            return {'connected': False,
+                    'short': "LinkedIn isn't read through the browser pane yet",
+                    'reason': 'no LinkedIn page reader exists for the browser pane yet; '
+                              'only the API route is planned, and it needs approval'}
         return {'connected': False,
+                'short': 'LinkedIn read access needs API approval',
                 'reason': 'LinkedIn comments and page analytics need Community '
                           'Management API approval (r_organization_social); none granted'}
 
 
 class XReader(Reader):
     platform = 'x'
+    via = 'api'
     unit_cost = X_READ_UNIT_COST
 
     def __init__(self, *, transport: Callable[[str, dict, str], dict] | None = None,
@@ -147,15 +195,16 @@ class XReader(Reader):
 
     def capability(self) -> dict:
         if self._token:
-            return {'connected': True, 'reason': None}
+            return {'connected': True, 'reason': None, 'short': None}
         try:
             names = {s.get('name') for s in secrets_store.list_secrets()}
         except Exception as e:
-            return {'connected': False, 'reason': f'vault unreadable: {e}'}
+            return {'connected': False, 'short': 'no API token',
+                    'reason': f'vault unreadable: {e}'}
         if X_READ_SECRET not in names:
-            return {'connected': False,
+            return {'connected': False, 'short': 'no API token',
                     'reason': f'no X read credential (vault entry {X_READ_SECRET!r} is not set)'}
-        return {'connected': True, 'reason': None}
+        return {'connected': True, 'reason': None, 'short': None}
 
     def _tok(self) -> str:
         if self._token:
@@ -223,8 +272,238 @@ class XReader(Reader):
         return {'resources': len(rows), 'metrics': out}
 
 
+# -- the pane route: parse page text as DATA ------------------------------------
+#
+# Everything below turns the visible text of an x.com page into rows. The text
+# is untrusted third-party content (the pane's read envelope says so): it is
+# matched against fixed patterns and copied into fields, never interpreted, and
+# a tweet that says "ignore previous instructions" is just an excerpt string.
+# Anything the patterns do not recognise is dropped or reported unavailable;
+# nothing is guessed from it.
+
+X_MENTIONS_URL = 'https://x.com/notifications/mentions'
+X_STATUS_URL = 'https://x.com/i/status/{id}'
+PANE_METRICS_MAX_POSTS = 10      # one page load per post: a smaller cap than the API's 50
+
+_MID_DOT = '·'
+_HANDLE = re.compile(r'^@[A-Za-z0-9_]{1,15}$')
+# relative ("2h", "14m") or absolute ("Sep 3", "Sep 3, 2025") as X renders a tweet's age
+_TWEET_AGE = re.compile(r'^(\d{1,3}[smhdw]|[A-Z][a-z]{2} \d{1,2}(, \d{4})?)$')
+_COUNT_LINE = re.compile(r'^\d[\d,.]*[KM]?$')
+_LOGIN_PATH = re.compile(r'^/(login|i/flow/(login|signup|single_sign_on))', re.I)
+_LOGIN_LINES = {'sign in to x', 'log in to x', 'log in', 'sign in'}
+# label on a status page -> the outcome metric name (same names the API route writes)
+_PANE_METRIC_NAMES = {'view': 'impressions', 'views': 'impressions', 'reply': 'replies',
+                      'replies': 'replies', 'repost': 'reposts', 'reposts': 'reposts',
+                      'quote': 'quotes', 'quotes': 'quotes', 'like': 'likes', 'likes': 'likes',
+                      'bookmark': 'bookmarks', 'bookmarks': 'bookmarks'}
+_LABEL_ALT = '|'.join(sorted(_PANE_METRIC_NAMES, key=len, reverse=True))
+_LABELLED_ONE = re.compile(rf'^(\d[\d,]*) ({_LABEL_ALT})$', re.I)
+_PLAIN_INT = re.compile(r'^\d[\d,]*$')
+_LABEL_ONLY = re.compile(rf'^({_LABEL_ALT})$', re.I)
+
+
+def _text_lines(text: str | None) -> list[str]:
+    return [ln.strip() for ln in (text or '').split('\n') if ln.strip()]
+
+
+def _looks_signed_out(final_url: str, title: str, lines: list[str]) -> bool:
+    try:
+        path = urllib.parse.urlsplit(final_url or '').path
+    except ValueError:
+        path = ''
+    if _LOGIN_PATH.match(path):
+        return True
+    if (title or '').strip().lower().startswith(('log in', 'sign in')):
+        return True
+    return any(ln.lower() in _LOGIN_LINES for ln in lines)
+
+
+def parse_x_mentions_text(text: str | None) -> list[dict]:
+    """Rows from the visible text of x.com/notifications/mentions.
+
+    A tweet is anchored on its header: `@handle`, `·`, age, on three
+    consecutive lines. The body is what follows up to the next tweet's
+    display-name line, minus an optional `Replying to @…` prefix and the
+    trailing run of bare counts (reply/repost/like/view numbers). A body that
+    really ends in a bare number loses it: the flat text cannot tell them apart.
+    `external_id` is a hash of handle + body, so a re-read dedupes; it is NOT an
+    X status id. No link, timestamp or parent post is recoverable from text.
+    Returns [] for text with no tweet in it."""
+    lines = _text_lines(text)
+    heads = [i for i in range(1, len(lines) - 2)
+             if _HANDLE.match(lines[i]) and lines[i + 1] == _MID_DOT
+             and _TWEET_AGE.match(lines[i + 2])]
+    items = []
+    for n, i in enumerate(heads):
+        end = heads[n + 1] - 1 if n + 1 < len(heads) else len(lines)
+        body = lines[i + 3:end]
+        if body and body[0].lower().startswith('replying to'):
+            body = body[1:]
+            while body and (_HANDLE.match(body[0]) or body[0].lower() in ('and', ',')):
+                body = body[1:]
+        for _ in range(5):
+            if body and _COUNT_LINE.match(body[-1]):
+                body.pop()
+        excerpt = ' '.join(body)[:280]
+        handle = lines[i]
+        items.append({
+            'external_id': 'pane:' + hashlib.sha1(f'{handle}|{excerpt}'.encode('utf-8')).hexdigest()[:16],
+            'author': handle, 'excerpt': excerpt, 'created_at': None, 'url': None,
+            'post_id': None, 'source': 'mentions',
+        })
+    return items
+
+
+def parse_x_status_metrics(text: str | None) -> dict[str, int]:
+    """Metrics the status page shows as EXACT labelled counts: `1,234 Views`, or
+    a bare number on one line with its label on the next. The first occurrence
+    of each label wins (the focal post renders before any reply). An abbreviated
+    count (`1.2K`) is rounded by X and matches neither form, so it is left out:
+    a metric not read is absent, never approximated and never 0."""
+    lines = _text_lines(text)
+    got: dict[str, int] = {}
+    for i, ln in enumerate(lines):
+        m = _LABELLED_ONE.match(ln)
+        if m:
+            num, label = m.group(1), m.group(2)
+        elif _PLAIN_INT.match(ln) and i + 1 < len(lines) and _LABEL_ONLY.match(lines[i + 1]):
+            num, label = ln, lines[i + 1]
+        else:
+            continue
+        got.setdefault(_PANE_METRIC_NAMES[label.lower()], int(num.replace(',', '')))
+    return got
+
+
+def _default_page_reader(project_id: str, profile: str):
+    from mc.blueprints import browser_routes
+    return browser_routes.ProfilePageReader(project_id, profile)
+
+
+def _default_profile_exists(name: str) -> bool:
+    from mc.blueprints import browser_routes
+    return browser_routes.named_profile_exists(name)
+
+
+class PaneXReader(Reader):
+    """Reads an X account through the signed-in pane profile: free, same
+    interface as `XReader`. Nothing is written to X; the only actions are
+    navigate and read."""
+    platform = 'x'
+    via = 'pane'
+    unit_cost = 0.0
+    sign_in_short = 'sign in to X in the browser pane'
+
+    def __init__(self, project_id: str, profile: str | None, *,
+                 page_reader_factory: Callable[[str, str], Any] | None = None,
+                 profile_exists: Callable[[str], bool] | None = None):
+        self._project_id = project_id
+        self._profile = (profile or '').strip().lower()
+        self._factory = page_reader_factory or _default_page_reader
+        self._profile_exists = profile_exists or _default_profile_exists
+        self._pages: Any = None
+
+    def capability(self) -> dict:
+        if not self._profile:
+            return {'connected': False, 'short': self.sign_in_short,
+                    'reason': 'no browser profile is chosen for this account'}
+        if not self._profile_exists(self._profile):
+            return {'connected': False, 'short': self.sign_in_short,
+                    'reason': f'no saved browser profile {self._profile!r}'}
+        return {'connected': True, 'reason': None, 'short': None}
+
+    def _read(self, url: str) -> dict:
+        if self._pages is None:
+            self._pages = self._factory(self._project_id, self._profile)
+        body = self._pages.read(url)
+        if not isinstance(body, dict) or not body.get('ok'):
+            b = body if isinstance(body, dict) else {}
+            raise _pane_error(b.get('error'), b.get('detail'))
+        return body
+
+    def close(self) -> None:
+        pages, self._pages = self._pages, None
+        if pages is not None:
+            try:
+                pages.close()
+            except Exception as e:
+                _log(f'[desk_engagement] pane close failed: {e}')
+
+    def fetch_mentions(self, *, since_id, known_posts):
+        body = self._read(X_MENTIONS_URL)
+        text = (body.get('content') or {}).get('text') or ''
+        lines = _text_lines(text)
+        if _looks_signed_out(body.get('final_url') or body.get('url') or '',
+                             body.get('title') or '', lines):
+            raise NotSignedIn(self.sign_in_short)
+        if 'Notifications' not in lines or 'Mentions' not in lines:
+            raise ReadError('the mentions page did not look like X notifications '
+                            '(layout changed or page not loaded); nothing was read')
+        return {'items': parse_x_mentions_text(text), 'resources': 0,
+                'cursor': None, 'account': None}
+
+    def fetch_metrics(self, external_ids):
+        metrics: dict[str, dict] = {}
+        unavailable: dict[str, str] = {}
+        for ext in external_ids[:PANE_METRICS_MAX_POSTS]:
+            try:
+                body = self._read(X_STATUS_URL.format(id=ext))
+            except _FatalPaneError:
+                raise
+            except ReadError as e:
+                unavailable[ext] = str(e)
+                continue
+            final = body.get('final_url') or ''
+            lines = _text_lines((body.get('content') or {}).get('text'))
+            if _looks_signed_out(final, body.get('title') or '', lines):
+                raise NotSignedIn(self.sign_in_short)
+            if ext not in final:
+                unavailable[ext] = 'the pane did not land on that post'
+                continue
+            got = parse_x_status_metrics((body.get('content') or {}).get('text'))
+            if got:
+                metrics[ext] = got
+            else:
+                unavailable[ext] = 'no exact counts visible on the post page'
+        for ext in external_ids[PANE_METRICS_MAX_POSTS:]:
+            unavailable[ext] = 'over the per-poll pane limit'
+        return {'resources': 0, 'metrics': metrics, 'unavailable': unavailable}
+
+
+class _FatalPaneError(ReadError):
+    """A pane failure that makes every further page read pointless (no profile,
+    profile open elsewhere, Chromium would not start): abort the pass."""
+
+
+# read-envelope `error` kinds (browser_routes._read_error) that end the whole pass
+_FATAL_PANE_KINDS = {'no_profile', 'profile_in_use', 'launch_failed', 'own_origin_blocked',
+                     'unknown_session'}
+
+
+def _pane_error(kind: str | None, detail: str | None) -> ReadError:
+    msg = f'browser pane read failed ({kind or "unknown"}): {detail or "no detail"}'
+    return _FatalPaneError(msg) if kind in _FATAL_PANE_KINDS else ReadError(msg)
+
+
 def default_readers() -> dict[str, Reader]:
     return {'x': XReader(), 'linkedin': LinkedInReader()}
+
+
+def readers_for_project(project_id: str) -> dict[str, Reader]:
+    """One reader per platform the project is present on, chosen by that
+    account's `read_via` (absent = `pane`). The project's first account on a
+    platform decides; a platform it only published to (no account record)
+    reads the default way."""
+    out: dict[str, Reader] = {}
+    for platform in project_platforms(project_id):
+        acc = platform_account(project_id, platform)
+        via = _desk.account_read_via(acc)
+        if platform == 'x':
+            out['x'] = (XReader() if via == 'api'
+                        else PaneXReader(project_id, (acc or {}).get('browser_profile')))
+        elif platform == 'linkedin':
+            out['linkedin'] = LinkedInReader(via=via)
+    return out
 
 
 # -- budget ---------------------------------------------------------------------
@@ -266,18 +545,35 @@ def project_platforms(project_id: str) -> list[str]:
     `platform`, else the named voice's) and any platform it has published to."""
     plats: list[str] = []
     for acc in ((_desk.get_presence(project_id) or {}).get('accounts') or []):
-        p = acc.get('platform')
-        if not p:
-            try:
-                p = _desk.get_voice(acc.get('voice') or '').get('platform')
-            except Exception:
-                p = None
+        p = _account_platform(acc)
         if p:
             plats.append(p)
     for r in _desk.list_ledger(limit=100000, project_id=project_id):
         if r.get('platform'):
             plats.append(r['platform'])
     return sorted(set(plats))
+
+
+def _account_platform(acc) -> str | None:
+    """An account record's platform: explicit, else its voice's. A bare-id
+    entry (no record) names none."""
+    if not isinstance(acc, dict):
+        return None
+    p = acc.get('platform')
+    if not p:
+        try:
+            p = _desk.get_voice(acc.get('voice') or '').get('platform')
+        except Exception:
+            p = None
+    return p or None
+
+
+def platform_account(project_id: str, platform: str) -> dict | None:
+    """The project's first presence account on `platform`, or None."""
+    for acc in ((_desk.get_presence(project_id) or {}).get('accounts') or []):
+        if _account_platform(acc) == platform:
+            return acc
+    return None
 
 
 def _x_post_id(row: dict) -> str | None:
@@ -289,22 +585,35 @@ def _x_post_id(row: dict) -> str | None:
 
 def platform_coverage(project_id: str, platform: str, reader: Reader | None = None) -> dict:
     """`state`: `ok` | `not_connected` | `not_read_yet`. `message` is the exact
-    line the UI shows; `reason` is the specific why."""
-    reader = reader or default_readers().get(platform)
+    line the UI shows (`Not connected (<why>)`); `reason` is the specific why;
+    `via` the route the account is read by.
+
+    A record written by the OTHER route (the user switched the account) says
+    nothing about this one: it counts as not read yet, and its last error is not
+    shown against a route it did not happen on."""
+    reader = reader or readers_for_project(project_id).get(platform)
     label = PLATFORM_LABELS.get(platform, platform)
     rec = _desk.get_read_coverage(project_id).get(platform) or {}
     cap = reader.capability() if reader else {'connected': False,
+                                              'short': f'no reader for {platform}',
                                               'reason': f'no reader for {platform}'}
+    via = reader.via if reader else None
+    same_route = reader is not None and (rec.get('via') or 'api') == reader.via
+    base = {'platform': platform, 'label': label, 'via': via}
     if not cap['connected']:
-        return {'platform': platform, 'label': label, 'state': 'not_connected',
-                'reason': cap.get('reason'), 'last_ok_at': rec.get('last_ok_at'),
-                'message': f"Not connected: replies on {label} aren't read yet"}
-    if not rec.get('last_ok_at'):
-        err = rec.get('last_error')
-        return {'platform': platform, 'label': label, 'state': 'not_read_yet',
-                'reason': err, 'last_ok_at': None,
+        return {**base, 'state': 'not_connected', 'reason': cap.get('reason'),
+                'last_ok_at': rec.get('last_ok_at') if same_route else None,
+                'message': f"Not connected ({cap.get('short') or cap.get('reason')})"}
+    if same_route and rec.get('error_kind') == 'not_signed_in' and reader is not None:
+        # The profile exists but its last read hit the login wall.
+        return {**base, 'state': 'not_connected', 'reason': rec.get('last_error'),
+                'last_ok_at': rec.get('last_ok_at'),
+                'message': f'Not connected ({reader.sign_in_short})'}
+    if not same_route or not rec.get('last_ok_at'):
+        err = rec.get('last_error') if same_route else None
+        return {**base, 'state': 'not_read_yet', 'reason': err, 'last_ok_at': None,
                 'message': f'Connected, not read yet on {label}' + (f' ({err})' if err else '')}
-    return {'platform': platform, 'label': label, 'state': 'ok', 'reason': rec.get('last_error'),
+    return {**base, 'state': 'ok', 'reason': rec.get('last_error'),
             'last_ok_at': rec['last_ok_at'], 'message': ''}
 
 
@@ -314,24 +623,33 @@ def poll_project(project_id: str, *, readers: dict[str, Reader] | None = None,
                  now: datetime | None = None) -> dict:
     """One read pass for one project: new replies/mentions into the feed, then
     today's per-post metrics as `source:'feed'` outcomes. Every platform that
-    cannot be read is reported, none is skipped silently. Never raises."""
-    readers = readers if readers is not None else default_readers()
+    cannot be read is reported, none is skipped silently. Never raises.
+
+    Each account is read the way its `read_via` says (see
+    `readers_for_project`); `readers` overrides that for tests."""
+    readers = readers if readers is not None else readers_for_project(project_id)
     now_dt = _now(now)
     report: dict[str, Any] = {'project_id': project_id, 'platforms': {}}
     for platform in project_platforms(project_id):
         reader = readers.get(platform)
         cov = platform_coverage(project_id, platform, reader)
         entry: dict[str, Any] = {'state': cov['state'], 'reason': cov['reason'],
-                                 'new_items': 0, 'metrics_written': 0, 'spent': 0.0}
+                                 'via': cov['via'], 'message': cov['message'],
+                                 'new_items': 0, 'metrics_written': 0,
+                                 'metrics_unavailable': 0, 'spent': 0.0}
         report['platforms'][platform] = entry
-        if reader is None or cov['state'] == 'not_connected':
-            continue          # no credential/approval: no call, no spend
+        # Decided on capability, not on the recorded state: a profile that hit
+        # the login wall last time must be retried once the user signs in.
+        if reader is None or not reader.capability()['connected']:
+            continue          # no credential/approval/profile: no call, no spend
         try:
             _poll_platform(project_id, platform, reader, entry, now_dt)
         except Exception as e:
             _log(f'[desk_engagement] {platform} poll for {project_id} failed: {e}')
             entry['error'] = str(e)
-            _desk.set_read_coverage(project_id, platform, ok=False, error=str(e))
+            _desk.set_read_coverage(project_id, platform, ok=False, error=str(e), via=reader.via)
+        finally:
+            reader.close()
     return report
 
 
@@ -354,7 +672,7 @@ def _poll_platform(project_id: str, platform: str, reader: Reader,
     if not _afford(project_id, reader, MENTIONS_MAX_RESULTS + 1, now_dt):
         msg = 'read budget spent: replies not read this period'
         entry['budget_blocked'] = True
-        _desk.set_read_coverage(project_id, platform, ok=False, error=msg)
+        _desk.set_read_coverage(project_id, platform, ok=False, error=msg, via=reader.via)
         return
     try:
         got = reader.fetch_mentions(since_id=cursor, known_posts=known)
@@ -362,7 +680,11 @@ def _poll_platform(project_id: str, platform: str, reader: Reader,
         _desk.record_read(platform=platform, project_id=project_id, kind='replies',
                           resources=0, cost=0.0, ok=False, error=str(e))
         entry['error'] = str(e)
-        _desk.set_read_coverage(project_id, platform, ok=False, error=str(e))
+        _desk.set_read_coverage(project_id, platform, ok=False, error=str(e),
+                                via=reader.via, error_kind=e.kind)
+        if e.kind == 'not_signed_in':
+            entry['state'] = 'not_connected'
+            entry['message'] = f'Not connected ({reader.sign_in_short})'
         return
     cost = got['resources'] * reader.unit_cost
     _desk.record_read(platform=platform, project_id=project_id, kind='replies',
@@ -377,7 +699,8 @@ def _poll_platform(project_id: str, platform: str, reader: Reader,
             'campaign_id': (led or {}).get('campaign_id'),
         })
         entry['new_items'] += 1 if created else 0
-    _desk.set_read_coverage(project_id, platform, ok=True, cursor=got.get('cursor'))
+    _desk.set_read_coverage(project_id, platform, ok=True, cursor=got.get('cursor'),
+                            via=reader.via)
 
     # 2. per-post metrics: once a day per post, recent posts only, each batch
     # costed before it is sent.
@@ -404,11 +727,15 @@ def _poll_platform(project_id: str, platform: str, reader: Reader,
             _desk.record_read(platform=platform, project_id=project_id, kind='metrics',
                               resources=0, cost=0.0, ok=False, error=str(e))
             entry['error'] = str(e)
+            if e.kind == 'not_signed_in':
+                _desk.set_read_coverage(project_id, platform, ok=False, error=str(e),
+                                        via=reader.via, error_kind=e.kind)
             break
         cost = res['resources'] * reader.unit_cost
         _desk.record_read(platform=platform, project_id=project_id, kind='metrics',
                           resources=res['resources'], cost=cost, ok=True)
         entry['spent'] += cost
+        entry['metrics_unavailable'] += len(res.get('unavailable') or {})
         for lid, ext in batch:
             for metric, value in (res['metrics'].get(ext) or {}).items():
                 if _desk.record_feed_outcome(lid, metric, value, at=_iso(now_dt)):
@@ -431,7 +758,7 @@ def project_bundle(project_id: str, *, period: str = 'week',
     """One landing bundle. Counts come from stored feed rows, so they match the
     lane view by construction (`lanes` uses the same state -> lane mapping as
     static/js/desk-v1-engagement.js `LANES`)."""
-    readers = readers if readers is not None else default_readers()
+    readers = readers if readers is not None else readers_for_project(project_id)
     cov = [platform_coverage(project_id, p, readers.get(p))
            for p in project_platforms(project_id)]
     covered = [c for c in cov if c['state'] == 'ok']

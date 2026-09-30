@@ -315,6 +315,68 @@ def upsert_presence(project_id: str, patch: dict) -> dict:
         return rec
 
 
+READ_VIA = ('pane', 'api')
+_ACCOUNT_PLATFORMS = ('x', 'linkedin')
+
+
+def account_read_via(acc) -> str:
+    """How the Desk reads this account's own mentions/replies and post stats.
+    Absent or unrecognised = `pane` (the free route; Ron 2026-09-30). Never
+    raises: a hand-edited store must not break a read."""
+    v = acc.get('read_via') if isinstance(acc, dict) else None
+    return v if v in READ_VIA else 'pane'
+
+
+def set_account_read_settings(project_id: str, channel_id: str, *, platform: str | None = None,
+                              read_via: str | None = None,
+                              browser_profile: str | None = None) -> dict:
+    """Set `read_via` and/or the named browser profile on one presence account.
+
+    Nothing in the backend populated `presence.accounts` before this (the UI's
+    accounts are fixtures), so an account with no record yet is created here
+    holding ONLY what reading needs: channel id + platform. That grants no
+    publishing authority: publishing is bounded by the campaign `plan`, not by
+    this list. Raises ValueError for a value outside the allowed set.
+    """
+    if read_via is not None and read_via not in READ_VIA:
+        raise ValueError(f'read_via must be one of {READ_VIA}')
+    if platform is not None and platform not in _ACCOUNT_PLATFORMS:
+        raise ValueError(f'platform must be one of {_ACCOUNT_PLATFORMS}')
+    if not channel_id or not isinstance(channel_id, str):
+        raise ValueError('channel_id is required')
+    with _store_lock:
+        store = _read_store()
+        rec = store['presences'].get(project_id) or _empty_presence(project_id)
+        accounts = rec.setdefault('accounts', [])
+        acc = None
+        for i, a in enumerate(accounts):
+            if a == channel_id:          # bare-id form: promote to a record
+                accounts[i] = a = {'channel_id': channel_id}
+            if isinstance(a, dict) and a.get('channel_id') == channel_id:
+                acc = a
+                break
+        if acc is None:
+            if not platform:
+                raise ValueError('platform is required for an account with no record yet')
+            acc = {'channel_id': channel_id, 'platform': platform}
+            accounts.append(acc)
+        if platform and not acc.get('platform'):
+            acc['platform'] = platform
+        if read_via is not None:
+            acc['read_via'] = read_via
+        if browser_profile is not None:
+            name = browser_profile.strip().lower()
+            if name:
+                acc['browser_profile'] = name
+            else:
+                acc.pop('browser_profile', None)
+        rec['project_id'] = project_id
+        rec['updated_at'] = now_iso()
+        store['presences'][project_id] = rec
+        _write_store(store)
+        return dict(acc)
+
+
 # -- bounds hash + widening (IA revision 2 §5.1/§5.2; the R2-1 kit's own
 # `computeBoundsHash`/`boundsWiden`/`nextBoundsHash`, static/js/desk-v1-kit.js)
 #
@@ -1410,25 +1472,35 @@ def list_reads(*, project_id: str | None = None, since: str | None = None) -> li
 
 
 def set_read_coverage(project_id: str, platform: str, *, ok: bool, cursor: str | None = None,
-                      error: str | None = None) -> dict:
+                      error: str | None = None, via: str | None = None,
+                      error_kind: str | None = None) -> dict:
     """Remember the outcome of the latest read attempt. `last_ok_at` only moves
     on success, so "connected but never successfully read" stays distinguishable
-    from "read, found nothing". `cursor` only moves on a successful read."""
+    from "read, found nothing". `cursor` only moves on a successful read.
+
+    `via` is the read route (`api` | `pane`) the attempt used: a success on one
+    route must not read as "ok" once the account is switched to the other
+    (`desk_engagement.platform_coverage` compares it). `error_kind` tags a
+    failure the UI words specially (`not_signed_in`)."""
     with _store_lock:
         store = _read_store()
         rec = store['engagement']['coverage'].setdefault(project_id, {}).setdefault(
             platform, {'last_ok_at': None, 'last_attempt_at': None,
                        'last_error': None, 'cursor': None})
         rec['last_attempt_at'] = now_iso()
+        if via:
+            rec['via'] = via
         if ok:
             rec['last_ok_at'] = rec['last_attempt_at']
             rec['last_error'] = None
+            rec['error_kind'] = None
             if cursor:
                 # since_id for the next mentions read: without it every poll
                 # re-reads (and re-pays for) the same newest N mentions.
                 rec['cursor'] = cursor
         else:
             rec['last_error'] = error
+            rec['error_kind'] = error_kind
         _write_store(store)
         return dict(rec)
 

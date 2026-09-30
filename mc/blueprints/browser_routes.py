@@ -3260,6 +3260,140 @@ def browser_read():
     return jsonify(body), status
 
 
+def named_profile_exists(name):
+    """True if a saved profile of this name is on disk. Says nothing about
+    whether any site is signed in inside it; only a read can show that."""
+    path = _profile_dir(name)
+    return bool(path) and os.path.isdir(path)
+
+
+class ProfilePageReader:
+    """In-process equivalent of launch(profile) -> navigate -> POST
+    /api/browser/read, for server-side callers (the Desk's pane reader) that
+    have no HTTP session to drive.
+
+    Every page goes through the same `_READ_JS_TEMPLATE` / `_build_read_envelope`
+    the route uses, so the hidden-text stripping, the non-HTML refusal and the
+    untrusted-content envelope all apply unchanged. `read()` returns that
+    envelope body (`ok: True`, text under `content.text`, plus `final_url`), or
+    the same structured error body the route would (`ok: False`, `error`,
+    `detail`, `guidance`). A caller that gets `ok: False` reports it and stops:
+    `guidance` says never to retry with curl/requests, and there is no such
+    path here to fall back to.
+
+    Read-only by construction: the only commands sent are `Page.navigate` and
+    `Runtime.evaluate` of the read template. Nothing is ever clicked or typed.
+
+    A profile already open in someone's live pane is NOT adopted (unlike
+    /api/browser/launch): reading would navigate the tab the user is looking
+    at. It is reported as `profile_in_use` instead. A Chromium this class
+    started is closed by `close()` (gracefully, so the profile is saved) and
+    only that one.
+    """
+    SETTLE_TIMEOUT_S = 25.0
+    POLL_S = 1.5
+
+    def __init__(self, project_id, profile):
+        self.project_id = project_id
+        self.profile = (profile or '').strip().lower()
+        self._session = None
+        self._last_href = ''
+
+    @staticmethod
+    def _fail(kind, detail):
+        return _read_error(kind, detail, 502)[0]
+
+    def _open(self, url):
+        if not named_profile_exists(self.profile):
+            return self._fail('no_profile', f"no saved browser profile '{self.profile}'")
+        session, err = _launch_browser(self.project_id, url, profile=self.profile)
+        if err or session is None:
+            return self._fail('launch_failed', err or 'browser failed to start')
+        if session.pop('reused', False):
+            return self._fail('profile_in_use',
+                              f"profile '{self.profile}' is open in a live browser pane; "
+                              f"close it so the Desk can read with it")
+        self._session = session
+        return None
+
+    def read(self, url):
+        if not isinstance(url, str) or not url.startswith(('http://', 'https://')):
+            return self._fail('bad_request', 'url must be http(s)')
+        if _is_clayrune_own_origin(url):
+            return _read_error('own_origin_blocked',
+                               "the browser pane may not read Clayrune's own origin", 403)[0]
+        if self._session is None:
+            failed = self._open(url)
+            if failed:
+                return failed
+        else:
+            self._session['url'] = url
+            self._session['cmd_queue'].put(('Page.navigate', {'url': url}))
+        session = self._session
+        if session is None:
+            return self._fail('launch_failed', 'browser session missing after launch')
+        deadline = _time.time() + self.SETTLE_TIMEOUT_S
+        started = _time.time()
+        prev = self._last_href
+        href = ''
+        # 1. wait for the navigation itself: a new href with the document complete.
+        while _time.time() < deadline:
+            if session.get('status') != 'running':
+                return self._fail('cdp_error', f"pane session ended: {session.get('error')}")
+            ok, val = _cdp_evaluate(
+                session, '({href: location.href, ready: document.readyState})',
+                timeout=5, recv_rounds=15)
+            if ok and isinstance(val, dict):
+                href = val.get('href') or ''
+                moved = href and href != 'about:blank' and href != prev
+                # same URL read twice (a refresh) never "moves": accept after a beat
+                same_ok = href == prev and _time.time() - started > 4
+                if val.get('ready') == 'complete' and (moved or same_ok):
+                    break
+            _time.sleep(0.5)
+        else:
+            return self._fail('cdp_timeout', f'page did not finish loading within '
+                                             f'{int(self.SETTLE_TIMEOUT_S)}s')
+        self._last_href = href
+        if _is_clayrune_own_origin(href):
+            return _read_error('own_origin_blocked',
+                               "the browser pane may not read Clayrune's own origin", 403)[0]
+        # 2. let a client-rendered page fill in: read until the text stops growing.
+        expression = (_READ_JS_TEMPLATE
+                      .replace('__SEL__', json.dumps(None))
+                      .replace('__CAP__', json.dumps(_JS_SAFETY_CHAR_CAP)))
+        body, last_len, stable = None, -1, 0
+        while _time.time() < deadline:
+            ok, val = _cdp_evaluate(session, expression, timeout=8, recv_rounds=15)
+            if not ok:
+                kind = 'cdp_timeout' if val == 'timeout' else 'cdp_error'
+                return self._fail(kind, f'browser read failed: {val}')
+            body, status = _build_read_envelope(href, val)
+            if status != 200:
+                return body
+            n = body.get('length') or 0
+            stable = stable + 1 if n == last_len and n > 0 else 0
+            last_len = n
+            if stable >= 1:
+                break
+            _time.sleep(self.POLL_S)
+        if body is None:
+            return self._fail('cdp_timeout', 'page text was never read')
+        body['final_url'] = href
+        print(f"[browser] profile read project={self.project_id} profile={self.profile} "
+              f"url={href!r} length={body.get('length')} "
+              f"hidden_flagged={body.get('hidden_content_flagged')}", flush=True)
+        return body
+
+    def close(self):
+        s, self._session = self._session, None
+        if not s:
+            return
+        _kill_browser_session(s)
+        with browser_lock:
+            browser_sessions.pop(s.get('session_id'), None)
+
+
 @bp.route('/api/browser/stop', methods=['POST'])
 def browser_stop():
     data = request.get_json(silent=True) or {}
