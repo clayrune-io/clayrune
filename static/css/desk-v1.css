@@ -1215,6 +1215,51 @@
 .desk-v1-cal-chip-dragging { opacity: 0.35; }
 .desk-v1-cal-chip-ghost { box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); pointer-events: none; }
 
+/* ── R2-9b (Dave follow-up): Month's real 7-col grid — a plain 2D grid
+   (7 weekday header cells then N*7 day cells, all direct children), so CSS
+   Grid's own row-wrapping places every 7th child in the last column with no
+   JS-computed grid-row/-column. Own max-height (~690px, what the modal
+   actually gives it) instead of week's 460px — a month needs up to 6 week-
+   rows visible at once, never a scroll to see the rest. */
+.desk-v1-cal-grid-wrap-month { max-height: 690px; }
+.desk-v1-cal-monthgrid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-auto-rows: minmax(92px, 1fr); }
+.desk-v1-cal-monthgrid-headcell {
+  padding: 6px 8px; font-size: 11px; color: var(--text-dim); text-transform: uppercase;
+  letter-spacing: 0.02em; border-bottom: 1px solid var(--border2); background: var(--surface2);
+  position: sticky; top: 0; z-index: 1;
+}
+.desk-v1-cal-monthcell {
+  border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); min-height: 92px; gap: 3px;
+}
+.desk-v1-cal-monthgrid .desk-v1-cal-monthcell:nth-child(7n) { border-right: none; }
+.desk-v1-cal-monthcell-outmonth { background: color-mix(in srgb, var(--surface2) 45%, transparent); }
+.desk-v1-cal-monthcell-head { display: flex; align-items: center; justify-content: space-between; position: relative; }
+.desk-v1-cal-monthcell-daynum { font-size: 12px; font-weight: 700; color: var(--text); }
+.desk-v1-cal-cell-today .desk-v1-cal-monthcell-daynum { color: var(--accent-soft); }
+/* The per-cell "+" add affix (week's slot band renders it in-flow, its own
+   row) sits absolutely over the day-number corner here instead — a month
+   cell has no dedicated slots row to give it its own line. */
+.desk-v1-cal-monthcell .desk-v1-cal-slotcell-add { position: absolute; top: -2px; right: 0; }
+.desk-v1-cal-monthcell-items { display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow: hidden; }
+/* Compact chip sizing inside a month cell — same markup/classes as week's
+   content chips and own-slot chips (`_chipHTML`/`_slotChipHTML`), just
+   tighter so several fit a ~92px-tall, 1/7-width cell. */
+.desk-v1-cal-monthcell .desk-v1-cal-chip,
+.desk-v1-cal-monthcell .desk-v1-cal-slotchip { padding: 3px 5px; gap: 1px; border-radius: 5px; }
+.desk-v1-cal-monthcell .desk-v1-cal-chip-title,
+.desk-v1-cal-monthcell .desk-v1-cal-slotchip-title { font-size: 10px; }
+/* Dave review pass 3, point 3: "⚠ held" overlapped the title text on Wed 9
+   — line 1 (time + state/origin + held) had no width/overflow constraint of
+   its own, so at a narrow cell width it just ran past the cell's edge into
+   whatever sat next to it instead of truncating. Same fix the Cadence field
+   overflow already needed (pass 2): the ellipsis has to live on the actual
+   text-bearing CHILDREN, not the flex row itself (a `max-width` on the row
+   alone clips the box, it doesn't ellipsize the text run inside it). */
+.desk-v1-cal-monthcell .desk-v1-cal-chip-line1,
+.desk-v1-cal-monthcell .desk-v1-cal-slotchip-line1 { max-width: 100%; overflow: hidden; }
+.desk-v1-cal-monthcell .desk-v1-cal-chip-line1 > *,
+.desk-v1-cal-monthcell .desk-v1-cal-slotchip-line1 > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .desk-v1-cal-kbd-reschedule {
   position: absolute; z-index: 5; top: 100%; left: 0; margin-top: 4px;
   background: var(--surface3); border: 1px solid var(--border2); border-radius: 8px; padding: 8px;
