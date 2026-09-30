@@ -1216,20 +1216,33 @@
 .desk-v1-cal-chip-ghost { box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); pointer-events: none; }
 
 /* ── R2-9b (Dave follow-up): Month's real 7-col grid — a plain 2D grid
-   (7 weekday header cells then N*7 day cells, all direct children), so CSS
-   Grid's own row-wrapping places every 7th child in the last column with no
-   JS-computed grid-row/-column. Own max-height (~690px, what the modal
-   actually gives it) instead of week's 460px — a month needs up to 6 week-
-   rows visible at once, never a scroll to see the rest. */
+   (N*7 day cells, all direct children), so CSS Grid's own row-wrapping
+   places every 7th child in the last column with no JS-computed
+   grid-row/-column. Own max-height (~690px, what the modal actually gives
+   it) instead of week's 460px — a month needs up to 6 week-rows visible at
+   once, scrolling the STAGE (not the grid internally) to reach the rest.
+   The weekday header is its OWN grid (`.desk-v1-cal-monthgrid-head`), not a
+   7th row of `.desk-v1-cal-monthgrid` — sharing one grid meant the header
+   row inherited the body's `grid-auto-rows: minmax(72px, 1fr)` too, leaving
+   a ~70px blank band under 12px of label text (Dave review pass 4). */
 .desk-v1-cal-grid-wrap-month { max-height: 690px; }
-.desk-v1-cal-monthgrid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-auto-rows: minmax(92px, 1fr); }
-.desk-v1-cal-monthgrid-headcell {
-  padding: 6px 8px; font-size: 11px; color: var(--text-dim); text-transform: uppercase;
-  letter-spacing: 0.02em; border-bottom: 1px solid var(--border2); background: var(--surface2);
-  position: sticky; top: 0; z-index: 1;
+.desk-v1-cal-monthgrid-head {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
+  position: sticky; top: 0; z-index: 1; background: var(--surface2);
+  border-bottom: 1px solid var(--border2);
 }
+.desk-v1-cal-monthgrid-headcell {
+  padding: 4px 8px; font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.02em;
+}
+/* `auto`, not `1fr` — Dave review pass 4: rows must sit at their ~72px
+   min-height and let the WRAPPER scroll past `max-height` for a 5/6-week
+   month, not stretch to fill it (`1fr` divided the wrap's height across
+   however many rows exist, so removing the header row above from this same
+   grid gave each remaining row a bigger fraction — 153px measured, worse
+   than the pre-split 110px, not the fix). */
+.desk-v1-cal-monthgrid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-auto-rows: minmax(72px, auto); }
 .desk-v1-cal-monthcell {
-  border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); min-height: 92px; gap: 3px;
+  border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); min-height: 72px; gap: 3px;
 }
 .desk-v1-cal-monthgrid .desk-v1-cal-monthcell:nth-child(7n) { border-right: none; }
 .desk-v1-cal-monthcell-outmonth { background: color-mix(in srgb, var(--surface2) 45%, transparent); }
@@ -1243,22 +1256,21 @@
 .desk-v1-cal-monthcell-items { display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow: hidden; }
 /* Compact chip sizing inside a month cell — same markup/classes as week's
    content chips and own-slot chips (`_chipHTML`/`_slotChipHTML`), just
-   tighter so several fit a ~92px-tall, 1/7-width cell. */
+   tighter so several fit a ~72px-tall, 1/7-width cell. */
 .desk-v1-cal-monthcell .desk-v1-cal-chip,
 .desk-v1-cal-monthcell .desk-v1-cal-slotchip { padding: 3px 5px; gap: 1px; border-radius: 5px; }
 .desk-v1-cal-monthcell .desk-v1-cal-chip-title,
-.desk-v1-cal-monthcell .desk-v1-cal-slotchip-title { font-size: 10px; }
-/* Dave review pass 3, point 3: "⚠ held" overlapped the title text on Wed 9
-   — line 1 (time + state/origin + held) had no width/overflow constraint of
-   its own, so at a narrow cell width it just ran past the cell's edge into
-   whatever sat next to it instead of truncating. Same fix the Cadence field
-   overflow already needed (pass 2): the ellipsis has to live on the actual
-   text-bearing CHILDREN, not the flex row itself (a `max-width` on the row
-   alone clips the box, it doesn't ellipsize the text run inside it). */
-.desk-v1-cal-monthcell .desk-v1-cal-chip-line1,
-.desk-v1-cal-monthcell .desk-v1-cal-slotchip-line1 { max-width: 100%; overflow: hidden; }
-.desk-v1-cal-monthcell .desk-v1-cal-chip-line1 > *,
-.desk-v1-cal-monthcell .desk-v1-cal-slotchip-line1 > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk-v1-cal-monthcell .desk-v1-cal-slotchip-title,
+.desk-v1-cal-monthcell .desk-v1-cal-slotchip-origin { font-size: 10px; }
+/* Dave review pass 3, point 3, corrected in pass 4: "⚠ held" overlapping the
+   title on Wed 9 was fixed by ellipsizing LINE 1 — wrong line. Line 1 is
+   glyph + time and must never truncate (pass 4 explicit); the overlap
+   belongs on line 2 (title / "Your slot" / "Agent suggested"), which is
+   also where the mockup allows an ellipsis. `_chipHTML`'s line 1 (content
+   chips: time + state glyph) is a different element and keeps its own
+   ellipsis below — only the SLOT chip's line 1 moved. */
+.desk-v1-cal-monthcell .desk-v1-cal-chip-line1 { max-width: 100%; overflow: hidden; }
+.desk-v1-cal-monthcell .desk-v1-cal-chip-line1 > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .desk-v1-cal-kbd-reschedule {
   position: absolute; z-index: 5; top: 100%; left: 0; margin-top: 4px;
@@ -1356,9 +1368,15 @@
 }
 .desk-v1-cal-slotchip-user { background: var(--green); border: 1px solid var(--green); color: var(--bg); }
 .desk-v1-cal-slotchip-agent { background: transparent; border: 1px dashed var(--green-text); color: var(--green-text); }
-.desk-v1-cal-slotchip-line1 { display: flex; align-items: center; gap: 5px; }
-.desk-v1-cal-slotchip-time { font-size: 10px; font-weight: 700; }
-.desk-v1-cal-slotchip-origin { font-size: 10.5px; font-weight: 600; }
+/* Dave review pass 4: line 1 (glyph + time) never truncates — `nowrap` +
+   `flex-shrink: 0` on both its children, no ellipsis rule here at all.
+   Line 2 (`-origin`/`-title`, mutually exclusive per chip) is where an
+   ellipsis is allowed, same clipped-text pattern the month grid already
+   uses elsewhere in this file. */
+.desk-v1-cal-slotchip-line1 { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.desk-v1-cal-slotchip-glyph { font-size: 10px; font-weight: 700; flex-shrink: 0; }
+.desk-v1-cal-slotchip-time { font-size: 10px; font-weight: 700; flex-shrink: 0; }
+.desk-v1-cal-slotchip-origin { font-size: 10.5px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .desk-v1-cal-slotchip-held { font-size: 10px; font-weight: 700; color: var(--amber-text); }
 .desk-v1-cal-slotchip-title { font-size: 11px; line-height: 1.3; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .desk-v1-cal-slotchip-ghost { box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); pointer-events: none; background: var(--green); color: var(--bg); border-radius: 7px; padding: 5px 7px; }

@@ -657,10 +657,17 @@ async function runR29AgentSuggestedAndFill(browser) {
     window.deskV1CalendarSuggestFill('camp-1', { slotId: 'slot-fill-test', title: 'Test suggested piece', platform: 'x' });
   });
   await page.waitForTimeout(50);
+  // R2-9b (Dave review pass 4): the title line no longer carries a
+  // "· platform" text suffix — platform is the line-1 glyph now, and the
+  // suffix was pushing "⚠ held" past the ellipsis at month-column widths.
   const filledTitle = (await page.textContent('[data-slot-id="slot-fill-test"] .desk-v1-cal-slotchip-title').catch(() => '') || '').trim();
-  filledTitle === 'Test suggested piece · x'
-    ? ok(`R2-9: deskV1CalendarSuggestFill fills a user slot with a title + platform: "${filledTitle}"`)
-    : fail(`R2-9: fill did not render on the slot chip: ${JSON.stringify(filledTitle)}`);
+  filledTitle === 'Test suggested piece'
+    ? ok(`R2-9b: deskV1CalendarSuggestFill fills a user slot with a title, no platform-text suffix: "${filledTitle}"`)
+    : fail(`R2-9b: fill did not render on the slot chip: ${JSON.stringify(filledTitle)}`);
+  const filledGlyph = (await page.textContent('[data-slot-id="slot-fill-test"] .desk-v1-cal-slotchip-glyph').catch(() => '') || '').trim();
+  filledGlyph === '𝕏'
+    ? ok(`R2-9b: the fill's platform ("x") renders as the line-1 glyph instead: "${filledGlyph}"`)
+    : fail(`R2-9b: fill's platform glyph wrong: ${JSON.stringify(filledGlyph)}`);
   const stillUser = await page.$eval('[data-slot-id="slot-fill-test"]', (el) => el.dataset.slotOrigin);
   stillUser === 'user'
     ? ok('R2-9: filling a slot never changes its origin away from user')
@@ -721,6 +728,53 @@ async function runR29UnscheduledDrag(browser) {
     : fail('R2-9: v-install-li should have left the Unscheduled tray once dated');
 
   reportUncaught(pageErrors, '[R2-9 unscheduled-drag]');
+  await ctx.close();
+}
+
+// ── R2-9b (Dave review pass 4): the Month grid's own three defects, pinned
+// so they can't regress silently — (1) the weekday header used to inherit
+// the body grid's `grid-auto-rows: minmax(72px, 1fr)`, leaving a blank band
+// under 12px of label text; (2) week rows were ~110px, not the mockup's
+// ~75px, clipping the modal to ~1.3 visible rows; (3) a slot chip's line 1
+// (glyph + time) must never ellipsize — only line 2 (the label) may. ───────
+async function runR29bMonthGridDimensions(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCalendar(page);
+  await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
+
+  await page.evaluate(() => {
+    const camp = (window.DeskV1Fixtures.campaigns || []).find((c) => c.id === 'camp-1');
+    camp.when = camp.when || {};
+    camp.when.slots = camp.when.slots || [];
+    const at = new Date(); at.setHours(14, 0, 0, 0);
+    camp.when.slots.push({ id: 'slot-month-dim-test', at: at.toISOString(), origin: 'user' });
+    window.deskV1Nav('calendar', { campaignId: 'camp-1' });
+  });
+  await page.waitForTimeout(50);
+  await page.selectOption('[data-cal-view]', 'month');
+  await page.waitForTimeout(50);
+
+  const headHeight = await page.$eval('.desk-v1-cal-monthgrid-head', (el) => el.getBoundingClientRect().height);
+  headHeight < 40
+    ? ok(`R2-9b: month header row is short, no reserved blank band: ${headHeight.toFixed(1)}px`)
+    : fail(`R2-9b: month header row too tall (blank band under labels): ${headHeight.toFixed(1)}px`);
+
+  const rowHeight = await page.$eval('.desk-v1-cal-monthcell', (el) => el.getBoundingClientRect().height);
+  rowHeight <= 90
+    ? ok(`R2-9b: month week row is <=90px: ${rowHeight.toFixed(1)}px`)
+    : fail(`R2-9b: month week row too tall: ${rowHeight.toFixed(1)}px`);
+
+  const timeEl = await page.$('[data-slot-id="slot-month-dim-test"] .desk-v1-cal-slotchip-time');
+  const dims = timeEl ? await timeEl.evaluate((el) => ({
+    text: el.textContent.trim(),
+    scrollWidth: el.scrollWidth,
+    clientWidth: el.clientWidth,
+  })) : null;
+  dims && /\d{1,2}:\d{2}/.test(dims.text) && dims.scrollWidth <= dims.clientWidth + 1
+    ? ok(`R2-9b: own slot chip's line 1 carries the full time, un-ellipsized: "${dims.text}"`)
+    : fail(`R2-9b: slot chip line 1 time missing/truncated: ${JSON.stringify(dims)}`);
+
+  reportUncaught(pageErrors, '[R2-9b month-dims]');
   await ctx.close();
 }
 
@@ -795,6 +849,7 @@ try {
   await runR29SlotCreateAndRefusal(browser);
   await runR29AgentSuggestedAndFill(browser);
   await runR29UnscheduledDrag(browser);
+  await runR29bMonthGridDimensions(browser);
   await runPhoneLayout(browser);
   await captureScreenshots(browser);
   exitCode = bad === 0 ? 0 : 1;
