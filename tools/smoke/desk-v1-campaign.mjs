@@ -547,11 +547,11 @@ async function runFreshEmptyStates(browser) {
   // all (§6, moves to Engagement at R2-12) and stays reachable only through
   // the same deep-link call a Home/piece "Review" link would make.
   await page.click('[data-stop="goal"]');
-  await page.waitForSelector('#desk-v1-camp-tabbody .desk-v1-stub', { timeout: 2000 });
-  const resultsText = (await page.textContent('#desk-v1-camp-tabbody') || '');
-  /Results start after the first post goes out\. Next: .*on 𝕏 · @ron\./.test(resultsText)
-    ? ok(`IA6: fresh Active Results shows UX_PASS §6.1 copy: "${resultsText.trim()}"`)
-    : fail(`IA6: fresh Active Results copy wrong: ${JSON.stringify(resultsText)}`);
+  await page.waitForSelector('#desk-v1-camp-tabbody .desk-v1-goal-editor', { timeout: 2000 });
+  const hintText = (await page.textContent('.desk-v1-goal-editor-hint').catch(() => '') || '').trim();
+  hintText === '⚠ Not measured — pick a source to start tracking progress.'
+    ? ok(`IA6: fresh Active Goal (R2-4) shows the untracked hint: "${hintText}"`)
+    : fail(`IA6: fresh Active Goal editor hint wrong: ${JSON.stringify(hintText)}`);
 
   await page.evaluate(() => window.deskV1GotoCampaignPanel('conversations', { campaignId: 'camp-4' }));
   await page.waitForSelector('#desk-v1-camp-tabbody .desk-v1-conversations, #desk-v1-camp-tabbody .desk-v1-conv-empty', { timeout: 2000 });
