@@ -40,7 +40,6 @@
     presence:      { parent: 'project', label: 'Presence',     render: () => window.deskV1RenderPresence },
     // IA1 stub (§5 row IA1: "engagement (stub)") — dashboard lands in IA7.
     engagement:    { parent: 'home',    label: 'Engagement',   render: () => window.deskV1RenderEngagement },
-    rules:         { parent: 'campaign', label: 'Rules',        render: () => window.deskV1RenderRules },
     // Empty label: T3 renders its own doc-label/count into the crumb-tools
     // slot below instead (frame 12b, one row). Safe only because no route's
     // `parent` is 'review' today — the SAME label also becomes a child
@@ -66,8 +65,16 @@
   // `desk-v1-calendar.js` directly as its own panel (§4.1's "Absorbs" column)
   // rather than the old content-tab's List/Calendar toggle, so the toggle-once
   // `calendarView` flag this alias used to set is retired with it — nothing
-  // sets or reads it any more. `conversations` is untouched (R2-12 moves it).
-  const PANEL_ALIASES = { results: 'goal', content: 'what', conversations: 'conversations', calendar: 'when' };
+  // sets or reads it any more.
+  //
+  // R2-3b: `conversations` is no longer a campaign panel at all — no frame 2 to
+  // 8 has a Conversations tab, and R2-12 (Engagement landing) is deferred, so
+  // the old deep link (Home's Needs-you reply row, old smoke navigation,
+  // `deskV1GotoCampaignPanel('conversations', ...)`) now lands on the
+  // Engagement route with the same params: `{campaignId}` makes Engagement
+  // show that campaign's conversations (desk-v1-engagement.js), exactly the
+  // component the tab used to embed.
+  const PANEL_ALIASES = { results: 'goal', content: 'what', calendar: 'when' };
 
   function _campaignLabel(params) {
     const camps = (window.DeskV1Fixtures && window.DeskV1Fixtures.campaigns) || [];
@@ -120,6 +127,7 @@
 
   function deskV1Nav(route, params) {
     params = params || {};
+    if (route === 'conversations') route = 'engagement';
     if (Object.prototype.hasOwnProperty.call(PANEL_ALIASES, route)) {
       _gotoCampaignPanel(PANEL_ALIASES[route], params);
       return;
@@ -140,6 +148,9 @@
   function deskV1GotoCampaignPanel(panel, params) { _gotoCampaignPanel(panel, params || {}); }
 
   function _gotoCampaignPanel(panel, params) {
+    // R2-3b: a direct caller naming the retired panel gets the Engagement
+    // route, same as the `conversations` alias in deskV1Nav.
+    if (panel === 'conversations') { deskV1Nav('engagement', params); return; }
     const campaignId = params.campaignId;
     const top = _stack[_stack.length - 1];
     const nextParams = Object.assign({ campaignId }, params, { panel });
@@ -325,13 +336,10 @@
     // guard something that actually tracks the active stop.
     tabbodyEl.dataset.panel = panel;
     // R2-3 (§4.1 Absorbs column): ① reads `desk-v1-results.js` and ④ reads
-    // `desk-v1-calendar.js` directly, same standalone-panel shape
-    // `conversations` already had — ② how / ⑤ where have no dedicated
+    // `desk-v1-calendar.js` directly, each a standalone panel — ② how / ⑤ where have no dedicated
     // renderer yet (placeholders) and ③ what / ⑥ launch are
     // desk-v1-campaign.js's own job, so both fall through to the generic hook.
-    if (panel === 'conversations' && typeof window.deskV1RenderConversations === 'function') {
-      window.deskV1RenderConversations(tabbodyEl, params);
-    } else if (panel === 'goal' && typeof window.deskV1RenderResults === 'function') {
+    if (panel === 'goal' && typeof window.deskV1RenderResults === 'function') {
       window.deskV1RenderResults(tabbodyEl, params);
     } else if (panel === 'when' && typeof window.deskV1RenderCalendar === 'function') {
       window.deskV1RenderCalendar(tabbodyEl, params);

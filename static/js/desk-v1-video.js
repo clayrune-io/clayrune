@@ -467,7 +467,7 @@
     };
 
     const raiseBtn = el.querySelector('[data-raise-budget]');
-    if (raiseBtn) raiseBtn.onclick = () => window.deskV1Nav('rules', { campaignId: _st.campaignId });
+    if (raiseBtn) raiseBtn.onclick = () => window.deskV1GotoCampaignPanel('how', { campaignId: _st.campaignId });
     const renderBtn = el.querySelector('[data-render-btn]');
     if (renderBtn) renderBtn.onclick = () => _startRender(family, detail);
 

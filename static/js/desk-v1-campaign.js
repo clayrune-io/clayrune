@@ -77,53 +77,25 @@
   // Summary bar (§3.1). The shell's own crumb already renders "‹ <parent> ·
   // <campaign name>" (desk-v1-shell.js _renderCrumb/_campaignLabel) — this
   // slot renders the rest of the bar the frame draws beside/below that: the
-  // state pill + Pause, then the Goal / Channels / Rules groups. Not
+  // state pill + Pause, then the Goal / Channels groups. Not
   // duplicating the name avoids two "Windows beta testers" on screen.
   // ────────────────────────────────────────────────────────────────────────
-  // IA2 (THE_DESK_V1_IA_REVISION.md §3): the "approve themes" review-mode
-  // toggle (row 7) retired with no replacement; the replies toggle (row 9)
-  // moved to project.replies; paid (row 10, the `rules` duplicate) retired
-  // in favor of the one copy at `plan.paid` (row 25, stays campaign). The
-  // frequency chip now reads the EFFECTIVE
-  // cadence (`validatePlan`'s inherit+clamp, kit.js `_effectiveCadence`) —
-  // "from <project>" names where a tighter number came from (§5 IA2
-  // acceptance: "campaign cadence 5 under project ceiling 3 -> effective 3
-  // with chip '≤3/wk · from Clayrune'").
-  function _ruleChips(camp) {
-    const plan = camp.plan || {};
-    const project = _project(camp.projectId);
-    const chips = [];
-    chips.push(plan.paid ? 'Paid' : 'Organic');
-    const eff = (DeskV1Kit.validatePlan(plan, project) || {}).effective || {};
-    if (eff.cadence_per_week != null) {
-      chips.push(`≤${esc(eff.cadence_per_week)}/wk${eff.cadence_from_project ? ` · from ${esc(project ? project.name : 'project')}` : ''}`);
-    }
-    // INS-02 (T2b): "a durable instruction appears as a new rule chip" —
-    // additive-only (`customChips` is undefined until a Posy instruction
-    // handler writes one, so today's camp-1 renders byte-identically).
-    ((camp.rules && camp.rules.customChips) || []).forEach((c) => chips.push(c));
-    return chips;
-  }
-
   function deskV1FillCampaignSummary(el, params) {
     const camp = _campaign(params.campaignId);
     if (!camp) { el.innerHTML = '<div class="desk-v1-stub-inline">Campaign not found.</div>'; return; }
     // §3.5: "Same page, with state ◇ Proposed" — T2b owns that whole variant
     // (editable goal sentence, Start campaign button) rather than this file
-    // branching internally on every group below. Backward-compatible seam
-    // (same pattern as the rules-edit hook further down): undefined until
-    // desk-v1-rules.js loads, at which point every proposed campaign uses it.
+    // branching internally on every group below. Backward-compatible seam:
+    // undefined until desk-v1-rules.js loads, at which point every proposed
+    // campaign uses it.
     if (camp.state === 'proposed' && typeof window.deskV1FillProposedSummary === 'function') {
       window.deskV1FillProposedSummary(el, params, camp);
       return;
     }
-    // IA4 (§2.3, §5 row IA4): a Draft campaign is mid-checklist, not a
-    // finished summary to render — same backward-compatible seam as the
-    // Proposed branch above, one state earlier.
-    if (camp.state === 'draft' && typeof window.deskV1FillDraftSetup === 'function') {
-      window.deskV1FillDraftSetup(el, params, camp);
-      return;
-    }
+    // R2-3b: a Draft has no summary bar — the map stepper is the first thing
+    // under the crumb, like every other campaign page (Ron 2026-09-30), and
+    // its own ⋯ menu (`deskV1FillCampaignTabStrip`) carries Delete draft.
+    if (camp.state === 'draft') { el.innerHTML = ''; return; }
     const stateHTML = DeskV1Kit.stateLabelHTML(camp.state, { className: 'desk-v1-camp-state-pill' });
     // §4/Dave review pass 1: target/deadline/outcome/tracked are read from
     // `camp.plan.goal` — the SAME object the rules popover and Resume's
@@ -159,13 +131,6 @@
         <span class="desk-v1-camp-summary-label">CHANNELS</span>
         <div class="desk-v1-camp-summary-badges">${chans.length ? chans.map((ch) => DeskV1Kit.channelBadge(ch)).join('') : '<span class="desk-v1-home-camp-nochannels">No channels yet</span>'}</div>
       </div>`;
-    const rulesHTML = `<div class="desk-v1-camp-summary-group" data-summary-group="rules">
-        <span class="desk-v1-camp-summary-label">RULES</span>
-        <div class="desk-v1-camp-summary-badges">
-          ${_ruleChips(camp).map((c) => `<span class="desk-v1-camp-rule-chip">${esc(c)}</span>`).join('')}
-          <button type="button" class="desk-v1-camp-rules-edit" data-rules-edit>Edit</button>
-        </div>
-      </div>`;
 
     el.innerHTML = `
       <div class="desk-v1-camp-summary-top">
@@ -182,7 +147,6 @@
       <div class="desk-v1-camp-summary-groups">
         ${goalHTML}
         ${channelsHTML}
-        ${rulesHTML}
       </div>`;
 
     const goalBtn = el.querySelector('[data-goal-btn]');
@@ -212,15 +176,6 @@
     };
     const resumeBtn = el.querySelector('[data-resume-btn]');
     if (resumeBtn) resumeBtn.onclick = () => _openResumeSheet(camp, el, params);
-    // T2b owns the rules popover itself (docs/desk_v1_r0_plan.md T2a scope:
-    // "Rule chips get an Edit hook only; the popover itself is T2b") — this
-    // hook is the backward-compatible seam: undefined today, T2b defines
-    // `window.deskV1OpenRulesPopover(campaignId)` without touching this file.
-    const editBtn = el.querySelector('[data-rules-edit]');
-    if (editBtn) editBtn.onclick = () => {
-      if (typeof window.deskV1OpenRulesPopover === 'function') window.deskV1OpenRulesPopover(camp.id);
-      else DeskV1Kit.toast('Editing rules lands with the rules popover (T2b).');
-    };
   }
 
   // ── Pause / Resume (§6.2) ──────────────────────────────────────────────
@@ -271,12 +226,11 @@
         if (!validity.ok || expiryReason) {
           const reason = expiryReason || `it's missing ${validity.missing.map((m) => m.label).join(', ')}`;
           // §6.2: "Resume routes to step 4 with only the changed terms, not
-          // a silent restart." Setup's step 4 (Review + start) is T4/T5,
-          // not built on this branch (T2 depends only on T1) — rather than
-          // invent that page, the nearest already-built surface for
-          // changing plan terms (the rules-edit popover, T2b) opens
-          // instead, and the toast says exactly why Resume didn't happen.
-          if (typeof window.deskV1OpenRulesPopover === 'function') window.deskV1OpenRulesPopover(camp.id);
+          // a silent restart." R2-3b retired the rules popover that used to
+          // stand in for that page; ⑥ Launch is where the missing terms are
+          // listed, each linking to the stop that fixes it, so Resume lands
+          // there and the toast says exactly why it didn't happen.
+          window.deskV1GotoCampaignPanel('launch', { campaignId: camp.id });
           DeskV1Kit.toast(`Can’t resume “${camp.plan.title}” — ${reason}. Fix it, then resume.`);
           return;
         }
@@ -315,7 +269,7 @@
     const conversations = _conversations();
     let campIdx, famRemoved, convRemoved;
     DeskV1Kit.commandBus.run({
-      label: `Deleted “${camp.plan.title}”`,
+      label: `Deleted “${camp.plan.title || 'Untitled draft'}”`,
       do: () => {
         campIdx = campaigns.indexOf(camp);
         famRemoved = [];
@@ -337,6 +291,20 @@
       },
     });
   }
+
+  // R2-3b (Ron 2026-09-30, "an option to delete a drafted campaign, at least
+  // from the main Desk page"): a Draft has nothing to protect and is cheap to
+  // remake, so deleting one asks no confirmation — the Undo toast
+  // (`_deleteCampaignCascade`'s commandBus entry) is the safety. Shared by
+  // Home's per-row trash and the campaign page's ⋯ › Delete draft. Refuses any
+  // other state: proposed/active/... keep the confirm-sheet/Archive paths.
+  function deskV1DeleteDraftCampaign(campaignId, onDone) {
+    const camp = _campaign(campaignId);
+    if (!camp || camp.state !== 'draft') return false;
+    _deleteCampaignCascade(camp, onDone);
+    return true;
+  }
+  window.deskV1DeleteDraftCampaign = deskV1DeleteDraftCampaign;
 
   // Archive never touches families/conversations/results — §"keeps results
   // and receipts" means literally nothing else in fixture data moves; only
@@ -387,9 +355,11 @@
     const menu = document.createElement('div');
     menu.className = 'desk-v1-camp-cardmenu';
     menu.setAttribute('role', 'menu');
-    menu.innerHTML = prePublish
-      ? `<button type="button" data-menu-delete>Delete campaign</button>`
-      : `<button type="button" data-menu-archive>Archive campaign</button>`;
+    menu.innerHTML = camp.state === 'draft'
+      ? `<button type="button" data-menu-delete-draft>Delete draft</button>`
+      : prePublish
+        ? `<button type="button" data-menu-delete>Delete campaign</button>`
+        : `<button type="button" data-menu-archive>Archive campaign</button>`;
     host.appendChild(menu);
     const close = () => { menu.remove(); document.removeEventListener('click', closer); };
     const closer = (e) => { if (!menu.contains(e.target) && e.target !== triggerEl) close(); };
@@ -403,6 +373,12 @@
     // the click fell through to the card's navigate handler. Stopping
     // propagation at the source doesn't depend on DOM structure surviving
     // the handler that runs first.
+    const delDraftBtn = menu.querySelector('[data-menu-delete-draft]');
+    if (delDraftBtn) delDraftBtn.onclick = (e) => {
+      e.stopPropagation();
+      close();
+      deskV1DeleteDraftCampaign(camp.id, opts.onDone);
+    };
     const delBtn = menu.querySelector('[data-menu-delete]');
     if (delBtn) delBtn.onclick = (e) => {
       e.stopPropagation();
@@ -503,14 +479,40 @@
         `<span class="desk-v1-map-stop-glyph" aria-hidden="true">${_STOP_STATE_GLYPH[state]}</span>` +
         `<span class="desk-v1-map-stop-word">${esc(word)}</span></button>`;
     }).join('');
+    // R2-3b: a Draft's summary bar is gone (see deskV1FillCampaignSummary), so
+    // its More menu (Delete draft) lives here, at the stepper's right edge —
+    // outside `.desk-v1-map-stops`, whose overflow-x would clip the dropdown.
+    const moreHTML = camp.state === 'draft'
+      ? `<div class="desk-v1-camp-card-more desk-v1-map-more"><button type="button" class="desk-v1-camp-card-morebtn" data-camp-more-btn aria-haspopup="menu" aria-label="More actions">&#8942;</button></div>`
+      : '';
     el.innerHTML = `
       <div class="desk-v1-map-tabs" role="tablist">
         ${DeskV1Kit.stateLabelHTML(camp.state, { className: 'desk-v1-map-pill' })}
         <div class="desk-v1-map-stops">${stopsHTML}</div>
+        ${moreHTML}
       </div>`;
     el.querySelectorAll('[data-stop]').forEach((btn) => {
       btn.onclick = () => _gotoMapStop(camp, btn.getAttribute('data-stop'));
     });
+    const moreBtn = el.querySelector('[data-camp-more-btn]');
+    if (moreBtn) moreBtn.onclick = (e) => {
+      e.stopPropagation();
+      deskV1OpenCampaignMoreMenu(moreBtn, camp.id, {
+        onDone: (result) => {
+          if (result === 'deleted' && typeof window.deskV1PopTo === 'function') window.deskV1PopTo('home');
+          else if (typeof window.deskV1Render === 'function') window.deskV1Render();
+        },
+      });
+    };
+    // ≤960px the stops scroll sideways (desk-v1.css); a tab strip rebuilt on
+    // every stop change would snap back to the first stop, so recentre the
+    // current one (frame 10: "current stop in view").
+    const stopsEl = el.querySelector('.desk-v1-map-stops');
+    const hereBtn = el.querySelector('.desk-v1-map-stop[data-state="here"]');
+    if (stopsEl && hereBtn && stopsEl.scrollWidth > stopsEl.clientWidth) {
+      const sr = stopsEl.getBoundingClientRect(); const br = hereBtn.getBoundingClientRect();
+      stopsEl.scrollLeft += (br.left - sr.left) - (sr.width - br.width) / 2;
+    }
   }
 
   // Movement (§3 table: "`Next: <stop> ›` / `‹ Back` at the foot of each
@@ -573,7 +575,7 @@
     if (!_projectEditable(camp)) return planResult;
     const extra = [];
     if (!project) {
-      extra.push({ bound: 'project', stop: 'launch', label: 'project', detail: 'pick one above' });
+      extra.push({ bound: 'project', stop: 'launch', label: 'Project', detail: 'pick one' });
     } else {
       const plan = camp.plan || {};
       const presence = project.presence || {};
@@ -858,7 +860,7 @@
   function _runSuggestTask(camp, project, posyBoxEl) {
     const plan = camp.plan || {};
     const accounts = plan.accounts || [];
-    const title = plan.title || camp.subject.label;
+    const title = plan.title || (camp.subject && camp.subject.label) || 'New campaign';
     camp.how = camp.how || {};
     camp.how.suggested = {
       what: [1, 2, 3].map((n) => ({ title: `${title} — post ${n}`, channelId: accounts[(n - 1) % (accounts.length || 1)] || null })),
@@ -1325,8 +1327,4 @@
   window.deskV1FillCampaignTabBody = deskV1FillCampaignTabBody;
   window.deskV1FillCampaignRightColumn = deskV1FillCampaignRightColumn;
   window.deskV1FillCampaignAddTray = deskV1FillCampaignAddTray;
-  // T2b needs the exact same chip list for the Proposed-state summary bar
-  // (§3.5: "the same page... shows the same chips") — a small backward-
-  // compatible export of this file's existing, unchanged `_ruleChips`.
-  window.deskV1RuleChips = _ruleChips;
 })();

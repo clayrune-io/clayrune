@@ -421,6 +421,18 @@
   padding: 12px 14px; border-top: 1px solid var(--border2); cursor: pointer;
 }
 .desk-v1-home-block-rows .desk-v1-home-row:first-child { border-top: none; }
+/* R2-3b: Draft rows only — trash at the row's right edge, out of the column
+   grid so the shared header still lines up; the row reserves room for it. */
+.desk-v1-home-row[data-state="draft"] { position: relative; padding-right: 52px; }
+.desk-v1-home-row-trash {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; justify-content: center; width: 32px; height: 32px;
+  background: none; border: 1px solid transparent; border-radius: 7px;
+  color: var(--text-faint); cursor: pointer; padding: 0;
+}
+.desk-v1-home-row-trash:hover, .desk-v1-home-row-trash:focus-visible {
+  color: var(--red-text, #c0392b); background: var(--surface3); border-color: var(--border2);
+}
 .desk-v1-home-row:hover { background: var(--surface2); }
 .desk-v1-home-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .desk-v1-home-row-title { font-size: 13.5px; font-weight: 700; color: var(--text); }
@@ -2075,6 +2087,11 @@
 .desk-v1-map-tabs { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .desk-v1-map-pill { flex: 0 0 auto; }
 .desk-v1-map-stops { display: flex; align-items: flex-start; flex: 1 1 auto; min-width: 0; gap: 0; }
+/* R2-3b: a Draft has no summary bar, so its ⋯ menu (Delete draft) sits at the
+   stepper's right edge, outside .desk-v1-map-stops (whose overflow-x would
+   clip the dropdown). */
+.desk-v1-map-more { flex: 0 0 auto; align-self: flex-start; }
+.desk-v1-map-more .desk-v1-camp-cardmenu { right: 0; left: auto; }
 
 .desk-v1-map-stop {
   position: relative; flex: 1 1 0; min-width: 0; min-height: 44px;
