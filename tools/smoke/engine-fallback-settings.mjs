@@ -91,6 +91,7 @@ await page.route('**/*', (route) => {
     return route.abort();
   }
   if (path === '/api/projects') return json([]);
+  if (path === '/api/local-auth/status') return json({ configured: true });
   if (path === '/api/config' && req.method() === 'PUT') {
     const body = JSON.parse(req.postData() || '{}');
     puts.push(body);
@@ -103,6 +104,18 @@ await page.route('**/*', (route) => {
                   default: config.default_provider });
   return route.abort();
 });
+
+// MC-995: move/remove/add now route through saveSetting() -> humanProofFetch()
+// instead of firing PUT /api/config directly — answer the passcode modal.
+const answerHumanProofModal = async (timeout = 5000) => {
+  await page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout });
+  await page.evaluate(() => {
+    const win = document.querySelector('[data-modal-id^="__human-proof-"]');
+    const modalId = win.dataset.modalId;
+    document.getElementById(`hp-passcode-${modalId}`).value = 'smoke-dash-passcode';
+    window._hpSubmit(modalId);
+  });
+};
 
 const openAgentSubs = async () => {
   await page.evaluate(() => { window.closeModalById && window.closeModalById('__settings'); });
@@ -186,6 +199,7 @@ try {
     document.getElementById('engine-fallback-add-provider').value = 'codex';
     window.addEngineFallback();
   });
+  await answerHumanProofModal();
   await page.waitForFunction(() => document.querySelectorAll('#engine-fallback-section [data-ef-idx]').length === 2);
   check(puts.length === 1 && JSON.stringify(puts[0].engine_fallback_order) ===
     JSON.stringify([{ provider: 'gemini', model: '' }, { provider: 'codex', model: '' }]),
@@ -194,6 +208,7 @@ try {
 
   puts.length = 0;
   await page.evaluate(() => window.moveEngineFallback(1, -1));
+  await answerHumanProofModal();
   await page.waitForFunction(() => document.querySelector('#engine-fallback-section [data-ef-idx="0"] .settings-label')
     ?.textContent.includes('Codex'));
   check(puts.length === 1 && puts[0].engine_fallback_order[0].provider === 'codex',
@@ -202,6 +217,7 @@ try {
 
   puts.length = 0;
   await page.evaluate(() => window.removeEngineFallback(0));
+  await answerHumanProofModal();
   await page.waitForFunction(() => document.querySelectorAll('#engine-fallback-section [data-ef-idx]').length === 1);
   check(puts.length === 1 && puts[0].engine_fallback_order.length === 1
     && puts[0].engine_fallback_order[0].provider === 'gemini',
