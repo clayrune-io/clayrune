@@ -30,12 +30,20 @@
           { channel_id: 'ch-x-ron', voice: 'Ron (first person)' },
           { channel_id: 'ch-li-page', voice: 'Clayrune page' },
           { channel_id: 'ch-blog', voice: 'Clayrune blog' },
+          // R2-10 (frame 7b SOURCES tray): the second X account and the two
+          // preview-only accounts (§11.6 Q1) the Where board can place.
+          { channel_id: 'ch-x-clayrune', voice: 'Clayrune (company)' },
+          { channel_id: 'ch-yt-clayrune', voice: 'Clayrune channel' },
+          { channel_id: 'ch-discord-community', voice: 'Community server' },
         ],
         audience: 'Developers running coding agents',
         ceilings: {
           'ch-x-ron': { per_week: 3, min_gap_h: 12 },
           'ch-li-page': { per_week: 3, min_gap_h: 12 },
           'ch-blog': { per_week: 3, min_gap_h: 12 },
+          'ch-x-clayrune': { per_week: 3, min_gap_h: 12 },
+          'ch-yt-clayrune': { per_week: 3, min_gap_h: 12 },
+          'ch-discord-community': { per_week: 3, min_gap_h: 12 },
         },
         replies: 'drafts',
         // IA revision 2 §5.3: who plans and writes for this project, asked
@@ -207,6 +215,21 @@
       capability: 'direct', health: 'held', holdReason: 'LinkedIn page disconnected' },
     { id: 'ch-blog', platform: 'blog', identity: 'Clayrune blog', label: 'Clayrune blog',
       capability: 'manual', health: 'ok' },
+    // R2-10 (frame 7b SOURCES tray; §11.6 Q1 — Ron 2026-09-29: build the
+    // tiles and placeholders so the mocked-up view is there). The second X
+    // account is a real publishing account like @ron. `preview: true` marks
+    // the accounts that render, drag, drop and remove like any other but
+    // never publish, read or authenticate (v1 PUBLISHES to X + LinkedIn
+    // only); `connected: false` is the one card the tray shows as
+    // `not connected · Connect ›` (→ Presence) and cannot be dragged.
+    { id: 'ch-x-clayrune', platform: 'x', identity: '@clayrune', label: '𝕏 · @clayrune',
+      capability: 'direct', health: 'ok' },
+    { id: 'ch-yt-clayrune', platform: 'youtube', identity: 'Clayrune', label: '▶ · Clayrune',
+      capability: 'manual', health: 'ok', preview: true },
+    { id: 'ch-discord-community', platform: 'discord', identity: 'Community', label: 'Discord · Community',
+      capability: 'manual', health: 'ok', preview: true },
+    { id: 'ch-reddit', platform: 'reddit', identity: 'Reddit', label: 'Reddit',
+      capability: 'manual', health: 'ok', preview: true, connected: false },
   ];
 
   // Content family (gap map #1): one piece, N destination versions (#2).

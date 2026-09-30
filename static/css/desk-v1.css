@@ -2159,3 +2159,125 @@
   .desk-v1-map-stops { flex-wrap: nowrap; overflow-x: auto; justify-content: flex-start; }
   .desk-v1-map-stop { flex: 0 0 auto; min-width: 58px; }
 }
+
+/* ── R2-10: ⑤ Where board (frames 7a/7b; desk-v1-where.js) ───────────────── */
+.desk-v1-where { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.desk-v1-where-board {
+  display: flex; align-items: flex-start; gap: 12px; overflow-x: auto; padding-bottom: 6px;
+}
+.desk-v1-where-msgs, .desk-v1-where-col {
+  flex: 0 0 232px; min-width: 0; background: var(--surface); border: 1px solid var(--border2);
+  border-radius: 10px; display: flex; flex-direction: column;
+}
+/* Sticky, so once the board scrolls sideways past 3 accounts the Messages column
+   stays in reach as the drag source for whichever column is in view. */
+.desk-v1-where-msgs { background: var(--surface2); position: sticky; left: 0; z-index: 2; }
+.desk-v1-where-msghead { padding: 10px 12px 8px; border-bottom: 1px solid var(--border); }
+.desk-v1-where-msgtitle { font-size: 13px; font-weight: 700; color: var(--text); }
+.desk-v1-where-msgsub { font-size: 11px; color: var(--text-faint); }
+.desk-v1-where-msglist, .desk-v1-where-colbody {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  /* A long column scrolls inside itself so the SOURCES tray below stays within
+     reach of the same drag (pointer-drag has no auto-scroll). */
+  max-height: clamp(160px, 32vh, 360px); overflow-y: auto;
+}
+.desk-v1-where-msgwrap, .desk-v1-where-vwrap { position: relative; }
+
+.desk-v1-where-msg, .desk-v1-where-vcard, .desk-v1-where-source {
+  background: var(--surface3); border: 1px solid var(--border2); border-radius: 8px;
+  cursor: grab; touch-action: pan-y; user-select: none;
+}
+.desk-v1-where-msg { padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
+.desk-v1-where-msg:hover, .desk-v1-where-vcard:hover, .desk-v1-where-source:hover { border-color: var(--accent); }
+.desk-v1-where-msg:focus-visible, .desk-v1-where-vcard:focus-visible, .desk-v1-where-source:focus-visible,
+.desk-v1-where-colremove:focus-visible, .desk-v1-where-connect:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.desk-v1-where-msg-kind { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); }
+.desk-v1-where-msg-title { font-size: 12.5px; font-weight: 700; color: var(--text); }
+.desk-v1-where-pill {
+  align-self: flex-start; font-size: 10.5px; font-weight: 600; color: var(--text-dim);
+  background: var(--accent-dim); border-radius: 999px; padding: 1px 8px;
+}
+
+.desk-v1-where-col.pd-drop-target { border: 1px dashed var(--border2); }
+.desk-v1-where-col.pd-drop-target.pd-drop-hover { border-color: var(--accent); background: var(--accent-dim); }
+.desk-v1-where-colhead { display: flex; align-items: center; gap: 10px; padding: 10px 10px 8px; }
+.desk-v1-where-colname { flex: 1; min-width: 0; }
+.desk-v1-where-handle { font-size: 13px; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk-v1-where-plat { font-size: 11px; color: var(--text-faint); }
+.desk-v1-where-colremove {
+  flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; border: none; cursor: pointer;
+  background: var(--surface3); color: var(--text-dim); font-size: 11px; line-height: 1; font-family: inherit;
+}
+.desk-v1-where-colremove:hover { background: var(--red-dim); color: var(--red-text); }
+.desk-v1-where-colempty {
+  font-size: 12px; color: var(--text-faint); text-align: center; padding: 18px 8px;
+}
+.desk-v1-where-nocols { align-self: center; font-size: 12.5px; color: var(--text-dim); padding: 0 12px; }
+
+.desk-v1-where-vcard { padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+.desk-v1-where-vtitle { font-size: 12.5px; font-weight: 700; color: var(--text); }
+.desk-v1-where-vformat { font-size: 11.5px; color: var(--text-dim); }
+.desk-v1-where-vtime { font-size: 11.5px; font-weight: 600; color: var(--accent); }
+.desk-v1-where-notime { color: var(--text-faint); font-weight: 500; }
+.desk-v1-where-vplat { font-weight: 700; }
+
+/* account avatar + platform badge — a letter on a hashed colour, so the colour
+   is decoration and the handle beside it is what identifies the account. */
+.desk-v1-where-avatar {
+  position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 50%; color: #fff; font-size: 14px; font-weight: 700;
+}
+.desk-v1-where-avatar-off { background: var(--surface3); color: var(--text-dim); }
+.desk-v1-where-avatar-badge {
+  position: absolute; right: -4px; bottom: -4px; min-width: 15px; height: 15px; padding: 0 2px;
+  border-radius: 8px; background: var(--surface); border: 1px solid var(--border2);
+  color: var(--text); font-size: 9px; font-weight: 700; line-height: 13px; text-align: center; box-sizing: border-box;
+}
+.desk-v1-where-preview {
+  display: inline-block; margin-top: 2px; font-size: 10px; font-weight: 600; color: var(--amber-text);
+  background: var(--amber-dim); border-radius: 999px; padding: 0 7px;
+}
+
+.desk-v1-where-rule { margin: 0; font-size: 11.5px; color: var(--text-faint); }
+.desk-v1-where-sources { border: 1px solid var(--border2); border-radius: 10px; background: var(--surface); padding: 10px 12px 12px; }
+.desk-v1-where-sources-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 8px;
+}
+.desk-v1-where-sources-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.desk-v1-where-source {
+  width: 96px; padding: 10px 6px; display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center;
+}
+.desk-v1-where-source.is-used { opacity: 0.55; }
+.desk-v1-where-source-off { cursor: default; border-style: dashed; }
+.desk-v1-where-source-handle { font-size: 12px; font-weight: 700; color: var(--text); word-break: break-word; }
+.desk-v1-where-source-plat { font-size: 10.5px; color: var(--text-faint); }
+.desk-v1-where-connect {
+  background: none; border: none; color: var(--accent); font-size: 11px; font-weight: 600; cursor: pointer;
+  font-family: inherit; padding: 4px 2px; min-height: 24px;
+}
+.desk-v1-where-connect:hover { text-decoration: underline; }
+
+.desk-v1-where-notice {
+  background: var(--amber-dim); border: 1px solid var(--amber-text); border-radius: 8px;
+  color: var(--amber-text); font-size: 12.5px; font-weight: 600; padding: 8px 12px;
+}
+.desk-v1-where-notice-link {
+  background: none; border: none; color: inherit; text-decoration: underline; cursor: pointer;
+  font: inherit; padding: 0 0 0 6px;
+}
+.desk-v1-where-suggest { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.desk-v1-where-dragging { opacity: 0.45; }
+.desk-v1-where-drag-active { cursor: grabbing; }
+
+@media (max-width: 960px) {
+  /* The board scrolls sideways (frame 7b is desktop-only; no where-mobile
+     frame). Every card is already a 44px-tall target; the small controls get
+     a full tap size here. */
+  .desk-v1-where-msgs, .desk-v1-where-col { flex-basis: 78vw; }
+  .desk-v1-where-colremove { width: 44px; height: 44px; font-size: 14px; }
+  .desk-v1-where-connect { min-height: 44px; }
+  .desk-v1-where-source { width: calc(33% - 8px); min-width: 92px; min-height: 44px; }
+}
+
+/* Frame 7b shows the board at full width with no agent box beside it. */
+.desk-v1-camp-main:has(> .desk-v1-camp-tabbody[data-panel="where"]) > .desk-v1-camp-rightcol { display: none; }

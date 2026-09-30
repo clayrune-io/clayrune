@@ -335,10 +335,10 @@
     // with Content-tab HTML. Stamping the requested panel here gives that
     // guard something that actually tracks the active stop.
     tabbodyEl.dataset.panel = panel;
-    // R2-3 (§4.1 Absorbs column): ① reads `desk-v1-results.js` and ④ reads
-    // `desk-v1-calendar.js` directly, each a standalone panel — ② how / ⑤ where have no dedicated
-    // renderer yet (placeholders) and ③ what / ⑥ launch are
-    // desk-v1-campaign.js's own job, so both fall through to the generic hook.
+    // R2-3 (§4.1 Absorbs column): ① reads `desk-v1-results.js`, ② how reads
+    // `desk-v1-how.js`, ④ reads `desk-v1-calendar.js` and ⑤ reads
+    // `desk-v1-where.js` directly, each a standalone panel — ③ what / ⑥ launch
+    // are desk-v1-campaign.js's own job, so both fall through to the generic hook.
     if (panel === 'goal' && typeof window.deskV1RenderResults === 'function') {
       window.deskV1RenderResults(tabbodyEl, params);
     } else if (panel === 'when' && typeof window.deskV1RenderCalendar === 'function') {
@@ -346,17 +346,10 @@
     } else if (panel === 'how' && typeof window.deskV1RenderHow === 'function') {
       // R2-6: strategy + angle + agent + budget + the Suggest task.
       window.deskV1RenderHow(tabbodyEl, params);
-    } else if (panel === 'where') {
-      // §4.1 Absorbs column: no dedicated renderer ships until R2-10 — a
-      // one-line placeholder, not a silent blank body. R2-6's Suggest task
-      // can still leave a `? suggested` placement here to show (its own
-      // acceptance row), read straight off the fixture rather than building
-      // any of R2-10's real column/drag UI.
-      const camp = ((window.DeskV1Fixtures && window.DeskV1Fixtures.campaigns) || []).find((c) => c.id === params.campaignId);
-      const placement = camp && camp.how && camp.how.suggested && camp.how.suggested.where;
-      tabbodyEl.innerHTML = placement
-        ? `<div class="desk-v1-stub-inline">Platforms (Where) isn't built yet. <strong>? suggested:</strong> ${esc(placement.label || placement.channelId || '')}</div>`
-        : `<div class="desk-v1-stub-inline">Platforms (Where) isn't built yet.</div>`;
+    } else if (panel === 'where' && typeof window.deskV1RenderWhere === 'function') {
+      // R2-10: the Where board (Messages + one column per account the
+      // campaign uses + the SOURCES tray).
+      window.deskV1RenderWhere(tabbodyEl, params);
     } else if (typeof window.deskV1FillCampaignTabBody === 'function') {
       window.deskV1FillCampaignTabBody(tabbodyEl, params);
     } else {
