@@ -48,6 +48,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(desk_routes, 'load_project', pr.load_project)
     monkeypatch.setattr(desk, 'STORE_PATH', tmp_path / 'desk.json')
     monkeypatch.setattr(desk, 'SIGNALS_PATH', tmp_path / 'desk_signals.jsonl')
+    # R1-A (1ef4c70d): a rework needs the project to have picked an agent;
+    # without a pick dispatch_rework reports "no agent picked" and sends nothing.
+    desk.upsert_presence('proj1', {'desk_agent': 'global:social-media-strategist'})
 
     calls = []
 
