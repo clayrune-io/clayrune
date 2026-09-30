@@ -51,6 +51,10 @@ def client(tmp_path):
         signals_path=tmp_path / 'desk_signals.jsonl',
     )
     app.register_blueprint(desk_routes.bp)
+    # R1-A (1ef4c70d): triage 409s until the project has picked who plans for
+    # it. `upsert_presence` writes the store `wire()` just pointed at, bypassing
+    # the PATCH route's roster check — right for a test that fakes dispatch.
+    desk.upsert_presence('p', {'desk_agent': 'global:social-media-strategist'})
     c = app.test_client()
     c.dispatch_calls = calls
     return c
