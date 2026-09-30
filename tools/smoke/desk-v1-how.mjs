@@ -201,7 +201,7 @@ async function run(browser) {
   await page.fill('[data-how-never-claim]', 'Never claim: guaranteed uptime');
   await page.keyboard.press('Tab'); // blur fires the real 'change' exactly once
   await gotoStop(page, 'what');
-  await page.waitForSelector('[data-filter-trigger]', { timeout: 4000 });
+  await page.waitForSelector('[data-what]', { timeout: 4000 });
   await gotoStop(page, 'how');
   await page.waitForSelector('[data-how-never-claim]', { timeout: 4000 });
   const neverClaimAfterSwitch = await page.inputValue('[data-how-never-claim]').catch(() => '');
@@ -282,19 +282,16 @@ async function run(browser) {
   newIds.length === 3
     ? ok(`Accept all: all 3 new pieces have the "fam-suggest-" id prefix`)
     : fail(`Accept all: unexpected new-piece ids: ${JSON.stringify(newIds)}`);
-  // The new pieces' "planned" state groups under PLANNED ("other"), which
-  // COLLAPSED_BY_DEFAULT (desk-v1-campaign.js) hides behind a "show ›"
-  // toggle — expand it before reading the cards' state words off the DOM.
-  const showOther = await page.$('[data-group-show="other"]');
-  if (showOther) await showOther.click();
+  // R2-7: What is a flat list now (no collapsed PLANNED group to expand); each
+  // row's right-hand column carries its per-version status.
   const stateWords = [];
   for (const id of newIds) {
-    const w = (await page.textContent(`[data-family-id="${id}"] .desk-v1-camp-vrow-state`).catch(() => '') || '').trim();
+    const w = (await page.textContent(`[data-family-id="${id}"] [data-what-status]`).catch(() => '') || '').trim();
     stateWords.push(w);
   }
-  stateWords.every((w) => /◇\s*Planned/.test(w))
-    ? ok(`Accept all: every new piece card reads "◇ Planned": ${JSON.stringify(stateWords)}`)
-    : fail(`Accept all: a new piece card isn't "◇ Planned": ${JSON.stringify(stateWords)}`);
+  stateWords.every((w) => /◇\s*planned/.test(w))
+    ? ok(`Accept all: every new piece row reads "◇ planned": ${JSON.stringify(stateWords)}`)
+    : fail(`Accept all: a new piece row isn't "◇ planned": ${JSON.stringify(stateWords)}`);
   const bannerGone = await page.$('.desk-v1-camp-suggested-banner');
   !bannerGone
     ? ok('Accept all: the "N suggested" banner clears once accepted')

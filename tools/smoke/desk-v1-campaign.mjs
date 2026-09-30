@@ -160,28 +160,41 @@ async function runToneRenderChecks(browser, tone) {
     ? ok(`[${tone.name}] map stepper reflects current panel + map.done (what=here, goal=done)`)
     : fail(`[${tone.name}] map stepper state wrong: what=${whatState} goal=${goalState}`);
 
-  // A2/A3: grouped "All content" — needs-you group holds both multi-claim
-  // article and multi-version video families; each card lists every
-  // version's OWN state independently.
-  const groupTitles = await page.$$eval('.desk-v1-camp-group-title', (els) => els.map((e) => e.textContent.trim()));
-  groupTitles.some((t) => /NEEDS YOU · 2/.test(t)) && groupTitles.some((t) => /SCHEDULED · 1/.test(t))
-    ? ok(`[${tone.name}] groups match fixture counts: ${JSON.stringify(groupTitles)}`)
-    : fail(`[${tone.name}] group titles/counts wrong: ${JSON.stringify(groupTitles)}`);
-
-  const videoStates = await page.$$eval('[data-family-id="fam-install-video"] .desk-v1-camp-vrow .desk-v1-state-word', (els) => els.map((e) => e.textContent.trim()));
-  videoStates.length === 3 && new Set(videoStates).size >= 2
-    ? ok(`[${tone.name}] A3: the video family's 3 versions show independent states: ${JSON.stringify(videoStates)}`)
-    : fail(`[${tone.name}] A3: version states should be independent, got ${JSON.stringify(videoStates)}`);
-
-  const primaryLabel = await page.textContent('[data-family-id="fam-install-video"] [data-primary-action]').catch(() => '');
-  primaryLabel.trim() === 'Watch & review'
-    ? ok(`[${tone.name}] video family's primary action reads "Watch & review"`)
-    : fail(`[${tone.name}] video primary action wrong: ${JSON.stringify(primaryLabel)}`);
-
-  const previewText = (await page.textContent('[data-family-id="fam-restore-points"] .desk-v1-camp-preview-text').catch(() => '') || '');
-  /Undo anything: restore points/.test(previewText)
-    ? ok(`[${tone.name}] article card shows its content preview excerpt`)
-    : fail(`[${tone.name}] article preview text missing: ${JSON.stringify(previewText)}`);
+  // R2-7 (frames 5a/7b): ③ What is a flat list of pieces — kind label, title,
+  // `on N channels`, a per-version status summary — with filters on top and the
+  // content-type tray below. The old grouped list (NEEDS YOU · n …) is retired.
+  const rows = await page.$$eval('[data-what-row]', (els) => els.map((e) => ({
+    id: e.dataset.familyId,
+    kind: e.querySelector('.desk-v1-what-kind').textContent.trim(),
+    title: e.querySelector('.desk-v1-what-title').textContent.trim(),
+    on: e.querySelector('[data-what-on]').textContent.trim(),
+    states: [...e.querySelectorAll('.desk-v1-what-status-item')].map((x) => x.dataset.state || ''),
+  })));
+  rows.length === 6
+    ? ok(`[${tone.name}] What lists camp-1's 6 pieces (frame 7b)`)
+    : fail(`[${tone.name}] What row count wrong: ${rows.length}`);
+  const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+  const vid = byId['fam-install-video'];
+  vid && vid.kind === 'VIDEO' && vid.on === 'on 3 channels' && vid.states.length === 3 && new Set(vid.states).size >= 2
+    ? ok(`[${tone.name}] A3: the video row reads "VIDEO · on 3 channels" with 3 independent version statuses: ${JSON.stringify(vid.states)}`)
+    : fail(`[${tone.name}] A3: video row wrong: ${JSON.stringify(vid)}`);
+  const art = byId['fam-restore-points'];
+  art && art.kind === 'ARTICLE' && art.on === 'on 2 channels'
+    ? ok(`[${tone.name}] the article row reads "ARTICLE · on 2 channels"`)
+    : fail(`[${tone.name}] article row wrong: ${JSON.stringify(art)}`);
+  const agentRow = await page.textContent('[data-family-id="fam-agent-live-run"] [data-what-status]').catch(() => '');
+  /rendering/.test(agentRow)
+    ? ok(`[${tone.name}] a video still rendering says so in its status column: "${agentRow.trim()}"`)
+    : fail(`[${tone.name}] rendering status missing: ${JSON.stringify(agentRow)}`);
+  const multi = await page.$$eval('[data-family-id="fam-30-testers"] .desk-v1-what-thumb', (els) => els.length);
+  const addMedia = await page.$('[data-family-id="fam-30-testers"] [data-add-media]');
+  multi === 2 && addMedia
+    ? ok(`[${tone.name}] a multi-asset piece shows its 2 thumbnails + ＋ Add media (frame 5a)`)
+    : fail(`[${tone.name}] multi-asset row wrong: thumbs=${multi}, add=${!!addMedia}`);
+  const filters = await page.$$eval('[data-what-filter]', (els) => els.map((e) => e.textContent.trim()));
+  JSON.stringify(filters) === JSON.stringify(['All', 'Needs review', 'Scheduled', 'Blocked'])
+    ? ok(`[${tone.name}] filters read ${JSON.stringify(filters)}`)
+    : fail(`[${tone.name}] filters wrong: ${JSON.stringify(filters)}`);
 
   // Posy box scoped to the campaign by default (§3.4 INS-01).
   const posyScope = (await page.textContent('.desk-v1-camp-posy .desk-v1-posy-scope').catch(() => '') || '');
@@ -190,58 +203,67 @@ async function runToneRenderChecks(browser, tone) {
     : fail(`[${tone.name}] Posy scope wrong: ${JSON.stringify(posyScope)}`);
   const suggestion = (await page.textContent('.desk-v1-camp-posy .agent-question-chip, .desk-v1-camp-posy [class*="chip"]').catch(() => '') || '');
 
-  // Add tray (§3.6): collapsed by default, reuses Home's own shelf markup.
-  const trayOpen = await page.$eval('.desk-v1-camp-addtray-details', (el) => el.open).catch(() => null);
-  trayOpen === false
-    ? ok(`[${tone.name}] Add tray is collapsed by default`)
-    : fail(`[${tone.name}] Add tray open state wrong: ${JSON.stringify(trayOpen)}`);
+  // The content-type tray (frame 5a) replaces the Add tray.
+  const types = await page.$$eval('[data-what-type] .desk-v1-what-type-name', (els) => els.map((e) => e.textContent.trim()));
+  JSON.stringify(types) === JSON.stringify(['Post', 'Article', 'Video', 'Image', 'YouTube'])
+    ? ok(`[${tone.name}] content-type tray offers ${JSON.stringify(types)}`)
+    : fail(`[${tone.name}] content-type tray wrong: ${JSON.stringify(types)}`);
+  const oldTray = await page.$('.desk-v1-camp-addtray-details, [data-view-btn], [data-group-show], [data-filter-trigger]');
+  !oldTray
+    ? ok(`[${tone.name}] the old Add tray, List/Calendar toggle, group headers and channel filter are gone`)
+    : fail(`[${tone.name}] retired Content-tab chrome still renders`);
 
   reportUncaught(pageErrors, `[${tone.name}]`);
   await ctx.close();
 }
 
-// ── filter + channel dropdowns (toolbar, §3.2). ─────────────────────────────
+// ── What filters (frame 5a): All · Needs review · Scheduled · Blocked. ──────
 async function runFilterToggle(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToCampaign(page);
 
-  await page.click('[data-filter-trigger]');
-  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
-  await page.click('.desk-v1-addto-menu button:has-text("Scheduled")');
+  const expect = await page.evaluate(() => {
+    const sched = new Set(['scheduled', 'approved', 'sending', 'submitted']);
+    const fams = window.DeskV1Fixtures.families.filter((f) => f.campaignId === 'camp-1');
+    return {
+      scheduled: fams.filter((f) => f.versions.some((v) => sched.has(v.state))).map((f) => f.id).sort(),
+      needs: fams.filter((f) => f.versions.some((v) => v.state === 'needs_review')).map((f) => f.id).sort(),
+      blocked: fams.filter((f) => f.versions.some((v) => v.state === 'blocked')).map((f) => f.id).sort(),
+    };
+  });
+  const rowsNow = () => page.$$eval('[data-what-row]', (els) => els.map((e) => e.dataset.familyId).sort());
+  for (const [label, key] of [['Scheduled', 'scheduled'], ['Needs review', 'needs'], ['Blocked', 'blocked']]) {
+    await page.click(`[data-what-filter]:has-text("${label}")`);
+    await page.waitForTimeout(50);
+    const got = await rowsNow();
+    got.length > 0 && got.length < 6 && JSON.stringify(got) === JSON.stringify(expect[key])
+      ? ok(`filter "${label}" narrows 6 pieces to ${got.length}: ${JSON.stringify(got)}`)
+      : fail(`filter "${label}" wrong: got ${JSON.stringify(got)}, expected ${JSON.stringify(expect[key])}`);
+  }
+  const pressed = await page.$eval('[data-what-filter][aria-pressed="true"]', (el) => el.textContent.trim());
+  pressed === 'Blocked' ? ok('the chosen filter reads as pressed') : fail(`pressed filter wrong: ${pressed}`);
+  await page.click('[data-what-filter]:has-text("All")');
   await page.waitForTimeout(50);
-  const cards = await page.$$eval('.desk-v1-camp-cards [data-family-id]', (els) => els.map((e) => e.dataset.familyId));
-  cards.length === 1 && cards[0] === 'fam-30-testers'
-    ? ok(`filter "Scheduled" narrows to the one scheduled family: ${JSON.stringify(cards)}`)
-    : fail(`Scheduled filter wrong: ${JSON.stringify(cards)}`);
-  const filterLabel = await page.textContent('[data-filter-trigger]');
-  /Scheduled/.test(filterLabel)
-    ? ok('filter trigger label updates to the chosen filter')
-    : fail(`filter trigger label did not update: ${JSON.stringify(filterLabel)}`);
+  (await rowsNow()).length === 6 ? ok('All restores the full list') : fail('All did not restore the list');
 
   reportUncaught(pageErrors, '[filter]');
   await ctx.close();
 }
 
-// ── List/Calendar toggle mounts T4's calendar through the T0a slot contract
-// (desk-v1-calendar.js's own comment: "once T2a lands, its toggle can call
-// [this] straight into its Content-tab body slot with no change needed
-// here"). ────────────────────────────────────────────────────────────────
+// ── The List/Calendar toggle is gone: the calendar is ④ When (R2-3/R2-7). ──
 async function runViewToggle(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToCampaign(page);
 
-  const listBefore = await page.$('.desk-v1-camp-listarea');
-  listBefore ? ok('List view is the default') : fail('List view should be the default');
-
-  await page.click('[data-view-btn="calendar"]');
+  (await page.$('[data-view-btn]')) === null
+    ? ok('What has no List/Calendar toggle (the calendar is the ④ When stop)')
+    : fail('a List/Calendar toggle still renders on What');
+  await page.click('[data-stop="when"]');
   await page.waitForSelector('.desk-v1-calendar', { timeout: 4000 });
-  ok('Calendar toggle mounts T4\'s real calendar component into the same body slot');
-  const listGone = await page.$('.desk-v1-camp-listarea');
-  !listGone ? ok('the list view is torn down while calendar is shown') : fail('list view should not coexist with calendar');
-
-  await page.click('[data-view-btn="list"]');
-  await page.waitForSelector('.desk-v1-camp-listarea', { timeout: 4000 });
-  ok('toggling back to List re-renders the grouped list');
+  ok('④ When mounts the calendar component');
+  await page.click('[data-stop="what"]');
+  await page.waitForSelector('[data-what]', { timeout: 4000 });
+  ok('back on ③ What the list re-renders');
 
   reportUncaught(pageErrors, '[view-toggle]');
   await ctx.close();
@@ -255,8 +277,6 @@ async function runCardMenu(browser) {
 
   // Duplicate (fam-30-testers, single-version scheduled post) — commandBus +
   // toast + Undo, same contract as every other mutation on this page. The
-  // duplicate is a fresh 'drafting' version, so it lands in the collapsed
-  // PLANNED group (_familyGroup's own "other" bucket) — show it first.
   await page.click('[data-family-id="fam-30-testers"] [data-more-btn]');
   await page.waitForSelector('.desk-v1-camp-cardmenu', { timeout: 2000 });
   await page.click('.desk-v1-camp-cardmenu [data-menu-dup]');
@@ -266,7 +286,7 @@ async function runCardMenu(browser) {
     ? ok(`Duplicate shows a commandBus toast: "${dupToast.trim()}"`)
     : fail(`Duplicate toast missing/wrong: ${JSON.stringify(dupToast)}`);
   const dupExists = await page.evaluate(() => window.DeskV1Fixtures.families.some((f) => f.id.startsWith('fam-30-testers-copy-')));
-  dupExists ? ok('the duplicated family exists in fixtures (renders collapsed under PLANNED)') : fail('duplicated family not found in fixtures');
+  dupExists ? ok('the duplicated family exists in fixtures (a new What row)') : fail('duplicated family not found in fixtures');
   await page.click('.toast .toast-btn.primary');
   await page.waitForSelector('.toast', { state: 'detached', timeout: 2000 }).catch(() => {});
   const dupGone = await page.evaluate(() => !window.DeskV1Fixtures.families.some((f) => f.id.startsWith('fam-30-testers-copy-')));
@@ -277,7 +297,7 @@ async function runCardMenu(browser) {
   // one — checked against the video family's 3 independent states).
   await page.click('[data-family-id="fam-install-video"] [data-more-btn]');
   await page.waitForSelector('.desk-v1-camp-cardmenu', { timeout: 2000 });
-  const statesBefore = await page.$$eval('[data-family-id="fam-install-video"] .desk-v1-camp-vrow .desk-v1-state-word', (els) => els.map((e) => e.textContent.trim()));
+  const statesBefore = await page.evaluate(() => window.DeskV1Fixtures.families.find((f) => f.id === 'fam-install-video').versions.map((v) => v.state));
   await page.click('.desk-v1-camp-cardmenu [data-menu-archive]');
   await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
   const archiveToast = (await page.textContent('.toast').catch(() => '') || '');
@@ -297,7 +317,7 @@ async function runCardMenu(browser) {
     const fam = window.DeskV1Fixtures.families.find((f) => f.id === 'fam-install-video');
     return fam.versions.map((v) => v.state);
   });
-  JSON.stringify(statesRestored.slice().sort()) === JSON.stringify(statesBefore.map((s) => s.toLowerCase()).sort()) || statesRestored.includes('needs_review')
+  JSON.stringify(statesRestored) === JSON.stringify(statesBefore)
     ? ok(`Undo restores each version's own prior state: ${JSON.stringify(statesRestored)}`)
     : fail(`Undo did not restore prior per-version states: ${JSON.stringify(statesRestored)}`);
 
@@ -305,91 +325,112 @@ async function runCardMenu(browser) {
   await ctx.close();
 }
 
-// ── Add tray drag-drop (§3.6, §10). The tray holds the Material shelf only
-// (R2-10 retired its Channels shelf): drags a MATERIAL asset onto an existing
-// card (attaches it) and onto the empty list area (creates a new piece). ──
-async function runAddTrayDrag(browser) {
+// ── R2-7: the content-type tray (frames 5a, 15, 15a, 16a, 16b). A type is
+// dragged (or focused + Enter) into the list; each drop is its OWN piece and
+// opens a source-first create card — nothing preselected, no file picker in
+// the DOM until Upload is chosen; Undo removes the piece. ─────────────────
+async function runWhatTray(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToCampaign(page);
+  const famCount = () => page.evaluate(() => window.DeskV1Fixtures.families.filter((f) => f.campaignId === 'camp-1').length);
+  const n0 = await famCount();
 
-  await page.click('.desk-v1-camp-addtray-summary');
-  await page.waitForSelector('.desk-v1-camp-addtray-body', { state: 'visible', timeout: 2000 });
-  ok('Add tray opens on click');
-
-  // R2-10 retired the tray's Channels shelf: adding an account is the Where
-  // board's SOURCES tray now (desk-v1-where.mjs holds that flow).
-  const channelsShelf = await page.$$eval('#desk-v1-camp-addtray-channels', (els) => els.length);
-  channelsShelf === 0
-    ? ok('R2-10: the Add tray has no Channels shelf (accounts are added on the Where board)')
-    : fail(`R2-10: Add tray still renders a Channels shelf (${channelsShelf})`);
-
-  // Attach an asset to fam-30-testers (single scheduled version, no assets yet).
-  const assetItem = await page.$('#desk-v1-camp-addtray-material .desk-v1-shelf-item[data-asset-id="asset-restore-points"]');
-  const card = await page.$('[data-family-id="fam-30-testers"]');
-  assetItem && card ? ok('found the article asset shelf item and the testers-wanted card') : fail('drag source/target not found');
-  // The Add tray expands the scrollable tab body past the viewport at 950px
-  // tall — manual mouse.move/down (unlike .click()) never auto-scrolls, so
-  // the drag source can sit below the fold and every coordinate below misses.
-  // Since item 1 (MC-977) sized the modal to the standard convention instead
-  // of force-maximizing, the family list itself is now short enough that a
-  // real card can sit below ITS OWN fold too — same "no drag-time auto-scroll"
-  // limitation. A real user scrolls the list to the target before reaching
-  // into the tray to drag (the list and the tray are independent scroll
-  // regions, so this doesn't disturb the tray's own scroll position); model
-  // that here by scrolling the card into view first.
-  await card.scrollIntoViewIfNeeded();
-  await assetItem.scrollIntoViewIfNeeded();
-  const sBox = await assetItem.boundingBox();
-  const cBox = await card.boundingBox();
-  await page.mouse.move(sBox.x + sBox.width / 2, sBox.y + sBox.height / 2);
+  // Real pointer drag: Video tile -> the list panel.
+  const tile = await page.$('[data-what-type="video"]');
+  const list = await page.$('[data-what-list]');
+  await tile.scrollIntoViewIfNeeded();
+  const t = await tile.boundingBox();
+  const l = await list.boundingBox();
+  const body = await page.locator('#desk-v1-camp-tabbody').boundingBox();
+  await page.mouse.move(t.x + t.width / 2, t.y + t.height / 2);
   await page.mouse.down();
-  await page.mouse.move(cBox.x + cBox.width / 2, cBox.y + 10, { steps: 8 });
-  await page.mouse.move(cBox.x + cBox.width / 2, cBox.y + cBox.height / 2, { steps: 8 });
+  await page.mouse.move(t.x + t.width / 2 + 14, t.y + t.height / 2 - 14, { steps: 4 });
+  await page.mouse.move(l.x + l.width / 2, Math.max(l.y, body ? body.y : l.y) + 30, { steps: 8 });
   await page.waitForTimeout(50);
-  const resultText = (await page.textContent('[data-family-id="fam-30-testers"] .desk-v1-camp-card-result').catch(() => '') || '');
-  /attach.*to this piece/i.test(resultText)
-    ? ok(`hover shows the attach result before release: "${resultText.trim()}"`)
-    : fail(`drop hover text missing/wrong: ${JSON.stringify(resultText)}`);
+  const hovering = await page.$eval('[data-what-list]', (el) => el.classList.contains('pd-drop-hover'));
+  hovering ? ok('dragging a content type over the list shows the drop ring') : fail('no drop ring while a type is dragged over the list');
   await page.mouse.up();
-  await page.waitForTimeout(50);
+  await page.waitForSelector('[data-what-create][data-kind="video"]', { timeout: 2000 });
+  ok('dropping Video opens a create card at the top of the list');
+  (await famCount()) === n0 + 1 ? ok('the drop created ONE new piece') : fail('drop did not create exactly one piece');
 
-  const attached = await page.evaluate(() => window.DeskV1Fixtures.families.find((f) => f.id === 'fam-30-testers').attachedAssets || []);
-  attached.includes('asset-restore-points')
-    ? ok(`material dropped on a card attaches the asset: ${JSON.stringify(attached)}`)
-    : fail(`asset was not attached: ${JSON.stringify(attached)}`);
+  // Source-first: four tiles, none preselected, no file input yet.
+  const sources = await page.$$eval('[data-what-create] [data-what-source]', (els) => els.map((e) => e.querySelector('.desk-v1-what-source-name').textContent.trim()));
+  JSON.stringify(sources) === JSON.stringify(['Record from the product', 'Upload', 'Online source', 'Create new'])
+    ? ok(`Video offers four sources, none preselected: ${JSON.stringify(sources)}`)
+    : fail(`Video sources wrong: ${JSON.stringify(sources)}`);
+  (await page.$('[data-what-create] input[type=file]')) === null
+    ? ok('no file picker exists in the DOM until Upload is chosen')
+    : fail('a file input is in the DOM before a source was chosen');
 
-  // Drop the video asset on the empty list area (not a card) — creates a new
-  // piece (A2: content originates from material, same as the ⋯ menu path).
-  const videoAsset = await page.$('#desk-v1-camp-addtray-material .desk-v1-shelf-item[data-asset-id="asset-install-video"]');
-  // Target the collapsed PLANNED group's header row — it's unambiguously
-  // below every card and outside .desk-v1-camp-card, so it's a valid
-  // "listarea" hit. Two-phase because hovering the empty area for the first
-  // time inserts a `.desk-v1-camp-listarea-result` banner as the list's
-  // first child (desk-v1-campaign.js's `_listAreaResultText`), pushing the
-  // header down a few px — a coordinate computed only from the PRE-hover
-  // position then drifts back onto the last card as the banner appears.
-  const plannedHead = await page.$('.desk-v1-camp-group-show');
-  await videoAsset.scrollIntoViewIfNeeded();
-  const vBox = await videoAsset.boundingBox();
-  await plannedHead.scrollIntoViewIfNeeded();
-  await page.mouse.move(vBox.x + vBox.width / 2, vBox.y + vBox.height / 2);
-  await page.mouse.down();
-  const hBoxPre = await plannedHead.boundingBox();
-  await page.mouse.move(hBoxPre.x + 20, hBoxPre.y - 30, { steps: 6 }); // cross slop, trigger the banner
-  await page.mouse.move(hBoxPre.x + 20, hBoxPre.y + hBoxPre.height / 2, { steps: 6 });
-  await page.waitForTimeout(50);
-  const hBoxPost = await plannedHead.boundingBox(); // re-measure post-banner
-  await page.mouse.move(hBoxPost.x + 20, hBoxPost.y + hBoxPost.height / 2, { steps: 4 });
-  await page.waitForTimeout(50);
-  await page.mouse.up();
-  await page.waitForTimeout(50);
+  await page.click('[data-what-create] [data-what-source="upload"]');
+  await page.waitForSelector('[data-what-dropzone]', { timeout: 2000 });
+  const chip = (await page.textContent('[data-what-chip]')).trim();
+  const folders = await page.$$eval('[data-what-folder]', (els) => els.length);
+  chip === 'Upload' && folders === 3 && (await page.$('[data-what-browse]')) && (await page.$('input[type=file]'))
+    ? ok('Upload shows the chip, the drop zone, Browse this computer and the 3 Material library folders')
+    : fail(`Upload body wrong: chip=${chip}, folders=${folders}`);
+  await page.click('[data-what-change-source]');
+  await page.waitForSelector('[data-what-source]', { timeout: 2000 });
+  (await page.$('[data-what-create] input[type=file]')) === null
+    ? ok('Change source returns to the four tiles and drops the file input')
+    : fail('file input survived Change source');
 
-  const newPieceExists = await page.evaluate(() => window.DeskV1Fixtures.families.some((f) => f.id.startsWith('fam-drop-') && f.title === 'Install in two minutes'));
-  newPieceExists
-    ? ok('material dropped on the empty list area creates a new piece')
-    : fail('dropping material on the list area did not create a new family');
+  // Picking a Material folder attaches an asset and closes the card into a row.
+  await page.click('[data-what-source="upload"]');
+  await page.click('[data-what-folder]');
+  await page.waitForSelector('[data-what-create]', { state: 'detached', timeout: 2000 });
+  const assets = await page.evaluate(() => window.DeskV1Fixtures.families.filter((f) => f.campaignId === 'camp-1' && f.id.startsWith('fam-new-')).map((f) => f.assets.length));
+  assets.length === 1 && assets[0] === 1 ? ok('a Material folder attaches one asset and the card finishes into a row') : fail(`folder attach wrong: ${JSON.stringify(assets)}`);
 
-  reportUncaught(pageErrors, '[add-tray-drag]');
+  // Undo (attach), Undo (create) — the new piece is gone again.
+  for (let i = 0; i < 2; i++) {
+    await page.locator('.toast .toast-btn.primary').last().click();
+    await page.waitForTimeout(80);
+  }
+  (await famCount()) === n0 ? ok('Undo twice removes the piece again') : fail(`Undo left ${await famCount()} pieces, expected ${n0}`);
+
+  // Several of a kind: two Images are two pieces. Keyboard path (focus + Enter).
+  await page.focus('[data-what-type="image"]');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('[data-what-create][data-kind="image"]', { timeout: 2000 });
+  await page.focus('[data-what-type="image"]');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelectorAll('[data-what-create][data-kind="image"]').length === 2, null, { timeout: 2000 });
+  ok('keyboard: Enter on the Image tile adds a piece; a second Image is a second piece');
+  const imgSources = await page.$$eval('[data-what-create][data-kind="image"]:first-child [data-what-source] .desk-v1-what-source-name', (els) => els.map((e) => e.textContent.trim()));
+  JSON.stringify(imgSources) === JSON.stringify(['Capture from the product', 'Upload', 'Online source', 'Generate'])
+    ? ok(`Image offers ${JSON.stringify(imgSources)}`)
+    : fail(`Image sources wrong: ${JSON.stringify(imgSources)}`);
+  const genHint = (await page.textContent('[data-what-source="generate"] [data-what-abstract-only]')).trim();
+  /never the product UI/i.test(genHint)
+    ? ok(`Generate states the standing position: "${genHint}"`)
+    : fail(`Generate hint wrong: ${JSON.stringify(genHint)}`);
+  await page.click('[data-what-create]:first-child [data-what-remove]');
+  await page.click('[data-what-create] [data-what-remove]');
+  await page.waitForFunction(() => !document.querySelector('[data-what-create]'), null, { timeout: 2000 });
+  (await famCount()) === n0 ? ok('✕ on both cards removes both pieces') : fail(`✕ left ${await famCount()} pieces`);
+
+  // Article: Browse existing / Write new.
+  await page.focus('[data-what-type="article"]');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('[data-what-create][data-kind="article"]', { timeout: 2000 });
+  const artSources = await page.$$eval('[data-what-create] [data-what-source] .desk-v1-what-source-name', (els) => els.map((e) => e.textContent.trim()));
+  JSON.stringify(artSources) === JSON.stringify(['Browse existing', 'Write new'])
+    ? ok(`Article offers ${JSON.stringify(artSources)}`)
+    : fail(`Article sources wrong: ${JSON.stringify(artSources)}`);
+  await page.click('[data-what-source="browse"]');
+  await page.click('[data-what-existing]');
+  await page.waitForSelector('[data-what-create]', { state: 'detached', timeout: 2000 });
+  ok('Browse existing -> picking an article finishes the card');
+
+  // YouTube: a Video card carrying the Preview chip (§11.6 Q1 — nothing connects).
+  await page.focus('[data-what-type="youtube"]');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('[data-what-create][data-kind="video"] [data-preview]', { timeout: 2000 });
+  ok('YouTube opens a Video card labelled Preview (renders, connects nothing)');
+
+  reportUncaught(pageErrors, '[what-tray]');
   await ctx.close();
 }
 
@@ -664,15 +705,19 @@ async function runPhoneLayout(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} }, { width: 390, height: 844 });
   await navToCampaign(page);
 
-  const cardDir = await page.$eval('.desk-v1-camp-card', (el) => getComputedStyle(el).flexDirection).catch(() => '');
-  cardDir === 'column'
-    ? ok('§11: content cards stack column-wise on phone (preview above title)')
-    : fail(`§11: card flex-direction wrong on phone: ${JSON.stringify(cardDir)}`);
+  const rowBox = await page.$eval('[data-what-row]', (el) => { const r = el.getBoundingClientRect(); return { w: r.width, right: r.right }; }).catch(() => null);
+  rowBox && rowBox.right <= 390 + 1
+    ? ok(`§11: What rows fit the phone width (${rowBox.w.toFixed(0)}px wide, right edge ${rowBox.right.toFixed(0)}px)`)
+    : fail(`§11: What row overflows the phone: ${JSON.stringify(rowBox)}`);
 
-  const primaryHeight = await page.$eval('.desk-v1-camp-card-primary', (el) => el.getBoundingClientRect().height).catch(() => 0);
-  primaryHeight >= 44
-    ? ok(`§11: primary action button is touch-sized (${primaryHeight.toFixed(0)}px)`)
-    : fail(`§11: primary action too short for touch: ${primaryHeight}px`);
+  const hit = await page.$eval('[data-what-row] .desk-v1-what-title', (el) => el.getBoundingClientRect().height).catch(() => 0);
+  hit >= 44
+    ? ok(`§11: a row's title action is touch-sized (${hit.toFixed(0)}px)`)
+    : fail(`§11: title action too short for touch: ${hit}px`);
+  const typeHit = await page.$eval('[data-what-type]', (el) => el.getBoundingClientRect().height).catch(() => 0);
+  typeHit >= 44
+    ? ok(`§11: content-type tiles are touch-sized (${typeHit.toFixed(0)}px)`)
+    : fail(`§11: type tile too short for touch: ${typeHit}px`);
 
   // Dave's review (T2a pass 2/4): the docked Posy composer used to be the
   // whole card (message + chips + input), tall enough to squeeze the tab
@@ -875,7 +920,7 @@ try {
   await runFilterToggle(browser);
   await runViewToggle(browser);
   await runCardMenu(browser);
-  await runAddTrayDrag(browser);
+  await runWhatTray(browser);
   await runCampaignPageMoreMenu(browser);
   await runPauseResume(browser);
   await runFreshEmptyStates(browser);

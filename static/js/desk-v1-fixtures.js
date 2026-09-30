@@ -253,6 +253,13 @@
           claims: [
             { id: 'claim-1', text: 'keeps ten snapshots automatically', source: null, verdict: 'blocked' },
           ] },
+        // R2-7 (frames 5a/7b, 6 pieces): the old standalone 'Windows ARM support
+        // FAQ' piece is folded in here as this article's LinkedIn version, so the
+        // calendar's Blocked chip (frame 12f) survives with the same version id.
+        { id: 'v-arm-blocked', channelId: 'ch-li-page', state: 'blocked', revision: 1,
+          claims: [
+            { id: 'claim-arm-1', text: 'runs natively on ARM64', source: null, verdict: 'blocked' },
+          ] },
       ],
     },
     // The install video — 3 versions, 3 independent states (A3): one
@@ -272,9 +279,47 @@
     {
       id: 'fam-30-testers', campaignId: 'camp-1', kind: 'post',
       title: '30 Windows testers wanted',
+      // R2-7: a piece may carry several assets (frame 5a: two thumbnails + `＋ Add media`).
+      // `src` is a real captured screenshot of the product (standing position:
+      // real captures by default, generated imagery only for abstract posts).
+      assets: [
+        { id: 'asset-testers-1', kind: 'image', title: 'Campaign page', src: '/assets/desk-thumb-campaign.png' },
+        { id: 'asset-testers-2', kind: 'image', title: 'Calendar', src: '/assets/desk-thumb-calendar.png' },
+      ],
       versions: [
         { id: 'v-testers-li', channelId: 'ch-li-page', state: 'scheduled', revision: 1,
           publishAt: '2026-09-30T10:00:00-07:00' },
+        // Folded in from the retired standalone 'Follow-up post' piece (same id,
+        // same calendarSchedule slot) so the calendar's Planned chip survives.
+        { id: 'v-followup-x', channelId: 'ch-x-ron', state: 'planned', revision: 0 },
+      ],
+    },
+    // R2-7 (frames 5a/7b): the other three of camp-1's six pieces. Versions per
+    // piece 3/1/2/1/2/2 and per account @ron 5, Clayrune Page 4, Clayrune blog 2
+    // — the counts the Where board is checked against (desk-v1-where.mjs).
+    {
+      id: 'fam-agent-live-run', campaignId: 'camp-1', kind: 'video',
+      title: 'Agent live run',
+      versions: [
+        { id: 'v-agent-x', channelId: 'ch-x-ron', state: 'drafting', revision: 0, format: '16:9' },
+      ],
+      render: { jobId: 'render-r1', status: 'rendering', revision: 1, progress: 40 },
+    },
+    {
+      id: 'fam-home-status', campaignId: 'camp-1', kind: 'image',
+      title: 'Home status table',
+      assets: [{ id: 'asset-home-1', kind: 'image', title: 'Desk home', src: '/assets/desk-thumb-home.png' }],
+      versions: [
+        { id: 'v-home-x', channelId: 'ch-x-ron', state: 'drafting', revision: 0 },
+        { id: 'v-home-li', channelId: 'ch-li-page', state: 'planned', revision: 0 },
+      ],
+    },
+    {
+      id: 'fam-where-board', campaignId: 'camp-1', kind: 'image',
+      title: 'Where board',
+      assets: [{ id: 'asset-where-1', kind: 'image', title: 'Where board', src: '/assets/desk-thumb-review.png' }],
+      versions: [
+        { id: 'v-where-x', channelId: 'ch-x-ron', state: 'drafting', revision: 0 },
       ],
     },
   ];
@@ -474,21 +519,9 @@
   // but nothing carries state 'blocked', and the x-ron row had only one
   // version (Published) — no Planned entry to show a second chip in that
   // row the way frame 12f's "Follow-up post" does.
-  FAMILIES.push(
-    { id: 'fam-followup-post', campaignId: 'camp-1', kind: 'post',
-      title: 'Follow-up post',
-      versions: [
-        { id: 'v-followup-x', channelId: 'ch-x-ron', state: 'planned', revision: 0 },
-      ] },
-    { id: 'fam-arm-faq', campaignId: 'camp-1', kind: 'article',
-      title: 'Windows ARM support FAQ',
-      versions: [
-        { id: 'v-arm-blocked', channelId: 'ch-blog', state: 'blocked', revision: 1,
-          claims: [
-            { id: 'claim-arm-1', text: 'runs natively on ARM64', source: null, verdict: 'blocked' },
-          ] },
-      ] },
-  );
+  // (R2-7: the two standalone pieces this push used to add — 'Follow-up post' and
+  // 'Windows ARM support FAQ' — now live as versions of '30 Windows testers wanted'
+  // and of the restore-points article, keeping camp-1 at six pieces.)
 
   // ── T5: video intake + director (docs/desk_v1_r0_plan.md; THE_DESK_V1_UI.md
   // §5). Keyed by familyId, same "own section, own key, never touches T0a's
@@ -1119,7 +1152,30 @@
       evidence_key: 'camp-archived-1:1', rejected_at: '2026-08-06T09:00:00Z' },
   ];
 
+  // ── R2-7: the What stop's source-first bodies (frames 15, 16b, 5b). Folder
+  // thumbnails are real captures of the product, like the piece assets above.
+  const MATERIAL_LIBRARY = {
+    video: [
+      { id: 'mat-screen-rec', title: 'Screen recordings', files: 12, thumb: '/assets/desk-thumb-director.png' },
+      { id: 'mat-broll', title: 'B-roll clips', files: 9, thumb: '/assets/desk-thumb-campaign.png' },
+      { id: 'mat-renders', title: 'Renders', files: 5, thumb: '/assets/desk-thumb-results.png' },
+    ],
+    image: [
+      { id: 'mat-screenshots', title: 'Screenshots', files: 24, thumb: '/assets/desk-thumb-home.png' },
+      { id: 'mat-calendar', title: 'Calendar captures', files: 8, thumb: '/assets/desk-thumb-calendar.png' },
+      { id: 'mat-review', title: 'Review captures', files: 6, thumb: '/assets/desk-thumb-review.png' },
+    ],
+  };
+  // `Browse existing` on an Article card: articles already in the project.
+  const EXISTING_ARTICLES = [
+    { id: 'art-restore', title: 'Undo anything: restore points in Clayrune 2.1', words: 640 },
+    { id: 'art-arm', title: 'Windows ARM support FAQ', words: 420 },
+    { id: 'art-install', title: 'Installing Clayrune on Windows 11', words: 880 },
+  ];
+
   window.DeskV1Fixtures = {
+    materialLibrary: MATERIAL_LIBRARY,
+    existingArticles: EXISTING_ARTICLES,
     projects: PROJECTS,
     campaigns: CAMPAIGNS,
     channels: CHANNELS,

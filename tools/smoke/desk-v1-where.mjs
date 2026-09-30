@@ -25,11 +25,11 @@
  *   - Phone (390 px): the board scrolls inside itself, the page does not;
  *     ✕ and Connect are ≥ 44 px tall.
  *
- * R2-7 (multi-asset pieces) has NOT shipped: the counts below are the CURRENT
- * fixture's (camp-1: 5 pieces; @ron 2, Clayrune Page 2, Clayrune blog 3), not
- * frame 7b's (Install 3, Agent 1, Home 2, Where board 1, Retro 2, Post 2;
- * @ron 5, Clayrune Page 4, YouTube 2). When R2-7 lands its 6-piece fixture,
- * the EXPECT block below is the ONE place to re-point (see the brief).
+ * R2-7 shipped the 6-piece fixture (camp-1) these counts follow — frame 7b's:
+ * Install 3, Agent 1, Home 2, Where board 1, Retro 2 (the restore-points
+ * article), Post 2; @ron 5, Clayrune Page 4, Clayrune blog 2. The EXPECT block
+ * below is the ONE place to re-point if the fixture moves. Pills read
+ * `DeskV1Kit.pieceChannelsText`, the same helper What's rows use.
  *
  * Real headless boot (real index.html + real static/js|css, no network).
  *
@@ -81,9 +81,11 @@ const TONES = [
 ];
 
 // The one place that knows the current fixture's numbers (see header).
+const RETRO = 'Undo anything: restore points in Clayrune 2.1'; // frame 7b's `Retro` piece
+const POST = '30 Windows testers wanted'; // frame 7b's `Post` piece
 const EXPECT = {
-  messages: { 'Undo anything: restore points in Clayrune 2.1': 1, 'Install in two minutes': 3, '30 Windows testers wanted': 1, 'Follow-up post': 1, 'Windows ARM support FAQ': 1 },
-  columns: { 'ch-x-ron': 2, 'ch-li-page': 2, 'ch-blog': 3 },
+  messages: { 'Undo anything: restore points in Clayrune 2.1': 2, 'Install in two minutes': 3, '30 Windows testers wanted': 2, 'Agent live run': 1, 'Home status table': 2, 'Where board': 1 },
+  columns: { 'ch-x-ron': 5, 'ch-li-page': 4, 'ch-blog': 2 },
   sources: ['ch-x-ron', 'ch-li-page', 'ch-blog', 'ch-x-clayrune', 'ch-yt-clayrune', 'ch-discord-community'],
   offSources: ['ch-reddit'],
 };
@@ -278,17 +280,17 @@ async function runDrags(browser) {
   const total0 = await versionTotal(page, 'camp-1');
 
   // Drag 1: message -> @ron ADDS a version; the message stays listed.
-  await drag(page, '[data-where-message][data-family-id="fam-arm-faq"]', '.desk-v1-where-col[data-channel-id="ch-x-ron"]');
+  await drag(page, '[data-where-message][data-family-id="fam-restore-points"]', '.desk-v1-where-col[data-channel-id="ch-x-ron"]');
   let b = await readBoard(page);
   const ron = col(b, 'ch-x-ron');
-  const armInRon = ron.versions.find((v) => v.familyId === 'fam-arm-faq');
+  const armInRon = ron.versions.find((v) => v.familyId === 'fam-restore-points');
   check(!!armInRon && armInRon.format === 'Article → X thread',
     `drag 1: Messages → @ron adds a card reading "${armInRon && armInRon.format}"`, `drag 1: no X-thread card on @ron: ${JSON.stringify(ron.versions)}`);
-  check(!!msg(b, 'Windows ARM support FAQ') && msg(b, 'Windows ARM support FAQ').pill === 'on 2 channels',
-    'drag 1: the message is still in Messages, pill now "on 2 channels"', `drag 1: message/pill wrong: ${JSON.stringify(msg(b, 'Windows ARM support FAQ'))}`);
+  check(!!msg(b, RETRO) && msg(b, RETRO).pill === 'on 3 channels',
+    'drag 1: the message is still in Messages, pill now "on 3 channels"', `drag 1: message/pill wrong: ${JSON.stringify(msg(b, RETRO))}`);
   check(ron.versions.length === EXPECT.columns['ch-x-ron'] + 1 && (await versionTotal(page, 'camp-1')) === total0 + 1,
     `drag 1: @ron ${ron.versions.length} cards, campaign total ${total0} → ${total0 + 1}`, 'drag 1: counts wrong');
-  const undoVisible = await page.$$eval('.toast', (els) => els.some((e) => /Undo/.test(e.textContent) && /ARM/.test(e.textContent)));
+  const undoVisible = await page.$$eval('.toast', (els) => els.some((e) => /Undo/.test(e.textContent) && /Undo anything/.test(e.textContent)));
   check(undoVisible, 'drag 1: a toast with Undo names the piece', 'drag 1: no Undo toast');
 
   // Drag 2: that card @ron -> Clayrune Page MOVES it; total unchanged.
@@ -298,8 +300,8 @@ async function runDrags(browser) {
   const moved = col(b, 'ch-li-page').versions.find((v) => v.versionId === armInRon.versionId);
   check(!!moved && moved.format === 'Article → LinkedIn native article' && !col(b, 'ch-x-ron').versions.some((v) => v.versionId === armInRon.versionId),
     `drag 2: @ron → Clayrune Page moves it ("${moved && moved.format}"), gone from @ron`, `drag 2: move wrong: ${JSON.stringify(moved)}`);
-  check((await versionTotal(page, 'camp-1')) === total0 + 1 && msg(b, 'Windows ARM support FAQ').pill === 'on 2 channels',
-    'drag 2: total unchanged by a move; the pill still says "on 2 channels"', 'drag 2: a move changed the total');
+  check((await versionTotal(page, 'camp-1')) === total0 + 1 && msg(b, RETRO).pill === 'on 3 channels',
+    'drag 2: total unchanged by a move; the pill still says "on 3 channels"', 'drag 2: a move changed the total');
 
   // A published version cannot be moved.
   const pubBefore = col(b, 'ch-x-ron').versions.filter((v) => v.title === 'Install in two minutes').length;
@@ -378,7 +380,7 @@ async function runKeyboard(browser) {
   check(focused === 'ch-x-clayrune', 'keyboard: focus stays on that source card after the add', `keyboard: focus lost (${focused})`);
 
   // Message: Enter opens a menu of the board's accounts; pick @clayrune.
-  await page.focus('[data-where-message][data-family-id="fam-followup-post"]');
+  await page.focus('[data-where-message][data-family-id="fam-30-testers"]');
   await page.keyboard.press('Enter');
   await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
   const items = await page.$$eval('.desk-v1-addto-menu button', (els) => els.map((e) => e.textContent.trim()));
@@ -386,11 +388,11 @@ async function runKeyboard(browser) {
   await page.locator('.desk-v1-addto-menu button', { hasText: '@clayrune' }).click();
   await page.waitForTimeout(100);
   b = await readBoard(page);
-  const fp = col(b, 'ch-x-clayrune').versions.find((v) => v.familyId === 'fam-followup-post');
-  check(!!fp && fp.format === 'Post → X post' && msg(b, 'Follow-up post').pill === 'on 2 channels',
-    `keyboard: message → account adds "${fp && fp.format}", message stays listed (on 2 channels)`, `keyboard: message add wrong: ${JSON.stringify(fp)}`);
+  const fp = col(b, 'ch-x-clayrune').versions.find((v) => v.familyId === 'fam-30-testers');
+  check(!!fp && fp.format === 'Post → X post' && msg(b, POST).pill === 'on 3 channels',
+    `keyboard: message → account adds "${fp && fp.format}", message stays listed (on 3 channels)`, `keyboard: message add wrong: ${JSON.stringify(fp)}`);
   const focusMsg = await page.evaluate(() => document.activeElement && document.activeElement.dataset && document.activeElement.dataset.familyId);
-  check(focusMsg === 'fam-followup-post', 'keyboard: focus returns to the message card', `keyboard: focus not restored (${focusMsg})`);
+  check(focusMsg === 'fam-30-testers', 'keyboard: focus returns to the message card', `keyboard: focus not restored (${focusMsg})`);
 
   // Version: Enter opens "Move to…" (never the account it is already on).
   await page.focus(`[data-where-version][data-version-id="${fp.versionId}"]`);

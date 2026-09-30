@@ -199,12 +199,9 @@ async function run(browser) {
   await page.click('[data-stop="what"]');
 
   // ── open a piece ─────────────────────────────────────────────────────────
-  // Freshly-planned pieces land in a collapsed group ("Planned · 3, show ›")
-  // — real content, but the user has to expand it before a card is
-  // reachable at all.
+  // R2-7: freshly-planned pieces are ordinary rows on What (no collapsed group
+  // to expand); the title is the row's primary action.
   const pieceId = await page.evaluate((id) => window.DeskV1Fixtures.families.find((f) => f.campaignId === id && f.id.startsWith('fam-suggest-')).id, campA);
-  await page.waitForSelector('[data-group-show]', { timeout: 8000 });
-  await page.click('[data-group-show]');
   await page.waitForSelector(`[data-family-id="${pieceId}"] [data-primary-action]`, { timeout: 8000 });
   await page.click(`[data-family-id="${pieceId}"] [data-primary-action]`);
   await page.waitForSelector('.desk-v1-piece', { timeout: 8000 });
@@ -213,35 +210,23 @@ async function run(browser) {
     ? ok(`open a piece: header title "${pieceTitle}"`)
     : fail('open a piece: no title rendered');
 
-  // ── What/How/When/Where — each fixture piece is kind:'post', no versions
-  // yet reviewed/scheduled, so every facet has its own distinct empty-state
-  // copy (real content, not just a selector match). ──────────────────────────
-  await page.waitForSelector('[data-facet="what"][aria-selected="true"]', { timeout: 8000 });
-  let body = (await page.textContent('.desk-v1-piece-facetbody').catch(() => '') || '');
-  /Nothing needs review right now/.test(body)
-    ? ok(`What: "${body.trim()}"`)
-    : fail(`What facet body wrong: ${JSON.stringify(body)}`);
-
-  await page.click('[data-facet="how"]');
-  await page.waitForSelector('[data-facet="how"][aria-selected="true"]', { timeout: 4000 });
-  body = (await page.textContent('.desk-v1-piece-facetbody').catch(() => '') || '');
-  /No production job for this piece yet/.test(body)
-    ? ok(`How: "${body.trim()}"`)
-    : fail(`How facet body wrong: ${JSON.stringify(body)}`);
-
-  await page.click('[data-facet="when"]');
-  await page.waitForSelector('[data-facet="when"][aria-selected="true"]', { timeout: 4000 });
-  body = (await page.textContent('.desk-v1-piece-facetbody').catch(() => '') || '');
-  /Not scheduled/.test(body)
-    ? ok(`When: "${body.trim()}"`)
-    : fail(`When facet body wrong: ${JSON.stringify(body)}`);
-
-  await page.click('[data-facet="where"]');
-  await page.waitForSelector('[data-facet="where"][aria-selected="true"]', { timeout: 4000 });
-  body = (await page.textContent('.desk-v1-piece-facetbody').catch(() => '') || '');
-  /Planned/.test(body)
-    ? ok(`Where: shows the version's state — "${body.trim()}"`)
-    : fail(`Where facet body wrong: ${JSON.stringify(body)}`);
+  // ── Copy · Media · Versions — a fresh planned post has no copy to review,
+  // no media, and one planned version on its destination (real content, not
+  // just a selector match). ────────────────────────────────────────────────
+  await page.waitForSelector('[data-piece-section="versions"]', { timeout: 8000 });
+  const sectionText = async (name) => (await page.textContent(`[data-piece-section="${name}"]`).catch(() => '') || '').replace(/\s+/g, ' ').trim();
+  let body = await sectionText('copy');
+  /planned/i.test(body) && !/Review/.test(body)
+    ? ok(`Copy: "${body}"`)
+    : fail(`Copy section wrong: ${JSON.stringify(body)}`);
+  body = await sectionText('media');
+  /Add media/.test(body)
+    ? ok(`Media: "${body}"`)
+    : fail(`Media section wrong: ${JSON.stringify(body)}`);
+  body = await sectionText('versions');
+  /Publish time/.test(body) && /planned/i.test(body)
+    ? ok(`Versions: shows the version's state and its publish time — "${body}"`)
+    : fail(`Versions section wrong: ${JSON.stringify(body)}`);
 
   // ── back to the project: Pause / Resume ─────────────────────────────────
   await page.click('.desk-v1-back'); // piece -> campaign

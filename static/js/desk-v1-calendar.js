@@ -809,6 +809,7 @@
         else { window.DeskV1Fixtures.calendarSchedule = window.DeskV1Fixtures.calendarSchedule || {}; window.DeskV1Fixtures.calendarSchedule[version.id] = iso; }
         if (movingOutsideWindow) version.state = 'needs_review';
         _render(campaign);
+        if (typeof window.deskV1PieceRepaint === 'function') window.deskV1PieceRepaint();
       },
       undo: () => {
         if (version.publishedAt) version.publishedAt = priorIso;
@@ -816,9 +817,24 @@
         else if (priorSchedule !== undefined) window.DeskV1Fixtures.calendarSchedule[version.id] = priorSchedule;
         version.state = priorState;
         _render(campaign);
+        if (typeof window.deskV1PieceRepaint === 'function') window.deskV1PieceRepaint();
       },
     });
   }
+
+  // R2-7 (§4.3): the piece page's Versions rows edit a version's publish time
+  // through THIS command — one value, two views — so the approval-window gate
+  // and the Undo toast are the calendar's own, not a second copy. A version's
+  // instant for display is `deskV1CalendarVersionWhen`.
+  function deskV1CalendarRescheduleVersion(versionId, newWhen) {
+    const found = _findFamilyVersion(versionId);
+    if (!found) return false;
+    const campaign = (_fx().campaigns || []).find((c) => c.id === found.family.campaignId);
+    if (!campaign || isNaN(newWhen)) return false;
+    _reschedule(found, newWhen, campaign);
+    return true;
+  }
+  function deskV1CalendarVersionWhen(version) { return _versionWhen(version); }
 
   // ── drag-to-reschedule (§10, §3.3). PointerDrag (T0c) owns the mechanics;
   // this owns what a target IS (a day cell) and what a drop DOES (reschedule
@@ -1034,5 +1050,7 @@
   }
 
   window.deskV1RenderCalendar = deskV1RenderCalendar;
+  window.deskV1CalendarRescheduleVersion = deskV1CalendarRescheduleVersion;
+  window.deskV1CalendarVersionWhen = deskV1CalendarVersionWhen;
   window.deskV1CalendarSuggestFill = deskV1CalendarSuggestFill;
 })();

@@ -1,12 +1,13 @@
-#!/usr/bin/env node
 /**
- * Desk v1 (MC-977, IA5) — piece page smoke (docs/THE_DESK_V1_IA_REVISION.md
- * §2.4, §5 row IA5).
+ * Desk v1 (MC-977, IA5 -> R2-7) — piece page smoke (docs/THE_DESK_V1_IA_REVISION_2.md
+ * §4.3, §8 row R2-7).
  *
- * Closes IA5's own acceptance row: card -> piece -> switch all four facets
- * keeps the header + Posy box as the SAME DOM node (identity, not just
- * text); What -> Review -> Back reads '‹ <piece title>'; How -> video
- * director -> Back returns to How.
+ * R2-7 retired IA5's four facets: the piece is one page, Copy · Media ·
+ * Versions. This checks the sections, a multi-asset piece (2 thumbnails +
+ * ＋ Add media, with Undo), header + Posy staying the SAME DOM node across
+ * repaints, the publish time being the calendar's own value, Back reading
+ * `‹ <campaign> · What`, What -> Review -> Back reading '‹ <piece title>',
+ * and the video director hand-off returning to the same piece.
  *
  * Real headless boot (real index.html + real static/js|css, no network),
  * same hermetic shape as desk-v1-review.mjs / desk-v1-video.mjs.
@@ -123,97 +124,140 @@ async function runCardOpensPiece(browser) {
   await ctx.close();
 }
 
-// ── switch all 4 facets: header + Posy box stay the SAME DOM node (identity,
-// not just text) — same marker-property technique as
-// desk-v1-campaign.mjs's runPosyDraftPersistence tab-switch check. ─────────
-async function runFacetSwitchIdentity(browser) {
+// ── R2-7: the piece is ONE page (Copy · Media · Versions). Header + Posy box
+// survive every in-page repaint as the SAME DOM node (identity, not text) —
+// same marker-property technique as desk-v1-campaign.mjs's tab-switch check. ─
+async function runSectionsAndIdentity(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
-  await navToPieceViaCard(page, 'fam-install-video');
-  await page.waitForSelector('[data-facet="what"]', { timeout: 8000 });
+  await navToPieceViaCard(page, 'fam-30-testers');
+
+  const sections = await page.$$eval('[data-piece-section]', (els) => els.map((e) => e.dataset.pieceSection));
+  if (sections.join() === 'copy,media,versions') ok('piece page: one scroll with Copy · Media · Versions');
+  else fail(`piece page: sections wrong: ${JSON.stringify(sections)}`);
+  const facetTabs = await page.$$eval('[data-facet]', (els) => els.length);
+  if (facetTabs === 0) ok('piece page: the four IA5 facet tabs are gone');
+  else fail(`piece page: ${facetTabs} [data-facet] tabs still render`);
+  const on = (await page.textContent('.desk-v1-piece-on') || '').trim();
+  if (on === 'on 2 channels') ok(`piece header: "${on}" (same helper as What and Where)`);
+  else fail(`piece header: expected "on 2 channels", got ${JSON.stringify(on)}`);
+
+  // Multi-asset piece (frame 5a): two thumbnails + `＋ Add media`.
+  const thumbs = await page.$$eval('[data-piece-media] .desk-v1-what-thumb', (els) => els.length);
+  const hasAdd = await page.$('[data-piece-media] [data-add-media]');
+  if (thumbs === 2 && hasAdd) ok('multi-asset piece: 2 thumbnails + ＋ Add media on the Media section');
+  else fail(`multi-asset piece: thumbs=${thumbs}, add=${!!hasAdd}`);
 
   await page.evaluate(() => {
     document.getElementById('desk-v1-piece-header')._deskv1SmokeMarker = 'same-header';
     document.getElementById('desk-v1-piece-posy-input')._deskv1SmokeMarker = 'same-posy';
   });
 
-  const order = ['how', 'when', 'where', 'what'];
-  for (const facet of order) {
-    await page.click(`[data-facet="${facet}"]`);
-    await page.waitForSelector(`[data-facet="${facet}"][aria-selected="true"]`, { timeout: 2000 });
-    const identity = await page.evaluate(() => ({
-      header: document.getElementById('desk-v1-piece-header')?._deskv1SmokeMarker,
-      posy: document.getElementById('desk-v1-piece-posy-input')?._deskv1SmokeMarker,
-    }));
-    if (identity.header === 'same-header' && identity.posy === 'same-posy') {
-      ok(`facet switch -> "${facet}": header + Posy box are the same DOM node`);
-    } else {
-      fail(`facet switch -> "${facet}": node identity lost: ${JSON.stringify(identity)}`);
-    }
-  }
+  // ＋ Add media picks a Material library folder, through the command bus (Undo).
+  await page.click('[data-piece-media] [data-add-media]');
+  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
+  await page.locator('.desk-v1-addto-menu button').first().click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-piece-media] .desk-v1-what-thumb').length === 3, null, { timeout: 2000 }).catch(() => {});
+  const after = await page.$$eval('[data-piece-media] .desk-v1-what-thumb', (els) => els.length);
+  if (after === 3) ok('＋ Add media: a third asset lands on the piece');
+  else fail(`＋ Add media: expected 3 assets, got ${after}`);
+  await page.locator('.toast button', { hasText: 'Undo' }).first().click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-piece-media] .desk-v1-what-thumb').length === 2, null, { timeout: 2000 }).catch(() => {});
+  const undone = await page.$$eval('[data-piece-media] .desk-v1-what-thumb', (els) => els.length);
+  if (undone === 2) ok('＋ Add media: Undo removes it again');
+  else fail(`＋ Add media: Undo left ${undone} assets`);
 
-  // Content itself did switch (not a no-op) — How shows the video director
-  // hand-off, absent from the other three facets' markup.
-  const howBody = (await page.textContent('.desk-v1-piece-body').catch(() => '') || '');
-  await page.click('[data-facet="how"]');
-  await page.waitForSelector('[data-facet="how"][aria-selected="true"]', { timeout: 2000 });
-  const howBody2 = (await page.textContent('.desk-v1-piece-body').catch(() => '') || '');
-  if (/Open video director/.test(howBody2)) ok('facet switch: "How" body renders the video hand-off');
-  else fail(`facet switch: "How" body missing the video hand-off: ${JSON.stringify(howBody2)}`);
-  if (howBody2 !== howBody) ok('facet switch: body content actually changes between facets');
-  else fail('facet switch: body content identical across facets (switch is a no-op)');
+  const identity = await page.evaluate(() => ({
+    header: document.getElementById('desk-v1-piece-header')?._deskv1SmokeMarker,
+    posy: document.getElementById('desk-v1-piece-posy-input')?._deskv1SmokeMarker,
+  }));
+  if (identity.header === 'same-header' && identity.posy === 'same-posy') ok('repaint: header + Posy box are the same DOM nodes');
+  else fail(`repaint: node identity lost: ${JSON.stringify(identity)}`);
 
-  reportUncaught(pageErrors, '[facet-identity]');
+  reportUncaught(pageErrors, '[sections-identity]');
   await ctx.close();
 }
 
-// ── What -> Review -> Back reads '‹ <piece title>' (ticket: "review 12b...
-// become piece children"). ───────────────────────────────────────────────
-async function runWhatToReviewBack(browser) {
+// ── Versions: the publish time is ONE value with the calendar. Editing it
+// here goes through the calendar's own reschedule command (Undo toast). ────
+async function runVersionTime(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+  await navToPieceViaCard(page, 'fam-30-testers');
+  const sel = '[data-version-time="v-testers-li"]';
+  await page.waitForSelector(sel, { timeout: 4000 });
+  const before = await page.$eval(sel, (i) => i.value);
+  const next = await page.evaluate((v) => {
+    const d = new Date(v); d.setHours(d.getHours() + 2);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  }, before);
+  await page.fill(sel, next);
+  await page.$eval(sel, (i) => i.dispatchEvent(new Event('change', { bubbles: true })));
+  await page.waitForTimeout(150);
+  const calWhen = await page.evaluate(() => {
+    const v = window.DeskV1Fixtures.families.find((f) => f.id === 'fam-30-testers').versions.find((x) => x.id === 'v-testers-li');
+    const d = window.deskV1CalendarVersionWhen(v); const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  });
+  if (calWhen === next) ok(`Versions: editing the publish time moves the calendar value (${before} -> ${calWhen})`);
+  else fail(`Versions: calendar value ${calWhen}, expected ${next}`);
+  const undo = page.locator('.toast button', { hasText: 'Undo' });
+  if (await undo.count()) {
+    await undo.first().click();
+    await page.waitForTimeout(150);
+    const restored = await page.$eval(sel, (i) => i.value);
+    if (restored === before) ok('Versions: Undo restores the publish time');
+    else fail(`Versions: Undo left ${restored}, expected ${before}`);
+  } else fail('Versions: no Undo toast after a time edit');
+  reportUncaught(pageErrors, '[version-time]');
+  await ctx.close();
+}
+
+// ── Back from a piece reads `‹ <campaign> · What`; What -> Review -> Back
+// reads '‹ <piece title>' (review 12b is a piece child). ──────────────────
+async function runBackLabels(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
   await navToPieceViaCard(page, 'fam-restore-points');
-  await page.waitForSelector('[data-facet="what"][aria-selected="true"]', { timeout: 8000 });
+  const campTitle = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').plan.title);
+  const pieceBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
+  if (pieceBack.includes(campTitle) && /·\s*What$/.test(pieceBack)) ok(`piece: Back reads "${pieceBack}"`);
+  else fail(`piece: Back wrong: ${JSON.stringify(pieceBack)} (campaign "${campTitle}")`);
 
   await page.click('[data-review-btn]');
   await page.waitForSelector('.desk-v1-review', { timeout: 8000 });
-
   const back = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
-  if (back.includes('Undo anything: restore points in Clayrune 2.1')) {
-    ok(`What -> Review: Back reads "${back}"`);
-  } else {
-    fail(`What -> Review: Back wrong: ${JSON.stringify(back)}`);
-  }
+  if (back.includes('Undo anything: restore points in Clayrune 2.1')) ok(`What -> Review: Back reads "${back}"`);
+  else fail(`What -> Review: Back wrong: ${JSON.stringify(back)}`);
 
-  reportUncaught(pageErrors, '[what-review-back]');
+  // Back from the piece lands on the campaign's ③ What list.
+  await page.click('.desk-v1-back');
+  await page.waitForSelector('.desk-v1-piece', { timeout: 8000 });
+  await page.click('.desk-v1-back');
+  await page.waitForSelector('[data-what]', { timeout: 8000 });
+  ok('piece -> Back: lands on the campaign What list');
+
+  reportUncaught(pageErrors, '[back-labels]');
   await ctx.close();
 }
 
-// ── How -> video director -> Back returns to How (piece entry's own params
-// are untouched by the forward nav, so the facet survives the round trip).
-async function runHowToVideoBack(browser) {
+// ── Media -> video director -> Back returns to the same piece. ───────────
+async function runMediaToVideoBack(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
   await navToPieceViaCard(page, 'fam-install-video');
-  await page.click('[data-facet="how"]');
-  await page.waitForSelector('[data-facet="how"][aria-selected="true"]', { timeout: 8000 });
+  await page.waitForSelector('[data-video-btn]', { timeout: 8000 });
 
   await page.click('[data-video-btn]');
   await page.waitForSelector('.desk-v1-video-director', { timeout: 8000 });
   const videoBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
-  if (videoBack.includes('Install in two minutes')) {
-    ok(`How -> video director: Back reads "${videoBack}"`);
-  } else {
-    fail(`How -> video director: Back wrong: ${JSON.stringify(videoBack)}`);
-  }
+  if (videoBack.includes('Install in two minutes')) ok(`Media -> video director: Back reads "${videoBack}"`);
+  else fail(`Media -> video director: Back wrong: ${JSON.stringify(videoBack)}`);
 
   await page.click('.desk-v1-back');
   await page.waitForSelector('.desk-v1-piece', { timeout: 8000 });
-  const activeFacet = await page.$eval('.desk-v1-camp-tab[aria-selected="true"]', (b) => b.dataset.facet).catch(() => null);
-  if (activeFacet === 'how') {
-    ok('How -> video director -> Back: returns to How');
-  } else {
-    fail(`How -> video director -> Back: landed on facet ${JSON.stringify(activeFacet)}, expected "how"`);
-  }
+  const title = (await page.textContent('.desk-v1-piece-title').catch(() => '') || '').trim();
+  if (title === 'Install in two minutes') ok('Media -> video director -> Back: returns to the same piece');
+  else fail(`Media -> video director -> Back: landed on ${JSON.stringify(title)}`);
 
-  reportUncaught(pageErrors, '[how-video-back]');
+  reportUncaught(pageErrors, '[media-video-back]');
   await ctx.close();
 }
 
@@ -221,9 +265,10 @@ let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
   await runCardOpensPiece(browser);
-  await runFacetSwitchIdentity(browser);
-  await runWhatToReviewBack(browser);
-  await runHowToVideoBack(browser);
+  await runSectionsAndIdentity(browser);
+  await runVersionTime(browser);
+  await runBackLabels(browser);
+  await runMediaToVideoBack(browser);
   exitCode = bad ? 1 : 0;
 } catch (e) {
   console.error('❌ FAIL — smoke harness error: ' + (e && e.message ? e.message : e));
@@ -234,5 +279,5 @@ try {
 
 console.log(bad
   ? `\n❌ FAIL — ${bad} Desk v1 piece check(s) regressed.`
-  : '\n✅ PASS — Desk v1 IA5 piece page: card -> piece, facet-switch DOM identity, What -> Review -> Back, How -> video -> Back all hold.');
+  : '\n✅ PASS — Desk v1 R2-7 piece page: card -> piece, Copy · Media · Versions, multi-asset + Add media, publish time via the calendar command, Back labels, Media -> video -> Back all hold.');
 process.exit(exitCode);

@@ -161,10 +161,10 @@ async function runTone(browser, tone) {
   await page.click('.desk-v1-project-camp-card[data-campaign-id="camp-1"]');
   await page.waitForSelector('.desk-v1-campaign', { timeout: 8000 });
   const campSlots = await page.$$eval(
-    '.desk-v1-camp-summary, .desk-v1-camp-tabstrip, .desk-v1-camp-tabbody, .desk-v1-camp-rightcol, .desk-v1-camp-addtray',
+    '.desk-v1-camp-summary, .desk-v1-camp-tabstrip, .desk-v1-camp-tabbody, .desk-v1-camp-rightcol',
     els => els.length);
-  if (campSlots === 5) ok(`[${tone.name}] campaign renders all 5 skeleton slots`);
-  else fail(`[${tone.name}] expected 5 campaign slots, got ${campSlots}`);
+  if (campSlots === 4) ok(`[${tone.name}] campaign renders all 4 skeleton slots (R2-7 retired the Add tray slot)`);
+  else fail(`[${tone.name}] expected 4 campaign slots, got ${campSlots}`);
   const campBack = await page.textContent('.desk-v1-back').catch(() => null);
   const campTitle = await page.textContent('.desk-v1-crumb-title');
   // IA1: campaign's real parent is now the project page (Back reads the

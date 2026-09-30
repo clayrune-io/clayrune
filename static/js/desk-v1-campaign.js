@@ -56,7 +56,6 @@
   window.deskV1CampaignNextScheduled = _nextScheduledVersion;
 
   function _familyHasState(fam, states) { return (fam.versions || []).some((v) => states.has ? states.has(v.state) : v.state === states); }
-  function _familyNeedsYou(fam) { return _familyHasState(fam, new Set(['needs_review'])); }
 
   // ── module state — one campaign-page mount at a time (same single-slot
   // precedent as desk-v1-review.js's `_st`). Rebuilt fresh whenever the
@@ -647,20 +646,14 @@
   }
 
   // ────────────────────────────────────────────────────────────────────────
-  // Content tab body (§3.2, §3.3). Toolbar (filter · channel filter ·
-  // List/Calendar toggle · + New piece) persists across the toggle; only the
-  // body under it swaps between the grouped/filtered list and T4's calendar,
-  // mounted straight into this same host via the T0a slot contract
-  // (`deskV1RenderCalendar(el, params)` — desk-v1-calendar.js's own header
-  // comment: "once T2a lands, its toggle can call [this] straight into its
-  // Content-tab body slot with no change needed here").
+  // ③ What (R2-7). The list, the CONTENT TYPES tray and the source-first
+  // create-cards live in desk-v1-what.js (`deskV1FillWhat`); this file keeps
+  // the pieces of the old Content tab that What still leans on — the piece ⋯
+  // menu and its commands, the Suggest banner, and the Posy selection — and
+  // hands them over through `window.deskV1CampaignWhatBridge`. The grouped
+  // list, channel filter, List/Calendar toggle, `+ New piece` and the Material
+  // Add tray are retired (calendar is ④ When; new pieces come from the tray).
   // ────────────────────────────────────────────────────────────────────────
-  const FILTER_LABELS = {
-    all: 'All content', needs_you: 'Needs you', scheduled: 'Scheduled',
-    published: 'Published', blocked: 'Blocked', archived: 'Archived',
-  };
-  const FILTER_ORDER = ['all', 'needs_you', 'scheduled', 'published', 'blocked', 'archived'];
-
   function deskV1FillCampaignTabBody(el, params) {
     const camp = _campaign(params.campaignId);
     // shell.js only falls through to this hook for 'what' (the default) and
@@ -676,131 +669,26 @@
       return;
     }
     const st = _ensureState(params.campaignId);
-    // §2/§8 calendar alias: `deskV1Nav('calendar', {campaignId})` lands on
-    // this same Content panel and asks it to open in calendar view once —
-    // consumed and dropped here so a later plain Content-tab click doesn't
-    // keep forcing calendar view back on.
-    if (params.calendarView) { st.view = 'calendar'; delete params.calendarView; }
     st.el = el;
-    _renderTabBody();
-  }
-
-  function _renderTabBody() {
-    const st = _st; const el = st.el;
-    const camp = _campaign(st.campaignId);
     if (!camp) { el.innerHTML = '<div class="desk-v1-stub-inline">Campaign not found.</div>'; return; }
-    el.innerHTML = `
-      <div class="desk-v1-camp-content">
-        <div class="desk-v1-camp-toolbar" id="desk-v1-camp-toolbar"></div>
-        <div class="desk-v1-camp-listwrap" id="desk-v1-camp-listwrap"></div>
-      </div>`;
-    _renderToolbar(camp);
-    if (st.view === 'calendar') {
-      if (typeof window.deskV1RenderCalendar === 'function') {
-        window.deskV1RenderCalendar(document.getElementById('desk-v1-camp-listwrap'), { campaignId: camp.id });
-      } else {
-        document.getElementById('desk-v1-camp-listwrap').innerHTML = '<div class="desk-v1-stub-inline">Calendar (T4) not loaded.</div>';
-      }
-    } else {
-      _renderList(camp);
-    }
+    if (typeof window.deskV1FillWhat !== 'function') { el.innerHTML = '<div class="desk-v1-stub-inline">What is not loaded.</div>'; return; }
+    window.deskV1FillWhat(el, params, camp);
   }
 
-  function _renderToolbar(camp) {
-    const st = _st;
-    const host = document.getElementById('desk-v1-camp-toolbar');
-    if (!host) return;
-    const chFilterLabel = st.channelFilter === 'all' ? 'All channels' : ((_channel(st.channelFilter) || {}).label || 'All channels');
-    host.innerHTML = `
-      <div class="desk-v1-camp-toolbar-left">
-        <div class="desk-v1-addto-wrap desk-v1-camp-filterwrap">
-          <button type="button" class="desk-v1-camp-filter-btn" data-filter-trigger>${esc(FILTER_LABELS[st.filter] || 'All content')} ▾</button>
-        </div>
-        <div class="desk-v1-addto-wrap desk-v1-camp-filterwrap">
-          <button type="button" class="desk-v1-camp-filter-btn" data-channel-trigger>${esc(chFilterLabel)} ▾</button>
-        </div>
-        <div class="desk-v1-camp-viewtoggle" role="tablist" aria-label="List or calendar view">
-          <button type="button" data-view-btn="list" aria-pressed="${st.view === 'list'}">☰ List</button>
-          <button type="button" data-view-btn="calendar" aria-pressed="${st.view === 'calendar'}">▦ Calendar</button>
-        </div>
-      </div>
-      <button type="button" class="desk-v1-camp-newpiece" data-new-piece>+ New piece</button>`;
-
-    host.querySelector('[data-filter-trigger]').onclick = (e) => {
-      const items = FILTER_ORDER.map((k) => ({ id: k, label: FILTER_LABELS[k] }));
-      DeskV1Kit.addToMenu(e.currentTarget, items, (id) => { st.filter = id; _renderTabBody(); }, { noAppendNew: true });
-    };
-    host.querySelector('[data-channel-trigger]').onclick = (e) => {
-      const items = [{ id: 'all', label: 'All channels' }].concat(_channels().map((ch) => ({ id: ch.id, label: ch.label })));
-      DeskV1Kit.addToMenu(e.currentTarget, items, (id) => { st.channelFilter = id; _renderTabBody(); }, { noAppendNew: true });
-    };
-    host.querySelectorAll('[data-view-btn]').forEach((b) => b.onclick = () => { st.view = b.dataset.viewBtn; _renderTabBody(); });
-    host.querySelector('[data-new-piece]').onclick = () => _newPiece(camp);
+  // Repaints the mounted What body after a fixture change made here (card ⋯
+  // menu commands, Accept all, the Suggest task).
+  function _renderTabBody() {
+    if (typeof window.deskV1RepaintWhat === 'function') window.deskV1RepaintWhat();
   }
+  function _renderList() { _renderTabBody(); }
 
-  // ── list body: grouped ("All content") or a single flat filtered list ────
-  function _matchesChannel(fam, channelFilter) {
-    return channelFilter === 'all' || (fam.versions || []).some((v) => v.channelId === channelFilter);
-  }
-  function _familyGroup(fam) {
-    if (_familyNeedsYou(fam)) return 'needs_you';
-    if (_familyHasState(fam, _SCHEDULED_STATES)) return 'scheduled';
-    if (_familyHasState(fam, _TERMINAL_STATES)) return 'published';
-    // R0's calendar-ticket fixtures (fam-followup-post: planned only;
-    // fam-arm-faq: blocked only) don't fit the doc's 3 named §3.2 groups —
-    // rather than drop them from "All content" (the acceptance check says
-    // grouped view covers everything), they collect under this 4th, equally
-    // collapsed-by-default heading. Flagged in the final report.
-    return 'other';
-  }
-  const GROUP_TITLES = { needs_you: 'NEEDS YOU', scheduled: 'SCHEDULED', published: 'PUBLISHED', other: 'PLANNED' };
-  const GROUP_ORDER = ['needs_you', 'scheduled', 'published', 'other'];
-  const COLLAPSED_BY_DEFAULT = new Set(['published', 'other']);
-
-  let _expandedGroups = new Set();
-
-  function _renderList(camp) {
-    const st = _st;
-    const host = document.getElementById('desk-v1-camp-listwrap');
-    if (!host) return;
-    let fams = _familiesFor(camp.id).filter((f) => _matchesChannel(f, st.channelFilter));
-
-    let bodyHTML;
-    if (st.filter === 'all') {
-      const groups = {};
-      for (const f of fams) { const g = _familyGroup(f); (groups[g] = groups[g] || []).push(f); }
-      bodyHTML = GROUP_ORDER.filter((g) => groups[g] && groups[g].length).map((g) => {
-        const items = groups[g];
-        const collapsed = COLLAPSED_BY_DEFAULT.has(g) && !_expandedGroups.has(g);
-        return `<div class="desk-v1-camp-group">
-          <div class="desk-v1-camp-group-head">
-            <span class="desk-v1-camp-group-title">${GROUP_TITLES[g]} · ${items.length}</span>
-            ${collapsed ? `<button type="button" class="desk-v1-camp-group-show" data-group-show="${g}">show ›</button>` : ''}
-          </div>
-          ${collapsed ? '' : `<div class="desk-v1-camp-cards">${items.map((f) => _familyCardHTML(f, camp)).join('')}</div>`}
-        </div>`;
-      }).join('') || '<div class="desk-v1-camp-empty">No content yet — drop a channel or material below, or ＋ New piece.</div>';
-    } else {
-      const pred = {
-        needs_you: _familyNeedsYou,
-        scheduled: (f) => _familyHasState(f, _SCHEDULED_STATES),
-        published: (f) => _familyHasState(f, _TERMINAL_STATES),
-        blocked: (f) => _familyHasState(f, new Set(['blocked'])),
-        archived: (f) => _familyHasState(f, new Set(['archived'])),
-      }[st.filter] || (() => true);
-      const items = fams.filter(pred);
-      bodyHTML = `<div class="desk-v1-camp-cards">${items.map((f) => _familyCardHTML(f, camp)).join('') || '<div class="desk-v1-camp-empty">Nothing matches this filter.</div>'}</div>`;
-    }
-
-    // pd-drop-target is NOT statically present (Dave's review: 12a has no
-    // container outline at rest) — onActivate/onTeardown below toggle it
-    // for the duration of a drag only.
-    host.innerHTML = `<div class="desk-v1-camp-listarea" id="desk-v1-camp-listarea" data-listarea>${_suggestedWhatBannerHTML(camp)}${bodyHTML}</div>`;
-    host.querySelectorAll('[data-group-show]').forEach((b) => b.onclick = () => { _expandedGroups.add(b.dataset.groupShow); _renderList(camp); });
-    const acceptBtn = host.querySelector('[data-suggested-accept-all]');
-    if (acceptBtn) acceptBtn.onclick = () => _acceptSuggestedWhat(camp);
-    _wireCards(host, camp);
-  }
+  window.deskV1CampaignWhatBridge = {
+    runPrimary: (fam, camp) => _runPrimaryAction(fam, camp),
+    openCardMenu: (trigger, fam, camp) => _openCardMenu(trigger, fam, camp),
+    setSelection: (scope, id, label) => _setSelection(scope, id, label),
+    suggestedBannerHTML: (camp) => _suggestedWhatBannerHTML(camp),
+    acceptSuggested: (camp) => _acceptSuggestedWhat(camp),
+  };
 
   // R2-6: the ② How stop's "Suggest What / When / Where" task writes
   // `camp.how.suggested.what` — an array of draft piece proposals, none of
@@ -873,39 +761,6 @@
     if (posyBoxEl) DeskV1Kit.paintPosyReadyNoDiff(posyBoxEl);
   }
 
-  // ── content card (§3.2 CNT-01) ────────────────────────────────────────────
-  function _kindMeta(fam) {
-    if (fam.kind === 'article') return `📄 Article · ${esc(fam.wordCount || 0)} words`;
-    if (fam.kind === 'video') return `▶ Video · ${fam.versions.length} version${fam.versions.length === 1 ? '' : 's'}`;
-    return null;
-  }
-  function _previewHTML(fam) {
-    if (fam.kind === 'video') {
-      const primary = fam.versions.find((v) => v.state === 'verified_published') || fam.versions.find((v) => v.format) || fam.versions[0];
-      const format = (primary && primary.format) || '16:9';
-      const vd = (_fx().videoDetail || {})[fam.id];
-      const durationSec = vd && vd.scenes ? vd.scenes.reduce((s, sc) => s + (sc.durationSec || 0), 0) : null;
-      const durLabel = durationSec != null ? ` · ${Math.floor(durationSec / 60)}:${String(durationSec % 60).padStart(2, '0')}` : '';
-      return `<div class="desk-v1-camp-preview desk-v1-camp-preview-video"><span class="desk-v1-camp-preview-play">▶</span><span class="desk-v1-camp-preview-caption">${esc(format)}${durLabel}</span></div>`;
-    }
-    const text = (_fx().contentPreview || {})[fam.id];
-    return `<div class="desk-v1-camp-preview desk-v1-camp-preview-text">${text ? esc(text) : ''}</div>`;
-  }
-  function _versionRowHTML(fam, v) {
-    const ch = _channel(v.channelId);
-    const badgeHTML = ch ? DeskV1Kit.channelBadge(ch, {}) : '<span class="desk-v1-camp-nochannel">No channel</span>';
-    const fmt = v.format ? ` · ${esc(v.format)}` : '';
-    const stateHTML = DeskV1Kit.stateLabelHTML(v.state);
-    let detail = '';
-    if (v.publishedAt) detail = _fmtWhenShort(v.publishedAt);
-    else if (v.publishAt) detail = _fmtWhenShort(v.publishAt);
-    else if (fam.render && fam.render.jobId && fam.kind === 'video') detail = `render ${esc(fam.render.jobId.replace('render-', ''))} ${esc(fam.render.status)}`;
-    return `<div class="desk-v1-camp-vrow" data-version-id="${esc(v.id)}">
-      <span class="desk-v1-camp-vrow-badge">${badgeHTML}${fmt}</span>
-      <span class="desk-v1-camp-vrow-state">${stateHTML}</span>
-      ${detail ? `<span class="desk-v1-camp-vrow-detail">· ${esc(detail)}</span>` : ''}
-    </div>`;
-  }
   function _fmtWhenShort(iso) {
     try {
       const cfg = (typeof _globalConfig !== 'undefined' && _globalConfig) || {};
@@ -918,42 +773,6 @@
     if (fam.kind === 'video') return { label: 'Open', kind: 'video' };
     return { label: 'Open', kind: 'open-stub' };
   }
-  function _familyCardHTML(fam, camp) {
-    const meta = _kindMeta(fam);
-    const action = _primaryAction(fam);
-    // pd-drop-target likewise applied only during an active drag (see
-    // _contentTargetAdapter.onActivate/onTeardown), not at rest.
-    return `<div class="desk-v1-camp-card" data-family-id="${esc(fam.id)}">
-      ${_previewHTML(fam)}
-      <div class="desk-v1-camp-card-body">
-        ${meta ? `<div class="desk-v1-camp-card-meta">${meta}</div>` : ''}
-        <div class="desk-v1-camp-card-title">${esc(fam.title)}</div>
-        <div class="desk-v1-camp-card-versions">${fam.versions.map((v) => _versionRowHTML(fam, v)).join('')}</div>
-        <div class="desk-v1-camp-card-result" aria-live="polite"></div>
-      </div>
-      <div class="desk-v1-camp-card-actions">
-        <button type="button" class="desk-v1-camp-card-primary" data-primary-action>${esc(action.label)}</button>
-        <div class="desk-v1-camp-card-more">
-          <button type="button" class="desk-v1-camp-card-morebtn" data-more-btn aria-haspopup="menu" aria-label="More actions">⋯</button>
-        </div>
-      </div>
-    </div>`;
-  }
-
-  function _wireCards(host, camp) {
-    host.querySelectorAll('[data-family-id]').forEach((cardEl) => {
-      const fam = _familiesFor(camp.id).find((f) => f.id === cardEl.dataset.familyId);
-      if (!fam) return;
-      const primary = cardEl.querySelector('[data-primary-action]');
-      if (primary) primary.onclick = (e) => { e.stopPropagation(); _runPrimaryAction(fam, camp); };
-      const more = cardEl.querySelector('[data-more-btn]');
-      if (more) more.onclick = (e) => { e.stopPropagation(); _openCardMenu(e.currentTarget, fam, camp); };
-      // Selecting the card (not its buttons) scopes the Posy box to it
-      // (§3.4 INS-01: "the campaign, a card, a version").
-      cardEl.addEventListener('click', () => _setSelection('card', fam.id, fam.title));
-    });
-  }
-
   // IA5 (§2.4, §5 row IA5 ticket: "the content card's primary action opens
   // the piece"): every card, whatever its kind or state, opens the piece
   // page now — What hands off to review when a version needs it, How hands
@@ -1075,150 +894,6 @@
   function _skipFamily(fam) { _disposeFamily(fam, 'skipped', 'Skipped'); }
   function _archiveFamily(fam) { _disposeFamily(fam, 'archived', 'Archived'); }
 
-  function _newPiece(camp) {
-    const fam = {
-      id: 'fam-new-' + Date.now().toString(36), campaignId: camp.id, kind: 'post',
-      title: 'New piece', versions: [{ id: 'v-new-' + Date.now().toString(36), channelId: null, state: 'drafting', revision: 0 }],
-    };
-    DeskV1Kit.commandBus.run({
-      label: `Created “${fam.title}”`,
-      do: () => { _fx().families.push(fam); _renderTabBody(); },
-      undo: () => { const arr = _fx().families; const i = arr.findIndex((f) => f.id === fam.id); if (i >= 0) arr.splice(i, 1); _renderTabBody(); },
-    });
-  }
-
-  // ── drag & drop (§3.2 table, §10). Reuses the Add tray's own shelf items
-  // as the drag SOURCE (deskV1RenderShelfPair, T1) with a custom
-  // targetAdapter whose targets are content cards + the empty list area,
-  // instead of Home's campaign cards — exactly the "caller supplies its own
-  // targetAdapter" seam deskV1RenderShelfPair's own comment describes. ──────
-  function _setCardResultText(cardEl, text) {
-    const t = cardEl.querySelector('.desk-v1-camp-card-result');
-    if (t) t.textContent = text || '';
-  }
-  function _listAreaResultText(text) {
-    const el = document.getElementById('desk-v1-camp-listarea');
-    if (!el) return;
-    let t = el.querySelector('.desk-v1-camp-listarea-result');
-    if (!t) { t = document.createElement('div'); t.className = 'desk-v1-camp-listarea-result'; el.insertBefore(t, el.firstChild); }
-    t.textContent = text || '';
-    if (!text) t.remove();
-  }
-
-  function _hoverContentAt(x, y, dragData) {
-    const el = document.elementFromPoint(x, y);
-    const card = el && el.closest && el.closest('.desk-v1-camp-card');
-    document.querySelectorAll('.desk-v1-camp-card').forEach((c) => {
-      if (c !== card) { c.classList.remove('pd-drop-hover'); _setCardResultText(c, ''); }
-    });
-    if (card) {
-      card.classList.add('pd-drop-hover');
-      _setCardResultText(card, dragData.type === 'channel' ? `Drop to add ${dragData.label} as a new version` : `Drop to attach ${dragData.label} to this piece`);
-      _listAreaResultText('');
-      return;
-    }
-    const listArea = el && el.closest && el.closest('#desk-v1-camp-listarea');
-    if (listArea) {
-      listArea.classList.add('pd-drop-hover');
-      _listAreaResultText(dragData.type === 'channel' ? `Drop to add ${dragData.label} to this campaign` : `Drop to create a new piece from ${dragData.label}`);
-    } else {
-      const la = document.getElementById('desk-v1-camp-listarea');
-      if (la) la.classList.remove('pd-drop-hover');
-      _listAreaResultText('');
-    }
-  }
-
-  function _resolveContentDropAt(x, y) {
-    const el = document.elementFromPoint(x, y);
-    const card = el && el.closest && el.closest('.desk-v1-camp-card');
-    if (card) return { type: 'card', familyId: card.dataset.familyId };
-    const listArea = el && el.closest && el.closest('#desk-v1-camp-listarea');
-    if (listArea) return { type: 'listarea' };
-    return null;
-  }
-
-  function _handleContentDrop(resolved, dragData, camp) {
-    if (resolved.type === 'card') {
-      const fam = _familiesFor(camp.id).find((f) => f.id === resolved.familyId);
-      if (!fam) return;
-      if (dragData.type === 'channel') {
-        if (fam.versions.some((v) => v.channelId === dragData.channelId)) { DeskV1Kit.toast(`${dragData.label} is already a version on “${fam.title}”.`); return; }
-        _addChannelVersion(fam, dragData.channelId);
-      } else {
-        // Material → card: attaches the asset (no generation) — modelled
-        // here as a note on the family's title-adjacent preview rather than a
-        // new version, since §3.2's AttachAsset carries no state of its own.
-        DeskV1Kit.commandBus.run({
-          label: `Attached “${dragData.label}” to “${fam.title}”`,
-          do: () => { fam.attachedAssets = (fam.attachedAssets || []).concat([dragData.asset.id]); _renderList(camp); },
-          undo: () => { fam.attachedAssets = (fam.attachedAssets || []).filter((id) => id !== dragData.asset.id); _renderList(camp); },
-        });
-      }
-    } else if (resolved.type === 'listarea') {
-      if (dragData.type === 'channel') {
-        if (camp.plan.accounts.includes(dragData.channelId)) { DeskV1Kit.toast(`${dragData.label} is already on “${camp.plan.title}”.`); return; }
-        DeskV1Kit.commandBus.run({
-          label: `Added ${dragData.label} to “${camp.plan.title}”`,
-          do: () => { camp.plan.accounts.push(dragData.channelId); deskV1FillCampaignSummary(document.getElementById('desk-v1-camp-summary'), { campaignId: camp.id }); },
-          undo: () => { const i = camp.plan.accounts.indexOf(dragData.channelId); if (i >= 0) camp.plan.accounts.splice(i, 1); deskV1FillCampaignSummary(document.getElementById('desk-v1-camp-summary'), { campaignId: camp.id }); },
-        });
-      } else {
-        const asset = dragData.asset;
-        const fam = { id: 'fam-drop-' + Date.now().toString(36), campaignId: camp.id, kind: asset.kind, title: asset.title, versions: [{ id: 'v-drop-' + Date.now().toString(36), channelId: null, state: 'drafting', revision: 0 }] };
-        DeskV1Kit.commandBus.run({
-          label: `Created “${fam.title}” from ${asset.title}`,
-          do: () => { _fx().families.push(fam); _renderTabBody(); },
-          undo: () => { const arr = _fx().families; const i = arr.findIndex((f) => f.id === fam.id); if (i >= 0) arr.splice(i, 1); _renderTabBody(); },
-        });
-      }
-    }
-  }
-
-  function _contentTargetAdapter(camp) {
-    return {
-      onActivate: () => {
-        document.querySelectorAll('.desk-v1-camp-card').forEach((c) => c.classList.add('pd-drop-target'));
-        const la = document.getElementById('desk-v1-camp-listarea');
-        if (la) la.classList.add('pd-drop-target');
-      },
-      onMove: (x, y, dragData) => _hoverContentAt(x, y, dragData),
-      onDrop: (x, y) => _resolveContentDropAt(x, y),
-      afterDrop: (resolved) => {},
-      onTeardown: () => {
-        document.querySelectorAll('.desk-v1-camp-card').forEach((c) => { c.classList.remove('pd-drop-target', 'pd-drop-hover'); _setCardResultText(c, ''); });
-        const la = document.getElementById('desk-v1-camp-listarea');
-        if (la) la.classList.remove('pd-drop-target', 'pd-drop-hover');
-        _listAreaResultText('');
-      },
-      addToItems: () => _familiesFor(camp.id).map((f) => ({ id: f.id, label: f.title })),
-      onPick: () => {},
-    };
-  }
-
-  // The Add tray's shelf pair calls afterDrop(resolved, dragData) via
-  // deskV1RenderShelfPair -> _wireShelfItem's adapter contract (desk-v1-
-  // home.js). This wraps _contentTargetAdapter so the campaign fixture
-  // mutation actually runs, since the generic adapter above only resolves
-  // WHAT was hit — the campaign-specific "what happens" stays here.
-  function _addTrayAdapter(camp) {
-    const base = _contentTargetAdapter(camp);
-    return Object.assign({}, base, {
-      afterDrop: (resolved, dragData) => { if (resolved) _handleContentDrop(resolved, dragData, camp); },
-      onPick: (pickedId, dragData) => {
-        // Keyboard/click "Add to…" path (UX-05) resolves to a family
-        // (attach) rather than a campaign — reusing the same _handleContentDrop
-        // as a synthetic card-drop keeps one code path for both entry points.
-        _handleContentDrop({ type: 'card', familyId: pickedId }, dragData, camp);
-      },
-    });
-  }
-
-  // Wires the SAME drop targets a second time for drags that originate
-  // inside the list itself (channel badges dropped straight from the
-  // summary bar are out of scope; this only needs to exist once, wired from
-  // the Add tray's shelf items, per _renderTabBody -> Add tray mount order).
-  function _wireListDrop() { /* no-op: targets are passive; adapter above drives them from the Add tray's pointerdown */ }
-
   // ────────────────────────────────────────────────────────────────────────
   // Posy box (§3.4, right column). Scope label follows `_st.selection`,
   // updated by `_setSelection()` below whenever the campaign/a card is
@@ -1290,38 +965,11 @@
     });
   }
 
-  // ────────────────────────────────────────────────────────────────────────
-  // Add tray (§3.6): the Material shelf only, scoped to this campaign. R2-10
-  // retired the Channels shelf: adding an account to a campaign is the Where
-  // board's own SOURCES tray now (desk-v1-where.js). The Material shelf stays
-  // until R2-7 replaces it with What's CONTENT TYPES / Upload flow.
-  // ────────────────────────────────────────────────────────────────────────
-  function deskV1FillCampaignAddTray(el, params) {
-    const camp = _campaign(params.campaignId);
-    if (!camp) { el.innerHTML = ''; return; }
-    el.innerHTML = `
-      <details class="desk-v1-camp-addtray-details">
-        <summary class="desk-v1-camp-addtray-summary">+ Add ▾</summary>
-        <div class="desk-v1-camp-addtray-body">
-          <div class="desk-v1-camp-addtray-shelf">
-            <div class="desk-v1-home-shelf-title">Material</div>
-            <div class="desk-v1-home-shelf-items" id="desk-v1-camp-addtray-material"></div>
-          </div>
-        </div>
-      </details>`;
-    window.deskV1RenderShelfPair({
-      materialHost: document.getElementById('desk-v1-camp-addtray-material'),
-    }, {
-      targetAdapter: _addTrayAdapter(camp),
-    });
-  }
-
   window.deskV1FillCampaignSummary = deskV1FillCampaignSummary;
   window.deskV1FillCampaignTabStrip = deskV1FillCampaignTabStrip;
   window.deskV1FillCampaignMapFoot = deskV1FillCampaignMapFoot;
   window.deskV1FillCampaignTabBody = deskV1FillCampaignTabBody;
   window.deskV1FillCampaignRightColumn = deskV1FillCampaignRightColumn;
-  window.deskV1FillCampaignAddTray = deskV1FillCampaignAddTray;
   // R2-10: the Where board shows the same Awaiting-approval notice Launch does.
   window.deskV1CampaignBounds = _currentBounds;
 })();
