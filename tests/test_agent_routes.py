@@ -497,6 +497,28 @@ def test_providers_endpoint_reports_in_use(client, monkeypatch):
     assert 'gemini' in by_name and by_name['gemini']['in_use'] is False
 
 
+def test_providers_endpoint_does_not_preempt_pending_first_run_choice(client, monkeypatch):
+    """MC-1010 review fixup: maybe_set_sole_provider_default must stay a no-op
+    while first-run setup is pending (state.CONFIG['setup_completed'] is
+    present and false), even with exactly one CLI installed — otherwise this
+    GET (fired on every boot's provider-catalog fetch) writes default_provider
+    before the user ever sees first-run.js's chooser step, and that step's own
+    `skip:` (installed + default_provider set + auth ok) then skips itself on
+    exactly the case its comment says must never skip. Route-level, not just
+    the unit test on maybe_set_sole_provider_default itself, because this is
+    what actually decides whether the chooser step renders on a fresh install."""
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar._agent_runtime, 'installed_runtimes',
+                         lambda: [types.SimpleNamespace(name='codex')])
+    restore = _set_config(ar, setup_completed=False, default_provider='')
+    try:
+        resp = client.get('/api/agent/providers')
+        assert resp.status_code == 200
+        assert ar.state.CONFIG.get('default_provider') == ''
+    finally:
+        restore()
+
+
 def test_providers_endpoint_refresh_forces_auth_probe(client, monkeypatch):
     """F8 (clean-VM run 2026-09-18): Claude was signed in — `claude auth
     status` showed loggedIn:true — but /api/agent/providers kept reporting

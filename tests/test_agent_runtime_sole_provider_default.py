@@ -95,6 +95,43 @@ def test_logs_once_when_it_sets(tmp_path, monkeypatch):
     assert 'codex' in calls[0][0][0]
 
 
+def test_setup_pending_is_untouched_even_with_one_cli(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_runtime, 'installed_runtimes', lambda: [_rt('codex')])
+    config = {'default_provider': '', 'setup_completed': False}
+    cfg_path = _config_path(tmp_path, config)
+
+    result = agent_runtime.maybe_set_sole_provider_default(config, cfg_path)
+
+    assert result is False
+    assert config['default_provider'] == ''
+    on_disk = json.loads(cfg_path.read_text(encoding='utf-8'))
+    assert on_disk['default_provider'] == ''
+
+
+def test_setup_completed_true_still_sets(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_runtime, 'installed_runtimes', lambda: [_rt('codex')])
+    config = {'default_provider': '', 'setup_completed': True}
+    cfg_path = _config_path(tmp_path, config)
+
+    result = agent_runtime.maybe_set_sole_provider_default(config, cfg_path)
+
+    assert result is True
+    assert config['default_provider'] == 'codex'
+    on_disk = json.loads(cfg_path.read_text(encoding='utf-8'))
+    assert on_disk['default_provider'] == 'codex'
+
+
+def test_setup_completed_key_absent_still_sets(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_runtime, 'installed_runtimes', lambda: [_rt('codex')])
+    config = {'default_provider': ''}
+    cfg_path = _config_path(tmp_path, config)
+
+    result = agent_runtime.maybe_set_sole_provider_default(config, cfg_path)
+
+    assert result is True
+    assert config['default_provider'] == 'codex'
+
+
 def test_no_log_when_it_is_a_noop(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_runtime, 'installed_runtimes', lambda: [])
     config = {'default_provider': ''}

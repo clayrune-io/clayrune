@@ -1502,14 +1502,26 @@ def maybe_set_sole_provider_default(config: dict, config_path: Path) -> bool:
     no HTTP round trip and nothing for the passcode gate to intercept.
 
     Idempotent and silent: a no-op whenever `default_provider` is already set
-    (never overwrites a real choice) or whenever installed-CLI count isn't
-    exactly 1. Mutates `config` in place (same live dict `state.CONFIG`
-    aliases) and persists to `config_path` using the same
-    read-merge-then-overwrite shape as settings_routes.update_config, so a
-    concurrent editor of unrelated keys in config.json is not clobbered by a
-    stale in-memory copy.
+    (never overwrites a real choice), whenever installed-CLI count isn't
+    exactly 1, or whenever first-run setup is still pending — mirrors
+    static/js/first-run.js's `firstRunNeeded()`: `'setup_completed' in config`
+    and falsy means setup hasn't run yet, and the provider choice belongs to
+    that wizard's chooser step, not to this auto-pick (a missing key means a
+    legacy install with no wizard to run, so it's allowed same as
+    firstRunNeeded treats it). Without this gate, a fresh install with one
+    CLI installed and signed in gets `default_provider` written here before
+    the user ever sees the chooser, and first-run.js's provider-choice step
+    (`skip:` ~line 116) then SKIPS itself on exactly the "only one CLI
+    installed" case its own comment says must never skip.
+
+    Mutates `config` in place (same live dict `state.CONFIG` aliases) and
+    persists to `config_path` using the same read-merge-then-overwrite shape
+    as settings_routes.update_config, so a concurrent editor of unrelated
+    keys in config.json is not clobbered by a stale in-memory copy.
     """
     if (config.get('default_provider') or '').strip():
+        return False
+    if 'setup_completed' in config and not config.get('setup_completed'):
         return False
     try:
         installed = installed_runtimes()
@@ -1525,14 +1537,12 @@ def maybe_set_sole_provider_default(config: dict, config_path: Path) -> bool:
     except Exception:
         on_disk = dict(config)
     on_disk['default_provider'] = name
+    from mc.core import _atomic_write_text, _log
     try:
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(on_disk, f, indent=2, ensure_ascii=False)
+        _atomic_write_text(config_path, json.dumps(on_disk, indent=2, ensure_ascii=False))
     except Exception as e:
-        from mc.core import _log
         _log(f'[providers] failed to persist sole-provider default {name!r}: {e}', flush=True)
         return False
-    from mc.core import _log
     _log(f'[providers] auto-picked sole installed provider as default_provider: {name}', flush=True)
     return True
 
