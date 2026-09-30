@@ -7313,6 +7313,10 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         with mgr.lock:
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
+        # Backlog 4668eafc (re-run turn_start): a revive starts a new turn
+        # under an existing session_id without passing
+        # `_log_agent_dispatch_pending`, so mark where it really begins.
+        _write_usage_breakdown_turn_start_checkpoint(session)
         threading.Thread(target=_read_agent_stream_b, args=(proc, session), daemon=True).start()
         # MC-944 (§9.6): the revival context above already carries a read floor
         # keyed on `message` (via _build_agent_context's task=), even when
@@ -7403,6 +7407,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
     with mgr.lock:
         agent_sessions[session_id] = session
         mgr.session_ids.add(session_id)
+    _write_usage_breakdown_turn_start_checkpoint(session)   # see Mode B above
     threading.Thread(target=_read_agent_stream, args=(proc, session), daemon=True).start()
     _log(f"[revive] {project_id}: Mode A revived session {session_id} via -r {claude_sid[:12]}")
     return session
@@ -7834,7 +7839,8 @@ def _session_cumulative_transcript_telemetry(project_id, session):
         return {}
 
 
-def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
+def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
+                                write_turn_start=True):
     """Write a placeholder agent_log row at dispatch time so trigger correlation
     survives a server restart that kills the session before _log_agent_completion
     can run.
@@ -7849,6 +7855,10 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
 
     Called for all dispatches before starting the reader, and again when a
     native provider's INIT event supplies its conversation id.
+
+    `write_turn_start=False` is for callers whose turn already has (or is
+    about to get) its own 'turn_start' row -- see the usage-breakdown block
+    at the bottom.
     """
     project_id = session.get('project_id')
     if not project_id or session.get('incognito') or session.get('housekeeping'):
@@ -7984,15 +7994,33 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
     # overlapping intervals as having exactly one active session. Not on an
     # identity-only INIT backfill: that can land after the turn completed,
     # and must no more reopen the fact than it resets the log row above.
+    #
+    # Backlog 4668eafc / MC-998 (re-run turn_start): the baseline is also a
+    # no-op past the first run, so a session RE-RUN under the same session_id
+    # (a scheduled cadence job, a '[Backlog run]' continuing thread, a revived
+    # dispatch) reached `mark_session_running` with no 'turn_start' row.
+    # `_session_turns` then had to start the new turn at the PREVIOUS
+    # completion -- often ~23h earlier -- and the first sample_tick of the new
+    # run closed one segment spanning the whole idle day, which 'crosses'
+    # every calibration interval inside it (and did so retroactively for
+    # every earlier clean day). `record_session_checkpoint` returns False
+    # exactly when the baseline already existed, i.e. this is a turn past the
+    # first: stamp its real start. Skipped for an identity-only INIT backfill
+    # (not a turn) and when the caller writes its own turn_start
+    # (`_advance_delegation_turn`; the second call of a notify_session
+    # dispatch, whose pre-Popen call already wrote this turn's).
     try:
         _store = _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite')
-        _store.record_session_checkpoint(**_usage_breakdown_sampler.baseline_checkpoint_fields(
+        _first_turn = _store.record_session_checkpoint(**_usage_breakdown_sampler.baseline_checkpoint_fields(
             sid, provider=(entry.get('provider') or 'claude'),
             observed_at=entry.get('started_at') or now_iso()))
         if not identity_only:
             _store.mark_session_running(sid)
     except Exception as e:
         _log(f"[usage-breakdown] baseline checkpoint write failed for {sid[:12]}: {e}")
+    else:
+        if not identity_only and not _first_turn and write_turn_start:
+            _write_usage_breakdown_turn_start_checkpoint(session)
 
 def _last_reply_text(session):
     """The child's last real assistant text, for the spawner callback.
@@ -8325,7 +8353,11 @@ def _advance_delegation_turn(session):
     _allocate_delegation_turn(session)
     # Turn identity must be durable before provider execution begins; a cold
     # revive can then reconstruct the same child/session turn without collision.
-    _log_agent_dispatch_pending(session, strict=True)
+    # write_turn_start=False: every caller (agent_followup / agent_interrupt
+    # `_start_new_turn`, `_auto_dispatch_followup`) writes the usage-breakdown
+    # turn_start itself right after this returns -- a second row here would
+    # only add a duplicate.
+    _log_agent_dispatch_pending(session, strict=True, write_turn_start=False)
 
 
 def _rearm_notify_for_new_turn(session):
@@ -11538,7 +11570,10 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
 
-            _log_agent_dispatch_pending(session)
+            # A notify_session dispatch already called this before Popen (and
+            # wrote this turn's turn_start there) -- don't write a second.
+            _log_agent_dispatch_pending(
+                session, write_turn_start=not (notify_session and not incognito))
             t = threading.Thread(target=_read_agent_stream_b, args=(proc, session), daemon=True)
             t.start()
 
@@ -11663,7 +11698,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
 
-            _log_agent_dispatch_pending(session)
+            _log_agent_dispatch_pending(
+                session, write_turn_start=not (notify_session and not incognito))
             t = threading.Thread(target=_read_agent_stream, args=(proc, session), daemon=True)
             t.start()
 

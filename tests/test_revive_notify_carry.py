@@ -276,7 +276,7 @@ def test_advance_delegation_turn_leaves_the_latch_untouched(monkeypatch):
 
     calls = []
     monkeypatch.setattr(ar, '_allocate_delegation_turn', lambda session: calls.append('turn') or 2)
-    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda session, strict=False: calls.append('pending'))
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda session, strict=False, **kw: calls.append('pending'))
 
     session = {'_notify_session_sent': True, '_notify_workflow_sent': True}
     ar._advance_delegation_turn(session)
@@ -298,7 +298,7 @@ def test_human_followup_after_completion_does_not_refire_the_callback(monkeypatc
     spawner_calls = []
     monkeypatch.setattr(ar, '_notify_agent_spawner', lambda *a, **k: spawner_calls.append(a))
     monkeypatch.setattr(ar, '_allocate_delegation_turn', lambda session: 2)
-    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda session, strict=False: None)
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda session, strict=False, **kw: None)
 
     session = {
         'project_id': 'p1', 'session_id': 'child-1',
