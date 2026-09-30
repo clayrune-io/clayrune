@@ -765,6 +765,7 @@
       el.innerHTML = `
       <div class="desk-v1-calendar">
         ${_suggestedWhenBannerHTML(campaign)}
+        <div class="desk-v1-cal-slot-refusal" data-slot-refusal></div>
         ${_fieldsHTML(campaign, project)}
         ${_toolbarHTML(st, days)}
         <div class="desk-v1-stub-inline desk-v1-cal-empty-where" data-cal-empty-where>
