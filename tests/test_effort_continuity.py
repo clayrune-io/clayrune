@@ -147,7 +147,13 @@ def test_other_non_claude_intent_is_visible_but_not_claimed_as_working(
 def test_completion_roundtrip_never_promotes_observed_model(env, monkeypatch, requested):
     routes = env['ar']
     monkeypatch.setattr(routes, '_find_transcript_file', lambda *a: 'fake-transcript')
-    monkeypatch.setattr(routes, '_extract_transcript_telemetry', lambda _: {'model': 'observed-opus'})
+    # MC-998 follow-up 5 (004fea16): completion now reads telemetry through
+    # `_session_cumulative_transcript_telemetry`, which calls
+    # mc.memory._extract_transcript_telemetry_multi (imported at call time),
+    # not the injected routes._extract_transcript_telemetry.
+    import mc.memory
+    monkeypatch.setattr(mc.memory, '_extract_transcript_telemetry_multi',
+                        lambda paths: {'model': 'observed-opus'})
     session = dict(project_id='proj1', session_id='s1', provider='claude',
                    claude_session_id=CSID, status='completed', log_lines=['Answer'], **requested)
     routes._log_agent_dispatch_pending(session)
