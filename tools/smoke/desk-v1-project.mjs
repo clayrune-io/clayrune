@@ -28,6 +28,8 @@ const CSS_DIR = resolve(REPO_ROOT, 'static', 'css');
 const ASSETS_DIR = resolve(REPO_ROOT, 'assets');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const ORIGIN = 'http://mc.smoke.test';
+const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
+mkdirSync(SHOT_DIR, { recursive: true });
 
 const MIME = { '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
 
@@ -477,6 +479,180 @@ async function runArchivedToggleRestore(browser) {
   await ctx.close();
 }
 
+// ── R2-16 (docs/THE_DESK_V1_IA_REVISION_2.md §8 row R2-16, §10.4): project
+// page Playbook — 2 confirmed (F2 slot, F6 format) + 1 stale (F4) + 1 rejected
+// (F3) fixture findings render in their groups; a campaign link lands on that
+// campaign's first stop; Undo reject moves the finding back to `proposed`;
+// Home has no playbook line. ────────────────────────────────────────────────
+async function gotoClayruneProject(page) {
+  await page.evaluate(() => window.deskV1Nav('project', { projectId: 'clayrune' }));
+  await page.waitForSelector('#desk-v1-project-playbook .desk-v1-playbook-group, #desk-v1-project-playbook .desk-v1-home-needsyou-empty', { timeout: 4000 });
+}
+
+async function runPlaybookGroups(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+  await gotoClayruneProject(page);
+
+  const groups = await page.$$eval('#desk-v1-project-playbook [data-playbook-dimension]', (els) =>
+    els.map((g) => ({ dim: g.dataset.playbookDimension, head: g.querySelector('.desk-v1-playbook-group-head').textContent.trim(),
+      ids: [...g.querySelectorAll('[data-finding-id]')].map((r) => r.dataset.findingId) })));
+  groups.length === 2 && groups.some((g) => g.dim === 'slot' && g.head === 'Posting day / time slot' && g.ids.join() === 'F2')
+    && groups.some((g) => g.dim === 'format' && g.head === 'Piece format' && g.ids.join() === 'F6')
+    ? ok(`Playbook: 2 confirmed findings in their dimension groups: ${JSON.stringify(groups)}`)
+    : fail(`Playbook confirmed groups wrong: ${JSON.stringify(groups)}`);
+
+  const f2 = (await page.textContent('[data-finding-id="F2"] .desk-v1-playbook-sentence')).replace(/\s+/g, ' ').trim();
+  /Tue\/Thu 08-10 got 2\.1× the clicks per post of other slots \(1 campaign, n=41, medium\)/.test(f2)
+    ? ok(`Playbook: F2 renders its sentence from structure: ${f2}`) : fail(`F2 sentence wrong: ${f2}`);
+  const f2meta = await page.$$eval('[data-finding-id="F2"] .desk-v1-playbook-chip', (els) => els.map((e) => e.textContent.trim()));
+  f2meta.join('|') === 'medium|n=41' ? ok('Playbook: F2 shows confidence + n chips') : fail(`F2 chips wrong: ${JSON.stringify(f2meta)}`);
+
+  const stale = await page.$$eval('#desk-v1-project-playbook [data-playbook-stale] [data-finding-id]', (els) =>
+    els.map((r) => ({ id: r.dataset.findingId, btns: [...r.querySelectorAll('.desk-v1-retro-btn')].map((b) => b.textContent.trim()),
+      text: r.querySelector('.desk-v1-playbook-sentence').textContent.replace(/\s+/g, ' ').trim() })));
+  stale.length === 1 && stale[0].id === 'F4' && stale[0].btns.join('|') === 'Re-confirm|Retire' && /Video clips out-clicked plain posts early on\./.test(stale[0].text)
+    ? ok('Playbook: Stale sub-list holds F4 (Ron\'s edited wording) with Re-confirm / Retire')
+    : fail(`Playbook stale list wrong: ${JSON.stringify(stale)}`);
+  const staleInConfirmed = await page.$('[data-playbook-dimension] [data-finding-id="F4"]');
+  staleInConfirmed === null ? ok('Playbook: stale F4 is not in the confirmed groups') : fail('stale F4 leaked into a confirmed group');
+
+  const collapsedToggle = (await page.textContent('[data-rejected-toggle]')).replace(/\s+/g, ' ').trim();
+  const collapsedRows = await page.$('[data-playbook-rejected] [data-finding-id]');
+  /Rejected \(1\)/.test(collapsedToggle) && collapsedRows === null
+    ? ok(`Playbook: rejected is collapsed by default (${collapsedToggle})`) : fail(`rejected not collapsed: ${collapsedToggle} / row=${collapsedRows !== null}`);
+  await page.click('[data-rejected-toggle]');
+  await page.waitForSelector('[data-playbook-rejected] [data-finding-id="F3"]', { timeout: 2000 });
+  const undoBtn = await page.textContent('[data-playbook-rejected] [data-finding-id="F3"] [data-finding-undo-reject]');
+  undoBtn.trim() === 'Undo reject' ? ok('Playbook: expanding rejected shows F3 with Undo reject') : fail(`F3 action wrong: ${undoBtn}`);
+
+  reportUncaught(pageErrors, '[playbook-groups]');
+  await ctx.close();
+}
+
+async function runPlaybookCampaignLink(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+  await gotoClayruneProject(page);
+
+  // F6 cites camp-archived-1 and camp-1; camp-1 is Active, so a plain campaign
+  // nav would land on What. The link must land on the first stop instead.
+  const links = await page.$$eval('[data-finding-id="F6"] [data-playbook-campaign]', (els) => els.map((e) => e.dataset.playbookCampaign));
+  links.join() === 'camp-archived-1,camp-1' ? ok(`Playbook: F6 links both evidence campaigns: ${links}`) : fail(`F6 campaign links wrong: ${links}`);
+  await page.click('[data-finding-id="F6"] [data-playbook-campaign="camp-1"]');
+  await page.waitForSelector('.desk-v1-map-stop', { timeout: 4000 });
+  const here = await page.$$eval('.desk-v1-map-stop[data-state="here"]', (els) => els.map((e) => e.dataset.stop));
+  const first = await page.evaluate(() => window.DeskV1Kit.MAP_STOPS[0]);
+  const title = (await crumb(page)).title;
+  here.join() === first && first === 'how' && title === 'Windows beta testers'
+    ? ok(`Playbook: campaign link lands on camp-1's first stop (${first} = Brief), crumb "${title}"`)
+    : fail(`campaign link landed wrong: here=${JSON.stringify(here)} first=${first} title=${title}`);
+
+  reportUncaught(pageErrors, '[playbook-link]');
+  await ctx.close();
+}
+
+async function runPlaybookUndoReject(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+  await gotoClayruneProject(page);
+  await page.click('[data-rejected-toggle]');
+  await page.waitForSelector('[data-finding-id="F3"] [data-finding-undo-reject]', { timeout: 2000 });
+  const snap = () => page.evaluate(() => {
+    const fx = window.DeskV1Fixtures;
+    const f = fx.playbook.findings.find((x) => x.id === 'F3');
+    return { state: f.state, decided_by: f.decided_by,
+      rejections: fx.playbook.rejections.filter((r) => r.dimension === 'platform_voice').length,
+      listed: fx.retros['camp-archived-1:1'].findings.includes('F3'),
+      toConfirm: window.deskV1RetroFindingsToConfirm('camp-archived-1') };
+  });
+  const before = await snap();
+  await page.click('[data-finding-id="F3"] [data-finding-undo-reject]');
+  await page.waitForTimeout(80);
+  const after = await snap();
+  before.state === 'rejected' && before.rejections === 1 && !before.listed && before.toConfirm === 1
+    && after.state === 'proposed' && after.decided_by === null && after.rejections === 0 && after.listed && after.toConfirm === 2
+    ? ok(`Playbook: Undo reject moves F3 rejected -> proposed, drops its rejection record, lists it on the retro: ${JSON.stringify(after)}`)
+    : fail(`Undo reject wrong: before=${JSON.stringify(before)} after=${JSON.stringify(after)}`);
+  (await page.$('[data-playbook-rejected]')) === null
+    ? ok('Playbook: rejected block disappears once nothing is rejected') : fail('rejected block still rendered');
+
+  // The toast's Undo puts it back.
+  await page.click('.toast-action .toast-btn.primary');
+  await page.waitForTimeout(80);
+  const undone = await snap();
+  undone.state === 'rejected' && undone.rejections === 1 && !undone.listed
+    ? ok('Playbook: undoing Undo reject restores the rejection and the retro list') : fail(`undo of undo wrong: ${JSON.stringify(undone)}`);
+
+  reportUncaught(pageErrors, '[playbook-undo-reject]');
+  await ctx.close();
+}
+
+async function runPlaybookStaleActions(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+  await gotoClayruneProject(page);
+  await page.click('[data-playbook-stale] [data-finding-reconfirm]');
+  await page.waitForTimeout(80);
+  const re = await page.evaluate(() => { const f = window.DeskV1Fixtures.playbook.findings.find((x) => x.id === 'F4'); return { state: f.state, origin: f.origin, by: f.decided_by, stale: f.stale_reason }; });
+  const inGroup = await page.$('[data-playbook-dimension="format"] [data-finding-id="F4"]');
+  const staleGone = await page.$('[data-playbook-stale]');
+  re.state === 'confirmed' && re.origin === 'interactive' && re.by === 'ron' && re.stale === null && inGroup !== null && staleGone === null
+    ? ok('Playbook: Re-confirm moves F4 stale -> confirmed (origin interactive) into its format group') : fail(`Re-confirm wrong: ${JSON.stringify(re)}`);
+  reportUncaught(pageErrors, '[playbook-reconfirm]');
+  await ctx.close();
+
+  const p2 = await newBootedPage(browser);
+  await gotoClayruneProject(p2.page);
+  await p2.page.click('[data-playbook-stale] [data-finding-retire]');
+  await p2.page.waitForTimeout(80);
+  const rt = await p2.page.evaluate(() => ({
+    state: window.DeskV1Fixtures.playbook.findings.find((x) => x.id === 'F4').state,
+    rejections: window.DeskV1Fixtures.playbook.rejections.length,
+  }));
+  const anywhere = await p2.page.$('#desk-v1-project-playbook [data-finding-id="F4"]');
+  rt.state === 'retired' && rt.rejections === 1 && anywhere === null
+    ? ok('Playbook: Retire moves F4 stale -> retired, records no rejection, shows nowhere on the page') : fail(`Retire wrong: ${JSON.stringify(rt)}`);
+  reportUncaught(p2.pageErrors, '[playbook-retire]');
+  await p2.ctx.close();
+}
+
+async function runPlaybookEmptyAndHome(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+
+  // Home: no playbook line anywhere on the board or in Needs-you (§10.4).
+  const homeText = await page.evaluate(() => document.querySelector('.desk-v1-shell').innerText);
+  !/playbook/i.test(homeText) && (await page.$('[data-playbook-dimension], #desk-v1-project-playbook')) === null
+    ? ok('Home has no playbook line') : fail(`Home mentions the playbook: ${homeText.match(/.{0,40}playbook.{0,40}/i)}`);
+
+  await page.evaluate(() => window.deskV1Nav('project', { projectId: 'engulfing_scanner' }));
+  await page.waitForSelector('#desk-v1-project-playbook .desk-v1-home-needsyou-empty', { timeout: 4000 });
+  const empty = (await page.textContent('#desk-v1-project-playbook')).replace(/\s+/g, ' ').trim();
+  /No confirmed findings yet/.test(empty) && (await page.$('#desk-v1-project-playbook [data-finding-id]')) === null
+    ? ok('Playbook: a project with no findings reads the empty line and shows none of clayrune\'s') : fail(`empty playbook wrong: ${empty}`);
+
+  reportUncaught(pageErrors, '[playbook-empty]');
+  await ctx.close();
+}
+
+async function runPlaybookShots(browser) {
+  const a = await newBootedPage(browser);
+  await gotoClayruneProject(a.page);
+  await a.page.click('[data-rejected-toggle]');
+  await a.page.click('[data-finding-id="F6"] [data-playbook-evidence-toggle]');
+  await a.page.locator('#desk-v1-project-playbook').scrollIntoViewIfNeeded();
+  await a.page.screenshot({ path: resolve(SHOT_DIR, 'r2_16_playbook_1440.png') });
+  ok('desktop screenshot saved: r2_16_playbook_1440.png');
+  reportUncaught(a.pageErrors, '[playbook-shot-1440]');
+  await a.ctx.close();
+
+  const b = await newBootedPage(browser, { width: 390, height: 844 });
+  await gotoClayruneProject(b.page);
+  await b.page.click('[data-rejected-toggle]');
+  await b.page.locator('#desk-v1-project-playbook').scrollIntoViewIfNeeded();
+  await b.page.screenshot({ path: resolve(SHOT_DIR, 'r2_16_playbook_390.png') });
+  const overflow = await b.page.evaluate(() => { const h = document.getElementById('desk-v1-project-playbook'); return h.scrollWidth - h.clientWidth; });
+  overflow <= 1 ? ok('phone screenshot saved: r2_16_playbook_390.png (no horizontal overflow)') : fail(`playbook overflows the 390 viewport by ${overflow}px`);
+  reportUncaught(b.pageErrors, '[playbook-shot-390]');
+  await b.ctx.close();
+}
+
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
@@ -490,6 +666,12 @@ try {
   await runProjectPauseResume(browser);
   await runNextPostAcrossCampaigns(browser);
   await runArchivedToggleRestore(browser);
+  await runPlaybookGroups(browser);
+  await runPlaybookCampaignLink(browser);
+  await runPlaybookUndoReject(browser);
+  await runPlaybookStaleActions(browser);
+  await runPlaybookEmptyAndHome(browser);
+  await runPlaybookShots(browser);
   exitCode = bad === 0 ? 0 : 1;
 } catch (e) {
   console.error('harness error:', e);
