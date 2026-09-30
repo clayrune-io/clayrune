@@ -45,6 +45,9 @@ from flask import Blueprint, Response, jsonify, request
 
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 
+import mc.agent_worktree as _agent_worktree
+import mc.hivemind_integration as _hm_integration
+import mc.project_sync as _sync
 from mc import engine_selection, obs, state
 from mc.atomic_json import write_json_atomic
 from mc.core import _log, now_iso, time_ago, TimestampedLines
@@ -191,6 +194,87 @@ def _hm_list_workstreams(hivemind_id):
         except Exception:
             pass
     return result
+
+
+# ── Worktree isolation + integration state (e3c0824e) ────────────────────────
+# Both live in their own files under the hivemind dir, NOT in manifest.json:
+# the orchestrator loop and several routes load-modify-save the whole manifest
+# from stale copies, which would silently drop a field written between.
+
+def _hm_worktree_base(hivemind_id):
+    """The commit every worker of this hivemind branched from ('' = not yet
+    pinned). Pinned by the first isolated worker so a master that moves
+    mid-run cannot give each worker a different base."""
+    try:
+        return json.loads((_hm_dir(hivemind_id) / 'worktree_base.json')
+                          .read_text(encoding='utf-8')).get('commit', '')
+    except Exception:
+        return ''
+
+
+def _hm_pin_worktree_base(hivemind_id, commit):
+    f = _hm_dir(hivemind_id) / 'worktree_base.json'
+    if commit and not f.exists():
+        write_json_atomic(f, {'commit': commit, 'pinned_at': now_iso()})
+
+
+def _hm_read_integration(hivemind_id):
+    """Integration result (merged / failed / branch) or None."""
+    try:
+        return json.loads((_hm_dir(hivemind_id) / 'integration.json')
+                          .read_text(encoding='utf-8'))
+    except Exception:
+        return None
+
+
+def _hm_write_integration(hivemind_id, state_dict):
+    write_json_atomic(_hm_dir(hivemind_id) / 'integration.json', state_dict,
+                      indent=2, ensure_ascii=False)
+
+
+def _hm_integrate_thread(hivemind_id):
+    """Body of the integration thread — runs git + smokes, so never on the
+    orchestrator loop. Always leaves a terminal state behind."""
+    try:
+        manifest = _hm_load_manifest(hivemind_id) or {}
+        project = load_project(manifest.get('project_id', ''))
+        if not project:
+            _hm_write_integration(hivemind_id, {
+                'status': 'error', 'reason': 'project not found',
+                'merged': [], 'skipped': [], 'failed': None, 'unmerged': []})
+            return
+        result = _hm_integration.integrate(
+            project, hivemind_id, _hm_list_workstreams(hivemind_id),
+            _hm_worktree_base(hivemind_id),
+            on_update=lambda st: _hm_write_integration(hivemind_id, st))
+        _hm_push_sse(hivemind_id, {
+            'type': 'hivemind_integration', 'hivemind_id': hivemind_id,
+            'status': result.get('status'), 'branch': result.get('branch'),
+            'merged': [m.get('ws_id') for m in result.get('merged', [])],
+            'failed': result.get('failed')})
+    except Exception as e:
+        _log(f"[hivemind] integration thread for {hivemind_id} crashed: {e}")
+        try:
+            _hm_write_integration(hivemind_id, {
+                'status': 'error', 'reason': f'integration crashed: {e}',
+                'merged': [], 'skipped': [], 'failed': None, 'unmerged': []})
+        except Exception as e2:
+            _log(f"[hivemind] integration error state write failed: {e2}")
+
+
+def _hm_start_integration(hivemind_id):
+    """Kick off integration once, when every workstream has completed. The
+    'running' marker is written BEFORE the thread starts, so a second call
+    (manifest re-completion, restart) sees it and does nothing."""
+    if _hm_read_integration(hivemind_id) is not None:
+        return False
+    _hm_write_integration(hivemind_id, {
+        'status': 'running', 'branch': _hm_integration.integration_branch(hivemind_id),
+        'base_commit': _hm_worktree_base(hivemind_id), 'merged': [], 'skipped': [],
+        'failed': None, 'unmerged': [], 'started_at': now_iso(), 'finished_at': None})
+    threading.Thread(target=_hm_integrate_thread, args=(hivemind_id,),
+                     daemon=True, name=f'hm-integrate-{hivemind_id}').start()
+    return True
 
 
 def _hm_append_finding(hivemind_id, ws_id, finding):
@@ -451,6 +535,15 @@ def _hm_reconcile_stale_on_startup():
         for d in HIVEMIND_DIR.iterdir():
             if not d.is_dir() or d.name.startswith('_'):
                 continue
+            # An integration that was mid-flight when the server went down has
+            # no thread left: say so rather than show 'running' forever. The
+            # integration branch/worktree are left as they are for a human.
+            _integ = _hm_read_integration(d.name)
+            if _integ and _integ.get('status') == 'running':
+                _integ['status'] = 'interrupted'
+                _integ['reason'] = 'server restarted mid-integration'
+                _integ['finished_at'] = now_iso()
+                _hm_write_integration(d.name, _integ)
             manifest = _hm_load_manifest(d.name)
             if not manifest:
                 continue
@@ -566,6 +659,7 @@ def hivemind_create():
                 'provider': ws_in.get('provider', ''),
                 'model': ws_in.get('model', ''),
                 'effort': ws_in.get('effort', ''),
+                'smokes': _hm_integration.clean_smokes(ws_in.get('smokes')),
                 'created_at': now_iso(),
                 'completed_at': None,
                 'findings_count': 0,
@@ -602,6 +696,7 @@ def hivemind_list():
         h['workstreams_completed'] = sum(1 for ws in workstreams if ws.get('status') == 'completed')
         h['workstreams_active'] = sum(1 for ws in workstreams if ws.get('status') == 'active')
         h['total_findings'] = sum(ws.get('findings_count', 0) for ws in workstreams)
+        h['integration_status'] = (_hm_read_integration(h['id']) or {}).get('status')
         h['updated_relative'] = time_ago(h.get('updated_at'))
     return jsonify(all_hm)
 
@@ -622,6 +717,7 @@ def hivemind_get(hivemind_id):
         'recent_messages': recent_messages,
         'decisions': decisions,
         'open_questions': open_questions,
+        'integration': _hm_read_integration(hivemind_id),
     })
 
 
@@ -745,6 +841,7 @@ def hivemind_workstream_create(hivemind_id):
         'provider': data.get('provider', ''),
         'model': data.get('model', ''),
         'effort': data.get('effort', ''),
+        'smokes': _hm_integration.clean_smokes(data.get('smokes')),
         'created_at': now_iso(),
         'completed_at': None,
         'findings_count': 0,
@@ -778,6 +875,8 @@ def hivemind_workstream_update(hivemind_id, ws_id):
                 'provider', 'model', 'effort', 'status'):
         if key in data:
             ws[key] = data[key]
+    if 'smokes' in data:
+        ws['smokes'] = _hm_integration.clean_smokes(data['smokes'])
     if data.get('status') == 'completed' and not ws.get('completed_at'):
         ws['completed_at'] = now_iso()
     _hm_save_workstream(hivemind_id, ws_id, ws)
@@ -1015,7 +1114,6 @@ def _hm_runtime_dispatch(*, provider_name, project_id, project_path, task,
 def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
     """Spawn a Hivemind worker through AgentRuntime for every provider."""
     project_id = p.get('id', '')
-    pp = p.get('project_path', '')
     worker_context = _hm_build_worker_context(hivemind_id, ws_id)
     from mc import engine_selection
     _cfg = manifest.get('config', {}) or {}
@@ -1052,6 +1150,26 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
         f"Begin your analysis. Follow the two-phase protocol described in your system prompt."
     )
     session_id = f'hm_{uuid.uuid4().hex[:8]}'
+    # Worktree isolation (e3c0824e): the SAME decision dispatched agents make
+    # (`_maybe_isolate_worktree` — git repo, isolation setting, per-project
+    # opt-out), minus the "first agent" gate: workers are parallel by
+    # construction and housekeeping sessions aren't counted by it. Any failure
+    # falls back to the shared tree, exactly as for a dispatched agent.
+    from mc.blueprints import agent_routes as _agent_routes
+    run_cwd, isolated = _agent_routes._maybe_isolate_worktree(
+        p, session_id, always=True, base_ref=_hm_worktree_base(hivemind_id) or 'HEAD')
+    if isolated:
+        _ok, _base = _sync.git_run(run_cwd, ['rev-parse', 'HEAD'], timeout=15)
+        if _ok:
+            _hm_pin_worktree_base(hivemind_id, _base)
+        ws['worktree_session_id'] = session_id
+        ws['worktree_branch'] = _agent_worktree.branch_name(session_id)
+        ws['base_commit'] = _base if _ok else ''
+        task += (
+            f"\n\nYou are working in an isolated git worktree on branch "
+            f"{ws['worktree_branch']}. Commit your changes there before you "
+            f"finish; do not merge, push, or switch branches. The hivemind "
+            f"integrates finished workstreams onto its own integration branch.")
     provider_name = engine.provider
     max_turns = (manifest.get('config', {}).get('worker_max_turns', 0) or
                  state.CONFIG.get('agent_max_turns', 0))
@@ -1082,6 +1200,11 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
         'pending_recovery_message': None,
         'circuit_breaker_tripped': False,
         '_dispatch_time': _time.time(),
+        # Same keys `_dispatch_via_runtime` stamps on a dispatched agent, so
+        # respawns, LOC attribution and Floor display read a worker like any
+        # other isolated agent.
+        '_agent_cwd': run_cwd,
+        '_worktree_isolated': isolated,
     }
     metadata = {
         'hivemind_id': hivemind_id,
@@ -1091,7 +1214,7 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
         'housekeeping': True,
     }
     return _hm_runtime_dispatch(
-        provider_name=provider_name, project_id=project_id, project_path=pp,
+        provider_name=provider_name, project_id=project_id, project_path=run_cwd,
         task=task, system_prompt=worker_context, model=model, effort=effort,
         session_id=session_id, session_dict=pre_session,
         project_generation=manifest.get('project_generation'),
@@ -1874,6 +1997,12 @@ def _hivemind_orchestrator_loop():
                     # Trigger final synthesis
                     if outcome == 'completed':
                         _hm_dispatch_orchestrator(hivemind_id, 'synthesize')
+                        # e3c0824e part 2: land the workers' branches, serially,
+                        # on hivemind/<id>. Never master, never a push.
+                        try:
+                            _hm_start_integration(hivemind_id)
+                        except Exception as _int_err:
+                            _log(f"[hivemind] integration start failed for {hivemind_id}: {_int_err}")
                     # MC-944 step 7 (Condition 21, trigger 1) — hivemind close
                     # mints a thin topic node. WRITE is fail-open by design
                     # (§6.5): fires on 'failed' too, never a Scribe judgement

@@ -1204,7 +1204,8 @@ def _live_agent_count(project_id):
         return 0
 
 
-def _maybe_isolate_worktree(project, session_id, incognito=False):
+def _maybe_isolate_worktree(project, session_id, incognito=False, *,
+                            always=False, base_ref='HEAD'):
     """Resolve the working directory for a new agent — the shared project tree,
     or a private git worktree when this is a CONCURRENT agent.
 
@@ -1215,6 +1216,11 @@ def _maybe_isolate_worktree(project, session_id, incognito=False):
     overwhelmingly common case — takes the identical code path it always has,
     which is what keeps this safe to enable globally. Backlog b264200a; design
     docs/COORDINATION_LAYER_DESIGN.md §5d.
+
+    `always` skips the "first agent" gate for callers that are parallel by
+    construction (Hivemind workers — housekeeping sessions, which
+    `_live_agent_count` does not count, so the gate would leave every worker in
+    the shared tree). `base_ref` is the commit the worktree branches from.
     """
     pp = project.get('project_path', '')
     if incognito:
@@ -1224,9 +1230,11 @@ def _maybe_isolate_worktree(project, session_id, incognito=False):
     if project.get('worktree_isolation') is False:  # per-project opt-out
         return pp, False
     try:
-        if _live_agent_count(project.get('id', '')) < 1:
+        if not always and _live_agent_count(project.get('id', '')) < 1:
             return pp, False  # first agent — no sibling to collide with
-        ok, path = _agent_worktree.create(project, session_id)
+        ok, path = (_agent_worktree.create(project, session_id)
+                    if base_ref == 'HEAD'
+                    else _agent_worktree.create(project, session_id, base_ref))
         if not ok:
             _log(f"[worktree] isolation unavailable, using shared tree: {path}")
             return pp, False
