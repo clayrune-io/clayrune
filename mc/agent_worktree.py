@@ -124,6 +124,13 @@ def branch_name(session_id: str) -> str:
     return f'clayrune/agent/{session_id}'
 
 
+def is_hivemind_worker(session_id: str) -> bool:
+    """Hivemind workers mint `hm_<8 hex>` session ids; dispatched agents mint
+    bare 12-hex ids, so the prefix cannot collide. A hivemind worker's branch
+    lands via its hivemind's integration branch, never via merge_back()."""
+    return (session_id or '').startswith('hm_')
+
+
 _LOC_BASELINE_FILE = 'clayrune-loc-base-commit'
 
 
@@ -383,12 +390,19 @@ def merge_back(project: dict, session_id: str, target_ref: str = ''):
       'clean'    — merged into the base branch
       'conflict' — overlapping edits; merge ABORTED, branch preserved for the
                    human. Never auto-resolved.
-      'skipped'  — base tree busy/unmergeable; branch preserved
+      'skipped'  — base tree busy/unmergeable (or a hivemind worker); branch
+                   preserved
     """
     base = project.get('project_path') or ''
     wt = worktree_path(project, session_id)
     if wt is None or not wt.exists():
         return 'nothing', 'no worktree'
+    # A hivemind worker's commits go to hivemind/<id> (integration branch), one
+    # workstream at a time behind a smoke gate — never straight into the base
+    # branch from session end or the stale-worktree gc. An explicit target_ref
+    # is the integration path's own call and is honoured.
+    if is_hivemind_worker(session_id) and not target_ref:
+        return 'skipped', 'hivemind worker: lands via its hivemind integration branch'
     wts = str(wt)
     ref = target_ref or _base_ref(project)
     if _sync._dirty(wts):

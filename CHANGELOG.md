@@ -6,6 +6,25 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-30] — Hivemind workers run in their own worktrees (e3c0824e)
+
+- `_hm_spawn_worker_session` now makes the same isolation decision as a
+  dispatched agent (`_maybe_isolate_worktree`: git repo, `worktree_isolation_enabled`,
+  per-project opt-out), so parallel workers no longer edit the live tree.
+  New keyword-only `always=` skips the "first agent" gate (workers are
+  housekeeping sessions, which `_live_agent_count` ignores) and `base_ref=`
+  pins every worker to the commit the first one branched from
+  (`hiveminds/<id>/worktree_base.json`). Non-git projects are unchanged.
+- `agent_worktree.merge_back` refuses `hm_*` worker sessions, so neither
+  session-end nor the stale-worktree gc lands a worker on master; the
+  hivemind integration branch is their only route.
+- When every workstream completes, `mc/hivemind_integration.py` merges them
+  serially into `hivemind/<id>` (dedicated worktree, never master, never a
+  push), runs the `smokes` each workstream names, stops at the first conflict,
+  dirty worker tree or failing smoke (that merge is rolled back), and records
+  the result in `hiveminds/<id>/integration.json`, served as `integration` by
+  `GET /api/hivemind/<id>`. Needs a server restart to take effect.
+
 ## [2026-09-30] — GPT-6.1 Sol in the Codex catalog
 
 - Added `gpt-6.1-sol` ("GPT-6.1 Sol") above `gpt-6-sol` in
