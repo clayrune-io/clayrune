@@ -852,10 +852,11 @@ function firstRunNeeded() {
   return true;
 }
 
-// The three config writes this flow used to fire one at a time — backup_dest_dir
+// The config writes this flow used to fire one at a time — backup_dest_dir
 // (destination field onchange), backup_schedule (cadence pick) and
-// setup_completed (this function) — are batched into this ONE PUT /api/config,
-// fired only from setupFinish. PUT /api/config is human-only-gated on every
+// setup_completed — are batched into this ONE PUT /api/config, fired only from
+// setupFinish. (setup_completed itself now goes first, via the narrow
+// _setupMarkCompleted below, and rides this PUT only as the fallback.) PUT /api/config is human-only-gated on every
 // call (MC-995): a fresh install has no passcode yet, so three separate calls
 // meant three passcode prompts (the first of them a dead end, since a fresh
 // install can't type a passcode that doesn't exist). humanProofFetch already
@@ -887,7 +888,23 @@ function _setupPendingConfigBody() {
   return body;
 }
 
+// Records "setup is done" on the server FIRST and on its own, through the narrow
+// POST /api/setup/complete (no passcode), so finishing or declining first run
+// is durable for the install even when the batched PUT below is cancelled or
+// refused (backlog c9c82caf: a fresh install has no passcode, "Not now" raised
+// a "set one" form, closing it left setup_completed false and every new
+// browser/origin re-ran setup). On any failure _globalConfig stays false and
+// _setupPendingConfigBody still puts setup_completed in the PUT, as before.
+async function _setupMarkCompleted() {
+  if (_globalConfig && _globalConfig.setup_completed) return;
+  try {
+    const r = await fetch(API_BASE + '/api/setup/complete', { method: 'POST' });
+    if (r.ok && _globalConfig) _globalConfig.setup_completed = true;
+  } catch (_) { /* network down: the PUT below still carries the flag */ }
+}
+
 async function _setupPersistCompleted() {
+  await _setupMarkCompleted();
   const body = _setupPendingConfigBody();
   if (!Object.keys(body).length) return; // nothing changed — no call, no prompt
   const result = await humanProofFetch(API_BASE + '/api/config', {
