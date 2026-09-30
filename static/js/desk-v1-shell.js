@@ -72,7 +72,8 @@
   function _campaignLabel(params) {
     const camps = (window.DeskV1Fixtures && window.DeskV1Fixtures.campaigns) || [];
     const c = camps.find(x => x.id === (params || {}).campaignId);
-    return c ? c.plan.title : 'Campaign';
+    // A draft started from Home (R2-2f) has no title until step 1 fills one.
+    return c ? (c.plan.title || 'New campaign') : 'Campaign';
   }
 
   // IA1: dynamic like _campaignLabel above — a project page's own crumb
@@ -152,6 +153,13 @@
   }
 
   function deskV1Back() {
+    // R2-2f: backing out of a campaign page discards a Home-started draft the
+    // user never touched (desk-v1-setup.js decides; a no-op for every other
+    // campaign), so a stray "＋ New campaign" click leaves nothing behind.
+    const top = _stack[_stack.length - 1];
+    if (top && top.route === 'campaign' && typeof window.deskV1DiscardIfUntouchedDraft === 'function') {
+      window.deskV1DiscardIfUntouchedDraft(top.params.campaignId);
+    }
     if (_stack.length > 1) _stack.pop();
     deskV1Render();
   }

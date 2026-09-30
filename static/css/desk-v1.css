@@ -397,6 +397,10 @@
   cursor: pointer; padding: 0; font-family: inherit;
 }
 .desk-v1-home-block-name:hover { color: var(--accent); }
+/* R2-2f: the "No project yet" block's title is a label, not a link. */
+.desk-v1-home-block-name-static { cursor: default; }
+.desk-v1-home-block-name-static:hover { color: var(--text); }
+.desk-v1-home-block-hint { font-size: 12px; color: var(--text-faint); }
 .desk-v1-home-block-agent {
   display: inline-flex; align-items: center; gap: 5px;
   background: var(--surface3); border: 1px solid var(--border2); border-radius: 999px;

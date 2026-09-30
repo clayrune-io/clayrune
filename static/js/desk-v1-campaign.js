@@ -496,6 +496,9 @@
     const project = _project(camp.projectId);
     const missing = (DeskV1Kit.validatePlan(camp.plan, project) || { missing: [] }).missing;
     const missingStops = new Set(missing.map((m) => m.stop));
+    // R2-2f: a draft with no project can't launch — ① Goal is where the Project
+    // select lives, so it carries the ⚠ until one is picked.
+    if (camp.state === 'draft' && !project) missingStops.add('goal');
     const stopsHTML = DeskV1Kit.MAP_STOPS.map((stop) => {
       const state = _stopState(stop, params.panel, map, missingStops);
       const word = DeskV1Kit.MAP_STOP_WORDS[stop];
@@ -583,7 +586,16 @@
       return;
     }
     const project = _project(camp.projectId);
-    const result = DeskV1Kit.validatePlan(camp.plan, project) || { ok: true, missing: [] };
+    const planResult = DeskV1Kit.validatePlan(camp.plan, project) || { ok: true, missing: [] };
+    // R2-2f: no project picked (Home's page-level New campaign starts without
+    // one) blocks Start the same way any other missing bound does — listed
+    // first, linking to ① Goal where the Project select is. Drafts only: a
+    // project-less Proposed (the Add-to "+ New campaign" drop path) has no
+    // Project select anywhere to send the user to.
+    const noProject = camp.state === 'draft' && !project;
+    const result = noProject
+      ? { ok: false, missing: [{ bound: 'project', stop: 'goal', label: 'project', detail: 'pick a project' }].concat(planResult.missing) }
+      : planResult;
     const missingHTML = result.missing.length
       ? `<ul class="desk-v1-map-launch-missing">${result.missing.map((m) => `
           <li><button type="button" class="desk-v1-map-launch-missing-link" data-missing-stop="${esc(m.stop)}">${esc(m.label)}${m.detail ? ` — ${esc(m.detail)}` : ''}</button></li>`).join('')}</ul>`
@@ -1226,7 +1238,7 @@
       // §3 T3 row: every draft key is prefixed `project:<pid>:` so Home's
       // project card (`anyPosyWorking('project:<pid>:')`) sees work in flight
       // anywhere under that project, not just this one campaign scope.
-      draftKey: `project:${camp.projectId}:campaign:${camp.id}:${st.selection.scope}:${st.selection.id || ''}`,
+      draftKey: `project:${camp.projectId || ''}:campaign:${camp.id}:${st.selection.scope}:${st.selection.id || ''}`,
       taskLifecycle: true,
     });
   }
