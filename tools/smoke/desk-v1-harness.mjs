@@ -139,14 +139,14 @@ async function runTone(browser, tone) {
   // IA1 replaced Home's direct campaign links with project cards (one per
   // project with a presence) — the fixture campaign camp-1 now sits under
   // the 'clayrune' project card, not a bare link on Home itself.
-  const homeProjectCard = await page.$('.desk-v1-home-project-card[data-project-id="clayrune"]');
-  if (homeProjectCard) ok(`[${tone.name}] Home renders the fixture project as a card`);
+  const homeProjectCard = await page.$('.desk-v1-home-block[data-project-id="clayrune"]');
+  if (homeProjectCard) ok(`[${tone.name}] Home renders the fixture project as a block`);
   else fail(`[${tone.name}] Home did not render the fixture campaign`);
 
   // ── Home -> project -> campaign: skeleton's 5 slots + Back reads the real
   // previous stack entry at each hop (IA1: an extra project layer sits
   // between Home and campaign now). ───────────────────────────────────────
-  await page.click('.desk-v1-home-project-card[data-project-id="clayrune"]');
+  await page.click('.desk-v1-home-block-name[data-project-id="clayrune"]');
   await page.waitForSelector('.desk-v1-project', { timeout: 8000 });
   const projTitle = (await page.textContent('.desk-v1-crumb-title').catch(() => '') || '').trim();
   const projBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();

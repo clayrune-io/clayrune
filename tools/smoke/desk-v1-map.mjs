@@ -96,7 +96,7 @@ function reportUncaught(pageErrors, tag) {
 }
 
 async function openProject(page, projectId) {
-  await page.click(`.desk-v1-home-project-card[data-project-id="${projectId}"]`);
+  await page.click(`.desk-v1-home-block-name[data-project-id="${projectId}"]`);
   await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
 }
 

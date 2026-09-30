@@ -21,54 +21,6 @@
   function _campaign(id) { return _campaigns().find((c) => c.id === id); }
   function _project(id) { return _projects().find((p) => p.id === id); }
 
-  // A version is done concluding once it reaches one of these — a held
-  // channel no longer "blocks" it (LIF-01/02/03).
-  const _TERMINAL_STATES = new Set(['verified_published', 'you_reported', 'failed', 'skipped', 'archived']);
-
-  // ── Needs you (§2): grouped by kind, holds tinted in the same card, each
-  // row deep-links to the real review surface, never to a list. ───────────
-  function _needsYouItems() {
-    const items = [];
-    for (const fam of _families()) {
-      for (const v of fam.versions) {
-        if (v.state !== 'needs_review') continue;
-        const camp = _campaign(fam.campaignId);
-        items.push({
-          kind: fam.kind === 'video' ? 'video' : 'piece',
-          campaignId: fam.campaignId, versionId: v.id,
-          projectId: camp && camp.projectId,
-        });
-      }
-    }
-    for (const c of _conversations()) {
-      if (c.state !== 'needs_reply') continue;
-      items.push({ kind: 'reply', campaignId: c.campaignId, conversationId: c.id, projectId: c.projectId });
-    }
-    return items;
-  }
-
-  // Channel-level holds block whatever versions are assigned to that channel
-  // and haven't already concluded; the worker heartbeat is a separate,
-  // channel-independent hold (§2's "Scheduling paused" example).
-  function _holds() {
-    const holds = [];
-    for (const ch of _channels()) {
-      if (ch.health !== 'held') continue;
-      let count = 0;
-      for (const fam of _families()) {
-        for (const v of fam.versions) {
-          if (v.channelId === ch.id && !_TERMINAL_STATES.has(v.state)) count++;
-        }
-      }
-      if (count > 0) holds.push({ kind: 'channel', label: ch.holdReason || `${ch.label} held`, count });
-    }
-    const wh = _fx().workerHeartbeat;
-    if (wh && wh.status === 'offline') {
-      holds.push({ kind: 'worker', label: `Scheduling paused — worker offline since ${wh.sinceLabel}`, count: wh.missed });
-    }
-    return holds;
-  }
-
   // ── campaign creation (Propose, and "+ New campaign" from an ambiguous
   // drop) — a pure factory; callers decide when/how to commit + undo so both
   // call sites can wrap it in their own commandBus entry (§10). ───────────
@@ -130,7 +82,7 @@
       return;
     }
     const cmd = _dropCommandFor(camp, dragData);
-    DeskV1Kit.commandBus.run({ label: cmd.label, do: () => { cmd.do(); _renderProjectCards(); }, undo: () => { cmd.undo(); _renderProjectCards(); } });
+    DeskV1Kit.commandBus.run({ label: cmd.label, do: () => { cmd.do(); _renderStatusBoard(); }, undo: () => { cmd.undo(); _renderStatusBoard(); } });
   }
 
   function _applyDropToNewCampaign(dragData) {
@@ -138,8 +90,8 @@
     const cmd = _dropCommandFor(camp, dragData);
     DeskV1Kit.commandBus.run({
       label: `Created “${camp.plan.title}” and added ${dragData.label}`,
-      do: () => { _fx().campaigns.push(camp); cmd.do(); _renderProjectCards(); },
-      undo: () => { cmd.undo(); const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); _renderProjectCards(); },
+      do: () => { _fx().campaigns.push(camp); cmd.do(); _renderStatusBoard(); },
+      undo: () => { cmd.undo(); const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); _renderStatusBoard(); },
     });
     deskV1Nav('campaign', { campaignId: camp.id });
   }
@@ -254,95 +206,333 @@
     }
   }
 
-  // ── IA1 (§5 row IA1, §1's hierarchy): project cards. §1 states Home's grid
-  // is one card PER PROJECT, not per campaign — the campaign-card grid below
-  // stays exactly as T1-T3 built it (ground rule 2: desk-v1-home.mjs, out of
-  // this ticket's file list, still asserts on it directly), so this is
-  // additive: a new row above it, the first hop of the new Home -> project
-  // -> campaign path IA1's own acceptance test exercises.
-  //
-  // Dave's review pass 3 (§1: Home shows project cards, no campaign grid):
-  // the flat campaign grid + Archived section that used to sit below this
-  // row are RETIRED from Home, not just superseded — campaigns (active and
-  // archived) are only reachable from here by way of a project's own page
-  // (desk-v1-project.js). This card is now the sole "at a glance" surface
-  // Home offers per project, so it carries what the old campaign cards used
-  // to show in aggregate: how many campaigns, how many are active, and the
-  // earliest planned post across them (omitted where the fixture has none —
-  // §"no label without a value" from THE_DESK_V1_UI.md still holds). ───────
+  // ── R2-2 (§8 amended row, mockups_r2/1-home.png): the status board. Home's
+  // grid used to be one card PER PROJECT with campaigns hidden a hop away
+  // (IA1); the amended row folds the campaign grid back onto Home itself —
+  // one column header for the page, one bordered block per project, one row
+  // per (non-archived) campaign — so §1's Home -> project -> campaign hop
+  // still exists for Back/deep-link purposes (a row click pushes 'project'
+  // then 'campaign', same construction as deskV1HomeGotoReview below) but
+  // both levels are visible without a click. Archived campaigns stay
+  // reachable only from the project page (IA1's retirement holds). ────────
   function _campaignsFor(projectId) { return _campaigns().filter((c) => c.projectId === projectId); }
 
-  function _nextPostFor(projectId) {
-    const campIds = new Set(_campaignsFor(projectId).map((c) => c.id));
+  const _SUBJECT_GLYPH = { project: '◉', product: '▣', feature: '✦', audience: '◎' };
+  const _PLATFORM_WORD = { x: 'X', linkedin: 'LinkedIn', blog: 'Blog' };
+  function _platformWord(ch) { return (ch && _PLATFORM_WORD[ch.platform]) || (ch && ch.label) || ''; }
+
+  // A campaign is "just started" once it's Active but barely into its own
+  // term — dividing a near-zero progress by a near-zero elapsed fraction
+  // would read as "Behind" (frame `4-community-discord-launch` row: 0 of 40,
+  // day 1, reads "On track", not a false alarm) for every fresh campaign, so
+  // both the STAGE qualifier and the PACE pill below special-case it instead
+  // of running the ratio.
+  const _JUST_STARTED_ELAPSED = 0.05;
+
+  // Mirrors desk-v1-results.js's own `_paceState`/`_fractionElapsed`
+  // (progress ÷ elapsed; >1.2 ahead, >=0.9 on track, else behind) — change
+  // one, change both. Kept separate rather than shared because Home reads a
+  // WIDER "tracked" condition than the Goal stop's effectiveness panel does
+  // (below).
+  function _paceState(pace) {
+    if (pace == null) return null;
+    if (pace > 1.2) return { key: 'ahead', word: 'Ahead' };
+    if (pace >= 0.9) return { key: 'on_track', word: 'On track' };
+    return { key: 'behind', word: 'Behind' };
+  }
+  function _fractionElapsed(term) {
+    if (!term || !term.starts || !term.ends) return null;
+    const start = new Date(term.starts).getTime();
+    const end = new Date(term.ends).getTime();
+    if (!(end > start)) return null;
+    return Math.max(0, Math.min(1, (Date.now() - start) / (end - start)));
+  }
+
+  // R2-4's full measurable-goal shape (`goal.source`/`entries`) only exists
+  // on campaigns that ticket has actually touched — today, only camp-1. The
+  // status board still owes every OTHER active/proposed campaign a real
+  // GOAL PROGRESS/PACE reading, so it reads the older `plan.goal.tracked` +
+  // `plan.goal.target` (set at Create for every campaign) as a fallback
+  // source of truth, with `goal.current` staying the one live number either
+  // shape uses.
+  function _homeGoalOf(camp) {
+    const planGoal = (camp.plan && camp.plan.goal) || {};
+    const goal = camp.goal || {};
+    const tracked = !!planGoal.tracked || goal.source === 'manual';
+    const target = planGoal.target != null ? planGoal.target : goal.target;
+    const metric = goal.metric || planGoal.outcome || '';
+    let current = goal.current || 0;
+    if (goal.source === 'manual' && goal.entries && goal.entries.length) {
+      current = goal.entries.reduce((a, b) => (new Date(b.at).getTime() > new Date(a.at).getTime() ? b : a)).value;
+    }
+    return { tracked, target, metric, current };
+  }
+
+  function _stageHTML(camp) {
+    const { glyph, word } = DeskV1Kit.stateLabel(camp.state);
+    const elapsed = camp.state === 'active' ? _fractionElapsed(camp.term) : null;
+    const justStarted = elapsed != null && elapsed < _JUST_STARTED_ELAPSED;
+    return `<span class="desk-v1-state-label desk-v1-home-row-state" data-state="${esc(camp.state || '')}">
+      <span class="desk-v1-state-glyph" aria-hidden="true">${esc(glyph)}</span>
+      <span class="desk-v1-state-word">${esc(word)}${justStarted ? ' &middot; just started' : ''}</span>
+    </span>`;
+  }
+
+  // Bar fill = current/target; the elapsed tick is a second, independent
+  // reading (position = fraction of `camp.term` elapsed) — the row's own
+  // `aria-label` is the ONE place both numbers are stated in one sentence,
+  // since the visual tick has no text of its own (A15: never colour alone,
+  // and here not position alone either).
+  function _goalBarHTML(camp) {
+    const g = _homeGoalOf(camp);
+    if (!g.tracked || !g.target) {
+      return `<div class="desk-v1-home-goal">
+        <div class="desk-v1-home-goal-bar desk-v1-home-goal-bar-untracked" aria-hidden="true"></div>
+        <div class="desk-v1-home-goal-text desk-v1-home-goal-untracked">not measured yet</div>
+      </div>`;
+    }
+    const progressRatio = g.target ? g.current / g.target : 0;
+    const progressPct = Math.max(0, Math.min(100, Math.round(progressRatio * 100)));
+    const elapsed = _fractionElapsed(camp.term);
+    const elapsedPct = elapsed == null ? null : Math.round(elapsed * 100);
+    const ariaLabel = elapsedPct == null ? `${progressPct}% of goal` : `${progressPct}% of goal, ${elapsedPct}% of term elapsed`;
+    return `<div class="desk-v1-home-goal">
+      <div class="desk-v1-home-goal-bar" role="img" aria-label="${esc(ariaLabel)}">
+        <div class="desk-v1-home-goal-fill" style="width:${progressPct}%"></div>
+        ${elapsedPct != null ? `<div class="desk-v1-home-goal-tick" style="left:${elapsedPct}%"></div>` : ''}
+      </div>
+      <div class="desk-v1-home-goal-text">${esc(g.current)} of ${esc(g.target)} ${esc(g.metric)}</div>
+    </div>`;
+  }
+
+  function _pacePillHTML(camp) {
+    const g = _homeGoalOf(camp);
+    if (!g.tracked || !g.target) return '<span class="desk-v1-home-pace-empty">&mdash;</span>';
+    const elapsed = _fractionElapsed(camp.term);
+    let paceSt = null;
+    if (elapsed != null && elapsed < _JUST_STARTED_ELAPSED) paceSt = { key: 'on_track', word: 'On track' };
+    else if (elapsed != null && elapsed > 0) paceSt = _paceState((g.current / g.target) / elapsed);
+    if (!paceSt) return '<span class="desk-v1-home-pace-empty">&mdash;</span>';
+    return `<span class="desk-v1-home-pace-pill" data-pace="${esc(paceSt.key)}">${esc(paceSt.word)}</span>`;
+  }
+
+  // NEXT POST reads the earliest still-pending (scheduled/planned) version
+  // across the campaign's own families; a campaign with nothing scheduled
+  // yet falls back to where it stands on the map (`Draft · at <stop>`) so
+  // the cell never reads simply blank.
+  function _nextPostForCampaign(camp) {
     const schedule = _fx().calendarSchedule || {};
     let best = null;
     for (const fam of _families()) {
-      if (!campIds.has(fam.campaignId)) continue;
+      if (fam.campaignId !== camp.id) continue;
       for (const v of fam.versions) {
-        const when = schedule[v.id];
-        if (!when || v.state !== 'planned') continue;
-        const t = new Date(when).getTime();
-        if (!best || t < best.t) best = { t, when };
+        if (v.state !== 'scheduled' && v.state !== 'planned') continue;
+        const iso = v.publishAt || schedule[v.id];
+        if (!iso) continue;
+        const t = new Date(iso).getTime();
+        if (!best || t < best.t) best = { t, iso, channelId: v.channelId };
       }
     }
-    return best && best.when;
+    return best;
+  }
+  function _fmtNextPostShort(iso) {
+    try {
+      const d = new Date(iso);
+      const wk = new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(d);
+      const hm = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+      return `${wk} ${hm}`;
+    } catch (e) { return iso; }
+  }
+  function _nextPostHTML(camp) {
+    const best = _nextPostForCampaign(camp);
+    if (best) {
+      const ch = _channel(best.channelId);
+      return `<span class="desk-v1-home-nextpost">${esc(_fmtNextPostShort(best.iso))} &middot; ${esc(_platformWord(ch))}</span>`;
+    }
+    const stopWord = camp.map && camp.map.stop && DeskV1Kit.MAP_STOP_WORDS[camp.map.stop];
+    return stopWord
+      ? `<span class="desk-v1-home-nextpost desk-v1-home-nextpost-draft">Draft &middot; at ${esc(stopWord)}</span>`
+      : '<span class="desk-v1-home-nextpost-empty">&mdash;</span>';
   }
 
-  function _fmtNextPost(iso) {
-    try { return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(iso)); }
-    catch (e) { return iso; }
+  // NEEDS YOU (§11.6 item 2: the column REPLACES the old Home-wide section —
+  // this is the per-campaign reading that section's flat counts never had).
+  // Priority, highest first: (1) a Proposed campaign's own sequencing
+  // blocker (CMP-03) — nothing else matters until that's answered; (2) a
+  // held channel among the campaign's own accounts — an infra problem that
+  // blocks publishing regardless of what's approved; (3)/(4)/(5) pieces to
+  // approve / videos to watch / replies waiting, same three kinds the old
+  // section counted, now scoped to this campaign. Within (3)-(5) the row
+  // shows the top non-empty kind's own count plus "+n" for the other kinds
+  // present — never a raw item count across kinds.
+  function _campaignNeedsYou(camp) {
+    if (camp.state === 'proposed') {
+      const extras = (_fx().proposedExtras || {})[camp.id];
+      if (extras && extras.blocker) return { kind: 'blocker', text: 'Needs your answer' };
+    }
+    const heldCh = (camp.plan.accounts || []).map(_channel).find((ch) => ch && ch.health === 'held');
+    if (heldCh) return { kind: 'held', text: `${_platformWord(heldCh)} disconnected` };
+    const pieces = []; const videos = [];
+    for (const fam of _families()) {
+      if (fam.campaignId !== camp.id) continue;
+      for (const v of fam.versions) {
+        if (v.state !== 'needs_review') continue;
+        (fam.kind === 'video' ? videos : pieces).push(v.id);
+      }
+    }
+    const replies = _conversations().filter((c) => c.campaignId === camp.id && (c.state === 'needs_you' || c.state === 'needs_reply'));
+    const buckets = [];
+    if (pieces.length) buckets.push({ kind: 'piece', versionId: pieces[0], text: `${pieces.length} piece${pieces.length === 1 ? '' : 's'} to approve` });
+    if (videos.length) buckets.push({ kind: 'video', versionId: videos[0], text: `${videos.length} video${videos.length === 1 ? '' : 's'} to watch` });
+    if (replies.length) buckets.push({ kind: 'reply', conversationId: replies[0].id, text: `${replies.length} repl${replies.length === 1 ? 'y' : 'ies'} waiting` });
+    if (!buckets.length) return null;
+    const top = buckets[0];
+    const extra = buckets.length - 1;
+    return Object.assign({}, top, { text: extra ? `${top.text} +${extra}` : top.text });
   }
 
-  function _projectCardHTML(p) {
+  function _needsYouPillHTML(camp) {
+    const item = _campaignNeedsYou(camp);
+    if (!item) return '<span class="desk-v1-home-needsyou-empty">&mdash;</span>';
+    // _goToNeedsYou reads campaignId/projectId off this button's own dataset
+    // (bound via btn.dataset in _bindStatusBoard) — the row's data-campaign-id
+    // is on an ancestor div the click handler never consults, so these two
+    // must be repeated here or every deep-link silently gets `undefined`.
+    const attrs = [`data-needsyou-kind="${esc(item.kind)}"`, `data-campaign-id="${esc(camp.id)}"`, `data-project-id="${esc(camp.projectId)}"`];
+    if (item.versionId) attrs.push(`data-version-id="${esc(item.versionId)}"`);
+    if (item.conversationId) attrs.push(`data-conversation-id="${esc(item.conversationId)}"`);
+    return `<button type="button" class="desk-v1-home-needsyou-pill" ${attrs.join(' ')}>
+      <span aria-hidden="true">&#9888;</span> ${esc(item.text)}
+    </button>`;
+  }
+
+  function _rowHTML(camp) {
+    const kind = (camp.subject && camp.subject.kind) || '';
+    const glyph = _SUBJECT_GLYPH[kind] || '';
+    return `<div class="desk-v1-home-row" data-campaign-id="${esc(camp.id)}" data-project-id="${esc(camp.projectId)}" role="button" tabindex="0">
+      <div class="desk-v1-home-row-campaign">
+        <div class="desk-v1-home-row-title">${esc(camp.plan.title)}</div>
+        <div class="desk-v1-home-row-subject">${esc(glyph)} ${esc(kind)} &middot; ${esc((camp.subject && camp.subject.label) || '')}</div>
+      </div>
+      <div class="desk-v1-home-row-stage">${_stageHTML(camp)}</div>
+      <div class="desk-v1-home-row-goal">${_goalBarHTML(camp)}</div>
+      <div class="desk-v1-home-row-pace">${_pacePillHTML(camp)}</div>
+      <div class="desk-v1-home-row-next">${_nextPostHTML(camp)}</div>
+      <div class="desk-v1-home-row-needsyou">${_needsYouPillHTML(camp)}</div>
+    </div>`;
+  }
+
+  function _blockHeaderAgentHTML(project) {
+    const resolved = DeskV1Kit.resolveDeskAgent(DeskV1Kit.deskAgentRef({ project }));
+    const label = resolved.name ? `${resolved.name} plans & writes` : DeskV1Kit.UNRESOLVED_AGENT_LABEL;
+    return `<button type="button" class="desk-v1-home-block-agent${resolved.name ? '' : ' desk-v1-home-block-agent-unresolved'}" data-project-id="${esc(project.id)}">
+      <span aria-hidden="true">&#129302;</span> ${esc(label)}
+    </button>`;
+  }
+
+  function _projectBlockHTML(p) {
     const camps = _campaignsFor(p.id).filter((c) => c.state !== 'archived');
-    const count = camps.length;
-    const activeCount = camps.filter((c) => c.state === 'active').length;
-    const nextPost = _nextPostFor(p.id);
-    // T3 row (§4): every draft key under this project is prefixed
-    // `project:<pid>:` — this card's own "⟳ Posy working" badge is the
-    // one place that prefix match actually reads, per anyPosyWorking's doc
-    // comment ("the query a Home card uses").
-    const working = window.DeskV1Kit && DeskV1Kit.anyPosyWorking(`project:${p.id}:`);
-    return `
-      <div class="desk-v1-home-project-card" data-project-id="${esc(p.id)}" role="button" tabindex="0">
-        <span class="desk-v1-home-project-name">${esc(p.name)}</span>
-        <span class="desk-v1-home-project-meta">${count} campaign${count === 1 ? '' : 's'}${activeCount ? ` · ${activeCount} active` : ''}</span>
-        ${nextPost ? `<span class="desk-v1-home-project-nextpost">Next post ${esc(_fmtNextPost(nextPost))}</span>` : ''}
-        ${working ? `<span class="desk-v1-home-project-posyworking">${esc(DeskV1Kit.deskAgentWorkingLabel({ project: p }))}</span>` : ''}
-      </div>`;
+    return `<div class="desk-v1-home-block" data-project-id="${esc(p.id)}">
+      <div class="desk-v1-home-block-head">
+        <button type="button" class="desk-v1-home-block-name" data-project-id="${esc(p.id)}">${esc(p.name)}</button>
+        ${_blockHeaderAgentHTML(p)}
+        <button type="button" class="desk-v1-home-block-newcamp" data-project-id="${esc(p.id)}">&#65291; New campaign</button>
+      </div>
+      <div class="desk-v1-home-block-rows">
+        ${camps.length ? camps.map(_rowHTML).join('') : '<div class="desk-v1-home-block-empty">No campaigns yet in this project &mdash; use &#65291; New campaign to start one.</div>'}
+      </div>
+    </div>`;
   }
 
-  function _renderProjectCards() {
-    const host = document.getElementById('desk-v1-home-projects');
-    if (!host) return;
-    const projects = _projects();
-    host.innerHTML = projects.length
-      ? projects.map(_projectCardHTML).join('')
-      : '<div class="desk-v1-home-empty">No projects yet.</div>';
-    host.querySelectorAll('.desk-v1-home-project-card').forEach((cardEl) => {
-      const projectId = cardEl.dataset.projectId;
-      const go = () => deskV1Nav('project', { projectId });
-      cardEl.addEventListener('click', go);
-      cardEl.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); }
+  // Scheduling-paused (A13) has no per-campaign or per-project home in the
+  // new row shape (it's a worker-wide condition) — surfaced as a banner
+  // above the board rather than silently dropped. Held-CHANNEL holds (the
+  // rest of A13) DO have a natural home: the affected campaign's own
+  // NEEDS YOU cell, via `_campaignNeedsYou` above.
+  function _workerBannerHTML() {
+    const wh = _fx().workerHeartbeat;
+    if (!wh || wh.status !== 'offline') return '';
+    return `<div class="desk-v1-home-worker-banner">
+      <span aria-hidden="true">&#9888;</span>
+      <span>Scheduling paused &mdash; worker offline since ${esc(wh.sinceLabel)} &middot; ${esc(wh.missed)} posts missed</span>
+      <button type="button" class="desk-v1-home-hold-fix" onclick="window.openSettings &amp;&amp; window.openSettings()">Fix</button>
+    </div>`;
+  }
+
+  function _newCampaignForProject(projectId) {
+    const camp = _createProposedCampaign('New campaign');
+    camp.projectId = projectId;
+    DeskV1Kit.commandBus.run({
+      label: `Created "${camp.plan.title}"`,
+      do: () => { _fx().campaigns.push(camp); _renderStatusBoard(); },
+      undo: () => { const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); _renderStatusBoard(); },
+    });
+    deskV1Nav('project', { projectId });
+    deskV1Nav('campaign', { campaignId: camp.id, projectId });
+  }
+
+  function _goToNeedsYou(ds) {
+    const { needsyouKind, campaignId, projectId, versionId, conversationId } = ds;
+    if (needsyouKind === 'piece') { deskV1HomeGotoReview(campaignId, versionId); return; }
+    deskV1Nav('project', { projectId });
+    deskV1Nav('campaign', { campaignId, projectId });
+    if (needsyouKind === 'video') deskV1Nav('video', { campaignId, versionId });
+    else if (needsyouKind === 'reply') deskV1Nav('conversations', { campaignId, conversationId });
+    // 'held' / 'blocker': the campaign page itself is where that reason renders.
+  }
+
+  function _bindStatusBoard(host) {
+    host.querySelectorAll('.desk-v1-home-block-name').forEach((btn) => {
+      btn.onclick = () => deskV1Nav('project', { projectId: btn.dataset.projectId });
+    });
+    host.querySelectorAll('.desk-v1-home-block-agent').forEach((btn) => {
+      btn.onclick = () => deskV1Nav('presence', { projectId: btn.dataset.projectId });
+    });
+    host.querySelectorAll('.desk-v1-home-block-newcamp').forEach((btn) => {
+      btn.onclick = () => _newCampaignForProject(btn.dataset.projectId);
+    });
+    host.querySelectorAll('.desk-v1-home-row').forEach((rowEl) => {
+      const { campaignId, projectId } = rowEl.dataset;
+      const go = () => { deskV1Nav('project', { projectId }); deskV1Nav('campaign', { campaignId, projectId }); };
+      rowEl.addEventListener('click', (e) => { if (!e.target.closest('.desk-v1-home-needsyou-pill')) go(); });
+      rowEl.addEventListener('keydown', (e) => {
+        if ((e.key === 'Enter' || e.key === ' ') && !e.target.closest('.desk-v1-home-needsyou-pill')) { e.preventDefault(); go(); }
       });
+    });
+    host.querySelectorAll('.desk-v1-home-needsyou-pill').forEach((btn) => {
+      btn.onclick = (e) => { e.stopPropagation(); _goToNeedsYou(btn.dataset); };
     });
   }
 
-  // ── render: Needs you (right column) ────────────────────────────────────
-  function _needsYouRowHTML(glyph, text, firstItem) {
-    // Each kind deep-links to its own review surface (§2: "12b, 12c, or
-    // 12d, not to a list") — video rows go to the director (12d/T5), never
-    // the piece-review surface, even though both carry campaignId+versionId.
-    const onclick = firstItem.kind === 'reply'
-      ? `deskV1Nav('conversations',{campaignId:'${esc(firstItem.campaignId)}',conversationId:'${esc(firstItem.conversationId)}'})`
-      : firstItem.kind === 'video'
-      ? `deskV1Nav('video',{campaignId:'${esc(firstItem.campaignId)}',versionId:'${esc(firstItem.versionId)}'})`
-      : `deskV1HomeGotoReview('${esc(firstItem.campaignId)}','${esc(firstItem.versionId)}')`;
-    return `<button type="button" class="desk-v1-home-needsyou-row" onclick="${onclick}">
-      <span class="desk-v1-home-needsyou-glyph" aria-hidden="true">${esc(glyph)}</span>
-      <span class="desk-v1-home-needsyou-text">${esc(text)}</span>
-    </button>`;
+  // Page-level "+ New campaign" (mockups_r2/1-home.png, top right of the
+  // page title) is ambiguous about WHICH project until picked — reuses the
+  // same picker construction as the crumb's Projects picker (shell.js), then
+  // hands off to the same `_newCampaignForProject` a block header's own
+  // "+ New campaign" already uses.
+  function _bindNewCampaignPageBtn(host) {
+    const btn = host.querySelector('.desk-v1-home-newcamp-page-btn');
+    if (!btn) return;
+    DeskV1Kit.bindAddToTrigger(btn, () => _projects().map((p) => ({ id: p.id, label: p.name })),
+      (projectId) => _newCampaignForProject(projectId), { noAppendNew: true });
+  }
+
+  function _renderStatusBoard() {
+    const host = document.getElementById('desk-v1-home-board');
+    if (!host) return;
+    const projects = _projects();
+    const titleRow = `<div class="desk-v1-home-board-title">
+      <h2 class="desk-v1-home-board-heading">The Desk</h2>
+      <button type="button" class="btn-dispatch desk-v1-home-newcamp-page-btn">&#65291; New campaign</button>
+    </div>`;
+    const legend = `<div class="desk-v1-home-legend"><span class="desk-v1-home-legend-bar" aria-hidden="true"></span> bar = goal reached <span class="desk-v1-home-legend-sep" aria-hidden="true">|</span> tick = time elapsed</div>`;
+    const colHead = `<div class="desk-v1-home-board-head">
+      <div>CAMPAIGN</div><div>STAGE</div><div>GOAL PROGRESS</div><div>PACE</div><div>NEXT POST</div><div>NEEDS YOU</div>
+    </div>`;
+    host.innerHTML = titleRow + legend + _workerBannerHTML() + (projects.length
+      ? colHead + `<div class="desk-v1-home-board-blocks">${projects.map(_projectBlockHTML).join('')}</div>`
+      : '<div class="desk-v1-home-empty">No projects yet.</div>');
+    _bindStatusBoard(host);
+    _bindNewCampaignPageBtn(host);
   }
 
   // IA1 (§5 row IA1's acceptance: "Needs-you deep link into a review builds
@@ -365,31 +555,6 @@
     deskV1Nav('review', { campaignId, versionId, projectId });
   }
   window.deskV1HomeGotoReview = deskV1HomeGotoReview;
-
-  function _holdRowHTML(h) {
-    const text = h.kind === 'worker' ? `${h.label} · ${h.count} posts missed` : `${h.label} · ${h.count} held`;
-    return `<div class="desk-v1-home-needsyou-row desk-v1-home-needsyou-hold">
-      <span class="desk-v1-home-needsyou-glyph" aria-hidden="true">⚠</span>
-      <span class="desk-v1-home-needsyou-text">${esc(text)}</span>
-      <button type="button" class="desk-v1-home-hold-fix" onclick="window.openSettings &amp;&amp; window.openSettings()">Fix</button>
-    </div>`;
-  }
-
-  function _renderNeedsYou() {
-    const host = document.getElementById('desk-v1-home-needsyou');
-    if (!host) return;
-    const items = _needsYouItems();
-    const pieces = items.filter((i) => i.kind === 'piece');
-    const videos = items.filter((i) => i.kind === 'video');
-    const replies = items.filter((i) => i.kind === 'reply');
-    const rows = [];
-    if (pieces.length) rows.push(_needsYouRowHTML('✎', `${pieces.length} piece${pieces.length === 1 ? '' : 's'} to approve`, pieces[0]));
-    if (videos.length) rows.push(_needsYouRowHTML('▶', `${videos.length} video${videos.length === 1 ? '' : 's'} to watch`, videos[0]));
-    if (replies.length) rows.push(_needsYouRowHTML('💬', `${replies.length} repl${replies.length === 1 ? 'y' : 'ies'} waiting`, replies[0]));
-    for (const h of _holds()) rows.push(_holdRowHTML(h));
-    host.innerHTML = `<div class="desk-v1-home-needsyou-title">Needs you</div>` +
-      (rows.length ? `<div class="desk-v1-home-needsyou-list">${rows.join('')}</div>` : '<div class="desk-v1-home-needsyou-empty">Nothing needs you right now.</div>');
-  }
 
   // ── render: shelves (Channels · Material) ───────────────────────────────
   function _channelShelfItemHTML(ch) {
@@ -463,8 +628,8 @@
     const camp = _createProposedCampaign(text);
     DeskV1Kit.commandBus.run({
       label: `Proposed “${camp.plan.title}”`,
-      do: () => { _fx().campaigns.push(camp); _renderProjectCards(); },
-      undo: () => { const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); _renderProjectCards(); },
+      do: () => { _fx().campaigns.push(camp); _renderStatusBoard(); },
+      undo: () => { const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); _renderStatusBoard(); },
     });
     deskV1Nav('campaign', { campaignId: camp.id });
   }
@@ -546,8 +711,8 @@
       const prevStates = camps.map((c) => c.state);
       DeskV1Kit.commandBus.run({
         label: `Paused ${camps.length} campaign${camps.length === 1 ? '' : 's'}`,
-        do: () => { camps.forEach((c) => { c.state = 'paused'; }); _renderProjectCards(); },
-        undo: () => { camps.forEach((c, i) => { c.state = prevStates[i]; }); _renderProjectCards(); },
+        do: () => { camps.forEach((c) => { c.state = 'paused'; }); _renderStatusBoard(); },
+        undo: () => { camps.forEach((c, i) => { c.state = prevStates[i]; }); _renderStatusBoard(); },
       });
     };
   }
@@ -563,12 +728,12 @@
     if (_heartbeatTimer) clearInterval(_heartbeatTimer);
     _heartbeatTimer = setInterval(() => {
       if (!document.body.contains(el)) { clearInterval(_heartbeatTimer); _heartbeatTimer = null; return; }
-      _renderNeedsYou();
+      _renderStatusBoard();
     }, HEARTBEAT_MS);
   }
   window.DESK_V1_HOME_HEARTBEAT_MS = HEARTBEAT_MS;
   // Test-only: forces one heartbeat re-check without waiting HEARTBEAT_MS.
-  window.__deskV1HomeTickHeartbeatNow = () => _renderNeedsYou();
+  window.__deskV1HomeTickHeartbeatNow = () => _renderStatusBoard();
 
   // §1 header count: "💬 Engagement · n" — every conversation across every
   // project still sitting in Incoming or Suggested (desk-v1-engagement.js
@@ -602,8 +767,7 @@
           </div>
           <div class="desk-v1-home-suggestions" id="desk-v1-home-suggestions"></div>
         </div>
-        <div class="desk-v1-home-projects" id="desk-v1-home-projects"></div>
-        <div class="desk-v1-home-needsyou" id="desk-v1-home-needsyou"></div>
+        <div class="desk-v1-home-board" id="desk-v1-home-board"></div>
         <div class="desk-v1-home-shelves">
           <div class="desk-v1-home-shelf">
             <div class="desk-v1-home-shelf-title">Channels</div>
@@ -618,10 +782,15 @@
     _bindHeader(el);
     _bindPromoteBox(el);
     _renderSuggestions();
-    _renderProjectCards();
-    _renderNeedsYou();
+    _renderStatusBoard();
     _renderShelves();
     _startHeartbeat(el);
+    // Block headers resolve an agent per PROJECT (`_blockHeaderAgentHTML`),
+    // outside any `.desk-v1-posy-box` — kit.js's own `_repaintDeskAgentBoxes`
+    // can't reach them, so a fetch that resolves AFTER this paint (the
+    // common case: /api/characters is still in flight on first Home render)
+    // would leave every block header showing UNRESOLVED_AGENT_LABEL forever.
+    DeskV1Kit.onAgentsReady(() => { if (document.body.contains(el)) _renderStatusBoard(); });
   }
 
   window.deskV1RenderHome = deskV1RenderHome;

@@ -16,12 +16,28 @@
   // null`; callers paint UNRESOLVED_AGENT_LABEL for that, never a guess or
   // the old hardcoded default.
   let _agentsByRef = null; // null = the one fetch below hasn't landed yet
+  // R2-2 (Home block headers resolve an agent per PROJECT, outside any
+  // `.desk-v1-posy-box` — `_repaintDeskAgentBoxes` below can't reach them).
+  // A caller that can't wait synchronously registers here instead; each
+  // queued callback fires exactly once, whether the fetch resolves or falls
+  // back to `{}` (still "ready" — just nothing recognised).
+  let _agentsReadyCallbacks = [];
+  function onAgentsReady(cb) {
+    if (_agentsByRef) { cb(); return; }
+    _agentsReadyCallbacks.push(cb);
+  }
+  function _flushAgentsReady() {
+    const cbs = _agentsReadyCallbacks;
+    _agentsReadyCallbacks = [];
+    cbs.forEach((cb) => cb());
+  }
   fetch('/api/characters').then((r) => r.json()).then((list) => {
     const map = {};
     (list || []).forEach((c) => { map[`${c.scope || 'global'}:${c.name}`] = c; });
     _agentsByRef = map;
     _repaintDeskAgentBoxes();
-  }).catch(() => { _agentsByRef = {}; });
+    _flushAgentsReady();
+  }).catch(() => { _agentsByRef = {}; _flushAgentsReady(); });
 
   const UNRESOLVED_AGENT_LABEL = 'Pick who plans for this project ›';
 
@@ -1095,7 +1111,7 @@
     addToMenu, bindAddToTrigger,
     infoIconHTML, bindInfoIcons,
     posyBoxHTML, bindPosyBox,
-    deskAgentRef, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL,
+    deskAgentRef, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL, onAgentsReady,
     anyPosyWorking, deskAgentWorkingLabel, paintPosyReadyNoDiff,
     openConfirmSheet,
     validatePlan, validatePresence,
