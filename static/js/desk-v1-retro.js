@@ -140,7 +140,7 @@
         <div class="desk-v1-retro-paste">
           <textarea class="desk-v1-rules-textarea desk-v1-retro-pastearea" data-retro-paste
             placeholder="Paste ${rows.length} numbers, one per line or comma-separated, in the order above."></textarea>
-          <button type="button" class="btn-secondary" data-retro-paste-fill>Fill grid</button>
+          <button type="button" class="desk-v1-retro-btn" data-retro-paste-fill>Fill grid</button>
         </div>
       </div>`;
   }
@@ -187,16 +187,16 @@
       ${editing
         ? `<textarea class="desk-v1-rules-textarea desk-v1-retro-finding-editarea" data-finding-editarea>${esc(f.edited_text || _findingSentence(f).replace(/<[^>]+>/g, ''))}</textarea>
            <div class="desk-v1-retro-finding-actions">
-             <button type="button" class="btn-secondary" data-finding-edit-save>Save & Confirm</button>
+             <button type="button" class="desk-v1-retro-btn desk-v1-retro-btn--primary" data-finding-edit-save>Save & Confirm</button>
              <button type="button" class="desk-v1-retro-finding-cancel" data-finding-edit-cancel>Cancel</button>
            </div>`
         : `<div class="desk-v1-retro-finding-text" data-finding-text>${_findingSentence(f)}</div>
            ${maybeWhy ? `<div class="desk-v1-retro-finding-why">${esc(maybeWhy)}</div>` : ''}
            <div class="desk-v1-retro-finding-actions">
-             <button type="button" class="btn-secondary" data-finding-confirm>Confirm</button>
-             <button type="button" data-finding-edit>Edit</button>
-             <button type="button" data-finding-reject>Reject</button>
-             <button type="button" data-finding-dontsuggest>Don’t suggest again</button>
+             <button type="button" class="desk-v1-retro-btn desk-v1-retro-btn--primary" data-finding-confirm>Confirm</button>
+             <button type="button" class="desk-v1-retro-btn" data-finding-edit>Edit</button>
+             <button type="button" class="desk-v1-retro-btn desk-v1-retro-btn--danger" data-finding-reject>Reject</button>
+             <button type="button" class="desk-v1-retro-btn" data-finding-dontsuggest>Don’t suggest again</button>
            </div>`}
     </div>`;
   }
@@ -328,7 +328,7 @@
         <div class="desk-v1-retro" data-retro-section>
           <div class="desk-v1-retro-head">
             <span class="desk-v1-retro-title">Retro</span>
-            <button type="button" class="btn-secondary" data-retro-run>Run retro now</button>
+            <button type="button" class="desk-v1-retro-btn desk-v1-retro-btn--primary" data-retro-run>Run retro now</button>
           </div>
         </div>`;
       hostEl.querySelector('[data-retro-run]').onclick = () => {

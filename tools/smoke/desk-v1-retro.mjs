@@ -116,6 +116,10 @@ async function runToneInterimChecks(browser, tone) {
   runBtn
     ? ok(`[${tone.name}] interim retro starts collapsed behind "Run retro now"`)
     : fail(`[${tone.name}] "Run retro now" button missing for an unclosed term`);
+  const runBtnRadius = runBtn ? parseFloat(await runBtn.evaluate((e) => getComputedStyle(e).borderRadius)) || 0 : 0;
+  runBtnRadius > 0
+    ? ok(`[${tone.name}] "Run retro now" computes a non-default border-radius (${runBtnRadius}px)`)
+    : fail(`[${tone.name}] "Run retro now" renders as a bare unstyled <button>`);
   if (runBtn) await runBtn.click();
   await page.waitForTimeout(30);
 
@@ -181,6 +185,17 @@ async function runClosedWithFindings(browser) {
   ['Confirm', 'Edit', 'Reject', 'Don’t suggest again'].every((l) => actionLabels.includes(l))
     ? ok(`finding card has all four actions: ${JSON.stringify(actionLabels)}`)
     : fail(`finding card actions wrong: ${JSON.stringify(actionLabels)}`);
+
+  // Dave's review of 89827bad: every Retro button rendered as a bare browser
+  // <button> (`.btn-secondary` has no CSS rule anywhere). Pin it so a future
+  // edit can't quietly drop the `.desk-v1-retro-btn` class and regress back
+  // to unstyled buttons — a real button rule always computes a non-zero
+  // border-radius, a bare UA default never does.
+  const radii = await page.$$eval('.desk-v1-retro-finding-actions button, [data-retro-paste-fill]',
+    (els) => els.map((e) => parseFloat(getComputedStyle(e).borderRadius) || 0));
+  radii.every((r) => r > 0)
+    ? ok(`all ${radii.length} Retro action buttons compute a non-default border-radius: ${JSON.stringify(radii)}`)
+    : fail(`some Retro action buttons render as bare unstyled <button>: ${JSON.stringify(radii)}`);
 
   reportUncaught(pageErrors, '[closed-findings]');
   await ctx.close();

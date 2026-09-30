@@ -1803,8 +1803,27 @@
 }
 .desk-v1-retro-finding-cancel:hover { color: var(--text); }
 
+/* Dave's review of 89827bad: every Retro action rendered as a bare browser
+   <button> — `.btn-secondary` (Fill grid/Confirm/Save & Confirm/Run retro
+   now) has no rule anywhere in this file (same gap the How step's own
+   comment above already names, desk-v1.css:1899), and Edit/Reject/Don't
+   suggest again/Cancel carried no class at all. Two dedicated classes
+   instead of fixing `.btn-secondary` globally — that class has other
+   callers elsewhere this ticket doesn't own. */
+.desk-v1-retro-btn {
+  background: var(--surface); border: 1px solid var(--border2); border-radius: 8px;
+  color: var(--text); font-size: 13px; font-weight: 600; min-height: 36px;
+  padding: 7px 12px; cursor: pointer; font-family: inherit; align-self: flex-start;
+}
+.desk-v1-retro-btn:hover { background: var(--surface2); }
+.desk-v1-retro-btn--primary {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.desk-v1-retro-btn--primary:hover { background: var(--accent-soft); }
+.desk-v1-retro-btn--danger { color: var(--red-text); }
+
 @media (max-width: 960px) {
-  .desk-v1-retro-finding-actions button { min-height: 44px; }
+  .desk-v1-retro-finding-actions button, .desk-v1-retro-btn { min-height: 44px; }
   .desk-v1-retro-grid-row { flex-wrap: wrap; }
 }
 
