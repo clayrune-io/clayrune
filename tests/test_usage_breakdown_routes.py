@@ -223,3 +223,40 @@ def test_windows_codex_forces_window_scope_to_all(client, store):
     r = client.get('/api/system/usage/windows?provider=codex&window_scope=opus')
     assert r.status_code == 200
     assert len(r.get_json()['windows']) == 1
+
+
+def _record_constant_resets_with_drop(store, now):
+    """7d-style series: constant resets_at, 100 -> 0 drop (the real reset
+    that left `resets_at` unchanged, measured 2026-09-29). Returns the
+    observed times of the last pre-drop and first post-drop samples."""
+    resets_at = _iso(now + timedelta(days=2))
+    times = [now - timedelta(hours=6), now - timedelta(hours=5), now - timedelta(hours=4),
+             now - timedelta(hours=3), now - timedelta(hours=2)]
+    for util, obs in zip((80.0, 100.0, 0.0, 4.0, 9.0), times):
+        store.record_allowance_sample(
+            provider='claude', window_kind='7d', window_scope='all',
+            raw_utilization=util, resets_at=resets_at, source_observed_at=_iso(obs))
+    return times[1], times[2]
+
+
+def test_default_range_starts_after_raw_utilization_drop_with_constant_resets_at(client, store):
+    now = datetime.now(timezone.utc)
+    _last_pre, first_post = _record_constant_resets_with_drop(store, now)
+
+    body = client.get('/api/system/usage/breakdown?window_kind=7d').get_json()
+    assert body['range_start'] == _iso(first_post)
+    assert body['bar_change']['status'] == 'ok'
+    assert body['bar_change']['delta_pp'] == 9.0
+
+
+def test_windows_split_at_raw_utilization_drop_with_constant_resets_at(client, store):
+    now = datetime.now(timezone.utc)
+    last_pre, first_post = _record_constant_resets_with_drop(store, now)
+
+    windows = client.get('/api/system/usage/windows?window_kind=7d').get_json()['windows']
+    assert len(windows) == 2
+    assert windows[0]['range_end'] == _iso(last_pre)
+    assert windows[0]['completed'] is True
+    assert windows[1]['range_start'] == _iso(first_post)
+    assert windows[1]['completed'] is False
+    assert all('_split' not in w for w in windows)

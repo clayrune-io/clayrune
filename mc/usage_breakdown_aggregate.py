@@ -104,6 +104,21 @@ def _reset_boundary_crossed(earlier_util: Optional[float], later_util: Optional[
     return (earlier_util - later_util) > tolerance_pp
 
 
+def reset_drop_starts(samples: list[dict]) -> set[str]:
+    """`source_observed_at` of every sample that begins a fresh window after a
+    raw_utilization reset drop, for callers that must split a constant-
+    `resets_at` run at the real reset (the default range and the windows
+    picker). Same predicate and same sample filter as `compute_bar_change`
+    (quality 'ok', non-null raw_utilization, `source_observed_at` order), so
+    a range that begins at one of these never reads `reset_crossed`. Measured
+    2026-09-29: the claude 7d window went 100 -> 0 with `resets_at` unchanged."""
+    ok = sorted((s for s in samples if s.get('quality') == 'ok'
+                 and s.get('raw_utilization') is not None),
+                key=lambda s: s['source_observed_at'])
+    return {cur['source_observed_at'] for prev, cur in zip(ok, ok[1:])
+            if _reset_boundary_crossed(prev['raw_utilization'], cur['raw_utilization'])}
+
+
 def _in_range(ts: Optional[str], start: Optional[datetime], end: Optional[datetime]) -> bool:
     """Inclusive at both ends (finding 8, P2-8): a completed window's own
     picker bounds ARE a bounding sample's source_observed_at, so an

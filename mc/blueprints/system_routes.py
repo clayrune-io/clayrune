@@ -31,6 +31,7 @@ from mc.blueprints.terminal_routes import launch_pty_session
 from mc.blueprints.workflow_routes import _is_agent_caller
 from mc.blueprints.secrets_routes import _require_human_passcode
 from mc.usage_breakdown_aggregate import _same_reset as _ub_same_reset  # MC-998 resets_at jitter
+from mc.usage_breakdown_aggregate import reset_drop_starts as _ub_reset_drop_starts
 from mc import slash_commands as slash_cmds
 from mc.atomic_json import write_json_atomic
 from mc.core import _atomic_write_text, _log, now_iso, path_is_within, time_ago
@@ -1328,7 +1329,12 @@ def _usage_breakdown_default_range(store, *, provider: str, window_kind: str,
     -- network/disk receipt delay means the receipt time of the window's
     first sample is always slightly AFTER that sample was actually
     observed, and an exclusive-of-receipt-time-and-earlier bound would cut
-    that sample (and its data) out of its own default window."""
+    that sample (and its data) out of its own default window.
+
+    Also stops at a raw_utilization reset drop (`reset_drop_starts`), since
+    `resets_at` can stay constant across a real reset (claude 7d,
+    2026-09-29: 100 -> 0, same `resets_at`); the range then begins at the
+    first sample after the drop, so `compute_bar_change` sees no crossing."""
     now = datetime.now(timezone.utc)
     samples = store.list_allowance_samples(provider=provider, window_kind=window_kind,
                                             window_scope=window_scope)
@@ -1336,11 +1342,14 @@ def _usage_breakdown_default_range(store, *, provider: str, window_kind: str,
     if not samples:
         return (now - span).isoformat(), now.isoformat()
     current_resets_at = samples[-1].get('resets_at')
+    drop_starts = _ub_reset_drop_starts(samples)
     window_start = samples[-1]['source_observed_at']
     for s in reversed(samples):
         if not _ub_same_reset(s.get('resets_at'), current_resets_at):
             break
         window_start = s['source_observed_at']
+        if window_start in drop_starts:
+            break
     return window_start, now.isoformat()
 
 
@@ -1457,15 +1466,21 @@ def system_usage_windows_get():
     samples = store.list_allowance_samples(provider=provider, window_kind=window_kind,
                                             window_scope=window_scope)
     now = datetime.now(timezone.utc).isoformat()
+    # A group also splits at a raw_utilization reset drop: `resets_at` can
+    # stay constant across a real reset, and the pre-reset part is then a
+    # completed window even though its `resets_at` is still in the future.
+    drop_starts = _ub_reset_drop_starts(samples)
     windows: list[dict] = []
     for s in samples:
         if windows and _ub_same_reset(windows[-1]['resets_at'], s.get('resets_at')):
-            windows[-1]['range_end'] = s['source_observed_at']
-            continue
+            if s['source_observed_at'] not in drop_starts:
+                windows[-1]['range_end'] = s['source_observed_at']
+                continue
+            windows[-1]['_split'] = True
         windows.append({'resets_at': s.get('resets_at'), 'range_start': s['source_observed_at'],
                          'range_end': s['source_observed_at']})
     for w in windows:
-        w['completed'] = bool(w['resets_at']) and w['resets_at'] < now
+        w['completed'] = bool(w.pop('_split', False)) or (bool(w['resets_at']) and w['resets_at'] < now)
     return jsonify({'windows': windows, 'coverage_begins': store.coverage_begins()})
 
 
