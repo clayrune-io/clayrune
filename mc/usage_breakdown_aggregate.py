@@ -634,6 +634,25 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
                        and s.get('source_observed_at')),
                       key=lambda s: s['source_observed_at'])
     all_sids = set(checkpoints.keys()) | set(facts_by_session.keys())
+    # A session's evidence doesn't depend on the interval, so derive it once.
+    # Follow-up 2 keeps delta-0 pairs, which took the per-interval loop from
+    # ~350 to ~2000 pairs; re-deriving evidence per pair put the breakdown
+    # route at 16s+ and the dashboard gave up on it.
+    evidence = []
+    for sid in all_sids:
+        ck = checkpoints.get(sid)
+        fact = facts_by_session.get(sid)
+        if _session_provider(ck, fact) != provider:
+            continue
+        scope_ok = _scope_matches(fact, window_scope)
+        if scope_ok is False:
+            continue  # confirmed different model scope -- not this window's class
+        # Round 3 P1-2/P1-3b: unmeasured spans (a still-running first or
+        # RESUMED turn after the last completion, a fact ahead of its
+        # checkpoint history) overlap exactly like a session does --
+        # the last completion is not the session's end.
+        turns, unmeasured = _session_evidence(ck, fact)
+        evidence.append((sid, scope_ok, turns, unmeasured))
     for a, b in zip(ordered, ordered[1:]):
         if not _same_reset(a.get('resets_at'), b.get('resets_at')):
             continue  # a reset happened between these two readings
@@ -652,20 +671,7 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
         coverage_complete = True
         input_processed_total = 0
         output_tokens = 0
-        for sid in all_sids:
-            ck = checkpoints.get(sid)
-            fact = facts_by_session.get(sid)
-            if _session_provider(ck, fact) != provider:
-                continue
-            scope_ok = _scope_matches(fact, window_scope)
-            if scope_ok is False:
-                continue  # confirmed different model scope -- not this window's class
-
-            # Round 3 P1-2/P1-3b: unmeasured spans (a still-running first or
-            # RESUMED turn after the last completion, a fact ahead of its
-            # checkpoint history) overlap exactly like a session does --
-            # the last completion is not the session's end.
-            turns, unmeasured = _session_evidence(ck, fact)
+        for sid, scope_ok, turns, unmeasured in evidence:
             # `_window_overlaps` (exclusive touch -- a span ending exactly at
             # t_a belongs to the PRIOR interval, not this one), not a
             # `>=`/inclusive check: schema v6 sample_tick segments are, by

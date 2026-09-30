@@ -148,3 +148,21 @@ def test_bootstrap_range_brackets_the_pooled_ratio_and_is_deterministic():
     again = compute_calibration(samples, checkpoints, _facts_by_session(facts), **kw)
     assert (again['input_per_point_lo'], again['input_per_point_hi']) == \
         (cal['input_per_point_lo'], cal['input_per_point_hi'])
+
+
+def test_eligible_intervals_derives_each_sessions_evidence_once(monkeypatch):
+    """Keeping delta-0 pairs took the live 90-day history to ~2000 pairs;
+    re-deriving every session's evidence inside the per-pair loop made the
+    breakdown route take 16s+ per call and the dashboard's 7d request time
+    out ("Breakdown failed to load", 2026-09-30). Evidence is per-session,
+    not per-interval, so it must be derived once per session."""
+    import mc.usage_breakdown_aggregate as agg
+    samples, checkpoints, facts = _even_series(tick_every=4)
+    calls = []
+    real = agg._session_evidence
+    monkeypatch.setattr(agg, '_session_evidence',
+                        lambda ck, fact: calls.append(1) or real(ck, fact))
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    assert cal['input_per_point'] == 12000.0
+    assert len(calls) == N_SESSIONS
