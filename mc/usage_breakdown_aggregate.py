@@ -36,6 +36,15 @@ _MIN_ELIGIBLE_SESSIONS = 3
 # whole window (5h or 7d), so any tolerance well under that can never merge
 # two real windows together.
 _RESET_JITTER_TOLERANCE_S = 120
+# Backlog 4668eafc follow-up (defect 3): resets_at can lag the actual reset --
+# measured 2026-09-29, the claude 7d bar's raw_utilization went 100 -> 0
+# between two samples 5 minutes apart while resets_at held at its OLD value
+# for both (~2026-10-02T02:00), so `_same_reset` never saw a reset and
+# `compute_bar_change` returned a fabricated -64pp swing. raw_utilization
+# only ever climbs within one window and drops back near zero at a reset, so
+# any drop bigger than ordinary sampling noise IS a reset boundary, whether
+# or not resets_at has caught up yet.
+_RESET_DROP_TOLERANCE_PP = 2.0
 
 RANKING_DIMENSIONS = ('project', 'character', 'trigger', 'model', 'provider')
 _DIMENSION_FACT_KEY = {
@@ -71,6 +80,19 @@ def _same_reset(a: Optional[str], b: Optional[str],
     if dt_a is None or dt_b is None:
         return False
     return abs((dt_a - dt_b).total_seconds()) <= tolerance_s
+
+
+def _reset_boundary_crossed(earlier_util: Optional[float], later_util: Optional[float],
+                             tolerance_pp: float = _RESET_DROP_TOLERANCE_PP) -> bool:
+    """True when `later_util` fell more than `tolerance_pp` below
+    `earlier_util` -- a drop this size is never legitimate usage (a window's
+    raw_utilization only climbs between resets), so it marks a reset boundary
+    even when `resets_at` itself hasn't moved yet (defect 3, see
+    `_RESET_DROP_TOLERANCE_PP`). Missing values are never treated as a
+    crossing -- same fail-closed posture as `_same_reset`."""
+    if earlier_util is None or later_util is None:
+        return False
+    return (earlier_util - later_util) > tolerance_pp
 
 
 def _in_range(ts: Optional[str], start: Optional[datetime], end: Optional[datetime]) -> bool:
@@ -197,6 +219,7 @@ def _session_turns(ck: Optional[dict]) -> list[dict]:
         if c_at is None:
             continue
         start_row, start_at = prev, prev_at
+        used_turn_start = False
         if prev_at is not None:
             candidates = []
             for ts in turn_starts:
@@ -205,6 +228,25 @@ def _session_turns(ck: Optional[dict]) -> list[dict]:
                     candidates.append((ts_at, ts))
             if candidates:
                 start_at, start_row = max(candidates, key=lambda pair: pair[0])
+                used_turn_start = True
+        if (not used_turn_start and start_row is not None
+                and start_row.get('checkpoint_type') == 'completion'
+                and all(start_row.get(k) is not None and cur.get(k) is not None
+                        and start_row.get(k) == cur.get(k) for k in _TOKEN_KEYS)):
+            # Defect 1 aggregator-side guard (backlog 4668eafc): a completion
+            # -> completion pair with no turn_start row between them AND
+            # identical cumulative totals is the phantom hour-long-idle-reap
+            # checkpoint (`_log_agent_completion_body` used to write a second
+            # 'completion' at reap time, ~1h after the real one, same totals
+            # -- fixed at the write side 2026-09-30, but rows written before
+            # that fix are already in the DB). Treating it as a real turn
+            # reports an hour of idle time as a running turn that straddles
+            # every calibration interval inside it (measured: 82/110 interval
+            # checks refused as 'crossing'). Refuse to build ANY segment for
+            # this pair -- the idle span becomes absent evidence, same as a
+            # missing turn_start's idle-time handling above.
+            prev, prev_at = cur, c_at
+            continue
         if start_at is not None and start_row is not None:
             ticks_in_span = []
             for tk in sample_ticks:
@@ -577,6 +619,8 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
     for a, b in zip(ordered, ordered[1:]):
         if not _same_reset(a.get('resets_at'), b.get('resets_at')):
             continue  # a reset happened between these two readings
+        if _reset_boundary_crossed(a['raw_utilization'], b['raw_utilization']):
+            continue  # resets_at hadn't caught up yet (defect 3) -- still a reset
         t_a, t_b = _parse_iso(a['source_observed_at']), _parse_iso(b['source_observed_at'])
         if t_a is None or t_b is None or t_b <= t_a:
             continue
@@ -701,7 +745,12 @@ def compute_bar_change(samples: list[dict], *, range_start: Optional[str],
                         range_end: Optional[str]) -> dict:
     """`later.raw_utilization - earlier.raw_utilization` for the fresh
     readings within [range_start, range_end), only when no reset boundary
-    was crossed (constant `resets_at` across the range)."""
+    was crossed (constant `resets_at` across the range, AND no raw_utilization
+    drop bigger than sampling noise -- defect 3, backlog 4668eafc follow-up:
+    `resets_at` can lag the actual reset by hours, so a range straddling a
+    real reset with a stale-but-constant `resets_at` used to fall through to
+    a fabricated negative `delta_pp` -- measured -64pp on the 7d window --
+    instead of `reset_crossed`)."""
     start, end = _parse_iso(range_start), _parse_iso(range_end)
     in_range = sorted(
         (s for s in samples if s.get('quality') == 'ok' and s.get('raw_utilization') is not None
@@ -711,6 +760,9 @@ def compute_bar_change(samples: list[dict], *, range_start: Optional[str],
         return {'status': 'insufficient_samples', 'delta_pp': None}
     anchor = in_range[0].get('resets_at')
     if any(not _same_reset(anchor, s.get('resets_at')) for s in in_range[1:]):
+        return {'status': 'reset_crossed', 'delta_pp': None}
+    if any(_reset_boundary_crossed(prev['raw_utilization'], cur['raw_utilization'])
+           for prev, cur in zip(in_range, in_range[1:])):
         return {'status': 'reset_crossed', 'delta_pp': None}
     delta = in_range[-1]['raw_utilization'] - in_range[0]['raw_utilization']
     return {'status': 'ok', 'delta_pp': delta,

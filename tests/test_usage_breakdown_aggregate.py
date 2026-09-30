@@ -318,6 +318,35 @@ def test_bar_change_none_resets_at_fails_closed():
     assert bc['delta_pp'] is None
 
 
+def test_bar_change_stale_resets_at_with_utilization_drop_is_reset_crossed():
+    """Defect 3 (backlog 4668eafc follow-up): `resets_at` can lag the actual
+    reset by hours -- measured live, the claude 7d bar's raw_utilization went
+    100 -> 0 between two samples ~5 minutes apart (2026-09-29T14:03-14:08Z)
+    while `resets_at` held at the SAME stale value (~2026-10-02T02:00) for
+    both, so `_same_reset` never saw a reset and this returned a fabricated
+    negative delta (measured -64pp on the live 7d bar). A drop bigger than
+    sampling noise must read as a reset boundary even when `resets_at`
+    itself hasn't caught up yet."""
+    samples = [_sample(raw_utilization=100.0, source_observed_at='2026-09-29T14:03:00Z',
+                        resets_at='2026-10-02T02:00:00+00:00'),
+               _sample(raw_utilization=0.0, source_observed_at='2026-09-29T14:08:00Z',
+                       resets_at='2026-10-02T02:00:00+00:00')]  # same (stale) resets_at both times
+    bc = compute_bar_change(samples, range_start='2026-09-29T00:00:00Z', range_end='2026-09-30T00:00:00Z')
+    assert bc['status'] == 'reset_crossed'
+    assert bc['delta_pp'] is None
+
+
+def test_bar_change_small_utilization_dip_within_tolerance_is_not_a_reset():
+    """The defect-3 guard must not fire on ordinary sampling noise -- a dip
+    smaller than `_RESET_DROP_TOLERANCE_PP` (2.0) is still a real, measurable
+    delta, not a reset boundary."""
+    samples = [_sample(raw_utilization=50.0, source_observed_at='2026-09-28T10:00:00Z'),
+               _sample(raw_utilization=49.0, source_observed_at='2026-09-28T10:05:00Z')]
+    bc = compute_bar_change(samples, range_start='2026-09-28T00:00:00Z', range_end='2026-09-29T00:00:00Z')
+    assert bc == {'status': 'ok', 'delta_pp': -1.0,
+                  'earliest': '2026-09-28T10:00:00Z', 'latest': '2026-09-28T10:05:00Z'}
+
+
 # ── calibration eligibility / AC2 + P1-2/P1-3 ───────────────────────────
 
 def _calibration_fixture(n_pairs=5):
@@ -364,6 +393,22 @@ def test_calibration_reset_between_pair_excludes_that_interval():
                         resets_at='2026-10-01T00:00:00+00:00'),
                _sample(raw_utilization=20.0, source_observed_at='2026-09-28T10:05:00Z',
                        resets_at='2026-10-08T00:00:00+00:00')]  # different resets_at = reset crossed
+    cal = compute_calibration(samples, {}, {}, provider='claude', window_scope='all')
+    assert cal['status'] == 'insufficient_samples'
+    assert cal['eligible_interval_count'] == 0
+
+
+def test_calibration_stale_resets_at_utilization_drop_excludes_interval():
+    """Same defect 3 scenario (backlog 4668eafc follow-up) at the calibration
+    pairing site: a raw_utilization drop bigger than sampling noise excludes
+    the interval exactly as a changed `resets_at` does
+    (test_calibration_reset_between_pair_excludes_that_interval) -- a stale-
+    but-constant `resets_at` must not let a real reset boundary read as a
+    legitimate multi-hour usage span."""
+    samples = [_sample(raw_utilization=100.0, source_observed_at='2026-09-28T10:00:00Z',
+                        resets_at='2026-10-01T00:00:00+00:00'),
+               _sample(raw_utilization=0.0, source_observed_at='2026-09-28T10:05:00Z',
+                       resets_at='2026-10-01T00:00:00+00:00')]  # same (stale) resets_at both times
     cal = compute_calibration(samples, {}, {}, provider='claude', window_scope='all')
     assert cal['status'] == 'insufficient_samples'
     assert cal['eligible_interval_count'] == 0
@@ -673,6 +718,41 @@ def test_calibration_reaches_ok_with_idle_sessions_present():
                         input_processed_total=200, output_tokens=100))
         facts.append(_fact(sid, started_at=t0.isoformat(), ended_at=t_end2.isoformat(),
                             input_processed_total=200, output_tokens=100))
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    assert cal['status'] == 'ok'
+    assert cal['eligible_interval_count'] == 5
+    assert cal['distinct_session_count'] == 5
+
+
+def test_calibration_phantom_reap_completion_pair_does_not_poison_interval():
+    """Defect 1 (PHANTOM HOUR-LONG TURN, backlog 4668eafc): an idle Mode B
+    session finally reaped writes a SECOND 'completion' checkpoint at reap
+    time with the SAME cumulative totals as its real completion, no
+    turn_start row in between (`_log_agent_completion_body`'s write-side
+    guard covers new rows going forward; this is the aggregator-side guard
+    for the rows already in the DB from before that fix shipped). Before
+    this fix, `_session_turns` paired the two completions into one hour-long
+    running turn that crossed every calibration interval inside the gap --
+    measured live: 3 sessions with exactly this two-completion,
+    identical-totals shape, 82/110 interval checks refused as 'crossing'.
+    An ADDITIONAL session straddles the fixture's whole 10:00-11:22 span
+    exactly like test_calibration_reaches_ok_with_idle_sessions_present's
+    idle sessions, but with a phantom completion pair instead of a
+    turn_start -- the fix must treat it the same way: absent from every
+    interval it would otherwise have crossed."""
+    samples, checkpoints, facts = _calibration_fixture()
+    t_real = datetime(2026, 9, 28, 8, 30, 0, tzinfo=timezone.utc)  # before 10:00
+    t_phantom = datetime(2026, 9, 28, 11, 30, 0, tzinfo=timezone.utc)  # after 11:22
+    checkpoints['sess-phantom'] = _checkpoint(
+        'sess-phantom', baseline_at=(t_real - timedelta(minutes=30)).isoformat(),
+        completion_at=t_real.isoformat(), input_processed_total=300, output_tokens=150)
+    assert checkpoints['sess-phantom']['turn_starts'] == []
+    checkpoints['sess-phantom']['completions'].append(
+        _completion('sess-phantom', observed_at=t_phantom.isoformat(),
+                    input_processed_total=300, output_tokens=150))  # identical totals -- the reap
+    facts.append(_fact('sess-phantom', started_at=(t_real - timedelta(minutes=30)).isoformat(),
+                        ended_at=t_phantom.isoformat(), input_processed_total=300, output_tokens=150))
     cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
                                provider='claude', window_scope='all')
     assert cal['status'] == 'ok'
