@@ -697,6 +697,91 @@ def test_maybe_why_survives_when_it_only_describes(store):
     assert store.get_finding(fid)['maybe_why'] == 'Readers may prefer mornings on this account.'
 
 
+# -- stale / reconfirm / retire (§10.2, MC-977 R2-16) -------------------------
+
+def test_mark_stale_only_moves_a_confirmed_finding(store):
+    fid = store.propose_finding(**_finding_kwargs())
+    assert store.mark_stale(fid, reason='test') is None, 'still proposed, not confirmed'
+
+    store.confirm_finding(fid, decided_by='ron')
+    f = store.mark_stale(fid, reason='Contradicts new evidence (b>a)')
+    assert f['state'] == 'stale'
+    assert f['stale_reason'] == 'Contradicts new evidence (b>a)'
+    assert f['stale_at'] is not None
+
+    assert store.mark_stale(fid, reason='again') is None, 'already stale, not confirmed'
+
+
+def test_stale_findings_absent_from_playbook_brief(store):
+    fid = store.propose_finding(**_finding_kwargs())
+    store.confirm_finding(fid, decided_by='ron')
+    assert fid in store.playbook_brief('mc')
+    store.mark_stale(fid, reason='180 days since last confirmation')
+    assert fid not in store.playbook_brief('mc'), \
+        'a stale finding is not confirmed and must not reach an agent'
+
+
+def test_reconfirm_moves_stale_back_to_confirmed_and_resets_the_clock(store):
+    fid = store.propose_finding(**_finding_kwargs())
+    assert store.reconfirm_finding(fid, decided_by='ron') is None, 'not stale yet'
+
+    store.confirm_finding(fid, decided_by='ron')
+    store.mark_stale(fid, reason='180 days since last confirmation')
+    f = store.reconfirm_finding(fid, decided_by='ron')
+    assert f['state'] == 'confirmed'
+    assert f['origin'] == 'interactive'
+    assert f['stale_at'] is None and f['stale_reason'] is None
+    assert fid in store.playbook_brief('mc')
+
+
+def test_reconfirm_may_edit_the_wording(store):
+    fid = store.propose_finding(**_finding_kwargs())
+    store.confirm_finding(fid, decided_by='ron')
+    store.mark_stale(fid, reason='test')
+    f = store.reconfirm_finding(fid, edited_text='Still true as of this quarter.', decided_by='ron')
+    assert f['edited_text'] == 'Still true as of this quarter.'
+
+
+def test_retire_only_moves_a_stale_finding_and_leaves_no_rejection(store):
+    fid = store.propose_finding(**_finding_kwargs())
+    assert store.retire_finding(fid, decided_by='ron') is None, 'still proposed, not stale'
+
+    store.confirm_finding(fid, decided_by='ron')
+    assert store.retire_finding(fid, decided_by='ron') is None, 'confirmed, not stale — must go stale first'
+
+    store.mark_stale(fid, reason='test')
+    f = store.retire_finding(fid, decided_by='ron')
+    assert f['state'] == 'retired'
+    assert f['decided_by'] == 'ron'
+    # Retiring is not rejecting: §10.5.3's durable-"no" evidence suppression
+    # must not fire for a finding that once earned real confidence.
+    ek = store.evidence_key(_finding_kwargs()['evidence'])
+    assert store.is_finding_suppressed('mc', 'slot', {'a': 'Tue/Thu 08-10', 'b': 'other'}, 'a>b', ek) is False
+
+
+def test_sweep_stale_findings_marks_only_confirmed_findings_past_the_age(store):
+    fresh = store.propose_finding(**_finding_kwargs())
+    store.confirm_finding(fresh, decided_by='ron')
+
+    old = store.propose_finding(**_finding_kwargs(dimension='format'))
+    store.confirm_finding(old, decided_by='ron')
+    # Back-date the confirmation directly through the store's own file, the
+    # same way other tests fake elapsed time — `confirm_finding` always
+    # stamps "now", so there is no public setter for `decided_at`.
+    import json as _json
+    with store.STORE_PATH.open('r', encoding='utf-8') as fh:
+        data = _json.load(fh)
+    data['playbook']['findings'][old]['decided_at'] = '2025-01-01T00:00:00Z'
+    with store.STORE_PATH.open('w', encoding='utf-8') as fh:
+        _json.dump(data, fh)
+
+    marked = store.sweep_stale_findings(now='2026-01-01T00:00:00Z')
+    assert marked == [old]
+    assert store.get_finding(old)['state'] == 'stale'
+    assert store.get_finding(old)['stale_reason'] == '180 days since last confirmation'
+    assert store.get_finding(fresh)['state'] == 'confirmed', 'well within 180 days, untouched'
+
+
 def test_desk_json_stays_outside_data_dir():
     """LOAD-BEARING (CLAUDE.md): a stray file under DATA_DIR (`data/projects/`)
     becomes a malformed 'project' and 500s both restart endpoints."""

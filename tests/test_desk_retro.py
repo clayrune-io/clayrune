@@ -129,3 +129,53 @@ def test_run_retro_does_not_repropose_rejected_evidence(store):
         'a': more_hi, 'b': more_lo, 'a_label': 'morning', 'b_label': 'evening',
         'evidence': more_evidence}})
     assert len(r3['proposed']) == 1
+
+
+def test_run_retro_marks_a_contradicted_confirmed_finding_stale(store):
+    """§10.2: 'confirmed -> stale when a newer retro points the other way
+    (proposed as Contradicts F3)' (MC-977 R2-16)."""
+    hi = [{'value': 30, 'campaign_id': f'c{i}'} for i in range(30)]
+    lo = [{'value': 10, 'campaign_id': f'd{i}'} for i in range(30)]
+    r1 = retro.run_retro('mc', dimension_arms={'slot': {
+        'a': hi, 'b': lo, 'a_label': 'morning', 'b_label': 'evening',
+        'evidence': [{'campaign_id': f'c{i}', 'term': 't1'} for i in range(30)]}})
+    old_fid = r1['proposed'][0]
+    confirmed = store.confirm_finding(old_fid, decided_by='ron')
+    assert confirmed['effect']['direction'] == 'a>b'
+
+    # A later retro on the SAME dimension/arms with the OPPOSITE direction —
+    # evening now wins, from different campaigns so it isn't suppressed as
+    # the same rejected evidence.
+    hi2 = [{'value': 30, 'campaign_id': f'g{i}'} for i in range(30)]
+    lo2 = [{'value': 10, 'campaign_id': f'h{i}'} for i in range(30)]
+    r2 = retro.run_retro('mc', dimension_arms={'slot': {
+        'a': lo2, 'b': hi2, 'a_label': 'morning', 'b_label': 'evening',
+        'evidence': [{'campaign_id': f'g{i}', 'term': 't2'} for i in range(30)]}})
+    new_fid = r2['proposed'][0]
+
+    assert store.get_finding(old_fid)['state'] == 'stale'
+    assert store.get_finding(old_fid)['stale_reason'].startswith('Contradicts')
+    assert store.get_finding(new_fid)['contradicts'] == old_fid
+    assert old_fid not in store.playbook_brief('mc')
+
+
+def test_run_retro_does_not_mark_stale_when_direction_agrees(store):
+    """The contradiction check must not fire on a finding that simply agrees
+    again — only a genuine direction flip marks a confirmed finding stale."""
+    hi = [{'value': 30, 'campaign_id': f'c{i}'} for i in range(30)]
+    lo = [{'value': 10, 'campaign_id': f'd{i}'} for i in range(30)]
+    r1 = retro.run_retro('mc', dimension_arms={'slot': {
+        'a': hi, 'b': lo, 'a_label': 'morning', 'b_label': 'evening',
+        'evidence': [{'campaign_id': f'c{i}', 'term': 't1'} for i in range(30)]}})
+    old_fid = r1['proposed'][0]
+    store.confirm_finding(old_fid, decided_by='ron')
+
+    hi2 = [{'value': 30, 'campaign_id': f'g{i}'} for i in range(30)]
+    lo2 = [{'value': 10, 'campaign_id': f'h{i}'} for i in range(30)]
+    r2 = retro.run_retro('mc', dimension_arms={'slot': {
+        'a': hi2, 'b': lo2, 'a_label': 'morning', 'b_label': 'evening',
+        'evidence': [{'campaign_id': f'g{i}', 'term': 't2'} for i in range(30)]}})
+    new_fid = r2['proposed'][0]
+
+    assert store.get_finding(old_fid)['state'] == 'confirmed'
+    assert store.get_finding(new_fid)['contradicts'] is None
