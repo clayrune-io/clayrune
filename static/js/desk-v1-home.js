@@ -520,8 +520,8 @@
     });
   }
 
-  // Page-level "+ New campaign" (mockups_r2/1-home.png, top right of the
-  // page title) is ambiguous about WHICH project until picked — reuses the
+  // Page-level "+ New campaign" lives in the crumb row next to Engagement
+  // (R2-2e) and is ambiguous about WHICH project until picked — reuses the
   // same picker construction as the crumb's Projects picker (shell.js), then
   // hands off to the same `_newCampaignForProject` a block header's own
   // "+ New campaign" already uses.
@@ -536,19 +536,14 @@
     const host = document.getElementById('desk-v1-home-board');
     if (!host) return;
     const projects = _projects();
-    const titleRow = `<div class="desk-v1-home-board-title">
-      <h2 class="desk-v1-home-board-heading">The Desk</h2>
-      <button type="button" class="desk-v1-home-newcamp-page-btn">&#65291; New campaign</button>
-    </div>`;
     const legend = `<div class="desk-v1-home-legend"><span class="desk-v1-home-legend-bar" aria-hidden="true"></span> bar = goal reached <span class="desk-v1-home-legend-sep" aria-hidden="true">|</span> tick = time elapsed</div>`;
     const colHead = `<div class="desk-v1-home-board-head">
       <div>CAMPAIGN</div><div>STAGE</div><div>GOAL PROGRESS</div><div>PACE</div><div>NEXT POST</div><div>NEEDS YOU</div>
     </div>`;
-    host.innerHTML = titleRow + legend + _workerBannerHTML() + (projects.length
+    host.innerHTML = legend + _workerBannerHTML() + (projects.length
       ? colHead + `<div class="desk-v1-home-board-blocks">${projects.map(_projectBlockHTML).join('')}</div>`
       : '<div class="desk-v1-home-empty">No projects yet.</div>');
     _bindStatusBoard(host);
-    _bindNewCampaignPageBtn(host);
   }
 
   // IA1 (§5 row IA1's acceptance: "Needs-you deep link into a review builds
@@ -614,11 +609,11 @@
     }
   }
 
-  // ── crumb-tools (Engagement · Settings) ──────────────────────────────────
+  // ── crumb-tools (Engagement · New campaign) ──────────────────────────────────
   // R2-2c (Dave's review pass 4, §2's one-row header): the project scope
   // picker already lives in the shell's crumb on EVERY Desk route
   // (`_projectsPickerHTML`, desk-v1-shell.js) — Home used to duplicate it
-  // with its own "Clayrune ▾" second row. Engagement + Settings now render
+  // with its own "Clayrune ▾" second row. Engagement + New campaign now render
   // into the shell's shared #desk-v1-crumb-tools slot instead, the same
   // per-route pattern desk-v1-review.js's `_renderCrumbTools` already
   // established, so Home collapses into the ONE header row §2 specifies.
@@ -631,10 +626,9 @@
     host.innerHTML = `
       <div class="desk-v1-home-crumbtools">
         <button type="button" class="desk-v1-home-engagement-btn">&#128172; Engagement${_engagementCountSuffix()}</button>
-        <button type="button" class="desk-v1-home-settings-btn">&#9881; Settings</button>
+        <span class="desk-v1-addto-wrap desk-v1-addto-wrap-right"><button type="button" class="desk-v1-home-newcamp-page-btn">&#65291; New campaign</button></span>
       </div>`;
-    const settingsBtn = host.querySelector('.desk-v1-home-settings-btn');
-    if (settingsBtn) settingsBtn.onclick = () => { if (window.openSettings) window.openSettings(); };
+    _bindNewCampaignPageBtn(host);
     const engagementBtn = host.querySelector('.desk-v1-home-engagement-btn');
     if (engagementBtn) engagementBtn.onclick = () => deskV1Nav('engagement', {});
   }
