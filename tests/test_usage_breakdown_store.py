@@ -407,9 +407,10 @@ def test_schema_v2_migration_preserves_rows_and_unfreezes_later_turns(tmp_path):
     assert [c['input_processed_total'] for c in completions] == [100, 500]
 
     with sqlite3.connect(db_path) as raw:
-        # v2 -> v3 -> v4 -> v5 in one open (v4 adds code_delta_lifetime, round 3
-        # P2-5; v5 adds the turn_start dedup index, MC-998 turn-start fix).
-        assert raw.execute('PRAGMA user_version').fetchone()[0] == SCHEMA_VERSION == 5
+        # v2 -> v3 -> v4 -> v5 -> v6 in one open (v4 adds code_delta_lifetime,
+        # round 3 P2-5; v5 adds the turn_start dedup index, MC-998 turn-start
+        # fix; v6 adds the sample_tick dedup index, backlog 4668eafc follow-up).
+        assert raw.execute('PRAGMA user_version').fetchone()[0] == SCHEMA_VERSION == 6
 
 
 # ── round 3 (docs/_journal/4668eafc-mc998-fenn-review.md "Round 3") ─────
@@ -457,9 +458,10 @@ def test_schema_v3_migration_seeds_one_lifetime_per_ok_row(tmp_path):
     assert row is not None
     assert (row['added'], row['deleted']) == (5, 1)
     with sqlite3.connect(db_path) as raw:
-        # v3 -> v4 -> v5 in one open (v5 adds the turn_start dedup index,
-        # MC-998 turn-start fix).
-        assert raw.execute('PRAGMA user_version').fetchone()[0] == SCHEMA_VERSION == 5
+        # v3 -> v4 -> v5 -> v6 in one open (v5 adds the turn_start dedup
+        # index, MC-998 turn-start fix; v6 adds the sample_tick dedup index,
+        # backlog 4668eafc follow-up).
+        assert raw.execute('PRAGMA user_version').fetchone()[0] == SCHEMA_VERSION == 6
 
 
 def test_prune_removes_code_delta_lifetime_rows_with_their_session(store):

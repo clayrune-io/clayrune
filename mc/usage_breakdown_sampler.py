@@ -280,6 +280,35 @@ def turn_start_checkpoint_fields(session_id: str, *, provider: str, observed_at:
     }
 
 
+def sample_tick_checkpoint_fields(session_id: str, *, provider: str, observed_at: str,
+                                   telemetry: Optional[dict]) -> dict:
+    """The 'sample_tick' `session_checkpoint` row (schema v6, backlog
+    4668eafc follow-up): a snapshot of a RUNNING session's cumulative
+    counters taken at the SAME `observed_at` an allowance sample was just
+    taken at, so `usage_breakdown_aggregate._session_turns` can split a turn
+    that spans several allowance samples into short, boundary-aligned
+    segments -- see that module's docstring for why the whole-turn
+    containment rule otherwise starved calibration of eligible intervals.
+
+    `telemetry` is the SAME transcript-summing, message.id-dedup dict
+    `_session_cumulative_transcript_telemetry` produces for the completion
+    checkpoint (built by the caller, since this module deliberately does no
+    file I/O of its own) run through `session_fact_from_entry`'s token-
+    category rules -- callers pass that fact-shaped dict here, not the raw
+    telemetry. `None`/empty leaves every token field `unavailable`, the same
+    no-fabricated-zero rule the other checkpoint builders follow."""
+    telemetry = telemetry or {}
+    return {
+        'session_id': session_id, 'provider': provider or telemetry.get('provider') or 'claude',
+        'checkpoint_type': 'sample_tick', 'observed_at': observed_at,
+        'input_fresh': telemetry.get('input_fresh'), 'input_cache_write': telemetry.get('input_cache_write'),
+        'input_cache_read': telemetry.get('input_cache_read'),
+        'input_processed_total': telemetry.get('input_processed_total'),
+        'output_tokens': telemetry.get('output_tokens'), 'output_reasoning': telemetry.get('output_reasoning'),
+        'token_coverage': telemetry.get('token_coverage') or 'unavailable',
+    }
+
+
 def completion_checkpoint_fields(fact: dict, *, session_id: str, observed_at: str) -> dict:
     """The completion-time 'completion' `session_checkpoint` row, built from
     the same `fact` dict `session_fact_from_entry` just produced -- the

@@ -8638,6 +8638,60 @@ def _write_usage_breakdown_turn_start_checkpoint(session):
         _log(f"[usage-breakdown] turn-start checkpoint write failed for {sid[:12]}: {e}")
 
 
+def _write_usage_breakdown_sample_tick(session, observed_at: str):
+    """MC-998 follow-up (schema v6, backlog 4668eafc, docs/_journal/4668eafc-
+    *.md): writes one 'sample_tick' `session_checkpoint` row for a RUNNING
+    session, stamped with `observed_at` -- the SAME `source_observed_at` the
+    calling allowance sample (`system_routes.usage_breakdown_sample_once`)
+    just used for its own `allowance_sample` row.
+
+    Measured 2026-09-29 (Dave, `_scratch/calib_diag.py`): with the turn-start
+    fix already shipped, 165/166 shape-eligible calibration interval pairs
+    were STILL refused, because a Clayrune turn routinely runs longer than
+    the sampler's own <=10-minute pairing window -- almost no turn was ever
+    fully contained in one interval no matter how idle time was handled.
+    Ticking every running session at every sample gives
+    `usage_breakdown_aggregate._session_turns` a checkpoint exactly at each
+    interval boundary a long turn was alive for, splitting it into several
+    short segments that CAN be fully contained instead of requiring the
+    whole turn to fit.
+
+    Reads cumulative counters the same way `_write_usage_breakdown_turn_
+    checkpoint` does (`_session_cumulative_transcript_telemetry` -- transcript
+    summing, message.id-deduped, across every claude_session_id this MC
+    session has run under), so a tick and a same-instant completion never
+    disagree on the session's totals. Best-effort, same exception handling
+    as the other checkpoint writers: one session's transcript read failing
+    must never block another session's tick or the allowance sample that
+    already landed."""
+    project_id = session.get('project_id')
+    sid = session.get('session_id')
+    if not project_id or not sid or session.get('incognito'):
+        return
+    is_housekeeping = session.get('housekeeping', False)
+    try:
+        _telemetry = _session_cumulative_transcript_telemetry(project_id, session)
+    except Exception as e:
+        _telemetry = {}
+        _log(f"[usage-breakdown] sample-tick transcript read failed for {sid[:12]}: {e}")
+    provider = session.get('provider') or 'claude'
+    entry = {
+        'provider': provider,
+        'input_tokens': _telemetry.get('input_tokens', 0),
+        'output_tokens': _telemetry.get('output_tokens', 0),
+        'cache_read_tokens': _telemetry.get('cache_read_tokens', 0),
+        'cache_write_tokens': _telemetry.get('cache_write_tokens', 0),
+    }
+    try:
+        _fact = _usage_breakdown_sampler.session_fact_from_entry(
+            entry, project_id=project_id, housekeeping=is_housekeeping)
+        _store = _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite')
+        _store.record_session_checkpoint(**_usage_breakdown_sampler.sample_tick_checkpoint_fields(
+            sid, provider=provider, observed_at=observed_at, telemetry=_fact))
+    except Exception as e:
+        _log(f"[usage-breakdown] sample-tick write failed for {sid[:12]}: {e}")
+
+
 def _log_agent_completion(session):
     """Save a summary entry when an agent session finishes.
 
