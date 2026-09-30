@@ -134,6 +134,14 @@ const ESTIMATE_EXCEEDS_OBSERVED_FIXTURE = {
   segmented_bar: { status: 'estimate_exceeds_observed', bar_change_pp: 10, estimated_pp: 12, unattributed_pp: -2, range_pp: [9, 13] },
 };
 
+// Ron 2026-09-30 screenshot: vendor meter 48%, estimated Clayrune 30.83pp,
+// unattributed 16.17pp, bar_change 47pp. The bar must read on the SAME 0-100
+// scale as the meter (30.83% + 16.17%), not as a share of bar_change (66%).
+const SEVEN_DAY_FIXTURE = {
+  ...POPULATED_FIXTURE, window_kind: '7d',
+  segmented_bar: { status: 'ok', bar_change_pp: 47, estimated_pp: 30.83, unattributed_pp: 16.17, range_pp: [28, 33] },
+};
+
 // Review finding #7's own reproduction: a Claude request in flight when
 // Codex is selected before it resolves. Distinct session_count per provider
 // (111 vs 222) is the tell for which one actually ended up on screen.
@@ -207,6 +215,14 @@ try {
     /12\.0k/.test(text) ? ok('input tokens total (12.0k) rendered') : fail(`input total missing from: ${text.slice(0, 800)}`);
     /50\.0k/.test(text) ? ok('tokens-per-1% median (50.0k) rendered') : fail('tokens-per-point median missing');
     /range 5\.00%.{0,3}7\.00%/.test(text) ? ok('segmented bar renders its estimate range (5.00%-7.00%)') : fail(`range caveat missing from: ${text.slice(0, 800)}`);
+
+    const segW = await page.$$eval('.ub-segbar > div', (els) => els.map((e) => [e.className, e.style.width]));
+    JSON.stringify(segW) === JSON.stringify([['ub-segbar-estimated', '6%'], ['ub-segbar-unattributed', '4%']])
+      ? ok('segbar on the absolute 0-100 scale: Clayrune 6%, Unattributed 4% (not 60% of bar_change)')
+      : fail(`segbar widths wrong: ${JSON.stringify(segW)}`);
+    /Change in this range: 10\.00% of 100%/.test(text)
+      ? ok('segbar caption states the change in this range (10.00% of 100%)')
+      : fail(`segbar caption missing from: ${text.slice(0, 800)}`);
 
     const tableVisible = await page.$eval('.ub-table-wrap', (el) => getComputedStyle(el).display !== 'none');
     tableVisible ? ok('desktop: .ub-table-wrap visible') : fail('.ub-table-wrap should be visible at 1440px');
@@ -301,6 +317,10 @@ try {
     /Unattributed[\s\S]{0,40}10\.00%/.test(text)
       ? ok('pre-calibration: unattributed bucket (10.00%) stays visible, not hidden')
       : fail(`pre-calibration unattributed value missing from: ${text.slice(0, 800)}`);
+    const segW = await page.$$eval('.ub-segbar > div', (els) => els.map((e) => [e.className, e.style.width]));
+    JSON.stringify(segW) === JSON.stringify([['ub-segbar-unattributed', '10%']])
+      ? ok('pre-calibration: a single Unattributed segment of width 10% (not the full-width unknown bar)')
+      : fail(`pre-calibration segbar wrong: ${JSON.stringify(segW)}`);
     await ctx.close();
   }
   {
@@ -309,9 +329,49 @@ try {
     /exceeds[\s\S]{0,60}2\.00%/i.test(text)
       ? ok('estimate-exceeds-observed: excess (2.00%) rendered as a separate error')
       : fail(`excess-error text missing from: ${text.slice(0, 800)}`);
+    const segW = await page.$$eval('.ub-segbar > div', (els) => els.map((e) => [e.className, e.style.width]));
+    JSON.stringify(segW) === JSON.stringify([['ub-segbar-estimated', '12%']])
+      ? ok('estimate-exceeds-observed: Clayrune segment is estimated_pp (12%) on the absolute scale, no Unattributed segment')
+      : fail(`exceeds segbar wrong: ${JSON.stringify(segW)}`);
     /Unattributed.{0,10}-2\.00%/.test(text)
       ? fail('estimate-exceeds-observed: rendered a literal negative "Unattributed" amount')
       : ok('estimate-exceeds-observed: no literal negative Unattributed amount rendered');
+    await ctx.close();
+  }
+
+  // ── 5b. Absolute-scale segbar: Ron's 7d screenshot (meter 48%) ──────────
+  {
+    const { ctx, page } = await openDesktopPopover(browser, SEVEN_DAY_FIXTURE, WINDOWS_FIXTURE);
+    // Dark theme is the :root base; the default tone adds tone-warm (light).
+    await page.evaluate(() => { document.body.classList.remove('tone-warm', 'tone-editorial'); });
+    const segW = await page.$$eval('.ub-segbar > div', (els) => els.map((e) => [e.className, e.style.width]));
+    JSON.stringify(segW) === JSON.stringify([['ub-segbar-estimated', '30.83%'], ['ub-segbar-unattributed', '16.17%']])
+      ? ok('7d fixture: Clayrune 30.83% + Unattributed 16.17% (sum 47%, never 66%)')
+      : fail(`7d segbar widths wrong: ${JSON.stringify(segW)}`);
+    const px = await page.$eval('.ub-segbar', (bar) => {
+      const w = bar.getBoundingClientRect().width;
+      return [...bar.children].map((c) => c.getBoundingClientRect().width / w * 100);
+    });
+    (Math.abs(px[0] - 30.83) < 0.5 && Math.abs(px[1] - 16.17) < 0.5)
+      ? ok(`7d fixture: rendered pixel shares ${px[0].toFixed(1)}% / ${px[1].toFixed(1)}% of the track`)
+      : fail(`7d rendered shares wrong: ${JSON.stringify(px)}`);
+    const hatched = await page.$eval('.ub-segbar-unattributed', (e) => getComputedStyle(e).backgroundImage.includes('repeating-linear-gradient'));
+    hatched ? ok('Unattributed segment is hatched (distinct from Clayrune)') : fail('Unattributed segment lost its hatch style');
+    const text = await page.$eval('.sys-status-popover', (el) => el.textContent);
+    /Change in this range: 47\.00% of 100%/.test(text) ? ok('7d caption: "Change in this range: 47.00% of 100%"') : fail(`7d caption missing from: ${text.slice(0, 800)}`);
+    const shot = process.env.SEGBAR_SCREENSHOT;
+    if (shot) {
+      const el = await page.$('.ub-segbar');
+      const box = await el.boundingBox();
+      await page.screenshot({ path: shot, clip: { x: Math.max(0, box.x - 20), y: Math.max(0, box.y - 120), width: Math.min(1440, box.width + 40), height: 260 } });
+    }
+    await ctx.close();
+  }
+  {
+    // Clamp: never wider than the track even on an implausible fixture.
+    const { ctx, page } = await openDesktopPopover(browser, { ...POPULATED_FIXTURE, segmented_bar: { status: 'ok', bar_change_pp: 100, estimated_pp: 80, unattributed_pp: 60, range_pp: null } }, WINDOWS_FIXTURE);
+    const segW = await page.$$eval('.ub-segbar > div', (els) => els.map((e) => e.style.width));
+    JSON.stringify(segW) === JSON.stringify(['80%', '20%']) ? ok('total clamped to 100%: 80% + 60pp renders 80% + 20%') : fail(`clamp wrong: ${JSON.stringify(segW)}`);
     await ctx.close();
   }
 

@@ -444,24 +444,41 @@ function _renderUsageBreakdownSection() {
   const seg = b.segmented_bar || {};
   const rangeSuffix = Array.isArray(seg.range_pp) && seg.range_pp.length === 2
     ? ` (range ${_ubFmtPP(seg.range_pp[0])}–${_ubFmtPP(seg.range_pp[1])})` : '';
+  // Absolute 0-100 scale, the SAME scale as the vendor meter: a segment's
+  // width is its own pp, NOT its share of `bar_change_pp` (that read as "66%
+  // of the allowance used" when the meter said 48%). The range may not start
+  // at 0, so the caption states the change explicitly.
+  const _segPct = (v) => Math.max(0, Math.min(100, Number(v) || 0));
+  const _segs = (clayPp, unattrPp) => {
+    const clay = _segPct(clayPp);
+    const unattr = Math.min(_segPct(unattrPp), 100 - clay);
+    const min = (w) => (w > 0 ? 'min-width:2px;' : '');
+    return `<div class="ub-segbar">`
+      + (clay > 0 ? `<div class="ub-segbar-estimated" style="${min(clay)}width:${clay}%"></div>` : '')
+      + (unattr > 0 ? `<div class="ub-segbar-unattributed" style="${min(unattr)}width:${unattr}%"></div>` : '')
+      + `</div>`;
+  };
+  const changeCaption = seg.bar_change_pp != null
+    ? `<div class="ssp-hint-line ub-segbar-caption">Change in this range: ${_ubFmtPP(seg.bar_change_pp)} of 100%</div>` : '';
   let segbarHTML;
   if (seg.status === 'ok') {
-    const estPct = Math.max(0, Math.min(100, (seg.estimated_pp / (seg.bar_change_pp || 1)) * 100));
     segbarHTML = `
-      <div class="ub-segbar"><div class="ub-segbar-estimated" style="width:${estPct}%"></div></div>
+      ${_segs(seg.estimated_pp, seg.unattributed_pp)}
+      ${changeCaption}
       <div class="ssp-row"><span class="ssp-k">Estimated Clayrune</span><span class="ssp-v">${_ubFmtPP(seg.estimated_pp)}${rangeSuffix}</span></div>
       <div class="ssp-row"><span class="ssp-k">Unattributed / uncertain</span><span class="ssp-v">${_ubFmtPP(seg.unattributed_pp)}</span></div>`;
   } else if (seg.status === 'estimate_exceeds_observed') {
-    const estPct = Math.max(0, Math.min(100, (seg.estimated_pp / (seg.bar_change_pp || 1)) * 100));
     segbarHTML = `
-      <div class="ub-segbar"><div class="ub-segbar-estimated" style="width:${estPct}%"></div></div>
+      ${_segs(seg.estimated_pp, 0)}
+      ${changeCaption}
       <div class="ssp-row"><span class="ssp-k">Estimated Clayrune</span><span class="ssp-v">${_ubFmtPP(seg.estimated_pp)}${rangeSuffix}</span></div>
       <div class="ssp-hint-line">Estimate exceeds the observed vendor change by ${_ubFmtPP(-seg.unattributed_pp)} — shown, not clamped; not a negative unattributed amount.</div>`;
   } else if (seg.unattributed_pp != null) {
     // Pre-calibration: the whole observed change is known but not yet split
     // into estimated/unattributed — the bucket stays visible, just uncalibrated.
     segbarHTML = `
-      <div class="ub-segbar ub-segbar-unknown"></div>
+      ${_segs(0, seg.unattributed_pp)}
+      ${changeCaption}
       <div class="ssp-row"><span class="ssp-k">Unattributed / uncertain</span><span class="ssp-v">${_ubFmtPP(seg.unattributed_pp)}</span></div>
       <div class="ssp-hint-line">${esc(_UB_BAR_STATUS_LABEL[seg.status] || seg.status || 'Unavailable')} — not yet split into an estimate.</div>`;
   } else {
