@@ -1488,6 +1488,65 @@ def claude_installed() -> bool:
     return bool(p) and Path(p).is_absolute()
 
 
+def maybe_set_sole_provider_default(config: dict, config_path: Path) -> bool:
+    """MC-1010: auto-pick the only installed provider CLI as `default_provider`
+    for an install that never chose one, without ever going through the
+    human-gated PUT /api/config route.
+
+    static/js/project-actions.js's `_maybeSetSoleProviderDefault` used to do
+    this client-side via `saveSetting`, which (since MC-995's dashboard
+    passcode gate) pops a passcode prompt on a routine page load for an
+    existing install — exactly what that function's own comment promised
+    never happens. Doing the same auto-pick here, in-process at startup and
+    lazily before the providers list is built, reaches the same outcome with
+    no HTTP round trip and nothing for the passcode gate to intercept.
+
+    Idempotent and silent: a no-op whenever `default_provider` is already set
+    (never overwrites a real choice), whenever installed-CLI count isn't
+    exactly 1, or whenever first-run setup is still pending — mirrors
+    static/js/first-run.js's `firstRunNeeded()`: `'setup_completed' in config`
+    and falsy means setup hasn't run yet, and the provider choice belongs to
+    that wizard's chooser step, not to this auto-pick (a missing key means a
+    legacy install with no wizard to run, so it's allowed same as
+    firstRunNeeded treats it). Without this gate, a fresh install with one
+    CLI installed and signed in gets `default_provider` written here before
+    the user ever sees the chooser, and first-run.js's provider-choice step
+    (`skip:` ~line 116) then SKIPS itself on exactly the "only one CLI
+    installed" case its own comment says must never skip.
+
+    Mutates `config` in place (same live dict `state.CONFIG` aliases) and
+    persists to `config_path` using the same read-merge-then-overwrite shape
+    as settings_routes.update_config, so a concurrent editor of unrelated
+    keys in config.json is not clobbered by a stale in-memory copy.
+    """
+    if (config.get('default_provider') or '').strip():
+        return False
+    if 'setup_completed' in config and not config.get('setup_completed'):
+        return False
+    try:
+        installed = installed_runtimes()
+    except Exception:
+        return False
+    if len(installed) != 1:
+        return False
+    name = installed[0].name
+    config['default_provider'] = name
+    try:
+        with open(config_path, encoding='utf-8') as f:
+            on_disk = json.load(f)
+    except Exception:
+        on_disk = dict(config)
+    on_disk['default_provider'] = name
+    from mc.core import _atomic_write_text, _log
+    try:
+        _atomic_write_text(config_path, json.dumps(on_disk, indent=2, ensure_ascii=False))
+    except Exception as e:
+        _log(f'[providers] failed to persist sole-provider default {name!r}: {e}', flush=True)
+        return False
+    _log(f'[providers] auto-picked sole installed provider as default_provider: {name}', flush=True)
+    return True
+
+
 def claude_oneshot_available() -> bool:
     """True if a toolless Claude oneshot call (ClaudeRuntime.oneshot) is
     likely to succeed right now.

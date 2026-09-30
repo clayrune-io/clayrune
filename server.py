@@ -595,6 +595,12 @@ from mc import state as _mc_state
 
 _mc_state.CONFIG = CONFIG  # live alias: mc.core._log reads log_level through this
 
+# MC-1010: auto-pick the sole installed provider CLI as default_provider for
+# an install that never chose one — server-side, so it never goes through the
+# human-gated PUT /api/config route. No-op once a default is set or when
+# installed-CLI count isn't exactly 1. See agent_runtime.maybe_set_sole_provider_default.
+_agent_runtime.maybe_set_sole_provider_default(CONFIG, CONFIG_PATH)
+
 from mc.core import (  # noqa: E402
     _LOG_LEVELS,
     _atomic_write_text,

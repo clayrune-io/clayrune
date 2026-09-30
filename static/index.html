@@ -3663,14 +3663,13 @@ fetchProjects().then(async () => {
   const realProjectCount = allProjects.filter(p => !isIncognitoProject(p) && !isStewardWorkspace(p) && !isOnboardingProject(p) && !isIdeasWorkspace(p)).length;
   if (realProjectCount === 0 && firstRunNeeded()) {
     setTimeout(() => startFirstRun(), 600);
-  } else {
-    // Existing install: no dialog, ever (Ron 2026-09-14 — the provider
-    // question belongs at install time, installers ask it now). The one
-    // silent exception: nothing was ever chosen and exactly one provider CLI
-    // exists on this machine, so save it without asking — see
-    // project-actions.js's _maybeSetSoleProviderDefault.
-    _maybeSetSoleProviderDefault();
   }
+  // Existing install: no dialog, ever (Ron 2026-09-14 — the provider
+  // question belongs at install time, installers ask it now). The one
+  // silent exception -- nothing was ever chosen and exactly one provider CLI
+  // exists on this machine -- is now handled server-side (MC-1010,
+  // mc.agent_runtime.maybe_set_sole_provider_default), so it never goes
+  // through the human-gated PUT /api/config route this client-side call used to.
   _mcBootMark('boot continuation done');
 });
 startRefresh();
