@@ -910,6 +910,19 @@
 .desk-v1-presence-account-row:last-child { border-bottom: none; }
 .desk-v1-presence-account-head { display: flex; align-items: center; gap: 8px; }
 .desk-v1-presence-account-voice { font-size: 12.5px; color: var(--text-dim); font-weight: 600; }
+/* R1-E part 2: Read via segmented control. Same dark-track/light-pill shape as
+   the Desk's other segmented controls (desk-v1-video-tabstrip); wraps on a
+   phone so neither label is clipped at 390. */
+.desk-v1-presence-readvia { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 8px 0 4px; }
+.desk-v1-presence-readvia-seg { display: inline-flex; flex-wrap: wrap; background: var(--text); border-radius: 7px; padding: 2px; gap: 2px; max-width: 100%; }
+.desk-v1-presence-readvia-seg button {
+  background: transparent; border: none; color: var(--bg); font-size: 12px; font-weight: 600;
+  padding: 6px 12px; cursor: pointer; font-family: inherit; border-radius: 5px;
+}
+.desk-v1-presence-readvia-seg button[aria-pressed="true"] { background: var(--surface); color: var(--text); }
+.desk-v1-presence-readvia-profile { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-dim); width: min(320px, 100%); }
+.desk-v1-presence-readvia [data-readvia-status]:empty { display: none; }
+.desk-v1-presence-readvia [data-readvia-status][data-state="not_connected"] { color: var(--amber-text); }
 .desk-v1-rules-textarea, .desk-v1-rules-textinput {
   background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px;
   color: var(--text); font-size: 13px; padding: 6px 8px; font-family: inherit; resize: vertical;

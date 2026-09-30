@@ -29,6 +29,7 @@ agent posted anyway. Publishing, when it lands, goes in its own module behind
 an explicit human release action, the way automation_routes.accept is the one
 bridge to the scheduler.
 """
+import re
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -37,6 +38,7 @@ from flask import Blueprint, jsonify, request
 from mc import characters as _chars
 from mc import desk as _desk
 from mc import desk_brief as _brief
+from mc import desk_engagement as _engagement
 from mc import desk_harvest as _harvest
 from mc import desk_retro as _retro
 from mc import desk_voice_seed as _seed
@@ -469,6 +471,96 @@ def record_outcome(post_id):
     if row is None:
         return jsonify({'error': 'post not found'}), 404
     return jsonify(row)
+
+
+# ── Engagement feed (§6, §8 R1-E, §10.7) ─────────────────────────────────────
+#
+# The inbound side. Reads only — nothing here posts or replies. `poll` is the
+# one route that can SPEND (paid platform reads, costed against the project's
+# budget), so like the finding state changes it refuses an unattended caller.
+
+@bp.route('/api/desk/engagement', methods=['GET'])
+def list_engagement():
+    return jsonify(_desk.list_engagement_items(
+        project_id=request.args.get('project_id'),
+        campaign_id=request.args.get('campaign_id'),
+        platform=request.args.get('platform'),
+        source=request.args.get('source'),
+        state=request.args.get('state'),
+        limit=_int_arg('limit', 200)))
+
+
+@bp.route('/api/desk/engagement/overview', methods=['GET'])
+def engagement_overview():
+    """Per-project landing bundles. A project nothing reads for comes back
+    `status: 'not_connected'` with `null` counts — never `0`."""
+    period = request.args.get('period', 'week')
+    if period not in ('week', 'month'):
+        return jsonify({'error': "period must be 'week' or 'month'"}), 400
+    return jsonify(_engagement.overview(period=period))
+
+
+@bp.route('/api/desk/engagement/<item_id>/read', methods=['POST'])
+def mark_engagement_read(item_id):
+    row = _desk.mark_engagement_read(item_id)
+    if row is None:
+        return jsonify({'error': 'engagement item not found'}), 404
+    return jsonify(row)
+
+
+@bp.route('/api/desk/engagement/poll', methods=['POST'])
+def poll_engagement():
+    """Read replies + per-post metrics for one project. May cost money."""
+    if is_unattended_caller():
+        return jsonify({'error': 'this action needs a human — an unattended agent '
+                                 'session cannot run a paid platform read'}), 403
+    d = request.get_json(silent=True) or {}
+    pid = d.get('project_id')
+    if not pid:
+        return jsonify({'error': 'project_id is required'}), 400
+    return jsonify(_engagement.poll_project(pid))
+
+
+_PROFILE_NAME = re.compile(r'^[a-z0-9][a-z0-9._-]{0,63}$')
+
+
+@bp.route('/api/desk/engagement/coverage/<project_id>', methods=['GET'])
+def engagement_coverage(project_id):
+    """Per-platform read state for one project, for the Presence account rows:
+    which route each account is read by and, if it is not being read, why. No
+    network call: capability checks only look at the vault / the profile dir."""
+    readers = _engagement.readers_for_project(project_id)
+    return jsonify({'project_id': project_id, 'coverage': [
+        _engagement.platform_coverage(project_id, p, readers.get(p))
+        for p in _engagement.project_platforms(project_id)]})
+
+
+@bp.route('/api/desk/presence/<project_id>/accounts/<channel_id>/read', methods=['PATCH'])
+def patch_account_read(project_id, channel_id):
+    """How the Desk reads one account's own mentions and post stats:
+    `read_via` = `pane` (free, needs a signed-in browser profile, named by
+    `browser_profile`) or `api` (paid per read, charged to the budget, needs the
+    vault token). The user's choice per account; `api` turns on spend, so like
+    `poll` this refuses an unattended caller. `platform` is only needed the
+    first time, when the account has no stored record yet."""
+    if is_unattended_caller():
+        return jsonify({'error': 'this action needs a human: an unattended agent '
+                                 'session cannot choose how an account is read'}), 403
+    d = request.get_json(silent=True) or {}
+    if set(d) - {'read_via', 'browser_profile', 'platform'}:
+        return jsonify({'error': 'only read_via, browser_profile and platform may be set here'}), 400
+    prof = d.get('browser_profile')
+    if prof is not None and (not isinstance(prof, str)
+                             or (prof.strip() and not _PROFILE_NAME.match(prof.strip().lower()))):
+        return jsonify({'error': 'browser_profile must be a saved profile name '
+                                 '(lowercase letters, digits, . - _)'}), 400
+    try:
+        acc = _desk.set_account_read_settings(
+            project_id, channel_id, platform=d.get('platform'),
+            read_via=d.get('read_via'), browser_profile=prof)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify(acc)
 
 
 # ── Playbook / outcome learning loop (§10, MC-977 R1-L) ─────────────────────

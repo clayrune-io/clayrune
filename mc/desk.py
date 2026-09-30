@@ -135,6 +135,12 @@ def _empty_store() -> dict:
         # `rejections` is a list because a rejection has no id of its own,
         # only the (dimension, arms, direction) tuple it durably suppresses.
         'playbook': {'findings': {}, 'rejections': []},
+        # §8 R1-E: the inbound side. `items` keyed by id (engagement feed rows),
+        # `reads` the append-only cost ledger of every platform read (§10.7:
+        # "each read costed against the budget"), `coverage` the last
+        # read outcome per project+platform so a gap is a recorded fact, not
+        # an absence. See mc/desk_engagement.py.
+        'engagement': {'items': {}, 'reads': [], 'coverage': {}},
     }
 
 
@@ -207,6 +213,10 @@ def _migrate_store(data: dict) -> dict:
     playbook = data.setdefault('playbook', {})
     playbook.setdefault('findings', {})
     playbook.setdefault('rejections', [])
+    engagement = data.setdefault('engagement', {})
+    engagement.setdefault('items', {})
+    engagement.setdefault('reads', [])
+    engagement.setdefault('coverage', {})
     data['version'] = STORE_VERSION
     return data
 
@@ -236,6 +246,7 @@ def _read_store() -> dict:
     data.setdefault('platforms_seeded', False)
     data.setdefault('presences', {})
     data.setdefault('playbook', {'findings': {}, 'rejections': []})
+    data.setdefault('engagement', {'items': {}, 'reads': [], 'coverage': {}})
     return _migrate_store(data)
 
 
@@ -302,6 +313,68 @@ def upsert_presence(project_id: str, patch: dict) -> dict:
         store['presences'][project_id] = rec
         _write_store(store)
         return rec
+
+
+READ_VIA = ('pane', 'api')
+_ACCOUNT_PLATFORMS = ('x', 'linkedin')
+
+
+def account_read_via(acc) -> str:
+    """How the Desk reads this account's own mentions/replies and post stats.
+    Absent or unrecognised = `pane` (the free route; Ron 2026-09-30). Never
+    raises: a hand-edited store must not break a read."""
+    v = acc.get('read_via') if isinstance(acc, dict) else None
+    return v if v in READ_VIA else 'pane'
+
+
+def set_account_read_settings(project_id: str, channel_id: str, *, platform: str | None = None,
+                              read_via: str | None = None,
+                              browser_profile: str | None = None) -> dict:
+    """Set `read_via` and/or the named browser profile on one presence account.
+
+    Nothing in the backend populated `presence.accounts` before this (the UI's
+    accounts are fixtures), so an account with no record yet is created here
+    holding ONLY what reading needs: channel id + platform. That grants no
+    publishing authority: publishing is bounded by the campaign `plan`, not by
+    this list. Raises ValueError for a value outside the allowed set.
+    """
+    if read_via is not None and read_via not in READ_VIA:
+        raise ValueError(f'read_via must be one of {READ_VIA}')
+    if platform is not None and platform not in _ACCOUNT_PLATFORMS:
+        raise ValueError(f'platform must be one of {_ACCOUNT_PLATFORMS}')
+    if not channel_id or not isinstance(channel_id, str):
+        raise ValueError('channel_id is required')
+    with _store_lock:
+        store = _read_store()
+        rec = store['presences'].get(project_id) or _empty_presence(project_id)
+        accounts = rec.setdefault('accounts', [])
+        acc = None
+        for i, a in enumerate(accounts):
+            if a == channel_id:          # bare-id form: promote to a record
+                accounts[i] = a = {'channel_id': channel_id}
+            if isinstance(a, dict) and a.get('channel_id') == channel_id:
+                acc = a
+                break
+        if acc is None:
+            if not platform:
+                raise ValueError('platform is required for an account with no record yet')
+            acc = {'channel_id': channel_id, 'platform': platform}
+            accounts.append(acc)
+        if platform and not acc.get('platform'):
+            acc['platform'] = platform
+        if read_via is not None:
+            acc['read_via'] = read_via
+        if browser_profile is not None:
+            name = browser_profile.strip().lower()
+            if name:
+                acc['browser_profile'] = name
+            else:
+                acc.pop('browser_profile', None)
+        rec['project_id'] = project_id
+        rec['updated_at'] = now_iso()
+        store['presences'][project_id] = rec
+        _write_store(store)
+        return dict(acc)
 
 
 # -- bounds hash + widening (IA revision 2 §5.1/§5.2; the R2-1 kit's own
@@ -1294,6 +1367,182 @@ def record_outcome(post_id: str, metric: str, value, *,
                 row.setdefault('outcomes', []).append(entry)
                 _write_store(store)
                 return row
+    return None
+
+
+# -- engagement feed + read costing (§8 R1-E, §10.7) --------------------------
+#
+# Storage only. What to read, from whom, and what a read costs is
+# mc/desk_engagement.py's business; this block is the same shape as the
+# findings store below: every mutation under `_store_lock`, nothing here
+# touches the network.
+
+# Lane states, same vocabulary static/js/desk-v1-engagement.js `LANES` matches
+# on: needs_you = Incoming, needs_reply = Suggested (reply drafted, awaiting
+# the human), sent = Sent. The others never count as needing anyone.
+ENGAGEMENT_STATES = ('needs_you', 'needs_reply', 'sent', 'reviewed', 'no_reply', 'stale')
+ENGAGEMENT_SOURCES = ('our_posts', 'mentions', 'discussions')
+
+
+def upsert_engagement_item(item: dict) -> tuple[dict, bool]:
+    """Insert one feed row, deduped on (platform, external_id). Returns
+    `(row, created)`. A re-read of a row we already hold changes nothing the
+    human may have touched (`state`, `read_at`): it is a no-op returning the
+    stored row, so polling twice can never resurrect a read item as unread."""
+    platform, ext = item.get('platform'), item.get('external_id')
+    if not platform or not ext:
+        raise ValueError('engagement item needs platform and external_id')
+    with _store_lock:
+        store = _read_store()
+        items = store['engagement']['items']
+        for row in items.values():
+            if row.get('platform') == platform and row.get('external_id') == ext:
+                return dict(row), False
+        row = {
+            'id': _new_id('eng'),
+            'project_id': item.get('project_id'),
+            'campaign_id': item.get('campaign_id'),
+            'platform': platform,
+            'account': item.get('account'),
+            'source': item.get('source') or 'mentions',
+            'post_id': item.get('post_id'),
+            'external_id': ext,
+            'author': item.get('author'),
+            'excerpt': item.get('excerpt') or '',
+            'url': item.get('url'),
+            'created_at': item.get('created_at') or now_iso(),
+            'fetched_at': now_iso(),
+            'state': item.get('state') or 'needs_you',
+            'read_at': None,
+        }
+        items[row['id']] = row
+        _write_store(store)
+        return dict(row), True
+
+
+def list_engagement_items(*, project_id: str | None = None, campaign_id: str | None = None,
+                          platform: str | None = None, source: str | None = None,
+                          state: str | None = None, limit: int = 200) -> list[dict]:
+    with _store_lock:
+        rows = [dict(r) for r in _read_store()['engagement']['items'].values()]
+    for key, want in (('project_id', project_id), ('campaign_id', campaign_id),
+                      ('platform', platform), ('source', source), ('state', state)):
+        if want:
+            rows = [r for r in rows if r.get(key) == want]
+    rows.sort(key=lambda r: r.get('created_at') or '', reverse=True)
+    return rows[:limit]
+
+
+def mark_engagement_read(item_id: str, *, at: str | None = None) -> dict | None:
+    """Stamp `read_at` once. Idempotent: a second call keeps the first stamp."""
+    with _store_lock:
+        store = _read_store()
+        row = store['engagement']['items'].get(item_id)
+        if row is None:
+            return None
+        if not row.get('read_at'):
+            row['read_at'] = at or now_iso()
+            _write_store(store)
+        return dict(row)
+
+
+def record_read(*, platform: str, project_id: str | None, kind: str, resources: int,
+                cost: float, ok: bool, error: str | None = None) -> dict:
+    """Append one row to the read-cost ledger. Failed reads are recorded too
+    (`ok: False`, cost as charged, usually 0) so spend is never undercounted
+    by omission."""
+    entry = {'id': _new_id('read'), 'at': now_iso(), 'platform': platform,
+             'project_id': project_id, 'kind': kind, 'resources': int(resources),
+             'cost': float(cost), 'ok': bool(ok), 'error': error}
+    with _store_lock:
+        store = _read_store()
+        store['engagement']['reads'].append(entry)
+        _write_store(store)
+    return entry
+
+
+def list_reads(*, project_id: str | None = None, since: str | None = None) -> list[dict]:
+    with _store_lock:
+        rows = list(_read_store()['engagement']['reads'])
+    if project_id:
+        rows = [r for r in rows if r.get('project_id') == project_id]
+    if since:
+        rows = [r for r in rows if (r.get('at') or '') >= since]
+    return rows
+
+
+def set_read_coverage(project_id: str, platform: str, *, ok: bool, cursor: str | None = None,
+                      error: str | None = None, via: str | None = None,
+                      error_kind: str | None = None) -> dict:
+    """Remember the outcome of the latest read attempt. `last_ok_at` only moves
+    on success, so "connected but never successfully read" stays distinguishable
+    from "read, found nothing". `cursor` only moves on a successful read.
+
+    `via` is the read route (`api` | `pane`) the attempt used: a success on one
+    route must not read as "ok" once the account is switched to the other
+    (`desk_engagement.platform_coverage` compares it). `error_kind` tags a
+    failure the UI words specially (`not_signed_in`)."""
+    with _store_lock:
+        store = _read_store()
+        rec = store['engagement']['coverage'].setdefault(project_id, {}).setdefault(
+            platform, {'last_ok_at': None, 'last_attempt_at': None,
+                       'last_error': None, 'cursor': None})
+        rec['last_attempt_at'] = now_iso()
+        if via:
+            rec['via'] = via
+        if ok:
+            rec['last_ok_at'] = rec['last_attempt_at']
+            rec['last_error'] = None
+            rec['error_kind'] = None
+            if cursor:
+                # since_id for the next mentions read: without it every poll
+                # re-reads (and re-pays for) the same newest N mentions.
+                rec['cursor'] = cursor
+        else:
+            rec['last_error'] = error
+            rec['error_kind'] = error_kind
+        _write_store(store)
+        return dict(rec)
+
+
+def get_read_coverage(project_id: str) -> dict:
+    with _store_lock:
+        return {k: dict(v) for k, v in
+                (_read_store()['engagement']['coverage'].get(project_id) or {}).items()}
+
+
+def record_feed_outcome(post_id: str, metric: str, value, *, at: str | None = None) -> dict | None:
+    """Write one `source:'feed'` per-post outcome (§10.7). Returns the ledger
+    row, or None for an unknown post.
+
+    Two guarantees the retro depends on:
+    - A typed (`source != 'feed'`) entry for the same post + metric is NEVER
+      touched: both are kept and the retro shows each one's source.
+    - Goals are measured daily (§10.8 Q1), so a feed entry is one per
+      post + metric + calendar day: a second read the same day REPLACES that
+      day's earlier feed entry instead of stacking duplicates. Feed entries
+      only ever replace feed entries.
+    `value` must be a real number from the platform; callers skip a metric the
+    platform did not return rather than passing 0 (§10.7: never a fake zero).
+    """
+    at = at or now_iso()
+    day = at[:10]
+    entry = {'metric': metric, 'value': value, 'at': at, 'source': 'feed'}
+    with _store_lock:
+        store = _read_store()
+        for row in store['ledger']:
+            if row.get('id') != post_id:
+                continue
+            outs = row.setdefault('outcomes', [])
+            for i, o in enumerate(outs):
+                if (o.get('source') == 'feed' and o.get('metric') == metric
+                        and (o.get('at') or '')[:10] == day):
+                    outs[i] = entry
+                    break
+            else:
+                outs.append(entry)
+            _write_store(store)
+            return row
     return None
 
 

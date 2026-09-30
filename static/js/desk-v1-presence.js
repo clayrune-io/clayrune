@@ -157,6 +157,82 @@
     });
   }
 
+  // ── Read via (R1-E part 2: how the Desk reads THIS account's own mentions and
+  // post stats — the user's choice per account, default the free browser pane).
+  // Only X and LinkedIn have a read route; a blog/web account shows no control.
+  const READ_VIA_PLATFORMS = ['x', 'linkedin'];
+  function _readViaHTML(ch, a) {
+    if (!ch || READ_VIA_PLATFORMS.indexOf(ch.platform) < 0) return '';
+    const via = a.read_via === 'api' ? 'api' : 'pane';
+    const apiLabel = ch.platform === 'x' ? 'X API (paid, ~$0.005 per read)' : 'LinkedIn API (paid)';
+    const btn = (v, label) => `<button type="button" data-readvia="${v}" aria-pressed="${via === v}">${esc(label)}</button>`;
+    const profile = via === 'pane' && ch.platform === 'x'
+      ? `<label class="desk-v1-presence-readvia-profile">Signed-in browser profile
+           <input type="text" class="desk-v1-rules-textinput" data-readvia-profile maxlength="64"
+             placeholder="name of the saved profile" value="${esc(a.browser_profile || '')}"></label>`
+      : '';
+    return `
+        <div class="desk-v1-presence-readvia" data-readvia-row="${esc(a.channel_id)}" data-platform="${esc(ch.platform)}">
+          <span class="desk-v1-how-field-label">Read via</span>
+          <div class="desk-v1-presence-readvia-seg" role="group" aria-label="How the Desk reads this account">
+            ${btn('pane', 'Browser pane (no charge)')}${btn('api', apiLabel)}
+          </div>
+          ${profile}
+          <div class="desk-v1-rules-hint" data-readvia-status></div>
+        </div>`;
+  }
+
+  function _readViaUrl(p, chId) {
+    return `/api/desk/presence/${encodeURIComponent(p.id)}/accounts/${encodeURIComponent(chId)}/read`;
+  }
+
+  // The coverage line the server computes (never silenced: "Not connected (…)"
+  // when the chosen route can't read). Empty when the route is reading fine.
+  function _showReadCoverage(row, p, platform) {
+    const out = row.querySelector('[data-readvia-status]');
+    if (!out) return;
+    fetch(`/api/desk/engagement/coverage/${encodeURIComponent(p.id)}`).then((r) => r.json()).then((d) => {
+      const c = ((d || {}).coverage || []).find((x) => x.platform === platform);
+      out.textContent = c ? (c.message || '') : '';
+      out.dataset.state = c ? c.state : '';
+    }).catch(() => { out.textContent = ''; });
+  }
+
+  function _bindReadVia(row, p, a, ch) {
+    const readRow = row.querySelector('[data-readvia-row]');
+    if (!readRow) return;
+    const out = readRow.querySelector('[data-readvia-status]');
+    const patch = (body) => fetch(_readViaUrl(p, a.channel_id), {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ platform: ch.platform }, body)),
+    }).then((r) => r.json().then((j) => ({ ok: r.ok, j }))).then(({ ok, j }) => {
+      if (!ok) { out.textContent = (j && j.error) || 'could not save'; return false; }
+      return j;
+    }).catch(() => { out.textContent = 'could not save'; return false; });
+
+    readRow.querySelectorAll('[data-readvia]').forEach((b) => b.addEventListener('click', () => {
+      const next = b.dataset.readvia;
+      if ((a.read_via === 'api' ? 'api' : 'pane') === next) return;
+      patch({ read_via: next }).then((acc) => {
+        if (!acc) return;
+        a.read_via = acc.read_via;
+        const effect = `${ch.label} is now read via ${next === 'api' ? 'the ' + (ch.platform === 'x' ? 'X' : 'LinkedIn') + ' API (paid per read)' : 'the browser pane (no charge)'}.`;
+        _log(p, effect);
+        DeskV1Kit.toast(effect);
+        _rerender();
+      });
+    }));
+    const prof = readRow.querySelector('[data-readvia-profile]');
+    if (prof) prof.addEventListener('change', () => {
+      patch({ browser_profile: prof.value.trim() }).then((acc) => {
+        if (!acc) return;
+        a.browser_profile = acc.browser_profile || '';
+        _showReadCoverage(row, p, ch.platform);
+      });
+    });
+    _showReadCoverage(row, p, ch.platform);
+  }
+
   // ── Accounts + voice ────────────────────────────────────────────────────
   function _accountRowHTML(p, a) {
     const ch = _channel(a.channel_id);
@@ -168,7 +244,8 @@
           <span class="desk-v1-presence-account-voice">${esc(a.voice || '')}</span>
         </div>
         <div class="desk-v1-rules-hint">${esc(_voiceSample(a.voice))}</div>
-        <div class="desk-v1-rules-inlinerow">Up to <input type="number" min="0" max="30" class="desk-v1-rules-numinput" data-ceiling-input="${esc(a.channel_id)}" value="${esc(ceil.per_week)}"> a week</div>
+        ${_readViaHTML(ch, a)}
+        <div class="desk-v1-rules-inlinerow">Up to<input type="number" min="0" max="30" class="desk-v1-rules-numinput" data-ceiling-input="${esc(a.channel_id)}" value="${esc(ceil.per_week)}"> a week</div>
         <div class="desk-v1-rules-inlinerow">At least <input type="number" min="0" max="72" class="desk-v1-rules-numinput" data-gap-input="${esc(a.channel_id)}" value="${esc(ceil.min_gap_h)}"> hours apart</div>
         <div class="desk-v1-rules-pop-preview" data-ceiling-preview="${esc(a.channel_id)}" hidden></div>
       </div>`;
@@ -181,7 +258,9 @@
       const previewEl = row.querySelector(`[data-ceiling-preview="${chId}"]`);
       const ceilInput = row.querySelector(`[data-ceiling-input="${chId}"]`);
       const gapInput = row.querySelector(`[data-gap-input="${chId}"]`);
-      if (ceilInput) ceilInput.addEventListener('change', () => {
+      const acct = p.presence.accounts.find((x) => x.channel_id === chId);
+      if (acct && ch) _bindReadVia(row, p, acct, ch);
+      if (ceilInput)ceilInput.addEventListener('change', () => {
         const prev = (p.presence.ceilings[chId] || {}).per_week || 0;
         const next = parseInt(ceilInput.value, 10) || 0;
         if (next === prev) return;
