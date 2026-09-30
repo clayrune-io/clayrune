@@ -204,6 +204,11 @@
     };
   }
 
+  // R2-15 (§10.4): the Retro section mounts at the foot of this same panel,
+  // through a backward-compatible seam (desk-v1-retro.js, undefined until
+  // that file loads) — same "own file, own hook" convention as the Proposed/
+  // Draft seams desk-v1-campaign.js already uses. This file never branches
+  // on retro internals.
   function _renderAll(el, camp) {
     const goal = _goalOf(camp);
     el.innerHTML = `
@@ -212,8 +217,12 @@
           ${_editorHTML(goal)}
           ${camp.state === 'active' ? _effectivenessHTML(camp, goal) : ''}
         </div>
+        <div class="desk-v1-retro-mount" id="desk-v1-retro-mount"></div>
       </div>`;
     _bindEditor(el, camp);
+    if (typeof window.deskV1RenderRetroSection === 'function') {
+      window.deskV1RenderRetroSection(document.getElementById('desk-v1-retro-mount'), camp);
+    }
   }
 
   function deskV1RenderResults(el, params) {
