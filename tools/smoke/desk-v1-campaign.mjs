@@ -690,12 +690,16 @@ async function runPhoneLayout(browser) {
 }
 
 // ── screenshots (default tone only, per the ticket brief). ─────────────────
-// ── R2-2f (Ron 2026-09-30): the campaign page's Goal stop carries a Project
-// select as its first field. Picking one sets camp.projectId through the
-// commandBus (Undo reverts it); a draft with no project can't launch; and a
-// project-less draft renders every stop without throwing or printing
-// "undefined"/"null". Driven from a hand-built project-less draft so this
-// smoke doesn't depend on Home's button (desk-v1-home.mjs covers that). ─────
+// ── R2-2g (Ron 2026-09-30, replaces R2-2f's "Project select first on Goal"):
+// the project is picked at LAUNCH, not up front. A new campaign page has no
+// project selector on the Goal stop and no crumb picker (zero until Launch,
+// then exactly one); a project-less draft runs every stop and every setup
+// step without throwing or printing "undefined"/"null"; Launch carries the
+// Project select, Start stays disabled until one is picked, a pick goes
+// through the commandBus (Undo reverts), and the picked project's ceilings
+// apply before Start. Agents are per PROJECT only (Ron's amendment): a
+// project-less draft has no per-campaign agent picker and never writes
+// camp.how.agent, and a project with no agent does not block Start. ─────────
 async function runProjectSelect(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   const campId = await page.evaluate(() => {
@@ -704,82 +708,175 @@ async function runProjectSelect(browser) {
     window.deskV1Nav('campaign', { campaignId: camp.id, projectId: null });
     return camp.id;
   });
-  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
-  const pid = () => page.evaluate((id) => window.DeskV1Fixtures.campaigns.find((c) => c.id === id).projectId, campId);
+  await page.waitForSelector('[data-setup-title]', { timeout: 4000 });
+  const camp = (fn, ...a) => page.evaluate(([id, src, args]) => new Function('c', 'args', 'return (' + src + ')(c, args)')(window.DeskV1Fixtures.campaigns.find((c) => c.id === id), args), [campId, fn.toString(), a]);
+  const pid = () => camp((c) => c.projectId);
+  const rerender = () => page.evaluate(() => window.deskV1Render());
+  const selectCount = () => page.evaluate(() => document.querySelectorAll('select[data-setup-project]').length);
+  const crumbPickers = () => page.evaluate(() => document.querySelectorAll('#desk-v1-crumb .desk-v1-projects-picker').length);
 
-  const first = await page.evaluate(() => {
-    const sel = document.querySelector('[data-setup-project]');
-    return { value: sel.value, prompt: sel.selectedOptions[0].textContent, hint: !!document.querySelector('[data-setup-project-hint]'), pill: (document.querySelector('.desk-v1-camp-state-pill') || {}).textContent };
-  });
-  first.value === '' && /Pick a project/.test(first.prompt) && first.hint
-    ? ok(`R2-2f: a project-less draft shows an empty Project select with a "Pick a project" prompt (pill "${(first.pill || '').trim()}")`)
-    : fail(`R2-2f: empty Project select wrong: ${JSON.stringify(first)}`);
-
-  // Launch is blocked with no project: listed first, links to ① Goal, Start disabled.
-  await page.click('.desk-v1-map-stop[data-stop="launch"]');
-  await page.waitForSelector('.desk-v1-map-launch', { timeout: 4000 });
-  const launch = await page.evaluate(() => ({
-    startDisabled: document.querySelector('[data-map-start-btn]').disabled,
-    missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing-link')).map((b) => b.textContent.trim()),
-    status: document.querySelector('.desk-v1-map-launch-status').textContent.trim(),
-    goalState: document.querySelector('.desk-v1-map-stop[data-stop="goal"]').dataset.state,
+  // Goal stop: no project select, no crumb picker, no "Pick a project" gate.
+  const first = await page.evaluate(() => ({
+    selects: document.querySelectorAll('select[data-setup-project]').length,
+    crumb: document.querySelectorAll('#desk-v1-crumb .desk-v1-projects-picker').length,
+    gate: /Setup\s*[—-]\s*Pick a project/.test(document.querySelector('.desk-v1-campaign').innerText),
+    step1: !!document.querySelector('[data-setup-title]'),
   }));
-  launch.startDisabled && /project/.test(launch.missing[0] || '') && launch.goalState === 'needs_you'
-    ? ok(`R2-2f: Launch is blocked with no project ("${launch.missing[0]}" listed first, Start disabled, ① Goal shows needs-you; status "${launch.status}")`)
-    : fail(`R2-2f: Launch not blocked on a missing project: ${JSON.stringify(launch)}`);
-  await page.click('.desk-v1-map-launch-missing-link');
-  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
-  const backAtGoal = await page.$eval('.desk-v1-map-stop[data-stop="goal"]', (el) => el.dataset.state);
-  backAtGoal === 'here' ? ok('R2-2f: the "project" missing-item link goes to ① Goal') : fail(`R2-2f: project link landed on ${backAtGoal}`);
+  first.selects === 0 && first.crumb === 0 && !first.gate && first.step1
+    ? ok('R2-2g: a project-less draft lands on Goal with NO project selector, NO crumb picker and no "Setup — Pick a project" gate (setup step 1 shows)')
+    : fail(`R2-2g: Goal stop still carries a project control/gate: ${JSON.stringify(first)}`);
 
-  // Every stop renders for a project-less draft: no page errors, no "undefined"/"null" text.
+  // Agents are per project: no per-campaign picker, neutral note, nothing written.
+  const agentBox = await page.evaluate(() => ({
+    neutral: (document.querySelector('[data-no-agent]') || {}).innerText || '',
+    picker: document.querySelectorAll('[data-agent-pick], .desk-v1-posy-agentpick').length,
+    posyBox: document.querySelectorAll('.desk-v1-posy-box').length,
+  }));
+  /No agent yet/.test(agentBox.neutral) && /per project/.test(agentBox.neutral) && agentBox.picker === 0 && agentBox.posyBox === 0 && (await camp((c) => !(c.how && c.how.agent)))
+    ? ok(`R2-2g: project-less draft has a neutral agent note ("${agentBox.neutral.replace(/\s+/g, ' ').trim().slice(0, 70)}…"), NO per-campaign agent picker, camp.how.agent unset`)
+    : fail(`R2-2g: project-less agent box wrong: ${JSON.stringify(agentBox)}`);
+
+  // Every stop renders for a project-less draft: no page errors, no raw values, no crumb picker.
   for (const stop of ['how', 'what', 'when', 'where', 'launch', 'goal']) {
     await page.click(`.desk-v1-map-stop[data-stop="${stop}"]`);
     await page.waitForTimeout(40);
     const txt = await page.evaluate(() => document.querySelector('.desk-v1-campaign').innerText);
     /\bundefined\b|\bnull\b|\[object/.test(txt)
-      ? fail(`R2-2f: project-less draft at ${stop} prints a raw value: ${JSON.stringify((txt.match(/.{0,30}(undefined|null|\[object).{0,30}/) || [''])[0])}`)
-      : ok(`R2-2f: project-less draft renders ${stop} with no "undefined"/"null" text`);
+      ? fail(`R2-2g: project-less draft at ${stop} prints a raw value: ${JSON.stringify((txt.match(/.{0,30}(undefined|null|\[object).{0,30}/) || [''])[0])}`)
+      : ok(`R2-2g: project-less draft renders ${stop} with no "undefined"/"null" text`);
   }
+  (await crumbPickers()) === 0 ? ok('R2-2g: no crumb Projects picker on the campaign route at any stop') : fail('R2-2g: crumb picker shown on a campaign stop');
+  (await camp((c) => !(c.how && c.how.agent))) ? ok('R2-2g: visiting every stop never wrote camp.how.agent') : fail('R2-2g: camp.how.agent was written');
 
-  // Picking a project sets camp.projectId and moves the page on to step 1.
-  await page.selectOption('[data-setup-project]', 'clayrune');
-  await page.waitForSelector('[data-setup-title]', { timeout: 4000 });
-  const picked = await pid();
-  const afterPick = await page.evaluate(() => ({ value: document.querySelector('[data-setup-project]').value, title: document.querySelector('[data-setup-title]').value, hint: !!document.querySelector('[data-setup-project-hint]') }));
-  picked === 'clayrune' && afterPick.value === 'clayrune' && !afterPick.hint && /Clayrune campaign/.test(afterPick.title)
-    ? ok(`R2-2f: picking a project sets camp.projectId (${picked}) and step 1 defaults from it ("${afterPick.title}")`)
-    : fail(`R2-2f: pick did not stick: ${JSON.stringify({ picked, afterPick })}`);
-  const toast = (await page.textContent('.toast').catch(() => '') || '');
-  /Set campaign project to Clayrune/.test(toast) ? ok(`R2-2f: the pick is a commandBus toast: "${toast.trim().slice(0, 60)}"`) : fail(`R2-2f: pick toast missing/wrong: ${JSON.stringify(toast)}`);
-
-  // Changing to another project re-defaults the auto-filled title (untouched), and Undo reverts.
-  await page.selectOption('[data-setup-project]', 'engulfing_scanner');
-  await page.waitForSelector('[data-setup-title]', { timeout: 4000 });
-  const switched = await page.evaluate(() => ({ value: document.querySelector('[data-setup-project]').value, title: document.querySelector('[data-setup-title]').value }));
-  (await pid()) === 'engulfing_scanner' && /Engulfing scanner campaign/.test(switched.title)
-    ? ok(`R2-2f: switching project re-defaults the untouched title ("${switched.title}")`)
-    : fail(`R2-2f: switch wrong: ${JSON.stringify(switched)}`);
-  await page.locator('.toast .toast-btn.primary').last().click(); // newest toast's Undo (older toasts stay stacked)
-  await page.waitForTimeout(60);
-  const undone = await page.evaluate(() => ({ value: document.querySelector('[data-setup-project]').value, title: document.querySelector('[data-setup-title]').value }));
-  (await pid()) === 'clayrune' && undone.value === 'clayrune' && /Clayrune campaign/.test(undone.title)
-    ? ok('R2-2f: Undo reverts the project pick (projectId, select and defaulted title)')
-    : fail(`R2-2f: Undo did not revert: ${JSON.stringify({ pid: await pid(), undone })}`);
-  // Undo the first pick too: back to no project.
-  await page.selectOption('[data-setup-project]', 'engulfing_scanner');
-  await page.waitForTimeout(40);
-  await page.locator('.toast .toast-btn.primary').last().click(); // newest toast's Undo (older toasts stay stacked)
-  await page.waitForTimeout(40);
-  (await pid()) === 'clayrune' ? ok('R2-2f: a second pick + Undo returns to the prior project') : fail(`R2-2f: second Undo wrong: ${await pid()}`);
-
-  // With a project picked the Launch gate no longer lists "project".
+  // Launch: exactly one project select (empty), Start disabled, "project" listed.
   await page.click('.desk-v1-map-stop[data-stop="launch"]');
-  await page.waitForSelector('.desk-v1-map-launch', { timeout: 4000 });
-  const launched = await page.evaluate(() => Array.from(document.querySelectorAll('.desk-v1-map-launch-missing-link')).map((b) => b.textContent.trim()));
-  !launched.some((m) => /project/.test(m)) ? ok(`R2-2f: once a project is picked Launch no longer lists it (still missing: ${launched.join(', ') || 'nothing'})`) : fail(`R2-2f: Launch still lists project: ${JSON.stringify(launched)}`);
+  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
+  const launch = await page.evaluate(() => ({
+    selects: document.querySelectorAll('select[data-setup-project]').length,
+    crumb: document.querySelectorAll('#desk-v1-crumb .desk-v1-projects-picker').length,
+    value: document.querySelector('[data-setup-project]').value,
+    prompt: document.querySelector('[data-setup-project]').selectedOptions[0].textContent,
+    options: Array.from(document.querySelector('[data-setup-project]').options).filter((o) => o.value).map((o) => o.textContent),
+    startDisabled: document.querySelector('[data-map-start-btn]').disabled,
+    missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li')).map((b) => b.textContent.trim()),
+    launchState: document.querySelector('.desk-v1-map-stop[data-stop="launch"]').dataset.state,
+  }));
+  launch.selects === 1 && launch.crumb === 0 && launch.value === '' && /Pick a project/.test(launch.prompt) && launch.options.includes('Clayrune') && launch.options.includes('Engulfing scanner')
+    ? ok(`R2-2g: Launch shows exactly ONE project selector anywhere on the page, empty, listing ${launch.options.join(', ')}`)
+    : fail(`R2-2g: Launch project select wrong: ${JSON.stringify(launch)}`);
+  launch.startDisabled && launch.missing.some((m) => /^project/.test(m))
+    ? ok(`R2-2g: Start is disabled until a project is picked ("${launch.missing.find((m) => /^project/.test(m))}")`)
+    : fail(`R2-2g: Launch not blocked on a missing project: ${JSON.stringify(launch)}`);
+
+  // Fill the plan by hand (accounts, cadence 3/wk, post cap) so the ceilings have something to check.
+  await camp((c) => { c.plan.accounts = ['ch-x-ron']; c.plan.cadence.per_week = 3; c.plan.end = { date: null, post_cap: 12 }; });
+  await rerender();
+  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
+
+  // Pick Engulfing scanner (x ceiling 2/wk, no desk agent): cadence 3 conflicts, Start stays disabled.
+  await page.selectOption('[data-setup-project]', 'engulfing_scanner');
+  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
+  const conflict = await page.evaluate(() => ({
+    value: document.querySelector('[data-setup-project]').value,
+    startDisabled: document.querySelector('[data-map-start-btn]').disabled,
+    missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li')).map((b) => b.textContent.trim()),
+    toast: (document.querySelector('.toast') || {}).textContent || '',
+  }));
+  (await pid()) === 'engulfing_scanner' && conflict.value === 'engulfing_scanner' && /Set campaign project to Engulfing scanner/.test(conflict.toast)
+    ? ok(`R2-2g: picking a project on Launch sets camp.projectId and is a commandBus toast ("${conflict.toast.trim().slice(0, 60)}")`)
+    : fail(`R2-2g: pick did not stick: ${JSON.stringify({ pid: await pid(), conflict })}`);
+  conflict.startDisabled && conflict.missing.some((m) => /cadence.*3\/wk is over Engulfing scanner's ceiling of 2\/wk/.test(m)) && !conflict.missing.some((m) => /^project/.test(m))
+    ? ok(`R2-2g: after the pick the project's ceiling applies: "${conflict.missing.find((m) => /cadence/.test(m))}", Start still disabled`)
+    : fail(`R2-2g: ceiling conflict not shown after pick: ${JSON.stringify(conflict)}`);
+
+  // Undo reverts the pick: back to no project, Project listed again.
+  await page.locator('.toast .toast-btn.primary').last().click();
+  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
+  const undone = await page.evaluate(() => ({ value: document.querySelector('[data-setup-project]').value, startDisabled: document.querySelector('[data-map-start-btn]').disabled, missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li')).map((b) => b.textContent.trim()) }));
+  (await pid()) === null && undone.value === '' && undone.startDisabled && undone.missing.some((m) => /^project/.test(m)) && !undone.missing.some((m) => /cadence/.test(m))
+    ? ok('R2-2g: Undo reverts the Launch pick (camp.projectId null, select empty, conflict gone, project listed again)')
+    : fail(`R2-2g: Undo did not revert: ${JSON.stringify({ pid: await pid(), undone })}`);
+
+  // Clayrune (x ceiling 3/wk): no conflict, Start enabled.
+  await page.selectOption('[data-setup-project]', 'clayrune');
+  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
+  const okPick = await page.evaluate(() => ({ startDisabled: document.querySelector('[data-map-start-btn]').disabled, missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li')).map((b) => b.textContent.trim()) }));
+  (await pid()) === 'clayrune' && !okPick.startDisabled && okPick.missing.length === 0
+    ? ok('R2-2g: a project whose ceilings fit (Clayrune 3/wk) leaves nothing missing and enables Start')
+    : fail(`R2-2g: Clayrune pick wrong: ${JSON.stringify({ pid: await pid(), okPick })}`);
+
+  // A project with NO agent (Engulfing scanner) must not block Start; the project-level label stays, no per-campaign picker.
+  await camp((c) => { c.plan.cadence.per_week = 2; });
+  await page.selectOption('[data-setup-project]', 'engulfing_scanner');
+  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
+  const noAgent = await page.evaluate(() => ({
+    startDisabled: document.querySelector('[data-map-start-btn]').disabled,
+    missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li')).map((b) => b.textContent.trim()),
+    agentLabel: (document.querySelector('.desk-v1-camp-posy .desk-thread-name') || {}).textContent || '',
+    picker: document.querySelectorAll('[data-agent-pick], .desk-v1-posy-agentpick').length,
+  }));
+  const engAgent = await page.evaluate(() => window.DeskV1Fixtures.projects.find((p) => p.id === 'engulfing_scanner').presence.desk_agent || null);
+  engAgent === null && !noAgent.startDisabled && noAgent.missing.length === 0 && noAgent.picker === 0 && /Pick who plans for this project/.test(noAgent.agentLabel) && (await camp((c) => !(c.how && c.how.agent)))
+    ? ok('R2-2g: a project with no agent does not block Start, keeps its project-level "Pick who plans for this project" label, no per-campaign picker, camp.how.agent unset')
+    : fail(`R2-2g: missing agent blocks/changes Launch: ${JSON.stringify({ engAgent, noAgent })}`);
+  await page.click('[data-map-start-btn]');
+  await page.waitForSelector('[data-sheet-confirm]', { timeout: 4000 });
+  !(await page.$eval('[data-sheet-confirm]', (b) => b.disabled)) ? ok('R2-2g: the Start sheet confirm is enabled with no agent assigned') : fail('R2-2g: Start sheet confirm disabled without an agent');
+  await page.click('[data-sheet-confirm]');
+  await page.waitForTimeout(80);
+
+  // After launch the project is read-only on Launch.
+  await page.click('.desk-v1-map-stop[data-stop="launch"]');
+  await page.waitForTimeout(60);
+  const ro = await page.evaluate(() => ({ state: null, selects: document.querySelectorAll('select[data-setup-project]').length, ro: (document.querySelector('[data-launch-project-ro]') || {}).textContent || '' }));
+  ro.selects === 0 && /Project: Engulfing scanner/.test(ro.ro)
+    ? ok(`R2-2g: once launched, Launch shows the project read-only ("${ro.ro.trim()}"), no select`)
+    : fail(`R2-2g: launched campaign still editable/missing project line: ${JSON.stringify(ro)}`);
 
   reportUncaught(pageErrors, '[project-select]');
+  await ctx.close();
+}
+
+// ── R2-2g: the setup steps themselves run for a project-less draft — step 1
+// (subject/title/brief/outcome typed by hand, no defaults from a project),
+// step 2 (every workspace channel offered, "Draft the plan" needs no agent),
+// then Proposed's Launch still demands a project before Start. ──────────────
+async function runProjectLessSetup(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  const campId = await page.evaluate(() => {
+    const camp = window.deskV1CreateDraftCampaign(null);
+    window.DeskV1Fixtures.campaigns.push(camp);
+    window.deskV1Nav('campaign', { campaignId: camp.id, projectId: null });
+    return camp.id;
+  });
+  await page.waitForSelector('[data-setup-title]', { timeout: 4000 });
+  const s1 = await page.evaluate(() => ({ title: document.querySelector('[data-setup-title]').value, brief: document.querySelector('[data-setup-brief]').value, label: document.querySelector('[data-subject-label]').value, text: document.querySelector('.desk-v1-campaign').innerText }));
+  s1.title === '' && s1.brief === '' && s1.label === '' && !/\bundefined\b|\bnull\b/.test(s1.text)
+    ? ok('R2-2g: setup step 1 for a project-less draft is blank (nothing defaulted from a project), no "undefined"/"null"')
+    : fail(`R2-2g: project-less step 1 wrong: ${JSON.stringify(s1)}`);
+  await page.fill('[data-subject-label]', 'Restore points');
+  await page.fill('[data-setup-title]', 'Restore points launch');
+  await page.fill('[data-setup-brief]', 'Tell people about restore points.');
+  await page.click('[data-setup-continue]');
+  await page.waitForSelector('[data-setup-account]', { timeout: 4000 });
+  const s2 = await page.evaluate(() => ({ accounts: document.querySelectorAll('[data-setup-account]').length, text: document.querySelector('.desk-v1-campaign').innerText }));
+  s2.accounts > 0 && !/\bundefined\b|\bnull\b/.test(s2.text)
+    ? ok(`R2-2g: setup step 2 for a project-less draft offers the workspace channels (${s2.accounts}) with no agent required`)
+    : fail(`R2-2g: project-less step 2 wrong: ${JSON.stringify(s2)}`);
+  await page.click('[data-setup-draftplan]');
+  await page.waitForTimeout(120);
+  const after = await page.evaluate((id) => { const c = window.DeskV1Fixtures.campaigns.find((x) => x.id === id); return { state: c.state, projectId: c.projectId, agent: !!(c.how && c.how.agent), accounts: c.plan.accounts.length }; }, campId);
+  after.state === 'proposed' && after.projectId === null && !after.agent && after.accounts > 0
+    ? ok('R2-2g: "Draft the plan" completes with no project and no agent (campaign Proposed, projectId null, how.agent unset)')
+    : fail(`R2-2g: Draft the plan dead-ended: ${JSON.stringify(after)}`);
+  await page.click('.desk-v1-map-stop[data-stop="launch"]');
+  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
+  const blocked = await page.evaluate(() => ({ startDisabled: document.querySelector('[data-map-start-btn]').disabled, missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li')).map((b) => b.textContent.trim()) }));
+  blocked.startDisabled && blocked.missing.some((m) => /^project/.test(m))
+    ? ok('R2-2g: a Proposed project-less campaign is still blocked at Launch until a project is picked')
+    : fail(`R2-2g: Proposed project-less Launch not blocked: ${JSON.stringify(blocked)}`);
+
+  reportUncaught(pageErrors, '[project-less-setup]');
   await ctx.close();
 }
 
@@ -817,6 +914,7 @@ try {
   await runPosyDraftPersistence(browser);
   await runPhoneLayout(browser);
   await runProjectSelect(browser);
+  await runProjectLessSetup(browser);
   await captureScreenshots(browser);
   exitCode = bad === 0 ? 0 : 1;
 } catch (e) {

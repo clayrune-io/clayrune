@@ -2130,6 +2130,7 @@
   cursor: pointer; padding: 9px 12px; font-family: inherit; width: 100%; min-height: 44px;
 }
 .desk-v1-map-launch-missing-link:hover { background: var(--surface3); }
+.desk-v1-map-launch-missing-project { color: var(--amber-text); font-size: 12.5px; font-weight: 600; padding: 2px 2px; }
 .desk-v1-map-launch-start {
   background: var(--accent); border: none; border-radius: 8px; color: #fff;
   font-size: 13px; font-weight: 700; padding: 11px 14px; cursor: pointer; font-family: inherit; min-height: 44px;

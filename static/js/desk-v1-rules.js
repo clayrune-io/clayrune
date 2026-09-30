@@ -353,9 +353,16 @@
     // missing one with the step (§2.3 table) it belongs to, same wording
     // pattern as the Resume path's toast (desk-v1-campaign.js:239-240).
     const missingLabel = validity.missing.map((m) => `${m.label} (step ${m.step})`).join(', ');
-    const noteHTML = validity.ok
-      ? 'Starting doesn’t approve any piece.'
-      : `Can’t start yet — missing ${esc(missingLabel)}.`;
+    // R2-2g: the project is picked at Launch, so a not-yet-started campaign
+    // without one can't be confirmed from here either (this sheet is also
+    // opened from Proposed's own Start button, not just the Launch stop).
+    const noProject = (camp.state === 'draft' || camp.state === 'proposed') && !project;
+    const canStart = validity.ok && !noProject;
+    const noteHTML = noProject
+      ? 'Can’t start yet — pick a project on the Launch stop.'
+      : (validity.ok
+        ? 'Starting doesn’t approve any piece.'
+        : `Can’t start yet — missing ${esc(missingLabel)}.`);
 
     const wrap = document.createElement('div');
     wrap.className = 'desk-v1-rules-overlay';
@@ -369,7 +376,7 @@
         <div class="desk-v1-rules-sheet-note">${noteHTML}</div>
         <div class="desk-v1-rules-sheet-actions">
           <button type="button" class="desk-v1-rules-sheet-cancel" data-sheet-cancel>Cancel</button>
-          <button type="button" class="desk-v1-rules-sheet-confirm" data-sheet-confirm${validity.ok ? '' : ' disabled'}>Confirm — Start campaign</button>
+          <button type="button" class="desk-v1-rules-sheet-confirm" data-sheet-confirm${canStart ? '' : ' disabled'}>Confirm — Start campaign</button>
         </div>
       </div>`;
     shell.appendChild(wrap);

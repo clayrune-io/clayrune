@@ -494,11 +494,8 @@
     if (!camp) { el.innerHTML = ''; return; }
     const map = _campMap(camp);
     const project = _project(camp.projectId);
-    const missing = (DeskV1Kit.validatePlan(camp.plan, project) || { missing: [] }).missing;
+    const missing = _launchMissing(camp, project).missing;
     const missingStops = new Set(missing.map((m) => m.stop));
-    // R2-2f: a draft with no project can't launch — ① Goal is where the Project
-    // select lives, so it carries the ⚠ until one is picked.
-    if (camp.state === 'draft' && !project) missingStops.add('goal');
     const stopsHTML = DeskV1Kit.MAP_STOPS.map((stop) => {
       const state = _stopState(stop, params.panel, map, missingStops);
       const word = DeskV1Kit.MAP_STOP_WORDS[stop];
@@ -563,6 +560,38 @@
     };
   }
 
+  // R2-2g: the project is required to start and can change until then.
+  function _projectEditable(camp) { return camp.state === 'draft' || camp.state === 'proposed'; }
+
+  // validatePlan's bounds plus the two that only exist once a project does
+  // (R2-2g, Ron 2026-09-30: the project is picked at Launch): no project at
+  // all, and a plan that doesn't fit the picked project — cadence over its
+  // per-account ceiling, or an account it hasn't connected. Only for a
+  // not-yet-started campaign; a running one keeps validatePlan's clamp.
+  function _launchMissing(camp, project) {
+    const planResult = DeskV1Kit.validatePlan(camp.plan, project) || { ok: true, missing: [] };
+    if (!_projectEditable(camp)) return planResult;
+    const extra = [];
+    if (!project) {
+      extra.push({ bound: 'project', stop: 'launch', label: 'project', detail: 'pick one above' });
+    } else {
+      const plan = camp.plan || {};
+      const presence = project.presence || {};
+      const connected = (presence.accounts || []).map((a) => a.channel_id);
+      const offProject = (plan.accounts || []).filter((id) => !connected.includes(id));
+      if (offProject.length) {
+        extra.push({ bound: 'accounts', stop: 'where', label: 'accounts', detail: `${offProject.map((id) => (_channel(id) || {}).label || id).join(', ')} not connected to ${project.name}` });
+      }
+      const perWeek = plan.cadence && plan.cadence.per_week;
+      const eff = planResult.effective || {};
+      if (perWeek != null && eff.cadence_from_project && eff.cadence_per_week != null && perWeek > eff.cadence_per_week) {
+        extra.push({ bound: 'cadence', stop: 'when', label: 'cadence', detail: `${perWeek}/wk is over ${project.name}'s ceiling of ${eff.cadence_per_week}/wk` });
+      }
+    }
+    const missing = extra.concat(planResult.missing.filter((m) => !extra.some((x) => x.bound === m.bound)));
+    return { ok: missing.length === 0, missing, effective: planResult.effective };
+  }
+
   // ⑥ Launch (§4.1 row): validatePlan gates Start, each missing bound links
   // to the stop that fixes it (`missing[].stop`, kit.js R2-1). Reuses
   // desk-v1-rules.js's existing Start sheet (`deskV1OpenStartSheet`) rather
@@ -586,26 +615,27 @@
       return;
     }
     const project = _project(camp.projectId);
-    const planResult = DeskV1Kit.validatePlan(camp.plan, project) || { ok: true, missing: [] };
-    // R2-2f: no project picked (Home's page-level New campaign starts without
-    // one) blocks Start the same way any other missing bound does — listed
-    // first, linking to ① Goal where the Project select is. Drafts only: a
-    // project-less Proposed (the Add-to "+ New campaign" drop path) has no
-    // Project select anywhere to send the user to.
-    const noProject = camp.state === 'draft' && !project;
-    const result = noProject
-      ? { ok: false, missing: [{ bound: 'project', stop: 'goal', label: 'project', detail: 'pick a project' }].concat(planResult.missing) }
-      : planResult;
+    const result = _launchMissing(camp, project);
+    // R2-2g: the project is chosen HERE, not up front. Missing "project" is a
+    // plain row (the select right above it is the fix); the rest link to the
+    // stop that fixes them. The select is editable while the campaign hasn't
+    // started (draft / proposed), a read-only line after.
+    const projectEditable = _projectEditable(camp);
     const missingHTML = result.missing.length
-      ? `<ul class="desk-v1-map-launch-missing">${result.missing.map((m) => `
-          <li><button type="button" class="desk-v1-map-launch-missing-link" data-missing-stop="${esc(m.stop)}">${esc(m.label)}${m.detail ? ` — ${esc(m.detail)}` : ''}</button></li>`).join('')}</ul>`
+      ? `<ul class="desk-v1-map-launch-missing">${result.missing.map((m) => m.bound === 'project'
+        ? `<li class="desk-v1-map-launch-missing-project" data-missing-project>${esc(m.label)} — ${esc(m.detail)}</li>`
+        : `<li><button type="button" class="desk-v1-map-launch-missing-link" data-missing-stop="${esc(m.stop)}">${esc(m.label)}${m.detail ? ` — ${esc(m.detail)}` : ''}</button></li>`).join('')}</ul>`
       : '<div class="desk-v1-stub-inline">Everything needed to launch is filled in.</div>';
     el.innerHTML = `
       <div class="desk-v1-map-launch">
+        ${projectEditable ? '' : `<div class="desk-v1-rules-hint" data-launch-project-ro>Project: ${esc(project ? project.name : 'none')}</div>`}
         <div class="desk-v1-map-launch-status">${result.ok ? '✓ Ready to launch' : `⚠ ${esc(result.missing.length)} to fix before Start`}</div>
         ${missingHTML}
         <button type="button" class="desk-v1-map-launch-start" data-map-start-btn ${result.ok ? '' : 'disabled'}>Start campaign</button>
       </div>`;
+    if (projectEditable && typeof window.deskV1MountProjectField === 'function') {
+      window.deskV1MountProjectField(el.querySelector('.desk-v1-map-launch'), camp);
+    }
     el.querySelectorAll('[data-missing-stop]').forEach((btn) => {
       btn.onclick = () => _gotoMapStop(camp, btn.getAttribute('data-missing-stop'));
     });
@@ -1207,6 +1237,19 @@
     const scopeLabel = st.selection.scope === 'card' ? st.selection.label : camp.plan.title;
     const project = _project(camp.projectId);
     const agentRef = DeskV1Kit.deskAgentRef({ project, campaign: camp });
+    // R2-2g (Ron 2026-09-30): agents are assigned per PROJECT, never per
+    // campaign, and a project needs none. A project-less draft has nothing to
+    // plan with yet, so this column is a neutral note (no box, no picker —
+    // nothing here writes `camp.how.agent`) and the user fills the stops by
+    // hand. A project WITHOUT an agent keeps the box and its project-level
+    // "Pick who plans for this project" label; nothing blocks on it.
+    if (!project) {
+      el.innerHTML = `<div class="desk-v1-camp-posy desk-v1-camp-noagent" data-no-agent>
+        <div class="desk-thread-head"><span class="desk-thread-name">No agent yet</span></div>
+        <div class="desk-v1-rules-hint">Pick a project at Launch — agents are assigned per project. Until then, fill in the stops by hand.</div>
+      </div>`;
+      return;
+    }
     el.innerHTML = `<div class="desk-v1-camp-posy">${DeskV1Kit.posyBoxHTML({
       inputId: 'desk-v1-camp-posy-input', scopeLabel, suggestion: sugg.suggestion, chips: sugg.chips, agentRef,
     })}</div>`;
