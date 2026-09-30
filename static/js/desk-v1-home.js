@@ -170,9 +170,10 @@
 
   // ── reusable shelf pair (T2a's Add tray, docs/desk_v1_r0_plan.md: "the Add
   // tray reuses T1's shelf renderer (desk-v1-home.js) - reuse, don't fork").
-  // Home's own _renderShelves below is now a thin call into this with its
-  // existing adapter/data — byte-identical output, nothing behavioural
-  // changes for Home. A caller on another surface supplies its own
+  // R2-2d: Home no longer renders these shelves (they are WHERE's and WHAT's
+  // side trays now, spec §2), so the campaign page's Add tray is the only
+  // caller; `_homeShelfAdapter` stays as the default for a caller that passes
+  // none. A caller supplies its own
   // `targetAdapter` (what a drop target IS there) and may narrow which
   // channels/assets show (`hideChannelIds`, `channels`, `assets`) and which
   // action a tile/Connect button runs (`onMaterialAction`, `onConnect`).
@@ -220,6 +221,13 @@
   const _SUBJECT_GLYPH = { project: '◉', product: '▣', feature: '✦', audience: '◎' };
   const _PLATFORM_WORD = { x: 'X', linkedin: 'LinkedIn', blog: 'Blog' };
   function _platformWord(ch) { return (ch && _PLATFORM_WORD[ch.platform]) || (ch && ch.label) || ''; }
+  // NEXT POST names the account, not just the platform (mockup: `Fri 09:00 ·
+  // 𝕏 @ron`, `Wed 10:00 · LinkedIn`): X carries its glyph + handle, since
+  // one platform can hold several accounts; LinkedIn/Blog read as the word.
+  function _accountWord(ch) {
+    if (ch && ch.platform === 'x') return `𝕏${ch.identity ? ' ' + ch.identity : ''}`;
+    return _platformWord(ch);
+  }
 
   // A campaign is "just started" once it's Active but barely into its own
   // term — dividing a near-zero progress by a near-zero elapsed fraction
@@ -269,7 +277,10 @@
   }
 
   function _stageHTML(camp) {
-    const { glyph, word } = DeskV1Kit.stateLabel(camp.state);
+    const { glyph: kitGlyph, word } = DeskV1Kit.stateLabel(camp.state);
+    // The mockup's Active reads `● Active` (a dot); the kit's own ▶ is the
+    // campaign page's pill glyph, which the board must not inherit.
+    const glyph = camp.state === 'active' ? '●' : kitGlyph;
     const elapsed = camp.state === 'active' ? _fractionElapsed(camp.term) : null;
     const justStarted = elapsed != null && elapsed < _JUST_STARTED_ELAPSED;
     return `<span class="desk-v1-state-label desk-v1-home-row-state" data-state="${esc(camp.state || '')}">
@@ -347,9 +358,14 @@
     const best = _nextPostForCampaign(camp);
     if (best) {
       const ch = _channel(best.channelId);
-      return `<span class="desk-v1-home-nextpost">${esc(_fmtNextPostShort(best.iso))} &middot; ${esc(_platformWord(ch))}</span>`;
+      return `<span class="desk-v1-home-nextpost">${esc(_fmtNextPostShort(best.iso))} &middot; ${esc(_accountWord(ch))}</span>`;
     }
-    const stopWord = camp.map && camp.map.stop && DeskV1Kit.MAP_STOP_WORDS[camp.map.stop];
+    // A proposed/draft campaign is always somewhere on the map (no `map` yet
+    // = Goal, the same default as desk-v1-project.js's `_draftCardLabel`), so
+    // its cell never reads blank.
+    const isDraft = camp.state === 'proposed' || camp.state === 'draft';
+    const stop = (camp.map && camp.map.stop) || (isDraft ? 'goal' : null);
+    const stopWord = stop && DeskV1Kit.MAP_STOP_WORDS[stop];
     return stopWord
       ? `<span class="desk-v1-home-nextpost desk-v1-home-nextpost-draft">Draft &middot; at ${esc(stopWord)}</span>`
       : '<span class="desk-v1-home-nextpost-empty">&mdash;</span>';
@@ -426,7 +442,7 @@
     const resolved = DeskV1Kit.resolveDeskAgent(DeskV1Kit.deskAgentRef({ project }));
     const label = resolved.name ? `${resolved.name} plans & writes` : DeskV1Kit.UNRESOLVED_AGENT_LABEL;
     return `<button type="button" class="desk-v1-home-block-agent${resolved.name ? '' : ' desk-v1-home-block-agent-unresolved'}" data-project-id="${esc(project.id)}">
-      <span aria-hidden="true">&#129302;</span> ${esc(label)}
+      <span aria-hidden="true">${resolved.name ? '&#129302;' : '&#9888;'}</span> ${esc(label)}
     </button>`;
   }
 
@@ -522,7 +538,7 @@
     const projects = _projects();
     const titleRow = `<div class="desk-v1-home-board-title">
       <h2 class="desk-v1-home-board-heading">The Desk</h2>
-      <button type="button" class="btn-dispatch desk-v1-home-newcamp-page-btn">&#65291; New campaign</button>
+      <button type="button" class="desk-v1-home-newcamp-page-btn">&#65291; New campaign</button>
     </div>`;
     const legend = `<div class="desk-v1-home-legend"><span class="desk-v1-home-legend-bar" aria-hidden="true"></span> bar = goal reached <span class="desk-v1-home-legend-sep" aria-hidden="true">|</span> tick = time elapsed</div>`;
     const colHead = `<div class="desk-v1-home-board-head">
@@ -598,87 +614,6 @@
     }
   }
 
-  function _renderShelves() {
-    deskV1RenderShelfPair({
-      channelsHost: document.getElementById('desk-v1-home-shelf-channels'),
-      materialHost: document.getElementById('desk-v1-home-shelf-material'),
-    });
-  }
-
-  // ── render: promote box ───────────────────────────────────────────────
-  function _submitPromote(ta) {
-    const text = (ta && ta.value.trim()) || '';
-    if (!text) return;
-    if (ta) ta.value = '';
-    const camp = _createProposedCampaign(text);
-    DeskV1Kit.commandBus.run({
-      label: `Proposed “${camp.plan.title}”`,
-      do: () => { _fx().campaigns.push(camp); _renderStatusBoard(); },
-      undo: () => { const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); _renderStatusBoard(); },
-    });
-    deskV1Nav('campaign', { campaignId: camp.id });
-  }
-
-  function _handlePromoteIconAction(action, ta) {
-    if (action === 'files') {
-      const input = document.createElement('input');
-      input.type = 'file'; input.multiple = true;
-      input.onchange = () => {
-        const files = Array.from(input.files || []);
-        if (!files.length) return;
-        if (ta) ta.value = (ta.value ? ta.value + ' ' : '') + `[Attached: ${files.map((f) => f.name).join(', ')}]`;
-        DeskV1Kit.toast(`Attached ${files.length === 1 ? files[0].name : files.length + ' files'} (fixture only — no upload in R0).`);
-      };
-      input.click();
-      return;
-    }
-    if (action === 'link') {
-      const url = window.prompt('Link to promote:');
-      if (url && url.trim() && ta) ta.value = (ta.value ? ta.value + ' ' : '') + url.trim();
-      return;
-    }
-    DeskV1Kit.toast('Voice capture lands with the video director (T5).');
-  }
-
-  function _handlePromoteDrop(e, ta) {
-    const dt = e.dataTransfer;
-    if (dt && dt.files && dt.files.length) {
-      const files = Array.from(dt.files);
-      if (ta) ta.value = (ta.value ? ta.value + ' ' : '') + `[Attached: ${files.map((f) => f.name).join(', ')}]`;
-      DeskV1Kit.toast(`Attached ${files.length === 1 ? files[0].name : files.length + ' files'} (fixture only — no upload in R0).`);
-      return;
-    }
-    const uri = dt && (dt.getData('text/uri-list') || dt.getData('text/plain'));
-    if (uri && uri.trim() && ta) ta.value = (ta.value ? ta.value + ' ' : '') + uri.trim();
-  }
-
-  function _bindPromoteBox(el) {
-    const drop = el.querySelector('#desk-v1-home-promote-drop');
-    const ta = el.querySelector('#desk-v1-home-promote-input');
-    const btn = el.querySelector('.desk-v1-home-promote-btn');
-    if (drop) {
-      // Native OS file/link drop (HTML5 DnD), the established precedent for
-      // OS-originated drops elsewhere (project-actions.js's attDrop,
-      // render-core.js) — distinct from pointer-drag.js, which is only for
-      // INTRA-app gestures (§10) and never fires for a real OS drag.
-      drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('drag-over'); });
-      drop.addEventListener('dragleave', () => drop.classList.remove('drag-over'));
-      drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('drag-over'); _handlePromoteDrop(e, ta); });
-    }
-    if (ta) {
-      ta.addEventListener('paste', (e) => {
-        const files = e.clipboardData && e.clipboardData.files;
-        if (files && files.length) {
-          e.preventDefault();
-          DeskV1Kit.toast(`Attached ${files.length === 1 ? files[0].name : files.length + ' files'} from paste (fixture only — no upload in R0).`);
-        }
-      });
-      ta.addEventListener('keydown', (e) => { if (typeof window.handleInputEnter === 'function') window.handleInputEnter(e, () => _submitPromote(ta), null); });
-    }
-    if (btn) btn.onclick = () => _submitPromote(ta);
-    el.querySelectorAll('.desk-v1-home-promote-icon-btn').forEach((b) => { b.onclick = () => _handlePromoteIconAction(b.dataset.promoteAction, ta); });
-  }
-
   // ── crumb-tools (Engagement · Settings) ──────────────────────────────────
   // R2-2c (Dave's review pass 4, §2's one-row header): the project scope
   // picker already lives in the shell's crumb on EVERY Desk route
@@ -734,33 +669,9 @@
     el.innerHTML = `
       <div class="desk-v1-home">
         <div class="desk-v1-home-board" id="desk-v1-home-board"></div>
-        <div class="desk-v1-home-promote">
-          <div class="desk-v1-home-promote-drop" id="desk-v1-home-promote-drop">
-            <textarea id="desk-v1-home-promote-input" class="desk-v1-home-promote-input" rows="2"
-              placeholder="What would you like to promote? Type, drop a file or link, or paste."></textarea>
-            <button type="button" class="btn-dispatch desk-v1-home-promote-btn">Propose</button>
-          </div>
-          <div class="desk-v1-home-promote-phone-actions">
-            <button type="button" class="desk-v1-home-promote-icon-btn" data-promote-action="files">&#128206; Files</button>
-            <button type="button" class="desk-v1-home-promote-icon-btn" data-promote-action="link">&#128279; Link</button>
-            <button type="button" class="desk-v1-home-promote-icon-btn" data-promote-action="say">&#127908; Say it</button>
-          </div>
-        </div>
-        <div class="desk-v1-home-shelves">
-          <div class="desk-v1-home-shelf">
-            <div class="desk-v1-home-shelf-title">Channels</div>
-            <div class="desk-v1-home-shelf-items" id="desk-v1-home-shelf-channels"></div>
-          </div>
-          <div class="desk-v1-home-shelf">
-            <div class="desk-v1-home-shelf-title">Material</div>
-            <div class="desk-v1-home-shelf-items" id="desk-v1-home-shelf-material"></div>
-          </div>
-        </div>
       </div>`;
     _renderCrumbTools();
-    _bindPromoteBox(el);
     _renderStatusBoard();
-    _renderShelves();
     _startHeartbeat(el);
     // Block headers resolve an agent per PROJECT (`_blockHeaderAgentHTML`),
     // outside any `.desk-v1-posy-box` — kit.js's own `_repaintDeskAgentBoxes`

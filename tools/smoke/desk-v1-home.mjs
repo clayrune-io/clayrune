@@ -78,7 +78,9 @@ async function fulfillOrAbort(route) {
   if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
   if (path === '/api/projects') return J(PROJECTS);
   if (path === '/api/config') return J({ desk_v1: true, user_timezone: '' });
-  if (path === '/api/characters') return J([]);
+  // Clayrune's project has presence.desk_agent 'global:claydo' (resolved here);
+  // Engulfing's has none (unresolved) - the two block-header chips in the mockup.
+  if (path === '/api/characters') return J([{ scope: 'global', name: 'claydo', agent_name: 'Claydo', avatar: '' }]);
   return route.abort();
 }
 
@@ -219,16 +221,68 @@ async function runToneRenderChecks(browser, tone) {
     fail(`[${tone.name}] A13: worker-offline banner missing/wrong: ${JSON.stringify(bannerText)}`);
   }
 
-  // Shelves: 3 channels, 2 recent assets, four Material intake tiles.
-  const channelItems = await page.$$eval('#desk-v1-home-shelf-channels .desk-v1-shelf-item', (els) => els.length);
-  if (channelItems === 3) ok(`[${tone.name}] Channels shelf: 3 fixture channels`);
-  else fail(`[${tone.name}] Channels shelf wrong count: ${channelItems}`);
-  const tileCount = await page.$$eval('.desk-v1-home-material-tile', (els) => els.length);
-  if (tileCount === 4) ok(`[${tone.name}] Material shelf: 4 intake tiles (Create video/Upload/Connect/Record)`);
-  else fail(`[${tone.name}] Material shelf tile count wrong: ${tileCount}`);
-  const assetItems = await page.$$eval('.desk-v1-home-material-assets .desk-v1-shelf-item', (els) => els.length);
-  if (assetItems === 2) ok(`[${tone.name}] Material shelf: 2 recent assets`);
-  else fail(`[${tone.name}] Material shelf recent-asset count wrong: ${assetItems}`);
+  // R2-2d: Channels + Material shelves and the promote box are gone from Home
+  // (they are WHERE's / WHAT's side trays; New campaign is the only entry).
+  const gone = await page.evaluate(() => ({
+    shelfSection: !!document.querySelector('.desk-v1-home-shelf, .desk-v1-home-shelves, [class*="desk-v1-home-shelf-"], .desk-v1-home-material-tile, .desk-v1-home-material-assets'),
+    promote: !!document.querySelector('.desk-v1-home-promote, textarea, #desk-v1-home-promote-input'),
+    shelfText: /\b(Channels|Material)\b/.test(document.querySelector('.desk-v1-home').innerText),
+  }));
+  !gone.shelfSection ? ok(`[${tone.name}] R2-2d: no shelf section on Home`) : fail(`[${tone.name}] R2-2d: a shelf element still renders on Home`);
+  !gone.shelfText ? ok(`[${tone.name}] R2-2d: no Channels / Material heading on Home`) : fail(`[${tone.name}] R2-2d: Home still shows a Channels/Material heading`);
+  !gone.promote ? ok(`[${tone.name}] R2-2d: no promote textarea on Home`) : fail(`[${tone.name}] R2-2d: a promote textarea still renders on Home`);
+
+  // R2-2d row parity with mockups_r2/1-home.png. Stage / pace / next post read
+  // per row; the fixture clock is the real one, camp-4's term starts today.
+  const rows = await page.evaluate(() => {
+    const out = {};
+    document.querySelectorAll('.desk-v1-home-row').forEach((r) => {
+      const cell = (sel) => (r.querySelector(sel) ? r.querySelector(sel).textContent.replace(/\s+/g, ' ').trim() : null);
+      out[r.dataset.campaignId] = { stage: cell('.desk-v1-home-row-stage'), pace: cell('.desk-v1-home-row-pace'), next: cell('.desk-v1-home-row-next') };
+    });
+    return out;
+  });
+  const wantRows = [
+    ['camp-1 stage is dot + word', rows['camp-1'] && rows['camp-1'].stage, /^● Active$/],
+    ['camp-2 stage is diamond + word', rows['camp-2'] && rows['camp-2'].stage, /^◇ Proposed$/],
+    ['camp-4 (day 0) stage reads "Active · just started"', rows['camp-4'] && rows['camp-4'].stage, /^● Active · just started$/],
+    ['camp-2 next post reads "Draft · at Launch", never a dash', rows['camp-2'] && rows['camp-2'].next, /^Draft · at Launch$/],
+    ['camp-1 next post names the LinkedIn account', rows['camp-1'] && rows['camp-1'].next, /^\w{3} \d\d:\d\d · LinkedIn$/],
+    ['camp-4 next post carries the X handle', rows['camp-4'] && rows['camp-4'].next, /^\w{3} \d\d:\d\d · 𝕏 @ron$/],
+    ['camp-3 next post carries the X handle', rows['camp-3'] && rows['camp-3'].next, /^\w{3} \d\d:\d\d · 𝕏 @ron$/],
+    ['camp-4 tracked goal at ~0% elapsed paces "On track", not a dash', rows['camp-4'] && rows['camp-4'].pace, /^On track$/],
+    ['camp-2 untracked goal keeps the dash pace', rows['camp-2'] && rows['camp-2'].pace, /^—$/],
+  ];
+  for (const [label, got, re] of wantRows) {
+    re.test(got || '') ? ok(`[${tone.name}] R2-2d: ${label}: ${JSON.stringify(got)}`) : fail(`[${tone.name}] R2-2d: ${label}: got ${JSON.stringify(got)}`);
+  }
+
+  // Top-right "＋ New campaign" is the filled accent primary; the per-block
+  // one stays a text link (transparent background).
+  const btnStyles = await page.evaluate(() => {
+    const top = getComputedStyle(document.querySelector('.desk-v1-home-newcamp-page-btn'));
+    const blk = getComputedStyle(document.querySelector('.desk-v1-home-block-newcamp'));
+    return { topBg: top.backgroundColor, topColor: top.color, blockBg: blk.backgroundColor };
+  });
+  const isFilled = (bg) => !/^rgba\(0, 0, 0, 0\)$|^transparent$/.test(bg);
+  if (isFilled(btnStyles.topBg) && btnStyles.topColor === 'rgb(255, 255, 255)') ok(`[${tone.name}] R2-2d: page-level "＋ New campaign" is a filled primary (${btnStyles.topBg}, white text)`);
+  else fail(`[${tone.name}] R2-2d: page-level "＋ New campaign" is not a filled primary: ${JSON.stringify(btnStyles)}`);
+  if (!isFilled(btnStyles.blockBg)) ok(`[${tone.name}] R2-2d: per-block "＋ New campaign" stays a text link (transparent)`);
+  else fail(`[${tone.name}] R2-2d: per-block "＋ New campaign" is filled: ${btnStyles.blockBg}`);
+
+  // Block-header agent chip: Clayrune resolved, Engulfing not (mockup).
+  const chips = await page.evaluate(() => {
+    const out = {};
+    document.querySelectorAll('.desk-v1-home-block').forEach((b) => {
+      const chip = b.querySelector('.desk-v1-home-block-agent');
+      out[b.querySelector('.desk-v1-home-block-name').textContent.trim()] = { text: chip.textContent.replace(/\s+/g, ' ').trim(), unresolved: chip.classList.contains('desk-v1-home-block-agent-unresolved') };
+    });
+    return out;
+  });
+  if (chips['Clayrune'] && /Claydo plans & writes$/.test(chips['Clayrune'].text) && !chips['Clayrune'].unresolved) ok(`[${tone.name}] R2-2d: Clayrune header chip reads "Claydo plans & writes"`);
+  else fail(`[${tone.name}] R2-2d: Clayrune header chip wrong: ${JSON.stringify(chips['Clayrune'])}`);
+  if (chips['Engulfing scanner'] && /Pick who plans for this project ›$/.test(chips['Engulfing scanner'].text) && chips['Engulfing scanner'].unresolved) ok(`[${tone.name}] R2-2d: Engulfing header chip is the unresolved "Pick who plans for this project ›"`);
+  else fail(`[${tone.name}] R2-2d: Engulfing header chip wrong: ${JSON.stringify(chips['Engulfing scanner'])}`);
 
   reportUncaught(pageErrors, `[${tone.name}]`);
   await ctx.close();
@@ -303,81 +357,43 @@ async function runNeedsYouDeepLinks(browser) {
   await ctx.close();
 }
 
-// ── A4 + UX-03 (Dave's review pass 3): Home no longer has a campaign grid to
-// drag/drop onto — _homeShelfAdapter.onDrop always misses — so a shelf item's
-// click/keyboard "Add to…" path (UX-05) is now the ONLY way Home attaches a
-// channel/asset to a campaign, across every project at once (no "ambiguous
-// drop" case left: the picker always lists every campaign, suffixed with its
-// project name since the fixture ships two). ───────────────────────────────
-async function runAddToMenuAttach(browser) {
+// ── R2-2d: `＋ New campaign` is Home's ONLY entry now (the promote box and the
+// Channels/Material shelves are gone, so the old Add to… menu attach has no
+// Home surface; the campaign page's Add tray covers it - desk-v1-campaign.mjs).
+// The per-block link creates a Proposed campaign for THAT project and lands on
+// it; the page-level button asks which project first. ────────────────────────
+async function runNewCampaignEntry(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
 
-  const before = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').plan.accounts.length);
-  const channelItem = await page.$('#desk-v1-home-shelf-channels .desk-v1-shelf-item[data-channel-id="ch-x-ron"]');
-  await channelItem.click();
-  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
-  const menuText = (await page.textContent('.desk-v1-addto-menu').catch(() => '') || '');
-  if (/Windows beta testers — Clayrune/.test(menuText) && /Restore points launch — Clayrune/.test(menuText)
-    && /Signal alerts for day traders — Engulfing scanner/.test(menuText) && /New campaign/.test(menuText)) {
-    ok('Add to…: menu lists every campaign across both fixture projects, suffixed with its project name, plus "+ New campaign"');
-  } else {
-    fail(`Add to… menu wrong: ${JSON.stringify(menuText)}`);
-  }
-  // ch-x-ron is already on camp-1 (fixture) — exercise the "already on"
-  // refusal, the same case the old drag-onto-card test covered.
-  await page.click('.desk-v1-addto-menu button:has-text("Windows beta testers")');
-  const toastText = (await page.$eval('.toast:last-of-type', (el) => el.textContent).catch(() => '') || '');
-  if (/already on/.test(toastText)) ok(`Add to…: attaching a channel already on the campaign is refused: "${toastText.trim()}"`);
-  else fail(`Add to…: expected an "already on" refusal toast, got: ${JSON.stringify(toastText)}`);
-  const after = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').plan.accounts.length);
-  if (after === before) ok('Add to…: refused attach does not mutate plan.accounts');
-  else fail(`Add to…: plan.accounts mutated on a refused attach: ${before} -> ${after}`);
-
-  // Material asset -> a real campaign DOES add a new family (the literal
-  // "adds a version" case per §13/A4), and IS undo-able via the command bus.
-  const famCountBefore = await page.evaluate(() => window.DeskV1Fixtures.families.length);
-  const assetItem = await page.$('.desk-v1-home-material-assets .desk-v1-shelf-item');
-  await assetItem.click();
-  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
-  await page.click('.desk-v1-addto-menu button:has-text("Signal alerts for day traders")');
-  const famCountAfter = await page.evaluate(() => window.DeskV1Fixtures.families.length);
-  if (famCountAfter === famCountBefore + 1) ok('Add to…: attaching a Material asset to a campaign adds a new family (a drafting version)');
-  else fail(`Add to…: family count did not increase: ${famCountBefore} -> ${famCountAfter}`);
-  const hasUndo = await page.$eval('.toast:last-of-type', (el) => /toast-btn/.test(el.innerHTML)).catch(() => false);
-  if (hasUndo) {
-    await page.click('.toast:last-of-type .toast-btn.primary');
-    const famCountUndone = await page.evaluate(() => window.DeskV1Fixtures.families.length);
-    if (famCountUndone === famCountBefore) ok('Add to…: Undo removes the family the attach added');
-    else fail(`Add to…: Undo did not remove the added family: ${famCountBefore} -> ${famCountUndone}`);
-  } else {
-    const lastToastText = (await page.$eval('.toast:last-of-type', (el) => el.textContent).catch(() => '') || '');
-    fail(`Add to…: asset-attach toast had no Undo button: ${JSON.stringify(lastToastText)}`);
-  }
-
-  // "+ New campaign" still creates one and navigates straight to it (UX-03's
-  // old "ambiguous drop -> + New campaign" case, now reached via the picker).
-  const campCountBefore = await page.evaluate(() => window.DeskV1Fixtures.campaigns.length);
-  const channelItem2 = await page.$('#desk-v1-home-shelf-channels .desk-v1-shelf-item[data-channel-id="ch-blog"]');
-  await channelItem2.click();
-  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
-  await page.click('.desk-v1-addto-menu button:has-text("New campaign")');
+  const before = await page.evaluate(() => window.DeskV1Fixtures.campaigns.length);
+  await page.click('.desk-v1-home-block[data-project-id="engulfing_scanner"] .desk-v1-home-block-newcamp');
   await page.waitForSelector('#desk-v1-crumb .desk-v1-crumb-title:has-text("New campaign")', { timeout: 4000 }).catch(() => {});
-  const campCountAfter = await page.evaluate(() => window.DeskV1Fixtures.campaigns.length);
-  const crumbAfterNew = (await page.textContent('#desk-v1-crumb .desk-v1-crumb-title').catch(() => '') || '');
-  if (campCountAfter === campCountBefore + 1) ok('Add to…: "+ New campaign" creates a campaign');
-  else fail(`Add to…: "+ New campaign" did not create a campaign: ${campCountBefore} -> ${campCountAfter}`);
-  if (/New campaign/.test(crumbAfterNew)) ok(`Add to…: "+ New campaign" navigates straight to the new campaign: crumb "${crumbAfterNew.trim()}"`);
-  else fail(`Add to…: did not land on the new campaign: crumb ${JSON.stringify(crumbAfterNew)}`);
+  const created = await page.evaluate(() => {
+    const list = window.DeskV1Fixtures.campaigns;
+    const c = list[list.length - 1];
+    return { count: list.length, projectId: c.projectId, state: c.state };
+  });
+  if (created.count === before + 1 && created.projectId === 'engulfing_scanner' && created.state === 'proposed') ok('R2-2d: per-block "＋ New campaign" creates a Proposed campaign in that project');
+  else fail(`R2-2d: per-block New campaign wrong: ${JSON.stringify({ before, created })}`);
+  const crumb = (await page.textContent('#desk-v1-crumb .desk-v1-crumb-title').catch(() => '') || '');
+  if (/New campaign/.test(crumb)) ok(`R2-2d: New campaign lands on the campaign page: crumb "${crumb.trim()}"`);
+  else fail(`R2-2d: did not land on the new campaign: crumb ${JSON.stringify(crumb)}`);
 
-  reportUncaught(pageErrors, '[addto]');
+  await page.evaluate(() => window.deskV1Nav('home', {}));
+  await page.waitForSelector('.desk-v1-home-newcamp-page-btn', { timeout: 8000 });
+  await page.click('.desk-v1-home-newcamp-page-btn');
+  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
+  const menu = (await page.textContent('.desk-v1-addto-menu').catch(() => '') || '');
+  if (/Clayrune/.test(menu) && /Engulfing scanner/.test(menu) && !/New campaign/.test(menu)) ok('R2-2d: page-level "＋ New campaign" asks which project (both fixture projects listed)');
+  else fail(`R2-2d: page-level New campaign menu wrong: ${JSON.stringify(menu)}`);
+
+  reportUncaught(pageErrors, '[new-campaign]');
   await ctx.close();
 }
 
 // ── Desktop layout (§8 amended row: "each project is its own bordered block
 // with a visible gap between blocks", Ron r2 (a)) — each block must actually
-// be bordered and have visible daylight before the next one, and a channel
-// shelf item renders as ONE pill (grip + badge + add inside a single
-// outline), not a badge-pill nested inside the shelf-item's own pill. ──────
+// be bordered and have visible daylight before the next one. ────────────────
 async function runDesktopLayoutChecks(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
 
@@ -401,17 +417,6 @@ async function runDesktopLayoutChecks(browser) {
     ok(`Visible gap between project blocks: ${blockLayout.gap.toFixed(0)}px`);
   } else {
     fail(`No visible gap between project blocks: ${JSON.stringify(blockLayout)}`);
-  }
-
-  const badgeBorders = await page.evaluate(() => {
-    const item = document.querySelector('#desk-v1-home-shelf-channels .desk-v1-shelf-item');
-    const badge = item.querySelector('.desk-v1-channel-badge');
-    return { itemBorder: getComputedStyle(item).borderStyle, badgeBorder: getComputedStyle(badge).borderStyle };
-  });
-  if (badgeBorders.itemBorder !== 'none' && badgeBorders.badgeBorder === 'none') {
-    ok('Channel shelf item is one pill (badge nested inside carries no border of its own)');
-  } else {
-    fail(`Channel shelf item double-pills: item border ${badgeBorders.itemBorder}, badge border ${badgeBorders.badgeBorder}`);
   }
 
   reportUncaught(pageErrors, '[desktop-layout]');
@@ -459,35 +464,20 @@ async function runR2_2cHeaderAcceptance(browser) {
   await ctx.close();
 }
 
-// ── Phone (§11): promote box shows the icon row (no drag), Home's content
-// rows stack (they always do now — the campaign grid's rail layout that used
-// to need a desktop/phone split is retired), hit targets >=44px. ───────────
+// ── Phone (§11): Home's content rows stack (they always do now — the campaign
+// grid's rail layout that used to need a desktop/phone split is retired), hit
+// targets >=44px. R2-2d removed the promote box + shelves, so their phone
+// checks went with them. ────────────────────────────────────────────────────
 async function runPhoneLayout(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} }, { width: 390, height: 844 });
 
   const layout = await page.evaluate(() => {
-    const phoneActions = document.querySelector('.desk-v1-home-promote-phone-actions');
-    const shelves = document.querySelector('.desk-v1-home-shelves');
-    const promote = document.querySelector('.desk-v1-home-promote');
     const board = document.querySelector('.desk-v1-home-board');
     return {
-      phoneActionsDisplay: getComputedStyle(phoneActions).display,
-      shelvesColumns: getComputedStyle(shelves).gridTemplateColumns.split(' ').length,
-      promoteTop: promote.getBoundingClientRect().top,
-      boardTop: board.getBoundingClientRect().top,
       boardWidth: board.getBoundingClientRect().width,
       homeWidth: document.querySelector('.desk-v1-home').getBoundingClientRect().width,
     };
   });
-  if (layout.phoneActionsDisplay !== 'none') ok('§11: promote box icon row (📎 🔗 🎙) visible at phone width');
-  else fail('§11: promote box icon row hidden at phone width');
-  if (layout.shelvesColumns === 1) ok('§11: Channels + Material shelves stack to a single column');
-  else fail(`§11: shelves did not stack to one column: ${layout.shelvesColumns} columns`);
-  if (layout.boardTop < layout.promoteTop) {
-    ok('§11: phone stack order is the status board, then promote (R2-2c: promote moved below the board)');
-  } else {
-    fail(`§11: phone stack order wrong — board@${layout.boardTop} promote@${layout.promoteTop}`);
-  }
   if (Math.abs(layout.boardWidth - layout.homeWidth) < 2) ok(`§11: status board is full width on phone, no fixed rail (${layout.boardWidth.toFixed(0)}px)`);
   else fail(`§11: status board is not full width: ${layout.boardWidth}px vs ${layout.homeWidth}px column`);
 
@@ -497,13 +487,11 @@ async function runPhoneLayout(browser) {
   const hitTargets = await page.evaluate(() => {
     const els = [
       document.querySelector('.desk-v1-home-settings-btn'),
-      document.querySelector('.desk-v1-home-promote-icon-btn'),
       document.querySelector('.desk-v1-home-row'),
-      document.querySelector('.desk-v1-shelf-item'),
     ].filter(Boolean);
     return els.map((el) => el.getBoundingClientRect().height);
   });
-  if (hitTargets.every((h) => h >= 44)) ok(`§11: header/promote/row/shelf hit targets all >=44px (${hitTargets.map((h) => h.toFixed(0)).join(', ')})`);
+  if (hitTargets.length === 2 && hitTargets.every((h) => h >= 44)) ok(`§11: header/row hit targets all >=44px (${hitTargets.map((h) => h.toFixed(0)).join(', ')})`);
   else fail(`§11: a hit target is under 44px: ${JSON.stringify(hitTargets)}`);
 
   reportUncaught(pageErrors, '[phone]');
@@ -543,7 +531,7 @@ try {
   browser = await chromium.launch();
   for (const tone of TONES) await runToneRenderChecks(browser, tone);
   await runNeedsYouDeepLinks(browser);
-  await runAddToMenuAttach(browser);
+  await runNewCampaignEntry(browser);
   await runDesktopLayoutChecks(browser);
   await runR2_2cHeaderAcceptance(browser);
   await runPhoneLayout(browser);
@@ -558,5 +546,5 @@ try {
 
 console.log(bad
   ? `\n❌ FAIL — ${bad} Desk v1 home check(s) regressed.`
-  : '\n✅ PASS — Desk v1 T1 home: A13 (heartbeat -> hold row), A4/UX-03 (Add to… menu attach), A12 (Needs-you deep-links), phone layout all hold.');
+  : '\n✅ PASS — Desk v1 T1 home: A13 (heartbeat -> hold row), R2-2d (mockup parity, no shelves/promote), A12 (Needs-you deep-links), phone layout all hold.');
 process.exit(exitCode);
