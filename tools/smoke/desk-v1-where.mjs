@@ -184,8 +184,10 @@ async function versionTotal(page, campaignId) {
 
 async function launchStatus(page) {
   await page.click('.desk-v1-map-stop[data-stop="launch"]');
-  await page.waitForSelector('.desk-v1-map-launch-status', { timeout: 4000 });
-  return (await page.textContent('.desk-v1-map-launch-status').catch(() => '') || '').trim();
+  // R2-11: a Live campaign's Launch reads its Live head instead of the old
+  // status line; the Awaiting-approval branch keeps the status line.
+  await page.waitForSelector('.desk-v1-map-launch-status, [data-launch-live]', { timeout: 4000 });
+  return (await page.textContent('.desk-v1-map-launch-status, .desk-v1-launch-live-head').catch(() => '') || '').trim();
 }
 
 async function backToWhere(page) {

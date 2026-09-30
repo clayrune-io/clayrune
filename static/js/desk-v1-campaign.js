@@ -856,7 +856,7 @@
       const live = camp.state === 'paused' ? '⏸ Paused' : (camp.state === 'active' ? '● Live' : DeskV1Kit.stateLabel(camp.state).word);
       footHTML = `
         <div class="desk-v1-launch-live" data-launch-live>
-          <div class="desk-v1-launch-live-head">${esc(live)}${since ? ` · ${camp.state === 'paused' ? 'live ' : ''}since ${esc(_fmtDateLong(since))}` : ''}</div>
+          <div class="desk-v1-launch-live-head">${esc(live)}${since ? `${camp.state === 'paused' ? ' · live' : ''} since ${esc(_fmtDateLong(since))}` : ''}</div>
           ${camp.term ? `<div class="desk-v1-rules-hint" data-launch-term>Term ${esc(camp.term.index || 1)}: ${esc(_fmtDateLong(camp.term.starts))} to ${esc(_fmtDateLong(camp.term.ends))}</div>` : ''}
           ${_approvalLine(camp) ? `<div class="desk-v1-rules-hint" data-launch-approval>${esc(_approvalLine(camp))}</div>` : ''}
           <div class="desk-v1-launch-live-actions">
