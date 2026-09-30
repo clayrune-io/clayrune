@@ -184,7 +184,13 @@
     });
   }
 
-  function _openStoryboard(camp, fam) { window.deskV1Nav('storyboard', { campaignId: camp.id, familyId: fam.id }); }
+  // The piece leaves its create-card for the list the moment its storyboard
+  // opens, so coming back shows it as a row (with its render status).
+  function _openStoryboard(camp, fam) {
+    const card = _state(camp.id).creates.find((c) => c.familyId === fam.id);
+    if (card) _closeCreate(camp, card);
+    window.deskV1Nav('storyboard', { campaignId: camp.id, familyId: fam.id });
+  }
 
   // Studio's New video / image / article tile: queue an empty create-card on
   // the campaign's What before navigating there.
