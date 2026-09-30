@@ -7,11 +7,12 @@
  * The viewer window sizes itself to the picture's natural width
  * (_ivFitBox in mermaid.js), and the toolbar is a child of that window. For a
  * portrait/narrow image (Ron's report: ~330px wide) the window shrank to the
- * old flat 320px floor while the toolbar's 8 fixed buttons (-, 100%, +, reset,
- * bg, save, open, close) needed ~450px in a single un-wrapping flex row. The
- * result: buttons past "save" rendered PAST the toolbar's clipped right edge
- * — present in the DOM, invisible and unreachable, with no wrap, no scroll,
- * no overflow menu to get to them. Even the close button landed out there.
+ * old flat 320px floor while the toolbar's fixed controls (-, 100%, +, reset,
+ * bg, save, open, nav counter, window-controls group) needed far more space
+ * in a single un-wrapping flex row. The result: controls past "save" rendered
+ * PAST the toolbar's clipped right edge — present in the DOM, invisible and
+ * unreachable, with no wrap, no scroll, no overflow menu to get to them. Even
+ * the close button landed out there.
  *
  * `node --check` and the boot smoke test both miss this class of bug entirely
  * — the viewer boots fine, every button exists in the DOM, it just renders
@@ -116,10 +117,18 @@ async function measureToolbar(page) {
   await openNarrowViewer(page, 220, 400);
   const geo = await measureToolbar(page);
 
-  check('desktop: expected 8 image-viewer controls all present',
-    geo.controlCount === 8, `${geo.controlCount} controls`);
+  // 9, not the old 8: the close button was replaced by an "n / N" nav
+  // counter span plus the minimize/maximize/close window-controls group
+  // (one wrapping div — still a single toolbar child), per the image-viewer
+  // nav feature (2026-09-29).
+  check('desktop: expected 9 image-viewer controls all present',
+    geo.controlCount === 9, `${geo.controlCount} controls`);
   for (const c of geo.controls) {
-    check(`desktop: "${c.label}" is visible`, c.visible);
+    // The nav counter is legitimately EMPTY (zero-size) here: this test opens
+    // a data: URL image with no folder to page through, so per spec it hides
+    // just like the prev/next arrows do — collapsing to 0x0 rather than
+    // reserving visible dead space achieves that.
+    if (c.label !== 'iv-counter') check(`desktop: "${c.label}" is visible`, c.visible);
     check(`desktop: "${c.label}" sits inside the toolbar box`, c.insideToolbar);
     check(`desktop: "${c.label}" sits inside the window's content box`, c.insideContent);
   }
@@ -153,10 +162,10 @@ async function measureToolbar(page) {
   await openNarrowViewer(page, 150, 400);
   const geo = await measureToolbar(page);
 
-  check('mobile 390px: expected 8 image-viewer controls all present',
-    geo.controlCount === 8, `${geo.controlCount} controls`);
+  check('mobile 390px: expected 9 image-viewer controls all present',
+    geo.controlCount === 9, `${geo.controlCount} controls`);
   for (const c of geo.controls) {
-    check(`mobile 390px: "${c.label}" is visible`, c.visible);
+    if (c.label !== 'iv-counter') check(`mobile 390px: "${c.label}" is visible`, c.visible);
     check(`mobile 390px: "${c.label}" sits inside the window's content box`, c.insideContent);
   }
   check('mobile 390px: page does not scroll horizontally',

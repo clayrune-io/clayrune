@@ -15,6 +15,14 @@
 
 const _mermaidBuffers = {};   // sessionId -> { placeholder, lines }
 
+// The viewers stay open while the chat composer keeps focus, so their
+// document-level key handlers must leave keys typed into a text field alone
+// (Ron 2026-09-30: ArrowLeft/Right in the composer switched pictures).
+function _isTypingTarget(t) {
+  return !!t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT'
+                 || t.tagName === 'SELECT' || t.isContentEditable);
+}
+
 function _mermaidPlaceholderHTML(source) {
   // For HTML-string builders (outputLines, openPlanViewer).
   return `<div class="mermaid-block" data-source="${esc(source)}">` +
@@ -432,6 +440,40 @@ function _ivToolbarMinWidth(toolbar) {
   return Math.ceil(sum + gap * Math.max(0, kids.length - 1) + pad);
 }
 
+// Same glyph pair the project modal's maximize button draws (interactions.js
+// _maxBtnInner, exposed on window). Inline fallback for the one call site
+// that renders the button's initial HTML synchronously during this module's
+// own load — before interactions.js (which loads after mermaid.js in
+// index.html) has necessarily finished — mirroring browser-pane.js's
+// _bpMaxIcon, which hits the exact same ordering gap for the same reason.
+function _ivMaxIcon(isFull) {
+  if (typeof window._maxBtnInner === 'function') return window._maxBtnInner(isFull);
+  return isFull
+    ? '<svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">' +
+      '<rect x="1.5" y="4.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3"/>' +
+      '<path d="M4.7 4.3V2.8a1.3 1.3 0 0 1 1.3-1.3h5.2a1.3 1.3 0 0 1 1.3 1.3V8a1.3 1.3 0 0 1-1.3 1.3H9.8" ' +
+      'stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>'
+    : '<svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">' +
+      '<rect x="2" y="2" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.3"/></svg>';
+}
+
+// Minimize/Maximize/Close, styled off the project modal header's own button
+// classes (render-core.js .modal-minimize/.modal-maximize/.modal-close) so
+// they look native rather than inventing a second button style just for this
+// overlay. `.modal-window-controls` normally floats absolute top-right over
+// a modal's content; here it rides inline at the end of the toolbar's own
+// flex row instead (same position:static override Desk's header already
+// applies for the same reason). Shared by both viewers that call
+// _ivWindowify — the '_iv-min'/'_iv-max'/'_iv-close' hooks below are what it
+// wires up.
+function _ivWinControlsHTML() {
+  return `<div class="mermaid-viewer-wincontrols modal-window-controls" style="position:static;display:flex;gap:4px;margin-left:auto">
+      <button class="modal-minimize _iv-min" title="Minimize">&#x2015;</button>
+      <button class="modal-maximize _iv-max" title="Maximize" aria-label="Maximize">${_ivMaxIcon(false)}</button>
+      <button class="modal-close _iv-close" title="Close (Esc)">&#10005;</button>
+    </div>`;
+}
+
 function _ivWindowify(overlay, content, toolbar) {
   _IV_STACK.push(overlay);
   const raise = () => {
@@ -499,10 +541,98 @@ function _ivWindowify(overlay, content, toolbar) {
   document.addEventListener('mouseup', endDrag);
   document.addEventListener('touchmove', onTouchMove, { passive: false });
   document.addEventListener('touchend', endDrag);
+
+  // ── Minimize → chip in #minimized-tray, same dock/style every other
+  // window minimizes into (modal-manager.js minimizeModal/restoreModal,
+  // browser-pane.js _bpMinimizePane) — but this overlay isn't in
+  // modal-manager's openModals map, so like browser-pane it reimplements the
+  // dock-and-chip contract standalone rather than calling into it. The chip's
+  // own close (×) forwards to the toolbar's REAL close button rather than
+  // duplicating closeIt's cleanup — closeIt is defined by the call site
+  // after this returns, and its listener is already attached by the time a
+  // user could ever click a minimized chip's close.
+  let chip = null;
+  const minimize = () => {
+    const tray = document.getElementById('minimized-tray');
+    if (!tray) return;         // no dock on this surface — nothing to minimize into
+    untrack();
+    overlay.style.display = 'none';
+    const img = content.querySelector('.mermaid-viewer-svg img');
+    const label = (img && img.alt) || 'Image';
+    chip = document.createElement('div');
+    chip.className = 'minimized-chip';
+    chip.innerHTML = `<span class="chip-status" style="background:#4caf50"></span>` +
+      `<span>&#128247; ${esc(label)}</span>` +
+      `<span class="chip-close" title="Close">&#10005;</span>`;
+    chip.addEventListener('click', e => {
+      if (e.target.closest('.chip-close')) {
+        const closeBtn = toolbar.querySelector('._iv-close');
+        if (closeBtn) closeBtn.click();
+        return;
+      }
+      restore();
+    });
+    tray.appendChild(chip);
+  };
+  const restore = () => {
+    overlay.style.display = '';
+    if (chip) { chip.remove(); chip = null; }
+    raise();
+  };
+  const minBtn = toolbar.querySelector('._iv-min');
+  if (minBtn) minBtn.addEventListener('click', e => { e.stopPropagation(); minimize(); });
+
+  // ── Maximize/restore — fills the whole viewport, matching
+  // .modal-window.is-maximized .modal-content (render-core.js) and
+  // browser-pane.js's _bpApplyMaximizedRect for the same reason: border/
+  // radius are cleared too, or the box would be 2px wider/taller than the
+  // viewport it's meant to exactly fill. `pin()` converts the still-flex-
+  // centered window to fixed geometry first if it's never been dragged —
+  // maximize has to work as the very first click, not just after a drag.
+  let maxState = null;
+  const maxBtn = toolbar.querySelector('._iv-max');
+  const toggleMaximize = () => {
+    if (maxState) {
+      const g = maxState; maxState = null;
+      content.style.left = g.left; content.style.top = g.top;
+      content.style.width = g.width; content.style.height = g.height;
+      content.style.border = g.border; content.style.borderRadius = g.borderRadius;
+      content.style.maxWidth = g.maxWidth; content.style.maxHeight = g.maxHeight;
+    } else {
+      pin();
+      maxState = {
+        left: content.style.left, top: content.style.top,
+        width: content.style.width, height: content.style.height,
+        border: content.style.border, borderRadius: content.style.borderRadius,
+        maxWidth: content.style.maxWidth, maxHeight: content.style.maxHeight,
+      };
+      content.style.left = '0px';
+      content.style.top = '0px';
+      // The CSS class sets max-width:95vw/max-height:92vh as a resize-drag
+      // ceiling (_ivFitBox) — that caps `width` too, not just clamps overflow,
+      // so without clearing it here the window "maximizes" to only 95%/92%
+      // of the viewport instead of filling it.
+      content.style.maxWidth = 'none';
+      content.style.maxHeight = 'none';
+      content.style.width = window.innerWidth + 'px';
+      content.style.height = window.innerHeight + 'px';
+      content.style.border = 'none';
+      content.style.borderRadius = '0';
+    }
+    if (maxBtn) {
+      maxBtn.innerHTML = _ivMaxIcon(!!maxState);
+      maxBtn.title = maxState ? 'Restore down' : 'Maximize';
+      maxBtn.setAttribute('aria-label', maxBtn.title);
+    }
+  };
+  if (maxBtn) maxBtn.addEventListener('click', e => { e.stopPropagation(); toggleMaximize(); });
+
   return {
-    raise, untrack, isTop,
+    raise, untrack, isTop, minimize, restore,
+    isMinimized: () => overlay.style.display === 'none',
     destroy: () => {
       untrack();
+      if (chip) { chip.remove(); chip = null; }
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', endDrag);
       document.removeEventListener('touchmove', onTouchMove);
@@ -557,7 +687,7 @@ function _openMermaidViewer(source, svg) {
         <button class="mermaid-viewer-btn mermaid-viewer-zoom-reset" title="Fit to view">&#8634;</button>
         <button class="mermaid-viewer-btn mermaid-viewer-source-toggle" title="Toggle source">&lt;/&gt; source</button>
         <button class="mermaid-viewer-btn mermaid-viewer-dl" title="Download as PNG">&#8681; save</button>
-        <button class="mermaid-viewer-btn mermaid-viewer-close" title="Close (Esc)">&times;</button>
+        ${_ivWinControlsHTML()}
       </div>
       <div class="mermaid-viewer-scroll">
         <div class="mermaid-viewer-svg">${big}</div>
@@ -617,7 +747,7 @@ function _openMermaidViewer(source, svg) {
   overlay.addEventListener('click', e => {
     if (e.target === overlay && _downOnBackdrop) closeIt();
   });
-  overlay.querySelector('.mermaid-viewer-close').addEventListener('click', closeIt);
+  overlay.querySelector('._iv-close').addEventListener('click', closeIt);
   overlay.querySelector('.mermaid-viewer-source-toggle').addEventListener('click', e => {
     e.stopPropagation();
     const pre = overlay.querySelector('.mermaid-source');
@@ -638,6 +768,7 @@ function _openMermaidViewer(source, svg) {
   });
   const onKey = e => {
     if (!win.isTop()) return;                     // only the front window listens
+    if (_isTypingTarget(e.target)) return;        // caret keys + '-'/'0' belong to the field
     if (e.key === 'Escape') closeIt();
     else if (e.key === '+' || e.key === '=') gest.zoomBy(1.25);
     else if (e.key === '-') gest.zoomBy(1 / 1.25);
@@ -761,11 +892,14 @@ function _openImageViewer(src) {
         <button class="mermaid-viewer-btn _iv-bg" title="Background (white / checker / dark)">&#9673; bg</button>
         <button class="mermaid-viewer-btn _iv-dl" title="Download image">&#8681; save</button>
         <a class="mermaid-viewer-btn _iv-open" href="${src}" target="_blank" rel="noopener" title="Open original">open ↗</a>
-        <button class="mermaid-viewer-btn _iv-close" title="Close (Esc)">&times;</button>
+        <span class="iv-counter"></span>
+        ${_ivWinControlsHTML()}
       </div>
       <div class="mermaid-viewer-scroll">
         <div class="mermaid-viewer-svg"><img src="${src}" style="display:block;width:100%;height:auto" alt=""></div>
       </div>
+      <button class="iv-nav-btn iv-nav-prev" title="Previous (←)" style="display:none">&#8249;</button>
+      <button class="iv-nav-btn iv-nav-next" title="Next (→)" style="display:none">&#8250;</button>
     </div>`;
   document.body.appendChild(overlay);
   if (typeof makeResizable === 'function') makeResizable(overlay.querySelector('.mermaid-viewer-content'));
@@ -853,12 +987,69 @@ function _openImageViewer(src) {
   overlay.querySelector('._iv-zr').addEventListener('click', e => {
     e.stopPropagation(); gest.fit();
   });
+
+  // ── Prev/Next through the other image files in the same folder ──
+  // Only meaningful when `src` names a real file on disk (/api/serve-image
+  // ?path=...) — a mermaid diagram data: URL or anything else has no
+  // "folder" to step through, so the arrows/counter just stay hidden (their
+  // CSS default) rather than erroring.
+  const counterEl = overlay.querySelector('.iv-counter');
+  const prevBtn = overlay.querySelector('.iv-nav-prev');
+  const nextBtn = overlay.querySelector('.iv-nav-next');
+  let siblings = null;   // { files: [absPath, ...], } once loaded
+  let ivIdx = 0;
+  const srcPath = (() => {
+    try { return new URL(src, location.href).searchParams.get('path'); } catch (_) { return null; }
+  })();
+  const updateNavUI = () => {
+    const n = siblings ? siblings.files.length : 0;
+    const show = n > 1;
+    prevBtn.style.display = show ? '' : 'none';
+    nextBtn.style.display = show ? '' : 'none';
+    counterEl.textContent = show ? `${ivIdx + 1} / ${n}` : '';
+  };
+  const goTo = (i) => {
+    if (!siblings) return;
+    const n = siblings.files.length;
+    ivIdx = ((i % n) + n) % n;
+    const newSrc = '/api/serve-image?path=' + encodeURIComponent(siblings.files[ivIdx]);
+    imgEl.src = newSrc;
+    overlay.querySelector('._iv-open').href = newSrc;
+    updateNavUI();
+  };
+  if (srcPath) {
+    fetch('/api/serve-image/siblings?path=' + encodeURIComponent(srcPath))
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (!data || !Array.isArray(data.files) || !data.files.length) return;
+        siblings = data;
+        ivIdx = data.index || 0;
+        updateNavUI();
+      })
+      .catch(() => {});
+  }
+  // Re-fit the zoom to whatever image is now loaded — covers both the first
+  // load and every nav step (sizeToImage above only ever fires once, for the
+  // window's own initial sizing; navigating deliberately leaves the window's
+  // size/position alone and only re-fits the picture inside it).
+  imgEl.addEventListener('load', () => {
+    if (imgEl.naturalWidth && imgEl.naturalHeight) {
+      gest.setNatural(imgEl.naturalWidth, imgEl.naturalHeight);
+      gest.fit();
+    }
+  });
+  prevBtn.addEventListener('click', e => { e.stopPropagation(); goTo(ivIdx - 1); });
+  nextBtn.addEventListener('click', e => { e.stopPropagation(); goTo(ivIdx + 1); });
+
   const onKey = e => {
     if (!win.isTop()) return;                     // only the front window listens
+    if (_isTypingTarget(e.target)) return;        // caret keys + '-'/'0' belong to the field
     if (e.key === 'Escape') closeIt();
     else if (e.key === '+' || e.key === '=') gest.zoomBy(1.25);
     else if (e.key === '-') gest.zoomBy(1 / 1.25);
     else if (e.key === '0') gest.fit();
+    else if (e.key === 'ArrowLeft') goTo(ivIdx - 1);
+    else if (e.key === 'ArrowRight') goTo(ivIdx + 1);
   };
   document.addEventListener('keydown', onKey);
 }

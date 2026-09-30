@@ -738,6 +738,40 @@ def test_serve_image_allowlist(client):
         outside.unlink()
 
 
+def test_serve_image_siblings(client):
+    _seed(client)
+    folder = client.uploads / 'ivnav'
+    folder.mkdir()
+    for name in ('c.png', 'a.png', 'b.jpg'):
+        (folder / name).write_bytes(b'\x89PNG')
+    (folder / 'readme.txt').write_text('not an image', encoding='utf-8')
+    target = folder / 'b.jpg'
+
+    r = client.get('/api/serve-image/siblings', query_string={'path': str(target)})
+    assert r.status_code == 200
+    data = r.get_json()
+    names = [Path(f).name for f in data['files']]
+    assert names == ['a.png', 'b.jpg', 'c.png']   # sorted, images only
+    assert data['index'] == names.index('b.jpg')
+
+    assert client.get('/api/serve-image/siblings').status_code == 400
+
+    # outside every allowed root → 403
+    outside = client.tmp.parent / 'outside_sib_1_11.png'
+    outside.write_bytes(b'\x89PNG')
+    try:
+        assert client.get('/api/serve-image/siblings',
+                          query_string={'path': str(outside)}).status_code == 403
+    finally:
+        outside.unlink()
+
+    # traversal out of the uploads dir via '..' resolves outside the
+    # allowlist and is refused the same way
+    traversal = str(client.uploads / 'ivnav' / '..' / '..' / '..' / 'etc' / 'passwd')
+    assert client.get('/api/serve-image/siblings',
+                      query_string={'path': traversal}).status_code == 403
+
+
 # ── import ───────────────────────────────────────────────────────────────────
 
 def test_import_from_changelog(client):

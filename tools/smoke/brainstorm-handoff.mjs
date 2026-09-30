@@ -99,6 +99,7 @@ async function installRoutes(page, { dispatchStatus = 200, dispatchBody = null, 
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (/\/conversations$/.test(path)) return route.fulfill({ status: 200, contentType: 'application/json', body: CONVERSATIONS_JSON });
     if (/\/agent-log$/.test(path)) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
@@ -290,6 +291,16 @@ try {
     });
 
     await page.click(`.modal-window[data-modal-id="${PID}"] .exploration-card [data-act="submit"]`);
+    // MC-995: the transfer POST now routes through humanProofFetch() -- answer
+    // the shared passcode modal (convention: mock /api/local-auth/status above,
+    // then drive window._hpSubmit(), same as engine-fallback-settings.mjs).
+    await page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout: 5000 });
+    await page.evaluate(() => {
+      const win = document.querySelector('[data-modal-id^="__human-proof-"]');
+      const modalId = win.dataset.modalId;
+      document.getElementById(`hp-passcode-${modalId}`).value = 'smoke-dash-passcode';
+      window._hpSubmit(modalId);
+    });
     await page.waitForTimeout(300);
 
     (transferBodies.length === 1) ? ok('review form: exactly ONE POST to the transfer route fired on submit')

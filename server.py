@@ -442,6 +442,14 @@ def _load_config():
         # underlying claude oneshot's 180s timeout — diagnosed in the analysis
         # doc (docs/DISPATCH_AND_ROUTING_ANALYSIS.md §C.1 step 1).
         'auto_model_classifier_timeout_secs': 8,
+        # Per-model context-profile reclassification (backlog 4a11b6a5,
+        # mc/context_profile.py). _build_agent_context slims its floor
+        # (MEMORY.md session log, recent conversations, recent activity) for
+        # a model whose runtime declares it 'lean' (AgentRuntime.
+        # context_profile_for). This dict lets a model be reclassified
+        # without a code change: {model_id_or_glob: 'full'|'lean'}, checked
+        # before the runtime's own declared default. Empty = no overrides.
+        'context_profile_overrides': {},
         # Sticky agent settings + respawn-on-flip. Default ON (2026-06-04).
         # When on: (a) the "brief replies everywhere" directive is baked into the
         # spawn-time system prompt (cached, authoritative) instead of being
@@ -594,6 +602,12 @@ PORT = int(os.environ.get('MC_PORT', CONFIG.get('port', 5199)))
 from mc import state as _mc_state
 
 _mc_state.CONFIG = CONFIG  # live alias: mc.core._log reads log_level through this
+
+# MC-1010: auto-pick the sole installed provider CLI as default_provider for
+# an install that never chose one — server-side, so it never goes through the
+# human-gated PUT /api/config route. No-op once a default is set or when
+# installed-CLI count isn't exactly 1. See agent_runtime.maybe_set_sole_provider_default.
+_agent_runtime.maybe_set_sole_provider_default(CONFIG, CONFIG_PATH)
 
 from mc.core import (  # noqa: E402
     _LOG_LEVELS,

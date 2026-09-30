@@ -1007,3 +1007,62 @@ def test_filter_multiturn_later_window_gets_its_own_turn_delta():
     cut = window('2026-09-28T12:00:00Z', '2026-09-28T12:30:00Z')
     assert cut['tokens']['input_processed_total'] == 100
     assert cut['incomplete_coverage_session_count'] == 1
+
+
+def test_counter_reset_segment_is_unmeasured_not_a_confirmed_zero():
+    """MC-1007 (backlog e91647ff): an MC session_id is deliberately kept
+    across a provider-conversation rollover (auto-fresh / new Claude
+    session), and the checkpoint counters are the CURRENT transcript's
+    cumulative totals -- so they restart low. Measured 2026-09-29 on the live
+    store: 18 such regressions over 8 sessions (e.g. 35bf35523b51 went
+    19,372,004 -> 955,267 at 23:15Z). `_segment_delta` clamped each to
+    `max(b - a, 0)`, reporting the reset turn as a 'complete' zero -- a
+    fabricated zero hiding >=126M tokens. A regressed counter means the
+    delta is unknown, so the segment must be 'unavailable'."""
+    ck = _checkpoint('roll', baseline_at='2026-09-28T12:00:00Z',
+                      completion_at='2026-09-28T12:05:00Z',
+                      input_processed_total=500, output_tokens=50)
+    ck['completions'].append(_completion('roll', observed_at='2026-09-28T13:05:00Z',
+                                          input_processed_total=80, output_tokens=8))
+    fact = _fact('roll', started_at='2026-09-28T12:00:00Z', ended_at='2026-09-28T13:05:00Z',
+                  input_processed_total=80, output_tokens=8)
+    rows, incomplete = filter_facts_in_range([fact], {'roll': ck}, provider='claude',
+                                             range_start='2026-09-28T12:05:00Z',
+                                             range_end='2026-09-28T14:00:00Z')
+    totals = compute_totals(rows, {}, incomplete_coverage_session_count=incomplete)
+    assert totals['tokens']['input_processed_total'] != 0
+    assert totals['tokens']['output_tokens'] != 0
+    assert totals['token_coverage_unavailable_count'] == 1
+    # The turn BEFORE the reset is still a real, measured delta.
+    rows, incomplete = filter_facts_in_range([fact], {'roll': ck}, provider='claude',
+                                             range_start='2026-09-28T12:00:00Z',
+                                             range_end='2026-09-28T12:05:00Z')
+    assert compute_totals(rows, {}, incomplete_coverage_session_count=incomplete)[
+        'tokens']['input_processed_total'] == 500
+
+
+def test_calibration_interval_holding_a_counter_reset_is_not_eligible():
+    """MC-1007: the same reset inside a calibration interval used to add a
+    zero-token segment to a 'coverage_complete' interval, biasing
+    tokens-per-point low. It must mark the interval incomplete instead."""
+    samples, checkpoints, facts = _calibration_fixture()
+    t0 = datetime(2026, 9, 28, 17, 0, 0, tzinfo=timezone.utc)
+    b0, b1, b2 = t0, t0 + timedelta(minutes=5), t0 + timedelta(minutes=10)
+    for i, b in enumerate((b0, b1, b2)):
+        samples.append(_sample(raw_utilization=60.0 + 5 * i, source_observed_at=b.isoformat()))
+    ck = _checkpoint('sess-roll', baseline_at=b0.isoformat(), completion_at=None)
+    ck['sample_ticks'] = [_sample_tick('sess-roll', observed_at=b1.isoformat(),
+                                        input_processed_total=900, output_tokens=90)]
+    ck['completions'] = [_completion('sess-roll', observed_at=b2.isoformat(),
+                                      input_processed_total=100, output_tokens=10)]
+    checkpoints['sess-roll'] = ck
+    facts.append(_fact('sess-roll', started_at=b0.isoformat(), ended_at=b2.isoformat(),
+                        input_processed_total=100, output_tokens=10))
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    new_intervals = sorted((iv for iv in cal['all_intervals'] if iv['start'] >= t0),
+                           key=lambda iv: iv['start'])
+    assert len(new_intervals) == 2
+    assert new_intervals[0]['coverage_complete'] is True
+    assert new_intervals[0]['input_processed_total'] == 900
+    assert new_intervals[1]['coverage_complete'] is False

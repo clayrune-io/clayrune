@@ -120,12 +120,23 @@ def _segment_delta(start_row: dict, start_at: datetime, end_row: dict, end_at: d
     trustworthy; the start row already had to carry usable counters or the
     caller would not have paired it here). A delta needs a counter at BOTH
     ends: `None` at either side makes the key `None`, never "cumulative
-    minus zero"."""
+    minus zero".
+
+    A counter that went BACKWARDS is a reset, not zero usage (MC-1007): the
+    MC session_id survives a provider-conversation rollover, but the
+    counters are the new transcript's cumulative totals and restart low.
+    The segment's true delta is then unknown, so every key is `None` and
+    the segment is 'unavailable' -- never clamped to a confirmed zero."""
     turn = {'start': start_at, 'end': end_at, 'fact_only': False,
             'token_coverage': end_row.get('token_coverage') or 'unavailable'}
+    reset = False
     for k in _TOKEN_KEYS:
         a, b = start_row.get(k), end_row.get(k)
-        turn[k] = max(b - a, 0) if (a is not None and b is not None) else None
+        turn[k] = b - a if (a is not None and b is not None) else None
+        reset = reset or (turn[k] is not None and turn[k] < 0)
+    if reset:
+        for k in _TOKEN_KEYS:
+            turn[k] = None
     if turn['input_processed_total'] is None and turn['output_tokens'] is None:
         turn['token_coverage'] = 'unavailable'
     return turn

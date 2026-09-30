@@ -12,7 +12,6 @@ import { execSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 
 const FIXED_JS = execSync('git show HEAD:static/js/conversation.js', { cwd: new URL('../..', import.meta.url), encoding: 'utf8' });
-const MASTER_JS = execSync('git show master:static/js/conversation.js', { cwd: new URL('../..', import.meta.url), encoding: 'utf8' });
 
 async function countMobileDaveChats(sourceJs) {
   const browser = await chromium.launch();
@@ -48,12 +47,17 @@ const liveDaveManualCount = new Set(
 ).size;
 assert.ok(liveDaveManualCount >= 2, `expected >=2 live manual Dave sessions to make this test meaningful, found ${liveDaveManualCount}`);
 
-const masterCount = await countMobileDaveChats(MASTER_JS);
 const fixedCount = await countMobileDaveChats(FIXED_JS);
 
-console.log(`live manual Dave sessions: ${liveDaveManualCount}, mobile Chats tab — master: ${masterCount}, fixed: ${fixedCount}`);
+console.log(`live manual Dave sessions: ${liveDaveManualCount}, mobile Chats tab: ${fixedCount}`);
 
-assert.ok(masterCount < liveDaveManualCount, `master should UNDER-count Dave rows on mobile (bug reproduced) — got ${masterCount} of ${liveDaveManualCount}`);
-assert.equal(fixedCount, liveDaveManualCount, `fixed branch should show all ${liveDaveManualCount} live manual Dave rows on mobile — got ${fixedCount}`);
+// The master-vs-fixed differential this smoke was written to prove (e1ad3f85)
+// no longer has a "before" state to diff against — the fix it guarded has
+// since merged to master (static/js/conversation.js is byte-identical between
+// HEAD and master as of this branch), so a `git show master:...` comparison
+// against itself would always report equal counts. Assert the invariant
+// that actually matters going forward: the live DOM shows every real manual
+// Dave session, no under-count regression.
+assert.equal(fixedCount, liveDaveManualCount, `mobile Chats tab should show all ${liveDaveManualCount} live manual Dave rows — got ${fixedCount}`);
 
-console.log('PASS mobile Chats tab live DOM: master under-counts Dave rows, fixed branch shows all of them');
+console.log('PASS mobile Chats tab live DOM: shows all live manual Dave rows');

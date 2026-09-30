@@ -182,6 +182,24 @@ check('toolbar + zooms in', (await zoom()) === 125, (await zoom()) + '%');
 await page.keyboard.press('0');
 await page.waitForTimeout(200);
 check('key 0 resets', (await zoom()) === 100, (await zoom()) + '%');
+// Keys typed into a text field belong to the field (Ron 2026-09-30: arrows in
+// the composer switched pictures). Same guard covers arrows, '-', '0', Escape.
+await page.evaluate(() => {
+  const ta = document.createElement('textarea');
+  ta.id = '__composer'; document.body.appendChild(ta); ta.focus();
+});
+await page.keyboard.press('-');
+await page.keyboard.press('ArrowLeft');
+await page.keyboard.press('Escape');
+await page.waitForTimeout(200);
+const typed = await page.evaluate(() => ({
+  open: !!document.querySelector('.mermaid-viewer-overlay'),
+  val: document.getElementById('__composer').value,
+}));
+check('keys typed in a text field leave the viewer alone',
+  (await zoom()) === 100 && typed.open && typed.val === '-',
+  `zoom ${await zoom()}%, open ${typed.open}, field "${typed.val}"`);
+await page.evaluate(() => document.getElementById('__composer').remove());
 
 
 // ── 7. It is a WINDOW, not a screen-grabbing modal ──
@@ -255,15 +273,16 @@ const small = await page.evaluate(() => {
   return { w: c.offsetWidth, h: c.offsetHeight };
 });
 // The width floor is no longer a flat ~320px: the window's min-width is
-// raised (on desktop) to fit its OWN toolbar's 8 buttons — a fixed-content
-// row that needs ~450px regardless of how narrow the picture is — so a tiny
-// or narrow image never leaves a control clipped/unreachable past the edge
-// (see _ivToolbarMinWidth / _ivFitBox in mermaid.js). 500 is comfortably
-// above that toolbar floor and comfortably below a viewport-filled window
-// (>900px at this 1280-wide viewport), so it still tells "tiny" from
-// "full-screen" apart.
+// raised (on desktop) to fit its OWN toolbar's buttons — a fixed-content
+// row that needs enough space regardless of how narrow the picture is — so a
+// tiny or narrow image never leaves a control clipped/unreachable past the
+// edge (see _ivToolbarMinWidth / _ivFitBox in mermaid.js). The window-controls
+// group (minimize/maximize/close) plus the "n / N" nav counter (image-viewer
+// nav, 2026-09-29) widened that floor to ~570px; 620 stays comfortably above
+// it and comfortably below a viewport-filled window (>900px at this
+// 1280-wide viewport), so it still tells "tiny" from "full-screen" apart.
 check('a thumbnail opens at the CSS min size, not full-screen',
-  small.w <= 500 && small.h <= 240, `${small.w}x${small.h}`);
+  small.w <= 620 && small.h <= 240, `${small.w}x${small.h}`);
 
 // ── 10. Closing unbinds every document listener it added ──
 await page.click('._iv-close');

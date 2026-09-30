@@ -26,6 +26,53 @@
     --sidebar-w:   52px;
     --sidebar-exp: 220px;
     --header-h:    48px;
+
+    /* ─── Density tokens (Cozy defaults) — body.compact overrides these ─── */
+    --pad-main:          16px 20px;
+    --gap-cards:         12px;
+    --card-min-w:        240px;
+    --card-min-h:        200px;
+    --radius-lg:         14px;
+    --pad-card:          14px 14px 8px 14px;
+    --fs-project-name:   14px;
+    --fs-domain-tag:     10px;
+    --pad-domain-tag:    2px 8px;
+    --pad-status-pill:   3px 10px;
+    --pad-tile-body:     0 14px;
+    --pad-tile-footer:   8px 14px 12px 14px;
+    --fs-backlog-badge:  10px;
+    --scale-drag-ghost:  0.92;
+    --pad-list-row:      10px 16px;
+    --fs-lr-name:        13px;
+    --pad-list-header:   8px 16px;
+    --fs-card-avatar:    16px;
+    --size-card-avatar:  24px;
+    --fs-tile-summary:   13px;
+  }
+
+  /* ─── Density tokens (Compact) — same properties the Cozy/Compact toggle
+     used to vary per-rule via body.compact overrides; now one token block. */
+  body.compact {
+    --pad-main:          10px 14px;
+    --gap-cards:         10px;
+    --card-min-w:        180px;
+    --card-min-h:        140px;
+    --radius-lg:         8px;
+    --pad-card:          10px 12px 8px 14px;
+    --fs-project-name:   13px;
+    --fs-domain-tag:     9px;
+    --pad-domain-tag:    1px 6px;
+    --pad-status-pill:   2px 8px;
+    --pad-tile-body:     0 12px 0 14px;
+    --pad-tile-footer:   6px 12px 8px 14px;
+    --fs-backlog-badge:  9px;
+    --scale-drag-ghost:  0.88;
+    --pad-list-row:      7px 12px;
+    --fs-lr-name:        12px;
+    --pad-list-header:   6px 12px;
+    --fs-card-avatar:    13px;
+    --size-card-avatar:  20px;
+    --fs-tile-summary:   11px;
   }
 
   /* ─── Appearance: accent presets ──────────────────────────────────────── */
@@ -665,7 +712,7 @@
 
   /* ── CONTENT AREA ────────────────────────────────────────────────── */
   .content-area { flex: 1; display: flex; overflow: hidden; position: relative; }
-  .content-main { flex: 1; overflow-y: auto; padding: 16px 20px; min-width: 0; }
+  .content-main { flex: 1; overflow-y: auto; padding: var(--pad-main); min-width: 0; }
 
   /* ── TOOLBAR (replaces filter row) ───────────────────────────────── */
   .toolbar {
@@ -731,8 +778,8 @@
   .projects-col {
     flex: 1; min-width: 0;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(var(--card-min-w), 1fr));
+    gap: var(--gap-cards);
     grid-auto-rows: 1fr;
     align-items: stretch;
   }
@@ -742,7 +789,7 @@
   .list-header {
     display: grid;
     grid-template-columns: 3px 200px 80px 1fr 1fr 100px 80px;
-    gap: 12px; padding: 8px 16px;
+    gap: 12px; padding: var(--pad-list-header);
     font-size: 10px; letter-spacing: 0.8px; text-transform: uppercase;
     color: var(--text-faint); font-weight: 600;
     border-bottom: 1px solid var(--border);
@@ -750,14 +797,14 @@
   .list-row {
     display: grid;
     grid-template-columns: 3px 200px 80px 1fr 1fr 100px 80px;
-    gap: 12px; padding: 10px 16px;
+    gap: 12px; padding: var(--pad-list-row);
     align-items: center;
     background: var(--surface); border-radius: 6px;
     cursor: pointer; transition: background 0.12s;
   }
   .list-row:hover { background: var(--surface2); }
   .list-row .lr-indicator { width: 3px; height: 24px; border-radius: 2px; }
-  .list-row .lr-name { font-size: 13px; font-weight: 600; color: var(--text); }
+  .list-row .lr-name { font-size: var(--fs-lr-name); font-weight: 600; color: var(--text); }
   .list-row .lr-status {
     font-size: 10px; padding: 2px 8px; border-radius: 10px;
     font-weight: 600; text-align: center; width: fit-content;
@@ -788,11 +835,11 @@
   .card {
     background: var(--surface);
     border: 2px solid var(--border);
-    border-radius: 14px;
+    border-radius: var(--radius-lg);
     overflow: hidden;
     transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
     position: relative;
-    min-height: 200px;
+    min-height: var(--card-min-h);
     display: flex;
     flex-direction: column;
     cursor: pointer;
@@ -818,18 +865,16 @@
   .card.friendly-asking::before,
   .card.friendly-stuck::before {
     content: ''; position: absolute; top: 0; left: 0; right: 0;
-    height: 3px; border-radius: 14px 14px 0 0; pointer-events: none;
+    height: 3px; border-radius: var(--radius-lg) var(--radius-lg) 0 0; pointer-events: none;
   }
   .card.friendly-asking::before { background: var(--amber); }
   .card.friendly-stuck::before  { background: var(--red); }
-  body.compact .card.friendly-asking::before,
-  body.compact .card.friendly-stuck::before { border-radius: 8px 8px 0 0; }
   .card:hover { border-color: var(--border2); box-shadow: 0 8px 24px rgba(0,0,0,0.35); transform: translateY(-2px); }
   body.tone-warm .card:hover,
   body.tone-editorial .card:hover { box-shadow: 0 8px 0 rgba(32,28,22,0.10); }
 
   /* Grid spacer (invisible empty cell) */
-  .grid-spacer { min-height: 200px; border-radius: 10px; }
+  .grid-spacer { min-height: var(--card-min-h); border-radius: 10px; }
   .grid-spacer.drop-target, .card.drop-target {
     outline: 2px dashed var(--accent);
     outline-offset: -2px;
@@ -840,34 +885,15 @@
   .card.dragging { opacity: 0.15; transform: none; pointer-events: none; }
   .drag-ghost {
     position: fixed; pointer-events: none; opacity: 0.85;
-    z-index: 10000; transform: scale(0.92);
+    z-index: 10000; transform: scale(var(--scale-drag-ghost));
     box-shadow: 0 12px 40px rgba(0,0,0,0.5);
     border-radius: 10px; overflow: hidden;
   }
 
-  /* ── COMPACT TILE DENSITY ─────────────────────────────────── */
-  body.compact .content-main { padding: 10px 14px; }
-  body.compact .projects-col { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
-  body.compact .card { min-height: 140px; border-radius: 8px; }
-  body.compact .grid-spacer { min-height: 140px; }
-  body.compact .card-header { padding: 10px 12px 8px 14px; }
-  body.compact .project-name { font-size: 13px; }
-  body.compact .domain-tag { font-size: 9px; padding: 1px 6px; }
-  body.compact .status-pill { font-size: 10px; padding: 2px 8px; }
-  body.compact .tile-body { padding: 0 12px 0 14px; gap: 4px; }
-  body.compact .tile-task { font-size: 11px; }
-  body.compact .tile-next { font-size: 10px; }
-  body.compact .tile-footer { padding: 6px 12px 8px 14px; }
-  body.compact .backlog-badge { font-size: 9px; }
-  body.compact .drag-ghost { transform: scale(0.88); }
-  body.compact .list-row { padding: 7px 12px; }
-  body.compact .list-row .lr-name { font-size: 12px; }
-  body.compact .list-header { padding: 6px 12px; }
-
   /* TILE HEADER */
   .card-header {
     display: flex; flex-direction: column; gap: 6px;
-    padding: 14px 14px 8px 14px;
+    padding: var(--pad-card);
   }
   .card-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .pin-indicator { font-size: 12px; line-height: 1; flex-shrink: 0; opacity: 0.9; }
@@ -892,14 +918,13 @@
   }
   .conv-pin-mark.pinned { opacity: 1; filter: none; }
   .card-avatar {
-    font-size: 16px; line-height: 1; display: inline-flex; align-items: center; justify-content: center;
-    width: 24px; height: 24px; flex-shrink: 0; overflow: hidden;
+    font-size: var(--fs-card-avatar); line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+    width: var(--size-card-avatar); height: var(--size-card-avatar); flex-shrink: 0; overflow: hidden;
     background: var(--surface2); border-radius: 6px;
   }
-  body.compact .card-avatar { font-size: 13px; width: 20px; height: 20px; }
-  .project-name { font-size: 14px; font-weight: 700; color: var(--text); letter-spacing: 0.1px; line-height: 1.2; }
+  .project-name { font-size: var(--fs-project-name); font-weight: 700; color: var(--text); letter-spacing: 0.1px; line-height: 1.2; }
   .domain-tag {
-    font-size: 10px; padding: 2px 8px; border-radius: 4px;
+    font-size: var(--fs-domain-tag); padding: var(--pad-domain-tag); border-radius: 4px;
     letter-spacing: 0.8px; text-transform: uppercase; white-space: nowrap; font-weight: 600;
   }
   .domain-trading { background: var(--accent-dim); color: var(--accent); }
@@ -908,7 +933,7 @@
   .domain-general  { background: var(--surface3);   color: var(--text-dim); }
 
   .status-pill {
-    font-size: 10px; padding: 3px 10px; border-radius: 4px;
+    font-size: 10px; padding: var(--pad-status-pill); border-radius: 4px;
     letter-spacing: 0.8px; text-transform: uppercase; white-space: nowrap; font-weight: 700;
     align-self: flex-start;
   }
@@ -940,15 +965,14 @@
 
   /* TILE BODY — compact info */
   .tile-body {
-    flex: 1; padding: 0 14px;
+    flex: 1; padding: var(--pad-tile-body);
     display: flex; flex-direction: column; gap: 4px;
     overflow: hidden;
   }
   .tile-summary {
-    font-size: 13px; line-height: 1.4; color: var(--text);
+    font-size: var(--fs-tile-summary); line-height: 1.4; color: var(--text);
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
-  body.compact .tile-summary { font-size: 11px; -webkit-line-clamp: 2; }
   .tile-task {
     font-size: 11px; line-height: 1.4; color: var(--text-faint);
     display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
@@ -965,13 +989,13 @@
 
   /* TILE FOOTER */
   .tile-footer {
-    padding: 8px 14px 12px 14px;
+    padding: var(--pad-tile-footer);
     display: flex; align-items: center; gap: 6px;
     margin-top: auto;
   }
   .backlog-badge {
     background: var(--amber-dim); color: var(--amber-text);
-    font-size: 10px; padding: 2px 8px; border-radius: 4px; font-weight: 600;
+    font-size: var(--fs-backlog-badge); padding: 2px 8px; border-radius: 4px; font-weight: 600;
   }
   .agent-image-previews {
     display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px;
@@ -5032,7 +5056,41 @@
     font-size: 12px; color: #6b6b6b; min-width: 50px;
     text-align: center; font-family: var(--mono, Consolas, monospace);
   }
-  .mermaid-viewer-close { margin-left: auto; font-size: 18px; padding: 5px 10px; }
+  /* Minimize/Maximize/Close group — reuses the project modal header's own
+     button classes (.modal-minimize/.modal-maximize/.modal-close,
+     render-core.js/interactions.js) so the viewer's window controls look
+     native instead of inventing a second button style. The group overrides
+     .modal-window-controls' absolute top/right positioning (inline style,
+     same override Desk's header already uses) since here it sits inside the
+     toolbar's own flex row rather than floating over the content. */
+  .mermaid-viewer-wincontrols { flex-shrink: 0; }
+  .iv-counter {
+    font-size: 12px; color: #6b6b6b; min-width: 44px;
+    text-align: center; font-family: var(--mono, Consolas, monospace);
+  }
+  /* Windowing (drag/minimize/maximize) is desktop-only — _ivWindowify skips
+     all of it on mobile, so a wired-but-inert button there would be dead
+     weight. .modal-maximize already hides ≤960px globally; scope the same
+     hide to minimize WITHOUT touching every other .modal-minimize on the
+     page (Desk, project modals) that mobile still wants working. */
+  @media (max-width: 960px) { .mermaid-viewer-wincontrols .modal-minimize { display: none; } }
+  /* Prev/Next — siblings of .mermaid-viewer-scroll (not children of it), so
+     they stay pinned to the WINDOW edges instead of panning away with a
+     zoomed/scrolled image; an absolutely-positioned descendant of an
+     overflow:auto ancestor scrolls with that ancestor's content, which is
+     exactly the bug this sidesteps. Hidden by JS when the open image has no
+     folder siblings (mermaid diagrams, data: URLs) or the API 403s. */
+  .iv-nav-btn {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    width: 40px; height: 40px; border-radius: 50%;
+    background: rgba(0, 0, 0, 0.45); color: #fff; border: none;
+    font-size: 22px; line-height: 1; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 5; transition: background 0.15s;
+  }
+  .iv-nav-btn:hover { background: rgba(0, 0, 0, 0.7); }
+  .iv-nav-prev { left: 10px; }
+  .iv-nav-next { right: 10px; }
   /* Canvas behind the image/diagram. WHITE by default — the checkerboard (the
      conventional "this pixel is transparent" indicator) was the default, and it
      fought with the artwork badly enough that images were hard to read. It's now
