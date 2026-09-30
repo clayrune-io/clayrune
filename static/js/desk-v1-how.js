@@ -103,8 +103,10 @@
           </div>
         </div>
         <div class="desk-v1-how-suggest">
-          <button type="button" class="desk-v1-how-suggest-btn" data-how-suggest>${esc(SUGGEST_TEXT)}</button>
-          <div class="desk-v1-rules-hint">Writes draft suggestions into What, When and Where — nothing is committed until you accept it there.</div>
+          ${project
+            ? `<button type="button" class="desk-v1-how-suggest-btn" data-how-suggest>${esc(SUGGEST_TEXT)}</button>
+          <div class="desk-v1-rules-hint">Writes draft suggestions into What, When and Where — nothing is committed until you accept it there.</div>`
+            : '<div class="desk-v1-rules-hint" data-how-no-agent>No agent yet — agents are assigned per project. Fill in What, When and Where by hand, or pick a project at Launch.</div>'}
         </div>
       </div>`;
 

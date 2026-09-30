@@ -83,15 +83,15 @@
 
   // ── Project field (R2-2f, Ron 2026-09-30: "the project picker on the left
   // and the new campaign on the right are doing almost the same thing") —
-  // "＋ New campaign" no longer asks which project up front; the campaign
-  // page's own first field does. Rendered at the top of every PRE-PLAN draft
-  // step (0 presence gate, 1 subject+goal, and the no-project-yet state): once
-  // step 2 drafts the plan, its accounts/cadence came from THIS project's
-  // presence, so moving the campaign afterwards would leave a plan that
-  // belongs to the wrong project — the field is simply not offered there.
-  // Every change goes through the commandBus so Undo reverts it; a project
-  // change also clears the title/brief step 1 auto-filled from the OLD
-  // project's name (only if the user hasn't edited them) so they re-default.
+  // "＋ New campaign" no longer asks which project up front.
+  // R2-2g (Ron 2026-09-30, "the pick a project enforcer should come only at
+  // the end before the campaign is launched"): the field moved off the Goal
+  // stop to the ⑥ Launch panel (desk-v1-campaign.js `_renderLaunchPanel`
+  // calls `deskV1MountProjectField`), and a project-less draft now runs the
+  // whole setup flow without one. Every change goes through the commandBus so
+  // Undo reverts it; a project change also re-defaults the title/brief that
+  // were auto-filled from the OLD project's name (only if the user hasn't
+  // edited them).
   function _projectFieldHTML(camp) {
     const cur = camp.projectId || '';
     const opts = _projects().map((p) => `<option value="${esc(p.id)}" ${p.id === cur ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
@@ -101,9 +101,12 @@
         <select class="desk-v1-goal-select" data-setup-project aria-label="Project">
           ${picked ? '' : '<option value="" selected disabled>Pick a project</option>'}${opts}
         </select>
-        ${picked ? '' : '<div class="desk-v1-rules-hint" data-setup-project-hint>Pick a project to set up this campaign. Its accounts, limits and agent come from the project, and a campaign can’t launch without one.</div>'}
+        ${picked ? '' : '<div class="desk-v1-rules-hint" data-setup-project-hint>Its accounts, limits and agent come from the project. A campaign can’t launch without one.</div>'}
       </div>`;
   }
+
+  function _defaultTitle(project) { return project ? `${project.name} campaign` : ''; }
+  function _defaultBrief(project) { return project ? `Promote ${project.name}.` : ''; }
 
   function _bindProjectField(el, camp) {
     const sel = el.querySelector('[data-setup-project]');
@@ -121,8 +124,8 @@
         do: () => {
           camp.projectId = nextId;
           camp._touched = true;
-          if (prevProject && plan.title === `${prevProject.name} campaign`) plan.title = '';
-          if (prevProject && plan.brief === `Promote ${prevProject.name}.`) plan.brief = '';
+          if (prevProject && plan.title === _defaultTitle(prevProject)) plan.title = _defaultTitle(nextProject);
+          if (prevProject && plan.brief === _defaultBrief(prevProject)) plan.brief = _defaultBrief(nextProject);
           if (typeof window.deskV1Render === 'function') window.deskV1Render();
         },
         undo: () => {
@@ -135,13 +138,11 @@
     };
   }
 
-  // Splices the Project group in straight after the step's own top row
-  // (state pill + More), so it is the first field on every pre-plan step.
-  function _mountProjectField(el, camp) {
-    const top = el.querySelector('.desk-v1-camp-summary-top');
-    if (!top) return;
-    top.insertAdjacentHTML('afterend', _projectFieldHTML(camp));
-    _bindProjectField(el, camp);
+  // Mounts the Project group at the top of `host` (the Launch panel) and binds it.
+  function deskV1MountProjectField(host, camp) {
+    if (!host) return;
+    host.insertAdjacentHTML('afterbegin', _projectFieldHTML(camp));
+    _bindProjectField(host, camp);
   }
 
   // ── Untouched-draft discard (R2-2f): Home's "＋ New campaign" creates a
@@ -240,15 +241,19 @@
     { kind: 'event', glyph: '◎', word: 'Event' },
   ];
 
+  // R2-2g: a project-less draft has no project to default the subject to —
+  // an empty "Product" the user names themselves.
   function _defaultSubject(project) {
-    return { kind: 'project', ref: project.id, label: project.name };
+    return project
+      ? { kind: 'project', ref: project.id, label: project.name }
+      : { kind: 'product', ref: undefined, label: '' };
   }
 
   function _fillStep1(el, params, camp, project) {
     const subject = camp.subject || _defaultSubject(project);
     const plan = camp.plan;
-    if (!plan.title) plan.title = `${project.name} campaign`;
-    if (!plan.brief) plan.brief = `Promote ${project.name}.`;
+    if (!plan.title) plan.title = _defaultTitle(project);
+    if (!plan.brief) plan.brief = _defaultBrief(project);
     if (!plan.goal.outcome) plan.goal.outcome = 'awareness';
     el.innerHTML = `
       <div class="desk-v1-camp-summary-top">
@@ -264,11 +269,11 @@
       </div>
       <div class="desk-v1-rules-group">
         <div class="desk-v1-rules-group-title">Title</div>
-        <input type="text" class="desk-v1-rules-textinput" data-setup-title value="${esc(plan.title)}">
+        <input type="text" class="desk-v1-rules-textinput" data-setup-title value="${esc(plan.title)}" placeholder="Campaign name">
       </div>
       <div class="desk-v1-rules-group">
         <div class="desk-v1-rules-group-title">Brief</div>
-        <textarea class="desk-v1-rules-textarea" data-setup-brief rows="2">${esc(plan.brief)}</textarea>
+        <textarea class="desk-v1-rules-textarea" data-setup-brief rows="2" placeholder="What this campaign is for">${esc(plan.brief)}</textarea>
       </div>
       <div class="desk-v1-rules-group">
         <div class="desk-v1-rules-group-title">Outcome</div>
@@ -295,7 +300,7 @@
       const brief = (el.querySelector('[data-setup-brief]').value || '').trim();
       const outcome = (el.querySelector('[data-setup-outcome]').value || '').trim();
       if (!label || !title || !brief || !outcome) { DeskV1Kit.toast('Subject, title, brief and outcome are all required.'); return; }
-      camp.subject = { kind: pickedKind, ref: pickedKind === 'project' ? project.id : undefined, label };
+      camp.subject = { kind: pickedKind, ref: pickedKind === 'project' && project ? project.id : undefined, label };
       plan.title = title;
       plan.brief = brief;
       plan.goal.outcome = outcome;
@@ -314,7 +319,7 @@
   // "samples"). Leaving before this runs keeps the campaign in Draft at step
   // 2 — the project card then shows "Setup 2 of 3" (desk-v1-project.js). ──
   function _minCeiling(project, channelIds) {
-    const ceilings = (project.presence && project.presence.ceilings) || {};
+    const ceilings = (project && project.presence && project.presence.ceilings) || {};
     let min = null;
     channelIds.forEach((id) => {
       const c = ceilings[id];
@@ -324,7 +329,11 @@
   }
 
   function _fillStep2(el, params, camp, project) {
-    const accounts = (project.presence && project.presence.accounts) || [];
+    // R2-2g: with no project yet, every workspace channel is offered; the
+    // project's own ceilings are checked against this plan at Launch.
+    const accounts = project
+      ? ((project.presence && project.presence.accounts) || [])
+      : _channels().map((c) => ({ channel_id: c.id }));
     const checked = camp.plan.accounts.length ? camp.plan.accounts : accounts.map((a) => a.channel_id);
     el.innerHTML = `
       <div class="desk-v1-camp-summary-top">
@@ -379,7 +388,7 @@
       // independent of `_effectiveCadence`'s own clamp comparison (kit.js),
       // which stays untouched (T2b's camp-1 unclamped-chip case must not
       // start showing a "from" suffix just because IA4 shipped).
-      plan._inheritedFields = { accounts: true, cadence: true, end: true };
+      plan._inheritedFields = project ? { accounts: true, cadence: true, end: true } : {};
 
       const pieceCount = 3;
       const families = _fx().families = _fx().families || [];
@@ -419,27 +428,19 @@
   // ── Dispatch (§2.3: step 0 presence gate, then steps 1/2; step 3 is the
   // existing Proposed-state page once state flips, see file header). ──────
   function deskV1FillDraftSetup(el, params, camp) {
-    const project = _project(camp.projectId);
-    if (!project) {
-      // R2-2f: no project picked yet (Home's page-level New campaign) — the
-      // Project field is the only thing to fill until one is chosen.
-      el.innerHTML = `
-        <div class="desk-v1-camp-summary-top">
-          <span class="desk-v1-camp-state-pill">Setup — Pick a project</span>
-          ${_moreBtnHTML()}
-        </div>`;
-      _mountProjectField(el, camp);
-      _wireMoreBtn(el, camp, () => deskV1FillDraftSetup(el, params, camp));
-      return;
-    }
-    if (!DeskV1Kit.validatePresence(project).ok) { _fillStep0(el, params, camp, project); _mountProjectField(el, camp); return; }
+    // R2-2g: a project-less draft (Home's page-level New campaign) runs the
+    // same steps as any other; the project is picked at Launch. Only a draft
+    // that HAS a project is held at step 0 until that project has accounts.
+    const project = _project(camp.projectId) || null;
+    if (project && !DeskV1Kit.validatePresence(project).ok) { _fillStep0(el, params, camp, project); return; }
     const step = (camp.setup && camp.setup.step) || 1;
-    if (step <= 1) { _fillStep1(el, params, camp, project); _mountProjectField(el, camp); }
+    if (step <= 1) _fillStep1(el, params, camp, project);
     else _fillStep2(el, params, camp, project);
   }
 
   window.DeskV1Setup = { deskV1CreateDraftCampaign };
   window.deskV1CreateDraftCampaign = deskV1CreateDraftCampaign;
+  window.deskV1MountProjectField = deskV1MountProjectField;
   window.deskV1NewCampaignInProject = deskV1NewCampaignInProject;
   window.deskV1FillDraftSetup = deskV1FillDraftSetup;
   window.deskV1DiscardIfUntouchedDraft = deskV1DiscardIfUntouchedDraft;

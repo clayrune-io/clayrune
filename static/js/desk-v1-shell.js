@@ -164,15 +164,19 @@
     deskV1Render();
   }
 
-  // R2-2 (§8 amended row): `Projects: All ▾` lives in the Desk header on
-  // EVERY Desk route (not just Home) — one click from anywhere, including a
-  // campaign page, lands on the picked project's own page. Rendered by
-  // `_renderCrumb` itself (called on every `deskV1Render`) rather than a
-  // per-route crumb-tool, since `#desk-v1-crumb-tools` gets overwritten by
-  // whichever route owns it (e.g. desk-v1-review.js) and this must survive
+  // R2-2 (§8 amended row): `Projects: All ▾` lives in the Desk header — one
+  // click from Home or a project page lands on the picked project's own page.
+  // Rendered by `_renderCrumb` itself (called on every `deskV1Render`) rather
+  // than a per-route crumb-tool, since `#desk-v1-crumb-tools` gets overwritten
+  // by whichever route owns it (e.g. desk-v1-review.js) and this must survive
   // that. "All" is a label only in R0 — fixtures model two projects and
   // Home always shows both; picking one navigates, it doesn't filter.
-  function _projectsPickerHTML() {
+  // R2-2g (Ron 2026-09-30, "two project selectors" on a new campaign page):
+  // campaign and deeper routes get Back + title only — the campaign's own
+  // Project select (Launch stop) is the only project control there.
+  const _PROJECTS_PICKER_ROUTES = ['home', 'project'];
+  function _projectsPickerHTML(route) {
+    if (_PROJECTS_PICKER_ROUTES.indexOf(route) === -1) return '';
     return `<button type="button" class="desk-v1-projects-picker" aria-haspopup="menu">Projects: All &#9662;</button>`;
   }
   function _bindProjectsPicker(crumb) {
@@ -193,7 +197,7 @@
         ? `<button type="button" class="desk-v1-back" onclick="deskV1Back()">&lsaquo; ${esc(_routeLabel(parentEntry))}</button>`
         : ''}
       <span class="desk-v1-crumb-title">${esc(_routeLabel(entry))}</span>
-      ${_projectsPickerHTML()}
+      ${_projectsPickerHTML(entry.route)}
       <div class="desk-v1-crumb-tools" id="desk-v1-crumb-tools"></div>`;
     _bindProjectsPicker(crumb);
     return true;
