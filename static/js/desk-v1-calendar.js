@@ -348,7 +348,7 @@
     const held = !!(channel && channel.health === 'held');
     const originWord = isUser ? 'Your slot' : 'Agent suggested';
     const cls = ['desk-v1-cal-slotchip', isUser ? 'desk-v1-cal-slotchip-user' : 'desk-v1-cal-slotchip-agent'];
-    if (!isUser) cls.push('desk-v1-cal-chip-dashed');
+    if (!isUser && slot.state !== 'accepted') cls.push('desk-v1-cal-chip-dashed');
     // Dave review pass 4: line 1 is glyph + time ONLY and must never
     // truncate ("2:00… Your …" was line 1 carrying time+origin+held all
     // at once). The label — origin word when unfilled, piece title (+
@@ -473,7 +473,38 @@
   function _suggestedWhenBannerHTML(campaign) {
     const when = campaign.how && campaign.how.suggested && campaign.how.suggested.when;
     if (!when) return '';
-    return `<div class="desk-v1-camp-suggested-banner">? suggested: ${esc(when.label || '')}</div>`;
+    // R2-17: the agent's proposed slot (`origin:'agent'`, in `when.slots`) on
+    // its own row with its `because` chip and an Accept — accepting is Ron's
+    // tap (§10.3) and moves no bound, so an Active campaign keeps its approval.
+    const slot = when.slotId ? _ownSlots(campaign).find((sl) => sl.id === when.slotId) : null;
+    const slotRow = slot ? (() => {
+      const at = new Date(slot.at);
+      const accepted = slot.state === 'accepted';
+      return `<div class="desk-v1-suggested-item desk-v1-suggested-slot" data-suggested-slot="${esc(slot.id)}" data-slot-state="${esc(slot.state)}">
+        <span class="desk-v1-suggested-title">${esc(_weekdayShort(at))} ${esc(_fmtTime(at))}</span>${window.DeskV1Kit.becauseChipsHTML(slot.because, campaign.projectId)}
+        ${accepted ? '<span class="desk-v1-suggested-done">✓ Accepted</span>' : '<button type="button" class="btn-secondary" data-suggested-slot-accept>Accept slot</button>'}
+      </div>`;
+    })() : '';
+    return `<div class="desk-v1-camp-suggested-banner">? suggested: ${esc(when.label || '')}</div>${slotRow}`;
+  }
+
+  function _bindSuggestedWhen(el, campaign) {
+    window.DeskV1Kit.bindBecauseChips(el, campaign.projectId);
+    const btn = el.querySelector('[data-suggested-slot-accept]');
+    if (!btn) return;
+    btn.onclick = () => {
+      const slot = _ownSlots(campaign).find((sl) => sl.id === campaign.how.suggested.when.slotId);
+      if (!slot) return;
+      // Same cadence / min-gap gate a dragged slot meets (`_slotRefusal`):
+      // an agent slot outside the rules is refused, not accepted.
+      const reason = _slotRefusal(new Date(slot.at), campaign, _project(campaign.projectId));
+      if (reason) { _showSlotRefusal(el, reason); return; }
+      window.DeskV1Kit.commandBus.run({
+        label: `Accepted the suggested slot ${_weekdayShort(new Date(slot.at))} ${_fmtTime(new Date(slot.at))}`,
+        do: () => { _clearSlotRefusal(el); slot.state = 'accepted'; _render(campaign); },
+        undo: () => { slot.state = 'suggested'; _render(campaign); },
+      });
+    };
   }
 
   function deskV1RenderCalendar(el, params) {
@@ -734,6 +765,7 @@
       el.innerHTML = `
       <div class="desk-v1-calendar">
         ${_suggestedWhenBannerHTML(campaign)}
+        <div class="desk-v1-cal-slot-refusal" data-slot-refusal></div>
         ${_fieldsHTML(campaign, project)}
         ${_toolbarHTML(st, days)}
         <div class="desk-v1-stub-inline desk-v1-cal-empty-where" data-cal-empty-where>
@@ -743,6 +775,7 @@
       </div>`;
       _bindFields(el, campaign);
       _bindToolbar(el, campaign);
+      _bindSuggestedWhen(el, campaign);
       const toWhere = el.querySelector('[data-cal-to-where]');
       if (toWhere) toWhere.onclick = () => window.deskV1GotoCampaignPanel('where', { campaignId: campaign.id });
       return;
@@ -762,6 +795,7 @@
       </div>`;
 
     _bindFields(el, campaign);
+    _bindSuggestedWhen(el, campaign);
     _bind(el, campaign, days, rows, cells, project);
   }
 

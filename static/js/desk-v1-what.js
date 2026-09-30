@@ -420,6 +420,7 @@
 
     const acceptBtn = el.querySelector('[data-suggested-accept-all]');
     if (acceptBtn && typeof _bridge().acceptSuggested === 'function') acceptBtn.onclick = () => _bridge().acceptSuggested(camp);
+    DeskV1Kit.bindBecauseChips(el, camp.projectId);
 
     // rows
     el.querySelectorAll('[data-what-row]').forEach((rowEl) => {

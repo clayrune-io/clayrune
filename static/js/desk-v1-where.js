@@ -354,6 +354,7 @@
     const already = ch && (camp.plan.accounts || []).includes(ch.id);
     return `<div class="desk-v1-stub-inline desk-v1-where-suggest" data-where-suggest>
       <strong>? suggested:</strong> ${esc(label)}${already ? ' — already a column' : ''}
+      ${DeskV1Kit.becauseChipsHTML(placement.because, camp.projectId)}
       ${ch && !already ? '<button type="button" class="btn-secondary desk-v1-where-suggest-accept" data-where-suggest-accept>Add this column</button>' : ''}
     </div>`;
   }
@@ -432,6 +433,7 @@
         else DeskV1Kit.toast('Pick a project at Launch first — accounts are connected per project.');
       };
     });
+    DeskV1Kit.bindBecauseChips(el, camp.projectId);
     const accept = el.querySelector('[data-where-suggest-accept]');
     if (accept) accept.onclick = () => {
       const p = camp.how.suggested.where;

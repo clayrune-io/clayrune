@@ -541,10 +541,23 @@
         <div class="desk-v1-project-engagement" id="desk-v1-project-engagement"></div>
         <div class="desk-v1-project-posy" id="desk-v1-project-posy"></div>
       </div>`;
+    // R2-17: a `Based on F3 ›` chip lands here with `findingId` — open that
+    // finding's evidence (and its group, if it is a rejected/stale one) and
+    // bring it into view.
+    const focusId = (params || {}).findingId;
+    if (focusId) {
+      _evidenceOpen.add(focusId);
+      const ff = (_playbook().findings || []).find((x) => x.id === focusId && x.project_id === projectId);
+      if (ff && ff.state === 'rejected') _rejectedOpen = true;
+    }
     _renderNextPost(projectId);
     _renderCampaigns(projectId);
     _renderArchived(projectId);
     _renderPlaybook(projectId);
+    if (focusId) {
+      const row = el.querySelector(`[data-finding-id="${String(focusId).replace(/"/g, '')}"]`);
+      if (row) { row.setAttribute('data-finding-focus', ''); if (row.scrollIntoView) row.scrollIntoView({ block: 'center' }); }
+    }
     _renderNeedsYou(projectId);
     _renderEngagementStrip(projectId);
     _renderPosyBox(projectId, p);

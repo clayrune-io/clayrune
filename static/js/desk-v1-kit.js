@@ -1158,6 +1158,36 @@
   }
   function pieceAssets(piece) { return (piece && piece.assets) || []; }
 
+  // ── R2-17: the Suggest brief's `because` (docs/THE_DESK_V1_IA_REVISION_2.md
+  // §10.3). An agent's suggestion cites `[finding ids]` or `'untested'`. The
+  // ids are the AGENT'S claim, not evidence: only an id that is a CONFIRMED
+  // finding of THIS project survives, everything else (unknown, proposed,
+  // rejected, stale, retired, another project's) is dropped so an agent cannot
+  // invent authority. A suggestion left with no surviving id and no
+  // `'untested'` gets no chip at all. Reads `DeskV1Fixtures.playbook` (R2-16's
+  // store); finding state stays human-only, nothing here writes it.
+  function resolveBecause(because, projectId) {
+    const fx = (window.DeskV1Fixtures || {}).playbook || {};
+    const confirmed = new Set((fx.findings || [])
+      .filter((f) => f.state === 'confirmed' && f.project_id === projectId).map((f) => f.id));
+    const ids = Array.isArray(because)
+      ? Array.from(new Set(because.filter((id) => typeof id === 'string' && confirmed.has(id)))) : [];
+    return { ids, untested: because === 'untested' };
+  }
+  function _becauseEsc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+  function becauseChipsHTML(because, projectId) {
+    const r = resolveBecause(because, projectId);
+    if (r.untested) return '<span class="desk-v1-because-chip desk-v1-because-chip--trying" data-because-trying>Trying: untested</span>';
+    return r.ids.map((id) => `<button type="button" class="desk-v1-because-chip" data-because-finding="${_becauseEsc(id)}">Based on ${_becauseEsc(id)} ›</button>`).join('');
+  }
+  // `Based on F3 ›` opens that finding's evidence on the project page Playbook
+  // (R2-16: rows carry `data-finding-id`, evidence disclosure per row).
+  function bindBecauseChips(root, projectId) {
+    root.querySelectorAll('[data-because-finding]').forEach((btn) => {
+      btn.onclick = () => { if (typeof window.deskV1Nav === 'function') window.deskV1Nav('project', { projectId, findingId: btn.dataset.becauseFinding }); };
+    });
+  }
+
   window.DeskV1Kit = {
     pieceKindWord, pieceVersions, pieceChannelCount, pieceChannelsText, pieceAssets,
     VERSION_STATES, CAMPAIGN_STATES,
@@ -1176,5 +1206,6 @@
     validatePlan, validatePresence, MAX_TERM_DAYS: _MAX_TERM_DAYS,
     computeBoundsHash, boundsWiden, nextBoundsHash,
     RETRO_DIMENSIONS, retroVerdict,
+    resolveBecause, becauseChipsHTML, bindBecauseChips,
   };
 })();
