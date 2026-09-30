@@ -172,7 +172,7 @@
           <span class="desk-v1-goal-progress-target">of ${esc(target)} ${esc(goal.metric || '')}</span>
         </div>
         <div class="desk-v1-goal-progress-bar"><div class="desk-v1-goal-progress-fill" style="width:${progressPct}%"></div></div>
-        ${paceSt ? `<div class="desk-v1-goal-pace" data-pace="${esc(paceSt.key)}"><span aria-hidden="true">${paceSt.glyph}</span> ${esc(paceSt.word)}</div>` : ''}
+        ${paceSt ? `<div class="desk-v1-goal-pace" data-pace="${esc(paceSt.key)}"><span aria-hidden="true">${paceSt.glyph}</span> <span class="desk-v1-goal-pace-word">${esc(paceSt.word)}</span></div>` : ''}
         ${costPerOutcome != null ? `<div class="desk-v1-goal-cost">Cost per outcome: ${esc(_money(costPerOutcome))}</div>` : ''}
         ${termRowsHTML}
       </div>`;

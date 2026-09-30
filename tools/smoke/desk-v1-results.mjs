@@ -1,20 +1,19 @@
 #!/usr/bin/env node
 /**
- * Desk v1 (MC-977, R0 plan T7) — Results smoke (no frame drawn, gap map C6;
- * built from THE_DESK_V1_UI.md §7 text alone).
- *
- * Closes: A10 (forecasts labelled as estimates, never "on pace"; missing
- * data never renders as a fake 0).
+ * Desk v1 (MC-977, R2-4) — ① Goal smoke: the measurable goal editor +
+ * effectiveness panel (docs/THE_DESK_V1_IA_REVISION_2.md §4.1 row "① Goal",
+ * §8 R2-4 acceptance). Replaces the old T7 Results smoke — that UI (Posy's
+ * experiment nudge, per-version breakdown, cost table, diagnostics) is gone;
+ * this file's checks are exactly the R2-4 row's three: a manual entry
+ * updates progress and pace, a `long` horizon shows per-term rows, and
+ * removing the source reads `⚠ Not measured` (never a fake `0 of`).
  *
  * Real headless boot (real index.html + real static/js|css, no network), same
  * hermetic shape as desk-v1-conversations.mjs / desk-v1-video.mjs.
  *
  * RUN
  *   cd tools/smoke && node desk-v1-results.mjs
- * Exit 0 = every case holds (render checks in all three tones, interaction
- * checks once, phone layout once); 1 = a case regressed / harness error.
- * Also writes docs/desk_v1/screens/t7_results_{desktop_1440,phone_390}.png
- * (default tone only).
+ * Exit 0 = every case holds; 1 = a case regressed / harness error.
  */
 import { readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -28,8 +27,6 @@ const CSS_DIR = resolve(REPO_ROOT, 'static', 'css');
 const ASSETS_DIR = resolve(REPO_ROOT, 'assets');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const ORIGIN = 'http://mc.smoke.test';
-const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
-mkdirSync(SHOT_DIR, { recursive: true });
 
 const MIME = { '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
 
@@ -95,8 +92,8 @@ async function newBootedPage(browser, tone, viewport) {
 }
 
 // Through the campaign page first (matches the real navigation path), then
-// straight to results via the shell route T0a already registers — same
-// two-step precedent T4/T6's smokes use.
+// straight to ① goal via the shell route (still called 'results' — R2-3's
+// PANEL_ALIASES table, unchanged by this ticket).
 async function navToResults(page) {
   await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
   await page.evaluate(() => window.deskV1Nav('results', { campaignId: 'camp-1' }));
@@ -107,218 +104,168 @@ function reportUncaught(pageErrors, tag) {
   if (uncaught.length) uncaught.forEach((e) => fail(`${tag} uncaught page error: ${e}`));
 }
 
-// ── render checks, one per tone: goal + forecast wording, per-version
-// outcomes with honest delayed/n/a (never a fake 0), costs with the
-// cost-per-outcome line withheld while ads is unmeasured, diagnostics last. ──
+// ── render checks, one per tone: the editor shows camp-1's fixture goal
+// (metric/target/baseline/horizon/deadline/source), the effectiveness panel
+// reads progress + a pace word, and copy lint holds. ────────────────────────
 async function runToneRenderChecks(browser, tone) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, tone);
   await navToResults(page);
-  await page.waitForSelector('.desk-v1-results', { timeout: 8000 });
+  await page.waitForSelector('.desk-v1-goal', { timeout: 8000 });
 
-  const goalNumber = (await page.textContent('.desk-v1-results-goal-number').catch(() => '') || '').trim();
-  const goalTarget = (await page.textContent('.desk-v1-results-goal-target').catch(() => '') || '').trim();
-  goalNumber === '11' && goalTarget === 'of 30 tester signups'
-    ? ok(`[${tone.name}] goal reads "${goalNumber}" / "${goalTarget}"`)
-    : fail(`[${tone.name}] goal wrong: number=${JSON.stringify(goalNumber)} target=${JSON.stringify(goalTarget)}`);
+  const metricVal = await page.inputValue('[data-goal-field="metric"]').catch(() => '');
+  const targetVal = await page.inputValue('[data-goal-field="target"]').catch(() => '');
+  const horizonVal = await page.inputValue('[data-goal-field="horizon"]').catch(() => '');
+  const sourceVal = await page.inputValue('[data-goal-field="source"]').catch(() => '');
+  metricVal === 'tester signups' && targetVal === '30' && horizonVal === 'short' && sourceVal === 'manual'
+    ? ok(`[${tone.name}] editor reads camp-1's fixture goal: metric="${metricVal}" target=${targetVal} horizon=${horizonVal} source=${sourceVal}`)
+    : fail(`[${tone.name}] editor field values wrong: metric=${JSON.stringify(metricVal)} target=${JSON.stringify(targetVal)} horizon=${JSON.stringify(horizonVal)} source=${JSON.stringify(sourceVal)}`);
 
-  const forecast = (await page.textContent('.desk-v1-results-forecast').catch(() => '') || '').replace(/\s+/g, ' ').trim();
-  /Projected 26 of 30/.test(forecast) && /below target/.test(forecast) && /estimate/.test(forecast)
-    ? ok(`[${tone.name}] forecast reads: "${forecast}"`)
-    : fail(`[${tone.name}] forecast wrong: ${JSON.stringify(forecast)}`);
-  /on pace/i.test(forecast)
-    ? fail(`[${tone.name}] forecast must never say "on pace": ${JSON.stringify(forecast)}`)
-    : ok(`[${tone.name}] forecast never says "on pace"`);
+  const progressNumber = (await page.textContent('.desk-v1-goal-progress-number').catch(() => '') || '').trim();
+  const progressTarget = (await page.textContent('.desk-v1-goal-progress-target').catch(() => '') || '').trim();
+  progressNumber === '11' && progressTarget === 'of 30 tester signups'
+    ? ok(`[${tone.name}] effectiveness progress reads "${progressNumber}" / "${progressTarget}"`)
+    : fail(`[${tone.name}] effectiveness progress wrong: number=${JSON.stringify(progressNumber)} target=${JSON.stringify(progressTarget)}`);
 
-  // A10 + MET-01: per-version rows — verified/measured shows a real number,
-  // the two unmeasured rows show their honest label, never "0".
-  const rows = await page.$$eval('.desk-v1-results-version-row', (els) => els.map((e) => ({
-    outcome: (e.querySelector('.desk-v1-results-outcome-word') || {}).textContent,
-    metric: (e.querySelector('.desk-v1-results-version-metric') || {}).textContent,
-    contrib: (e.querySelector('.desk-v1-results-version-contrib') || {}).textContent,
-  })));
-  rows.length === 3
-    ? ok(`[${tone.name}] "What went out" lists 3 version rows`)
-    : fail(`[${tone.name}] expected 3 version rows, got ${rows.length}`);
-  const published = rows.find((r) => /Verified published/.test(r.outcome || ''));
-  published && published.metric.trim() === '8 signups' && /\+8/.test(published.contrib)
-    ? ok(`[${tone.name}] the verified row shows a real measured metric: "${published.metric.trim()}"`)
-    : fail(`[${tone.name}] verified row wrong: ${JSON.stringify(published)}`);
-  const unknownRows = rows.filter((r) => /Unknown outcome/.test(r.outcome || ''));
-  unknownRows.length === 2
-    ? ok(`[${tone.name}] the 2 unreported rows both read "? Unknown outcome"`)
-    : fail(`[${tone.name}] expected 2 unknown-outcome rows, got ${unknownRows.length}`);
-  const metricTexts = unknownRows.map((r) => r.metric.trim());
-  metricTexts.includes('delayed') && metricTexts.includes('n/a')
-    ? ok(`[${tone.name}] missing outcomes read "delayed"/"n/a", never a fake 0: ${JSON.stringify(metricTexts)}`)
-    : fail(`[${tone.name}] missing-outcome labels wrong: ${JSON.stringify(metricTexts)}`);
-  metricTexts.some((t) => t === '0')
-    ? fail(`[${tone.name}] a missing outcome rendered as a bare "0"`)
-    : ok(`[${tone.name}] no missing outcome rendered as a bare "0"`);
+  const paceText = (await page.textContent('.desk-v1-goal-pace-word').catch(() => '') || '').trim();
+  /^(Ahead|On track|Behind)$/.test(paceText)
+    ? ok(`[${tone.name}] pace reads a known state: "${paceText}"`)
+    : fail(`[${tone.name}] pace text unexpected: ${JSON.stringify(paceText)}`);
 
-  // MET-02: ads is unmeasured (null) in the fixture — cost-per-outcome must
-  // be withheld, with an explanatory note instead.
-  const costRows = await page.$$eval('.desk-v1-results-cost-row', (els) => els.map((e) => {
-    const spans = e.querySelectorAll('span');
-    return { label: (spans[0] || {}).textContent, value: (spans[1] || {}).textContent };
-  }));
-  const adsRow = costRows.find((r) => r.label === 'Ads');
-  adsRow && adsRow.value === 'n/a'
-    ? ok(`[${tone.name}] unmeasured Ads cost reads "n/a", not $0: "${adsRow.label} ${adsRow.value}"`)
-    : fail(`[${tone.name}] Ads cost row wrong: ${JSON.stringify(adsRow)}`);
-  const perOutcomeRow = await page.$('.desk-v1-results-cost-row-total');
-  perOutcomeRow
-    ? fail(`[${tone.name}] cost-per-outcome should be hidden while Ads is unmeasured`)
-    : ok(`[${tone.name}] cost-per-outcome correctly withheld (not every cost category is measured)`);
-  const costNote = (await page.textContent('.desk-v1-results-cost-note').catch(() => '') || '');
-  /hidden until/.test(costNote)
-    ? ok(`[${tone.name}] cost note explains the withheld line: "${costNote.trim()}"`)
-    : fail(`[${tone.name}] cost note missing/wrong: ${JSON.stringify(costNote)}`);
-
-  // §7: diagnostics last, small, never a gate — exact fixture numbers.
-  const diag = (await page.textContent('.desk-v1-results-diagnostics').catch(() => '') || '').trim();
-  diag === 'You edited 5 of 7 before approval.'
-    ? ok(`[${tone.name}] diagnostics reads the exact fixture line: "${diag}"`)
-    : fail(`[${tone.name}] diagnostics wrong: ${JSON.stringify(diag)}`);
-
-  // Posy's read: exactly one proposed experiment, with both actions present.
-  const posyText = (await page.textContent('.desk-v1-results-posy-text').catch(() => '') || '').trim();
-  posyText.length > 0
-    ? ok(`[${tone.name}] Posy's read renders: "${posyText.slice(0, 60)}..."`)
-    : fail(`[${tone.name}] Posy's read is empty`);
-  const hasAccept = !!(await page.$('[data-results-experiment-accept]'));
-  const hasDismiss = !!(await page.$('[data-results-experiment-dismiss]'));
-  hasAccept && hasDismiss
-    ? ok(`[${tone.name}] "Set up experiment" / "Not now" both present`)
-    : fail(`[${tone.name}] experiment actions missing: accept=${hasAccept} dismiss=${hasDismiss}`);
-
-  const bodyText = (await page.textContent('.desk-v1-results').catch(() => '') || '');
+  const bodyText = (await page.textContent('.desk-v1-goal').catch(() => '') || '');
   /\bfree\b/i.test(bodyText)
     ? fail(`[${tone.name}] copy lint: page must never say "free"`)
     : ok(`[${tone.name}] copy lint: no "free" on the page`);
-  /posts automatically/i.test(bodyText)
-    ? fail(`[${tone.name}] copy lint: page must never say "posts automatically"`)
-    : ok(`[${tone.name}] copy lint: no "posts automatically" on the page`);
+  /\bon pace\b/i.test(bodyText)
+    ? fail(`[${tone.name}] copy lint: page must never say "on pace" (§7/A10)`)
+    : ok(`[${tone.name}] copy lint: no "on pace" on the page`);
 
   reportUncaught(pageErrors, `[${tone.name}]`);
   await ctx.close();
 }
 
-// ── Accepting the experiment creates a real client-side family (Content
-// list, once T2a lands) via the command bus, with Undo removing it — same
-// "fixtures only, every drop a command with an inverse" contract every
-// other R0 surface follows (§10; ground rule 3). ────────────────────────────
-async function runAcceptExperiment(browser) {
+// ── R2-4 acceptance #1: "manual entry 14 dated today updates progress and
+// pace." Verified against an independently-computed expected pace (same
+// formula, computed here from wall-clock `now` and camp-1's own term
+// bounds) rather than a hardcoded word, so the check doesn't silently rot as
+// real dates move past the fixture's 2026 term window. ──────────────────────
+async function runManualEntry(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
-  const requests = [];
-  page.on('request', (r) => { if (r.url().includes('/api/')) requests.push(r.url()); });
   await navToResults(page);
-  await page.waitForSelector('.desk-v1-results', { timeout: 8000 });
+  await page.waitForSelector('.desk-v1-goal', { timeout: 8000 });
 
-  const before = await page.evaluate(() => (window.DeskV1Fixtures.families || []).length);
-  await page.click('[data-results-experiment-accept]');
-  await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
-  const toastText = (await page.textContent('.toast').catch(() => '') || '');
-  /Added/.test(toastText) && /Content/.test(toastText)
-    ? ok(`accepting fires the commandBus toast: "${toastText.trim()}"`)
-    : fail(`accept toast missing/wrong: ${JSON.stringify(toastText)}`);
-
-  const after = await page.evaluate(() => (window.DeskV1Fixtures.families || []).length);
-  after === before + 1
-    ? ok(`accepting pushes exactly one new planned family onto DeskV1Fixtures.families (${before} -> ${after})`)
-    : fail(`expected families to grow by 1, got ${before} -> ${after}`);
-
-  const confirm = (await page.textContent('.desk-v1-results-posy-confirm').catch(() => '') || '');
-  /Added/.test(confirm)
-    ? ok(`the Posy card swaps to a confirmation line: "${confirm.trim()}"`)
-    : fail(`confirmation line missing/wrong: ${JSON.stringify(confirm)}`);
-
-  const apiCalls = requests.filter((u) => !/\/api\/(projects|config|characters)$/.test(u));
-  apiCalls.length === 0
-    ? ok('accepting the experiment made no backend API call — fixtures only, per R0 ground rules')
-    : fail(`accept should not hit the network, but called: ${JSON.stringify(apiCalls)}`);
-
-  // Undo removes the family again (§10: every command carries its inverse).
-  await page.click('.toast .toast-btn');
+  const today = new Date().toISOString().slice(0, 10);
+  await page.fill('[data-manual-entry-date]', today);
+  await page.fill('[data-manual-entry-value]', '14');
+  await page.click('[data-manual-entry-add]');
   await page.waitForTimeout(30);
-  const afterUndo = await page.evaluate(() => (window.DeskV1Fixtures.families || []).length);
-  afterUndo === before
-    ? ok(`Undo removes the planned family again (back to ${afterUndo})`)
-    : fail(`Undo did not restore family count: expected ${before}, got ${afterUndo}`);
 
-  reportUncaught(pageErrors, '[accept-experiment]');
+  const progressNumber = (await page.textContent('.desk-v1-goal-progress-number').catch(() => '') || '').trim();
+  progressNumber === '14'
+    ? ok(`manual entry 14 dated today updates progress: "${progressNumber}"`)
+    : fail(`progress did not update to 14: got "${progressNumber}"`);
+
+  const entryRows = await page.$$eval('.desk-v1-goal-manual-list .desk-v1-rules-hint', (els) => els.map((e) => e.textContent));
+  entryRows.some((t) => t.includes(today) && t.includes('14'))
+    ? ok(`the new entry appears in the manual-entry list: "${entryRows[0]}"`)
+    : fail(`new entry missing from the list: ${JSON.stringify(entryRows)}`);
+
+  const start = new Date('2026-09-01').getTime();
+  const end = new Date('2026-10-20').getTime();
+  const elapsed = Math.max(0, Math.min(1, (Date.now() - start) / (end - start)));
+  const pace = elapsed > 0 ? (14 / 30) / elapsed : null;
+  const expectedWord = pace == null ? null : (pace > 1.2 ? 'Ahead' : pace >= 0.9 ? 'On track' : 'Behind');
+  const paceText = (await page.textContent('.desk-v1-goal-pace-word').catch(() => '') || '').trim();
+  (expectedWord && paceText === expectedWord)
+    ? ok(`pace recomputes off the new entry: "${paceText}" (elapsed=${elapsed.toFixed(2)}, progress=${(14 / 30).toFixed(2)})`)
+    : fail(`pace wrong: expected "${expectedWord}" (elapsed=${elapsed.toFixed(2)}), got "${paceText}"`);
+
+  reportUncaught(pageErrors, '[manual-entry]');
   await ctx.close();
 }
 
-// ── "Not now" declines without mutating fixtures. ───────────────────────────
-async function runDismissExperiment(browser) {
+// ── R2-4 acceptance #2: "`long` horizon shows term rows." ───────────────────
+async function runLongHorizonTermRows(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToResults(page);
-  await page.waitForSelector('.desk-v1-results', { timeout: 8000 });
+  await page.waitForSelector('.desk-v1-goal', { timeout: 8000 });
 
-  const before = await page.evaluate(() => (window.DeskV1Fixtures.families || []).length);
-  await page.click('[data-results-experiment-dismiss]');
+  await page.evaluate(() => {
+    const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1');
+    camp.goal.horizon = 'long';
+    camp.terms = [
+      { index: 1, starts: '2026-07-01', ends: '2026-08-30', target: 15, current: 12 },
+      { index: 2, starts: '2026-09-01', ends: '2026-10-20', target: 15, current: 11 },
+    ];
+    window.deskV1RenderResults(document.querySelector('.desk-v1-camp-tabbody') || document.querySelector('#desk-v1-camp-tabbody'), { campaignId: 'camp-1' });
+  });
   await page.waitForTimeout(30);
-  const posyGone = await page.$('.desk-v1-results-posy');
-  !posyGone
-    ? ok('"Not now" clears the Posy card')
-    : fail('"Not now" should clear the Posy card');
-  const after = await page.evaluate(() => (window.DeskV1Fixtures.families || []).length);
-  after === before
-    ? ok('"Not now" does not create a family')
-    : fail(`"Not now" should not mutate fixtures: ${before} -> ${after}`);
 
-  reportUncaught(pageErrors, '[dismiss-experiment]');
+  const rows = await page.$$eval('.desk-v1-goal-term-row', (els) => els.map((e) => e.textContent.trim()));
+  rows.length === 2 && rows[0] === 'Term 1: 12 of 15' && rows[1] === 'Term 2: 11 of 15'
+    ? ok(`long horizon shows per-term rows: ${JSON.stringify(rows)}`)
+    : fail(`term rows wrong: ${JSON.stringify(rows)}`);
+
+  reportUncaught(pageErrors, '[long-horizon]');
   await ctx.close();
 }
 
-// ── §11 phone: hit targets ≥44px on the experiment actions. ─────────────────
+// ── R2-4 acceptance #3: "source removed → ⚠ Not measured" (never a `0 of`,
+// MET-01). ───────────────────────────────────────────────────────────────
+async function runSourceRemoved(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToResults(page);
+  await page.waitForSelector('.desk-v1-goal', { timeout: 8000 });
+
+  await page.selectOption('[data-goal-field="source"]', '');
+  await page.waitForTimeout(30);
+
+  const untracked = (await page.textContent('.desk-v1-goal-untracked').catch(() => '') || '').trim();
+  untracked === '⚠ Not measured: add a source'
+    ? ok(`removing the source reads "${untracked}"`)
+    : fail(`untracked copy wrong: ${JSON.stringify(untracked)}`);
+
+  const progressNumber = await page.$('.desk-v1-goal-progress-number');
+  !progressNumber
+    ? ok('no progress number renders while untracked (never a fake "0 of 30")')
+    : fail('a progress number rendered while the source is removed — should be withheld entirely');
+
+  const bodyText = (await page.textContent('.desk-v1-goal-effectiveness').catch(() => '') || '');
+  /\b0 of\b/.test(bodyText)
+    ? fail(`untracked effectiveness panel must never read "0 of...": ${JSON.stringify(bodyText)}`)
+    : ok('untracked effectiveness panel never reads "0 of..."');
+
+  reportUncaught(pageErrors, '[source-removed]');
+  await ctx.close();
+}
+
+// ── §11 phone: hit targets ≥44px on the "+ Add entry" button, no overflow. ──
 async function runPhoneLayout(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} }, { width: 390, height: 844 });
   await navToResults(page);
-  await page.waitForSelector('.desk-v1-results', { timeout: 8000 });
+  await page.waitForSelector('.desk-v1-goal', { timeout: 8000 });
 
-  const acceptHeight = await page.$eval('[data-results-experiment-accept]', (el) => el.getBoundingClientRect().height).catch(() => 0);
-  acceptHeight >= 40
-    ? ok(`§11: "Set up experiment" is touch-sized (${acceptHeight.toFixed(0)}px)`)
-    : fail(`§11: "Set up experiment" too short for touch: ${acceptHeight}px`);
+  const addHeight = await page.$eval('[data-manual-entry-add]', (el) => el.getBoundingClientRect().height).catch(() => 0);
+  addHeight >= 40
+    ? ok(`§11: "+ Add entry" is touch-sized (${addHeight.toFixed(0)}px)`)
+    : fail(`§11: "+ Add entry" too short for touch: ${addHeight}px`);
 
   const overflowX = await page.evaluate(() => document.querySelector('.desk-v1-results').scrollWidth > document.querySelector('.desk-v1-body').clientWidth + 2);
   !overflowX
     ? ok('§11: no horizontal overflow at 390px')
-    : fail('§11: results page overflows the phone viewport width');
+    : fail('§11: goal panel overflows the phone viewport width');
 
   reportUncaught(pageErrors, '[phone]');
   await ctx.close();
-}
-
-// ── screenshots (default tone only, per the ticket brief). ─────────────────
-async function captureScreenshots(browser) {
-  {
-    const { ctx, page } = await newBootedPage(browser, { ls: {} }, { width: 1440, height: 950 });
-    await navToResults(page);
-    await page.waitForSelector('.desk-v1-results', { timeout: 8000 });
-    await page.screenshot({ path: resolve(SHOT_DIR, 't7_results_desktop_1440.png') });
-    ok('desktop screenshot saved: t7_results_desktop_1440.png');
-    await ctx.close();
-  }
-  {
-    const { ctx, page } = await newBootedPage(browser, { ls: {} }, { width: 390, height: 844 });
-    await navToResults(page);
-    await page.waitForSelector('.desk-v1-results', { timeout: 8000 });
-    await page.screenshot({ path: resolve(SHOT_DIR, 't7_results_phone_390.png') });
-    ok('phone screenshot saved: t7_results_phone_390.png');
-    await ctx.close();
-  }
 }
 
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
   for (const tone of TONES) await runToneRenderChecks(browser, tone);
-  await runAcceptExperiment(browser);
-  await runDismissExperiment(browser);
+  await runManualEntry(browser);
+  await runLongHorizonTermRows(browser);
+  await runSourceRemoved(browser);
   await runPhoneLayout(browser);
-  await captureScreenshots(browser);
   exitCode = bad === 0 ? 0 : 1;
 } catch (e) {
   console.error('harness error:', e);

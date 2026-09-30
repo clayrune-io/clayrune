@@ -1639,6 +1639,7 @@
   .desk-v1-results { max-width: none; }
   .desk-v1-goal-progress-number { font-size: 28px; }
   .desk-v1-goal-row { flex-direction: column; align-items: stretch; }
+  .desk-v1-goal-manual [data-manual-entry-add] { min-height: 44px; }
 }
 
 /* IA7: Engagement dashboard (docs/THE_DESK_V1_IA_REVISION.md §7) — three
