@@ -22,13 +22,22 @@ project percentages") holds structurally because no row is ever given one.
 """
 from __future__ import annotations
 
-import statistics
+import random
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 _MAX_INTERVAL_MINUTES = 10
 _MIN_ELIGIBLE_INTERVALS = 5
 _MIN_ELIGIBLE_SESSIONS = 3
+# Backlog 4668eafc follow-up 2 (pooled estimator): the gate also needs enough
+# TOTAL vendor movement across the contributing intervals. raw_utilization is
+# whole points, so the pooled ratio is only as good as the points it divides
+# by -- a handful of intervals that together moved the counter 1pp is a
+# quantisation artefact, not a rate.
+_MIN_CALIBRATION_TOTAL_PP = 5.0
+_BOOTSTRAP_RESAMPLES = 2000
+_BOOTSTRAP_SEED = 998  # fixed: the same history must always print the same range
+_BOOTSTRAP_LOW_PCT, _BOOTSTRAP_HIGH_PCT = 10, 90
 # MC-998 follow-up: the Anthropic usage endpoint returns resets_at with
 # sub-second jitter on every poll (measured 2026-09-29: 241 samples inside
 # one 5h/7d window, 241 distinct raw values -- e.g. 19:00:00.444543,
@@ -571,8 +580,17 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
                          *, provider: str, window_scope: str) -> list[dict]:
     """Consecutive fresh-sample pairs meeting the spec's eligibility rule:
     same provider/window/scope identity (guaranteed -- `samples` is already
-    scoped to one), <=10 minutes apart, positive delta >=1pp, quality 'ok'
-    at both endpoints, no reset crossed (same `resets_at`).
+    scoped to one), <=10 minutes apart, non-negative delta (0 IS kept --
+    see below), quality 'ok' at both endpoints, no reset crossed (same
+    `resets_at`).
+
+    Follow-up 2 (pooled estimator): pairs with `delta == 0` are returned too.
+    `raw_utilization` is whole points, so a pair's delta is 0 for most pairs
+    and 1 on the minute the counter ticks over; the consumption behind a tick
+    accrued over the delta-0 pairs before it. Keeping only delta>=1 pairs
+    paired a whole bucket's worth of vendor movement with one minute's tokens
+    and read ~5x low. Callers pool tokens and delta across ALL of these; a
+    single pair's tokens/delta is meaningless and is never taken.
 
     Per finding 2 (P1-2, "2026-09-28 re-review"): the ORIGINAL fix only
     walked `checkpoints.items()`, so a session with NO checkpoint row at all
@@ -627,8 +645,8 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
         if (t_b - t_a) > timedelta(minutes=_MAX_INTERVAL_MINUTES):
             continue
         delta = b['raw_utilization'] - a['raw_utilization']
-        if delta < 1.0:
-            continue
+        if delta < 0:
+            continue  # sub-tolerance dip (<= _RESET_DROP_TOLERANCE_PP): not a measurable rate
 
         session_ids: set[str] = set()
         coverage_complete = True
@@ -688,16 +706,79 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
     return out
 
 
+def _contributing(iv: dict) -> bool:
+    """An interval contributes to calibration when it is fully measured, has
+    at least one Clayrune session in it, and moves at least one side of the
+    ratio (tokens or vendor points). A measured pair with no tokens and no
+    movement adds nothing to either sum and must not pad the count gate."""
+    return bool(iv['coverage_complete'] and iv['session_ids']
+                and (iv['input_processed_total'] + iv['output_tokens'] > 0 or iv['delta_pp'] > 0))
+
+
+def _contiguous_runs(intervals: list[dict]) -> list[list[dict]]:
+    """Group contributing intervals into maximal runs where each one starts
+    exactly where the previous ended (adjacent allowance samples, nothing
+    excluded between them). Used as the bootstrap's resampling unit."""
+    runs: list[list[dict]] = []
+    for iv in sorted(intervals, key=lambda i: i['start']):
+        if runs and runs[-1][-1]['end'] == iv['start']:
+            runs[-1].append(iv)
+        else:
+            runs.append([iv])
+    return runs
+
+
+def _pooled_ratio_range(runs: list[list[dict]], *, numerator) -> tuple[float, float]:
+    """10th-90th percentile of the pooled ratio under a BLOCK bootstrap over
+    contiguous runs: resample whole runs with replacement, pool
+    sum(numerator)/sum(delta) on each resample. Runs, not single pairs, are
+    the unit because adjacent pairs share a quantisation bucket (a tick is
+    paid for by the pairs before it), so pairs are not independent; a run is
+    the largest span the data lets us treat as exchangeable. This is an
+    observed-variation range for the ratio, not a confidence interval and
+    not a bound on outside use. Resamples whose delta sums to 0 have no
+    ratio and are skipped."""
+    rng = random.Random(_BOOTSTRAP_SEED)
+    sums = [(sum(numerator(iv) for iv in r), sum(iv['delta_pp'] for iv in r)) for r in runs]
+    n = len(sums)
+    ratios = []
+    for _ in range(_BOOTSTRAP_RESAMPLES):
+        tok = delta = 0.0
+        for _k in range(n):
+            t, d = sums[rng.randrange(n)]
+            tok += t
+            delta += d
+        if delta > 0:
+            ratios.append(tok / delta)
+    if not ratios:
+        raise ValueError('no bootstrap resample had a positive delta')
+    ratios.sort()
+    return _percentile(ratios, _BOOTSTRAP_LOW_PCT), _percentile(ratios, _BOOTSTRAP_HIGH_PCT)
+
+
 def compute_calibration(samples: list[dict], checkpoints: dict[str, dict], facts_by_session: dict[str, dict],
                          *, provider: str, window_scope: str) -> dict:
-    """Median + 10th/90th percentile workload-per-point and input-per-point
-    over ALL eligible intervals in the given (already 90-day-scoped)
-    history, per "A calibration value requires at least five eligible
-    intervals from at least three distinct sessions in the same
-    provider/window class. Those intervals must have only one Clayrune
-    session active." (finding 2, P1-2). An interval with zero overlapping
-    sessions contributes nothing to calibration (its delta belongs to
-    `Unattributed activity` instead, per spec) but is not itself an error.
+    """Pooled workload-per-point and input-per-point over the eligible
+    intervals in the given (already 90-day-scoped) history.
+
+    ESTIMATOR (backlog 4668eafc follow-up 2): ratio of sums --
+    sum(tokens) / sum(delta_pp) over every coverage-complete, session-bearing
+    interval, INCLUDING delta-0 intervals. The previous estimator took the
+    median of per-interval tokens/delta over delta>=1 pairs only; because
+    `raw_utilization` is whole points those pairs are the minute the counter
+    ticked, whose consumption accrued over the delta-0 pairs before it, so it
+    read ~5x low on live data (estimate 171pp against 47pp observed).
+
+    GATE: >= 5 contributing intervals (`_contributing`: fully measured,
+    session-bearing, moves tokens or points -- a zero/zero pair does not pad
+    the count), >= 3 distinct sessions among them, AND >= 5pp of total vendor
+    delta and non-zero total tokens across them. An interval with zero
+    overlapping sessions contributes nothing (its delta belongs to
+    `Unattributed activity`) but is not itself an error.
+
+    RANGE: `*_lo`/`*_hi` are the 10th/90th percentile of the pooled ratio
+    under a block bootstrap over contiguous runs (`_pooled_ratio_range`),
+    not the spread of single-pair ratios the old p10/p90 reported.
     """
     intervals = _eligible_intervals(samples, checkpoints, facts_by_session,
                                      provider=provider, window_scope=window_scope)
@@ -707,25 +788,35 @@ def compute_calibration(samples: list[dict], checkpoints: dict[str, dict], facts
     # coverage_complete refuses the interval if ANY of them is unmeasured. The
     # old single-session rule left ~17% of intervals usable on a box that runs
     # up to 9 agents at once, so calibration never qualified.
-    calibratable = [iv for iv in intervals if iv['coverage_complete'] and iv['session_ids']]
+    calibratable = [iv for iv in intervals if _contributing(iv)]
     distinct_sessions = set().union(*(iv['session_ids'] for iv in calibratable)) if calibratable else set()
-    if len(calibratable) < _MIN_ELIGIBLE_INTERVALS or len(distinct_sessions) < _MIN_ELIGIBLE_SESSIONS:
+    total_delta = sum(iv['delta_pp'] for iv in calibratable)
+    total_input = sum(iv['input_processed_total'] for iv in calibratable)
+    total_workload = total_input + sum(iv['output_tokens'] for iv in calibratable)
+    if (len(calibratable) < _MIN_ELIGIBLE_INTERVALS or len(distinct_sessions) < _MIN_ELIGIBLE_SESSIONS
+            or total_delta < _MIN_CALIBRATION_TOTAL_PP or total_workload <= 0):
         return {'status': 'insufficient_samples', 'eligible_interval_count': len(calibratable),
-                'distinct_session_count': len(distinct_sessions), 'all_intervals': intervals}
+                'distinct_session_count': len(distinct_sessions), 'total_delta_pp': total_delta,
+                'all_intervals': intervals}
 
-    workload_per_point = sorted(
-        (iv['input_processed_total'] + iv['output_tokens']) / iv['delta_pp'] for iv in calibratable)
-    input_per_point = sorted(iv['input_processed_total'] / iv['delta_pp'] for iv in calibratable)
+    runs = _contiguous_runs(calibratable)
+    workload_lo, workload_hi = _pooled_ratio_range(
+        runs, numerator=lambda iv: iv['input_processed_total'] + iv['output_tokens'])
+    input_lo, input_hi = _pooled_ratio_range(runs, numerator=lambda iv: iv['input_processed_total'])
     return {
         'status': 'ok',
         'eligible_interval_count': len(calibratable),
         'distinct_session_count': len(distinct_sessions),
-        'workload_per_point_median': statistics.median(workload_per_point),
-        'workload_per_point_p10': _percentile(workload_per_point, 10),
-        'workload_per_point_p90': _percentile(workload_per_point, 90),
-        'input_per_point_median': statistics.median(input_per_point),
-        'input_per_point_p10': _percentile(input_per_point, 10),
-        'input_per_point_p90': _percentile(input_per_point, 90),
+        'total_delta_pp': total_delta,
+        'run_count': len(runs),
+        'estimator': 'pooled_ratio',
+        'range_method': 'block_bootstrap_p10_p90',
+        'workload_per_point': total_workload / total_delta,
+        'workload_per_point_lo': workload_lo,
+        'workload_per_point_hi': workload_hi,
+        'input_per_point': total_input / total_delta,
+        'input_per_point_lo': input_lo,
+        'input_per_point_hi': input_hi,
         'all_intervals': intervals,
     }
 
@@ -786,9 +877,9 @@ def compute_segmented_bar(bar_change: dict, totals: dict, calibration: dict) -> 
     fresh_plus_output = (totals['tokens'].get('input_fresh') or 0) + (totals['tokens'].get('output_tokens') or 0)
     processed_plus_output = ((totals['tokens'].get('input_processed_total') or 0)
                               + (totals['tokens'].get('output_tokens') or 0))
-    estimated_pp = processed_plus_output / calibration['workload_per_point_median']
-    low_pp = fresh_plus_output / calibration['workload_per_point_p90']
-    high_pp = processed_plus_output / calibration['workload_per_point_p10']
+    estimated_pp = processed_plus_output / calibration['workload_per_point']
+    low_pp = fresh_plus_output / calibration['workload_per_point_hi']
+    high_pp = processed_plus_output / calibration['workload_per_point_lo']
     unattributed = delta - estimated_pp
     status = 'ok'
     if unattributed < 0:
@@ -851,9 +942,17 @@ def build_breakdown(*, provider: str, window_kind: str, window_scope: str,
         'dimension': dimension, 'sort_by': sort_by,
         'tokens_per_point': {
             'status': calibration.get('status'),
-            'median': calibration.get('input_per_point_median'),
-            'p10': calibration.get('input_per_point_p10'),
-            'p90': calibration.get('input_per_point_p90'),
+            # Wire names are the UI/smoke contract (system-status.js,
+            # tools/smoke): 'median' is now the POOLED ratio and p10/p90 the
+            # block-bootstrap range -- `estimator`/`range_method` say so for
+            # anything reading the raw JSON.
+            'median': calibration.get('input_per_point'),
+            'p10': calibration.get('input_per_point_lo'),
+            'p90': calibration.get('input_per_point_hi'),
+            'estimator': calibration.get('estimator'),
+            'range_method': calibration.get('range_method'),
+            'total_delta_pp': calibration.get('total_delta_pp'),
+            'run_count': calibration.get('run_count'),
             'sample_count': calibration.get('eligible_interval_count', 0),
             'note': 'Indicative: account-wide bar',
         },

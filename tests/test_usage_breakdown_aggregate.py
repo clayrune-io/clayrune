@@ -932,8 +932,8 @@ def test_segmented_bar_positive_delta_no_clayrune_activity_is_fully_unattributed
 def test_segmented_bar_estimate_exceeding_observed_is_flagged_not_clamped():
     bar_change = {'status': 'ok', 'delta_pp': 1.0}
     totals = {'tokens': {'input_fresh': 100, 'input_processed_total': 1000, 'output_tokens': 1000}}
-    calibration = {'status': 'ok', 'workload_per_point_median': 1.0,
-                   'workload_per_point_p10': 1.0, 'workload_per_point_p90': 1.0}
+    calibration = {'status': 'ok', 'workload_per_point': 1.0,
+                   'workload_per_point_lo': 1.0, 'workload_per_point_hi': 1.0}
     seg = compute_segmented_bar(bar_change, totals, calibration)
     assert seg['status'] == 'estimate_exceeds_observed'
     assert seg['unattributed_pp'] < 0
