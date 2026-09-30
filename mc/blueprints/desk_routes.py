@@ -37,6 +37,7 @@ from flask import Blueprint, jsonify, request
 from mc import characters as _chars
 from mc import desk as _desk
 from mc import desk_brief as _brief
+from mc import desk_engagement as _engagement
 from mc import desk_harvest as _harvest
 from mc import desk_retro as _retro
 from mc import desk_voice_seed as _seed
@@ -469,6 +470,54 @@ def record_outcome(post_id):
     if row is None:
         return jsonify({'error': 'post not found'}), 404
     return jsonify(row)
+
+
+# ── Engagement feed (§6, §8 R1-E, §10.7) ─────────────────────────────────────
+#
+# The inbound side. Reads only — nothing here posts or replies. `poll` is the
+# one route that can SPEND (paid platform reads, costed against the project's
+# budget), so like the finding state changes it refuses an unattended caller.
+
+@bp.route('/api/desk/engagement', methods=['GET'])
+def list_engagement():
+    return jsonify(_desk.list_engagement_items(
+        project_id=request.args.get('project_id'),
+        campaign_id=request.args.get('campaign_id'),
+        platform=request.args.get('platform'),
+        source=request.args.get('source'),
+        state=request.args.get('state'),
+        limit=_int_arg('limit', 200)))
+
+
+@bp.route('/api/desk/engagement/overview', methods=['GET'])
+def engagement_overview():
+    """Per-project landing bundles. A project nothing reads for comes back
+    `status: 'not_connected'` with `null` counts — never `0`."""
+    period = request.args.get('period', 'week')
+    if period not in ('week', 'month'):
+        return jsonify({'error': "period must be 'week' or 'month'"}), 400
+    return jsonify(_engagement.overview(period=period))
+
+
+@bp.route('/api/desk/engagement/<item_id>/read', methods=['POST'])
+def mark_engagement_read(item_id):
+    row = _desk.mark_engagement_read(item_id)
+    if row is None:
+        return jsonify({'error': 'engagement item not found'}), 404
+    return jsonify(row)
+
+
+@bp.route('/api/desk/engagement/poll', methods=['POST'])
+def poll_engagement():
+    """Read replies + per-post metrics for one project. May cost money."""
+    if is_unattended_caller():
+        return jsonify({'error': 'this action needs a human — an unattended agent '
+                                 'session cannot run a paid platform read'}), 403
+    d = request.get_json(silent=True) or {}
+    pid = d.get('project_id')
+    if not pid:
+        return jsonify({'error': 'project_id is required'}), 400
+    return jsonify(_engagement.poll_project(pid))
 
 
 # ── Playbook / outcome learning loop (§10, MC-977 R1-L) ─────────────────────

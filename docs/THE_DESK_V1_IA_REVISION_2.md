@@ -510,6 +510,13 @@ the engagement feed; impressions and clicks need a metrics read on top of it. Ex
 R1-E: 𝕏 reads are pay-per-use and must be costed against the budget; LinkedIn page analytics are expected to need the
 same Community Management API approval the Clayrune page's posting already waits on.
 
+**Confirmed in R1-E (2026-09-30, `mc/desk_engagement.py`):** X post reads are $0.005 per resource returned
+(docs.x.com pricing), costed against `presence.budget` (publishing spend + read spend; budget 0 = no paid reads)
+and recorded per read. The vault held no X OAuth token (`x.oauth-token`), so X reads report `Not connected` until
+a human adds one. LinkedIn comments and page analytics sit behind Community Management API approval we lack, so
+LinkedIn is gap-only: no call, reported `Not connected`. Built and tested against recorded responses; no live call
+has been made. `non_public_metrics` (`url_link_clicks`) is wired but off by default, unverified against the live API.
+
 Until then the retro labels each number's source (`typed 3 Oct` / `from 𝕏`), and a dimension with no numbers never
 renders as zero.
 
