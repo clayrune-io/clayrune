@@ -77,7 +77,8 @@ def _run_smoke(wt: Path, name: str) -> tuple[bool, str]:
     try:
         r = subprocess.run(
             [node, str(Path('tools') / 'smoke' / name)], cwd=str(wt),
-            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            capture_output=True, stdin=subprocess.DEVNULL,
+            text=True, encoding='utf-8', errors='replace',
             timeout=SMOKE_TIMEOUT_S,
             creationflags=_sync._POPEN_FLAGS, startupinfo=_sync._STARTUPINFO)
     except subprocess.TimeoutExpired:
@@ -190,7 +191,7 @@ def _merge_one(project, wt, ws, ws_branch, base_sha, st):
     or a failure dict {kind, detail, ...}."""
     ws_id = ws.get('id')
     sess_wt = _awt.worktree_path(project, ws['worktree_session_id'])
-    if sess_wt is not None and sess_wt.exists() and _sync._dirty(str(sess_wt)):
+    if sess_wt is not None and sess_wt.exists() and _awt.dirty_outside_runtime(project, sess_wt):
         return {'kind': 'dirty',
                 'detail': 'uncommitted changes in the worker worktree; its work is not on the branch'}
     ok, _ = _git(wt, ['rev-parse', '--verify', f'{ws_branch}^{{commit}}'], 15)

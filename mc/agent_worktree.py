@@ -198,7 +198,7 @@ def _link_dir(link: Path, target: Path) -> bool:
                 return True
         if _IS_WINDOWS:
             r = subprocess.run(['cmd', '/c', 'mklink', '/J', str(link), str(target)],
-                               capture_output=True, text=True, encoding='utf-8', errors='replace',
+                               capture_output=True, stdin=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace',
                                creationflags=_sync._POPEN_FLAGS,
                                startupinfo=_sync._STARTUPINFO)
             return r.returncode == 0
@@ -261,7 +261,7 @@ def unlink_runtime(project: dict, wt: Path) -> None:
             if link.is_dir() and not link.is_symlink() and _IS_WINDOWS:
                 # Windows junction: rmdir unlinks without touching the target.
                 subprocess.run(['cmd', '/c', 'rmdir', str(link)],
-                               capture_output=True, text=True, encoding='utf-8', errors='replace',
+                               capture_output=True, stdin=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace',
                                creationflags=_sync._POPEN_FLAGS,
                                startupinfo=_sync._STARTUPINFO)
             elif link.is_symlink():
@@ -602,6 +602,21 @@ def has_uncommitted(project: dict, session_id: str) -> bool:
     if wt is None or not wt.exists():
         return False
     return _sync._dirty(str(wt))
+
+
+def dirty_outside_runtime(project: dict, wt: Path) -> bool:
+    """True when the worktree has uncommitted/untracked work of its OWN.
+
+    The linked runtime paths (`data/projects` is a junction into the main
+    checkout) show the MAIN tree's untracked runtime files — e.g. a
+    `*_skill_stats_archive.jsonl` — inside every worktree's `git status`, so a
+    plain `_sync._dirty` marks every worker dirty. Git does the filtering via
+    `:(exclude)` pathspecs over the same `_shared_runtime` list link_runtime
+    links, so a real file the worker wrote anywhere else still counts.
+    """
+    specs = [f':(exclude){rel}' for rel in _shared_runtime(project)]
+    ok, out = _sync.git_run(str(wt), ['status', '--porcelain', '--', '.', *specs])
+    return ok and bool(out.strip())
 
 
 def sync_into(project: dict, session_id: str, source_ref: str = 'master'):
