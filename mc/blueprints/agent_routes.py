@@ -1034,6 +1034,7 @@ def _fresh_context_for(project, session, task=''):
         character_body=body, character_name=name,
         session_id=(session or {}).get('session_id', ''),
         character_skills=sk, source=(session or {}).get('source', ''),
+        job_shape=(session or {}).get('job_shape', ''),
         provider=(session or {}).get('provider', ''),
         model=_requested_model_snapshot(session or {}))
 
@@ -1079,6 +1080,7 @@ def _respawn_sysprompt_args(session, project, task=''):
             task=task, character_body=body, character_name=name,
             session_id=(session or {}).get('session_id', ''),
             character_skills=sk, source=(session or {}).get('source', ''),
+            job_shape=(session or {}).get('job_shape', ''),
             provider=(session or {}).get('provider', ''),
             model=_requested_model_snapshot(session or {}))
     except Exception as e:
@@ -4690,8 +4692,16 @@ def _roster_block(project, port, session_id=''):
 
 def _build_agent_context(project, incognito=False, task='', character_body='',
                          character_name='', session_id='', character_skills=None,
-                         source='', provider='', model=''):
+                         source='', provider='', model='', job_shape=''):
     """Build system prompt context for the agent.
+
+    `job_shape` ('conversation' | 'task', backlog 8ead5755) is the caller's
+    already-resolved value — see `context_profile.resolve_job_shape` — read
+    off the session dict the same way `source` is. An empty value (an old
+    caller, a test, a one-off context build like the Hivemind worker prompt)
+    resolves fresh from `source` here, which is the SAME conservative
+    fallback the resolver itself uses: everything that isn't a programmatic
+    agent dispatch defaults to 'conversation', today's unchanged full floor.
 
     `provider`/`model` are the EFFECTIVE engine for this session/turn (in
     precedence order: explicit per-chat pick > character's own pin > project/
@@ -4745,6 +4755,18 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     _full_context = _context_profile.resolve(
         provider or project.get('provider') or 'claude', model,
         state.CONFIG.get('context_profile_overrides')) != 'lean'
+    # The SECOND, orthogonal axis (backlog 8ead5755): job shape. Model tier
+    # asks "how capable is the engine reading this"; shape asks "what kind of
+    # session is this" — a human's own chat, or a one-off session another
+    # agent dispatched with a brief that reports home. `job_shape` normally
+    # arrives already resolved (read off the session dict, same as `source`);
+    # an unrecognized value here (an old caller, a test, a one-off builder
+    # like the Hivemind worker prompt) falls through to a fresh resolve from
+    # `source`, same conservative default as `context_profile.resolve_job_shape`.
+    _job_shape = (job_shape or '').strip().lower()
+    if _job_shape not in _context_profile.JOB_SHAPES:
+        _job_shape = _context_profile.resolve_job_shape(source, '')
+    _task_shape = _job_shape == 'task'
     # Runtime capabilities, kept SEPARATE from the model-tier check above:
     # two sections below (curated-memory bridge, no-background-job notice)
     # exist to compensate for what a specific CLI does or doesn't provide on
@@ -4789,7 +4811,12 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # name is how Ron tells two of them apart at a glance; the default one is
     # inherited, not chosen, so an agent doing something distinct should say so.
     # Offered rather than demanded — a board where every session renamed itself
-    # would be as unreadable as one where none did.
+    # would be as unreadable as one where none did. BOTH shapes: a dispatched
+    # (source='agent') session gets its own real Floor figure too (per the
+    # roster card above: "spawns a REAL session: its own figure on the Floor"),
+    # and MC-925's `TestDelegatedPersonalessIdentity` pins this exact text for
+    # a personaless delegated session — self-identification, not "who's on the
+    # team" (that's the roster block just below, which IS conversation-only).
     if session_id and not incognito:
         parts.append(
             f"You appear on the Floor as a figure named {agent_name or 'unnamed'}. "
@@ -4802,8 +4829,12 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             "doing when it distinguishes you from the other figures — a board "
             "where every session renamed itself would be as unreadable as one "
             "where none did.")
+    # Roster (who else is hired, on what engine): CONVERSATION only. This is
+    # "who's on the team", useful for a human deciding who to delegate to or
+    # talk to next; a dispatched worker was already told who to report to by
+    # its own brief and does not pick its own delegates off a roster.
     _has_roster = False
-    if session_id and not incognito:
+    if session_id and not incognito and not _task_shape:
         _ros = _roster_block(project, state.CONFIG.get('port', 5199), session_id)
         if _ros:
             parts.append(_ros)
@@ -4998,7 +5029,10 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # for a read-floor slot would be asking the wrong question. Affordable
     # because it is capped by construction (fixed slots, replace-never-append),
     # not because it is small by luck.
-    if not incognito and state.CONFIG.get('continuity_enabled', True):
+    # CONVERSATION only: "what has this project been mid-way through" is a
+    # question about ongoing project state a persistent chat should track —
+    # a dispatched worker's mid-way state IS its own brief, already in `task`.
+    if not incognito and not _task_shape and state.CONFIG.get('continuity_enabled', True):
         try:
             from mc.memory import render_continuity as _render_cont
             # Scoped to THIS agent (same string as "Your name is …", which is
@@ -5014,7 +5048,11 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # "no, use tabs"), so the agent has to be TOLD — directive, and here rather
     # than in the API reference, because reference material failing to fire is
     # the exact failure positions exist to fix.
-    if not incognito and state.CONFIG.get('positions_enabled', True):
+    # CONVERSATION only: capturing a standing position is project-level
+    # curation over the life of the conversation, not something a scoped
+    # one-off task needs to be told to do — it reports its own findings home
+    # via its brief's own channel (backlog note / spawner reply), not here.
+    if not incognito and not _task_shape and state.CONFIG.get('positions_enabled', True):
         try:
             from mc.memory import render_position_capture as _render_pos
             _pos = _render_pos(project, port)
@@ -5032,7 +5070,11 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # `agent_sessions` by `session_id` — the same ground-truth field
     # `_write_session_memory`'s Distiller dispatch and `fence.py` both key
     # off, never a value this call's own arguments could fake.
-    if not incognito and state.CONFIG.get('memory_mint_triggers_enabled', False):
+    # CONVERSATION only: resolving a stale mint's `supersedes: unresolved` is
+    # curation of the PROJECT's memory, not this task's job — and the block
+    # itself already self-disables for unattended trigger types, which a
+    # dispatched worker's session effectively is.
+    if not incognito and not _task_shape and state.CONFIG.get('memory_mint_triggers_enabled', False):
         try:
             from mc.memory import unresolved_mint_block as _render_mint
             _mint_trigger_type = ((agent_sessions.get(session_id) or {}).get('trigger_type', '')
@@ -5049,7 +5091,10 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # Condition 13 requires this ALWAYS present when enabled, independent of
     # whether the task string matches any position's terms — so it renders
     # here, alongside the mint block, outside the `if task:` gate below.
-    if not incognito and state.CONFIG.get('negation_ledger_enabled', False):
+    # CONVERSATION only, for the same reason as the mint block above: this is
+    # the project's full standing-decisions history, not query-scoped to this
+    # one task the way STANDING POSITIONS (below, inside `if task:`) is.
+    if not incognito and not _task_shape and state.CONFIG.get('negation_ledger_enabled', False):
         try:
             from mc.memory import render_negation_ledger as _render_ledger
             _ledger_trigger_type = ((agent_sessions.get(session_id) or {}).get('trigger_type', '')
@@ -5125,6 +5170,8 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # this, _proposed/ explorations are write-only and never change behavior.
     # Best-effort, gated, and never load-bearing (same posture as the Distiller
     # write side). Skipped for incognito sessions (no memory leakage).
+    # BOTH shapes: keyed off `task`, same as the memory read-floor above — this
+    # IS task-scoped memory, not project/conversation history, so it stays.
     if task and not incognito and state.CONFIG.get('exploration_readback_enabled', True):
         try:
             # _UNATTENDED_LOOP_RULE: a steward cycle is an unattended consumer,
@@ -5152,6 +5199,10 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # delivery shape as RELEVANT MEMORY; gated behind coordination_enabled
     # (default OFF); best-effort, never load-bearing. Skipped for incognito.
     # Design: docs/COORDINATION_LAYER_DESIGN.md. Backlog 9518ec62.
+    # BOTH shapes: ranked by overlap with THIS task, not a project activity
+    # feed — a dispatched builder in a worktree is exactly who needs to know
+    # a sibling is editing the same file right now (AGENT_RULES.md already
+    # tells dispatched sessions to coordinate before touching shared files).
     if task and not incognito and state.CONFIG.get('coordination_enabled', False):
         try:
             from mc.blueprints import coordination_routes as _coord
@@ -5167,8 +5218,12 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
 
     # Recent activity — full-profile only: a lean-profile agent reads these
     # past "Agent dispatched: <task>" lines as things it still has to do.
+    # CONVERSATION only too: this is the PROJECT's ongoing activity feed, not
+    # this dispatch's — a task-shape session has its own brief for "what to
+    # do" and reading someone else's dispatch line as its own task is exactly
+    # the lean-profile failure mode above, just triggered by shape instead.
     log = project.get('activity_log', [])[:3]
-    if log and _full_context:
+    if log and _full_context and not _task_shape:
         lines = [f"  - {e.get('ts','')}: {e.get('msg','')}" for e in log]
         parts.append("Recent activity:\n" + "\n".join(lines))
 
@@ -5180,9 +5235,12 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # `claude -r <id>` resume hints. For a lean-profile agent they are both
     # wrong (not necessarily its CLI) and actively harmful — it reads them as
     # "our last chat" and tries to continue tasks from them.
+    # CONVERSATION only: this is a human's own conversation history with the
+    # project — a dispatched task-shape session has exactly one conversation
+    # that matters (the one it's in) and it already knows about that one.
     project_path = project.get('project_path', '')
     convos = (_recent_claude_transcripts(project_path, limit=5, exclude_transforms=True)
-              if (project_path and _full_context) else [])
+              if (project_path and _full_context and not _task_shape) else [])
     if convos:
         live_by_csid = {}
         try:
@@ -5215,7 +5273,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             "Recent conversations (use 'claude -r <id>' to resume any of these — "
             "label is the user's LAST message):\n" + "\n".join(sess_lines)
         )
-    elif _full_context:
+    elif _full_context and not _task_shape:
         agent_log = _load_agent_log(project['id'])[:3]
         if agent_log:
             sess_lines = []
@@ -7102,13 +7160,22 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
     # MC-925 "unnamed worker" framing and could claim the default agent_name.
     _revive_incognito = bool(entry.get('incognito'))
     _revive_source = entry.get('source') or ''
+    # backlog 8ead5755: reproduce the SAME shape the dead session had rather
+    # than re-derive a fresh one. `entry.get('job_shape', '')` wins outright
+    # once the field exists on agent_log rows; today it's always '' (this
+    # field is only stored on the live in-memory session dict, not yet
+    # persisted to the log), so this falls through to resolving fresh from
+    # `_revive_source` — the same deterministic mapping the dead session's
+    # own resolution used, so the outcome matches without the extra plumbing.
+    _revive_job_shape = _context_profile.resolve_job_shape(
+        _revive_source, entry.get('job_shape', ''))
     if _af_reason:
         context = _build_agent_context(p, incognito=_revive_incognito, task=message or '',
                                        character_body=_revive_char_body,
                                        character_name=_revive_char_name,
                                        session_id=session_id,
                                        character_skills=_revive_char_skills,
-                                       source=_revive_source,
+                                       source=_revive_source, job_shape=_revive_job_shape,
                                        provider=entry.get('provider') or '',
                                        model=revive_model)
         _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
@@ -7129,7 +7196,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                                            character_name=_revive_char_name,
                                            session_id=session_id,
                                            character_skills=_revive_char_skills,
-                                           source=_revive_source,
+                                           source=_revive_source, job_shape=_revive_job_shape,
                                            provider=entry.get('provider') or '',
                                            model=revive_model)
         except Exception as e:
@@ -7223,6 +7290,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             # straight off this dict.
             'incognito': _revive_incognito,
             'source': _revive_source,
+            'job_shape': _revive_job_shape,
             'trigger_type': entry.get('trigger_type', 'manual'),
             'trigger_id': entry.get('trigger_id', ''),
             'provider': entry.get('provider') or 'claude',
@@ -7316,6 +7384,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         'character': _revive_character,   # same reason as Mode B above
         'incognito': _revive_incognito,
         'source': _revive_source,
+        'job_shape': _revive_job_shape,
         'trigger_type': entry.get('trigger_type', 'manual'),
         'trigger_id': entry.get('trigger_id', ''),
         'provider': entry.get('provider') or 'claude',
@@ -9577,6 +9646,11 @@ def _dispatch_via_runtime(p, task, *, provider_name,
 
     pp = p.get('project_path', '')
     project_id = p.get('id', '')
+    # Job shape (backlog 8ead5755), resolved ONCE here at session start —
+    # same rule the claude path uses in `_dispatch_agent_internal`. Stored on
+    # the session dict below so a same-process respawn reads it back instead
+    # of re-deriving (see `_fresh_context_for`/`_respawn_sysprompt_args`).
+    _job_shape = _context_profile.resolve_job_shape(source, '')
     # The cwd the CLI actually runs in — a private worktree when the caller
     # made that decision (vendor-parity gap 1), the shared project tree
     # otherwise. Every existing direct caller/test that doesn't pass
@@ -9670,6 +9744,9 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # present, so a personaless Codex/Gemini/opencode worker introduced
             # itself as the project's default agent instead.
             'source': source or '',
+            # backlog 8ead5755 — resolved once above, read back by a
+            # same-process respawn instead of re-derived from `source`.
+            'job_shape': _job_shape,
             # Completion callbacks -- see the docstring. Same keys as the
             # claude session dicts in _dispatch_agent_internal.
             '_notify_session': notify_session,
@@ -9718,7 +9795,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                                              character_name=(character_meta or {}).get('agent_name') or '',
                                              session_id=session_id,
                                              character_skills=(character_meta or {}).get('skills') or [],
-                                             source=source,
+                                             source=source, job_shape=_job_shape,
                                              provider=provider_name, model=model)
     except Exception as e:
         _log(f"[runtime-dispatch] context build failed: {e}")
@@ -11124,6 +11201,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             project_id, resume_id, provider_name) if resume_id else None))
     _char_agent_name = (character_meta or {}).get('agent_name') or ''
     _char_skills = (character_meta or {}).get('skills') or []
+    # Job shape (backlog 8ead5755), resolved ONCE here at session start (this
+    # function is the shared create path for both the HTTP endpoint and the
+    # scheduler) and stored on the session dict below — a same-process
+    # respawn reads it back via `_fresh_context_for`/`_respawn_sysprompt_args`
+    # instead of re-deriving it, so the shape can't drift mid-conversation.
+    _job_shape = _context_profile.resolve_job_shape(source, '')
     if resume_id and not model_override:
         # An imported/older conversation may have no recorded model. Let the
         # native resume restore it, rather than choosing today's defaults.
@@ -11139,7 +11222,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             p, incognito=incognito, task=task,
             character_body=character_body, character_name=_char_agent_name,
             session_id=_planned_sid, character_skills=_char_skills,
-            source=source, provider=provider_name, model='')
+            source=source, job_shape=_job_shape, provider=provider_name, model='')
     elif model_override:
         # Composer "Model" picker, or the character's pinned model: an explicit
         # choice either way, so the auto-router is bypassed entirely. The
@@ -11157,7 +11240,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                        character_name=_char_agent_name,
                                        session_id=_planned_sid,
                                        character_skills=_char_skills,
-                                       source=source,
+                                       source=source, job_shape=_job_shape,
                                        provider=provider_name, model=model_override)
     else:
         # context_builder runs IN PARALLEL with the auto-router's classifier
@@ -11175,7 +11258,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                     p, incognito=incognito, task=task,
                     character_body=character_body, character_name=_char_agent_name,
                     session_id=_planned_sid, character_skills=_char_skills,
-                    source=source, provider=provider_name, model=''),
+                    source=source, job_shape=_job_shape, provider=provider_name, model=''),
                 streaming=use_streaming, effort_override=_char_effort,
                 character_skills=_char_skills))
         if max_turns_override is not None:
@@ -11371,6 +11454,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # (programmatic / agent self-dispatch). Lets the mobile
                 # conversations list route agent-initiated chats to the side flow.
                 'source': source or '',
+                # backlog 8ead5755 — resolved once above; a same-process
+                # respawn reads it back instead of re-deriving from `source`.
+                'job_shape': _job_shape,
                 'agent_model': routed_model,
                 # Auto-router attribution — `model` is what actually got
                 # passed via --model (after override); `model_source` is
@@ -11494,6 +11580,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # (programmatic / agent self-dispatch). Lets the mobile
                 # conversations list route agent-initiated chats to the side flow.
                 'source': source or '',
+                # backlog 8ead5755 — resolved once above; a same-process
+                # respawn reads it back instead of re-deriving from `source`.
+                'job_shape': _job_shape,
                 'agent_model': routed_model,
                 'model': routed_model,
                 'model_source': routed_source,
