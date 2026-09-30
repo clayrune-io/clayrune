@@ -8,20 +8,25 @@
  * walkthrough.mjs / drag-to-hire.mjs:
  *
  *   1. Existing install (>=1 real project), no default_provider saved, 2+
- *      CLIs installed -> NO popup/toast/dialog ever. The old
- *      _maybeOfferProviderChoice toast is gone; only the walkthrough's own
- *      first-run step may ask, and that never runs when a real project
- *      already exists.
+ *      CLIs installed -> NO popup/toast/dialog ever, no PUT /api/config.
+ *      The old _maybeOfferProviderChoice toast is gone; only the
+ *      walkthrough's own first-run step may ask, and that never runs when a
+ *      real project already exists.
  *   2. Existing install, exactly ONE CLI installed, no default_provider
- *      saved -> silently PUT /api/config {default_provider: <that CLI>},
- *      still no popup. (walkthrough.mjs already proves the inverse: a fresh
- *      install with 2+ CLIs DOES show the walkthrough's provider-choice
- *      step — not re-tested here.)
+ *      saved -> ALSO no popup and no PUT /api/config from the client. This
+ *      case used to fire a client-side saveSetting() call (Ron 2026-09-14's
+ *      "the one silent exception"), but since MC-995 saveSetting goes
+ *      through humanProofFetch, which pops the dashboard passcode modal —
+ *      so the "silent" auto-pick silently stopped being silent. MC-1010
+ *      moved the single-CLI auto-pick server-side
+ *      (mc.agent_runtime.maybe_set_sole_provider_default, tested in
+ *      tests/test_agent_runtime_sole_provider_default.py); the client no
+ *      longer does anything for this case, ever.
  *
  * RUN
  *   cd tools/smoke && node provider-choice-no-popup.mjs
- * Exit 0 = both scenarios hold; 1 = a popup leaked back in or the silent
- * single-CLI save regressed.
+ * Exit 0 = both scenarios hold; 1 = a popup or a client-side config PUT
+ * leaked back in.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -119,15 +124,19 @@ try {
     await page.waitForTimeout(1200); // past the 600ms fresh-install timer + boot continuation
 
     const hasOldFn = await page.evaluate(() => typeof window._maybeOfferProviderChoice);
-    const hasNewFn = await page.evaluate(() => typeof window._maybeSetSoleProviderDefault);
+    const hasClientAutopick = await page.evaluate(() => typeof window._maybeSetSoleProviderDefault);
     if (hasOldFn !== 'undefined') fail(`old toast function _maybeOfferProviderChoice still exists (typeof ${hasOldFn}) — removal regressed`);
     else ok('_maybeOfferProviderChoice is gone');
-    if (hasNewFn !== 'function') fail(`_maybeSetSoleProviderDefault missing (typeof ${hasNewFn})`);
-    else ok('_maybeSetSoleProviderDefault is wired');
+    if (hasClientAutopick !== 'undefined') fail(`_maybeSetSoleProviderDefault still exists client-side (typeof ${hasClientAutopick}) — MC-1010 moved this server-side, it must be gone`);
+    else ok('_maybeSetSoleProviderDefault is gone (moved server-side, MC-1010)');
 
     const popup = await findProviderPopupText(page);
     if (popup) fail(`provider-choice popup rendered on an EXISTING install (2 CLIs, no default): ${popup}`);
     else ok('existing install, 2 CLIs installed: no popup');
+
+    const passcodeActive = await page.evaluate(() => document.body.classList.contains('human-proof-active'));
+    if (passcodeActive) fail('dashboard passcode modal is active on an EXISTING install (2 CLIs, no default) — no user action triggered this');
+    else ok('existing install, 2 CLIs installed: no passcode modal');
 
     if (configPutCalls !== 0) fail(`PUT /api/config called ${configPutCalls}x with 2 CLIs installed — should stay silent, nothing to auto-pick`);
     else ok('existing install, 2 CLIs installed: no config write (ambiguous, correctly left alone)');
@@ -137,18 +146,23 @@ try {
   }
 
   // ── Scenario 2: existing install, exactly ONE CLI, no default saved ─────
+  // This is the case that used to regress: the client-side auto-pick fired
+  // saveSetting() -> humanProofFetch(), popping the passcode modal on a
+  // routine page load. MC-1010 moved the auto-pick server-side, so the
+  // client must now do NOTHING for this case — no popup, no passcode modal,
+  // no PUT /api/config at all.
   {
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
     const page = await ctx.newPage();
     const pageErrors = [];
     page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
-    let savedDefault = null;
+    let configPutCalls = 0;
     await routeCommon(page, {
       providers: [
         { name: 'codex', display_name: 'Codex', installed: true, in_use: false, default: false },
       ],
       default: 'claude',
-    }, {}, (body) => { if ('default_provider' in body) savedDefault = body.default_provider; });
+    }, {}, () => { configPutCalls++; });
     await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#projects-col .card', { timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(1200);
@@ -157,8 +171,12 @@ try {
     if (popup) fail(`provider-choice popup rendered on an EXISTING install (1 CLI, no default): ${popup}`);
     else ok('existing install, 1 CLI installed (codex): no popup');
 
-    if (savedDefault !== 'codex') fail(`expected silent PUT /api/config {default_provider:'codex'}, got ${JSON.stringify(savedDefault)}`);
-    else ok("existing install, 1 CLI installed (codex): silently saved as default, no dialog");
+    const passcodeActive = await page.evaluate(() => document.body.classList.contains('human-proof-active'));
+    if (passcodeActive) fail('dashboard passcode modal is active on an EXISTING install (1 CLI, no default) — the exact MC-1010 regression');
+    else ok('existing install, 1 CLI installed (codex): no passcode modal');
+
+    if (configPutCalls !== 0) fail(`PUT /api/config called ${configPutCalls}x from the CLIENT with 1 CLI installed — the sole-provider pick must happen server-side now, not via a client fetch`);
+    else ok('existing install, 1 CLI installed (codex): no client-side PUT /api/config (server-side pick only)');
 
     await ctx.close();
     if (pageErrors.length) fail('uncaught exception(s): ' + pageErrors.join(' | '));
@@ -166,7 +184,7 @@ try {
 
   exitCode = bad === 0 ? 0 : 1;
   console.log(exitCode === 0
-    ? '\n✅ PASS — no in-app provider popup on an existing install; single-CLI default still saves silently.'
+    ? '\n✅ PASS — no in-app provider popup or passcode modal on an existing install, and no client-side config write.'
     : `\n❌ FAIL — ${bad} problem(s).`);
 } catch (err) {
   console.error('❌ FAIL — smoke harness error:', err && err.stack ? err.stack : err);

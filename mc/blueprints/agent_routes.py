@@ -2097,6 +2097,15 @@ def agent_providers():
     provider-catalog fetch.
     """
     _merge_registry_path()
+    # MC-1010: a CLI installed after startup (first-run chooser, manual
+    # install) can turn "exactly one installed provider" true later than
+    # boot — catch that here too, right before the default is read, instead
+    # of only once at process start. Idempotent; no-op once a default exists.
+    try:
+        from mc.blueprints import settings_routes as _settings_routes
+        _agent_runtime.maybe_set_sole_provider_default(state.CONFIG, _settings_routes.CONFIG_PATH)
+    except Exception as e:
+        _log(f'[providers] sole-provider auto-pick failed: {e}', flush=True)
     refresh = str(request.args.get('refresh', '')).strip().lower() in ('1', 'true', 'yes')
     # ?model=<id>[&provider=<name>]: report whether THAT model can see images
     # (`selected_model_image_input`). image_input alone is per-runtime, and one

@@ -147,29 +147,12 @@ async function checkClayruneUpdateAvailable() {
   ], { dismissOnAction: true });
 }
 
-// Silent single-CLI default for an EXISTING install (realProjectCount > 0,
-// so the walkthrough — and its 'provider-choice' step — never auto-runs).
-//
-// Ron 2026-09-14: the provider question belongs at install time (installer
-// scripts now ask it, see installer/install.sh + install.ps1), NOT as an
-// in-app popup — an existing user got ambushed by exactly that popup on a
-// routine dashboard refresh. So this fires no dialog, ever, for an existing
-// install. The one thing it still does: if nothing was ever chosen (an
-// install that predates default_provider, or the installer's non-interactive
-// path) and exactly one provider CLI exists on this machine, that's the only
-// sane answer — save it without asking, same as the installer's own
-// single-CLI auto-pick.
-async function _maybeSetSoleProviderDefault() {
-  if (_globalConfig && _globalConfig.default_provider) return; // already chosen
-  // Boot only PRIMES the providers fetch, it doesn't await it — reading
-  // _agentProviders synchronously here raced it and usually saw null.
-  let all = [];
-  try { all = (await _ensureAgentProviders()) || []; } catch (e) { return; }
-  const provs = all.filter(p => p.installed);
-  if (provs.length === 1) {
-    saveSetting('default_provider', provs[0].name);
-  }
-}
+// Silent single-CLI default for an EXISTING install: moved server-side
+// (MC-1010, mc.agent_runtime.maybe_set_sole_provider_default) so it never
+// goes through the human-gated PUT /api/config route (saveSetting ->
+// humanProofFetch, MC-995) — that popped a passcode prompt on a routine
+// dashboard refresh, which Ron's 2026-09-14 rule says must never happen for
+// an existing install.
 
 function timeAgoJS(ts) {
   if (!ts) return 'never';
@@ -683,7 +666,6 @@ window.createDragOver = createDragOver;
 window.createDragLeave = createDragLeave;
 window.createDrop = createDrop;
 window.checkClayruneUpdateAvailable = checkClayruneUpdateAvailable;
-window._maybeSetSoleProviderDefault = _maybeSetSoleProviderDefault;
 window.timeAgoJS = timeAgoJS;
 window.githubConnect = githubConnect;
 window.githubDisconnect = githubDisconnect;
