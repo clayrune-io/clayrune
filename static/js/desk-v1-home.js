@@ -605,22 +605,7 @@
     });
   }
 
-  // ── render: promote box + suggestions ───────────────────────────────────
-  function _renderSuggestions() {
-    const host = document.getElementById('desk-v1-home-suggestions');
-    if (!host) return;
-    const chips = (_fx().homeSuggestions || []).slice(0, 3);
-    host.innerHTML = chips.length
-      ? `<div class="desk-v1-home-suggestion-chips agent-question-chips">${chips.map((c) => `<button type="button" class="agent-question-chip" data-suggest="${esc(c)}">${esc(c)}</button>`).join('')}</div>`
-      : '';
-    host.querySelectorAll('[data-suggest]').forEach((btn) => {
-      btn.onclick = () => {
-        const ta = document.getElementById('desk-v1-home-promote-input');
-        if (ta) { ta.value = btn.dataset.suggest; ta.focus(); }
-      };
-    });
-  }
-
+  // ── render: promote box ───────────────────────────────────────────────
   function _submitPromote(ta) {
     const text = (ta && ta.value.trim()) || '';
     if (!text) return;
@@ -694,27 +679,29 @@
     el.querySelectorAll('.desk-v1-home-promote-icon-btn').forEach((b) => { b.onclick = () => _handlePromoteIconAction(b.dataset.promoteAction, ta); });
   }
 
-  // ── header (project scope · Settings · Pause all) ───────────────────────
-  function _bindHeader(el) {
-    const settingsBtn = el.querySelector('.desk-v1-home-settings-btn');
+  // ── crumb-tools (Engagement · Settings) ──────────────────────────────────
+  // R2-2c (Dave's review pass 4, §2's one-row header): the project scope
+  // picker already lives in the shell's crumb on EVERY Desk route
+  // (`_projectsPickerHTML`, desk-v1-shell.js) — Home used to duplicate it
+  // with its own "Clayrune ▾" second row. Engagement + Settings now render
+  // into the shell's shared #desk-v1-crumb-tools slot instead, the same
+  // per-route pattern desk-v1-review.js's `_renderCrumbTools` already
+  // established, so Home collapses into the ONE header row §2 specifies.
+  // "Pause all" is dropped outright, not relocated: the project page already
+  // has its own Pause project (desk-v1-project.js `_pauseProject`), and no
+  // R2 frame or spec line gives Home a cross-project pause of its own.
+  function _renderCrumbTools() {
+    const host = document.getElementById('desk-v1-crumb-tools');
+    if (!host) return;
+    host.innerHTML = `
+      <div class="desk-v1-home-crumbtools">
+        <button type="button" class="desk-v1-home-engagement-btn">&#128172; Engagement${_engagementCountSuffix()}</button>
+        <button type="button" class="desk-v1-home-settings-btn">&#9881; Settings</button>
+      </div>`;
+    const settingsBtn = host.querySelector('.desk-v1-home-settings-btn');
     if (settingsBtn) settingsBtn.onclick = () => { if (window.openSettings) window.openSettings(); };
-    const scopeBtn = el.querySelector('.desk-v1-home-scope');
-    // R0 fixtures model exactly one project — a real switcher needs the
-    // multi-project fixture data R1 adds (layout choice, see final report).
-    if (scopeBtn) scopeBtn.onclick = () => DeskV1Kit.toast('Project switching lands with real multi-project data (R1).');
-    const engagementBtn = el.querySelector('.desk-v1-home-engagement-btn');
+    const engagementBtn = host.querySelector('.desk-v1-home-engagement-btn');
     if (engagementBtn) engagementBtn.onclick = () => deskV1Nav('engagement', {});
-    const pauseBtn = el.querySelector('.desk-v1-home-pause-btn');
-    if (pauseBtn) pauseBtn.onclick = () => {
-      const camps = _campaigns().filter((c) => c.state === 'active');
-      if (!camps.length) { DeskV1Kit.toast('No active campaigns to pause.'); return; }
-      const prevStates = camps.map((c) => c.state);
-      DeskV1Kit.commandBus.run({
-        label: `Paused ${camps.length} campaign${camps.length === 1 ? '' : 's'}`,
-        do: () => { camps.forEach((c) => { c.state = 'paused'; }); _renderStatusBoard(); },
-        undo: () => { camps.forEach((c, i) => { c.state = prevStates[i]; }); _renderStatusBoard(); },
-      });
-    };
   }
 
   // ── simulated worker heartbeat (A13): Home shows no heartbeat chip ever —
@@ -746,14 +733,7 @@
   function deskV1RenderHome(el) {
     el.innerHTML = `
       <div class="desk-v1-home">
-        <div class="desk-v1-home-header">
-          <button type="button" class="desk-v1-home-scope">Clayrune &#9662;</button>
-          <div class="desk-v1-home-header-actions">
-            <button type="button" class="desk-v1-home-engagement-btn">&#128172; Engagement${_engagementCountSuffix()}</button>
-            <button type="button" class="desk-v1-home-settings-btn">&#9881; Settings</button>
-            <button type="button" class="desk-v1-home-pause-btn">&#9208; Pause all</button>
-          </div>
-        </div>
+        <div class="desk-v1-home-board" id="desk-v1-home-board"></div>
         <div class="desk-v1-home-promote">
           <div class="desk-v1-home-promote-drop" id="desk-v1-home-promote-drop">
             <textarea id="desk-v1-home-promote-input" class="desk-v1-home-promote-input" rows="2"
@@ -765,9 +745,7 @@
             <button type="button" class="desk-v1-home-promote-icon-btn" data-promote-action="link">&#128279; Link</button>
             <button type="button" class="desk-v1-home-promote-icon-btn" data-promote-action="say">&#127908; Say it</button>
           </div>
-          <div class="desk-v1-home-suggestions" id="desk-v1-home-suggestions"></div>
         </div>
-        <div class="desk-v1-home-board" id="desk-v1-home-board"></div>
         <div class="desk-v1-home-shelves">
           <div class="desk-v1-home-shelf">
             <div class="desk-v1-home-shelf-title">Channels</div>
@@ -779,9 +757,8 @@
           </div>
         </div>
       </div>`;
-    _bindHeader(el);
+    _renderCrumbTools();
     _bindPromoteBox(el);
-    _renderSuggestions();
     _renderStatusBoard();
     _renderShelves();
     _startHeartbeat(el);

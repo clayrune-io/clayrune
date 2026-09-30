@@ -213,15 +213,6 @@ async function runToneRenderChecks(browser, tone) {
   if (assetItems === 2) ok(`[${tone.name}] Material shelf: 2 recent assets`);
   else fail(`[${tone.name}] Material shelf recent-asset count wrong: ${assetItems}`);
 
-  // Posy suggestion chips (≤3, KNW) fill the promote box without sending.
-  const chips = await page.$$('.desk-v1-home-suggestions .agent-question-chip');
-  if (chips.length > 0 && chips.length <= 3) ok(`[${tone.name}] ${chips.length} Posy suggestion chip(s) rendered (<=3)`);
-  else fail(`[${tone.name}] suggestion chip count out of range: ${chips.length}`);
-  await chips[0].click();
-  const filled = await page.$eval('#desk-v1-home-promote-input', (ta) => ta.value);
-  if (filled) ok(`[${tone.name}] clicking a suggestion chip fills the promote box (does not send)`);
-  else fail(`[${tone.name}] suggestion chip click did not fill the promote box`);
-
   reportUncaught(pageErrors, `[${tone.name}]`);
   await ctx.close();
 }
@@ -410,6 +401,47 @@ async function runDesktopLayoutChecks(browser) {
   await ctx.close();
 }
 
+// ── R2-2c (Dave's review pass 4): one header row, the status board pushed up
+// to the top of the page — checked at the exact 1440x900 the review shot was
+// taken at, where the old two-row header + promote-box-first ordering pushed
+// the board's own column header down to y~537. Acceptance: the column header
+// sits above y=320 and both project blocks' own headers are visible without
+// scrolling. Also a regression guard for the two things this ticket removed
+// outright (the "Clayrune ▾" second-row scope duplicate, "Pause all"). ──────
+async function runR2_2cHeaderAcceptance(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} }, { width: 1440, height: 900 });
+
+  const layout = await page.evaluate(() => {
+    const colHead = document.querySelector('.desk-v1-home-board-head');
+    const blockHeads = Array.from(document.querySelectorAll('.desk-v1-home-block-head'));
+    return {
+      colHeadTop: colHead ? colHead.getBoundingClientRect().top : null,
+      blockHeadCount: blockHeads.length,
+      blockHeadBottoms: blockHeads.map((b) => b.getBoundingClientRect().bottom),
+      viewportHeight: window.innerHeight,
+      hasScopeDupe: !!document.querySelector('.desk-v1-home-scope'),
+      hasPauseAll: !!document.querySelector('.desk-v1-home-pause-btn'),
+    };
+  });
+  if (layout.colHeadTop !== null && layout.colHeadTop < 320) {
+    ok(`R2-2c: column header row (CAMPAIGN/STAGE/...) sits above y=320 (top ${layout.colHeadTop.toFixed(0)}px)`);
+  } else {
+    fail(`R2-2c: column header row too low: top ${layout.colHeadTop}`);
+  }
+  if (layout.blockHeadCount === 2 && layout.blockHeadBottoms.every((b) => b <= layout.viewportHeight)) {
+    ok(`R2-2c: both project blocks' headers visible without scrolling at 1440x900 (bottoms ${layout.blockHeadBottoms.map((b) => b.toFixed(0)).join(', ')})`);
+  } else {
+    fail(`R2-2c: a project block header is below the fold at 1440x900: ${JSON.stringify(layout.blockHeadBottoms)}`);
+  }
+  if (!layout.hasScopeDupe) ok('R2-2c: Home no longer renders its own "Clayrune ▾" second-row scope (crumb\'s Projects: All ▾ is the only picker)');
+  else fail('R2-2c: Home still renders the duplicate "Clayrune ▾" scope button');
+  if (!layout.hasPauseAll) ok('R2-2c: "Pause all" is gone from Home (project page owns Pause project)');
+  else fail('R2-2c: "Pause all" is still on Home');
+
+  reportUncaught(pageErrors, '[r2-2c-header]');
+  await ctx.close();
+}
+
 // ── Phone (§11): promote box shows the icon row (no drag), Home's content
 // rows stack (they always do now — the campaign grid's rail layout that used
 // to need a desktop/phone split is retired), hit targets >=44px. ───────────
@@ -434,10 +466,10 @@ async function runPhoneLayout(browser) {
   else fail('§11: promote box icon row hidden at phone width');
   if (layout.shelvesColumns === 1) ok('§11: Channels + Material shelves stack to a single column');
   else fail(`§11: shelves did not stack to one column: ${layout.shelvesColumns} columns`);
-  if (layout.promoteTop < layout.boardTop) {
-    ok('§11: phone stack order is promote, then the status board');
+  if (layout.boardTop < layout.promoteTop) {
+    ok('§11: phone stack order is the status board, then promote (R2-2c: promote moved below the board)');
   } else {
-    fail(`§11: phone stack order wrong — promote@${layout.promoteTop} board@${layout.boardTop}`);
+    fail(`§11: phone stack order wrong — board@${layout.boardTop} promote@${layout.promoteTop}`);
   }
   if (Math.abs(layout.boardWidth - layout.homeWidth) < 2) ok(`§11: status board is full width on phone, no fixed rail (${layout.boardWidth.toFixed(0)}px)`);
   else fail(`§11: status board is not full width: ${layout.boardWidth}px vs ${layout.homeWidth}px column`);
@@ -448,7 +480,6 @@ async function runPhoneLayout(browser) {
   const hitTargets = await page.evaluate(() => {
     const els = [
       document.querySelector('.desk-v1-home-settings-btn'),
-      document.querySelector('.desk-v1-home-pause-btn'),
       document.querySelector('.desk-v1-home-promote-icon-btn'),
       document.querySelector('.desk-v1-home-row'),
       document.querySelector('.desk-v1-shelf-item'),
@@ -497,6 +528,7 @@ try {
   await runNeedsYouDeepLinks(browser);
   await runAddToMenuAttach(browser);
   await runDesktopLayoutChecks(browser);
+  await runR2_2cHeaderAcceptance(browser);
   await runPhoneLayout(browser);
   await runModalSizeCheck(browser);
   exitCode = bad ? 1 : 0;

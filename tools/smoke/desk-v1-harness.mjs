@@ -133,9 +133,16 @@ async function runTone(browser, tone) {
   } else {
     fail(`[${tone.name}] Home crumb wrong: title=${JSON.stringify(homeTitle)}, hasBack=${!!homeBack}`);
   }
-  const homeToolsEmpty = await page.$eval('#desk-v1-crumb-tools', (el) => el.children.length === 0).catch(() => null);
-  if (homeToolsEmpty) ok(`[${tone.name}] Home: #desk-v1-crumb-tools stays empty (one-row crumb, T3's optional slot unused)`);
-  else fail(`[${tone.name}] Home: #desk-v1-crumb-tools is not empty: ${JSON.stringify(homeToolsEmpty)}`);
+  // R2-2c (Dave's review pass 4, §2's one-row header): Home now folds
+  // Engagement + Settings into this SAME shared slot instead of its own
+  // second header row — so unlike every other route, Home's crumb-tools is
+  // deliberately non-empty.
+  const homeToolsBtns = await page.$$eval('#desk-v1-crumb-tools button', (els) => els.map((e) => e.className));
+  if (homeToolsBtns.some((c) => /desk-v1-home-engagement-btn/.test(c)) && homeToolsBtns.some((c) => /desk-v1-home-settings-btn/.test(c))) {
+    ok(`[${tone.name}] Home: #desk-v1-crumb-tools carries Engagement + Settings (one-row crumb, R2-2c)`);
+  } else {
+    fail(`[${tone.name}] Home: #desk-v1-crumb-tools missing Engagement/Settings: ${JSON.stringify(homeToolsBtns)}`);
+  }
   // IA1 replaced Home's direct campaign links with project cards (one per
   // project with a presence) — the fixture campaign camp-1 now sits under
   // the 'clayrune' project card, not a bare link on Home itself.
