@@ -245,6 +245,14 @@ def build_brief(signal: dict, *, voice: str | None = None,
 
     out += ['', '── THE VOICE YOU ARE WRITING IN ──', _desk.voice_brief(voice)]
 
+    # §10.3: confirmed findings only — proposed/rejected/stale never reach a
+    # drafting agent. A cited id that is not a confirmed finding of THIS
+    # project must be dropped by the reader of `because`, never trusted just
+    # because it appears in text; that check lives with whatever renders the
+    # suggestion, not here.
+    if pid:
+        out += ['', '── ' + _desk.playbook_brief(pid)]
+
     # A post carries a visual, or plainly says it has none — never an invented
     # or described one. `media` on the queue item has existed since Phase 1 but
     # nothing ever populated it, so no draft has ever actually shown a reader

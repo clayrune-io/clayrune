@@ -38,8 +38,10 @@ from mc import characters as _chars
 from mc import desk as _desk
 from mc import desk_brief as _brief
 from mc import desk_harvest as _harvest
+from mc import desk_retro as _retro
 from mc import desk_voice_seed as _seed
 from mc.core import _log
+from mc.unattended import is_unattended_caller
 
 bp = Blueprint('desk_routes', __name__)
 
@@ -447,7 +449,9 @@ def record_published():
         platform=d['platform'], voice=voice, body=d['body'],
         signal_id=d.get('signal_id'), campaign_id=d.get('campaign_id'),
         project_id=d.get('project_id'), url=d.get('url'),
-        published_at=d.get('published_at'))
+        published_at=d.get('published_at'),
+        piece_id=d.get('piece_id'), format=d.get('format'),
+        account=d.get('account'), term=d.get('term'), cost=d.get('cost', 0))
     if d.get('signal_id'):
         _desk.mark_signal_consumed(d['signal_id'], entry['id'])
     return jsonify(entry), 201
@@ -455,10 +459,126 @@ def record_published():
 
 @bp.route('/api/desk/ledger/<post_id>/outcome', methods=['POST'])
 def record_outcome(post_id):
-    row = _desk.record_outcome(post_id, request.get_json(silent=True) or {})
+    """Append one per-post outcome entry (§8 R1-L: `outcomes[]` replaces the
+    free-form `outcome` dict)."""
+    d = request.get_json(silent=True) or {}
+    if not d.get('metric') or 'value' not in d:
+        return jsonify({'error': 'metric and value are required'}), 400
+    row = _desk.record_outcome(post_id, d['metric'], d['value'],
+                               source=d.get('source', 'manual'), at=d.get('at'))
     if row is None:
         return jsonify({'error': 'post not found'}), 404
     return jsonify(row)
+
+
+# ── Playbook / outcome learning loop (§10, MC-977 R1-L) ─────────────────────
+#
+# §10.5.1: a finding schema has no field that can name an approval bound.
+# Structural enforcement, not trust in whoever built the request body: any of
+# these keys in a finding state-change body is refused outright, whatever its
+# value, so a bound can never ride in on a field named after one.
+_BOUND_FIELD_NAMES = {'cadence', 'budget', 'accounts', 'approval', 'end', 'post_cap'}
+
+
+def _bound_field_violation(d: dict):
+    hit = _BOUND_FIELD_NAMES & set(d or {})
+    if hit:
+        return jsonify({'error': f'field(s) {sorted(hit)} name an approval bound; '
+                                 'a finding may never carry one'}), 400
+    return None
+
+
+def _unattended_refusal():
+    """§10.5.2 + §10.2 "Only Ron moves a finding between states": every
+    state-change route below refuses an unattended caller, the same posture
+    `secrets_routes._unattended_refusal` takes for vault writes."""
+    return jsonify({'error': 'this action needs a human — an unattended agent '
+                             'session cannot confirm, edit, reject, or undo a '
+                             'playbook finding'}), 403
+
+
+@bp.route('/api/desk/retro', methods=['POST'])
+def run_retro():
+    """Compute a retro over caller-supplied per-dimension evidence (§10.1).
+    Code-only and deterministic; this route itself may run unattended (a
+    scheduled term-end retro) — proposed findings always land `origin:
+    'unattended'` regardless (mc.desk.propose_finding), so this route is NOT
+    gated on `is_unattended_caller`, unlike the finding state-change routes."""
+    d = request.get_json(silent=True) or {}
+    if not d.get('project_id') or not d.get('dimension_arms'):
+        return jsonify({'error': 'project_id and dimension_arms are required'}), 400
+    result = _retro.run_retro(
+        d['project_id'], dimension_arms=d['dimension_arms'],
+        account=d.get('account'), metric=d.get('metric', 'clicks'),
+        interim=bool(d.get('interim')))
+    return jsonify(result)
+
+
+@bp.route('/api/desk/findings', methods=['GET'])
+def list_findings():
+    return jsonify(_desk.list_findings(
+        project_id=request.args.get('project_id'), state=request.args.get('state')))
+
+
+@bp.route('/api/desk/findings/<finding_id>', methods=['GET'])
+def get_finding(finding_id):
+    f = _desk.get_finding(finding_id)
+    if f is None:
+        return jsonify({'error': 'finding not found'}), 404
+    return jsonify(f)
+
+
+@bp.route('/api/desk/findings/<finding_id>/confirm', methods=['POST'])
+def confirm_finding(finding_id):
+    if is_unattended_caller():
+        return _unattended_refusal()
+    d = request.get_json(silent=True) or {}
+    violation = _bound_field_violation(d)
+    if violation is not None:
+        return violation
+    f = _desk.confirm_finding(finding_id, edited_text=d.get('edited_text'),
+                              decided_by=d.get('decided_by'))
+    if f is None:
+        return jsonify({'error': 'finding not found'}), 404
+    return jsonify(f)
+
+
+@bp.route('/api/desk/findings/<finding_id>/reject', methods=['POST'])
+def reject_finding(finding_id):
+    if is_unattended_caller():
+        return _unattended_refusal()
+    d = request.get_json(silent=True) or {}
+    violation = _bound_field_violation(d)
+    if violation is not None:
+        return violation
+    f = _desk.reject_finding(finding_id, decided_by=d.get('decided_by'))
+    if f is None:
+        return jsonify({'error': 'finding not found'}), 404
+    return jsonify(f)
+
+
+@bp.route('/api/desk/findings/<finding_id>/dont-suggest-again', methods=['POST'])
+def dont_suggest_again(finding_id):
+    if is_unattended_caller():
+        return _unattended_refusal()
+    d = request.get_json(silent=True) or {}
+    violation = _bound_field_violation(d)
+    if violation is not None:
+        return violation
+    f = _desk.dont_suggest_again(finding_id, decided_by=d.get('decided_by'))
+    if f is None:
+        return jsonify({'error': 'finding not found'}), 404
+    return jsonify(f)
+
+
+@bp.route('/api/desk/findings/<finding_id>/undo-reject', methods=['POST'])
+def undo_reject(finding_id):
+    if is_unattended_caller():
+        return _unattended_refusal()
+    f = _desk.undo_reject(finding_id)
+    if f is None:
+        return jsonify({'error': 'finding not found or not rejected'}), 404
+    return jsonify(f)
 
 
 # ── Drafting ─────────────────────────────────────────────────────────────────

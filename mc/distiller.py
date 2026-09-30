@@ -1727,6 +1727,18 @@ def _authority_violation(body: str) -> str:
     return m.group(0) if m else ''
 
 
+def authority_violation(body: str) -> str:
+    """Public name for `_authority_violation` (MC-977 R1-L). The Desk's
+    playbook (`mc/desk.py`) reuses this exact check for model-written finding
+    text (`maybe_why`, retro summaries) rather than copying the pattern —
+    CLAUDE.md's "Learning-system safety rails" call this the constitutional
+    bright line, and a second copy is a second place for it to drift. Delegates
+    to the underlying function so `_authority_violation`'s own behaviour (and
+    tests/test_distiller_safety.py, which calls the private name directly)
+    is untouched."""
+    return _authority_violation(body)
+
+
 # ── Per-kind artifact generation (§4.3, §4.4, §4.5) ──────────────────────────
 
 def _generate_and_write_artifact(project_id: str, project: dict,
