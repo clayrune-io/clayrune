@@ -177,6 +177,9 @@ _CONFIG_EDITABLE_KEYS = {
     'mobile_brief_replies_enabled', 'brief_replies_always_enabled',
     'auto_model_enabled', 'auto_model_classifier_model',
     'auto_model_classifier_timeout_secs',
+    # Per-model context-profile overrides (mc/context_profile.py). Read live
+    # at the next context build — no respawn needed (like read_floor_topk).
+    'context_profile_overrides',
     'sticky_agent_settings',
     'activity_states_enabled',
     # The loop-closer's kill switch. Exploration readback is the ONE learned

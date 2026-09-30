@@ -442,6 +442,14 @@ def _load_config():
         # underlying claude oneshot's 180s timeout — diagnosed in the analysis
         # doc (docs/DISPATCH_AND_ROUTING_ANALYSIS.md §C.1 step 1).
         'auto_model_classifier_timeout_secs': 8,
+        # Per-model context-profile reclassification (backlog 4a11b6a5,
+        # mc/context_profile.py). _build_agent_context slims its floor
+        # (MEMORY.md session log, recent conversations, recent activity) for
+        # a model whose runtime declares it 'lean' (AgentRuntime.
+        # context_profile_for). This dict lets a model be reclassified
+        # without a code change: {model_id_or_glob: 'full'|'lean'}, checked
+        # before the runtime's own declared default. Empty = no overrides.
+        'context_profile_overrides': {},
         # Sticky agent settings + respawn-on-flip. Default ON (2026-06-04).
         # When on: (a) the "brief replies everywhere" directive is baked into the
         # spawn-time system prompt (cached, authoritative) instead of being
