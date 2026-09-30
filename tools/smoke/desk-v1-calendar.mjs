@@ -654,19 +654,22 @@ async function runR29AgentSuggestedAndFill(browser) {
     const camp = (window.DeskV1Fixtures.campaigns || []).find((c) => c.id === 'camp-1');
     const at = new Date(); at.setHours(9, 0, 0, 0);
     camp.when.slots.push({ id: 'slot-fill-test', at: at.toISOString(), origin: 'user' });
-    window.deskV1CalendarSuggestFill('camp-1', { slotId: 'slot-fill-test', title: 'Test suggested piece', platform: 'x' });
+    // R2-19: the fill takes a version Where already placed (title / platform
+    // come off it, never off the caller) — v-home-x is @ron's version of
+    // "Home status table".
+    window.deskV1CalendarSuggestFill('camp-1', { slotId: 'slot-fill-test', versionId: 'v-home-x', title: 'Ignored caller title', platform: 'linkedin' });
   });
   await page.waitForTimeout(50);
   // R2-9b (Dave review pass 4): the title line no longer carries a
   // "· platform" text suffix — platform is the line-1 glyph now, and the
   // suffix was pushing "⚠ held" past the ellipsis at month-column widths.
   const filledTitle = (await page.textContent('[data-slot-id="slot-fill-test"] .desk-v1-cal-slotchip-title').catch(() => '') || '').trim();
-  filledTitle === 'Test suggested piece'
-    ? ok(`R2-9b: deskV1CalendarSuggestFill fills a user slot with a title, no platform-text suffix: "${filledTitle}"`)
+  filledTitle === 'Home status table'
+    ? ok(`R2-9b: deskV1CalendarSuggestFill fills a user slot with the placed version's title, no platform-text suffix: "${filledTitle}"`)
     : fail(`R2-9b: fill did not render on the slot chip: ${JSON.stringify(filledTitle)}`);
   const filledGlyph = (await page.textContent('[data-slot-id="slot-fill-test"] .desk-v1-cal-slotchip-glyph').catch(() => '') || '').trim();
   filledGlyph === '𝕏'
-    ? ok(`R2-9b: the fill's platform ("x") renders as the line-1 glyph instead: "${filledGlyph}"`)
+    ? ok(`R2-9b: the fill's platform (the version's own account, x) renders as the line-1 glyph: "${filledGlyph}"`)
     : fail(`R2-9b: fill's platform glyph wrong: ${JSON.stringify(filledGlyph)}`);
   const stillUser = await page.$eval('[data-slot-id="slot-fill-test"]', (el) => el.dataset.slotOrigin);
   stillUser === 'user'
@@ -674,6 +677,97 @@ async function runR29AgentSuggestedAndFill(browser) {
     : fail(`R2-9: fill must not mutate origin, got ${JSON.stringify(stillUser)}`);
 
   reportUncaught(pageErrors, '[R2-9 agent+fill]');
+  await ctx.close();
+}
+
+// ── R2-19 (Ron 2026-09-30): When owns TIME only, for versions Where already
+// placed. (a) Suggest never creates a version and never moves one across
+// accounts — a full snapshot of every version's id + account + state is
+// identical before and after; (b) Suggest takes only placed versions: an
+// unplaced version (no account, or an account the campaign does not use) and
+// an unknown id fill nothing; (c) with nothing placed, When shows an empty
+// state pointing back to Where (and the Go to Where button lands there). ────
+async function runR219WhenTimeOnly(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCalendar(page);
+  await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
+
+  const res = await page.evaluate(() => {
+    const fx = window.DeskV1Fixtures;
+    const camp = fx.campaigns.find((c) => c.id === 'camp-1');
+    const snapNow = () => JSON.stringify((fx.families || []).map((f) => [f.id, (f.versions || []).map((v) => [v.id, v.channelId, v.state])]));
+    // Two unplaced versions on camp-1: no account, and an account camp-1 does not use.
+    const fam = fx.families.find((f) => f.campaignId === 'camp-1');
+    fam.versions.push({ id: 'v-r219-noacct', channelId: null, state: 'planned', revision: 0 });
+    fam.versions.push({ id: 'v-r219-otheracct', channelId: 'ch-not-in-plan', state: 'planned', revision: 0 });
+    camp.when = camp.when || {};
+    camp.when.slots = camp.when.slots || [];
+    const at = new Date();
+    at.setHours(16, 0, 0, 0);
+    ['a', 'b', 'c'].forEach((k) => camp.when.slots.push({ id: 'slot-r219-' + k, at: at.toISOString(), origin: 'user' }));
+    const before = snapNow();
+    const unplaced1 = window.deskV1CalendarSuggestFill('camp-1', { slotId: 'slot-r219-a', versionId: 'v-r219-noacct' });
+    const unplaced2 = window.deskV1CalendarSuggestFill('camp-1', { slotId: 'slot-r219-a', versionId: 'v-r219-otheracct' });
+    const unknown = window.deskV1CalendarSuggestFill('camp-1', { slotId: 'slot-r219-a', versionId: 'no-such-version', title: 'Invented', platform: 'x', channelId: 'ch-x-ron' });
+    const invented = window.deskV1CalendarSuggestFill('camp-1', { slotId: 'slot-r219-b', title: 'Invented piece', platform: 'reddit', channelId: 'ch-blog' });
+    const afterRefusals = snapNow();
+    const auto = window.deskV1CalendarSuggestFill('camp-1', { slotId: 'slot-r219-c' });
+    const after = snapNow();
+    return {
+      refusedUnplaced: unplaced1 === null && unplaced2 === null && unknown === null,
+      slotAStillEmpty: !camp.when.slots.find((s) => s.id === 'slot-r219-a').filled,
+      inventedTitle: invented && invented.filled && invented.filled.title,
+      autoVersion: auto && auto.filled && auto.filled.versionId,
+      autoChannel: auto && auto.filled && auto.filled.channelId,
+      sameAfterRefusals: before === afterRefusals,
+      sameAfterFill: before === after,
+    };
+  });
+  res.refusedUnplaced && res.slotAStillEmpty
+    ? ok('R2-19: Suggest fills nothing for a version with no account, one on an account the campaign does not use, or an unknown id')
+    : fail(`R2-19: Suggest filled an unplaced version: ${JSON.stringify(res)}`);
+  res.inventedTitle && res.inventedTitle !== 'Invented piece'
+    ? ok(`R2-19: a caller-supplied title/platform/channel cannot invent a placement (filled with the placed version's own "${res.inventedTitle}")`)
+    : fail(`R2-19: Suggest honoured a caller-invented piece: ${JSON.stringify(res)}`);
+  res.sameAfterRefusals && res.sameAfterFill
+    ? ok('R2-19: When Suggest left every version (count, id, account, state) unchanged, before and after')
+    : fail(`R2-19: When Suggest changed version placement: ${JSON.stringify(res)}`);
+  res.autoVersion && res.autoChannel
+    ? ok(`R2-19: an unnamed fill picks a placed version (${res.autoVersion} on ${res.autoChannel}) and keeps its own account`)
+    : fail(`R2-19: unnamed fill picked nothing: ${JSON.stringify(res)}`);
+
+  // (c) empty state: a campaign whose Where has placed nothing.
+  await page.evaluate(() => {
+    const fx = window.DeskV1Fixtures;
+    fx.campaigns.push({
+      id: 'camp-r219-empty', projectId: 'clayrune', state: 'draft', subject: { label: 'R2-19 empty' },
+      plan: { title: 'R2-19 empty', accounts: ['ch-x-ron'], cadence: { per_week: 2 } }, term: {}, map: { stop: 'when', done: [] },
+    });
+    window.deskV1Nav('campaign', { campaignId: 'camp-r219-empty' });
+    window.deskV1Nav('calendar', { campaignId: 'camp-r219-empty' });
+  });
+  await page.waitForSelector('[data-cal-empty-where]', { timeout: 4000 }).catch(() => {});
+  const empty = await page.evaluate(() => ({
+    hasEmpty: !!document.querySelector('[data-cal-empty-where]'),
+    hasGrid: !!document.querySelector('.desk-v1-cal-grid, .desk-v1-cal-monthgrid'),
+    hasSlotsBand: !!document.querySelector('.desk-v1-cal-row-slots'),
+    hasFields: !!document.querySelector('.desk-v1-cal-fields'),
+    text: (document.querySelector('[data-cal-empty-where]') || {}).textContent || '',
+  }));
+  empty.hasEmpty && /Where/.test(empty.text) && !empty.hasGrid && !empty.hasSlotsBand && empty.hasFields
+    ? ok(`R2-19: a campaign with nothing placed shows the When empty state pointing at Where (no grid, cadence/term fields kept): "${empty.text.trim().replace(/\s+/g, ' ')}"`)
+    : fail(`R2-19: When empty state wrong: ${JSON.stringify(empty)}`);
+  await page.click('[data-cal-to-where]').catch(() => {});
+  await page.waitForSelector('[data-where]', { timeout: 4000 }).catch(() => {});
+  const landed = await page.evaluate(() => {
+    const here = document.querySelector('.desk-v1-map-stop[data-state="here"]');
+    return { where: !!document.querySelector('[data-where]'), here: here ? here.dataset.stop : null };
+  });
+  landed.where && landed.here === 'where'
+    ? ok('R2-19: "Go to Where ›" from the When empty state lands on the Where stop')
+    : fail(`R2-19: Go to Where did not land on Where: ${JSON.stringify(landed)}`);
+
+  reportUncaught(pageErrors, '[R2-19 when]');
   await ctx.close();
 }
 
@@ -848,6 +942,7 @@ try {
   await runR29FieldsAndLegend(browser);
   await runR29SlotCreateAndRefusal(browser);
   await runR29AgentSuggestedAndFill(browser);
+  await runR219WhenTimeOnly(browser);
   await runR29UnscheduledDrag(browser);
   await runR29bMonthGridDimensions(browser);
   await runPhoneLayout(browser);

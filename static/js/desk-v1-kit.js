@@ -155,7 +155,11 @@
   // first — the old ② How stop is now the FIRST stop and reads `Brief`. The
   // route key stays `how` (deep links, fixtures, `missing[].stop`, `camp.how`
   // all keep working); only the order and the visible word changed.
-  const MAP_STOPS = ['how', 'goal', 'what', 'when', 'where', 'launch'];
+  // R2-19 (Ron 2026-09-30, When/Where overlap): Where comes BEFORE When. Where
+  // owns channel placement only (which accounts, which messages go to each);
+  // When owns time only, for versions already placed in Where — so When never
+  // has to handle a channel the campaign has not picked yet.
+  const MAP_STOPS = ['how', 'goal', 'what', 'where', 'when', 'launch'];
   const MAP_STOP_WORDS = { goal: 'Goal', how: 'Brief', what: 'What', when: 'When', where: 'Where', launch: 'Launch' };
 
   function stateLabel(state) {

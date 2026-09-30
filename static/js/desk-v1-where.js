@@ -1,5 +1,8 @@
-// Desk v1 (MC-977) — R2-10: the ⑤ Where stop of the campaign map, a board
+// Desk v1 (MC-977) — R2-10: the ④ Where stop of the campaign map, a board
 // (docs/THE_DESK_V1_IA_REVISION_2.md §8 row R2-10, frames 7a + 7b, §11.6 Q1).
+// R2-19 (Ron 2026-09-30): Where owns CHANNEL PLACEMENT only — which accounts,
+// which messages go to each. A version card carries no time; times belong to
+// the ⑤ When stop, which reads the versions placed here.
 // Window-bridged module, no `import` (ground rule 1). `desk-v1-shell.js`'s
 // `_renderCampaignPanel` calls `deskV1RenderWhere(el, params)` for panel
 // 'where'.
@@ -78,30 +81,6 @@
     return `<span class="desk-v1-where-avatar" style="background:${_avatarColor(ch ? ch.id : '')}" aria-hidden="true">` +
       `<span class="desk-v1-where-avatar-letter">${esc((m ? m[0] : '?').toUpperCase())}</span>` +
       `<span class="desk-v1-where-avatar-badge" data-platform="${esc(ch ? ch.platform : '')}">${esc(plat.glyph)}</span></span>`;
-  }
-
-  // Same lookup order desk-v1-calendar.js's `_versionWhen` uses, so a card
-  // and the When calendar never disagree about a version's slot.
-  function _versionWhen(v) {
-    const iso = v.publishedAt || v.publishAt
-      || (_fx().calendarSchedule || {})[v.id]
-      || ((_fx().reviewDetail || {})[v.id] || {}).whenISO;
-    if (!iso) return null;
-    const d = new Date(iso);
-    return isNaN(d) ? null : d;
-  }
-  function _userTz() {
-    const cfg = (typeof _globalConfig !== 'undefined' && _globalConfig) || {};
-    return cfg.user_timezone || undefined;
-  }
-  // `Wed 10:00` — weekday + 24-hour time in the configured timezone, en-US so
-  // the text does not change with the host locale (the frames read this way).
-  function _timeText(d) {
-    try {
-      const parts = new Intl.DateTimeFormat('en-US', { timeZone: _userTz(), weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(d);
-      const get = (t) => (parts.find((p) => p.type === t) || {}).value || '';
-      return `${get('weekday')} ${get('hour')}:${get('minute')}`;
-    } catch (e) { return ''; }
   }
 
   // A version counts on the board while it is live and sits on a channel.
@@ -312,18 +291,12 @@
   }
 
   function _versionHTML(fam, v, ch) {
-    const when = _versionWhen(v);
     const state = DeskV1Kit.stateLabel(v.state);
-    const plat = _platform(ch);
-    const timeHTML = when
-      ? `<span class="desk-v1-where-vplat" data-platform="${esc(ch.platform)}" aria-hidden="true">${esc(plat.glyph)}</span> ${esc(_timeText(when))}`
-      : '<span class="desk-v1-where-notime">No time yet</span>';
     return `<div class="desk-v1-addto-wrap desk-v1-where-vwrap">
       <div class="desk-v1-where-vcard" role="button" tabindex="0" data-where-version data-family-id="${esc(fam.id)}" data-version-id="${esc(v.id)}" data-state="${esc(v.state)}"
            aria-haspopup="menu" aria-label="${esc(`${fam.title}, ${_kindWord(fam.kind)} to ${_formatWord(fam.kind, ch)}, ${state.word}. Press Enter to move it to another account.`)}">
         <div class="desk-v1-where-vtitle">${esc(fam.title)}</div>
         <div class="desk-v1-where-vformat">${esc(_kindWord(fam.kind))} → ${esc(_formatWord(fam.kind, ch))}</div>
-        <div class="desk-v1-where-vtime">${timeHTML}</div>
       </div>
     </div>`;
   }

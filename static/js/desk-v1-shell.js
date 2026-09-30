@@ -61,7 +61,7 @@
   // R2-3 (IA revision 2 §4.1, §7): the tab strip becomes the ①-⑥ map, so the
   // three old panel names retire onto the stop that now absorbs them —
   // `results` -> ① goal (`desk-v1-results.js`), `content` -> ③ what (T2a's
-  // own content list, unchanged), `calendar` -> ④ when. `when` now renders
+  // own content list, unchanged), `calendar` -> ⑤ when. `when` now renders
   // `desk-v1-calendar.js` directly as its own panel (§4.1's "Absorbs" column)
   // rather than the old content-tab's List/Calendar toggle, so the toggle-once
   // `calendarView` flag this alias used to set is retired with it — nothing
@@ -348,8 +348,8 @@
     // guard something that actually tracks the active stop.
     tabbodyEl.dataset.panel = panel;
     // R2-3 (§4.1 Absorbs column): ① reads `desk-v1-results.js`, ② how reads
-    // `desk-v1-how.js`, ④ reads `desk-v1-calendar.js` and ⑤ reads
-    // `desk-v1-where.js` directly, each a standalone panel — ③ what / ⑥ launch
+    // `desk-v1-how.js`, ④ Where reads `desk-v1-where.js` and ⑤ When reads
+    // `desk-v1-calendar.js` directly, each a standalone panel — ③ what / ⑥ launch
     // are desk-v1-campaign.js's own job, so both fall through to the generic hook.
     if (panel === 'goal' && typeof window.deskV1RenderResults === 'function') {
       window.deskV1RenderResults(tabbodyEl, params);
