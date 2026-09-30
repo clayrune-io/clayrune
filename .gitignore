@@ -15,6 +15,9 @@ src-tauri/target/
 # User data (generated at runtime)
 data/projects/*.json
 data/projects/*_agent_log.json
+# Distiller signal cold-archive sidecar: same runtime data as *_skill_stats.json
+# (covered by the *.json rule above) but a .jsonl, so it needs its own line.
+data/projects/*_skill_stats_archive.jsonl
 # Per-project workspaces (data/projects/<id>/…) are USER DATA — never publish.
 # Only top-level records + .gitkeep are tracked. (2026-06-09: engulfing-analyst
 # content had slipped in tracked because the rule above only covers *.json — see

@@ -33,7 +33,8 @@ import mc.agent_worktree as w  # noqa: E402
 
 
 def _git(cwd, *args, check=True):
-    r = subprocess.run(['git', *args], cwd=str(cwd), capture_output=True, text=True)
+    r = subprocess.run(['git', *args], cwd=str(cwd), capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL)
     if check and r.returncode != 0:
         raise RuntimeError(f'git {" ".join(args)}: {r.stderr.strip()}')
     return r.stdout.strip()

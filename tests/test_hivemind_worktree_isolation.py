@@ -32,7 +32,8 @@ from mc.blueprints import hivemind_routes as hm  # noqa: E402
 
 
 def _git(cwd, *args):
-    r = subprocess.run(['git', *args], cwd=str(cwd), capture_output=True, text=True)
+    r = subprocess.run(['git', *args], cwd=str(cwd), capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL)
     if r.returncode != 0:
         raise RuntimeError(f'git {" ".join(args)}: {r.stderr.strip()}')
     return r.stdout.strip()
@@ -310,6 +311,47 @@ def test_dirty_worker_tree_stops_rather_than_dropping_work(project):
     wt = _awt.worktree_path(project, 'hm_00000031')
     (wt / 'a.txt').write_text('uncommitted\n', encoding='utf-8')
     st = hi.integrate(project, 'hmD', [ws], base)
+    assert st['status'] == 'stopped' and st['failed']['kind'] == 'dirty'
+    assert st['merged'] == []
+
+
+def _with_runtime_dir(repo):
+    """Track data/projects/.gitkeep like the real repo, so worktrees get the
+    junction into it."""
+    (repo / 'data' / 'projects').mkdir(parents=True)
+    (repo / 'data' / 'projects' / '.gitkeep').write_text('', encoding='utf-8')
+    _git(repo, 'add', '-f', 'data/projects/.gitkeep')
+    _git(repo, 'commit', '-q', '-m', 'runtime dir')
+
+
+def test_untracked_runtime_file_in_linked_dir_does_not_make_a_worker_dirty(project):
+    """data/projects is a junction into the MAIN checkout, so a runtime file
+    untracked there (e.g. *_skill_stats_archive.jsonl) shows in every worker
+    tree's `git status`. It is not the worker's work and must not block."""
+    repo = Path(project['project_path'])
+    _with_runtime_dir(repo)
+    (repo / 'data' / 'projects' / 'x_skill_stats_archive.jsonl').write_text('{}\n', encoding='utf-8')
+    base = _git(repo, 'rev-parse', 'master')
+    ws = _worker(project, 'hmL', 'ws1', 'hm_00000051', {'a.txt': '1\n'})
+    wt = _awt.worktree_path(project, 'hm_00000051')
+    assert (wt / 'data' / 'projects' / 'x_skill_stats_archive.jsonl').exists()   # linked
+    assert project_sync._dirty(str(wt))                 # plain status sees it: the bug
+    assert not _awt.dirty_outside_runtime(project, wt)
+    st = hi.integrate(project, 'hmL', [ws], base)
+    assert st['status'] == 'completed' and st['failed'] is None
+    assert [m['ws_id'] for m in st['merged']] == ['ws1']
+
+
+def test_untracked_file_outside_linked_dirs_still_counts_as_dirty(project):
+    repo = Path(project['project_path'])
+    _with_runtime_dir(repo)
+    (repo / 'data' / 'projects' / 'x_skill_stats_archive.jsonl').write_text('{}\n', encoding='utf-8')
+    base = _git(repo, 'rev-parse', 'master')
+    ws = _worker(project, 'hmU', 'ws1', 'hm_00000052', {'a.txt': '1\n'})
+    wt = _awt.worktree_path(project, 'hm_00000052')
+    (wt / 'notes.md').write_text('forgot to commit\n', encoding='utf-8')
+    assert _awt.dirty_outside_runtime(project, wt)
+    st = hi.integrate(project, 'hmU', [ws], base)
     assert st['status'] == 'stopped' and st['failed']['kind'] == 'dirty'
     assert st['merged'] == []
 

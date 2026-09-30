@@ -145,6 +145,10 @@ def git_run(cwd: str, args: list[str], timeout: int = 30,
             ['git'] + args,
             cwd=cwd,
             capture_output=True,
+            # No inherited stdin: under a headless parent whose stdin handle
+            # is invalid, Windows fails the spawn with WinError 6/50 (same fix
+            # as system_routes._git, cd1cac76).
+            stdin=subprocess.DEVNULL,
             text=True, encoding='utf-8', errors='replace',
             timeout=timeout,
             creationflags=_POPEN_FLAGS,
