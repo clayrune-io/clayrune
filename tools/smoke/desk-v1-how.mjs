@@ -14,6 +14,13 @@
  *   campaign flips ⑥ Launch to "Awaiting approval" -> lowering to $40 does
  *   not clear it.
  *
+ * R2-17 (§10.3, §8 row R2-17): Suggest results carry `because`. Default
+ * fixtures: F6 confirmed -> `Based on F6 >`; F5 (rejected) + F99 (unknown) ->
+ * no chip; `untested` -> `Trying`; the Tue 09:00 slot cites F3 which is
+ * rejected -> no chip. Then F3 is confirmed: the slot shows `Based on F3 >`,
+ * which opens F3's evidence on the project Playbook, and accepting that slot
+ * on Active camp-1 (within bounds) keeps approval (no Awaiting approval).
+ *
  * Real headless boot (real index.html + real static/js|css, no network), same
  * hermetic shape as every other desk-v1-*.mjs smoke.
  *
@@ -272,6 +279,21 @@ async function run(browser) {
     ? ok(`③ What: suggested banner reads "${bannerText}"`)
     : fail(`③ What: suggested banner wrong: ${JSON.stringify(bannerText)}`);
 
+  // R2-17: chips per suggested piece, default fixtures.
+  const whatChips = await page.$$eval('[data-suggested-item]', (els) => els.map((e) => ({
+    based: Array.from(e.querySelectorAll('[data-because-finding]')).map((b) => b.textContent.trim()),
+    trying: Array.from(e.querySelectorAll('[data-because-trying]')).map((b) => b.textContent.trim()),
+  })));
+  whatChips.length === 3 && whatChips[0].based.length === 1 && /^Based on F6\s*›$/.test(whatChips[0].based[0])
+    ? ok('R2-17 ③: piece 1 (confirmed F6) shows `Based on F6 ›`')
+    : fail(`R2-17 ③: piece 1 chips wrong: ${JSON.stringify(whatChips)}`);
+  whatChips[1] && !whatChips[1].based.length && !whatChips[1].trying.length
+    ? ok('R2-17 ③: piece 2 cites nonexistent F5 + unknown F99 -> no chip')
+    : fail(`R2-17 ③: piece 2 should show no chip: ${JSON.stringify(whatChips[1])}`);
+  whatChips[2] && whatChips[2].trying.length === 1 && /Trying: untested/.test(whatChips[2].trying[0])
+    ? ok('R2-17 ③: piece 3 (`untested`) shows `Trying: untested`')
+    : fail(`R2-17 ③: piece 3 chips wrong: ${JSON.stringify(whatChips[2])}`);
+
   await page.click('[data-suggested-accept-all]');
   await page.waitForTimeout(50);
   const famCountAfter = await familyCountFor(page, 'camp-1');
@@ -305,9 +327,22 @@ async function run(browser) {
     ? ok(`④ When: cadence proposal banner reads "${whenBanner}"`)
     : fail(`④ When: cadence proposal banner wrong: ${JSON.stringify(whenBanner)}`);
 
+  // R2-17: the proposed slot cites F3, which is `rejected` in the default
+  // fixtures -> the row exists (Tue, dashed on the calendar) with NO chip.
+  const slotRow0 = await page.$eval('[data-suggested-slot]', (e) => ({
+    text: e.textContent.replace(/\s+/g, ' ').trim(), chips: e.querySelectorAll('.desk-v1-because-chip').length, state: e.dataset.slotState,
+  })).catch(() => null);
+  slotRow0 && /^Tue 9:00/.test(slotRow0.text) && slotRow0.chips === 0 && slotRow0.state === 'suggested'
+    ? ok(`R2-17 ④: suggested slot "${slotRow0.text}" cites rejected F3 -> no chip`)
+    : fail(`R2-17 ④: suggested slot row wrong: ${JSON.stringify(slotRow0)}`);
+
   // ── ⑤ Where: placement suggestion ────────────────────────────────────────
   await gotoStop(page, 'where');
   await page.waitForSelector('.desk-v1-stub-inline', { timeout: 4000 });
+  const whereChip = (await page.textContent('[data-where-suggest] [data-because-trying]').catch(() => '') || '').trim();
+  /Trying: untested/.test(whereChip)
+    ? ok('R2-17 ⑤: placement suggestion shows `Trying: untested`')
+    : fail(`R2-17 ⑤: placement chip wrong: ${JSON.stringify(whereChip)}`);
   const whereText = (await page.textContent('.desk-v1-stub-inline').catch(() => '') || '').trim();
   /suggested/.test(whereText) && /@ron|ch-x-ron/.test(whereText)
     ? ok(`⑤ Where: placement suggestion reads "${whereText}"`)
@@ -329,6 +364,59 @@ async function run(browser) {
   /suggested 3 pieces, a cadence and a placement/.test(retryToast)
     ? ok(`Retry: recovers, reaches Ready again: "${retryToast.trim()}"`)
     : fail(`Retry: did not recover: ${JSON.stringify(retryToast)}`);
+
+  // ── R2-17: F3 confirmed -> the Tue 09:00 slot shows `Based on F3 ›`, it
+  // opens F3's evidence, accepting it keeps approval ─────────────────────────
+  await page.evaluate(() => {
+    const pb = window.DeskV1Fixtures.playbook;
+    const f3 = pb.findings.find((f) => f.id === 'F3');
+    f3.state = 'confirmed'; f3.origin = 'interactive';
+    // the acceptance's rejected F5 (the agent cites it on piece 2)
+    pb.findings.push({ id: 'F5', project_id: 'clayrune', scope: 'project', dimension: 'slot', arms: { a: 'Mon', b: 'Fri' },
+      metric: 'clicks', effect: { ratio: 1.3, direction: 'a>b' }, evidence: [], n_total: 20, confidence: 'low',
+      state: 'rejected', origin: 'interactive', decided_at: '2026-08-07T09:00:00Z', decided_by: 'ron' });
+  });
+  await gotoStop(page, 'how');
+  await page.waitForSelector('.desk-v1-how', { timeout: 4000 });
+  await nextToastText(page, () => page.click('[data-how-suggest]'), 8000);
+
+  await gotoStop(page, 'what');
+  await page.waitForSelector('[data-suggested-item]', { timeout: 4000 });
+  const whatChips2 = await page.$$eval('[data-suggested-item]', (els) => els.map((e) => e.querySelectorAll('[data-because-finding]').length));
+  whatChips2[1] === 0
+    ? ok('R2-17 ③: a suggestion citing rejected F5 (now in the store) + unknown F99 still shows no chip')
+    : fail(`R2-17 ③: rejected F5 leaked a chip: ${JSON.stringify(whatChips2)}`);
+
+  await gotoStop(page, 'when');
+  await page.waitForSelector('[data-suggested-slot]', { timeout: 4000 });
+  const f3Chip = (await page.textContent('[data-suggested-slot] [data-because-finding="F3"]').catch(() => '') || '').trim();
+  /^Based on F3\s*›$/.test(f3Chip)
+    ? ok('R2-17 ④: with F3 confirmed, the Tue 09:00 suggestion shows `Based on F3 ›`')
+    : fail(`R2-17 ④: expected "Based on F3 ›", got ${JSON.stringify(f3Chip)}`);
+
+  await page.click('[data-suggested-slot-accept]');
+  await page.waitForSelector('[data-suggested-slot][data-slot-state="accepted"]', { timeout: 3000 }).catch(() => {});
+  const accState = await page.$eval('[data-suggested-slot]', (e) => e.dataset.slotState).catch(() => null);
+  accState === 'accepted'
+    ? ok('R2-17 ④: accepting the F3-based slot (within cadence/min-gap) marks it accepted')
+    : fail(`R2-17 ④: slot not accepted: ${JSON.stringify(accState)}`);
+  await gotoStop(page, 'launch');
+  await page.waitForSelector('.desk-v1-map-launch', { timeout: 4000 });
+  const launchAfterAccept = (await page.textContent('.desk-v1-map-launch-status').catch(() => '') || '').trim();
+  !/Awaiting approval/.test(launchAfterAccept)
+    ? ok(`R2-17 ⑥: accepting the F3-based slot keeps approval: "${launchAfterAccept}"`)
+    : fail(`R2-17 ⑥: accepting a within-bounds slot wrongly asked for approval: ${JSON.stringify(launchAfterAccept)}`);
+
+  await gotoStop(page, 'when');
+  await page.waitForSelector('[data-suggested-slot] [data-because-finding="F3"]', { timeout: 4000 });
+  await page.click('[data-suggested-slot] [data-because-finding="F3"]');
+  await page.waitForSelector('.desk-v1-playbook-finding[data-finding-id="F3"] [data-finding-evidence]', { timeout: 4000 }).catch(() => {});
+  const f3Evidence = await page.$eval('.desk-v1-playbook-finding[data-finding-id="F3"] [data-finding-evidence]', (e) => e.textContent.replace(/\s+/g, ' ').trim()).catch(() => null);
+  f3Evidence && /term 1/.test(f3Evidence)
+    ? ok(`R2-17: "Based on F3 ›" opens F3's evidence on the project Playbook: "${f3Evidence}"`)
+    : fail(`R2-17: F3 evidence not open on the project page: ${JSON.stringify(f3Evidence)}`);
+  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1', projectId: 'clayrune', panel: 'how' }));
+  await page.waitForSelector('.desk-v1-how', { timeout: 4000 });
 
   // ── ⑥ budget own $50 on an Active campaign -> Awaiting approval ─────────
   await gotoStop(page, 'how');
