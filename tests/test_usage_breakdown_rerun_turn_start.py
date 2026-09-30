@@ -186,3 +186,50 @@ def test_excluded_sessions_write_no_turn_start(env, flag):
     env['clock']['now'] = D2
     ar._log_agent_dispatch_pending(_session(**{flag: True}))
     assert _turn_starts(env) == []
+
+
+def test_scheduled_run_appended_to_idle_mode_b_session_records_turn_start(monkeypatch):
+    """`_scheduled_continue`'s 'appended' branch (a '[Backlog run]' continuing
+    thread's next cadence tick, delivered to a live idle Mode B process) never
+    passes `_log_agent_dispatch_pending`, and it flips status to 'running'
+    itself, so `_note_self_started_turn` can't catch it either. It must call
+    the wired turn-started recorder or the run starts at the previous
+    completion in calibration."""
+    import threading
+    import server  # noqa: F401  (wires the blueprints)
+    from mc.blueprints import scheduler_routes as sr
+    from mc.blueprints import agent_routes as ar
+
+    assert sr._record_usage_breakdown_turn_started is ar._record_usage_breakdown_turn_started
+
+    recorded = []
+    monkeypatch.setattr(sr, '_record_usage_breakdown_turn_started',
+                        lambda s: recorded.append((s['session_id'], s['status'])))
+
+    class _Mgr:
+        lock = threading.Lock()
+        def ensure_guardian(self):
+            pass
+
+    class _Stdin:
+        def write(self, _):
+            pass
+        def flush(self):
+            pass
+
+    class _Proc:
+        pid = 4242
+        stdin = _Stdin()
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(sr, 'get_manager', lambda pid: _Mgr())
+    monkeypatch.setattr(sr, '_pid_is_alive', lambda pid: True)
+    monkeypatch.setattr(sr, '_log_agent_activity', lambda *a, **k: None)
+    session = {'session_id': 'sched-sess', 'project_id': 'p1', 'status': 'idle', 'mode': 'B',
+               'process_alive': True, 'proc': _Proc(), 'log_lines': [],
+               'stdin_lock': threading.Lock()}
+    monkeypatch.setitem(sr.agent_sessions, 'sched-sess', session)
+
+    assert sr._scheduled_continue({'project_path': ''}, 'p1', 'sched-sess', 'next tick') == 'appended'
+    assert recorded == [('sched-sess', 'running')]

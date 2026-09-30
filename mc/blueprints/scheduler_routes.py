@@ -91,19 +91,21 @@ all_managers: Callable[[], list] = None  # type: ignore[assignment]
 _pid_is_alive: Callable[[int], bool] = None  # type: ignore[assignment]
 _revive_from_agent_log: Callable[..., bool] = None  # type: ignore[assignment]
 _revive_non_claude_from_agent_log: Callable[..., Any] = None  # type: ignore[assignment]
+_record_usage_breakdown_turn_started: Optional[Callable[[dict], Any]] = None
 
 
 def wire(*, schedules_path, load_project_fn, load_projects_fn,
          log_agent_activity_fn, dispatch_agent_internal_fn, load_agent_log_fn,
          enrich_run_entries_fn, get_manager_fn, all_managers_fn,
          pid_is_alive_fn, revive_from_agent_log_fn,
-         revive_non_claude_from_agent_log_fn, save_project_fn=None):
+         revive_non_claude_from_agent_log_fn, save_project_fn=None,
+         record_usage_breakdown_turn_started_fn=None):
     """Late-bind cross-family deps. Called once by server.py before
     register_blueprint + _start_scheduler()."""
     global SCHEDULES_PATH, load_project, save_project, load_projects, _log_agent_activity
     global _dispatch_agent_internal, _load_agent_log, _enrich_run_entries
     global get_manager, all_managers, _pid_is_alive, _revive_from_agent_log
-    global _revive_non_claude_from_agent_log
+    global _revive_non_claude_from_agent_log, _record_usage_breakdown_turn_started
     SCHEDULES_PATH = schedules_path
     load_project = load_project_fn
     save_project = save_project_fn  # type: ignore[assignment]  # optional kwarg (steward cycle stamp)
@@ -117,6 +119,7 @@ def wire(*, schedules_path, load_project_fn, load_projects_fn,
     _pid_is_alive = pid_is_alive_fn
     _revive_from_agent_log = revive_from_agent_log_fn
     _revive_non_claude_from_agent_log = revive_non_claude_from_agent_log_fn
+    _record_usage_breakdown_turn_started = record_usage_breakdown_turn_started_fn
 
 
 def _load_schedules():
@@ -1091,6 +1094,14 @@ def _scheduled_continue(p, project_id, session_id, task):
                 existing['last_status_change_time'] = _time.time()
                 existing['last_output_time'] = _time.time()
                 existing['log_lines'].append(f"\n> [scheduled run]: {task}\n")
+                # Backlog 4668eafc (MC-998): this turn never passes
+                # `_log_agent_dispatch_pending`, and status is already
+                # 'running' so `_note_self_started_turn` won't fire either.
+                # Without a turn_start, calibration starts the run at the
+                # previous completion (often a day earlier) and reads every
+                # interval in between as crossed.
+                if _record_usage_breakdown_turn_started is not None:
+                    _record_usage_breakdown_turn_started(existing)
                 stdin_msg = json.dumps({
                     "type": "user",
                     "message": {"role": "user", "content": task},

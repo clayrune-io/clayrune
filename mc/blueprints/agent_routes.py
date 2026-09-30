@@ -8156,22 +8156,12 @@ def _note_background_system_event(session, msg):
         session['last_output_time'] = _time.time()
 
 
-def _note_self_started_turn(session):
-    """MC-958: main-thread assistant output while the session is `idle` means
-    the CLI started a turn nobody in Clayrune sent — the wake-up after a
-    background job. Mark it `running` so the UI, the guardian and a sender
-    see the truth, and re-arm the spawner callback if the wait cap already
-    spent it on an interim report."""
-    if session.get('status') != 'idle' or session.get('waiting_for_question'):
-        return
-    session['status'] = 'running'
-    session['last_status_change_time'] = _time.time()
-    session.pop(_bg_tasks.RESUME_PENDING_KEY, None)
-    # MC-998 round 4: this turn never passes the dispatch-pending writer, so
-    # the usage store still held the previous turn's 'completed' fact (or a
-    # reconcile-closed one) while it ran -- every automatic wake, not only
-    # the INTERIM-latched one below, reopens it. Same exclusions as that
-    # writer, same best-effort write.
+def _record_usage_breakdown_turn_started(session):
+    """A turn Clayrune did not start through `_log_agent_dispatch_pending`
+    (a self-started background wake, a scheduled run appended to a live idle
+    Mode B session): reopen the usage fact and stamp a 'turn_start' so
+    `_session_turns` starts the turn here, not at the previous completion.
+    Best-effort."""
     if (session.get('project_id') and session.get('session_id')
             and not session.get('incognito') and not session.get('housekeeping')):
         try:
@@ -8191,6 +8181,25 @@ def _note_self_started_turn(session):
         # `_auto_dispatch_followup`. This is exactly the wake `_session_turns`
         # needs a `turn_start` row for.
         _write_usage_breakdown_turn_start_checkpoint(session)
+
+
+def _note_self_started_turn(session):
+    """MC-958: main-thread assistant output while the session is `idle` means
+    the CLI started a turn nobody in Clayrune sent — the wake-up after a
+    background job. Mark it `running` so the UI, the guardian and a sender
+    see the truth, and re-arm the spawner callback if the wait cap already
+    spent it on an interim report."""
+    if session.get('status') != 'idle' or session.get('waiting_for_question'):
+        return
+    session['status'] = 'running'
+    session['last_status_change_time'] = _time.time()
+    session.pop(_bg_tasks.RESUME_PENDING_KEY, None)
+    # MC-998 round 4: this turn never passes the dispatch-pending writer, so
+    # the usage store still held the previous turn's 'completed' fact (or a
+    # reconcile-closed one) while it ran -- every automatic wake, not only
+    # the INTERIM-latched one below, reopens it. Same exclusions as that
+    # writer, same best-effort write.
+    _record_usage_breakdown_turn_started(session)
     if session.pop(_bg_tasks.INTERIM_KEY, None):
         try:
             _rearm_notify_for_new_turn(session)

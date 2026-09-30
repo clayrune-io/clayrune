@@ -2085,6 +2085,7 @@ _bp_sched.wire(
     pid_is_alive_fn=_bp_agent._pid_is_alive,
     revive_from_agent_log_fn=_bp_agent._revive_from_agent_log,
     revive_non_claude_from_agent_log_fn=_bp_agent._revive_non_claude_from_agent_log,
+    record_usage_breakdown_turn_started_fn=_bp_agent._record_usage_breakdown_turn_started,
 )
 app.register_blueprint(_bp_sched.bp)
 
