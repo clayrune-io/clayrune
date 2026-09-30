@@ -53,12 +53,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 import difflib
+import hashlib
 import json
 import re
 import threading
 import uuid
 
 from mc.core import _atomic_write_text, _log, now_iso
+from mc import distiller as _distiller
 
 # -- wired by server.py -------------------------------------------------------
 # Path constants are server.py-owned; this module holds wired placeholders, the
@@ -127,6 +129,12 @@ def _empty_store() -> dict:
         'platforms': {},
         'platforms_seeded': False,
         'presences': {},
+        # §10.6 (R1-L, MC-977 IA revision 2): findings live HERE, beside
+        # voices/campaigns/ledger, under the same _store_lock — not in the
+        # Distiller. `findings` keyed by id (same convention as `campaigns`);
+        # `rejections` is a list because a rejection has no id of its own,
+        # only the (dimension, arms, direction) tuple it durably suppresses.
+        'playbook': {'findings': {}, 'rejections': []},
     }
 
 
@@ -160,6 +168,34 @@ def _migrate_campaign_record(camp: dict) -> dict:
     return camp
 
 
+def _migrate_ledger_row(row: dict) -> dict:
+    """§8 R1-L: the free-form `outcome` dict -> per-post `outcomes[]`; ledger
+    rows gain `piece_id/format/account/term/cost`.
+
+    Migration keeps whatever the old dict held as ONE `source:'manual'`
+    entry rather than discarding it — the same "degrade to under-learn,
+    never unlearn" posture `_read_store` already takes on a corrupt file.
+    Guarded by absence of `outcomes` (like the other migrations here), so
+    re-running is a no-op.
+    """
+    if 'outcomes' not in row:
+        old = row.pop('outcome', None)
+        if isinstance(old, dict) and old:
+            entry = dict(old)
+            entry.setdefault('source', 'manual')
+            entry.setdefault('at', row.get('published_at'))
+            row['outcomes'] = [entry]
+        else:
+            row['outcomes'] = []
+    row.pop('outcome', None)
+    row.setdefault('piece_id', None)
+    row.setdefault('format', None)
+    row.setdefault('account', None)
+    row.setdefault('term', None)
+    row.setdefault('cost', 0)
+    return row
+
+
 def _migrate_store(data: dict) -> dict:
     presences: dict = data.get('presences') or {}
     for pid, rec in list(presences.items()):
@@ -167,6 +203,10 @@ def _migrate_store(data: dict) -> dict:
     campaigns: dict = data.get('campaigns') or {}
     for cid, camp in list(campaigns.items()):
         campaigns[cid] = _migrate_campaign_record(camp)
+    data['ledger'] = [_migrate_ledger_row(dict(row)) for row in (data.get('ledger') or [])]
+    playbook = data.setdefault('playbook', {})
+    playbook.setdefault('findings', {})
+    playbook.setdefault('rejections', [])
     data['version'] = STORE_VERSION
     return data
 
@@ -195,6 +235,7 @@ def _read_store() -> dict:
     data.setdefault('platforms', {})
     data.setdefault('platforms_seeded', False)
     data.setdefault('presences', {})
+    data.setdefault('playbook', {'findings': {}, 'rejections': []})
     return _migrate_store(data)
 
 
@@ -1190,8 +1231,18 @@ def record_published(*, platform: str, voice: str, body: str,
                      campaign_id: str | None = None,
                      project_id: str | None = None,
                      url: str | None = None,
-                     published_at: str | None = None) -> dict:
-    """Record that a human released something. NOT a publish path."""
+                     published_at: str | None = None,
+                     piece_id: str | None = None,
+                     format: str | None = None,
+                     account: str | None = None,
+                     term: str | None = None,
+                     cost: float = 0) -> dict:
+    """Record that a human released something. NOT a publish path.
+
+    `piece_id/format/account/term/cost` (§8 R1-L, §10.7): without these a
+    filled-in outcome cannot be attributed to anything — the retro's
+    per-dimension table groups by exactly these fields.
+    """
     entry = {
         'id': _new_id('post'),
         'platform': platform,
@@ -1202,7 +1253,12 @@ def record_published(*, platform: str, voice: str, body: str,
         'project_id': project_id,
         'url': url,
         'published_at': published_at or now_iso(),
-        'outcome': None,        # filled in later, by hand or by a reader
+        'piece_id': piece_id,
+        'format': format,
+        'account': account,
+        'term': term,
+        'cost': cost,
+        'outcomes': [],   # per-post outcomes[{metric, value, at, source}], §10.7
     }
     with _store_lock:
         store = _read_store()
@@ -1223,12 +1279,19 @@ def list_ledger(*, limit: int = 100, platform: str | None = None,
     return rows[:limit]
 
 
-def record_outcome(post_id: str, outcome: dict) -> dict | None:
+def record_outcome(post_id: str, metric: str, value, *,
+                   source: str = 'manual', at: str | None = None) -> dict | None:
+    """Append one per-post outcome entry (§8 R1-L: `outcomes[]` replaces the
+    free-form `outcome` dict). Never overwrites an existing entry for the same
+    metric — R1-E's `source:'feed'` entries and a human's typed entry for the
+    same post + metric are BOTH kept (§10.7), so the retro can show its
+    source (`typed 3 Oct` / `from x`) rather than silently picking one."""
+    entry = {'metric': metric, 'value': value, 'at': at or now_iso(), 'source': source}
     with _store_lock:
         store = _read_store()
         for row in store['ledger']:
             if row.get('id') == post_id:
-                row['outcome'] = outcome
+                row.setdefault('outcomes', []).append(entry)
                 _write_store(store)
                 return row
     return None
@@ -1267,3 +1330,235 @@ def similar_published(body: str, *, threshold: float = 0.35,
 
 def already_said(body: str, **kw) -> bool:
     return bool(similar_published(body, **kw))
+
+
+# -- playbook (§10 outcome learning loop, MC-977 R1-L) ------------------------
+#
+# Findings live HERE, in `store['playbook']`, beside voices/campaigns/ledger —
+# §10.6's recommendation, not the Distiller. A finding is numbers tied to
+# campaign ids consumed by one brief; the Distiller's skill artifacts are
+# prose loaded into every agent's prompt on every project, and would leak
+# Desk statistics into unrelated agents. Reused, not rebuilt, from the
+# Distiller: `authority_violation` (below) and the durable-rejection pattern
+# of `_suppress_artifact` / `_is_suppressed`.
+
+# Desk bounds pattern (§10.5.1, second layer beyond `authority_violation`): a
+# finding may describe what happened ("got 2.1x the clicks"), never prescribe
+# widening a bound ("raise the cadence"). `authority_violation` alone does not
+# cover this — its phrases are about the AGENT's own permissions, not a
+# CAMPAIGN's bounds, so the Desk needs its own narrow pattern for the second
+# vocabulary.
+_DESK_BOUND_WORDS = r'cadence|budget|spend|cap|ceiling|accounts?|approval'
+_DESK_BOUND_RE = re.compile(
+    r'\b(?:raise|increase|more)\b(?:\s+\w+){0,4}\s+\b(?:' + _DESK_BOUND_WORDS + r')\b',
+    re.IGNORECASE)
+
+
+def _guarded_text(text: str | None) -> str | None:
+    """Drop (never edit) model-written finding text that fails either
+    authority check. Failing closed here, before the text ever reaches the
+    store, is the same posture `_generate_and_write_artifact` takes for
+    skills — a gate a human has to click past is not a gate."""
+    if not text:
+        return text
+    violation = _distiller.authority_violation(text)
+    if violation:
+        _log(f'[desk] playbook text dropped (authority_violation: {violation!r}): {text!r}')
+        return None
+    if _DESK_BOUND_RE.search(text):
+        _log(f'[desk] playbook text dropped (Desk bounds pattern): {text!r}')
+        return None
+    return text
+
+
+def _arms_key(arms) -> tuple:
+    if isinstance(arms, dict):
+        return tuple(sorted(arms.items()))
+    return tuple(arms or ())
+
+
+def evidence_key(evidence: Iterable[dict]) -> str:
+    """§10.5.3: hash of the sorted (campaign_id, term) set backing a finding.
+    Same key => same evidence => a rejected finding is not re-proposed; NEW
+    evidence (different campaigns/terms) changes the key and may return."""
+    pairs = sorted({(e.get('campaign_id'), e.get('term')) for e in (evidence or [])})
+    digest = hashlib.sha256(json.dumps(pairs, sort_keys=True).encode('utf-8')).hexdigest()
+    return digest[:16]
+
+
+def is_finding_suppressed(project_id: str | None, dimension: str, arms,
+                          direction: str | None, evidence_key_: str) -> bool:
+    """§10.5.3 "No" is durable: a rejection matches on (project, dimension,
+    arms, direction). A `permanent` rejection (Don't suggest again) suppresses
+    regardless of evidence; a plain Reject only suppresses THIS evidence — new
+    evidence (a different `evidence_key_`) may re-propose it."""
+    arms_k = _arms_key(arms)
+    with _store_lock:
+        store = _read_store()
+    for r in store['playbook']['rejections']:
+        if r.get('project_id') != project_id or r.get('dimension') != dimension:
+            continue
+        if r.get('direction') != direction or _arms_key(r.get('arms')) != arms_k:
+            continue
+        if r.get('permanent') or r.get('evidence_key') == evidence_key_:
+            return True
+    return False
+
+
+def propose_finding(*, project_id: str | None, dimension: str, arms,
+                    account: str | None = None, metric: str | None = None,
+                    effect: dict, evidence: list[dict], n_total: int,
+                    confidence: str, maybe_why: str | None = None) -> str:
+    """Add a `proposed` finding. ALWAYS `origin: 'unattended'` (§10.5.2): the
+    retro that produces this is code-computed, not a human judgement, so its
+    output starts on the unattended side of the loop no matter who or what
+    triggered the retro run. It only becomes `origin: 'interactive'` when Ron
+    confirms it (`confirm_finding` below) — autonomous output never becomes
+    autonomous input, the same rule `exploration_read_floor` enforces."""
+    fid = _new_id('finding')
+    finding = {
+        'id': fid, 'project_id': project_id, 'scope': 'project',
+        'dimension': dimension, 'arms': arms, 'account': account, 'metric': metric,
+        'effect': effect, 'evidence': evidence, 'n_total': n_total,
+        'confidence': confidence, 'maybe_why': _guarded_text(maybe_why),
+        'state': 'proposed', 'origin': 'unattended',
+        'decided_at': None, 'decided_by': None, 'edited_text': None,
+    }
+    with _store_lock:
+        store = _read_store()
+        store['playbook']['findings'][fid] = finding
+        _write_store(store)
+    return fid
+
+
+def get_finding(finding_id: str) -> dict | None:
+    with _store_lock:
+        return _read_store()['playbook']['findings'].get(finding_id)
+
+
+def list_findings(project_id: str | None = None, state: str | None = None) -> list[dict]:
+    with _store_lock:
+        rows = list(_read_store()['playbook']['findings'].values())
+    if project_id:
+        rows = [r for r in rows if r.get('project_id') == project_id]
+    if state:
+        rows = [r for r in rows if r.get('state') == state]
+    return rows
+
+
+def confirm_finding(finding_id: str, *, edited_text: str | None = None,
+                    decided_by: str | None = None) -> dict | None:
+    """Only Ron moves a finding between states (§10.2) — this route (and
+    reject/dont_suggest_again/undo_reject below) is what desk_routes.py must
+    refuse to an unattended caller."""
+    with _store_lock:
+        store = _read_store()
+        f = store['playbook']['findings'].get(finding_id)
+        if f is None:
+            return None
+        f['state'] = 'confirmed'
+        f['origin'] = 'interactive'
+        f['decided_at'] = now_iso()
+        f['decided_by'] = decided_by
+        if edited_text is not None:
+            f['edited_text'] = _guarded_text(edited_text)
+        _write_store(store)
+        return dict(f)
+
+
+def _record_rejection(store: dict, f: dict, *, permanent: bool) -> None:
+    store['playbook']['rejections'].append({
+        'finding_id': f['id'], 'project_id': f.get('project_id'),
+        'dimension': f.get('dimension'), 'arms': f.get('arms'),
+        'direction': (f.get('effect') or {}).get('direction'),
+        'evidence_key': evidence_key(f.get('evidence') or []),
+        'decided_at': f['decided_at'], 'permanent': permanent,
+    })
+
+
+def reject_finding(finding_id: str, *, decided_by: str | None = None) -> dict | None:
+    """Plain Reject: durable against THIS evidence only (§10.5.3) — the same
+    finding may return with >=10 new posts from campaigns/terms outside the
+    rejected evidence set."""
+    with _store_lock:
+        store = _read_store()
+        f = store['playbook']['findings'].get(finding_id)
+        if f is None:
+            return None
+        f['state'] = 'rejected'
+        f['decided_at'] = now_iso()
+        f['decided_by'] = decided_by
+        _record_rejection(store, f, permanent=False)
+        _write_store(store)
+        return dict(f)
+
+
+def dont_suggest_again(finding_id: str, *, decided_by: str | None = None) -> dict | None:
+    """§10.5.3: suppresses this dimension + arms + direction for the project
+    PERMANENTLY, regardless of future evidence — lifted only by `undo_reject`."""
+    with _store_lock:
+        store = _read_store()
+        f = store['playbook']['findings'].get(finding_id)
+        if f is None:
+            return None
+        f['state'] = 'rejected'
+        f['decided_at'] = now_iso()
+        f['decided_by'] = decided_by
+        _record_rejection(store, f, permanent=True)
+        _write_store(store)
+        return dict(f)
+
+
+def undo_reject(finding_id: str) -> dict | None:
+    """The project page's `Undo reject` (§10.4) — the only thing that lifts a
+    `Don't suggest again` suppression. Moves the finding back to `proposed`
+    and drops ALL of its rejection records, so the same evidence may be
+    re-proposed on the next retro run rather than waiting for new evidence."""
+    with _store_lock:
+        store = _read_store()
+        f = store['playbook']['findings'].get(finding_id)
+        if f is None or f.get('state') != 'rejected':
+            return None
+        f['state'] = 'proposed'
+        f['decided_at'] = None
+        f['decided_by'] = None
+        store['playbook']['rejections'] = [
+            r for r in store['playbook']['rejections'] if r.get('finding_id') != finding_id]
+        _write_store(store)
+        return dict(f)
+
+
+def _render_finding_sentence(f: dict) -> str:
+    """§10.2's rendered-from-structure sentence. Approximate wording — the
+    spec gives one worked example, not a literal template; what matters, and
+    what a caller renders from structure, is that the state machine and its
+    guardrails (never in this module: bounds, always human-gated confirm) are
+    authoritative, not this prose."""
+    arms = f.get('arms') or {}
+    effect = f.get('effect') or {}
+    direction = effect.get('direction') or ''
+    ratio = effect.get('ratio')
+    winner_key, _, loser_key = direction.partition('>')
+    winner = arms.get(winner_key) if isinstance(arms, dict) else None
+    loser = arms.get(loser_key) if isinstance(arms, dict) else None
+    metric = f.get('metric') or 'the metric'
+    where = f" on {f['account']}" if f.get('account') else ''
+    if winner and loser and ratio:
+        return (f"{winner} got {ratio:.1f}× the {metric} per post of {loser}{where} "
+                f"({f.get('n_total')} posts, {f.get('confidence')}).")
+    return f"{f.get('dimension')}: {direction} ({metric}, n={f.get('n_total')}, {f.get('confidence')})."
+
+
+def playbook_brief(project_id: str) -> str:
+    """The PLAYBOOK section for the drafting brief (§10.3, beside
+    `voice_brief`) — CONFIRMED findings ONLY. Proposed, rejected and stale
+    findings never reach here: a finding earns an agent's attention by a human
+    confirming it, not merely by existing."""
+    findings = list_findings(project_id=project_id, state='confirmed')
+    if not findings:
+        return 'PLAYBOOK: no confirmed findings yet for this project.'
+    lines = ['PLAYBOOK (confirmed findings — cite the id in `because`, never invent one):']
+    for f in findings:
+        text = f.get('edited_text') or _render_finding_sentence(f)
+        lines.append(f"  - {f['id']} ({f.get('confidence')}): {text}")
+    return '\n'.join(lines)

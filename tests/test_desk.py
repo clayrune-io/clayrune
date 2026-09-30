@@ -366,8 +366,21 @@ def test_ledger_records_and_lists(store):
                            project_id='mission_control')
     rows = store.list_ledger()
     assert len(rows) == 1
-    assert rows[0]['outcome'] is None
+    assert rows[0]['outcomes'] == []
     assert store.list_ledger(platform='linkedin') == []
+
+
+def test_ledger_row_carries_r1l_attribution_fields(store):
+    """§8 R1-L: ledger rows gain piece_id/format/account/term/cost — without
+    them a filled-in outcome cannot be attributed to anything."""
+    row = store.record_published(
+        platform='x', voice='personal', body='Shipped the Desk',
+        piece_id='piece-1', format='post', account='x:ron', term='2026-Q4', cost=0.015)
+    assert row['piece_id'] == 'piece-1'
+    assert row['format'] == 'post'
+    assert row['account'] == 'x:ron'
+    assert row['term'] == '2026-Q4'
+    assert row['cost'] == 0.015
 
 
 def test_similar_published_catches_a_re_announcement(store):
@@ -398,8 +411,36 @@ def test_empty_body_is_never_a_repeat(store):
 
 def test_record_outcome(store):
     p = store.record_published(platform='x', voice='personal', body='hello world post')
-    assert store.record_outcome(p['id'], {'likes': 4})['outcome'] == {'likes': 4}
-    assert store.record_outcome('post-nope', {'likes': 1}) is None
+    row = store.record_outcome(p['id'], 'likes', 4)
+    assert row['outcomes'] == [{'metric': 'likes', 'value': 4,
+                                'at': row['outcomes'][0]['at'], 'source': 'manual'}]
+    assert store.record_outcome('post-nope', 'likes', 1) is None
+
+
+def test_record_outcome_keeps_both_typed_and_feed_entries_for_same_metric(store):
+    """§10.7: 'a feed entry never overwrites a typed entry for the same post +
+    metric (both kept, source shown)'."""
+    p = store.record_published(platform='x', voice='personal', body='hello world post')
+    store.record_outcome(p['id'], 'clicks', 10, source='manual')
+    row = store.record_outcome(p['id'], 'clicks', 12, source='feed')
+    assert len(row['outcomes']) == 2
+    assert {o['source'] for o in row['outcomes']} == {'manual', 'feed'}
+
+
+def test_ledger_row_migration_keeps_old_outcome_as_one_manual_entry(store):
+    """§8 R1-L: migration keeps whatever the old free-form `outcome` dict held
+    as one `source:'manual'` entry rather than discarding it."""
+    store.STORE_PATH.write_text(json.dumps({
+        'version': 1,
+        'ledger': [{'id': 'post-1', 'platform': 'x', 'voice': 'personal',
+                   'body': 'hi', 'published_at': '2026-01-01T00:00:00Z',
+                   'outcome': {'likes': 4}}],
+    }), encoding='utf-8')
+    rows = store.list_ledger()
+    assert len(rows) == 1
+    assert 'outcome' not in rows[0]
+    assert rows[0]['outcomes'] == [{'likes': 4, 'source': 'manual', 'at': '2026-01-01T00:00:00Z'}]
+    assert rows[0]['piece_id'] is None and rows[0]['format'] is None
 
 
 # -- the structural guarantee -------------------------------------------------
@@ -571,3 +612,95 @@ def test_removing_a_cadence_end_or_term_bound_widens(store):
     h3 = c3['approval']['bounds_hash']
     no_term = store.update_campaign(c3['id'], {'term': {}})
     assert no_term['approval']['bounds_hash'] != h3, 'dropping the term end date widens'
+
+
+# -- playbook (§10 outcome learning loop, MC-977 R1-L) ------------------------
+
+def _finding_kwargs(**over):
+    d = dict(project_id='mc', dimension='slot', arms={'a': 'Tue/Thu 08-10', 'b': 'other'},
+            account='x:ron', metric='clicks', effect={'ratio': 2.1, 'direction': 'a>b'},
+            evidence=[{'campaign_id': 'c1', 'term': 't1'}], n_total=41, confidence='medium')
+    d.update(over)
+    return d
+
+
+def test_propose_finding_is_always_proposed_and_unattended(store):
+    """§10.5.2: every retro-born finding starts `state:'proposed',
+    origin:'unattended'` regardless of who calls propose_finding — it only
+    crosses to interactive when a human confirms it."""
+    fid = store.propose_finding(**_finding_kwargs())
+    f = store.get_finding(fid)
+    assert f['state'] == 'proposed' and f['origin'] == 'unattended'
+
+
+def test_confirm_stamps_interactive_and_only_confirmed_reaches_playbook_brief(store):
+    fid = store.propose_finding(**_finding_kwargs())
+    assert store.playbook_brief('mc') == 'PLAYBOOK: no confirmed findings yet for this project.'
+    f = store.confirm_finding(fid, decided_by='ron')
+    assert f['state'] == 'confirmed' and f['origin'] == 'interactive'
+    brief = store.playbook_brief('mc')
+    assert fid in brief and 'Tue/Thu 08-10' in brief
+
+    fid2 = store.propose_finding(**_finding_kwargs(dimension='format'))
+    store.reject_finding(fid2, decided_by='ron')
+    fid3 = store.propose_finding(**_finding_kwargs(dimension='angle'))
+    # proposed/rejected/stale never appear in the brief — only confirmed.
+    brief2 = store.playbook_brief('mc')
+    assert fid2 not in brief2 and fid3 not in brief2
+
+
+def test_reject_suppresses_same_evidence_but_new_evidence_reproposes(store):
+    """§10.5.3: same finding from the same evidence is never re-proposed; new
+    evidence (extra campaigns/terms) may return."""
+    fid = store.propose_finding(**_finding_kwargs())
+    store.reject_finding(fid, decided_by='ron')
+
+    ek = store.evidence_key(_finding_kwargs()['evidence'])
+    assert store.is_finding_suppressed('mc', 'slot', {'a': 'Tue/Thu 08-10', 'b': 'other'},
+                                       'a>b', ek) is True
+
+    new_evidence = [{'campaign_id': 'c1', 'term': 't1'}, {'campaign_id': 'c2', 'term': 't2'}]
+    new_ek = store.evidence_key(new_evidence)
+    assert new_ek != ek
+    assert store.is_finding_suppressed('mc', 'slot', {'a': 'Tue/Thu 08-10', 'b': 'other'},
+                                       'a>b', new_ek) is False
+
+
+def test_dont_suggest_again_suppresses_regardless_of_evidence(store):
+    fid = store.propose_finding(**_finding_kwargs())
+    store.dont_suggest_again(fid, decided_by='ron')
+    other_evidence_key = store.evidence_key([{'campaign_id': 'c9', 'term': 't9'}])
+    assert store.is_finding_suppressed('mc', 'slot', {'a': 'Tue/Thu 08-10', 'b': 'other'},
+                                       'a>b', other_evidence_key) is True
+
+
+def test_undo_reject_lifts_suppression_and_restores_proposed(store):
+    fid = store.propose_finding(**_finding_kwargs())
+    store.dont_suggest_again(fid, decided_by='ron')
+    ek = store.evidence_key(_finding_kwargs()['evidence'])
+    assert store.is_finding_suppressed('mc', 'slot', {'a': 'Tue/Thu 08-10', 'b': 'other'}, 'a>b', ek)
+
+    f = store.undo_reject(fid)
+    assert f['state'] == 'proposed'
+    assert store.is_finding_suppressed('mc', 'slot', {'a': 'Tue/Thu 08-10', 'b': 'other'}, 'a>b', ek) is False
+
+
+def test_maybe_why_dropped_by_authority_guard(store):
+    """§10.5.1: `maybe_why` passes `distiller.authority_violation` plus the
+    Desk bounds pattern — a hit drops the text and logs it, never edits it."""
+    fid = store.propose_finding(**_finding_kwargs(maybe_why='Maybe raise the cadence to capture this.'))
+    assert store.get_finding(fid)['maybe_why'] is None
+
+
+def test_maybe_why_survives_when_it_only_describes(store):
+    fid = store.propose_finding(**_finding_kwargs(maybe_why='Readers may prefer mornings on this account.'))
+    assert store.get_finding(fid)['maybe_why'] == 'Readers may prefer mornings on this account.'
+
+
+def test_desk_json_stays_outside_data_dir():
+    """LOAD-BEARING (CLAUDE.md): a stray file under DATA_DIR (`data/projects/`)
+    becomes a malformed 'project' and 500s both restart endpoints."""
+    import server
+    data_dir = Path(server.DATA_DIR).resolve()
+    desk_store = Path(server.DESK_STORE_PATH).resolve()
+    assert data_dir not in desk_store.parents
