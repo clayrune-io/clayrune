@@ -261,8 +261,8 @@ async function runStubRoutes(browser) {
   await page.click('.desk-v1-project-presence-btn');
   await page.waitForSelector('.desk-v1-presence', { timeout: 4000 });
   const accountCount = await page.$$eval('.desk-v1-presence-account-row', (els) => els.length);
-  accountCount === 3
-    ? ok(`presence route: real page renders Clayrune's 3 bound accounts`)
+  accountCount === 6 // 3 + the 3 R2-10 Where-board fixture accounts (@clayrune, YouTube, Discord)
+    ? ok(`presence route: real page renders Clayrune's 6 bound accounts`)
     : fail(`presence route wrong account count: ${accountCount}`);
   await page.click('.desk-v1-back');
   await page.waitForSelector('.desk-v1-project', { timeout: 4000 });

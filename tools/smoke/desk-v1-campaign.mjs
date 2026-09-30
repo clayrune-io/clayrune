@@ -305,11 +305,9 @@ async function runCardMenu(browser) {
   await ctx.close();
 }
 
-// ── Add tray drag-drop (§3.6, §10). camp-1's fixture already carries all 3
-// channels (docs/desk_v1_r0_plan.md ground rule 3 data), so the tray's own
-// Channels shelf is empty here (hideChannelIds hides every one, exactly as
-// designed) — this drags a MATERIAL asset instead: onto an existing card
-// (attaches it) and onto the empty list area (creates a new piece). ────────
+// ── Add tray drag-drop (§3.6, §10). The tray holds the Material shelf only
+// (R2-10 retired its Channels shelf): drags a MATERIAL asset onto an existing
+// card (attaches it) and onto the empty list area (creates a new piece). ──
 async function runAddTrayDrag(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToCampaign(page);
@@ -318,10 +316,12 @@ async function runAddTrayDrag(browser) {
   await page.waitForSelector('.desk-v1-camp-addtray-body', { state: 'visible', timeout: 2000 });
   ok('Add tray opens on click');
 
-  const noChannels = await page.$$eval('#desk-v1-camp-addtray-channels .desk-v1-shelf-item', (els) => els.length);
-  noChannels === 0
-    ? ok('every campaign channel is already attached, so the tray\'s Channels shelf is empty (hidden, not dimmed)')
-    : fail(`expected 0 channel shelf items (all 3 already on the campaign), got ${noChannels}`);
+  // R2-10 retired the tray's Channels shelf: adding an account is the Where
+  // board's SOURCES tray now (desk-v1-where.mjs holds that flow).
+  const channelsShelf = await page.$$eval('#desk-v1-camp-addtray-channels', (els) => els.length);
+  channelsShelf === 0
+    ? ok('R2-10: the Add tray has no Channels shelf (accounts are added on the Where board)')
+    : fail(`R2-10: Add tray still renders a Channels shelf (${channelsShelf})`);
 
   // Attach an asset to fam-30-testers (single scheduled version, no assets yet).
   const assetItem = await page.$('#desk-v1-camp-addtray-material .desk-v1-shelf-item[data-asset-id="asset-restore-points"]');

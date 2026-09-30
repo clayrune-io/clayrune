@@ -1291,11 +1291,10 @@
   }
 
   // ────────────────────────────────────────────────────────────────────────
-  // Add tray (§3.6): the same two shelves as Home, scoped to this campaign —
-  // "reuse, don't fork" (docs/desk_v1_r0_plan.md). Channels already on the
-  // campaign are hidden (`hideChannelIds`) rather than merely dimmed — CSS
-  // opacity on a still-interactive shelf item would leave a drop target that
-  // silently no-ops (already-attached), which is worse than not offering it.
+  // Add tray (§3.6): the Material shelf only, scoped to this campaign. R2-10
+  // retired the Channels shelf: adding an account to a campaign is the Where
+  // board's own SOURCES tray now (desk-v1-where.js). The Material shelf stays
+  // until R2-7 replaces it with What's CONTENT TYPES / Upload flow.
   // ────────────────────────────────────────────────────────────────────────
   function deskV1FillCampaignAddTray(el, params) {
     const camp = _campaign(params.campaignId);
@@ -1305,20 +1304,14 @@
         <summary class="desk-v1-camp-addtray-summary">+ Add ▾</summary>
         <div class="desk-v1-camp-addtray-body">
           <div class="desk-v1-camp-addtray-shelf">
-            <div class="desk-v1-home-shelf-title">Channels</div>
-            <div class="desk-v1-home-shelf-items" id="desk-v1-camp-addtray-channels"></div>
-          </div>
-          <div class="desk-v1-camp-addtray-shelf">
             <div class="desk-v1-home-shelf-title">Material</div>
             <div class="desk-v1-home-shelf-items" id="desk-v1-camp-addtray-material"></div>
           </div>
         </div>
       </details>`;
     window.deskV1RenderShelfPair({
-      channelsHost: document.getElementById('desk-v1-camp-addtray-channels'),
       materialHost: document.getElementById('desk-v1-camp-addtray-material'),
     }, {
-      hideChannelIds: camp.plan.accounts || [],
       targetAdapter: _addTrayAdapter(camp),
     });
   }
@@ -1329,4 +1322,6 @@
   window.deskV1FillCampaignTabBody = deskV1FillCampaignTabBody;
   window.deskV1FillCampaignRightColumn = deskV1FillCampaignRightColumn;
   window.deskV1FillCampaignAddTray = deskV1FillCampaignAddTray;
+  // R2-10: the Where board shows the same Awaiting-approval notice Launch does.
+  window.deskV1CampaignBounds = _currentBounds;
 })();
