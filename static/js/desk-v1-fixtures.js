@@ -680,6 +680,9 @@
     projectId: 'clayrune',
     subject: { kind: 'feature', label: 'Restore points' },
     goal: { current: 0 },
+    // R2-2d: a proposed campaign already parked at the Launch stop (mockup
+    // row `Draft · at Launch`), same shape as camp-1's `map`.
+    map: { stop: 'launch', done: ['goal', 'how', 'what', 'when', 'where'] },
     // IA2 §3: the per-piece approval toggle, weekly-count duplicate,
     // reply-mode toggle and paid duplicate all retired (see camp-1's
     // comment above) — `customChips` is the only field left.
@@ -819,6 +822,16 @@
     projectId: 'clayrune',
     subject: { kind: 'feature', label: 'Community Discord' },
     goal: { current: 0 },
+    // R2-2d: the mockup's `Active · just started` / pace `On track` row. Every
+    // other campaign's term is a fixed date, but this one is meant to be on
+    // day 0 whenever the fixtures load, so its term starts today rather than
+    // on a date that ages past the "just started" window (first ~5% of term).
+    term: (function () {
+      const day = 24 * 3600 * 1000;
+      const iso = (t) => new Date(t).toISOString().slice(0, 10);
+      const now = Date.now();
+      return { index: 1, starts: iso(now), ends: iso(now + 46 * day), post_cap: null };
+    })(),
     rules: {},
     plan: {
       brief: 'Clayrune users looking for community should find the Discord and join.',
