@@ -3656,8 +3656,11 @@ fetchProjects().then(async () => {
   // guided tour is no longer auto-started: setup offers it as its last step.
   // Filter out the auto-created `_incognito` pseudo-project — it always exists
   // even on fresh installs, so counting it would suppress setup on the exact
-  // users it's meant for.
-  const realProjectCount = allProjects.filter(p => !isIncognitoProject(p) && !isStewardWorkspace(p) && !isOnboardingProject(p)).length;
+  // users it's meant for. The Ideas workspace (MC-990, seeded on every boot
+  // since 276cf354) is the same category and must be excluded the same way —
+  // without this a brand-new install's seeded Ideas project silently
+  // satisfied realProjectCount and skipped first-run setup entirely.
+  const realProjectCount = allProjects.filter(p => !isIncognitoProject(p) && !isStewardWorkspace(p) && !isOnboardingProject(p) && !isIdeasWorkspace(p)).length;
   if (realProjectCount === 0 && firstRunNeeded()) {
     setTimeout(() => startFirstRun(), 600);
   } else {
