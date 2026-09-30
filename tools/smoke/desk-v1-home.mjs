@@ -464,6 +464,64 @@ async function runR2_2cHeaderAcceptance(browser) {
   await ctx.close();
 }
 
+// ── R2-2e (Ron 2026-09-30, live Home after R2-2d): the crumb row is the ONE
+// header row — no Settings button in it, "＋ New campaign" sits in it beside
+// Engagement, the "The Desk" h2 (duplicating the crumb title) is gone, and the
+// project menu that button opens is anchored to the button (right-aligned,
+// directly below) and stays inside the Desk modal at 1440 and at 390. ───────
+async function runR2_2eHeaderCleanup(browser) {
+  for (const vp of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    const tag = `${vp.width}x${vp.height}`;
+    const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} }, vp);
+
+    const hdr = await page.evaluate(() => {
+      const tools = document.getElementById('desk-v1-crumb-tools');
+      const eng = document.querySelector('.desk-v1-home-engagement-btn');
+      const newBtn = document.querySelector('.desk-v1-home-newcamp-page-btn');
+      const newStyle = newBtn && getComputedStyle(newBtn);
+      return {
+        hasSettings: !!(tools && Array.from(tools.querySelectorAll('button')).some((b) => /Settings/.test(b.textContent))) || !!document.querySelector('.desk-v1-home-settings-btn'),
+        engTop: eng && eng.getBoundingClientRect().top,
+        newTop: newBtn && newBtn.getBoundingClientRect().top,
+        newInCrumbTools: !!(tools && newBtn && tools.contains(newBtn)),
+        newBg: newStyle && newStyle.backgroundColor,
+        hasDeskH2: Array.from(document.querySelectorAll('.desk-v1-home h2')).some((h) => /^\s*The Desk\s*$/.test(h.textContent)),
+      };
+    });
+    if (!hdr.hasSettings) ok(`[${tag}] R2-2e: no Settings button in the Desk crumb row`);
+    else fail(`[${tag}] R2-2e: a Settings button is still in the Desk crumb row`);
+    if (!hdr.hasDeskH2) ok(`[${tag}] R2-2e: no "The Desk" h2 in the Home body`);
+    else fail(`[${tag}] R2-2e: "The Desk" h2 is still in the Home body`);
+    if (hdr.newInCrumbTools && !/^rgba\(0, 0, 0, 0\)$/.test(hdr.newBg)) ok(`[${tag}] R2-2e: New campaign lives in the crumb row, still filled (${hdr.newBg})`);
+    else fail(`[${tag}] R2-2e: New campaign not in the crumb row or not filled: ${JSON.stringify(hdr)}`);
+    if (vp.width >= 1440) {
+      if (hdr.engTop !== null && hdr.newTop !== null && Math.abs(hdr.engTop - hdr.newTop) <= 4) ok(`[${tag}] R2-2e: New campaign and Engagement share a row (tops ${hdr.newTop.toFixed(1)} / ${hdr.engTop.toFixed(1)})`);
+      else fail(`[${tag}] R2-2e: New campaign not on Engagement's row: ${JSON.stringify(hdr)}`);
+    }
+
+    await page.click('.desk-v1-home-newcamp-page-btn');
+    await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
+    const geo = await page.evaluate(() => {
+      const r = (el) => { const b = el.getBoundingClientRect(); return { left: b.left, right: b.right, top: b.top, bottom: b.bottom }; };
+      return {
+        btn: r(document.querySelector('.desk-v1-home-newcamp-page-btn')),
+        menu: r(document.querySelector('.desk-v1-addto-menu')),
+        modal: r(document.querySelector('.modal-window[data-modal-id="__desk"]')),
+      };
+    });
+    const { btn, menu, modal } = geo;
+    if (menu.top >= btn.bottom - 0.5 && menu.top - btn.bottom <= 12) ok(`[${tag}] R2-2e: menu sits directly below the button (gap ${(menu.top - btn.bottom).toFixed(1)}px)`);
+    else fail(`[${tag}] R2-2e: menu not directly below the button: ${JSON.stringify(geo)}`);
+    if (Math.abs(menu.right - btn.right) <= 8) ok(`[${tag}] R2-2e: menu right edge within 8px of the button's (${menu.right.toFixed(1)} vs ${btn.right.toFixed(1)})`);
+    else fail(`[${tag}] R2-2e: menu not right-aligned to the button: ${JSON.stringify(geo)}`);
+    if (menu.left >= modal.left - 0.5 && menu.right <= modal.right + 0.5) ok(`[${tag}] R2-2e: menu stays inside the Desk modal (${menu.left.toFixed(0)}..${menu.right.toFixed(0)} in ${modal.left.toFixed(0)}..${modal.right.toFixed(0)})`);
+    else fail(`[${tag}] R2-2e: menu spills outside the Desk modal: ${JSON.stringify(geo)}`);
+
+    reportUncaught(pageErrors, `[r2-2e-${tag}]`);
+    await ctx.close();
+  }
+}
+
 // ── Phone (§11): Home's content rows stack (they always do now — the campaign
 // grid's rail layout that used to need a desktop/phone split is retired), hit
 // targets >=44px. R2-2d removed the promote box + shelves, so their phone
@@ -486,7 +544,7 @@ async function runPhoneLayout(browser) {
   // control nested inside the row, which is itself the 44px primary target.
   const hitTargets = await page.evaluate(() => {
     const els = [
-      document.querySelector('.desk-v1-home-settings-btn'),
+      document.querySelector('.desk-v1-home-newcamp-page-btn'),
       document.querySelector('.desk-v1-home-row'),
     ].filter(Boolean);
     return els.map((el) => el.getBoundingClientRect().height);
@@ -534,6 +592,7 @@ try {
   await runNewCampaignEntry(browser);
   await runDesktopLayoutChecks(browser);
   await runR2_2cHeaderAcceptance(browser);
+  await runR2_2eHeaderCleanup(browser);
   await runPhoneLayout(browser);
   await runModalSizeCheck(browser);
   exitCode = bad ? 1 : 0;

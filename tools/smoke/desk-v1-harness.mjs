@@ -138,10 +138,10 @@ async function runTone(browser, tone) {
   // second header row — so unlike every other route, Home's crumb-tools is
   // deliberately non-empty.
   const homeToolsBtns = await page.$$eval('#desk-v1-crumb-tools button', (els) => els.map((e) => e.className));
-  if (homeToolsBtns.some((c) => /desk-v1-home-engagement-btn/.test(c)) && homeToolsBtns.some((c) => /desk-v1-home-settings-btn/.test(c))) {
-    ok(`[${tone.name}] Home: #desk-v1-crumb-tools carries Engagement + Settings (one-row crumb, R2-2c)`);
+  if (homeToolsBtns.some((c) => /desk-v1-home-engagement-btn/.test(c)) && homeToolsBtns.some((c) => /desk-v1-home-newcamp-page-btn/.test(c))) {
+    ok(`[${tone.name}] Home: #desk-v1-crumb-tools carries Engagement + New campaign (one-row crumb, R2-2c/2e)`);
   } else {
-    fail(`[${tone.name}] Home: #desk-v1-crumb-tools missing Engagement/Settings: ${JSON.stringify(homeToolsBtns)}`);
+    fail(`[${tone.name}] Home: #desk-v1-crumb-tools missing Engagement/New campaign: ${JSON.stringify(homeToolsBtns)}`);
   }
   // IA1 replaced Home's direct campaign links with project cards (one per
   // project with a presence) — the fixture campaign camp-1 now sits under
