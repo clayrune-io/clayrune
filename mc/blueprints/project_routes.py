@@ -2303,6 +2303,17 @@ def serve_image():
         abort(415)
     if not os.path.isfile(real):
         abort(404)
+    if not _image_path_allowed(real):
+        abort(403)
+    return send_file(real, as_attachment=False, max_age=3600)
+
+
+def _image_path_allowed(real: str) -> bool:
+    """The serve-image allowlist, factored out so /api/serve-image/siblings
+    (and anything else that needs to check a REALPATH-resolved image path)
+    shares this instead of re-deriving it. `real` must already be
+    os.path.realpath()-resolved by the caller — that's what collapses `..`
+    so the prefix check below can't be escaped."""
     allowed = [str(UPLOADS_DIR), str(_DATA_ROOT)]
     try:
         for p in load_projects():
@@ -2319,18 +2330,47 @@ def serve_image():
     except Exception:
         pass
     rn = os.path.normcase(real)
-    ok = False
     for a in allowed:
         try:
             ar = os.path.normcase(os.path.realpath(a))
         except Exception:
             continue
         if rn == ar or rn.startswith(ar + os.sep):
-            ok = True
-            break
-    if not ok:
+            return True
+    return False
+
+
+@bp.route('/api/serve-image/siblings')
+def serve_image_siblings():
+    """List the image files in the same folder as `path`, sorted by name, for
+    the chat image viewer's prev/next nav. Same allowlist as /api/serve-image
+    (reused via _image_path_allowed) — a folder is only listable through here
+    if a single file in it would already be servable through serve_image."""
+    raw = (request.args.get('path') or '').strip()
+    if not raw:
+        abort(400)
+    try:
+        real = os.path.realpath(raw)
+    except Exception:
+        abort(400)
+    if not _image_path_allowed(real):
         abort(403)
-    return send_file(real, as_attachment=False, max_age=3600)
+    folder = os.path.dirname(real)
+    try:
+        names = os.listdir(folder)
+    except Exception:
+        abort(404)
+    files = sorted(
+        os.path.join(folder, n) for n in names
+        if os.path.splitext(n)[1].lower() in _IMAGE_EXTS
+        and os.path.isfile(os.path.join(folder, n))
+    )
+    try:
+        index = next(i for i, f in enumerate(files)
+                      if os.path.normcase(f) == os.path.normcase(real))
+    except StopIteration:
+        index = 0
+    return jsonify({'files': files, 'index': index})
 
 
 # Secrets denylist for /api/serve-file. Deep links are more exposed than an
