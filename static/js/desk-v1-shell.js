@@ -50,6 +50,12 @@
     // family's own title ("Install in two minutes"), not the static word
     // "Video" — falls back to it during intake (no family picked yet).
     video:         { parent: 'campaign', label: _videoLabel,   render: () => window.deskV1RenderVideo },
+    // R2-8 (§8, frames 11, 13): Studio is its own Desk route (Home's header
+    // `🎬 Studio`); the storyboard is What's Create-new page, so its Back
+    // reads `‹ Back to What` (see _backLabel) and its title `New video ·
+    // Storyboard`. Both render from desk-v1-studio.js.
+    studio:        { parent: 'home',     label: 'Studio',       render: () => window.deskV1RenderStudio },
+    storyboard:    { parent: 'campaign', label: 'New video · Storyboard', render: () => window.deskV1RenderStoryboard },
   };
 
   // T2 (§2, §8): conversations/results/calendar stop being separate routes —
@@ -204,6 +210,7 @@
   // parent campaign entry's own panel. Every other route keeps the plain parent
   // title.
   function _backLabel(entry, parentEntry) {
+    if (entry.route === 'storyboard' && parentEntry.route === 'campaign') return 'Back to What';
     const label = _routeLabel(parentEntry);
     if (entry.route === 'piece' && parentEntry.route === 'campaign') {
       const words = (window.DeskV1Kit && window.DeskV1Kit.MAP_STOP_WORDS) || {};
