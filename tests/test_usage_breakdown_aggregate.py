@@ -116,6 +116,23 @@ def _turn_start(session_id, *, provider='claude', observed_at,
     }
 
 
+def _sample_tick(session_id, *, provider='claude', observed_at,
+                  input_processed_total, output_tokens, token_coverage='complete'):
+    """One 'sample_tick' checkpoint row (schema v6, backlog 4668eafc
+    follow-up), for appending onto a `_checkpoint(...)` fixture's
+    `sample_ticks` list -- a RUNNING session's cumulative counters snapshot
+    at the same `source_observed_at` an allowance sample used for its own
+    reading. Same cumulative-totals convention as `_completion`/`_turn_start`:
+    the ABSOLUTE total at that instant, not a delta."""
+    return {
+        'session_id': session_id, 'provider': provider, 'checkpoint_type': 'sample_tick',
+        'observed_at': observed_at, 'input_fresh': input_processed_total,
+        'input_cache_write': 0, 'input_cache_read': 0,
+        'input_processed_total': input_processed_total, 'output_tokens': output_tokens,
+        'output_reasoning': 0, 'token_coverage': token_coverage,
+    }
+
+
 # ── totals / AC1 ─────────────────────────────────────────────────────────
 
 def test_unavailable_coverage_rows_do_not_contribute_a_fabricated_zero():
@@ -661,6 +678,155 @@ def test_calibration_reaches_ok_with_idle_sessions_present():
     assert cal['status'] == 'ok'
     assert cal['eligible_interval_count'] == 5
     assert cal['distinct_session_count'] == 5
+
+
+# ── sample_tick fix (backlog 4668eafc follow-up, 2026-09-29) ────────────
+#
+# Measured 2026-09-29 (Dave, _scratch/calib_diag.py): even with turn_start
+# shipped, 165/166 shape-eligible interval pairs against the live DB were
+# STILL refused, because a Clayrune turn routinely outlives the sampler's
+# own <=10-minute pairing window. These four tests build on top of
+# _calibration_fixture()'s existing 5-interval/5-session base (already
+# satisfying _MIN_ELIGIBLE_INTERVALS/_MIN_ELIGIBLE_SESSIONS on its own) with
+# an ADDITIONAL block of contiguous samples far enough away in time
+# (hours) that it can never accidentally pair with the base fixture's own
+# samples -- isolating what the added session(s) contribute.
+
+def test_calibration_long_turn_split_by_sample_ticks_becomes_eligible():
+    """A single turn spanning four consecutive sample intervals, with a
+    sample_tick at each intermediate boundary, is split into four segments
+    that are each fully contained in their own interval -- all four become
+    eligible instead of one long turn crossing every boundary it touches."""
+    samples, checkpoints, facts = _calibration_fixture()
+    t0 = datetime(2026, 9, 28, 15, 0, 0, tzinfo=timezone.utc)  # well past the base fixture's span
+    boundaries = [t0 + timedelta(minutes=5 * i) for i in range(5)]  # 4 intervals
+    for i, b in enumerate(boundaries):
+        samples.append(_sample(raw_utilization=40.0 + 5 * i, source_observed_at=b.isoformat()))
+    ck = _checkpoint('sess-long', baseline_at=boundaries[0].isoformat(), completion_at=None)
+    ck['sample_ticks'] = [_sample_tick('sess-long', observed_at=boundaries[i].isoformat(),
+                                        input_processed_total=100 * i, output_tokens=50 * i)
+                           for i in range(1, 4)]
+    ck['completions'] = [_completion('sess-long', observed_at=boundaries[4].isoformat(),
+                                      input_processed_total=400, output_tokens=200)]
+    checkpoints['sess-long'] = ck
+    facts.append(_fact('sess-long', started_at=boundaries[0].isoformat(),
+                        ended_at=boundaries[4].isoformat(), input_processed_total=400, output_tokens=200))
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    assert cal['status'] == 'ok'
+    assert cal['eligible_interval_count'] == 5 + 4
+    assert cal['distinct_session_count'] == 5 + 1
+    new_intervals = [iv for iv in cal['all_intervals'] if iv['start'] >= t0]
+    assert len(new_intervals) == 4
+    for iv in new_intervals:
+        assert iv['coverage_complete'] is True
+        assert iv['session_ids'] == {'sess-long'}
+        assert iv['input_processed_total'] == 100
+        assert iv['output_tokens'] == 50
+
+
+def test_calibration_concurrent_ticked_sessions_sum_per_interval():
+    """Two DIFFERENT sessions running concurrently, each ticked at the same
+    boundaries, contribute their OWN measured delta to a shared interval --
+    the interval sums both, exactly like the pre-existing (short-turn)
+    concurrent-session rule, now proven for tick-segmented long turns."""
+    samples, checkpoints, facts = _calibration_fixture()
+    t0 = datetime(2026, 9, 28, 16, 0, 0, tzinfo=timezone.utc)
+    b0, b1, b2 = t0, t0 + timedelta(minutes=5), t0 + timedelta(minutes=10)
+    samples.append(_sample(raw_utilization=60.0, source_observed_at=b0.isoformat()))
+    samples.append(_sample(raw_utilization=65.0, source_observed_at=b1.isoformat()))
+    samples.append(_sample(raw_utilization=70.0, source_observed_at=b2.isoformat()))
+    ck_a = _checkpoint('sess-long-a', baseline_at=b0.isoformat(), completion_at=None)
+    ck_a['sample_ticks'] = [_sample_tick('sess-long-a', observed_at=b1.isoformat(),
+                                          input_processed_total=100, output_tokens=50)]
+    ck_a['completions'] = [_completion('sess-long-a', observed_at=b2.isoformat(),
+                                        input_processed_total=200, output_tokens=100)]
+    ck_b = _checkpoint('sess-long-b', baseline_at=b0.isoformat(), completion_at=None)
+    ck_b['sample_ticks'] = [_sample_tick('sess-long-b', observed_at=b1.isoformat(),
+                                          input_processed_total=40, output_tokens=20)]
+    ck_b['completions'] = [_completion('sess-long-b', observed_at=b2.isoformat(),
+                                        input_processed_total=80, output_tokens=40)]
+    checkpoints['sess-long-a'] = ck_a
+    checkpoints['sess-long-b'] = ck_b
+    facts.append(_fact('sess-long-a', started_at=b0.isoformat(), ended_at=b2.isoformat(),
+                        input_processed_total=200, output_tokens=100))
+    facts.append(_fact('sess-long-b', started_at=b0.isoformat(), ended_at=b2.isoformat(),
+                        input_processed_total=80, output_tokens=40))
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    assert cal['status'] == 'ok'
+    assert cal['eligible_interval_count'] == 5 + 2
+    assert cal['distinct_session_count'] == 5 + 2
+    new_intervals = [iv for iv in cal['all_intervals'] if iv['start'] >= t0]
+    assert len(new_intervals) == 2
+    for iv in new_intervals:
+        assert iv['coverage_complete'] is True
+        assert iv['session_ids'] == {'sess-long-a', 'sess-long-b'}
+        assert iv['input_processed_total'] == 140
+        assert iv['output_tokens'] == 70
+
+
+def test_calibration_session_without_a_boundary_tick_stays_incomplete():
+    """A session ticked at the FIRST boundary but not the second/third: its
+    first segment (baseline -> tick) is fully contained and eligible, but
+    its second segment (tick -> completion, with no tick at the boundaries
+    in between) still crosses the later intervals -- those stay incomplete,
+    exactly as an untracked long turn always has. Ticking some boundaries
+    does not retroactively cover the ones with no tick."""
+    samples, checkpoints, facts = _calibration_fixture()
+    t0 = datetime(2026, 9, 28, 17, 0, 0, tzinfo=timezone.utc)
+    b0 = t0
+    b1 = t0 + timedelta(minutes=5)
+    b2 = t0 + timedelta(minutes=10)
+    b3 = t0 + timedelta(minutes=15)
+    for b, util in ((b0, 80.0), (b1, 85.0), (b2, 90.0), (b3, 95.0)):
+        samples.append(_sample(raw_utilization=util, source_observed_at=b.isoformat()))
+    ck = _checkpoint('sess-partial', baseline_at=b0.isoformat(), completion_at=None)
+    ck['sample_ticks'] = [_sample_tick('sess-partial', observed_at=b1.isoformat(),
+                                        input_processed_total=100, output_tokens=50)]
+    # No tick at b2 -- this segment (b1 -> completion at b3) crosses both
+    # the [b1,b2) and [b2,b3) intervals without landing on either boundary.
+    ck['completions'] = [_completion('sess-partial', observed_at=b3.isoformat(),
+                                      input_processed_total=500, output_tokens=300)]
+    checkpoints['sess-partial'] = ck
+    facts.append(_fact('sess-partial', started_at=b0.isoformat(), ended_at=b3.isoformat(),
+                        input_processed_total=500, output_tokens=300))
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    # 5 base intervals + only the one new interval sess-partial actually
+    # ticked both ends of ([b0,b1)); [b1,b2) and [b2,b3) stay incomplete.
+    assert cal['status'] == 'ok'
+    assert cal['eligible_interval_count'] == 5 + 1
+    new_intervals = {iv['start']: iv for iv in cal['all_intervals'] if iv['start'] >= t0}
+    assert len(new_intervals) == 3
+    assert new_intervals[b0]['coverage_complete'] is True
+    assert new_intervals[b0]['input_processed_total'] == 100
+    assert new_intervals[b1]['coverage_complete'] is False
+    assert new_intervals[b2]['coverage_complete'] is False
+
+
+def test_calibration_reset_crossed_pair_never_becomes_a_candidate_regardless_of_ticks():
+    """A reset crossing the two allowance samples themselves (mismatched
+    resets_at) must exclude that pair as an interval CANDIDATE before
+    session evidence is ever consulted -- a fully-ticked session must not
+    be able to rescue a reset-crossed pair into existence."""
+    samples, checkpoints, facts = _calibration_fixture()
+    t0 = datetime(2026, 9, 28, 18, 0, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(minutes=5)
+    samples.append(_sample(raw_utilization=10.0, source_observed_at=t0.isoformat(),
+                            resets_at='2026-10-01T00:00:00+00:00'))
+    samples.append(_sample(raw_utilization=20.0, source_observed_at=t1.isoformat(),
+                            resets_at='2026-10-08T00:00:00+00:00'))  # different resets_at = reset crossed
+    ck = _checkpoint('sess-reset', baseline_at=t0.isoformat(), completion_at=None)
+    ck['sample_ticks'] = [_sample_tick('sess-reset', observed_at=t1.isoformat(),
+                                        input_processed_total=100, output_tokens=50)]
+    checkpoints['sess-reset'] = ck
+    facts.append(_fact('sess-reset', started_at=t0.isoformat(), ended_at=t1.isoformat()))
+    cal = compute_calibration(samples, checkpoints, _facts_by_session(facts),
+                               provider='claude', window_scope='all')
+    assert cal['status'] == 'ok'
+    assert cal['eligible_interval_count'] == 5  # unchanged from the base fixture
+    assert not any(iv['start'] == t0 for iv in cal['all_intervals'])
 
 
 # ── segmented bar ────────────────────────────────────────────────────────

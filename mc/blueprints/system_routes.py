@@ -1024,6 +1024,45 @@ def _usage_breakdown_any_session_active() -> bool:
         return False
 
 
+def _usage_breakdown_tick_running_sessions(*, provider: str, observed_at: Optional[str]) -> int:
+    """MC-998 follow-up (schema v6, backlog 4668eafc): write one 'sample_tick'
+    `session_checkpoint` row per RUNNING same-provider session, stamped with
+    `observed_at` -- the SAME `source_observed_at` this sampling pass just
+    used for `provider`'s own `allowance_sample` row. See
+    `usage_breakdown_aggregate._session_turns`'s docstring for why this is
+    what makes a long-running or concurrent turn calibratable at all.
+
+    Deferred import of `_session_cumulative_transcript_telemetry` (only
+    `agent_routes.py` owns transcript reading): `agent_routes` imports FROM
+    this module at top level (`_capture_system_init`), so importing it back
+    here at module scope would be circular -- every other cross-module reach
+    in this file already imports lazily inside the function for the same
+    reason (see `_usage_breakdown_live_session_ids` below).
+
+    Best-effort per session, same as the allowance sample itself: one
+    session's transcript read failing must never block another session's
+    tick or the sample that already landed. `observed_at=None` (no fresh
+    vendor reading this pass) is a no-op -- a tick with no matching
+    allowance-sample timestamp could never pair with an interval boundary
+    anyway."""
+    if not observed_at:
+        return 0
+    from mc.blueprints.agent_routes import _write_usage_breakdown_sample_tick
+    ticked = 0
+    for session in list(agent_sessions.values()):
+        try:
+            if session.get('incognito') or session.get('status') != 'running':
+                continue
+            if (session.get('provider') or 'claude') != provider:
+                continue
+            _write_usage_breakdown_sample_tick(session, observed_at)
+            ticked += 1
+        except Exception as e:
+            sid = session.get('session_id', '')
+            _log(f"[usage-breakdown] sample-tick failed for {sid[:12]}: {e}", flush=True)
+    return ticked
+
+
 def _usage_breakdown_live_session_ids():
     """MC session ids that are live -- the liveness source for
     `reconcile_dead_sessions`. None when the registry can't be read, which
@@ -1063,22 +1102,35 @@ def _usage_breakdown_live_session_ids():
 
 def usage_breakdown_sample_once() -> dict:
     """Fetch both vendor caches and persist any new allowance samples, then
-    close store sessions whose MC session is no longer live (round 4: a
-    crashed session must not stay open for 90 days). Best-effort per step --
-    a Claude fetch failure must not block a Codex sample or vice versa.
+    tick every RUNNING same-provider session's cumulative counters at that
+    same sample's `source_observed_at` (schema v6, backlog 4668eafc
+    follow-up -- see `_usage_breakdown_tick_running_sessions`), then close
+    store sessions whose MC session is no longer live (round 4: a crashed
+    session must not stay open for 90 days). Best-effort per step -- a
+    Claude fetch failure must not block a Codex sample or vice versa.
     Returns {'claude': n, 'codex': n} rows inserted."""
     from mc import usage_breakdown_sampler as _sampler
     store = _usage_breakdown_store()
     claude_n = codex_n = 0
     try:
         usage_limits = _fetch_oauth_usage_limits()
+        claude_epoch = _oauth_usage_cache.get('ts')
         claude_n = _sampler.sample_claude(
-            store, usage_limits=usage_limits, fetched_at_epoch=_oauth_usage_cache.get('ts'))
+            store, usage_limits=usage_limits, fetched_at_epoch=claude_epoch)
+        # Same source_observed_at sample_claude just used for its own
+        # allowance_sample rows -- ticking with a DIFFERENT timestamp would
+        # produce a checkpoint that can never line up with an interval
+        # boundary (see `_usage_breakdown_tick_running_sessions`).
+        claude_observed_at = _sampler._iso_from_epoch(claude_epoch) if claude_epoch is not None else None
+        _usage_breakdown_tick_running_sessions(provider='claude', observed_at=claude_observed_at)
     except Exception as e:
         _log(f"[usage-breakdown] claude allowance sample failed: {e}", flush=True)
     try:
         detail = _fetch_codex_usage_detail()
         codex_n = _sampler.sample_codex(store, detail=detail)
+        codex_observed_at = (detail.get('event_at') or detail.get('sampled_at')) \
+            if isinstance(detail, dict) else None
+        _usage_breakdown_tick_running_sessions(provider='codex', observed_at=codex_observed_at)
     except Exception as e:
         _log(f"[usage-breakdown] codex allowance sample failed: {e}", flush=True)
     try:
@@ -1339,21 +1391,30 @@ def system_usage_breakdown_get():
     session_facts = store.list_session_facts(since=ninety_days_ago)
     code_deltas = {f['session_id']: (store.get_code_delta(f['session_id']) or {})
                    for f in session_facts if f.get('session_id')}
-    # {session_id: {'baseline': row|None, 'turn_starts': [row, ...], 'completions': [row, ...]}}
-    # -- a multi-turn session appends one 'turn_start' and one 'completion'
-    # row per follow-up turn (P1-3, MC-998 turn-start fix); both lists stay
-    # in observed_at order because list_session_checkpoints is itself
-    # ordered (session_id ASC, observed_at ASC). Every non-baseline row used
-    # to be bucketed as a completion -- that would silently treat a
-    # 'turn_start' row as if a turn had finished at that instant.
+    # {session_id: {'baseline': row|None, 'turn_starts': [row, ...],
+    #  'completions': [row, ...], 'sample_ticks': [row, ...]}} -- a
+    # multi-turn session appends one 'turn_start' and one 'completion' row
+    # per follow-up turn (P1-3, MC-998 turn-start fix), plus one
+    # 'sample_tick' row per allowance sample taken while running (schema v6,
+    # backlog 4668eafc follow-up). All lists stay in observed_at order
+    # because list_session_checkpoints is itself ordered (session_id ASC,
+    # observed_at ASC). Every unrecognized row used to fall through to
+    # 'completions' -- that silently treated a 'turn_start' (and, before
+    # this fix, a 'sample_tick') row as if a turn had finished at that
+    # instant, so the dispatch below is exhaustive over the 4 known types
+    # rather than an if/elif/else catch-all.
     checkpoints: dict[str, dict] = {}
     for row in store.list_session_checkpoints(since=ninety_days_ago):
         entry = checkpoints.setdefault(
-            row['session_id'], {'baseline': None, 'turn_starts': [], 'completions': []})
-        if row['checkpoint_type'] == 'baseline':
+            row['session_id'],
+            {'baseline': None, 'turn_starts': [], 'completions': [], 'sample_ticks': []})
+        ctype = row['checkpoint_type']
+        if ctype == 'baseline':
             entry['baseline'] = row
-        elif row['checkpoint_type'] == 'turn_start':
+        elif ctype == 'turn_start':
             entry['turn_starts'].append(row)
+        elif ctype == 'sample_tick':
+            entry['sample_ticks'].append(row)
         else:
             entry['completions'].append(row)
 
