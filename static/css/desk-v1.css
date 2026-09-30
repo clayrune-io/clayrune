@@ -1682,3 +1682,16 @@
   .desk-v1-eng-lane, .desk-v1-eng-row { min-height: 44px; }
   .desk-v1-eng-filters { flex-direction: column; }
 }
+
+/* R2-6 (THE_DESK_V1_IA_REVISION_2.md §8 row): ② How stop panel. Reuses
+   .desk-v1-rules-group/-group-title/-textarea/-numinput/-inlinerow/-hint
+   and .desk-v1-project-newcamp-btn as-is (same component set the rules
+   popover and Presence page already established) — only the panel's own
+   scroll wrapper and the "n suggested" banner (also used by ④'s calendar
+   and shared with ③'s Content-tab list) are new. */
+.desk-v1-how { display: flex; flex-direction: column; gap: 14px; height: 100%; min-height: 0; overflow-y: auto; }
+.desk-v1-camp-suggested-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px;
+  padding: 8px 12px; margin-bottom: 10px; font-size: 13px; color: var(--text);
+}
