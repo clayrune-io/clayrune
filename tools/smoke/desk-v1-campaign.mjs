@@ -690,6 +690,99 @@ async function runPhoneLayout(browser) {
 }
 
 // ── screenshots (default tone only, per the ticket brief). ─────────────────
+// ── R2-2f (Ron 2026-09-30): the campaign page's Goal stop carries a Project
+// select as its first field. Picking one sets camp.projectId through the
+// commandBus (Undo reverts it); a draft with no project can't launch; and a
+// project-less draft renders every stop without throwing or printing
+// "undefined"/"null". Driven from a hand-built project-less draft so this
+// smoke doesn't depend on Home's button (desk-v1-home.mjs covers that). ─────
+async function runProjectSelect(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  const campId = await page.evaluate(() => {
+    const camp = window.deskV1CreateDraftCampaign(null);
+    window.DeskV1Fixtures.campaigns.push(camp);
+    window.deskV1Nav('campaign', { campaignId: camp.id, projectId: null });
+    return camp.id;
+  });
+  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
+  const pid = () => page.evaluate((id) => window.DeskV1Fixtures.campaigns.find((c) => c.id === id).projectId, campId);
+
+  const first = await page.evaluate(() => {
+    const sel = document.querySelector('[data-setup-project]');
+    return { value: sel.value, prompt: sel.selectedOptions[0].textContent, hint: !!document.querySelector('[data-setup-project-hint]'), pill: (document.querySelector('.desk-v1-camp-state-pill') || {}).textContent };
+  });
+  first.value === '' && /Pick a project/.test(first.prompt) && first.hint
+    ? ok(`R2-2f: a project-less draft shows an empty Project select with a "Pick a project" prompt (pill "${(first.pill || '').trim()}")`)
+    : fail(`R2-2f: empty Project select wrong: ${JSON.stringify(first)}`);
+
+  // Launch is blocked with no project: listed first, links to ① Goal, Start disabled.
+  await page.click('.desk-v1-map-stop[data-stop="launch"]');
+  await page.waitForSelector('.desk-v1-map-launch', { timeout: 4000 });
+  const launch = await page.evaluate(() => ({
+    startDisabled: document.querySelector('[data-map-start-btn]').disabled,
+    missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing-link')).map((b) => b.textContent.trim()),
+    status: document.querySelector('.desk-v1-map-launch-status').textContent.trim(),
+    goalState: document.querySelector('.desk-v1-map-stop[data-stop="goal"]').dataset.state,
+  }));
+  launch.startDisabled && /project/.test(launch.missing[0] || '') && launch.goalState === 'needs_you'
+    ? ok(`R2-2f: Launch is blocked with no project ("${launch.missing[0]}" listed first, Start disabled, ① Goal shows needs-you; status "${launch.status}")`)
+    : fail(`R2-2f: Launch not blocked on a missing project: ${JSON.stringify(launch)}`);
+  await page.click('.desk-v1-map-launch-missing-link');
+  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
+  const backAtGoal = await page.$eval('.desk-v1-map-stop[data-stop="goal"]', (el) => el.dataset.state);
+  backAtGoal === 'here' ? ok('R2-2f: the "project" missing-item link goes to ① Goal') : fail(`R2-2f: project link landed on ${backAtGoal}`);
+
+  // Every stop renders for a project-less draft: no page errors, no "undefined"/"null" text.
+  for (const stop of ['how', 'what', 'when', 'where', 'launch', 'goal']) {
+    await page.click(`.desk-v1-map-stop[data-stop="${stop}"]`);
+    await page.waitForTimeout(40);
+    const txt = await page.evaluate(() => document.querySelector('.desk-v1-campaign').innerText);
+    /\bundefined\b|\bnull\b|\[object/.test(txt)
+      ? fail(`R2-2f: project-less draft at ${stop} prints a raw value: ${JSON.stringify((txt.match(/.{0,30}(undefined|null|\[object).{0,30}/) || [''])[0])}`)
+      : ok(`R2-2f: project-less draft renders ${stop} with no "undefined"/"null" text`);
+  }
+
+  // Picking a project sets camp.projectId and moves the page on to step 1.
+  await page.selectOption('[data-setup-project]', 'clayrune');
+  await page.waitForSelector('[data-setup-title]', { timeout: 4000 });
+  const picked = await pid();
+  const afterPick = await page.evaluate(() => ({ value: document.querySelector('[data-setup-project]').value, title: document.querySelector('[data-setup-title]').value, hint: !!document.querySelector('[data-setup-project-hint]') }));
+  picked === 'clayrune' && afterPick.value === 'clayrune' && !afterPick.hint && /Clayrune campaign/.test(afterPick.title)
+    ? ok(`R2-2f: picking a project sets camp.projectId (${picked}) and step 1 defaults from it ("${afterPick.title}")`)
+    : fail(`R2-2f: pick did not stick: ${JSON.stringify({ picked, afterPick })}`);
+  const toast = (await page.textContent('.toast').catch(() => '') || '');
+  /Set campaign project to Clayrune/.test(toast) ? ok(`R2-2f: the pick is a commandBus toast: "${toast.trim().slice(0, 60)}"`) : fail(`R2-2f: pick toast missing/wrong: ${JSON.stringify(toast)}`);
+
+  // Changing to another project re-defaults the auto-filled title (untouched), and Undo reverts.
+  await page.selectOption('[data-setup-project]', 'engulfing_scanner');
+  await page.waitForSelector('[data-setup-title]', { timeout: 4000 });
+  const switched = await page.evaluate(() => ({ value: document.querySelector('[data-setup-project]').value, title: document.querySelector('[data-setup-title]').value }));
+  (await pid()) === 'engulfing_scanner' && /Engulfing scanner campaign/.test(switched.title)
+    ? ok(`R2-2f: switching project re-defaults the untouched title ("${switched.title}")`)
+    : fail(`R2-2f: switch wrong: ${JSON.stringify(switched)}`);
+  await page.locator('.toast .toast-btn.primary').last().click(); // newest toast's Undo (older toasts stay stacked)
+  await page.waitForTimeout(60);
+  const undone = await page.evaluate(() => ({ value: document.querySelector('[data-setup-project]').value, title: document.querySelector('[data-setup-title]').value }));
+  (await pid()) === 'clayrune' && undone.value === 'clayrune' && /Clayrune campaign/.test(undone.title)
+    ? ok('R2-2f: Undo reverts the project pick (projectId, select and defaulted title)')
+    : fail(`R2-2f: Undo did not revert: ${JSON.stringify({ pid: await pid(), undone })}`);
+  // Undo the first pick too: back to no project.
+  await page.selectOption('[data-setup-project]', 'engulfing_scanner');
+  await page.waitForTimeout(40);
+  await page.locator('.toast .toast-btn.primary').last().click(); // newest toast's Undo (older toasts stay stacked)
+  await page.waitForTimeout(40);
+  (await pid()) === 'clayrune' ? ok('R2-2f: a second pick + Undo returns to the prior project') : fail(`R2-2f: second Undo wrong: ${await pid()}`);
+
+  // With a project picked the Launch gate no longer lists "project".
+  await page.click('.desk-v1-map-stop[data-stop="launch"]');
+  await page.waitForSelector('.desk-v1-map-launch', { timeout: 4000 });
+  const launched = await page.evaluate(() => Array.from(document.querySelectorAll('.desk-v1-map-launch-missing-link')).map((b) => b.textContent.trim()));
+  !launched.some((m) => /project/.test(m)) ? ok(`R2-2f: once a project is picked Launch no longer lists it (still missing: ${launched.join(', ') || 'nothing'})`) : fail(`R2-2f: Launch still lists project: ${JSON.stringify(launched)}`);
+
+  reportUncaught(pageErrors, '[project-select]');
+  await ctx.close();
+}
+
 async function captureScreenshots(browser) {
   {
     const { ctx, page } = await newBootedPage(browser, { ls: {} }, { width: 1440, height: 950 });
@@ -723,6 +816,7 @@ try {
   await runRouteStackUnchanged(browser);
   await runPosyDraftPersistence(browser);
   await runPhoneLayout(browser);
+  await runProjectSelect(browser);
   await captureScreenshots(browser);
   exitCode = bad === 0 ? 0 : 1;
 } catch (e) {

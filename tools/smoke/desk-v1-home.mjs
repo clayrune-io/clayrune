@@ -357,37 +357,131 @@ async function runNeedsYouDeepLinks(browser) {
   await ctx.close();
 }
 
-// ── R2-2d: `＋ New campaign` is Home's ONLY entry now (the promote box and the
-// Channels/Material shelves are gone, so the old Add to… menu attach has no
-// Home surface; the campaign page's Add tray covers it - desk-v1-campaign.mjs).
-// The per-block link creates a Proposed campaign for THAT project and lands on
-// it; the page-level button asks which project first. ────────────────────────
+// ── R2-2d/R2-2f: `＋ New campaign` is Home's ONLY entry (the promote box and
+// the Channels/Material shelves are gone; the campaign page's Add tray covers
+// attach - desk-v1-campaign.mjs). R2-2f (Ron 2026-09-30, "we have duality in
+// functionality"): the page-level button no longer opens a project menu - one
+// click starts a Draft on its Goal stop, whose first field is the Project
+// select. The per-block link still PREFILLS its own project. ─────────────────
 async function runNewCampaignEntry(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
 
+  // (a) Crumb-row button, Projects: All -> no menu, lands on the campaign page
+  // at ① Goal with an EMPTY Project select as its first field.
   const before = await page.evaluate(() => window.DeskV1Fixtures.campaigns.length);
-  await page.click('.desk-v1-home-block[data-project-id="engulfing_scanner"] .desk-v1-home-block-newcamp');
-  await page.waitForSelector('#desk-v1-crumb .desk-v1-crumb-title:has-text("New campaign")', { timeout: 4000 }).catch(() => {});
-  const created = await page.evaluate(() => {
+  await page.click('.desk-v1-home-newcamp-page-btn');
+  await page.waitForSelector('.desk-v1-campaign', { timeout: 4000 });
+  const menuOpen = await page.$('.desk-v1-addto-menu');
+  if (!menuOpen) ok('R2-2f: page-level "＋ New campaign" opens NO project menu');
+  else fail('R2-2f: page-level "＋ New campaign" still opens a menu');
+  const top = await page.evaluate(() => {
     const list = window.DeskV1Fixtures.campaigns;
     const c = list[list.length - 1];
-    return { count: list.length, projectId: c.projectId, state: c.state };
+    const sel = document.querySelector('[data-setup-project]');
+    const firstGroup = document.querySelector('#desk-v1-camp-summary .desk-v1-rules-group');
+    const firstField = document.querySelector('#desk-v1-camp-summary input, #desk-v1-camp-summary textarea, #desk-v1-camp-summary select');
+    return {
+      count: list.length, projectId: c.projectId, state: c.state,
+      crumb: (document.querySelector('#desk-v1-crumb .desk-v1-crumb-title') || {}).textContent,
+      goalHere: (document.querySelector('.desk-v1-map-stop[data-stop="goal"]') || {}).dataset && document.querySelector('.desk-v1-map-stop[data-stop="goal"]').dataset.state,
+      hasSelect: !!sel, selectValue: sel && sel.value,
+      prompt: sel && sel.selectedOptions[0] && sel.selectedOptions[0].textContent,
+      options: sel ? Array.from(sel.options).filter((o) => o.value).map((o) => o.textContent) : [],
+      selectIsFirstField: !!(sel && firstGroup && firstGroup.contains(sel) && firstField === sel),
+    };
   });
-  if (created.count === before + 1 && created.projectId === 'engulfing_scanner' && created.state === 'proposed') ok('R2-2d: per-block "＋ New campaign" creates a Proposed campaign in that project');
-  else fail(`R2-2d: per-block New campaign wrong: ${JSON.stringify({ before, created })}`);
-  const crumb = (await page.textContent('#desk-v1-crumb .desk-v1-crumb-title').catch(() => '') || '');
-  if (/New campaign/.test(crumb)) ok(`R2-2d: New campaign lands on the campaign page: crumb "${crumb.trim()}"`);
-  else fail(`R2-2d: did not land on the new campaign: crumb ${JSON.stringify(crumb)}`);
+  if (top.count === before + 1 && top.state === 'draft' && top.projectId === null) ok('R2-2f: page-level New campaign creates ONE Draft with no project');
+  else fail(`R2-2f: page-level New campaign wrong: ${JSON.stringify({ before, top })}`);
+  if (/New campaign/.test(top.crumb || '') && top.goalHere === 'here') ok(`R2-2f: lands on the campaign page at ① Goal (crumb "${(top.crumb || '').trim()}")`);
+  else fail(`R2-2f: did not land on Goal: ${JSON.stringify(top)}`);
+  if (top.hasSelect && top.selectValue === '' && /Pick a project/.test(top.prompt || '')) ok('R2-2f: Project select is empty, prompting "Pick a project" (Projects: All)');
+  else fail(`R2-2f: Project select not empty/prompting: ${JSON.stringify(top)}`);
+  if (top.options.includes('Clayrune') && top.options.includes('Engulfing scanner')) ok(`R2-2f: Project select lists every project (${top.options.join(', ')})`);
+  else fail(`R2-2f: Project select options wrong: ${JSON.stringify(top.options)}`);
+  if (top.selectIsFirstField) ok('R2-2f: Project is the FIRST field on the Goal stop');
+  else fail('R2-2f: Project select is not the first field of the page');
 
+  // (b) Per-block link prefills that block's project (Project select shows it).
   await page.evaluate(() => window.deskV1Nav('home', {}));
-  await page.waitForSelector('.desk-v1-home-newcamp-page-btn', { timeout: 8000 });
-  await page.click('.desk-v1-home-newcamp-page-btn');
-  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
-  const menu = (await page.textContent('.desk-v1-addto-menu').catch(() => '') || '');
-  if (/Clayrune/.test(menu) && /Engulfing scanner/.test(menu) && !/New campaign/.test(menu)) ok('R2-2d: page-level "＋ New campaign" asks which project (both fixture projects listed)');
-  else fail(`R2-2d: page-level New campaign menu wrong: ${JSON.stringify(menu)}`);
+  await page.waitForSelector('.desk-v1-home-block[data-project-id="engulfing_scanner"]', { timeout: 4000 });
+  const before2 = await page.evaluate(() => window.DeskV1Fixtures.campaigns.length);
+  await page.click('.desk-v1-home-block[data-project-id="engulfing_scanner"] .desk-v1-home-block-newcamp');
+  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
+  const blk = await page.evaluate(() => {
+    const list = window.DeskV1Fixtures.campaigns;
+    const c = list[list.length - 1];
+    return { count: list.length, projectId: c.projectId, state: c.state, selected: document.querySelector('[data-setup-project]').value };
+  });
+  if (blk.count === before2 + 1 && blk.projectId === 'engulfing_scanner' && blk.state === 'draft' && blk.selected === 'engulfing_scanner') ok('R2-2f: per-block "＋ New campaign" creates a Draft prefilled with that block\'s project (Project select shows it)');
+  else fail(`R2-2f: per-block New campaign wrong: ${JSON.stringify({ before2, blk })}`);
 
   reportUncaught(pageErrors, '[new-campaign]');
+  await ctx.close();
+}
+
+// ── R2-2f: a draft Home starts is never invisible and never litters. A
+// project-less draft the user TOUCHED lists under a "No project yet" block
+// after the project blocks; one left completely untouched is discarded when
+// the user backs out, so a stray click leaves nothing behind. ────────────────
+async function runNoProjectDrafts(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  const noProjBlock = () => page.$('[data-no-project-block]');
+  const campCount = () => page.evaluate(() => window.DeskV1Fixtures.campaigns.length);
+
+  if (!(await noProjBlock())) ok('R2-2f: no "No project yet" block while no project-less campaign exists');
+  else fail('R2-2f: "No project yet" block shown with nothing to list');
+
+  // Untouched -> Back discards it, no block.
+  const n0 = await campCount();
+  await page.click('.desk-v1-home-newcamp-page-btn');
+  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
+  if ((await campCount()) === n0 + 1) ok('R2-2f: New campaign created the draft');
+  else fail('R2-2f: draft not created');
+  await page.click('.desk-v1-back');
+  await page.waitForSelector('.desk-v1-home-block', { timeout: 4000 });
+  if ((await campCount()) === n0 && !(await noProjBlock())) ok('R2-2f: untouched draft + Back leaves nothing behind (campaign removed, no "No project yet" block)');
+  else fail(`R2-2f: untouched draft survived Back: count ${await campCount()} vs ${n0}, block=${!!(await noProjBlock())}`);
+
+  // Per-block untouched (project prefilled, nothing changed) -> Back discards too.
+  await page.click('.desk-v1-home-block[data-project-id="engulfing_scanner"] .desk-v1-home-block-newcamp');
+  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
+  await page.click('.desk-v1-back');
+  await page.click('.desk-v1-back');
+  await page.waitForSelector('.desk-v1-home-block', { timeout: 4000 });
+  if ((await campCount()) === n0) ok('R2-2f: untouched per-block draft + Back (project page, then Home) leaves nothing behind');
+  else fail(`R2-2f: untouched per-block draft survived Back: count ${await campCount()} vs ${n0}`);
+
+  // Touched (typed a goal field on the Goal stop) -> Back keeps it, listed
+  // under "No project yet".
+  await page.evaluate(() => { const c = document.getElementById('toast-container'); if (c) c.innerHTML = ''; }); // a lingering toast would cover the button
+  await page.click('.desk-v1-home-newcamp-page-btn');
+  await page.waitForSelector('[data-goal-field="metric"]', { timeout: 4000 });
+  await page.fill('[data-goal-field="metric"]', 'tester signups');
+  await page.dispatchEvent('[data-goal-field="metric"]', 'change');
+  await page.click('.desk-v1-back');
+  await page.waitForSelector('[data-no-project-block]', { timeout: 4000 });
+  const listed = await page.evaluate(() => {
+    const blocks = Array.from(document.querySelectorAll('.desk-v1-home-block'));
+    const blk = document.querySelector('[data-no-project-block]');
+    return {
+      last: blocks[blocks.length - 1] === blk,
+      title: (blk.querySelector('.desk-v1-home-block-name') || {}).textContent,
+      rows: blk.querySelectorAll('.desk-v1-home-row').length,
+      hasNewLink: !!blk.querySelector('.desk-v1-home-block-newcamp'),
+    };
+  });
+  if (listed.last && /No project yet/.test(listed.title) && listed.rows === 1 && !listed.hasNewLink) ok('R2-2f: a touched project-less draft shows in a "No project yet" block, after the project blocks');
+  else fail(`R2-2f: "No project yet" block wrong: ${JSON.stringify(listed)}`);
+
+  // Clicking its row opens the campaign (no project page to push) and the
+  // Project select still offers a pick.
+  await page.click('[data-no-project-block] .desk-v1-home-row');
+  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
+  const reopened = await page.evaluate(() => ({ value: document.querySelector('[data-setup-project]').value, back: (document.querySelector('.desk-v1-back') || {}).textContent }));
+  if (reopened.value === '' && /Desk/.test(reopened.back || '')) ok('R2-2f: a "No project yet" row opens its campaign (Back reads "Desk", no project page in between)');
+  else fail(`R2-2f: reopening a project-less row wrong: ${JSON.stringify(reopened)}`);
+
+  reportUncaught(pageErrors, '[no-project-drafts]');
   await ctx.close();
 }
 
@@ -466,9 +560,11 @@ async function runR2_2cHeaderAcceptance(browser) {
 
 // ── R2-2e (Ron 2026-09-30, live Home after R2-2d): the crumb row is the ONE
 // header row — no Settings button in it, "＋ New campaign" sits in it beside
-// Engagement, the "The Desk" h2 (duplicating the crumb title) is gone, and the
-// project menu that button opens is anchored to the button (right-aligned,
-// directly below) and stays inside the Desk modal at 1440 and at 390. ───────
+// Engagement, and the "The Desk" h2 (duplicating the crumb title) is gone, at
+// 1440 and at 390. R2-2f removed the third R2-2e claim (the project menu that
+// button opened was anchored below/right of it and stayed inside the modal):
+// the menu no longer exists, so its three position assertions went with it —
+// the no-menu behaviour is asserted in runNewCampaignEntry instead. ─────────
 async function runR2_2eHeaderCleanup(browser) {
   for (const vp of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     const tag = `${vp.width}x${vp.height}`;
@@ -498,24 +594,6 @@ async function runR2_2eHeaderCleanup(browser) {
       if (hdr.engTop !== null && hdr.newTop !== null && Math.abs(hdr.engTop - hdr.newTop) <= 4) ok(`[${tag}] R2-2e: New campaign and Engagement share a row (tops ${hdr.newTop.toFixed(1)} / ${hdr.engTop.toFixed(1)})`);
       else fail(`[${tag}] R2-2e: New campaign not on Engagement's row: ${JSON.stringify(hdr)}`);
     }
-
-    await page.click('.desk-v1-home-newcamp-page-btn');
-    await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
-    const geo = await page.evaluate(() => {
-      const r = (el) => { const b = el.getBoundingClientRect(); return { left: b.left, right: b.right, top: b.top, bottom: b.bottom }; };
-      return {
-        btn: r(document.querySelector('.desk-v1-home-newcamp-page-btn')),
-        menu: r(document.querySelector('.desk-v1-addto-menu')),
-        modal: r(document.querySelector('.modal-window[data-modal-id="__desk"]')),
-      };
-    });
-    const { btn, menu, modal } = geo;
-    if (menu.top >= btn.bottom - 0.5 && menu.top - btn.bottom <= 12) ok(`[${tag}] R2-2e: menu sits directly below the button (gap ${(menu.top - btn.bottom).toFixed(1)}px)`);
-    else fail(`[${tag}] R2-2e: menu not directly below the button: ${JSON.stringify(geo)}`);
-    if (Math.abs(menu.right - btn.right) <= 8) ok(`[${tag}] R2-2e: menu right edge within 8px of the button's (${menu.right.toFixed(1)} vs ${btn.right.toFixed(1)})`);
-    else fail(`[${tag}] R2-2e: menu not right-aligned to the button: ${JSON.stringify(geo)}`);
-    if (menu.left >= modal.left - 0.5 && menu.right <= modal.right + 0.5) ok(`[${tag}] R2-2e: menu stays inside the Desk modal (${menu.left.toFixed(0)}..${menu.right.toFixed(0)} in ${modal.left.toFixed(0)}..${modal.right.toFixed(0)})`);
-    else fail(`[${tag}] R2-2e: menu spills outside the Desk modal: ${JSON.stringify(geo)}`);
 
     reportUncaught(pageErrors, `[r2-2e-${tag}]`);
     await ctx.close();
@@ -590,6 +668,7 @@ try {
   for (const tone of TONES) await runToneRenderChecks(browser, tone);
   await runNeedsYouDeepLinks(browser);
   await runNewCampaignEntry(browser);
+  await runNoProjectDrafts(browser);
   await runDesktopLayoutChecks(browser);
   await runR2_2cHeaderAcceptance(browser);
   await runR2_2eHeaderCleanup(browser);

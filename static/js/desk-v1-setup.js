@@ -34,11 +34,17 @@
   // ambiguous-drop "+ New campaign" path (desk-v1-home.js) both need one of
   // these; only the project page wires it in IA4 (Home's own drop path is
   // out of this ticket's scope, THE_DESK_V1_IA_REVISION.md §5 row IA4). ────
+  // R2-2f: `projectId` may be null — Home's page-level "＋ New campaign"
+  // creates a draft before any project is chosen and the Goal stop's Project
+  // select sets it. `_prefillProjectId` records what the creator supplied so
+  // `_isUntouchedDraft` below can tell "nobody changed anything" from "the
+  // user picked the same project the block had prefilled, then undid it".
   function deskV1CreateDraftCampaign(projectId) {
     return {
       id: 'camp-draft-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
       state: 'draft', // draft | proposed | active | paused | completed | archived
-      projectId,
+      projectId: projectId || null,
+      _prefillProjectId: projectId || null,
       subject: null,
       goal: { current: 0 },
       rules: {},
@@ -73,6 +79,103 @@
       undo: () => { const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); if (typeof window.deskV1Render === 'function') window.deskV1Render(); },
     });
     deskV1Nav('campaign', { campaignId: camp.id, projectId });
+  }
+
+  // ── Project field (R2-2f, Ron 2026-09-30: "the project picker on the left
+  // and the new campaign on the right are doing almost the same thing") —
+  // "＋ New campaign" no longer asks which project up front; the campaign
+  // page's own first field does. Rendered at the top of every PRE-PLAN draft
+  // step (0 presence gate, 1 subject+goal, and the no-project-yet state): once
+  // step 2 drafts the plan, its accounts/cadence came from THIS project's
+  // presence, so moving the campaign afterwards would leave a plan that
+  // belongs to the wrong project — the field is simply not offered there.
+  // Every change goes through the commandBus so Undo reverts it; a project
+  // change also clears the title/brief step 1 auto-filled from the OLD
+  // project's name (only if the user hasn't edited them) so they re-default.
+  function _projectFieldHTML(camp) {
+    const cur = camp.projectId || '';
+    const opts = _projects().map((p) => `<option value="${esc(p.id)}" ${p.id === cur ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+    const picked = !!_project(cur);
+    return `<div class="desk-v1-rules-group" data-setup-project-group>
+        <div class="desk-v1-rules-group-title">Project</div>
+        <select class="desk-v1-goal-select" data-setup-project aria-label="Project">
+          ${picked ? '' : '<option value="" selected disabled>Pick a project</option>'}${opts}
+        </select>
+        ${picked ? '' : '<div class="desk-v1-rules-hint" data-setup-project-hint>Pick a project to set up this campaign. Its accounts, limits and agent come from the project, and a campaign can’t launch without one.</div>'}
+      </div>`;
+  }
+
+  function _bindProjectField(el, camp) {
+    const sel = el.querySelector('[data-setup-project]');
+    if (!sel) return;
+    sel.onchange = () => {
+      const nextId = sel.value || null;
+      const prevId = camp.projectId || null;
+      if (nextId === prevId) return;
+      const prevProject = _project(prevId);
+      const plan = camp.plan || {};
+      const prevTitle = plan.title; const prevBrief = plan.brief; const prevTouched = camp._touched;
+      const nextProject = _project(nextId);
+      DeskV1Kit.commandBus.run({
+        label: `Set campaign project to ${nextProject ? nextProject.name : 'none'}`,
+        do: () => {
+          camp.projectId = nextId;
+          camp._touched = true;
+          if (prevProject && plan.title === `${prevProject.name} campaign`) plan.title = '';
+          if (prevProject && plan.brief === `Promote ${prevProject.name}.`) plan.brief = '';
+          if (typeof window.deskV1Render === 'function') window.deskV1Render();
+        },
+        undo: () => {
+          camp.projectId = prevId;
+          camp._touched = prevTouched;
+          plan.title = prevTitle; plan.brief = prevBrief;
+          if (typeof window.deskV1Render === 'function') window.deskV1Render();
+        },
+      });
+    };
+  }
+
+  // Splices the Project group in straight after the step's own top row
+  // (state pill + More), so it is the first field on every pre-plan step.
+  function _mountProjectField(el, camp) {
+    const top = el.querySelector('.desk-v1-camp-summary-top');
+    if (!top) return;
+    top.insertAdjacentHTML('afterend', _projectFieldHTML(camp));
+    _bindProjectField(el, camp);
+  }
+
+  // ── Untouched-draft discard (R2-2f): Home's "＋ New campaign" creates a
+  // draft on click, so a stray click would otherwise leave a nameless draft
+  // behind. `deskV1Back` (desk-v1-shell.js) calls this when leaving a campaign
+  // page; only a draft Home marked `_discardIfUntouched` is ever removed, and
+  // only if nothing the user could have typed or picked anywhere on the map is
+  // set. Fields only written on Continue (title/brief/outcome/subject) are
+  // covered by `_touched`, set on their `input` events in step 1.
+  function _isUntouchedDraft(camp) {
+    if (!camp || camp.state !== 'draft' || !camp._discardIfUntouched || camp._touched) return false;
+    if ((camp.projectId || null) !== (camp._prefillProjectId || null)) return false;
+    if (camp.subject || ((camp.setup && camp.setup.step) || 1) > 1) return false;
+    const map = camp.map || {};
+    if ((map.done || []).length || (map.stop && map.stop !== 'goal')) return false;
+    const g = camp.goal || {};
+    if (['metric', 'target', 'baseline', 'unit', 'horizon', 'deadline', 'source'].some((k) => g[k] != null && g[k] !== '')) return false;
+    if ((g.entries || []).length) return false;
+    const plan = camp.plan || {};
+    if ((plan.accounts || []).length) return false;
+    if (plan.cadence && plan.cadence.per_week != null) return false;
+    if (plan.end && (plan.end.date != null || plan.end.post_cap != null)) return false;
+    const how = camp.how;
+    if (how && (how.angle || how.strategy || how.never_claim || how.agent || (how.budget && how.budget.source && how.budget.source !== 'none'))) return false;
+    return !(_fx().families || []).some((f) => f.campaignId === camp.id);
+  }
+
+  function deskV1DiscardIfUntouchedDraft(campaignId) {
+    const camp = _campaign(campaignId);
+    if (!_isUntouchedDraft(camp)) return false;
+    const arr = _campaigns();
+    const i = arr.indexOf(camp);
+    if (i >= 0) arr.splice(i, 1);
+    return i >= 0;
   }
 
   // ── Step 0: Presence (§2.3, "if the project has no presence yet... once")
@@ -175,9 +278,11 @@
         <button type="button" class="desk-v1-rules-start-btn" data-setup-continue>Continue</button>
       </div>`;
 
+    el.querySelectorAll('input, textarea').forEach((f) => f.addEventListener('input', () => { camp._touched = true; }));
     let pickedKind = subject.kind;
     el.querySelectorAll('[data-subject-kind]').forEach((btn) => {
       btn.onclick = () => {
+        camp._touched = true;
         pickedKind = btn.dataset.subjectKind;
         el.querySelectorAll('[data-subject-kind]').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
       };
@@ -315,10 +420,21 @@
   // existing Proposed-state page once state flips, see file header). ──────
   function deskV1FillDraftSetup(el, params, camp) {
     const project = _project(camp.projectId);
-    if (!project) { el.innerHTML = '<div class="desk-v1-stub-inline">Project not found.</div>'; return; }
-    if (!DeskV1Kit.validatePresence(project).ok) { _fillStep0(el, params, camp, project); return; }
+    if (!project) {
+      // R2-2f: no project picked yet (Home's page-level New campaign) — the
+      // Project field is the only thing to fill until one is chosen.
+      el.innerHTML = `
+        <div class="desk-v1-camp-summary-top">
+          <span class="desk-v1-camp-state-pill">Setup — Pick a project</span>
+          ${_moreBtnHTML()}
+        </div>`;
+      _mountProjectField(el, camp);
+      _wireMoreBtn(el, camp, () => deskV1FillDraftSetup(el, params, camp));
+      return;
+    }
+    if (!DeskV1Kit.validatePresence(project).ok) { _fillStep0(el, params, camp, project); _mountProjectField(el, camp); return; }
     const step = (camp.setup && camp.setup.step) || 1;
-    if (step <= 1) _fillStep1(el, params, camp, project);
+    if (step <= 1) { _fillStep1(el, params, camp, project); _mountProjectField(el, camp); }
     else _fillStep2(el, params, camp, project);
   }
 
@@ -326,4 +442,5 @@
   window.deskV1CreateDraftCampaign = deskV1CreateDraftCampaign;
   window.deskV1NewCampaignInProject = deskV1NewCampaignInProject;
   window.deskV1FillDraftSetup = deskV1FillDraftSetup;
+  window.deskV1DiscardIfUntouchedDraft = deskV1DiscardIfUntouchedDraft;
 })();

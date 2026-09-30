@@ -460,6 +460,23 @@
     </div>`;
   }
 
+  // R2-2f: a draft started from the crumb-row "＋ New campaign" has no project
+  // until its Goal stop picks one — without a block it would be invisible on
+  // Home. Shown only while such campaigns exist, after the project blocks; no
+  // agent chip or "＋ New campaign" (there is no project to scope either to).
+  function _noProjectCampaigns() {
+    return _campaigns().filter((c) => !_project(c.projectId) && c.state !== 'archived');
+  }
+  function _noProjectBlockHTML(camps) {
+    return `<div class="desk-v1-home-block desk-v1-home-block-noproject" data-no-project-block>
+      <div class="desk-v1-home-block-head">
+        <span class="desk-v1-home-block-name desk-v1-home-block-name-static">No project yet</span>
+        <span class="desk-v1-home-block-hint">Open a campaign and pick its project</span>
+      </div>
+      <div class="desk-v1-home-block-rows">${camps.map(_rowHTML).join('')}</div>
+    </div>`;
+  }
+
   // Scheduling-paused (A13) has no per-campaign or per-project home in the
   // new row shape (it's a worker-wide condition) — surfaced as a banner
   // above the board rather than silently dropped. Held-CHANNEL holds (the
@@ -475,41 +492,59 @@
     </div>`;
   }
 
-  function _newCampaignForProject(projectId) {
-    const camp = _createProposedCampaign('New campaign');
-    camp.projectId = projectId;
+  // R2-2f (Ron 2026-09-30): every "＋ New campaign" on Home — the crumb-row
+  // button AND each project block's own link — makes a Draft (the same factory
+  // the project page's button uses, desk-v1-setup.js) and lands on its Goal
+  // stop, where the Project select is the first field. The block link only
+  // PREFILLS its project; the crumb button passes null. The draft is marked
+  // `_discardIfUntouched`: a stray click leaves nothing behind once the user
+  // backs out (desk-v1-setup.js `deskV1DiscardIfUntouchedDraft`, called from
+  // the shell's Back).
+  function _startNewCampaign(projectId) {
+    const camp = window.deskV1CreateDraftCampaign(projectId || null);
+    camp._discardIfUntouched = true;
     DeskV1Kit.commandBus.run({
-      label: `Created "${camp.plan.title}"`,
+      label: 'Started a new campaign',
       do: () => { _fx().campaigns.push(camp); _renderStatusBoard(); },
-      undo: () => { const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); _renderStatusBoard(); },
+      undo: () => {
+        const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1);
+        if (typeof window.deskV1Render === 'function') window.deskV1Render();
+      },
     });
-    deskV1Nav('project', { projectId });
-    deskV1Nav('campaign', { campaignId: camp.id, projectId });
+    if (projectId) deskV1Nav('project', { projectId });
+    deskV1Nav('campaign', { campaignId: camp.id, projectId: projectId || null });
   }
+
+  // The crumb's "Projects: All ▾" is a label only today (desk-v1-shell.js
+  // `_projectsPickerHTML` — picking a project navigates, it never filters), so
+  // there is no scoped state to read and the crumb button always starts
+  // project-less. When that picker grows a real one-project scope, this is the
+  // single place to return its id.
+  function _scopedProjectId() { return null; }
 
   function _goToNeedsYou(ds) {
     const { needsyouKind, campaignId, projectId, versionId, conversationId } = ds;
     if (needsyouKind === 'piece') { deskV1HomeGotoReview(campaignId, versionId); return; }
-    deskV1Nav('project', { projectId });
-    deskV1Nav('campaign', { campaignId, projectId });
+    if (projectId) deskV1Nav('project', { projectId });
+    deskV1Nav('campaign', { campaignId, projectId: projectId || null });
     if (needsyouKind === 'video') deskV1Nav('video', { campaignId, versionId });
     else if (needsyouKind === 'reply') deskV1Nav('conversations', { campaignId, conversationId });
     // 'held' / 'blocker': the campaign page itself is where that reason renders.
   }
 
   function _bindStatusBoard(host) {
-    host.querySelectorAll('.desk-v1-home-block-name').forEach((btn) => {
+    host.querySelectorAll('button.desk-v1-home-block-name').forEach((btn) => {
       btn.onclick = () => deskV1Nav('project', { projectId: btn.dataset.projectId });
     });
     host.querySelectorAll('.desk-v1-home-block-agent').forEach((btn) => {
       btn.onclick = () => deskV1Nav('presence', { projectId: btn.dataset.projectId });
     });
     host.querySelectorAll('.desk-v1-home-block-newcamp').forEach((btn) => {
-      btn.onclick = () => _newCampaignForProject(btn.dataset.projectId);
+      btn.onclick = () => _startNewCampaign(btn.dataset.projectId);
     });
     host.querySelectorAll('.desk-v1-home-row').forEach((rowEl) => {
       const { campaignId, projectId } = rowEl.dataset;
-      const go = () => { deskV1Nav('project', { projectId }); deskV1Nav('campaign', { campaignId, projectId }); };
+      const go = () => { if (projectId) deskV1Nav('project', { projectId }); deskV1Nav('campaign', { campaignId, projectId: projectId || null }); };
       rowEl.addEventListener('click', (e) => { if (!e.target.closest('.desk-v1-home-needsyou-pill')) go(); });
       rowEl.addEventListener('keydown', (e) => {
         if ((e.key === 'Enter' || e.key === ' ') && !e.target.closest('.desk-v1-home-needsyou-pill')) { e.preventDefault(); go(); }
@@ -521,15 +556,13 @@
   }
 
   // Page-level "+ New campaign" lives in the crumb row next to Engagement
-  // (R2-2e) and is ambiguous about WHICH project until picked — reuses the
-  // same picker construction as the crumb's Projects picker (shell.js), then
-  // hands off to the same `_newCampaignForProject` a block header's own
-  // "+ New campaign" already uses.
+  // (R2-2e). R2-2f: it no longer opens a project menu (that duplicated the
+  // project picker beside it) — one click starts a campaign and the Goal
+  // stop's Project select picks the project.
   function _bindNewCampaignPageBtn(host) {
     const btn = host.querySelector('.desk-v1-home-newcamp-page-btn');
     if (!btn) return;
-    DeskV1Kit.bindAddToTrigger(btn, () => _projects().map((p) => ({ id: p.id, label: p.name })),
-      (projectId) => _newCampaignForProject(projectId), { noAppendNew: true });
+    btn.onclick = () => _startNewCampaign(_scopedProjectId());
   }
 
   function _renderStatusBoard() {
@@ -540,8 +573,9 @@
     const colHead = `<div class="desk-v1-home-board-head">
       <div>CAMPAIGN</div><div>STAGE</div><div>GOAL PROGRESS</div><div>PACE</div><div>NEXT POST</div><div>NEEDS YOU</div>
     </div>`;
-    host.innerHTML = legend + _workerBannerHTML() + (projects.length
-      ? colHead + `<div class="desk-v1-home-board-blocks">${projects.map(_projectBlockHTML).join('')}</div>`
+    const orphans = _noProjectCampaigns();
+    host.innerHTML = legend + _workerBannerHTML() + (projects.length || orphans.length
+      ? colHead + `<div class="desk-v1-home-board-blocks">${projects.map(_projectBlockHTML).join('')}${orphans.length ? _noProjectBlockHTML(orphans) : ''}</div>`
       : '<div class="desk-v1-home-empty">No projects yet.</div>');
     _bindStatusBoard(host);
   }
@@ -626,7 +660,7 @@
     host.innerHTML = `
       <div class="desk-v1-home-crumbtools">
         <button type="button" class="desk-v1-home-engagement-btn">&#128172; Engagement${_engagementCountSuffix()}</button>
-        <span class="desk-v1-addto-wrap desk-v1-addto-wrap-right"><button type="button" class="desk-v1-home-newcamp-page-btn">&#65291; New campaign</button></span>
+        <button type="button" class="desk-v1-home-newcamp-page-btn">&#65291; New campaign</button>
       </div>`;
     _bindNewCampaignPageBtn(host);
     const engagementBtn = host.querySelector('.desk-v1-home-engagement-btn');
