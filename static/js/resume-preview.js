@@ -1341,7 +1341,15 @@ function escPromptWithImages(raw) {
     // isolate sits on the far edge of an rtl line ("Q:" reads as ":Q" to a
     // Hebrew reader); left outside, it resolves to the line's direction and
     // lands between label and content. MC-1000 round 3.
-    t = t.replace(/^(&gt;\s?[^:\n]{0,60}|[A-Za-z]{1,12})(:\s)/, '<span dir="ltr">$1</span>$2');
+    // The "> " quote marker stays OUTSIDE the isolate too: inside it, an rtl
+    // line showed "> Ron" as one ltr unit, so the marker sat left of the name
+    // pointing the wrong way. Outside, it takes the line's direction -- right
+    // edge of an rtl line, mirrored to "<" -- and ltr lines are unchanged.
+    // Ron, 2026-09-30. MC-1000 round 4.
+    t = t.replace(/^(?:(&gt;\s?)([^:\n]{1,60})|([A-Za-z]{1,12}))(:\s)/,
+      (m, gt, name, label, colon) => gt !== undefined
+        ? `${gt}<span dir="ltr">${name}</span>${colon}`
+        : `<span dir="ltr">${label}</span>${colon}`);
     // Same path detection regex as formatAgentText — keep the two in sync.
     t = t.replace(
       /(?<![\w:/%])((?:[A-Za-z]:(?!\/\/)[\\/]|\/)[^\s"'`<>|]+?\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif))(?![A-Za-z0-9])/gi,

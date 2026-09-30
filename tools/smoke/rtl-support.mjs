@@ -313,6 +313,34 @@ try {
         prefixDirection: prefixSpan ? dirOf(prefixSpan) : null,
         prefixText: prefixSpan ? prefixSpan.textContent : null,
       };
+      // ROUND 4 — the "> " marker must sit OUTSIDE the ltr isolate, on the
+      // right edge of the rtl line (RIGHT of the name), not left of it.
+      const markerNode = lineDiv && lineDiv.firstChild;
+      let markerRightOfName = null;
+      if (markerNode && markerNode.nodeType === 3 && prefixSpan) {
+        const r = document.createRange();
+        r.setStart(markerNode, 0); r.setEnd(markerNode, 1);
+        const m = r.getClientRects()[0], n = prefixSpan.getBoundingClientRect();
+        markerRightOfName = m ? (m.left >= n.right - 1) : null;
+      }
+      out.userBubble.markerText = markerNode && markerNode.nodeType === 3 ? markerNode.textContent : null;
+      out.userBubble.markerRightOfName = markerRightOfName;
+      // Same prefix in an English line: marker stays LEFT of the name.
+      const en = document.createElement('div');
+      en.className = 'agent-line agent-line-prompt';
+      en.setAttribute('dir', 'auto');
+      en.innerHTML = window.escPromptWithImages(`> Ron: ${EN}`);
+      root.appendChild(en);
+      const enLine = en.querySelector('div[dir="auto"]');
+      const enName = en.querySelector('span[dir="ltr"]');
+      let enMarkerLeft = null;
+      if (enLine && enLine.firstChild && enLine.firstChild.nodeType === 3 && enName) {
+        const r2 = document.createRange();
+        r2.setStart(enLine.firstChild, 0); r2.setEnd(enLine.firstChild, 1);
+        const m2 = r2.getClientRects()[0];
+        enMarkerLeft = m2 ? (m2.right <= enName.getBoundingClientRect().left + 1) : null;
+      }
+      out.userBubble.enMarkerLeftOfName = enMarkerLeft;
     }
 
     // 5b. ROUND 2 — a bubble mixing a Hebrew Q line and an English A line
@@ -508,6 +536,9 @@ try {
   ub.lineCount === 1 ? ok('single-line user bubble: exactly one per-line dir="auto" block') : fail(`single-line user bubble produced ${ub.lineCount} line blocks, expected 1`);
   ub.direction === 'rtl' ? ok('mixed user bubble ("> Ron: <Hebrew>") detects rtl from the message, not "Ron:"') : fail(`user bubble direction=${ub.direction} — the "> Ron: " prefix is bleeding into direction detection`);
   ub.prefixDirection === 'ltr' ? ok(`"> Ron: " prefix span stays ltr (text=${JSON.stringify(ub.prefixText)})`) : fail(`user bubble prefix span direction=${ub.prefixDirection} (found: ${JSON.stringify(ub.prefixText)})`);
+  (ub.prefixText === 'Ron') ? ok('"> " marker is outside the name isolate') : fail(`name isolate text=${JSON.stringify(ub.prefixText)}, expected "Ron" (marker inside the isolate can't follow the line direction)`);
+  ub.markerRightOfName === true ? ok(`rtl line: "${(ub.markerText || '').trim()}" marker sits on the right edge, right of the name`) : fail(`rtl "> Ron:" marker not right of the name (markerRightOfName=${ub.markerRightOfName})`);
+  ub.enMarkerLeftOfName === true ? ok('ltr line: "> Ron:" marker still left of the name') : fail(`ltr "> Ron:" marker moved (enMarkerLeftOfName=${ub.enMarkerLeftOfName})`);
 
   // 5b. Mixed-language bubble: Q line (Hebrew) rtl, A line (English) ltr, independently.
   const mb = result.mixedBubble;
