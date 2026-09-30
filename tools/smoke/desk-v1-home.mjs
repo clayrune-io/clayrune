@@ -361,16 +361,16 @@ async function runNeedsYouDeepLinks(browser) {
 // the Channels/Material shelves are gone; the campaign page's Add tray covers
 // attach - desk-v1-campaign.mjs). R2-2f (Ron 2026-09-30, "we have duality in
 // functionality"): the page-level button no longer opens a project menu - one
-// click starts a Draft on its Goal stop. R2-2g (Ron 2026-09-30, "two project
-// selectors"): the Project select is NOT on the Goal stop any more (it lives
-// on Launch - desk-v1-campaign.mjs), and the crumb's Projects: All picker is
+// click starts a Draft on its Brief stop (R2-18; was Goal). R2-2g (Ron
+// 2026-09-30, "two project selectors"): the Project select is on Brief (first
+// field) and Launch, never both at once (desk-v1-campaign.mjs), and the crumb's Projects: All picker is
 // absent on the campaign route (present on Home and project routes). The
 // per-block link still PREFILLS its own project. ─────────────────────────────
 async function runNewCampaignEntry(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
 
   // (a) Crumb-row button, Projects: All -> no menu, lands on the campaign page
-  // at ① Goal with NO project select and NO crumb picker (R2-2g).
+  // at ① Brief with ONE empty project select and NO crumb picker.
   const homePicker = await page.$('#desk-v1-crumb .desk-v1-projects-picker');
   if (homePicker) ok('R2-2g: Home still shows the crumb Projects: All picker');
   else fail('R2-2g: Home lost the crumb Projects: All picker');
@@ -387,8 +387,9 @@ async function runNewCampaignEntry(browser) {
     return {
       count: list.length, projectId: c.projectId, state: c.state,
       crumb: (document.querySelector('#desk-v1-crumb .desk-v1-crumb-title') || {}).textContent,
-      goalHere: (document.querySelector('.desk-v1-map-stop[data-stop="goal"]') || {}).dataset && document.querySelector('.desk-v1-map-stop[data-stop="goal"]').dataset.state,
-      projectSelects: document.querySelectorAll('select[data-setup-project], [data-setup-project-group]').length,
+      briefHere: (document.querySelector('.desk-v1-map-stop[data-stop="how"]') || {}).dataset && document.querySelector('.desk-v1-map-stop[data-stop="how"]').dataset.state,
+      briefProjectValue: (document.querySelector('select[data-setup-project]') || {}).value,
+      projectSelects: document.querySelectorAll('select[data-setup-project]').length,
       crumbPicker: !!document.querySelector('#desk-v1-crumb .desk-v1-projects-picker'),
       pickPill: /Setup\s*[—-]\s*Pick a project/.test(camp ? camp.innerText : ''),
       step1: !!document.querySelector('[data-setup-title]'),
@@ -397,11 +398,11 @@ async function runNewCampaignEntry(browser) {
   });
   if (top.count === before + 1 && top.state === 'draft' && top.projectId === null) ok('R2-2f: page-level New campaign creates ONE Draft with no project');
   else fail(`R2-2f: page-level New campaign wrong: ${JSON.stringify({ before, top })}`);
-  if (/New campaign/.test(top.crumb || '') && top.goalHere === 'here') ok(`R2-2f: lands on the campaign page at ① Goal (crumb "${(top.crumb || '').trim()}")`);
-  else fail(`R2-2f: did not land on Goal: ${JSON.stringify(top)}`);
-  // R2-2g: replaces R2-2f's "Project select is first on Goal" assertions.
-  if (top.projectSelects === 0 && !top.crumbPicker) ok('R2-2g: a new campaign page has NO project selector on the Goal stop and no crumb picker (zero selectors until Launch)');
-  else fail(`R2-2g: project selector still on the new campaign page: ${JSON.stringify(top)}`);
+  if (/New campaign/.test(top.crumb || '') && top.briefHere === 'here') ok(`R2-18: lands on the campaign page at ① Brief (crumb "${(top.crumb || '').trim()}")`);
+  else fail(`R2-18: did not land on Brief: ${JSON.stringify(top)}`);
+  // R2-18: the project select is the first thing on Brief (empty, optional); no crumb picker.
+  if (top.projectSelects === 1 && top.briefProjectValue === '' && !top.crumbPicker) ok('R2-18: a new campaign page has ONE empty project select (on Brief) and no crumb picker');
+  else fail(`R2-18: Brief project select wrong on the new campaign page: ${JSON.stringify(top)}`);
   // R2-3b: IA4's setup steps are gone — no gate, no "Setup n of 3", no step-1 form.
   if (!top.pickPill && !top.step1 && !top.setupText) ok('R2-3b: no "Setup — Pick a project" gate and no IA4 setup step; the draft opens straight on the map');
   else fail(`R2-2g: project-less draft still gated: ${JSON.stringify(top)}`);
@@ -467,6 +468,7 @@ async function runNoProjectDrafts(browser) {
   // under "No project yet".
   await page.evaluate(() => { const c = document.getElementById('toast-container'); if (c) c.innerHTML = ''; }); // a lingering toast would cover the button
   await page.click('.desk-v1-home-newcamp-page-btn');
+  await page.click('.desk-v1-map-stop[data-stop="goal"]'); // R2-18: New campaign lands on Brief; the goal field is one stop on
   await page.waitForSelector('[data-goal-field="metric"]', { timeout: 4000 });
   await page.fill('[data-goal-field="metric"]', 'tester signups');
   await page.dispatchEvent('[data-goal-field="metric"]', 'change');
@@ -520,6 +522,7 @@ async function runDraftDelete(browser) {
   // Make a touched draft (typing a goal field) so Back keeps it on Home.
   const n0 = await count();
   await page.click('.desk-v1-home-newcamp-page-btn');
+  await page.click('.desk-v1-map-stop[data-stop="goal"]'); // R2-18: New campaign lands on Brief; the goal field is one stop on
   await page.waitForSelector('[data-goal-field="metric"]', { timeout: 4000 });
   await page.fill('[data-goal-field="metric"]', 'tester signups');
   await page.dispatchEvent('[data-goal-field="metric"]', 'change');

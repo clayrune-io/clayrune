@@ -151,7 +151,7 @@ async function runToneRenderChecks(browser, tone) {
   // moves into Engagement at R2-12), so its old badge assertion is retired
   // with the tab it lived on, not rewritten onto a stop that doesn't exist.
   const stopWords = await page.$$eval('.desk-v1-map-stop .desk-v1-map-stop-word', (els) => els.map((e) => e.textContent.trim()));
-  JSON.stringify(stopWords) === JSON.stringify(['Goal', 'How', 'What', 'When', 'Where', 'Launch'])
+  JSON.stringify(stopWords) === JSON.stringify(['Brief', 'Goal', 'What', 'When', 'Where', 'Launch'])
     ? ok(`[${tone.name}] map stepper shows all 6 stops in order: ${JSON.stringify(stopWords)}`)
     : fail(`[${tone.name}] map stepper stops wrong: ${JSON.stringify(stopWords)}`);
   const whatState = await page.$eval('.desk-v1-map-stop[data-stop="what"]', (el) => el.dataset.state).catch(() => null);
@@ -691,16 +691,15 @@ async function runPhoneLayout(browser) {
 }
 
 // ── screenshots (default tone only, per the ticket brief). ─────────────────
-// ── R2-2g (Ron 2026-09-30, replaces R2-2f's "Project select first on Goal"):
-// the project is picked at LAUNCH, not up front. A new campaign page has no
-// project selector on the Goal stop and no crumb picker (zero until Launch,
-// then exactly one); a project-less draft runs every stop and every setup
-// step without throwing or printing "undefined"/"null"; Launch carries the
-// Project select, Start stays disabled until one is picked, a pick goes
-// through the commandBus (Undo reverts), and the picked project's ceilings
-// apply before Start. Agents are per PROJECT only (Ron's amendment): a
-// project-less draft has no per-campaign agent picker and never writes
-// camp.how.agent, and a project with no agent does not block Start. ─────────
+// ── R2-2g + R2-18 (Ron 2026-09-30): a project is REQUIRED TO START, not to
+// proceed. A project-less draft opens on the ① Brief stop (R2-18), which
+// carries the Project select (empty) and a disabled Agent picker; the Goal
+// stop and the crumb carry no project control; the draft runs every stop
+// without throwing or printing "undefined"/"null"; ⑥ Launch carries a Project
+// select too (exactly one on the page), Start stays disabled until one is
+// picked, a pick goes through the commandBus (Undo reverts), and the picked
+// project's ceilings apply before Start. A project with no agent does not
+// block Start. (The Agent picker itself is covered in desk-v1-how.mjs.) ─────
 async function runProjectSelect(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   const campId = await page.evaluate(() => {
@@ -709,33 +708,40 @@ async function runProjectSelect(browser) {
     window.deskV1Nav('campaign', { campaignId: camp.id, projectId: null });
     return camp.id;
   });
-  await page.waitForSelector('.desk-v1-map-stop[data-stop="goal"]', { timeout: 4000 });
+  await page.waitForSelector('.desk-v1-map-stop[data-stop="how"][data-state="here"]', { timeout: 4000 });
   const camp = (fn, ...a) => page.evaluate(([id, src, args]) => new Function('c', 'args', 'return (' + src + ')(c, args)')(window.DeskV1Fixtures.campaigns.find((c) => c.id === id), args), [campId, fn.toString(), a]);
   const pid = () => camp((c) => c.projectId);
   const rerender = () => page.evaluate(() => window.deskV1Render());
   const selectCount = () => page.evaluate(() => document.querySelectorAll('select[data-setup-project]').length);
   const crumbPickers = () => page.evaluate(() => document.querySelectorAll('#desk-v1-crumb .desk-v1-projects-picker').length);
 
-  // Goal stop: no project select, no crumb picker, no "Pick a project" gate.
+  // Brief stop (R2-18): ONE project select, empty, no crumb picker, no "Pick a
+  // project" gate, no IA4 setup step; the Agent picker is there but disabled.
   const first = await page.evaluate(() => ({
     selects: document.querySelectorAll('select[data-setup-project]').length,
+    value: (document.querySelector('select[data-setup-project]') || {}).value,
     crumb: document.querySelectorAll('#desk-v1-crumb .desk-v1-projects-picker').length,
     gate: /Setup\s*[—-]\s*Pick a project/.test(document.querySelector('.desk-v1-campaign').innerText),
     step1: !!document.querySelector('[data-setup-title]') || /Setup\s+\d\s+of\s+3/.test(document.querySelector('.desk-v1-campaign').innerText),
+    agentDisabled: (document.querySelector('select[data-how-agent]') || {}).disabled,
   }));
-  first.selects === 0 && first.crumb === 0 && !first.gate && !first.step1
-    ? ok('R2-2g: a project-less draft lands on Goal with NO project selector, NO crumb picker and no "Setup — Pick a project" gate (and, R2-3b, no IA4 setup step)')
-    : fail(`R2-2g: Goal stop still carries a project control/gate: ${JSON.stringify(first)}`);
+  first.selects === 1 && first.value === '' && first.crumb === 0 && !first.gate && !first.step1 && first.agentDisabled === true
+    ? ok('R2-18: a project-less draft lands on Brief with ONE empty project select, a disabled agent picker, NO crumb picker and no "Setup — Pick a project" gate')
+    : fail(`R2-18: Brief stop wrong for a project-less draft: ${JSON.stringify(first)}`);
 
-  // Agents are per project: no per-campaign picker, neutral note, nothing written.
+  // The neutral right-column note points at Brief; nothing is written.
   const agentBox = await page.evaluate(() => ({
     neutral: (document.querySelector('[data-no-agent]') || {}).innerText || '',
-    picker: document.querySelectorAll('[data-agent-pick], .desk-v1-posy-agentpick').length,
     posyBox: document.querySelectorAll('.desk-v1-posy-box').length,
   }));
-  /No agent yet/.test(agentBox.neutral) && /per project/.test(agentBox.neutral) && agentBox.picker === 0 && agentBox.posyBox === 0 && (await camp((c) => !(c.how && c.how.agent)))
-    ? ok(`R2-2g: project-less draft has a neutral agent note ("${agentBox.neutral.replace(/\s+/g, ' ').trim().slice(0, 70)}…"), NO per-campaign agent picker, camp.how.agent unset`)
-    : fail(`R2-2g: project-less agent box wrong: ${JSON.stringify(agentBox)}`);
+  /No agent yet/.test(agentBox.neutral) && /on Brief/.test(agentBox.neutral) && !/Launch/.test(agentBox.neutral) && agentBox.posyBox === 0 && (await camp((c) => !(c.how && c.how.agent)))
+    ? ok(`R2-18: project-less draft has a neutral agent note pointing at Brief ("${agentBox.neutral.replace(/\s+/g, ' ').trim().slice(0, 70)}…"), camp.how.agent unset`)
+    : fail(`R2-18: project-less agent box wrong: ${JSON.stringify(agentBox)}`);
+
+  // Goal stop carries no project control.
+  await page.click('.desk-v1-map-stop[data-stop="goal"]');
+  await page.waitForTimeout(40);
+  (await selectCount()) === 0 ? ok('R2-18: the Goal stop has no project select') : fail('R2-18: Goal stop still carries a project select');
 
   // Every stop renders for a project-less draft: no page errors, no raw values, no crumb picker.
   for (const stop of ['how', 'what', 'when', 'where', 'launch', 'goal']) {

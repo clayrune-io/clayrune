@@ -173,9 +173,9 @@ const SURFACES = [
   { key: 'presence', label: 'Presence (engulfing_scanner)', wait: '.desk-v1-presence',
     nav: async (page) => page.evaluate(() => window.deskV1Nav('presence', { projectId: 'engulfing_scanner' })) },
   // No draft-state campaign exists in the fixtures, so a new draft (R2-3b: the
-  // map at ① Goal, no setup steps) is reached the way a real user reaches it:
+  // map at ① Brief, no setup steps) is reached the way a real user reaches it:
   // Project -> "+ New campaign".
-  { key: 'setup', label: 'New draft campaign (map at Goal)', wait: '.desk-v1-map-stop[data-stop="goal"][data-state="here"]',
+  { key: 'setup', label: 'New draft campaign (map at Brief)', wait: '.desk-v1-map-stop[data-stop="how"][data-state="here"]',
     nav: async (page) => {
       await page.evaluate(() => window.deskV1Nav('project', { projectId: 'engulfing_scanner' }));
       await page.waitForSelector('.desk-v1-project-newcamp-btn', { timeout: 8000 });

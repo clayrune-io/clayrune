@@ -7,9 +7,9 @@
  * deskV1Nav shortcuts except reaching Engagement, which the real UI itself
  * only reaches via Home's own button — see navHomeToEngagement below):
  *
- *   Home -> engulfing_scanner -> new campaign (lands on the map at ① Goal,
- *   R2-3b: no IA4 setup steps) -> left at ② How -> resume -> forced Posy
- *   failure + Retry on the How stop's Suggest -> Accept all on ③ What ->
+ *   Home -> engulfing_scanner -> new campaign (lands on the map at ① Brief,
+ *   R2-18; R2-3b: no IA4 setup steps) -> left at ② Goal -> resume -> back to
+ *   Brief -> forced Posy failure + Retry on the Brief stop's Suggest -> Accept all on ③ What ->
  *   ⑥ Launch -> Start -> open a piece -> What/How/When/Where -> Pause project
  *   -> Resume -> Engagement filtered to that project -> Delete a never-started
  *   Draft from its ⋯ menu (Undo).
@@ -123,33 +123,35 @@ async function run(browser) {
 
   // ── new feature campaign ─────────────────────────────────────────────────
   // R2-3b: IA4's 3-step setup is gone — a new campaign opens the map stepper
-  // at ① Goal like every other campaign, with no "Setup n of 3" anywhere.
+  // at ① Brief (R2-18) like every other campaign, with no "Setup n of 3" anywhere.
   await page.click('.desk-v1-project-newcamp-btn');
   await page.waitForSelector('.desk-v1-campaign', { timeout: 8000 });
-  await page.waitForSelector('.desk-v1-map-stop[data-stop="goal"][data-state="here"]', { timeout: 8000 });
+  await page.waitForSelector('.desk-v1-map-stop[data-stop="how"][data-state="here"]', { timeout: 8000 });
   let text = await page.evaluate(() => document.body.innerText);
   !/Setup\s+\d\s+of\s+3/.test(text)
-    ? ok('new campaign: opens on the map at ① Goal, no "Setup n of 3"')
+    ? ok('new campaign: opens on the map at ① Brief, no "Setup n of 3"')
     : fail('new campaign: still shows an IA4 setup step');
   const campA = await lastCampaignId(page);
 
-  // ── left at ② How ─────────────────────────────────────────────────────────
+  // ── left at ② Goal ────────────────────────────────────────────────────────
   await page.click('[data-map-next]');
-  await page.waitForSelector('.desk-v1-map-stop[data-stop="how"][data-state="here"]', { timeout: 8000 });
+  await page.waitForSelector('.desk-v1-map-stop[data-stop="goal"][data-state="here"]', { timeout: 8000 });
   await page.click('.desk-v1-back');
   await page.waitForSelector('.desk-v1-project', { timeout: 8000 });
   const cardWordSel = `.desk-v1-project-camp-card[data-campaign-id="${campA}"] .desk-v1-state-word`;
   let cardLabel = (await page.textContent(cardWordSel).catch(() => '') || '').trim();
-  /Draft · at How/.test(cardLabel)
-    ? ok(`left at ② How: project card reads "${cardLabel}"`)
-    : fail(`left-at-How card label wrong: ${JSON.stringify(cardLabel)}`);
+  /Draft · at Goal/.test(cardLabel)
+    ? ok(`left at ② Goal: project card reads "${cardLabel}"`)
+    : fail(`left-at-Goal card label wrong: ${JSON.stringify(cardLabel)}`);
 
   // ── resume ────────────────────────────────────────────────────────────────
   await page.click(`.desk-v1-project-camp-card[data-campaign-id="${campA}"]`);
+  await page.waitForSelector('.desk-v1-map-stop[data-stop="goal"][data-state="here"]', { timeout: 8000 });
+  ok('resume: back on ② Goal');
+  await page.click('[data-stop="how"]');
   await page.waitForSelector('.desk-v1-map-stop[data-stop="how"][data-state="here"]', { timeout: 8000 });
-  ok('resume: back on ② How');
 
-  // ── forced Posy failure + Retry (the How stop's Suggest task) ─────────────
+  // ── forced Posy failure + Retry (the Brief stop's Suggest task) ───────────
   await page.evaluate(() => { window.__deskV1PosyForce = 'fail'; });
   await page.click('[data-how-suggest]');
   await page.waitForSelector('.desk-v1-posy-failed', { timeout: 4000 });
@@ -287,7 +289,7 @@ async function run(browser) {
   await page.evaluate(() => window.deskV1Nav('project', { projectId: 'engulfing_scanner' }));
   await page.waitForSelector('.desk-v1-project', { timeout: 8000 });
   await page.click('.desk-v1-project-newcamp-btn');
-  await page.waitForSelector('.desk-v1-map-stop[data-stop="goal"]', { timeout: 8000 }); // ① Goal — never touched
+  await page.waitForSelector('.desk-v1-map-stop[data-stop="how"]', { timeout: 8000 }); // ① Brief — never touched
   const campB = await lastCampaignId(page);
 
   await page.click('[data-camp-more-btn]');

@@ -56,13 +56,16 @@ const PROJECTS = [{
   distiller_max_explorations_per_session: 3, distiller_min_turns: 5,
   distiller_skip_errors: true, roster: [],
 }];
-// desk-v1-kit.js fetches this ONCE at module load, for every panel that
-// resolves an agent name (the right-column box, §11.3's read-only
-// DeskV1Kit.deskAgentRef) — desk-v1-how.js itself no longer fetches or
-// renders a picker (§11.3 item 1), so this stub stays for kit.js's own
-// fetch, not for the How panel.
-const CHARACTERS = [{ scope: 'global', name: 'dave', agent_name: 'Dave', avatar: '🛡️' }];
+// desk-v1-kit.js fetches this at module load and again each time the Brief's
+// agent picker paints (R2-18 `projectAgentChoices`). The fixture project's
+// roster is ['global:claydo', 'global:dave'], desk_agent 'global:claydo'.
+const CHARACTERS = [
+  { scope: 'global', name: 'claydo', agent_name: 'Claydo', avatar: '🧱' },
+  { scope: 'global', name: 'dave', agent_name: 'Dave', avatar: '🛡️' },
+  { scope: 'global', name: 'not-hired', agent_name: 'Not Hired', avatar: '👻' },
+];
 
+let charReqsAfterHow_ = 0;
 let bad = 0;
 const ok = (m) => console.log('  ✓ ' + m);
 const fail = (m) => { console.error('  ✗ ' + m); bad++; };
@@ -161,16 +164,33 @@ async function run(browser) {
     ? ok(`How stop: Never claim reads the fixture: "${neverClaimVal.trim()}"`)
     : fail(`How stop: Never claim wrong: ${JSON.stringify(neverClaimVal)}`);
 
-  // §11.3 item 1: the agent picker moved to R2-18's Plan stop — How renders
-  // none, and fetches nothing to feed one.
-  const agentTriggerCount = await page.locator('[data-how-agent-trigger]').count();
-  agentTriggerCount === 0
-    ? ok('How stop: no agent picker trigger ([data-how-agent-trigger] count 0)')
-    : fail(`How stop: agent picker trigger still renders, count ${agentTriggerCount}`);
-  const charReqsAfterHow = charRequests.length - charReqsBeforeHow;
-  charReqsAfterHow === 0
-    ? ok('How stop: the How panel makes no /api/characters request')
-    : fail(`How stop: /api/characters requested ${charReqsAfterHow} time(s) after entering How`);
+  // R2-18: the agent belongs to the CAMPAIGN — the Brief offers the agents hired
+  // on the project's floor (roster), never the whole /api/characters list, plus
+  // "+ Create new agent" last; it defaults to the project's desk agent.
+  await page.waitForFunction(() => { const s = document.querySelector('[data-how-agent]'); return s && !s.disabled && s.options.length > 1; }, null, { timeout: 4000 }).catch(() => {});
+  const agentOpts = await page.$$eval('[data-how-agent] option', (os) => os.map((o) => ({ v: o.value, t: o.textContent.trim(), sel: o.selected })));
+  agentOpts.length === 3 && agentOpts[0].v === 'global:claydo' && agentOpts[1].v === 'global:dave' && agentOpts[2].v === '__create__'
+    ? ok(`Brief: agent picker lists the project's hired agents then "+ Create new agent": ${JSON.stringify(agentOpts.map((o) => o.t))}`)
+    : fail(`Brief: agent picker options wrong: ${JSON.stringify(agentOpts)}`);
+  agentOpts.some((o) => o.sel && o.v === 'global:claydo') && /project default/.test((agentOpts[0] || {}).t || '')
+    ? ok('Brief: agent picker defaults to the project desk agent, labelled "(project default)"')
+    : fail(`Brief: default not the desk agent: ${JSON.stringify(agentOpts)}`);
+  charReqsAfterHow_ = charRequests.length - charReqsBeforeHow;
+  charReqsAfterHow_ >= 1
+    ? ok(`Brief: agent roster is fetched live from /api/characters (${charReqsAfterHow_} request(s))`)
+    : fail('Brief: no /api/characters request when painting the agent picker');
+
+  // Picking Dave writes the campaign's own `how.agent`; the resolver now
+  // prefers it over the project's presence.desk_agent; Undo restores it.
+  await page.selectOption('[data-how-agent]', 'global:dave');
+  const resolvedDave = await page.evaluate(() => {
+    const c = window.DeskV1Fixtures.campaigns.find((x) => x.id === 'camp-1');
+    const p = window.DeskV1Fixtures.projects.find((x) => x.id === c.projectId);
+    return { stored: c.how.agent, ref: window.DeskV1Kit.deskAgentRef({ project: p, campaign: c }), presence: p.presence.desk_agent };
+  });
+  resolvedDave.stored === 'global:dave' && resolvedDave.ref === 'global:dave' && resolvedDave.presence === 'global:claydo'
+    ? ok('Brief: picking Dave stores how.agent and deskAgentRef resolves it BEFORE presence.desk_agent')
+    : fail(`Brief: agent pick not campaign-scoped: ${JSON.stringify(resolvedDave)}`);
 
   const budgetNonePressed = await page.getAttribute('[data-how-budget-btn="none"]', 'aria-pressed').catch(() => '');
   budgetNonePressed === 'true'

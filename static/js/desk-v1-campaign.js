@@ -432,8 +432,9 @@
   // ────────────────────────────────────────────────────────────────────────
   function _campMap(camp) {
     // A pre-R2-3 fixture, or a draft that predates `deskV1CreateDraftCampaign`
-    // seeding `map.stop: 'goal'` — falls back the same way either way.
-    if (!camp.map) camp.map = { stop: 'goal', done: [] };
+    // seeding `map.stop: 'how'` (the Brief, R2-18) — falls back the same way
+    // either way.
+    if (!camp.map) camp.map = { stop: 'how', done: [] };
     return camp.map;
   }
 
@@ -612,7 +613,7 @@
       el.innerHTML = `
         <div class="desk-v1-map-launch">
           <div class="desk-v1-map-launch-status desk-v1-map-launch-awaiting">⚠ Awaiting approval</div>
-          <div class="desk-v1-stub-inline">A change since the last approval (How stop) widens what this campaign can do. An authorized user needs to approve it again before it takes effect.</div>
+          <div class="desk-v1-stub-inline">A change since the last approval (Brief stop) widens what this campaign can do. An authorized user needs to approve it again before it takes effect.</div>
         </div>`;
       return;
     }
@@ -1239,16 +1240,17 @@
     const scopeLabel = st.selection.scope === 'card' ? st.selection.label : camp.plan.title;
     const project = _project(camp.projectId);
     const agentRef = DeskV1Kit.deskAgentRef({ project, campaign: camp });
-    // R2-2g (Ron 2026-09-30): agents are assigned per PROJECT, never per
-    // campaign, and a project needs none. A project-less draft has nothing to
-    // plan with yet, so this column is a neutral note (no box, no picker —
-    // nothing here writes `camp.how.agent`) and the user fills the stops by
-    // hand. A project WITHOUT an agent keeps the box and its project-level
-    // "Pick who plans for this project" label; nothing blocks on it.
+    // R2-18 (Ron 2026-09-30): the agent belongs to the CAMPAIGN, picked on the
+    // Brief stop (`how.agent`), and needs a project first — its choices are the
+    // agents hired on that project's floor. A project-less draft has nothing
+    // to plan with yet, so this column is a neutral note pointing at Brief (no
+    // box) and the user fills the stops by hand. A campaign with a project but
+    // no agent anywhere keeps the box and its "Pick who plans" label; nothing
+    // blocks on it.
     if (!project) {
       el.innerHTML = `<div class="desk-v1-camp-posy desk-v1-camp-noagent" data-no-agent>
         <div class="desk-thread-head"><span class="desk-thread-name">No agent yet</span></div>
-        <div class="desk-v1-rules-hint">Pick a project at Launch — agents are assigned per project. Until then, fill in the stops by hand.</div>
+        <div class="desk-v1-rules-hint">Pick a project on Brief, then an agent for this campaign. Until then, fill in the stops by hand.</div>
       </div>`;
       return;
     }

@@ -32,7 +32,7 @@
   // a separate field). No `map` yet (a pre-R2-3 fixture) reads as ① Goal,
   // the same fallback `_renderCampaignSkeleton` (desk-v1-shell.js) uses.
   function _draftCardLabel(c) {
-    const stop = (c.map && c.map.stop) || 'goal';
+    const stop = (c.map && c.map.stop) || 'how';
     const word = (DeskV1Kit && DeskV1Kit.MAP_STOP_WORDS && DeskV1Kit.MAP_STOP_WORDS[stop]) || stop;
     return `<span class="desk-v1-state-label" data-state="draft">` +
       `<span class="desk-v1-state-glyph" aria-hidden="true">✎</span>` +
