@@ -104,6 +104,12 @@ try {
         description: 'reviews a diff', engine: { provider: 'claude', model: 'claude-sonnet-5' } },
     ]) });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(FLOOR_PAYLOAD) });
+    // Fenn is freshly hired with no history — the thread-shell empty state
+    // depends on both rail sources reporting 'ok' (agent-log.js
+    // _railSourcesLoaded/_railSourcesFailed), so both must resolve or the
+    // shell reads "Couldn't load conversations." instead of "No conversations yet".
+    if (path === '/api/project/smoke_target/agent/log') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === '/api/project/smoke_target/conversations') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === '/api/project/smoke_target/roster/hire' && req.method() === 'POST') {
       hireCalls.push(JSON.parse(req.postData() || '{}'));
       const roster = [{ character: 'global:code-reviewer', hired_at: '2026-09-09T00:00:00Z', hired_by: 'drag', removed_at: null }];
@@ -622,6 +628,10 @@ try {
           description: 'reviews a diff', engine: { provider: 'claude', model: 'claude-sonnet-5' } },
       ]) });
       if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(FLOOR_PAYLOAD) });
+      // Same rail-source mocks as the desktop context above — required for the
+      // thread-shell empty state to read "No conversations yet".
+      if (path === '/api/project/smoke_target/agent/log') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+      if (path === '/api/project/smoke_target/conversations') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
       if (path === '/api/project/smoke_target/roster/hire' && req.method() === 'POST') {
         mHireCalls2.push(JSON.parse(req.postData() || '{}'));
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({

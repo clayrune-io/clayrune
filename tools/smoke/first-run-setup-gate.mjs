@@ -107,6 +107,7 @@ async function scenario(name, { config, configStatus = 200, providers = ONE_PROV
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === '/api/agent/providers') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(providers) });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: false }) });
+    if (path === '/api/local-auth/set' && req.method() === 'POST') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
     if (path === '/api/system/update/status') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ is_git_repo: true, behind: 0, ahead: 0, has_local_changes: false, update_available: false, projects_in_install_dir: [] }) });
     return route.abort();
   });
@@ -135,6 +136,30 @@ async function overlayState(page) {
     };
   });
 }
+
+// feea79de (MC-995 follow-up, 2026-09-28): setupFinish/setupTakeTour's batched
+// PUT /api/config now routes through humanProofFetch(). /api/local-auth/status
+// is mocked {configured:false} above (a fresh install has no passcode yet), so
+// the modal opens in "set a passcode" mode, not "re-enter it" — drive that
+// two-step flow: type a new passcode + "Set passcode & continue" (posts
+// /api/local-auth/set, then re-shows in passcode mode pre-filled), then Confirm.
+const answerHumanProofSetModal = async (page, timeout = 5000) => {
+  await page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout });
+  await page.evaluate(() => {
+    const win = document.querySelector('[data-modal-id^="__human-proof-"]');
+    const modalId = win.dataset.modalId;
+    document.getElementById(`hp-new-${modalId}`).value = 'smoke-dash-passcode';
+    window._hpSubmit(modalId);
+  });
+  await page.waitForFunction(() => {
+    const win = document.querySelector('[data-modal-id^="__human-proof-"]');
+    return !!win && !!win.querySelector('[id^="hp-passcode-"]');
+  }, { timeout });
+  await page.evaluate(() => {
+    const win = document.querySelector('[data-modal-id^="__human-proof-"]');
+    window._hpSubmit(win.dataset.modalId);
+  });
+};
 
 try {
   browser = await chromium.launch();
@@ -177,6 +202,10 @@ try {
     await page.waitForTimeout(150);
     st = await overlayState(page);
     if (st.title !== 'How much detail do you want to see?') { fail(`expected essentials step C, got: ${st.title}`); return null; }
+    await page.click('#setup-overlay .wt-btn-primary'); // "Next" -> protect (MC-982)
+    await page.waitForTimeout(150);
+    st = await overlayState(page);
+    if (st.title !== 'Protect your work') { fail(`expected the protect step (MC-982), got: ${st.title}`); return null; }
     await page.click('#setup-overlay .wt-btn-primary'); // "Next"
     await page.waitForTimeout(150);
     st = await overlayState(page);
@@ -197,6 +226,8 @@ try {
     else ok('setup overlay closes on "Not now"');
     if (st.tourVisible) fail('the tour started after declining it');
     else ok('the tour did NOT start after "Not now"');
+    await answerHumanProofSetModal(page); // feea79de: setupFinish's PUT is passcode-gated
+    await page.waitForTimeout(150);
     const completes = configPuts.filter((p) => p.setup_completed === true);
     if (completes.length !== 1) fail(`expected exactly one PUT /api/config {setup_completed:true}, got ${completes.length}: ${JSON.stringify(configPuts)}`);
     else ok('PUT /api/config {setup_completed:true} sent on decline');
@@ -214,6 +245,8 @@ try {
     else ok('setup overlay closes on "Take the tour"');
     if (!st.tourVisible) fail('the tour did NOT start after "Take the tour"');
     else ok('the tour (walkthrough overlay) starts after "Take the tour"');
+    await answerHumanProofSetModal(page); // feea79de: setupFinish's PUT is passcode-gated
+    await page.waitForTimeout(150);
     const completes = configPuts.filter((p) => p.setup_completed === true);
     if (completes.length !== 1) fail(`expected exactly one PUT /api/config {setup_completed:true}, got ${completes.length}: ${JSON.stringify(configPuts)}`);
     else ok('PUT /api/config {setup_completed:true} sent before handing off to the tour');
@@ -348,9 +381,13 @@ try {
     const st = await overlayState(page);
     if (st.setupVisible) fail('setup overlay appeared for a browser that already finished the old combined tour');
     else ok('no setup overlay for a browser with walkthrough_done already set');
-    const completes = configPuts.filter((p) => p.setup_completed === true);
-    if (completes.length !== 1) fail(`expected exactly one PUT /api/config {setup_completed:true} (firstRunNeeded's migration write), got ${completes.length}: ${JSON.stringify(configPuts)}`);
-    else ok('setup_completed:true is persisted once for the migrated browser');
+    // 45b34752 (MC-995 follow-up, item C) deleted firstRunNeeded's unguarded
+    // migration write: it fired PUT /api/config on every boot and 403'd under
+    // MC-995's passcode gate (no user action here to hang a passcode modal
+    // off), spending a throttle attempt for a browser that hadn't touched
+    // anything yet. Matches boot-smoke.mjs's "first-run migration guard".
+    if (configPuts.length !== 0) fail(`expected zero PUT /api/config requests (migration write removed, 45b34752), got ${configPuts.length}: ${JSON.stringify(configPuts)}`);
+    else ok('no PUT /api/config fires for the migrated browser (migration write removed, 45b34752)');
   });
 
   // ── 7. /api/config hydration failure: fails closed ───────────────────────
@@ -404,8 +441,8 @@ try {
     await page.waitForSelector('#setup-overlay', { timeout: 5000 });
     st = await overlayState(page);
     if (st.title !== 'Welcome to Clayrune') { fail(`"Run setup again" should start at Welcome, got: ${st.title}`); return; }
-    if (st.progress !== 'Step 1 of 6') fail(`forced re-run should show all 6 steps (none skipped), got progress "${st.progress}"`);
-    else ok('forced re-run shows all 6 steps (progress "Step 1 of 6") despite an already-configured install');
+    if (st.progress !== 'Step 1 of 7') fail(`forced re-run should show all 7 steps (none skipped), got progress "${st.progress}"`);
+    else ok('forced re-run shows all 7 steps (progress "Step 1 of 7") despite an already-configured install');
     if (!st.isMarkedAsSetup) fail('forced re-run card does not carry the wt-card-setup marker');
     else ok('forced re-run card also carries the wt-card-setup marker');
 
@@ -431,6 +468,11 @@ try {
     await page.waitForTimeout(150);
     st = await overlayState(page);
     if (st.title !== 'How much detail do you want to see?') { fail(`expected essentials step C, got: ${st.title}`); return; }
+
+    await page.click('#setup-overlay .wt-btn-primary'); // Next -> protect (MC-982)
+    await page.waitForTimeout(150);
+    st = await overlayState(page);
+    if (st.title !== 'Protect your work') { fail(`expected the protect step (MC-982), got: ${st.title}`); return; }
 
     await page.click('#setup-overlay .wt-btn-primary'); // Next
     await page.waitForTimeout(150);
