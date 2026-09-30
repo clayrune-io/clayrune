@@ -95,6 +95,7 @@ from mc.state import (
 )
 
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
+import mc.context_profile as _context_profile  # backlog 4a11b6a5: per-model context slim
 from mc import allowance_state as _allowance_state
 from mc import engine_fallback as _engine_fallback  # MC-961 opt-in vendor swap
 from mc import vision_bridge as _vision_bridge  # describe images for models that cannot see
@@ -1032,7 +1033,9 @@ def _fresh_context_for(project, session, task=''):
         project, incognito=bool((session or {}).get('incognito')), task=task,
         character_body=body, character_name=name,
         session_id=(session or {}).get('session_id', ''),
-        character_skills=sk, source=(session or {}).get('source', ''))
+        character_skills=sk, source=(session or {}).get('source', ''),
+        provider=(session or {}).get('provider', ''),
+        model=_requested_model_snapshot(session or {}))
 
 
 def _respawn_sysprompt_args(session, project, task=''):
@@ -1075,7 +1078,9 @@ def _respawn_sysprompt_args(session, project, task=''):
             project, incognito=bool((session or {}).get('incognito')),
             task=task, character_body=body, character_name=name,
             session_id=(session or {}).get('session_id', ''),
-            character_skills=sk, source=(session or {}).get('source', ''))
+            character_skills=sk, source=(session or {}).get('source', ''),
+            provider=(session or {}).get('provider', ''),
+            model=_requested_model_snapshot(session or {}))
     except Exception as e:
         _log(f"[respawn] sysprompt rebuild failed: {e}")
         # A stale context beats no context: the alternative is a turn with no
@@ -4685,8 +4690,16 @@ def _roster_block(project, port, session_id=''):
 
 def _build_agent_context(project, incognito=False, task='', character_body='',
                          character_name='', session_id='', character_skills=None,
-                         source=''):
+                         source='', provider='', model=''):
     """Build system prompt context for the agent.
+
+    `provider`/`model` are the EFFECTIVE engine for this session/turn (in
+    precedence order: explicit per-chat pick > character's own pin > project/
+    global default), used only to resolve the context PROFILE below — never
+    to gate on a vendor name directly (see `_full_context`). `provider=''`
+    falls back to `project.get('provider')`; `model=''` is "unknown" and
+    resolves via the runtime's own CONTEXT_PROFILE_DEFAULT (conservative:
+    'full' for claude, matching today's Opus/Sonnet/unset behavior).
 
     character_body, when set, is the markdown body of a per-chat "character"
     (a Claude Code subagent persona the user picked at new-chat time). It is
@@ -4717,13 +4730,34 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     did. A personaless delegated session gets no name here instead.
     """
     parts = []
-    # Non-Claude agents (Gemini etc.) get a slimmer context. Claude treats a
-    # rich context dump as background; weaker models read prompt-history-shaped
-    # sections (the MEMORY.md session log, recent conversations, recent
-    # activity) as a TASK LIST and go off doing phantom work on a plain "Hi".
-    # So those sections are Claude-only; non-Claude still gets the targeted
-    # read-floor (RELEVANT MEMORY) which is small and task-scoped.
-    _is_claude = (project.get('provider') or 'claude').lower() == 'claude'
+    # A model gets a slimmer context when its runtime declares it 'lean'
+    # (mc/context_profile.py, mirrors AgentRuntime.image_input_for): a model
+    # capable of treating a rich context dump as background gets the full
+    # floor; a weaker one that reads prompt-history-shaped sections (the
+    # MEMORY.md session log, recent conversations, recent activity) as a
+    # TASK LIST and goes off doing phantom work on a plain "Hi" gets the lean
+    # path instead — it still gets the targeted read-floor (RELEVANT MEMORY),
+    # which is small and task-scoped. This used to be a per-VENDOR check
+    # (every Claude model full, every non-Claude model lean); it is per-MODEL
+    # now because the failure is a property of the model, not the vendor —
+    # backlog 4a11b6a5. A user can reclassify any model without a code change
+    # via config.json's `context_profile_overrides`.
+    _full_context = _context_profile.resolve(
+        provider or project.get('provider') or 'claude', model,
+        state.CONFIG.get('context_profile_overrides')) != 'lean'
+    # Runtime capabilities, kept SEPARATE from the model-tier check above:
+    # two sections below (curated-memory bridge, no-background-job notice)
+    # exist to compensate for what a specific CLI does or doesn't provide on
+    # its own (native CLAUDE.md/MEMORY.md auto-load, a `run_in_background`
+    # facility) — properties of the RUNTIME, not the model. A Claude Haiku
+    # session still runs on the `claude` CLI and still has both, so those two
+    # gates key off the runtime's declared capabilities, not the context
+    # profile above, even though Haiku takes the lean profile for it.
+    try:
+        _runtime_caps = _agent_runtime.get_runtime(
+            (provider or project.get('provider') or 'claude').lower()).capabilities()
+    except Exception:
+        _runtime_caps = _agent_runtime.ProviderCapabilities(name='', display_name='')
     # A persona that named itself outranks the global assistant name: for this
     # chat, that IS who is speaking. Emitting both would tell the agent it has
     # two names, and it would pick one at random per turn.
@@ -4919,7 +4953,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # different cell's marker). Bridge it with the CURATED half only —
     # `_mem_split` drops the managed Session Log, the "wall of past prompts"
     # that caused the Gemini failure above. Bounded by index_byte_budget.
-    if not _is_claude and not incognito:
+    if not _runtime_caps.native_memory_autoload and not incognito:
         try:
             from mc.memory import _mem_split as _mem_split_idx
             _idx = _mem_split_idx(mem_path.read_text(encoding='utf-8', errors='replace'))[0].strip() \
@@ -4938,7 +4972,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # the agent the real options instead of letting it discover the silent
     # failure by trying to background a command itself. Needs a session_id to
     # address, and incognito sessions can't take a job endpoint response.
-    if not _is_claude and session_id and not incognito:
+    if not _runtime_caps.background_jobs and session_id and not incognito:
         parts.append(
             "You have no background-job facility of your own -- your process "
             "exits when this turn ends, so backgrounding a command with `&` "
@@ -5131,10 +5165,10 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
         except Exception as e:
             _log(f"[coord] read-floor injection failed: {e}")
 
-    # Recent activity — Claude-only: a non-Claude agent reads these past
-    # "Agent dispatched: <task>" lines as things it still has to do.
+    # Recent activity — full-profile only: a lean-profile agent reads these
+    # past "Agent dispatched: <task>" lines as things it still has to do.
     log = project.get('activity_log', [])[:3]
-    if log and _is_claude:
+    if log and _full_context:
         lines = [f"  - {e.get('ts','')}: {e.get('msg','')}" for e in log]
         parts.append("Recent activity:\n" + "\n".join(lines))
 
@@ -5142,13 +5176,13 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # sessions (never reached completion log) are still discoverable. Display the
     # LAST user message, not the first, since the first is usually a meta prompt
     # (context condensation, boot text) that the user won't recognize.
-    # Claude-only: these are Claude transcripts, listed with `claude -r <id>`
-    # resume hints. For a non-Claude agent they are both wrong (not its CLI)
-    # and actively harmful — it reads them as "our last chat" and tries to
-    # continue tasks from them.
+    # Full-profile only: these are Claude transcripts, listed with
+    # `claude -r <id>` resume hints. For a lean-profile agent they are both
+    # wrong (not necessarily its CLI) and actively harmful — it reads them as
+    # "our last chat" and tries to continue tasks from them.
     project_path = project.get('project_path', '')
     convos = (_recent_claude_transcripts(project_path, limit=5, exclude_transforms=True)
-              if (project_path and _is_claude) else [])
+              if (project_path and _full_context) else [])
     if convos:
         live_by_csid = {}
         try:
@@ -5181,7 +5215,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             "Recent conversations (use 'claude -r <id>' to resume any of these — "
             "label is the user's LAST message):\n" + "\n".join(sess_lines)
         )
-    elif _is_claude:
+    elif _full_context:
         agent_log = _load_agent_log(project['id'])[:3]
         if agent_log:
             sess_lines = []
@@ -7074,7 +7108,9 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                                        character_name=_revive_char_name,
                                        session_id=session_id,
                                        character_skills=_revive_char_skills,
-                                       source=_revive_source)
+                                       source=_revive_source,
+                                       provider=entry.get('provider') or '',
+                                       model=revive_model)
         _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
             pp, 'claude', claude_sid, project_id, session_id,
             reason=_af_reason, detail=_af_detail)
@@ -7093,7 +7129,9 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                                            character_name=_revive_char_name,
                                            session_id=session_id,
                                            character_skills=_revive_char_skills,
-                                           source=_revive_source)
+                                           source=_revive_source,
+                                           provider=entry.get('provider') or '',
+                                           model=revive_model)
         except Exception as e:
             _log(f"[revive] {project_id}: context rebuild failed: {e}")
 
@@ -9680,7 +9718,8 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                                              character_name=(character_meta or {}).get('agent_name') or '',
                                              session_id=session_id,
                                              character_skills=(character_meta or {}).get('skills') or [],
-                                             source=source)
+                                             source=source,
+                                             provider=provider_name, model=model)
     except Exception as e:
         _log(f"[runtime-dispatch] context build failed: {e}")
 
@@ -11093,11 +11132,14 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          model_override='', effort_override=_char_effort,
                                          max_turns_override=max_turns_override,
                                          character_skills=_char_skills)
+        # routed_model is '' here (native resume decides it) — model is
+        # genuinely unknown at context-build time, so this resolves to the
+        # conservative 'full' profile (mc/context_profile.py), same as today.
         context = _build_agent_context(
             p, incognito=incognito, task=task,
             character_body=character_body, character_name=_char_agent_name,
             session_id=_planned_sid, character_skills=_char_skills,
-            source=source)
+            source=source, provider=provider_name, model='')
     elif model_override:
         # Composer "Model" picker, or the character's pinned model: an explicit
         # choice either way, so the auto-router is bypassed entirely. The
@@ -11115,8 +11157,17 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                        character_name=_char_agent_name,
                                        session_id=_planned_sid,
                                        character_skills=_char_skills,
-                                       source=source)
+                                       source=source,
+                                       provider=provider_name, model=model_override)
     else:
+        # context_builder runs IN PARALLEL with the auto-router's classifier
+        # (_dispatch_with_routing_parallel, RC-2 latency constraint) — the
+        # routed model is not decided yet when this lambda runs, so model is
+        # genuinely unknown here too and resolves to the conservative 'full'
+        # profile, same as the resume branch above. An auto-routed dispatch
+        # that the classifier ultimately sends to Haiku still gets full
+        # context today; fixing that would mean serializing context build
+        # after routing, undoing the optimization this function exists for.
         routed_model, routed_source, base_flags, context, _router_fallback_reason = (
             _dispatch_with_routing_parallel(
                 p, task,
@@ -11124,7 +11175,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                     p, incognito=incognito, task=task,
                     character_body=character_body, character_name=_char_agent_name,
                     session_id=_planned_sid, character_skills=_char_skills,
-                    source=source),
+                    source=source, provider=provider_name, model=''),
                 streaming=use_streaming, effort_override=_char_effort,
                 character_skills=_char_skills))
         if max_turns_override is not None:

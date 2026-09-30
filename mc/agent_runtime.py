@@ -236,6 +236,18 @@ class ProviderCapabilities:
     # env var or a cached OAuth token). The Settings UI uses this to label
     # the probe action with its cost instead of firing it silently on a poll.
     auth_probe_spends_quota: bool = False
+    # True when the CLI itself loads CLAUDE.md/MEMORY.md from disk before the
+    # turn Clayrune builds — so injecting the curated memory index AGAIN in
+    # _build_agent_context would duplicate what the runtime already gave the
+    # agent. Backlog 4a11b6a5: this is a RUNTIME fact (every model on this
+    # CLI gets it), not a per-model one — Haiku on the Claude CLI still has
+    # it even though Haiku takes the lean context profile.
+    native_memory_autoload: bool = False
+    # True when a dispatched command can keep running after the turn ends and
+    # something wakes the session when it finishes (e.g. a `run_in_background`
+    # tool). False means _build_agent_context must tell the agent a shell `&`
+    # orphans the job — also a runtime fact, not a per-model one.
+    background_jobs: bool = False
 
 
 # Alias so caller code from the brief can use the name CapabilityFlags.
@@ -1145,6 +1157,39 @@ class AgentRuntime(ABC):
         except Exception:
             return False
 
+    # ── Context profile (model-level) ───────────────────────────────────────
+    # How much of _build_agent_context's floor (MEMORY.md session log, recent
+    # conversations, recent activity — agent_routes.py) a model should get.
+    # 'full' is the default: a model that treats the dump as background gets
+    # it. 'lean' drops those sections for a model that reads them as a live
+    # task list and goes off doing phantom work on a plain "Hi" — MEASURED on
+    # Gemini (the original case this slim path was built for). Haiku is
+    # bucketed 'lean' by EXPECTED capability, not a measured probe of this
+    # specific failure — no live Haiku dispatch has been run against it yet.
+    # Backlog 4a11b6a5 — this used to be a per-VENDOR check (_is_claude); it
+    # is per-MODEL because the failure mode is a property of the model's
+    # capability, not its vendor.
+    CONTEXT_PROFILE_DEFAULT: str = 'full'
+    # (regex, profile) pairs, first match wins on the lower-cased model id;
+    # no match falls back to CONTEXT_PROFILE_DEFAULT. Mirrors
+    # VISION_MODEL_PATTERNS — a runtime overrides this when its own catalog
+    # mixes profiles (e.g. Claude's Haiku vs. Sonnet/Opus).
+    CONTEXT_PROFILE_PATTERNS: Tuple[Tuple[str, str], ...] = ()
+
+    def context_profile_for(self, model: str = '') -> str:
+        """'full' or 'lean' for `model` (or this runtime's own default).
+
+        A user override (config.json `context_profile_overrides`) is checked
+        by the caller (mc/context_profile.py) before this — this is only the
+        runtime's own declared fallback.
+        """
+        m = (model or '').strip().lower()
+        if m:
+            for pattern, profile in self.CONTEXT_PROFILE_PATTERNS:
+                if re.search(pattern, m):
+                    return profile
+        return self.CONTEXT_PROFILE_DEFAULT
+
     # Model this runtime uses when it is the one DESCRIBING an image for a
     # blind agent (mc/vision_bridge.py). '' = this runtime is not a describer.
     VISION_DESCRIBE_MODEL: str = ''
@@ -1887,6 +1932,13 @@ class ClaudeRuntime(AgentRuntime):
     # re-resolves it to its own newest match on every spawn, so a future
     # Opus release is picked up automatically with no MC edit required.
     TIER_ALIASES = {'best': 'opus', 'balanced': 'sonnet', 'fast': 'haiku'}
+
+    # CONTEXT_PROFILE_DEFAULT stays 'full' (base class) — Opus/Sonnet/Fable
+    # and any unrecognized pin keep today's full floor. Haiku alone drops to
+    # 'lean': expected, by capability tier, to be at risk of the same
+    # phantom-task-list failure the non-Claude runtimes below are already
+    # gated on (backlog 4a11b6a5) — NOT yet confirmed by a live Haiku probe.
+    CONTEXT_PROFILE_PATTERNS = (('haiku', 'lean'),)
 
     def tier_family(self, model: str) -> str:
         """Name-pattern match against MODEL_CHOICES' own naming (opus/sonnet/
@@ -3246,6 +3298,8 @@ class ClaudeRuntime(AgentRuntime):
             context_injection='flag',
             context_file_name='CLAUDE.md',
             oneshot_supported=True,
+            native_memory_autoload=True,
+            background_jobs=True,
         )
 
     # ── Dispatch delegates (keep byte-identical claude path) ──────────────────
@@ -3576,6 +3630,12 @@ class GeminiRuntime(AgentRuntime):
     name = 'gemini'
     tool_free_transform_enforced = True
     display_name = 'Gemini CLI'
+    # Every Gemini model reads the full context floor (MEMORY.md session log,
+    # recent conversations/activity) as a live task list — the ORIGINAL
+    # measured case for the slim path (agent_routes.py's _build_agent_context
+    # docstring). Blanket 'lean', not per-model: this runtime has no model
+    # known to be exempt.
+    CONTEXT_PROFILE_DEFAULT = 'lean'
     # Verified 2026-08-31 against the LIVE API (ListModels + a real generateContent
     # call per id), NOT against the CLI's own constants. That distinction is the
     # whole lesson here: @google/gemini-cli-core's models.js still names
@@ -6444,6 +6504,9 @@ class QwenRuntime(AgentRuntime):
 
     name = 'qwen'
     tool_free_transform_enforced = True
+    # Same rationale as GeminiRuntime — blanket 'lean', no model in this
+    # catalog is known exempt.
+    CONTEXT_PROFILE_DEFAULT = 'lean'
     # Coder ids are blind whatever else their name says; VL / QVQ / Omni ids
     # are the sighted line. Anything else (qwen3.7-plus, glm-*, kimi-* ...) is
     # unverified, so it is treated as blind: the bridge then describes the image
@@ -7509,6 +7572,9 @@ class CodexRuntime(AgentRuntime):
     """
 
     name = 'codex'
+    # Same rationale as GeminiRuntime — blanket 'lean', no model in this
+    # catalog is known exempt.
+    CONTEXT_PROFILE_DEFAULT = 'lean'
     # Codex's CLI does not currently expose a certified no-tools transport.
     # Keep this false until a canary proves the boundary; run_text_transform
     # therefore refuses Codex before sensitive transform input is delivered.
@@ -9065,6 +9131,9 @@ class OpenCodeRuntime(AgentRuntime):
 
     name = 'opencode'
     display_name = 'OpenCode'
+    # Same rationale as GeminiRuntime — blanket 'lean', no model in this
+    # catalog is known exempt.
+    CONTEXT_PROFILE_DEFAULT = 'lean'
     # OpenCode addresses models as `<provider>/<model>` — a bare model id is
     # rejected, so every entry here carries its provider prefix.
     MODEL_CHOICES = [
@@ -9418,6 +9487,9 @@ class GooseRuntime(AgentRuntime):
 
     name = 'goose'
     display_name = 'Goose'
+    # Same rationale as GeminiRuntime — blanket 'lean', no model in this
+    # catalog is known exempt.
+    CONTEXT_PROFILE_DEFAULT = 'lean'
     # Goose's --model names a model within whatever provider `goose configure`
     # selected, so the useful ids depend on the operator's own setup. These are
     # the common ones; anything else goes through the picker's Custom entry.
@@ -9788,6 +9860,9 @@ class AiderRuntime(AgentRuntime):
 
     name = 'aider'
     display_name = 'Aider'
+    # Same rationale as GeminiRuntime — blanket 'lean', no model in this
+    # catalog is known exempt.
+    CONTEXT_PROFILE_DEFAULT = 'lean'
     # Aider accepts both its own short aliases and full LiteLLM model names.
     MODEL_CHOICES = [
         ('sonnet', 'Claude Sonnet (alias)'),
@@ -10095,6 +10170,9 @@ class KiroRuntime(AgentRuntime):
 
     name = 'kiro'
     display_name = 'Kiro'
+    # Same rationale as GeminiRuntime — blanket 'lean', no model in this
+    # catalog is known exempt.
+    CONTEXT_PROFILE_DEFAULT = 'lean'
     # Deliberately empty: kiro-cli headless takes no model flag (build_command
     # below ignores `model`), so an empty catalog is what hides the composer's
     # Model picker for this provider instead of offering a dead control.
