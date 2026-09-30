@@ -650,9 +650,18 @@
     height: 10px; border-radius: 5px; background: var(--surface3);
     overflow: hidden; margin: 6px 0 4px; position: relative;
   }
+  .sys-status-popover .ub-segbar { display: flex; }
   .sys-status-popover .ub-segbar-estimated {
-    height: 100%; background: var(--accent, var(--green)); border-radius: 5px;
+    height: 100%; background: var(--accent, var(--green)); flex: none;
   }
+  /* Unattributed: lighter + hatched so it reads as "not known to be ours". */
+  .sys-status-popover .ub-segbar-unattributed {
+    height: 100%; flex: none;
+    background: repeating-linear-gradient(
+      45deg, var(--surface3), var(--surface3) 3px, var(--text-faint) 3px, var(--text-faint) 6px);
+    opacity: 0.85;
+  }
+  .sys-status-popover .ub-segbar-caption { margin-top: 0; }
   .sys-status-popover .ub-segbar-unknown {
     background: repeating-linear-gradient(
       45deg, var(--surface3), var(--surface3) 6px, var(--border) 6px, var(--border) 12px);
