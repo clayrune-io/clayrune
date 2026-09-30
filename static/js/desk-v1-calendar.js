@@ -19,6 +19,7 @@
   function _fx() { return window.DeskV1Fixtures || {}; }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id) || null; }
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id) || null; }
+  function _project(id) { return (_fx().projects || []).find((p) => p.id === id) || null; }
   function _findFamilyVersion(versionId) {
     for (const fam of (_fx().families || [])) {
       const v = (fam.versions || []).find((x) => x.id === versionId);
@@ -137,6 +138,251 @@
     if (version.state !== 'scheduled') return null;
     const when = _versionWhen(version);
     return when ? _dayKey(when) : null;
+  }
+
+  // ── R2-9: When stop fields (Cadence · Min gap · Term · Post cap, §4.1 ④,
+  // frame 6). Cadence and min gap are inherited/clamped display only — the
+  // campaign never edits them here (min gap has no campaign-level field at
+  // all, §3 row 22: it moved to the project's own `presence.ceilings`); Term
+  // end and Post cap are the two real editable bounds (§4.1: "Required to
+  // launch: cadence, end date and/or post cap"), writing straight to
+  // `plan.end` so kit.js's existing `boundsWiden`/`_endWiden` (desk-v1-
+  // campaign.js `_renderLaunchPanel`) picks up a later end date as a widen
+  // and an earlier one as a narrow with no new wiring needed here. ─────────
+  function _effectiveMinGapH(campaign, project) {
+    const ceilings = (project && project.presence && project.presence.ceilings) || {};
+    const accounts = (campaign.plan && campaign.plan.accounts) || [];
+    let g = null;
+    accounts.forEach((chId) => {
+      const c = ceilings[chId];
+      if (c && c.min_gap_h != null) g = g == null ? c.min_gap_h : Math.min(g, c.min_gap_h);
+    });
+    return g;
+  }
+  function _cadenceFieldText(campaign, project) {
+    const result = (window.DeskV1Kit && window.DeskV1Kit.validatePlan(campaign.plan, project)) || {};
+    const eff = result.effective || {};
+    if (eff.cadence_per_week == null) return 'Not set';
+    return eff.cadence_from_project
+      ? `≤${eff.cadence_per_week}/wk · from ${project ? project.name : 'the project'}`
+      : `${eff.cadence_per_week}/wk`;
+  }
+  function _minGapFieldText(campaign, project) {
+    const g = _effectiveMinGapH(campaign, project);
+    return g == null ? 'Not set' : `${g}h (inherited, read-only)`;
+  }
+  function _fieldsHTML(campaign, project) {
+    const plan = campaign.plan || {};
+    const term = campaign.term || {};
+    const startLabel = term.starts ? new Intl.DateTimeFormat(undefined, { timeZone: _userTz(), month: 'short', day: 'numeric' }).format(new Date(term.starts + 'T00:00:00')) : '—';
+    const endDate = (plan.end && plan.end.date) || term.ends || '';
+    const postCap = plan.end && plan.end.post_cap != null ? plan.end.post_cap : '';
+    return `
+      <div class="desk-v1-cal-fields">
+        <div class="desk-v1-cal-field"><span class="desk-v1-cal-field-label">Cadence</span>
+          <span class="desk-v1-cal-field-value" data-cal-field-cadence>${esc(_cadenceFieldText(campaign, project))}</span></div>
+        <div class="desk-v1-cal-field"><span class="desk-v1-cal-field-label">Min gap</span>
+          <span class="desk-v1-cal-field-value" data-cal-field-mingap>${esc(_minGapFieldText(campaign, project))}</span></div>
+        <div class="desk-v1-cal-field"><span class="desk-v1-cal-field-label">Term</span>
+          <span class="desk-v1-cal-field-value">${esc(startLabel)} – <input type="date" class="desk-v1-cal-field-date" data-cal-field-end value="${esc(endDate)}"></span></div>
+        <div class="desk-v1-cal-field"><span class="desk-v1-cal-field-label">Post cap</span>
+          <input type="number" min="0" class="desk-v1-cal-field-num" data-cal-field-postcap placeholder="none" value="${esc(postCap)}"></div>
+      </div>`;
+  }
+  function _bindFields(el, campaign) {
+    const endEl = el.querySelector('[data-cal-field-end]');
+    if (endEl) endEl.onchange = () => {
+      campaign.plan.end = campaign.plan.end || {};
+      campaign.plan.end.date = endEl.value || null;
+    };
+    const capEl = el.querySelector('[data-cal-field-postcap]');
+    if (capEl) capEl.onchange = () => {
+      campaign.plan.end = campaign.plan.end || {};
+      campaign.plan.end.post_cap = capEl.value === '' ? null : parseInt(capEl.value, 10);
+    };
+  }
+
+  // ── R2-9: own slots (`when.slots[]`, §5's data addendum, frame 6). A slot
+  // the user drags onto the calendar reserves a posting window before any
+  // piece exists for it — solid, "Your slot", may stay empty. An agent
+  // proposal is the SAME array, `origin:'agent', state:'suggested'`, dashed,
+  // until Ron accepts it. Suggest only ever fills an existing user slot (adds
+  // `.filled`) or adds its own agent-origin entries — it never edits or
+  // removes a `origin:'user'` slot's own id/at (§8 row: "Suggest never moves
+  // or deletes a user slot"). ────────────────────────────────────────────────
+  function _ownSlots(campaign) {
+    campaign.when = campaign.when || {};
+    campaign.when.slots = campaign.when.slots || [];
+    return campaign.when.slots;
+  }
+  function _weekKey(d) {
+    const monday = new Date(d);
+    const wd = monday.getDay();
+    monday.setDate(monday.getDate() - (wd === 0 ? 6 : wd - 1));
+    monday.setHours(0, 0, 0, 0);
+    return _dayKey(monday);
+  }
+  // Refuses a NEW user slot that would push the week over the effective
+  // cadence, or that lands inside the effective min-gap window of another
+  // slot — returns the reason string, or null if the slot is allowed.
+  function _slotRefusal(at, campaign, project) {
+    const slots = _ownSlots(campaign).filter((s) => s.origin === 'user');
+    const result = (window.DeskV1Kit && window.DeskV1Kit.validatePlan(campaign.plan, project)) || {};
+    const cap = (result.effective || {}).cadence_per_week;
+    if (cap != null) {
+      const wk = _weekKey(at);
+      const countThisWeek = slots.filter((s) => _weekKey(new Date(s.at)) === wk).length;
+      if (countThisWeek + 1 > cap) return `over ${cap}/wk`;
+    }
+    const minGap = _effectiveMinGapH(campaign, project);
+    if (minGap != null) {
+      for (const s of slots) {
+        const diffH = Math.abs(new Date(s.at).getTime() - at.getTime()) / 3600000;
+        if (diffH < minGap) return `within ${minGap}h of another slot`;
+      }
+    }
+    return null;
+  }
+  function _showSlotRefusal(el, message) {
+    const banner = el.querySelector('[data-slot-refusal]');
+    if (!banner) return;
+    banner.textContent = message;
+    banner.classList.add('desk-v1-cal-slot-refusal-show');
+  }
+  function _clearSlotRefusal(el) {
+    const banner = el.querySelector('[data-slot-refusal]');
+    if (!banner) return;
+    banner.textContent = '';
+    banner.classList.remove('desk-v1-cal-slot-refusal-show');
+  }
+  function _createOwnSlot(dayKey, campaign, project, el) {
+    const [y, m, d] = dayKey.split('-').map((n) => parseInt(n, 10));
+    const at = new Date(y, m - 1, d, 14, 0, 0, 0); // fixed default creation time (frame 6: both mocked slots land at 14:00)
+    const reason = _slotRefusal(at, campaign, project);
+    if (reason) { _showSlotRefusal(el, reason); return; }
+    const slot = { id: 'slot-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7), at: at.toISOString(), origin: 'user' };
+    window.DeskV1Kit.commandBus.run({
+      label: `Added your slot ${new Intl.DateTimeFormat(undefined, { timeZone: _userTz(), weekday: 'short', month: 'short', day: 'numeric' }).format(at)} · ${_fmtTime(at)}`,
+      do: () => { _clearSlotRefusal(el); _ownSlots(campaign).push(slot); _render(campaign); },
+      undo: () => { const arr = _ownSlots(campaign); const i = arr.findIndex((s) => s.id === slot.id); if (i >= 0) arr.splice(i, 1); _render(campaign); },
+    });
+  }
+  // Test/Suggest seam: fills the first unfilled user slot (or a named one)
+  // with a suggested piece, WITHOUT touching that slot's id/at/origin — the
+  // real ② How "Suggest" task (desk-v1-how.js) is the eventual caller; this
+  // is the same contract the calendar itself needs regardless of caller.
+  function deskV1CalendarSuggestFill(campaignId, fill) {
+    const campaign = _campaign(campaignId);
+    if (!campaign) return null;
+    const slots = _ownSlots(campaign).filter((s) => s.origin === 'user');
+    const target = (fill && fill.slotId) ? slots.find((s) => s.id === fill.slotId) : slots.find((s) => !s.filled);
+    if (!target) return null;
+    target.filled = { title: (fill && fill.title) || 'Suggested piece', platform: (fill && fill.platform) || '', channelId: (fill && fill.channelId) || null };
+    if (_mountEl && _state && _state.campaignId === campaignId) _render(campaign);
+    return target;
+  }
+
+  // ── R2-9: legend (§8 row: "legend `your own slot` / `agent-suggested`") —
+  // the literal wording, so own-vs-suggested reads as WORDS (this text +
+  // each chip's own line, `_slotChipHTML` below), never inferred from the
+  // dashed border alone (§8: "not border alone"). ─────────────────────────
+  function _legendHTML() {
+    return `
+      <div class="desk-v1-cal-legend">
+        <span class="desk-v1-cal-legend-item desk-v1-cal-legend-user"><span class="desk-v1-cal-legend-dot"></span>your own slot</span>
+        <span class="desk-v1-cal-legend-item desk-v1-cal-legend-agent"><span class="desk-v1-cal-legend-dot"></span>agent-suggested</span>
+      </div>`;
+  }
+
+  // ── R2-9: a slot chip — solid "Your slot" (origin:'user') or dashed
+  // "Agent suggested" (origin:'agent'); once filled it also shows the
+  // piece + platform, and a held DESTINATION channel still overrides to
+  // `⚠ held` (same rule `_effectiveState` applies to a dated version's
+  // chip above, applied here to a filled slot's optional `filled.channelId`
+  // — a slot with no channel yet, or a channel that isn't held, never shows
+  // it). aria-label carries the same "your own slot"/"agent-suggested"
+  // words as the legend, so the distinction survives without colour or
+  // border for assistive tech. ─────────────────────────────────────────────
+  function _slotChipHTML(slot) {
+    const isUser = slot.origin === 'user';
+    const at = new Date(slot.at);
+    const channel = slot.filled && slot.filled.channelId ? _channel(slot.filled.channelId) : null;
+    const held = !!(channel && channel.health === 'held');
+    const originWord = isUser ? 'Your slot' : 'Agent suggested';
+    const cls = ['desk-v1-cal-slotchip', isUser ? 'desk-v1-cal-slotchip-user' : 'desk-v1-cal-slotchip-agent'];
+    if (!isUser) cls.push('desk-v1-cal-chip-dashed');
+    return `
+      <button type="button" class="${cls.join(' ')}" data-slot-id="${esc(slot.id)}" data-slot-origin="${esc(slot.origin)}"
+          aria-label="${esc(isUser ? 'your own slot' : 'agent-suggested')}${held ? ' · held' : ''}, ${esc(_fmtTime(at))}">
+        <span class="desk-v1-cal-slotchip-line1">
+          <span class="desk-v1-cal-slotchip-time">${esc(_fmtTime(at))}</span>
+          <span class="desk-v1-cal-slotchip-origin">${esc(originWord)}</span>
+          ${held ? '<span class="desk-v1-cal-slotchip-held">⚠ held</span>' : ''}
+        </span>
+        ${slot.filled ? `<span class="desk-v1-cal-slotchip-title">${esc(slot.filled.title)}${slot.filled.platform ? ' · ' + esc(slot.filled.platform) : ''}</span>` : ''}
+      </button>`;
+  }
+
+  // ── R2-9: the "Your slots" band — its own `.desk-v1-cal-row` sharing the
+  // grid's `--desk-v1-cal-cols` column template (same technique every other
+  // row already uses), so it lines up under the right day regardless of
+  // week/month view without touching the channel rows at all. The rowhead
+  // carries the one draggable affordance ("+ New slot") the user drags onto
+  // a day cell to create an own slot (§8: "the user drags on the calendar
+  // to create OWN slots") — dragging FROM a day cell itself would collide
+  // with the existing reschedule-drag surface those same cells already are.
+  function _slotRowHTML(days, campaign) {
+    const slots = _ownSlots(campaign);
+    const byDay = {};
+    slots.forEach((s) => { const k = _dayKey(new Date(s.at)); (byDay[k] = byDay[k] || []).push(s); });
+    Object.values(byDay).forEach((arr) => arr.sort((a, b) => new Date(a.at) - new Date(b.at)));
+    const cellsHTML = days.map((d) => {
+      const key = _dayKey(d.date);
+      const items = byDay[key] || [];
+      return `<div class="desk-v1-cal-cell desk-v1-cal-slotcell pd-drop-target" data-day-key="${esc(key)}">
+        <span class="desk-v1-cal-cell-preview"></span>
+        ${items.map((s) => _slotChipHTML(s)).join('')}
+      </div>`;
+    }).join('');
+    return `<div class="desk-v1-cal-row desk-v1-cal-row-slots">
+      <div class="desk-v1-cal-rowhead desk-v1-cal-rowhead-slots">
+        <span class="desk-v1-cal-slot-rowlabel">Your slots</span>
+        <button type="button" class="desk-v1-cal-slot-handle" data-slot-handle aria-label="Drag to add your own slot">+ New slot</button>
+      </div>
+      ${cellsHTML}
+    </div>`;
+  }
+
+  // ── R2-9: the Unscheduled tray (§4.1 row 141, carried into this ticket's
+  // acceptance: "the Unscheduled tray stays (below the fold in frame 6)").
+  // Same undated-version set A14/MET-01 already keeps OFF the grid (a date-
+  // less version never gets an invented chip) — this is that same set's one
+  // legitimate home: a card the user can drag onto a day to set its first
+  // date, via the SAME `_reschedule` command every other drop already uses
+  // (Undo/toast/announce included), just with no "moving FROM a day" side
+  // to gate on approval. ────────────────────────────────────────────────────
+  function _unscheduledItems(st, campaign) {
+    const items = [];
+    for (const fam of _familiesInScope(st, campaign)) {
+      for (const v of (fam.versions || [])) {
+        if (!_versionWhen(v)) items.push({ family: fam, version: v });
+      }
+    }
+    return items;
+  }
+  function _unscheduledHTML(st, campaign) {
+    const items = _unscheduledItems(st, campaign);
+    if (!items.length) return '';
+    return `
+      <div class="desk-v1-cal-unscheduled">
+        <div class="desk-v1-cal-unscheduled-label">Unscheduled</div>
+        <div class="desk-v1-cal-unscheduled-tray">
+          ${items.map((it) => `
+            <button type="button" class="desk-v1-cal-unscheduled-card" data-unsched-version="${esc(it.version.id)}" title="${esc(it.family.title)}">
+              ${esc(it.family.title)}
+            </button>`).join('')}
+        </div>
+      </div>`;
   }
 
   // ── module state — one calendar mounted at a time in R0 (route-driven);
@@ -281,7 +527,11 @@
       }).join('');
       return `<div class="desk-v1-cal-row">${_rowHeaderHTML(ch)}${cellsHTML}</div>`;
     }).join('');
-    return `<div class="desk-v1-cal-grid-wrap"><div class="desk-v1-cal-grid" style="--desk-v1-cal-cols:${days.length}">${header}${body}</div></div>`;
+    // R2-9's own slots band sits right under the header, ahead of the real
+    // channel rows — one more `.desk-v1-cal-row` in the same grid, so it
+    // shares the column template and never has to touch `body` above.
+    const slotRow = _slotRowHTML(days, campaign);
+    return `<div class="desk-v1-cal-grid-wrap"><div class="desk-v1-cal-grid" style="--desk-v1-cal-cols:${days.length}">${header}${slotRow}${body}</div></div>`;
   }
 
   // Phone (§11): "Calendar on phone defaults to an agenda list grouped by
@@ -358,20 +608,26 @@
     const rows = _rows(st, campaign);
     const cells = _buildCells(st, campaign, days);
     const todayKey = _dayKey(new Date());
+    const project = _project(campaign.projectId);
 
     el.innerHTML = `
       <div class="desk-v1-calendar">
         ${_suggestedWhenBannerHTML(campaign)}
+        ${_fieldsHTML(campaign, project)}
+        <div class="desk-v1-cal-slot-refusal" data-slot-refusal></div>
         ${_toolbarHTML(st, days)}
+        ${_legendHTML()}
         ${_gridHTML(st, campaign, days, rows, cells, todayKey)}
         ${_agendaHTML(days, rows, cells, todayKey)}
+        ${_unscheduledHTML(st, campaign)}
         <div class="desk-v1-cal-footnote">Calendar is a view of Content, not a separate place. Dragging a chip reschedules it (approval covers content, not time, within your rules). Click a chip to open its review.</div>
       </div>`;
 
-    _bind(el, campaign, days, rows, cells);
+    _bindFields(el, campaign);
+    _bind(el, campaign, days, rows, cells, project);
   }
 
-  function _bind(el, campaign, days, rows, cells) {
+  function _bind(el, campaign, days, rows, cells, project) {
     const st = _state;
 
     const scopeSel = el.querySelector('[data-cal-scope-select]');
@@ -397,6 +653,8 @@
     });
 
     _bindDrag(el, campaign);
+    _bindSlotCreate(el, campaign, project);
+    _bindUnscheduledDrag(el, campaign);
     _bindSwipe(el, campaign);
   }
 
@@ -525,6 +783,112 @@
     });
   }
 
+  // ── R2-9: drag-to-create an own slot. Same PointerDrag mechanics as
+  // `_bindDrag` above, but the draggable is the rowhead's "+ New slot"
+  // handle, not an existing chip, and the drop target is scoped to
+  // `.desk-v1-cal-slotcell` (the slots band only) so a slot never lands on
+  // a channel row. A separate local `_slotDragState` — concurrent with
+  // `_dragState` is impossible (one pointer), but keeping them apart means
+  // this drag's teardown can never stomp a chip-drag's own state object. ───
+  let _slotDragState = null;
+  function _bindSlotCreate(el, campaign, project) {
+    const handle = el.querySelector('[data-slot-handle]');
+    if (!handle) return;
+    handle.addEventListener('pointerdown', (e) => {
+      window.PointerDrag.begin(handle, e, {
+        isDragActive: () => !!_slotDragState,
+        getDragState: () => _slotDragState,
+        setDragState: (s) => { _slotDragState = s; },
+        data: {},
+        draggingClass: 'desk-v1-cal-slot-handle-dragging',
+        ghostClass: 'pd-ghost desk-v1-cal-slotchip-ghost',
+        ghostHTML: () => '<span class="desk-v1-cal-slotchip-time">New</span><span class="desk-v1-cal-slotchip-origin">Your slot</span>',
+        ghostRotationDeg: -3,
+        ghostOffsetX: 18, ghostOffsetY: 18,
+        onMove: (st, x, y) => {
+          el.querySelectorAll('.desk-v1-cal-slotcell.pd-drop-hover').forEach((c) => { c.classList.remove('pd-drop-hover'); const p = c.querySelector('.desk-v1-cal-cell-preview'); if (p) p.textContent = ''; });
+          const target = document.elementFromPoint(x, y);
+          const cell = target && target.closest && target.closest('.desk-v1-cal-slotcell');
+          if (!cell) return;
+          cell.classList.add('pd-drop-hover');
+          const preview = cell.querySelector('.desk-v1-cal-cell-preview');
+          if (preview) {
+            const label = new Intl.DateTimeFormat(undefined, { timeZone: _userTz(), weekday: 'short', month: 'short', day: 'numeric' }).format(new Date(cell.dataset.dayKey + 'T00:00:00'));
+            preview.textContent = `Add your slot, ${label} 14:00`;
+          }
+        },
+        onDrop: (st, x, y) => {
+          const target = document.elementFromPoint(x, y);
+          const cell = target && target.closest && target.closest('.desk-v1-cal-slotcell');
+          return cell ? cell.dataset.dayKey : null;
+        },
+        afterDrop: (st, dayKey) => {
+          if (!dayKey) return;
+          _createOwnSlot(dayKey, campaign, project, el);
+        },
+        onTeardown: () => {
+          el.querySelectorAll('.desk-v1-cal-slotcell.pd-drop-hover').forEach((c) => { c.classList.remove('pd-drop-hover'); const p = c.querySelector('.desk-v1-cal-cell-preview'); if (p) p.textContent = ''; });
+        },
+      });
+    });
+  }
+
+  // ── R2-9: the Unscheduled tray's own drag-to-schedule. Drop target is
+  // scoped to the piece's OWN channel row (`data-channel-id` match) — a
+  // grid drop only ever changes `data-day-key` for the channel it's already
+  // in (same invariant `_bindDrag`'s reschedule already keeps), so a piece
+  // with no date yet can't be dropped onto a channel it doesn't belong to.
+  // Reuses `_reschedule` wholesale (Undo/toast/announce, approval gate —
+  // moot here since a never-scheduled version has no `_approvalDayKey`). ───
+  function _bindUnscheduledDrag(el, campaign) {
+    el.querySelectorAll('.desk-v1-cal-unscheduled-card').forEach((card) => {
+      card.addEventListener('pointerdown', (e) => {
+        const versionId = card.dataset.unschedVersion;
+        const found = _findFamilyVersion(versionId);
+        if (!found) return;
+        const channelId = found.version.channelId;
+        const targetSel = `.desk-v1-cal-cell[data-channel-id="${channelId}"]`;
+        window.PointerDrag.begin(card, e, {
+          isDragActive: () => !!_dragState,
+          getDragState: () => _dragState,
+          setDragState: (s) => { _dragState = s; },
+          data: { versionId },
+          draggingClass: 'desk-v1-cal-unscheduled-dragging',
+          ghostClass: 'pd-ghost desk-v1-cal-chip-ghost',
+          ghostHTML: () => card.innerHTML,
+          ghostRotationDeg: -3,
+          ghostOffsetX: 18, ghostOffsetY: 18,
+          onMove: (st, x, y) => {
+            el.querySelectorAll('.desk-v1-cal-cell.pd-drop-hover').forEach((c) => { c.classList.remove('pd-drop-hover'); const p = c.querySelector('.desk-v1-cal-cell-preview'); if (p) p.textContent = ''; });
+            const target = document.elementFromPoint(x, y);
+            const cell = target && target.closest && target.closest(targetSel);
+            if (!cell) return;
+            cell.classList.add('pd-drop-hover');
+            const preview = cell.querySelector('.desk-v1-cal-cell-preview');
+            if (preview) {
+              const label = new Intl.DateTimeFormat(undefined, { timeZone: _userTz(), weekday: 'short', month: 'short', day: 'numeric' }).format(new Date(cell.dataset.dayKey + 'T00:00:00'));
+              preview.textContent = `Schedule ${label}`;
+            }
+          },
+          onDrop: (st, x, y) => {
+            const target = document.elementFromPoint(x, y);
+            const cell = target && target.closest && target.closest(targetSel);
+            return cell ? cell.dataset.dayKey : null;
+          },
+          afterDrop: (st, dayKey) => {
+            if (!dayKey) return;
+            const [y, m, d] = dayKey.split('-').map((n) => parseInt(n, 10));
+            const newWhen = new Date(y, m - 1, d, 12, 0, 0, 0); // fixed default time, same technique as _createOwnSlot
+            _reschedule(found, newWhen, campaign);
+          },
+          onTeardown: () => {
+            el.querySelectorAll('.desk-v1-cal-cell.pd-drop-hover').forEach((c) => { c.classList.remove('pd-drop-hover'); const p = c.querySelector('.desk-v1-cal-cell-preview'); if (p) p.textContent = ''; });
+          },
+        });
+      });
+    });
+  }
+
   // Own swipe binding, same slop/ratio technique schedule-calendar.js uses
   // (:868) but calling THIS file's own shift, not that file's `scalShift` —
   // see the _rangeDays comment above for why the original isn't reused
@@ -558,4 +922,5 @@
   }
 
   window.deskV1RenderCalendar = deskV1RenderCalendar;
+  window.deskV1CalendarSuggestFill = deskV1CalendarSuggestFill;
 })();

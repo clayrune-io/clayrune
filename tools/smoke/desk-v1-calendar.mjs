@@ -440,6 +440,284 @@ async function runDragReschedule(browser) {
   await ctx.close();
 }
 
+// ── R2-9 (§8 row / §11): the When stop's own fields — Cadence/Min gap
+// (read-only inherited display) and Term/Post cap (the two real editable
+// bounds, writing straight to `plan.end`) — plus the legend's literal
+// "your own slot"/"agent-suggested" words and the Your-slots rowhead. ───────
+async function runR29FieldsAndLegend(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCalendar(page);
+  await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
+
+  const cadence = (await page.textContent('[data-cal-field-cadence]').catch(() => '') || '').trim();
+  cadence === '3/wk'
+    ? ok(`R2-9: Cadence field reads the plan's own cadence: "${cadence}"`)
+    : fail(`R2-9: Cadence field wrong: ${JSON.stringify(cadence)}`);
+
+  const minGap = (await page.textContent('[data-cal-field-mingap]').catch(() => '') || '').trim();
+  /12h \(inherited, read-only\)/.test(minGap)
+    ? ok(`R2-9: Min gap field reads the project's ceiling, marked read-only: "${minGap}"`)
+    : fail(`R2-9: Min gap field wrong: ${JSON.stringify(minGap)}`);
+
+  const endVal = await page.$eval('[data-cal-field-end]', (el) => el.value).catch(() => '');
+  endVal === '2026-10-20'
+    ? ok(`R2-9: Term end date field shows plan.end.date: "${endVal}"`)
+    : fail(`R2-9: Term end date field wrong: ${JSON.stringify(endVal)}`);
+
+  // Edit end date -> writes straight to `plan.end.date` (no command/Undo —
+  // §8's Test/Suggest bound edit is a live field, not a drag/drop).
+  await page.fill('[data-cal-field-end]', '2026-11-15');
+  await page.$eval('[data-cal-field-end]', (el) => el.dispatchEvent(new Event('change', { bubbles: true })));
+  const writtenEnd = await page.evaluate(() => {
+    const camp = (window.DeskV1Fixtures.campaigns || []).find((c) => c.id === 'camp-1');
+    return camp.plan.end.date;
+  });
+  writtenEnd === '2026-11-15'
+    ? ok('R2-9: editing the Term end date writes straight to plan.end.date')
+    : fail(`R2-9: Term end date edit did not persist: ${JSON.stringify(writtenEnd)}`);
+
+  await page.fill('[data-cal-field-postcap]', '12');
+  await page.$eval('[data-cal-field-postcap]', (el) => el.dispatchEvent(new Event('change', { bubbles: true })));
+  const writtenCap = await page.evaluate(() => {
+    const camp = (window.DeskV1Fixtures.campaigns || []).find((c) => c.id === 'camp-1');
+    return camp.plan.end.post_cap;
+  });
+  writtenCap === 12
+    ? ok('R2-9: editing Post cap writes straight to plan.end.post_cap')
+    : fail(`R2-9: Post cap edit did not persist: ${JSON.stringify(writtenCap)}`);
+
+  const legendText = await page.$$eval('.desk-v1-cal-legend-item', (els) => els.map((e) => e.textContent.trim()));
+  legendText.some((t) => /your own slot/.test(t)) && legendText.some((t) => /agent-suggested/.test(t))
+    ? ok(`R2-9: legend spells out the literal words, not colour/border alone: ${JSON.stringify(legendText)}`)
+    : fail(`R2-9: legend text missing/wrong: ${JSON.stringify(legendText)}`);
+
+  const rowLabel = (await page.textContent('.desk-v1-cal-slot-rowlabel').catch(() => '') || '').trim();
+  const handle = await page.$('[data-slot-handle]');
+  rowLabel === 'Your slots' && handle
+    ? ok('R2-9: the Your-slots band and its drag handle render')
+    : fail(`R2-9: Your-slots band missing (label=${JSON.stringify(rowLabel)}, handle=${!!handle})`);
+
+  reportUncaught(pageErrors, '[R2-9 fields/legend]');
+  await ctx.close();
+}
+
+// ── R2-9 drag-to-create helper: drags the "+ New slot" rowhead handle onto
+// a `.desk-v1-cal-slotcell` (same PointerDrag mechanics as runDragReschedule
+// above), scoped to the slots band only so it never lands on a channel row.
+async function dragSlotHandleToDay(page, dayKey) {
+  const handle = await page.$('[data-slot-handle]');
+  const handleBox = await handle.boundingBox();
+  const hx = handleBox.x + handleBox.width / 2, hy = handleBox.y + handleBox.height / 2;
+  const cellSel = `.desk-v1-cal-row-slots .desk-v1-cal-slotcell[data-day-key="${dayKey}"]`;
+  const cell = await page.$(cellSel);
+  const cellBox = await cell.boundingBox();
+  const tx = cellBox.x + cellBox.width / 2, ty = cellBox.y + cellBox.height / 2;
+
+  await page.mouse.move(hx, hy);
+  await page.mouse.down();
+  await page.mouse.move(hx + 15, hy + 5, { steps: 3 });
+  await page.waitForSelector('.desk-v1-cal-slot-handle-dragging', { timeout: 2000 }).catch(() => {});
+  await page.mouse.move(tx, ty, { steps: 8 });
+  await page.waitForSelector(`${cellSel}.pd-drop-hover .desk-v1-cal-cell-preview:not(:empty)`, { timeout: 2000 }).catch(() => {});
+  const previewShown = await page.$eval(`${cellSel}.pd-drop-hover .desk-v1-cal-cell-preview`, (e) => e.textContent).catch(() => '');
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+  return previewShown;
+}
+
+// ── R2-9 (§8 row): drag-to-create own slots, the cadence/min-gap refusal
+// gate (banner shows the reason, no slot inserted), and Undo on a successful
+// add. Uses camp-1's real fixture bounds — cadence 3/wk, min gap 12h across
+// all 3 accounts (desk-v1-fixtures.js `presence.ceilings`) — not invented
+// numbers, so a refusal message asserted here is the real gate firing. ─────
+async function runR29SlotCreateAndRefusal(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCalendar(page);
+  await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
+
+  const dayKeys = await page.$$eval('.desk-v1-cal-row-slots .desk-v1-cal-slotcell', (els) => els.map((e) => e.dataset.dayKey));
+  dayKeys.length === 7
+    ? ok(`R2-9: the slots band has 7 day cells for week view: ${JSON.stringify(dayKeys)}`)
+    : fail(`R2-9: expected 7 slot cells, got ${dayKeys.length}`);
+
+  // 1) Monday: first slot succeeds.
+  const preview1 = await dragSlotHandleToDay(page, dayKeys[0]);
+  /Add your slot/.test(preview1)
+    ? ok(`R2-9: slot-create drag hover shows a ghost + drop preview: "${preview1}"`)
+    : fail(`R2-9: slot-create hover preview missing/wrong: ${JSON.stringify(preview1)}`);
+  let chip = await page.$(`.desk-v1-cal-row-slots .desk-v1-cal-slotcell[data-day-key="${dayKeys[0]}"] .desk-v1-cal-slotchip-user`);
+  const ariaLabel = chip ? await chip.getAttribute('aria-label') : '';
+  chip && /your own slot/.test(ariaLabel)
+    ? ok(`R2-9: dragged slot renders solid "Your slot", aria-label carries "your own slot": "${ariaLabel}"`)
+    : fail(`R2-9: first slot drag did not create a user chip (aria-label=${JSON.stringify(ariaLabel)})`);
+  const dashed1 = chip ? await chip.evaluate((el) => el.classList.contains('desk-v1-cal-chip-dashed')) : true;
+  !dashed1
+    ? ok('R2-9: a user slot chip is solid, not dashed (mine vs suggested distinct by border too)')
+    : fail('R2-9: user slot chip should not be dashed');
+
+  // 2) Monday again (same 14:00 default time, 0h apart): min-gap refusal —
+  // count (2) would stay under the 3/wk cap, so this isolates the gap check.
+  await dragSlotHandleToDay(page, dayKeys[0]);
+  const refusalMsg = (await page.textContent('[data-slot-refusal]').catch(() => '') || '').trim();
+  /within 12h of another slot/.test(refusalMsg)
+    ? ok(`R2-9: dropping a 2nd slot on the same default time is refused for min gap: "${refusalMsg}"`)
+    : fail(`R2-9: expected a min-gap refusal, got ${JSON.stringify(refusalMsg)}`);
+  const mondayChips = await page.$$eval(`.desk-v1-cal-row-slots .desk-v1-cal-slotcell[data-day-key="${dayKeys[0]}"] .desk-v1-cal-slotchip`, (els) => els.length);
+  mondayChips === 1
+    ? ok('R2-9: a refused slot is not inserted (Monday still carries exactly 1 chip)')
+    : fail(`R2-9: refused slot should not persist, Monday has ${mondayChips} chip(s)`);
+
+  // 3) Tuesday: succeeds and clears the refusal banner (2nd real slot).
+  await dragSlotHandleToDay(page, dayKeys[1]);
+  const bannerAfterSuccess = await page.$eval('[data-slot-refusal]', (el) => el.classList.contains('desk-v1-cal-slot-refusal-show')).catch(() => true);
+  !bannerAfterSuccess
+    ? ok('R2-9: a subsequent successful add clears the refusal banner')
+    : fail('R2-9: refusal banner should clear after a successful add');
+
+  // 4) Wednesday: 3rd slot, at the 3/wk cap.
+  await dragSlotHandleToDay(page, dayKeys[2]);
+  const wedChip = await page.$(`.desk-v1-cal-row-slots .desk-v1-cal-slotcell[data-day-key="${dayKeys[2]}"] .desk-v1-cal-slotchip-user`);
+  wedChip
+    ? ok('R2-9: 3rd slot (at cap) succeeds')
+    : fail('R2-9: 3rd slot should have been created');
+
+  // 5) Thursday: 4th slot would exceed the 3/wk cadence cap -> refused.
+  await dragSlotHandleToDay(page, dayKeys[3]);
+  const capRefusal = (await page.textContent('[data-slot-refusal]').catch(() => '') || '').trim();
+  /over 3\/wk/.test(capRefusal)
+    ? ok(`R2-9: a 4th slot in the same week is refused over the campaign's cadence cap: "${capRefusal}"`)
+    : fail(`R2-9: expected an over-cadence refusal, got ${JSON.stringify(capRefusal)}`);
+  const thuChips = await page.$$eval(`.desk-v1-cal-row-slots .desk-v1-cal-slotcell[data-day-key="${dayKeys[3]}"] .desk-v1-cal-slotchip`, (els) => els.length);
+  thuChips === 0
+    ? ok('R2-9: the refused 4th slot leaves Thursday empty')
+    : fail(`R2-9: Thursday should have no slot, has ${thuChips}`);
+
+  // 6) Undo the last successful add (Wednesday) via the commandBus toast —
+  // same Undo contract every other Desk v1 drop already gets. Toasts stack
+  // (no `opts.key`, so each add appends a new one rather than replacing the
+  // last) — target the LAST toast, not the first, or this undoes Monday's.
+  const toastText = (await page.textContent('.toast:last-of-type').catch(() => '') || '');
+  /Added your slot/.test(toastText)
+    ? ok(`R2-9: commandBus toast confirms the slot add: "${toastText.trim()}"`)
+    : fail(`R2-9: toast missing/wrong after slot add: ${JSON.stringify(toastText)}`);
+  await page.click('.toast:last-of-type .toast-btn.primary');
+  await page.waitForTimeout(50);
+  const wedChipsAfterUndo = await page.$$eval(`.desk-v1-cal-row-slots .desk-v1-cal-slotcell[data-day-key="${dayKeys[2]}"] .desk-v1-cal-slotchip`, (els) => els.length);
+  wedChipsAfterUndo === 0
+    ? ok('R2-9: Undo removes the slot from the grid')
+    : fail(`R2-9: Wednesday should be empty after Undo, has ${wedChipsAfterUndo}`);
+
+  reportUncaught(pageErrors, '[R2-9 slot-create]');
+  await ctx.close();
+}
+
+// ── R2-9 (§8 row): an agent-suggested slot renders dashed with the literal
+// "Agent suggested" words (mine vs suggested is never colour/border alone),
+// and `deskV1CalendarSuggestFill` — the seam desk-v1-how.js's Suggest task
+// will call — fills a user slot without touching its id/at/origin. ─────────
+async function runR29AgentSuggestedAndFill(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  await navToCalendar(page);
+  await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
+
+  // Seeded at "today 14:00" so it always falls inside the default week view
+  // regardless of which real day this runs on (no hardcoded date to step to).
+  await page.evaluate(() => {
+    const camp = (window.DeskV1Fixtures.campaigns || []).find((c) => c.id === 'camp-1');
+    camp.when = camp.when || {};
+    camp.when.slots = camp.when.slots || [];
+    const at = new Date(); at.setHours(14, 0, 0, 0);
+    camp.when.slots.push({ id: 'slot-agent-test', at: at.toISOString(), origin: 'agent' });
+    window.deskV1Nav('calendar', { campaignId: 'camp-1' });
+  });
+  await page.waitForTimeout(50);
+
+  const agentChip = await page.$('[data-slot-id="slot-agent-test"]');
+  const isDashed = agentChip ? await agentChip.evaluate((el) => el.classList.contains('desk-v1-cal-chip-dashed') && el.classList.contains('desk-v1-cal-slotchip-agent')) : false;
+  const agentAria = agentChip ? await agentChip.getAttribute('aria-label') : '';
+  agentChip && isDashed && /agent-suggested/.test(agentAria)
+    ? ok(`R2-9: an agent-origin slot renders dashed with "agent-suggested" in its aria-label: "${agentAria}"`)
+    : fail(`R2-9: agent-suggested slot chip wrong (dashed=${isDashed}, aria=${JSON.stringify(agentAria)})`);
+  const originWord = (await page.textContent('[data-slot-id="slot-agent-test"] .desk-v1-cal-slotchip-origin').catch(() => '') || '').trim();
+  originWord === 'Agent suggested'
+    ? ok('R2-9: the agent chip\'s own line reads "Agent suggested" literally')
+    : fail(`R2-9: agent chip origin word wrong: ${JSON.stringify(originWord)}`);
+
+  // Now exercise the fill seam on a fresh USER slot: fills without moving it.
+  await page.evaluate(() => {
+    const camp = (window.DeskV1Fixtures.campaigns || []).find((c) => c.id === 'camp-1');
+    const at = new Date(); at.setHours(9, 0, 0, 0);
+    camp.when.slots.push({ id: 'slot-fill-test', at: at.toISOString(), origin: 'user' });
+    window.deskV1CalendarSuggestFill('camp-1', { slotId: 'slot-fill-test', title: 'Test suggested piece', platform: 'x' });
+  });
+  await page.waitForTimeout(50);
+  const filledTitle = (await page.textContent('[data-slot-id="slot-fill-test"] .desk-v1-cal-slotchip-title').catch(() => '') || '').trim();
+  filledTitle === 'Test suggested piece · x'
+    ? ok(`R2-9: deskV1CalendarSuggestFill fills a user slot with a title + platform: "${filledTitle}"`)
+    : fail(`R2-9: fill did not render on the slot chip: ${JSON.stringify(filledTitle)}`);
+  const stillUser = await page.$eval('[data-slot-id="slot-fill-test"]', (el) => el.dataset.slotOrigin);
+  stillUser === 'user'
+    ? ok('R2-9: filling a slot never changes its origin away from user')
+    : fail(`R2-9: fill must not mutate origin, got ${JSON.stringify(stillUser)}`);
+
+  reportUncaught(pageErrors, '[R2-9 agent+fill]');
+  await ctx.close();
+}
+
+// ── R2-9 (§4.1 row 141 carried acceptance): the Unscheduled tray stays, and
+// dragging a card onto its own channel row's day cell reuses `_reschedule`
+// wholesale (same Undo/toast/approval-gate contract every other drop gets).
+// Taller-than-shipped viewport (1440x1400, not the suite's usual 950) — at a
+// real modal's ~900px height the campaign chrome above the calendar plus
+// R2-9's own Fields/legend/Your-slots rows push the Unscheduled tray below
+// the fold, below a channel-row drop target too, and PointerDrag has no
+// auto-scroll-during-drag (see pointer-drag.js — a real user scrolls first,
+// then drags, same two-step any native OS drag needs). This test exercises
+// the drag MECHANICS (same code path either way); the below-the-fold
+// reachability at shipped viewport sizes is reported as a deviation, not
+// silently worked around.
+async function runR29UnscheduledDrag(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} }, { width: 1440, height: 1400 });
+  await navToCalendar(page);
+  await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
+
+  const card = await page.$('.desk-v1-cal-unscheduled-card[data-unsched-version="v-install-li"]');
+  card
+    ? ok('R2-9: v-install-li (no date anywhere, A14/MET-01) shows in the Unscheduled tray')
+    : fail('R2-9: v-install-li missing from the Unscheduled tray');
+
+  const targetCell = await page.$('.desk-v1-cal-cell[data-channel-id="ch-li-page"]');
+  const cardBox = await card.boundingBox();
+  const cellBox = await targetCell.boundingBox();
+  const cx = cardBox.x + cardBox.width / 2, cy = cardBox.y + cardBox.height / 2;
+  const tx = cellBox.x + cellBox.width / 2, ty = cellBox.y + cellBox.height / 2;
+
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  await page.mouse.move(cx + 15, cy + 5, { steps: 3 });
+  await page.waitForSelector('.desk-v1-cal-unscheduled-dragging', { timeout: 2000 }).catch(() => {});
+  await page.mouse.move(tx, ty, { steps: 8 });
+  await page.waitForSelector('.pd-drop-hover .desk-v1-cal-cell-preview:not(:empty)', { timeout: 2000 }).catch(() => {});
+  const preview = await page.$eval('.pd-drop-hover .desk-v1-cal-cell-preview', (e) => e.textContent).catch(() => '');
+  /Schedule/.test(preview)
+    ? ok(`R2-9: dragging an unscheduled card shows a "Schedule <day>" preview: "${preview}"`)
+    : fail(`R2-9: unscheduled drag preview missing/wrong: ${JSON.stringify(preview)}`);
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+
+  const chipNow = await page.$('[data-chip-version="v-install-li"]');
+  chipNow
+    ? ok('R2-9: dropping an unscheduled card gives its version a real date (a chip now renders)')
+    : fail('R2-9: v-install-li should now render a chip after being dropped');
+  const stillInTray = await page.$('.desk-v1-cal-unscheduled-card[data-unsched-version="v-install-li"]');
+  !stillInTray
+    ? ok('R2-9: a now-dated version leaves the Unscheduled tray')
+    : fail('R2-9: v-install-li should have left the Unscheduled tray once dated');
+
+  reportUncaught(pageErrors, '[R2-9 unscheduled-drag]');
+  await ctx.close();
+}
+
 // ── Phone (§11): "Calendar on phone defaults to an agenda list grouped by
 // day" — the grid is hidden, the agenda (day, then channel) is shown. ───────
 async function runPhoneLayout(browser) {
@@ -507,6 +785,10 @@ try {
   await runScopeToggle(browser);
   await runKeyboardReschedule(browser);
   await runDragReschedule(browser);
+  await runR29FieldsAndLegend(browser);
+  await runR29SlotCreateAndRefusal(browser);
+  await runR29AgentSuggestedAndFill(browser);
+  await runR29UnscheduledDrag(browser);
   await runPhoneLayout(browser);
   await captureScreenshots(browser);
   exitCode = bad === 0 ? 0 : 1;
