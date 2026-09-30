@@ -1173,9 +1173,77 @@
     { id: 'art-install', title: 'Installing Clayrune on Windows 11', words: 880 },
   ];
 
+  // ── R2-8: Studio + the creation bodies What opens (frames 11 to 14, 15b, 16,
+  // 16c; docs/THE_DESK_V1_IA_REVISION_2.md §8 row R2-8, §11.6 Q1). Fixtures only:
+  // no capture backend, no connector, no renderer exists behind any of this.
+  // Thumbnails are real captures of the product (standing position: real
+  // screenshots by default).
+  const STUDIO = {
+    // Recent (frame 11). The rendering video is NOT listed here: Studio reads it
+    // off the families (`render.status === 'rendering'`) so its percentage is
+    // the What row's own number. These two are the drafts that have no family.
+    recent: [
+      { id: 'rec-retro-faq', kind: 'article', title: 'Retro FAQ', campaignId: 'camp-1', status: 'draft', savedAgo: '2h ago' },
+      { id: 'rec-dashboard-hero', kind: 'image', title: 'Dashboard hero', campaignId: null, status: 'rendered' },
+    ],
+    // Material library (frame 11): folders with file counts.
+    library: [
+      { id: 'lib-screenshots', title: 'Product screenshots', files: 38 },
+      { id: 'lib-recordings', title: 'Screen recordings', files: 12 },
+      { id: 'lib-broll', title: 'B-roll clips', files: 9 },
+      { id: 'lib-brand', title: 'Brand assets', files: 21 },
+      { id: 'lib-renders', title: 'Renders', files: 5 },
+    ],
+    // Capture from the product (frame 16): the screens a project exposes. A
+    // project absent from this map has no capturable surface, and the tile reads
+    // `Not available for this project`.
+    captureScreens: {
+      clayrune: [
+        { id: 'scr-home', label: 'Home · campaign status table', thumb: '/assets/desk-thumb-home.png' },
+        { id: 'scr-campaign', label: 'Campaign · What', thumb: '/assets/desk-thumb-campaign.png' },
+        { id: 'scr-calendar', label: 'Calendar · When', thumb: '/assets/desk-thumb-calendar.png' },
+        { id: 'scr-review', label: 'Review · a draft', thumb: '/assets/desk-thumb-review.png' },
+      ],
+    },
+    // Online source (frames 15b, 16c). `connected: false` is the read-access
+    // warning + `Connect <x>` card; nothing authenticates or reads in v1.
+    online: {
+      video: [
+        { id: 'yt', label: 'YouTube channel', glyph: 'Y', tone: 'red', account: 'Clayrune', connected: true,
+          thumbs: ['/assets/desk-thumb-director.png', '/assets/desk-thumb-campaign.png', '/assets/desk-thumb-home.png', '/assets/desk-thumb-review.png', '/assets/desk-thumb-calendar.png'] },
+        { id: 'gdrive', label: 'Google Drive', glyph: 'G', tone: 'blue', account: 'you@example.com', connected: true,
+          thumbs: ['/assets/desk-thumb-results.png', '/assets/desk-thumb-director.png', '/assets/desk-thumb-calendar.png'] },
+        { id: 'dropbox', label: 'Dropbox', glyph: 'D', tone: 'blue', account: null, connected: false },
+      ],
+      image: [
+        { id: 'gdrive', label: 'Google Drive', glyph: 'G', tone: 'blue', account: 'you@example.com', connected: true,
+          thumbs: ['/assets/desk-thumb-home.png', '/assets/desk-thumb-campaign.png', '/assets/desk-thumb-review.png', '/assets/desk-thumb-calendar.png', '/assets/desk-thumb-results.png'] },
+        { id: 'gphotos', label: 'Google Photos', glyph: 'P', tone: 'red', account: 'you@example.com', connected: true,
+          thumbs: ['/assets/desk-thumb-results.png', '/assets/desk-thumb-director.png'] },
+        { id: 'dropbox', label: 'Dropbox', glyph: 'D', tone: 'blue', account: null, connected: false },
+      ],
+    },
+    // The scenes a new storyboard opens with (frame 13). Scene 1's line is the
+    // piece's own copy (its title); the other lines are the agent's first pass.
+    storyboard: [
+      { label: 'Download page', line: null, source: 'screen recording: clayrune.io/download', thumb: '/assets/desk-thumb-director.png', durationSec: 4 },
+      { label: 'First launch', line: 'It opens straight into a project.', source: 'screenshot: onboarding welcome', thumb: '/assets/desk-thumb-home.png', durationSec: 5 },
+      { label: 'Live agent run', line: 'Watch it work on a real task, live.', source: 'screen recording: agent chat panel', thumb: '/assets/desk-thumb-review.png', durationSec: 8 },
+      { label: 'Call to action', line: 'Install in two minutes. Tell us what breaks.', source: 'screenshot: install page CTA', thumb: '/assets/desk-thumb-campaign.png', durationSec: 3 },
+    ],
+    // Article writer (frame 12): the claims a first draft carries. `source: null`
+    // is an assumed claim (`? Assumed` inline + `not yet verified` in the panel).
+    claims: {
+      'cl-friction': { text: 'Install friction is the #1 churn driver', source: "campaign How, goal notes" },
+      'cl-smartscreen': { text: 'SmartScreen warning on first launch', source: null, note: 'not yet verified against current build' },
+      'cl-testers': { text: '30 testers target', source: 'campaign Goal' },
+    },
+  };
+
   window.DeskV1Fixtures = {
     materialLibrary: MATERIAL_LIBRARY,
     existingArticles: EXISTING_ARTICLES,
+    studio: STUDIO,
     projects: PROJECTS,
     campaigns: CAMPAIGNS,
     channels: CHANNELS,

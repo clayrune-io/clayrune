@@ -15,10 +15,12 @@
 // source-first (§8): an Article asks `Browse existing` / `Write new`, a Video
 // four sources, an Image four sources, none preselected, and no file picker
 // exists in the DOM until the Upload source is chosen. The chosen source shows
-// as a chip + `Change source`. Only Upload's body is built here (drop zone,
+// as a chip + `Change source`. Upload's body is built here (drop zone,
 // `Browse this computer`, Material library folders); Record / Capture /
-// Create / Generate / Online and the article writer are R2-8's, and render a
-// labelled placeholder so nothing pretends to work.
+// Create / Generate / Online and the article writer are R2-8's and live in
+// desk-v1-studio.js (`window.DeskV1Studio`), which this file calls. If that
+// module is absent a source falls back to a labelled placeholder so nothing
+// pretends to work.
 //
 // Every mutation is a `DeskV1Kit.commandBus` command with an inverse (§10).
 // Fixtures only: nothing here calls a backend. The piece shape is read through
@@ -92,7 +94,7 @@
   // ── state — one What mount per campaign; survives its own repaints ───────
   const _states = {};
   function _state(campaignId) {
-    if (!_states[campaignId]) _states[campaignId] = { campaignId, filter: 'all', creates: [], el: null };
+    if (!_states[campaignId]) _states[campaignId] = { campaignId, filter: 'all', creates: [], writer: null, el: null };
     return _states[campaignId];
   }
   let _cur = null; // the state of the mount currently on screen
@@ -182,6 +184,22 @@
     });
   }
 
+  // The piece leaves its create-card for the list the moment its storyboard
+  // opens, so coming back shows it as a row (with its render status).
+  function _openStoryboard(camp, fam) {
+    const card = _state(camp.id).creates.find((c) => c.familyId === fam.id);
+    if (card) _closeCreate(camp, card);
+    window.deskV1Nav('storyboard', { campaignId: camp.id, familyId: fam.id });
+  }
+
+  // Studio's New video / image / article tile: queue an empty create-card on
+  // the campaign's What before navigating there.
+  function deskV1WhatStartCreate(campaignId, typeId) {
+    const camp = _campaign(campaignId);
+    const type = TYPES.find((t) => t.id === typeId);
+    if (camp && type) _addCreate(camp, type);
+  }
+
   // ── repaint ──────────────────────────────────────────────────────────────
   function _repaint(focusSel) {
     if (!_isMounted()) return;
@@ -213,8 +231,15 @@
   // rendering says so (frame 5a: `⟳ rendering`) instead of listing versions.
   function _statusHTML(fam) {
     if (fam.render && fam.render.status === 'rendering') {
-      const pct = fam.render.progress != null ? ` ${esc(fam.render.progress)}%` : '';
-      return `<span class="desk-v1-what-status-item" data-state="sending"><span class="desk-v1-state-glyph" aria-hidden="true">⟳</span> rendering${pct}</span>`;
+      const n = fam.render.progress != null ? Number(fam.render.progress) : 0;
+      return `<span class="desk-v1-what-status-item" data-state="sending"><span class="desk-v1-state-glyph" aria-hidden="true">⟳</span> Rendering ${esc(n)}%</span>` +
+        `<span class="desk-v1-what-progress" role="progressbar" aria-label="Rendering ${esc(fam.title)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${esc(n)}"><span style="width:${esc(n)}%"></span></span>`;
+    }
+    // An article saved from the writer is handed to review as a whole, even
+    // before Where has placed it on an account.
+    if (fam.draft && fam.draft.status === 'in_review') {
+      const { glyph } = DeskV1Kit.stateLabel('needs_review');
+      return `<span class="desk-v1-what-status-item" data-state="needs_review"><span class="desk-v1-state-glyph" aria-hidden="true">${esc(glyph)}</span> in review</span>`;
     }
     const live = DeskV1Kit.pieceVersions(fam);
     if (!live.length) return '<span class="desk-v1-what-status-item desk-v1-what-status-none">no versions yet</span>';
@@ -292,7 +317,7 @@
       </button>`).join('')}</div>`;
   }
 
-  function _createHTML(card, fam) {
+  function _createHTML(card, fam, camp) {
     const type = TYPES.find((t) => t.id === card.typeId) || TYPES[0];
     const kind = fam.kind;
     const srcList = SOURCES[kind];
@@ -306,7 +331,10 @@
       let inner;
       if (card.source === 'upload') inner = _uploadBodyHTML(kind);
       else if (card.source === 'browse') inner = _browseBodyHTML();
-      else inner = `<div class="desk-v1-what-later" data-what-later>${esc(R2_8_NOTE[card.source] || 'Opens in Studio (R2-8).')}</div>`;
+      else {
+        const studioBody = window.DeskV1Studio ? window.DeskV1Studio.sourceBodyHTML(card.source, { card, fam, camp }) : null;
+        inner = studioBody || `<div class="desk-v1-what-later" data-what-later>${esc(R2_8_NOTE[card.source] || 'Opens in Studio (R2-8).')}</div>`;
+      }
       bodyHTML = chip + inner;
     } else {
       bodyHTML = `<div class="desk-v1-what-later" data-what-later>Write the post on its piece page.</div>
@@ -336,8 +364,30 @@
     </div>`;
   }
 
+  // The article writer (frame 12) takes the list's place inside the campaign
+  // frame; Save / Back return to the list.
+  function _paintWriter(el, camp, st) {
+    const fam = _familiesFor(camp.id).find((f) => f.id === st.writer.familyId);
+    if (!fam || !window.DeskV1Studio) { st.writer = null; return false; }
+    el.innerHTML = `<div class="desk-v1-what" data-what>${window.DeskV1Studio.writerHTML(fam, camp, st.writer.tab)}</div>`;
+    window.DeskV1Studio.wireWriter(el.querySelector('[data-writer]'), fam, camp, st.writer.tab, {
+      onTab: (i) => { st.writer.tab = i; _repaint(`[data-writer-tab="${i}"]`); },
+      onBack: () => { st.writer = null; _repaint(); },
+      onSave: () => {
+        let undoMark = null;
+        DeskV1Kit.commandBus.run({
+          label: `Saved “${fam.title}” to What`,
+          do: () => { undoMark = window.DeskV1Studio.markInReview(fam); st.writer = null; _repaint(); },
+          undo: () => { if (undoMark) undoMark(); _repaint(); },
+        });
+      },
+    });
+    return true;
+  }
+
   function _paint(el, camp) {
     const st = _state(camp.id);
+    if (st.writer && _paintWriter(el, camp, st)) return;
     const all = _familiesFor(camp.id);
     const openIds = new Set(st.creates.map((c) => c.familyId));
     const pred = FILTER_PRED[st.filter] || FILTER_PRED.all;
@@ -349,7 +399,7 @@
         <div class="desk-v1-what-filters" role="group" aria-label="Filter pieces">${FILTERS.map((f) =>
           `<button type="button" class="desk-v1-what-filter" data-what-filter="${f.id}" aria-pressed="${st.filter === f.id}">${esc(f.label)}</button>`).join('')}</div>
         ${banner}
-        <div class="desk-v1-what-creates" data-what-creates>${creates.map((x) => _createHTML(x.c, x.f)).join('')}</div>
+        <div class="desk-v1-what-creates" data-what-creates>${creates.map((x) => _createHTML(x.c, x.f, camp)).join('')}</div>
         <div class="desk-v1-what-rows" data-what-rows>${rows.map(_rowHTML).join('') ||
           `<div class="desk-v1-camp-empty">${all.length && st.filter !== 'all' ? 'Nothing matches this filter.' : creates.length ? '' : 'No pieces yet — drag a content type from the tray below.'}</div>`}</div>
       </div>
@@ -394,8 +444,19 @@
       cardEl.querySelector('[data-what-remove]').onclick = () => _removeCreate(camp, card);
       cardEl.querySelectorAll('[data-what-source]').forEach((b) => b.onclick = () => {
         card.source = b.dataset.whatSource;
+        // Write new opens the article writer, Create new the storyboard: each
+        // is a page of its own, not a body inside the card.
+        if (card.source === 'write' && window.DeskV1Studio) { _closeCreate(camp, card); st.writer = { familyId: fam.id, tab: 0 }; _repaint(); return; }
+        if (card.source === 'create' && typeof window.deskV1Nav === 'function') { _openStoryboard(camp, fam); return; }
         _repaint('[data-what-change-source]');
       });
+      if (window.DeskV1Studio) {
+        window.DeskV1Studio.wireSourceBody(cardEl, { card, fam, camp }, {
+          attach: (asset) => _attachAsset(camp, fam, asset, card),
+          repaint: () => _repaint(),
+          openStoryboard: () => _openStoryboard(camp, fam),
+        });
+      }
       const change = cardEl.querySelector('[data-what-change-source]');
       if (change) change.onclick = () => { card.source = null; _repaint(`[data-what-create="${card.id}"] [data-what-source]`); };
       const open = cardEl.querySelector('[data-what-open]');
@@ -508,4 +569,5 @@
   window.deskV1FillWhat = deskV1FillWhat;
   window.deskV1RepaintWhat = deskV1RepaintWhat;
   window.deskV1WhatAddMedia = openAddMedia;
+  window.deskV1WhatStartCreate = deskV1WhatStartCreate;
 })();

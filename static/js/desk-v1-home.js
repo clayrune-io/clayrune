@@ -676,12 +676,15 @@
     if (!host) return;
     host.innerHTML = `
       <div class="desk-v1-home-crumbtools">
+        <button type="button" class="desk-v1-home-studio-btn">&#127916; Studio</button>
         <button type="button" class="desk-v1-home-engagement-btn">&#128172; Engagement${_engagementCountSuffix()}</button>
         <button type="button" class="desk-v1-home-newcamp-page-btn">&#65291; New campaign</button>
       </div>`;
     _bindNewCampaignPageBtn(host);
     const engagementBtn = host.querySelector('.desk-v1-home-engagement-btn');
     if (engagementBtn) engagementBtn.onclick = () => deskV1Nav('engagement', {});
+    const studioBtn = host.querySelector('.desk-v1-home-studio-btn');
+    if (studioBtn) studioBtn.onclick = () => deskV1Nav('studio', {});
   }
 
   // ── simulated worker heartbeat (A13): Home shows no heartbeat chip ever —

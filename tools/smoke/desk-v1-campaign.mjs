@@ -183,7 +183,7 @@ async function runToneRenderChecks(browser, tone) {
     ? ok(`[${tone.name}] the article row reads "ARTICLE · on 2 channels"`)
     : fail(`[${tone.name}] article row wrong: ${JSON.stringify(art)}`);
   const agentRow = await page.textContent('[data-family-id="fam-agent-live-run"] [data-what-status]').catch(() => '');
-  /rendering/.test(agentRow)
+  /rendering/i.test(agentRow)
     ? ok(`[${tone.name}] a video still rendering says so in its status column: "${agentRow.trim()}"`)
     : fail(`[${tone.name}] rendering status missing: ${JSON.stringify(agentRow)}`);
   const multi = await page.$$eval('[data-family-id="fam-30-testers"] .desk-v1-what-thumb', (els) => els.length);
