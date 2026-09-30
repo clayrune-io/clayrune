@@ -354,6 +354,9 @@
   }
 
   window.deskV1RenderRetroSection = _renderRetroSection;
+  // Seam for the project page's Playbook (R2-16): the same code-rendered
+  // sentence, or Ron's own wording when he edited it on Confirm.
+  window.deskV1FindingSentence = function (f) { return f.edited_text ? esc(f.edited_text) : _findingSentence(f); };
   // Additive seam for R2-2 (Home's Needs-you column)/R2-16 (project Playbook)
   // to read without this file touching either of their own: "Retro ready: n
   // findings to confirm" (§10.4's Home row) is exactly this count.
