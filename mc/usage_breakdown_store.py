@@ -47,6 +47,13 @@ Four tables, schema-versioned via `PRAGMA user_version`:
     at each interval boundary it's alive for -- splitting one long turn into
     several short, boundary-aligned segments that CAN be fully contained,
     instead of requiring the whole turn to fit inside one <=10-minute pair.
+    Schema v7 (backlog 4668eafc follow-up 6, Kestrel's token-accounting
+    review) adds three nullable columns to session_fact AND session_checkpoint:
+    `cache_write_5m` / `cache_write_1h` (the TTL split OF `input_cache_write`,
+    never additional to it) and `model_usage` (JSON, {model: {input_fresh,
+    input_cache_write, input_cache_read, output_tokens}}). NULL = unknown --
+    every row written before v7, and every Codex row, stays NULL; nothing is
+    backfilled or invented.
     Same dedup shape as 'completion'/'turn_start' (a partial unique index on
     (session_id, observed_at), never one-per-session, since a session gets
     one per sampler tick for as long as it stays running).
@@ -77,13 +84,14 @@ is ever written here — only the normalized facts the spec's tables define.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 APPLICATION_ID = 0x4D435542  # 'MCUB'
 DB_FILENAME = 'usage_breakdown.sqlite'
 
@@ -113,6 +121,11 @@ _CODE_DELTA_LIFETIME_SEED_SQL = (
     "FROM code_delta WHERE status='ok' AND base_commit IS NOT NULL"
 )
 
+# Schema v7 columns, added to BOTH session_fact and session_checkpoint.
+_V7_COLUMNS = (('cache_write_5m', 'INTEGER'), ('cache_write_1h', 'INTEGER'),
+               ('model_usage', 'TEXT'))
+_JSON_COLUMNS = ('model_usage',)
+
 # Schema v3 shape (docs/_journal/4668eafc-mc998-fenn-review.md finding 3,
 # P1-3): no table-level UNIQUE(session_id, checkpoint_type) -- that froze
 # every session's completion checkpoint at its first turn. A 'baseline' row
@@ -134,7 +147,10 @@ _SESSION_CHECKPOINT_TABLE_SQL = (
     ' output_tokens INTEGER,'
     ' output_reasoning INTEGER,'
     ' token_coverage TEXT NOT NULL,'
-    ' created_at TEXT NOT NULL'
+    ' created_at TEXT NOT NULL,'
+    ' cache_write_5m INTEGER,'
+    ' cache_write_1h INTEGER,'
+    ' model_usage TEXT'
     ')'
 )
 _IDX_SESSION_CHECKPOINT_SESSION = (
@@ -197,6 +213,23 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _encode_json(value: Any) -> Optional[str]:
+    """NULL stays NULL (unknown); an empty dict is stored as '{}' (a known empty)."""
+    return None if value is None else json.dumps(value, separators=(',', ':'), sort_keys=True)
+
+
+def _decode_row(row: Any) -> dict:
+    d = dict(row)
+    for col in _JSON_COLUMNS:
+        raw = d.get(col)
+        if isinstance(raw, str):
+            try:
+                d[col] = json.loads(raw)
+            except ValueError:
+                d[col] = None
+    return d
+
+
 class UsageBreakdownStore:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path).absolute()
@@ -257,7 +290,10 @@ class UsageBreakdownStore:
                 ' housekeeping INTEGER NOT NULL DEFAULT 0,'
                 ' parent_session_id TEXT,'
                 ' updated_at TEXT NOT NULL,'
-                ' created_at TEXT NOT NULL'
+                ' created_at TEXT NOT NULL,'
+                ' cache_write_5m INTEGER,'
+                ' cache_write_1h INTEGER,'
+                ' model_usage TEXT'
                 ')'
             )
             db.execute('CREATE INDEX idx_session_fact_ended '
@@ -353,6 +389,20 @@ class UsageBreakdownStore:
                 "SELECT name FROM sqlite_master WHERE type='index'")}
             if 'idx_session_checkpoint_sample_tick_dedup' not in existing_indexes:
                 db.execute(_IDX_SESSION_CHECKPOINT_SAMPLE_TICK_DEDUP)
+            version = 6
+            db.execute('PRAGMA user_version=6')
+        if version == 6 and app == APPLICATION_ID and (
+                {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                - {'sqlite_sequence'}) == _TABLES:
+            # v6->v7 (follow-up 6): three nullable columns on both tables.
+            # Existing rows keep NULL = unknown. A v1/v2-origin db reaches this
+            # point with session_checkpoint already rebuilt under the v7
+            # shape, so add only what is actually missing.
+            for table in ('session_fact', 'session_checkpoint'):
+                have = {r[1] for r in db.execute(f'PRAGMA table_info({table})')}
+                for col, typ in _V7_COLUMNS:
+                    if col not in have:
+                        db.execute(f'ALTER TABLE {table} ADD COLUMN {col} {typ}')
             db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
             return
         if (app != APPLICATION_ID or version != SCHEMA_VERSION
@@ -444,8 +494,9 @@ class UsageBreakdownStore:
                 'ended_at', 'input_fresh', 'input_cache_write', 'input_cache_read',
                 'input_processed_total', 'output_tokens', 'output_reasoning',
                 'token_source', 'token_coverage', 'included', 'housekeeping',
-                'parent_session_id']
+                'parent_session_id', 'cache_write_5m', 'cache_write_1h', 'model_usage']
         row = {c: fields.get(c) for c in cols}
+        row['model_usage'] = _encode_json(row['model_usage'])
         row['included'] = 1 if fields.get('included', True) else 0
         row['housekeeping'] = 1 if fields.get('housekeeping', False) else 0
         row['token_coverage'] = row.get('token_coverage') or 'unavailable'
@@ -590,7 +641,7 @@ class UsageBreakdownStore:
         with self._connection(write=False) as db:
             row = db.execute('SELECT * FROM session_fact WHERE session_id=?',
                               (session_id,)).fetchone()
-            return dict(row) if row else None
+            return _decode_row(row) if row else None
 
     def list_session_facts(self, *, since: Optional[str] = None,
                             include_excluded: bool = True) -> list[dict]:
@@ -606,7 +657,7 @@ class UsageBreakdownStore:
             if clauses:
                 q += ' WHERE ' + ' AND '.join(clauses)
             q += ' ORDER BY COALESCE(ended_at, started_at) ASC'
-            return [dict(r) for r in db.execute(q, params).fetchall()]
+            return [_decode_row(r) for r in db.execute(q, params).fetchall()]
 
     # ── session_checkpoint ──────────────────────────────────────────────
 
@@ -616,6 +667,8 @@ class UsageBreakdownStore:
         input_cache_read: Optional[int] = None, input_processed_total: Optional[int] = None,
         output_tokens: Optional[int] = None, output_reasoning: Optional[int] = None,
         token_coverage: str = 'unavailable',
+        cache_write_5m: Optional[int] = None, cache_write_1h: Optional[int] = None,
+        model_usage: Optional[dict] = None,
     ) -> bool:
         """Record one timestamped cumulative-token snapshot for `session_id`.
         Returns False (no-op) when this would violate one of the two partial
@@ -639,10 +692,12 @@ class UsageBreakdownStore:
                     'INSERT INTO session_checkpoint '
                     '(session_id, provider, checkpoint_type, observed_at, input_fresh, input_cache_write, '
                     ' input_cache_read, input_processed_total, output_tokens, output_reasoning, '
-                    ' token_coverage, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                    ' token_coverage, created_at, cache_write_5m, cache_write_1h, model_usage) '
+                    'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                     (session_id, provider, checkpoint_type, observed_at, input_fresh, input_cache_write,
                      input_cache_read, input_processed_total, output_tokens, output_reasoning,
-                     token_coverage, _now()),
+                     token_coverage, _now(), cache_write_5m, cache_write_1h,
+                     _encode_json(model_usage)),
                 )
             except sqlite3.IntegrityError:
                 return False
@@ -659,7 +714,7 @@ class UsageBreakdownStore:
                 q += ' WHERE observed_at >= ?'
                 params.append(since)
             q += ' ORDER BY session_id ASC, observed_at ASC'
-            return [dict(r) for r in db.execute(q, params).fetchall()]
+            return [_decode_row(r) for r in db.execute(q, params).fetchall()]
 
     def get_session_checkpoints(self, session_id: str) -> dict[str, Any]:
         """{'baseline': row|None, 'turn_starts': [row, ...], 'completions':
@@ -684,7 +739,7 @@ class UsageBreakdownStore:
                 'baseline': None, 'turn_starts': [], 'completions': [], 'sample_ticks': [],
             }
             for r in rows:
-                d = dict(r)
+                d = _decode_row(r)
                 ctype = d['checkpoint_type']
                 if ctype == 'baseline':
                     result['baseline'] = d

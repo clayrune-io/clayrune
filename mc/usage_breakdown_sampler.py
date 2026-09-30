@@ -159,6 +159,9 @@ def session_fact_from_entry(entry: dict, *, project_id: str,
     _raw_usage = entry.get('usage')
     nested: dict = _raw_usage if isinstance(_raw_usage, dict) else {}
     fresh = cache_write = cache_read = output = reasoning = processed_total = None
+    # Cache-write TTL split + per-model category totals (schema v7). Only the
+    # transcript path can supply them; None = unknown, never a fabricated 0.
+    cw_5m = cw_1h = model_usage = None
     token_source = 'unavailable'
     coverage = 'unavailable'
 
@@ -179,6 +182,10 @@ def session_fact_from_entry(entry: dict, *, project_id: str,
             cache_write = int(entry.get('cache_write_tokens') or 0)
             output = int(top_out or 0)
             processed_total = fresh + cache_write + cache_read
+            cw_5m = entry.get('cache_write_5m_tokens')
+            cw_1h = entry.get('cache_write_1h_tokens')
+            mu = entry.get('model_usage')
+            model_usage = mu if isinstance(mu, dict) and mu else None
             token_source, coverage = 'transcript', 'complete'
         elif nested:
             n_fresh = int(nested.get('input_tokens') or 0)
@@ -225,6 +232,9 @@ def session_fact_from_entry(entry: dict, *, project_id: str,
         'input_processed_total': processed_total,
         'output_tokens': output,
         'output_reasoning': reasoning,
+        'cache_write_5m': cw_5m,
+        'cache_write_1h': cw_1h,
+        'model_usage': model_usage,
         'token_source': token_source,
         'token_coverage': coverage,
         'included': included,
@@ -247,6 +257,12 @@ def baseline_checkpoint_fields(session_id: str, *, provider: str, observed_at: s
         'input_fresh': 0, 'input_cache_write': 0, 'input_cache_read': 0,
         'input_processed_total': 0, 'output_tokens': 0, 'output_reasoning': 0,
         'token_coverage': 'complete',
+        # A Claude session starts with nothing cached under either TTL and
+        # no model used -- a confirmed zero. Codex reports neither, so its
+        # rows stay NULL (unknown).
+        'cache_write_5m': 0 if provider == 'claude' else None,
+        'cache_write_1h': 0 if provider == 'claude' else None,
+        'model_usage': {} if provider == 'claude' else None,
     }
 
 
@@ -277,6 +293,8 @@ def turn_start_checkpoint_fields(session_id: str, *, provider: str, observed_at:
         'input_processed_total': fact.get('input_processed_total'),
         'output_tokens': fact.get('output_tokens'), 'output_reasoning': fact.get('output_reasoning'),
         'token_coverage': fact.get('token_coverage') or 'unavailable',
+        'cache_write_5m': fact.get('cache_write_5m'), 'cache_write_1h': fact.get('cache_write_1h'),
+        'model_usage': fact.get('model_usage'),
     }
 
 
@@ -306,6 +324,8 @@ def sample_tick_checkpoint_fields(session_id: str, *, provider: str, observed_at
         'input_processed_total': telemetry.get('input_processed_total'),
         'output_tokens': telemetry.get('output_tokens'), 'output_reasoning': telemetry.get('output_reasoning'),
         'token_coverage': telemetry.get('token_coverage') or 'unavailable',
+        'cache_write_5m': telemetry.get('cache_write_5m'), 'cache_write_1h': telemetry.get('cache_write_1h'),
+        'model_usage': telemetry.get('model_usage'),
     }
 
 
@@ -323,6 +343,8 @@ def completion_checkpoint_fields(fact: dict, *, session_id: str, observed_at: st
         'input_processed_total': fact.get('input_processed_total'),
         'output_tokens': fact.get('output_tokens'), 'output_reasoning': fact.get('output_reasoning'),
         'token_coverage': fact.get('token_coverage') or 'unavailable',
+        'cache_write_5m': fact.get('cache_write_5m'), 'cache_write_1h': fact.get('cache_write_1h'),
+        'model_usage': fact.get('model_usage'),
     }
 
 

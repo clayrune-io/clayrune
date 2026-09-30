@@ -693,6 +693,12 @@
     display: flex; justify-content: space-between; gap: 8px;
     font-size: 11px; color: var(--text-dim); padding: 2px 0;
   }
+  /* Input breakdown (Fresh / Cache reads / Cache writes): indented, dimmer
+     sub-rows under the Input total, on the totals block and on the phone cards. */
+  .sys-status-popover .ssp-row.ub-subrow { padding: 1px 0 1px 12px; border-bottom: none; }
+  .sys-status-popover .ssp-row.ub-subrow .ssp-k { color: var(--text-faint); }
+  .sys-status-popover .ub-card-subrow { padding-left: 10px; color: var(--text-faint); }
+  .sys-status-popover .ub-rowsplit { color: var(--text-faint); font-size: 10px; }
   @media (max-width: 960px) {
     .sys-status-popover .ub-table-wrap { display: none; }
     .sys-status-popover .ub-cards { display: block; }
