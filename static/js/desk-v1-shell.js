@@ -293,11 +293,20 @@
       window.deskV1RenderResults(tabbodyEl, params);
     } else if (panel === 'when' && typeof window.deskV1RenderCalendar === 'function') {
       window.deskV1RenderCalendar(tabbodyEl, params);
-    } else if (panel === 'how' || panel === 'where') {
-      // §4.1 Absorbs column: no dedicated renderer ships until R2-6 (how)
-      // and R2-10 (where) — a one-line placeholder, not a silent blank body.
-      const label = panel === 'how' ? 'Strategy (How)' : 'Platforms (Where)';
-      tabbodyEl.innerHTML = `<div class="desk-v1-stub-inline">${esc(label)} isn't built yet.</div>`;
+    } else if (panel === 'how' && typeof window.deskV1RenderHow === 'function') {
+      // R2-6: strategy + angle + agent + budget + the Suggest task.
+      window.deskV1RenderHow(tabbodyEl, params);
+    } else if (panel === 'where') {
+      // §4.1 Absorbs column: no dedicated renderer ships until R2-10 — a
+      // one-line placeholder, not a silent blank body. R2-6's Suggest task
+      // can still leave a `? suggested` placement here to show (its own
+      // acceptance row), read straight off the fixture rather than building
+      // any of R2-10's real column/drag UI.
+      const camp = ((window.DeskV1Fixtures && window.DeskV1Fixtures.campaigns) || []).find((c) => c.id === params.campaignId);
+      const placement = camp && camp.how && camp.how.suggested && camp.how.suggested.where;
+      tabbodyEl.innerHTML = placement
+        ? `<div class="desk-v1-stub-inline">Platforms (Where) isn't built yet. <strong>? suggested:</strong> ${esc(placement.label || placement.channelId || '')}</div>`
+        : `<div class="desk-v1-stub-inline">Platforms (Where) isn't built yet.</div>`;
     } else if (typeof window.deskV1FillCampaignTabBody === 'function') {
       window.deskV1FillCampaignTabBody(tabbodyEl, params);
     } else {
