@@ -56,12 +56,8 @@ const PROJECTS = [{
 // are reached through real navigation below; the rest are item-level surfaces
 // normally reached FROM a campaign, so they are entered directly via
 // `deskV1Nav`, which is exactly how a later ticket's own UI will reach them.
-// 'rules' is deliberately excluded (Dave's review pass 3): ROUTES['rules']
-// still exists in desk-v1-shell.js so old deep links resolve (T5's "Raise
-// budget…"), but deskV1RenderRules immediately deskV1PopTo('campaign') and
-// opens the real rules POPOVER instead of painting a stub under a
-// "‹ <campaign>" crumb — it never has the page shape this loop asserts, so
-// it gets its own check below instead.
+// R2-3b retired the 'rules' route and its popover (T5's "Raise budget…" now
+// opens the ② How stop), so there is nothing left to exclude here.
 //
 // T2 (§2, §8): 'calendar', 'conversations' and 'results' stopped being real
 // pushed routes — `deskV1Nav` now resolves them to an IN-PLACE panel switch
@@ -70,11 +66,11 @@ const PROJECTS = [{
 // below (PANEL_ALIAS_ROUTES); ITEM_ROUTES now covers only the routes that
 // still push a real stack entry.
 const ITEM_ROUTES = ['review', 'video'];
-const PANEL_ALIAS_ROUTES = ['calendar', 'conversations', 'results'];
+const PANEL_ALIAS_ROUTES = ['calendar', 'results'];
 // R2-3: the tab strip is now the six-stop map — 'results' lands on ① Goal
 // and 'calendar' lands on ④ When (desk-v1-shell.js's PANEL_ALIASES).
-// 'conversations' has no map stop of its own (§6, moves to Engagement at
-// R2-12), so it's checked separately below, not through this stop lookup.
+// R2-3b: 'conversations' is no longer a campaign panel — it routes to
+// Engagement filtered to the campaign, checked separately below.
 const PANEL_ALIAS_STOP = { calendar: 'when', results: 'goal' };
 const TONES = [
   { name: 'default/dark', ls: {} },
@@ -267,13 +263,8 @@ async function runTone(browser, tone) {
     } else {
       fail(`[${tone.name}] alias "${route}" changed the crumb title: ${JSON.stringify(title)}`);
     }
-    // R2-3: 'conversations' has no map stop (checked via the rendered panel
-    // body); 'calendar'/'results' land on a real stop button, "here" state.
-    if (route === 'conversations') {
-      const convShown = await page.$('.desk-v1-conv-layout, .desk-v1-conversations, .desk-v1-conv-empty, .desk-v1-stub');
-      if (convShown) ok(`[${tone.name}] alias "${route}" selects the conversations panel`);
-      else fail(`[${tone.name}] alias "${route}" did not select the conversations panel`);
-    } else {
+    // 'calendar'/'results' land on a real stop button, "here" state.
+    {
       const stop = PANEL_ALIAS_STOP[route];
       const stopSelected = await page.$eval(`[data-stop="${stop}"]`, (el) => el.dataset.state === 'here').catch(() => false);
       if (stopSelected) {
@@ -296,28 +287,31 @@ async function runTone(browser, tone) {
     await page.waitForTimeout(30);
   }
 
-  // ── 'rules' is not a page (Dave's review pass 3): navigating to it must
-  // bounce straight back to the campaign page and open the real popover, with
-  // Back reading the campaign's actual parent (Home) — never a "‹ Rules"
-  // crumb or a bare stub. ───────────────────────────────────────────────────
+  // ── R2-3b: 'conversations' is not a campaign panel any more — the old deep
+  // link navigates to Engagement filtered to that campaign (a pushed route,
+  // so Back returns to the campaign page), and the campaign page itself has
+  // no Conversations tab. The 'rules' route and popover are retired: nothing
+  // on the campaign page offers a rules trigger. ─────────────────────────────
   await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
   await page.waitForTimeout(30);
-  await page.evaluate(() => window.deskV1Nav('rules', { campaignId: 'camp-1' }));
-  await page.waitForSelector('.desk-v1-rules-pop', { timeout: 4000 }).catch(() => {});
-  const rulesTitle = (await page.textContent('.desk-v1-crumb-title').catch(() => '') || '').trim();
-  const rulesPopOpen = !!(await page.$('.desk-v1-rules-pop'));
-  if (rulesPopOpen && rulesTitle.includes('Windows beta testers')) {
-    ok(`[${tone.name}] "rules" bounces back to the campaign page and opens the popover, not a page`);
+  const hasConvTab = await page.$('.desk-v1-campaign [data-stop="conversations"], .desk-v1-campaign [data-tab="conversations"]');
+  if (!hasConvTab) ok(`[${tone.name}] campaign page has no Conversations tab/stop`);
+  else fail(`[${tone.name}] campaign page still has a Conversations tab/stop`);
+  const hasRulesTrigger = await page.$('.desk-v1-campaign [data-rules-edit], .desk-v1-campaign .desk-v1-camp-rule-chip');
+  if (!hasRulesTrigger) ok(`[${tone.name}] campaign page has no rules popover trigger or rule chips`);
+  else fail(`[${tone.name}] campaign page still has a rules trigger/chip`);
+  await page.evaluate(() => window.deskV1Nav('conversations', { campaignId: 'camp-1' }));
+  await page.waitForTimeout(60);
+  const convTitle = (await page.textContent('.desk-v1-crumb-title').catch(() => '') || '').trim();
+  const convShown = await page.$('.desk-v1-conv-layout, .desk-v1-conversations, .desk-v1-conv-empty');
+  const convBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
+  if (convTitle === 'Engagement' && convShown && convBack.includes('Windows beta testers')) {
+    ok(`[${tone.name}] old "conversations" deep link lands on Engagement filtered to the campaign; Back reads "${convBack}"`);
   } else {
-    fail(`[${tone.name}] "rules" did not land on the campaign page + popover: popoverOpen=${rulesPopOpen}, title=${JSON.stringify(rulesTitle)}`);
+    fail(`[${tone.name}] "conversations" deep link wrong: title=${JSON.stringify(convTitle)}, conversationsShown=${!!convShown}, back=${JSON.stringify(convBack)}`);
   }
-  const rulesBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
-  if (rulesBack.includes('Desk')) {
-    ok(`[${tone.name}] "rules" Back crumb names the campaign's real parent: "${rulesBack}"`);
-  } else {
-    fail(`[${tone.name}] "rules" Back crumb wrong: ${JSON.stringify(rulesBack)}`);
-  }
-  await page.keyboard.press('Escape');
+  await page.click('.desk-v1-back'); // engagement -> campaign
+  await page.waitForTimeout(30);
   await page.click('.desk-v1-back'); // campaign -> home, reset for the A1 sweep below
   await page.waitForTimeout(30);
 

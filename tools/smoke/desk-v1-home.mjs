@@ -392,6 +392,7 @@ async function runNewCampaignEntry(browser) {
       crumbPicker: !!document.querySelector('#desk-v1-crumb .desk-v1-projects-picker'),
       pickPill: /Setup\s*[—-]\s*Pick a project/.test(camp ? camp.innerText : ''),
       step1: !!document.querySelector('[data-setup-title]'),
+      setupText: /Setup\s+\d\s+of\s+3/.test(document.body.innerText),
     };
   });
   if (top.count === before + 1 && top.state === 'draft' && top.projectId === null) ok('R2-2f: page-level New campaign creates ONE Draft with no project');
@@ -401,7 +402,8 @@ async function runNewCampaignEntry(browser) {
   // R2-2g: replaces R2-2f's "Project select is first on Goal" assertions.
   if (top.projectSelects === 0 && !top.crumbPicker) ok('R2-2g: a new campaign page has NO project selector on the Goal stop and no crumb picker (zero selectors until Launch)');
   else fail(`R2-2g: project selector still on the new campaign page: ${JSON.stringify(top)}`);
-  if (!top.pickPill && top.step1) ok('R2-2g: no "Setup — Pick a project" gate; the draft enters setup step 1 directly');
+  // R2-3b: IA4's setup steps are gone — no gate, no "Setup n of 3", no step-1 form.
+  if (!top.pickPill && !top.step1 && !top.setupText) ok('R2-3b: no "Setup — Pick a project" gate and no IA4 setup step; the draft opens straight on the map');
   else fail(`R2-2g: project-less draft still gated: ${JSON.stringify(top)}`);
 
   // (b) Per-block link prefills that block's project (Project select shows it).
@@ -444,7 +446,7 @@ async function runNoProjectDrafts(browser) {
   // Untouched -> Back discards it, no block.
   const n0 = await campCount();
   await page.click('.desk-v1-home-newcamp-page-btn');
-  await page.waitForSelector('[data-setup-title]', { timeout: 4000 });
+  await page.waitForSelector('.desk-v1-map-stop[data-stop="goal"]', { timeout: 4000 });
   if ((await campCount()) === n0 + 1) ok('R2-2f: New campaign created the draft');
   else fail('R2-2f: draft not created');
   await page.click('.desk-v1-back');
@@ -496,6 +498,58 @@ async function runNoProjectDrafts(browser) {
   else fail(`R2-2f: reopening a project-less row wrong: ${JSON.stringify(reopened)}`);
 
   reportUncaught(pageErrors, '[no-project-drafts]');
+  await ctx.close();
+}
+
+// ── R2-3b (Ron 2026-09-30: "an option to delete a drafted campaign, at least
+// from the main Desk page"): only Draft rows carry a trash button; click
+// deletes without opening the row and without a confirm, an Undo toast brings
+// it back, non-draft rows (active/proposed) have none. ──────────────────────
+async function runDraftDelete(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
+  const count = () => page.evaluate(() => window.DeskV1Fixtures.campaigns.length);
+
+  // Non-draft rows: no trash.
+  const nonDraft = await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll('.desk-v1-home-row')).filter((r) => r.dataset.state !== 'draft');
+    return { rows: rows.length, withTrash: rows.filter((r) => r.querySelector('[data-delete-draft]')).length, states: Array.from(new Set(rows.map((r) => r.dataset.state))) };
+  });
+  if (nonDraft.rows >= 2 && nonDraft.withTrash === 0 && nonDraft.states.includes('active') && nonDraft.states.includes('proposed')) ok(`R2-3b: non-draft rows (${nonDraft.states.join('/')}) have no trash button`);
+  else fail(`R2-3b: non-draft rows wrong: ${JSON.stringify(nonDraft)}`);
+
+  // Make a touched draft (typing a goal field) so Back keeps it on Home.
+  const n0 = await count();
+  await page.click('.desk-v1-home-newcamp-page-btn');
+  await page.waitForSelector('[data-goal-field="metric"]', { timeout: 4000 });
+  await page.fill('[data-goal-field="metric"]', 'tester signups');
+  await page.dispatchEvent('[data-goal-field="metric"]', 'change');
+  await page.click('.desk-v1-back');
+  await page.waitForSelector('[data-no-project-block] .desk-v1-home-row[data-state="draft"]', { timeout: 4000 });
+  const trashInfo = await page.evaluate(() => {
+    const row = document.querySelector('.desk-v1-home-row[data-state="draft"]');
+    const t = row.querySelector('[data-delete-draft]');
+    const rr = row.getBoundingClientRect(); const tr = t ? t.getBoundingClientRect() : null;
+    return { has: !!t, label: t && t.getAttribute('aria-label'), title: row.querySelector('.desk-v1-home-row-title').textContent, rightGap: tr ? rr.right - tr.right : null, insideRow: !!tr && tr.left >= rr.left && tr.right <= rr.right };
+  });
+  if (trashInfo.has && trashInfo.label === `Delete draft ${trashInfo.title}` && trashInfo.insideRow && trashInfo.rightGap < 24) ok(`R2-3b: Draft row has a trash at its right edge, aria-label "${trashInfo.label}"`);
+  else fail(`R2-3b: draft trash wrong: ${JSON.stringify(trashInfo)}`);
+
+  // Click: deleted, not navigated (still on Home), no confirm sheet.
+  await page.click('[data-delete-draft]');
+  const after = await page.evaluate(() => ({
+    onHome: !!document.querySelector('.desk-v1-home-board'), onCampaign: !!document.querySelector('.desk-v1-campaign'),
+    drafts: document.querySelectorAll('.desk-v1-home-row[data-state="draft"]').length, confirm: !!document.querySelector('.desk-v1-rules-confirm-overlay'),
+  }));
+  if ((await count()) === n0 && after.onHome && !after.onCampaign && after.drafts === 0 && !after.confirm) ok('R2-3b: trash click deletes the draft, stays on Home (row not opened), no confirm dialog');
+  else fail(`R2-3b: trash click wrong: ${JSON.stringify({ n0, now: await count(), after })}`);
+
+  // Undo brings the row back.
+  await page.locator('.toast-action').last().locator('.toast-btn.primary').click();
+  await page.waitForSelector('.desk-v1-home-row[data-state="draft"]', { timeout: 4000 });
+  if ((await count()) === n0 + 1) ok('R2-3b: Undo restores the deleted draft row');
+  else fail(`R2-3b: Undo did not restore the draft: ${await count()} vs ${n0 + 1}`);
+
+  reportUncaught(pageErrors, '[draft-delete]');
   await ctx.close();
 }
 
@@ -683,6 +737,7 @@ try {
   await runNeedsYouDeepLinks(browser);
   await runNewCampaignEntry(browser);
   await runNoProjectDrafts(browser);
+  await runDraftDelete(browser);
   await runDesktopLayoutChecks(browser);
   await runR2_2cHeaderAcceptance(browser);
   await runR2_2eHeaderCleanup(browser);

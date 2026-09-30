@@ -131,16 +131,15 @@ async function runToneRenderChecks(browser, tone) {
     ? ok(`[${tone.name}] all 3 campaign channels render via the shared channel badge: ${JSON.stringify(chanLabels)}`)
     : fail(`[${tone.name}] channel badges missing one: ${JSON.stringify(chanLabels)}`);
 
-  // A12: rule chips are real rule values, and the popover itself is out of
-  // scope for T2a (docs/desk_v1_r0_plan.md) — only the Edit hook exists.
-  // IA2 (THE_DESK_V1_IA_REVISION.md §3): the review-mode chip ("You approve
-  // each piece") retired with reviewMode itself — no replacement chip.
+  // R2-3b retired the rule chips and the rules popover's Edit hook (the
+  // accepted-bounds table lives on ⑥ Launch now): the old A12 "chips are real
+  // rule values" + "Edit hook renders" checks became their absence.
   const ruleChips = await page.$$eval('.desk-v1-camp-rule-chip', (els) => els.map((e) => e.textContent.trim()));
-  ruleChips.includes('Organic') && ruleChips.includes('≤3/wk')
-    ? ok(`[${tone.name}] rule chips reflect the fixture's real rules: ${JSON.stringify(ruleChips)}`)
-    : fail(`[${tone.name}] rule chips wrong: ${JSON.stringify(ruleChips)}`);
   const editBtn = await page.$('[data-rules-edit]');
-  editBtn ? ok(`[${tone.name}] Rules "Edit" hook renders (popover itself is T2b)`) : fail(`[${tone.name}] Rules Edit hook missing`);
+  const rulesGroup = await page.$('[data-summary-group="rules"]');
+  !ruleChips.length && !editBtn && !rulesGroup
+    ? ok(`[${tone.name}] R2-3b: no rule chips, no Rules group and no Edit hook on the summary bar`)
+    : fail(`[${tone.name}] R2-3b: rules UI still on the summary bar: chips=${JSON.stringify(ruleChips)}, edit=${!!editBtn}, group=${!!rulesGroup}`);
 
   // R2-3: the old Content/Conversations/Results tab strip is now the ①-⑥ map
   // stepper (IA revision 2 §3/§4.1). navToCampaign() opens camp-1 (Active)
@@ -496,18 +495,19 @@ async function runPauseResume(browser) {
 
   // (d) An expired end date isn't covered by validatePlan's own bound table
   // (§4) — Resume catches it separately (_planExpiryReason) and must not
-  // silently restart. T4/T5 (Review + start) aren't built on this branch, so
-  // the accepted interim is the rules-edit popover (T2b) plus an explaining
-  // toast, not an invented step 4.
+  // silently restart. R2-3b: the rules popover that used to stand in for the
+  // "Review + start" step is retired, so Resume lands on ⑥ Launch (where the
+  // missing terms are listed) plus an explaining toast.
   await page.click('[data-pause-btn]');
   await page.waitForSelector('[data-resume-btn]', { timeout: 2000 });
   await page.evaluate(() => { window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').plan.end.date = '2020-01-01'; });
   await page.click('[data-resume-btn]');
   await page.waitForSelector('.desk-v1-rules-confirm-overlay', { timeout: 2000 });
   await page.click('[data-confirm-accept]');
-  await page.waitForSelector('.desk-v1-rules-pop-overlay', { timeout: 2000 }).catch(() => {});
+  await page.waitForSelector('.desk-v1-map-launch', { timeout: 2000 }).catch(() => {});
+  const onLaunch = await page.$eval('[data-stop="launch"]', (el) => el.dataset.state === 'here').catch(() => false);
   const popOpen = await page.$('.desk-v1-rules-pop-overlay');
-  popOpen ? ok('T2/6.2: expired-end Resume opens the rules popover (T2’s accepted interim for T4/T5’s step 4)') : fail('T2/6.2: expired-end Resume did not open the rules popover');
+  onLaunch && !popOpen ? ok('T2/6.2: expired-end Resume routes to ⑥ Launch (no rules popover any more)') : fail(`T2/6.2: expired-end Resume did not land on ⑥ Launch: onLaunch=${onLaunch}, popover=${!!popOpen}`);
   const expiredToast = (await lastToast().textContent().catch(() => '') || '');
   /its end date has passed/.test(expiredToast)
     ? ok(`T2/6.2: expired-end Resume explains why via toast: "${expiredToast.trim()}"`)
@@ -553,11 +553,14 @@ async function runFreshEmptyStates(browser) {
     ? ok(`IA6: fresh Active Goal (R2-4) shows the untracked hint: "${hintText}"`)
     : fail(`IA6: fresh Active Goal editor hint wrong: ${JSON.stringify(hintText)}`);
 
+  // R2-3b: the campaign's Conversations tab is gone; the old deep link lands
+  // on Engagement filtered to this campaign, which mounts the same component
+  // (and so the same §6.1 fresh-empty copy).
   await page.evaluate(() => window.deskV1GotoCampaignPanel('conversations', { campaignId: 'camp-4' }));
-  await page.waitForSelector('#desk-v1-camp-tabbody .desk-v1-conversations, #desk-v1-camp-tabbody .desk-v1-conv-empty', { timeout: 2000 });
-  const convText = (await page.textContent('#desk-v1-camp-tabbody') || '');
+  await page.waitForSelector('.desk-v1-conv-empty', { timeout: 2000 });
+  const convText = (await page.textContent('.desk-v1-conv-empty') || '');
   /Replies show up here once a post is live\./.test(convText)
-    ? ok('IA6: fresh Active Conversations shows UX_PASS §6.1 copy: "Replies show up here once a post is live."')
+    ? ok('IA6: fresh Active campaign\'s conversations (via Engagement) show UX_PASS §6.1 copy: "Replies show up here once a post is live."')
     : fail(`IA6: fresh Active Conversations copy wrong: ${JSON.stringify(convText)}`);
 
   reportUncaught(pageErrors, '[ia6-fresh-empty]');
@@ -568,11 +571,10 @@ async function runRouteStackUnchanged(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToCampaign(page);
 
-  // R2-3: Conversations has no stop of its own any more — a deep-link call
-  // is the same in-place `_gotoCampaignPanel` path a tab click used to be
-  // (desk-v1-shell.js), so it still belongs in this same-stack-entry check.
-  await page.evaluate(() => window.deskV1GotoCampaignPanel('conversations', { campaignId: 'camp-1' }));
-  await page.waitForSelector('.desk-v1-conversations, .desk-v1-stub', { timeout: 2000 });
+  // R2-3b: Conversations is no longer a panel (it routes to Engagement, which
+  // DOES push), so the in-place leg here is the ② How stop.
+  await page.click('[data-stop="how"]');
+  await page.waitForSelector('[data-stop="how"][data-state="here"]', { timeout: 2000 });
   await page.click('[data-stop="goal"]');
   await page.waitForSelector('.desk-v1-results', { timeout: 2000 });
   await page.click('[data-stop="what"]');
@@ -606,19 +608,18 @@ async function runPosyDraftPersistence(browser) {
   // a route or rebuilds the skeleton, so the Posy box is the SAME DOM node
   // across a What -> Conversations -> What round trip, not merely one
   // holding the same value. Capture the node identity via a marker property
-  // (a fresh element from a rebuild would not carry it). R2-3: Conversations
-  // has no stop button any more, so the middle leg is the same deep-link
-  // call a Home/piece "Review" link would make, not a tab click.
+  // (a fresh element from a rebuild would not carry it). R2-3b: Conversations
+  // is no longer a panel, so the middle leg is the ② How stop.
   await page.evaluate(() => { document.getElementById('desk-v1-camp-posy-input')._deskv1SmokeMarker = 'same-node'; });
-  await page.evaluate(() => window.deskV1GotoCampaignPanel('conversations', { campaignId: 'camp-1' }));
-  await page.waitForSelector('.desk-v1-conversations, .desk-v1-stub', { timeout: 2000 });
+  await page.click('[data-stop="how"]');
+  await page.waitForSelector('[data-stop="how"][data-state="here"]', { timeout: 2000 });
   await page.click('[data-stop="what"]');
   await page.waitForSelector('#desk-v1-camp-posy-input', { timeout: 2000 });
   await page.waitForTimeout(50);
   const afterTabSwitch = await page.$eval('#desk-v1-camp-posy-input', (ta) => ta.value).catch(() => '');
   const sameNode = await page.evaluate(() => document.getElementById('desk-v1-camp-posy-input')._deskv1SmokeMarker === 'same-node').catch(() => false);
   afterTabSwitch === DRAFT && sameNode
-    ? ok('item 5/T2: Posy draft survives a What -> Conversations -> What panel switch, same DOM node (no route push)')
+    ? ok('item 5/T2: Posy draft survives a What -> How -> What panel switch, same DOM node (no route push)')
     : fail(`item 5/T2: draft or node identity lost across panel switch: value=${JSON.stringify(afterTabSwitch)}, sameNode=${sameNode}`);
 
   // Navigate away to Home and back — a harder rebuild than the tab strip
@@ -708,7 +709,7 @@ async function runProjectSelect(browser) {
     window.deskV1Nav('campaign', { campaignId: camp.id, projectId: null });
     return camp.id;
   });
-  await page.waitForSelector('[data-setup-title]', { timeout: 4000 });
+  await page.waitForSelector('.desk-v1-map-stop[data-stop="goal"]', { timeout: 4000 });
   const camp = (fn, ...a) => page.evaluate(([id, src, args]) => new Function('c', 'args', 'return (' + src + ')(c, args)')(window.DeskV1Fixtures.campaigns.find((c) => c.id === id), args), [campId, fn.toString(), a]);
   const pid = () => camp((c) => c.projectId);
   const rerender = () => page.evaluate(() => window.deskV1Render());
@@ -720,10 +721,10 @@ async function runProjectSelect(browser) {
     selects: document.querySelectorAll('select[data-setup-project]').length,
     crumb: document.querySelectorAll('#desk-v1-crumb .desk-v1-projects-picker').length,
     gate: /Setup\s*[—-]\s*Pick a project/.test(document.querySelector('.desk-v1-campaign').innerText),
-    step1: !!document.querySelector('[data-setup-title]'),
+    step1: !!document.querySelector('[data-setup-title]') || /Setup\s+\d\s+of\s+3/.test(document.querySelector('.desk-v1-campaign').innerText),
   }));
-  first.selects === 0 && first.crumb === 0 && !first.gate && first.step1
-    ? ok('R2-2g: a project-less draft lands on Goal with NO project selector, NO crumb picker and no "Setup — Pick a project" gate (setup step 1 shows)')
+  first.selects === 0 && first.crumb === 0 && !first.gate && !first.step1
+    ? ok('R2-2g: a project-less draft lands on Goal with NO project selector, NO crumb picker and no "Setup — Pick a project" gate (and, R2-3b, no IA4 setup step)')
     : fail(`R2-2g: Goal stop still carries a project control/gate: ${JSON.stringify(first)}`);
 
   // Agents are per project: no per-campaign picker, neutral note, nothing written.
@@ -764,8 +765,8 @@ async function runProjectSelect(browser) {
   launch.selects === 1 && launch.crumb === 0 && launch.value === '' && /Pick a project/.test(launch.prompt) && launch.options.includes('Clayrune') && launch.options.includes('Engulfing scanner')
     ? ok(`R2-2g: Launch shows exactly ONE project selector anywhere on the page, empty, listing ${launch.options.join(', ')}`)
     : fail(`R2-2g: Launch project select wrong: ${JSON.stringify(launch)}`);
-  launch.startDisabled && launch.missing.some((m) => /^project/.test(m))
-    ? ok(`R2-2g: Start is disabled until a project is picked ("${launch.missing.find((m) => /^project/.test(m))}")`)
+  launch.startDisabled && launch.missing.some((m) => /^Project/.test(m))
+    ? ok(`R2-2g: Start is disabled until a project is picked ("${launch.missing.find((m) => /^Project/.test(m))}")`)
     : fail(`R2-2g: Launch not blocked on a missing project: ${JSON.stringify(launch)}`);
 
   // Fill the plan by hand (accounts, cadence 3/wk, post cap) so the ceilings have something to check.
@@ -785,7 +786,7 @@ async function runProjectSelect(browser) {
   (await pid()) === 'engulfing_scanner' && conflict.value === 'engulfing_scanner' && /Set campaign project to Engulfing scanner/.test(conflict.toast)
     ? ok(`R2-2g: picking a project on Launch sets camp.projectId and is a commandBus toast ("${conflict.toast.trim().slice(0, 60)}")`)
     : fail(`R2-2g: pick did not stick: ${JSON.stringify({ pid: await pid(), conflict })}`);
-  conflict.startDisabled && conflict.missing.some((m) => /cadence.*3\/wk is over Engulfing scanner's ceiling of 2\/wk/.test(m)) && !conflict.missing.some((m) => /^project/.test(m))
+  conflict.startDisabled && conflict.missing.some((m) => /cadence.*3\/wk is over Engulfing scanner's ceiling of 2\/wk/.test(m)) && !conflict.missing.some((m) => /^Project/.test(m))
     ? ok(`R2-2g: after the pick the project's ceiling applies: "${conflict.missing.find((m) => /cadence/.test(m))}", Start still disabled`)
     : fail(`R2-2g: ceiling conflict not shown after pick: ${JSON.stringify(conflict)}`);
 
@@ -793,7 +794,7 @@ async function runProjectSelect(browser) {
   await page.locator('.toast .toast-btn.primary').last().click();
   await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
   const undone = await page.evaluate(() => ({ value: document.querySelector('[data-setup-project]').value, startDisabled: document.querySelector('[data-map-start-btn]').disabled, missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li')).map((b) => b.textContent.trim()) }));
-  (await pid()) === null && undone.value === '' && undone.startDisabled && undone.missing.some((m) => /^project/.test(m)) && !undone.missing.some((m) => /cadence/.test(m))
+  (await pid()) === null && undone.value === '' && undone.startDisabled && undone.missing.some((m) => /^Project/.test(m)) && !undone.missing.some((m) => /cadence/.test(m))
     ? ok('R2-2g: Undo reverts the Launch pick (camp.projectId null, select empty, conflict gone, project listed again)')
     : fail(`R2-2g: Undo did not revert: ${JSON.stringify({ pid: await pid(), undone })}`);
 
@@ -837,48 +838,10 @@ async function runProjectSelect(browser) {
   await ctx.close();
 }
 
-// ── R2-2g: the setup steps themselves run for a project-less draft — step 1
-// (subject/title/brief/outcome typed by hand, no defaults from a project),
-// step 2 (every workspace channel offered, "Draft the plan" needs no agent),
-// then Proposed's Launch still demands a project before Start. ──────────────
-async function runProjectLessSetup(browser) {
-  const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
-  const campId = await page.evaluate(() => {
-    const camp = window.deskV1CreateDraftCampaign(null);
-    window.DeskV1Fixtures.campaigns.push(camp);
-    window.deskV1Nav('campaign', { campaignId: camp.id, projectId: null });
-    return camp.id;
-  });
-  await page.waitForSelector('[data-setup-title]', { timeout: 4000 });
-  const s1 = await page.evaluate(() => ({ title: document.querySelector('[data-setup-title]').value, brief: document.querySelector('[data-setup-brief]').value, label: document.querySelector('[data-subject-label]').value, text: document.querySelector('.desk-v1-campaign').innerText }));
-  s1.title === '' && s1.brief === '' && s1.label === '' && !/\bundefined\b|\bnull\b/.test(s1.text)
-    ? ok('R2-2g: setup step 1 for a project-less draft is blank (nothing defaulted from a project), no "undefined"/"null"')
-    : fail(`R2-2g: project-less step 1 wrong: ${JSON.stringify(s1)}`);
-  await page.fill('[data-subject-label]', 'Restore points');
-  await page.fill('[data-setup-title]', 'Restore points launch');
-  await page.fill('[data-setup-brief]', 'Tell people about restore points.');
-  await page.click('[data-setup-continue]');
-  await page.waitForSelector('[data-setup-account]', { timeout: 4000 });
-  const s2 = await page.evaluate(() => ({ accounts: document.querySelectorAll('[data-setup-account]').length, text: document.querySelector('.desk-v1-campaign').innerText }));
-  s2.accounts > 0 && !/\bundefined\b|\bnull\b/.test(s2.text)
-    ? ok(`R2-2g: setup step 2 for a project-less draft offers the workspace channels (${s2.accounts}) with no agent required`)
-    : fail(`R2-2g: project-less step 2 wrong: ${JSON.stringify(s2)}`);
-  await page.click('[data-setup-draftplan]');
-  await page.waitForTimeout(120);
-  const after = await page.evaluate((id) => { const c = window.DeskV1Fixtures.campaigns.find((x) => x.id === id); return { state: c.state, projectId: c.projectId, agent: !!(c.how && c.how.agent), accounts: c.plan.accounts.length }; }, campId);
-  after.state === 'proposed' && after.projectId === null && !after.agent && after.accounts > 0
-    ? ok('R2-2g: "Draft the plan" completes with no project and no agent (campaign Proposed, projectId null, how.agent unset)')
-    : fail(`R2-2g: Draft the plan dead-ended: ${JSON.stringify(after)}`);
-  await page.click('.desk-v1-map-stop[data-stop="launch"]');
-  await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
-  const blocked = await page.evaluate(() => ({ startDisabled: document.querySelector('[data-map-start-btn]').disabled, missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li')).map((b) => b.textContent.trim()) }));
-  blocked.startDisabled && blocked.missing.some((m) => /^project/.test(m))
-    ? ok('R2-2g: a Proposed project-less campaign is still blocked at Launch until a project is picked')
-    : fail(`R2-2g: Proposed project-less Launch not blocked: ${JSON.stringify(blocked)}`);
-
-  reportUncaught(pageErrors, '[project-less-setup]');
-  await ctx.close();
-}
+// R2-3b retired `runProjectLessSetup`: IA4's setup steps 1 and 2 and the
+// "Draft the plan" button it drove no longer exist. Its still-live claim — a
+// project-less draft is blocked at Launch until a project is picked — is held
+// by runProjectSelect above and desk-v1-map.mjs's "Launch missing list" case.
 
 async function captureScreenshots(browser) {
   {
@@ -914,7 +877,6 @@ try {
   await runPosyDraftPersistence(browser);
   await runPhoneLayout(browser);
   await runProjectSelect(browser);
-  await runProjectLessSetup(browser);
   await captureScreenshots(browser);
   exitCode = bad === 0 ? 0 : 1;
 } catch (e) {

@@ -425,16 +425,26 @@
   function _rowHTML(camp) {
     const kind = (camp.subject && camp.subject.kind) || '';
     const glyph = _SUBJECT_GLYPH[kind] || '';
-    return `<div class="desk-v1-home-row" data-campaign-id="${esc(camp.id)}" data-project-id="${esc(camp.projectId)}" role="button" tabindex="0">
+    // R2-3b (Ron 2026-09-30): a Draft row — only `draft`, never proposed or
+    // active — carries a trash button at its right edge; Undo is the safety.
+    // A draft no longer has a subject or (project-less) a title to show.
+    const title = camp.plan.title || 'Untitled draft';
+    const subjectHTML = camp.subject
+      ? `<div class="desk-v1-home-row-subject">${esc(glyph)} ${esc(kind)} &middot; ${esc(camp.subject.label || '')}</div>` : '';
+    const trash = camp.state === 'draft'
+      ? `<button type="button" class="desk-v1-home-row-trash" data-delete-draft="${esc(camp.id)}" aria-label="Delete draft ${esc(title)}" title="Delete draft"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4h11M6 4V2.5h4V4M4 4l.6 9h6.8L12 4M6.6 6.5v4.5M9.4 6.5v4.5"/></svg></button>`
+      : '';
+    return `<div class="desk-v1-home-row" data-campaign-id="${esc(camp.id)}" data-project-id="${esc(camp.projectId)}" data-state="${esc(camp.state)}" role="button" tabindex="0">
       <div class="desk-v1-home-row-campaign">
-        <div class="desk-v1-home-row-title">${esc(camp.plan.title)}</div>
-        <div class="desk-v1-home-row-subject">${esc(glyph)} ${esc(kind)} &middot; ${esc((camp.subject && camp.subject.label) || '')}</div>
+        <div class="desk-v1-home-row-title">${esc(title)}</div>
+        ${subjectHTML}
       </div>
       <div class="desk-v1-home-row-stage">${_stageHTML(camp)}</div>
       <div class="desk-v1-home-row-goal">${_goalBarHTML(camp)}</div>
       <div class="desk-v1-home-row-pace">${_pacePillHTML(camp)}</div>
       <div class="desk-v1-home-row-next">${_nextPostHTML(camp)}</div>
       <div class="desk-v1-home-row-needsyou">${_needsYouPillHTML(camp)}</div>
+      ${trash}
     </div>`;
   }
 
@@ -545,13 +555,20 @@
     host.querySelectorAll('.desk-v1-home-row').forEach((rowEl) => {
       const { campaignId, projectId } = rowEl.dataset;
       const go = () => { if (projectId) deskV1Nav('project', { projectId }); deskV1Nav('campaign', { campaignId, projectId: projectId || null }); };
-      rowEl.addEventListener('click', (e) => { if (!e.target.closest('.desk-v1-home-needsyou-pill')) go(); });
+      const inner = (e) => e.target.closest('.desk-v1-home-needsyou-pill, .desk-v1-home-row-trash');
+      rowEl.addEventListener('click', (e) => { if (!inner(e)) go(); });
       rowEl.addEventListener('keydown', (e) => {
-        if ((e.key === 'Enter' || e.key === ' ') && !e.target.closest('.desk-v1-home-needsyou-pill')) { e.preventDefault(); go(); }
+        if ((e.key === 'Enter' || e.key === ' ') && !inner(e)) { e.preventDefault(); go(); }
       });
     });
     host.querySelectorAll('.desk-v1-home-needsyou-pill').forEach((btn) => {
       btn.onclick = (e) => { e.stopPropagation(); _goToNeedsYou(btn.dataset); };
+    });
+    host.querySelectorAll('[data-delete-draft]').forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        if (typeof window.deskV1DeleteDraftCampaign === 'function') window.deskV1DeleteDraftCampaign(btn.dataset.deleteDraft, _renderStatusBoard);
+      };
     });
   }
 

@@ -15,7 +15,7 @@
  *
  *   PART B — cross-cutting sweeps that need EVERY route, INCLUDING the two
  *   surfaces no ticket smoke drives end-to-end together with the rest
- *   (rules popover, Proposed campaign + Start sheet), which none of the
+ *   (Proposed campaign + Start sheet; the rules popover retired in R2-3b), which none of the
  *   per-ticket smokes needed to combine:
  *     - A1 (no node graph / connector paths), re-asserted on every route in
  *       this file's own list, across all 3 tones.
@@ -135,8 +135,8 @@ async function newBootedPage(browser, tone, viewport) {
 // 2026-09-10 rule this cites in the file banner.
 const OTHER_SMOKES = [
   'desk-v1-harness.mjs', 'desk-v1-kit.mjs', 'desk-v1-home.mjs',
-  'desk-v1-campaign.mjs', 'desk-v1-piece.mjs', 'desk-v1-setup.mjs',
-  'desk-v1-rules.mjs', 'desk-v1-review.mjs',
+  'desk-v1-campaign.mjs', 'desk-v1-piece.mjs', 'desk-v1-map.mjs',
+  'desk-v1-review.mjs',
   'desk-v1-calendar.mjs', 'desk-v1-video.mjs', 'desk-v1-conversations.mjs',
   'desk-v1-engagement.mjs',
   'desk-v1-results.mjs', 'desk.mjs', 'boot-smoke.mjs',
@@ -172,9 +172,10 @@ const SURFACES = [
     nav: async (page) => page.evaluate(() => window.deskV1Nav('project', { projectId: 'engulfing_scanner' })) },
   { key: 'presence', label: 'Presence (engulfing_scanner)', wait: '.desk-v1-presence',
     nav: async (page) => page.evaluate(() => window.deskV1Nav('presence', { projectId: 'engulfing_scanner' })) },
-  // No draft-state campaign exists in the fixtures, so the setup wizard is
-  // reached the same way a real user reaches it: Project -> "+ New campaign".
-  { key: 'setup', label: 'Setup step 1 (new draft campaign)', wait: '[data-setup-continue]',
+  // No draft-state campaign exists in the fixtures, so a new draft (R2-3b: the
+  // map at ① Goal, no setup steps) is reached the way a real user reaches it:
+  // Project -> "+ New campaign".
+  { key: 'setup', label: 'New draft campaign (map at Goal)', wait: '.desk-v1-map-stop[data-stop="goal"][data-state="here"]',
     nav: async (page) => {
       await page.evaluate(() => window.deskV1Nav('project', { projectId: 'engulfing_scanner' }));
       await page.waitForSelector('.desk-v1-project-newcamp-btn', { timeout: 8000 });
@@ -186,9 +187,6 @@ const SURFACES = [
     nav: async (page) => page.evaluate(() => window.deskV1Nav('engagement', {})) },
   { key: 'campaign-active', label: 'Campaign (camp-1, Active)', wait: '.desk-v1-camp-summary',
     nav: async (page) => page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' })) },
-  { key: 'rules-popover', label: 'Rules popover (camp-1)', wait: '.desk-v1-rules-pop',
-    nav: async (page) => page.evaluate(() => window.deskV1Nav('rules', { campaignId: 'camp-1' })),
-    teardown: async (page) => { await page.keyboard.press('Escape'); } },
   { key: 'calendar', label: 'Calendar (camp-1)', wait: '.desk-v1-calendar',
     nav: async (page) => page.evaluate(() => window.deskV1Nav('calendar', { campaignId: 'camp-1' })) },
   { key: 'review', label: 'Full-width review (camp-1)', wait: '.desk-v1-review',
@@ -197,6 +195,7 @@ const SURFACES = [
     nav: async (page) => page.evaluate(() => window.deskV1Nav('video', { campaignId: 'camp-1', mode: 'intake' })) },
   { key: 'video-director', label: 'Video director (fam-install-video)', wait: '.desk-v1-video-director',
     nav: async (page) => page.evaluate(() => window.deskV1Nav('video', { campaignId: 'camp-1', familyId: 'fam-install-video' })) },
+  // R2-3b: the `conversations` deep link lands on Engagement filtered to camp-1.
   { key: 'conversations', label: 'Conversations (camp-1)', wait: '.desk-v1-conversations',
     nav: async (page) => page.evaluate(() => window.deskV1Nav('conversations', { campaignId: 'camp-1' })) },
   { key: 'results', label: 'Results (camp-1)', wait: '.desk-v1-results',

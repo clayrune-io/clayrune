@@ -1,16 +1,16 @@
-// Desk v1 (MC-977) — T2b: Proposed state, Start sheet, rules popover, Posy
+// Desk v1 (MC-977) — T2b: Proposed state, Start sheet, Posy
 // instructions (frame: none drawn, gap map C6; docs/desk_v1_r0_plan.md;
 // THE_DESK_V1_UI.md §3.5, §8, §9, §11). Window-bridged module, no `import`
-// (ground rule 1).
+// (ground rule 1). R2-3b retired this file's rules popover and the rule
+// chips it edited (docs/THE_DESK_V1_IA_REVISION_2.md §8); the filename stays
+// because index.html and the `window.deskV1*` hooks below don't move.
 //
-// Reads the campaign page through the T0a slot contract and three small,
+// Reads the campaign page through the T0a slot contract and two small,
 // backward-compatible seams desk-v1-campaign.js (T2a) already carries for
 // this exact purpose (its own comments name T2b): a Proposed-state summary/
 // content override in deskV1FillCampaignSummary/TabBody, and a Posy-
 // instruction override in the right column's onSend. This file never edits
-// desk-v1-campaign.js — see the final report for the one small addition to
-// _ruleChips() that WAS needed for INS-02 (a durable rule chip has to render
-// somewhere, and the rule-chip list lives there).
+// desk-v1-campaign.js.
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
   function _fx() { return window.DeskV1Fixtures || {}; }
@@ -30,23 +30,6 @@
   // desk-v1-*.js uses, keyed off the campaign's own project.
   function _agentName(camp) {
     return window.DeskV1Kit ? DeskV1Kit.deskAgentName({ project: _project(camp && camp.projectId), campaign: camp }) : 'your agent';
-  }
-
-  // §3.5: "the same page... shows the same chips" as T2a's summary bar.
-  // `window.deskV1RuleChips` is a one-line backward-compatible export added
-  // to desk-v1-campaign.js's existing (private) `_ruleChips` — see the final
-  // report; it's a pure getter already used by T2a itself, not new logic.
-  // T1 adds one derived chip on top, Proposed-only: an "Ends …" chip read
-  // straight off `camp.plan.end` so editing the goal date (which T1 also
-  // writes into `plan.end.date`, see the blur handler below) visibly changes
-  // a rule chip too, not just the goal sentence — campaign.js's own
-  // `_ruleChips` (Active state, camp.rules only) is untouched.
-  function _ruleChipsFor(camp) {
-    const base = typeof window.deskV1RuleChips === 'function' ? window.deskV1RuleChips(camp) : [];
-    const end = camp.plan && camp.plan.end;
-    if (!end) return base;
-    const endLabel = end.date ? `Ends ${_fmtDate(end.date)}` : (end.post_cap ? `Ends after ${end.post_cap} posts` : null);
-    return endLabel ? base.concat(endLabel) : base;
   }
 
   // Dave's review (2026-09-28): `new Date('2026-10-20')` parses a bare
@@ -108,8 +91,8 @@
 
   // ────────────────────────────────────────────────────────────────────────
   // §3.5 Proposed state — summary slot override (state pill + editable goal
-  // sentence + `Start campaign`, replacing T2a's ordinary Goal/Channels/
-  // Rules groups per the doc: "Same page, with state ◇ Proposed... The goal
+  // sentence + `Start campaign`, replacing T2a's ordinary Goal/Channels
+  // groups per the doc: "Same page, with state ◇ Proposed... The goal
   // is a single editable sentence"). Channels still render via the shared
   // kit badge (UX-02 — never a bare logo, even here).
   // ────────────────────────────────────────────────────────────────────────
@@ -147,17 +130,7 @@
           <span class="desk-v1-camp-summary-label">CHANNELS</span>
           <div class="desk-v1-camp-summary-badges">${chans.length ? chans.map((ch) => DeskV1Kit.channelBadge(ch)).join('') : '<span class="desk-v1-home-camp-nochannels">No channels yet</span>'}</div>
         </div>
-        <div class="desk-v1-camp-summary-group" data-summary-group="rules">
-          <span class="desk-v1-camp-summary-label">RULES</span>
-          <div class="desk-v1-camp-summary-badges">
-            ${_ruleChipsFor(camp).map((c) => `<span class="desk-v1-camp-rule-chip">${esc(c)}</span>`).join('')}
-            <button type="button" class="desk-v1-camp-rules-edit" data-rules-edit>Edit</button>
-          </div>
-        </div>
       </div>`;
-
-    const rulesEditBtn = el.querySelector('[data-rules-edit]');
-    if (rulesEditBtn) rulesEditBtn.onclick = () => window.deskV1OpenRulesPopover(camp.id, rulesEditBtn);
 
     // §4: "every surface re-renders from it" — a commit re-invokes this same
     // function so the goal sentence AND the rule chips beside it (the
@@ -348,11 +321,12 @@
       ['Stop conditions', auth.stopConditions || '—', false],
     ];
 
-    // §2.3 row 3: `validatePlan` ok is required to leave step 3 — Confirm is
+    // §2.3 row 3: `validatePlan` ok is required to start — Confirm is
     // disabled until every plan bound resolves, and the sheet names each
-    // missing one with the step (§2.3 table) it belongs to, same wording
-    // pattern as the Resume path's toast (desk-v1-campaign.js:239-240).
-    const missingLabel = validity.missing.map((m) => `${m.label} (step ${m.step})`).join(', ');
+    // missing one with the map stop that fixes it (R2-3b: the IA4 "step n"
+    // numbering is gone with the setup steps; kit.js `missing[].stop`).
+    const _stopWord = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+    const missingLabel = validity.missing.map((m) => `${m.label} (${m.stop ? _stopWord(m.stop) : `step ${m.step}`})`).join(', ');
     // R2-2g: the project is picked at Launch, so a not-yet-started campaign
     // without one can't be confirmed from here either (this sheet is also
     // opened from Proposed's own Start button, not just the Launch stop).
@@ -411,95 +385,6 @@
     });
   }
 
-  // ────────────────────────────────────────────────────────────────────────
-  // §8 Rules popover, anchored to the summary bar's rule chips (§1: "rule
-  // chips... open a popover. They are never form fields on the page" — a
-  // prior draft of this file treated the doc's "popover" heading as license
-  // to keep the existing full-`‹ <campaign>`-page route; Dave's review
-  // pass corrected that). One instance open at a time (`_rulesPop`), closed
-  // by Esc (capture phase, same reason the Start sheet needs it — see its
-  // own comment above), an outside click, or opening a different campaign's.
-  // Desktop: a floating card positioned from the anchor button's own
-  // `getBoundingClientRect()`. Phone (§11: "a bottom sheet is fine"): CSS
-  // alone re-docks the same markup full-width to the bottom edge — the same
-  // pattern already proven by the Start sheet's own `.desk-v1-rules-overlay`
-  // above, just under new class names so the two never visually collide if
-  // both were ever open (they can't be, in practice — Start sheet only
-  // exists on the Proposed page, before there's anything to widen).
-  // ────────────────────────────────────────────────────────────────────────
-  let _rulesPop = null;
-
-  function _closeRulesPopover() {
-    if (!_rulesPop) return;
-    document.removeEventListener('keydown', _rulesPop.onKey, true);
-    document.removeEventListener('click', _rulesPop.onOutsideClick, true);
-    if (_rulesPop.el.parentNode) _rulesPop.el.parentNode.removeChild(_rulesPop.el);
-    _rulesPop = null;
-  }
-
-  function _positionRulesPopover(panel, anchorEl) {
-    // Phone re-docks via the @media rule instead (bottom-sheet, full width);
-    // an inline top/left here would fight that, so skip it under 960px.
-    if (!anchorEl || window.innerWidth <= 960) return;
-    const rect = anchorEl.getBoundingClientRect();
-    const width = panel.getBoundingClientRect().width || 380;
-    const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12));
-    const top = Math.min(rect.bottom + 8, window.innerHeight - 40);
-    panel.style.left = `${left}px`;
-    panel.style.top = `${top}px`;
-    panel.style.right = 'auto';
-    // The CSS `max-height: calc(100vh - 64px)` default assumes `top` sits
-    // near the viewport's edge (true only when the anchor is near the top
-    // of a maximized window). Once Desk stopped force-maximizing (MC-977
-    // item 1), a lower anchor position leaves less real room below `top`
-    // than that static calc knows about, so a preview revealed after open
-    // (§8's Apply/Cancel row) could grow the panel past the window's bottom
-    // edge. Pin max-height to what's actually left below `top`.
-    panel.style.maxHeight = `${window.innerHeight - top - 12}px`;
-  }
-
-  window.deskV1OpenRulesPopover = function (campaignId, anchorEl) {
-    const camp = _campaign(campaignId);
-    if (!camp) return;
-    anchorEl = anchorEl || document.querySelector('#desk-v1-camp-summary [data-rules-edit]');
-    _closeRulesPopover();
-
-    const wrap = document.createElement('div');
-    wrap.className = 'desk-v1-rules-pop-overlay';
-    wrap.innerHTML = `
-      <div class="desk-v1-rules-pop-scrim" data-pop-scrim></div>
-      <div class="desk-v1-rules-pop" role="dialog" aria-modal="false" aria-label="Rules for ${esc(camp.plan.title)}">
-        <div class="desk-v1-rules-pop-title">Rules — ${esc(camp.plan.title)}</div>
-        <div class="desk-v1-rules-pop-body"></div>
-      </div>`;
-    document.body.appendChild(wrap);
-    const panel = wrap.querySelector('.desk-v1-rules-pop');
-    _positionRulesPopover(panel, anchorEl);
-
-    // Both handlers bail while a widening-confirm sheet is open on top of
-    // this popover (setPending's Apply -> _openWideningConfirm): that
-    // sheet's own scrim/Escape live outside `panel`, so without this guard
-    // clicking its scrim or pressing Escape to decline would ALSO close the
-    // popover underneath — same capture-phase document listener, registered
-    // first, so it would otherwise run before the confirm sheet even sees it.
-    const onKey = (e) => {
-      if (e.key !== 'Escape' || document.querySelector('.desk-v1-rules-confirm-overlay')) return;
-      e.stopPropagation(); _closeRulesPopover();
-    };
-    const onOutsideClick = (e) => {
-      if (document.querySelector('.desk-v1-rules-confirm-overlay')) return;
-      if (!panel.contains(e.target) && e.target !== anchorEl) _closeRulesPopover();
-    };
-    document.addEventListener('keydown', onKey, true);
-    // Deferred one tick so the click that opened the popover (the Edit
-    // button itself) isn't also the click that immediately closes it.
-    setTimeout(() => document.addEventListener('click', onOutsideClick, true), 0);
-    wrap.querySelector('[data-pop-scrim]').onclick = _closeRulesPopover;
-
-    _rulesPop = { el: wrap, onKey, onOutsideClick, pending: null };
-    _fillRulesPopoverBody(panel.querySelector('.desk-v1-rules-pop-body'), camp);
-  };
-
   // Dave's review pass 3: a native window.confirm() blocks the render
   // thread and can't be styled — replaced with an in-page sheet using the
   // same overlay/scrim/panel markup as deskV1OpenStartSheet above, just a
@@ -527,15 +412,12 @@
     // Appended to body, not `.desk-v1-shell`: the shell lives inside the
     // Desk's `.modal-window`, which sets its own `style.zIndex` and so forms
     // its own (low-numbered) stacking context — any z-index inside it, no
-    // matter how high, can never out-rank the rules POPOVER's overlay, which
-    // is itself appended straight to body (deskV1OpenRulesPopover, above).
+    // matter how high, can never out-rank the Start sheet's overlay, which
+    // is itself appended straight to body (deskV1OpenStartSheet, above).
     document.body.appendChild(wrap);
 
     // Capture phase, same reason (and same risk) as the Start sheet's own
-    // Escape handler above — plus this one must WIN against the rules
-    // popover's own capture-phase Escape/outside-click listeners when both
-    // are open, which the popover's own handlers now check for below
-    // (`.desk-v1-rules-confirm-overlay` guard in deskV1OpenRulesPopover).
+    // Escape handler above.
     const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); decline(); } };
     function cleanup() { wrap.remove(); document.removeEventListener('keydown', onKey, true); }
     function decline() { cleanup(); if (onDecline) onDecline(); }
@@ -546,174 +428,15 @@
     wrap.querySelector('[data-confirm-accept]').onclick = accept;
   }
 
-  function _refreshRuleChips(camp) {
-    const summaryHost = document.getElementById('desk-v1-camp-summary');
-    if (!summaryHost) return;
-    if (camp.state === 'proposed' && typeof window.deskV1FillProposedSummary === 'function') window.deskV1FillProposedSummary(summaryHost, { campaignId: camp.id }, camp);
-    else if (typeof window.deskV1FillCampaignSummary === 'function') window.deskV1FillCampaignSummary(summaryHost, { campaignId: camp.id });
-  }
-
-  function _campaignAccountsLabel(camp) {
-    return (camp.plan.accounts || []).map(_channel).filter(Boolean).map((ch) => ch.label).join(', ');
-  }
-
-  // IA2 (§3): review mode (row 7) is retired with no replacement — every
-  // piece needs approval, contradicting the old "approve themes" bypass —
-  // and replies (row 9) moved to `project.replies`, an IA3 settings-page
-  // field this popover no longer owns. The frequency group now edits the
-  // campaign's own `plan.cadence.per_week` bound (row 21, C) and shows the
-  // EFFECTIVE ceiling (inherit+clamp against `project.presence.ceilings`,
-  // kit.js `_effectiveCadence`) so a campaign asking for more than its
-  // project allows sees the real number, not its own unclamped input. Paid
-  // (row 25, C) now reads/writes `plan.paid` — `rules.paid` (row 10) was a
-  // dead duplicate.
-  function _fillRulesPopoverBody(bodyEl, camp) {
-    const plan = camp.plan = camp.plan || {};
-    const project = _project(camp.projectId);
-    const budget = _fx().renderBudget || {};
-    const chans = _channels();
-    const currency = budget.currency === 'USD' ? '$' : (budget.currency || '');
-    const eff = DeskV1Kit.validatePlan(plan, project).effective;
-
-    bodyEl.innerHTML = `
-      <div class="desk-v1-rules-group">
-        <div class="desk-v1-rules-group-title">Frequency ceiling ${DeskV1Kit.infoIconHTML('freq')}</div>
-        <div class="desk-v1-rules-inlinerow">Up to <input type="number" min="0" max="30" class="desk-v1-rules-numinput" data-freq-input value="${esc(plan.cadence && plan.cadence.per_week != null ? plan.cadence.per_week : 0)}"> a week</div>
-        ${eff.cadence_from_project ? `<div class="desk-v1-rules-hint" data-cadence-hint>Effective: ≤${esc(eff.cadence_per_week)}/wk · from ${esc(project ? project.name : 'project')}</div>` : ''}
-      </div>
-      <div class="desk-v1-rules-group">
-        <div class="desk-v1-rules-group-title">Channels</div>
-        ${chans.map((ch) => `<label class="desk-v1-rules-checkrow"><input type="checkbox" data-channel-toggle="${esc(ch.id)}" ${camp.plan.accounts.includes(ch.id) ? 'checked' : ''}> ${esc(ch.label)}${!camp.plan.accounts.includes(ch.id) ? ' <span class="desk-v1-rules-excluded">excluded</span>' : ''}</label>`).join('')}
-      </div>
-      <div class="desk-v1-rules-group">
-        <div class="desk-v1-rules-group-title">Paid</div>
-        <label class="desk-v1-rules-radio"><input type="radio" name="paid" value="off" ${!plan.paid ? 'checked' : ''}> Off</label>
-        <label class="desk-v1-rules-radio"><input type="radio" name="paid" value="on" ${plan.paid ? 'checked' : ''}> On</label>
-      </div>
-      <div class="desk-v1-rules-group">
-        <div class="desk-v1-rules-group-title">Production budget</div>
-        <div class="desk-v1-rules-inlinerow">${esc(currency)}<input type="number" min="0" class="desk-v1-rules-numinput" data-budget-perjob-input value="${esc(budget.perJobLimit != null ? budget.perJobLimit : 0)}"> per job</div>
-        <div class="desk-v1-rules-inlinerow">${esc(currency)}<input type="number" min="0" class="desk-v1-rules-numinput" data-budget-input value="${esc(budget.limit != null ? budget.limit : 0)}"> per ${esc(budget.period || 'month')}</div>
-        <div class="desk-v1-rules-hint">${esc(currency)}${esc(budget.spent != null ? budget.spent : 0)} spent so far this ${esc(budget.period || 'month')}.</div>
-      </div>
-      <div class="desk-v1-rules-pop-preview" id="desk-v1-rules-pop-preview" aria-live="polite" hidden></div>`;
-
-    const agentName = _agentName(camp);
-    DeskV1Kit.bindInfoIcons(bodyEl, { freq: `A ceiling, not a quota — ${agentName} won’t post more than this, but may post fewer.` });
-
-    // §8: "Every change shows its effect before applying" — a control's
-    // 'change' event never mutates the fixture directly; it stages one
-    // pending change (mutate + a human-readable effect + whether it widens
-    // authority) and shows Cancel/Apply. Only Apply calls mutate(); Cancel
-    // (or staging a second control before the first is applied) calls
-    // revert() so the control snaps back to the still-real value — at most
-    // one pending change is ever shown, matching the doc's singular "its".
-    const previewEl = bodyEl.querySelector('#desk-v1-rules-pop-preview');
-    function setPending(mutate, effectText, widening, revert) {
-      if (_rulesPop && _rulesPop.pending) _rulesPop.pending.revert();
-      previewEl.hidden = false;
-      previewEl.innerHTML = `
-        <div class="desk-v1-rules-pop-previewtext">${esc(effectText)}</div>
-        <div class="desk-v1-rules-pop-previewbtns">
-          <button type="button" class="desk-v1-rules-pop-cancel" data-pop-preview-cancel>Cancel</button>
-          <button type="button" class="desk-v1-rules-pop-apply" data-pop-preview-apply>Apply</button>
-        </div>`;
-      const clear = () => { previewEl.hidden = true; previewEl.innerHTML = ''; if (_rulesPop) _rulesPop.pending = null; };
-      previewEl.querySelector('[data-pop-preview-cancel]').onclick = () => { revert(); clear(); };
-      previewEl.querySelector('[data-pop-preview-apply]').onclick = () => {
-        const commit = () => { mutate(); clear(); DeskV1Kit.toast(effectText); _refreshRuleChips(camp); };
-        if (!widening) { commit(); return; }
-        _openWideningConfirm(
-          `This widens what ${agentName} can do`, effectText, 'An authorized user must confirm. Continue?',
-          commit, () => { revert(); clear(); },
-        );
-      };
-      if (_rulesPop) _rulesPop.pending = { revert };
-    }
-
-    const freqInput = bodyEl.querySelector('[data-freq-input]');
-    if (freqInput) freqInput.addEventListener('change', () => {
-      const prev = (plan.cadence && plan.cadence.per_week) || 0;
-      const next = parseInt(freqInput.value, 10) || 0;
-      if (next === prev) return;
-      const accounts = _campaignAccountsLabel(camp);
-      const effect = `${_agentName(camp)} will publish at most ${next} post${next === 1 ? '' : 's'} a week${accounts ? ` on ${accounts}` : ''} — was ${prev}.`;
-      setPending(() => { plan.cadence = plan.cadence || {}; plan.cadence.per_week = next; }, effect, next > prev, () => { freqInput.value = String(prev); });
-    });
-
-    bodyEl.querySelectorAll('[data-channel-toggle]').forEach((cb) => {
-      cb.addEventListener('change', () => {
-        const chId = cb.dataset.channelToggle;
-        const ch = _channel(chId);
-        const included = camp.plan.accounts.includes(chId);
-        if (cb.checked === included) return;
-        const label = ch ? ch.label : chId;
-        const effect = cb.checked ? `${label} can now be used by this campaign.` : `${label} is excluded from this campaign.`;
-        setPending(() => {
-          if (cb.checked) camp.plan.accounts.push(chId);
-          else camp.plan.accounts = camp.plan.accounts.filter((id) => id !== chId);
-        }, effect, cb.checked, () => { cb.checked = included; });
-      });
-    });
-
-    bodyEl.querySelectorAll('input[name="paid"]').forEach((radio) => {
-      radio.addEventListener('change', () => {
-        const prevVal = plan.paid ? 'on' : 'off';
-        const next = radio.value;
-        if (next === prevVal) return;
-        const widening = next === 'on';
-        const effect = next === 'on'
-          ? 'Paid distribution turns on — this opens paid terms (out of scope this release; nothing spends here).'
-          : 'Paid distribution turns off.';
-        const prevRadio = bodyEl.querySelector(`input[name="paid"][value="${prevVal}"]`);
-        setPending(() => { plan.paid = next === 'on'; }, effect, widening, () => { if (prevRadio) prevRadio.checked = true; });
-      });
-    });
-
-    const budgetInput = bodyEl.querySelector('[data-budget-input]');
-    if (budgetInput) budgetInput.addEventListener('change', () => {
-      const prev = budget.limit || 0;
-      const next = parseFloat(budgetInput.value) || 0;
-      if (next === prev) return;
-      setPending(() => { budget.limit = next; }, `Video budget set to ${currency}${next} per ${budget.period || 'month'} — was ${currency}${prev}.`, next > prev, () => { budgetInput.value = String(prev); });
-    });
-
-    const budgetPerJobInput = bodyEl.querySelector('[data-budget-perjob-input]');
-    if (budgetPerJobInput) budgetPerJobInput.addEventListener('change', () => {
-      const prev = budget.perJobLimit || 0;
-      const next = parseFloat(budgetPerJobInput.value) || 0;
-      if (next === prev) return;
-      setPending(() => { budget.perJobLimit = next; }, `Per-job render cap set to ${currency}${next} — was ${currency}${prev}.`, next > prev, () => { budgetPerJobInput.value = String(prev); });
-    });
-  }
-
-  // Kept exported only so desk-v1-shell.js's pre-existing ROUTES['rules']
-  // entry (T0a, out of this file's scope) and T5's `deskV1Nav('rules',
-  // {campaignId})` "Raise budget…" deep link still resolve to something —
-  // neither ever paints a page under a `‹ <campaign>` breadcrumb now: this
-  // bounces straight back to the campaign page and opens the real popover.
-  //
-  // `deskV1PopTo('campaign')`, not `deskV1Nav('campaign', ...)` (Dave's
-  // review pass 2): Nav PUSHES a new campaign entry on top of the 'rules'
-  // entry this function is already rendering as, so the back button read
-  // the stack's new second-to-last entry — 'rules' — as '‹ Rules' instead
-  // of the real previous page. PopTo pops 'rules' (and 'video', when the
-  // deep link came from T5) off the stack instead, landing back on the
-  // campaign entry already underneath it.
-  window.deskV1RenderRules = function (el, params) {
-    if (typeof window.deskV1PopTo === 'function') window.deskV1PopTo('campaign');
-    window.deskV1OpenRulesPopover(params.campaignId);
-  };
-
   // ────────────────────────────────────────────────────────────────────────
   // §3.4 Posy instructions (INS-01..04): before → after + affected items,
   // Undo via the existing commandBus toast; a widening instruction confirms
-  // first instead of applying; a durable one becomes a visible rule chip.
+  // first instead of applying. (A durable instruction used to become a rule
+  // chip; R2-3b retired the chips, so it is now applied like any other.)
   // Simulated intent detection (fixtures only, R0): keyword heuristics, not
   // a real model call — this is interaction validation, not NLU.
   // ────────────────────────────────────────────────────────────────────────
   const _WIDENING_RE = /\bpaid\b|\bbudget\b|more accounts?\b|\bevery ?day\b|\bdaily\b|auto-?answer|auto-?repl(y|ies)|more often|increase (the )?frequency/i;
-  const _DURABLE_RE = /\balways\b|from now on|every time|going forward|\bwhenever\b/i;
 
   function _renderPosyReply(posyBoxEl, before, after, affected) {
     if (!posyBoxEl) return;
@@ -731,33 +454,14 @@
     const scopeLabel = (selection && selection.scope === 'card' && selection.label) || camp.plan.title;
     const before = `${scopeLabel} follows the existing rules.`;
     const widening = _WIDENING_RE.test(text);
-    const durable = _DURABLE_RE.test(text);
     const agentName = _agentName(camp);
 
     const apply = () => {
       const after = `“${text}” applied to ${scopeLabel}.`;
-      let addedChip = null;
       DeskV1Kit.commandBus.run({
         label: `${agentName}: ${text}`,
-        do: () => {
-          if (durable) {
-            camp.rules = camp.rules || {};
-            camp.rules.customChips = camp.rules.customChips || [];
-            addedChip = text.length > 40 ? text.slice(0, 37) + '…' : text;
-            camp.rules.customChips.push(addedChip);
-            const summaryHost = document.getElementById('desk-v1-camp-summary');
-            if (summaryHost && typeof window.deskV1FillCampaignSummary === 'function') window.deskV1FillCampaignSummary(summaryHost, { campaignId: camp.id });
-          }
-          _renderPosyReply(posyBoxEl, before, after, [scopeLabel]);
-        },
-        undo: () => {
-          if (durable && addedChip && camp.rules.customChips) {
-            camp.rules.customChips = camp.rules.customChips.filter((c) => c !== addedChip);
-            const summaryHost = document.getElementById('desk-v1-camp-summary');
-            if (summaryHost && typeof window.deskV1FillCampaignSummary === 'function') window.deskV1FillCampaignSummary(summaryHost, { campaignId: camp.id });
-          }
-          _renderPosyReply(posyBoxEl, after, 'Reverted.', [scopeLabel]);
-        },
+        do: () => { _renderPosyReply(posyBoxEl, before, after, [scopeLabel]); },
+        undo: () => { _renderPosyReply(posyBoxEl, after, 'Reverted.', [scopeLabel]); },
       });
     };
 

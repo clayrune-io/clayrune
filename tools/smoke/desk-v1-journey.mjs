@@ -7,10 +7,12 @@
  * deskV1Nav shortcuts except reaching Engagement, which the real UI itself
  * only reaches via Home's own button — see navHomeToEngagement below):
  *
- *   Home -> engulfing_scanner -> new campaign -> setup interrupted at step 2
- *   -> resume -> forced Posy failure + Retry -> Start -> open a piece ->
- *   What/How/When/Where -> Pause project -> Resume -> Engagement filtered to
- *   that project -> Delete a never-started Draft (Undo).
+ *   Home -> engulfing_scanner -> new campaign (lands on the map at ① Goal,
+ *   R2-3b: no IA4 setup steps) -> left at ② How -> resume -> forced Posy
+ *   failure + Retry on the How stop's Suggest -> Accept all on ③ What ->
+ *   ⑥ Launch -> Start -> open a piece -> What/How/When/Where -> Pause project
+ *   -> Resume -> Engagement filtered to that project -> Delete a never-started
+ *   Draft from its ⋯ menu (Undo).
  *
  * Each hop asserts what the user SEES (pill text, facet body copy, filtered
  * row ids, toast text) — never just that a selector exists.
@@ -120,44 +122,36 @@ async function run(browser) {
     : fail(`Home -> project: wrong project page: ${JSON.stringify(projectTitle)}`);
 
   // ── new feature campaign ─────────────────────────────────────────────────
+  // R2-3b: IA4's 3-step setup is gone — a new campaign opens the map stepper
+  // at ① Goal like every other campaign, with no "Setup n of 3" anywhere.
   await page.click('.desk-v1-project-newcamp-btn');
   await page.waitForSelector('.desk-v1-campaign', { timeout: 8000 });
-  let text = await pillText(page);
-  /Setup 1 of 3/.test(text)
-    ? ok(`new campaign: opens at step 1: "${text}"`)
-    : fail(`new campaign: wrong step: ${JSON.stringify(text)}`);
+  await page.waitForSelector('.desk-v1-map-stop[data-stop="goal"][data-state="here"]', { timeout: 8000 });
+  let text = await page.evaluate(() => document.body.innerText);
+  !/Setup\s+\d\s+of\s+3/.test(text)
+    ? ok('new campaign: opens on the map at ① Goal, no "Setup n of 3"')
+    : fail('new campaign: still shows an IA4 setup step');
   const campA = await lastCampaignId(page);
 
-  // ── setup interrupted at step 2 ──────────────────────────────────────────
-  await page.click('[data-setup-continue]');
-  await page.waitForSelector('[data-setup-draftplan]', { timeout: 8000 });
-  text = await pillText(page);
-  /Setup 2 of 3/.test(text)
-    ? ok(`setup step 2 (Plan) renders: "${text}"`)
-    : fail(`setup step 2 wrong: ${JSON.stringify(text)}`);
-
+  // ── left at ② How ─────────────────────────────────────────────────────────
+  await page.click('[data-map-next]');
+  await page.waitForSelector('.desk-v1-map-stop[data-stop="how"][data-state="here"]', { timeout: 8000 });
   await page.click('.desk-v1-back');
   await page.waitForSelector('.desk-v1-project', { timeout: 8000 });
   const cardWordSel = `.desk-v1-project-camp-card[data-campaign-id="${campA}"] .desk-v1-state-word`;
-  // R2-3: the project card's draft label moved from "Setup N of 3" to
-  // "Draft · at <stop>" (camp.map.stop) — IA4's steps never touch the map,
-  // so it reads "at Goal" throughout setup regardless of the step reached.
   let cardLabel = (await page.textContent(cardWordSel).catch(() => '') || '').trim();
-  /Draft · at Goal/.test(cardLabel)
-    ? ok(`interrupted at step 2: project card reads "${cardLabel}"`)
-    : fail(`interrupted-at-step-2 card label wrong: ${JSON.stringify(cardLabel)}`);
+  /Draft · at How/.test(cardLabel)
+    ? ok(`left at ② How: project card reads "${cardLabel}"`)
+    : fail(`left-at-How card label wrong: ${JSON.stringify(cardLabel)}`);
 
   // ── resume ────────────────────────────────────────────────────────────────
   await page.click(`.desk-v1-project-camp-card[data-campaign-id="${campA}"]`);
-  await page.waitForSelector('[data-setup-draftplan]', { timeout: 8000 });
-  text = await pillText(page);
-  /Setup 2 of 3/.test(text)
-    ? ok(`resume: back on step 2 (Plan): "${text}"`)
-    : fail(`resume landed wrong: ${JSON.stringify(text)}`);
+  await page.waitForSelector('.desk-v1-map-stop[data-stop="how"][data-state="here"]', { timeout: 8000 });
+  ok('resume: back on ② How');
 
-  // ── forced Posy failure + Retry ──────────────────────────────────────────
+  // ── forced Posy failure + Retry (the How stop's Suggest task) ─────────────
   await page.evaluate(() => { window.__deskV1PosyForce = 'fail'; });
-  await page.click('[data-setup-draftplan]');
+  await page.click('[data-how-suggest]');
   await page.waitForSelector('.desk-v1-posy-failed', { timeout: 4000 });
   const failedText = (await page.textContent('.desk-v1-posy-failed').catch(() => '') || '');
   /couldn.t finish/.test(failedText)
@@ -170,14 +164,29 @@ async function run(browser) {
 
   await page.evaluate(() => { window.__deskV1PosyForce = undefined; });
   await page.click('[data-posy-retry]');
-  await page.waitForSelector('.desk-v1-camp-state-pill', { timeout: 4000 });
-  text = await pillText(page);
-  /Proposed/.test(text)
-    ? ok(`Retry: succeeds, campaign now Proposed: "${text}"`)
-    : fail(`Retry did not recover: ${JSON.stringify(text)}`);
+  // Wait for the Suggest task to land before leaving How — clicking ③ while it is
+  // still Working raced it (flaked under load).
+  await page.waitForFunction(() => /suggested 3 pieces/.test(document.body.textContent || ''), null, { timeout: 6000 });
+  await page.click('[data-stop="what"]');
+  await page.waitForSelector('.desk-v1-camp-suggested-banner', { timeout: 4000 });
+  const banner = (await page.textContent('.desk-v1-camp-suggested-banner').catch(() => '') || '').trim();
+  /3 suggested/.test(banner)
+    ? ok(`Retry: succeeds, ③ What shows "${banner}"`)
+    : fail(`Retry did not recover: ${JSON.stringify(banner)}`);
+  await page.click('[data-suggested-accept-all]');
+  await page.waitForTimeout(80);
 
   // ── Start ─────────────────────────────────────────────────────────────────
-  await page.click('[data-start-campaign]');
+  // The plan's accounts / cadence / end are typed on ⑤/④ in the real UI;
+  // they are set on the fixture here (same shortcut desk-v1-campaign.mjs's
+  // runProjectSelect takes) until R2-13 rewrites this journey end to end.
+  await page.evaluate((id) => {
+    const c = window.DeskV1Fixtures.campaigns.find((x) => x.id === id);
+    c.plan.accounts = ['ch-x-ron']; c.plan.cadence.per_week = 2; c.plan.end = { date: null, post_cap: 12 };
+  }, campA);
+  await page.click('[data-stop="launch"]');
+  await page.waitForSelector('[data-map-start-btn]:not([disabled])', { timeout: 4000 });
+  await page.click('[data-map-start-btn]');
   await page.waitForSelector('.desk-v1-rules-sheet', { timeout: 4000 });
   await page.click('[data-sheet-confirm]');
   await page.waitForSelector('.desk-v1-camp-state-pill', { timeout: 4000 });
@@ -185,12 +194,13 @@ async function run(browser) {
   /Active/.test(text)
     ? ok(`Start: campaign now Active: "${text}"`)
     : fail(`Start did not activate the campaign: ${JSON.stringify(text)}`);
+  await page.click('[data-stop="what"]');
 
   // ── open a piece ─────────────────────────────────────────────────────────
   // Freshly-planned pieces land in a collapsed group ("Planned · 3, show ›")
   // — real content, but the user has to expand it before a card is
   // reachable at all.
-  const pieceId = `${campA}-piece-1`;
+  const pieceId = await page.evaluate((id) => window.DeskV1Fixtures.families.find((f) => f.campaignId === id && f.id.startsWith('fam-suggest-')).id, campA);
   await page.waitForSelector('[data-group-show]', { timeout: 8000 });
   await page.click('[data-group-show]');
   await page.waitForSelector(`[data-family-id="${pieceId}"] [data-primary-action]`, { timeout: 8000 });
@@ -277,19 +287,18 @@ async function run(browser) {
   await page.evaluate(() => window.deskV1Nav('project', { projectId: 'engulfing_scanner' }));
   await page.waitForSelector('.desk-v1-project', { timeout: 8000 });
   await page.click('.desk-v1-project-newcamp-btn');
-  await page.waitForSelector('[data-setup-continue]', { timeout: 8000 }); // step 1 — never touched
+  await page.waitForSelector('.desk-v1-map-stop[data-stop="goal"]', { timeout: 8000 }); // ① Goal — never touched
   const campB = await lastCampaignId(page);
 
   await page.click('[data-camp-more-btn]');
   await page.waitForSelector('.desk-v1-camp-cardmenu', { timeout: 4000 });
   const menuText = (await page.textContent('.desk-v1-camp-cardmenu').catch(() => '') || '');
-  /Delete campaign/.test(menuText)
-    ? ok('never-started Draft: More menu offers Delete (not Archive)')
+  /Delete draft/.test(menuText) && !/Archive/.test(menuText)
+    ? ok('never-started Draft: More menu offers Delete draft (not Archive)')
     : fail(`never-started Draft: More menu wrong: ${JSON.stringify(menuText)}`);
 
-  await page.click('.desk-v1-camp-cardmenu [data-menu-delete]');
-  await page.waitForSelector('.desk-v1-rules-confirm-overlay', { timeout: 4000 });
-  await page.click('[data-confirm-accept]');
+  // R2-3b: no confirm sheet for a Draft — the Undo toast is the safety.
+  await page.click('.desk-v1-camp-cardmenu [data-menu-delete-draft]');
   await page.waitForSelector('.toast', { timeout: 4000 });
   // Toasts have no `key` here, so they STACK rather than replace — the
   // still-showing Resume toast from the Pause/Resume step above can linger
