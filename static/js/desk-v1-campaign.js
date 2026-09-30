@@ -804,10 +804,15 @@
   // into real pieces; ④/⑤ read `how.suggested.when`/`.where` directly
   // (desk-v1-calendar.js, desk-v1-shell.js's 'where' branch) since neither
   // has a dedicated accept flow yet (R2-9/R2-10). Only refreshes the
-  // Content tab body if it's the one currently mounted (`_st.el` is a
-  // per-tab DOM ref set by `deskV1FillCampaignTabBody` — repainting it
-  // while a different map stop, e.g. How itself, is showing would write
-  // into a detached node for nothing).
+  // Content tab body if it's the one currently mounted AND currently the
+  // active stop. `_st.el` is the SAME shared `#desk-v1-camp-tabbody` node
+  // every stop paints into (shell.js `_renderCampaignPanel`), so once
+  // Content has rendered once, `_st.el` stays attached to the DOM even
+  // while a different stop (e.g. How) is showing — "still in DOM" alone
+  // can't tell them apart. Dave's follow-up (2e24880e review): the fix is
+  // checking shell.js's own `dataset.panel` stamp on that node, so a
+  // Suggest task resolving while parked on How repaints nothing instead of
+  // clobbering How with Content-tab HTML.
   function _runSuggestTask(camp, project, posyBoxEl) {
     const plan = camp.plan || {};
     const accounts = plan.accounts || [];
@@ -819,7 +824,7 @@
       where: { channelId: accounts[0] || null, label: accounts[0] ? (_channel(accounts[0]) || {}).label || accounts[0] : null },
     };
     DeskV1Kit.toast(`${DeskV1Kit.deskAgentName({ project, campaign: camp })} suggested 3 pieces, a cadence and a placement.`);
-    if (_st && _st.campaignId === camp.id && _st.el && document.body.contains(_st.el)) _renderTabBody();
+    if (_st && _st.campaignId === camp.id && _st.el && document.body.contains(_st.el) && _st.el.dataset.panel === 'what') _renderTabBody();
     if (posyBoxEl) DeskV1Kit.paintPosyReadyNoDiff(posyBoxEl);
   }
 

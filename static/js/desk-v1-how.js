@@ -75,33 +75,35 @@
 
     el.innerHTML = `
       <div class="desk-v1-how">
-        <div class="desk-v1-how-card">
-          <div class="desk-v1-how-card-title">Strategy</div>
-          <div class="desk-v1-how-field">
-            <label class="desk-v1-how-field-label">Angle</label>
-            <textarea class="desk-v1-rules-textarea" data-how-angle rows="2" placeholder="The through-line.">${esc(how.angle || '')}</textarea>
+        <div class="desk-v1-how-scroll">
+          <div class="desk-v1-how-card">
+            <div class="desk-v1-how-card-title">Strategy</div>
+            <div class="desk-v1-how-field">
+              <label class="desk-v1-how-field-label">Angle</label>
+              <textarea class="desk-v1-rules-textarea" data-how-angle rows="2" placeholder="The through-line.">${esc(how.angle || '')}</textarea>
+            </div>
+            <div class="desk-v1-how-field">
+              <label class="desk-v1-how-field-label">Strategy</label>
+              <textarea class="desk-v1-rules-textarea" data-how-strategy rows="2" placeholder="Who, what argument, why these channels.">${esc(how.strategy || '')}</textarea>
+            </div>
+            <div class="desk-v1-how-field">
+              <label class="desk-v1-how-field-label">Never claim</label>
+              <input type="text" class="desk-v1-rules-textinput" data-how-never-claim value="${esc(how.never_claim || '')}" placeholder="What this campaign never asserts.">
+            </div>
           </div>
-          <div class="desk-v1-how-field">
-            <label class="desk-v1-how-field-label">Strategy</label>
-            <textarea class="desk-v1-rules-textarea" data-how-strategy rows="2" placeholder="Who, what argument, why these channels.">${esc(how.strategy || '')}</textarea>
+          <div class="desk-v1-how-card" data-how-budget-card>
+            <div class="desk-v1-how-card-title">Budget (optional)</div>
+            <div class="desk-v1-how-budget-toggle" role="group" aria-label="Budget source">
+              <button type="button" data-how-budget-btn="none" aria-pressed="${how.budget.source === 'none'}">None</button>
+              <button type="button" data-how-budget-btn="project" aria-pressed="${how.budget.source === 'project'}">Project earmark</button>
+              <button type="button" data-how-budget-btn="own" aria-pressed="${how.budget.source === 'own'}">Own</button>
+            </div>
+            ${how.budget.source !== 'none' ? `<div class="desk-v1-rules-inlinerow">$<input type="number" min="0" class="desk-v1-rules-numinput" data-how-budget-amount value="${esc(how.budget.amount || 0)}"></div>` : ''}
+            <div class="desk-v1-rules-hint">${_budgetHint(camp, how, project)}</div>
           </div>
-          <div class="desk-v1-how-field">
-            <label class="desk-v1-how-field-label">Never claim</label>
-            <input type="text" class="desk-v1-rules-textinput" data-how-never-claim value="${esc(how.never_claim || '')}" placeholder="What this campaign never asserts.">
-          </div>
-        </div>
-        <div class="desk-v1-how-card" data-how-budget-card>
-          <div class="desk-v1-how-card-title">Budget (optional)</div>
-          <div class="desk-v1-how-budget-toggle" role="group" aria-label="Budget source">
-            <button type="button" data-how-budget-btn="none" aria-pressed="${how.budget.source === 'none'}">None</button>
-            <button type="button" data-how-budget-btn="project" aria-pressed="${how.budget.source === 'project'}">Project earmark</button>
-            <button type="button" data-how-budget-btn="own" aria-pressed="${how.budget.source === 'own'}">Own</button>
-          </div>
-          ${how.budget.source !== 'none' ? `<div class="desk-v1-rules-inlinerow">$<input type="number" min="0" class="desk-v1-rules-numinput" data-how-budget-amount value="${esc(how.budget.amount || 0)}"></div>` : ''}
-          <div class="desk-v1-rules-hint">${_budgetHint(camp, how, project)}</div>
         </div>
         <div class="desk-v1-how-suggest">
-          <button type="button" class="btn-secondary" data-how-suggest>${esc(SUGGEST_TEXT)}</button>
+          <button type="button" class="desk-v1-how-suggest-btn" data-how-suggest>${esc(SUGGEST_TEXT)}</button>
           <div class="desk-v1-rules-hint">Writes draft suggestions into What, When and Where — nothing is committed until you accept it there.</div>
         </div>
       </div>`;

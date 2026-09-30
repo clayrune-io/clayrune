@@ -198,6 +198,20 @@ async function run(browser) {
   /\$60 \/ term earmarked from Clayrune's \$100\/month budget .* \$40 remaining for other campaigns/.test(poolLine)
     ? ok(`How stop: $60 earmark against a $100 pool reads "${poolLine}"`)
     : fail(`How stop: pool line wrong: ${JSON.stringify(poolLine)}`);
+  // Dave's review (2e24880e follow-up): the pool line must be reachable by
+  // scrolling `.desk-v1-how-scroll` (fine) but never hidden behind the
+  // Suggest footer (not fine) — scroll the inner region all the way and
+  // assert the line's rect clears the footer's top edge.
+  const overlapAtEnd = await page.evaluate(() => {
+    const scroller = document.querySelector('.desk-v1-how-scroll');
+    const hint = document.querySelector('[data-how-budget-card] .desk-v1-rules-hint');
+    const footer = document.querySelector('.desk-v1-how-suggest');
+    scroller.scrollTop = scroller.scrollHeight;
+    return hint.getBoundingClientRect().bottom > footer.getBoundingClientRect().top;
+  });
+  !overlapAtEnd
+    ? ok('How stop: Budget pool line clears the Suggest footer once scrolled to the end')
+    : fail('How stop: Budget pool line is still hidden behind the Suggest footer at max scroll');
   // Reset to 'none' so the later ⑥ own-budget section below starts clean.
   await page.click('[data-how-budget-btn="none"]');
 
@@ -210,6 +224,25 @@ async function run(browser) {
   /suggested 3 pieces, a cadence and a placement/.test(suggestToast)
     ? ok(`Suggest task: reaches Ready, toast reads: "${suggestToast.trim()}"`)
     : fail(`Suggest task: toast wrong: ${JSON.stringify(suggestToast)}`);
+
+  // ── Dave's review (2e24880e follow-up): a Suggest task that resolves
+  // while the user stayed parked on How must NOT clobber How with the
+  // Content tab's HTML — `_runSuggestTask` used to guard its repaint on
+  // "is `_st.el` still in the DOM", true even while How owns that same
+  // shared node, so this used to fail. Still on How (no nav since the
+  // click above) — Strategy + the Ready line must both still be showing.
+  const stillOnHowStrategy = await page.inputValue('[data-how-strategy]').catch(() => '');
+  /Show the beta working end to end/.test(stillOnHowStrategy)
+    ? ok(`Suggest task (parked on How): Strategy textarea still showing: "${stillOnHowStrategy.trim()}"`)
+    : fail(`Suggest task (parked on How): Strategy textarea lost/clobbered: ${JSON.stringify(stillOnHowStrategy)}`);
+  const readyLine = (await page.textContent('.desk-v1-posy-status').catch(() => '') || '').trim();
+  /answered; nothing changed/.test(readyLine)
+    ? ok(`Suggest task (parked on How): Ready line reads "${readyLine}"`)
+    : fail(`Suggest task (parked on How): Ready line missing/wrong: ${JSON.stringify(readyLine)}`);
+  const contentTabLeaked = await page.$('.desk-v1-camp-content');
+  !contentTabLeaked
+    ? ok('Suggest task (parked on How): no Content-tab markup leaked into the How panel')
+    : fail('Suggest task (parked on How): Content-tab markup clobbered the How panel');
 
   // ── ③ What: "3 suggested" banner + Accept all -> 3 Planned pieces ───────
   await gotoStop(page, 'what');

@@ -1693,7 +1693,17 @@
    label row, the Budget segmented toggle and the panel's own scroll
    wrapper + "n suggested" banner (also used by ④'s calendar and shared
    with ③'s Content-tab list) are new. */
-.desk-v1-how { display: flex; flex-direction: column; gap: 14px; height: 100%; min-height: 0; overflow-y: auto; }
+.desk-v1-how { display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 0; }
+/* Dave's review (2e24880e follow-up): `.desk-v1-how-suggest` used to be a
+   `position: sticky` LAST child of this same scrolling flex column — inside
+   a column flex container, a sticky child's "stuck" bottom position is
+   computed against the flex line, not the padding box, so it pinned itself
+   OVER the tail of the Budget card even at scrollTop 0 (measured: card
+   bottom 794.75, suggest bar 612.25-688.25 — already overlapping before any
+   scroll). Splitting the scroll region from the footer sidesteps the bug
+   outright: only `.desk-v1-how-scroll` scrolls, `.desk-v1-how-suggest` is a
+   plain static footer that can never be scrolled under. */
+.desk-v1-how-scroll { display: flex; flex-direction: column; gap: 14px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .desk-v1-how-card {
   display: flex; flex-direction: column; gap: 12px;
   background: var(--surface); border: 1px solid var(--border2); border-radius: 10px; padding: 16px;
@@ -1709,14 +1719,25 @@
 .desk-v1-how-budget-toggle button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
 /* Dave's review (858a7098): Suggest is the primary action and mustn't sit
    below the fold at 1440x900 — the mockup's bare screen (no dashboard chrome)
-   has room to spare, the real modal doesn't. Pinning it to the foot of
-   .desk-v1-how's own scroller (not the outer tabbody's) guarantees it stays
-   in view regardless of how tall the two cards above grow; `background`
-   matches .modal-content so scrolled card content doesn't show through. */
+   has room to spare, the real modal doesn't. A plain footer OUTSIDE
+   `.desk-v1-how-scroll` (see that rule's comment) guarantees it stays in
+   view regardless of how tall the two cards above grow, without the sticky
+   approach's flex-overlap bug; `border-top` stands in for the old sticky
+   bar's `background` divider now that there's nothing for it to cover. */
 .desk-v1-how-suggest {
   display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
-  position: sticky; bottom: 0; background: var(--surface); padding-top: 8px; margin-top: -8px;
+  flex: 0 0 auto; padding-top: 12px; border-top: 1px solid var(--border2);
 }
+/* Filled-accent primary button, same visual language as .desk-v1-map-next/
+   -launch-start (the mockup's solid blue "Suggest What / When / Where") —
+   .btn-secondary (Retry/Edit/Cancel's class) has no rule anywhere, so this
+   button was rendering as a bare unstyled <button>. */
+.desk-v1-how-suggest-btn {
+  background: var(--accent); border: none; border-radius: 8px; color: #fff;
+  font-size: 13px; font-weight: 700; padding: 11px 16px; cursor: pointer;
+  font-family: inherit; min-height: 44px;
+}
+.desk-v1-how-suggest-btn:hover { background: var(--accent-soft); }
 .desk-v1-camp-suggested-banner {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px;

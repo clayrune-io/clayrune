@@ -282,6 +282,14 @@
     const tabbodyEl = document.getElementById('desk-v1-camp-tabbody');
     if (!tabbodyEl) return;
     const panel = params.panel || 'what';
+    // Dave's review (2e24880e follow-up): every stop's renderer (What, How,
+    // When, ...) paints into this SAME node — desk-v1-campaign.js's
+    // `_runSuggestTask` used to guard its own repaint on "is `_st.el` still
+    // in the DOM", which is true regardless of which stop currently owns
+    // this element, so a Suggest resolving while parked on How clobbered it
+    // with Content-tab HTML. Stamping the requested panel here gives that
+    // guard something that actually tracks the active stop.
+    tabbodyEl.dataset.panel = panel;
     // R2-3 (§4.1 Absorbs column): ① reads `desk-v1-results.js` and ④ reads
     // `desk-v1-calendar.js` directly, same standalone-panel shape
     // `conversations` already had — ② how / ⑤ where have no dedicated
