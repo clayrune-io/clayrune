@@ -156,6 +156,23 @@ async function runToneRenderChecks(browser, tone) {
     fail(`[${tone.name}] Engulfing scanner block rows wrong: ${JSON.stringify(engulfingTitles)}`);
   }
 
+  // Goal text keeps a zero count: camp-4 is tracked at 0 of 40, and the
+  // app-wide esc()'s old `str||''` guard rendered it as "of 40 Discord joins".
+  const goalTexts = await page.evaluate(() => {
+    const out = {};
+    document.querySelectorAll('.desk-v1-home-row').forEach((r) => {
+      const t = r.querySelector('.desk-v1-home-row-title');
+      const g = r.querySelector('.desk-v1-home-goal-text');
+      if (t && g) out[t.textContent.trim()] = g.textContent.trim();
+    });
+    return out;
+  });
+  const discordGoal = goalTexts['Community Discord launch'] || '';
+  if (/^0 of 40 /.test(discordGoal)) ok(`[${tone.name}] zero goal count renders as "0 of 40", not blank`);
+  else fail(`[${tone.name}] zero goal count lost: ${JSON.stringify(discordGoal)}`);
+  if (/^11 of 30 tester signups$/.test(goalTexts['Windows beta testers'] || '')) ok(`[${tone.name}] goal text "11 of 30 tester signups"`);
+  else fail(`[${tone.name}] Windows beta testers goal text wrong: ${JSON.stringify(goalTexts['Windows beta testers'])}`);
+
   // Needs-you column, per row, unmutated fixture state:
   //  - camp-1: ch-li-page (held) is one of its accounts — held beats the
   //    needs_review piece/video also sitting on this campaign (§11.6 item 2

@@ -2579,7 +2579,9 @@ async function refreshSilent() {
 }
 
 function esc(str) {
-  return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  // null/undefined/false render empty; 0 must still render as "0" (a `str||''`
+  // guard blanked it, so the Desk showed "of 40 Discord joins" for 0 of 40).
+  return String(str == null || str === false ? '' : str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 // Open an external URL in the user's system browser. Frozen macOS builds run
