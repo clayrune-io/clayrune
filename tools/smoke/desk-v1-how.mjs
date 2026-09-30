@@ -401,11 +401,12 @@ async function run(browser) {
     ? ok('R2-17 ④: accepting the F3-based slot (within cadence/min-gap) marks it accepted')
     : fail(`R2-17 ④: slot not accepted: ${JSON.stringify(accState)}`);
   await gotoStop(page, 'launch');
-  await page.waitForSelector('.desk-v1-map-launch', { timeout: 4000 });
-  const launchAfterAccept = (await page.textContent('.desk-v1-map-launch-status').catch(() => '') || '').trim();
-  !/Awaiting approval/.test(launchAfterAccept)
-    ? ok(`R2-17 ⑥: accepting the F3-based slot keeps approval: "${launchAfterAccept}"`)
-    : fail(`R2-17 ⑥: accepting a within-bounds slot wrongly asked for approval: ${JSON.stringify(launchAfterAccept)}`);
+  await page.waitForSelector('.desk-v1-launch', { timeout: 4000 });
+  const launchAfterAccept = (await page.textContent('.desk-v1-launch').catch(() => '') || '').replace(/\s+/g, ' ');
+  const approvalOnFile = (await page.textContent('[data-launch-approval]').catch(() => '') || '').trim();
+  !/Awaiting approval/.test(launchAfterAccept) && /Approval on file/.test(approvalOnFile)
+    ? ok(`R2-17 ⑥: accepting the F3-based slot keeps approval: "${approvalOnFile}"`)
+    : fail(`R2-17 ⑥: accepting a within-bounds slot disturbed approval: awaiting=${/Awaiting approval/.test(launchAfterAccept)} line=${JSON.stringify(approvalOnFile)}`);
 
   await gotoStop(page, 'when');
   await page.waitForSelector('[data-suggested-slot] [data-because-finding="F3"]', { timeout: 4000 });
