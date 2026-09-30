@@ -349,6 +349,15 @@ function _renderUsageBreakdownSection() {
   const windowsStale = _ubWindowsCacheKey !== _ubWindowsQueryKey();
   const windowsList = (!windowsStale && systemUsageWindowsCache && systemUsageWindowsCache.windows) || [];
   const windowsUnavailable = windowsStale && (_ubWindowsError || _ubWindowsFetching);
+  // MC-998: a SUCCESSFUL windows load for exactly this selection that came
+  // back empty means the vendor has reported no such window in the retained
+  // 90 days (e.g. Codex "prolite" sends only a 7-day limit). That is a fact
+  // about the account, not missing Clayrune data -- say so instead of the
+  // calibration states. A failed fetch (`_ubWindowsError`) or a cache keyed
+  // to another selection never qualifies.
+  const vendorReportsNoWindow = !windowsStale && !_ubWindowsError &&
+    !!systemUsageWindowsCache && Array.isArray(systemUsageWindowsCache.windows) &&
+    systemUsageWindowsCache.windows.length === 0;
 
   const provSel = `
     <select class="ub-select" onchange="_ubBreakdownControlChange('provider', event)">
@@ -404,7 +413,7 @@ function _renderUsageBreakdownSection() {
   const refreshErrorHint = _ubBreakdownError
     ? '<div class="ssp-hint-line">Last refresh failed — showing the previous result.</div>' : '';
 
-  const esLabel = b.empty_state ? _UB_EMPTY_STATE_LABEL[b.empty_state] || b.empty_state : '';
+  const esLabel = b.empty_state && !vendorReportsNoWindow ? _UB_EMPTY_STATE_LABEL[b.empty_state] || b.empty_state : '';
   const t = b.totals || {};
   const tok = t.tokens || {};
   const loc = t.loc || {};
@@ -461,6 +470,12 @@ function _renderUsageBreakdownSection() {
       <div class="ssp-hint-line">${esc(_UB_BAR_STATUS_LABEL[seg.status] || seg.status || 'Unavailable')} — no observed change to attribute.</div>`;
   }
 
+  const noWindowHTML = vendorReportsNoWindow ? (() => {
+    const kind = _ubWindowKind === '5h' ? '5-hour' : 'weekly';
+    const scope = _ubWindowScope === 'opus' ? ' Opus' : _ubWindowScope === 'sonnet' ? ' Sonnet' : '';
+    return `<div class="ssp-empty ub-no-window">${esc(_ubProviderLabel(_ubProvider))} has not reported a ${kind}${scope} limit for this account in the last 90 days.</div>`;
+  })() : '';
+
   const rows = (b.rankings && b.rankings.rows) || [];
   const rankingsHTML = rows.length === 0 ? '<div class="ssp-empty">No sessions to rank in this range.</div>' : `
     <div class="ub-table-wrap"><table class="ub-table">
@@ -488,8 +503,7 @@ function _renderUsageBreakdownSection() {
     ${refreshErrorHint}
     ${esLabel ? `<div class="ssp-empty">${esc(esLabel)}.</div>` : ''}
     ${totalsHTML}
-    ${tppHTML}
-    ${segbarHTML}
+    ${vendorReportsNoWindow ? noWindowHTML : tppHTML + segbarHTML}
     ${rankingsHTML}
     ${b.coverage_begins ? `<div class="ssp-hint-line">Retained samples since ${esc(new Date(b.coverage_begins).toLocaleDateString())}.</div>` : ''}
   `;
