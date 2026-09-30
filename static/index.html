@@ -3394,7 +3394,7 @@ applyViewMode();
 // a controlling SW with a fetch handler is active — without this, the
 // `beforeinstallprompt` event never fires and the Install row stays hidden.
 window._pushState = window._pushState || {};
-if ('serviceWorker' in navigator) {
+if (navigator.serviceWorker) {
   window._pushState.swState = 'registering';
   navigator.serviceWorker.register('/sw.js', { scope: '/' })
     .then(reg => {
@@ -3407,8 +3407,17 @@ if ('serviceWorker' in navigator) {
         if (!worker) return;
         worker.addEventListener('statechange', () => {
           window._pushState.swState = worker.state;
+          // MC-713: remember when a worker last reached 'activated' so the
+          // Settings > Installed App section can show "last updated" — the
+          // Service Worker API exposes no such timestamp itself.
+          if (worker.state === 'activated') {
+            try { localStorage.setItem('mc_sw_activated_at', new Date().toISOString()); } catch (_) {}
+          }
           if (document.getElementById('sw-status-line')) {
             try { refreshPushSection(); } catch (_) {}
+          }
+          if (document.getElementById('installed-app-section')) {
+            try { refreshInstalledAppSection(); } catch (_) {}
           }
         });
       };

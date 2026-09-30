@@ -95,7 +95,11 @@
 // agentLineCls/collapseIntoPlanButton/expandAgentOutput + the rAF pin-scroll
 // pair). The conversation-model half of the old "Rich text formatting" section
 // (appendAgentLine onward) stays inline for M23. Same no-cache-list rationale.
-const SW_VERSION = 'mc-push-v37';
+// v38 (2026-09-29, MC-713): add a SKIP_WAITING message handler for the new
+// Settings > Installed App "Force update" button. install() already calls
+// self.skipWaiting() unconditionally, so this is a belt-and-suspenders hook
+// (e.g. if that auto-skip is ever made conditional) — no caching-strategy change.
+const SW_VERSION = 'mc-push-v38';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
@@ -103,6 +107,12 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 // Chrome 93+ requires a `fetch` handler that actually intercepts something

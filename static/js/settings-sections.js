@@ -669,6 +669,177 @@ async function refreshPushDeviceList() {
     <div style="margin-top:6px">${rows}</div>`;
 }
 
+// ── Installed App (MC-713) ──────────────────────────────────────────────────
+// When manifest.json or sw.js changes, an already-installed PWA keeps running
+// the old version until its service worker updates — Chrome doesn't surface
+// any of this state, so this section makes it visible plus gives a manual
+// "Force update" escape hatch and reinstall instructions (uninstall is not
+// scriptable from a page, so we can't do it for the user).
+window._mcSwVersion = window._mcSwVersion || null;
+window._mcManifestHash = window._mcManifestHash || null;
+
+async function _mcSwVersionFromSource() {
+  try {
+    const r = await fetch('/sw.js', { cache: 'no-store' });
+    if (!r.ok) return null;
+    const text = await r.text();
+    const m = text.match(/SW_VERSION\s*=\s*['"]([^'"]+)['"]/);
+    return m ? m[1] : null;
+  } catch (_) { return null; }
+}
+
+// FNV-1a, not SHA-256: this is a change-detection fingerprint, not a security
+// hash, and crypto.subtle requires a secure context (https, or plain http on
+// localhost only) — it's undefined on a plain-HTTP LAN address, which is a
+// real path here (Settings > Connectivity's local-network passcode access).
+function _mcFnv1aHex(text) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+async function _mcManifestHashFromSource() {
+  try {
+    const r = await fetch('/manifest.json', { cache: 'no-store' });
+    if (!r.ok) return null;
+    return _mcFnv1aHex(await r.text());
+  } catch (_) { return null; }
+}
+
+function installedAppSettingsHTML() {
+  const swSupported = !!navigator.serviceWorker;
+  const st = window._pushState || {};
+  const installed = _isPwaInstalled();
+  const swState = st.swState || (swSupported ? 'unknown' : 'not-supported');
+  const swVersion = window._mcSwVersion;
+  const manifestHash = window._mcManifestHash;
+  const lastActivatedIso = (() => { try { return localStorage.getItem('mc_sw_activated_at'); } catch (_) { return null; } })();
+  const lastActivatedText = lastActivatedIso ? (window.timeAgoShort ? window.timeAgoShort(lastActivatedIso) : lastActivatedIso) : 'unknown';
+
+  const installPill = installed
+    ? `<span style="font-size:11px;font-weight:600;padding:3px 8px;border-radius:8px;background:#10b98122;color:#059669;border:1px solid #10b98155">Installed app</span>`
+    : `<span style="font-size:11px;font-weight:600;padding:3px 8px;border-radius:8px;background:var(--surface3);color:var(--text-faint);border:1px solid var(--border2)">Browser tab</span>`;
+
+  const updateDisabled = !swSupported || swState === 'not-supported' || swState === 'failed';
+  const updateReason = !swSupported
+    ? 'Service workers are not supported in this browser.'
+    : (swState === 'failed' ? 'Service worker failed to register, so there is nothing to update.' : '');
+
+  return `
+    <div class="settings-section" id="installed-app-section">
+      <div class="settings-section-title">Installed App</div>
+      <div class="settings-hint" style="margin-bottom:10px;line-height:1.45">
+        When Clayrune's app code changes, an installed copy keeps the old
+        version until its service worker updates. This section shows that
+        state and lets you force an update or reinstall.
+      </div>
+      <div class="settings-row">
+        <div><div class="settings-label">Install state</div><div class="settings-hint">${installed ? 'Running as an installed app.' : 'Running in a browser tab.'}</div></div>
+        ${installPill}
+      </div>
+      <div class="settings-row">
+        <div><div class="settings-label">Service worker</div><div class="settings-hint">state: ${esc(swState)}${swVersion ? ` &middot; version ${esc(swVersion)}` : ''}</div></div>
+      </div>
+      <div class="settings-row">
+        <div><div class="settings-label">Manifest</div><div class="settings-hint">${manifestHash ? `hash ${esc(manifestHash)}` : 'unknown'}</div></div>
+      </div>
+      <div class="settings-row">
+        <div><div class="settings-label">Last service worker update</div><div class="settings-hint">${esc(lastActivatedText)}</div></div>
+      </div>
+      <div class="settings-row" style="align-items:flex-start;flex-wrap:wrap">
+        <div style="flex:1;min-width:160px">
+          <div class="settings-label">Force update</div>
+          <div class="settings-hint" id="installed-app-update-hint">${updateDisabled ? esc(updateReason) : 'Checks for a new version, activates it, and reloads.'}</div>
+        </div>
+        <button id="installed-app-update-btn" class="btn-dispatch" ${updateDisabled ? 'disabled' : ''} onclick="forceUpdateServiceWorker()" style="font-size:12px;padding:6px 10px;flex-shrink:0">Force update service worker</button>
+      </div>
+      <div class="settings-row" style="align-items:flex-start;flex-direction:column;gap:8px;border-top:1px dashed var(--border-soft,rgba(0,0,0,.08));padding-top:10px;margin-top:8px">
+        <div>
+          <div class="settings-label">Reinstall the app</div>
+          <div class="settings-hint">Clayrune can't uninstall itself from here. Steps:</div>
+        </div>
+        <ol class="settings-hint" style="margin:0;padding-left:18px;line-height:1.7">
+          <li>Chrome desktop: open the app window's menu (top right) and choose Uninstall, then click the install icon in the address bar to reinstall.</li>
+          <li>Android: long-press the Clayrune icon and choose Uninstall, then use the browser menu and choose Install app.</li>
+        </ol>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <code style="font-size:11px;background:var(--surface3);padding:3px 8px;border-radius:6px">chrome://apps</code>
+          <button class="btn-dispatch" style="font-size:11px;padding:4px 8px;background:transparent;border:1px solid var(--border)" onclick="copyInstalledAppLink()">Copy</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function refreshInstalledAppSection() {
+  const [swVersion, manifestHash] = await Promise.all([_mcSwVersionFromSource(), _mcManifestHashFromSource()]);
+  if (swVersion) window._mcSwVersion = swVersion;
+  if (manifestHash) window._mcManifestHash = manifestHash;
+  const el = document.getElementById('installed-app-section');
+  if (el) el.outerHTML = installedAppSettingsHTML();
+  try { _applySettingsSectionVisibility(); } catch (_) {}
+}
+
+async function copyInstalledAppLink() {
+  try {
+    await navigator.clipboard.writeText('chrome://apps');
+    showToast('Copied chrome://apps');
+  } catch (_) {
+    showToast('Could not copy. Select and copy the text manually.', 4000);
+  }
+}
+
+async function forceUpdateServiceWorker() {
+  if (!navigator.serviceWorker) return;
+  const btn = document.getElementById('installed-app-update-btn');
+  const hint = document.getElementById('installed-app-update-hint');
+  if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+  if (hint) hint.textContent = 'Checking for a new version…';
+  try {
+    const reg = await navigator.serviceWorker.getRegistration('/');
+    if (!reg) {
+      showToast('No service worker registered.', 4000);
+      await refreshInstalledAppSection();
+      return;
+    }
+    // Listen BEFORE update(): install() calls skipWaiting() itself, so a new
+    // worker can activate before we ever see it in reg.installing/waiting.
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloaded) return;
+      reloaded = true;
+      location.reload();
+    });
+    await reg.update();
+    let waiting = reg.waiting;
+    if (!waiting && reg.installing) {
+      waiting = await new Promise((resolve) => {
+        const w = reg.installing;
+        const onChange = () => {
+          if (w.state === 'installed') { w.removeEventListener('statechange', onChange); resolve(reg.waiting || w); }
+          else if (w.state === 'redundant') { w.removeEventListener('statechange', onChange); resolve(null); }
+        };
+        w.addEventListener('statechange', onChange);
+        setTimeout(() => resolve(reg.waiting || null), 8000);
+      });
+    }
+    if (!waiting) {
+      if (reloaded) return;
+      showToast('Already up to date.');
+      await refreshInstalledAppSection();
+      return;
+    }
+    waiting.postMessage({ type: 'SKIP_WAITING' });
+    setTimeout(() => { if (!reloaded) { reloaded = true; location.reload(); } }, 6000);
+  } catch (e) {
+    showToast(`Update check failed: ${e.message || e}`, 5000);
+    if (btn) { btn.disabled = false; btn.textContent = 'Force update service worker'; }
+    if (hint) hint.textContent = 'Checks for a new version, activates it, and reloads.';
+  }
+}
+
 async function enablePushOnThisDevice() {
   if (!_pushSupported()) {
     showToast('This browser does not support web push', 4000);
@@ -1276,6 +1447,10 @@ window.installPwaApp = installPwaApp;
 window.removePushSubscription = removePushSubscription;
 window.updatePushSubscription = updatePushSubscription;
 window.renameRemoteSession = renameRemoteSession;
+window.installedAppSettingsHTML = installedAppSettingsHTML;
+window.refreshInstalledAppSection = refreshInstalledAppSection;
+window.forceUpdateServiceWorker = forceUpdateServiceWorker;
+window.copyInstalledAppLink = copyInstalledAppLink;
 window.signOutSession = signOutSession;
 window.enforceSessionCleanup = enforceSessionCleanup;
 window.signOutAllSessions = signOutAllSessions;

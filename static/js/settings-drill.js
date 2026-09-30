@@ -893,6 +893,8 @@ async function _renderSettings() {
       </div>
     </div>
 
+    ${installedAppSettingsHTML()}
+
     <div class="settings-section">
       <div class="settings-section-title">Help</div>
       <div class="settings-row">
@@ -917,6 +919,7 @@ async function _renderSettings() {
   // their containers. Both functions early-return if their target element
   // isn't found, so the placeholder used to get stuck.
   try { refreshPushSection(); } catch (_) {}
+  try { refreshInstalledAppSection(); } catch (_) {}
   try { refreshMobilePairingSection(); } catch (_) {}
   try { refreshAgentFaceSection(); } catch (_) {}
   try { refreshBackupScheduleSection(); } catch (_) {}
