@@ -111,7 +111,9 @@ async function run(browser) {
   const { ctx, page, pageErrors } = await openPresence(browser, { width: 1440, height: 900 });
 
   const rows = await page.$$eval('[data-readvia-row]', (els) => els.map((e) => e.dataset.platform));
-  check(rows.includes('x') && rows.includes('linkedin') && rows.length === 2,
+  // Every X/LinkedIn account gets one (R2-10's fixture added a second X account);
+  // no other platform does.
+  check(rows.includes('x') && rows.includes('linkedin') && rows.every((p) => p === 'x' || p === 'linkedin'),
         'X and LinkedIn accounts carry the Read via control; the blog account does not',
         `Read via rows wrong: ${JSON.stringify(rows)}`);
   check(await pressed(page, 'ch-x-ron') === 'pane',
