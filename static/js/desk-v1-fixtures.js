@@ -73,6 +73,19 @@
     },
   ];
 
+  // R2-6: camp-1's `how` (strategy/angle/agent/budget) used to be duplicated
+  // between `campaign.how` (kit.js deskAgentRef's read) and a separate
+  // `plan.angle` string kit.js never read — one object now, `campaign.how`
+  // and `campaign.plan.how` both point at it, so kit's two different `.how`
+  // readers (deskAgentRef on campaign.how, validatePlan/nextBoundsHash on
+  // plan.how) see the same data instead of drifting.
+  const _CAMP1_HOW = {
+    strategy: 'Show the beta working end to end, not just announce it.',
+    angle: 'Show the restore-points and install flow working end to end so trying the beta feels low-risk.',
+    agent: null,
+    budget: { source: 'project', amount: 60, period: 'term' },
+  };
+
   const CAMPAIGNS = [
     {
       id: 'camp-1',
@@ -104,16 +117,7 @@
       // `long` horizon goal above would renew terms until `goal.deadline`).
       // camp-1's own `short` horizon needs exactly one term.
       term: { index: 1, starts: '2026-09-01', ends: '2026-10-20', post_cap: null },
-      // §5.1: `plan.angle` moves here eventually (R2-6); duplicated rather
-      // than moved for this ticket since `plan.angle` still has no reader
-      // of its own to retire (grep confirms) and nothing depends on this
-      // one yet — R2-6 picks a single home for it.
-      how: {
-        strategy: 'Show the beta working end to end, not just announce it.',
-        angle: 'Show the restore-points and install flow working end to end so trying the beta feels low-risk.',
-        agent: null,
-        budget: { source: 'project', amount: 60, period: 'term' },
-      },
+      how: _CAMP1_HOW,
       // §5.1: replaces `setup {step, done}` (a Draft-only concept the R0
       // setup wizard still owns via `camp.setup`, untouched here) — `map`
       // is the R2-3 stepper's own state, additive, unread by anything yet.
@@ -141,7 +145,9 @@
         audience: 'Windows users trying Claude Code',
         goal: { outcome: 'tester signups', target: 30, deadline: '2026-10-20', tracked: true },
         accounts: ['ch-x-ron', 'ch-li-page', 'ch-blog'],
-        angle: 'Show the restore-points and install flow working end to end so trying the beta feels low-risk.',
+        // R2-6: `angle` retired from here — `how.angle` (below) is the one
+        // copy now; `how` itself is the SAME object as `campaign.how` above.
+        how: _CAMP1_HOW,
         samples: [],
         cadence: { per_week: 3 },
         end: { date: '2026-10-20', post_cap: null },
