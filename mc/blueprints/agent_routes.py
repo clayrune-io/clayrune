@@ -4745,14 +4745,19 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     _full_context = _context_profile.resolve(
         provider or project.get('provider') or 'claude', model,
         state.CONFIG.get('context_profile_overrides')) != 'lean'
-    # Vendor identity, kept SEPARATE from the model-tier check above: two
-    # sections below (curated-memory bridge, no-background-job notice) exist
-    # to compensate for a gap in the Claude CLI specifically (native
-    # CLAUDE.md/MEMORY.md auto-load, a `run_in_background` tool) — properties
-    # of the RUNTIME, not the model. A Claude Haiku session still runs on the
-    # `claude` CLI and still has both, so those two gates must stay on vendor
-    # even though Haiku now takes the lean profile above.
-    _is_claude = (provider or project.get('provider') or 'claude').lower() == 'claude'
+    # Runtime capabilities, kept SEPARATE from the model-tier check above:
+    # two sections below (curated-memory bridge, no-background-job notice)
+    # exist to compensate for what a specific CLI does or doesn't provide on
+    # its own (native CLAUDE.md/MEMORY.md auto-load, a `run_in_background`
+    # facility) — properties of the RUNTIME, not the model. A Claude Haiku
+    # session still runs on the `claude` CLI and still has both, so those two
+    # gates key off the runtime's declared capabilities, not the context
+    # profile above, even though Haiku takes the lean profile for it.
+    try:
+        _runtime_caps = _agent_runtime.get_runtime(
+            (provider or project.get('provider') or 'claude').lower()).capabilities()
+    except Exception:
+        _runtime_caps = _agent_runtime.ProviderCapabilities(name='', display_name='')
     # A persona that named itself outranks the global assistant name: for this
     # chat, that IS who is speaking. Emitting both would tell the agent it has
     # two names, and it would pick one at random per turn.
@@ -4948,7 +4953,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # different cell's marker). Bridge it with the CURATED half only —
     # `_mem_split` drops the managed Session Log, the "wall of past prompts"
     # that caused the Gemini failure above. Bounded by index_byte_budget.
-    if not _is_claude and not incognito:
+    if not _runtime_caps.native_memory_autoload and not incognito:
         try:
             from mc.memory import _mem_split as _mem_split_idx
             _idx = _mem_split_idx(mem_path.read_text(encoding='utf-8', errors='replace'))[0].strip() \
@@ -4967,7 +4972,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # the agent the real options instead of letting it discover the silent
     # failure by trying to background a command itself. Needs a session_id to
     # address, and incognito sessions can't take a job endpoint response.
-    if not _is_claude and session_id and not incognito:
+    if not _runtime_caps.background_jobs and session_id and not incognito:
         parts.append(
             "You have no background-job facility of your own -- your process "
             "exits when this turn ends, so backgrounding a command with `&` "

@@ -126,6 +126,25 @@ def test_gemini_runtime_context_profile_default_is_lean():
     assert rt.context_profile_for('') == 'lean'
 
 
+# ── ProviderCapabilities.native_memory_autoload / .background_jobs ──────────
+# Runtime-level facts, independent of the model-tier context profile above:
+# Claude Haiku is 'lean' by context profile but still runs on the `claude`
+# CLI, so it still has both of these — see
+# test_haiku_stays_runtime_capability_gated_for_claude_only_sections below.
+
+def test_claude_runtime_has_native_memory_autoload_and_background_jobs():
+    caps = agent_runtime.get_runtime('claude').capabilities()
+    assert caps.native_memory_autoload is True
+    assert caps.background_jobs is True
+
+
+def test_non_claude_runtimes_lack_native_memory_autoload_and_background_jobs():
+    for provider in ('gemini', 'qwen', 'codex', 'opencode', 'goose', 'aider', 'kiro'):
+        caps = agent_runtime.get_runtime(provider).capabilities()
+        assert caps.native_memory_autoload is False, provider
+        assert caps.background_jobs is False, provider
+
+
 # ── Integration: _build_agent_context actually gates on the resolved profile ─
 
 @pytest.fixture()
@@ -228,15 +247,17 @@ def test_character_pinned_haiku_model_is_honored_over_claude_project_default(env
                 'memory_index': False, 'no_bg_job': False}
 
 
-def test_haiku_stays_vendor_gated_for_claude_only_sections(env):
+def test_haiku_stays_runtime_capability_gated_for_claude_only_sections(env):
     # Regression guard: an earlier pass gated ALL FOUR sections on the new
-    # model-tier flag by mechanically swapping `_is_claude` -> `_full_context`
-    # everywhere. That was wrong for two of them — the curated-memory bridge
-    # and the no-background-job notice exist only to compensate for what the
-    # Claude CLI itself provides natively; a Claude Haiku session still runs
-    # on that CLI and still has both, so injecting them anyway would
-    # duplicate the real MEMORY.md auto-load (measured +18.6KB on a real
-    # project) and tell Haiku it has no backgrounding facility when it does.
+    # model-tier flag by mechanically swapping the old vendor compare ->
+    # `_full_context` everywhere. That was wrong for two of them — the
+    # curated-memory bridge and the no-background-job notice exist only to
+    # compensate for what the Claude CLI itself provides natively
+    # (`ProviderCapabilities.native_memory_autoload` /  `.background_jobs`,
+    # both True only for ClaudeRuntime). A Claude Haiku session still runs on
+    # that CLI and still has both, so injecting them anyway would duplicate
+    # the real MEMORY.md auto-load (measured +18.6KB on a real project) and
+    # tell Haiku it has no backgrounding facility when it does.
     ctx_claude = env['ar']._build_agent_context(
         env['project'], task='hi', session_id='sess1',
         provider='claude', model='claude-haiku-4-5-20251001')

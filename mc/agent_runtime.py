@@ -236,6 +236,18 @@ class ProviderCapabilities:
     # env var or a cached OAuth token). The Settings UI uses this to label
     # the probe action with its cost instead of firing it silently on a poll.
     auth_probe_spends_quota: bool = False
+    # True when the CLI itself loads CLAUDE.md/MEMORY.md from disk before the
+    # turn Clayrune builds — so injecting the curated memory index AGAIN in
+    # _build_agent_context would duplicate what the runtime already gave the
+    # agent. Backlog 4a11b6a5: this is a RUNTIME fact (every model on this
+    # CLI gets it), not a per-model one — Haiku on the Claude CLI still has
+    # it even though Haiku takes the lean context profile.
+    native_memory_autoload: bool = False
+    # True when a dispatched command can keep running after the turn ends and
+    # something wakes the session when it finishes (e.g. a `run_in_background`
+    # tool). False means _build_agent_context must tell the agent a shell `&`
+    # orphans the job — also a runtime fact, not a per-model one.
+    background_jobs: bool = False
 
 
 # Alias so caller code from the brief can use the name CapabilityFlags.
@@ -1150,10 +1162,13 @@ class AgentRuntime(ABC):
     # conversations, recent activity — agent_routes.py) a model should get.
     # 'full' is the default: a model that treats the dump as background gets
     # it. 'lean' drops those sections for a model that reads them as a live
-    # task list and goes off doing phantom work on a plain "Hi" (first
-    # measured on Gemini, since confirmed on Haiku). Backlog 4a11b6a5 — this
-    # used to be a per-VENDOR check (_is_claude); it is per-MODEL because the
-    # failure mode is a property of the model's capability, not its vendor.
+    # task list and goes off doing phantom work on a plain "Hi" — MEASURED on
+    # Gemini (the original case this slim path was built for). Haiku is
+    # bucketed 'lean' by EXPECTED capability, not a measured probe of this
+    # specific failure — no live Haiku dispatch has been run against it yet.
+    # Backlog 4a11b6a5 — this used to be a per-VENDOR check (_is_claude); it
+    # is per-MODEL because the failure mode is a property of the model's
+    # capability, not its vendor.
     CONTEXT_PROFILE_DEFAULT: str = 'full'
     # (regex, profile) pairs, first match wins on the lower-cased model id;
     # no match falls back to CONTEXT_PROFILE_DEFAULT. Mirrors
@@ -1920,8 +1935,9 @@ class ClaudeRuntime(AgentRuntime):
 
     # CONTEXT_PROFILE_DEFAULT stays 'full' (base class) — Opus/Sonnet/Fable
     # and any unrecognized pin keep today's full floor. Haiku alone drops to
-    # 'lean': measured capable of the same phantom-task-list failure the
-    # non-Claude runtimes below were already gated on (backlog 4a11b6a5).
+    # 'lean': expected, by capability tier, to be at risk of the same
+    # phantom-task-list failure the non-Claude runtimes below are already
+    # gated on (backlog 4a11b6a5) — NOT yet confirmed by a live Haiku probe.
     CONTEXT_PROFILE_PATTERNS = (('haiku', 'lean'),)
 
     def tier_family(self, model: str) -> str:
@@ -3282,6 +3298,8 @@ class ClaudeRuntime(AgentRuntime):
             context_injection='flag',
             context_file_name='CLAUDE.md',
             oneshot_supported=True,
+            native_memory_autoload=True,
+            background_jobs=True,
         )
 
     # ── Dispatch delegates (keep byte-identical claude path) ──────────────────
