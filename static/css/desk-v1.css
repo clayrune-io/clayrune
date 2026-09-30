@@ -1095,7 +1095,18 @@
 }
 
 /* ── T4: Calendar view (frame 12f) ───────────────────────────────────────── */
-.desk-v1-calendar { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; }
+/* R2-9: was `height: 100%; min-height: 0` — fine when the grid-wrap was the
+   only flexible sibling, but R2-9 added 4 more non-shrinking blocks above it
+   (Fields, refusal banner, legend, plus the Unscheduled tray below), so a
+   fixed 100% forced grid-wrap to shrink until real channel rows were clipped
+   past its own scrollport (not merely off-screen — un-paintable, so a click/
+   drag at their computed position hit whatever rendered underneath instead).
+   `min-height: 100%` keeps the panel filling the modal when content is
+   short, but lets it grow past that when it isn't — the mount point
+   (`#desk-v1-camp-listwrap`, desk-v1-campaign.js) already carries its own
+   `overflow-y: auto`, so the panel scrolls as a whole once content genuinely
+   exceeds the modal instead of squeezing the grid. */
+.desk-v1-calendar { display: flex; flex-direction: column; gap: 12px; min-height: 100%; }
 
 .desk-v1-cal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; flex: 0 0 auto; }
 .desk-v1-cal-toolbar-left { display: flex; align-items: center; gap: 10px; }
@@ -1124,10 +1135,12 @@
    columns stay aligned across rows without one giant grid needing to know
    every row's markup. */
 /* flex-grow: 0 — a short week/campaign shouldn't stretch the bordered grid
-   box open to fill unused modal height (frame 12f's card sizes to its rows);
-   flex-shrink + min-height: 0 still let it yield to the footnote and scroll
-   internally on a tall All-campaigns row count instead of overflowing. */
-.desk-v1-cal-grid-wrap { flex: 0 1 auto; overflow: auto; min-height: 0; max-height: 100%; border: 1px solid var(--border2); border-radius: 10px; background: var(--surface); }
+   box open to fill unused modal height (frame 12f's card sizes to its rows).
+   `max-height` is a fixed px cap, not `100%` (the parent `.desk-v1-calendar`
+   no longer has a fixed height to be a percentage of, R2-9 above) — this is
+   what still gives a tall All-campaigns row count its OWN internal scroll
+   instead of growing the whole panel unboundedly. */
+.desk-v1-cal-grid-wrap { flex: 0 1 auto; overflow: auto; min-height: 0; max-height: 460px; border: 1px solid var(--border2); border-radius: 10px; background: var(--surface); }
 .desk-v1-cal-grid { display: flex; flex-direction: column; min-width: calc(150px + var(--desk-v1-cal-cols, 7) * 110px); }
 .desk-v1-cal-row { display: grid; grid-template-columns: 150px repeat(var(--desk-v1-cal-cols, 7), minmax(110px, 1fr)); border-bottom: 1px solid var(--border); }
 .desk-v1-cal-row:last-child { border-bottom: none; }
@@ -1218,6 +1231,103 @@
   padding: 5px 9px; cursor: pointer; font-size: 12px;
 }
 .desk-v1-cal-kbd-reschedule button[data-kbd-move] { background: var(--accent-dim); border-color: var(--accent); color: var(--accent-soft); font-weight: 600; }
+
+/* ── R2-9: When fields (Cadence · Min gap · Term · Post cap, §4.1 ④) ──────── */
+.desk-v1-cal-fields {
+  /* Dave review pass 2, point 3: Cadence's "≤ n/wk from <project>'s
+     ceiling" hint is the longest string of the four (and grows with the
+     project's name) — Term only needs room for a short date range plus a
+     native date input, so it was oversized at 1.5fr while Cadence starved
+     at 1fr. Weights below reflect actual content width, not a round split. */
+  display: grid; grid-template-columns: minmax(210px, 1.6fr) minmax(170px, 1fr) minmax(210px, 1.2fr) minmax(120px, 0.8fr);
+  gap: 10px; flex: 0 0 auto;
+}
+.desk-v1-cal-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.desk-v1-cal-field-label { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.02em; }
+.desk-v1-cal-field-value {
+  font-size: 13px; color: var(--text); background: var(--surface2); border: 1px solid var(--border2);
+  border-radius: 8px; padding: 7px 9px; display: flex; align-items: center; gap: 6px; min-height: 32px;
+  min-width: 0;
+}
+/* The overflowing content is the plain-text CHILD span, not this flex
+   container itself — text-overflow on the container alone hard-clips with
+   no "…" (flex layout clips the child's box; it doesn't ellipsize the text
+   run inside it). Cadence/Min-gap's value spans need their own overflow
+   rule to actually ellipsize instead of cutting off mid-word. */
+.desk-v1-cal-field-value > span {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.desk-v1-cal-field-date, .desk-v1-cal-field-num {
+  background: transparent; border: none; color: var(--text); font: inherit; padding: 0; min-width: 0; flex: 0 1 auto;
+}
+.desk-v1-cal-field-num {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px;
+  padding: 7px 9px; min-height: 32px;
+}
+@media (max-width: 960px) { .desk-v1-cal-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* Refusal banner (§8: "an own slot over the week's cadence or inside min
+   gap is refused with the reason") — collapsed to nothing until a refusal
+   actually fires, never reserving layout space for a message that isn't
+   showing (matches `.desk-v1-cal-cell-preview:empty` just above). */
+.desk-v1-cal-slot-refusal {
+  display: none; font-size: 12px; color: var(--red-text); background: var(--red-dim);
+  border: 1px solid var(--red-text); border-radius: 8px; padding: 7px 10px; flex: 0 0 auto;
+}
+.desk-v1-cal-slot-refusal-show { display: block; }
+
+/* Legend (§8: literal words "your own slot" / "agent-suggested", not colour
+   or border alone). */
+.desk-v1-cal-legend { display: flex; align-items: center; gap: 16px; font-size: 12px; color: var(--text-dim); flex: 0 0 auto; }
+.desk-v1-cal-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.desk-v1-cal-legend-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.desk-v1-cal-legend-user .desk-v1-cal-legend-dot { background: var(--green); }
+.desk-v1-cal-legend-agent .desk-v1-cal-legend-dot { background: transparent; border: 1.5px dashed var(--green-text); }
+
+/* Your-slots band — its own row inside the grid (`_slotRowHTML`), so it
+   shares the grid's column template with the header and channel rows. */
+.desk-v1-cal-rowhead-slots { flex-direction: row; align-items: center; justify-content: space-between; gap: 6px; }
+.desk-v1-cal-slot-rowlabel { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.02em; }
+.desk-v1-cal-slot-handle {
+  background: var(--green-dim); border: 1px dashed var(--green-text); color: var(--green-text);
+  border-radius: 6px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: grab; white-space: nowrap;
+}
+.desk-v1-cal-slot-handle:active, .desk-v1-cal-slot-handle-dragging { cursor: grabbing; }
+/* Per-cell add affix (Dave review pass 1, point 2): "the user drags ON THE
+   CALENDAR to create OWN slots" — the rowhead handle above is a convenience,
+   but every empty slot cell is ALSO its own drag source so a slot can be
+   created directly on the day it lands, no reach-across-the-month drag to a
+   single fixed handle required. Same grab affordance, just per-cell. */
+.desk-v1-cal-slotcell-add {
+  display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+  border-radius: 50%; border: 1px dashed var(--green-text); color: var(--green-text);
+  font-size: 12px; line-height: 1; cursor: grab; opacity: 0.55;
+}
+.desk-v1-cal-slotcell-add:hover, .desk-v1-cal-slotcell:hover .desk-v1-cal-slotcell-add { opacity: 1; }
+.desk-v1-cal-slotcell-add:active { cursor: grabbing; }
+.desk-v1-cal-slotchip {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left;
+  border-radius: 7px; padding: 5px 7px; font: inherit; cursor: default;
+}
+.desk-v1-cal-slotchip-user { background: var(--green); border: 1px solid var(--green); color: var(--bg); }
+.desk-v1-cal-slotchip-agent { background: transparent; border: 1px dashed var(--green-text); color: var(--green-text); }
+.desk-v1-cal-slotchip-line1 { display: flex; align-items: center; gap: 5px; }
+.desk-v1-cal-slotchip-time { font-size: 10px; font-weight: 700; }
+.desk-v1-cal-slotchip-origin { font-size: 10.5px; font-weight: 600; }
+.desk-v1-cal-slotchip-held { font-size: 10px; font-weight: 700; color: var(--amber-text); }
+.desk-v1-cal-slotchip-title { font-size: 11px; line-height: 1.3; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk-v1-cal-slotchip-ghost { box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); pointer-events: none; background: var(--green); color: var(--bg); border-radius: 7px; padding: 5px 7px; }
+
+/* Unscheduled tray (§4.1 row 141, kept below the fold per frame 6). */
+.desk-v1-cal-unscheduled { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
+.desk-v1-cal-unscheduled-label { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.02em; }
+.desk-v1-cal-unscheduled-tray { display: flex; flex-wrap: wrap; gap: 8px; }
+.desk-v1-cal-unscheduled-card {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px; padding: 6px 10px;
+  color: var(--text); font-size: 12px; cursor: grab; font: inherit;
+}
+.desk-v1-cal-unscheduled-card:hover { background: var(--surface3); }
+.desk-v1-cal-unscheduled-dragging { opacity: 0.35; }
 
 .desk-v1-cal-footnote { font-size: 11.5px; color: var(--text-faint); line-height: 1.5; flex: 0 0 auto; }
 
