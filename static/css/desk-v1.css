@@ -1234,16 +1234,31 @@
 
 /* ── R2-9: When fields (Cadence · Min gap · Term · Post cap, §4.1 ④) ──────── */
 .desk-v1-cal-fields {
-  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; flex: 0 0 auto;
+  /* Dave review pass 2, point 3: Cadence's "≤ n/wk from <project>'s
+     ceiling" hint is the longest string of the four (and grows with the
+     project's name) — Term only needs room for a short date range plus a
+     native date input, so it was oversized at 1.5fr while Cadence starved
+     at 1fr. Weights below reflect actual content width, not a round split. */
+  display: grid; grid-template-columns: minmax(210px, 1.6fr) minmax(170px, 1fr) minmax(210px, 1.2fr) minmax(120px, 0.8fr);
+  gap: 10px; flex: 0 0 auto;
 }
-.desk-v1-cal-field { display: flex; flex-direction: column; gap: 4px; }
+.desk-v1-cal-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .desk-v1-cal-field-label { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.02em; }
 .desk-v1-cal-field-value {
   font-size: 13px; color: var(--text); background: var(--surface2); border: 1px solid var(--border2);
   border-radius: 8px; padding: 7px 9px; display: flex; align-items: center; gap: 6px; min-height: 32px;
+  min-width: 0;
+}
+/* The overflowing content is the plain-text CHILD span, not this flex
+   container itself — text-overflow on the container alone hard-clips with
+   no "…" (flex layout clips the child's box; it doesn't ellipsize the text
+   run inside it). Cadence/Min-gap's value spans need their own overflow
+   rule to actually ellipsize instead of cutting off mid-word. */
+.desk-v1-cal-field-value > span {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
 }
 .desk-v1-cal-field-date, .desk-v1-cal-field-num {
-  background: transparent; border: none; color: var(--text); font: inherit; padding: 0; min-width: 0;
+  background: transparent; border: none; color: var(--text); font: inherit; padding: 0; min-width: 0; flex: 0 1 auto;
 }
 .desk-v1-cal-field-num {
   width: 100%; background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px;
@@ -1278,6 +1293,18 @@
   border-radius: 6px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: grab; white-space: nowrap;
 }
 .desk-v1-cal-slot-handle:active, .desk-v1-cal-slot-handle-dragging { cursor: grabbing; }
+/* Per-cell add affix (Dave review pass 1, point 2): "the user drags ON THE
+   CALENDAR to create OWN slots" — the rowhead handle above is a convenience,
+   but every empty slot cell is ALSO its own drag source so a slot can be
+   created directly on the day it lands, no reach-across-the-month drag to a
+   single fixed handle required. Same grab affordance, just per-cell. */
+.desk-v1-cal-slotcell-add {
+  display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+  border-radius: 50%; border: 1px dashed var(--green-text); color: var(--green-text);
+  font-size: 12px; line-height: 1; cursor: grab; opacity: 0.55;
+}
+.desk-v1-cal-slotcell-add:hover, .desk-v1-cal-slotcell:hover .desk-v1-cal-slotcell-add { opacity: 1; }
+.desk-v1-cal-slotcell-add:active { cursor: grabbing; }
 .desk-v1-cal-slotchip {
   display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left;
   border-radius: 7px; padding: 5px 7px; font: inherit; cursor: default;

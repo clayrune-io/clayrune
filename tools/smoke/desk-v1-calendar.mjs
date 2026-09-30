@@ -449,9 +449,15 @@ async function runR29FieldsAndLegend(browser) {
   await navToCalendar(page);
   await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
 
+  // Dave review pass 1, point 3: the row's required format is "≤ n/wk from
+  // <project>'s ceiling" UNCONDITIONALLY whenever a project ceiling exists —
+  // camp-1's own cadence (3/wk) happens to equal Clayrune's ceiling (3/wk),
+  // so this also proves the hint isn't gated on the campaign leaving cadence
+  // unset (that gate was the bug: it hid the ceiling whenever a campaign set
+  // its own value, even when that value came straight from the ceiling).
   const cadence = (await page.textContent('[data-cal-field-cadence]').catch(() => '') || '').trim();
-  cadence === '3/wk'
-    ? ok(`R2-9: Cadence field reads the plan's own cadence: "${cadence}"`)
+  cadence === "≤3/wk from Clayrune's ceiling"
+    ? ok(`R2-9: Cadence field always shows the project ceiling hint: "${cadence}"`)
     : fail(`R2-9: Cadence field wrong: ${JSON.stringify(cadence)}`);
 
   const minGap = (await page.textContent('[data-cal-field-mingap]').catch(() => '') || '').trim();

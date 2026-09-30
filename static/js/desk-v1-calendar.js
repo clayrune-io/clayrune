@@ -159,12 +159,29 @@
     });
     return g;
   }
+  // Raw project ceiling, independent of whether the campaign's own cadence
+  // happens to be under/equal to it (kit.js's `_effectiveCadence` only
+  // reports `fromProject` when the campaign left cadence unset — Dave review
+  // pass 1: the row's required format is "≤ n/wk from <project>'s ceiling"
+  // UNCONDITIONALLY whenever a ceiling exists, same pattern `_effectiveMinGapH`
+  // above already uses for the read-only Min gap field).
+  function _projectCadenceCeiling(campaign, project) {
+    const ceilings = (project && project.presence && project.presence.ceilings) || {};
+    const accounts = (campaign.plan && campaign.plan.accounts) || [];
+    let c = null;
+    accounts.forEach((chId) => {
+      const ceil = ceilings[chId];
+      if (ceil && ceil.per_week != null) c = c == null ? ceil.per_week : Math.min(c, ceil.per_week);
+    });
+    return c;
+  }
   function _cadenceFieldText(campaign, project) {
     const result = (window.DeskV1Kit && window.DeskV1Kit.validatePlan(campaign.plan, project)) || {};
     const eff = result.effective || {};
     if (eff.cadence_per_week == null) return 'Not set';
-    return eff.cadence_from_project
-      ? `≤${eff.cadence_per_week}/wk · from ${project ? project.name : 'the project'}`
+    const ceiling = _projectCadenceCeiling(campaign, project);
+    return ceiling != null
+      ? `≤${eff.cadence_per_week}/wk from ${project ? project.name : 'the project'}'s ceiling`
       : `${eff.cadence_per_week}/wk`;
   }
   function _minGapFieldText(campaign, project) {
@@ -180,9 +197,9 @@
     return `
       <div class="desk-v1-cal-fields">
         <div class="desk-v1-cal-field"><span class="desk-v1-cal-field-label">Cadence</span>
-          <span class="desk-v1-cal-field-value" data-cal-field-cadence>${esc(_cadenceFieldText(campaign, project))}</span></div>
+          <span class="desk-v1-cal-field-value" data-cal-field-cadence title="${esc(_cadenceFieldText(campaign, project))}"><span>${esc(_cadenceFieldText(campaign, project))}</span></span></div>
         <div class="desk-v1-cal-field"><span class="desk-v1-cal-field-label">Min gap</span>
-          <span class="desk-v1-cal-field-value" data-cal-field-mingap>${esc(_minGapFieldText(campaign, project))}</span></div>
+          <span class="desk-v1-cal-field-value" data-cal-field-mingap title="${esc(_minGapFieldText(campaign, project))}"><span>${esc(_minGapFieldText(campaign, project))}</span></span></div>
         <div class="desk-v1-cal-field"><span class="desk-v1-cal-field-label">Term</span>
           <span class="desk-v1-cal-field-value">${esc(startLabel)} – <input type="date" class="desk-v1-cal-field-date" data-cal-field-end value="${esc(endDate)}"></span></div>
         <div class="desk-v1-cal-field"><span class="desk-v1-cal-field-label">Post cap</span>
@@ -341,6 +358,7 @@
       const items = byDay[key] || [];
       return `<div class="desk-v1-cal-cell desk-v1-cal-slotcell pd-drop-target" data-day-key="${esc(key)}">
         <span class="desk-v1-cal-cell-preview"></span>
+        <span class="desk-v1-cal-slotcell-add" data-slot-cell-add aria-label="Drag to add your own slot" title="Drag to add your own slot">+</span>
         ${items.map((s) => _slotChipHTML(s)).join('')}
       </div>`;
     }).join('');
@@ -784,52 +802,64 @@
   }
 
   // ── R2-9: drag-to-create an own slot. Same PointerDrag mechanics as
-  // `_bindDrag` above, but the draggable is the rowhead's "+ New slot"
-  // handle, not an existing chip, and the drop target is scoped to
+  // `_bindDrag` above; the drop target is always scoped to
   // `.desk-v1-cal-slotcell` (the slots band only) so a slot never lands on
   // a channel row. A separate local `_slotDragState` — concurrent with
   // `_dragState` is impossible (one pointer), but keeping them apart means
-  // this drag's teardown can never stomp a chip-drag's own state object. ───
+  // this drag's teardown can never stomp a chip-drag's own state object.
+  //
+  // Two draggable sources share this mechanics (Dave review pass 1, point 2:
+  // "the user drags ON THE CALENDAR to create own slots" — a single handle
+  // parked at the row's far-left edge means a month view drag has to cross
+  // ~30 columns to reach its target day, which isn't "on the calendar"):
+  //   - the rowhead's "+ New slot" handle (kept — harmless, and in Week view
+  //     with only 7 columns it's a fine single reach-any-day affordance);
+  //   - a small add affix rendered INSIDE every slot cell (`_slotRowHTML`),
+  //     so in Month view the drag can start on (or right next to) the day
+  //     it's headed for, same as dragging directly on the calendar. ────────
   let _slotDragState = null;
+  function _beginSlotCreateDrag(sourceEl, e, el, campaign, project) {
+    window.PointerDrag.begin(sourceEl, e, {
+      isDragActive: () => !!_slotDragState,
+      getDragState: () => _slotDragState,
+      setDragState: (s) => { _slotDragState = s; },
+      data: {},
+      draggingClass: 'desk-v1-cal-slot-handle-dragging',
+      ghostClass: 'pd-ghost desk-v1-cal-slotchip-ghost',
+      ghostHTML: () => '<span class="desk-v1-cal-slotchip-time">New</span><span class="desk-v1-cal-slotchip-origin">Your slot</span>',
+      ghostRotationDeg: -3,
+      ghostOffsetX: 18, ghostOffsetY: 18,
+      onMove: (st, x, y) => {
+        el.querySelectorAll('.desk-v1-cal-slotcell.pd-drop-hover').forEach((c) => { c.classList.remove('pd-drop-hover'); const p = c.querySelector('.desk-v1-cal-cell-preview'); if (p) p.textContent = ''; });
+        const target = document.elementFromPoint(x, y);
+        const cell = target && target.closest && target.closest('.desk-v1-cal-slotcell');
+        if (!cell) return;
+        cell.classList.add('pd-drop-hover');
+        const preview = cell.querySelector('.desk-v1-cal-cell-preview');
+        if (preview) {
+          const label = new Intl.DateTimeFormat(undefined, { timeZone: _userTz(), weekday: 'short', month: 'short', day: 'numeric' }).format(new Date(cell.dataset.dayKey + 'T00:00:00'));
+          preview.textContent = `Add your slot, ${label} 14:00`;
+        }
+      },
+      onDrop: (st, x, y) => {
+        const target = document.elementFromPoint(x, y);
+        const cell = target && target.closest && target.closest('.desk-v1-cal-slotcell');
+        return cell ? cell.dataset.dayKey : null;
+      },
+      afterDrop: (st, dayKey) => {
+        if (!dayKey) return;
+        _createOwnSlot(dayKey, campaign, project, el);
+      },
+      onTeardown: () => {
+        el.querySelectorAll('.desk-v1-cal-slotcell.pd-drop-hover').forEach((c) => { c.classList.remove('pd-drop-hover'); const p = c.querySelector('.desk-v1-cal-cell-preview'); if (p) p.textContent = ''; });
+      },
+    });
+  }
   function _bindSlotCreate(el, campaign, project) {
     const handle = el.querySelector('[data-slot-handle]');
-    if (!handle) return;
-    handle.addEventListener('pointerdown', (e) => {
-      window.PointerDrag.begin(handle, e, {
-        isDragActive: () => !!_slotDragState,
-        getDragState: () => _slotDragState,
-        setDragState: (s) => { _slotDragState = s; },
-        data: {},
-        draggingClass: 'desk-v1-cal-slot-handle-dragging',
-        ghostClass: 'pd-ghost desk-v1-cal-slotchip-ghost',
-        ghostHTML: () => '<span class="desk-v1-cal-slotchip-time">New</span><span class="desk-v1-cal-slotchip-origin">Your slot</span>',
-        ghostRotationDeg: -3,
-        ghostOffsetX: 18, ghostOffsetY: 18,
-        onMove: (st, x, y) => {
-          el.querySelectorAll('.desk-v1-cal-slotcell.pd-drop-hover').forEach((c) => { c.classList.remove('pd-drop-hover'); const p = c.querySelector('.desk-v1-cal-cell-preview'); if (p) p.textContent = ''; });
-          const target = document.elementFromPoint(x, y);
-          const cell = target && target.closest && target.closest('.desk-v1-cal-slotcell');
-          if (!cell) return;
-          cell.classList.add('pd-drop-hover');
-          const preview = cell.querySelector('.desk-v1-cal-cell-preview');
-          if (preview) {
-            const label = new Intl.DateTimeFormat(undefined, { timeZone: _userTz(), weekday: 'short', month: 'short', day: 'numeric' }).format(new Date(cell.dataset.dayKey + 'T00:00:00'));
-            preview.textContent = `Add your slot, ${label} 14:00`;
-          }
-        },
-        onDrop: (st, x, y) => {
-          const target = document.elementFromPoint(x, y);
-          const cell = target && target.closest && target.closest('.desk-v1-cal-slotcell');
-          return cell ? cell.dataset.dayKey : null;
-        },
-        afterDrop: (st, dayKey) => {
-          if (!dayKey) return;
-          _createOwnSlot(dayKey, campaign, project, el);
-        },
-        onTeardown: () => {
-          el.querySelectorAll('.desk-v1-cal-slotcell.pd-drop-hover').forEach((c) => { c.classList.remove('pd-drop-hover'); const p = c.querySelector('.desk-v1-cal-cell-preview'); if (p) p.textContent = ''; });
-        },
-      });
+    if (handle) handle.addEventListener('pointerdown', (e) => _beginSlotCreateDrag(handle, e, el, campaign, project));
+    el.querySelectorAll('[data-slot-cell-add]').forEach((affix) => {
+      affix.addEventListener('pointerdown', (e) => _beginSlotCreateDrag(affix, e, el, campaign, project));
     });
   }
 
