@@ -486,6 +486,89 @@ try {
     await ctx.close();
   }
 
+  // ── 8. MC-998: vendor reports NO window of this kind (windows: [] after a
+  //      SUCCESSFUL load) -> say so, instead of "Insufficient samples"/"No
+  //      runs" that read like a Clayrune data bug. Totals/rankings remain. ──
+  {
+    const NO_WINDOW_FIXTURE = {
+      ...POPULATED_FIXTURE, provider: 'codex', empty_state: 'no_vendor_percentage',
+      bar_change: { status: 'insufficient_samples', delta_pp: null },
+      segmented_bar: { status: 'insufficient_samples', estimated_pp: null, unattributed_pp: null, range_pp: null },
+      tokens_per_point: { status: 'insufficient_samples', median: null, p10: null, p90: null, sample_count: 0, note: 'Indicative: account-wide bar' },
+    };
+    const EMPTY_WINDOWS = { windows: [], coverage_begins: null };
+    const { ctx, page } = await openDesktopPopover(browser, NO_WINDOW_FIXTURE, EMPTY_WINDOWS);
+    await page.selectOption('.ub-select:has(option[value="claude"])', 'codex');
+    await page.waitForTimeout(300);
+    const text = await page.$eval('.sys-status-popover', (el) => el.textContent);
+    /Codex has not reported a 5-hour limit for this account in the last 90 days/.test(text)
+      ? ok('empty windows list: "<Vendor> has not reported a 5-hour limit ... last 90 days" shown')
+      : fail(`no-window message missing from: ${text.slice(0, 600)}`);
+    (!/Insufficient samples/i.test(text) && !/No vendor percentage/i.test(text) && !/Tokens per 1%/.test(text))
+      ? ok('empty windows list: no "Insufficient samples"/calibration states alongside it')
+      : fail(`calibration state leaked next to the no-window message: ${text.slice(0, 600)}`);
+    /proj-a/.test(text) ? ok('empty windows list: rankings still render') : fail('rankings should still render');
+    const windowKindOpts = await page.$$eval('.ub-select option[value="5h"], .ub-select option[value="7d"]', (els) => els.map((e) => e.value));
+    JSON.stringify(windowKindOpts) === JSON.stringify(['5h', '7d'])
+      ? ok('empty windows list: the 5-hour option stays selectable')
+      : fail(`window-kind options changed: ${JSON.stringify(windowKindOpts)}`);
+    const shot = resolve(REPO_ROOT, '_scratch', 'mc998-no-vendor-window.png');
+    await page.screenshot({ path: shot, fullPage: false });
+    console.log('  screenshot: ' + shot);
+    await ctx.close();
+  }
+  {
+    // 8b. A FAILED windows fetch must not produce the message (error
+    // behaviour unchanged), and neither may a windows cache for a prior
+    // selection: claude -> [] (message), then codex -> 500 (no message).
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await ctx.newPage();
+    await page.route('**/*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/system/usage/windows') {
+        if (url.searchParams.get('provider') === 'codex') return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ windows: [], coverage_begins: null }) });
+      }
+      return routeHandler(POPULATED_FIXTURE, WINDOWS_FIXTURE)(route);
+    });
+    await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
+    await page.evaluate(() => { sidebarNav('usage-report'); });
+    await page.waitForSelector('#usage-report-surface .ub-controls', { state: 'attached', timeout: 5000 });
+    await page.waitForTimeout(300);
+    let text = await page.$eval('.sys-status-popover', (el) => el.textContent);
+    /Claude has not reported a 5-hour limit/.test(text)
+      ? ok('windows [] for claude/5h shows the message (control for 8b)')
+      : fail(`expected the no-window message for claude/5h in: ${text.slice(0, 500)}`);
+    await page.selectOption('.ub-select:has(option[value="claude"])', 'codex');
+    await page.waitForTimeout(300);
+    text = await page.$eval('.sys-status-popover', (el) => el.textContent);
+    (!/has not reported a/i.test(text) && /completed windows unavailable/i.test(text))
+      ? ok('failed windows fetch (after a prior empty one) does NOT show the no-window message')
+      : fail(`no-window message shown for a failed windows fetch: ${text.slice(0, 500)}`);
+    await ctx.close();
+  }
+  {
+    // 8c. First-ever windows fetch fails: no message either.
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await ctx.newPage();
+    await page.route('**/*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/system/usage/windows') return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+      return routeHandler(POPULATED_FIXTURE, WINDOWS_FIXTURE)(route);
+    });
+    await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
+    await page.evaluate(() => { sidebarNav('usage-report'); });
+    await page.waitForSelector('#usage-report-surface .ub-controls', { state: 'attached', timeout: 5000 });
+    await page.waitForTimeout(300);
+    const text = await page.$eval('.sys-status-popover', (el) => el.textContent);
+    (!/has not reported a/i.test(text) && /Tokens per 1%/.test(text))
+      ? ok('failed first windows fetch: no no-window message, normal calibration rows stay')
+      : fail(`failed windows fetch misrendered: ${text.slice(0, 500)}`);
+    await ctx.close();
+  }
+
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
     ? '\n✅ PASS — usage breakdown: desktop table + phone cards from the same data, control re-fetch, all 5 empty states.'
