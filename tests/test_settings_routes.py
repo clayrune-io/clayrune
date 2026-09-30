@@ -37,6 +37,7 @@ LAN = {'REMOTE_ADDR': '192.168.1.50'}
 # The exact route surface 1.14 owns. A change here is intentional API churn.
 EXPECTED_ROUTES = {
     '/api/config',
+    '/api/setup/complete',
     '/api/browse/folders',
     '/api/browse/create_folder',
     '/api/settings/domains',

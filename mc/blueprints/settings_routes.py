@@ -446,6 +446,41 @@ def update_config():
                     'respawn_flagged': respawn_flagged})
 
 
+@bp.route('/api/setup/complete', methods=['POST'])
+def setup_complete():
+    """Record that first-run setup was finished or declined ("Not now").
+
+    Exists because `setup_completed` could previously be written ONLY through
+    the passcode-gated PUT /api/config (MC-995). A fresh install has no
+    passcode, so "Not now" raised a "set a passcode" form; closing it (or any
+    400 on the other keys batched into that PUT) dropped the write, and every
+    new browser/origin ran first-run again (backlog c9c82caf). The flag gates
+    a wizard and grants no capability, so it does not need the retyped
+    passcode; PUT /api/config keeps requiring one for everything else, this
+    flag included. Sets true only, never false: re-arming the wizard stays a
+    Settings action. Refuses an unattended agent session, same gate as
+    PUT /api/config.
+    """
+    if is_unattended_caller():
+        return jsonify({'error': 'this action needs a human — an unattended '
+                                 'agent session cannot change settings'}), 403
+    state.CONFIG['setup_completed'] = True
+    # Read-merge-write (as mc.agent_runtime.maybe_set_sole_provider_default):
+    # a concurrent editor of unrelated keys in config.json is not clobbered.
+    try:
+        with open(CONFIG_PATH, encoding='utf-8') as f:
+            on_disk = json.load(f)
+    except Exception:
+        on_disk = dict(state.CONFIG)
+    on_disk['setup_completed'] = True
+    try:
+        write_json_atomic(CONFIG_PATH, on_disk, indent=2, ensure_ascii=False)
+    except Exception as e:
+        _log(f"[settings] failed to persist setup_completed: {e}", flush=True)
+        return jsonify({'error': f'failed to save config: {e}'}), 500
+    return jsonify({'ok': True, 'setup_completed': True})
+
+
 # ── Folder browse (for project_path picker) ─────────────────────────────────
 
 @bp.route('/api/browse/folders')

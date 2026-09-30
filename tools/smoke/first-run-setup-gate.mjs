@@ -78,7 +78,7 @@ let scenarioIdx = 0;
 
 // Builds a fresh, isolated context (own localStorage/cookies) wired with the
 // route table every scenario shares, plus per-scenario overrides.
-async function scenario(name, { config, configStatus = 200, providers = ONE_PROVIDER_OK, projects = [CLAYRUNE_PROJECT], initScript = null }, run) {
+async function scenario(name, { config, configStatus = 200, providers = ONE_PROVIDER_OK, projects = [CLAYRUNE_PROJECT], initScript = null, stateful = false }, run) {
   scenarioIdx++;
   console.log(`\n[${scenarioIdx}] ${name}`);
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
@@ -87,6 +87,7 @@ async function scenario(name, { config, configStatus = 200, providers = ONE_PROV
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   const configPuts = [];
+  const completePosts = [];
 
   await page.route('**/*', (route) => {
     const req = route.request();
@@ -97,11 +98,23 @@ async function scenario(name, { config, configStatus = 200, providers = ONE_PROV
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(projects) });
     if (path === '/api/config') {
       if (req.method() === 'PUT') {
-        try { configPuts.push(JSON.parse(req.postData() || '{}')); } catch (_) {}
+        let body = {};
+        try { body = JSON.parse(req.postData() || '{}'); configPuts.push(body); } catch (_) {}
+        if (stateful) {
+          // Mirrors the real PUT /api/config (MC-995): no passcode, no write.
+          if (!body.passcode) return route.fulfill({ status: 403, contentType: 'application/json', body: '{"error":"passcode_required"}' });
+          const { passcode, ...rest } = body;
+          Object.assign(config, rest);
+        }
         return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
       }
       if (configStatus !== 200) return route.fulfill({ status: configStatus, contentType: 'application/json', body: '{}' });
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(config) });
+    }
+    if (path === '/api/setup/complete' && req.method() === 'POST') {
+      completePosts.push(Date.now());
+      if (stateful) config.setup_completed = true; // `config` IS the shared server state across contexts
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"setup_completed":true}' });
     }
     if (path === '/api/walkthrough/sample-project') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, id: 'clayrune', existed: true }) });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
@@ -114,7 +127,7 @@ async function scenario(name, { config, configStatus = 200, providers = ONE_PROV
 
   try {
     await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
-    await run(page, { configPuts });
+    await run(page, { configPuts, completePosts });
   } finally {
     if (pageErrors.length) fail(`[${name}] uncaught exception(s): ${pageErrors.join(' | ')}`);
     await ctx.close();
@@ -217,7 +230,7 @@ try {
   await scenario('walk to tour offer, decline ("Not now")', {
     config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' },
     providers: ONE_PROVIDER_OK,
-  }, async (page, { configPuts }) => {
+  }, async (page, { configPuts, completePosts }) => {
     if (!(await walkToTourOffer(page))) return;
     await page.click('#setup-overlay .setup-btn-secondary'); // "Not now"
     await page.waitForTimeout(200);
@@ -228,15 +241,18 @@ try {
     else ok('the tour did NOT start after "Not now"');
     await answerHumanProofSetModal(page); // feea79de: setupFinish's PUT is passcode-gated
     await page.waitForTimeout(150);
-    const completes = configPuts.filter((p) => p.setup_completed === true);
-    if (completes.length !== 1) fail(`expected exactly one PUT /api/config {setup_completed:true}, got ${completes.length}: ${JSON.stringify(configPuts)}`);
-    else ok('PUT /api/config {setup_completed:true} sent on decline');
+    // c9c82caf: the flag no longer rides the passcode-gated PUT; it goes to the
+    // narrow POST /api/setup/complete so a cancelled passcode form cannot lose it.
+    if (completePosts.length !== 1) fail(`expected exactly one POST /api/setup/complete, got ${completePosts.length}`);
+    else ok('POST /api/setup/complete sent on decline');
+    if (configPuts.some((p) => 'setup_completed' in p)) fail(`setup_completed still rides PUT /api/config: ${JSON.stringify(configPuts)}`);
+    else ok('setup_completed is not batched into the passcode-gated PUT');
   });
 
   await scenario('walk to tour offer, accept ("Take the tour")', {
     config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' },
     providers: ONE_PROVIDER_OK,
-  }, async (page, { configPuts }) => {
+  }, async (page, { configPuts, completePosts }) => {
     if (!(await walkToTourOffer(page))) return;
     await page.click('#setup-overlay .wt-btn-primary'); // "Take the tour"
     await page.waitForTimeout(300);
@@ -247,9 +263,66 @@ try {
     else ok('the tour (walkthrough overlay) starts after "Take the tour"');
     await answerHumanProofSetModal(page); // feea79de: setupFinish's PUT is passcode-gated
     await page.waitForTimeout(150);
-    const completes = configPuts.filter((p) => p.setup_completed === true);
-    if (completes.length !== 1) fail(`expected exactly one PUT /api/config {setup_completed:true}, got ${completes.length}: ${JSON.stringify(configPuts)}`);
-    else ok('PUT /api/config {setup_completed:true} sent before handing off to the tour');
+    if (completePosts.length !== 1) fail(`expected exactly one POST /api/setup/complete, got ${completePosts.length}`);
+    else ok('POST /api/setup/complete sent before handing off to the tour');
+    if (configPuts.some((p) => 'setup_completed' in p)) fail(`setup_completed still rides PUT /api/config: ${JSON.stringify(configPuts)}`);
+    else ok('setup_completed is not batched into the passcode-gated PUT');
+  });
+
+  // ── 3b. Durable across browsers (backlog c9c82caf) ──────────────────────
+  // Fresh install, no passcode. "Not now" raises the "set a passcode" form;
+  // the user CANCELS it. Before c9c82caf setup_completed only ever travelled
+  // in that cancelled PUT, so the server never learned setup was done and a
+  // reload — or a login from another origin (fresh localStorage) — ran setup
+  // again. `server` below is shared server state: a second browser context
+  // reads whatever the first one managed to persist.
+  const cancelHumanProofModal = async (page) => {
+    await page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout: 5000 });
+    await page.evaluate(() => window._hpCancel(document.querySelector('[data-modal-id^="__human-proof-"]').dataset.modalId));
+    await page.waitForTimeout(200);
+  };
+  const serverA = { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' };
+  await scenario('durability: "Not now", passcode form cancelled', {
+    config: serverA, stateful: true, providers: ONE_PROVIDER_OK,
+  }, async (page) => {
+    if (!(await walkToTourOffer(page))) return;
+    await page.click('#setup-overlay .setup-btn-secondary'); // "Not now"
+    await cancelHumanProofModal(page);
+    if (serverA.setup_completed !== true) fail('server still has setup_completed=false after "Not now" + cancelled passcode form');
+    else ok('server recorded setup_completed=true despite the cancelled passcode form');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1500);
+    const st = await overlayState(page);
+    if (st.setupVisible) fail('setup re-showed on reload after "Not now"');
+    else ok('no setup on reload after "Not now"');
+  });
+  await scenario('durability: second origin (fresh localStorage) after the decline', {
+    config: serverA, stateful: true, providers: ONE_PROVIDER_OK,
+  }, async (page) => {
+    await page.waitForTimeout(1500);
+    const st = await overlayState(page);
+    if (st.setupVisible || st.tourVisible) fail('setup/tour re-offered to a browser with empty localStorage after the install was set up');
+    else ok('no setup/tour for a fresh browser once the install is set up');
+  });
+
+  const serverB = { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' };
+  await scenario('durability: tour accepted then skipped (no "Don’t show again"), passcode form cancelled', {
+    config: serverB, stateful: true, providers: ONE_PROVIDER_OK,
+  }, async (page) => {
+    if (!(await walkToTourOffer(page))) return;
+    await page.click('#setup-overlay .wt-btn-primary'); // "Take the tour"
+    await cancelHumanProofModal(page);
+    await page.evaluate(() => window.wtSkip());
+    if (serverB.setup_completed !== true) fail('server still has setup_completed=false after accepting + skipping the tour');
+    else ok('server recorded setup_completed=true after the tour was started and skipped');
+  });
+  await scenario('durability: second origin after tour accepted+skipped', {
+    config: serverB, stateful: true, providers: ONE_PROVIDER_OK,
+  }, async (page) => {
+    await page.waitForTimeout(1500);
+    const st = await overlayState(page);
+    if (st.setupVisible || st.tourVisible) fail('setup/tour re-offered to a fresh browser after the tour was skipped');
+    else ok('no setup/tour for a fresh browser after the tour was skipped');
   });
 
   // ── 4. First run cannot be skipped: no skip control on any step ─────────
