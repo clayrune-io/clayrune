@@ -1133,7 +1133,29 @@
     };
   }
 
+  // ── R2-7: the piece shape, read in ONE place (docs/THE_DESK_V1_IA_REVISION_2.md
+  // §8 R2-7; frames 5a/7b). A piece is `{id, campaignId, kind, title, assets[],
+  // versions[]}`: `assets[]` are its media (`{id, kind, title, src}`), `versions[]`
+  // its destination versions (one per channel, each with its own state). What's
+  // list rows and Where's Messages column both read `on N channels` from here, so
+  // the two can never disagree about how many channels a piece is on.
+  const PIECE_KIND_WORDS = { post: 'Post', article: 'Article', video: 'Video', image: 'Image' };
+  function pieceKindWord(kind) {
+    return PIECE_KIND_WORDS[kind] || (kind ? String(kind).charAt(0).toUpperCase() + String(kind).slice(1) : 'Piece');
+  }
+  // A version is live while it sits on a channel and was not archived or skipped.
+  function pieceVersions(piece) {
+    return ((piece && piece.versions) || []).filter((v) => v.channelId && v.state !== 'archived' && v.state !== 'skipped');
+  }
+  function pieceChannelCount(piece) { return pieceVersions(piece).length; }
+  function pieceChannelsText(piece) {
+    const n = pieceChannelCount(piece);
+    return `on ${n} channel${n === 1 ? '' : 's'}`;
+  }
+  function pieceAssets(piece) { return (piece && piece.assets) || []; }
+
   window.DeskV1Kit = {
+    pieceKindWord, pieceVersions, pieceChannelCount, pieceChannelsText, pieceAssets,
     VERSION_STATES, CAMPAIGN_STATES,
     MAP_STOPS, MAP_STOP_WORDS,
     channelCapabilityCopy, noChargeYetCopy,

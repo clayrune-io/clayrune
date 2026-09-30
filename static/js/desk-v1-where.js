@@ -23,10 +23,12 @@
 // dragged up on an Active campaign → Awaiting approval" both fall out of
 // that one rule instead of a second copy of it here.
 //
-// Reads the CURRENT fixture piece shape (`family.{id,kind,title,versions[]}`,
-// `version.{id,channelId,state,publishAt}`); R2-7's multi-asset pieces
-// (`piece.assets[]`) are not read here. A piece's "on N channels" is the
-// number of live versions on the board's columns.
+// Reads the R2-7 piece shape (`piece.{id,kind,title,assets[],versions[]}`,
+// `version.{id,channelId,state,publishAt}`) through `DeskV1Kit.piece*` — the
+// same helpers What's list rows use — so a piece's "on N channels" is one
+// number on both surfaces (the count of its live versions), and the kind word
+// is What's. Assets (`piece.assets[]`) are What's and the piece page's; the
+// board never draws them.
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -50,14 +52,13 @@
   function _platform(ch) { return (ch && PLATFORMS[ch.platform]) || { word: (ch && ch.platform) || '', glyph: '•' }; }
 
   // `<kind> → <platform format>` on a version card (frame 7b).
-  const KIND_WORDS = { video: 'Video', image: 'Image', article: 'Article', post: 'Post' };
   const FORMATS = {
     video: { x: 'X clip', linkedin: 'LinkedIn native video', youtube: 'YouTube upload', discord: 'Discord clip', reddit: 'Reddit video', blog: 'Blog embed' },
     image: { x: 'X post', linkedin: 'LinkedIn post', youtube: 'Community post', discord: 'Discord image', reddit: 'Reddit image', blog: 'Blog figure' },
     article: { x: 'X thread', linkedin: 'LinkedIn native article', youtube: 'Video description', discord: 'Discord post', reddit: 'Reddit post', blog: 'Blog post' },
     post: { x: 'X post', linkedin: 'LinkedIn post', youtube: 'Community post', discord: 'Discord post', reddit: 'Reddit post', blog: 'Blog note' },
   };
-  function _kindWord(kind) { return KIND_WORDS[kind] || (kind ? kind.charAt(0).toUpperCase() + kind.slice(1) : 'Piece'); }
+  function _kindWord(kind) { return DeskV1Kit.pieceKindWord(kind); }
   function _formatWord(kind, ch) {
     const byKind = FORMATS[kind];
     return (byKind && ch && byKind[ch.platform]) || `${_platform(ch).word} post`.trim();
@@ -299,8 +300,7 @@
   }
 
   function _messageHTML(camp, fam, cols) {
-    const onBoard = cols.reduce((n, ch) => n + _boardVersions(camp, ch.id).filter((x) => x.fam.id === fam.id).length, 0);
-    const pill = `on ${onBoard} channel${onBoard === 1 ? '' : 's'}`;
+    const pill = DeskV1Kit.pieceChannelsText(fam);
     return `<div class="desk-v1-addto-wrap desk-v1-where-msgwrap">
       <div class="desk-v1-where-msg" role="button" tabindex="0" data-where-message data-family-id="${esc(fam.id)}" data-kind="${esc(fam.kind || '')}"
            aria-haspopup="menu" aria-label="${esc(`${_kindWord(fam.kind)}: ${fam.title}, ${pill}. Press Enter to add a version to an account.`)}">

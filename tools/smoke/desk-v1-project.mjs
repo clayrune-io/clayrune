@@ -216,8 +216,8 @@ async function runNeedsYouDeepStack(browser) {
   await page.click('.desk-v1-back');
   await page.waitForTimeout(50);
   c = await crumb(page);
-  c.back === '‹ Windows beta testers'
-    ? ok(`piece's Back label is the campaign entry's title: "${c.back}"`)
+  c.back === '‹ Windows beta testers · What'
+    ? ok(`piece's Back label is the campaign title + its ③ What stop: "${c.back}"`)
     : fail(`piece Back label wrong: ${JSON.stringify(c)}`);
 
   await page.click('.desk-v1-back');

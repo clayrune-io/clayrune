@@ -199,13 +199,27 @@
     }, (projectId) => { deskV1Nav('project', { projectId }); }, { noAppendNew: true });
   }
 
+  // R2-7 (§4.3): a piece is a drill-in under the campaign's ③ What stop, so its
+  // Back reads `‹ <campaign> · What` — the stop it returns to, taken from the
+  // parent campaign entry's own panel. Every other route keeps the plain parent
+  // title.
+  function _backLabel(entry, parentEntry) {
+    const label = _routeLabel(parentEntry);
+    if (entry.route === 'piece' && parentEntry.route === 'campaign') {
+      const words = (window.DeskV1Kit && window.DeskV1Kit.MAP_STOP_WORDS) || {};
+      const stop = words[parentEntry.params.panel || 'what'];
+      if (stop) return `${label} · ${stop}`;
+    }
+    return label;
+  }
+
   function _renderCrumb(entry) {
     const crumb = document.getElementById('desk-v1-crumb');
     if (!crumb) return false;
     const parentEntry = _stack.length > 1 ? _stack[_stack.length - 2] : null;
     crumb.innerHTML = `
       ${parentEntry
-        ? `<button type="button" class="desk-v1-back" onclick="deskV1Back()">&lsaquo; ${esc(_routeLabel(parentEntry))}</button>`
+        ? `<button type="button" class="desk-v1-back" onclick="deskV1Back()">&lsaquo; ${esc(_backLabel(entry, parentEntry))}</button>`
         : ''}
       <span class="desk-v1-crumb-title">${esc(_routeLabel(entry))}</span>
       ${_projectsPickerHTML(entry.route)}
@@ -300,12 +314,10 @@
           <div class="desk-v1-camp-rightcol" id="desk-v1-camp-rightcol"></div>
         </div>
         <div class="desk-v1-camp-mapfoot" id="desk-v1-camp-mapfoot"></div>
-        <div class="desk-v1-camp-addtray" id="desk-v1-camp-addtray"></div>
       </div>`;
     const slots = [
       ['desk-v1-camp-summary', window.deskV1FillCampaignSummary],
       ['desk-v1-camp-rightcol', window.deskV1FillCampaignRightColumn],
-      ['desk-v1-camp-addtray', window.deskV1FillCampaignAddTray],
     ];
     for (const [id, fill] of slots) {
       const slotEl = document.getElementById(id);
@@ -357,20 +369,17 @@
     }
   }
 
-  // IA5 (§2.4, §5 row IA5): piece skeleton — same "shell owns the frame,
-  // caller fills slots" contract as `_renderCampaignSkeleton` above (T2's
-  // own precedent, §4 table: "reused for the project page and the piece
-  // page"). Header + Posy rightcol are filled ONLY here (a full mount),
-  // never by `_renderPieceFacet` below — so a facet switch through the
-  // in-place `_gotoPieceFacet` branch leaves both as the SAME DOM node
-  // (IA5 acceptance: "switch 4 facets keeps header + Posy DOM node, same
-  // node identity").
+  // IA5 (§2.4, §5 row IA5) + R2-7 (§4.3): piece skeleton — same "shell owns
+  // the frame, caller fills slots" contract as `_renderCampaignSkeleton` above
+  // (T2's own precedent, §4 table: "reused for the project page and the piece
+  // page"). R2-7 retired the four facets: the piece is one drill-in page under
+  // ③ What, a single scroll with Copy · Media · Versions, so there is no facet
+  // strip or in-place facet switch any more — header, body and the Posy
+  // rightcol are all filled once per mount.
   function _renderPieceSkeleton(el, params) {
-    if (!params.facet) params.facet = 'what';
     el.innerHTML = `
       <div class="desk-v1-piece">
         <div class="desk-v1-piece-header" id="desk-v1-piece-header"></div>
-        <div class="desk-v1-camp-tabstrip" id="desk-v1-piece-facetstrip"></div>
         <div class="desk-v1-camp-main">
           <div class="desk-v1-piece-body" id="desk-v1-piece-body"></div>
           <div class="desk-v1-camp-rightcol" id="desk-v1-piece-rightcol"></div>
@@ -380,41 +389,13 @@
     if (headerEl && typeof window.deskV1FillPieceHeader === 'function') window.deskV1FillPieceHeader(headerEl, params);
     const rightEl = document.getElementById('desk-v1-piece-rightcol');
     if (rightEl && typeof window.deskV1FillPieceRightColumn === 'function') window.deskV1FillPieceRightColumn(rightEl, params);
-    _renderPieceFacet(params);
-  }
-
-  // Fills ONLY the facet strip + body — mirrors `_renderCampaignPanel`'s own
-  // "never touch summary/rightcol" comment above, for the same reason.
-  function _renderPieceFacet(params) {
-    const stripEl = document.getElementById('desk-v1-piece-facetstrip');
-    if (stripEl && typeof window.deskV1FillPieceFacetStrip === 'function') window.deskV1FillPieceFacetStrip(stripEl, params);
     const bodyEl = document.getElementById('desk-v1-piece-body');
     if (!bodyEl) return;
     if (typeof window.deskV1FillPieceBody === 'function') {
       window.deskV1FillPieceBody(bodyEl, params);
     } else {
-      bodyEl.innerHTML = `<div class="desk-v1-stub-inline">${esc(params.facet || 'what')} is not built yet.</div>`;
+      bodyEl.innerHTML = '<div class="desk-v1-stub-inline">The piece page is not built yet.</div>';
     }
-  }
-
-  // Same same-target in-place switch as `_gotoCampaignPanel` above: a facet
-  // click from the piece currently on screen patches the stack entry's
-  // params in place (no push, no header/Posy rebuild); a facet request for
-  // a DIFFERENT piece (or from elsewhere) pushes a fresh piece entry the
-  // same way a plain `deskV1Nav('piece', ...)` always has. Identity is by
-  // `familyId` — every caller inside desk-v1-piece.js resolves and passes it.
-  function deskV1GotoPieceFacet(facet, params) { _gotoPieceFacet(facet, params || {}); }
-
-  function _gotoPieceFacet(facet, params) {
-    const top = _stack[_stack.length - 1];
-    const nextParams = Object.assign({}, params, { facet });
-    if (top && top.route === 'piece' && top.params.familyId && top.params.familyId === nextParams.familyId) {
-      top.params = nextParams;
-      _renderPieceFacet(nextParams);
-      return;
-    }
-    _stack.push({ route: 'piece', params: nextParams });
-    deskV1Render();
   }
 
   function deskV1Open() {
@@ -464,5 +445,4 @@
   window.deskV1PatchParams = deskV1PatchParams;
   window.deskV1PopTo = deskV1PopTo;
   window.deskV1GotoCampaignPanel = deskV1GotoCampaignPanel;
-  window.deskV1GotoPieceFacet = deskV1GotoPieceFacet;
 })();
