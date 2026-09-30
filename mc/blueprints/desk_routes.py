@@ -143,7 +143,12 @@ def patch_presence(project_id):
     if not project:
         return jsonify({'error': 'project not found'}), 404
     d = request.get_json(silent=True) or {}
-    if 'desk_agent' in d and d.get('desk_agent') is not None:
+    # Only `desk_agent` is writable here. `upsert_presence` would take any
+    # key, including `budget`, whose earmark bounds are enforced elsewhere —
+    # this route must not become a way around them.
+    if set(d) - {'desk_agent'}:
+        return jsonify({'error': 'only desk_agent may be set here'}), 400
+    if d.get('desk_agent') is not None:
         ref = d['desk_agent']
         if not isinstance(ref, str) or not _valid_agent_ref(project, ref):
             return jsonify({'error': f'unknown agent {ref!r} — pick one from '

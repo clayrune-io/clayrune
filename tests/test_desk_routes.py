@@ -484,3 +484,12 @@ def test_patch_presence_can_clear_the_agent(client, monkeypatch):
     r = client.patch('/api/desk/presence/proj-9', json={'desk_agent': None})
     assert r.status_code == 200
     assert r.get_json()['desk_agent'] is None
+
+
+def test_presence_patch_refuses_keys_other_than_desk_agent(client, monkeypatch):
+    """The presence route writes the agent pick only — never `budget`, whose
+    earmark bounds are enforced on the campaign/presence budget paths."""
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid, 'name': 'P'})
+    r = client.patch('/api/desk/presence/proj-x', json={'budget': {'amount': 999}})
+    assert r.status_code == 400
+    assert (_desk.get_presence('proj-x') or {}).get('budget', {}).get('amount') != 999
