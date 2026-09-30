@@ -73,6 +73,28 @@
     },
   ];
 
+  // R2-6: camp-1's `how` (strategy/angle/agent/budget) used to be duplicated
+  // between `campaign.how` (kit.js deskAgentRef's read) and a separate
+  // `plan.angle` string kit.js never read — one object now, `campaign.how`
+  // and `campaign.plan.how` both point at it, so kit's two different `.how`
+  // readers (deskAgentRef on campaign.how, validatePlan/nextBoundsHash on
+  // plan.how) see the same data instead of drifting.
+  // R2-6: budget starts 'none' — R2-1 gave this object a `budget.source:
+  // 'project', amount: 60` placeholder before any UI ever read or wrote it;
+  // that value was never approved as a bound (the How stop's budget picker,
+  // and `camp.approval.bounds` below, are both new in this ticket). Starting
+  // both at 'none' means the fixture opens in the plain (non-awaiting) ⑥
+  // state, so the R2-6 smoke's own budget edit is what first creates a
+  // divergence from `camp.approval.bounds` — not a pre-existing one.
+  const _CAMP1_HOW = {
+    strategy: 'Show the beta working end to end, not just announce it.',
+    angle: 'Show the restore-points and install flow working end to end so trying the beta feels low-risk.',
+    // R2-6 (§11.3 item 2): matches mockup frame 4's fixture value exactly.
+    never_claim: 'Feature completeness on ARM (not verified yet)',
+    agent: null,
+    budget: { source: 'none' },
+  };
+
   const CAMPAIGNS = [
     {
       id: 'camp-1',
@@ -104,16 +126,7 @@
       // `long` horizon goal above would renew terms until `goal.deadline`).
       // camp-1's own `short` horizon needs exactly one term.
       term: { index: 1, starts: '2026-09-01', ends: '2026-10-20', post_cap: null },
-      // §5.1: `plan.angle` moves here eventually (R2-6); duplicated rather
-      // than moved for this ticket since `plan.angle` still has no reader
-      // of its own to retire (grep confirms) and nothing depends on this
-      // one yet — R2-6 picks a single home for it.
-      how: {
-        strategy: 'Show the beta working end to end, not just announce it.',
-        angle: 'Show the restore-points and install flow working end to end so trying the beta feels low-risk.',
-        agent: null,
-        budget: { source: 'project', amount: 60, period: 'term' },
-      },
+      how: _CAMP1_HOW,
       // §5.1: replaces `setup {step, done}` (a Draft-only concept the R0
       // setup wizard still owns via `camp.setup`, untouched here) — `map`
       // is the R2-3 stepper's own state, additive, unread by anything yet.
@@ -141,13 +154,31 @@
         audience: 'Windows users trying Claude Code',
         goal: { outcome: 'tester signups', target: 30, deadline: '2026-10-20', tracked: true },
         accounts: ['ch-x-ron', 'ch-li-page', 'ch-blog'],
-        angle: 'Show the restore-points and install flow working end to end so trying the beta feels low-risk.',
+        // R2-6: `angle` retired from here — `how.angle` (below) is the one
+        // copy now; `how` itself is the SAME object as `campaign.how` above.
+        how: _CAMP1_HOW,
         samples: [],
         cadence: { per_week: 3 },
         end: { date: '2026-10-20', post_cap: null },
         replies: 'drafts',
         paid: false,
         generation: 'No video generation planned for this campaign',
+      },
+      // R2-6: the bounds snapshot `DeskV1Kit.boundsWiden`/`nextBoundsHash`
+      // (kit.js, shipped by R2-1, never wired to a real caller until this
+      // ticket) compares the live plan against — "what was last approved".
+      // Mirrors `plan`'s own accounts/cadence/end/term/budget exactly, so
+      // camp-1 opens on ⑥ in its normal (non-awaiting) state; the How
+      // stop's budget picker is what first moves the live bounds away from
+      // this snapshot.
+      approval: {
+        bounds: {
+          accounts: ['ch-x-ron', 'ch-li-page', 'ch-blog'],
+          cadence: { per_week: 3 },
+          end: { date: '2026-10-20', post_cap: null },
+          term: { ends: '2026-10-20' },
+          budget: { source: 'none' },
+        },
       },
     },
   ];

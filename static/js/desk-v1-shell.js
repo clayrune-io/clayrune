@@ -282,6 +282,14 @@
     const tabbodyEl = document.getElementById('desk-v1-camp-tabbody');
     if (!tabbodyEl) return;
     const panel = params.panel || 'what';
+    // Dave's review (2e24880e follow-up): every stop's renderer (What, How,
+    // When, ...) paints into this SAME node — desk-v1-campaign.js's
+    // `_runSuggestTask` used to guard its own repaint on "is `_st.el` still
+    // in the DOM", which is true regardless of which stop currently owns
+    // this element, so a Suggest resolving while parked on How clobbered it
+    // with Content-tab HTML. Stamping the requested panel here gives that
+    // guard something that actually tracks the active stop.
+    tabbodyEl.dataset.panel = panel;
     // R2-3 (§4.1 Absorbs column): ① reads `desk-v1-results.js` and ④ reads
     // `desk-v1-calendar.js` directly, same standalone-panel shape
     // `conversations` already had — ② how / ⑤ where have no dedicated
@@ -293,11 +301,20 @@
       window.deskV1RenderResults(tabbodyEl, params);
     } else if (panel === 'when' && typeof window.deskV1RenderCalendar === 'function') {
       window.deskV1RenderCalendar(tabbodyEl, params);
-    } else if (panel === 'how' || panel === 'where') {
-      // §4.1 Absorbs column: no dedicated renderer ships until R2-6 (how)
-      // and R2-10 (where) — a one-line placeholder, not a silent blank body.
-      const label = panel === 'how' ? 'Strategy (How)' : 'Platforms (Where)';
-      tabbodyEl.innerHTML = `<div class="desk-v1-stub-inline">${esc(label)} isn't built yet.</div>`;
+    } else if (panel === 'how' && typeof window.deskV1RenderHow === 'function') {
+      // R2-6: strategy + angle + agent + budget + the Suggest task.
+      window.deskV1RenderHow(tabbodyEl, params);
+    } else if (panel === 'where') {
+      // §4.1 Absorbs column: no dedicated renderer ships until R2-10 — a
+      // one-line placeholder, not a silent blank body. R2-6's Suggest task
+      // can still leave a `? suggested` placement here to show (its own
+      // acceptance row), read straight off the fixture rather than building
+      // any of R2-10's real column/drag UI.
+      const camp = ((window.DeskV1Fixtures && window.DeskV1Fixtures.campaigns) || []).find((c) => c.id === params.campaignId);
+      const placement = camp && camp.how && camp.how.suggested && camp.how.suggested.where;
+      tabbodyEl.innerHTML = placement
+        ? `<div class="desk-v1-stub-inline">Platforms (Where) isn't built yet. <strong>? suggested:</strong> ${esc(placement.label || placement.channelId || '')}</div>`
+        : `<div class="desk-v1-stub-inline">Platforms (Where) isn't built yet.</div>`;
     } else if (typeof window.deskV1FillCampaignTabBody === 'function') {
       window.deskV1FillCampaignTabBody(tabbodyEl, params);
     } else {

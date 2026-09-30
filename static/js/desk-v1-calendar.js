@@ -154,6 +154,18 @@
     return _state;
   }
 
+  // R2-6: the How stop's `Suggest What / When / Where` task (desk-v1-how.js
+  // via desk-v1-campaign.js's `_runSuggestTask`) writes a cadence proposal
+  // into `campaign.how.suggested.when` — no dedicated accept/edit UI yet
+  // (R2-9's job, same as the rest of this stop's real controls), so this
+  // ticket only has to prove the suggestion reaches ④ (row acceptance:
+  // "④ a cadence proposal").
+  function _suggestedWhenBannerHTML(campaign) {
+    const when = campaign.how && campaign.how.suggested && campaign.how.suggested.when;
+    if (!when) return '';
+    return `<div class="desk-v1-camp-suggested-banner">? suggested: ${esc(when.label || '')}</div>`;
+  }
+
   function deskV1RenderCalendar(el, params) {
     const campaignId = (params || {}).campaignId;
     const campaign = _campaign(campaignId);
@@ -349,6 +361,7 @@
 
     el.innerHTML = `
       <div class="desk-v1-calendar">
+        ${_suggestedWhenBannerHTML(campaign)}
         ${_toolbarHTML(st, days)}
         ${_gridHTML(st, campaign, days, rows, cells, todayKey)}
         ${_agendaHTML(days, rows, cells, todayKey)}

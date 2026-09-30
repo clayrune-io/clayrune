@@ -13,6 +13,12 @@
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
+  // R2-6: the literal request text desk-v1-how.js's Suggest button sends
+  // through the rightcol Posy box — the `onSend` handler below (in
+  // `deskV1FillCampaignRightColumn`) matches on this exact string to run
+  // `_runSuggestTask` instead of the generic instruction handler.
+  const _HOW_SUGGEST_TEXT = 'Suggest What / When / Where';
+
   // ── data resolution (same _fx() convention as desk-v1-review.js/-home.js) ─
   function _fx() { return window.DeskV1Fixtures || {}; }
   function _campaigns() { return _fx().campaigns || []; }
@@ -535,15 +541,47 @@
     };
   }
 
+  // R2-6: the bounds shape `DeskV1Kit.boundsWiden`/`nextBoundsHash` compare —
+  // pulled from wherever each dimension actually lives on a campaign today
+  // (`plan.accounts`/`plan.cadence`/`plan.end`, the top-level `term`, and
+  // the shared `how.budget` object). Kept local to this file rather than
+  // exported from kit.js: kit's own comment on `boundsWiden` says it takes
+  // "the canonical bounds object" as a given, never how to build one from a
+  // campaign — that assembly is a caller concern, and this is its only
+  // caller so far.
+  function _currentBounds(camp) {
+    const plan = camp.plan || {};
+    return {
+      accounts: plan.accounts || [],
+      cadence: plan.cadence || {},
+      end: plan.end || {},
+      term: { ends: camp.term && camp.term.ends },
+      budget: (plan.how && plan.how.budget) || { source: 'none' },
+    };
+  }
+
   // ⑥ Launch (§4.1 row): validatePlan gates Start, each missing bound links
   // to the stop that fixes it (`missing[].stop`, kit.js R2-1). Reuses
   // desk-v1-rules.js's existing Start sheet (`deskV1OpenStartSheet`) rather
   // than a second Start flow. This ticket wires the frame + the gate only —
   // the Active-state half of the row (approval record, Pause/Resume, Renew
   // term) is R2-11's job; a running campaign sees the same missing/Start
-  // body here until then.
+  // body here until then, EXCEPT for the one bound R2-6 does wire on an
+  // Active campaign: `camp.approval.bounds` vs the live plan, so a How-stop
+  // budget widen is visible somewhere before R2-11 builds the rest of this
+  // row. A campaign with no `approval` recorded yet (draft, or a fixture
+  // that predates this ticket) skips the check exactly as before.
   function _renderLaunchPanel(el, params, camp) {
     if (!camp) { el.innerHTML = '<div class="desk-v1-stub-inline">Campaign not found.</div>'; return; }
+    if (camp.state !== 'draft' && camp.approval && camp.approval.bounds
+        && DeskV1Kit.boundsWiden(camp.approval.bounds, _currentBounds(camp))) {
+      el.innerHTML = `
+        <div class="desk-v1-map-launch">
+          <div class="desk-v1-map-launch-status desk-v1-map-launch-awaiting">⚠ Awaiting approval</div>
+          <div class="desk-v1-stub-inline">A change since the last approval (How stop) widens what this campaign can do. An authorized user needs to approve it again before it takes effect.</div>
+        </div>`;
+      return;
+    }
     const project = _project(camp.projectId);
     const result = DeskV1Kit.validatePlan(camp.plan, project) || { ok: true, missing: [] };
     const missingHTML = result.missing.length
@@ -712,9 +750,82 @@
     // pd-drop-target is NOT statically present (Dave's review: 12a has no
     // container outline at rest) — onActivate/onTeardown below toggle it
     // for the duration of a drag only.
-    host.innerHTML = `<div class="desk-v1-camp-listarea" id="desk-v1-camp-listarea" data-listarea>${bodyHTML}</div>`;
+    host.innerHTML = `<div class="desk-v1-camp-listarea" id="desk-v1-camp-listarea" data-listarea>${_suggestedWhatBannerHTML(camp)}${bodyHTML}</div>`;
     host.querySelectorAll('[data-group-show]').forEach((b) => b.onclick = () => { _expandedGroups.add(b.dataset.groupShow); _renderList(camp); });
+    const acceptBtn = host.querySelector('[data-suggested-accept-all]');
+    if (acceptBtn) acceptBtn.onclick = () => _acceptSuggestedWhat(camp);
     _wireCards(host, camp);
+  }
+
+  // R2-6: the ② How stop's "Suggest What / When / Where" task writes
+  // `camp.how.suggested.what` — an array of draft piece proposals, none of
+  // them real content yet. This banner is the ONLY place that offer is
+  // visible on the Content tab; "Accept all" is the one action R2-6 builds
+  // for it (per-item accept/reject is R2-9's job, same as the rest of ④'s
+  // real UI — this ticket only has to prove the suggestion reaches ③).
+  function _suggestedWhatBannerHTML(camp) {
+    const items = camp.how && camp.how.suggested && camp.how.suggested.what;
+    if (!items || !items.length) return '';
+    return `
+      <div class="desk-v1-camp-suggested-banner">
+        <span>${esc(items.length)} suggested</span>
+        <button type="button" class="btn-secondary" data-suggested-accept-all>Accept all</button>
+      </div>`;
+  }
+
+  function _acceptSuggestedWhat(camp) {
+    const items = (camp.how && camp.how.suggested && camp.how.suggested.what) || [];
+    if (!items.length) return;
+    const created = items.map((it, i) => ({
+      id: 'fam-suggest-' + Date.now().toString(36) + '-' + i,
+      campaignId: camp.id, kind: 'post', title: it.title,
+      versions: [{ id: 'v-suggest-' + Date.now().toString(36) + '-' + i, channelId: it.channelId || null, state: 'planned', revision: 0 }],
+    }));
+    DeskV1Kit.commandBus.run({
+      label: `Accepted ${created.length} suggested piece${created.length === 1 ? '' : 's'}`,
+      do: () => {
+        created.forEach((fam) => _fx().families.push(fam));
+        camp.how.suggested.what = [];
+        _renderTabBody();
+      },
+      undo: () => {
+        const arr = _fx().families;
+        created.forEach((fam) => { const i = arr.findIndex((f) => f.id === fam.id); if (i >= 0) arr.splice(i, 1); });
+        camp.how.suggested.what = items;
+        _renderTabBody();
+      },
+    });
+  }
+
+  // R2-6: the Suggest task itself (`_HOW_SUGGEST_TEXT`, fired by
+  // desk-v1-how.js driving the rightcol Posy box's real Send). Writes
+  // DRAFT suggestions only (§4.2 item 3: "never commitments") — ③'s own
+  // `_suggestedWhatBannerHTML`/`_acceptSuggestedWhat` above turn `what`
+  // into real pieces; ④/⑤ read `how.suggested.when`/`.where` directly
+  // (desk-v1-calendar.js, desk-v1-shell.js's 'where' branch) since neither
+  // has a dedicated accept flow yet (R2-9/R2-10). Only refreshes the
+  // Content tab body if it's the one currently mounted AND currently the
+  // active stop. `_st.el` is the SAME shared `#desk-v1-camp-tabbody` node
+  // every stop paints into (shell.js `_renderCampaignPanel`), so once
+  // Content has rendered once, `_st.el` stays attached to the DOM even
+  // while a different stop (e.g. How) is showing — "still in DOM" alone
+  // can't tell them apart. Dave's follow-up (2e24880e review): the fix is
+  // checking shell.js's own `dataset.panel` stamp on that node, so a
+  // Suggest task resolving while parked on How repaints nothing instead of
+  // clobbering How with Content-tab HTML.
+  function _runSuggestTask(camp, project, posyBoxEl) {
+    const plan = camp.plan || {};
+    const accounts = plan.accounts || [];
+    const title = plan.title || camp.subject.label;
+    camp.how = camp.how || {};
+    camp.how.suggested = {
+      what: [1, 2, 3].map((n) => ({ title: `${title} — post ${n}`, channelId: accounts[(n - 1) % (accounts.length || 1)] || null })),
+      when: { label: `${(plan.cadence && plan.cadence.per_week) || 3}x/week` },
+      where: { channelId: accounts[0] || null, label: accounts[0] ? (_channel(accounts[0]) || {}).label || accounts[0] : null },
+    };
+    DeskV1Kit.toast(`${DeskV1Kit.deskAgentName({ project, campaign: camp })} suggested 3 pieces, a cadence and a placement.`);
+    if (_st && _st.campaignId === camp.id && _st.el && document.body.contains(_st.el) && _st.el.dataset.panel === 'what') _renderTabBody();
+    if (posyBoxEl) DeskV1Kit.paintPosyReadyNoDiff(posyBoxEl);
   }
 
   // ── content card (§3.2 CNT-01) ────────────────────────────────────────────
@@ -1092,6 +1203,15 @@
     // same shape as the two hooks above: falls back to the plain toast T2a
     // shipped with until desk-v1-rules.js defines the real handler.
     DeskV1Kit.bindPosyBox(el.querySelector('.desk-v1-camp-posy'), 'desk-v1-camp-posy-input', (text) => {
+      // R2-6: desk-v1-how.js's Suggest button fills this SAME box's textarea
+      // with this exact literal and clicks Send — reusing the real task
+      // lifecycle (Working/Failed/Retry, `window.__deskV1PosyForce`) rather
+      // than a second one. Checked before the generic instruction handler so
+      // a How-stop suggestion never falls through to it.
+      if (text === _HOW_SUGGEST_TEXT) {
+        _runSuggestTask(camp, project, el.querySelector('.desk-v1-camp-posy'));
+        return;
+      }
       if (typeof window.deskV1HandlePosyInstruction === 'function') {
         window.deskV1HandlePosyInstruction(camp, text, el.querySelector('.desk-v1-camp-posy'), st.selection);
       } else {
