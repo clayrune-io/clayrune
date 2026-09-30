@@ -837,7 +837,16 @@
     state: 'archived',
     projectId: 'clayrune',
     subject: { kind: 'feature', label: 'Legacy import wizard' },
-    goal: { current: 22 },
+    goal: {
+      current: 22, metric: 'imports completed', target: 25, baseline: 0,
+      unit: 'imports', horizon: 'short', deadline: '2026-08-01', source: 'manual',
+      entries: [{ at: '2026-08-01T09:00:00Z', value: 22 }],
+    },
+    // R2-15 (§10.1): this campaign's one term closed 1 Aug — the retro fixture
+    // below (RETRO_CLOSED_1) and the R1-L outcome-loop findings (F1-F4 further
+    // down) both key off `term.index`, so a restored (Restore -> `completed`)
+    // view of this campaign has a real closed term to show a Retro section for.
+    term: { index: 1, starts: '2026-06-01', ends: '2026-08-01', post_cap: null },
     rules: {},
     _preArchiveState: 'completed',
     plan: {
@@ -911,6 +920,22 @@
       cost: 0, published_at: '2026-09-09T16:00:00Z', outcomes: [] },
   ];
 
+  // R2-15: camp-archived-1's own closed term (2026-06-01 to 2026-08-01, 12
+  // posts, one per week-ish) — the per-post number grid's source rows. No
+  // outcomes typed yet on any of them (§10.7: "a dimension with no numbers
+  // never renders as zero"), so the Retro section's paste-from-CSV grid has
+  // something real to fill rather than fixture-preloaded values.
+  for (let i = 0; i < 12; i++) {
+    LEDGER.push({
+      id: `post-arch1-${i + 1}`, piece_id: `piece-arch1-${i + 1}`,
+      format: i % 3 === 2 ? 'image' : 'post', account: 'ch-x-ron',
+      campaign_id: 'camp-archived-1', project_id: 'clayrune', term: 1,
+      platform: 'x', voice: 'Ron (first person)', cost: 0.015,
+      published_at: new Date(Date.UTC(2026, 5, 1 + i * 5, 15, 0, 0)).toISOString(),
+      outcomes: [],
+    });
+  }
+
   // §10.1: `Run retro now` mid-term is labelled Interim, numbers only,
   // **never proposes findings** — camp-1's term 1 hasn't closed (CAMPAIGNS
   // above: `state:'active'`), so this is the only honest status for it.
@@ -932,6 +957,51 @@
     ],
     summary: 'Interim: 11 of 30 tester signups so far, $0.03 spent. Not enough posts yet to say what’s working.',
     findings: [],
+  };
+
+  // R2-15: camp-archived-1's CLOSED term 1 retro (§10.4: "a Retro section per
+  // closed term"). `dimensions` mirrors the §10.1 table's five rows; the
+  // 'finding' rows reuse F1/F2/F3's own arms/effect/evidence below (one
+  // retro run produced all of them) so the dimension table and the findings
+  // list agree on the same numbers, the way `desk_retro.run_retro` and
+  // `mc.desk.propose_finding` agree in the backend. `findings` lists only
+  // the ids still `state:'proposed'` at load time (F1, F5) — confirmed
+  // (F2)/rejected (F3)/stale (F4) findings belong to the project page's
+  // Playbook (R2-16), not this section (§10.4's row split).
+  const RETRO_CLOSED_1 = {
+    campaign_id: 'camp-archived-1', project_id: 'clayrune', term: 1, status: 'closed',
+    computed_at: '2026-08-02T09:00:00Z',
+    metric: 'clicks',
+    goal: { metric: 'imports completed', target: 25, actual: 22, baseline: 0 },
+    spend: { publishing: 0.18, media_cost: 0, total: 0.18, ceiling: null, cost_per_outcome: 0.008 },
+    dimensions: [
+      { dimension: 'format', verdict: 'finding', confidence: 'low',
+        arms: { a: 'post', b: 'image' }, effect: { ratio: 1.8, direction: 'a>b' }, n_total: 25,
+        evidence: [{ campaign_id: 'camp-archived-1', term: 1, n_a: 14, n_b: 11 }] },
+      { dimension: 'platform_voice', verdict: 'finding', confidence: 'low',
+        arms: { a: 'x:ron', b: 'linkedin:clayrune_page' }, effect: { ratio: 1.4, direction: 'a>b' }, n_total: 24,
+        evidence: [{ campaign_id: 'camp-archived-1', term: 1, n_a: 12, n_b: 12 }] },
+      { dimension: 'slot', verdict: 'finding', confidence: 'medium',
+        arms: { a: 'Tue/Thu 08-10', b: 'other slots' }, effect: { ratio: 2.1, direction: 'a>b' }, n_total: 41,
+        evidence: [{ campaign_id: 'camp-archived-1', term: 1, n_a: 22, n_b: 19 }] },
+      { dimension: 'angle', verdict: 'too_few_campaigns',
+        text: 'Too few campaigns to tell (1 and 1; need 3 each)' },
+      { dimension: 'spend_kind', verdict: 'too_few_campaigns',
+        text: 'Too few campaigns to tell (1 and 1; need 3 each)' },
+    ],
+    summary: 'Judged on clicks per post, not on imports completed. Term closed 1 Aug: 22 of 25 imports completed, $0.18 spent.',
+    // Only F1 is still `state:'proposed'` (F2/F3/F4 already decided, T0a's own
+    // rows below) — R2-15's own comment above ("lists only the ids still
+    // state:'proposed' at load time") means this array holds exactly that one.
+    findings: ['F1'],
+  };
+
+  // Keyed by `<campaignId>:<term index>` — the Retro section (desk-v1-retro.js)
+  // looks up `camp.id + ':' + camp.term.index` here rather than assuming one
+  // retro per campaign, since a `long`-horizon campaign closes several terms.
+  const RETROS = {
+    'camp-1:1': RETRO,
+    'camp-archived-1:1': RETRO_CLOSED_1,
   };
 
   // §10.2 finding schema, verbatim field set. States cover the full
@@ -1009,7 +1079,7 @@
     resultsInsight: RESULTS_INSIGHT,
     proposedExtras: PROPOSED_EXTRAS,
     ledger: LEDGER,
-    retro: RETRO,
+    retros: RETROS,
     playbook: { findings: FINDINGS, rejections: REJECTIONS },
   };
 })();

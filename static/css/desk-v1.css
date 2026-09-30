@@ -1752,6 +1752,62 @@
   .desk-v1-goal-manual [data-manual-entry-add] { min-height: 44px; }
 }
 
+/* R2-15 (§8, §10): Retro section at the foot of the Goal stop's effectiveness
+   panel. Same boxed-card language as .desk-v1-goal-editor/-effectiveness
+   above (this file's own §10.4 note: "own file, own hook" — desk-v1-retro.js
+   mounts here through .desk-v1-retro-mount, results.js never styles it). */
+.desk-v1-retro-mount { display: flex; flex-direction: column; }
+.desk-v1-retro {
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface);
+  padding: 16px 18px; display: flex; flex-direction: column; gap: 12px;
+}
+.desk-v1-retro-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.desk-v1-retro-title { font-size: 13px; font-weight: 700; color: var(--text); }
+.desk-v1-retro-status {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+  background: var(--surface2); color: var(--text-dim);
+}
+.desk-v1-retro-status[data-status="closed"] { background: var(--accent-dim, var(--surface3)); color: var(--text); }
+.desk-v1-retro-goal { font-size: 14px; font-weight: 700; color: var(--text); }
+.desk-v1-retro-summary { font-size: 13px; color: var(--text-dim); line-height: 1.5; }
+.desk-v1-retro-spend { font-size: 12px; color: var(--text-faint); }
+
+.desk-v1-retro-dims { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--border2); }
+.desk-v1-retro-dim-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
+.desk-v1-retro-dim-label { font-weight: 600; color: var(--text-dim); min-width: 96px; }
+.desk-v1-retro-dim-detail { color: var(--text); }
+.desk-v1-retro-dim-note { color: var(--text-faint); font-style: italic; }
+
+.desk-v1-retro-grid { display: flex; flex-direction: column; gap: 4px; padding-top: 6px; border-top: 1px solid var(--border2); }
+.desk-v1-retro-grid-head { font-size: 12px; font-weight: 600; color: var(--text-dim); margin-bottom: 2px; }
+.desk-v1-retro-grid-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--text); padding: 2px 0; }
+.desk-v1-retro-grid-date { color: var(--text-faint); width: 84px; }
+.desk-v1-retro-grid-format { color: var(--text-dim); width: 56px; }
+.desk-v1-retro-grid-value { color: var(--text); }
+.desk-v1-retro-paste { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.desk-v1-retro-pastearea { min-height: 60px; }
+
+.desk-v1-retro-findings { display: flex; flex-direction: column; gap: 10px; padding-top: 6px; border-top: 1px solid var(--border2); }
+.desk-v1-retro-findings-head { font-size: 12px; font-weight: 600; color: var(--text-dim); }
+.desk-v1-retro-finding {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 9px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+}
+.desk-v1-retro-finding-text { font-size: 13px; color: var(--text); line-height: 1.5; }
+.desk-v1-retro-finding-why { font-size: 12px; color: var(--text-faint); font-style: italic; }
+.desk-v1-retro-finding-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.desk-v1-retro-finding-editarea { min-height: 52px; }
+.desk-v1-retro-finding-cancel {
+  background: transparent; border: none; color: var(--text-faint); font-size: 12.5px;
+  cursor: pointer; font-family: inherit; padding: 0 4px;
+}
+.desk-v1-retro-finding-cancel:hover { color: var(--text); }
+
+@media (max-width: 960px) {
+  .desk-v1-retro-finding-actions button { min-height: 44px; }
+  .desk-v1-retro-grid-row { flex-wrap: wrap; }
+}
+
 /* IA7: Engagement dashboard (docs/THE_DESK_V1_IA_REVISION.md §7) — three
    lanes + filters, reached from Home's header count, a project's Engagement
    strip "Open ›", or (campaignId case) handed off to the conversations
