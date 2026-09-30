@@ -2421,9 +2421,26 @@ def test_codex_catalog_falls_back_to_static_list_on_bad_cache(monkeypatch, tmp_p
     stub_codex_models_cache(monkeypatch, tmp_path, models=models, missing=missing)
     codex = agent_runtime.get_runtime('codex')
     assert codex.model_choices() == codex.MODEL_CHOICES
-    assert codex.MODEL_CHOICES[0] == ('gpt-6-astra', 'GPT-6 Astra')
+    assert codex.MODEL_CHOICES[0] == ('gpt-6.1-sol', 'GPT-6.1 Sol')
     assert ('gpt-5.4', 'GPT-5.4') not in codex.MODEL_CHOICES
     assert ('gpt-5.4-mini', 'GPT-5.4 Mini') not in codex.MODEL_CHOICES
+
+
+def test_gpt_6_1_sol_is_the_balanced_head_static_fallback(monkeypatch, tmp_path):
+    # gpt-6.1-sol (Codex rust-v0.159.1, 2026-09-29 20:32Z) is the new
+    # 'balanced' head. Must sit above gpt-6-sol in the static MODEL_CHOICES
+    # fallback list, or the upgrade gate reads gpt-6-sol as the head and
+    # never moves a balanced-tier pin (e.g. Marlow/prd-writer). Forces the
+    # static-fallback path (missing=True) since that is what this catalog
+    # edit actually touches — the live models_cache.json path is unaffected.
+    from conftest import stub_codex_models_cache
+    from mc.engine_selection import is_stale_pin
+    stub_codex_models_cache(monkeypatch, tmp_path, missing=True)
+    codex = agent_runtime.get_runtime('codex')
+    assert codex.catalog_head_for('balanced') == 'gpt-6.1-sol'
+    assert codex.TIER_ALIASES['balanced'] == 'gpt-6.1-sol'
+    assert is_stale_pin('codex', 'gpt-6-sol') is True
+    assert is_stale_pin('codex', 'gpt-6.1-sol') is False
 
 
 def test_codex_model_supported_still_accepts_retired_ids(monkeypatch, tmp_path):

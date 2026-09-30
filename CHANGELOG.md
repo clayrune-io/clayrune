@@ -6,6 +6,26 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-30] — GPT-6.1 Sol in the Codex catalog
+
+- Added `gpt-6.1-sol` ("GPT-6.1 Sol") above `gpt-6-sol` in
+  `CodexRuntime.MODEL_CHOICES` and `TIER_ALIASES['balanced']`
+  (`mc/agent_runtime.py`), so it is now the balanced-tier head for
+  `catalog_head_for('balanced')`/`latest_for()` and the model auto-upgrade
+  gate. Codex rust-v0.159.1 (2026-09-29 20:32Z) made it the bundled catalog's
+  default. No JS/frontend picker to update: unlike Claude's hardcoded
+  `MC_MODEL_CHOICES`/Settings pickers, Codex's model list is served live from
+  `~/.codex/models_cache.json` via `model_choices()`, so a new id that keeps
+  the `-astra`/`-sol`/`-luna` suffix convention needs no frontend edit.
+- Same price as `gpt-6-sol` ($2 in / $10 out per Mtok, OpenAI's own pricing
+  page). Row added to `~/.clayrune/model_prices.json`, along with a missing
+  row for `gpt-6-luna` (the fast tier's head, previously unpriced).
+- Moving `TIER_ALIASES['balanced']` off `gpt-6-sol` also fixes
+  `is_stale_pin()`: it treats any value still present in `TIER_ALIASES`
+  as a self-updating handle that is never stale, so leaving the old id
+  there would have hidden a balanced-tier pin (Marlow/prd-writer) from the
+  upgrade gate forever.
+
 ## [2026-09-29] — Right-to-left text in chat (MC-1000)
 
 - **Hebrew and Arabic rendered left-aligned everywhere.** Agent replies, user

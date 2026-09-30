@@ -7594,7 +7594,12 @@ class CodexRuntime(AgentRuntime):
     # still accepts them explicitly, since a catalog drop is not the same as
     # the id going invalid. Kept newest-first: catalog_head_for() relies on
     # that ordering, same as the live cache path (sorted by `priority`).
+    # gpt-6.1-sol added 2026-09-30: Codex rust-v0.159.1 (2026-09-29 20:32Z)
+    # made it the bundled catalog's default, same -sol suffix and same price
+    # as gpt-6-sol (OpenAI's own pricing page, developers.openai.com/api/docs
+    # /pricing, read 2026-09-30: $2/$10 standard, matching models.dev).
     MODEL_CHOICES = [
+        ('gpt-6.1-sol', 'GPT-6.1 Sol'),
         ('gpt-6-astra', 'GPT-6 Astra'),
         ('gpt-6-sol', 'GPT-6 Sol'),
         ('gpt-6-luna', 'GPT-6 Luna'),
@@ -7624,7 +7629,14 @@ class CodexRuntime(AgentRuntime):
     # read; when it can, catalog_head_for() (driven by tier_family() below)
     # takes precedence, so a new OpenAI generation lands with zero code edits
     # here as long as it keeps the same -astra/-sol/-luna suffix convention.
-    TIER_ALIASES = {'best': 'gpt-6-astra', 'balanced': 'gpt-6-sol', 'fast': 'gpt-6-luna'}
+    # 'balanced' moved gpt-6-sol -> gpt-6.1-sol (2026-09-30): is_stale_pin()
+    # treats any value ALREADY in this dict as a self-updating handle that is
+    # never stale (mc/engine_selection.py's `if value in tier_aliases.values()`
+    # early return) — leaving gpt-6-sol here after gpt-6.1-sol became the
+    # balanced head would have permanently hidden Marlow's pin from the gate
+    # even though it fails catalog_head_for('balanced') == value. Same rule
+    # that moved Sonnet 5.5 into _AUTO_MODEL_VALID['S'] on 2026-09-29.
+    TIER_ALIASES = {'best': 'gpt-6-astra', 'balanced': 'gpt-6.1-sol', 'fast': 'gpt-6-luna'}
 
     # GPT-6 (2026-09-22) settled on a reliable per-tier suffix convention —
     # -astra/-sol/-luna name the tier itself, not a one-off variant, so unlike
