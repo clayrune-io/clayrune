@@ -15,6 +15,14 @@
 
 const _mermaidBuffers = {};   // sessionId -> { placeholder, lines }
 
+// The viewers stay open while the chat composer keeps focus, so their
+// document-level key handlers must leave keys typed into a text field alone
+// (Ron 2026-09-30: ArrowLeft/Right in the composer switched pictures).
+function _isTypingTarget(t) {
+  return !!t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT'
+                 || t.tagName === 'SELECT' || t.isContentEditable);
+}
+
 function _mermaidPlaceholderHTML(source) {
   // For HTML-string builders (outputLines, openPlanViewer).
   return `<div class="mermaid-block" data-source="${esc(source)}">` +
@@ -760,6 +768,7 @@ function _openMermaidViewer(source, svg) {
   });
   const onKey = e => {
     if (!win.isTop()) return;                     // only the front window listens
+    if (_isTypingTarget(e.target)) return;        // caret keys + '-'/'0' belong to the field
     if (e.key === 'Escape') closeIt();
     else if (e.key === '+' || e.key === '=') gest.zoomBy(1.25);
     else if (e.key === '-') gest.zoomBy(1 / 1.25);
@@ -1034,6 +1043,7 @@ function _openImageViewer(src) {
 
   const onKey = e => {
     if (!win.isTop()) return;                     // only the front window listens
+    if (_isTypingTarget(e.target)) return;        // caret keys + '-'/'0' belong to the field
     if (e.key === 'Escape') closeIt();
     else if (e.key === '+' || e.key === '=') gest.zoomBy(1.25);
     else if (e.key === '-') gest.zoomBy(1 / 1.25);

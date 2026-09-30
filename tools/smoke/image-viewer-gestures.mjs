@@ -182,6 +182,24 @@ check('toolbar + zooms in', (await zoom()) === 125, (await zoom()) + '%');
 await page.keyboard.press('0');
 await page.waitForTimeout(200);
 check('key 0 resets', (await zoom()) === 100, (await zoom()) + '%');
+// Keys typed into a text field belong to the field (Ron 2026-09-30: arrows in
+// the composer switched pictures). Same guard covers arrows, '-', '0', Escape.
+await page.evaluate(() => {
+  const ta = document.createElement('textarea');
+  ta.id = '__composer'; document.body.appendChild(ta); ta.focus();
+});
+await page.keyboard.press('-');
+await page.keyboard.press('ArrowLeft');
+await page.keyboard.press('Escape');
+await page.waitForTimeout(200);
+const typed = await page.evaluate(() => ({
+  open: !!document.querySelector('.mermaid-viewer-overlay'),
+  val: document.getElementById('__composer').value,
+}));
+check('keys typed in a text field leave the viewer alone',
+  (await zoom()) === 100 && typed.open && typed.val === '-',
+  `zoom ${await zoom()}%, open ${typed.open}, field "${typed.val}"`);
+await page.evaluate(() => document.getElementById('__composer').remove());
 
 
 // ── 7. It is a WINDOW, not a screen-grabbing modal ──
