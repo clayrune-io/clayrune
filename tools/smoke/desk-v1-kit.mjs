@@ -658,12 +658,21 @@ async function runR21PlanBoundsChecks(browser) {
       coveredMissing: covered.missing.some((m) => m.bound === 'how_budget'),
       prevHash, widenedHash, loweredHash,
       dimResults,
+      // R2-18: campaign how.agent wins over the project's presence.desk_agent.
+      agentPrec: [
+        K.deskAgentRef({ project: { presence: { desk_agent: 'global:claydo' } }, campaign: { how: { agent: 'global:dave' } } }),
+        K.deskAgentRef({ project: { presence: { desk_agent: 'global:claydo' } }, campaign: { how: {} } }),
+        K.deskAgentRef({ project: { presence: {} }, campaign: { how: {} } }),
+      ],
     };
   });
 
   result.noTargetMissing.includes('goal') && result.noTargetStop === 'goal'
     ? ok(`plan without goal target -> validatePlan missing names stop 'goal': ${JSON.stringify(result.noTargetMissing)}`)
     : fail(`goal-target gate wrong: ${JSON.stringify(result.noTargetMissing)}, stop=${result.noTargetStop}`);
+  JSON.stringify(result.agentPrec) === JSON.stringify(['global:dave', 'global:claydo', null])
+    ? ok('R2-18: deskAgentRef resolves the campaign how.agent FIRST, then presence.desk_agent, else null')
+    : fail(`R2-18: deskAgentRef precedence wrong: ${JSON.stringify(result.agentPrec)}`);
   !result.withTargetOk
     ? ok('plan with goal target + source clears the goal bound')
     : fail('goal bound still missing once target + source are set');

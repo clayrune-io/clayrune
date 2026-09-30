@@ -3,7 +3,7 @@
 // IA4's 3-step in-page setup (docs/THE_DESK_V1_IA_REVISION.md §2.3); R2-3b
 // (docs/THE_DESK_V1_IA_REVISION_2.md §8) retired those steps — a new campaign
 // now renders the ①–⑥ map stepper like every other campaign and lands on
-// ① Goal — so what remains is what the map still needs: creating a Draft,
+// ① Brief (R2-18) — so what remains is what the map still needs: creating a Draft,
 // the Project select that ⑥ Launch mounts (R2-2g), and discarding a Draft
 // nobody touched. The filename stays so index.html's script list and the
 // `window.deskV1*` names the rest of the Desk calls don't move.
@@ -41,10 +41,10 @@
       goal: { current: 0 },
       rules: {},
       // R2-3 (IA revision 2 §3 table): the map stepper's resume cursor — a
-      // fresh draft starts at ① Goal, same stop the project page's draft card
+      // fresh draft starts at ① Brief, same stop the project page's draft card
       // and `_renderCampaignSkeleton` fall back to for any older draft
       // fixture that predates this field.
-      map: { stop: 'goal', done: [] },
+      map: { stop: 'how', done: [] },
       // R2-3b: with IA4's Subject/Title/Brief step gone nothing else names a
       // campaign, so a draft that starts inside a project is named for it (and
       // a project-less one is named when ⑥ Launch picks its project —
@@ -80,10 +80,11 @@
   // and the new campaign on the right are doing almost the same thing") —
   // "＋ New campaign" no longer asks which project up front.
   // R2-2g (Ron 2026-09-30, "the pick a project enforcer should come only at
-  // the end before the campaign is launched"): the field moved off the Goal
-  // stop to the ⑥ Launch panel (desk-v1-campaign.js `_renderLaunchPanel`
-  // calls `deskV1MountProjectField`), and a project-less draft now runs the
-  // whole map without one. Every change goes through the commandBus so
+  // the end before the campaign is launched"): a project-less draft runs the
+  // whole map without one; Start stays gated on it at ⑥ Launch.
+  // R2-18 (Ron 2026-09-30, later): the select is ALSO the first thing on the
+  // ① Brief stop (desk-v1-how.js), still optional there; both panels call
+  // `deskV1MountProjectField`. Every change goes through the commandBus so
   // Undo reverts it; a project change also re-defaults the title/brief that
   // were auto-filled from the OLD project's name (only if the user hasn't
   // edited them).
@@ -96,7 +97,7 @@
         <select class="desk-v1-goal-select" data-setup-project aria-label="Project">
           ${picked ? '' : '<option value="" selected disabled>Pick a project</option>'}${opts}
         </select>
-        ${picked ? '' : '<div class="desk-v1-rules-hint" data-setup-project-hint>Its accounts, limits and agent come from the project. A campaign can’t launch without one.</div>'}
+        ${picked ? '' : '<div class="desk-v1-rules-hint" data-setup-project-hint>Its accounts and limits come from the project, and its agents are the ones hired there. A campaign can’t launch without one.</div>'}
       </div>`;
   }
 
@@ -113,12 +114,16 @@
       const prevProject = _project(prevId);
       const plan = camp.plan || {};
       const prevTitle = plan.title; const prevBrief = plan.brief; const prevTouched = camp._touched;
+      // R2-18: the campaign's agent is chosen from the project's hired agents,
+      // so a different project drops it (back to that project's own default).
+      const prevAgent = camp.how ? camp.how.agent : null;
       const nextProject = _project(nextId);
       DeskV1Kit.commandBus.run({
         label: `Set campaign project to ${nextProject ? nextProject.name : 'none'}`,
         do: () => {
           camp.projectId = nextId;
           camp._touched = true;
+          if (camp.how) camp.how.agent = null;
           if (!plan.title || (prevProject && plan.title === _defaultTitle(prevProject))) plan.title = _defaultTitle(nextProject);
           if (!plan.brief || (prevProject && plan.brief === _defaultBrief(prevProject))) plan.brief = _defaultBrief(nextProject);
           if (typeof window.deskV1Render === 'function') window.deskV1Render();
@@ -126,6 +131,7 @@
         undo: () => {
           camp.projectId = prevId;
           camp._touched = prevTouched;
+          if (camp.how) camp.how.agent = prevAgent;
           plan.title = prevTitle; plan.brief = prevBrief;
           if (typeof window.deskV1Render === 'function') window.deskV1Render();
         },
@@ -152,7 +158,7 @@
     if ((camp.projectId || null) !== (camp._prefillProjectId || null)) return false;
     if (camp.subject) return false;
     const map = camp.map || {};
-    if ((map.done || []).length || (map.stop && map.stop !== 'goal')) return false;
+    if ((map.done || []).length || (map.stop && map.stop !== 'how')) return false;
     const g = camp.goal || {};
     if (['metric', 'target', 'baseline', 'unit', 'horizon', 'deadline', 'source'].some((k) => g[k] != null && g[k] !== '')) return false;
     if ((g.entries || []).length) return false;

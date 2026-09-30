@@ -364,7 +364,7 @@
     // = Goal, the same default as desk-v1-project.js's `_draftCardLabel`), so
     // its cell never reads blank.
     const isDraft = camp.state === 'proposed' || camp.state === 'draft';
-    const stop = (camp.map && camp.map.stop) || (isDraft ? 'goal' : null);
+    const stop = (camp.map && camp.map.stop) || (isDraft ? 'how' : null);
     const stopWord = stop && DeskV1Kit.MAP_STOP_WORDS[stop];
     return stopWord
       ? `<span class="desk-v1-home-nextpost desk-v1-home-nextpost-draft">Draft &middot; at ${esc(stopWord)}</span>`
@@ -504,7 +504,7 @@
 
   // R2-2f (Ron 2026-09-30): every "＋ New campaign" on Home — the crumb-row
   // button AND each project block's own link — makes a Draft (the same factory
-  // the project page's button uses, desk-v1-setup.js) and lands on its Goal
+  // the project page's button uses, desk-v1-setup.js) and lands on its Brief
   // stop, where the Project select is the first field. The block link only
   // PREFILLS its project; the crumb button passes null. The draft is marked
   // `_discardIfUntouched`: a stray click leaves nothing behind once the user

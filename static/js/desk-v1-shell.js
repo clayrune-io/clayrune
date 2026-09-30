@@ -275,8 +275,8 @@
     // unless the caller asked for another panel (an aliased deep link). A
     // Draft campaign is the one exception (§3 table: "Draft · at <stop> ...
     // Continue lands on that stop") — it resumes at `camp.map.stop`, or ①
-    // goal for a campaign that has never touched the map (`deskV1
-    // CreateDraftCampaign` seeds `map.stop: 'goal'`, but this falls back the
+    // Brief (how) for a campaign that has never touched the map (`deskV1
+    // CreateDraftCampaign` seeds `map.stop: 'how'` (Brief, R2-18), but this falls back the
     // same way for any older/hand-built draft fixture missing the field).
     // Non-draft states ignore `map.stop` here on purpose: it is not a resume
     // cursor for them (Active's own "stage" text is goal pace, not a stop,
@@ -288,7 +288,7 @@
       const camps = (window.DeskV1Fixtures && window.DeskV1Fixtures.campaigns) || [];
       const camp = camps.find((c) => c.id === params.campaignId);
       params.panel = (camp && camp.state === 'draft')
-        ? ((camp.map && camp.map.stop) || 'goal')
+        ? ((camp.map && camp.map.stop) || 'how')
         : 'what';
     }
     el.innerHTML = `
@@ -344,7 +344,7 @@
     } else if (panel === 'when' && typeof window.deskV1RenderCalendar === 'function') {
       window.deskV1RenderCalendar(tabbodyEl, params);
     } else if (panel === 'how' && typeof window.deskV1RenderHow === 'function') {
-      // R2-6: strategy + angle + agent + budget + the Suggest task.
+      // R2-18 Brief: project + agent + strategy + angle + budget + the Suggest task.
       window.deskV1RenderHow(tabbodyEl, params);
     } else if (panel === 'where') {
       // §4.1 Absorbs column: no dedicated renderer ships until R2-10 — a

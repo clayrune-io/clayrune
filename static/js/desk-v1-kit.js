@@ -6,9 +6,8 @@
 (function () {
   // ── Agent of choice (R2-5, MC-977 IA revision 2 §5.3). The chat box below
   // used to hardcode "Posy" (`social-media-strategist`) for every project;
-  // it now draws whoever the project actually picked — `presence.desk_agent`,
-  // or a campaign's own `how.agent` when the box has no project presence to
-  // read — resolved against the real roster via GET /api/characters. Fetched
+  // it now draws whoever the campaign picked (`how.agent`, R2-18) or, failing
+  // that, the project's `presence.desk_agent` — resolved against the real roster via GET /api/characters. Fetched
   // ONCE and cached by "scope:name" ref (same one-shot-fetch-then-repaint
   // shape the old avatar lookup used, replaced here since it only ever
   // resolved Posy's face, never her name). A ref this fetch doesn't
@@ -31,23 +30,53 @@
     _agentsReadyCallbacks = [];
     cbs.forEach((cb) => cb());
   }
-  fetch('/api/characters').then((r) => r.json()).then((list) => {
-    const map = {};
-    (list || []).forEach((c) => { map[`${c.scope || 'global'}:${c.name}`] = c; });
-    _agentsByRef = map;
-    _repaintDeskAgentBoxes();
-    _flushAgentsReady();
-  }).catch(() => { _agentsByRef = {}; _flushAgentsReady(); });
+  function _loadAgents() {
+    return fetch('/api/characters').then((r) => r.json()).then((list) => {
+      const map = {};
+      (list || []).forEach((c) => { map[`${c.scope || 'global'}:${c.name}`] = c; });
+      _agentsByRef = map;
+      _repaintDeskAgentBoxes();
+      _flushAgentsReady();
+    }).catch(() => { if (!_agentsByRef) _agentsByRef = {}; _flushAgentsReady(); });
+  }
+  _loadAgents();
 
   const UNRESOLVED_AGENT_LABEL = 'Pick who plans for this project ›';
 
-  // opts: {project, campaign}. Precedence matches the row's own wording —
-  // the project's standing pick first, a campaign's own (multi-project
-  // campaigns, or a box with no project presence at hand) second.
+  // opts: {project, campaign}. R2-18 (Ron 2026-09-30, reversing the same-day
+  // "agents per project only" ruling): the agent belongs to the CAMPAIGN —
+  // picked on its Brief stop into `how.agent` — so that wins; the project's
+  // standing `presence.desk_agent` is the default when the campaign has none.
   function deskAgentRef(opts) {
     opts = opts || {};
     const presence = (opts.project && opts.project.presence) || {};
-    return presence.desk_agent || (opts.campaign && opts.campaign.how && opts.campaign.how.agent) || null;
+    return (opts.campaign && opts.campaign.how && opts.campaign.how.agent) || presence.desk_agent || null;
+  }
+
+  // R2-18: the agents a campaign's Brief picker offers — those hired on the
+  // project's floor (its live `roster` rows: `character` ref, not `removed_at`)
+  // plus the project's own desk agent, so the default is always selectable.
+  // A project record may carry its own `roster` array of refs (the Desk's
+  // fixture projects are not Clayrune project ids, so the real roster can't
+  // be looked up for them); otherwise GET /api/projects is read by id. Both
+  // fetches re-run each call — a hire or a new character made since the last
+  // Brief render must show. Resolves to [{ref, name, avatar}], only for refs
+  // GET /api/characters recognises; never rejects.
+  function projectAgentChoices(project) {
+    if (!project) return Promise.resolve([]);
+    const refsP = Array.isArray(project.roster)
+      ? Promise.resolve(project.roster)
+      : fetch('/api/projects').then((r) => r.json()).then((list) => {
+        const rec = (Array.isArray(list) ? list : (list && list.projects) || []).find((x) => x.id === project.id);
+        return ((rec && rec.roster) || []).filter((r) => !r.removed_at).map((r) => r.character);
+      }).catch(() => []);
+    return Promise.all([refsP, _loadAgents()]).then(([refs]) => {
+      const def = (project.presence || {}).desk_agent;
+      const all = (def ? [def] : []).concat(refs.filter((r) => r && r !== def));
+      return all.map((ref) => ({ ref, rec: resolveDeskAgent(ref) }))
+        .filter((x) => x.rec.name)
+        .map((x) => ({ ref: x.ref, name: x.rec.name, avatar: x.rec.avatar }));
+    });
   }
 
   // {ref, name, avatar} once the roster fetch has landed and recognises the
@@ -122,8 +151,12 @@
   // and the project page's draft card label (desk-v1-project.js
   // `_draftCardLabel`) both read, so a stop never gets two names. Order
   // matters: it drives Next/Back and `validatePlan`'s `missing[].stop` links.
-  const MAP_STOPS = ['goal', 'how', 'what', 'when', 'where', 'launch'];
-  const MAP_STOP_WORDS = { goal: 'Goal', how: 'How', what: 'What', when: 'When', where: 'Where', launch: 'Launch' };
+  // R2-18 (Ron 2026-09-30, "we start too deep"): the campaign is framed
+  // first — the old ② How stop is now the FIRST stop and reads `Brief`. The
+  // route key stays `how` (deep links, fixtures, `missing[].stop`, `camp.how`
+  // all keep working); only the order and the visible word changed.
+  const MAP_STOPS = ['how', 'goal', 'what', 'when', 'where', 'launch'];
+  const MAP_STOP_WORDS = { goal: 'Goal', how: 'Brief', what: 'What', when: 'When', where: 'Where', launch: 'Launch' };
 
   function stateLabel(state) {
     return ALL_STATES[state] || { glyph: '?', word: state ? String(state) : 'Unknown' };
@@ -889,7 +922,7 @@
     const budget = plan.how && plan.how.budget;
     if (!budget || budget.source !== 'project' || opts.projectRemaining == null) return null;
     const short = (budget.amount || 0) - opts.projectRemaining;
-    if (short > 0) return { bound: 'how_budget', stop: 'how', label: 'how', detail: `short by $${short}` };
+    if (short > 0) return { bound: 'how_budget', stop: 'how', label: 'brief budget', detail: `short by $${short}` };
     return null;
   }
 
@@ -1111,7 +1144,7 @@
     addToMenu, bindAddToTrigger,
     infoIconHTML, bindInfoIcons,
     posyBoxHTML, bindPosyBox,
-    deskAgentRef, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL, onAgentsReady,
+    deskAgentRef, projectAgentChoices, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL, onAgentsReady,
     anyPosyWorking, deskAgentWorkingLabel, paintPosyReadyNoDiff,
     openConfirmSheet,
     validatePlan, validatePresence,

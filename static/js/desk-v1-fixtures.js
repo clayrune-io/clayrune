@@ -25,6 +25,12 @@
   const PROJECTS = [
     {
       id: 'clayrune', name: 'Clayrune', state: 'active',
+      // R2-18: the agents "hired on this project's floor", standing in for the
+      // live `/api/projects` roster (a fixture id is not a Clayrune project id,
+      // so `DeskV1Kit.projectAgentChoices` reads this when present). Refs the
+      // install doesn't know are dropped there, so a fresh install still gets
+      // `global:claydo`. `engulfing_scanner` below has none: the empty case.
+      roster: ['global:claydo', 'global:dave'],
       presence: {
         accounts: [
           { channel_id: 'ch-x-ron', voice: 'Ron (first person)' },
@@ -60,6 +66,7 @@
     // ch-x-ron id the clayrune project above also binds, at its own ceiling.
     {
       id: 'engulfing_scanner', name: 'Engulfing scanner', state: 'active',
+      roster: [],
       presence: {
         accounts: [{ channel_id: 'ch-x-ron', voice: 'Ron (first person)' }],
         audience: 'Day traders evaluating signal tools',

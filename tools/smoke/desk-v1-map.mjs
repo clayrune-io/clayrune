@@ -7,7 +7,7 @@
  * Closes the §8 R2-3 row (frame half) and the R2-3b row (the retirements —
  * last sections below; they also re-home the still-valid checks of the
  * retired desk-v1-setup.mjs / desk-v1-rules.mjs):
- *   - New campaign opens the map at ① Goal.
+ *   - New campaign opens the map at ① Brief (R2-18).
  *   - Next carries a draft through to ⑥ Launch, marking each stop done.
  *   - Leaving at ④ When: the project page's draft card reads "Draft · at
  *     When", and clicking the card (Continue) resumes there.
@@ -137,10 +137,10 @@ async function stopState(page, stop) {
   return page.$eval(`.desk-v1-map-stop[data-stop="${stop}"]`, (el) => el.dataset.state).catch(() => null);
 }
 
-const MAP_STOPS = ['goal', 'how', 'what', 'when', 'where', 'launch'];
-const MAP_STOP_WORDS = { goal: 'Goal', how: 'How', what: 'What', when: 'When', where: 'Where', launch: 'Launch' };
+const MAP_STOPS = ['how', 'goal', 'what', 'when', 'where', 'launch'];
+const MAP_STOP_WORDS = { goal: 'Goal', how: 'Brief', what: 'What', when: 'When', where: 'Where', launch: 'Launch' };
 
-// ── New campaign opens at ① Goal; `Next ›` carries a Draft through every
+// ── New campaign opens at ① Brief (R2-18; route key `how`); `Next ›` carries a Draft through every
 // stop to ⑥ Launch, marking each one done as it moves past it; `‹ Back`
 // retreats one stop. §3 table's "guided, never locked" movement. ──────────
 async function runNewCampaignStepperFlow(browser) {
@@ -148,10 +148,10 @@ async function runNewCampaignStepperFlow(browser) {
 
   await newCampaign(page, 'engulfing_scanner');
 
-  let goalState = await stopState(page, 'goal');
-  goalState === 'here'
-    ? ok(`new campaign opens the map at ① Goal (data-state="${goalState}")`)
-    : fail(`new campaign did not open at Goal: data-state=${JSON.stringify(goalState)}`);
+  const briefState = await stopState(page, 'how');
+  briefState === 'here'
+    ? ok(`new campaign opens the map at ① Brief (data-state="${briefState}")`)
+    : fail(`new campaign did not open at Brief: data-state=${JSON.stringify(briefState)}`);
 
   const stopWords = await page.$$eval('.desk-v1-map-stop .desk-v1-map-stop-word', (els) => els.map((e) => e.textContent.trim()));
   JSON.stringify(stopWords) === JSON.stringify(MAP_STOPS.map((s) => MAP_STOP_WORDS[s]))
@@ -196,7 +196,7 @@ async function runLeaveAtWhenDraftCard(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
 
   const campaignId = await newCampaign(page, 'engulfing_scanner');
-  // goal -> how -> what -> when: 3 Next clicks.
+  // how (Brief) -> goal -> what -> when: 3 Next clicks.
   for (let i = 0; i < 3; i++) {
     await page.click('[data-map-next]');
     await page.waitForTimeout(30);
