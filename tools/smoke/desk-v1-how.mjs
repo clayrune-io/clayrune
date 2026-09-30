@@ -95,6 +95,15 @@ async function newBootedPage(browser) {
   await page.route('**/*', fulfillOrAbort);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
+  // nextToastText below needs a call log, not a live-DOM count: a toast
+  // self-removes ~5s after it fires, so a slow-resolving task (Retry's ~1.5-4s
+  // Working phase, arriving well after the PREVIOUS ask's still-showing toast
+  // from earlier in this same run) can let the old one dismiss before the new
+  // one lands — the DOM count dips back through the "before" baseline instead
+  // of ever exceeding it. Hooking the one function every toast already routes
+  // through (DeskV1Kit.toast -> window.showToast) sidesteps the race: a call
+  // log only grows.
+  await page.evaluate(() => { window.__toastLog = []; const orig = window.showToast; window.showToast = (m, d) => { window.__toastLog.push(m); return orig ? orig(m, d) : undefined; }; });
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
   return { ctx, page, pageErrors, charRequests };
@@ -118,18 +127,21 @@ async function familyCountFor(page, campaignId) {
   return page.evaluate((cid) => window.DeskV1Fixtures.families.filter((f) => f.campaignId === cid).length, campaignId);
 }
 
-// Toasts stack (up to 5s) before they self-remove, so a plain "does a toast
-// with this text exist" check can't tell a fresh Suggest run's toast apart
-// from the PREVIOUS run's — the Suggest task fires the identical message
-// both times. Count toasts before the triggering click, then wait for that
-// count to grow: proof a NEW one landed, immune to whether the old one has
-// auto-dismissed yet. Safe here because Suggest's toast is the only kind
-// this smoke ever fires.
+// A plain "does a toast with this text exist" check can't tell a fresh
+// Suggest run's toast apart from the PREVIOUS run's — the Suggest task fires
+// the identical message both times. Counting live `.toast` DOM nodes doesn't
+// work either: a toast self-removes ~5s after it fires, so when the
+// triggering action resolves slowly (Retry's ~1.5-4s Working phase) the
+// PREVIOUS ask's still-showing toast can auto-dismiss before the new one
+// lands — the DOM count dips back through the "before" baseline instead of
+// ever exceeding it. `window.__toastLog` (newBootedPage's hook on
+// window.showToast, the one function every toast already routes through) is
+// a call log, not a live count — it only grows, immune to that dismiss race.
 async function nextToastText(page, triggerFn, timeout) {
-  const before = await page.locator('.toast').count();
+  const before = await page.evaluate(() => window.__toastLog.length);
   await triggerFn();
-  await page.waitForFunction((n) => document.querySelectorAll('.toast').length > n, before, { timeout: timeout || 6000 });
-  return (await page.locator('.toast').last().textContent().catch(() => '') || '');
+  await page.waitForFunction((n) => window.__toastLog.length > n, before, { timeout: timeout || 6000 });
+  return (await page.evaluate(() => window.__toastLog[window.__toastLog.length - 1]) || '');
 }
 
 async function run(browser) {
