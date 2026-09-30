@@ -60,10 +60,13 @@ def augment_unix_path() -> bool:
     ~/.local/bin, ~/.claude/bin or nvm are invisible — both to our own
     `claude --version` check and to the `claude` shim when it execs `node`.
 
-    User/Homebrew dirs are prepended (existing behaviour); nvm's dir is
-    APPENDED so it can never shadow a `node` the machine already resolves.
-    Only directories that exist are added; idempotent. Returns True when PATH
-    changed. No-op on Windows (PATH there is refreshed from the registry)."""
+    All dirs are PREPENDED, nvm's included, matching what nvm's own shell
+    init does with $NVM_BIN. The CLI shim is `#!/usr/bin/env node`, so it must
+    run under the node it was installed with: appending nvm would let a distro
+    node win (Ubuntu 22.04's apt nodejs is v12, below Claude Code's minimum)
+    and break the very CLI this resolves. Only directories that exist are
+    added; idempotent. Returns True when PATH changed. No-op on Windows (PATH
+    there is refreshed from the registry)."""
     if sys.platform == 'win32':
         return False
     home = _home()
@@ -84,7 +87,7 @@ def augment_unix_path() -> bool:
             changed = True
     for d in back:
         if d and os.path.isdir(d) and d not in parts:
-            parts.append(d)
+            parts.insert(0, d)
             changed = True
     if changed:
         os.environ['PATH'] = os.pathsep.join(p for p in parts if p)

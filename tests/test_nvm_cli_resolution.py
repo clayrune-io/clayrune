@@ -77,8 +77,9 @@ def test_augment_adds_nvm_dir_and_is_idempotent(fake_home, monkeypatch):
     parts = os.environ['PATH'].split(os.pathsep)
     assert str(bins['v20.20.2']) in parts
     assert str(bins['v9.0.0']) not in parts
-    # nvm is appended: it must not shadow a node the machine already resolves
-    assert parts.index('/usr/bin') < parts.index(str(bins['v20.20.2']))
+    # nvm is prepended: the CLI's `#!/usr/bin/env node` shim must get the nvm
+    # node it was installed with, not an older distro node in /usr/bin
+    assert parts.index(str(bins['v20.20.2'])) < parts.index('/usr/bin')
     before = os.environ['PATH']
     assert augment_unix_path() is False
     assert os.environ['PATH'] == before
