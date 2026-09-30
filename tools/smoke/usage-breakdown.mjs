@@ -629,6 +629,76 @@ try {
     await ctx.close();
   }
 
+  // ── 9. MC-998 follow-up 6: input breakdown (Fresh / Cache reads / Cache
+  //      writes with their share of input, writes split by TTL), the reworded
+  //      incomplete-coverage hint, calibration evidence, the range label, and
+  //      the model-unknown hint. Desktop totals + phone cards both. ─────────
+  {
+    const TOKEN_FIXTURE = {
+      ...POPULATED_FIXTURE,
+      totals: {
+        ...POPULATED_FIXTURE.totals,
+        tokens: { input_fresh: 40000000, input_cache_read: 1208000000, input_cache_write: 12000000,
+                  input_processed_total: 1260000000, output_tokens: 9000000,
+                  cache_write_5m: 2000000, cache_write_1h: 6000000, cache_write_ttl_unknown: 4000000 },
+        incomplete_coverage_session_count: 2, model_unknown_session_count: 3,
+      },
+      rankings: { ...POPULATED_FIXTURE.rankings, rows: [
+        { label: 'opus', input_processed_total: 1000, input_fresh: 100, input_cache_read: 800, input_cache_write: 100, output_tokens: 50, added: 1, session_count: 1 },
+      ], mixed_session_count: 2, whole_session_attribution_count: 1 },
+      tokens_per_point: { status: 'ok', median: 50000, p10: 40000, p90: 60000, sample_count: 8, total_delta_pp: 41.5, run_count: 6, note: 'Indicative: account-wide bar' },
+      segmented_bar: { status: 'ok', bar_change_pp: 10, estimated_pp: 6, unattributed_pp: 4, range_pp: [5, 7] },
+    };
+    const { ctx, page, pageErrors } = await openDesktopPopover(browser, TOKEN_FIXTURE, WINDOWS_FIXTURE);
+    await page.evaluate(() => { document.body.classList.remove('tone-warm', 'tone-editorial'); });
+    const text = await page.$eval('.sys-status-popover', (el) => el.textContent);
+    /Cache reads\s*1\.21B \(95\.9%\)/.test(text) || /Cache reads\s*1\.208B \(95\.9%\)/.test(text)
+      ? ok('input breakdown: "Cache reads" shows tokens and its share of input')
+      : fail(`cache-reads share missing from: ${text.slice(0, 900)}`);
+    (/Fresh\s*\S+ \(3\.2%\)/.test(text) && /Cache writes\s*\S+ \(1\.0%\)/.test(text))
+      ? ok('input breakdown: Fresh and Cache writes rows carry their shares')
+      : fail(`fresh/writes shares missing from: ${text.slice(0, 900)}`);
+    (/5-minute/.test(text) && /1-hour/.test(text) && /TTL unknown/.test(text))
+      ? ok('cache writes split into 5-minute / 1-hour / TTL unknown')
+      : fail(`TTL split rows missing from: ${text.slice(0, 900)}`);
+    /their unmeasured portions are excluded/.test(text) && !/aren't isolated to it yet/.test(text)
+      ? ok('incomplete-coverage hint reworded: unmeasured portions excluded, not whole sessions')
+      : fail(`old/absent incomplete-coverage hint: ${text.slice(0, 900)}`);
+    /41\.5pp over 6 runs/.test(text) && !/n=8/.test(text)
+      ? ok('Tokens per 1%: calibration evidence "41.5pp over 6 runs" replaces n=')
+      : fail(`calibration evidence missing from: ${text.slice(0, 900)}`);
+    /calibration-rate range/.test(text) && /not from bounds on attribution/.test(text)
+      ? ok('estimate range labelled as calibration-rate variation, not attribution bounds')
+      : fail(`range label missing from: ${text.slice(0, 900)}`);
+    /3 session\(s\) have no recorded model/.test(text)
+      ? ok('model-unknown sessions surfaced in a visible hint')
+      : fail(`model-unknown hint missing from: ${text.slice(0, 900)}`);
+    /2 session\(s\) ran on more than one model/.test(text)
+      ? ok('mixed-model sessions noted under the model ranking')
+      : fail(`mixed-session hint missing from: ${text.slice(0, 900)}`);
+    const shot = resolve(REPO_ROOT, '_scratch', 'mc998-token-accounting-report-dark.png');
+    await page.screenshot({ path: shot, fullPage: true });
+    console.log('  screenshot: ' + shot);
+    pageErrors.length === 0 ? ok('no page errors on the token-accounting render') : fail(`page errors: ${pageErrors.join(' | ')}`);
+    await ctx.close();
+  }
+  {
+    const TOKEN_FIXTURE_ROWS = {
+      ...POPULATED_FIXTURE,
+      rankings: { ...POPULATED_FIXTURE.rankings, rows: [
+        { label: 'opus', input_processed_total: 1000, input_fresh: 100, input_cache_read: 800, input_cache_write: 100,
+          cache_write_5m: null, cache_write_1h: null, cache_write_ttl_unknown: 100, output_tokens: 50, added: 1, session_count: 1 },
+      ] },
+    };
+    const { ctx, page } = await openMobileModal(browser, TOKEN_FIXTURE_ROWS, WINDOWS_FIXTURE);
+    const cardText = await page.$eval('.ub-cards', (el) => el.textContent);
+    /Cache reads\s*800 \(80\.0%\)/.test(cardText) && /Fresh\s*100 \(10\.0%\)/.test(cardText) && /Cache writes\s*100 \(10\.0%\)/.test(cardText)
+      ? ok('phone cards: Fresh / Cache reads / Cache writes with shares')
+      : fail(`phone card breakdown wrong: ${cardText.slice(0, 500)}`);
+    /TTL unknown/.test(cardText) ? ok('phone cards: older-session writes shown as TTL unknown') : fail(`phone card TTL-unknown row missing: ${cardText.slice(0, 500)}`);
+    await ctx.close();
+  }
+
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
     ? '\n✅ PASS — usage breakdown: desktop table + phone cards from the same data, control re-fetch, all 5 empty states.'

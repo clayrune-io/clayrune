@@ -7665,9 +7665,19 @@ def _accumulate_session_usage(session, turn_usage):
     merged = dict(prev)
     for k in _INT_FIELDS:
         merged[k] = int(prev.get(k) or 0) + int(turn_usage.get(k) or 0)
+    # `cache_creation` = the 5m/1h TTL split OF cache_creation_input_tokens.
+    # Summed like the ints above -- overwriting it with the latest turn (the
+    # metadata loop below) kept only one turn's split against a lifetime
+    # combined-write figure. Never added to cache_creation_input_tokens.
+    prev_cc = prev.get('cache_creation') if isinstance(prev.get('cache_creation'), dict) else {}
+    turn_cc = turn_usage.get('cache_creation')
+    if isinstance(turn_cc, dict):
+        merged['cache_creation'] = {
+            k: int(prev_cc.get(k) or 0) + int(turn_cc.get(k) or 0)
+            for k in set(prev_cc) | set(turn_cc)}
     # Carry non-numeric metadata from the latest turn (service_tier, etc.)
     for k, v in turn_usage.items():
-        if k not in _INT_FIELDS:
+        if k not in _INT_FIELDS and k != 'cache_creation':
             merged[k] = v
     session['usage'] = merged
 
@@ -8764,6 +8774,11 @@ def _write_usage_breakdown_turn_checkpoint(session):
         'output_tokens': _telemetry.get('output_tokens', 0),
         'cache_read_tokens': _telemetry.get('cache_read_tokens', 0),
         'cache_write_tokens': _telemetry.get('cache_write_tokens', 0),
+        # MC-998 follow-up 6: TTL split of the write total (None = unknown)
+        # and per-model category totals, for the Usage Breakdown fact.
+        'cache_write_5m_tokens': _telemetry.get('cache_write_5m_tokens'),
+        'cache_write_1h_tokens': _telemetry.get('cache_write_1h_tokens'),
+        'model_usage': _telemetry.get('model_usage'),
         'parent_session_id': session.get('_notify_session') or None,
     }
     try:
@@ -8862,6 +8877,11 @@ def _write_usage_breakdown_sample_tick(session, observed_at: str):
         'output_tokens': _telemetry.get('output_tokens', 0),
         'cache_read_tokens': _telemetry.get('cache_read_tokens', 0),
         'cache_write_tokens': _telemetry.get('cache_write_tokens', 0),
+        # MC-998 follow-up 6: TTL split of the write total (None = unknown)
+        # and per-model category totals, for the Usage Breakdown fact.
+        'cache_write_5m_tokens': _telemetry.get('cache_write_5m_tokens'),
+        'cache_write_1h_tokens': _telemetry.get('cache_write_1h_tokens'),
+        'model_usage': _telemetry.get('model_usage'),
     }
     try:
         _fact = _usage_breakdown_sampler.session_fact_from_entry(
@@ -9083,6 +9103,11 @@ def _log_agent_completion_body(session):
         'output_tokens': _telemetry.get('output_tokens', 0),
         'cache_read_tokens': _telemetry.get('cache_read_tokens', 0),
         'cache_write_tokens': _telemetry.get('cache_write_tokens', 0),
+        # MC-998 follow-up 6: TTL split of the write total (None = unknown)
+        # and per-model category totals, for the Usage Breakdown fact.
+        'cache_write_5m_tokens': _telemetry.get('cache_write_5m_tokens'),
+        'cache_write_1h_tokens': _telemetry.get('cache_write_1h_tokens'),
+        'model_usage': _telemetry.get('model_usage'),
         'model_tokens': _telemetry.get('model_tokens', {}),
     }
     # Upsert: if a pending entry was written at dispatch time (non-manual trigger),

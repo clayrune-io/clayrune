@@ -5498,7 +5498,10 @@ def _extract_transcript_telemetry(path):
 
     Returns {'model': str, 'input_tokens': int, 'output_tokens': int,
              'cache_read_tokens': int, 'cache_write_tokens': int,
-             'model_tokens': {model: total_tokens}}
+             'cache_write_5m_tokens': int|None, 'cache_write_1h_tokens': int|None,
+             'model_tokens': {model: total_tokens},
+             'model_usage': {model: {input_fresh, input_cache_write,
+                                      input_cache_read, output_tokens}}}
     or {} on any failure. Never raises. Indicative, not billing-accurate.
     """
     if not path:
@@ -5524,7 +5527,19 @@ def _extract_transcript_telemetry_multi(paths):
     yielded any usable usage. Never raises.
     """
     model_tokens = {}  # model -> {input, output}
+    # model -> all four categories (MC-998 follow-up 6: the per-model split
+    # the model ranking and the Opus/Sonnet scopes need; `model_tokens` above
+    # stays fresh+output only because the agent_log consumers read it).
+    model_usage = {}
     totals = {'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0}
+    # Cache-write TTL split (usage.cache_creation.ephemeral_{5m,1h}_input_
+    # tokens). It is a split OF cache_creation_input_tokens, never added to
+    # it. `ttl_ok` goes False the moment any cache-writing message lacks a
+    # dict that adds up to its own write total -- the whole session's TTL
+    # is then reported as unknown (None), never a partial sum presenting
+    # itself as the full split.
+    ttl = {'5m': 0, '1h': 0}
+    ttl_ok = True
     seen_ids = set()
     for path in (paths or []):
         if not path:
@@ -5559,8 +5574,28 @@ def _extract_transcript_telemetry_multi(paths):
                     model_tokens[model]['output'] += out_tok
                     totals['input'] += in_tok
                     totals['output'] += out_tok
-                    totals['cache_read'] += int(usage.get('cache_read_input_tokens') or 0)
-                    totals['cache_write'] += int(usage.get('cache_creation_input_tokens') or 0)
+                    cr_tok = int(usage.get('cache_read_input_tokens') or 0)
+                    cw_tok = int(usage.get('cache_creation_input_tokens') or 0)
+                    totals['cache_read'] += cr_tok
+                    totals['cache_write'] += cw_tok
+                    mu = model_usage.setdefault(model, {
+                        'input_fresh': 0, 'input_cache_write': 0,
+                        'input_cache_read': 0, 'output_tokens': 0})
+                    mu['input_fresh'] += in_tok
+                    mu['input_cache_write'] += cw_tok
+                    mu['input_cache_read'] += cr_tok
+                    mu['output_tokens'] += out_tok
+                    cc = usage.get('cache_creation')
+                    if isinstance(cc, dict):
+                        m5 = int(cc.get('ephemeral_5m_input_tokens') or 0)
+                        h1 = int(cc.get('ephemeral_1h_input_tokens') or 0)
+                        if m5 + h1 == cw_tok:
+                            ttl['5m'] += m5
+                            ttl['1h'] += h1
+                        else:
+                            ttl_ok = False
+                    elif cw_tok:
+                        ttl_ok = False
         except Exception:
             continue
     if not model_tokens:
@@ -5573,8 +5608,13 @@ def _extract_transcript_telemetry_multi(paths):
         'output_tokens': totals['output'],
         'cache_read_tokens': totals['cache_read'],
         'cache_write_tokens': totals['cache_write'],
+        'cache_write_5m_tokens': ttl['5m'] if ttl_ok else None,
+        'cache_write_1h_tokens': ttl['1h'] if ttl_ok else None,
         'model_tokens': {m: v['input'] + v['output']
                          for m, v in model_tokens.items()},
+        # A zero-usage model (CC's '<synthetic>' placeholder messages) would
+        # only add an empty label to the model ranking.
+        'model_usage': {m: v for m, v in model_usage.items() if any(v.values())},
     }
 
 

@@ -321,6 +321,9 @@ const _UB_EMPTY_STATE_LABEL = {
   incomplete_coverage: 'Not yet measurable in this window',
   no_vendor_percentage: 'No vendor percentage',
   sampling_not_begun: 'Sampling has not begun',
+  // Model scope (Opus / Sonnet) selected and every session in range has no
+  // model evidence -- they are counted in the hint below, not silently dropped.
+  model_unknown: 'No sessions with a recorded model in this window',
 };
 const _UB_BAR_STATUS_LABEL = {
   insufficient_samples: 'Insufficient samples',
@@ -333,6 +336,34 @@ const _UB_BAR_STATUS_LABEL = {
 function _ubFmtTok(n) { return n == null ? 'unavailable' : _ssFormatTokens(n); }
 function _ubFmtLoc(n) { return n == null ? 'unavailable' : n.toLocaleString(); }
 function _ubFmtPP(n) { return n == null ? '—' : n.toFixed(2) + '%'; }
+// "1.208B (96.0%)": a category's tokens with its share of the input total.
+function _ubFmtShare(n, total) {
+  if (n == null) return 'unavailable';
+  return total > 0 ? `${_ssFormatTokens(n)} (${(100 * n / total).toFixed(1)}%)` : _ssFormatTokens(n);
+}
+// Input breakdown rows (Fresh / Cache reads / Cache writes, the writes split
+// by TTL). `src` is a totals.tokens object or a ranking row; the TTL keys are
+// optional (ranking rows carry none). `sub(label, valueHTML)` renders one row.
+function _ubInputBreakdown(src, sub) {
+  const total = src.input_processed_total;
+  if (total == null || src.input_fresh == null) return '';
+  let html = sub('Fresh', _ubFmtShare(src.input_fresh, total))
+    + sub('Cache reads', _ubFmtShare(src.input_cache_read, total))
+    + sub('Cache writes', _ubFmtShare(src.input_cache_write, total));
+  if (src.cache_write_ttl_unknown !== undefined && (src.input_cache_write || 0) > 0) {
+    // The TTL figures are a split OF the cache-write line above, not more input.
+    if (src.cache_write_5m != null) html += sub('&nbsp;&nbsp;5-minute', _ubFmtShare(src.cache_write_5m, total));
+    if (src.cache_write_1h != null) html += sub('&nbsp;&nbsp;1-hour', _ubFmtShare(src.cache_write_1h, total));
+    if ((src.cache_write_ttl_unknown || 0) > 0) html += sub('&nbsp;&nbsp;TTL unknown', _ubFmtShare(src.cache_write_ttl_unknown, total));
+  }
+  return html;
+}
+
+// One muted line under a table row's Input figure: "fresh X · reads Y · writes Z".
+function _ubRowSplit(r) {
+  if (r.input_processed_total == null || r.input_fresh == null) return '';
+  return `<div class="ub-rowsplit">fresh ${_ssFormatTokens(r.input_fresh)} · reads ${_ssFormatTokens(r.input_cache_read)} · writes ${_ssFormatTokens(r.input_cache_write)}</div>`;
+}
 
 function _renderUsageBreakdownSection() {
   const currentKey = _ubBreakdownQueryKey();
@@ -422,17 +453,19 @@ function _renderUsageBreakdownSection() {
   const totalsHTML = `
     <div class="ssp-row"><span class="ssp-k">Sessions in range</span><span class="ssp-v">${(t.session_count || 0).toLocaleString()}</span></div>
     <div class="ssp-row"><span class="ssp-k">Input tokens</span><span class="ssp-v">${_ubFmtTok(tok.input_processed_total)}</span></div>
+    ${_ubInputBreakdown(tok, (k, v) => `<div class="ssp-row ub-subrow"><span class="ssp-k">${k}</span><span class="ssp-v">${v}</span></div>`)}
     <div class="ssp-row"><span class="ssp-k">Output tokens</span><span class="ssp-v">${_ubFmtTok(tok.output_tokens)}</span></div>
     <div class="ssp-row"><span class="ssp-k">LOC added / deleted</span><span class="ssp-v">${_ubFmtLoc(loc.added)} / ${_ubFmtLoc(loc.deleted)}</span></div>
     ${telemetryUnavailable ? '<div class="ssp-hint-line">Telemetry unavailable for every session in this range.</div>' : ''}
     ${(t.token_coverage_unavailable_count || 0) > 0 ? `<div class="ssp-hint-line">${t.token_coverage_unavailable_count} session(s) with unavailable token coverage.</div>` : ''}
     ${(t.loc_unavailable_count || 0) > 0 ? `<div class="ssp-hint-line">${t.loc_unavailable_count} session(s) with LOC unavailable (shared/dirty worktree).</div>` : ''}
-    ${(t.incomplete_coverage_session_count || 0) > 0 ? `<div class="ssp-hint-line">${t.incomplete_coverage_session_count} session(s) overlap this window but aren't isolated to it yet (excluded from the totals above).</div>` : ''}
+    ${(t.incomplete_coverage_session_count || 0) > 0 ? `<div class="ssp-hint-line">${t.incomplete_coverage_session_count} session(s) overlap this window; their unmeasured portions are excluded from the totals above (segments that were measured inside it are included).</div>` : ''}
+    ${(t.model_unknown_session_count || 0) > 0 ? `<div class="ssp-hint-line">${t.model_unknown_session_count} session(s) have no recorded model and are excluded from this model selection.</div>` : ''}
   `;
 
   const tpp = b.tokens_per_point || {};
   const tppHTML = tpp.status === 'ok'
-    ? `<div class="ssp-row"><span class="ssp-k">Tokens per 1%</span><span class="ssp-v">${_ubFmtTok(tpp.median)} (p10 ${_ubFmtTok(tpp.p10)} · p90 ${_ubFmtTok(tpp.p90)}, n=${tpp.sample_count})</span></div>${tpp.note ? `<div class="ssp-hint-line">${esc(tpp.note)}</div>` : ''}`
+    ? `<div class="ssp-row"><span class="ssp-k">Tokens per 1%</span><span class="ssp-v">${_ubFmtTok(tpp.median)} (p10 ${_ubFmtTok(tpp.p10)} · p90 ${_ubFmtTok(tpp.p90)}; ${tpp.total_delta_pp != null && tpp.run_count != null ? `${+Number(tpp.total_delta_pp).toFixed(1)}pp over ${tpp.run_count} runs` : `n=${tpp.sample_count}`})</span></div>${tpp.note ? `<div class="ssp-hint-line">${esc(tpp.note)}</div>` : ''}`
     : `<div class="ssp-row"><span class="ssp-k">Tokens per 1%</span><span class="ssp-v">${esc(_UB_BAR_STATUS_LABEL[tpp.status] || 'Insufficient calibration')}</span></div>`;
 
   // MC-998 review finding #9: the range/caveat was dropped, the
@@ -442,8 +475,13 @@ function _renderUsageBreakdownSection() {
   // `compute_segmented_bar`) rendered as if it were a real negative amount
   // of external usage instead of a separate over-estimate error.
   const seg = b.segmented_bar || {};
-  const rangeSuffix = Array.isArray(seg.range_pp) && seg.range_pp.length === 2
-    ? ` (range ${_ubFmtPP(seg.range_pp[0])}–${_ubFmtPP(seg.range_pp[1])})` : '';
+  // The range is the calibrated rate's own variation (p10/p90 of the pooled
+  // workload-per-point), NOT bounds on what was attributed to Clayrune.
+  const hasRange = Array.isArray(seg.range_pp) && seg.range_pp.length === 2;
+  const rangeSuffix = hasRange
+    ? ` (calibration-rate range ${_ubFmtPP(seg.range_pp[0])}–${_ubFmtPP(seg.range_pp[1])})` : '';
+  const rangeNote = hasRange
+    ? '<div class="ssp-hint-line">The range comes from variation in the calibrated tokens-per-1% rate (p10–p90), not from bounds on attribution.</div>' : '';
   // Absolute 0-100 scale, the SAME scale as the vendor meter: a segment's
   // width is its own pp, NOT its share of `bar_change_pp` (that read as "66%
   // of the allowance used" when the meter said 48%). The range may not start
@@ -466,12 +504,14 @@ function _renderUsageBreakdownSection() {
       ${_segs(seg.estimated_pp, seg.unattributed_pp)}
       ${changeCaption}
       <div class="ssp-row"><span class="ssp-k">Estimated Clayrune</span><span class="ssp-v">${_ubFmtPP(seg.estimated_pp)}${rangeSuffix}</span></div>
+      ${rangeNote}
       <div class="ssp-row"><span class="ssp-k">Unattributed / uncertain</span><span class="ssp-v">${_ubFmtPP(seg.unattributed_pp)}</span></div>`;
   } else if (seg.status === 'estimate_exceeds_observed') {
     segbarHTML = `
       ${_segs(seg.estimated_pp, 0)}
       ${changeCaption}
       <div class="ssp-row"><span class="ssp-k">Estimated Clayrune</span><span class="ssp-v">${_ubFmtPP(seg.estimated_pp)}${rangeSuffix}</span></div>
+      ${rangeNote}
       <div class="ssp-hint-line">Estimate exceeds the observed vendor change by ${_ubFmtPP(-seg.unattributed_pp)} — shown, not clamped; not a negative unattributed amount.</div>`;
   } else if (seg.unattributed_pp != null) {
     // Pre-calibration: the whole observed change is known but not yet split
@@ -498,13 +538,14 @@ function _renderUsageBreakdownSection() {
     <div class="ub-table-wrap"><table class="ub-table">
       <thead><tr><th>${b.dimension[0].toUpperCase() + b.dimension.slice(1)}</th><th>Input</th><th>Output</th><th>LOC+</th><th>Sessions</th></tr></thead>
       <tbody>${rows.map(r => `
-        <tr><td>${esc(r.label)}</td><td>${_ubFmtTok(r.input_processed_total)}</td><td>${_ubFmtTok(r.output_tokens)}</td><td>${_ubFmtLoc(r.added)}</td><td>${r.session_count}</td></tr>
+        <tr><td>${esc(r.label)}</td><td>${_ubFmtTok(r.input_processed_total)}${_ubRowSplit(r)}</td><td>${_ubFmtTok(r.output_tokens)}</td><td>${_ubFmtLoc(r.added)}</td><td>${r.session_count}</td></tr>
       `).join('')}</tbody>
     </table></div>
     <div class="ub-cards">${rows.map(r => `
       <div class="ub-card">
         <div class="ub-card-label">${esc(r.label)}</div>
         <div class="ub-card-row"><span>Input</span><span>${_ubFmtTok(r.input_processed_total)}</span></div>
+        ${_ubInputBreakdown(r, (k, v) => `<div class="ub-card-row ub-card-subrow"><span>${k}</span><span>${v}</span></div>`)}
         <div class="ub-card-row"><span>Output</span><span>${_ubFmtTok(r.output_tokens)}</span></div>
         <div class="ub-card-row"><span>LOC+</span><span>${_ubFmtLoc(r.added)}</span></div>
         <div class="ub-card-row"><span>Sessions</span><span>${r.session_count}</span></div>
@@ -512,6 +553,8 @@ function _renderUsageBreakdownSection() {
     `).join('')}</div>
     ${(b.rankings.unknown_count || 0) > 0 ? `<div class="ssp-hint-line">${b.rankings.unknown_count} session(s) in Unknown.</div>` : ''}
     ${(b.rankings.missing_data_count || 0) > 0 ? `<div class="ssp-hint-line">${b.rankings.missing_data_count} session(s) missing token data.</div>` : ''}
+    ${(b.rankings.mixed_session_count || 0) > 0 ? `<div class="ssp-hint-line">${b.rankings.mixed_session_count} session(s) ran on more than one model and are split across them.</div>` : ''}
+    ${(b.rankings.whole_session_attribution_count || 0) > 0 ? `<div class="ssp-hint-line">${b.rankings.whole_session_attribution_count} session(s) have no per-model counters and are listed whole under their main model.</div>` : ''}
   `;
 
   return `

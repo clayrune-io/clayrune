@@ -138,6 +138,57 @@ def _in_range(ts: Optional[str], start: Optional[datetime], end: Optional[dateti
 
 _TOKEN_KEYS = ('input_fresh', 'input_cache_write', 'input_cache_read',
                'input_processed_total', 'output_tokens')
+# Per-model category counters (session_fact / session_checkpoint `model_usage`,
+# schema v7): {model: {<each key below>: cumulative tokens}}.
+_MODEL_CATS = ('input_fresh', 'input_cache_write', 'input_cache_read', 'output_tokens')
+
+
+def _segment_ttl(start_row: dict, end_row: dict, write_delta: Optional[int]):
+    """(5m, 1h) cache-write delta for one segment, or (None, None) when the
+    split cannot be established: a NULL counter at either end (older rows,
+    Codex), a counter that went backwards, or a split that does not add up to
+    the segment's own combined-write delta. The TTL figures are a split OF
+    `input_cache_write`, never additional to it -- an unknown split is
+    reported as unknown, never guessed."""
+    if write_delta is None:
+        return None, None
+    vals = []
+    for k in ('cache_write_5m', 'cache_write_1h'):
+        a, b = start_row.get(k), end_row.get(k)
+        if a is None or b is None or b < a:
+            return None, None
+        vals.append(b - a)
+    if sum(vals) != write_delta:
+        return None, None
+    return vals[0], vals[1]
+
+
+def _segment_model_usage(start_row: dict, end_row: dict, turn: dict) -> Optional[dict]:
+    """{model: {cat: delta}} for one segment, or None when unknown: either
+    end carries no per-model counters (pre-v7 rows, Codex), a model's counter
+    went backwards, or the per-model deltas do not sum to the segment's own
+    category deltas (then the per-model evidence cannot be trusted for it)."""
+    a, b = start_row.get('model_usage'), end_row.get('model_usage')
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return None
+    if any(m not in b for m in a):
+        return None
+    out: dict = {}
+    sums = dict.fromkeys(_MODEL_CATS, 0)
+    for m, cats in b.items():
+        base = a.get(m) or {}
+        d = {}
+        for k in _MODEL_CATS:
+            v = int((cats or {}).get(k) or 0) - int(base.get(k) or 0)
+            if v < 0:
+                return None
+            d[k] = v
+            sums[k] += v
+        if any(d.values()):
+            out[m] = d
+    if any(turn.get(k) is None or turn[k] != sums[k] for k in _MODEL_CATS):
+        return None
+    return out
 
 
 def _session_provider(ck: Optional[dict], fact: Optional[dict]) -> Optional[str]:
@@ -185,6 +236,8 @@ def _segment_delta(start_row: dict, start_at: datetime, end_row: dict, end_at: d
             turn[k] = None
     if turn['input_processed_total'] is None and turn['output_tokens'] is None:
         turn['token_coverage'] = 'unavailable'
+    turn['ttl_5m'], turn['ttl_1h'] = _segment_ttl(start_row, end_row, turn['input_cache_write'])
+    turn['model_usage'] = _segment_model_usage(start_row, end_row, turn)
     return turn
 
 
@@ -353,6 +406,9 @@ def _session_evidence(ck: Optional[dict], fact: Optional[dict]) -> tuple[list[di
                 'token_coverage': fact.get('token_coverage') or 'unavailable'}
         for k in _TOKEN_KEYS:
             turn[k] = fact.get(k)
+        zero = {'cache_write_5m': 0, 'cache_write_1h': 0, 'model_usage': {}}
+        turn['ttl_5m'], turn['ttl_1h'] = _segment_ttl(zero, fact, turn['input_cache_write'])
+        turn['model_usage'] = _segment_model_usage(zero, fact, turn)
         return [turn], []
 
     turns = _session_turns(ck)
@@ -420,8 +476,53 @@ def _window_contains(t: dict, start: Optional[datetime], end: Optional[datetime]
     return (start is None or t['start'] >= start) and (end is None or t['end'] <= end)
 
 
+def _scoped_row(row: dict, fact: Optional[dict], window_scope: str) -> Optional[dict]:
+    """Restrict a rolled-up session row to `window_scope` (the dashboard's
+    All / Opus / Sonnet selector), using the same `_scope_matches` the
+    calibration uses. Returns the row (possibly narrowed to the matching
+    models of a mixed session), None when none of the session belongs to the
+    scope, or the row flagged `_scope_unknown` when part of its tokens carry
+    no model evidence at all -- never silently included, never silently
+    dropped: `compute_totals` leaves a flagged row out of the sums and counts
+    it in `model_unknown_session_count`."""
+    mu = row.get('model_usage') or {}
+    unsplit = row.get('_model_unsplit') or {}
+    whole = _scope_matches(fact, window_scope)
+    has_unsplit = any(unsplit.get(k) for k in _MODEL_CATS)
+    if has_unsplit and whole is None:
+        row['_scope_unknown'] = True
+        return row
+    kept = {m: c for m, c in mu.items() if _scope_matches({'observed_model': m}, window_scope)}
+    if not kept and whole is not True:
+        return None
+    parts = dict.fromkeys(_MODEL_CATS, 0)
+    for c in kept.values():
+        for k in _MODEL_CATS:
+            parts[k] += c.get(k, 0)
+    if whole is True:
+        for k in _MODEL_CATS:
+            parts[k] += unsplit.get(k, 0)
+    if len(kept) != len(mu) or (whole is not True and has_unsplit):
+        # A narrowed mixed session: LOC cannot be split by model, and the
+        # per-model counters carry no TTL split, so the narrowed write total
+        # has an unknown TTL.
+        row['_loc_attributable'] = False
+        if row.get('cache_write_5m') is not None or row.get('cache_write_ttl_unknown'):
+            row['cache_write_5m'] = row['cache_write_1h'] = None
+            row['cache_write_ttl_unknown'] = parts['input_cache_write']
+    row['input_fresh'] = parts['input_fresh']
+    row['input_cache_write'] = parts['input_cache_write']
+    row['input_cache_read'] = parts['input_cache_read']
+    row['input_processed_total'] = parts['input_fresh'] + parts['input_cache_write'] + parts['input_cache_read']
+    row['output_tokens'] = parts['output_tokens']
+    row['model_usage'] = kept or None
+    row['_model_unsplit'] = unsplit if whole is True else {}
+    return row
+
+
 def filter_facts_in_range(session_facts: list[dict], checkpoints: dict[str, dict], *, provider: str,
-                           range_start: Optional[str], range_end: Optional[str]) -> tuple[list[dict], int]:
+                           range_start: Optional[str], range_end: Optional[str],
+                           window_scope: str = 'all') -> tuple[list[dict], int]:
     """Per-session rows carrying only the token deltas MEASURED inside
     [range_start, range_end], plus a count of same-provider sessions whose
     in-range work could not be measured.
@@ -447,6 +548,13 @@ def filter_facts_in_range(session_facts: list[dict], checkpoints: dict[str, dict
     `_loc_attributable` is True only when the session's ENTIRE evidence lies
     inside the range: code_delta is a per-session lifetime count that cannot
     be split by turn, so every other row reports its LOC as unavailable.
+
+    `window_scope` ('all' / 'opus' / 'sonnet') narrows every row to that
+    model class (`_scoped_row`). Each row also carries the cache-write TTL
+    roll-up (`cache_write_5m` / `cache_write_1h` -- None when no segment's
+    split is known -- and `cache_write_ttl_unknown`, the combined-write
+    tokens whose split is unknown) and the per-model roll-up (`model_usage`
+    over segments with per-model evidence, `_model_unsplit` over the rest).
 
     Returns (rows, incomplete_session_count)."""
     start = _parse_iso(range_start)
@@ -476,8 +584,45 @@ def filter_facts_in_range(session_facts: list[dict], checkpoints: dict[str, dict
         row['token_coverage'] = ('complete' if coverages == {'complete'}
                                  else 'unavailable' if not counted else 'partial')
         row['_loc_attributable'] = len(contained) == len(turns) and not unmeasured
+        ttl_known = [t for t in counted if t.get('ttl_5m') is not None]
+        row['cache_write_5m'] = sum(t['ttl_5m'] for t in ttl_known) if ttl_known else None
+        row['cache_write_1h'] = sum(t['ttl_1h'] for t in ttl_known) if ttl_known else None
+        row['cache_write_ttl_unknown'] = sum(t['input_cache_write'] or 0
+                                             for t in counted if t.get('ttl_5m') is None)
+        mu_total: dict = {}
+        unsplit = dict.fromkeys(_MODEL_CATS, 0)
+        split_segments = 0
+        for t in counted:
+            if t.get('model_usage') is None:
+                for k in _MODEL_CATS:
+                    unsplit[k] += t[k] or 0
+                continue
+            split_segments += 1
+            for m, cats in t['model_usage'].items():
+                acc = mu_total.setdefault(m, dict.fromkeys(_MODEL_CATS, 0))
+                for k in _MODEL_CATS:
+                    acc[k] += cats.get(k, 0)
+        row['model_usage'] = mu_total if split_segments else None
+        row['_model_unsplit'] = unsplit
+        if window_scope != 'all':
+            row = _scoped_row(row, fact, window_scope)
+            if row is None:
+                continue
         rows.append(row)
     return rows, incomplete
+
+
+def _row_ttl(f: dict) -> tuple:
+    """(5m, 1h, unknown) cache-write tokens for one row. Rows from
+    `filter_facts_in_range` carry the roll-up; a hand-built or whole-fact row
+    with only `cache_write_5m`/`cache_write_1h` counts as known when both are
+    set, otherwise its whole write total is unknown."""
+    if 'cache_write_ttl_unknown' in f:
+        return f.get('cache_write_5m'), f.get('cache_write_1h'), f.get('cache_write_ttl_unknown') or 0
+    t5, t1 = f.get('cache_write_5m'), f.get('cache_write_1h')
+    if t5 is not None and t1 is not None:
+        return t5, t1, 0
+    return None, None, f.get('input_cache_write') or 0
 
 
 def compute_totals(facts: list[dict], code_deltas: dict[str, dict], *,
@@ -493,6 +638,13 @@ def compute_totals(facts: list[dict], code_deltas: dict[str, dict], *,
             'input_processed_total': 0, 'output_tokens': 0}
     have_any_token_data = False
     unavailable_token_rows = 0
+    ttl_5m = ttl_1h = ttl_unknown = 0
+    ttl_known_any = False
+    # A row flagged `_scope_unknown` (filter_facts_in_range under a model
+    # scope) has tokens with no model evidence: out of every sum below, but
+    # counted so the exclusion is visible.
+    model_unknown = sum(1 for f in facts if f.get('_scope_unknown'))
+    facts = [f for f in facts if not f.get('_scope_unknown')]
     for f in facts:
         if f.get('token_coverage') == 'unavailable':
             unavailable_token_rows += 1
@@ -502,6 +654,12 @@ def compute_totals(facts: list[dict], code_deltas: dict[str, dict], *,
             v = f.get(k)
             if v is not None:
                 sums[k] += v
+        t5, t1, unk = _row_ttl(f)
+        if t5 is not None:
+            ttl_known_any = True
+            ttl_5m += t5
+            ttl_1h += t1
+        ttl_unknown += unk
 
     loc_added = loc_deleted = 0
     have_any_loc_data = False
@@ -515,9 +673,16 @@ def compute_totals(facts: list[dict], code_deltas: dict[str, dict], *,
         loc_added += cd.get('added') or 0
         loc_deleted += cd.get('deleted') or 0
 
+    tokens = {k: (v if have_any_token_data else None) for k, v in sums.items()}
+    # The TTL figures are a split OF input_cache_write, never added to it.
+    # 5m/1h stay None (unknown, not 0) until some segment's split is known.
+    tokens['cache_write_5m'] = ttl_5m if have_any_token_data and ttl_known_any else None
+    tokens['cache_write_1h'] = ttl_1h if have_any_token_data and ttl_known_any else None
+    tokens['cache_write_ttl_unknown'] = ttl_unknown if have_any_token_data else None
     return {
         'session_count': len(facts),
-        'tokens': {k: (v if have_any_token_data else None) for k, v in sums.items()},
+        'model_unknown_session_count': model_unknown,
+        'tokens': tokens,
         'token_coverage_unavailable_count': unavailable_token_rows,
         'loc': {'added': loc_added if have_any_loc_data else None,
                 'deleted': loc_deleted if have_any_loc_data else None},
@@ -539,23 +704,74 @@ def compute_rankings(facts: list[dict], code_deltas: dict[str, dict], *,
     groups: dict[str, dict] = {}
     unknown_count = 0
     missing_data_count = 0
+    mixed_session_count = 0
+    whole_session_count = 0
+
+    def _group(label: str) -> dict:
+        return groups.setdefault(label, {
+            'label': label, 'input_processed_total': 0, 'output_tokens': 0,
+            'input_fresh': 0, 'input_cache_write': 0, 'input_cache_read': 0,
+            'added': 0, 'session_count': 0, 'has_token_data': False, 'has_loc_data': False,
+        })
+
     for f in facts:
+        if f.get('_scope_unknown'):
+            continue  # counted in totals.model_unknown_session_count, not ranked
+        has_tokens = f.get('token_coverage') != 'unavailable'
+        if not has_tokens:
+            missing_data_count += 1
+        cd = code_deltas.get(f.get('session_id') or '') if f.get('_loc_attributable', True) else None
+        loc_ok = bool(cd and cd.get('status') == 'ok')
+
+        if dimension == 'model' and has_tokens:
+            # A session that ran under several models is split ACROSS them by
+            # its per-model counters (schema v7); segments without that
+            # evidence (older rows, Codex) stay attributed whole to the
+            # session's observed model, as before, and are counted so the
+            # UI can say so.
+            mu = f.get('model_usage') or {}
+            unsplit = f.get('_model_unsplit')
+            if unsplit is None and not mu:      # hand-built row: whole session
+                unsplit = {k: f.get(k) or 0 for k in _MODEL_CATS}
+            unsplit = unsplit or {}
+            portions = {m: dict(c) for m, c in mu.items()}
+            if any(unsplit.get(k) for k in _MODEL_CATS) or not portions:
+                label = f.get(key) or 'Unknown'
+                if label == 'Unknown':
+                    unknown_count += 1
+                whole_session_count += 1
+                p = portions.setdefault(label, dict.fromkeys(_MODEL_CATS, 0))
+                for k in _MODEL_CATS:
+                    p[k] += unsplit.get(k, 0)
+            if len(mu) > 1:
+                mixed_session_count += 1
+            for label, c in portions.items():
+                g = _group(label)
+                g['session_count'] += 1
+                g['has_token_data'] = True
+                g['input_fresh'] += c['input_fresh']
+                g['input_cache_write'] += c['input_cache_write']
+                g['input_cache_read'] += c['input_cache_read']
+                g['input_processed_total'] += c['input_fresh'] + c['input_cache_write'] + c['input_cache_read']
+                g['output_tokens'] += c['output_tokens']
+                if loc_ok and len(portions) == 1:
+                    g['has_loc_data'] = True
+                    g['added'] += cd.get('added') or 0
+            continue
+
         label = f.get(key) or 'Unknown'
         if label == 'Unknown':
             unknown_count += 1
-        g = groups.setdefault(label, {
-            'label': label, 'input_processed_total': 0, 'output_tokens': 0,
-            'added': 0, 'session_count': 0, 'has_token_data': False, 'has_loc_data': False,
-        })
+        g = _group(label)
         g['session_count'] += 1
-        if f.get('token_coverage') != 'unavailable':
+        if has_tokens:
             g['has_token_data'] = True
             g['input_processed_total'] += f.get('input_processed_total') or 0
             g['output_tokens'] += f.get('output_tokens') or 0
-        else:
-            missing_data_count += 1
-        cd = code_deltas.get(f.get('session_id') or '') if f.get('_loc_attributable', True) else None
-        if cd and cd.get('status') == 'ok':
+            g['input_fresh'] += f.get('input_fresh') or 0
+            g['input_cache_write'] += f.get('input_cache_write') or 0
+            g['input_cache_read'] += f.get('input_cache_read') or 0
+        if loc_ok:
             g['has_loc_data'] = True
             g['added'] += cd.get('added') or 0
 
@@ -563,12 +779,17 @@ def compute_rankings(facts: list[dict], code_deltas: dict[str, dict], *,
                 'added': 'added'}.get(sort_by, 'input_processed_total')
     rows = sorted(groups.values(), key=lambda g: g[sort_key], reverse=True)
     for r in rows:
-        r['input_processed_total'] = r['input_processed_total'] if r['has_token_data'] else None
-        r['output_tokens'] = r['output_tokens'] if r['has_token_data'] else None
+        for k in ('input_processed_total', 'output_tokens', 'input_fresh',
+                  'input_cache_write', 'input_cache_read'):
+            r[k] = r[k] if r['has_token_data'] else None
         r['added'] = r['added'] if r['has_loc_data'] else None
         del r['has_token_data']
         del r['has_loc_data']
-    return {'rows': rows, 'unknown_count': unknown_count, 'missing_data_count': missing_data_count}
+    out = {'rows': rows, 'unknown_count': unknown_count, 'missing_data_count': missing_data_count}
+    if dimension == 'model':
+        out['mixed_session_count'] = mixed_session_count
+        out['whole_session_attribution_count'] = whole_session_count
+    return out
 
 
 # ── tokens-per-point calibration (allowance_sample pairs + session_checkpoint) ─
@@ -895,11 +1116,16 @@ def compute_segmented_bar(bar_change: dict, totals: dict, calibration: dict) -> 
         return {'status': 'insufficient_calibration', 'estimated_pp': None,
                 'unattributed_pp': delta, 'range_pp': None, 'bar_change_pp': delta}
 
-    fresh_plus_output = (totals['tokens'].get('input_fresh') or 0) + (totals['tokens'].get('output_tokens') or 0)
     processed_plus_output = ((totals['tokens'].get('input_processed_total') or 0)
                               + (totals['tokens'].get('output_tokens') or 0))
+    # ONE workload definition (processed input + output) in numerator and in
+    # the calibration denominator. The old low end divided fresh input +
+    # output (6M of 1.26B) by a rate calibrated on ALL input + output, so it
+    # measured a different thing and the range read 0.1%-41%. The range is
+    # the calibration rate's observed variation (p10/p90 of the pooled
+    # workload-per-point), not bounds on what Clayrune work was attributed.
     estimated_pp = processed_plus_output / calibration['workload_per_point']
-    low_pp = fresh_plus_output / calibration['workload_per_point_hi']
+    low_pp = processed_plus_output / calibration['workload_per_point_hi']
     high_pp = processed_plus_output / calibration['workload_per_point_lo']
     unattributed = delta - estimated_pp
     status = 'ok'
@@ -931,7 +1157,8 @@ def build_breakdown(*, provider: str, window_kind: str, window_scope: str,
     (session_id -> row)."""
     facts_by_session = {f['session_id']: f for f in session_facts if f.get('session_id')}
     facts_in_range, incomplete_count = filter_facts_in_range(
-        session_facts, checkpoints, provider=provider, range_start=range_start, range_end=range_end)
+        session_facts, checkpoints, provider=provider, range_start=range_start, range_end=range_end,
+        window_scope=window_scope)
     totals = compute_totals(facts_in_range, code_deltas, incomplete_coverage_session_count=incomplete_count)
     rankings = compute_rankings(facts_in_range, code_deltas, dimension=dimension, sort_by=sort_by)
     calibration = compute_calibration(calibration_samples, checkpoints, facts_by_session,
@@ -947,7 +1174,9 @@ def build_breakdown(*, provider: str, window_kind: str, window_scope: str,
         # same as before -- but "no session survived the filter" must not
         # collapse to the same "No runs" a truly-empty window shows. The
         # work happened; it just isn't measurable in this window yet.
-        empty_state = 'incomplete_coverage' if incomplete_count > 0 else 'no_runs'
+        empty_state = ('incomplete_coverage' if incomplete_count > 0
+                       else 'model_unknown' if totals['model_unknown_session_count'] > 0
+                       else 'no_runs')
     elif not range_samples:
         empty_state = 'no_vendor_percentage'
     elif coverage_begins is None:
