@@ -4166,29 +4166,30 @@ def _transcript_tail_records(path) -> dict:
     return out
 
 
-def _hook_blocked_before(session, msg_uuid) -> bool:
+def _hook_blocked_before(session, msg_uuid):
     """Confirm from the transcript that this assistant message follows a
-    blocked Stop hook (agent_runtime.stop_hook_precedes). The CLI writes the
-    transcript alongside stdout, so a record not there yet gets a short retry;
-    anything unresolvable answers False — never collapse on a guess."""
+    blocked Stop hook (agent_runtime.stop_hook_block_kind_before). Returns the
+    block's kind ('length' | 'other'), or None. The CLI writes the transcript
+    alongside stdout, so a record not there yet gets a short retry; anything
+    unresolvable answers None — never mark a boundary on a guess."""
     if not msg_uuid:
-        return False
+        return None
     csid = session.get('claude_session_id')
     pid = session.get('project_id')
     if not csid or not pid:
-        return False
+        return None
     try:
         f = _find_transcript_file((load_project(pid) or {}).get('project_path', ''), csid)
         if not f:
-            return False
+            return None
         for _ in range(10):
             recs = _transcript_tail_records(f)
             if msg_uuid in recs:
-                return _agent_runtime.stop_hook_precedes(recs, msg_uuid)
+                return _agent_runtime.stop_hook_block_kind_before(recs, msg_uuid)
             _time.sleep(0.1)
     except Exception as e:
         _log(f"[stop-hook] transcript check failed: {e}")
-    return False
+    return None
 
 
 def _track_stop_hook_boundary(session, msg) -> None:
@@ -4196,8 +4197,8 @@ def _track_stop_hook_boundary(session, msg) -> None:
     whose last API message was text with no tool call; the model's resend is a
     NEW message id with no tool_result or result in between. Only that shape
     (rare: nothing else produces it) pays for a transcript check, and only a
-    confirmed block appends '[stop-hook-redo]' ahead of the resend so the
-    renderer collapses the draft."""
+    confirmed block appends '[stop-hook-redo:<kind>]' ahead of the resend so
+    the renderer can decide whether the draft was replaced."""
     try:
         mt = msg.get('type')
         if mt == 'result':
@@ -4222,9 +4223,10 @@ def _track_stop_hook_boundary(session, msg) -> None:
         last = session.get('_sh_last_msg')
         if last and mid and mid != last['id'] and last['text'] and not last['tool']:
             lines = session.setdefault('log_lines', TimestampedLines())
-            already = bool(lines) and lines[-1].strip() == '[stop-hook-redo]'
-            if not already and _hook_blocked_before(session, msg.get('uuid')):
-                lines.append('[stop-hook-redo]')
+            already = bool(lines) and lines[-1].strip().startswith('[stop-hook-redo')
+            kind = None if already else _hook_blocked_before(session, msg.get('uuid'))
+            if kind:
+                lines.append(_agent_runtime.stop_hook_marker(kind))
                 session['last_output_time'] = _time.time()
         if not last or last['id'] != mid:
             last = {'id': mid, 'text': False, 'tool': False}
@@ -5828,11 +5830,12 @@ def _read_agent_stream(proc, session):
                         # `reason` back as this synthetic turn so the model
                         # re-sends a compressed version in the SAME turn — see
                         # is_stop_hook_feedback for the structural signal.
-                        # Record a boundary so the renderer collapses the
-                        # retracted draft into a "show earlier draft" toggle
-                        # instead of showing both replies as if they were two
-                        # separate answers.
-                        session['log_lines'].append('[stop-hook-redo]')
+                        # Record a boundary, tagged with the hook kind, so the
+                        # renderer can collapse the retracted draft into a
+                        # "show earlier draft" toggle when (and only when) the
+                        # follow-up actually replaces it.
+                        session['log_lines'].append(
+                            _agent_runtime.stop_hook_marker(_agent_runtime.stop_hook_kind(msg)))
                         session['last_output_time'] = _time.time()
                     else:
                         # Mid-task memory push (MC-944, mc/memory_push.py) — the
@@ -6103,8 +6106,9 @@ def _read_agent_stream_b(proc, session):
                 elif msg_type == 'user' and isinstance(msg.get('message'), dict):
                     if _agent_runtime.is_stop_hook_feedback(msg):
                         # See Mode A reader for the structural signal and why
-                        # this collapses the draft instead of dropping it.
-                        session['log_lines'].append('[stop-hook-redo]')
+                        # this marks a (kind-tagged) boundary instead of dropping it.
+                        session['log_lines'].append(
+                            _agent_runtime.stop_hook_marker(_agent_runtime.stop_hook_kind(msg)))
                         session['last_output_time'] = _time.time()
                     else:
                         # Mid-task memory push (MC-944, mc/memory_push.py) — the
@@ -7130,7 +7134,7 @@ def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_me
                 # The renderer collapses the assistant text just appended above
                 # into a "show earlier draft" toggle when it sees this marker,
                 # same convention the live stream reader uses.
-                lines.append('[stop-hook-redo]')
+                lines.append(_agent_runtime.stop_hook_marker(m.get('kind') or ''))
                 ts.append(None)
         return lines, ts
     except Exception as e:
