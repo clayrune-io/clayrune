@@ -6,8 +6,8 @@
  * Drives camp-1 (Active, `approval.bounds` snapshot already recorded) through:
  *   How stop renders (angle/strategy/never claim/budget), no agent picker and
  *   no /api/characters request from this panel -> Never claim survives a stop
- *   switch -> a $60 project earmark against a $100 pool with no other
- *   earmarks reads "$40 remaining" -> Suggest What/When/Where -> Working ->
+ *   switch -> a $60 own budget reads as the campaign's cap, no project pool
+ *   (Presence retired) -> Suggest What/When/Where -> Working ->
  *   Ready -> ③ shows "3 suggested" -> Accept all creates 3 Planned pieces ->
  *   ④ shows the suggested cadence -> ⑤ shows the suggested placement ->
  *   forced Posy failure -> Retry recovers -> budget own $50 on the Active
@@ -216,29 +216,42 @@ async function run(browser) {
     ? ok('Never claim: survives a stop switch')
     : fail(`Never claim: lost after stop switch: ${JSON.stringify(neverClaimAfterSwitch)}`);
 
-  // ── $60 project earmark against a $100 pool, no other earmarks -> $40 remaining
-  await page.click('[data-how-budget-btn="project"]');
+  // ── Presence retired (MC-977): a budget is the campaign's own amount, with no
+  // project pool to read "remaining" from. $60 reads as this campaign's cap and
+  // the card offers no 'project' source.
+  const projectBtn = await page.$('[data-how-budget-btn="project"]');
+  !projectBtn
+    ? ok('How stop: no "project pool" budget source is offered')
+    : fail('How stop: a project budget pool button is still rendered');
+  await page.click('[data-how-budget-btn="own"]');
   await page.waitForSelector('[data-how-budget-amount]', { timeout: 4000 });
   await page.fill('[data-how-budget-amount]', '60');
   await page.keyboard.press('Tab');
-  const poolLine = (await page.textContent('[data-how-budget-card] .desk-v1-rules-hint').catch(() => '') || '').trim();
-  /\$60 \/ term earmarked from Clayrune's \$100\/month budget .* \$40 remaining for other campaigns/.test(poolLine)
-    ? ok(`How stop: $60 earmark against a $100 pool reads "${poolLine}"`)
-    : fail(`How stop: pool line wrong: ${JSON.stringify(poolLine)}`);
-  // Dave's review (2e24880e follow-up): the pool line must be reachable by
+  // Camp-1 is Active with an approved ceiling, so the raise keeps its confirm
+  // sheet on the Brief edit (the only place the limit lives now).
+  await page.waitForSelector('[data-confirm-accept]', { timeout: 3000 })
+    .then(() => ok('How stop: raising an Active campaign budget still opens the widen-confirm sheet'))
+    .catch(() => fail('How stop: raising an Active campaign budget showed no confirm sheet'));
+  await page.click('[data-confirm-accept]').catch(() => {});
+  await page.waitForSelector('[data-how-budget-hint]', { timeout: 3000 });
+  const poolLine = (await page.textContent('[data-how-budget-hint]').catch(() => '') || '').trim();
+  /^Up to \$60 for this campaign\./.test(poolLine) && !/remaining|earmark|\/month/.test(poolLine)
+    ? ok(`How stop: $60 reads as the campaign's own cap, no pool arithmetic: "${poolLine.slice(0, 60)}"`)
+    : fail(`How stop: budget line wrong: ${JSON.stringify(poolLine)}`);
+  // Dave's review (2e24880e follow-up): the budget line must be reachable by
   // scrolling `.desk-v1-how-scroll` (fine) but never hidden behind the
   // Suggest footer (not fine) — scroll the inner region all the way and
   // assert the line's rect clears the footer's top edge.
   const overlapAtEnd = await page.evaluate(() => {
     const scroller = document.querySelector('.desk-v1-how-scroll');
-    const hint = document.querySelector('[data-how-budget-card] .desk-v1-rules-hint');
+    const hint = document.querySelector('[data-how-budget-hint]');
     const footer = document.querySelector('.desk-v1-how-suggest');
     scroller.scrollTop = scroller.scrollHeight;
     return hint.getBoundingClientRect().bottom > footer.getBoundingClientRect().top;
   });
   !overlapAtEnd
-    ? ok('How stop: Budget pool line clears the Suggest footer once scrolled to the end')
-    : fail('How stop: Budget pool line is still hidden behind the Suggest footer at max scroll');
+    ? ok('How stop: Budget line clears the Suggest footer once scrolled to the end')
+    : fail('How stop: Budget line is still hidden behind the Suggest footer at max scroll');
   // Reset to 'none' so the later ⑥ own-budget section below starts clean.
   await page.click('[data-how-budget-btn="none"]');
 
@@ -426,6 +439,9 @@ async function run(browser) {
   await page.waitForSelector('[data-how-budget-amount]', { timeout: 4000 });
   await page.fill('[data-how-budget-amount]', '50');
   await page.keyboard.press('Tab'); // blur fires the real 'change' exactly once
+  // The raise widens the approved ceiling, so the Brief edit asks first.
+  await page.waitForSelector('[data-confirm-accept]', { timeout: 3000 }).catch(() => {});
+  await page.click('[data-confirm-accept]', { timeout: 1500 }).catch(() => {});
 
   await gotoStop(page, 'launch');
   await page.waitForSelector('.desk-v1-map-launch', { timeout: 4000 });
@@ -439,6 +455,9 @@ async function run(browser) {
   await page.waitForSelector('[data-how-budget-amount]', { timeout: 4000 });
   await page.fill('[data-how-budget-amount]', '40');
   await page.keyboard.press('Tab');
+  // $40 is still above what was approved, so it asks again; confirming it must not clear the state.
+  await page.waitForSelector('[data-confirm-accept]', { timeout: 3000 }).catch(() => {});
+  await page.click('[data-confirm-accept]', { timeout: 1500 }).catch(() => {});
 
   await gotoStop(page, 'launch');
   await page.waitForSelector('.desk-v1-map-launch', { timeout: 4000 });
