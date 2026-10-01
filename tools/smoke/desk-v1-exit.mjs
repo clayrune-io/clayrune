@@ -156,7 +156,13 @@ function runOtherSmokes() {
     const passed = r.status === 0;
     results.push({ file: f, passed, lastLine, status: r.status });
     if (passed) ok(`${f}: exit 0 — "${lastLine}"`);
-    else fail(`${f}: exit ${r.status} — "${lastLine}"`);
+    else {
+      fail(`${f}: exit ${r.status} — "${lastLine}"`);
+      // A smoke can print "All checks passed." and still exit 1 on a thrown
+      // error (stderr), so name the error rather than only the last stdout line.
+      const errTail = (r.stderr || '').trim().split(String.fromCharCode(10)).slice(0, 8).join(' | ');
+      if (errTail) console.log(`    stderr: ${errTail.slice(0, 600)}`);
+    }
   }
   return results;
 }

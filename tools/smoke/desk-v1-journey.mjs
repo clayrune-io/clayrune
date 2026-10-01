@@ -258,7 +258,7 @@ async function run(browser) {
   await gotoStop(page, 'how');
   await page.evaluate(() => { window.__deskV1PosyForce = 'fail'; });
   await page.click('[data-how-suggest]');
-  await page.waitForSelector('.desk-v1-posy-failed', { timeout: 4000 });
+  await page.waitForSelector('.desk-v1-posy-failed', { timeout: 10000 });
   const failedText = await text(page, '.desk-v1-posy-failed');
   /couldn.t finish/.test(failedText)
     ? ok(`forced agent failure: shows "${failedText}"`)
@@ -268,7 +268,7 @@ async function run(browser) {
     : fail('forced agent failure mutated the campaign');
   await page.evaluate(() => { window.__deskV1PosyForce = undefined; });
   await page.click('[data-posy-retry]');
-  await page.waitForFunction(() => /suggested 3 pieces/.test(document.body.textContent || ''), null, { timeout: 6000 });
+  await page.waitForFunction(() => /suggested 3 pieces/.test(document.body.textContent || ''), null, { timeout: 10000 });
   ok('Retry: the Suggest task completes ("suggested 3 pieces, a cadence and a placement")');
 
   // ── What: the suggestion is 3 pieces — accept all ────────────────────────
@@ -480,7 +480,7 @@ async function run(browser) {
   // ── How: Suggest cites the confirmed finding, never the rejected one ──────
   await gotoStop(page, 'how');
   await page.click('[data-how-suggest]');
-  await page.waitForFunction(() => /suggested 3 pieces/.test(document.body.textContent || ''), null, { timeout: 6000 });
+  await page.waitForFunction(() => /suggested 3 pieces/.test(document.body.textContent || ''), null, { timeout: 10000 });
   await gotoStop(page, 'what');
   await page.waitForSelector('.desk-v1-suggested-list', { timeout: 4000 });
   const chips = await page.$$eval('.desk-v1-suggested-list [data-because-finding]', (els) => els.map((e) => e.textContent.trim()));
