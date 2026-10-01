@@ -1,11 +1,18 @@
 // Desk v1 (MC-977) — T6: Conversations (frame 12c, docs/desk_v1_r0_plan.md;
 // THE_DESK_V1_UI.md §6). Window-bridged module, no `import` (ground rule 1).
 //
-// Fixtures only (ground rule 3): Send/Ignore/Assign/Take over all mutate the
-// in-memory DeskV1Fixtures conversation objects directly through
-// DeskV1Kit.commandBus, same "client-side over fixture data with Undo"
-// contract T3/T4/T5 already established. **Send is simulated — no platform
-// write** (the ticket's own instruction; §6 says the same).
+// desk_v1_live OFF (DEMO): Send/Ignore/Assign/Take over all mutate the in-memory
+// DeskV1Fixtures conversation objects through DeskV1Store.write (apply + Undo,
+// NO route call). **Send is simulated — no platform write.**
+//
+// desk_v1_live ON (R1-W S8, docs/desk_v1/R1W_WIRING_PLAN.md §2.F): the rows are
+// the Desk's engagement feed (`GET /api/desk/engagement`, one row per reply or
+// mention the reader found), the thread is `GET /api/desk/engagement/<id>`, and
+// the writes are real: PATCH (ignore / assign / take over / save a draft),
+// POST suggest-reply (the project's agent drafts, nothing is sent), and POST
+// reply, which posts for real and so goes through the dashboard passcode prompt.
+// A row's feed state is what the lane shows; an empty feed says "not connected"
+// or "not read yet" through the coverage line, never "no one is talking".
 //
 // Reached via `deskV1Nav('conversations', {campaignId, conversationId?})` —
 // Home's "1 reply waiting" row already calls this (desk-v1-home.js), and
@@ -30,6 +37,152 @@
   function _allConversations() { return _fx().conversations || []; }
   function _detail(id) { return (_fx().conversationDetail || {})[id] || {}; }
   function _coverageGaps(campaignId) { return (_fx().conversationCoverageGaps || {})[campaignId] || []; }
+  function _isLive() { return window.DeskV1Store.live(); }
+
+  // ── Live data (R1-W S8) ─────────────────────────────────────────────────
+  // The server's feed rows, mapped into the SAME shapes the fixtures hold
+  // (`conversations`, `conversationDetail`, `conversationCoverageGaps`) so every
+  // renderer below reads one structure in both modes. Nothing here runs with
+  // desk_v1_live OFF, and a failed load is shown, never papered over with
+  // demo rows (DeskV1Store's rule).
+  //   phase  idle | loading | ready | error. `ready` stays while a refresh runs.
+  //   raw    id -> the server's row (plus `parent_post` once its thread was read).
+  const _eng = { phase: 'idle', error: null, raw: {}, inflight: null, at: 0, threadAt: {} };
+  const STALE_HOLD = 'This thread has new replies since the draft below was written.';
+
+  function _ago(iso) {
+    const t = Date.parse(iso);
+    if (!isFinite(t)) return '';
+    const m = Math.max(0, Math.round((Date.now() - t) / 60000));
+    if (m < 60) return m + 'm';
+    return m < 1440 ? Math.round(m / 60) + 'h' : Math.round(m / 1440) + 'd';
+  }
+  function _channelIdFor(row) {
+    const ch = (_fx().channels || []).find((c) => c.platform === row.platform && c.identity && c.identity === row.account);
+    return ch ? ch.id : null;
+  }
+  function _toConversation(row) {
+    return {
+      id: row.id, projectId: row.project_id, campaignId: row.campaign_id || null, source: row.source,
+      channelId: _channelIdFor(row), excerpt: row.excerpt || '', state: row.state,
+      takenOver: !!row.taken_over, assignedTo: row.assigned_to || null,
+    };
+  }
+  function _toDetail(row) {
+    const parent = row.parent_post;
+    const identity = row.account || 'your account';
+    let parentPost; let comments = [];
+    if (parent) {
+      parentPost = { label: 'Your post', platform: parent.platform || row.platform, identity: parent.account || identity,
+        ageLabel: _ago(parent.published_at), text: parent.body || '', link: parent.url || '' };
+      comments = [{ author: row.author || 'Someone', platform: row.platform, ageLabel: _ago(row.created_at), text: row.excerpt || '' }];
+    } else {
+      parentPost = { label: row.source === 'discussions' ? 'Discussion' : (row.source === 'mentions' ? 'Mentioned by' : 'Reply on our post'),
+        platform: row.platform, identity: row.author || '', ageLabel: _ago(row.created_at), text: row.excerpt || '', link: row.url || '' };
+    }
+    const shown = row.draft || row.reply;
+    const thread = { parentPost, comments, reply: shown ? { identity, platform: row.platform, text: shown.text } : null };
+    if (row.state === 'stale') thread.hold = STALE_HOLD;
+    const d = { author: row.author || 'Someone', platform: row.platform, ageLabel: _ago(row.created_at), thread };
+    if (row.state === 'needs_reply') { d.reasonKind = 'question'; d.reasonDetail = 'reply drafted'; }
+    else if (row.state === 'needs_you') { d.reasonKind = 'needs_you'; d.reasonDetail = 'no reply drafted yet'; }
+    else d.reasonKind = row.state;
+    return d;
+  }
+  // One row in, everywhere it lives: the raw copy, the conversation object (kept
+  // as the SAME object so a held reference stays current) and its detail.
+  function _adoptRow(row) {
+    const prev = _eng.raw[row.id];
+    if (prev && prev.parent_post !== undefined && row.parent_post === undefined) row.parent_post = prev.parent_post;
+    _eng.raw[row.id] = row;
+    const fx = _fx();
+    const conv = _toConversation(row);
+    const list = fx.conversations;
+    const i = list.findIndex((c) => c.id === row.id);
+    if (i >= 0) Object.assign(list[i], conv); else list.push(conv);
+    fx.conversationDetail[row.id] = _toDetail(row);
+    return list[i >= 0 ? i : list.length - 1];
+  }
+  function _gapsFrom(coverage) {
+    return (coverage || []).filter((c) => c.state !== 'ok')
+      .map((c) => ({ label: c.message || `${c.label || c.platform}: not read`, detail: c.reason || c.message || '' }));
+  }
+
+  async function _fetchEngagement() {
+    const S = window.DeskV1Store;
+    const rows = await S.api('GET', '/api/desk/engagement?limit=1000');
+    const projects = _fx().projects || [];
+    const covs = await Promise.all(projects.map((p) => S.api('GET', '/api/desk/engagement/coverage/' + encodeURIComponent(p.id))
+      .then((r) => [p.id, _gapsFrom(r && r.coverage)])
+      .catch((e) => [p.id, [{ label: `Could not check what is read for ${p.name || p.id}`, detail: e && e.message ? e.message : String(e) }]])));
+    const gapsByProject = Object.fromEntries(covs);
+    const fx = _fx();
+    const prevRaw = _eng.raw;
+    _eng.raw = {};
+    fx.conversations = [];
+    fx.conversationDetail = {};
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+      if (prevRaw[row.id] && prevRaw[row.id].parent_post !== undefined) row.parent_post = prevRaw[row.id].parent_post;
+      _adoptRow(row);
+    });
+    fx.conversationCoverageGaps = {};
+    fx.engagementCoverage = gapsByProject;   // project id -> what is not being read, for the dashboard
+    (fx.campaigns || []).forEach((c) => { fx.conversationCoverageGaps[c.id] = gapsByProject[c.projectId] || []; });
+  }
+
+  // Reads the feed (and each project's coverage line). Resolves { phase, error }
+  // once it has landed or failed; never rejects. A second call while one is out
+  // shares it. `force` is not needed: a caller that wants fresh data (after a
+  // poll) just calls again once the first has resolved.
+  function deskV1LoadEngagement() {
+    if (!_isLive()) return Promise.resolve({ phase: 'ready', error: null });
+    if (_eng.inflight) return _eng.inflight;
+    if (_eng.phase !== 'ready') { _eng.phase = 'loading'; _eng.error = null; }
+    const p = _fetchEngagement().then(() => {
+      _eng.phase = 'ready'; _eng.error = null; _eng.at = Date.now();
+    }).catch((e) => {
+      _eng.phase = 'error'; _eng.error = e && e.message ? e.message : String(e);
+    }).then(() => { _eng.inflight = null; return { phase: _eng.phase, error: _eng.error }; });
+    _eng.inflight = p;
+    return p;
+  }
+
+  // The gate a live mount goes through: paints "loading" or the error (with Try
+  // again) INSTEAD of the surface and returns true; false once data is there.
+  // A mount while data is already `ready` renders it at once and refreshes in the
+  // background when it is older than 15s, repainting through `repaint`.
+  function deskV1EngagementGate(el, repaint) {
+    if (!_isLive()) return false;
+    // An error is not stale: it waits for "Try again", or a failing feed would be re-read in a loop.
+    const stale = _eng.phase === 'idle' || (_eng.phase === 'ready' && Date.now() - _eng.at > 15000);
+    if (stale && !_eng.inflight) {
+      deskV1LoadEngagement().then(() => { if (el.isConnected) repaint(); });
+    } else if (_eng.inflight && _eng.phase !== 'ready') {
+      _eng.inflight.then(() => { if (el.isConnected) repaint(); });
+    }
+    if (_eng.phase === 'ready') return false;
+    if (_eng.phase === 'error') {
+      el.innerHTML = `<div class="desk-v1-stub" data-eng-error><div class="desk-v1-stub-body">Could not load conversations: ${esc(_eng.error)}
+        <button type="button" data-eng-retry>Try again</button></div></div>`;
+      el.querySelector('[data-eng-retry]').onclick = () => { deskV1LoadEngagement().then(() => { if (el.isConnected) repaint(); }); repaint(); };
+    } else {
+      el.innerHTML = '<div class="desk-v1-stub" data-eng-loading><div class="desk-v1-stub-body">Loading conversations…</div></div>';
+    }
+    return true;
+  }
+
+  // The thread: one row read when it is opened (it names the post it answers).
+  function _loadThread(id, repaint) {
+    if (!_isLive() || Date.now() - (_eng.threadAt[id] || 0) < 20000) return;
+    _eng.threadAt[id] = Date.now();
+    window.DeskV1Store.api('GET', '/api/desk/engagement/' + encodeURIComponent(id)).then((row) => {
+      _adoptRow(row);
+      repaint();
+    }).catch((e) => {
+      delete _eng.threadAt[id];
+      window.DeskV1Kit.toast(`Could not open that thread: ${e && e.message ? e.message : e}`);
+    });
+  }
 
   // ── §6 source switch + reason-line vocabulary ───────────────────────────
   // Kept LOCAL to this file, not promoted into desk-v1-kit.js: §9's own
@@ -95,8 +248,9 @@
 
   function deskV1RenderConversations(el, params) {
     const campaignId = (params || {}).campaignId;
-    const campaign = _campaign(campaignId);
     _mountEl = el;
+    if (deskV1EngagementGate(el, () => deskV1RenderConversations(el, params))) return;
+    const campaign = _campaign(campaignId);
     if (!campaign) {
       el.innerHTML = '<div class="desk-v1-stub"><div class="desk-v1-stub-body">No campaign selected.</div></div>';
       return;
@@ -221,12 +375,20 @@
           <div class="desk-v1-conv-reply-head">Replying as ${esc(reply.identity)} on ${esc(platformLabel)}</div>
           <div class="desk-v1-conv-reply-text" data-conv-reply-text tabindex="0" role="button">${esc(reply.text)}</div>
         </div>`
-      : `<div class="desk-v1-conv-noreply">No reply drafted for this one.</div>`;
+      : `<div class="desk-v1-conv-noreply">No reply drafted for this one.${_isLive() && !conv.takenOver && conv.state !== 'sent'
+          ? ' <button type="button" data-conv-write>Write one</button>' : ''}</div>`;
     const takenOver = !!conv.takenOver;
     const alreadySent = conv.state === 'sent';
-    const canSend = !!reply && !thread.hold && !takenOver && conv.state !== 'ignored' && !alreadySent;
-    const sendReason = !reply ? 'No reply drafted' : (thread.hold ? thread.hold : (takenOver ? 'Taken over — resume to send again' : (alreadySent ? 'Already sent' : '')));
+    // Live, a reply only goes out where the publisher can post it (X); every
+    // other platform says so and leaves the reply to the person on the platform.
+    const noSendPath = _isLive() && (_eng.raw[conv.id] || {}).platform !== 'x';
+    const canSend = !!reply && !thread.hold && !takenOver && conv.state !== 'ignored' && !alreadySent && !noSendPath;
+    const sendReason = !reply ? 'No reply drafted' : (thread.hold ? thread.hold : (takenOver ? 'Taken over — resume to send again' : (alreadySent ? 'Already sent' : (noSendPath ? 'Replies can only be sent to X from here: open the post on the platform and reply there' : ''))));
     const agentName = _agentName(_campaign(conv.campaignId));
+    const reviseLabel = (_isLive() && !reply) ? `Ask ${esc(agentName)} to draft` : `Ask ${esc(agentName)} to revise`;
+    const reviseOn = _isLive() ? (!takenOver && !alreadySent) : (reply && !takenOver);
+    const noteHTML = (_isLive() && reply && reviseOn)
+      ? '<input type="text" class="desk-v1-conv-note" data-conv-note maxlength="1000" placeholder="What to change (optional)" aria-label="What to change">' : '';
 
     return `
       <div class="desk-v1-conv-thread">
@@ -239,7 +401,8 @@
         ${replyHTML}
         <div class="desk-v1-conv-actions">
           <button type="button" class="desk-v1-conv-send" data-conv-send ${canSend ? '' : `disabled title="${esc(sendReason)}"`}>Send</button>
-          <button type="button" class="desk-v1-conv-revise" data-conv-revise ${(reply && !takenOver) ? '' : 'disabled'}>Ask ${esc(agentName)} to revise</button>
+          ${noteHTML}
+          <button type="button" class="desk-v1-conv-revise" data-conv-revise ${reviseOn ? '' : 'disabled'}>${reviseLabel}</button>
           <button type="button" data-conv-ignore ${takenOver ? 'disabled' : ''}>Ignore</button>
           <button type="button" data-conv-assign ${takenOver ? 'disabled' : ''}>Assign ▾</button>
           <button type="button" class="desk-v1-conv-takeover" data-conv-takeover>${takenOver ? '✅ Resume' : '✋ Take over'}</button>
@@ -262,6 +425,7 @@
         ${_threadHTML(selected, st)}
       </div>`;
     _bind(el, campaign);
+    if (selected) _loadThread(selected.id, () => { if (el.isConnected && _mountEl === el && _state === st && st.selectedId === selected.id) _render(campaign); });
     if (window.DeskV1Kit) {
       const gaps = _coverageGaps(st.campaignId);
       const texts = {};
@@ -297,6 +461,7 @@
     if (!conv) return;
     const d = _detail(conv.id);
     const thread = d.thread || {};
+    if (_isLive()) { _bindLive(el, campaign, conv, d, thread); return; }
 
     // Click the proposed reply to edit it in place (§6: "Click the reply to
     // edit it") — a plain textarea swap, no autosave infra (T3's own scope).
@@ -397,5 +562,180 @@
     };
   }
 
+  // ── Live writes (R1-W S8) ────────────────────────────────────────────────
+  // Every write goes through DeskV1Store.run: the route's answer (the row) is
+  // adopted, a refusal puts the draw back and toasts the server's reason, and
+  // Undo sends the inverse PATCH. Nothing is shown as changed before the server
+  // has said so (apply is a no-op): a reply or an ignore is not worth guessing.
+  const _SETTABLE = new Set(['needs_you', 'needs_reply', 'reviewed', 'no_reply', 'ignored']);
+  const _SEND_PROOF = { title: 'Send reply', description: 'Re-enter your dashboard passcode to post this reply. It goes out under your account on the platform and cannot be unsent from here.' };
+  const _assignees = {};   // project id -> [{id,label}], from the agents hired on it
+
+  function _snap(id) { return _eng.raw[id] ? JSON.parse(JSON.stringify(_eng.raw[id])) : null; }
+  function _rowPath(id) { return '/api/desk/engagement/' + encodeURIComponent(id); }
+
+  // `inverse` is the PATCH body that reverses it, or null when the change has no
+  // inverse the route accepts (then it is confirmed with a plain toast, no Undo).
+  function _livePatch(conv, campaign, label, body, inverse) {
+    const S = window.DeskV1Store;
+    const before = _snap(conv.id);
+    const repaint = () => { if (_mountEl && _mountEl.isConnected && _state) _render(campaign); };
+    const adopt = (row) => { _adoptRow(row); repaint(); return row; };
+    return S.run({
+      label,
+      apply: () => {},
+      unapply: () => { if (before) _adoptRow(JSON.parse(JSON.stringify(before))); },
+      repaint,
+      request: () => S.api('PATCH', _rowPath(conv.id), body).then(adopt),
+      undoRequest: inverse ? () => S.api('PATCH', _rowPath(conv.id), inverse).then(adopt) : undefined,
+      irreversible: inverse ? undefined : true,
+    });
+  }
+
+  function _openEditor(host, initial, onCommit) {
+    const ta = document.createElement('textarea');
+    ta.className = 'desk-v1-conv-reply-editor';
+    ta.value = initial;
+    host.replaceWith(ta);
+    ta.focus();
+    let done = false;
+    const commit = () => { if (done) return; done = true; onCommit(ta.value); };
+    ta.addEventListener('blur', commit);
+    ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ta.blur(); } });
+  }
+
+  function _saveDraft(conv, campaign, text) {
+    const prior = ((_eng.raw[conv.id] || {}).draft || {}).text || '';
+    const next = (text || '').trim();
+    if (next === prior.trim()) { _render(campaign); return; }
+    _livePatch(conv, campaign, next ? 'Saved your edit to the reply' : 'Cleared the reply',
+      { draft: { text: next } }, { draft: prior ? { text: prior } : null });
+  }
+
+  // The agent saves its draft with a PATCH of its own, a while after the ask:
+  // read the row again every 5s (max 2 min) until the draft changes.
+  function _awaitDraft(id, before, campaign) {
+    let tries = 0;
+    const tick = () => {
+      if (++tries > 24 || !_mountEl || !_mountEl.isConnected) return;
+      window.DeskV1Store.api('GET', _rowPath(id)).then((row) => {
+        const was = before && before.at;
+        const now = (row.draft || {}).at;
+        if (now && now !== was) {
+          _adoptRow(row);
+          if (_state && _state.selectedId === id) _render(campaign);
+          window.DeskV1Kit.toast('A new draft is ready.');
+        } else setTimeout(tick, 5000);
+      }).catch(() => setTimeout(tick, 5000));
+    };
+    setTimeout(tick, 5000);
+  }
+
+  function _assigneeChoices(conv, rerender) {
+    const pid = conv.projectId;
+    if (_assignees[pid]) return _assignees[pid];
+    _assignees[pid] = [];
+    window.DeskV1Kit.projectAgentChoices(_project(pid)).then((cs) => {
+      _assignees[pid] = cs.map((c) => ({ id: c.name, label: c.name }));
+      rerender();
+    });
+    return _assignees[pid];
+  }
+
+  function _bindLive(el, campaign, conv, d, thread) {
+    const S = window.DeskV1Store;
+    const Kit = window.DeskV1Kit;
+    const raw = _eng.raw[conv.id] || {};
+    const repaint = () => { if (_mountEl && _mountEl.isConnected) _render(campaign); };
+
+    // Click the reply (or "Write one") to edit it: the text is saved as the
+    // row's draft on blur / Enter.
+    const replyTextEl = el.querySelector('[data-conv-reply-text]');
+    if (replyTextEl && thread.reply && conv.state !== 'sent') {
+      const open = () => _openEditor(replyTextEl, thread.reply.text, (t) => _saveDraft(conv, campaign, t));
+      replyTextEl.onclick = open;
+      replyTextEl.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } };
+    }
+    const writeBtn = el.querySelector('[data-conv-write]');
+    if (writeBtn) writeBtn.onclick = () => _openEditor(writeBtn.parentElement, '', (t) => {
+      if (!t.trim()) { repaint(); return; }
+      _saveDraft(conv, campaign, t);
+    });
+
+    const sendBtn = el.querySelector('[data-conv-send]');
+    if (sendBtn && !sendBtn.disabled) sendBtn.onclick = () => {
+      const text = thread.reply.text;
+      const before = _snap(conv.id);
+      sendBtn.disabled = true;
+      S.run({
+        label: `Sent your reply to ${d.author || 'them'}`,
+        apply: () => {},
+        unapply: () => { if (before) _adoptRow(before); },
+        repaint,
+        irreversible: true,
+        request: async () => {
+          if (typeof window.humanProofFetch !== 'function') throw new Error('the passcode prompt is not available');
+          const res = await window.humanProofFetch(_rowPath(conv.id) + '/reply',
+            { method: 'POST', body: JSON.stringify({ text }) }, _SEND_PROOF);
+          if (res === null) throw new Error('the dashboard passcode was not entered, so nothing was sent');
+          if (!res.ok) throw new Error((res.body && (res.body.error || res.body.message)) || `HTTP ${res.status}`);
+          _adoptRow(res.body);
+          repaint();
+          return res.body;
+        },
+      });
+    };
+
+    const reviseBtn = el.querySelector('[data-conv-revise]');
+    if (reviseBtn && !reviseBtn.disabled) reviseBtn.onclick = async () => {
+      const noteEl = el.querySelector('[data-conv-note]');
+      const note = noteEl ? noteEl.value.trim() : '';
+      const agentName = _agentName(campaign || _campaign(conv.campaignId));
+      reviseBtn.disabled = true;
+      try {
+        await S.api('POST', _rowPath(conv.id) + '/suggest-reply', note ? { note } : {});
+        Kit.toast(`${agentName} is drafting. Nothing is sent: you read it and press Send.`);
+        _awaitDraft(conv.id, raw.draft || null, campaign);
+      } catch (e) {
+        Kit.toast(`Could not ask ${agentName}: ${e && e.message ? e.message : e}`);
+        reviseBtn.disabled = false;
+      }
+    };
+
+    const ignoreBtn = el.querySelector('[data-conv-ignore]');
+    if (ignoreBtn && !ignoreBtn.disabled) ignoreBtn.onclick = () => {
+      const prior = raw.state;
+      _livePatch(conv, campaign, `Ignored the conversation with ${d.author || 'them'}`,
+        { state: 'ignored' }, _SETTABLE.has(prior) ? { state: prior } : null);
+    };
+
+    const assignBtn = el.querySelector('[data-conv-assign]');
+    if (assignBtn && !assignBtn.disabled) {
+      Kit.bindAddToTrigger(assignBtn,
+        () => _assigneeChoices(conv, repaint).concat([{ id: '__unassign__', label: 'Unassign' }]),
+        (pick) => {
+          const prior = raw.assigned_to || null;
+          const who = pick === '__unassign__' ? null : pick;
+          _livePatch(conv, campaign, who ? `Assigned to ${who}` : 'Unassigned', { assigned_to: who }, { assigned_to: prior });
+        });
+    }
+
+    const toggleTakeover = () => {
+      const was = !!conv.takenOver;
+      const priorDraft = (raw.draft || {}).text;
+      const undoBody = was ? { taken_over: true }
+        : Object.assign({ taken_over: false }, priorDraft ? { draft: { text: priorDraft } } : {});
+      _livePatch(conv, campaign, was ? 'Resumed automated replies' : 'Took over — automated replies paused',
+        { taken_over: !was }, undoBody);
+    };
+    const takeoverBtn = el.querySelector('[data-conv-takeover]');
+    if (takeoverBtn) takeoverBtn.onclick = toggleTakeover;
+    const resumeBtn = el.querySelector('[data-conv-resume]');
+    if (resumeBtn) resumeBtn.onclick = toggleTakeover;
+  }
+
   window.deskV1RenderConversations = deskV1RenderConversations;
+  window.deskV1LoadEngagement = deskV1LoadEngagement;
+  window.deskV1EngagementPhase = () => _eng.phase;
+  window.deskV1EngagementGate = deskV1EngagementGate;
 })();

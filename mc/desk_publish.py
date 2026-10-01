@@ -164,10 +164,13 @@ def get_receipt(item_id: str) -> dict[str, Any] | None:
 
 # -- X API calls ----------------------------------------------------------------
 
-def _post_tweet(token: str, body: str) -> dict[str, Any]:
+def _post_tweet(token: str, body: str, in_reply_to: str | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {'text': body}
+    if in_reply_to:
+        payload['reply'] = {'in_reply_to_tweet_id': in_reply_to}
     req = urllib.request.Request(
         f'{X_API_BASE}/tweets',
-        data=json.dumps({'text': body}).encode('utf-8'),
+        data=json.dumps(payload).encode('utf-8'),
         method='POST',
         headers={'Authorization': f'Bearer {token}',
                  'Content-Type': 'application/json'})
@@ -192,7 +195,8 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
     """POST one queue item to X and return its receipt.
 
     `item` is a `social_queue` row (`mc.blueprints.project_routes`): only
-    `id`, `body` and `platform` are read. Returns
+    `id`, `body`, `platform` and, for a reply, `in_reply_to` (the id of the post
+    being answered) are read. Returns
     `{item_id, post_id, permalink, posted_at, body}`. Raises `PublishError` —
     never a bare exception, never a partial or synthetic receipt — on any
     failure, including a repeat call for an id whose earlier attempt failed
@@ -250,7 +254,9 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
             raise PublishError(f'credential unavailable: {e}') from e
 
         try:
-            payload = _post_tweet(token, body)
+            in_reply_to = item.get('in_reply_to')
+            payload = (_post_tweet(token, body, str(in_reply_to)) if in_reply_to
+                       else _post_tweet(token, body))
         except urllib.error.HTTPError as e:
             detail = e.read().decode('utf-8', errors='replace')[:500]
             raise PublishError(f'X API HTTP {e.code}: {detail}') from e

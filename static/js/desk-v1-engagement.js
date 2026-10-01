@@ -21,6 +21,16 @@
 // row jumps to the conversation's real home (its campaign's Conversations
 // tab, same deep-link shape Home's own Needs-you row already uses) rather
 // than growing a second thread/actions panel here.
+//
+// desk_v1_live ON (R1-W S8): the rows are the Desk's engagement feed
+// (`GET /api/desk/engagement`, loaded by desk-v1-conversations.js's shared
+// `deskV1EngagementGate` so both surfaces read one copy), and a "Check now"
+// button runs `POST /api/desk/engagement/poll` for the project in scope. HOW an
+// account is read (platform API, paid, or the browser pane, free, the default)
+// is the user's choice per account on the Presence page, not here: this page
+// only reports what that choice produced. Anything the chosen route could not
+// read is listed under the rows, so an empty lane never reads as "no one is
+// talking".
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -48,7 +58,16 @@
   // Home header count (§1: "💬 Engagement · n"): every conversation, across
   // every project, still sitting in Incoming or Suggested — the two lanes
   // that need a person's action. Sent doesn't add to that count.
+  //
+  // Live, Home and the project pages read the same `conversations` list, and the
+  // workspace read (M1) does not carry the feed: the first count asked for loads
+  // it once, then redraws whatever page asked. Until it lands the count is 0,
+  // which the header leaves unlabelled rather than claiming "nothing waiting".
   function deskV1EngagementCount() {
+    const S = window.DeskV1Store;
+    if (S.live() && typeof window.deskV1EngagementPhase === 'function' && window.deskV1EngagementPhase() === 'idle') {
+      window.deskV1LoadEngagement().then(() => { if (typeof window.deskV1Render === 'function') window.deskV1Render(); });
+    }
     return _allConversations().filter((c) => c.state === 'needs_you' || c.state === 'needs_reply').length;
   }
 
@@ -137,6 +156,42 @@
 
   let _mountEl = null;
   let _mountParams = null;
+  let _poll = { busy: false, line: '' };
+
+  function _isLive() { return window.DeskV1Store.live(); }
+
+  // What the feed is NOT reading, per project in scope (the server's own
+  // coverage line, never silenced).
+  function _coverageHTML(st) {
+    if (!_isLive()) return '';
+    const by = _fx().engagementCoverage || {};
+    const ids = st.project === 'all' ? Object.keys(by) : [st.project];
+    const lines = [];
+    ids.forEach((id) => (by[id] || []).forEach((g) => {
+      const p = _project(id);
+      lines.push(`<div class="desk-v1-eng-gap">${esc(st.project === 'all' && p ? p.name + ': ' : '')}${esc(g.label)}${g.detail && g.detail !== g.label ? ` <span class="desk-v1-eng-gap-detail">${esc(g.detail)}</span>` : ''}</div>`);
+    }));
+    return lines.length ? `<div class="desk-v1-eng-gaps">${lines.join('')}</div>` : '';
+  }
+
+  function _checkNowHTML(st) {
+    if (!_isLive()) return '';
+    const one = st.project !== 'all';
+    return `<div class="desk-v1-eng-check">
+      <button type="button" data-eng-check ${one && !_poll.busy ? '' : 'disabled'}
+        title="${esc(one ? 'Reads new replies and mentions now. A platform API read is paid and counted against the budget; the browser pane is free.' : 'Pick one project to check it')}">${_poll.busy ? 'Checking…' : 'Check now'}</button>
+      <span class="desk-v1-eng-check-line" data-eng-check-line aria-live="polite">${esc(_poll.line)}</span>
+    </div>`;
+  }
+
+  function _pollLine(rep) {
+    const parts = Object.entries((rep && rep.platforms) || {}).map(([plat, e]) => {
+      if (e.error || e.state !== 'ok') return `${plat}: ${e.message || e.error || 'not read'}`;
+      const spent = e.spent ? `, spent $${Number(e.spent).toFixed(3)}` : '';
+      return `${plat}: ${e.new_items} new${spent}`;
+    });
+    return parts.length ? parts.join(' · ') : 'No account is connected to read.';
+  }
 
   function _render() {
     const el = _mountEl;
@@ -157,13 +212,29 @@
         <div class="desk-v1-eng-lanes" role="tablist">${lanesHTML}</div>
         ${_filterSelectsHTML(st)}
         ${_repliesBannerHTML(st)}
+        ${_checkNowHTML(st)}
         <div class="desk-v1-eng-rows">${rowsHTML}</div>
+        ${_coverageHTML(st)}
       </div>`;
     _bind(el);
   }
 
   function _bind(el) {
     const st = _state;
+    const checkBtn = el.querySelector('[data-eng-check]');
+    if (checkBtn && !checkBtn.disabled) checkBtn.onclick = async () => {
+      const S = window.DeskV1Store;
+      _poll = { busy: true, line: '' };
+      _render();
+      try {
+        const rep = await S.api('POST', '/api/desk/engagement/poll', { project_id: st.project });
+        _poll = { busy: false, line: _pollLine(rep) };
+        await window.deskV1LoadEngagement();
+      } catch (e) {
+        _poll = { busy: false, line: `Could not check: ${e && e.message ? e.message : e}` };
+      }
+      if (el.isConnected && _mountEl === el) _render();
+    };
     el.querySelectorAll('[data-eng-lane]').forEach((b) => b.onclick = () => { st.lane = b.dataset.engLane; _render(); });
     el.querySelectorAll('[data-eng-filter]').forEach((sel) => sel.onchange = () => {
       st[sel.dataset.engFilter] = sel.value;
@@ -192,6 +263,8 @@
     _mountEl = el;
     _mountParams = params;
     _ensureState(params);
+    if (typeof window.deskV1EngagementGate === 'function'
+        && window.deskV1EngagementGate(el, () => deskV1RenderEngagement(el, params))) return;
     _render();
   }
 
