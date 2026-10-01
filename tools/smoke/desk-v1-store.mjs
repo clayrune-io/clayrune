@@ -2,14 +2,16 @@
 /**
  * Desk v1 (MC-1021 R1-W S0) — the store's live path, with NO fixtures seeded.
  *
- * Every other desk-v1 smoke seeds `window.DeskV1Fixtures` and runs the store
- * in its flag-off mode. This one is the production shape: nothing seeded, and
- * `desk_v1_live` on or off as each case needs.
- *   1. live ON, M1 answers  -> surfaces render the SERVER's project, not demo data.
+ * The other desk-v1 smokes run the store in its flag-off (demo) mode. This one
+ * covers both modes as production sees them, with `desk_v1_live` set per case.
+ *   1. live ON, M1 answers  -> surfaces render the SERVER's project, not demo
+ *                              data, and the "Demo data" banner is absent.
  *   2. live ON, M1 fails    -> an explicit error state with the server's text and
- *                              Try again; no project card; fixtures never appear.
- *                              Try again re-reads M1 and renders.
- *   3. live OFF, unseeded   -> the "no live data" gate, still no demo data.
+ *                              Try again; no project card; demo data and the
+ *                              banner never appear. Try again re-reads M1.
+ *   3. live OFF             -> DEMO MODE: the banner "Demo data - not your
+ *                              workspace" shows on every page (Home, a project,
+ *                              a campaign), the fixtures render, M1 is not read.
  *   4. run(): a refused write rolls back and toasts the server's own error; an
  *                              accepted one keeps its change.
  *
@@ -88,8 +90,10 @@ async function liveOk(browser) {
   const { ctx, page, pageErrors, hits } = await newPage(browser, { live: true, m1: () => ({ status: 200, body: WORKSPACE }) });
   await settle(page, () => /Server Project Zed/.test(document.body.innerText));
   ok('live ON: Home shows the project M1 returned');
-  const fx = await page.evaluate(() => typeof window.DeskV1Fixtures);
-  fx === 'undefined' ? ok('no DeskV1Fixtures global in the unseeded page') : fail('fixtures leaked into an unseeded page');
+  const notFx = await page.evaluate(() => window.DeskV1Store.state() !== window.DeskV1Fixtures && !window.DeskV1Store.demo());
+  notFx ? ok('live ON: state() is not the fixtures and demo() is false') : fail('live ON store is handing out the fixtures');
+  const bannerOn = await page.$eval('#desk-v1-demo-banner', (el) => !el.hidden);
+  !bannerOn ? ok('live ON: no "Demo data" banner') : fail('demo banner shown with desk_v1_live on');
   const gate = await page.$('[data-store-gate]');
   !gate ? ok('no store gate once M1 has loaded') : fail('gate still painted after a good load');
   hits.m1 >= 1 ? ok(`M1 was read (${hits.m1}x)`) : fail('M1 never requested');
@@ -139,6 +143,8 @@ async function liveFails(browser) {
   const hasRetry = await page.$('[data-store-retry]');
   hasRetry ? ok('error state offers Try again') : fail('no Try again button');
   !/Server Project Zed|Clayrune/.test(t) ? ok('no project or demo data painted under the error') : fail('data painted under an error');
+  const bannerErr = await page.$eval('#desk-v1-demo-banner', (el) => !el.hidden);
+  !bannerErr ? ok('no demo banner under the error (a failed live load is not demo mode)') : fail('demo banner under a live error');
 
   mode = 'ok';
   await page.click('[data-store-retry]');
@@ -147,13 +153,30 @@ async function liveFails(browser) {
   await ctx.close();
 }
 
-async function liveOffUnseeded(browser) {
+async function demoMode(browser) {
   const { ctx, page, hits } = await newPage(browser, { live: false, m1: () => ({ status: 500, body: {} }) });
-  await settle(page, () => !!document.querySelector('[data-store-gate="off"]'));
-  ok('live OFF, nothing seeded: the "no live data" gate shows');
+  const banner = (p) => p.$eval('#desk-v1-demo-banner', (el) => ({ shown: !el.hidden && el.offsetHeight > 0, text: el.textContent.trim() }));
+  await settle(page, () => window.DeskV1Store.demo());
+  const home = await banner(page);
+  (home.shown && home.text === 'Demo data - not your workspace')
+    ? ok('live OFF: Home shows the banner "Demo data - not your workspace"') : fail('Home banner: ' + JSON.stringify(home));
+  const names = await page.evaluate(() => window.DeskV1Fixtures.projects.map((p) => p.name));
   const t = await deskText(page);
-  /Server Project Zed|Clayrune/.test(t) ? fail('demo or live data painted with live off') : ok('no data painted');
+  names.some((n) => t.includes(n)) ? ok('demo fixtures render under the banner') : fail('no demo project on Home');
+  const gate = await page.$('[data-store-gate]');
+  !gate ? ok('no store gate in demo mode') : fail('gate painted in demo mode');
   hits.m1 === 0 ? ok('M1 is not requested while the flag is off') : fail('M1 read with the flag off');
+
+  const pid = await page.evaluate(() => window.DeskV1Fixtures.projects[0].id);
+  await page.evaluate((projectId) => window.deskV1Nav('project', { projectId }), pid);
+  await settle(page, () => /Back|Desk/.test(document.querySelector('.desk-v1-crumb').innerText) && !!document.querySelector('.desk-v1-body').children.length);
+  const proj = await banner(page);
+  proj.shown ? ok('banner persists on the project page') : fail('banner gone on the project page');
+  const cid = await page.evaluate(() => window.DeskV1Fixtures.campaigns[0].id);
+  await page.evaluate((campaignId) => window.deskV1Nav('campaign', { campaignId }), cid);
+  await settle(page, () => !!document.getElementById('desk-v1-camp-tabstrip'));
+  const camp = await banner(page);
+  camp.shown ? ok('banner persists on a campaign page') : fail('banner gone on the campaign page');
   await ctx.close();
 }
 
@@ -161,8 +184,8 @@ const browser = await chromium.launch();
 try {
   console.log('live ON, M1 answers'); await liveOk(browser);
   console.log('live ON, M1 fails'); await liveFails(browser);
-  console.log('live OFF, unseeded'); await liveOffUnseeded(browser);
+  console.log('live OFF (demo mode)'); await demoMode(browser);
 } catch (e) { fail('harness error: ' + (e && e.stack || e)); }
 await browser.close();
 if (bad) { console.error(`\n❌ FAIL — ${bad} case(s)`); process.exit(1); }
-console.log('\n✅ PASS — the live store loads M1, shows an explicit error (never demo data) on failure, and run() rolls back refusals.');
+console.log('\n✅ PASS — live loads M1 and never shows demo data or the banner, a failed load is an explicit error, flag-off is labelled demo mode on every page, run() rolls back refusals.');

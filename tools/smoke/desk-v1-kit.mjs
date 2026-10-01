@@ -727,8 +727,7 @@ async function runR21FixtureProductionKeyCheck(browser) {
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
 
-  // The fixture file left static/js in R1-W S0 (no script tag to find any
-  // more); the same text the seed injects is what gets counted.
+  // The file the page loads, read straight off disk.
   const productionKeyCount = (FIXTURES_SOURCE.match(/\bproduction\b\s*:/g) || []).length;
   productionKeyCount === 0
     ? ok('fixture load has 0 \'production\' keys (renamed to presence.budget)')

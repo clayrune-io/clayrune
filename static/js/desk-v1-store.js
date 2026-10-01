@@ -9,16 +9,15 @@
 //   desk_v1_live ON   state() is hydrated from `GET /api/desk/workspace` (M1).
 //                     Until a slice wires a surface to a route the keys it
 //                     reads that M1 does not carry stay empty, never invented.
-//   desk_v1_live OFF  There is no live data. The fixture file is not shipped
-//                     (it lives in tools/smoke/fixtures/); the smoke harness
-//                     seeds `window.DeskV1Fixtures` before the page loads and
-//                     state() returns that object itself, so a smoke that
-//                     mutates it sees its own writes. In production nothing
-//                     seeds it, state() is empty and `gate()` says so.
+//   desk_v1_live OFF  DEMO MODE, chosen by the user and labelled: state() is
+//                     `window.DeskV1Fixtures` itself (static/js/desk-v1-
+//                     fixtures.js), so a smoke that mutates it sees its own
+//                     writes, and demo() is true so the shell shows "Demo data
+//                     - not your workspace" on every page.
 //
-// PRODUCTION NEVER FALLS BACK TO DEMO DATA. A failed live load leaves
-// `gate()` returning an error the shell paints (with Try again); it does not
-// quietly hand the surfaces fixtures. Substitution is a lie.
+// DEMO IS NEVER A FALLBACK. Live ON never reads the fixtures: a failed live
+// load leaves `gate()` returning an error the shell paints (with Try again),
+// it does not quietly hand the surfaces demo data. Substitution is a lie.
 //
 // `run()` is the write path: optimistic apply, the route call, and on a
 // refusal a rollback plus a toast carrying the server's own error text. It
@@ -57,13 +56,16 @@
     return window.DeskV1Fixtures || _empty;
   }
 
+  // True only in demo mode (flag off, fixtures present): the shell's banner.
+  function demo() { return !live() && !!window.DeskV1Fixtures; }
+
   // What the shell should paint INSTEAD of a surface, or null when the surfaces
-  // can render. `off` only fires with no seed: production, flag off.
+  // can render. `off` fires only if the fixture file itself failed to load.
   function gate() {
     if (!live()) {
       return window.DeskV1Fixtures ? null : {
         kind: 'off',
-        message: 'Desk v1 has no live data yet. Turn on "desk_v1_live" to use your real workspace; demo data is not shipped.',
+        message: 'Demo data did not load, and desk_v1_live is off, so there is nothing to show.',
       };
     }
     if (_phase === 'ready') return null;
@@ -164,5 +166,5 @@
     return { ok: true, result };
   }
 
-  window.DeskV1Store = { state, gate, load, run, api, live };
+  window.DeskV1Store = { state, gate, load, run, api, live, demo };
 })();

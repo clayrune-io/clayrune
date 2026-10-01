@@ -271,8 +271,13 @@
     const routeDef = ROUTES[entry.route];
     const renderFn = routeDef && routeDef.render();
     body.innerHTML = '';
-    // R1-W S0: while the live store is loading, has failed, or is off with no
-    // data, say so instead of painting a surface over nothing. Never demo data.
+    // R1-W S0: `desk_v1_live` off is DEMO MODE, a mode the user chose: every
+    // page carries the banner, so fixtures are never mistaken for the workspace.
+    // The banner sits outside #desk-v1-body, so a panel switch never drops it.
+    const banner = document.getElementById('desk-v1-demo-banner');
+    if (banner) banner.hidden = !window.DeskV1Store.demo();
+    // While the live store is loading or has failed, say so instead of painting
+    // a surface over nothing. A failed live load never falls back to demo data.
     const gate = window.DeskV1Store.gate();
     if (gate) { _renderStoreGate(body, gate); return; }
     if (typeof renderFn === 'function') {
@@ -452,6 +457,7 @@
       </div>
       <div class="desk-v1-shell">
         <div class="desk-v1-crumb" id="desk-v1-crumb"></div>
+        <div class="desk-v1-demo-banner" id="desk-v1-demo-banner" role="status" hidden>Demo data - not your workspace</div>
         <div class="desk-v1-body" id="desk-v1-body"></div>
       </div>`;
     win.appendChild(content);

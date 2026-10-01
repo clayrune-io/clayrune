@@ -185,10 +185,17 @@ def test_get_config_reports_desk_v1_live(ctx):
     assert ctx.client.get('/api/config').get_json()['desk_v1_live'] is False
 
 
-def test_store_script_is_loaded_before_the_surfaces_and_fixtures_are_not_shipped():
-    """The fixture file left static/ in S0: production must not ship demo data,
-    and the store has to load ahead of every surface that calls it."""
+def test_fixtures_and_store_load_before_the_shell():
+    """Demo mode (desk_v1_live off) ships the fixtures: the store hands them to
+    the surfaces and the shell labels them. Both load ahead of the shell."""
     html = (PROJECT_ROOT / 'static' / 'index.html').read_text(encoding='utf-8')
-    assert 'src="/static/js/desk-v1-fixtures.js"' not in html
-    assert not (PROJECT_ROOT / 'static' / 'js' / 'desk-v1-fixtures.js').exists()
-    assert html.index('/static/js/desk-v1-store.js') < html.index('/static/js/desk-v1-shell.js')
+    fx = html.index('/static/js/desk-v1-fixtures.js')
+    assert fx < html.index('/static/js/desk-v1-store.js') < html.index('/static/js/desk-v1-shell.js')
+    assert (PROJECT_ROOT / 'static' / 'js' / 'desk-v1-fixtures.js').exists()
+
+
+def test_shell_labels_demo_mode():
+    """Flag off = demo mode, and every v1 page says so (never a silent fallback)."""
+    shell = (PROJECT_ROOT / 'static' / 'js' / 'desk-v1-shell.js').read_text(encoding='utf-8')
+    assert 'Demo data - not your workspace' in shell
+    assert 'DeskV1Store.demo()' in shell
