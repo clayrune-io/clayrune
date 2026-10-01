@@ -42,6 +42,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import threading
 from pathlib import Path
@@ -272,6 +273,99 @@ def unlink_runtime(project: dict, wt: Path) -> None:
             _plog(f"[worktree] unlink {rel} failed: {e}")
 
 
+def _is_junction(path) -> bool:
+    """Windows directory junction (mount-point reparse point). Hand-rolled
+    because `os.path.isjunction` only exists on Python 3.12+ and installs run
+    3.11. Always False off Windows."""
+    if not _IS_WINDOWS:
+        return False
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return (bool(getattr(st, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+            and getattr(st, 'st_reparse_tag', 0) == stat.IO_REPARSE_TAG_MOUNT_POINT)
+
+
+def _is_link(path) -> bool:
+    """True for a symlink OR a Windows directory junction, without following
+    it. `Path.is_symlink()` is False for a junction, so check both."""
+    try:
+        return os.path.islink(path) or _is_junction(path)
+    except OSError:
+        return False
+
+
+def _unlink_link(path: str) -> None:
+    """Remove a link/junction itself, never its target. `os.rmdir` on a junction
+    or directory symlink unlinks the reparse point (it refuses a real non-empty
+    dir); `os.unlink` covers file symlinks and POSIX dir symlinks."""
+    if _is_junction(path):
+        os.rmdir(path)
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        os.rmdir(path)
+
+
+def sever_links(wt: Path) -> tuple[bool, list[str]]:
+    """Unlink EVERY junction/symlink under a worktree, not just the ones in
+    `_shared_runtime`. Walks with `os.scandir` and never descends into a link.
+
+    Agents make their own links (CLAUDE.md tells them to junction the main
+    checkout's tools/smoke/node_modules in to run smokes), and
+    `git worktree remove --force` walks straight through such a junction and
+    empties the target (main checkout's node_modules wiped 2026-10-01, twice).
+
+    Returns (ok, severed). ok is False if a link could not be removed or a
+    directory could not be listed — the caller must then NOT delete the tree,
+    because an unverified walk cannot rule out a live link.
+    """
+    root = str(wt)
+    severed: list[str] = []
+    if _is_link(root):
+        _plog(f"[worktree] teardown refused: worktree root {root} is itself a link")
+        return False, severed
+    ok = True
+    stack = [root]
+    while stack:
+        cur = stack.pop()
+        try:
+            with os.scandir(cur) as it:
+                entries = list(it)
+        except OSError as e:
+            _plog(f"[worktree] cannot scan {cur} for links: {e}")
+            ok = False
+            continue
+        for e in entries:
+            if _is_link(e.path):
+                try:
+                    _unlink_link(e.path)
+                    severed.append(e.path)
+                    _plog(f"[worktree] severed link {e.path}")
+                except OSError as ex:
+                    _plog(f"[worktree] could not sever link {e.path}: {ex}")
+                    ok = False
+                    continue
+                if os.path.lexists(e.path):
+                    _plog(f"[worktree] link {e.path} still present after unlink")
+                    ok = False
+            elif e.is_dir(follow_symlinks=False):
+                stack.append(e.path)
+    return ok, severed
+
+
+def prepare_delete(project: dict, wt: Path) -> bool:
+    """Make a worktree safe to delete: unlink the known shared-runtime links,
+    then sever every other link found by walking the tree. False means a link
+    survived or could not be ruled out — the caller must refuse to delete and
+    never fall through to a recursive delete."""
+    unlink_runtime(project, wt)
+    ok, _ = sever_links(wt)
+    return ok
+
+
 # ── Rewriting .mcp.json (requirement #2) ────────────────────────────────────
 
 def retarget_mcp(project: dict, wt: Path) -> bool:
@@ -453,7 +547,10 @@ def remove(project: dict, session_id: str, delete_branch: bool = False,
     if not force and has_unmerged_work(project, session_id):
         return False, 'refused: worktree has unmerged or uncommitted work'
     with _lock(pid):
-        unlink_runtime(project, wt)          # MUST precede any delete
+        if not prepare_delete(project, wt):  # MUST precede any delete
+            _plog(f"[worktree] remove {session_id[:12]} refused: a link under "
+                  f"the worktree could not be severed")
+            return False, 'refused: a junction/symlink in the worktree could not be unlinked'
         ok, msg = _sync.git_run(base, ['worktree', 'remove', '--force', str(wt)],
                                 timeout=60)
         if not ok:
