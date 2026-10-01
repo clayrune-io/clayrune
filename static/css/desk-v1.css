@@ -3039,3 +3039,20 @@ button.desk-v1-because-chip { color: var(--accent-soft); font-weight: 600; curso
   .desk-v1-goal-manual .desk-v1-rules-inlinerow input { width: 100%; min-width: 0; box-sizing: border-box; }
   .desk-v1-goal-manual .desk-v1-rules-inlinerow [data-manual-entry-add] { grid-column: 1 / -1; white-space: nowrap; }
 }
+
+/* Studio article body / Goal "+ Add entry" (batch 2, the surface the review could not
+   reach): `.btn-secondary` has no rule anywhere, so "Back to What", "+ Add entry" and
+   the other Desk callers rendered as bare browser buttons (grey face, black system
+   text). Scoped to the Desk shell rather than the global class, as the Retro buttons
+   above were. */
+.desk-v1-shell .btn-secondary {
+  background: var(--surface); border: 1px solid var(--border2); border-radius: 8px;
+  color: var(--text); font-family: inherit; font-size: 13px; font-weight: 600;
+  padding: 7px 14px; cursor: pointer;
+}
+.desk-v1-shell .btn-secondary:hover, .desk-v1-shell .btn-secondary:focus-visible { background: var(--surface2); }
+.desk-v1-shell .btn-secondary:disabled { opacity: 0.55; cursor: default; }
+@media (max-width: 640px) {
+  .desk-v1-writer-actions { flex-wrap: wrap; }
+  .desk-v1-writer-actions button { flex: 1 1 140px; }
+}

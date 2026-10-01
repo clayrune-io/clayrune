@@ -114,7 +114,7 @@
     };
     const card = { id: 'create-' + _uid(), familyId: fam.id, typeId: type.id, source: null, existingPick: null };
     DeskV1Kit.commandBus.run({
-      label: `Added a ${type.label.toLowerCase()} piece`,
+      label: `Added ${/^[aeiou]/i.test(type.label) ? 'an' : 'a'} ${type.label.toLowerCase()} piece`,
       do: () => { _fx().families.push(fam); st.creates.unshift(card); _repaint(`[data-what-create="${card.id}"] [data-what-title]`); },
       undo: () => {
         const arr = _fx().families; const i = arr.findIndex((f) => f.id === fam.id); if (i >= 0) arr.splice(i, 1);
