@@ -8,6 +8,19 @@
   display: flex; flex-direction: column; height: 100%;
   padding: 0 24px 20px 28px;
 }
+/* Phone (MC-977 mobile fix batch 1, G-1/G-2): the modal is a flex column
+   (header + shell), but `height:100%` sized the shell to the WHOLE modal, so
+   it overran by the header's 44px and the last ~22px of every page (Brief's
+   "Next", the Where palette, the Posy box) sat under the bottom tab bar. Fill
+   the remaining height instead. Gutters shrink from 28/24 to 14 so a 344px
+   screen gives its content 314px, not 290 (84% -> 91%). ≤960px only: desktop
+   keeps its geometry. */
+@media (max-width: 960px) {
+  .desk-v1-shell {
+    height: auto; flex: 1 1 auto; min-height: 0;
+    padding: 0 14px 20px 14px;
+  }
+}
 /* app.css's .agent-line is styled for terminal-style agent transcripts
    (JetBrains Mono) — everywhere the Desk reuses it (kit's Posy box, T7's
    Results read, any future caller) it's product copy, not a log line (12a:
