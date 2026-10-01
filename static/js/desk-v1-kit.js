@@ -325,7 +325,7 @@
     const availW = Math.max(120, Math.min(isFinite(cssMax) ? cssMax : Infinity, bounds.right - bounds.left - 2 * M));
 
     // Measure the natural size with the anchor CSS neutralised.
-    Object.assign(pop.style, { left: '0px', top: '0px', right: 'auto', bottom: 'auto', width: 'max-content', maxWidth: availW + 'px', maxHeight: '', overflowY: '' });
+    Object.assign(pop.style, { position: 'fixed', left: '0px', top: '0px', right: 'auto', bottom: 'auto', width: 'max-content', maxWidth: availW + 'px', maxHeight: '', overflowY: '' });
     const pw = pop.offsetWidth;
     const ph = pop.offsetHeight;
     const t = trigger.getBoundingClientRect();
@@ -350,14 +350,24 @@
     const usedH = Math.min(ph, Math.max(80, above ? roomAbove : roomBelow));
     const T = above ? t.top - GAP - usedH : t.bottom + GAP;
 
-    const host = pop.offsetParent || document.body;
-    const hr = host === document.body || host === document.documentElement
-      ? { left: -window.scrollX, top: -window.scrollY }
-      : host.getBoundingClientRect();
-    const bl = host.clientLeft || 0;
-    const bt = host.clientTop || 0;
-    pop.style.left = Math.round(L - hr.left - bl + (host.scrollLeft || 0)) + 'px';
-    pop.style.top = Math.round(T - hr.top - bt + (host.scrollTop || 0)) + 'px';
+    // position:fixed, not absolute: a trigger inside an overflow:auto column body
+    // (the Where board) would clip an absolute menu to that box. The pop's rect at
+    // left/top 0 is its containing block's origin (the viewport, or a transformed
+    // ancestor), so the offset self-calibrates.
+    const o = pop.getBoundingClientRect();
+    pop.style.left = Math.round(L - o.left) + 'px';
+    pop.style.top = Math.round(T - o.top) + 'px';
+    // Fixed does not follow its trigger when something scrolls underneath: re-place
+    // on the next scroll anywhere (capture), until the menu is gone.
+    if (!pop._placeBound) {
+      pop._placeBound = true;
+      const again = (e) => {
+        if (e && e.target === pop) return;
+        if (!pop.isConnected) { document.removeEventListener('scroll', again, true); return; }
+        placePopover(pop, trigger, opts);
+      };
+      document.addEventListener('scroll', again, true);
+    }
   }
 
   // ── Add to… ▾ menu (UX-05): every shelf item needs BOTH a drag path and a
