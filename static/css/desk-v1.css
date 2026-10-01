@@ -566,6 +566,27 @@
     min-height: 44px;
   }
   .desk-v1-home-needsyou-pill { min-height: 32px; }
+  /* MC-977 mobile H-1: the Studio / Engagement / New campaign row was 315px
+     in a 290px column (flex-shrink on the nowrap buttons let "Engagement · 5"
+     wrap to 3 lines, 3 different heights, "New campaign" flush to the edge).
+     Now: the tools slot takes its own full row, Studio + Engagement share the
+     first line (equal, never wrap), the primary New campaign is a full-width
+     second line. Every button is one text line at the same 44px height. */
+  .desk-v1-home-crumbtools { flex: 1 1 100%; flex-wrap: wrap; margin-left: 0; gap: 8px; min-width: 0; }
+  .desk-v1-home-studio-btn, .desk-v1-home-engagement-btn, .desk-v1-home-newcamp-page-btn {
+    white-space: nowrap; min-height: 44px; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .desk-v1-home-studio-btn, .desk-v1-home-engagement-btn { flex: 1 1 0; min-width: 0; padding-left: 8px; padding-right: 8px; }
+  .desk-v1-home-newcamp-page-btn { flex: 1 1 100%; }
+  /* H-2: project block head = name + New campaign on line 1, the agent chip
+     on its own line 2 (ellipsized, never a 3-line pill). */
+  .desk-v1-home-block-head { flex-wrap: wrap; row-gap: 6px; }
+  .desk-v1-home-block-name { flex: 1 1 0; min-width: 0; text-align: left; overflow-wrap: anywhere; min-height: 44px; }
+  .desk-v1-home-block-newcamp { flex: 0 0 auto; white-space: nowrap; min-height: 44px; margin-left: 0; }
+  .desk-v1-home-block-agent {
+    order: 3; flex: 1 1 100%; min-height: 44px; max-width: 100%; box-sizing: border-box;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; justify-content: center;
+  }
 }
 
 /* ── T2a: Campaign page + Content list ───────────────────────────────────── */
