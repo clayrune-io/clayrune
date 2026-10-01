@@ -10,7 +10,7 @@
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
   // ── data resolution ────────────────────────────────────────────────────
-  function _fx() { return window.DeskV1Fixtures || {}; }
+  function _fx() { return window.DeskV1Store.state(); }
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id); }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id); }
   function _project(id) { return (_fx().projects || []).find((p) => p.id === id); }

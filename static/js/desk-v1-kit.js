@@ -1225,7 +1225,7 @@
   // `'untested'` gets no chip at all. Reads `DeskV1Fixtures.playbook` (R2-16's
   // store); finding state stays human-only, nothing here writes it.
   function resolveBecause(because, projectId) {
-    const fx = (window.DeskV1Fixtures || {}).playbook || {};
+    const fx = (window.DeskV1Store ? window.DeskV1Store.state() : {}).playbook || {};
     const confirmed = new Set((fx.findings || [])
       .filter((f) => f.state === 'confirmed' && f.project_id === projectId).map((f) => f.id));
     const ids = Array.isArray(because)

@@ -84,7 +84,7 @@
   const PANEL_ALIASES = { results: 'goal', content: 'what', calendar: 'when' };
 
   function _campaignLabel(params) {
-    const camps = (window.DeskV1Fixtures && window.DeskV1Fixtures.campaigns) || [];
+    const camps = window.DeskV1Store.state().campaigns || [];
     const c = camps.find(x => x.id === (params || {}).campaignId);
     // A draft started from Home (R2-2f) has no title until step 1 fills one.
     return c ? (c.plan.title || 'New campaign') : 'Campaign';
@@ -94,7 +94,7 @@
   // title is the fixture project's real name (e.g. "Clayrune"), not the
   // word "Project".
   function _projectLabel(params) {
-    const projects = (window.DeskV1Fixtures && window.DeskV1Fixtures.projects) || [];
+    const projects = window.DeskV1Store.state().projects || [];
     const p = projects.find(x => x.id === (params || {}).projectId);
     return p ? p.name : 'Project';
   }
@@ -107,7 +107,7 @@
   // carries versionId), same lookup shape as _videoLabel below but keyed
   // the other way round.
   function _pieceLabel(params) {
-    const families = (window.DeskV1Fixtures && window.DeskV1Fixtures.families) || [];
+    const families = window.DeskV1Store.state().families || [];
     const p = params || {};
     let fam = p.familyId ? families.find(f => f.id === p.familyId) : null;
     if (!fam && p.versionId) fam = families.find(f => (f.versions || []).some(v => v.id === p.versionId));
@@ -115,7 +115,7 @@
   }
 
   function _videoLabel(params) {
-    const families = (window.DeskV1Fixtures && window.DeskV1Fixtures.families) || [];
+    const families = window.DeskV1Store.state().families || [];
     const f = families.find(x => x.id === (params || {}).familyId);
     return f ? f.title : 'Video';
   }
@@ -201,7 +201,7 @@
     const btn = crumb.querySelector('.desk-v1-projects-picker');
     if (!btn || !window.DeskV1Kit) return;
     window.DeskV1Kit.bindAddToTrigger(btn, () => {
-      const projects = (window.DeskV1Fixtures && window.DeskV1Fixtures.projects) || [];
+      const projects = window.DeskV1Store.state().projects || [];
       return projects.map((p) => ({ id: p.id, label: p.name }));
     }, (projectId) => { deskV1Nav('project', { projectId }); }, { noAppendNew: true });
   }
@@ -271,6 +271,15 @@
     const routeDef = ROUTES[entry.route];
     const renderFn = routeDef && routeDef.render();
     body.innerHTML = '';
+    // R1-W S0: `desk_v1_live` off is DEMO MODE, a mode the user chose: every
+    // page carries the banner, so fixtures are never mistaken for the workspace.
+    // The banner sits outside #desk-v1-body, so a panel switch never drops it.
+    const banner = document.getElementById('desk-v1-demo-banner');
+    if (banner) banner.hidden = !window.DeskV1Store.demo();
+    // While the live store is loading or has failed, say so instead of painting
+    // a surface over nothing. A failed live load never falls back to demo data.
+    const gate = window.DeskV1Store.gate();
+    if (gate) { _renderStoreGate(body, gate); return; }
     if (typeof renderFn === 'function') {
       renderFn(body, entry.params);
     } else {
@@ -280,6 +289,23 @@
       // back to a name here or a missing renderer reads " is not built yet.".
       body.innerHTML = `<div class="desk-v1-stub"><div class="desk-v1-stub-body">${esc(_routeLabel(entry) || 'This page')} is not built yet.</div></div>`;
     }
+  }
+
+  function _renderStoreGate(body, gate) {
+    body.innerHTML = `<div class="desk-v1-stub" data-store-gate="${esc(gate.kind)}">
+      <div class="desk-v1-stub-body">${esc(gate.message)}</div>
+      ${gate.kind === 'error' ? '<button type="button" class="desk-v1-stub-link" data-store-retry>Try again</button>' : ''}
+    </div>`;
+    const retry = body.querySelector('[data-store-retry]');
+    if (retry) retry.addEventListener('click', () => { _loadStoreThenRender(true); });
+  }
+
+  // Live mode only (DeskV1Store.load() resolves at once otherwise): paint the
+  // gate now, then repaint when the load settles.
+  function _loadStoreThenRender(force) {
+    const p = window.DeskV1Store.load({ force });
+    deskV1Render();
+    p.then(() => { if (openModals.has(MODAL_ID)) deskV1Render(); });
   }
 
   // The campaign route is a skeleton with 6 fixed slots (summary / tab strip
@@ -307,7 +333,7 @@
     // Mutating `params` in place (the same object the stack entry holds) so
     // a later in-place switch reads the same default without a second nav.
     if (!params.panel) {
-      const camps = (window.DeskV1Fixtures && window.DeskV1Fixtures.campaigns) || [];
+      const camps = window.DeskV1Store.state().campaigns || [];
       const camp = camps.find((c) => c.id === params.campaignId);
       params.panel = (camp && camp.state === 'draft')
         ? ((camp.map && camp.map.stop) || 'how')
@@ -431,6 +457,7 @@
       </div>
       <div class="desk-v1-shell">
         <div class="desk-v1-crumb" id="desk-v1-crumb"></div>
+        <div class="desk-v1-demo-banner" id="desk-v1-demo-banner" role="status" hidden>Demo data - not your workspace</div>
         <div class="desk-v1-body" id="desk-v1-body"></div>
       </div>`;
     win.appendChild(content);
@@ -443,7 +470,8 @@
     focusModal(MODAL_ID);
 
     _stack = [{ route: 'home', params: {} }];
-    deskV1Render();
+    if (window.DeskV1Store.live()) _loadStoreThenRender(false);
+    else deskV1Render();
   }
 
   window.deskV1Open = deskV1Open;

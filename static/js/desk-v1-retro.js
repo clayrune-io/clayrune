@@ -16,7 +16,7 @@
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
-  function _fx() { return window.DeskV1Fixtures || {}; }
+  function _fx() { return window.DeskV1Store.state(); }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id) || null; }
   function _playbook() { const fx = _fx(); fx.playbook = fx.playbook || { findings: [], rejections: [] }; return fx.playbook; }
   function _finding(id) { return (_playbook().findings || []).find((f) => f.id === id) || null; }

@@ -35,7 +35,7 @@
 
   const SUGGEST_TEXT = 'Suggest What / When / Where';
 
-  function _fx() { return window.DeskV1Fixtures || {}; }
+  function _fx() { return window.DeskV1Store.state(); }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id) || null; }
   function _project(id) { return (_fx().projects || []).find((p) => p.id === id) || null; }
 

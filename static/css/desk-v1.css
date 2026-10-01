@@ -78,6 +78,13 @@
 }
 .desk-v1-crumb-tools:empty { display: none; }
 .desk-v1-body { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+/* R1-W S0: demo mode (desk_v1_live off). Persistent, outside the scroll body. */
+.desk-v1-demo-banner {
+  flex: 0 0 auto; margin: 0 0 10px; padding: 6px 12px; border-radius: 8px;
+  font-size: 12px; font-weight: 700; letter-spacing: .02em;
+  color: var(--text); background: var(--surface2); border: 1px dashed var(--border2);
+}
+.desk-v1-demo-banner[hidden] { display: none; }
 
 /* Phone (≤960px): a non-empty crumb-tools slot (currently only T3's review)
    no longer shares row 1 with the back link — its own doc-label sits beside
