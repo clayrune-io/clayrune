@@ -565,6 +565,13 @@ def _load_config():
         # views go read-only (T0d) and v1 runs against fixtures only: no new
         # backend store, no publishing, no spend (docs/desk_v1_r0_plan.md).
         'desk_v1': False,
+        # Desk v1 R1-W (MC-1021, docs/desk_v1/R1W_WIRING_PLAN.md S0). Picks
+        # the v1 store's source: ON = `GET /api/desk/workspace` (the live
+        # Desk store), OFF = no live data (the fixtures only ever load in the
+        # smoke harness). Default OFF until slice S5 wires Where/Connections,
+        # so the live store is never shown beside half-wired surfaces. Needs
+        # `desk_v1` on as well; this flag alone shows nothing.
+        'desk_v1_live': False,
         # Desk v1 renders schedule/publish times in this IANA zone (e.g.
         # 'America/New_York'). '' = fall back to the host's local timezone —
         # the same behaviour every other time surface in the app has today.

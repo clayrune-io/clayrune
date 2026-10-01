@@ -4001,10 +4001,12 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/desk.js"></script>
 <!-- Desk v1 (MC-977, R0 plan T0a). Behind the `desk_v1` flag (default off);
      every desk-v1-*.js/.css tag is added here, up front, so no later ticket
-     touches index.html (ground rule 2). Fixtures/kit before the shell before
+     touches index.html (ground rule 2). Store/kit before the shell before
      the surface stubs — load order only matters for readability here, since
-     the shell resolves each surface's render function lazily at nav time. -->
-<script type="module" src="/static/js/desk-v1-fixtures.js"></script>
+     the shell resolves each surface's render function lazily at nav time.
+     The store replaced desk-v1-fixtures.js (R1-W S0): that file now lives in
+     tools/smoke/fixtures/ and is seeded by the smoke harness only. -->
+<script type="module" src="/static/js/desk-v1-store.js"></script>
 <script type="module" src="/static/js/desk-v1-kit.js"></script>
 <script type="module" src="/static/js/desk-v1-shell.js"></script>
 <script type="module" src="/static/js/desk-v1-home.js"></script>

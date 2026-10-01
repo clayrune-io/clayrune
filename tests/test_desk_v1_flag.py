@@ -158,3 +158,37 @@ def test_open_desk_branches_to_v1_shell_when_flagged():
     src = (PROJECT_ROOT / 'static' / 'js' / 'desk.js').read_text(encoding='utf-8')
     assert 'window.deskV1Open' in src
     assert src.index('desk_v1') < src.index('DESK_MODAL_ID', src.index('async function openDesk'))
+
+
+# ── desk_v1_live (MC-1021 R1-W S0) ────────────────────────────────────────────
+# The v1 store reads live data only when this is on; default OFF until slice S5.
+
+def test_load_config_defaults_desk_v1_live_off():
+    assert _server_config_defaults()['desk_v1_live'] is False
+
+
+def test_desk_v1_live_is_an_editable_key(ctx):
+    assert 'desk_v1_live' in ctx.sr._CONFIG_EDITABLE_KEYS
+
+
+def test_put_config_toggles_desk_v1_live_and_persists(ctx):
+    resp = ctx.client.put('/api/config', json={'desk_v1_live': True})
+    assert resp.status_code == 200
+    assert resp.get_json()['updated'] == ['desk_v1_live']
+    assert ctx.state.CONFIG['desk_v1_live'] is True
+    saved = json.loads(ctx.config_path.read_text(encoding='utf-8'))
+    assert saved['desk_v1_live'] is True
+
+
+def test_get_config_reports_desk_v1_live(ctx):
+    ctx.state.CONFIG['desk_v1_live'] = False
+    assert ctx.client.get('/api/config').get_json()['desk_v1_live'] is False
+
+
+def test_store_script_is_loaded_before_the_surfaces_and_fixtures_are_not_shipped():
+    """The fixture file left static/ in S0: production must not ship demo data,
+    and the store has to load ahead of every surface that calls it."""
+    html = (PROJECT_ROOT / 'static' / 'index.html').read_text(encoding='utf-8')
+    assert 'src="/static/js/desk-v1-fixtures.js"' not in html
+    assert not (PROJECT_ROOT / 'static' / 'js' / 'desk-v1-fixtures.js').exists()
+    assert html.index('/static/js/desk-v1-store.js') < html.index('/static/js/desk-v1-shell.js')

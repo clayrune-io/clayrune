@@ -19,6 +19,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { seedDeskV1Fixtures, FIXTURES_SOURCE } from './desk-v1-fixture-api.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -82,6 +83,8 @@ async function runToneRenderChecks(browser, tone) {
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   await page.route('**/*', fulfillOrAbort);
+
+  await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
 
@@ -154,6 +157,8 @@ async function runInteractionChecks(browser) {
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   await page.route('**/*', fulfillOrAbort);
+
+  await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
 
@@ -377,6 +382,8 @@ async function runTaskLifecycleChecks(browser) {
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   await page.route('**/*', fulfillOrAbort);
+
+  await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
   await page.clock.install();
@@ -524,6 +531,8 @@ async function runShellBootedPage(browser) {
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   await page.route('**/*', fulfillOrAbort);
+
+  await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
   await page.evaluate(() => window.sidebarNav('social'));
@@ -564,6 +573,8 @@ async function runR21PlanBoundsChecks(browser) {
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   await page.route('**/*', fulfillOrAbort);
+
+  await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
 
@@ -711,15 +722,14 @@ async function runR21FixtureProductionKeyCheck(browser) {
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   await page.route('**/*', fulfillOrAbort);
+
+  await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
 
-  const productionKeyCount = await page.evaluate(() => {
-    const src = Array.from(document.scripts)
-      .map((s) => s.src)
-      .find((s) => /desk-v1-fixtures\.js$/.test(s));
-    return fetch(src).then((r) => r.text()).then((text) => (text.match(/\bproduction\b\s*:/g) || []).length);
-  });
+  // The fixture file left static/js in R1-W S0 (no script tag to find any
+  // more); the same text the seed injects is what gets counted.
+  const productionKeyCount = (FIXTURES_SOURCE.match(/\bproduction\b\s*:/g) || []).length;
   productionKeyCount === 0
     ? ok('fixture load has 0 \'production\' keys (renamed to presence.budget)')
     : fail(`fixtures still declare ${productionKeyCount} 'production' key(s)`);
@@ -736,6 +746,8 @@ async function runR214RetroVerdictChecks(browser) {
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   await page.route('**/*', fulfillOrAbort);
+
+  await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
 

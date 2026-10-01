@@ -16,7 +16,7 @@
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
   // ── data resolution ───────────────────────────────────────────────────────
-  function _fx() { return window.DeskV1Fixtures || {}; }
+  function _fx() { return window.DeskV1Store.state(); }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id) || null; }
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id) || null; }
   function _project(id) { return (_fx().projects || []).find((p) => p.id === id) || null; }
@@ -847,7 +847,7 @@
         const iso = newWhen.toISOString();
         if (version.publishedAt) version.publishedAt = iso;
         else if (version.publishAt) version.publishAt = iso;
-        else { window.DeskV1Fixtures.calendarSchedule = window.DeskV1Fixtures.calendarSchedule || {}; window.DeskV1Fixtures.calendarSchedule[version.id] = iso; }
+        else { window.DeskV1Store.state().calendarSchedule = window.DeskV1Store.state().calendarSchedule || {}; window.DeskV1Store.state().calendarSchedule[version.id] = iso; }
         if (movingOutsideWindow) version.state = 'needs_review';
         _render(campaign);
         if (typeof window.deskV1PieceRepaint === 'function') window.deskV1PieceRepaint();
@@ -855,7 +855,7 @@
       undo: () => {
         if (version.publishedAt) version.publishedAt = priorIso;
         else if (version.publishAt) version.publishAt = priorIso;
-        else if (priorSchedule !== undefined) window.DeskV1Fixtures.calendarSchedule[version.id] = priorSchedule;
+        else if (priorSchedule !== undefined) window.DeskV1Store.state().calendarSchedule[version.id] = priorSchedule;
         version.state = priorState;
         _render(campaign);
         if (typeof window.deskV1PieceRepaint === 'function') window.deskV1PieceRepaint();

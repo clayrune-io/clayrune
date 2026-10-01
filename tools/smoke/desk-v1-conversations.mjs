@@ -23,6 +23,7 @@ import { readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { seedDeskV1Fixtures } from './desk-v1-fixture-api.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -90,6 +91,8 @@ async function newBootedPage(browser, tone, viewport) {
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   await page.route('**/*', fulfillOrAbort);
+
+  await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
   await page.evaluate(() => window.sidebarNav('social'));

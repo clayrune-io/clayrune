@@ -160,6 +160,19 @@ def patch_presence(project_id):
     return jsonify(_desk.upsert_presence(project_id, d))
 
 
+# ── Workspace read (R1-W S0, M1) ─────────────────────────────────────────────
+#
+# One bootstrap call for Desk v1's store (static/js/desk-v1-store.js): projects
+# with their presence, campaigns in v1 words, workspace accounts, pieces.
+# Read-only; the v1 surfaces switch to it behind the `desk_v1_live` flag.
+
+@bp.route('/api/desk/workspace', methods=['GET'])
+def workspace():
+    if load_projects is None:
+        return jsonify({'error': 'not wired'}), 503
+    return jsonify(_desk.v1_workspace(load_projects()))
+
+
 # ── Signal feed ──────────────────────────────────────────────────────────────
 
 @bp.route('/api/desk/signals', methods=['GET'])

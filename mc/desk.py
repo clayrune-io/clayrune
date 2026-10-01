@@ -1330,6 +1330,88 @@ def delete_campaign(campaign_id: str) -> bool:
         return True
 
 
+# -- v1 workspace read model (R1-W S0, docs/desk_v1/R1W_WIRING_PLAN.md M1) ----
+#
+# Desk v1's store (static/js/desk-v1-store.js) reads ONE bootstrap payload. The
+# backend keeps its own campaign vocabulary (CAMPAIGN_STATES above) so the
+# legacy Desk keeps working until it retires; the v1 words are translated HERE,
+# on the way out, never stored (Dave's S0 decision, 2026-09-30).
+
+_V1_STATE_OUT = {'running': 'active', 'done': 'completed', 'dropped': 'archived'}
+
+
+def v1_campaign(camp: dict) -> dict:
+    """A stored campaign in the shape the v1 surfaces read: `state` in v1 words
+    (running->active, done->completed, dropped->archived; proposed/paused
+    unchanged), `projectId` beside `project_id`, `plan.title` carrying the
+    title. A deep copy: nothing the caller does to it reaches the store."""
+    out = json.loads(json.dumps(camp))
+    state = camp.get('state') or ''
+    out['state'] = _V1_STATE_OUT.get(state, state)
+    out['projectId'] = camp.get('project_id')
+    plan = out.get('plan') if isinstance(out.get('plan'), dict) else {}
+    plan['title'] = plan.get('title') or camp.get('title') or ''
+    out['plan'] = plan
+    return out
+
+
+def v1_accounts(presences: dict) -> list[dict]:
+    """The workspace's accounts, lifted read-only out of `presences[*].accounts`
+    (there is no workspace account store until slice S5). First record per
+    channel id wins; a bare-id entry carries no platform and is skipped, since
+    an account with no platform is not one the Desk can place anything on.
+    `capability` defaults to `manual` (the human publishes): nothing here can
+    claim a direct publish route that was never configured."""
+    seen: dict[str, dict] = {}
+    for pid in sorted(presences or {}):
+        for acc in ((presences[pid] or {}).get('accounts') or []):
+            if not isinstance(acc, dict) or not acc.get('channel_id') or not acc.get('platform'):
+                continue
+            cid = acc['channel_id']
+            if cid in seen:
+                continue
+            rec = dict(acc)
+            rec['id'] = cid
+            rec.setdefault('identity', cid)
+            rec.setdefault('label', rec['identity'])
+            rec.setdefault('capability', 'manual')
+            seen[cid] = rec
+    return list(seen.values())
+
+
+def v1_workspace(projects: Iterable[dict]) -> dict:
+    """M1: `{projects, campaigns, accounts, pieces}`. `pieces` is `[]` until the
+    piece store exists (slice S4): an honest empty list, not a placeholder."""
+    with _store_lock:
+        store = _read_store()
+    presences = store['presences']
+    rows = []
+    for p in projects:
+        pid = p.get('id')
+        if not pid:
+            continue
+        pres = presences.get(pid) or {}
+        rows.append({
+            'id': pid,
+            'name': p.get('name') or pid,
+            'state': pres.get('state') or 'active',
+            'roster': [r.get('character') for r in (p.get('roster') or [])
+                       if isinstance(r, dict) and r.get('character') and not r.get('removed_at')],
+            'presence': {
+                'replies': pres.get('replies') or 'drafts',
+                'desk_agent': pres.get('desk_agent'),
+                'state': pres.get('state') or 'active',
+            },
+        })
+    camps = sorted(store['campaigns'].values(), key=lambda r: r.get('created_at') or '', reverse=True)
+    return {
+        'projects': rows,
+        'campaigns': [v1_campaign(c) for c in camps],
+        'accounts': v1_accounts(presences),
+        'pieces': [],
+    }
+
+
 # -- story ledger -------------------------------------------------------------
 #
 # Its job is NOT analytics. Its job is to stop the Desk repeating itself and to

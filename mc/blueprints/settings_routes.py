@@ -267,6 +267,8 @@ _CONFIG_EDITABLE_KEYS = {
     # static/js/desk.js's openDesk() branch at the next open — no respawn or
     # restart needed. `user_timezone` is read by the v1 shell's time helper.
     'desk_v1', 'user_timezone',
+    # Desk v1 R1-W (MC-1021 S0): the v1 store reads live data only when on.
+    'desk_v1_live',
     # MC-964 steps 7 + 8 (Settings > Agent > Retrieval). Both read live off
     # state.CONFIG per turn (mc/memory.py _mint_enabled / negation ledger),
     # default False; human-only like the rest of this set.

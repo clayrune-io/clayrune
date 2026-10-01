@@ -11,7 +11,7 @@
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
   // ── data resolution (same _fx() convention as desk-v1-review.js) ────────
-  function _fx() { return window.DeskV1Fixtures || {}; }
+  function _fx() { return window.DeskV1Store.state(); }
   function _projects() { return _fx().projects || []; }
   function _campaigns() { return _fx().campaigns || []; }
   function _channels() { return _fx().channels || []; }

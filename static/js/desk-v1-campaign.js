@@ -20,7 +20,7 @@
   const _HOW_SUGGEST_TEXT = 'Suggest What / When / Where';
 
   // ── data resolution (same _fx() convention as desk-v1-review.js/-home.js) ─
-  function _fx() { return window.DeskV1Fixtures || {}; }
+  function _fx() { return window.DeskV1Store.state(); }
   function _campaigns() { return _fx().campaigns || []; }
   function _channels() { return _fx().channels || []; }
   function _channel(id) { return _channels().find((c) => c.id === id); }

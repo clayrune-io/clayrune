@@ -32,6 +32,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { seedDeskV1Fixtures } from './desk-v1-fixture-api.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -103,6 +104,8 @@ async function newBootedPage(browser) {
   const charRequests = [];
   page.on('request', (req) => { if (new URL(req.url()).pathname === '/api/characters') charRequests.push(req.url()); });
   await page.route('**/*', fulfillOrAbort);
+
+  await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
   // nextToastText below needs a call log, not a live-DOM count: a toast

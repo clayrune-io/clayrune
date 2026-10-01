@@ -19,7 +19,7 @@
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
-  function _fx() { return window.DeskV1Fixtures || {}; }
+  function _fx() { return window.DeskV1Store.state(); }
   function _studio() { return _fx().studio || {}; }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id) || null; }
   function _project(id) { return (_fx().projects || []).find((p) => p.id === id) || null; }
