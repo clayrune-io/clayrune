@@ -408,8 +408,7 @@ def _known_account(account_id) -> bool:
     if not isinstance(account_id, str) or not account_id:
         return False
     with _desk._store_lock:
-        presences = _desk._read_store().get('presences') or {}
-    return any(a.get('id') == account_id for a in _desk.v1_accounts(presences))
+        return account_id in (_desk._read_store().get('accounts') or {})
 
 
 def add_version(piece_id: str, account_id: str, *, body=None, version_id: str | None = None,

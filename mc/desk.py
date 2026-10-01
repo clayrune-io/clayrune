@@ -129,6 +129,9 @@ def _empty_store() -> dict:
         'platforms': {},
         'platforms_seeded': False,
         'presences': {},
+        # R1-W S5: workspace accounts, keyed by id (`mc/desk_accounts.py`).
+        # Lifted from `presences[*].accounts` by `_lift_presence_accounts`.
+        'accounts': {},
         # §10.6 (R1-L, MC-977 IA revision 2): findings live HERE, beside
         # voices/campaigns/ledger, under the same _store_lock — not in the
         # Distiller. `findings` keyed by id (same convention as `campaigns`);
@@ -223,10 +226,49 @@ def _migrate_ledger_row(row: dict) -> dict:
     return row
 
 
+def _lift_presence_accounts(data: dict) -> None:
+    """Copy every `presences[*].accounts[]` record into the workspace store
+    `data['accounts']` (R1-W S5, plan §2.C). IDEMPOTENT and run on every read:
+    an id already in the workspace store is never touched, so a second run (or a
+    later write that persisted the first) changes nothing, and an edit made to
+    the workspace record is never overwritten by a stale presence copy. The
+    presence copy stays (engagement still reads its read settings from it). A
+    bare-id entry carries no platform and is skipped: an account with no
+    platform is not one the Desk can place anything on. `capability` defaults to
+    `manual` (the human publishes): nothing lifted here can claim a direct
+    publish route that was never configured. `created_at` is the presence
+    record's own stamp, never `now`, so two reads of one unpersisted store agree."""
+    accounts = data.setdefault('accounts', {})
+    presences = data.get('presences') or {}
+    for pid in sorted(presences):
+        pres = presences[pid] or {}
+        for acc in (pres.get('accounts') or []):
+            cid = acc.get('channel_id') if isinstance(acc, dict) else None
+            plat = acc.get('platform') if isinstance(acc, dict) else None
+            if not cid or not isinstance(cid, str) or not plat or cid in accounts:
+                continue
+            ident = acc.get('identity') or cid
+            rec = {
+                'id': cid, 'platform': plat, 'identity': ident,
+                'label': acc.get('label') or ident,
+                'capability': acc.get('capability') if acc.get('capability') in ('direct', 'manual') else 'manual',
+                'voice': acc.get('voice') or '',
+                'created_at': acc.get('created_at') or pres.get('updated_at'),
+            }
+            if acc.get('read_via') in READ_VIA:
+                rec['read_via'] = acc['read_via']
+            if acc.get('browser_profile'):
+                rec['browser_profile'] = acc['browser_profile']
+            if acc.get('preview'):
+                rec['preview'] = True
+            accounts[cid] = rec
+
+
 def _migrate_store(data: dict) -> dict:
     presences: dict = data.get('presences') or {}
     for pid, rec in list(presences.items()):
         presences[pid] = _migrate_presence_record(rec)
+    _lift_presence_accounts(data)
     campaigns: dict = data.get('campaigns') or {}
     for cid, camp in list(campaigns.items()):
         campaigns[cid] = _migrate_campaign_record(camp)
@@ -269,6 +311,7 @@ def _read_store() -> dict:
     data.setdefault('playbook', {'findings': {}, 'rejections': []})
     data.setdefault('engagement', {'items': {}, 'reads': [], 'coverage': {}})
     data.setdefault('pieces', {})
+    data.setdefault('accounts', {})
     return _migrate_store(data)
 
 
@@ -384,19 +427,38 @@ def set_account_read_settings(project_id: str, channel_id: str, *, platform: str
             accounts.append(acc)
         if platform and not acc.get('platform'):
             acc['platform'] = platform
-        if read_via is not None:
-            acc['read_via'] = read_via
-        if browser_profile is not None:
-            name = browser_profile.strip().lower()
-            if name:
-                acc['browser_profile'] = name
-            else:
-                acc.pop('browser_profile', None)
+        apply_read_settings(acc, read_via, browser_profile)
         rec['project_id'] = project_id
         rec['updated_at'] = now_iso()
         store['presences'][project_id] = rec
+        # R1-W S5: the workspace account store is the source of truth the v1
+        # surfaces read, so this (presence-scoped) route writes through to it.
+        # `_read_store` already lifted a copy that existed before this call; an
+        # account created by this very call has none yet.
+        ws = store['accounts'].get(channel_id)
+        if ws is None:
+            ws = store['accounts'][channel_id] = {
+                'id': channel_id, 'platform': acc.get('platform') or platform,
+                'identity': channel_id, 'label': channel_id, 'capability': 'manual',
+                'voice': '', 'created_at': rec['updated_at']}
+        apply_read_settings(ws, read_via, browser_profile)
         _write_store(store)
         return dict(acc)
+
+
+def apply_read_settings(acc: dict, read_via: str | None, browser_profile: str | None) -> None:
+    """Set `read_via` and/or the named browser profile on one account dict (a
+    presence copy or a workspace record: the same two keys on both, which is
+    what lets engagement keep reading the presence copy). `''` clears the
+    profile. Validation is the caller's."""
+    if read_via is not None:
+        acc['read_via'] = read_via
+    if browser_profile is not None:
+        name = browser_profile.strip().lower()
+        if name:
+            acc['browser_profile'] = name
+        else:
+            acc.pop('browser_profile', None)
 
 
 # -- bounds hash + widening (IA revision 2 §5.1/§5.2; the R2-1 kit's own
@@ -1923,28 +1985,13 @@ def set_project_state(project_id: str, state: str) -> dict:
                 'changed': len(changed), 'held': held}
 
 
-def v1_accounts(presences: dict) -> list[dict]:
-    """The workspace's accounts, lifted read-only out of `presences[*].accounts`
-    (there is no workspace account store until slice S5). First record per
-    channel id wins; a bare-id entry carries no platform and is skipped, since
-    an account with no platform is not one the Desk can place anything on.
-    `capability` defaults to `manual` (the human publishes): nothing here can
-    claim a direct publish route that was never configured."""
-    seen: dict[str, dict] = {}
-    for pid in sorted(presences or {}):
-        for acc in ((presences[pid] or {}).get('accounts') or []):
-            if not isinstance(acc, dict) or not acc.get('channel_id') or not acc.get('platform'):
-                continue
-            cid = acc['channel_id']
-            if cid in seen:
-                continue
-            rec = dict(acc)
-            rec['id'] = cid
-            rec.setdefault('identity', cid)
-            rec.setdefault('label', rec['identity'])
-            rec.setdefault('capability', 'manual')
-            seen[cid] = rec
-    return list(seen.values())
+def v1_accounts(store: dict) -> list[dict]:
+    """The workspace's accounts in the v1 shape (`mc.desk_accounts.v1_account`):
+    one row per `store['accounts']` record, each with its derived `publish`
+    state. Reads the vault's METADATA (is the token there), so call it outside
+    `_store_lock`."""
+    from mc import desk_accounts  # lazy: desk_accounts imports this module
+    return desk_accounts.v1_accounts(store)
 
 
 def _v1_pieces(store: dict) -> list[dict]:
@@ -1981,7 +2028,7 @@ def v1_workspace(projects: Iterable[dict]) -> dict:
     return {
         'projects': rows,
         'campaigns': [v1_campaign(c) for c in camps],
-        'accounts': v1_accounts(presences),
+        'accounts': v1_accounts(store),
         'pieces': _v1_pieces(store),
     }
 

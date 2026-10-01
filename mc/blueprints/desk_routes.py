@@ -37,6 +37,7 @@ from flask import Blueprint, jsonify, request
 
 from mc import characters as _chars
 from mc import desk as _desk
+from mc import desk_accounts as _accounts
 from mc import desk_brief as _brief
 from mc import desk_engines as _engines
 from mc import desk_engagement as _engagement
@@ -642,6 +643,74 @@ def remove_piece_asset(piece_id, asset_id):
 @bp.route('/api/desk/materials', methods=['GET'])
 def materials():
     return _piece_call(_pieces.materials, request.args.get('campaign_id') or None)
+
+
+# ── Workspace accounts (R1-W S5; plan M2-M5, §2.C) ────────────────────────────
+#
+# An account is a place the Desk can put a message (`mc/desk_accounts.py`). The
+# answer is always the v1 account, whose `publish` is derived from the vault's
+# metadata on every read. No route here takes, stores or returns a credential:
+# an account names the vault entry it needs, and only a human creates one.
+# Create and delete refuse an unattended caller (plan §2 "human-only"); so does
+# a read-setting change, which can turn on paid reads (the presence route it
+# replaces refused the same way).
+
+def _account_call(fn, *args, status=200, **kw):
+    try:
+        out = fn(*args, **kw)
+    except _accounts.AccountError as e:
+        return jsonify({'error': str(e)}), e.status
+    return jsonify(out), status
+
+
+def _account_human_only(action: str):
+    if is_unattended_caller():
+        return jsonify({'error': f'this action needs a human: an unattended agent session '
+                                 f'cannot {action} an account'}), 403
+    return None
+
+
+@bp.route('/api/desk/accounts', methods=['GET'])
+def list_accounts():
+    return jsonify(_accounts.list_accounts())
+
+
+@bp.route('/api/desk/accounts', methods=['POST'])
+def create_account():
+    refused = _account_human_only('add')
+    if refused:
+        return refused
+    d = request.get_json(silent=True) or {}
+    return _account_call(_accounts.create_account, d.get('platform'), d.get('identity'),
+                         label=d.get('label'), capability=d.get('capability'),
+                         voice=d.get('voice'), account_id=d.get('id'), status=201)
+
+
+@bp.route('/api/desk/accounts/<account_id>', methods=['PATCH'])
+def update_account(account_id):
+    d = request.get_json(silent=True) or {}
+    if ('read_via' in d or 'browser_profile' in d) and is_unattended_caller():
+        return jsonify({'error': 'this action needs a human: an unattended agent '
+                                 'session cannot choose how an account is read'}), 403
+    prof = d.get('browser_profile')
+    if isinstance(prof, str) and prof.strip() and not _PROFILE_NAME.match(prof.strip().lower()):
+        return jsonify({'error': 'browser_profile must be a saved profile name '
+                                 '(lowercase letters, digits, . - _)'}), 400
+    return _account_call(_accounts.update_account, account_id, d)
+
+
+@bp.route('/api/desk/accounts/<account_id>', methods=['DELETE'])
+def delete_account(account_id):
+    refused = _account_human_only('remove')
+    if refused:
+        return refused
+    try:
+        found = _accounts.delete_account(account_id)
+    except _accounts.AccountError as e:
+        return jsonify({'error': str(e)}), e.status
+    if not found:
+        return jsonify({'error': 'account not found'}), 404
+    return jsonify({'ok': True})
 
 
 # ── Generation engines (MC-1019; plan M26/M27) ───────────────────────────────
