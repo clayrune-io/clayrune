@@ -19,7 +19,7 @@ only safe answer is to keep the old app and fall back to the download link.
 The swap helper is a generated /bin/sh script written into the staging dir at
 run time (no new file for build-macos.spec to bundle). It waits for the app PID
 to exit, renames the old bundle aside, moves the new one in, `open`s it, and
-waits for /api/system/heartbeat. If the new app does not answer in time it puts
+waits for /api/system/update/status to report the verified commit. If it does not in time it puts
 the old bundle back and reopens it. The aside copy is deleted only after the new
 app answers.
 
@@ -69,7 +69,7 @@ FALLBACK_MESSAGES = {
 }
 
 _MAX_ZIP_BYTES = 1_500_000_000  # sanity cap when the manifest gives no size
-_HEALTH_PATH = '/api/system/heartbeat'
+_HEALTH_PATH = '/api/system/update/status'
 _JOB_LOCK = threading.Lock()
 _JOB: dict = {'state': IDLE}
 
@@ -162,6 +162,28 @@ def bundle_identifier(app: Path) -> Optional[str]:
         return info.get('CFBundleIdentifier') or None
     except Exception:
         return None
+
+
+def bundle_executable(app: Path) -> str:
+    """CFBundleExecutable of a bundle ('Clayrune' if unreadable)."""
+    try:
+        with open(app / 'Contents' / 'Info.plist', 'rb') as f:
+            return plistlib.load(f).get('CFBundleExecutable') or 'Clayrune'
+    except Exception:
+        return 'Clayrune'
+
+
+_COMMIT_RE = re.compile(r'[0-9a-f]{7,40}')
+
+
+def require_release_commit(release: dict) -> str:
+    """The commit the verified release was built from, or UpdateAbort. The swap
+    helper only calls the new app "up" when it reports this commit."""
+    commit = str(release.get('remote_commit') or release.get('commit') or '').strip().lower()
+    if not _COMMIT_RE.fullmatch(commit):
+        raise UpdateAbort('The release does not say which build it is, so the update '
+                          'could not be confirmed afterwards. Nothing was changed.')
+    return commit
 
 
 def require_running_team(running_app: Path) -> str:
@@ -289,9 +311,20 @@ def _extract(zip_path: Path, into: Path) -> Path:
 
 def build_swap_script(*, bundle: Path, new_app: Path, aside: Path, stage: Path,
                       pid: int, port: int, log_path: Path, result_path: Path,
+                      expect_commit: str, exe_name: str = 'Clayrune',
                       wait_exit_s: int = 90, wait_up_s: int = 60) -> str:
-    """The detached helper. Every path is shlex-quoted; `rm -rf` targets are
-    checked non-empty and inside the bundle's parent folder before use."""
+    """The detached helper. Every path is shlex-quoted; deletion targets are
+    checked non-empty and inside the bundle's parent folder before use.
+
+    "New app is up" means the process answering on the port reports
+    `expect_commit` (the release verified earlier): a bare HTTP 200 would pass
+    for any other server holding the port. The rollback stops only processes
+    whose executable path equals the bundle's, by exact string compare (no
+    regex over command lines), and leaves the backup alone if it cannot first
+    move the failed app out of the way."""
+    if not _COMMIT_RE.fullmatch(expect_commit or ''):
+        raise ValueError('expect_commit must be 7-40 lowercase hex chars')
+
     def q(path):  # posix form: identical on macOS, and lets the script run under Git Bash in tests
         return shlex.quote(Path(path).as_posix())
     return f'''#!/bin/sh
@@ -303,6 +336,8 @@ STAGE={q(stage)}
 PARENT={q(bundle.parent)}
 PID={int(pid)}
 URL="http://127.0.0.1:{int(port)}{_HEALTH_PATH}"
+EXPECT={shlex.quote(expect_commit)}
+EXE="$OLD/Contents/MacOS/"{shlex.quote(exe_name)}
 LOG={q(log_path)}
 RESULT={q(result_path)}
 STAMP="$(date +%s)"
@@ -314,6 +349,32 @@ safe_rm() {{
     "$PARENT"/?*) rm -rf "$1" ;;
     *) log "refusing to delete $1" ;;
   esac
+}}
+# $1 = commit the process on the port reported; true if it is the verified build.
+commit_matches() {{
+  [ -n "$1" ] || return 1
+  case "$EXPECT" in "$1"*) return 0 ;; esac
+  case "$1" in "$EXPECT"*) return 0 ;; esac
+  return 1
+}}
+# Stop only processes whose executable path is exactly $EXE: TERM, wait, then
+# KILL the same pids. `ps comm=` prints the full path; compare it as a string.
+stop_new_app() {{
+  pids="$(ps -axo pid=,comm= 2>/dev/null | while read -r p c; do
+    [ "$c" = "$EXE" ] && printf '%s\\n' "$p"
+  done)"
+  [ -n "$pids" ] || return 0
+  for p in $pids; do kill -TERM "$p" 2>/dev/null; done
+  k=0
+  while [ "$k" -lt 20 ]; do
+    alive=""
+    for p in $pids; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
+    [ -z "$alive" ] && return 0
+    k=$((k+1))
+    sleep 0.5
+  done
+  for p in $alive; do kill -KILL "$p" 2>/dev/null; done
+  return 0
 }}
 
 log "helper started: waiting for app pid $PID to exit"
@@ -347,31 +408,35 @@ if ! mv "$NEW" "$OLD"; then
 fi
 
 open "$OLD"
-log "opened new bundle; waiting for $URL"
-i=0
+log "opened new bundle; waiting for build $EXPECT at $URL"
+END=$(( $(date +%s) + {int(wait_up_s)} ))
 up=0
-while [ "$i" -lt {int(wait_up_s)} ]; do
-  if curl -fs -m 5 "$URL" >/dev/null 2>&1; then up=1; break; fi
-  i=$((i+1))
+got=""
+while [ "$(date +%s)" -lt "$END" ]; do
+  body="$(curl -fs -m 20 "$URL" 2>/dev/null)"
+  if [ $? -eq 0 ]; then
+    got="$(printf '%s\\n' "$body" | sed -n 's/.*"commit": *"\\([^"]*\\)".*/\\1/p' | head -n 1)"
+    if commit_matches "$got"; then up=1; break; fi
+  fi
   sleep 1
 done
 
 if [ "$up" = 1 ]; then
-  log "new app answered; update complete"
+  log "new app answered with build $got; update complete"
   result updated ""
   safe_rm "$ASIDE"
   safe_rm "$STAGE"
   exit 0
 fi
 
-log "new app did not answer in {int(wait_up_s)}s; rolling back"
-EXE="$OLD/Contents/MacOS/"
-pkill -TERM -f "$EXE" 2>/dev/null
-k=0
-while pgrep -f "$EXE" >/dev/null 2>&1 && [ "$k" -lt 20 ]; do k=$((k+1)); sleep 0.5; done
-pgrep -f "$EXE" >/dev/null 2>&1 && pkill -KILL -f "$EXE" 2>/dev/null
+log "new build did not answer in {int(wait_up_s)}s; rolling back"
+stop_new_app
 FAILED="$PARENT/.clayrune-failed-$STAMP"
-mv "$OLD" "$FAILED"
+if ! mv "$OLD" "$FAILED"; then
+  log "ROLLBACK FAILED: could not move the new app out of the way; old bundle is still at $ASIDE, new at $OLD"
+  result rollback_failed "restore the previous version from $ASIDE; the new app is still at $OLD"
+  exit 2
+fi
 if mv "$ASIDE" "$OLD"; then
   log "old bundle restored"
   result rolled_back "the new version did not start, so the previous version was restored"
@@ -381,7 +446,7 @@ if mv "$ASIDE" "$OLD"; then
   exit 1
 fi
 log "ROLLBACK FAILED: old bundle is at $ASIDE, new at $FAILED"
-result rollback_failed "restore the previous version from $ASIDE"
+result rollback_failed "restore the previous version from $ASIDE; the new app is at $FAILED"
 exit 2
 '''
 
@@ -435,6 +500,7 @@ def _run_job(bundle, release, port, data_dir, quit_fn, blockers_fn, force, log):
     swap = None
     try:
         require_running_team(bundle)
+        expect_commit = require_release_commit(release)
         stage.mkdir(mode=0o700)
         zip_path = stage / 'Clayrune-macOS.zip'
         _download(release.get('download_url') or '', zip_path,
@@ -459,7 +525,8 @@ def _run_job(bundle, release, port, data_dir, quit_fn, blockers_fn, force, log):
         result_path.parent.mkdir(parents=True, exist_ok=True)
         script.write_text(build_swap_script(
             bundle=bundle, new_app=new_app, aside=aside, stage=stage, pid=os.getpid(),
-            port=port, log_path=log_path, result_path=result_path), encoding='utf-8')
+            port=port, log_path=log_path, result_path=result_path,
+            expect_commit=expect_commit, exe_name=bundle_executable(new_app)), encoding='utf-8')
         script.chmod(0o700)
 
         _set(state=RESTARTING)

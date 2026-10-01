@@ -278,6 +278,7 @@ class TestRoute:
         assert len(route['started']) == 1
         rel = route['started'][0]['release']
         assert rel['download_url'] == ZIP_URL  # not the client's
+        assert rel['remote_commit'] == 'bbb2222'  # what the helper will wait to hear from the new app
         assert rel['sha256'] == 'f' * 64 and rel['size'] == 4242
         assert rel['release_tag'] == 'v9.9.9'
         assert route['started'][0]['force'] is False
@@ -371,7 +372,7 @@ class TestJob:
         def quit_fn():
             env['calls']['quit'] += 1
         mu._set(state=mu.DOWNLOADING)
-        mu._run_job(env['bundle'], {'download_url': ZIP_URL}, 5199, env['data_dir'],
+        mu._run_job(env['bundle'], {'download_url': ZIP_URL, 'remote_commit': 'abc1234'}, 5199, env['data_dir'],
                     quit_fn, lambda: blockers, force, lambda m: None)
 
     def stages(self, env):
@@ -384,7 +385,8 @@ class TestJob:
         script = env['calls']['spawn'][0]
         text = script.read_text()
         assert env['bundle'].as_posix() in text and 'mv "$OLD" "$ASIDE"' in text
-        assert str(5199) in text and '/api/system/heartbeat' in text
+        assert str(5199) in text and '/api/system/update/status' in text
+        assert 'EXPECT=abc1234' in text
         assert (env['bundle'] / 'Contents' / 'MacOS' / 'Clayrune').read_text() == 'old'  # app untouched until it exits
 
     @pytest.mark.parametrize('stage_that_fails', ['_download', '_extract', 'verify_bundle'])
@@ -408,6 +410,19 @@ class TestJob:
         assert env['calls']['quit'] == 0
         assert self.stages(env) == []
 
+    def test_release_without_a_commit_aborts_before_downloading(self, env, monkeypatch):
+        monkeypatch.setattr(mu, '_download', lambda *a: pytest.fail('downloaded with nothing to confirm against'))
+        mu._set(state=mu.DOWNLOADING)
+        mu._run_job(env['bundle'], {'download_url': ZIP_URL}, 5199, env['data_dir'],
+                    lambda: pytest.fail('quit'), lambda: False, False, lambda m: None)
+        snap = mu.job_snapshot()
+        assert snap['state'] == mu.FAILED and 'which build' in snap['reason']
+        assert env['calls']['spawn'] == [] and self.stages(env) == []
+
+    def test_helper_is_told_the_executable_name_from_the_new_bundle(self, env):
+        self.run(env)
+        assert 'EXE="$OLD/Contents/MacOS/"Clayrune' in env['calls']['spawn'][0].read_text()
+
     def test_agents_started_mid_download_abort_unless_forced(self, env):
         self.run(env, blockers=True, force=False)
         assert mu.job_snapshot()['state'] == mu.FAILED
@@ -420,7 +435,7 @@ class TestJob:
         def bad_quit():
             raise RuntimeError('cannot quit')
         mu._set(state=mu.DOWNLOADING)
-        mu._run_job(env['bundle'], {'download_url': ZIP_URL}, 5199, env['data_dir'],
+        mu._run_job(env['bundle'], {'download_url': ZIP_URL, 'remote_commit': 'abc1234'}, 5199, env['data_dir'],
                     bad_quit, lambda: False, False, lambda m: None)
         assert mu.job_snapshot()['state'] == mu.FAILED
         assert env['calls'].get('terminated') is True
@@ -536,14 +551,21 @@ needs_sh = pytest.mark.skipif(SH is None, reason='no sh on PATH')
 
 
 class TestSwapHelper:
-    @pytest.fixture()
-    def layout(self, tmp_path):
+    """Runs the generated script under a real sh. External commands (open,
+    curl, ps, kill, mv) are stubs injected as shell FUNCTIONS naming the stub by
+    absolute path: a function beats a PATH lookup, so Git Bash's own /usr/bin
+    curl can never override the stub and reach a live server."""
+
+    COMMIT = 'abc1234'
+
+    @staticmethod
+    def make_layout(tmp_path, app_name='Clayrune.app'):
         parent = tmp_path / 'Applications'
-        old = parent / 'Clayrune.app'
+        old = parent / app_name
         old.mkdir(parents=True)
         (old / 'marker').write_text('old')
         stage = parent / '.clayrune-update-1'
-        new = stage / 'extracted' / 'Clayrune.app'
+        new = stage / 'extracted' / app_name
         new.mkdir(parents=True)
         (new / 'marker').write_text('new')
         stubs = tmp_path / 'stubs'
@@ -551,27 +573,49 @@ class TestSwapHelper:
         return {'parent': parent, 'old': old, 'new': new, 'stage': stage, 'stubs': stubs,
                 'aside': parent / '.Clayrune-previous-1',
                 'log': tmp_path / 'logs' / 'u.log', 'result': tmp_path / 'result.json',
-                'opened': tmp_path / 'opened.txt'}
+                'opened': tmp_path / 'opened.txt', 'curl_log': tmp_path / 'curl.txt',
+                'kill_log': tmp_path / 'kill.txt', 'alive': tmp_path / 'alive.txt'}
+
+    @pytest.fixture()
+    def layout(self, tmp_path):
+        return self.make_layout(tmp_path)
 
     def stub(self, layout, name, body):
         f = layout['stubs'] / name
-        f.write_text('#!/bin/sh\n' + body + '\n')
+        with open(f, 'w', newline='\n') as fh:  # LF even on Windows: CR would end up in ps output
+            fh.write('#!/bin/sh\n' + body + '\n')
         f.chmod(0o755)
 
-    def run(self, layout, *, pid=999999, curl_ok=True, wait_exit_s=2, wait_up_s=2):
+    def run(self, layout, *, pid=999999, curl_body='{"commit":"abc1234"}', ps_lines=(),
+            kill_alive=None, fail_failed_mv=False, expect=COMMIT, wait_exit_s=2, wait_up_s=2):
         layout['log'].parent.mkdir(parents=True, exist_ok=True)
         self.stub(layout, 'open', f'echo "$@" >> "{layout["opened"].as_posix()}"')
-        self.stub(layout, 'curl', 'exit 0' if curl_ok else 'exit 22')
-        self.stub(layout, 'pkill', 'exit 0')
-        self.stub(layout, 'pgrep', 'exit 1')
+        if curl_body is None:
+            self.stub(layout, 'curl', f'echo "$@" >> "{layout["curl_log"].as_posix()}"\nexit 22')
+        else:
+            self.stub(layout, 'curl', f'echo "$@" >> "{layout["curl_log"].as_posix()}"\n'
+                                      f"cat <<'EOF'\n{curl_body}\nEOF")
+        self.stub(layout, 'ps', 'cat <<\'EOF\'\n' + '\n'.join(ps_lines) + '\nEOF')
+        if kill_alive is not None:
+            layout['alive'].write_text('\n'.join(str(p) for p in kill_alive) + '\n')
+            self.stub(layout, 'kill',
+                      f'echo "$@" >> "{layout["kill_log"].as_posix()}"\n'
+                      f'if [ "$1" = "-0" ]; then grep -qx "$2" "{layout["alive"].as_posix()}"; exit $?; fi\n'
+                      'exit 0')
+        if fail_failed_mv:
+            self.stub(layout, 'mv', 'case "$2" in */.clayrune-failed-*) exit 1 ;; esac\nexec mv "$@"')
         script = layout['stage'] / 'swap.sh'
-        script.write_text(mu.build_swap_script(
+        text = mu.build_swap_script(
             bundle=layout['old'], new_app=layout['new'], aside=layout['aside'],
             stage=layout['stage'], pid=pid, port=5199, log_path=layout['log'],
-            result_path=layout['result'], wait_exit_s=wait_exit_s, wait_up_s=wait_up_s))
-        import os
-        env = dict(os.environ, PATH=str(layout['stubs']) + os.pathsep + os.environ['PATH'])
-        r = subprocess.run([SH, script.as_posix()], env=env, stdin=subprocess.DEVNULL,
+            result_path=layout['result'], expect_commit=expect,
+            wait_exit_s=wait_exit_s, wait_up_s=wait_up_s)
+        funcs = ''.join(f'{f.name}() {{ "{f.as_posix()}" "$@"; }}\n'
+                        for f in sorted(layout['stubs'].iterdir()))
+        head, rest = text.split('\n', 1)
+        with open(script, 'w', newline='\n') as fh:
+            fh.write(head + '\n' + funcs + rest)
+        r = subprocess.run([SH, script.as_posix()], stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=60)
         return r, json.loads(layout['result'].read_text())
 
@@ -583,16 +627,69 @@ class TestSwapHelper:
         assert not layout['aside'].exists() and not layout['stage'].exists()
         assert res['status'] == 'updated'
         assert layout['opened'].read_text().count('Clayrune.app') == 1
+        assert 'http://127.0.0.1:5199/api/system/update/status' in layout['curl_log'].read_text()  # the stub ran
+
+    @needs_sh
+    @pytest.mark.parametrize('body', [
+        '{"commit": "abc1234def5678"}',                    # full sha, spaced JSON
+        '{\n  "remote_commit": "zzz9999",\n  "commit": "abc1234"\n}',  # pretty-printed, other keys around it
+    ])
+    def test_new_build_answering_in_any_json_shape_counts_as_up(self, layout, body):
+        r, res = self.run(layout, curl_body=body)
+        assert res['status'] == 'updated', r.stdout + r.stderr
 
     @needs_sh
     def test_new_app_never_answers_rolls_back(self, layout):
-        r, res = self.run(layout, curl_ok=False)
+        r, res = self.run(layout, curl_body=None)
         assert r.returncode == 1, r.stdout + r.stderr
         assert (layout['old'] / 'marker').read_text() == 'old'
         assert not layout['aside'].exists() and not layout['stage'].exists()
         assert not any(p.name.startswith('.clayrune-failed') for p in layout['parent'].iterdir())
         assert res['status'] == 'rolled_back'
         assert layout['opened'].read_text().count('Clayrune.app') == 2  # new, then old again
+
+    @needs_sh
+    @pytest.mark.parametrize('body', [
+        '{"commit":"deadbee"}',                 # a different build holds the port
+        '{"status":"ok"}',                      # some other server entirely: 200, no commit
+        '{"remote_commit":"abc1234"}',          # only a look-alike key
+        '<html>hello</html>',
+        '',
+    ])
+    def test_foreign_server_on_the_port_is_not_the_new_app(self, layout, body):
+        r, res = self.run(layout, curl_body=body)
+        assert res['status'] == 'rolled_back', r.stdout + r.stderr
+        assert (layout['old'] / 'marker').read_text() == 'old'
+        assert not layout['aside'].exists()  # restored, only now removed
+
+    @needs_sh
+    def test_failed_mv_during_rollback_leaves_the_backup_untouched(self, layout):
+        r, res = self.run(layout, curl_body=None, fail_failed_mv=True)
+        assert r.returncode == 2, r.stdout + r.stderr
+        assert res['status'] == 'rollback_failed'
+        assert (layout['aside'] / 'marker').read_text() == 'old'   # backup not nested, not moved
+        assert not any((layout['aside'] / n).exists() for n in ('Clayrune.app',))
+        assert (layout['old'] / 'marker').read_text() == 'new'     # failed app still where it was
+        assert layout['aside'].as_posix() in res['reason'] and layout['old'].as_posix() in res['reason']
+
+    @needs_sh
+    def test_rollback_stops_only_the_exact_executable(self, tmp_path):
+        layout = self.make_layout(tmp_path, 'Clayrune [Beta].app')
+        exe = layout['old'].as_posix() + '/Contents/MacOS/Clayrune'
+        ps = [
+            f'  101 {exe}',                                   # the one to stop (ps pads the pid)
+            f'  102 {exe}-helper',                            # same prefix
+            f'  103 /elsewhere{exe}',                         # same suffix
+            f'  104 {exe} Helper',                            # exe path plus more
+            '  105 /usr/bin/vim',
+            f'  106 {layout["old"].as_posix()}',             # mentions the path, is not the exe
+        ]
+        r, res = self.run(layout, curl_body=None, ps_lines=ps, kill_alive=[101, 102, 103])
+        assert res['status'] == 'rolled_back', r.stdout + r.stderr
+        signals = [ln.split() for ln in layout['kill_log'].read_text().splitlines()
+                   if ln.split()[0] in ('-TERM', '-KILL')]
+        assert signals == [['-TERM', '101'], ['-KILL', '101']]  # 101 was still alive after the wait
+        assert (layout['old'] / 'marker').read_text() == 'old'
 
     @needs_sh
     @pytest.mark.skipif(sys.platform == 'win32', reason='MSYS pids differ from Windows pids')
@@ -611,7 +708,16 @@ class TestSwapHelper:
         weird = tmp_path / "My Apps" / "it's Clayrune.app"
         text = mu.build_swap_script(
             bundle=weird, new_app=tmp_path / 'n', aside=tmp_path / 'a', stage=tmp_path / 's',
-            pid=1, port=1, log_path=tmp_path / 'l', result_path=tmp_path / 'r')
+            pid=1, port=1, log_path=tmp_path / 'l', result_path=tmp_path / 'r',
+            expect_commit='abc1234')
         import shlex
         old_line = next(ln for ln in text.splitlines() if ln.startswith('OLD='))
         assert shlex.split(old_line)[0] == 'OLD=' + weird.as_posix()
+
+    @pytest.mark.parametrize('bad', ['', 'xyz', 'ABC1234', 'abc12', 'abc1234; rm', 'abc1234"'])
+    def test_unusable_expected_commit_is_refused_at_generation(self, tmp_path, bad):
+        with pytest.raises(ValueError):
+            mu.build_swap_script(
+                bundle=tmp_path / 'A.app', new_app=tmp_path / 'n', aside=tmp_path / 'a',
+                stage=tmp_path / 's', pid=1, port=1, log_path=tmp_path / 'l',
+                result_path=tmp_path / 'r', expect_commit=bad)
