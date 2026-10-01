@@ -42,6 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from mc import process_sweep as _process_sweep  # noqa: E402
+from mc.cli_install import install_method as _install_method  # noqa: E402
 
 _VER = re.compile(r'(\d+\.\d+\.\d+)')
 
@@ -70,6 +71,8 @@ class CLI:
 CLIS = [
     CLI('claude', '@anthropic-ai/claude-code', ['claude', 'update']),
     CLI('gemini', '@google/gemini-cli', ['npm', 'install', '-g', '@google/gemini-cli@latest']),
+    # update_cmd here is the NPM flavour only; update_argv() picks the real
+    # updater from where the resolved binary lives (standalone/npm/brew).
     CLI('codex', '@openai/codex', ['npm', 'install', '-g', '@openai/codex@latest']),
     CLI('opencode', 'opencode-ai', ['npm', 'install', '-g', 'opencode-ai@latest']),
     CLI('aider', None, None),
@@ -188,6 +191,31 @@ def _npm_prefix():
     if rc == 0 and out and not out.startswith('undefined'):
         return out.strip()
     return None
+
+
+def update_argv(cli, path):
+    """(argv or None, note) -- the updater that matches HOW `path` was installed.
+
+    codex is install-method-aware: a standalone install is updated by re-running
+    OpenAI's install script, npm by npm, Homebrew by brew. Running npm over a
+    standalone copy leaves two codexes and PATH roulette (Keegan's Mac,
+    2026-10-01: no npm on PATH at all). An install method we cannot tell is
+    reported, never guessed at. Every other CLI keeps its fixed `update_cmd`;
+    detection lives in mc/cli_install.py, shared with the in-app Update button.
+    """
+    if cli.name != 'codex':
+        return (list(cli.update_cmd) if cli.update_cmd else None), None
+    method = _install_method(path)
+    if method == 'npm':
+        return list(cli.update_cmd) if cli.update_cmd else None, method
+    if method == 'standalone':
+        return ['sh', '-c', 'curl -fsSL https://chatgpt.com/codex/install.sh | sh'], method
+    if method == 'standalone-windows':
+        return ['powershell', '-ExecutionPolicy', 'ByPass', '-c',
+                'irm https://chatgpt.com/codex/install.ps1 | iex'], method
+    if method == 'brew':
+        return ['brew', 'upgrade', '--cask', 'codex'], method
+    return None, method
 
 
 def npm_package_dir(cli):
@@ -390,10 +418,17 @@ def check_one(cli, apply_updates=False):
 
     latest = latest_version(cli.npm_package)
     shadows = shadow_check(cli.name, path)
+    argv, method = update_argv(cli, path)
+    if argv != cli.update_cmd:
+        # Work on a copy carrying the method-matched updater, so npm-only
+        # preflight (npm_package_dir) is skipped for a standalone/brew install.
+        cli = CLI(cli.name, cli.npm_package, argv)
     row = {
         'name': cli.name, 'installed': inst, 'latest': latest, 'path': path,
         'shadowed_by': shadows, 'status': 'ok', 'updated': False,
     }
+    if method is not None:
+        row['install_method'] = method or 'unknown'
 
     # Diagnostic-only, independent of --apply/--behind: surface orphaned CLI
     # processes and sweep stale rename-aside files from a prior run, so a
@@ -424,6 +459,9 @@ def check_one(cli, apply_updates=False):
     elif shadows:
         row['status'] = 'shadowed'
 
+    if apply_updates and behind and not cli.update_cmd and method is not None:
+        row['update_skipped'] = ('install method unknown for %s -- not guessing an updater'
+                                 % path)
     if apply_updates and behind and cli.update_cmd:
         # Resolve argv[0] (npm -> npm.cmd on Windows): a bare 'npm' raised
         # FileNotFoundError here and every npm update silently failed.

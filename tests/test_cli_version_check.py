@@ -90,7 +90,7 @@ def test_check_one_blocks_when_process_enumeration_fails_npm_not_invoked(cvc, tm
     monkeypatch.setattr(cvc, 'npm_package_dir', lambda c: str(pkg_dir))
     monkeypatch.setattr(cvc, 'aside_dir_for', lambda c: str(tmp_path / 'aside'))
     monkeypatch.setattr(cvc, 'list_processes', lambda: None)  # enumeration failed
-    monkeypatch.setattr(cvc, 'installed_version', lambda name: ('0.155.1', r'C:\fake\codex.cmd'))
+    monkeypatch.setattr(cvc, 'installed_version', lambda name: ('0.155.1', r'C:\fake\npm\codex.cmd'))
     monkeypatch.setattr(cvc, 'latest_version', lambda pkg: '0.158.0')
     monkeypatch.setattr(cvc, 'shadow_check', lambda name, path: [])
 
@@ -183,7 +183,7 @@ def test_rename_aside_success_lets_install_proceed(cvc, tmp_path, monkeypatch):
     ])
 
     versions = iter(['0.155.1', '0.158.0'])  # before install, after install
-    monkeypatch.setattr(cvc, 'installed_version', lambda name: (next(versions), r'C:\fake\codex.cmd'))
+    monkeypatch.setattr(cvc, 'installed_version', lambda name: (next(versions), r'C:\fake\npm\codex.cmd'))
     monkeypatch.setattr(cvc, 'latest_version', lambda pkg: '0.158.0')
     monkeypatch.setattr(cvc, 'shadow_check', lambda name, path: [])
 
@@ -221,7 +221,7 @@ def test_rename_aside_failure_blocks_install_npm_not_invoked(cvc, tmp_path, monk
         {'pid': 4242, 'ppid': 100, 'name': 'codex', 'exe': str(locked_exe), 'start_epoch': time.time()},
     ])
     monkeypatch.setattr(cvc, 'rename_aside', lambda path, aside_dir: None)  # simulate a rename that can't succeed
-    monkeypatch.setattr(cvc, 'installed_version', lambda name: ('0.155.1', r'C:\fake\codex.cmd'))
+    monkeypatch.setattr(cvc, 'installed_version', lambda name: ('0.155.1', r'C:\fake\npm\codex.cmd'))
     monkeypatch.setattr(cvc, 'latest_version', lambda pkg: '0.158.0')
     monkeypatch.setattr(cvc, 'shadow_check', lambda name, path: [])
 
@@ -252,7 +252,7 @@ def test_blocked_when_npm_prefix_unknown_no_safe_aside_location(cvc, tmp_path, m
     monkeypatch.setattr(cvc, 'list_processes', lambda: [
         {'pid': 4242, 'ppid': 100, 'name': 'codex', 'exe': str(locked_exe), 'start_epoch': time.time()},
     ])
-    monkeypatch.setattr(cvc, 'installed_version', lambda name: ('0.155.1', r'C:\fake\codex.cmd'))
+    monkeypatch.setattr(cvc, 'installed_version', lambda name: ('0.155.1', r'C:\fake\npm\codex.cmd'))
     monkeypatch.setattr(cvc, 'latest_version', lambda pkg: '0.158.0')
     monkeypatch.setattr(cvc, 'shadow_check', lambda name, path: [])
 
@@ -279,7 +279,7 @@ def test_retry_once_after_downgrade_then_succeeds(cvc, tmp_path, monkeypatch):
     monkeypatch.setattr(cvc, 'latest_version', lambda pkg: '0.158.0')
 
     versions = iter(['0.155.1', '0.154.1', '0.158.0'])  # start, after attempt1 (downgrade), after attempt2
-    monkeypatch.setattr(cvc, 'installed_version', lambda name: (next(versions), r'C:\fake\codex.cmd'))
+    monkeypatch.setattr(cvc, 'installed_version', lambda name: (next(versions), r'C:\fake\npm\codex.cmd'))
     monkeypatch.setattr(cvc.shutil, 'which', lambda x: x)
 
     run_calls = []

@@ -2162,6 +2162,7 @@ def agent_providers():
                         last_checked=probe.get('last_checked') or h.auth_state.last_checked,
                     ),
                     install_hint=h.install_hint, diagnostic=h.diagnostic,
+                    update_hint=h.update_hint, update_reason=h.update_reason,
                 )
             except Exception as e:
                 _log(f'[providers] refresh auth_probe failed for {rt.name}: {e}', flush=True)
@@ -2230,6 +2231,8 @@ def agent_providers():
             'binary_path': str(h.binary_path) if h.binary_path else None,
             'version': h.version,
             'install_hint': h.install_hint,
+            'update_hint': h.update_hint,
+            'update_reason': h.update_reason,
             'auth_status': h.auth_state.status if h.auth_state else 'unknown',
             'auth_error_text': h.auth_state.error_text if h.auth_state else None,
             'capabilities': caps_dict,
@@ -2316,6 +2319,8 @@ def agent_provider_auth_status(name):
         'auth_method': h.auth_state.method if h.auth_state else None,
         'auth_error_text': h.auth_state.error_text if h.auth_state else None,
         'install_hint': h.install_hint,
+        'update_hint': h.update_hint,
+        'update_reason': h.update_reason,
     })
 
 
@@ -2907,15 +2912,43 @@ def agent_provider_install_launch(name):
         rt = _agent_runtime.get_runtime(name)
     except KeyError:
         return jsonify({'error': f'unknown provider {name}'}), 404
+    # {"update": true} updates an INSTALLED CLI the runtime reports as too old
+    # (HealthStatus.update_hint, chosen from HOW that binary was installed),
+    # so the user updates from the button and never types a command into a
+    # shell that may have no npm (nvm is sourced only inside the install
+    # terminal).
+    want_update = bool((request.get_json(silent=True) or {}).get('update'))
     try:
-        hint = rt.health_check().install_hint or ''
+        h = rt.health_check()
+        hint = (h.update_hint if want_update else h.install_hint) or ''
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e), 'command': ''}), 200
     if not hint:
         return jsonify({'ok': False,
-                        'error': f'no automatic install available for {name}',
+                        'error': (f'{name} cannot be updated automatically '
+                                  f'from here' if want_update else
+                                  f'no automatic install available for {name}'),
                         'command': ''}), 200
     _merge_registry_path()  # npm/node from an nvm install made after boot
+    if want_update and hint != _agent_runtime.CODEX_UPDATE_COMMANDS['npm']:
+        # Standalone (install.sh / install.ps1) and Homebrew installs are
+        # updated by their OWN tool, run exactly as the vendor documents --
+        # never npm over them (two copies, PATH picks one). Fixed strings
+        # only: anything the runtime reports outside the allowlist is refused.
+        if hint not in _agent_runtime.CODEX_UPDATE_COMMANDS.values():
+            return jsonify({'ok': False,
+                            'error': 'unsupported provider update command',
+                            'command': ''}), 200
+        required = _install_command_required_binary(hint)
+        if required != 'powershell' and not shutil.which(required):
+            return jsonify({'ok': False, 'error': f'{required} not found on PATH',
+                            'command': ''}), 200
+        session_id, err = _launch_install_terminal(hint)
+        if err:
+            return jsonify({'ok': False, 'error': err, 'command': ''}), 200
+        return jsonify({'ok': True, 'command': hint, 'prerequisite': None,
+                        'execution_policy': None,
+                        'session_id': session_id, 'pty': False})
     command, prerequisite = _provider_install_command(name, hint)
     if prerequisite == 'unsupported':
         return jsonify({'ok': False,

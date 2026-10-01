@@ -2791,3 +2791,301 @@ class TestKiroArgvSafety:
         self.rt.dispatch(project_path='.', task='say hi',
                          mc_session_id='t1', project_id='p1')
         assert 'say hi' in ' '.join(captured['cmd'])
+
+
+# ── Codex "model not supported" 400 (2026-10-01, Keegan's Mac) ────────────────
+# codex-cli 0.153.0 + `gpt-6-sol` -> 400 "not supported when using Codex with a
+# ChatGPT account". The same account runs gpt-6-sol on 0.159.3, so the cause is
+# the OUTDATED CLI, not the account type: nothing below keys on account type.
+
+_REFUSAL = ('{"type":"error","status":400,"error":{"type":"invalid_request_error",'
+            '"message":"The \'gpt-6-sol\' model is not supported when using Codex '
+            'with a ChatGPT account."}}')
+
+
+def test_codex_model_rejection_is_classified_deterministically():
+    from mc.agent_runtime import codex_model_rejection
+    assert codex_model_rejection(_REFUSAL) == 'gpt-6-sol'
+    assert codex_model_rejection(
+        "The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account."
+    ) == 'gpt-6-sol'
+    # a payload that carries a status must carry 400
+    assert codex_model_rejection(_REFUSAL.replace('"status":400', '"status":500')) is None
+    assert codex_model_rejection('usage_limit_exceeded: chatgpt.com/codex/settings/usage') is None
+    assert codex_model_rejection('') is None
+
+
+def test_codex_parse_event_tags_the_rejected_model():
+    rt = CodexRuntime()
+    ev = rt.parse_event(_REFUSAL)
+    assert ev.type == EventType.ERROR
+    assert ev.payload['model_rejected'] == 'gpt-6-sol'
+    # same text under a non-400 envelope status is NOT a model rejection
+    ev2 = rt.parse_event(_REFUSAL.replace('"status":400', '"status":502'))
+    assert ev2.type == EventType.ERROR and 'model_rejected' not in ev2.payload
+
+
+def test_codex_explain_exit_error_names_the_model_and_does_not_blame_auth():
+    hint = CodexRuntime().explain_exit_error(
+        1, "[codex error] The 'gpt-6-sol' model is not supported when using "
+           "Codex with a ChatGPT account.")
+    assert "'gpt-6-sol'" in hint
+    assert 'Update' in hint and 'engine picker' in hint and 'blank' in hint
+    assert "isn't authenticated" not in hint
+    # never steers to an API key, never hands the user a raw npm line
+    assert 'API' not in hint and 'npm' not in hint.lower()
+
+
+_STANDALONE_BIN = '/Users/k/.codex/packages/standalone/current/bin/codex'
+
+
+@pytest.mark.parametrize('version,advised', [
+    ('codex-cli 0.153.0', True),
+    ('codex-cli 0.156.9', True),
+    ('codex-cli 0.157.0', False),
+    ('codex-cli 0.159.3', False),
+    (None, False),
+    ('not a version', False),
+])
+def test_codex_cli_update_advice_floor(version, advised):
+    hint, reason = CodexRuntime.cli_update_advice(version, _STANDALONE_BIN)
+    assert bool(hint) is advised and bool(reason) is advised
+    if advised:
+        assert '0.157.0' in reason
+
+
+@pytest.mark.parametrize('path,platform,method', [
+    # Keegan's Mac: OpenAI's standalone install.sh (no nvm, no npm)
+    ('/Users/k/.codex/packages/standalone/current/bin/codex', 'darwin', 'standalone'),
+    ('C:\\Users\\k\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe',
+     'win32', 'standalone-windows'),
+    ('/Users/k/.nvm/versions/node/v20.1.0/bin/codex', 'darwin', 'npm'),
+    ('/usr/lib/node_modules/@openai/codex/bin/codex.js', 'linux', 'npm'),
+    ('C:\\Users\\k\\AppData\\Roaming\\npm\\codex.cmd', 'win32', 'npm'),
+    ('/opt/homebrew/Caskroom/codex/0.153.0/codex', 'darwin', 'brew'),
+    ('/usr/local/bin/codex', 'darwin', ''),
+    ('', 'darwin', ''),
+    (None, 'darwin', ''),
+])
+def test_codex_install_method_is_read_from_the_binary_path(path, platform, method):
+    from mc.agent_runtime import codex_install_method
+    assert codex_install_method(path, platform) == method
+
+
+def test_codex_update_command_matches_the_installer(monkeypatch):
+    from mc.agent_runtime import CODEX_UPDATE_COMMANDS as C
+    monkeypatch.setattr(sys, 'platform', 'darwin')
+    old = 'codex-cli 0.153.0'
+    # standalone is re-run through ITS installer, never npm (two copies, PATH roulette)
+    assert CodexRuntime.cli_update_advice(old, _STANDALONE_BIN)[0] == C['standalone']
+    assert 'npm' not in C['standalone'] and 'install.sh' in C['standalone']
+    assert 'install.ps1' in C['standalone-windows']
+    assert CodexRuntime.cli_update_advice(old, '/Users/k/.nvm/versions/node/v20/bin/codex')[0] == C['npm']
+    assert CodexRuntime.cli_update_advice(old, '/opt/homebrew/Caskroom/codex/1/codex')[0] == C['brew']
+    # unknown install method: no automatic updater, but the reason still shows
+    hint, reason = CodexRuntime.cli_update_advice(old, '/usr/local/bin/codex')
+    assert hint == '' and '0.157.0' in reason and 'installed it with' in reason
+
+
+class TestCodexNeverPassesAnUnlistedModel:
+    def setup_method(self):
+        self.rt = CodexRuntime()
+        self.rt._bin_cache = 'codex'
+        self.rt._npx_fallback = False
+
+    def _cache(self, monkeypatch, tmp_path, slugs, missing=False):
+        from conftest import stub_codex_models_cache
+        models = [{'slug': s, 'display_name': s, 'visibility': 'list', 'priority': i}
+                  for i, s in enumerate(slugs)]
+        stub_codex_models_cache(monkeypatch, tmp_path, models, missing=missing)
+
+    def test_model_absent_from_the_cli_cache_is_dropped_with_a_named_warning(
+            self, monkeypatch, tmp_path):
+        self._cache(monkeypatch, tmp_path, ['gpt-5.6-sol', 'gpt-5.5'])
+        monkeypatch.setattr(CodexRuntime, '_installed_cli_version',
+                            lambda self: 'codex-cli 0.153.0')
+        model, warn = self.rt._gate_model('gpt-6-sol')
+        assert model == ''
+        assert "'gpt-6-sol'" in warn and '0.153.0' in warn and 'Update' in warn
+
+    def test_model_in_the_cache_passes_through(self, monkeypatch, tmp_path):
+        self._cache(monkeypatch, tmp_path, ['gpt-6-sol'])
+        monkeypatch.setattr(CodexRuntime, '_installed_cli_version',
+                            lambda self: 'codex-cli 0.159.3')
+        assert self.rt._gate_model('gpt-6-sol') == ('gpt-6-sol', '')
+
+    def test_missing_cache_old_cli_drops_gpt6_only(self, monkeypatch, tmp_path):
+        self._cache(monkeypatch, tmp_path, [], missing=True)
+        monkeypatch.setattr(CodexRuntime, '_installed_cli_version',
+                            lambda self: 'codex-cli 0.153.0')
+        assert self.rt._gate_model('gpt-6-sol')[0] == ''
+        assert self.rt._gate_model('gpt-5.5') == ('gpt-5.5', '')
+
+    def test_missing_cache_unknown_version_passes_through(self, monkeypatch, tmp_path):
+        self._cache(monkeypatch, tmp_path, [], missing=True)
+        monkeypatch.setattr(CodexRuntime, '_installed_cli_version', lambda self: None)
+        assert self.rt._gate_model('gpt-6-sol') == ('gpt-6-sol', '')
+
+    def test_legacy_ids_and_blank_stay_explicit(self, monkeypatch, tmp_path):
+        self._cache(monkeypatch, tmp_path, ['gpt-5.5'])
+        monkeypatch.setattr(CodexRuntime, '_installed_cli_version',
+                            lambda self: 'codex-cli 0.153.0')
+        assert self.rt._gate_model('gpt-5.4') == ('gpt-5.4', '')
+        assert self.rt._gate_model('') == ('', '')
+
+    def test_dispatch_omits_dash_m_and_logs_the_warning(self, monkeypatch, tmp_path):
+        self._cache(monkeypatch, tmp_path, ['gpt-5.5'])
+        monkeypatch.setattr(CodexRuntime, '_installed_cli_version',
+                            lambda self: 'codex-cli 0.153.0')
+        captured = {}
+
+        def fake_dispatch(rt, cmd, *a, **k):
+            captured['cmd'] = cmd
+            return object()
+        monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', fake_dispatch)
+        sd = {'trigger_type': 'manual', 'log_lines': []}
+        self.rt.dispatch(project_path='.', task='hi', model='gpt-6-sol',
+                         mc_session_id='t1', project_id='p1', session_dict=sd)
+        assert '-m' not in captured['cmd'] and '--model' not in captured['cmd']
+        assert any(l.startswith("[codex warn] Model 'gpt-6-sol'") for l in sd['log_lines'])
+        assert sd['_codex_native_model'] is True
+
+    def test_picker_offers_only_what_the_cli_cache_lists(self, monkeypatch, tmp_path):
+        self._cache(monkeypatch, tmp_path, ['gpt-5.6-sol', 'gpt-5.5'])
+        assert [m for m, _ in self.rt.model_choices()] == ['gpt-5.6-sol', 'gpt-5.5']
+
+
+class TestCodexRefusedModelRetriesOnce:
+    def _run(self, monkeypatch, *, already_retried=False):
+        import io
+        spawned = []
+        monkeypatch.setattr(CodexRuntime, '_installed_cli_version',
+                            lambda self: 'codex-cli 0.153.0')
+        def fake_spawn(self, h, cmd, prompt, resume):
+            spawned.append((cmd, prompt, resume))
+            h.session_dict['proc'] = object()   # what the real _spawn_turn does
+        monkeypatch.setattr(CodexRuntime, '_spawn_turn', fake_spawn)
+
+        class _Proc:
+            stdout = io.StringIO(_REFUSAL + '\n')
+
+            def wait(self):
+                return 1
+        proc = _Proc()
+        session = {'log_lines': [], 'proc': proc, 'status': 'running',
+                   '_codex_last_prompt': 'do the thing', '_codex_last_resume': '',
+                   '_codex_unattended_sandbox': False, '_codex_fence_armed': False,
+                   'agent_model': 'gpt-6-sol'}
+        if already_retried:
+            session['_codex_retried_without_model'] = True
+        rt = CodexRuntime()
+        rt._bin_cache = 'codex'
+        handle = agent_runtime.SessionHandle(
+            mc_session_id='x', provider='codex', mode='A', project_path='.',
+            project_id='p', session_dict=session)
+        agent_runtime._mode_a_reader(proc, handle, rt)
+        return session, spawned
+
+    def test_one_labelled_retry_without_dash_m(self, monkeypatch):
+        session, spawned = self._run(monkeypatch)
+        assert len(spawned) == 1
+        cmd, prompt, resume = spawned[0]
+        assert '-m' not in cmd and 'gpt-6-sol' not in cmd
+        assert prompt == 'do the thing' and resume == ''
+        warn = [l for l in session['log_lines'] if l.startswith('[codex warn]')]
+        assert len(warn) == 1 and "'gpt-6-sol'" in warn[0] and 'native default' in warn[0]
+        # the retry's reader owns the status: this one must not mark it errored
+        assert session['status'] == 'running'
+        assert not any(l.startswith('[hint]') for l in session['log_lines'])
+        assert session['_codex_native_model'] is True   # later turns stay native too
+
+    def test_second_refusal_does_not_loop(self, monkeypatch):
+        session, spawned = self._run(monkeypatch, already_retried=True)
+        assert spawned == []
+        assert session['status'] == 'error'
+        assert any(l.startswith('[hint]') and "'gpt-6-sol'" in l for l in session['log_lines'])
+
+
+def test_codex_service_tier_config_notice_is_a_notice_with_its_own_text():
+    """Keegan's own config.toml names a tier his account does not advertise;
+    Codex falls back. It was shown as `[codex error]`, and must not be
+    rewritten to the hook-trust sentence either."""
+    import io
+    from mc.agent_runtime import codex_error_is_notice
+    text = 'Configured service tier priority is not advertised for this account'
+    assert codex_error_is_notice(text)
+    assert not codex_error_is_notice('The service tier is unavailable')
+    line = json.dumps({'type': 'error', 'message': text})
+
+    class _Proc:
+        stdout = io.StringIO(line + '\n')
+
+        def wait(self):
+            return 0
+    proc = _Proc()
+    session = {'log_lines': [], 'proc': proc, 'status': 'running'}
+    handle = agent_runtime.SessionHandle(
+        mc_session_id='tier-notice', provider='codex', mode='A', project_path='.',
+        project_id='p', session_dict=session)
+    agent_runtime._mode_a_reader(proc, handle, CodexRuntime())
+    assert any(l.startswith('[codex notice] ') and 'service tier priority' in l
+               for l in session['log_lines'])
+    assert not any('[codex error]' in l or 'hook-trust' in l for l in session['log_lines'])
+
+
+class TestCodexVersionMemoInvalidatesOnBinaryReplace:
+    """The in-app Update keeps the SAME path, so a path-only memo served the
+    pre-update version until a server restart (review of 44585202)."""
+
+    def _rig(self, monkeypatch, tmp_path):
+        import subprocess as _sp
+        import mc.agent_runtime as ar
+        exe = tmp_path / 'codex'
+        exe.write_bytes(b'v1')
+        monkeypatch.setattr(CodexRuntime, '_cli_version_cache', {})
+        monkeypatch.setattr(CodexRuntime, 'resolve_binary', lambda self: str(exe))
+        monkeypatch.setattr(CodexRuntime, '_cmd_prefix', lambda self: [str(exe)])
+        shown = {'v': 'codex-cli 0.153.0', 'probes': 0}
+
+        def fake_run(cmd, **kw):
+            shown['probes'] += 1
+            return _sp.CompletedProcess(cmd, 0, stdout=shown['v'] + '\n', stderr='')
+
+        monkeypatch.setattr(ar.subprocess, 'run', fake_run)
+        return exe, shown
+
+    def test_unchanged_binary_is_probed_once(self, monkeypatch, tmp_path):
+        _exe, shown = self._rig(monkeypatch, tmp_path)
+        rt = CodexRuntime()
+        assert rt._installed_cli_version() == 'codex-cli 0.153.0'
+        assert rt._installed_cli_version() == 'codex-cli 0.153.0'
+        assert shown['probes'] == 1
+
+    def test_replaced_binary_at_same_path_reprobes(self, monkeypatch, tmp_path):
+        import os
+        exe, shown = self._rig(monkeypatch, tmp_path)
+        rt = CodexRuntime()
+        assert rt._installed_cli_version() == 'codex-cli 0.153.0'
+        exe.write_bytes(b'v2-longer')
+        st = exe.stat()
+        os.utime(exe, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+        shown['v'] = 'codex-cli 0.160.0'
+        assert rt._installed_cli_version() == 'codex-cli 0.160.0'
+        assert shown['probes'] == 2
+
+    def test_symlink_retargeted_to_new_version_reprobes(self, monkeypatch, tmp_path):
+        import os
+        old = tmp_path / 'v1'; old.write_bytes(b'same')
+        new = tmp_path / 'v2'; new.write_bytes(b'same')
+        link = tmp_path / 'link'
+        try:
+            os.symlink(old, link)
+        except (OSError, NotImplementedError):
+            pytest.skip('symlinks unavailable')
+        _exe, shown = self._rig(monkeypatch, tmp_path)
+        monkeypatch.setattr(CodexRuntime, 'resolve_binary', lambda self: str(link))
+        rt = CodexRuntime()
+        rt._installed_cli_version()
+        link.unlink(); os.symlink(new, link)
+        shown['v'] = 'codex-cli 0.160.0'
+        assert rt._installed_cli_version() == 'codex-cli 0.160.0'

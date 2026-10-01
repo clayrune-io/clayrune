@@ -767,6 +767,16 @@ function _renderProviderRow(p, opts) {
   // utility actions there (.setup-btn-utility), same rule as every other
   // in-step button. Settings keeps its own .btn-add look unchanged.
   const rowBtnCls = setup ? 'setup-btn-utility' : 'btn-add';
+  // Installed but too old for what Clayrune offers it (Codex < the GPT-6
+  // catalog): the server names the reason and the Update button re-runs the
+  // install through Clayrune's own terminal -- never a raw npm command for
+  // the user to type into a shell that may have no npm.
+  const updateRow = (installed && p.update_reason) ? `
+            <div class="prov-row-update" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px 0;font-size:11px;color:var(--amber)">
+              <span>${esc(p.update_reason || 'A newer version is needed.')}</span>
+              ${p.update_hint ? `<button type="button" class="${setup ? 'setup-btn-utility' : 'btn-add'} prov-update" style="padding:2px 10px;font-size:11px;flex-shrink:0"
+                onclick="event.preventDefault();providerInstall('${n}',this,true)">Update ${esc(p.display_name)}</button>` : ''}
+            </div>` : '';
   const installBtn = installed ? '' : `
               <button type="button" class="${rowBtnCls} prov-install" style="padding:2px 10px;font-size:11px;flex-shrink:0"
                 onclick="event.preventDefault();providerInstall('${n}',this)">Install</button>`;
@@ -842,6 +852,7 @@ function _renderProviderRow(p, opts) {
             </label>
             ${actions}
             ${allowance}
+            ${updateRow}
             ${detail}
             ${extra}
             <div id="prov-install-msg-${n}" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0">${esc(_providerInstallMsg[p.name] || '')}</div>
@@ -947,33 +958,39 @@ function _repaintProviderRows() {
 // on a phone, where a new OS window on the host would be invisible. Never
 // invents its own command: {ok:false} always carries the exact one to run by
 // hand when the server can't launch it itself (no npm/curl on PATH).
-async function providerInstall(name, btnEl) {
+async function providerInstall(name, btnEl, update) {
   const msgEl = document.getElementById(`prov-install-msg-${name}`);
-  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Installing...'; }
+  const idleLabel = update ? 'Update' : 'Install';
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = update ? 'Updating...' : 'Installing...'; }
   try {
     const res = await fetch(API_BASE + `/api/agent/provider/${name}/install-launch`,
-                            { method: 'POST' });
+                            update ? { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                       body: JSON.stringify({ update: true }) }
+                                   : { method: 'POST' });
     const data = await res.json().catch(() => ({}));
     if (data.ok) {
       if (data.session_id) {
         openTerminalPopout(window.currentProjectId, data.session_id, data.command || name, data.pty);
       }
-      if (msgEl) msgEl.textContent = 'A terminal opened to install it. Once it finishes, click Refresh.' + _providerPolicyNote(data);
+      if (msgEl) msgEl.textContent = (update ? 'A terminal opened to update it. Once it finishes, click Refresh.'
+                                              : 'A terminal opened to install it. Once it finishes, click Refresh.') + _providerPolicyNote(data);
       if (btnEl) {
         btnEl.textContent = 'Refresh';
         btnEl.disabled = false;
         btnEl.onclick = (e) => { e.preventDefault(); providerRefreshAll(); };
       }
-    } else if (data.command) {
+    } else if (data.command && !update) {
       if (msgEl) msgEl.textContent = `Couldn't start that here (${data.error || 'no runnable install'}). Run this yourself: ${data.command}`;
-      if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Install'; }
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = idleLabel; }
     } else {
-      if (msgEl) msgEl.textContent = data.error || 'Could not start the install.';
-      if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Install'; }
+      // An update never prints the raw npm line: on a Mac with an nvm-only
+      // Node a plain shell has no npm, so typing it there fails.
+      if (msgEl) msgEl.textContent = data.error || (update ? 'Could not start the update.' : 'Could not start the install.');
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = idleLabel; }
     }
   } catch (e) {
-    if (msgEl) msgEl.textContent = 'Install failed: ' + e;
-    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Install'; }
+    if (msgEl) msgEl.textContent = (update ? 'Update failed: ' : 'Install failed: ') + e;
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = idleLabel; }
   }
 }
 
