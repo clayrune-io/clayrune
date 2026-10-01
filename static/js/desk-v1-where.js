@@ -38,7 +38,6 @@
   function _fx() { return window.DeskV1Fixtures || {}; }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id) || null; }
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id) || null; }
-  function _project(id) { return (_fx().projects || []).find((p) => p.id === id) || null; }
   function _familiesFor(campaignId) { return (_fx().families || []).filter((f) => f.campaignId === campaignId); }
 
   let _seq = 0;
@@ -99,16 +98,12 @@
     return out;
   }
 
-  // The tray: a project's own connected accounts, plus every not-connected
-  // platform. A project-less draft has no account list yet, so it offers every
-  // connected account in the workspace (Launch checks the fit once one is picked).
-  function _sources(camp) {
+  // The tray: every connected workspace account (accounts are the workspace's,
+  // connected on the Connections screen — not a per-project list), plus every
+  // not-connected one, whose card routes there.
+  function _sources() {
     const all = _fx().channels || [];
-    const project = _project(camp.projectId);
-    const bound = project && project.presence
-      ? (project.presence.accounts || []).map((a) => _channel(a.channel_id)).filter(Boolean)
-      : all.filter((c) => c.connected !== false);
-    return { bound: bound.filter((c) => c.connected !== false), off: all.filter((c) => c.connected === false) };
+    return { bound: all.filter((c) => c.connected !== false), off: all.filter((c) => c.connected === false) };
   }
 
   // ── state ────────────────────────────────────────────────────────────────
@@ -317,6 +312,7 @@
         </div>
         <button type="button" class="desk-v1-where-colremove" data-where-remove data-channel-id="${esc(ch.id)}" aria-label="${esc(`Remove ${ch.identity} (${plat.word}) from this campaign`)}">✕</button>
       </header>
+      <label class="desk-v1-where-voice">Voice <input type="text" class="desk-v1-rules-textinput" data-where-voice data-channel-id="${esc(ch.id)}" maxlength="80" value="${esc(DeskV1Kit.accountVoice(camp.plan, ch))}" placeholder="How this account sounds"></label>
       <div class="desk-v1-where-colbody">${body}</div>
     </section>`;
   }
@@ -369,7 +365,7 @@
   function _paint(el, camp) {
     const cols = _columnChannels(camp);
     const fams = _familiesFor(camp.id);
-    const src = _sources(camp);
+    const src = _sources();
     el.innerHTML = `<div class="desk-v1-where" data-where data-campaign-id="${esc(camp.id)}">
       ${_suggestHTML(camp)}
       ${_awaitingHTML(camp)}
@@ -428,10 +424,21 @@
       btn.onclick = () => _removeColumn(camp, btn.dataset.channelId);
     });
     el.querySelectorAll('[data-where-connect]').forEach((btn) => {
-      btn.onclick = () => {
-        if (camp.projectId) window.deskV1Nav('presence', { projectId: camp.projectId });
-        else DeskV1Kit.toast('Pick a project at Launch first — accounts are connected per project.');
-      };
+      btn.onclick = () => window.deskV1Nav('connections');
+    });
+    el.querySelectorAll('[data-where-voice]').forEach((inp) => {
+      inp.addEventListener('change', () => {
+        const chId = inp.dataset.channelId;
+        const ch = _channel(chId);
+        const prev = (camp.plan.voices || {})[chId];
+        const next = inp.value.trim();
+        if (next === DeskV1Kit.accountVoice(camp.plan, ch)) return;
+        DeskV1Kit.commandBus.run({
+          label: `Set ${ch ? ch.identity : 'account'} voice to “${next || 'default'}”`,
+          do: () => { camp.plan.voices = camp.plan.voices || {}; if (next) camp.plan.voices[chId] = next; else delete camp.plan.voices[chId]; _repaint(); },
+          undo: () => { camp.plan.voices = camp.plan.voices || {}; if (prev) camp.plan.voices[chId] = prev; else delete camp.plan.voices[chId]; _repaint(); },
+        });
+      });
     });
     DeskV1Kit.bindBecauseChips(el, camp.projectId);
     const accept = el.querySelector('[data-where-suggest-accept]');
