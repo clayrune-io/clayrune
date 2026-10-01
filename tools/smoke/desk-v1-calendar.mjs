@@ -50,6 +50,8 @@ for (const f of readdirSync(ASSETS_DIR)) {
   if (MIME[ext]) STATIC[`/assets/${f}`] = [MIME[ext], readFileSync(resolve(ASSETS_DIR, f))];
 }
 
+const SMOKE_TZ = 'America/Los_Angeles';
+const SMOKE_NOW = new Date('2026-09-30T12:00:00-07:00');
 const PID = 'smoke_deskv1calendar';
 const PROJECTS = [{
   id: PID, name: 'Desk v1 calendar smoke', status: 'active', domain: 'general', emoji: '🧪',
@@ -88,7 +90,19 @@ async function fulfillOrAbort(route) {
 }
 
 async function newBootedPage(browser, tone, viewport) {
-  const ctx = await browser.newContext({ viewport: viewport || { width: 1440, height: 950 } });
+  // PIN THE WALL CLOCK AND THE ZONE. The fixtures (desk-v1-fixtures.js:
+  // CALENDAR_SCHEDULE, publishedAt/publishAt) are dated late Sep / 1 Oct 2026 and
+  // authored in -07:00; the calendar anchors on the page's own `new Date()`. Run
+  // against the real clock this smoke passed 2026-09-30 and failed from 2026-10-01
+  // (month view moved to October, so only 'Thursday, Oct 1' had chips). The product
+  // is right on that boundary; the fixtures simply aren't "today" any more. The
+  // clock keeps ticking from the pinned instant (install without pauseAt), so
+  // Date.now()-derived ids and timers still behave.
+  const ctx = await browser.newContext({
+    viewport: viewport || { width: 1440, height: 950 },
+    timezoneId: SMOKE_TZ,
+  });
+  await ctx.clock.install({ time: SMOKE_NOW });
   const page = await ctx.newPage();
   await page.addInitScript((ls) => {
     try { for (const k of Object.keys(ls)) localStorage.setItem(k, ls[k]); } catch (e) {}
