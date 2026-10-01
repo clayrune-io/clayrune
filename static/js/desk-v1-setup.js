@@ -66,10 +66,9 @@
   }
 
   function deskV1NewCampaignInProject(projectId) {
-    const project = _project(projectId);
     const camp = deskV1CreateDraftCampaign(projectId);
     DeskV1Kit.commandBus.run({
-      label: `Started setup for a new campaign in ${project ? project.name : 'the project'}`,
+      label: 'New campaign started',
       do: () => { _fx().campaigns.push(camp); },
       undo: () => { const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); if (typeof window.deskV1Render === 'function') window.deskV1Render(); },
     });

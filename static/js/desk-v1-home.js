@@ -520,7 +520,7 @@
     const camp = window.deskV1CreateDraftCampaign(projectId || null);
     camp._discardIfUntouched = true;
     DeskV1Kit.commandBus.run({
-      label: 'Started a new campaign',
+      label: 'New campaign started',
       do: () => { _fx().campaigns.push(camp); _renderStatusBoard(); },
       undo: () => {
         const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1);
