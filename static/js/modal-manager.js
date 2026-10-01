@@ -41,6 +41,7 @@ function _flushModalPrefs() {
 }
 function _setModalPref(projectId, patch) {
   if (!projectId || projectId.startsWith('__')) return;
+  if (window.__mcPopout) return; // a popped-out window must not overwrite the main window's geometry prefs
   if (_isMobileDevice || window.innerWidth <= 960) return; // mobile is full-screen, skip
   if (!_modalPrefPending) _modalPrefPending = _loadModalPrefs();
   _modalPrefPending[projectId] = Object.assign({}, _modalPrefPending[projectId] || {}, patch);
@@ -51,6 +52,9 @@ function _setModalPref(projectId, patch) {
 
 function _saveOpenModalsSnapshot() {
   if (_isMobileDevice || window.innerWidth <= 960) return; // mobile: don't persist
+  // A popped-out chat window has one modal and shares localStorage with the main
+  // dashboard: persisting here would replace the main window's open-modal list.
+  if (window.__mcPopout) return;
   const list = [];
   for (const [modalId, entry] of openModals) {
     // Only persist project modals (synthetic IDs like __terminal_*, __hivemind_* are transient)
@@ -1109,6 +1113,137 @@ function restoreModal(modalId) {
 }
 
 
+// ── Pop out a conversation into its own window ──────────────────────────────
+// The chat header's "Pop Out" button. The popped window is this same SPA loaded
+// as `/?popout=1&p=<project>&s=<session>` (the early script in index.html flips
+// the page into chat-only mode; bootPopoutChat below is its boot path).
+//
+// Slots: every popped window is one more live connection on the origin, and
+// Chromium allows 6 per origin, so the SERVER keeps a registry capped at 4
+// (mc/blueprints/popout_routes.py). We claim a slot before opening; the popped
+// window re-claims on a heartbeat and releases on pagehide.
+const POPOUT_WINDOW_FEATURES = 'popup=yes,width=1000,height=860';
+const POPOUT_HEARTBEAT_MS = 15000;
+
+function _popoutUrl(pid, sid) {
+  const u = new URL(location.href);
+  u.search = ''; u.hash = '';
+  u.searchParams.set('popout', '1');
+  u.searchParams.set('p', pid);
+  u.searchParams.set('s', sid);
+  return u.toString();
+}
+
+function _popoutWindowName(sid) {
+  return 'mc_popout_' + String(sid).replace(/[^A-Za-z0-9_]/g, '_');
+}
+
+// The frozen desktop app (pywebview) exposes this via app.py's js_api. It is how
+// a second window opens there: WKWebView swallows script window.open.
+function _popoutBridge() {
+  const api = window.pywebview && window.pywebview.api;
+  return api && typeof api.open_chat_window === 'function' ? api : null;
+}
+
+function _popoutTitle(pid, sid) {
+  const p = (typeof allProjects !== 'undefined' ? allProjects : []).find(x => x.id === pid);
+  const c = agentStatusCache[sid];
+  const task = c && c.task ? String(c.task).replace(/\s+/g, ' ').trim().slice(0, 60) : '';
+  return [p && p.name, task].filter(Boolean).join(' · ') || 'Clayrune chat';
+}
+
+async function _popoutSlot(path, sid) {
+  const r = await fetch(API_BASE + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sid }),
+  });
+  let body = {};
+  try { body = await r.json(); } catch (_) {}
+  return { status: r.status, body };
+}
+
+async function popOutChat(pid, sid) {
+  if (!pid || !sid) return;
+  const bridge = _popoutBridge();
+  let win = null;
+  let fresh = false;
+  if (!bridge) {
+    // Open inside the click, before any await: popup blockers only honour a
+    // window.open made in the user gesture. '' + a per-session name returns the
+    // EXISTING window for that conversation untouched (so a second click focuses
+    // it instead of reloading it), or a new blank one we then point at the chat.
+    win = window.open('', _popoutWindowName(sid), POPOUT_WINDOW_FEATURES);
+    if (!win) {
+      showToast('The browser blocked the pop-out window. Allow pop-ups for this site, then try again.', 6000);
+      return;
+    }
+    try { fresh = win.location.href === 'about:blank'; } catch (_) { fresh = false; }
+  }
+  const dropFresh = () => { if (fresh && win) { try { win.close(); } catch (_) {} } };
+  let claim;
+  try {
+    claim = await _popoutSlot('/api/popout/claim', sid);
+  } catch (e) {
+    dropFresh();
+    showToast('Could not reach the server to open a pop-out window.', 5000);
+    return;
+  }
+  if (claim.status === 409) {
+    dropFresh();
+    showToast(claim.body.message || 'Too many pop-out windows are open. Close one to pop out another.', 6000);
+    return;
+  }
+  if (claim.status !== 200) {
+    dropFresh();
+    showToast('Could not open the pop-out window.', 5000);
+    return;
+  }
+  if (bridge) {
+    let res = null;
+    try { res = await bridge.open_chat_window(pid, sid, _popoutTitle(pid, sid)); } catch (_) {}
+    if (!res || !res.ok) {
+      _popoutSlot('/api/popout/release', sid).catch(() => {});
+      showToast('Could not open the pop-out window.', 5000);
+    }
+    return;
+  }
+  if (fresh) win.location.href = _popoutUrl(pid, sid);
+  else { try { win.focus(); } catch (_) {} }
+}
+
+// Boot path of a popped window (called from index.html's boot continuation when
+// window.__mcPopout is set): take the slot, show the one conversation, keep the
+// slot alive, give it back when the window goes away.
+async function bootPopoutChat() {
+  const { pid, sid } = window.__mcPopout;
+  const say = (msg) => {
+    document.body.innerHTML = '<div style="position:fixed;inset:0;display:flex;align-items:center;'
+      + 'justify-content:center;padding:24px;text-align:center;font:14px Inter,system-ui,sans-serif;'
+      + 'color:var(--text-dim,#8a7560);background:var(--bg,#fdfaf6)">' + esc(msg) + '</div>';
+  };
+  try {
+    const claim = await _popoutSlot('/api/popout/claim', sid);
+    if (claim.status === 409) { say(claim.body.message || 'Too many pop-out windows are open.'); return; }
+  } catch (_) { /* server unreachable: the project fetch just succeeded, let the chat try */ }
+  if (!allProjects.some(p => p.id === pid)) { say('This conversation’s project no longer exists.'); return; }
+  const beat = () => {
+    _popoutSlot('/api/popout/claim', sid).catch(() => {});
+    document.title = _popoutTitle(pid, sid);
+  };
+  setInterval(beat, POPOUT_HEARTBEAT_MS);
+  // A window left minimized has its timers throttled hard; re-claim the moment it is looked at.
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') beat(); });
+  window.addEventListener('pagehide', () => {
+    try {
+      navigator.sendBeacon(API_BASE + '/api/popout/release',
+        new Blob([JSON.stringify({ session_id: sid })], { type: 'application/json' }));
+    } catch (_) {}
+  });
+  await openProjectAtSession(pid, sid);
+  document.title = _popoutTitle(pid, sid);
+}
+
 // ── interop: window re-exposure for inline/generated/cross-module callers ──
 window._flushModalPrefs = _flushModalPrefs;
 window._getModalZoom = _getModalZoom;
@@ -1122,6 +1257,8 @@ window.focusModal = focusModal;
 window._handleDeepLinkFromUrl = _handleDeepLinkFromUrl;
 window.openProjectModal = openProjectModal;
 window.openProjectAtSession = openProjectAtSession;
+window.popOutChat = popOutChat;
+window.bootPopoutChat = bootPopoutChat;
 window.closeModalById = closeModalById;
 window.toggleModalMenu = toggleModalMenu;
 window.toggleModalMenuSub = toggleModalMenuSub;

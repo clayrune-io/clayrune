@@ -15,6 +15,25 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Clayrune">
 <script>
+// Pop-out chat window: `/?popout=1&p=<project>&s=<session>` is the chat-only view
+// the chat header's "Pop Out" button opens in its own window (see popOutChat in
+// js/modal-manager.js). Decided HERE, before anything else runs, because the
+// single-instance guard below, the boot restore and the stylesheet all branch on
+// it. A popped window is not a second dashboard: it must not be killed as a
+// "duplicate tab", must not restore (or overwrite) the main window's open-modal
+// snapshot, and shows only the conversation.
+(function() {
+  try {
+    var q = new URLSearchParams(location.search);
+    if (q.get('popout') !== '1') return;
+    var p = q.get('p') || '', s = q.get('s') || '';
+    if (!p || !s) return;
+    window.__mcPopout = { pid: p, sid: s };
+    document.documentElement.classList.add('mc-popout');
+  } catch (_) {}
+})();
+</script>
+<script>
 // Single-instance guard. Backstop for the browser-tab case: a Windows Start
 // menu / taskbar shortcut to clayrune.io is just a Chrome bookmark, so each
 // click spawns a fresh tab — manifest.json's launch_handler only kicks in
@@ -23,6 +42,7 @@
 // acks; the duplicate replaces its UI with a "Clayrune already open" panel
 // and attempts to close itself. Same-origin only (BroadcastChannel scope).
 (function() {
+  if (window.__mcPopout) return; // a popped-out chat window is meant to coexist
   if (typeof BroadcastChannel === 'undefined') return; // very old browser, skip
   // Skip when running as an installed PWA — launch_handler handles that case
   // and we don't want to interfere with deep-link navigation.
@@ -2414,7 +2434,9 @@ document.addEventListener('keydown', (e) => {
   // signal — checking floor.js's `hire-active` here instead would only exempt
   // the Floor's hire drag and let ANY other pointer-drag caller's Escape
   // close the modal underneath it (fixed after code review, MC-977 T0c).
-  if (e.key === 'Escape' && focusedModalId && !document.querySelector('.mermaid-viewer-overlay')
+  // A popped-out chat window has nothing underneath its one modal: Esc closing
+  // it would leave a blank window, so the window's own close button is the way out.
+  if (e.key === 'Escape' && focusedModalId && !window.__mcPopout && !document.querySelector('.mermaid-viewer-overlay')
       && !document.body.classList.contains('pd-drag-active')) {
     closeModalById(focusedModalId);
   }
@@ -3594,6 +3616,13 @@ fetchProjects().then(async () => {
     if (cfgRes.ok) _globalConfig = await cfgRes.json();
   } catch (e) { /* non-fatal — feature gates fall back to off */ }
   _mcBootMark('config hydrated');
+  // Popped-out chat window: show ONE conversation and nothing else — no modal
+  // restore, no Claydo restore, no update/schedule/first-run chrome (js/modal-manager.js).
+  if (window.__mcPopout) {
+    try { await bootPopoutChat(); } catch (e) { console.warn('popout boot', e); }
+    _mcBootMark('popout boot done');
+    return;
+  }
   // Restore previously-open project modals (refresh persistence).
   // Skip on mobile: modals are full-screen there and bottom-tab nav assumes a clean slate.
   if (!_isMobileDevice && window.innerWidth > 960) {

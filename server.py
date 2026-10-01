@@ -2787,6 +2787,12 @@ _bp_push_mobile.wire(
 )
 app.register_blueprint(_bp_push_mobile.bp)
 
+# ── Pop-out chat windows ── /api/popout/* slot registry (cap on concurrent
+# popped-out conversations). Stateless wiring: nothing to inject.
+from mc.blueprints import popout_routes as _bp_popout  # noqa: E402
+
+app.register_blueprint(_bp_popout.bp)
+
 
 # ── Autonomous Steward ── framework-agnostic steward/ package + thin blueprint.
 # Wired AFTER push_mobile (needs _notify_push) and projects (needs the backlog
