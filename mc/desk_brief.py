@@ -428,3 +428,111 @@ def build_reply_brief(item: dict, *, parent_text: str | None = None,
         '    -d \'{"draft":{"text":"..."}}\'',
     ]
     return '\n'.join(out)
+
+
+def build_suggest_brief(campaign: dict, *, accounts: list[dict], project_name: str | None = None,
+                        note: str | None = None) -> str:
+    """The brief for the Brief stop's "Suggest What / When / Where" (R1-W S7, M9).
+    The agent proposes; a human accepts. It saves its proposal through ONE route
+    and that route refuses any text that names a limit, so a suggestion can never
+    be a commitment. `accounts` is every account the campaign may use, listed by
+    id so the agent can name a real one and nothing else."""
+    plan = campaign.get('plan') or {}
+    how = campaign.get('how') or {}
+    out = [
+        'You are suggesting what to post, when, and where, for ONE Desk campaign. '
+        'YOU ARE NOT STARTING IT AND YOU CANNOT: a human reads what you suggest '
+        'and accepts the parts they want. Nothing you save is published, scheduled '
+        'or approved, and you must not propose changing a limit (cadence, budget, '
+        'caps, accounts, approval): suggest content and times inside what is set.',
+        '',
+        f'Campaign: {campaign.get("title") or plan.get("title") or campaign.get("id")}',
+        f'Project: {project_name or campaign.get("project_id") or "?"}',
+    ]
+    if campaign.get('thesis') or plan.get('brief'):
+        out += ['', '── THE CAMPAIGN\'S THESIS ──', campaign.get('thesis') or plan.get('brief')]
+    goal = campaign.get('goal') if isinstance(campaign.get('goal'), dict) else {}
+    if goal:
+        out += ['', f'Goal: {goal.get("metric") or goal.get("label") or "?"} '
+                    f'({goal.get("target") if goal.get("target") is not None else "no target set"})']
+    cadence = plan.get('cadence') or {}
+    if cadence:
+        out += ['', 'Limits already set (context only, do not change): '
+                    + ', '.join(f'{k} {v}' for k, v in cadence.items() if v is not None)]
+    if how.get('strategy') or how.get('angle'):
+        out += ['', '── THE HUMAN\'S STRATEGY ──', str(how.get('strategy') or ''), str(how.get('angle') or '')]
+    if how.get('never_claim'):
+        out += ['', 'NEVER CLAIM: ' + '; '.join(map(str, how['never_claim'])) if isinstance(how['never_claim'], list)
+                else 'NEVER CLAIM: ' + str(how['never_claim'])]
+    out += ['', '── ACCOUNTS YOU MAY PLACE A PIECE ON (use the id exactly) ──']
+    out += [f'  {a["id"]}: {a.get("label") or a.get("identity")} ({a.get("platform")})' for a in accounts] or ['  (none yet)']
+    if note:
+        out += ['', '── THE HUMAN\'S NOTE, IN THEIR OWN WORDS (do not paraphrase it away) ──', note]
+    pid = campaign.get('project_id')
+    if pid:
+        out += ['', '── ' + _desk.playbook_brief(pid)]
+    out += [
+        '',
+        '── HOW TO DELIVER IT ──',
+        'Save your suggestions with this ONE call (it replaces only the keys you send):',
+        f'  curl -s -X PUT http://localhost:5199/api/desk/campaigns/{campaign.get("id")}/suggestions \\',
+        "    -H 'Content-Type: application/json' \\",
+        '    -d \'{"what":[{"title":"...","channel_id":"<account id>","because":["<finding id>"]}],'
+        '"when":[{"at":"<ISO 8601 time>","because":["<finding id>"]}],'
+        '"where":[{"channel_id":"<account id>"}]}\'',
+        '`because` lists ONLY finding ids from the playbook above; never invent one. '
+        'If one answer would change what you suggest, add '
+        '`"blocker":{"id":"q1","question":"...","answers":[{"id":"a","label":"..."},{"id":"b","label":"..."}]}` '
+        'and ask nothing else.',
+    ]
+    return '\n'.join(out)
+
+
+def build_revise_brief(piece: dict, version: dict, *, account: dict | None, style: str | None = None,
+                       claim: dict | None = None, selection: str | None = None, note: str | None = None,
+                       voice: str | None = None, project_name: str | None = None) -> str:
+    """The brief for revising ONE version in Review (R1-W S7, M20): a style
+    rewrite (`shorter`, `less_technical`, `rephrase`, or the human's own words in
+    `note`), optionally of a selected passage, or rephrasing one claim so it no
+    longer needs a source. The result lands as a new revision in `needs_review`,
+    through the plain version PATCH: the agent cannot approve and a PATCH cannot."""
+    pid, vid = piece.get('id'), version.get('id')
+    platform = (account or {}).get('platform') or ''
+    body = (version.get('body') or piece.get('body') or '').strip()
+    out = [
+        'You are revising ONE version of a Desk piece. YOU ARE NOT APPROVING OR '
+        'SENDING IT: you save a new revision, a human reads it in Review and '
+        'approves it themselves. You cannot approve, and saving does not publish.',
+        '',
+        f'Project: {project_name or piece.get("project_id") or "?"}',
+        f'Piece: {piece.get("title") or pid}   Account: {(account or {}).get("label") or (account or {}).get("id") or "?"}'
+        f' ({platform or "?"})',
+    ]
+    if platform:
+        out += ['', 'PLATFORM RULES: ' + _platform_rules_text(platform)]
+    out += ['', '── THE CURRENT TEXT (revision %s) ──' % (version.get('revision') or 0), body or '(empty)']
+    if selection:
+        out += ['', '── REVISE ONLY THIS PASSAGE, leave the rest as it is ──', selection]
+    if claim:
+        out += ['', f'── THE CLAIM TO FIX ({claim.get("id")}) ──', claim.get('text') or '',
+                'Rephrase it so it makes no claim that needs a source you do not have: '
+                'hedge it or drop the unsupported number. Do not invent a source.']
+    if style:
+        words = {'shorter': 'Make it shorter without losing the point.',
+                 'less_technical': 'Make it less technical, for someone who does not know the product.',
+                 'rephrase': 'Say the same thing in different words.'}
+        out += ['', 'REQUESTED CHANGE: ' + words.get(style, style)]
+    if note:
+        out += ['', '── THE HUMAN\'S NOTE, IN THEIR OWN WORDS (do not paraphrase it away) ──', note]
+    if voice and _desk.is_voice(voice):
+        out += ['', '── THE VOICE YOU ARE WRITING IN ──', _desk.voice_brief(voice)]
+    out += [
+        '',
+        '── HOW TO DELIVER IT ──',
+        'Save the new text as the next revision, back in review (the ONLY write you may make):',
+        f'  curl -s -X PATCH http://localhost:5199/api/desk/pieces/{pid}/versions/{vid} \\',
+        "    -H 'Content-Type: application/json' \\",
+        '    -d \'{"body":"<the full new text>","revision":%s,"state":"needs_review"}\'' % ((version.get('revision') or 0) + 1),
+        'If the right answer is to change nothing, save nothing and say why in your final message.',
+    ]
+    return '\n'.join(out)

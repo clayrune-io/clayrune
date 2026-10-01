@@ -45,6 +45,7 @@ from mc import desk_harvest as _harvest
 from mc import desk_pieces as _pieces
 from mc import desk_publish as _publish
 from mc import desk_retro as _retro
+from mc import desk_tick as _tick
 from mc import desk_voice_seed as _seed
 from mc.blueprints.secrets_routes import _require_human_passcode
 from mc.core import _log
@@ -560,10 +561,10 @@ def propose_campaign_retro(campaign_id):
 # same `_require_human_passcode` gate the other human-only routes use. With no
 # passcode configured it refuses 403 `passcode_required`, as everywhere else.
 
-def _human_only(action: str, data: dict):
+def _human_only(action: str, data: dict, what: str = 'a campaign'):
     if is_unattended_caller():
         return jsonify({'error': f'this action needs a human: an unattended agent session '
-                                 f'cannot {action} a campaign'}), 403
+                                 f'cannot {action} {what}'}), 403
     return _require_human_passcode(data)
 
 
@@ -597,6 +598,55 @@ def approve_campaign(campaign_id):
 def renew_campaign(campaign_id):
     d = request.get_json(silent=True) or {}
     return _approval_action(campaign_id, 'renew', _desk.renew_campaign, d)
+
+
+# M9. Ask the campaign's picked agent to suggest what / when / where. 202 with the
+# session id; the agent answers through M10 below. Nothing is started or approved.
+@bp.route('/api/desk/campaigns/<campaign_id>/suggest', methods=['POST'])
+def suggest_for_campaign(campaign_id):
+    d = request.get_json(silent=True) or {}
+    camp = next((c for c in _desk.list_campaigns() if c.get('id') == campaign_id), None)
+    if camp is None:
+        return jsonify({'error': 'campaign not found'}), 404
+    pid = camp.get('project_id')
+    project = load_project(pid) if (load_project and pid) else None
+    if project is None:
+        return jsonify({'error': 'pick a project for this campaign first: the agent works inside one'}), 409
+    agent_ref = _desk_agent_ref(project, camp)
+    if not agent_ref:
+        return _pick_agent_error(project)
+    if dispatch_agent is None:
+        return jsonify({'error': 'dispatch not wired'}), 503
+    chosen = (camp.get('plan') or {}).get('accounts') or []
+    brief = _brief.build_suggest_brief(
+        camp, accounts=[a for a in _accounts.list_accounts() if not chosen or a.get('id') in chosen],
+        project_name=project.get('name'), note=_clip(d.get('note'), 1000))
+    try:
+        session_id = dispatch_agent(
+            pid, brief, '',
+            display_task=f'Suggest what, when and where for {camp.get("title") or campaign_id}',
+            character=agent_ref,
+            source='agent', strict_character=True)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        _log(f'[desk] suggest dispatch failed for {campaign_id}: {e}')
+        return jsonify({'error': f'dispatch failed: {e}'}), 502
+    return jsonify({'ok': True, 'session_id': session_id}), 202
+
+
+# M10. Where the agent (or a human clearing a list) saves suggestions. Agent-
+# callable on purpose: a suggestion is data a human accepts, never a commitment,
+# and the store refuses any text that names a limit.
+@bp.route('/api/desk/campaigns/<campaign_id>/suggestions', methods=['PUT'])
+def put_campaign_suggestions(campaign_id):
+    try:
+        camp = _desk.set_suggestions(campaign_id, request.get_json(silent=True) or {})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if camp is None:
+        return jsonify({'error': 'campaign not found'}), 404
+    return jsonify(camp)
 
 
 @bp.route('/api/desk/campaigns/<campaign_id>', methods=['DELETE'])
@@ -661,6 +711,103 @@ def add_piece_version(piece_id):
 @bp.route('/api/desk/pieces/<piece_id>/versions/<version_id>', methods=['PATCH'])
 def update_piece_version(piece_id, version_id):
     return _piece_call(_pieces.update_version, piece_id, version_id, request.get_json(silent=True) or {})
+
+
+# M19. The approval gate, and the one route that can make a version go out. Human
+# only, with the retyped dashboard passcode per call (MC-995), exactly like
+# start/approve/renew above: an agent can write a draft, it can never approve it.
+# `scheduled_at` absent keeps the version's own time (what When saved), an explicit
+# null means "now". A future time is `scheduled` and the tick sends it; no time (or
+# one already due) is sent here and now, as an attended caller, and the answer is
+# the piece as it stands after that: `submitted`, `held` with the reason, `failed`...
+@bp.route('/api/desk/pieces/<piece_id>/versions/<version_id>/approve', methods=['POST'])
+def approve_piece_version(piece_id, version_id):
+    d = request.get_json(silent=True) or {}
+    refused = _human_only('approve', d, 'a version')
+    if refused:
+        return refused
+    kw = {'scheduled_at': d['scheduled_at']} if 'scheduled_at' in d else {}
+    try:
+        return jsonify(_tick.approve_and_send(piece_id, version_id, **kw))
+    except _pieces.PieceError as e:
+        return jsonify({'error': str(e), 'problems': e.problems}), e.status
+
+
+# "I posted it": the person says a manual version (or an unknown outcome they
+# checked) is live. A statement, not a post, but it writes the story ledger, so it
+# is human-only too.
+@bp.route('/api/desk/pieces/<piece_id>/versions/<version_id>/posted', methods=['POST'])
+def report_version_posted(piece_id, version_id):
+    d = request.get_json(silent=True) or {}
+    refused = _human_only('mark as posted', d, 'a version')
+    if refused:
+        return refused
+    return _piece_call(_tick.report_posted, piece_id, version_id, url=d.get('url'))
+
+
+# M20. Ask the campaign's picked agent to revise one version: a style, a selected
+# passage, a claim, or the human's own note. 202 with the session id; the agent
+# saves the result as the next revision through the plain version PATCH, back in
+# `needs_review`. Nothing is approved or sent by this.
+_REVISE_STYLES = ('shorter', 'less_technical', 'rephrase')
+
+
+def _clip(value, n):
+    return value.strip()[:n] if isinstance(value, str) and value.strip() else None
+
+
+@bp.route('/api/desk/pieces/<piece_id>/versions/<version_id>/revise', methods=['POST'])
+def revise_piece_version(piece_id, version_id):
+    d = request.get_json(silent=True) or {}
+    try:
+        piece = _pieces.get_stored_piece(piece_id)
+    except _pieces.PieceError as e:
+        return jsonify({'error': str(e)}), e.status
+    ver = next((v for v in piece.get('versions') or [] if v.get('id') == version_id), None)
+    if ver is None:
+        return jsonify({'error': 'version not found'}), 404
+    if ver.get('state') not in ('drafting', 'needs_review', 'held', 'failed', 'planned', 'blocked'):
+        return jsonify({'error': f"this version is {ver.get('state')}: send it back to review before asking for a revision"}), 409
+    style, claim_id = d.get('style'), d.get('claim_id')
+    note, selection = _clip(d.get('note'), 1000), _clip(d.get('selection'), 2000)
+    if style is not None and style not in _REVISE_STYLES and style != 'custom':
+        return jsonify({'error': f'style must be one of {", ".join(_REVISE_STYLES)}, or custom with a note'}), 400
+    if style == 'custom' and not note:
+        return jsonify({'error': 'a custom revision needs a note saying what to change'}), 400
+    claim = None
+    if claim_id is not None:
+        claim = next((c for c in piece.get('claims') or [] if c.get('id') == claim_id), None)
+        if claim is None:
+            return jsonify({'error': f'unknown claim {claim_id!r}'}), 400
+    if style is None and claim is None and not note:
+        return jsonify({'error': 'say what to revise: a style, a claim_id, or a note'}), 400
+    pid = piece.get('project_id')
+    project = load_project(pid) if (load_project and pid) else None
+    if project is None:
+        return jsonify({'error': f'project {pid!r} not found'}), 404
+    camp = next((c for c in _desk.list_campaigns() if c.get('id') == piece.get('campaign_id')), None)
+    agent_ref = _desk_agent_ref(project, camp)
+    if not agent_ref:
+        return _pick_agent_error(project)
+    if dispatch_agent is None:
+        return jsonify({'error': 'dispatch not wired'}), 503
+    acc = next((a for a in _accounts.list_accounts() if a.get('id') == ver.get('account_id')), None)
+    brief = _brief.build_revise_brief(
+        piece, ver, account=acc, style=None if style == 'custom' else style, claim=claim,
+        selection=selection, note=note, voice=(acc or {}).get('voice') or None,
+        project_name=project.get('name'))
+    try:
+        session_id = dispatch_agent(
+            pid, brief, '',
+            display_task=f'Revise "{piece.get("title") or piece_id}"',
+            character=agent_ref,
+            source='agent', strict_character=True)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        _log(f'[desk] revise dispatch failed for {piece_id}/{version_id}: {e}')
+        return jsonify({'error': f'dispatch failed: {e}'}), 502
+    return jsonify({'ok': True, 'session_id': session_id}), 202
 
 
 # M21. Two bodies: JSON `{path, title?, id?}` attaches a file already under

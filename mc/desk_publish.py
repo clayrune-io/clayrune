@@ -1,12 +1,19 @@
 """The Desk's outbound publisher — the ONLY module in `mc/` that posts to a
 social platform. Step 2 of `docs/THE_DESK_SIMPLIFICATION_PLAN.md` §5.
 
-Nothing calls `publish()` yet. No route, button or schedule reaches it — that
-is steps 3 (Accounts/credential), 4 (human-only approval gate) and 6 (the Desk
-tick). Wiring this in before step 4's approval gate exists would let something
-other than Ron's own click cause a real, billed X post
-(`docs/THE_DESK_SIMPLIFICATION_PLAN.md` §4, "why the Desk cannot grant itself
-release").
+Callers: the engagement reply route (a human click, passcode) and
+`mc/desk_tick.py` (R1-W S7: approved/scheduled versions, behind the human
+approve route, M19). Nothing else may reach it: wiring a caller in without an
+approval gate in front would let something other than Ron's own click cause a
+real, billed post (`docs/THE_DESK_SIMPLIFICATION_PLAN.md` §4, "why the Desk
+cannot grant itself release").
+
+Two platforms: X (`POST /2/tweets`) and a LinkedIn ORGANIZATION post
+(`POST /rest/posts`, author `urn:li:organization:<id>`; R1-W S7, plan §4). The
+LinkedIn path exists but no account can reach it until
+`mc.desk_accounts.LINKEDIN_ORG_POSTING_APPROVED` is flipped, which happens when
+LinkedIn approves the `w_organization_social` scope (Community Management API
+review); `desk_accounts.publish_state` reports that account not ready until then.
 
 WHY THIS IS ITS OWN MODULE, not a function on `mc/desk.py`: `mc/desk.py`'s own
 docstring says its approval gate is permanent BECAUSE nothing in it publishes.
@@ -61,6 +68,20 @@ and never logs or returns the value. It is a different secret from the
 (`kind: password`, for signing into x.com by hand) — an OAuth user access
 token is not a password and does not belong in the same entry.
 
+## LinkedIn (verified 2026-10-01 against learn.microsoft.com Posts API, version moniker 2026-09)
+
+`POST https://api.linkedin.com/rest/posts`, headers `Authorization: Bearer`,
+`Linkedin-Version: YYYYMM` and `X-Restli-Protocol-Version: 2.0.0` (both
+required on every call), JSON body `{author, commentary, visibility: PUBLIC,
+distribution: {feedDistribution: MAIN_FEED, targetEntities: [],
+thirdPartyDistributionChannels: []}, lifecycleState: PUBLISHED,
+isReshareDisabledByAuthor: false}`. Success is `201` with the new post's URN in
+the `x-restli-id` response header (no body). The permalink LinkedIn documents
+is `https://www.linkedin.com/feed/update/<urn>/`. The docs list `Linkedin-Version`
+202510 as sunsetting 2026-10-15, so `LINKEDIN_API_VERSION` is a current one;
+re-check it when LinkedIn retires its own. The organization id is not a
+secret and lives on the account record; only the token is in the vault.
+
 ## The permalink X's own API will not hand you
 
 `POST /2/tweets` returns only `{data: {id, text, edit_history_post_ids}}` —
@@ -79,6 +100,7 @@ flagged here rather than asserted as API contract.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -100,6 +122,11 @@ X_API_BASE = 'https://api.x.com/2'
 # Created by a human, never by an agent (vault rule 3) — step 3 wires the
 # Accounts panel that lets Ron paste this in.
 X_OAUTH_TOKEN_SECRET = 'x.oauth-token'
+LINKEDIN_TOKEN_SECRET = 'linkedin.oauth-token'
+
+LINKEDIN_API_BASE = 'https://api.linkedin.com/rest'
+LINKEDIN_API_VERSION = '202609'
+_ORG_ID = re.compile(r'^\d{1,20}$')
 
 _HTTP_TIMEOUT_SECONDS = 20
 
@@ -112,7 +139,15 @@ _lock = threading.Lock()
 class PublishError(Exception):
     """`publish()` could not produce a receipt. `str(e)` is the exact error
     text to keep — the caller decides what it means for its own store; this
-    module never mutates a queue item."""
+    module never mutates a queue item.
+
+    `maybe_posted` is True when the request got no response, so the platform may
+    have accepted it: the caller must not offer a plain retry (it would double
+    post) and records an unknown outcome instead of a failure."""
+
+    def __init__(self, message: str = '', *, maybe_posted: bool = False):
+        super().__init__(message)
+        self.maybe_posted = maybe_posted
 
 
 # -- receipt store --------------------------------------------------------------
@@ -188,6 +223,138 @@ def _get_username(token: str) -> str:
     return ((payload or {}).get('data') or {}).get('username') or ''
 
 
+def _post_linkedin(token: str, organization_id: str, body: str) -> dict[str, Any]:
+    """`{'id': <post urn>}`. The API answers 201 with the URN in the
+    `x-restli-id` header and no body; a response without it is an error to the
+    caller, never a synthetic receipt."""
+    payload = {
+        'author': f'urn:li:organization:{organization_id}',
+        'commentary': body,
+        'visibility': 'PUBLIC',
+        'distribution': {'feedDistribution': 'MAIN_FEED', 'targetEntities': [],
+                         'thirdPartyDistributionChannels': []},
+        'lifecycleState': 'PUBLISHED',
+        'isReshareDisabledByAuthor': False,
+    }
+    req = urllib.request.Request(
+        f'{LINKEDIN_API_BASE}/posts',
+        data=json.dumps(payload).encode('utf-8'),
+        method='POST',
+        headers={'Authorization': f'Bearer {token}',
+                 'Content-Type': 'application/json',
+                 'Linkedin-Version': LINKEDIN_API_VERSION,
+                 'X-Restli-Protocol-Version': '2.0.0'})
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SECONDS) as r:
+        return {'id': r.headers.get('x-restli-id') or ''}
+
+
+def _send_x(token: str, body: str, in_reply_to) -> tuple[str, str]:
+    """(post id, permalink) for one X post; PublishError on any failure."""
+    try:
+        payload = (_post_tweet(token, body, str(in_reply_to)) if in_reply_to
+                   else _post_tweet(token, body))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode('utf-8', errors='replace')[:500]
+        raise PublishError(f'X API HTTP {e.code}: {detail}') from e
+    except (urllib.error.URLError, TimeoutError) as e:
+        # No response is NOT proof nothing posted: X may have accepted the
+        # request before the connection dropped. Say so, so whoever
+        # retries checks the account first instead of double-posting.
+        raise PublishError(
+            f'X API request failed with no response ({e}) -- the post MAY '
+            f'have gone out; check the account before retrying', maybe_posted=True) from e
+    except Exception as e:
+        raise PublishError(f'X API request failed unexpectedly: {e}') from e
+
+    post_id = ((payload or {}).get('data') or {}).get('id')
+    if not post_id:
+        raise PublishError(f'X API returned no post id: {json.dumps(payload)[:500]}')
+
+    try:
+        username = _get_username(token)
+    except Exception as e:
+        # The post is already live on X -- a lookup failure here must
+        # never be reported as a failed publish (see module docstring).
+        _log(f'[desk_publish] could not resolve username for the permalink, '
+             f'falling back to the generic form: {e}')
+        username = ''
+
+    permalink = (f'https://x.com/{username}/status/{post_id}' if username
+                 else f'https://x.com/i/web/status/{post_id}')
+    return post_id, permalink
+
+
+def _send_linkedin(token: str, organization_id: str, body: str) -> str:
+    """The new post's URN; PublishError on any failure."""
+    try:
+        payload = _post_linkedin(token, organization_id, body)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode('utf-8', errors='replace')[:500]
+        raise PublishError(f'LinkedIn API HTTP {e.code}: {detail}') from e
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise PublishError(
+            f'LinkedIn API request failed with no response ({e}) -- the post MAY '
+            f'have gone out; check the Company Page before retrying', maybe_posted=True) from e
+    except Exception as e:
+        raise PublishError(f'LinkedIn API request failed unexpectedly: {e}') from e
+    post_id = (payload or {}).get('id')
+    if not post_id:
+        # A 2xx with no x-restli-id: the post probably exists but cannot be
+        # linked or recorded, so this is an unknown outcome, never a failure.
+        raise PublishError('LinkedIn API accepted the request but returned no post id '
+                           '(x-restli-id header) -- the post MAY have gone out; check '
+                           'the Company Page before retrying', maybe_posted=True)
+    return post_id
+
+
+# -- verify ---------------------------------------------------------------------
+
+def _get_tweet(token: str, post_id: str) -> dict[str, Any]:
+    req = urllib.request.Request(
+        f'{X_API_BASE}/tweets/{post_id}',
+        method='GET',
+        headers={'Authorization': f'Bearer {token}'})
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SECONDS) as r:
+        return json.loads(r.read().decode('utf-8'))
+
+
+def verify_post(platform: str, post_id: str, *, consumer: str = 'desk_publish',
+                project_id: str | None = None, unattended: bool = False) -> bool | None:
+    """Does the platform itself say this post exists? True = it does. False =
+    the platform answered and the post is not there. None = this module has no
+    way to ask (LinkedIn: reading a post back needs `r_organization_social`,
+    which the posting scope does not grant), so the caller leaves the version
+    `submitted` and says so rather than claiming a verification nobody did.
+    Raises PublishError when the question could not be put (no credential, no
+    response, an error status): "could not check" is never "not there".
+
+    X: `GET /2/tweets/:id` with the same token that posted it. That is an X read
+    and costs what a read costs (`mc.desk_engagement.X_READ_UNIT_COST`); fetching
+    the permalink instead would prove nothing, since x.com answers 200 for any
+    status URL."""
+    if platform != 'x':
+        return None
+    try:
+        token = secrets_store.get_secret_value(
+            X_OAUTH_TOKEN_SECRET, consumer=consumer, project_id=project_id, unattended=unattended)
+    except secrets_store.SecretsError as e:
+        raise PublishError(f'credential unavailable: {e}') from e
+    try:
+        payload = _get_tweet(token, str(post_id))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False
+        detail = e.read().decode('utf-8', errors='replace')[:300]
+        raise PublishError(f'X API HTTP {e.code} while verifying: {detail}') from e
+    except Exception as e:
+        raise PublishError(f'could not reach X to verify: {e}') from e
+    data = (payload or {}).get('data') or {}
+    if str(data.get('id') or '') == str(post_id):
+        return True
+    # A 200 with errors[] and no data is X's "not found" for a deleted/never-seen id.
+    return False
+
+
 # -- publish --------------------------------------------------------------------
 
 def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
@@ -212,14 +379,24 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
         raise PublishError("item has no 'id' -- cannot key idempotency")
 
     platform = item.get('platform')
-    if platform != 'x':
+    if platform not in ('x', 'linkedin'):
         raise PublishError(
-            f"desk_publish only posts to X ('x'), got platform={platform!r} "
-            f"-- LinkedIn is step 8, not built")
+            f"desk_publish only posts to X ('x') or LinkedIn ('linkedin'), "
+            f"got platform={platform!r}")
 
     body = (item.get('body') or '').strip()
     if not body:
         raise PublishError(f"item {item_id} has no body to publish")
+
+    organization_id = ''
+    if platform == 'linkedin':
+        if item.get('in_reply_to'):
+            raise PublishError('LinkedIn replies are not supported by this publisher')
+        organization_id = str(item.get('organization_id') or '').strip()
+        if not _ORG_ID.match(organization_id):
+            raise PublishError(
+                'the LinkedIn account has no organization id (digits only, from the '
+                'Company Page admin URL): set it on the account before publishing')
 
     with _lock:
         existing = _read_store(strict=True)['receipts'].get(item_id)
@@ -248,46 +425,20 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
 
         try:
             token = secrets_store.get_secret_value(
-                X_OAUTH_TOKEN_SECRET, consumer=consumer, project_id=project_id,
-                unattended=unattended)
+                X_OAUTH_TOKEN_SECRET if platform == 'x' else LINKEDIN_TOKEN_SECRET,
+                consumer=consumer, project_id=project_id, unattended=unattended)
         except secrets_store.SecretsError as e:
             raise PublishError(f'credential unavailable: {e}') from e
 
-        try:
-            in_reply_to = item.get('in_reply_to')
-            payload = (_post_tweet(token, body, str(in_reply_to)) if in_reply_to
-                       else _post_tweet(token, body))
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode('utf-8', errors='replace')[:500]
-            raise PublishError(f'X API HTTP {e.code}: {detail}') from e
-        except (urllib.error.URLError, TimeoutError) as e:
-            # No response is NOT proof nothing posted: X may have accepted the
-            # request before the connection dropped. Say so, so whoever
-            # retries checks the account first instead of double-posting.
-            raise PublishError(
-                f'X API request failed with no response ({e}) -- the post MAY '
-                f'have gone out; check the account before retrying') from e
-        except Exception as e:
-            raise PublishError(f'X API request failed unexpectedly: {e}') from e
-
-        post_id = ((payload or {}).get('data') or {}).get('id')
-        if not post_id:
-            raise PublishError(f'X API returned no post id: {json.dumps(payload)[:500]}')
-
-        try:
-            username = _get_username(token)
-        except Exception as e:
-            # The post is already live on X -- a lookup failure here must
-            # never be reported as a failed publish (see module docstring).
-            _log(f'[desk_publish] could not resolve username for the permalink, '
-                 f'falling back to the generic form: {e}')
-            username = ''
-
-        permalink = (f'https://x.com/{username}/status/{post_id}' if username
-                     else f'https://x.com/i/web/status/{post_id}')
+        if platform == 'linkedin':
+            post_id = _send_linkedin(token, organization_id, body)
+            permalink = f'https://www.linkedin.com/feed/update/{post_id}/'
+        else:
+            post_id, permalink = _send_x(token, body, item.get('in_reply_to'))
 
         receipt = {
             'item_id': item_id,
+            'platform': platform,
             'post_id': post_id,
             'permalink': permalink,
             'posted_at': now_iso(),

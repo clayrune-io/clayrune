@@ -1,11 +1,20 @@
 // Desk v1 (MC-977) — T3: full-width review (frame 12b, docs/desk_v1_r0_plan.md;
 // THE_DESK_V1_UI.md §4). Window-bridged module, no `import` (ground rule 1).
 //
-// Fixtures only (ground rule: R0 has no backend store, no publishing, no
-// spend): every Approve/Skip/Archive/Accept-revision mutates the in-memory
-// DeskV1Fixtures objects directly through DeskV1Kit.commandBus, which is
-// exactly the "client-side over fixture data with Undo" contract the R0 plan
-// specifies — there is nothing else for a command to write to in R0.
+// Two modes, one surface (MC-1021 R1-W S7, docs/desk_v1/R1W_WIRING_PLAN.md §1 Review):
+//
+//   desk_v1_live OFF  DEMO. Every Approve/Skip/Archive/Accept-revision mutates the
+//                     in-memory DeskV1Fixtures objects through DeskV1Kit.commandBus
+//                     and calls NOTHING: the original R0 contract.
+//   desk_v1_live ON   the version is a stored piece version. The body and claims
+//                     are read from it, edits and claim decisions are PATCHed (M18),
+//                     "Ask the agent" is M20, and Approve is M19: human-only, the
+//                     retyped dashboard passcode every time, and it can PUBLISH, so
+//                     the answer (sent, scheduled, held with its reason, failed,
+//                     a publishing task to do by hand) is shown, never assumed.
+//                     A live claim is checked by a person (a source they name, a
+//                     sentence they accept or rewrite); nothing here claims Clayrune
+//                     verified a source it did not read.
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -20,6 +29,17 @@
     return window.DeskV1Kit ? DeskV1Kit.deskAgentName({ project: _project(campaign && campaign.projectId), campaign }) : 'your agent';
   }
 
+  function _S() { return window.DeskV1Store; }
+  function _live() { return !!(_S() && _S().live()); }
+  // What a person can still act on here. Live, that includes what a refusal or
+  // a send leaves behind: a version the tick held, one that failed, and one whose
+  // outcome is unknown. Demo keeps the one state the fixtures use.
+  const _LIVE_ACTIONABLE = ['needs_review', 'held', 'failed', 'unknown_outcome'];
+  function _inList(v) { return _live() ? _LIVE_ACTIONABLE.indexOf(v.state) >= 0 : v.state === 'needs_review'; }
+  function _versionUrl(family, version, tail) {
+    return '/api/desk/pieces/' + encodeURIComponent(family.id) + '/versions/' + encodeURIComponent(version.id) + (tail || '');
+  }
+
   // Every {family, version} pair in campaignId with state 'needs_review', in
   // fixture array order — the stepper's "n of m to review" list (§4 header).
   function _needsReviewList(campaignId) {
@@ -27,7 +47,7 @@
     for (const fam of (_fx().families || [])) {
       if (fam.campaignId !== campaignId) continue;
       for (const v of (fam.versions || [])) {
-        if (v.state === 'needs_review') out.push({ family: fam, version: v });
+        if (_inList(v)) out.push({ family: fam, version: v });
       }
     }
     return out;
@@ -41,7 +61,63 @@
     return null;
   }
 
-  function _detail(versionId) { return (_fx().reviewDetail || {})[versionId] || {}; }
+  function _detail(versionId) {
+    if (_live()) {
+      const pair = _findFamilyVersion(versionId);
+      return pair ? _liveDetail(pair.family, pair.version) : {};
+    }
+    return (_fx().reviewDetail || {})[versionId] || {};
+  }
+
+  // ── live read: a stored version -> the shape the fixtures' reviewDetail has ─
+  // The body is plain text, paragraphs split on a blank line, `#` lines headings.
+  // A claim is a sentence the piece declared; the paragraph that contains it gets
+  // the claim's action bar. A claim whose text is in no paragraph (the version
+  // body differs from the piece's) gets a paragraph of its own at the end rather
+  // than a blocker with nothing to act on.
+  const _HEADING = /^#{1,6}\s+/;
+  function _liveBody(family, version) { return version.body || family.body || ''; }
+  function _liveRaws(family, version) {
+    return _liveBody(family, version).split(/\n{2,}/).map((x) => x.trim()).filter(Boolean);
+  }
+  function _liveClaimStatus(c, version) {
+    const st = (version.claimsState || {})[c.id] || {};
+    if (st.status === 'removed') return 'removed';
+    if (st.status === 'accepted') return 'accepted';
+    if (st.status === 'edited') return 'edited';
+    return c.source ? 'sourced' : 'blocked';
+  }
+  function _claimLabel(text) {
+    const t = String(text || '').replace(/\s+/g, ' ').trim();
+    return t.length > 40 ? t.slice(0, 37).trimEnd() + '…' : t;
+  }
+  function _liveDetail(family, version) {
+    const claims = version.claims || [];
+    const used = new Set();
+    const paragraphs = _liveRaws(family, version).map((raw, i) => {
+      const id = 'p' + i;
+      if (_HEADING.test(raw)) return { id, raw, heading: raw.replace(_HEADING, '') };
+      const c = claims.find((x) => !used.has(x.id) && x.text && raw.indexOf(x.text) >= 0);
+      if (c) { used.add(c.id); return { id, raw, text: raw, claimId: c.id, before: c.text }; }
+      return { id, raw, text: raw };
+    });
+    claims.forEach((c) => {
+      if (!used.has(c.id) && _liveClaimStatus(c, version) !== 'removed') {
+        paragraphs.push({ id: 'pc-' + c.id, raw: null, text: c.text, claimId: c.id, before: c.text });
+      }
+    });
+    return {
+      paragraphs,
+      claims: claims.map((c) => ({
+        id: c.id, label: _claimLabel(c.text), source: c.source || null,
+        state: _liveClaimStatus(c, version), revision: ((version.claimsState || {})[c.id] || {}).revision || 0,
+      })),
+      whyChecks: [],
+      whenISO: version.publishAt || null,
+      where: null,
+      link: null,
+    };
+  }
 
   // ── timezone (ground rule: user_timezone, empty = host tz). No shared kit
   // helper exists yet in T0a/T0b (only T3 needs one in R0), so this stays
@@ -96,6 +172,11 @@
     supports: { glyph: '✓', word: '✓ Source supports it' },
     resolved_by_posy: { glyph: '✓', word: '✓ Rewritten — no longer needs a source' },
     removed: { glyph: '·', word: 'Removed' },
+    // Live only. A person's own decisions, worded as that: Clayrune did not read
+    // the source, so none of these says it "supports" anything.
+    sourced: { glyph: '✓', word: '✓ Source on file' },
+    accepted: { glyph: '✓', word: '✓ You accepted it as written' },
+    edited: { glyph: '✓', word: '✓ You rewrote it' },
   };
   // A7: the block clears ONLY on 'supports' or on accepting a revision.
   function _claimBlocks(status) { return status === 'blocked' || status === 'checked' || status === 'doesnt_support'; }
@@ -119,13 +200,29 @@
       editValues: {},  // paragraphId -> live-edited text (Edit-text mode)
       conflictShown: false,
       commentDraft: {}, // paragraphId -> composer open
+      result: null,     // live: what Approve did, shown until the person continues
+      approving: false,
     };
     // Seed claim runtime state from the fixture baseline, once per mount.
-    const d = _detail(versionId);
-    for (const c of (d.claims || [])) {
-      _st.claims[c.id] = { status: c.state, sourceName: null, revision: c.revision, addingSource: false, checking: false };
-    }
+    _reseedClaims();
     _renderAll();
+  }
+
+  // Claim runtime state from the current detail. Live, called after every write
+  // so the bars follow what the version now says; the form a person is typing
+  // into (addingSource, its draft) survives it.
+  function _reseedClaims() {
+    if (!_st) return;
+    const d = _detail(_st.versionId);
+    const prev = _st.claims || {};
+    _st.claims = {};
+    for (const c of (d.claims || [])) {
+      const was = prev[c.id] || {};
+      _st.claims[c.id] = {
+        status: c.state, sourceName: null, revision: c.revision,
+        addingSource: !!was.addingSource, checking: false, sourceDraft: was.sourceDraft,
+      };
+    }
   }
 
   function _pair() { return _st && _st.versionId ? _findFamilyVersion(_st.versionId) : null; }
@@ -139,6 +236,7 @@
   function _renderAll() {
     const el = _st.el;
     _closeSelToolbar();
+    if (_st.result) { _renderResult(); return; }
     const list = _needsReviewList(_st.campaignId);
     if (!_st.versionId || !list.length) {
       el.innerHTML = `
@@ -299,6 +397,7 @@
             <button type="button" data-claim-fixposy="${esc(claimId)}">Fix with ${esc(agentName)}</button>
             <button type="button" data-claim-remove="${esc(claimId)}">Remove</button>
             <button type="button" data-claim-addsource="${esc(claimId)}">Add source</button>
+            ${_live() ? `<button type="button" data-claim-asis="${esc(claimId)}">Accept as written</button>` : ''}
           </div>`}
       </div>`;
     }
@@ -325,15 +424,18 @@
         </div>
       </div>`;
     }
-    // supports / resolved_by_posy: a quiet confirmation line, not a block bar.
-    return `<div class="desk-v1-claimbar desk-v1-claimbar-ok" data-claim-bar="${esc(claimId)}">${copy.word}</div>`;
+    // supports / resolved_by_posy (live: sourced / accepted / edited): a quiet
+    // confirmation line, not a block bar.
+    const src = _live() && st.status === 'sourced' && meta.source ? ` <span class="desk-v1-claimbar-source">${esc(meta.source)}</span>` : '';
+    return `<div class="desk-v1-claimbar desk-v1-claimbar-ok" data-claim-bar="${esc(claimId)}">${copy.word}${src}</div>`;
   }
 
   function _sourceFormHTML(claimId, st) {
     if (st.checking) return `<div class="desk-v1-claimbar-checking">Checking…</div>`;
+    const live = _live();
     return `<div class="desk-v1-claimbar-sourceform">
-      <input type="text" placeholder="benchmark-sep-22.md" data-source-input="${esc(claimId)}" value="${esc(st.sourceDraft || '')}" />
-      <button type="button" data-source-run="${esc(claimId)}">Check</button>
+      <input type="text" placeholder="${live ? 'A document, link or note this comes from' : 'benchmark-sep-22.md'}" data-source-input="${esc(claimId)}" value="${esc(st.sourceDraft || '')}" />
+      <button type="button" data-source-run="${esc(claimId)}">${live ? 'Save' : 'Check'}</button>
       <button type="button" data-source-cancel="${esc(claimId)}">Cancel</button>
     </div>`;
   }
@@ -348,15 +450,31 @@
     </div>`;
   }
 
+  // Demo: any time counts (the fixtures' dates are not tied to the clock). Live: a
+  // time already passed is not a schedule (the server refuses it rather than
+  // quietly posting now), so it neither labels the button "schedule" nor is sent.
+  function _hasFutureSchedule(detail) {
+    if (!detail || !detail.whenISO) return false;
+    if (!_live()) return true;
+    const t = Date.parse(detail.whenISO);
+    return !isNaN(t) && t > Date.now();
+  }
+
   // ── right rail ─────────────────────────────────────────────────────────
   function _railHTML(family, version, channel, detail, isVideo) {
-    const hasSchedule = !!detail.whenISO;
+    const hasSchedule = _hasFutureSchedule(detail);
     const rendered = !isVideo || (family.render && family.render.status === 'ready' && family.render.revision === version.revision);
     const blockedClaim = (detail.claims || []).map((c) => _st.claims[c.id]).find((s) => s && _claimBlocks(s.status));
-    const info = _primaryInfo(channel, hasSchedule, blockedClaim, detail.claims, isVideo, rendered);
+    const info = _primaryInfo(channel, hasSchedule, blockedClaim, detail.claims, isVideo, rendered, version, detail);
 
     let notice = '';
-    if (channel && channel.health === 'held') {
+    if (_live() && version.state === 'held') {
+      notice = `<div class="desk-v1-review-notice desk-v1-review-notice-held" data-review-held>⚠ Held — ${esc((version.failure && version.failure.reason) || 'held')}. Nothing was posted. Fix that, then approve again.</div>`;
+    } else if (_live() && version.state === 'failed') {
+      notice = `<div class="desk-v1-review-notice desk-v1-review-notice-held" data-review-failed>✗ Failed — ${esc((version.failure && version.failure.reason) || 'the platform refused it')}. Nothing was posted. Approving again retries it.</div>`;
+    } else if (_live() && version.state === 'unknown_outcome') {
+      notice = `<div class="desk-v1-review-notice desk-v1-review-notice-held" data-review-unknown>? Unknown outcome — ${esc((version.failure && version.failure.reason) || 'the request may have gone out')}. It may already be live: check ${esc((channel && (channel.label || channel.identity)) || 'the account')} before doing anything else.</div>`;
+    } else if (channel && channel.health === 'held') {
       notice = `<div class="desk-v1-review-notice desk-v1-review-notice-held">⚠ Held — ${esc(channel.holdReason || 'disconnected')}. Reconnect it before this can publish.</div>`;
     } else if (channel && channel.capability === 'manual') {
       notice = `<div class="desk-v1-review-notice">✋ You publish this one. Clayrune can’t post to ${esc(channel.label || channel.identity)}. Approving creates a task with the text, images and link ready to paste.</div>`;
@@ -414,6 +532,7 @@
           <button type="button" data-act-request>Request changes</button>
           <button type="button" data-act-skip>Skip</button>
           <button type="button" data-act-archive>Archive</button>
+          ${_live() && version.state === 'unknown_outcome' ? '<button type="button" data-act-posted>It is live: mark as posted</button>' : ''}
         </div>
       </div>`;
   }
@@ -423,11 +542,22 @@
   // third one added here — approving can't bind a destination that can't
   // currently publish (§9 "Held overrides either"). Not drawn in frame 12b;
   // flagged in the final report as a deviation.
-  function _primaryInfo(channel, hasSchedule, blockedClaim, claims, isVideo, rendered) {
+  function _primaryInfo(channel, hasSchedule, blockedClaim, claims, isVideo, rendered, version, detail) {
+    const retry = _live() && version && (version.state === 'held' || version.state === 'failed');
     const label = !channel ? 'Approve'
       : channel.capability === 'manual' ? 'Approve and create publishing task'
+      : retry ? (hasSchedule ? 'Approve again and schedule' : 'Approve again')
       : (hasSchedule ? 'Approve and schedule' : 'Approve');
     const reasons = [];
+    if (_live()) {
+      // The server refuses all of these too (M19); saying them here is so the
+      // button is never a click that can only come back with a 409.
+      const pub = channel && channel.publish;
+      if (!channel) reasons.push('The account this version is for is not in the workspace');
+      else if (pub && !pub.ready) reasons.push(`${channel.label || channel.identity} cannot publish: ${pub.reason || 'not connected'}`);
+      if (version && version.state === 'unknown_outcome') reasons.push('This may already be live: check the account, then mark it posted');
+      if (detail && detail.whenISO && !hasSchedule) reasons.push('The scheduled time has passed: pick a new one on When, or use ⋯ Publish now');
+    }
     if (channel && channel.health === 'held') reasons.push(`Reconnect ${channel.label || channel.identity} before scheduling`);
     if (isVideo && !rendered) reasons.push('Render this version before it can be approved');
     if (blockedClaim) {
@@ -450,6 +580,7 @@
     el.querySelectorAll('[data-claim-editself]').forEach((b) => b.onclick = () => _editSelf(b.dataset.claimEditself, family, version, detail));
     el.querySelectorAll('[data-claim-remove]').forEach((b) => b.onclick = () => _removeSentence(b.dataset.claimRemove, family, version, detail));
     el.querySelectorAll('[data-claim-fixposy]').forEach((b) => b.onclick = () => _fixWithPosy(b.dataset.claimFixposy, family, version, detail));
+    el.querySelectorAll('[data-claim-asis]').forEach((b) => b.onclick = () => _acceptAsWritten(b.dataset.claimAsis, family, version));
 
     el.querySelectorAll('[data-edit-para]').forEach((span) => {
       span.oninput = () => { _st.editValues[span.dataset.editPara] = span.textContent; _scheduleAutosave(); };
@@ -463,14 +594,21 @@
     if (skip) skip.onclick = () => _dispose(family, version, 'skipped', 'Skipped');
     const arch = el.querySelector('[data-act-archive]');
     if (arch) arch.onclick = () => _dispose(family, version, 'archived', 'Archived');
+    const posted = el.querySelector('[data-act-posted]');
+    if (posted) posted.onclick = () => _markPosted(family, version, null);
     const more = el.querySelector('[data-more-btn]');
     if (more) more.onclick = (e) => _openMoreMenu(e.currentTarget, family, version, channel, detail, isVideo);
 
     if (window.DeskV1Kit) {
+      const live = _live();
       window.DeskV1Kit.bindPosyBox(el.querySelector('#desk-v1-review-posy'), 'desk-v1-review-posy-input', (text) => {
+        // Live: the real agent (M20), and the box is not the R0 simulation. It
+        // answers by saving a revision back to this version, which the watcher
+        // below picks up. Demo: the simulated task, unchanged.
+        if (live) { _reviseRequest(family, version, { note: text }); return; }
         window.DeskV1Kit.toast('Sent to ' + _agentName(_campaign(family.campaignId)) + ': "' + text + '"', {});
         window.DeskV1Kit.paintPosyReadyNoDiff(el.querySelector('#desk-v1-review-posy'));
-      }, { draftKey: `project:${(_campaign(family.campaignId) || {}).projectId}:review:${version.id}`, taskLifecycle: true });
+      }, { draftKey: `project:${(_campaign(family.campaignId) || {}).projectId}:review:${version.id}`, taskLifecycle: !live });
       // §4: "Say this once in an ⓘ tooltip; don't print it permanently."
       window.DeskV1Kit.bindInfoIcons(el, {
         'review-approve-binding': 'Approving binds this revision, destination, link, schedule and policy version together — changing any of them invalidates the approval.',
@@ -505,9 +643,50 @@
     if (status) status.textContent = 'Saving…';
     clearTimeout(_autosaveTimer);
     _autosaveTimer = setTimeout(() => {
+      _autosaveTimer = null;
+      if (_live()) { _saveBody(); return; }
       const s = document.getElementById('desk-v1-review-savestatus');
       if (s) s.textContent = 'Saved';
     }, 600);
+  }
+
+  // Live: the edited paragraphs back into one body, saved with M18. Headings and
+  // claim paragraphs are not editable here, so they go back exactly as they came.
+  function _composeBody(family, version) {
+    const d = _liveDetail(family, version);
+    const parts = [];
+    (d.paragraphs || []).forEach((p) => {
+      if (p.raw == null) return;
+      const edited = !p.heading && !p.claimId ? _st.editValues[p.id] : null;
+      const text = edited != null ? edited.trim() : p.raw;
+      if (text) parts.push(text);
+    });
+    return parts.join('\n\n');
+  }
+
+  async function _saveBody() {
+    const pair = _pair();
+    if (!pair || !_live()) return;
+    const { family, version } = pair;
+    const body = _composeBody(family, version);
+    if (body === _liveBody(family, version).trim()) {
+      const s = document.getElementById('desk-v1-review-savestatus');
+      if (s) s.textContent = 'Saved';
+      return;
+    }
+    const st = _st;
+    try {
+      await _S().api('PATCH', _versionUrl(family, version), { body });
+      version.body = body;
+      if (_st === st) { const s = document.getElementById('desk-v1-review-savestatus'); if (s) s.textContent = 'Saved'; }
+    } catch (e) {
+      if (_st === st) { const s = document.getElementById('desk-v1-review-savestatus'); if (s) s.textContent = `Not saved: ${e && e.message ? e.message : e}`; }
+    }
+  }
+
+  // A claim write reads the saved body, so a pending edit is saved first.
+  async function _flushBody() {
+    if (_autosaveTimer) { clearTimeout(_autosaveTimer); _autosaveTimer = null; await _saveBody(); }
   }
 
   // Simulated conflict (§4 "conflict handling if another editor changed the
@@ -534,6 +713,7 @@
     const st = _st.claims[claimId];
     const draft = (st.sourceDraft || '').trim();
     if (!draft) return;
+    if (_live()) { _saveSource(claimId, family, draft); return; }
     st.checking = true;
     _renderAll();
     // Simulated validator (no backend in R0): deterministic on the typed
@@ -557,6 +737,7 @@
   }
 
   function _acceptRevision(claimId, family, version, detail) {
+    if (_live()) return;   // no proposed revision exists live: the agent saves a whole one (M20)
     const st = _st.claims[claimId];
     const p = (detail.paragraphs || []).find((x) => x.claimId === claimId);
     const rN = st.revision + 1;
@@ -570,6 +751,13 @@
   function _editSelf(claimId, family, version, detail) {
     const p = (detail.paragraphs || []).find((x) => x.claimId === claimId);
     const st = _st.claims[claimId];
+    if (_live()) {
+      const typed = window.prompt ? window.prompt('Rewrite the sentence:', (p && p.before) || '') : null;
+      if (typed == null || !typed.trim()) return;
+      _liveClaimWrite(claimId, family, version, 'edited', { body: (b) => _replaceIn(b, p && p.before, typed.trim()), text: typed.trim(),
+        label: 'Rewrote the claim sentence yourself' });
+      return;
+    }
     const typed = window.prompt ? window.prompt('Rewrite the sentence:', p.after || p.text) : p.after;
     if (typed == null) return;
     const rN = st.revision + 1;
@@ -583,6 +771,11 @@
 
   function _removeSentence(claimId, family, version, detail) {
     const st = _st.claims[claimId];
+    if (_live()) {
+      const p = (detail.paragraphs || []).find((x) => x.claimId === claimId);
+      _liveClaimWrite(claimId, family, version, 'removed', { body: (b) => _removeFrom(b, p && p.before), label: 'Removed the unsupported sentence' });
+      return;
+    }
     const prevStatus = st.status;
     const rN = st.revision + 1;
     window.DeskV1Kit.commandBus.run({
@@ -593,6 +786,7 @@
   }
 
   function _fixWithPosy(claimId, family, version, detail) {
+    if (_live()) { _reviseRequest(family, version, { claim_id: claimId }); return; }
     const p = (detail.paragraphs || []).find((x) => x.claimId === claimId);
     const st = _st.claims[claimId];
     const rN = st.revision + 1;
@@ -604,15 +798,300 @@
     });
   }
 
+  // ── live: writes ──────────────────────────────────────────────────────
+  function _replaceIn(body, from, to) {
+    if (!from || body.indexOf(from) < 0) return body;
+    return body.replace(from, to);
+  }
+  function _removeFrom(body, text) {
+    if (!text || body.indexOf(text) < 0) return body;
+    return body.replace(text, '').replace(/[ \t]{2,}/g, ' ').replace(/ +\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  function _afterLocal() { _reseedClaims(); if (_st && !_st.result) _renderAll(); }
+
+  // One PATCH to a version (M18), applied locally first so the bars follow at
+  // once, rolled back with the server's reason on a refusal, with an Undo that
+  // PATCHes the previous values back. `next`/`prev` carry only what changes.
+  function _versionWrite(family, version, label, next, prev) {
+    const put = (v) => {
+      if ('body' in v) version.body = v.body;
+      if ('claims_state' in v) version.claimsState = v.claims_state;
+      if ('revision' in v) version.revision = v.revision;
+      // A claim's text is its revised text while one exists (the server's own rule).
+      (version.claims || []).forEach((c) => {
+        const e = (version.claimsState || {})[c.id];
+        c.text = (e && e.revised_text) || c.original || c.text;
+      });
+    };
+    return _S().write({
+      label, apply: () => { put(next); _afterLocal(); }, unapply: () => put(prev),
+      request: () => _S().api('PATCH', _versionUrl(family, version), next),
+      undoRequest: () => _S().api('PATCH', _versionUrl(family, version), prev),
+      repaint: _afterLocal,
+    });
+  }
+
+  // A decision on one claim: `kind` is accepted | edited | removed. `change.body`
+  // (optional) maps the saved body to the new one. Bumps the version's revision.
+  async function _liveClaimWrite(claimId, family, version, kind, change) {
+    await _flushBody();
+    const cs = JSON.parse(JSON.stringify(version.claimsState || {}));
+    const rev = (version.revision || 0) + 1;
+    const claimRev = ((cs[claimId] || {}).revision || 0) + 1;
+    const body = _liveBody(family, version);
+    const nextBody = change.body ? change.body(body) : body;
+    const nextCs = Object.assign({}, cs, { [claimId]: { status: kind, revised_text: kind === 'edited' ? change.text : null, revision: claimRev } });
+    const next = { claims_state: nextCs, revision: rev };
+    const prev = { claims_state: cs, revision: version.revision || 0 };
+    if (nextBody !== body) { next.body = nextBody; prev.body = version.body || ''; }
+    return _versionWrite(family, version, `${change.label} → r${rev}`, next, prev);
+  }
+
+  function _acceptAsWritten(claimId, family, version) {
+    return _liveClaimWrite(claimId, family, version, 'accepted', { label: 'Accepted the claim as written' });
+  }
+
+  // Adding a source is a change to the PIECE's claim (claims are piece-level, so
+  // every version of it reads the same source). Saved as typed: nobody here reads
+  // the source, which is why the bar says "on file", not "supports".
+  function _saveSource(claimId, family, text) {
+    const claimsOf = () => (family.versions || []).flatMap((v) => v.claims || []).filter((c) => c.id === claimId);
+    const first = claimsOf()[0];
+    if (!first) return;
+    const prevSource = first.source || null;
+    const toList = (src) => {
+      const seen = new Set();
+      const out = [];
+      (family.versions || []).forEach((v) => (v.claims || []).forEach((c) => {
+        if (seen.has(c.id)) return;
+        seen.add(c.id);
+        out.push({ id: c.id, text: c.original || c.text, source: c.id === claimId ? src : (c.source || null) });
+      }));
+      return out;
+    };
+    const url = '/api/desk/pieces/' + encodeURIComponent(family.id);
+    const setLocal = (src) => claimsOf().forEach((c) => { c.source = src; });
+    const st = _st.claims[claimId];
+    return _S().write({
+      label: 'Added a source to the claim',
+      apply: () => { setLocal(text); st.addingSource = false; st.sourceDraft = ''; _afterLocal(); },
+      unapply: () => setLocal(prevSource),
+      request: () => _S().api('PATCH', url, { claims: toList(text) }),
+      undoRequest: () => _S().api('PATCH', url, { claims: toList(prevSource) }),
+      repaint: _afterLocal,
+    });
+  }
+
+  // M20: ask the campaign's agent. It answers by saving a revision to this
+  // version through the plain PATCH, back in needs_review: nothing is approved or
+  // sent by it. The watcher repaints when that revision lands.
+  async function _reviseRequest(family, version, opts) {
+    const agent = _agentName(_campaign(family.campaignId));
+    const toast = (m) => window.DeskV1Kit && window.DeskV1Kit.toast(m, {});
+    await _flushBody();
+    try {
+      await _S().api('POST', _versionUrl(family, version, '/revise'), opts);
+    } catch (e) {
+      toast(`${agent} was not asked: ${e && e.message ? e.message : e}`);
+      return false;
+    }
+    toast(`Sent to ${agent}. The revision lands here for you to review; nothing is approved or sent by it.`);
+    _watchRevision(family, version);
+    return true;
+  }
+
+  // Polls the campaign's pieces until this version's text or revision changes (the
+  // agent saved), then repaints. Stops when the person leaves the surface or after
+  // ~6 minutes. `__deskV1ReviewPollMs` is a test hook, not a setting.
+  function _watchRevision(family, version) {
+    const st = _st;
+    const vid = version.id;
+    const body0 = version.body || '';
+    const rev0 = version.revision || 0;
+    const every = window.__deskV1ReviewPollMs || 4000;
+    let n = 0;
+    const tick = async () => {
+      if (_st !== st || n++ > 90) return;
+      try {
+        const list = await _S().api('GET', '/api/desk/pieces?campaign_id=' + encodeURIComponent(family.campaignId));
+        if (_st !== st) return;
+        const arr = _fx().families;
+        (list || []).forEach((p) => { const i = arr.findIndex((f) => f.id === p.id); if (i >= 0) arr[i] = p; else arr.push(p); });
+        const pair = _findFamilyVersion(vid);
+        if (pair && ((pair.version.body || '') !== body0 || (pair.version.revision || 0) !== rev0)) {
+          if (window.DeskV1Kit) window.DeskV1Kit.toast(`${_agentName(_campaign(family.campaignId))} revised this version.`, {});
+          _reseedClaims();
+          // Someone else's change over text being typed: the existing "keep mine / use theirs" bar.
+          if (_st.mode === 'edit' && Object.keys(_st.editValues).length) window.__deskV1SimulateEditConflict();
+          else _renderAll();
+          return;
+        }
+      } catch (e) { /* the next tick tries again */ }
+      setTimeout(tick, every);
+    };
+    setTimeout(tick, every);
+  }
+
+  // ── live: approving (M19) ───────────────────────────────────────────────
+  // Human-only, the dashboard passcode retyped for each call, and it can publish.
+  function _adoptPiece(piece) {
+    const arr = _fx().families;
+    const i = arr.findIndex((f) => f.id === piece.id);
+    if (i >= 0) arr[i] = piece; else arr.push(piece);
+  }
+
+  async function _humanPost(url, body, proof) {
+    if (typeof window.humanProofFetch !== 'function') throw new Error('the passcode prompt is not available');
+    const res = await window.humanProofFetch(url, { method: 'POST', body: JSON.stringify(body || {}) }, proof);
+    if (res === null) throw new Error('the dashboard passcode was not entered, so nothing was changed');
+    if (!res.ok) throw new Error((res.body && (res.body.error || res.body.message)) || `HTTP ${res.status}`);
+    return res.body;
+  }
+
+  async function _approveLive(family, version, channel, detail, opts) {
+    if (_st.approving) return;
+    const now = !!(opts && opts.now);
+    const when = !now && _hasFutureSchedule(detail) ? _fmtWhen(detail.whenISO) : null;
+    const name = (channel && (channel.label || channel.identity)) || 'the account';
+    const proof = {
+      title: when ? 'Approve and schedule' : (channel && channel.capability === 'manual' ? 'Approve and create the publishing task' : 'Approve and publish'),
+      description: channel && channel.capability === 'manual'
+        ? `Re-enter your dashboard passcode to approve this version for ${name}. Nothing is posted: you get the text and a link to post it yourself.`
+        : (when
+          ? `Re-enter your dashboard passcode to approve this version for ${name} at ${when}. It posts from the scheduler without asking again.`
+          : `Re-enter your dashboard passcode to approve and post this version to ${name} now. A post cannot be unsent from here.`),
+    };
+    _st.approving = true;
+    const st = _st;
+    try {
+      const piece = await _humanPost(_versionUrl(family, version, '/approve'), now ? { scheduled_at: null } : {}, proof);
+      _adoptPiece(piece);
+      if (_st === st) { st.result = { versionId: version.id }; }
+    } catch (e) {
+      if (window.DeskV1Kit) window.DeskV1Kit.toast(`Not approved: ${e && e.message ? e.message : e}`, {});
+    } finally {
+      st.approving = false;
+    }
+    if (_st === st) _renderAll();
+  }
+
+  async function _markPosted(family, version, url) {
+    if (_st.approving) return;
+    const proof = { title: 'Mark as posted', description: 'Re-enter your dashboard passcode to record that this was posted. It is written to the story ledger as published by you.' };
+    _st.approving = true;
+    const st = _st;
+    try {
+      const piece = await _humanPost(_versionUrl(family, version, '/posted'), url ? { url } : {}, proof);
+      _adoptPiece(piece);
+      st.result = { versionId: version.id };
+    } catch (e) {
+      if (window.DeskV1Kit) window.DeskV1Kit.toast(`Not recorded: ${e && e.message ? e.message : e}`, {});
+    } finally {
+      st.approving = false;
+    }
+    if (_st === st) _renderAll();
+  }
+
+  // What Approve did, said plainly and shown until the person continues. Built from
+  // the version AS STORED after the call, never from what was expected.
+  function _renderResult() {
+    const el = _st.el;
+    const pair = _findFamilyVersion(_st.result.versionId);
+    _clearCrumbTools();
+    if (!pair) { _st.result = null; _advanceOrEmpty(); return; }
+    const { family, version } = pair;
+    const channel = _channel(version.channelId);
+    const where = esc((channel && (channel.label || channel.identity)) || 'the account');
+    const link = version.receipt && version.receipt.permalink
+      ? ` <a href="${esc(version.receipt.permalink)}" target="_blank" rel="noopener noreferrer">${esc(version.receipt.permalink)}</a>` : '';
+    const reason = esc((version.failure && version.failure.reason) || '');
+    let head; let body = ''; let tone = '';
+    switch (version.state) {
+      case 'verified_published': head = `✓ Published to ${where}.`; body = link; break;
+      case 'submitted': head = `✓ Sent to ${where}.`; body = `The platform has it; Clayrune confirms it is live within a few minutes.${link}`; break;
+      case 'scheduled': {
+        head = `✓ Approved. It goes out ${esc(_fmtWhen(version.publishAt) || 'at the time you set')}.`;
+        const pub = channel && channel.publish;
+        body = pub && pub.unattended_ok === false
+          ? `<div data-review-unattended>Heads up: the vault entry <code>${esc(pub.secret)}</code> does not allow unattended use, so this post will be HELD at that time. Allow it in Secrets, or approve this one now instead.</div>`
+          : 'It posts from the scheduler at that time, and is held with the reason if any check fails then.';
+        break;
+      }
+      case 'approved':
+        if (version.manual) { head = `✋ Your turn: post it on ${where}.`; body = _manualTaskHTML(version); }
+        else { head = '✓ Approved.'; body = 'The publisher picks it up within a minute.'; }
+        break;
+      case 'held': head = '⚠ Held.'; body = `${reason}. Nothing was posted. Fix that, then approve again.`; tone = ' desk-v1-review-notice-held'; break;
+      case 'failed': head = '✗ Failed.'; body = `${reason}. Nothing was posted. Approving again retries it.`; tone = ' desk-v1-review-notice-held'; break;
+      case 'unknown_outcome':
+        head = '? Unknown outcome.';
+        body = `${reason}. The post may already be live: check ${where} before doing anything else.<div><button type="button" class="desk-v1-review-primary" data-result-posted>It is live: mark as posted</button></div>`;
+        tone = ' desk-v1-review-notice-held';
+        break;
+      case 'you_reported': head = '✓ Recorded as posted by you.'; body = link; break;
+      default: head = `Now: ${esc(version.state)}.`;
+    }
+    el.innerHTML = `
+      <div class="desk-v1-review-empty" data-review-result data-state="${esc(version.state)}">
+        <div class="desk-v1-review-empty-title">${head}</div>
+        <div class="desk-v1-review-empty-body${tone}">${body}</div>
+        <button type="button" class="desk-v1-stub-link" data-result-continue>Continue ›</button>
+      </div>`;
+    const cont = el.querySelector('[data-result-continue]');
+    if (cont) cont.onclick = () => { _st.result = null; _advanceOrEmpty(); };
+    const posted = el.querySelector('[data-result-posted]');
+    if (posted) posted.onclick = () => _markPosted(family, version, null);
+    const copy = el.querySelector('[data-task-copy]');
+    if (copy) copy.onclick = async () => {
+      try { await navigator.clipboard.writeText(version.manual.copy_text || ''); copy.textContent = 'Copied'; } catch (e) { copy.textContent = 'Select the text above and copy it'; }
+    };
+    const done = el.querySelector('[data-task-posted]');
+    if (done) done.onclick = () => {
+      const u = (el.querySelector('[data-task-url]') || {}).value || '';
+      _markPosted(family, version, u.trim() || null);
+    };
+  }
+
+  function _manualTaskHTML(version) {
+    const m = version.manual || {};
+    const share = m.share_url
+      ? `<a href="${esc(m.share_url)}" target="_blank" rel="noopener noreferrer" data-task-share>Open X with the text ready ›</a>` : '';
+    const note = m.share_url ? '' : `<div>${esc(m.platform || 'The platform')} has no link that carries text: open it yourself and paste.</div>`;
+    return `<div data-review-task>
+      <div><strong>${esc(m.title || 'Publishing task')}</strong></div>
+      <textarea readonly rows="5" data-task-text>${esc(m.copy_text || '')}</textarea>
+      <div><button type="button" data-task-copy>Copy text</button> ${share}</div>${note}
+      <div>When it is up: <input type="text" data-task-url placeholder="its link (optional)" />
+        <button type="button" data-task-posted>I posted it</button></div>
+    </div>`;
+  }
+
   // ── primary / secondary actions ────────────────────────────────────────
   function _approve(family, version, channel, detail) {
+    if (_live()) { _approveLive(family, version, channel, detail); return; }
     const hasSchedule = !!detail.whenISO;
     const nextState = hasSchedule ? 'scheduled' : 'approved';
     _dispose({ /* no family mutation needed */ }, version, nextState,
       channel && channel.capability === 'manual' ? 'Publishing task created' : (hasSchedule ? 'Scheduled' : 'Approved'));
   }
 
+  // Live Skip / Archive: M18 `state`, the two writable states a person may set.
+  // Undo goes back to review, the only state this surface can restore it to.
+  function _disposeLive(family, version, nextState, label) {
+    const prev = version.state;
+    const back = prev === 'needs_review' ? prev : 'needs_review';
+    return _S().write({
+      label,
+      apply: () => { version.state = nextState; _advanceOrEmpty(); },
+      unapply: () => { version.state = back; _advanceOrEmpty(); },
+      request: () => _S().api('PATCH', _versionUrl(family, version), { state: nextState }),
+      undoRequest: () => _S().api('PATCH', _versionUrl(family, version), { state: back }),
+      repaint: _advanceOrEmpty,
+    });
+  }
+
   function _dispose(family, version, nextState, label) {
+    if (_live()) return _disposeLive(family, version, nextState, label);
     const prev = version.state;
     window.DeskV1Kit.commandBus.run({
       label,
@@ -636,8 +1115,12 @@
     const held = channel && channel.health === 'held';
     const rendered = !isVideo || (family.render && family.render.status === 'ready' && family.render.revision === version.revision);
     const manual = channel && channel.capability === 'manual';
-    const disabled = manual || held || !!blockedClaim || !rendered;
+    const liveReason = _live() ? (!channel ? 'The account is not in the workspace'
+      : (channel.publish && !channel.publish.ready ? `${channel.label || channel.identity} cannot publish: ${channel.publish.reason || 'not connected'}`
+        : (version.state === 'unknown_outcome' ? 'This may already be live: check the account first' : ''))) : '';
+    const disabled = manual || held || !!blockedClaim || !rendered || !!liveReason;
     const reason = manual ? 'Manual destinations can’t publish now — approving creates the task instead'
+      : liveReason ? liveReason
       : held ? 'Reconnect the destination first' : (blockedClaim ? 'Resolve the blocked claim first' : (!rendered ? 'Render this version first' : ''));
     const menu = document.createElement('div');
     menu.className = 'desk-v1-review-moremenu';
@@ -647,7 +1130,11 @@
     host.appendChild(menu);
     DeskV1Kit.placePopover(menu, triggerEl, { prefer: 'above' });
     if (!disabled) {
-      menu.querySelector('[data-publish-now]').onclick = () => { menu.remove(); _dispose(family, version, 'verified_published', 'Published now'); };
+      menu.querySelector('[data-publish-now]').onclick = () => {
+        menu.remove();
+        if (_live()) _approveLive(family, version, channel, detail, { now: true });
+        else _dispose(family, version, 'verified_published', 'Published now');
+      };
     }
     const closer = (e) => { if (!menu.contains(e.target) && e.target !== triggerEl) { menu.remove(); document.removeEventListener('click', closer); } };
     setTimeout(() => document.addEventListener('click', closer), 0);
@@ -683,7 +1170,7 @@
     const para = anchorEl && anchorEl.closest('[data-para-id]');
     // The claim paragraph resolves through its own source-validation flow,
     // not a free rewrite — no toolbar there (keeps A7's gate the only path).
-    if (!para || para.dataset.paraId === 'p-claim' || para.dataset.paraId === 'p-embed') { _closeSelToolbar(); return; }
+    if (!para || para.dataset.paraId === 'p-claim' || para.dataset.paraId === 'p-embed' || para.classList.contains('desk-v1-review-p-claim')) { _closeSelToolbar(); return; }
 
     _closeSelToolbar();
     const rect = range.getBoundingClientRect();
@@ -748,6 +1235,11 @@
     const detail = _detail(_st.versionId);
     const p = (detail.paragraphs || []).find((x) => x.id === paraId);
     if (!p) return;
+    if (_live()) {
+      const pair = _pair();
+      if (pair) _reviseRequest(pair.family, pair.version, { style, selection: selectedText || p.text });
+      return;
+    }
     const before = _st.editValues[paraId] != null ? _st.editValues[paraId] : p.text;
     const after = _rewriteFor(paraId, style, before);
     window.DeskV1Kit.commandBus.run({
@@ -770,6 +1262,14 @@
     box.querySelector('button').onclick = () => {
       const text = box.querySelector('textarea').value.trim();
       if (!text) return;
+      if (_live()) {
+        // Live there is no thread to post into: a comment IS a revision request on that passage.
+        const pair = _pair();
+        const para = (_detail(_st.versionId).paragraphs || []).find((x) => x.id === paraId);
+        if (pair) _reviseRequest(pair.family, pair.version, { selection: para && para.text, note: text });
+        box.innerHTML = `<div class="desk-v1-review-comment-posted"><strong>You:</strong> ${esc(text)}</div>`;
+        return;
+      }
       box.innerHTML = `<div class="desk-v1-review-comment-posted"><strong>You:</strong> ${esc(text)}</div>
         <div class="desk-v1-review-comment-reply"><strong>${esc(_agentName(_campaign(_st.campaignId)))}:</strong> Noted — I’ll flag this on the next pass.</div>`;
     };

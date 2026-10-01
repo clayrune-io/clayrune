@@ -166,9 +166,15 @@ def test_linkedin_page_is_not_connected_whatever_the_vault_holds(env, monkeypatc
     li = _by_id(client)['ch-li']
     assert li['publish']['ready'] is False and li['connected'] is False
     assert li['publish']['reason'] == 'LinkedIn app review pending (w_organization_social)'
-    # the one switch, flipped by whoever lands the publisher, makes it depend on the token
+    # the one switch, flipped when LinkedIn approves the scope, makes it depend on the
+    # organization id (account) and the token (vault)
     monkeypatch.setattr(_accounts, 'LINKEDIN_ORG_POSTING_APPROVED', True)
+    no_org = _by_id(client)['ch-li']['publish']
+    assert no_org['ready'] is False and 'organization id' in no_org['reason']
+    assert client.patch('/api/desk/accounts/ch-li', json={'organization_id': '12345678'}).status_code == 200
     assert _by_id(client)['ch-li']['publish']['ready'] is True
+    assert _by_id(client)['ch-li']['organization_id'] == '12345678'
+    assert client.patch('/api/desk/accounts/ch-li', json={'organization_id': 'urn:li:organization:1'}).status_code == 400
     del vault.entries['linkedin.oauth-token']
     assert _by_id(client)['ch-li']['publish']['ready'] is False
 

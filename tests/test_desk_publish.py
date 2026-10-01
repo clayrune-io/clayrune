@@ -238,7 +238,7 @@ def test_non_x_platform_refused_without_touching_network(store):
         raise AssertionError('must not POST for an unsupported platform')
     with patch.object(desk_publish, '_post_tweet', _no_call):
         with pytest.raises(desk_publish.PublishError, match='only posts to X'):
-            store.publish(_item(platform='linkedin'))
+            store.publish(_item(platform='reddit'))
 
 
 def test_unwired_receipts_path_fails_closed_before_any_post(monkeypatch):

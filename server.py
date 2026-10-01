@@ -2147,8 +2147,9 @@ _bp_desk.wire(
 app.register_blueprint(_bp_desk.bp)
 
 # mc.desk_publish (simplification plan §5 step 2) is a plain module, not a
-# blueprint -- no route calls it yet (step 4's approval gate has to exist
-# first), so this only gives it a durable path for its idempotency receipts.
+# blueprint: callers are the human-gated reply route and mc.desk_tick (R1-W
+# S7, behind the passcode approve route), so this only gives it a durable
+# path for its idempotency receipts.
 import mc.desk_publish as _desk_publish  # noqa: E402
 _desk_publish.RECEIPTS_PATH = DESK_RECEIPTS_PATH
 
@@ -3414,6 +3415,17 @@ def boot(check_port=True):
     # gets this thread as a side effect. Roll back: delete this line.
     from mc import secrets_store as _secrets_store
     _secrets_store.start_idle_lock_sweeper()
+    # The Desk publish tick (MC-1021 R1-W S7): sends versions a human approved,
+    # once their time comes, after the ordered checks in mc/desk_tick.py. Server
+    # process only; a test importing mc.desk_tick starts nothing. Refuses to
+    # start unless the store and receipts paths are wired. `desk_tick_enabled`
+    # is read before every pass (a kill switch, not a dry run: there is none).
+    # Roll back: delete this block.
+    try:
+        from mc import desk_tick as _desk_tick
+        _desk_tick.start(enabled=lambda: bool(CONFIG.get('desk_tick_enabled', True)))
+    except Exception as e:
+        _log(f"[desk_tick] not started: {e}")
     # Keep-awake reconciler: holds an OS wake lock while any agent is running, so
     # the machine doesn't sleep out from under a working agent. Off by default
     # (keep_awake_enabled); the reconciler reads the flag live so the toggle
