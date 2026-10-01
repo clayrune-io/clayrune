@@ -440,57 +440,44 @@ async function runDragReschedule(browser) {
   await ctx.close();
 }
 
-// ── R2-9 (§8 row / §11): the When stop's own fields — Cadence/Min gap
-// (read-only inherited display) and Term/Post cap (the two real editable
-// bounds, writing straight to `plan.end`) — plus the legend's literal
-// "your own slot"/"agent-suggested" words and the Your-slots rowhead. ───────
+// ── R2-9 (§8 row / §11), reshaped when the Presence screen was retired
+// (MC-977 2026-10-01): the When stop only READS the campaign's own limits
+// (cadence, min gap, term, post cap) and links back to the Brief, where they
+// are edited — one place per setting. Plus the legend's literal "your own
+// slot"/"agent-suggested" words and the Your-slots rowhead. ───────────────
 async function runR29FieldsAndLegend(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await navToCalendar(page);
   await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
 
-  // Dave review pass 1, point 3: the row's required format is "≤ n/wk from
-  // <project>'s ceiling" UNCONDITIONALLY whenever a project ceiling exists —
-  // camp-1's own cadence (3/wk) happens to equal Clayrune's ceiling (3/wk),
-  // so this also proves the hint isn't gated on the campaign leaving cadence
-  // unset (that gate was the bug: it hid the ceiling whenever a campaign set
-  // its own value, even when that value came straight from the ceiling).
   const cadence = (await page.textContent('[data-cal-field-cadence]').catch(() => '') || '').trim();
-  cadence === "≤3/wk from Clayrune's ceiling"
-    ? ok(`R2-9: Cadence field always shows the project ceiling hint: "${cadence}"`)
+  cadence === '3/wk'
+    ? ok(`R2-9: Cadence field reads the campaign's own cadence: "${cadence}"`)
     : fail(`R2-9: Cadence field wrong: ${JSON.stringify(cadence)}`);
 
   const minGap = (await page.textContent('[data-cal-field-mingap]').catch(() => '') || '').trim();
-  /12h \(inherited, read-only\)/.test(minGap)
-    ? ok(`R2-9: Min gap field reads the project's ceiling, marked read-only: "${minGap}"`)
+  minGap === '12h'
+    ? ok(`R2-9: Min gap field reads the campaign's own min gap: "${minGap}"`)
     : fail(`R2-9: Min gap field wrong: ${JSON.stringify(minGap)}`);
 
-  const endVal = await page.$eval('[data-cal-field-end]', (el) => el.value).catch(() => '');
-  endVal === '2026-10-20'
-    ? ok(`R2-9: Term end date field shows plan.end.date: "${endVal}"`)
-    : fail(`R2-9: Term end date field wrong: ${JSON.stringify(endVal)}`);
+  const term = (await page.textContent('[data-cal-field-term]').catch(() => '') || '').trim();
+  /Oct 20$/.test(term)
+    ? ok(`R2-9: Term field shows the campaign's end date: "${term}"`)
+    : fail(`R2-9: Term field wrong: ${JSON.stringify(term)}`);
 
-  // Edit end date -> writes straight to `plan.end.date` (no command/Undo —
-  // §8's Test/Suggest bound edit is a live field, not a drag/drop).
-  await page.fill('[data-cal-field-end]', '2026-11-15');
-  await page.$eval('[data-cal-field-end]', (el) => el.dispatchEvent(new Event('change', { bubbles: true })));
-  const writtenEnd = await page.evaluate(() => {
-    const camp = (window.DeskV1Fixtures.campaigns || []).find((c) => c.id === 'camp-1');
-    return camp.plan.end.date;
-  });
-  writtenEnd === '2026-11-15'
-    ? ok('R2-9: editing the Term end date writes straight to plan.end.date')
-    : fail(`R2-9: Term end date edit did not persist: ${JSON.stringify(writtenEnd)}`);
+  const noInputs = await page.$$eval('.desk-v1-cal-fields input', (els) => els.length);
+  noInputs === 0
+    ? ok('R2-9: the When stop has no limit inputs of its own (limits are edited on the Brief only)')
+    : fail(`R2-9: the When stop still carries ${noInputs} limit input(s)`);
 
-  await page.fill('[data-cal-field-postcap]', '12');
-  await page.$eval('[data-cal-field-postcap]', (el) => el.dispatchEvent(new Event('change', { bubbles: true })));
-  const writtenCap = await page.evaluate(() => {
-    const camp = (window.DeskV1Fixtures.campaigns || []).find((c) => c.id === 'camp-1');
-    return camp.plan.end.post_cap;
-  });
-  writtenCap === 12
-    ? ok('R2-9: editing Post cap writes straight to plan.end.post_cap')
-    : fail(`R2-9: Post cap edit did not persist: ${JSON.stringify(writtenCap)}`);
+  await page.click('[data-cal-edit-limits]');
+  await page.waitForSelector('[data-how-limits-card] [data-how-limit="per_week"]', { timeout: 4000 });
+  const cap = await page.$eval('[data-how-limits-card] [data-how-limit="per_week"]', (el) => el.value);
+  cap === '3'
+    ? ok('R2-9: "Edit limits in Brief" opens the Brief limits card, showing the same 3/wk')
+    : fail(`R2-9: Brief limits card wrong: per_week=${JSON.stringify(cap)}`);
+  await navToCalendar(page);
+  await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
 
   const legendText = await page.$$eval('.desk-v1-cal-legend-item', (els) => els.map((e) => e.textContent.trim()));
   legendText.some((t) => /your own slot/.test(t)) && legendText.some((t) => /agent-suggested/.test(t))
