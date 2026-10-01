@@ -1704,7 +1704,7 @@
 .desk-v1-video-scene:hover, .desk-v1-video-scene:focus { background: var(--surface3); outline: none; }
 .desk-v1-video-scene-target { background: var(--accent-dim); }
 .desk-v1-video-scene-dragging { opacity: 0.4; }
-.desk-v1-video-scene-dot { color: var(--accent); font-size: 8px; }
+.desk-v1-video-scene-dot { color: var(--accent); font-size: 11px; }
 /* Empty placeholder box, never a fabricated preview (U11) — 12d shows a
    thumbnail-shaped slot above each label, not a real frame. */
 .desk-v1-video-scene-thumb {
@@ -2980,7 +2980,7 @@ button.desk-v1-because-chip { color: var(--accent-soft); font-weight: 600; curso
    own line (left-aligned, one line) rather than squeeze both. */
 @media (max-width: 640px) {
   .desk-v1-posy-box .desk-thread-head { flex-wrap: wrap; row-gap: 0; }
-  .desk-v1-posy-scope { margin-left: 0; padding-left: 0; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+  .desk-v1-posy-scope { margin-left: 0; padding-left: 0; white-space: normal; max-width: 100%; text-align: left; }
 }
 
 /* Remaining icon / label shapes from the sweep. */
