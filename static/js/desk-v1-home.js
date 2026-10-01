@@ -484,8 +484,22 @@
     </button>`;
   }
 
-  function _projectBlockHTML(p) {
-    const camps = _campaignsFor(p.id).filter((c) => c.state !== 'archived');
+  // Home is the live board (Ron 2026-10-01): a campaign is on it while it is
+  // draft / proposed / running / paused (v1 word: `active`). The terminal
+  // states in mc/desk.py CAMPAIGN_STATES are `done` and `dropped`, which
+  // `_V1_STATE_OUT` hands the browser as `completed` and `archived`; both move
+  // under the quiet "Ended (N)" link (`archived` used to be hidden outright).
+  // Anything else counts as live so an unknown state is never silently hidden.
+  const _ENDED_STATES = ['completed', 'archived'];
+  function _isEnded(c) { return _ENDED_STATES.indexOf(c.state) !== -1; }
+  function _isLive(c) { return !_isEnded(c); }
+  // Survives a repaint (every action on Home re-renders the board).
+  let _endedOpen = false;
+
+  // A project with no live campaign gets no block at all: no empty box, no
+  // planner chip. Its New campaign link and agent card live on its project
+  // page (reached from the Projects picker), so nothing becomes unreachable.
+  function _projectBlockHTML(p, camps) {
     return `<div class="desk-v1-home-block" data-project-id="${esc(p.id)}">
       <div class="desk-v1-home-block-head">
         <button type="button" class="desk-v1-home-block-name" data-project-id="${esc(p.id)}">${esc(p.name)}</button>
@@ -493,7 +507,7 @@
         <button type="button" class="desk-v1-home-block-newcamp" data-project-id="${esc(p.id)}">&#65291; New campaign</button>
       </div>
       <div class="desk-v1-home-block-rows">
-        ${camps.length ? camps.map(_rowHTML).join('') : '<div class="desk-v1-home-block-empty">No campaigns yet in this project &mdash; use &#65291; New campaign to start one.</div>'}
+        ${camps.map(_rowHTML).join('')}
       </div>
     </div>`;
   }
@@ -503,7 +517,7 @@
   // Home. Shown only while such campaigns exist, after the project blocks; no
   // agent chip or "＋ New campaign" (there is no project to scope either to).
   function _noProjectCampaigns() {
-    return _campaigns().filter((c) => !_project(c.projectId) && c.state !== 'archived');
+    return _campaigns().filter((c) => !_project(c.projectId) && _isLive(c));
   }
   function _noProjectBlockHTML(camps) {
     return `<div class="desk-v1-home-block desk-v1-home-block-noproject" data-no-project-block>
@@ -576,6 +590,12 @@
     host.querySelectorAll('.desk-v1-home-block-newcamp').forEach((btn) => {
       btn.onclick = () => _startNewCampaign(btn.dataset.projectId);
     });
+    host.querySelectorAll('.desk-v1-home-empty-newcamp').forEach((btn) => {
+      btn.onclick = () => _startNewCampaign(_scopedProjectId());
+    });
+    host.querySelectorAll('.desk-v1-home-ended-toggle').forEach((btn) => {
+      btn.onclick = () => { _endedOpen = !_endedOpen; _renderStatusBoard(); };
+    });
     host.querySelectorAll('.desk-v1-home-row').forEach((rowEl) => {
       const { campaignId, projectId } = rowEl.dataset;
       const go = () => { deskV1Nav('campaign', { campaignId, projectId: projectId || null }); };
@@ -606,18 +626,52 @@
     btn.onclick = () => _startNewCampaign(_scopedProjectId());
   }
 
+  // Ended campaigns, grouped by project like the live board but with no planner
+  // chip and no New campaign link (those belong to a displayed live group).
+  function _endedSectionHTML(ended) {
+    if (!ended.length) return '';
+    const toggle = `<button type="button" class="desk-v1-home-ended-toggle" aria-expanded="${_endedOpen ? 'true' : 'false'}">Ended (${ended.length})</button>`;
+    if (!_endedOpen) return `<div class="desk-v1-home-ended">${toggle}</div>`;
+    const groups = [];
+    for (const c of ended) {
+      let g = groups.find((x) => x.projectId === c.projectId);
+      if (!g) { g = { projectId: c.projectId, camps: [] }; groups.push(g); }
+      g.camps.push(c);
+    }
+    const blocks = groups.map((g) => {
+      const p = _project(g.projectId);
+      return `<div class="desk-v1-home-block desk-v1-home-ended-block" data-ended-project-id="${esc(g.projectId || '')}">
+        <div class="desk-v1-home-block-head">
+          <span class="desk-v1-home-block-name desk-v1-home-block-name-static">${esc(p ? p.name : 'No project yet')}</span>
+        </div>
+        <div class="desk-v1-home-block-rows">${g.camps.map(_rowHTML).join('')}</div>
+      </div>`;
+    }).join('');
+    return `<div class="desk-v1-home-ended">${toggle}<div class="desk-v1-home-ended-blocks">${blocks}</div></div>`;
+  }
+
   function _renderStatusBoard() {
     const host = document.getElementById('desk-v1-home-board');
     if (!host) return;
-    const projects = _projects();
     const legend = `<div class="desk-v1-home-legend"><span class="desk-v1-home-legend-bar" aria-hidden="true"></span> bar = goal reached <span class="desk-v1-home-legend-sep" aria-hidden="true">|</span> tick = time elapsed</div>`;
     const colHead = `<div class="desk-v1-home-board-head">
       <div>CAMPAIGN</div><div>STAGE</div><div>GOAL PROGRESS</div><div>PACE</div><div>NEXT POST</div><div>NEEDS YOU</div>
     </div>`;
+    const groups = _projects()
+      .map((p) => ({ p, camps: _campaignsFor(p.id).filter(_isLive) }))
+      .filter((g) => g.camps.length);
     const orphans = _noProjectCampaigns();
-    host.innerHTML = legend + _workerBannerHTML() + (projects.length || orphans.length
-      ? colHead + `<div class="desk-v1-home-board-blocks">${projects.map(_projectBlockHTML).join('')}${orphans.length ? _noProjectBlockHTML(orphans) : ''}</div>`
-      : '<div class="desk-v1-home-empty">No projects yet.</div>');
+    const ended = _campaigns().filter(_isEnded);
+    const blocks = groups.map((g) => _projectBlockHTML(g.p, g.camps)).join('') + (orphans.length ? _noProjectBlockHTML(orphans) : '');
+    // Nothing live anywhere: ONE page-level empty state, not a box per project.
+    // The legend and column header describe rows that aren't there, so they go.
+    const board = blocks
+      ? legend + _workerBannerHTML() + colHead + `<div class="desk-v1-home-board-blocks">${blocks}</div>`
+      : _workerBannerHTML() + `<div class="desk-v1-home-empty">
+        <div>No active or draft campaigns</div>
+        <button type="button" class="desk-v1-home-empty-newcamp">&#65291; New campaign</button>
+      </div>`;
+    host.innerHTML = board + _endedSectionHTML(ended);
     _bindStatusBoard(host);
   }
 
