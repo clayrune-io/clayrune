@@ -714,10 +714,84 @@ async function toggleSecretsAudit() {
 
 // ── Editor ───────────────────────────────────────────────────────────────────
 
-async function openSecretEditor(name) {
-  const isNew = !name;
+// A Desk generation engine's credential form spec (GET /api/desk/engines →
+// `credential`): labels, a hint and the vendor URL. Metadata only; the human
+// still types the value and submits through the passcode-gated save below.
+let _secPreset = null;
+let _secIsNew = true;
+let _secPresetsByName = null;
+
+function _secLoadPresets() {
+  if (_secPresetsByName) return Promise.resolve(_secPresetsByName);
+  const eng = window.DeskV1Engines;
+  if (!eng || typeof eng.list !== 'function') return Promise.resolve({});
+  return eng.list(null).then((engines) => {
+    const m = {};
+    (engines || []).forEach((e) => { if (e.credential && e.credential.vault_entry) m[e.credential.vault_entry] = e.credential; });
+    return (_secPresetsByName = m);
+  }).catch(() => ({}));
+}
+
+// Relabel the open editor from `preset` (null = the stock form). Safe to call
+// repeatedly: it always writes every labelled node, so a preset never sticks.
+function _secApplyPreset(preset) {
+  _secPreset = preset || null;
+  const $ = (id) => document.getElementById(id);
+  const hasUser = !preset || !!preset.username_label;
+  const userBlock = $('sec-user-block');
+  if (userBlock) userBlock.hidden = !hasUser;
+  const set = (id, text) => { const el = $(id); if (el) el.textContent = text; };
+  set('sec-user-name', preset && preset.username_label ? preset.username_label : 'Username');
+  set('sec-user-opt', preset && preset.username_label
+    ? (preset.username_required ? ' — required' : ' — optional') : ' — optional');
+  const user = $('sec-user');
+  if (user) user.placeholder = preset && preset.username_label ? `paste the ${preset.username_label}` : 'ron@example.com';
+  const userHelp = $('sec-user-help');
+  if (userHelp) userHelp.hidden = !!preset;
+  set('sec-value-name', preset ? preset.secret_label : 'Value');
+  const value = $('sec-value');
+  if (value) value.placeholder = !_secIsNew ? 'unchanged'
+    : (preset ? `paste the ${preset.secret_label}` : 'paste from your password manager');
+  const twoFa = $('sec-2fa-help');
+  if (twoFa) twoFa.hidden = !!preset;
+  const desc = $('sec-desc');
+  if (desc) desc.placeholder = preset ? 'Desk generation engine (renders for the Studio)' : 'Reddit account used for launch posts';
+  const hint = $('sec-preset-hint');
+  if (hint) {
+    hint.hidden = !preset;
+    hint.textContent = '';
+    if (preset) {
+      hint.append(preset.hint || '');
+      if (preset.url) {
+        const a = document.createElement('a');
+        a.href = preset.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+        a.textContent = preset.url.replace(/^https?:\/\//, '');
+        hint.append(' ', a);
+      }
+    }
+  }
+  const root = document.querySelector('[data-modal-id="__secret-edit"]');
+  if (root) {
+    let n = 0;
+    root.querySelectorAll('.sec-step').forEach((el) => {
+      if (el.closest('#sec-user-block') && !hasUser) return;
+      el.textContent = `${++n}. `;
+    });
+  }
+}
+
+// `preset`: a credential spec from an engine row. `preset.create` opens an Add
+// with `name` prefilled (the entry does not exist yet); without it a given
+// name is an Edit, as ever. A plain Add also picks a preset up by the name typed.
+async function openSecretEditor(name, preset) {
+  const isNew = !name || !!(preset && preset.create);
   const modalId = '__secret-edit';
   if (openModals.has(modalId)) closeModalById(modalId);
+  if (name && !preset) preset = (await _secLoadPresets())[name] || null;
+  _secIsNew = isNew;
+  // A prefilled Add (Connect on an engine row) locks the name: it IS the link
+  // to the engine, and a typo would store a credential nothing reads.
+  const lockName = !isNew || !!(preset && preset.create);
 
   let existing = null;
   if (!isNew) {
@@ -760,28 +834,28 @@ async function openSecretEditor(name) {
       </div>
 
       <div>
-        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">1. Name</label>
-        <input type="text" id="sec-name" value="${esc(name || '')}" ${isNew ? '' : 'readonly'}
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px"><span class="sec-step"></span>Name</label>
+        <input type="text" id="sec-name" value="${esc(name || '')}" ${lockName ? 'readonly' : ''}
           placeholder="reddit.password" autocomplete="off" spellcheck="false"
           style="width:100%;padding:6px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);
-                 font-family:var(--mono);${isNew ? '' : 'opacity:0.6'}">
+                 font-family:var(--mono);${lockName ? 'opacity:0.6' : ''}">
         <div style="font-size:10px;color:var(--text-faint);margin-top:3px">
           Lowercase, dot-namespaced. Referenced in tasks as
           <code>{{secret:reddit.password}}</code>.
         </div>
       </div>
 
-      <div>
-        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">
-          2. Username <span style="opacity:.7">— optional</span>
+      <div id="sec-user-block">
+        <label id="sec-user-label" style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">
+          <span class="sec-step"></span><span id="sec-user-name">Username</span> <span id="sec-user-opt" style="opacity:.7">— optional</span>
         </label>
         <input type="text" id="sec-user" value="${esc((existing && existing.username) || '')}"
           placeholder="ron@example.com" autocomplete="off" spellcheck="false"
           style="width:100%;padding:6px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);
                  font-family:var(--mono)">
-        <div style="font-size:10px;color:var(--text-faint);margin-top:3px">
+        <div id="sec-user-help" style="font-size:10px;color:var(--text-faint);margin-top:3px">
           The other half of a login. Referenced as <code>{{user:${esc(name || 'name')}}}</code>,
           and shown in the list so two accounts on the same site stay apart.
           Not encrypted — it is an identifier, not a credential.
@@ -790,7 +864,7 @@ async function openSecretEditor(name) {
 
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">
-          3. Value ${isNew ? '' : '<span style="opacity:.7">— leave blank to keep the current one</span>'}
+          <span class="sec-step"></span><span id="sec-value-name">Value</span> ${isNew ? '' : '<span style="opacity:.7">— leave blank to keep the current one</span>'}
         </label>
         <div style="display:flex;gap:6px">
           <input type="password" id="sec-value" autocomplete="off" spellcheck="false"
@@ -805,7 +879,8 @@ async function openSecretEditor(name) {
           Once saved it cannot be displayed again — there is no route that hands
           a value back. Rotate it here if you lose it.
         </div>
-        <div style="font-size:10px;color:var(--text-faint);margin-top:5px;line-height:1.5">
+        <div id="sec-preset-hint" hidden style="font-size:10px;color:var(--text-faint);margin-top:5px;line-height:1.5"></div>
+        <div id="sec-2fa-help" style="font-size:10px;color:var(--text-faint);margin-top:5px;line-height:1.5">
           <strong>For 2FA:</strong> paste an <code>otpauth://</code> setup link
           (the "can't scan the QR?" text on the enrolment page) and it becomes a
           code generator. Google Authenticator's
@@ -820,7 +895,7 @@ async function openSecretEditor(name) {
       </div>
 
       <div>
-        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">4. What it's for</label>
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px"><span class="sec-step"></span>What it's for</label>
         <input type="text" id="sec-desc" value="${esc((existing && existing.description) || '')}"
           placeholder="Reddit account used for launch posts" autocomplete="off"
           style="width:100%;padding:6px 10px;font-size:13px;background:var(--surface2);
@@ -828,7 +903,7 @@ async function openSecretEditor(name) {
       </div>
 
       <div>
-        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">5. Who can use it</label>
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px"><span class="sec-step"></span>Who can use it</label>
         <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
           <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
             <input type="radio" name="sec-scope" value="global" ${scopeIsProject ? '' : 'checked'}
@@ -850,7 +925,7 @@ async function openSecretEditor(name) {
         <label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;cursor:pointer">
           <input type="checkbox" id="sec-unattended" ${allowUnattended ? 'checked' : ''} style="margin-top:2px">
           <span>
-            6. Usable by unattended runs
+            <span class="sec-step"></span>Usable by unattended runs
             <div style="font-size:10px;color:var(--text-faint);margin-top:2px">
               Uncheck for anything you don't want the steward or a scheduled job
               touching while you're away.
@@ -875,7 +950,18 @@ async function openSecretEditor(name) {
   openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
   centerModalElement(win);
   focusModal(modalId);
-  const first = document.getElementById(isNew ? 'sec-name' : 'sec-value');
+  _secApplyPreset(preset);
+  if (isNew && !lockName) {
+    // A plain Add: typing a known engine's vault name switches to its labels.
+    const nameEl = document.getElementById('sec-name');
+    const retarget = async () => {
+      const found = (await _secLoadPresets())[nameEl.value.trim()] || null;
+      if (found !== _secPreset) _secApplyPreset(found);
+    };
+    nameEl.addEventListener('input', retarget);
+    _secLoadPresets();
+  }
+  const first = document.getElementById(isNew && !lockName ? 'sec-name' : 'sec-value');
   if (first) first.focus();
 }
 
@@ -909,12 +995,17 @@ async function saveSecret(modalId, isNew) {
   // not required (and would be meaningless) for that path.
   const isBulkImport = /^otpauth-migration:\/\//i.test(value.trim());
   if (!name && !isBulkImport) return fail('Give it a name.');
-  if (isNew && !value) return fail('Paste the value you want stored.');
+  if (isNew && !value) return fail(_secPreset ? `Paste the ${_secPreset.secret_label}.` : 'Paste the value you want stored.');
   if (scopeIsProject && !scope) return fail('Pick a project, or choose “Every project”.');
+  // A preset without a username field (Gemini, OpenAI) stores none, whatever a
+  // previous name left typed in the hidden input.
+  const username = (_secPreset && !_secPreset.username_label)
+    ? '' : (document.getElementById('sec-user')?.value || '').trim();
+  if (_secPreset && _secPreset.username_required && !username) return fail(`Enter the ${_secPreset.username_label}.`);
 
   const body = {
     name,
-    username: (document.getElementById('sec-user')?.value || '').trim(),
+    username,
     description: document.getElementById('sec-desc')?.value || '',
     scope,
     allow_unattended: !!document.getElementById('sec-unattended')?.checked,

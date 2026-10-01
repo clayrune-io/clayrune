@@ -166,6 +166,10 @@ class EngineDescriptor:
     estimate: str                              # "endpoint" | "price_table"
     prices_read: str
     models: list[ModelDescriptor]
+    # What the Secrets form says for this engine's vault entry. Labels and a
+    # hint only, never a value; `username_label` None = the engine has no
+    # username half and the form hides that field.
+    credential: dict = field(default_factory=dict)
 
     def public(self) -> dict:
         d = asdict(self)
@@ -247,6 +251,13 @@ def _higgs_model(path: str, kind: str, label: str, *, durations=None, ratios=Non
         vendor={'adapter': 'higgsfield'})
 
 
+def _credential(vault_entry: str, secret_label: str, hint: str, url: str, *,
+                username_label: str | None = None, username_required: bool = False) -> dict:
+    return {'vault_entry': vault_entry, 'username_label': username_label,
+            'username_required': bool(username_label and username_required),
+            'secret_label': secret_label, 'hint': hint, 'url': url}
+
+
 # `kind` of the engine's auth + where its credential lives. Two-part entries
 # (Higgsfield) read the username half through `secrets_store.get_username`.
 _ENGINES: list[EngineDescriptor] = [
@@ -268,7 +279,11 @@ _ENGINES: list[EngineDescriptor] = [
                          'Hailuo 2.3 (text to video)', durations=[6, 10]),
             _higgs_model('minimax/hailuo-2.3/standard/image-to-video', 'video',
                          'Hailuo 2.3 (image to video)', durations=[6, 10], first_frame=True),
-        ]),
+        ],
+        credential=_credential(
+            VAULT_HIGGSFIELD, 'API key secret',
+            'Create an API key in the Higgsfield console; it shows a key ID and a key secret.',
+            'https://console.higgsfield.ai', username_label='API key ID', username_required=True)),
     EngineDescriptor(
         id='google', label='Google (Veo + Gemini image)',
         auth={'kind': 'api_key', 'vault_entry': VAULT_GEMINI},
@@ -286,7 +301,11 @@ _ENGINES: list[EngineDescriptor] = [
                                 {'1K': 0.0336}, refs=14),
             _gemini_image_model('gemini-3-pro-image', 'Gemini 3 Pro Image',
                                 {'1K': 0.134, '2K': 0.134, '4K': 0.24}, refs=6),
-        ]),
+        ],
+        credential=_credential(
+            VAULT_GEMINI, 'Gemini API key',
+            'Create the key in Google AI Studio; billing must be on for the project or Veo is refused.',
+            'https://aistudio.google.com/apikey')),
     EngineDescriptor(
         id='openai', label='OpenAI image',
         auth={'kind': 'api_key', 'vault_entry': VAULT_OPENAI},
@@ -294,7 +313,11 @@ _ENGINES: list[EngineDescriptor] = [
         models=[
             _openai_image_model('gpt-image-2.5-sunburst', 'GPT Image 2.5 (sunburst)'),
             _openai_image_model('gpt-image-2.5-flare', 'GPT Image 2.5 (flare)'),
-        ]),
+        ],
+        credential=_credential(
+            VAULT_OPENAI, 'OpenAI API key',
+            'Create the key on platform.openai.com; a ChatGPT or Codex plan does not include API use.',
+            'https://platform.openai.com/api-keys')),
 ]
 
 ENGINES: dict[str, EngineDescriptor] = {e.id: e for e in _ENGINES}
@@ -437,25 +460,29 @@ class _Creds:
 
 
 def connection(engine_id: str, project_id: str | None = None) -> dict:
-    """`{ready, reason, vault_entry}` for one engine. Metadata only: the vault
-    is asked whether the entry exists and decrypts, never for its value."""
+    """`{ready, reason, vault_entry, exists}` for one engine. Metadata only: the
+    vault is asked whether the entry exists and decrypts, never for its value.
+    `exists` tells the Connect button whether to open the form as Add or Edit."""
     eng = ENGINES[engine_id]
     name = eng.auth['vault_entry']
+    exists = False
     try:
         visible = {s['name']: s for s in secrets_store.list_secrets(project_id)}
         rec = visible.get(name)
         if rec is None:
-            return {'ready': False, 'vault_entry': name,
+            return {'ready': False, 'vault_entry': name, 'exists': False,
                     'reason': f"no vault entry named '{name}' (add it in Secrets)"}
+        exists = True
         if not secrets_store.is_readable(name):
-            return {'ready': False, 'vault_entry': name,
+            return {'ready': False, 'vault_entry': name, 'exists': True,
                     'reason': f"vault entry '{name}' cannot be read (vault locked or key mismatch)"}
         if eng.auth['kind'] == 'key_id_secret' and not rec.get('username'):
-            return {'ready': False, 'vault_entry': name,
-                    'reason': f"vault entry '{name}' has no username; store the key id as its username"}
+            label = eng.credential.get('username_label') or 'username'
+            return {'ready': False, 'vault_entry': name, 'exists': True,
+                    'reason': f"vault entry '{name}' has no {label}; store the {label} in its username field"}
     except secrets_store.SecretsError as e:
-        return {'ready': False, 'vault_entry': name, 'reason': _safe(e)}
-    return {'ready': True, 'vault_entry': name, 'reason': None}
+        return {'ready': False, 'vault_entry': name, 'exists': exists, 'reason': _safe(e)}
+    return {'ready': True, 'vault_entry': name, 'exists': True, 'reason': None}
 
 
 def _creds(engine_id: str, project_id: str | None, unattended: bool) -> _Creds:
