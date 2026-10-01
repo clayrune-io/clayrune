@@ -876,6 +876,79 @@ async function runR29bMonthGridDimensions(browser) {
   await ctx.close();
 }
 
+// ── MC-1021 weekend overlap: at every desktop width the desk window is ~1026px
+// wide, so the 7-day week grid beside the Posy column used to overflow its
+// wrapper — Sat + Sun scrolled out of view and the Posy box sat where they
+// were, so a drop on a weekend slot landed on the Posy input. Every width:
+// each weekend cell is fully inside the grid wrapper, the point at its centre
+// resolves to the cell (not the Posy box), the wrapper has no horizontal
+// scroll, and a real drag hovers the Sunday cell as a drop target.
+async function runWeekendNotCovered(browser) {
+  for (const w of [1280, 1440, 1920]) {
+    const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} }, { width: w, height: 950 });
+    await navToCalendar(page);
+    await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
+    await page.waitForTimeout(100);
+    const r = await page.evaluate(() => {
+      const wrap = document.querySelector('.desk-v1-cal-grid-wrap').getBoundingClientRect();
+      const rightcol = document.querySelector('.desk-v1-camp-rightcol').getBoundingClientRect();
+      const cells = [...document.querySelectorAll('.desk-v1-cal-row:not(.desk-v1-cal-row-header) .desk-v1-cal-cell-weekend')];
+      const bad = [];
+      for (const c of cells) {
+        // Horizontal geometry is measured BEFORE any scroll (a cell that is
+        // only reachable by scrolling sideways is the bug); the row may sit
+        // below the modal's fold, so scroll vertically only, then hit-test.
+        const b0 = c.getBoundingClientRect();
+        const inWrap = b0.left >= wrap.left - 0.5 && b0.right <= wrap.right + 0.5;
+        const clearOfRightcol = b0.right <= rightcol.left + 0.5;
+        c.scrollIntoView({ block: 'center', inline: 'nearest' });
+        const b = c.getBoundingClientRect();
+        const x = b.left + b.width / 2, y = b.top + b.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        if (!(hit && (hit === c || c.contains(hit))) || !inWrap || !clearOfRightcol) {
+          bad.push({ l: Math.round(b.left), r: Math.round(b.right), inWrap, clearOfRightcol, hit: hit ? hit.className : null });
+        }
+      }
+      const wrapEl = document.querySelector('.desk-v1-cal-grid-wrap');
+      return { n: cells.length, bad, hscroll: wrapEl.scrollWidth - wrapEl.clientWidth };
+    });
+    r.n >= 2 && r.bad.length === 0
+      ? ok(`[${w}px] all ${r.n} weekend cells are fully visible, clear of the Posy column, and are what elementFromPoint returns at their centres`)
+      : fail(`[${w}px] weekend cells covered/clipped (n=${r.n}): ${JSON.stringify(r.bad)}`);
+    r.hscroll <= 1
+      ? ok(`[${w}px] week grid has no horizontal scroll (all 7 day columns fit)`)
+      : fail(`[${w}px] week grid overflows its wrapper by ${r.hscroll}px`);
+
+    // Real drag: a scheduled chip hovered over the Sunday cell of its own row
+    // must light that cell's drop target (not the Posy box).
+    await page.evaluate(() => { window.confirm = () => false; });
+    let chip = await page.$('[data-chip-version="v-testers-li"]');
+    for (let i = 0; i < 6 && !chip; i++) {
+      await page.click('[data-cal-shift="1"]');
+      await page.waitForTimeout(30);
+      chip = await page.$('[data-chip-version="v-testers-li"]');
+    }
+    if (!chip) { fail(`[${w}px] no chip to drag onto the weekend`); await ctx.close(); continue; }
+    const cb = await chip.boundingBox();
+    const row = await chip.evaluateHandle((el) => el.closest('.desk-v1-cal-row'));
+    const weekendCells = await row.$$('.desk-v1-cal-cell-weekend');
+    const sunday = weekendCells[weekendCells.length - 1];
+    const sb = await sunday.boundingBox();
+    await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(cb.x + cb.width / 2 + 15, cb.y + cb.height / 2 + 5, { steps: 3 });
+    await page.mouse.move(sb.x + sb.width / 2, sb.y + sb.height / 2, { steps: 8 });
+    await page.waitForTimeout(60);
+    const hoverIsSunday = await sunday.evaluate((el) => el.classList.contains('pd-drop-hover'));
+    hoverIsSunday
+      ? ok(`[${w}px] dragging a chip over Sunday lights the Sunday cell as the drop target`)
+      : fail(`[${w}px] Sunday cell did not receive the drag hover`);
+    await page.mouse.up();
+    reportUncaught(pageErrors, `[${w}px weekend]`);
+    await ctx.close();
+  }
+}
+
 // ── Phone (§11): "Calendar on phone defaults to an agenda list grouped by
 // day" — the grid is hidden, the agenda (day, then channel) is shown. ───────
 async function runPhoneLayout(browser) {
@@ -949,6 +1022,7 @@ try {
   await runR219WhenTimeOnly(browser);
   await runR29UnscheduledDrag(browser);
   await runR29bMonthGridDimensions(browser);
+  await runWeekendNotCovered(browser);
   await runPhoneLayout(browser);
   await captureScreenshots(browser);
   exitCode = bad === 0 ? 0 : 1;

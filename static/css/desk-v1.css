@@ -1304,8 +1304,16 @@
    what still gives a tall All-campaigns row count its OWN internal scroll
    instead of growing the whole panel unboundedly. */
 .desk-v1-cal-grid-wrap { flex: 0 1 auto; overflow: auto; min-height: 0; max-height: 460px; border: 1px solid var(--border2); border-radius: 10px; background: var(--surface); }
-.desk-v1-cal-grid { display: flex; flex-direction: column; min-width: calc(150px + var(--desk-v1-cal-cols, 7) * 110px); }
-.desk-v1-cal-row { display: grid; grid-template-columns: 150px repeat(var(--desk-v1-cal-cols, 7), minmax(110px, 1fr)); border-bottom: 1px solid var(--border); }
+/* Weekend-overlap fix (MC-1021): the desk window is ~1026px wide at every
+   desktop viewport (1280/1440/1920 alike), so the When stop's tabbody is
+   ~690px beside the 320px Posy column. The old 150px rowhead + 7 x 110px
+   floor (920px) could never fit, so Sat + Sun scrolled out of this wrapper
+   to the right and the Posy box sat where they were — a drop there hit the
+   Posy input. 116px rowhead + 7 x 84px day floor = 704px fits the tabbody
+   once the When stop's Posy column narrows to 260px (rule below); the
+   wrapper's own overflow-x stays as the fallback for a hand-shrunk window. */
+.desk-v1-cal-grid { display: flex; flex-direction: column; min-width: calc(116px + var(--desk-v1-cal-cols, 7) * 84px); }
+.desk-v1-cal-row { display: grid; grid-template-columns: 116px repeat(var(--desk-v1-cal-cols, 7), minmax(84px, 1fr)); border-bottom: 1px solid var(--border); }
 .desk-v1-cal-row:last-child { border-bottom: none; }
 .desk-v1-cal-row-header { position: sticky; top: 0; z-index: 1; background: var(--surface2); border-bottom: 1px solid var(--border2); }
 
@@ -1349,7 +1357,7 @@
 .desk-v1-cal-chip {
   display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left;
   background: var(--surface2); border: 1px solid var(--border2); border-radius: 7px; padding: 5px 7px;
-  cursor: grab; font: inherit;
+  cursor: grab; font: inherit; min-width: 0; overflow: hidden;
 }
 .desk-v1-cal-chip:hover { background: var(--surface3); }
 .desk-v1-cal-chip:active { cursor: grabbing; }
@@ -1359,7 +1367,7 @@
    the state colour so the glyph and word (kit's own .desk-v1-state-label,
    normally coloured only on the glyph per A15) read in the same tone as the
    time, without recolouring the shared kit component's default elsewhere. */
-.desk-v1-cal-chip-line1 { display: flex; align-items: center; gap: 5px; color: var(--text-dim); }
+.desk-v1-cal-chip-line1 { display: flex; flex-wrap: wrap; align-items: center; gap: 0 5px; max-width: 100%; color: var(--text-dim); }
 .desk-v1-cal-chip-line1 .desk-v1-state-label,
 .desk-v1-cal-chip-line1 .desk-v1-state-glyph { color: inherit; }
 .desk-v1-cal-chip[data-state="blocked"] .desk-v1-cal-chip-line1,
@@ -1377,6 +1385,12 @@
 }
 .desk-v1-cal-chip-dragging { opacity: 0.35; }
 .desk-v1-cal-chip-ghost { box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); pointer-events: none; }
+
+/* When stop: a 260px Posy column (not the 320px default) so the 7-day week grid
+   above fits beside it. Desktop only — <=960px stacks the column below. */
+@media (min-width: 961px) {
+  .desk-v1-camp-main:has(> .desk-v1-camp-tabbody[data-panel="when"]) > .desk-v1-camp-rightcol { flex: 0 0 260px; }
+}
 
 /* ── R2-9b (Dave follow-up): Month's real 7-col grid — a plain 2D grid
    (N*7 day cells, all direct children), so CSS Grid's own row-wrapping
@@ -1507,11 +1521,11 @@
 
 /* Your-slots band — its own row inside the grid (`_slotRowHTML`), so it
    shares the grid's column template with the header and channel rows. */
-.desk-v1-cal-rowhead-slots { flex-direction: row; align-items: center; justify-content: space-between; gap: 6px; }
+.desk-v1-cal-rowhead-slots { flex-direction: row; align-items: center; justify-content: space-between; gap: 4px; padding: 8px 6px; }
 .desk-v1-cal-slot-rowlabel { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.02em; }
 .desk-v1-cal-slot-handle {
   background: var(--green-dim); border: 1px dashed var(--green-text); color: var(--green-text);
-  border-radius: 6px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: grab; white-space: nowrap;
+  border-radius: 6px; padding: 4px 6px; font-size: 10.5px; font-weight: 600; cursor: grab; white-space: nowrap;
 }
 .desk-v1-cal-slot-handle:active, .desk-v1-cal-slot-handle-dragging { cursor: grabbing; }
 /* Per-cell add affix (Dave review pass 1, point 2): "the user drags ON THE
