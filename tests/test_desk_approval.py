@@ -15,6 +15,9 @@ session is refused, and checked by the publisher. Pinned:
     makes `publish_blockers` / `desk_publish.publish` refuse; narrowing does not;
     Approve re-snapshots and clears it;
   * Start / Approve / Renew are 403 for an unattended caller and write nothing;
+  * ... and, for ANY caller (an attended agent's curl carries a forged Origin),
+    403 without the retyped dashboard passcode (MC-995): no passcode / wrong
+    passcode / no passcode configured all write nothing, the right one succeeds;
   * Renew opens the next term and refuses when something other than the term
     was widened since the last approval.
 """
@@ -37,7 +40,11 @@ CID = 'camp-a'
 
 
 @pytest.fixture
-def client(tmp_path):
+def client(tmp_path, monkeypatch):
+    # This file tests the approval snapshot, not the passcode gate: bypass it
+    # here (as test_character_routes.py does) and exercise the real gate in the
+    # "human proof" section below through `gated`.
+    monkeypatch.setattr(desk_routes, '_require_human_passcode', lambda data: None)
     app = Flask(__name__)
     app.config['TESTING'] = True
     desk_routes.wire(
@@ -271,6 +278,83 @@ def test_unattended_caller_can_still_patch(client, unattended):
     client.post('/api/desk/campaigns?shape=v1', json=_draft())
     r = client.patch(f'/api/desk/campaigns/{CID}?shape=v1', json={'projectId': 'alpha'})
     assert r.status_code == 200
+
+
+# -- human proof (MC-995) -----------------------------------------------------
+
+PASSCODE = 'unlock1234'
+WRONG = 'nope-wrong-code'
+# A forged Origin is what an attended agent's curl carries; it must not matter.
+FORGED = {'Origin': 'http://localhost:5199'}
+
+
+@pytest.fixture
+def gated(client, tmp_path, monkeypatch):
+    """`client` with the REAL passcode gate back on and a passcode configured."""
+    from mc.blueprints import local_auth
+    from mc.blueprints.secrets_routes import _require_human_passcode as real
+    monkeypatch.setattr(local_auth, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
+    monkeypatch.setattr(desk_routes, '_require_human_passcode', real)
+    local_auth._local_auth_set_passcode(PASSCODE)
+    local_auth._LOCAL_AUTH_FAILS.clear()
+    return client
+
+
+def _post(client, action, body=None):
+    return client.post(f'/api/desk/campaigns/{CID}/{action}', json=body or {}, headers=FORGED)
+
+
+@pytest.mark.parametrize('action', ['start', 'approve', 'renew'])
+@pytest.mark.parametrize('body', [{}, {'passcode': WRONG}, {'passcode': 12345}])
+def test_approval_action_refused_without_the_right_passcode(gated, action, body):
+    gated.post('/api/desk/campaigns?shape=v1', json=_draft())
+    r = _post(gated, action, body)
+    assert r.status_code == 403 and r.get_json()['error'] == 'bad_passcode'
+    st = _stored()
+    assert st['state'] == 'draft' and 'approved' not in st and 'approvals' not in st
+
+
+@pytest.mark.parametrize('action', ['start', 'approve', 'renew'])
+def test_approval_action_refused_when_no_passcode_is_configured(gated, tmp_path, monkeypatch, action):
+    from mc.blueprints import local_auth
+    monkeypatch.setattr(local_auth, 'LOCAL_AUTH_PATH', tmp_path / 'never-set.json')
+    gated.post('/api/desk/campaigns?shape=v1', json=_draft())
+    r = _post(gated, action, {'passcode': PASSCODE})
+    assert r.status_code == 403 and r.get_json()['error'] == 'passcode_required'
+    st = _stored()
+    assert st['state'] == 'draft' and 'approved' not in st
+
+
+def test_start_succeeds_with_the_right_passcode_and_stores_no_passcode(gated):
+    gated.post('/api/desk/campaigns?shape=v1', json=_draft())
+    r = _post(gated, 'start', {'passcode': PASSCODE, 'policy_record': {'note': 'x'}})
+    assert r.status_code == 200 and r.get_json()['state'] == 'active'
+    assert PASSCODE not in repr(_stored())
+
+
+def test_approve_succeeds_with_the_right_passcode(gated):
+    gated.post('/api/desk/campaigns?shape=v1', json=_draft())
+    assert _post(gated, 'start', {'passcode': PASSCODE}).status_code == 200
+    r = _post(gated, 'approve', {'passcode': PASSCODE})
+    assert r.status_code == 200 and r.get_json()['awaiting_approval'] is False
+
+
+def test_renew_clears_the_gate_with_the_right_passcode(gated):
+    gated.post('/api/desk/campaigns?shape=v1', json=_draft())
+    assert _post(gated, 'start', {'passcode': PASSCODE}).status_code == 200
+    # Term 1 has not ended at this suite's clock, so the route answers its own
+    # 409 (not the gate's 403): the right passcode got past the gate.
+    r = _post(gated, 'renew', {'passcode': PASSCODE})
+    assert r.status_code == 409 and 'not ended' in r.get_json()['error']
+
+
+def test_unattended_is_still_refused_with_the_right_passcode(gated, unattended):
+    gated.post('/api/desk/campaigns?shape=v1', json=_draft())
+    # No Origin header: a forged one is exactly what makes is_unattended_caller()
+    # say "human", which is why the passcode gate above exists.
+    r = gated.post(f'/api/desk/campaigns/{CID}/start', json={'passcode': PASSCODE})
+    assert r.status_code == 403 and 'needs a human' in r.get_json()['error']
+    assert _stored()['state'] == 'draft'
 
 
 # -- renew --------------------------------------------------------------------

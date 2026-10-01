@@ -33,7 +33,9 @@ PROJECTS = [{'id': 'alpha', 'name': 'Alpha'}, {'id': 'beta', 'name': 'Beta'}]
 
 
 @pytest.fixture
-def client(tmp_path):
+def client(tmp_path, monkeypatch):
+    # Not testing the passcode gate here (tests/test_desk_approval.py does).
+    monkeypatch.setattr(desk_routes, '_require_human_passcode', lambda data: None)
     app = Flask(__name__)
     app.config['TESTING'] = True
     desk_routes.wire(

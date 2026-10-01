@@ -18,7 +18,11 @@
  *                        server's approval.
  *   5. Renew          -> POST .../renew; the server's term replaces the local one.
  *   6. Flag OFF       -> Start, Pause, Resume and a Brief edit make 0 /api/desk/*
- *                        requests.
+ *                        requests (and no passcode prompt).
+ *   7. Human proof    -> (MC-995) Start / Approve / Renew each open the shared
+ *                        passcode modal and send the passcode in the POST body; a
+ *                        wrong one shows the server's error in the modal and
+ *                        changes nothing; Cancel rolls the action back.
  *
  * RUN   cd tools/smoke && node desk-v1-live-campaign.mjs
  */
@@ -58,10 +62,21 @@ function makeServer() {
   // camp-2 (proposed) is made startable: its goal needs a target and a source.
   const prop = campaigns.find((c) => c.id === 'camp-2');
   prop.goal = { current: 0, metric: 'signups', target: 10, source: 'manual', baseline: 0, unit: 'signups', horizon: 'short', deadline: '2026-10-20' };
-  const srv = { log: [], next: {}, campaigns, fx };
+  // `refusedProof`: the POSTs that reached the three approval routes with a wrong
+  // or missing passcode (kept out of `log` so "the POST" below is the accepted one).
+  const srv = { log: [], next: {}, campaigns, fx, refusedProof: [] };
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects, campaigns: campaigns.map((c) => JSON.parse(JSON.stringify(c))) });
   return srv;
 }
+
+// MC-995: the fake server's idea of the dashboard passcode.
+const PASSCODE = 'smoke-pass';
+// Types into the shared passcode modal (human-proof-modal.js) and submits.
+const enterPasscode = async (page, code) => {
+  await page.waitForSelector('[id^="hp-passcode-"]', { timeout: 8000 });
+  await page.fill('[id^="hp-passcode-"]', code);
+  await page.press('[id^="hp-passcode-"]', 'Enter');
+};
 
 const boundsOf = (c) => ({ accounts: c.plan.accounts, cadence: c.plan.cadence, end: c.plan.end, term: c.term || {}, budget: (c.how && c.how.budget) || {} });
 
@@ -88,9 +103,15 @@ async function newPage(browser, { live, srv }) {
     })));
     if (path === '/api/config') return J({ desk_v1: true, desk_v1_live: live, user_timezone: '' });
     if (path === '/api/characters') return J([{ name: 'claydo', scope: 'global', agent_name: 'Claydo', avatar: '' }, { name: 'posy', scope: 'global', agent_name: 'Posy', avatar: '' }]);
+    if (path === '/api/local-auth/status') return J({ configured: true });
     if (!path.startsWith('/api/desk/')) return route.abort();
     let body = null;
     try { body = req.postDataJSON(); } catch (_) { /* no body */ }
+    if (method === 'POST' && /^\/api\/desk\/campaigns\/[^/]+\/(start|approve|renew)$/.test(path)
+        && !(body && body.passcode === PASSCODE)) {
+      srv.refusedProof.push({ path, body });
+      return J({ error: 'bad_passcode' }, 403);
+    }
     srv.log.push({ method, path, search: url.search, body });
     const key = `${method} ${path}`;
     const refuse = Object.keys(srv.next).find((k) => key === k || key.startsWith(k));
@@ -157,6 +178,7 @@ async function start(browser) {
   srv.next['POST /api/desk/campaigns/camp-2/start'] = 'cannot start: no accounts';
   await page.click('[data-map-start-btn]');
   await page.click('[data-sheet-confirm]');
+  await enterPasscode(page, PASSCODE);
   await settle(page, () => /was not saved: cannot start: no accounts/.test(document.body.innerText));
   const back = await camp(page, 'camp-2');
   (back.state === 'proposed' && !back.approval && !back.startedAt)
@@ -167,6 +189,7 @@ async function start(browser) {
   await settle(page, () => !!document.querySelector('[data-map-start-btn]'));
   await page.click('[data-map-start-btn]');
   await page.click('[data-sheet-confirm]');
+  await enterPasscode(page, PASSCODE);
   await settle(page, () => window.DeskV1Store.state().campaigns.find((c) => c.id === 'camp-2').approval?.bounds_hash === 'srv-hash-1');
   const patch = calls(srv, 'PATCH', /^\/api\/desk\/campaigns\/camp-2$/)[0];
   const post = calls(srv, 'POST', /^\/api\/desk\/campaigns\/camp-2\/start$/)[0];
@@ -174,8 +197,8 @@ async function start(browser) {
     && !('approval' in patch.body) && !('approvals' in patch.body) && !('startedAt' in patch.body) && !('term' in patch.body))
     ? ok('Start first PATCHes the bounds (plan, how, goal, map) and never state / approval / approvals / startedAt / term')
     : fail('pre-start PATCH: ' + JSON.stringify(patch && Object.keys(patch.body)));
-  (post && post.body && post.body.policy_record && Array.isArray(post.body.policy_record.accounts))
-    ? ok('then POSTs /start with the policy record') : fail('start POST: ' + JSON.stringify(post));
+  (post && post.body && post.body.policy_record && Array.isArray(post.body.policy_record.accounts) && post.body.passcode === PASSCODE)
+    ? ok('then POSTs /start with the policy record and the typed passcode') : fail('start POST: ' + JSON.stringify(post));
   srv.log.indexOf(patch) < srv.log.indexOf(post) ? ok('the PATCH lands before the POST') : fail('POST before PATCH');
   const c = await camp(page, 'camp-2');
   (c.state === 'active' && c.startedAt === '2031-02-03T04:05:06Z' && c.term.starts === '2031-02-03' && c.approval.at === '2031-02-03T04:05:06Z')
@@ -249,6 +272,7 @@ async function briefAndApprove(browser) {
   ok('Launch shows "Awaiting approval" with an Approve button after the widening');
   srv.log.length = 0;
   await page.click('[data-approve-bounds]');
+  await enterPasscode(page, PASSCODE);
   await settle(page, () => (window.DeskV1Store.state().campaigns.find((c) => c.id === 'camp-1').approval || {}).at === '2031-02-03T04:05:06Z');
   const post = calls(srv, 'POST', /^\/api\/desk\/campaigns\/camp-1\/approve$/)[0];
   const pre = calls(srv, 'PATCH', /^\/api\/desk\/campaigns\/camp-1$/)[0];
@@ -268,6 +292,7 @@ async function renew(browser) {
   await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
   await openLaunch(page, 'camp-4');
   await page.click('[data-renew-term]');
+  await enterPasscode(page, PASSCODE);
   await settle(page, () => (window.DeskV1Store.state().campaigns.find((c) => c.id === 'camp-4').approval || {}).bounds_hash === 'srv-hash-2');
   const post = calls(srv, 'POST', /^\/api\/desk\/campaigns\/camp-4\/renew$/);
   post.length === 1 ? ok('Renew POSTs /renew once') : fail('renew calls: ' + JSON.stringify(post));
@@ -275,6 +300,45 @@ async function renew(browser) {
   (c.term.ends === '2020-05-30' && c.approval.bounds_hash === 'srv-hash-2')
     ? ok("the campaign takes the server's next term and approval") : fail('after renew: ' + JSON.stringify({ t: c.term, a: c.approval && c.approval.bounds_hash }));
   await ctx.close();
+}
+
+// ── 7: human proof (MC-995) ────────────────────────────────────────────────
+async function humanProof(browser) {
+  const srv = makeServer();
+  const { ctx, page } = await newPage(browser, { live: true, srv });
+  await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
+  await openLaunch(page, 'camp-2');
+  const serverState = () => srv.campaigns.find((c) => c.id === 'camp-2').state;
+
+  // A wrong passcode: the modal stays open with the server's error, the server
+  // changed nothing, and a retry with the right one then goes through.
+  await page.click('[data-map-start-btn]');
+  await page.click('[data-sheet-confirm]');
+  await enterPasscode(page, 'not-the-passcode');
+  await settle(page, () => /Wrong dashboard passcode/.test(document.body.innerText));
+  ok('a wrong passcode shows "Wrong dashboard passcode." in the modal');
+  (serverState() === 'proposed' && srv.refusedProof.length === 1 && srv.refusedProof[0].body.passcode === 'not-the-passcode')
+    ? ok('the wrong-passcode POST was refused and the server campaign is unchanged') : fail('after wrong passcode: ' + JSON.stringify({ s: serverState(), r: srv.refusedProof.length }));
+  (await page.$('[id^="hp-passcode-"]')) ? ok('the modal is still open for a retry') : fail('modal closed after a wrong passcode');
+  await enterPasscode(page, PASSCODE);
+  await settle(page, () => window.DeskV1Store.state().campaigns.find((c) => c.id === 'camp-2').approval?.bounds_hash === 'srv-hash-1');
+  serverState() === 'active' ? ok('the right passcode on retry starts the campaign') : fail('server state after retry: ' + serverState());
+  await ctx.close();
+
+  // Cancel: the optimistic Start is rolled back and the server never sees an accepted POST.
+  const srv2 = makeServer();
+  const second = await newPage(browser, { live: true, srv: srv2 });
+  await settle(second.page, () => window.DeskV1Store.state().campaigns.length > 0);
+  await openLaunch(second.page, 'camp-2');
+  await second.page.click('[data-map-start-btn]');
+  await second.page.click('[data-sheet-confirm]');
+  await second.page.waitForSelector('[id^="hp-passcode-"]', { timeout: 8000 });
+  await second.page.click('.modal-window[data-modal-id^="__human-proof-"] .btn-secondary');
+  await settle(second.page, () => /nothing was changed/.test(document.body.innerText));
+  const back = await camp(second.page, 'camp-2');
+  (back.state === 'proposed' && !back.approval && calls(srv2, 'POST', /\/start$/).length === 0 && srv2.refusedProof.length === 0)
+    ? ok('Cancel rolls the Start back, says nothing was changed, and sends no POST') : fail('after cancel: ' + JSON.stringify({ s: back.state, a: back.approval, p: srv2.refusedProof.length }));
+  await second.ctx.close();
 }
 
 // ── 6: flag OFF → no Desk route is ever called ─────────────────────────────
@@ -308,6 +372,7 @@ try {
   console.log('live ON: pause / resume'); await pauseResume(browser);
   console.log('live ON: brief edit + approve'); await briefAndApprove(browser);
   console.log('live ON: renew'); await renew(browser);
+  console.log('live ON: human proof'); await humanProof(browser);
   console.log('live OFF: demo'); await demoCallsNothing(browser);
 } catch (e) { fail('harness error: ' + (e && e.stack || e)); }
 await browser.close();

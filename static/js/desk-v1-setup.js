@@ -97,12 +97,29 @@
   // The POST behind a human approval action (start / approve / renew). The
   // client's bounds are saved first so the server snapshots what the user was
   // looking at, then the action runs; the answer is adopted onto `camp`.
+  //
+  // MC-995: the POST goes through the shared passcode modal (human-proof-modal.js),
+  // because the server refuses these three without the retyped dashboard
+  // passcode. A wrong one re-prompts inside the modal with the server's error and
+  // sends nothing else; Cancel (or any server refusal) throws, so the caller's
+  // rollback + toast run exactly as for any other refused write.
+  const _ACTION_PROOF = {
+    start: { title: 'Start campaign', description: 'Re-enter your dashboard passcode to start this campaign and approve its bounds.' },
+    approve: { title: 'Approve campaign bounds', description: 'Re-enter your dashboard passcode to approve the changed bounds of this campaign.' },
+    renew: { title: 'Renew campaign', description: 'Re-enter your dashboard passcode to renew this campaign for another term.' },
+  };
+
   async function deskV1CampaignAction(camp, action, saveKeys, body) {
     if (saveKeys && saveKeys.length) await deskV1PatchCampaign(camp, saveKeys);
-    const out = await window.DeskV1Store.api(
-      'POST', '/api/desk/campaigns/' + encodeURIComponent(camp.id) + '/' + action, body || {});
-    deskV1AdoptServerCampaign(camp, out);
-    return out;
+    if (typeof window.humanProofFetch !== 'function') throw new Error('the passcode prompt is not available');
+    const res = await window.humanProofFetch(
+      '/api/desk/campaigns/' + encodeURIComponent(camp.id) + '/' + action,
+      { method: 'POST', body: JSON.stringify(body || {}) },
+      _ACTION_PROOF[action]);
+    if (res === null) throw new Error('the dashboard passcode was not entered, so nothing was changed');
+    if (!res.ok) throw new Error((res.body && (res.body.error || res.body.message)) || `HTTP ${res.status}`);
+    deskV1AdoptServerCampaign(camp, res.body);
+    return res.body;
   }
 
   // Pushes `camp` into the store and, live, creates it server-side. Resolves
