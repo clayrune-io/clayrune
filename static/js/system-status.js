@@ -482,8 +482,17 @@ function _renderUsageBreakdownSection() {
         compPart('output', comp.output), compPart('fresh', comp.fresh)].filter(Boolean).join(' · ')}</div>
        <div class="ssp-hint-line">This is what the volume is made of, not how the vendor weights each type. The data cannot separate those.</div>`
     : '';
+  // The same workload in agent turns: per-point workload / MEAN turn size
+  // (consistent with the totals), median-sized turns in the hint. Absent when
+  // the server could not size at least 20 turns.
+  const ts = tpp.turn_size || {};
+  const _turnsFmt = (n) => n < 10 ? n.toFixed(1) : String(Math.round(n));
+  const turnsHTML = tpp.turns_per_point != null
+    ? `<div class="ssp-hint-line ub-tpp-turns" title="Average turn size ${esc(_ubFmtTok(ts.mean))} tokens over ${ts.turn_count} turns.">~${_turnsFmt(tpp.turns_per_point)} average agent turns per 1% (~${Math.round(tpp.turns_per_point * 100).toLocaleString()} per full window)</div>
+       <div class="ssp-hint-line">Turns vary ${Math.round(ts.p90 / ts.p10)}x (p10 ${esc(_ubFmtTok(ts.p10))} to p90 ${esc(_ubFmtTok(ts.p90))} tokens); a short reply costs far less, about ${_turnsFmt(tpp.turns_per_point_median_basis)} typical turns per 1%.</div>`
+    : '';
   const tppHTML = tpp.status === 'ok'
-    ? `<div class="ssp-row"><span class="ssp-k">Tokens per 1% (pooled rate)</span><span class="ssp-v">${_ubFmtTok(tppRate)} (p10 ${_ubFmtTok(tpp.p10)} · p90 ${_ubFmtTok(tpp.p90)}; ${tppSpan})</span></div>${compHTML}${tpp.note ? `<div class="ssp-hint-line">${esc(tpp.note)}</div>` : ''}`
+    ? `<div class="ssp-row"><span class="ssp-k">Tokens per 1% (pooled rate)</span><span class="ssp-v">${_ubFmtTok(tppRate)} (p10 ${_ubFmtTok(tpp.p10)} · p90 ${_ubFmtTok(tpp.p90)}; ${tppSpan})</span></div>${compHTML}${turnsHTML}${tpp.note ? `<div class="ssp-hint-line">${esc(tpp.note)}</div>` : ''}`
     : `<div class="ssp-row"><span class="ssp-k">Tokens per 1%</span><span class="ssp-v">${esc(_UB_BAR_STATUS_LABEL[tpp.status] || 'Insufficient calibration')}</span></div>`;
 
   // MC-998 review finding #9: the range/caveat was dropped, the

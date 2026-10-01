@@ -29,6 +29,7 @@ from typing import Optional
 _MAX_INTERVAL_MINUTES = 10
 _MIN_ELIGIBLE_INTERVALS = 5
 _MIN_ELIGIBLE_SESSIONS = 3
+_MIN_TURNS_FOR_TURNS_PER_POINT = 20  # fewer turns and the mean is noise, not a unit of work
 # Backlog 4668eafc follow-up 2 (pooled estimator): the gate also needs enough
 # TOTAL vendor movement across the contributing intervals. raw_utilization is
 # whole points, so the pooled ratio is only as good as the points it divides
@@ -1093,6 +1094,82 @@ def _composition_payload(calibration: dict) -> Optional[dict]:
     return {name: {'per_point': per_point[k], 'share': share[k]} for name, k in names.items()}
 
 
+def _session_turn_sizes(ck: Optional[dict]) -> list[int]:
+    """One size per WHOLE turn of one session: a 'completion' checkpoint
+    paired with the nearest preceding 'turn_start' (or the 'baseline', for the
+    first turn) strictly after the PREVIOUS completion; size is the delta of
+    input_processed_total + output_tokens between the two rows.
+
+    Whole turns, not `_session_turns` segments -- those are split at every
+    sample_tick for calibration, so their sizes are fragments. A turn with no
+    start marker after the previous completion (an aged-out turn_start) has
+    no honest start and is skipped, never paired across the previous
+    completion. A None counter at either end, or a counter that went
+    backwards (reset, MC-1007), skips the turn rather than becoming a size."""
+    baseline = (ck or {}).get('baseline')
+    completions = (ck or {}).get('completions') or []
+    starts = [r for r in [baseline, *((ck or {}).get('turn_starts') or [])] if r]
+    timed_starts = sorted(((_parse_iso(r.get('observed_at')), r) for r in starts
+                           if _parse_iso(r.get('observed_at')) is not None), key=lambda p: p[0])
+    timed_completions = sorted(((_parse_iso(r.get('observed_at')), r) for r in completions
+                                if _parse_iso(r.get('observed_at')) is not None), key=lambda p: p[0])
+    sizes = []
+    prev_at = None
+    for c_at, cur in timed_completions:
+        candidates = [(t, r) for t, r in timed_starts
+                      if t <= c_at and (prev_at is None or t > prev_at)]
+        prev_at = c_at
+        if not candidates:
+            continue
+        _, start_row = candidates[-1]
+        parts = []
+        for k in ('input_processed_total', 'output_tokens'):
+            a, b = start_row.get(k), cur.get(k)
+            if a is None or b is None or b < a:
+                parts = None
+                break
+            parts.append(b - a)
+        if parts is not None:
+            sizes.append(sum(parts))
+    return sizes
+
+
+def compute_turn_sizes(checkpoints: dict[str, dict], facts_by_session: dict[str, dict],
+                        *, provider: str, window_scope: str) -> dict:
+    """Distribution of agent-turn sizes (processed input + output tokens) over
+    the same history `compute_calibration` sees, filtered to the same
+    provider and model scope. A session whose scope cannot be confirmed
+    (`_scope_matches` -> None) is left out: a size from an unknown model class
+    would blur the distribution. Stats are None when there is no turn."""
+    sizes: list[int] = []
+    for sid, ck in checkpoints.items():
+        fact = facts_by_session.get(sid)
+        if _session_provider(ck, fact) != provider or _scope_matches(fact, window_scope) is not True:
+            continue
+        sizes.extend(_session_turn_sizes(ck))
+    if not sizes:
+        return {'turn_count': 0, 'mean': None, 'median': None, 'p10': None, 'p90': None}
+    sizes.sort()
+    return {'turn_count': len(sizes), 'mean': sum(sizes) / len(sizes),
+            'median': _percentile(sizes, 50), 'p10': _percentile(sizes, 10),
+            'p90': _percentile(sizes, 90)}
+
+
+def _turns_per_point_payload(calibration: dict, turn_sizes: dict) -> dict:
+    """Tokens-per-point translated into agent turns: workload per point over
+    the MEAN turn size (the mean is the figure consistent with the totals --
+    turns x mean = workload), and over the MEDIAN as the typical-turn
+    reading. None unless calibration is ok and >= 20 turns were measured."""
+    mean, median = turn_sizes.get('mean'), turn_sizes.get('median')
+    per_point = calibration.get('workload_per_point')
+    ok = (calibration.get('status') == 'ok' and per_point is not None
+          and turn_sizes.get('turn_count', 0) >= _MIN_TURNS_FOR_TURNS_PER_POINT
+          and mean and median)
+    return {'turns_per_point': per_point / mean if ok else None,
+            'turns_per_point_median_basis': per_point / median if ok else None,
+            'turn_size': turn_sizes}
+
+
 def _percentile(sorted_values: list[float], pct: float) -> float:
     if not sorted_values:
         raise ValueError('empty distribution')
@@ -1193,6 +1270,8 @@ def build_breakdown(*, provider: str, window_kind: str, window_scope: str,
     rankings = compute_rankings(facts_in_range, code_deltas, dimension=dimension, sort_by=sort_by)
     calibration = compute_calibration(calibration_samples, checkpoints, facts_by_session,
                                        provider=provider, window_scope=window_scope)
+    turn_sizes = compute_turn_sizes(checkpoints, facts_by_session, provider=provider,
+                                     window_scope=window_scope)
     bar_change = compute_bar_change(range_samples, range_start=range_start, range_end=range_end)
     segmented_bar = compute_segmented_bar(bar_change, totals, calibration)
 
@@ -1237,6 +1316,7 @@ def build_breakdown(*, provider: str, window_kind: str, window_scope: str,
             'total_delta_pp': calibration.get('total_delta_pp'),
             'run_count': calibration.get('run_count'),
             'composition': _composition_payload(calibration),
+            **_turns_per_point_payload(calibration, turn_sizes),
             'sample_count': calibration.get('eligible_interval_count', 0),
             'note': 'Indicative: account-wide bar',
         },

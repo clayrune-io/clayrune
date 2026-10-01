@@ -647,6 +647,7 @@ try {
         { label: 'opus', input_processed_total: 1000, input_fresh: 100, input_cache_read: 800, input_cache_write: 100, output_tokens: 50, added: 1, session_count: 1 },
       ], mixed_session_count: 2, whole_session_attribution_count: 1 },
       tokens_per_point: { status: 'ok', median: 50000, pooled_rate: 50000, p10: 40000, p90: 60000, sample_count: 8, total_delta_pp: 41.5, run_count: 6, note: 'Indicative: account-wide bar',
+        turns_per_point: 2.2, turns_per_point_median_basis: 6.8, turn_size: { turn_count: 626, mean: 2450000, median: 780000, p10: 150000, p90: 6270000 },
         composition: { cache_read: { per_point: 48500, share: 0.971 }, cache_write: { per_point: 1200, share: 0.024 }, output: { per_point: 250, share: 0.005 }, fresh: { per_point: 80, share: 0.0000156 } } },
       segmented_bar: { status: 'ok', bar_change_pp: 10, estimated_pp: 6, unattributed_pp: 4, range_pp: [5, 7] },
     };
@@ -688,6 +689,12 @@ try {
     /2 session\(s\) ran on more than one model/.test(text)
       ? ok('mixed-model sessions noted under the model ranking')
       : fail(`mixed-session hint missing from: ${text.slice(0, 900)}`);
+    (/~2\.2 average agent turns per 1% \(~220 per full window\)/.test(text)
+      && /Turns vary 42x \(p10 150\.0k to p90 6\.27M tokens\); a short reply costs far less, about 6\.8 typical turns per 1%\./.test(text))
+      ? ok('turns per 1%: average-turn line + spread/typical-turn hint render from the payload')
+      : fail(`turns-per-point lines missing from: ${text.slice(Math.max(0, text.indexOf("Per point")), text.indexOf("Per point") + 700)}`);
+    /\u2014/.test(text.slice(text.indexOf('average agent turns'), text.indexOf('typical turns per 1%') + 20))
+      ? fail('em-dash in the turns-per-point text') : ok('turns-per-point text has no em-dash');
     const shot = resolve(REPO_ROOT, '_scratch', 'mc998-token-accounting-report-dark.png');
     await page.screenshot({ path: shot, fullPage: true });
     console.log('  screenshot: ' + shot);
@@ -697,12 +704,18 @@ try {
   {
     const TOKEN_FIXTURE_ROWS = {
       ...POPULATED_FIXTURE,
+      tokens_per_point: { ...POPULATED_FIXTURE.tokens_per_point,
+        turns_per_point: 2.2, turns_per_point_median_basis: 6.8, turn_size: { turn_count: 626, mean: 2450000, median: 780000, p10: 150000, p90: 6270000 } },
       rankings: { ...POPULATED_FIXTURE.rankings, rows: [
         { label: 'opus', input_processed_total: 1000, input_fresh: 100, input_cache_read: 800, input_cache_write: 100,
           cache_write_5m: null, cache_write_1h: null, cache_write_ttl_unknown: 100, output_tokens: 50, added: 1, session_count: 1 },
       ] },
     };
     const { ctx, page } = await openMobileModal(browser, TOKEN_FIXTURE_ROWS, WINDOWS_FIXTURE);
+    const surfaceText = await page.$eval('#usage-report-surface', (el) => el.textContent);
+    /~2\.2 average agent turns per 1% \(~220 per full window\)/.test(surfaceText) && /about 6\.8 typical turns per 1%/.test(surfaceText)
+      ? ok('phone: turns-per-point lines render (shared tppHTML)')
+      : fail(`phone turns-per-point lines missing from: ${surfaceText.slice(0, 700)}`);
     const cardText = await page.$eval('.ub-cards', (el) => el.textContent);
     /Cache reads\s*800 \(80\.0%\)/.test(cardText) && /Fresh\s*100 \(10\.0%\)/.test(cardText) && /Cache writes\s*100 \(10\.0%\)/.test(cardText)
       ? ok('phone cards: Fresh / Cache reads / Cache writes with shares')
