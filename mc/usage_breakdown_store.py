@@ -89,7 +89,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 SCHEMA_VERSION = 7
 APPLICATION_ID = 0x4D435542  # 'MCUB'
@@ -125,6 +125,9 @@ _CODE_DELTA_LIFETIME_SEED_SQL = (
 _V7_COLUMNS = (('cache_write_5m', 'INTEGER'), ('cache_write_1h', 'INTEGER'),
                ('model_usage', 'TEXT'))
 _JSON_COLUMNS = ('model_usage',)
+
+# Bound variables per `IN (...)` query; well under SQLite's 999 floor on old builds.
+_SQLITE_IN_BATCH = 500
 
 # Schema v3 shape (docs/_journal/4668eafc-mc998-fenn-review.md finding 3,
 # P1-3): no table-level UNIQUE(session_id, checkpoint_type) -- that froze
@@ -819,6 +822,26 @@ class UsageBreakdownStore:
             row = db.execute('SELECT * FROM code_delta WHERE session_id=?',
                               (session_id,)).fetchone()
             return dict(row) if row else None
+
+    def get_code_deltas(self, session_ids: Iterable[str]) -> dict[str, dict]:
+        """`get_code_delta` for many sessions in ONE connection. Every store
+        call opens a connection (WAL pragma + schema probe), so the breakdown
+        route's old one-call-per-session loop cost ~1.2ms x every session in
+        the 90-day window. Sessions with no code_delta row are simply absent
+        from the result; callers default them to {} exactly as they did with
+        the single-row form."""
+        ids = [i for i in dict.fromkeys(session_ids) if i]
+        out: dict[str, dict] = {}
+        if not ids:
+            return out
+        with self._connection(write=False) as db:
+            for i in range(0, len(ids), _SQLITE_IN_BATCH):
+                chunk = ids[i:i + _SQLITE_IN_BATCH]
+                q = ('SELECT * FROM code_delta WHERE session_id IN (%s)'
+                     % ','.join('?' * len(chunk)))
+                for row in db.execute(q, chunk).fetchall():
+                    out[row['session_id']] = dict(row)
+        return out
 
     # ── pruning ─────────────────────────────────────────────────────────
 

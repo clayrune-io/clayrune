@@ -887,6 +887,23 @@ function _ubWindowsQueryKey() {
   return new URLSearchParams({ provider: _ubProvider, window_kind: _ubWindowKind, window_scope: _ubWindowScope }).toString();
 }
 
+// The breakdown request is a multi-second compute on a busy box and crosses
+// the remote tunnel, so fetchFailFast's 8s default aborted the FIRST open
+// (cold server-side cache) and showed "failed to load" until a refresh.
+// Longer timeout plus ONE automatic retry (it lands on a warm cache). A 4xx is
+// a deterministic rejection and is returned as-is, never retried. `stillWanted`
+// lets the caller's sequence guard veto the retry for a superseded request.
+const _UB_FETCH_TIMEOUT_MS = 25000;
+async function _ubFetchBreakdownRetry(url, stillWanted) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetchFailFast(url, {}, _UB_FETCH_TIMEOUT_MS);
+      if (res.ok || (res.status >= 400 && res.status < 500) || attempt) return res;
+    } catch (e) { if (attempt) throw e; }
+    if (stillWanted && !stillWanted()) throw new Error('superseded');
+  }
+}
+
 // MC-998 — Usage Breakdown section: fetch/render pair mirroring
 // fetchSystemUsage's guard/cache/rerender shape, against the two read-only
 // endpoints in mc/blueprints/system_routes.py.
@@ -903,7 +920,8 @@ async function fetchUsageBreakdown() {
   _rerenderSysStatusSurfaces();
   let payload = null, succeeded = false;
   try {
-    const res = await fetchFailFast(API_BASE + '/api/system/usage/breakdown?' + key);
+    const res = await _ubFetchBreakdownRetry(API_BASE + '/api/system/usage/breakdown?' + key,
+                                              () => seq === _ubBreakdownReqSeq);
     if (res.ok) { payload = await res.json(); succeeded = true; }
   } catch { /* succeeded stays false -> error state below */ }
   if (seq !== _ubBreakdownReqSeq) return;  // superseded by a newer selection meanwhile
@@ -1248,8 +1266,10 @@ async function _ubFetchBarPopup(provider) {
   let charData = null, modelData = null, error = false;
   try {
     const [charRes, modelRes] = await Promise.all([
-      fetchFailFast(API_BASE + '/api/system/usage/breakdown?' + qs + '&dimension=character'),
-      fetchFailFast(API_BASE + '/api/system/usage/breakdown?' + qs + '&dimension=model'),
+      _ubFetchBreakdownRetry(API_BASE + '/api/system/usage/breakdown?' + qs + '&dimension=character',
+                             () => seq === _ubPopupReqSeq),
+      _ubFetchBreakdownRetry(API_BASE + '/api/system/usage/breakdown?' + qs + '&dimension=model',
+                             () => seq === _ubPopupReqSeq),
     ]);
     if (!charRes.ok || !modelRes.ok) throw new Error('bad status');
     charData = await charRes.json();

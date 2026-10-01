@@ -22,9 +22,13 @@ project percentages") holds structurally because no row is ever given one.
 """
 from __future__ import annotations
 
+import copy
+import hashlib
 import random
+import threading
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 _MAX_INTERVAL_MINUTES = 10
 _MIN_ELIGIBLE_INTERVALS = 5
@@ -1245,6 +1249,52 @@ def compute_segmented_bar(bar_change: dict, totals: dict, calibration: dict) -> 
     }
 
 
+# ── memoization ─────────────────────────────────────────────────────────────
+# `compute_calibration` (interval walk + block bootstrap) and
+# `compute_turn_sizes` are ~75% of a breakdown request (measured 2026-10-01:
+# 1.03s of 1.35s on a live 90-day copy), and they are pure functions of
+# (samples, checkpoints, facts, provider, scope) -- NOT of the ranking
+# dimension, sort, display range or code deltas. So repeat requests, and every
+# dimension/sort change, were recomputing an identical answer.
+#
+# The key is a CONTENT digest of those inputs, not an id/count/timestamp guess:
+# a new sample or checkpoint, an in-place fact update (status, model, ended_at)
+# or a row aging out of the 90-day window all change the digest, so a hit is
+# only ever the exact answer a recompute would give. Hashing the ~8k rows
+# costs ~20ms. Bounded (LRU, `_MEMO_MAX` entries) and guarded by one lock that
+# is held across the compute, so N concurrent identical requests compute once
+# instead of N times; callers get a deep copy so nothing can mutate a cached
+# value.
+
+_MEMO_MAX = 16
+_memo: 'OrderedDict[tuple, object]' = OrderedDict()
+_memo_lock = threading.RLock()
+
+
+def _clear_memo() -> None:
+    with _memo_lock:
+        _memo.clear()
+
+
+def _digest(*parts) -> str:
+    h = hashlib.blake2b(digest_size=16)
+    for part in parts:
+        h.update(repr(part).encode('utf-8', 'backslashreplace'))
+        h.update(b'')
+    return h.hexdigest()
+
+
+def _memoized(key: tuple, compute: Callable[[], object]):
+    with _memo_lock:
+        if key in _memo:
+            _memo.move_to_end(key)
+        else:
+            _memo[key] = compute()
+            while len(_memo) > _MEMO_MAX:
+                _memo.popitem(last=False)
+        return copy.deepcopy(_memo[key])
+
+
 # ── dashboard assembly ──────────────────────────────────────────────────────
 
 def build_breakdown(*, provider: str, window_kind: str, window_scope: str,
@@ -1268,10 +1318,21 @@ def build_breakdown(*, provider: str, window_kind: str, window_scope: str,
         window_scope=window_scope)
     totals = compute_totals(facts_in_range, code_deltas, incomplete_coverage_session_count=incomplete_count)
     rankings = compute_rankings(facts_in_range, code_deltas, dimension=dimension, sort_by=sort_by)
-    calibration = compute_calibration(calibration_samples, checkpoints, facts_by_session,
-                                       provider=provider, window_scope=window_scope)
-    turn_sizes = compute_turn_sizes(checkpoints, facts_by_session, provider=provider,
-                                     window_scope=window_scope)
+    # Compute-once-per-input-state; see the memoization note above. The two
+    # lookups resolve `compute_*` at call time so a caller/test that swaps them
+    # still sees every real computation.
+    ck_digest, fact_digest = _digest(checkpoints), _digest(session_facts)
+    calibration = _memoized(
+        ('calibration', provider, window_scope, _digest(calibration_samples), ck_digest, fact_digest),
+        # `all_intervals` (thousands of dicts) is a test/diagnostic field this
+        # payload never reads -- keep it out of the cache and its deep copies.
+        lambda: {k: v for k, v in compute_calibration(
+            calibration_samples, checkpoints, facts_by_session,
+            provider=provider, window_scope=window_scope).items() if k != 'all_intervals'})
+    turn_sizes = _memoized(
+        ('turn_sizes', provider, window_scope, ck_digest, fact_digest),
+        lambda: compute_turn_sizes(checkpoints, facts_by_session, provider=provider,
+                                   window_scope=window_scope))
     bar_change = compute_bar_change(range_samples, range_start=range_start, range_end=range_end)
     segmented_bar = compute_segmented_bar(bar_change, totals, calibration)
 
