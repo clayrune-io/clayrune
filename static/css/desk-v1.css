@@ -2533,9 +2533,44 @@
   .desk-v1-what-main { flex-basis: calc(100% - 100px); }
   .desk-v1-what-status { flex-basis: 100%; align-items: flex-start; text-align: left; flex-direction: row; flex-wrap: wrap; gap: 4px 12px; }
   .desk-v1-what-filter, .desk-v1-what-title, .desk-v1-what-addmedia, .desk-v1-what-change, .desk-v1-what-create-x { min-height: 44px; }
-  .desk-v1-what-type { width: calc(33% - 8px); min-width: 92px; min-height: 44px; }
   .desk-v1-what-source { min-height: 44px; }
   .desk-v1-piece-facetrow { flex-wrap: wrap; }
+
+  /* MC-977 mobile WT-1/WT-2 (Dave's call): the Content Types tray was 3 rows of
+     92x70-90 tiles = 315px, 36% of a 882px screen, and sat over the rows it was
+     meant to feed (217/217px of "Install in two minutes" hidden). It is now ONE
+     row, all five tiles visible at once, icon + short label only, ~84px tall.
+     Chosen over a collapsed bar because adding a piece stays a single tap (a
+     collapsed bar costs two), and over a horizontally scrolling strip because
+     the tiles are also drag sources (touch-action: pan-y) -- a sideways-scrolling
+     parent would fight that drag on a phone. The "Preview" pill and the
+     "drag one into the campaign" clause drop out here; the pill still shows on
+     the piece once added, and tapping a tile is the phone gesture. */
+  .desk-v1-what-tray { padding: 8px 10px; }
+  .desk-v1-what-tray-title { margin-bottom: 6px; }
+  .desk-v1-what-tray-drag { display: none; }
+  .desk-v1-what-tray-row { flex-wrap: nowrap; gap: 6px; }
+  .desk-v1-what-type { flex: 1 1 0; width: auto; min-width: 0; min-height: 44px; padding: 6px 2px; gap: 2px; justify-content: center; }
+  .desk-v1-what-type-glyph { font-size: 15px; line-height: 1; }
+  .desk-v1-what-type-name { font-size: 11px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .desk-v1-what-type .desk-v1-where-preview { display: none; }
+
+  /* WT-5 (Dave's call): source picker tiles = small icon + short label, two to a
+     row; the description line is desktop-only (it stays on the tile's title and
+     aria-label). Was four 264x86 tiles, 374px of stack for four choices. The short
+     label comes from data-short so the DOM text (and desktop) are unchanged. */
+  .desk-v1-what-sources { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .desk-v1-what-source { flex-direction: row; align-items: center; gap: 8px; padding: 8px 10px; }
+  .desk-v1-what-source-glyph { font-size: 15px; line-height: 1; flex: 0 0 auto; }
+  .desk-v1-what-source-hint { display: none; }
+  .desk-v1-what-source-name { font-size: 0; min-width: 0; }
+  .desk-v1-what-source-name::after { content: attr(data-short); font-size: 12.5px; white-space: nowrap; }
+}
+/* A short viewport (on-screen keyboard, URL bar) can't afford a sticky tray over a
+   focused field (WT-1: at vh 618 the title input sat under a tile). It scrolls with
+   the page instead. */
+@media (max-width: 960px) and (max-height: 600px) {
+  .desk-v1-what-tray { position: static; }
 }
 
 /* ── R2-8: Studio + creation bodies (frames 11-14, 15b, 16, 16c; desk-v1-studio.js) ── */

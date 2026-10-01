@@ -66,20 +66,20 @@
   // body in this ticket; the rest are R2-8's.
   const SOURCES = {
     video: [
-      { id: 'record', label: 'Record from the product', hint: 'Screen recording of a live run', glyph: '📹' },
+      { id: 'record', label: 'Record from the product', short: 'Record', hint: 'Screen recording of a live run', glyph: '📹' },
       { id: 'upload', label: 'Upload', hint: 'This computer or the material library', glyph: '⬆', body: true },
-      { id: 'online', label: 'Online source', hint: 'YouTube channel, Google Drive, Dropbox', glyph: '🌐' },
-      { id: 'create', label: 'Create new', hint: 'Storyboard it in Studio', glyph: '🎬' },
+      { id: 'online', label: 'Online source', short: 'Online', hint: 'YouTube channel, Google Drive, Dropbox', glyph: '🌐' },
+      { id: 'create', label: 'Create new', short: 'Create', hint: 'Storyboard it in Studio', glyph: '🎬' },
     ],
     image: [
-      { id: 'capture', label: 'Capture from the product', hint: 'A real screenshot of the app', glyph: '📸' },
+      { id: 'capture', label: 'Capture from the product', short: 'Capture', hint: 'A real screenshot of the app', glyph: '📸' },
       { id: 'upload', label: 'Upload', hint: 'This computer or the material library', glyph: '⬆', body: true },
-      { id: 'online', label: 'Online source', hint: 'YouTube channel, Google Drive, Dropbox', glyph: '🌐' },
+      { id: 'online', label: 'Online source', short: 'Online', hint: 'YouTube channel, Google Drive, Dropbox', glyph: '🌐' },
       { id: 'generate', label: 'Generate', hint: 'Abstract visuals only — never the product UI', glyph: '✨' },
     ],
     article: [
-      { id: 'browse', label: 'Browse existing', hint: 'Articles already in this project', glyph: '📚', body: true },
-      { id: 'write', label: 'Write new', hint: 'Open the article writer', glyph: '✎' },
+      { id: 'browse', label: 'Browse existing', short: 'Browse', hint: 'Articles already in this project', glyph: '📚', body: true },
+      { id: 'write', label: 'Write new', short: 'Write', hint: 'Open the article writer', glyph: '✎' },
     ],
   };
   const R2_8_NOTE = {
@@ -283,9 +283,9 @@
 
   function _sourceTilesHTML(card, kind) {
     return `<div class="desk-v1-what-sources" role="group" aria-label="Choose a source">${SOURCES[kind].map((s) => `
-      <button type="button" class="desk-v1-what-source" data-what-source="${esc(s.id)}">
+      <button type="button" class="desk-v1-what-source" data-what-source="${esc(s.id)}" aria-label="${esc(`${s.label}. ${s.hint}`)}" title="${esc(s.hint)}">
         <span class="desk-v1-what-source-glyph" aria-hidden="true">${esc(s.glyph)}</span>
-        <span class="desk-v1-what-source-name">${esc(s.label)}</span>
+        <span class="desk-v1-what-source-name" data-short="${esc(s.short || s.label)}">${esc(s.label)}</span>
         <span class="desk-v1-what-source-hint"${s.id === 'generate' ? ' data-what-abstract-only' : ''}>${esc(s.hint)}</span>
       </button>`).join('')}</div>`;
   }
@@ -353,7 +353,7 @@
 
   function _trayHTML() {
     return `<div class="desk-v1-what-tray" data-what-tray>
-      <div class="desk-v1-what-tray-title">CONTENT TYPES — DRAG ONE INTO THE CAMPAIGN</div>
+      <div class="desk-v1-what-tray-title">CONTENT TYPES<span class="desk-v1-what-tray-drag"> — DRAG ONE INTO THE CAMPAIGN</span></div>
       <div class="desk-v1-what-tray-row">${TYPES.map((t) => `
         <div class="desk-v1-what-type" role="button" tabindex="0" data-what-type="${esc(t.id)}"
              aria-label="${esc(`${t.label}. Press Enter to add a ${t.label.toLowerCase()} to this campaign`)}">
