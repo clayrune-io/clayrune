@@ -441,10 +441,10 @@ async function runNewCampaign(browser) {
   check(b2.columns.length === 1 && b2.columns[0].channelId === 'ch-x-ron' && !(await page.$('[data-where-awaiting]')),
     'draft: a source dragged up adds a column and never shows Awaiting approval', `draft: ${JSON.stringify(b2.columns.map((c) => c.channelId))}`);
 
-  // Connect › → the project's Presence page.
+  // Connect › → the Connections screen (the one place accounts are connected).
   await page.click('[data-where-connect]');
-  await page.waitForSelector('.desk-v1-presence-account-row', { timeout: 4000 });
-  ok('Connect › on the not-connected card lands on the project Presence page');
+  await page.waitForSelector('[data-connections] [data-conn-account="ch-reddit"]', { timeout: 4000 });
+  ok('Connect › on the not-connected card lands on the Connections screen');
   reportUncaught(pageErrors, '[new-campaign]');
   await ctx.close();
 }
