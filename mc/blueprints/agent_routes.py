@@ -6839,6 +6839,67 @@ def _save_agent_log(project_id, log):
         log = log[:cap]
     write_json_atomic(filepath, log, indent=2, ensure_ascii=False)
 
+
+# Triggers whose sessions the Chats list hides as machine threads
+# (conversation.js `_isNoiseConvoRow` / `_UNATTENDED_TRIGGERS`).
+_HUMAN_JOINABLE_TRIGGERS = frozenset({'schedule', 'steward', 'night-review'})
+
+
+def _mark_human_joined(project_id, session_id):
+    """A HUMAN typed into a session an unattended trigger started: stamp the
+    DISPLAY-ONLY `human_joined` flag on the live session and on its agent_log
+    row(s) so the Chats list keeps the thread after a restart.
+
+    Measured 2026-10-01 (drop_shipping_company): Ron chatted with Vector inside
+    a session the 9am '[Brand inbox watch]' schedule started. While live it
+    showed; after a restart only the log row remained, and the client drops
+    every trigger_type 'schedule' row from Chats.
+
+    Display-only by construction: `trigger_type` is NEVER touched, and nothing
+    on the fence path reads this key -- steward/fence.py arms off
+    GET /api/session/trigger-type, which returns trigger_type alone, so a
+    scheduled run a human joined stays fenced exactly as before (see
+    attend_session's docstring for why that must hold). Because it gates only
+    visibility, the human test is the same Origin-header signal as
+    workflow_routes._is_agent_caller; an agent forging that header can at most
+    make its own chat appear in the list, which is not a capability.
+
+    Idempotent; never raises (a failed stamp must not fail the user's send).
+    Call it OUTSIDE the project lock -- it takes the log leaf lock itself.
+    """
+    from mc.blueprints.workflow_routes import _is_agent_caller
+    if not session_id or _is_agent_caller():
+        return
+    try:
+        live_trigger = None
+        with get_manager(project_id).lock:
+            s = agent_sessions.get(session_id)
+            if s and s.get('project_id') == project_id:
+                live_trigger = s.get('trigger_type') or 'manual'
+                if live_trigger in _HUMAN_JOINABLE_TRIGGERS:
+                    s['human_joined'] = True
+        if live_trigger is not None and live_trigger not in _HUMAN_JOINABLE_TRIGGERS:
+            return  # an ordinary chat: nothing to stamp, skip the log read
+
+        def _wants(r):
+            return ((r.get('session_id') == session_id
+                     or session_id == r.get('claude_session_id')
+                     or session_id in (r.get('claude_session_ids') or []))
+                    and (r.get('trigger_type') or 'manual') in _HUMAN_JOINABLE_TRIGGERS
+                    and not r.get('human_joined'))
+
+        if not any(_wants(r) for r in _load_agent_log(project_id)):
+            return
+
+        def stamp(rows):
+            for r in rows:
+                if _wants(r):
+                    r['human_joined'] = True
+        _update_agent_log(project_id, stamp)
+    except Exception as e:
+        _log(f'[human-joined] {project_id}/{session_id}: stamp failed: {e}')
+
+
 def _context_window_for(provider: str):
     """The vendor's declared max context size (docs/CONTEXT_ECONOMY_SPEC.md
     §1's `context_window` field), or None when the runtime doesn't declare
@@ -7310,6 +7371,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             'job_shape': _revive_job_shape,
             'trigger_type': entry.get('trigger_type', 'manual'),
             'trigger_id': entry.get('trigger_id', ''),
+            'human_joined': bool(entry.get('human_joined')),   # display-only
             'provider': entry.get('provider') or 'claude',
             'model': revive_model,
             'agent_model': revive_model,
@@ -7408,6 +7470,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         'job_shape': _revive_job_shape,
         'trigger_type': entry.get('trigger_type', 'manual'),
         'trigger_id': entry.get('trigger_id', ''),
+        'human_joined': bool(entry.get('human_joined')),   # display-only
         'provider': entry.get('provider') or 'claude',
         'model': revive_model,
         'agent_model': revive_model,
@@ -7959,6 +8022,8 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
             else ''
         ),
     }
+    if session.get('human_joined'):
+        entry['human_joined'] = True   # display-only, see _mark_human_joined
     def upsert(log):
         # Upsert: a continued scheduled run reuses the prior run's session_id
         # (see _dispatch_agent_internal reuse_session_id). Refresh that row in
@@ -7983,6 +8048,11 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
             entry['claude_session_id'] = entry['claude_session_id'] or prev.get('claude_session_id', '')
             entry['provider_session_id'] = entry['provider_session_id'] or prev.get('provider_session_id', '')
             entry['started_at'] = prev.get('started_at', '') or entry['started_at']
+            # The flag outlives the in-memory session: a scheduled cadence tick
+            # reusing this session_id after a restart builds `entry` from a
+            # fresh session dict that never saw the human message.
+            if prev.get('human_joined'):
+                entry['human_joined'] = True
             # Union with the outgoing row's history rather than replacing it
             # -- a new process reusing this session_id (server restart across
             # a scheduled cadence tick) starts with an empty in-memory
@@ -9115,11 +9185,15 @@ def _log_agent_completion_body(session):
     # replace it in place so trigger_type/trigger_id survive the rewrite. Otherwise
     # insert at the top as before. Move the row to position 0 on update so newest-
     # finalized stays at the top (matches the "log.insert(0, ...)" convention).
+    if session.get('human_joined'):
+        entry['human_joined'] = True   # display-only, see _mark_human_joined
     def complete(log):
         sid = entry['session_id']
         if sid:
             for i, e in enumerate(log):
                 if e.get('session_id') == sid and e.get('status') == 'in_progress':
+                    if e.get('human_joined'):
+                        entry['human_joined'] = True
                     log.pop(i)
                     break
         log.insert(0, entry)
@@ -12067,6 +12141,10 @@ def agent_send(project_id):
             data['session_id'] = _owner
             session_id = _owner
 
+    # A human typing into a scheduled/steward thread makes it a chat they own:
+    # flag it so it keeps its place in the Chats list (display-only).
+    _mark_human_joined(project_id, session_id)
+
     # Decision under the lock — this is the ONLY place that picks the route.
     with get_manager(project_id).lock:
         session = agent_sessions.get(session_id) if session_id else None
@@ -12549,6 +12627,7 @@ def agent_followup(project_id):
         return jsonify({'error': 'message required'}), 400
     if not session_id:
         return jsonify({'error': 'session_id required'}), 400
+    _mark_human_joined(project_id, session_id)   # display-only; no-op for agent callers
     # MC-970: this endpoint is answered by a human (chat form, plan-approval
     # click, the emailed-question-reply relay in question_channel.py) far more
     # often than by an agent, and none of those callers should re-fire a
@@ -15562,6 +15641,7 @@ def _recent_codex_conversation_rows(project_id, p, limit, by_sid=None):
             'waiting_for_question': bool(live.get('waiting_for_question')) if live else False,
             'waiting_for_plan_approval': bool(live.get('waiting_for_plan_approval')) if live else False,
             'trigger_type': (log_entry.get('trigger_type') or '') if log_entry else '',
+            'human_joined': bool((log_entry or {}).get('human_joined')),
             'source': _row_source,
             'steward': False,
             'steward_objective': '',
@@ -15686,6 +15766,7 @@ def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None, by_si
             'waiting_for_question': bool(live.get('waiting_for_question')) if live else False,
             'waiting_for_plan_approval': bool(live.get('waiting_for_plan_approval')) if live else False,
             'trigger_type': latest.get('trigger_type') or '',
+            'human_joined': any(bool(e.get('human_joined')) for e in entries),
             'source': _row_source,
             'steward': False,
             'steward_objective': '',
@@ -15854,6 +15935,7 @@ def get_project_conversations(project_id):
                 'notify_session': (s.get('_notify_session') or '').strip(),
                 # Immutable spawner-of-record (bugfix) -- see `_row_spawned_by`.
                 'spawned_by': (s.get('_spawned_by') or '').strip(),
+                'human_joined': bool(s.get('human_joined')),
             }
 
     # exclude_transforms: Scribe/condense/Distiller one-shots write a transcript
@@ -15975,6 +16057,11 @@ def get_project_conversations(project_id):
             # Empty (transcript-only / manual, no 'agent' source) = user-initiated.
             'trigger_type': ((log_entry.get('trigger_type') if log_entry else '')
                              or chain_entry.get('trigger_type') or ''),
+            # A human typed into this scheduled/steward thread (display-only,
+            # see _mark_human_joined): the client keeps the row in Chats.
+            'human_joined': bool((log_entry or {}).get('human_joined')
+                                 or chain_entry.get('human_joined')
+                                 or (live or {}).get('human_joined')),
             'source': _row_source,
             'steward': is_steward,
             'steward_objective': (p.get('steward_objective') or '') if is_steward else '',
