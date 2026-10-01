@@ -464,8 +464,26 @@ function _renderUsageBreakdownSection() {
   `;
 
   const tpp = b.tokens_per_point || {};
+  // `pooled_rate` is the honest name for what older payloads call `median`
+  // (it is a pooled ratio-of-sums); fall back for a server that predates it.
+  const tppRate = tpp.pooled_rate != null ? tpp.pooled_rate : tpp.median;
+  // "Stretch" = a contiguous run of allowance samples, NOT an agent run.
+  const stretchTip = 'A stretch is a contiguous run of allowance samples with Clayrune sessions measured throughout. It is not an agent run.';
+  const tppSpan = tpp.total_delta_pp != null && tpp.run_count != null
+    ? `${+Number(tpp.total_delta_pp).toFixed(1)}pp over <span title="${esc(stretchTip)}">${tpp.run_count} stretches</span>`
+    : `n=${tpp.sample_count}`;
+  // What one point is made of: per-point volume + share of workload per token
+  // type. Volume only -- the vendor's per-type weighting is not identifiable.
+  const comp = tpp.composition;
+  const compPart = (label, c) => !c ? '' : `${label} ${c.per_point < 1000 ? '<1K' : _ssFormatTokens(c.per_point)} (${(100 * c.share).toFixed(1)}%)`;
+  const compHTML = comp
+    ? `<div class="ssp-hint-line ub-tpp-composition">Per point: ${[
+        compPart('cache reads', comp.cache_read), compPart('cache writes', comp.cache_write),
+        compPart('output', comp.output), compPart('fresh', comp.fresh)].filter(Boolean).join(' · ')}</div>
+       <div class="ssp-hint-line">This is what the volume is made of, not how the vendor weights each type — the data cannot separate those.</div>`
+    : '';
   const tppHTML = tpp.status === 'ok'
-    ? `<div class="ssp-row"><span class="ssp-k">Tokens per 1%</span><span class="ssp-v">${_ubFmtTok(tpp.median)} (p10 ${_ubFmtTok(tpp.p10)} · p90 ${_ubFmtTok(tpp.p90)}; ${tpp.total_delta_pp != null && tpp.run_count != null ? `${+Number(tpp.total_delta_pp).toFixed(1)}pp over ${tpp.run_count} runs` : `n=${tpp.sample_count}`})</span></div>${tpp.note ? `<div class="ssp-hint-line">${esc(tpp.note)}</div>` : ''}`
+    ? `<div class="ssp-row"><span class="ssp-k">Tokens per 1% (pooled rate)</span><span class="ssp-v">${_ubFmtTok(tppRate)} (p10 ${_ubFmtTok(tpp.p10)} · p90 ${_ubFmtTok(tpp.p90)}; ${tppSpan})</span></div>${compHTML}${tpp.note ? `<div class="ssp-hint-line">${esc(tpp.note)}</div>` : ''}`
     : `<div class="ssp-row"><span class="ssp-k">Tokens per 1%</span><span class="ssp-v">${esc(_UB_BAR_STATUS_LABEL[tpp.status] || 'Insufficient calibration')}</span></div>`;
 
   // MC-998 review finding #9: the range/caveat was dropped, the
@@ -1285,7 +1303,7 @@ function _ubRenderBarPopup(provider) {
   const tpp = b.tokens_per_point || {};
   const calibrated = state === 'calibrated';
   const valFor = (t) => calibrated
-    ? (tpp.median ? (t / tpp.median).toFixed(1) : '0.0') + '% of allowance'
+    ? ((tpp.pooled_rate || tpp.median) ? (t / (tpp.pooled_rate || tpp.median)).toFixed(1) : '0.0') + '% of allowance'
     : (totalMeasured > 0 ? ((t / totalMeasured) * 100).toFixed(0) : '0') + '% of measured';
   const row = (label, t) => `<div class="ssp-row"><span class="ssp-k">${esc(label)}</span><span class="ssp-v">${valFor(t)}</span></div>`;
 
