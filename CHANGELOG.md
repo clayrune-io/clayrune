@@ -6,6 +6,18 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-01] — v2.4.4 release (Mac update button, 288 commits since v2.4.3)
+
+- Release notes: `docs/RELEASE_NOTES_v2.4.4.md`. Leads with MC-1003: the Mac
+  `.app`'s Settings > Update > "Download update" now opens the browser
+  (`openExternal()` anchor click instead of `window.open()`, which pywebview's
+  WKWebView swallows); `a4f7f4d` was not in v2.4.3.
+- Also: Desk v1 work behind `desk_v1` (default off), image-viewer window
+  controls and folder navigation, Settings > Installed App (MC-713), hivemind
+  worker worktrees (MC-1013), first-run `setup_completed` fix (MC-1015),
+  POSIX Stop/restart fixes, MC-998 usage-breakdown calibration.
+- `installer/` unchanged since v2.4.3: no Windows installer exe rebuild.
+
 ## [2026-09-30] — Hivemind workers run in their own worktrees (e3c0824e)
 
 - `_hm_spawn_worker_session` now makes the same isolation decision as a
