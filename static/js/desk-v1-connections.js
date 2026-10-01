@@ -9,7 +9,8 @@
 //                    or the platform API, paid) + the signed-in browser profile.
 //                    Voice is NOT here: a campaign sets it on its Where board.
 //   Content sources  the cloud drives Studio's online sources read from.
-//   Generation engines  placeholder heading only (video + image engines); a follow-up ticket fills it.
+//   Generation engines  live: each engine, connected or not by vault name, and the per-job USD
+//                    limit the user sets for it (static/js/desk-v1-engines.js, MC-1019).
 //
 // Demo mode (desk_v1_live OFF): Connect / Reconnect flips the fixture account's
 // state (with Undo) and authenticates nothing. Read via is real there: it
@@ -322,6 +323,8 @@
     });
   }
 
+  let _enginesCache = null;   // live: GET /api/desk/engines, cleared when a limit changes
+
   function deskV1RenderConnections(el) {
     const repaint = () => { if (el.isConnected) deskV1RenderConnections(el); };
     const channels = _channels();
@@ -342,6 +345,7 @@
         </section>
         <section class="desk-v1-rules-group" data-conn-section="engines">
           <div class="desk-v1-rules-group-title">Generation engines</div>
+          ${live ? window.DeskV1Engines.connectionsHTML(_enginesCache) : ''}
         </section>
       </div>`;
     channels.forEach((ch) => {
@@ -358,6 +362,13 @@
     const recheck = el.querySelector('[data-conn-recheck]');
     if (recheck) recheck.onclick = () => _recheck(el, repaint);
     _bindAddForm(el, repaint);
+    if (live) {
+      if (_enginesCache) window.DeskV1Engines.bindConnections(el, _enginesCache, () => { _enginesCache = null; repaint(); });
+      else window.DeskV1Engines.list(null, { force: true }).then((e) => { _enginesCache = e; repaint(); }).catch((err) => {
+        const box = el.querySelector('[data-conn-section="engines"]');
+        if (box) box.insertAdjacentHTML('beforeend', `<div class="desk-v1-stub-empty">Could not load the engines: ${esc(err && err.message ? err.message : err)}</div>`);
+      });
+    }
   }
 
   window.deskV1RenderConnections = deskV1RenderConnections;

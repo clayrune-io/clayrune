@@ -1042,6 +1042,71 @@ def get_engine_job(job_id):
     return jsonify({'job': job})
 
 
+# The per-job USD limit is a spending gate: raising it loosens one, so setting
+# it is human-only and takes the retyped passcode, like Start / Approve / Renew.
+@bp.route('/api/desk/engines/<engine_id>/limit', methods=['PUT'])
+def set_engine_limit(engine_id):
+    d = request.get_json(silent=True) or {}
+    if is_unattended_caller():
+        return jsonify({'error': 'this action needs a human: an unattended agent session '
+                                 'cannot change a render spending limit'}), 403
+    refused = _require_human_passcode(d)
+    if refused:
+        return refused
+    try:
+        return jsonify(_engines.set_limit(engine_id, d.get('job_limit_usd')))
+    except _engines.Refused as e:
+        return _engine_refusal(e)
+
+
+# A storyboard render: one engine job per scene, then joined (ffmpeg, this
+# machine). Estimate and poll are free; Render spends, so it is human-only +
+# passcode, and the jobs POST's gates apply unchanged.
+@bp.route('/api/desk/engines/render/estimate', methods=['POST'])
+def estimate_storyboard_render():
+    d = request.get_json(silent=True) or {}
+    try:
+        return jsonify(_engines.estimate_render(d, unattended=is_unattended_caller()))
+    except _engines.Refused as e:
+        return _engine_refusal(e)
+    except _engines.NotConnected as e:
+        return _not_connected(e)
+
+
+@bp.route('/api/desk/engines/renders', methods=['POST'])
+def start_storyboard_render():
+    d = request.get_json(silent=True) or {}
+    if is_unattended_caller():
+        return jsonify({'error': 'this action needs a human: an unattended agent session '
+                                 'cannot start a render (it spends money)'}), 403
+    refused = _require_human_passcode(d)
+    if refused:
+        return refused
+    try:
+        out, replay = _engines.render(d, unattended=False)
+    except _engines.Refused as e:
+        return _engine_refusal(e)
+    except _engines.NotConnected as e:
+        return _not_connected(e)
+    return jsonify({'render': out, 'replay': replay}), (200 if replay else 201)
+
+
+@bp.route('/api/desk/engines/renders', methods=['GET'])
+def latest_storyboard_render():
+    kind, oid = request.args.get('owner_kind') or '', request.args.get('owner_id') or ''
+    if kind not in ('piece', 'studio') or not oid:
+        return jsonify({'error': 'owner_kind (piece|studio) and owner_id are required'}), 400
+    return jsonify({'render': _engines.latest_render(kind, oid)})
+
+
+@bp.route('/api/desk/engines/renders/<render_id>', methods=['GET'])
+def get_storyboard_render(render_id):
+    out = _engines.poll_render(render_id, unattended=is_unattended_caller())
+    if out is None:
+        return jsonify({'error': 'render not found'}), 404
+    return jsonify({'render': out})
+
+
 # ── Story ledger ─────────────────────────────────────────────────────────────
 
 @bp.route('/api/desk/ledger', methods=['GET'])

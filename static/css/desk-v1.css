@@ -3169,3 +3169,19 @@ button.desk-v1-because-chip { color: var(--accent-soft); font-weight: 600; curso
 }
 .desk-v1-conn-btn:disabled { opacity: 0.5; cursor: default; }
 @media (max-width: 640px) { .desk-v1-conn-btn { min-height: 44px; } }
+
+/* Generation engines (MC-1019 = R1-W S9b): Connections rows + the render panel. */
+.desk-v1-engine-row .desk-v1-engine-limit { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--text-dim); }
+.desk-v1-engine-row .desk-v1-engine-limit input { width: 90px; }
+.desk-v1-engine-limit-note { flex-basis: 100%; }
+.desk-v1-engine-panel { margin: 14px 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
+.desk-v1-engine-head { font-weight: 600; }
+.desk-v1-engine-pickers { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--text-dim); }
+.desk-v1-engine-pickers label { display: flex; flex-direction: column; gap: 3px; }
+.desk-v1-engine-est { font-size: 13px; }
+.desk-v1-engine-est-detail { font-size: 12px; color: var(--text-dim); }
+.desk-v1-engine-refusal { font-size: 12px; color: var(--danger, #b3261e); }
+.desk-v1-engine-actions { display: flex; gap: 8px; }
+.desk-v1-engine-outputs { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }
+.desk-v1-engine-saved { color: var(--text-dim); font-size: 12px; }
+.desk-v1-engine-img { max-width: 100%; max-height: 260px; border-radius: 8px; display: block; margin: 6px 0; }

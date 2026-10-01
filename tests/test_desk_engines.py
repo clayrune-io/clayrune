@@ -422,7 +422,9 @@ def test_a_closed_or_unknown_campaign_is_refused(client, vendor):
     _campaign(_own(100), state='dropped')
     assert _submit(client, _veo()).get_json()['code'] == 'campaign_closed'
     assert _submit(client, _veo(campaign_id='nope')).status_code == 404
-    assert _submit(client, {k: v for k, v in _veo().items() if k != 'campaign_id'}).status_code == 400
+    # No campaign is a Studio render now: allowed, but only under a per-job limit.
+    r = _submit(client, {k: v for k, v in _veo().items() if k != 'campaign_id'})
+    assert (r.status_code, r.get_json()['code']) == (409, 'no_job_limit')
 
 
 def test_idempotency_key_is_required(client):
@@ -470,7 +472,7 @@ def test_higgsfield_video_end_to_end(client, vendor, uploads):
     out = done['outputs'][0]
     p = Path(out['local_path'])
     assert p.read_bytes() == b'MP4DATA' and p.suffix == '.mp4'
-    assert uploads / 'desk' / 'generated' / CID in p.parents
+    assert uploads / 'desk' / 'library' / 'video' / 'Generated' in p.parents
     assert out['mime'] == 'video/mp4' and out['duration_sec'] == 5
     # the download carries no Higgsfield key
     assert 'Authorization' not in vendor.to('cdn.higgs.example')[0]['headers']
@@ -668,7 +670,7 @@ def test_gemini_image_is_ready_on_submit_and_saved_with_its_size(client, vendor,
     out = j['outputs'][0]
     assert (out['width'], out['height'], out['mime']) == (640, 480, 'image/png')
     assert Path(out['local_path']).read_bytes() == _png(640, 480)
-    assert uploads / 'desk' / 'generated' / CID in Path(out['local_path']).parents
+    assert uploads / 'desk' / 'library' / 'image' / 'Generated' in Path(out['local_path']).parents
     sent = json.loads(vendor.to('/v1beta/interactions')[0]['body'])
     assert sent['model'] == 'gemini-3.1-flash-image'
     assert sent['response_format'] == {'type': 'image', 'mime_type': 'image/png', 'aspect_ratio': '1:1', 'image_size': '1K'}
@@ -737,3 +739,365 @@ def test_openai_interrupted_sync_job_is_failed_with_cost_kept(client, vendor, mo
 
 def test_unknown_job_is_404(client):
     assert client.get('/api/desk/engines/jobs/gen-nope').status_code == 404
+
+
+# ── S9b: per-job limit, Studio renders, storyboard render, library, ffmpeg ───
+#
+# Still no real vendor call: `vendor` is the scripted transport. ffmpeg is never
+# run for real either: `_ffmpeg` / `_run_ffmpeg` / `_codecs_match` are replaced.
+
+STUDIO_ID = 'studio-s9b'
+HIGGS_T2V = 'kling-video/v2.5-turbo/pro/text-to-video'
+HIGGS_I2V = 'kling-video/v2.5-turbo/pro/image-to-video'
+
+
+@pytest.fixture
+def board(client, uploads, monkeypatch):
+    """Point the Desk material library at the same tmp uploads dir and return a
+    writer: `board(scenes, owner_kind='studio', owner_id=STUDIO_ID)`."""
+    from mc import desk_pieces
+    from mc import desk_storyboard as sb
+    monkeypatch.setattr(desk_pieces, 'UPLOADS_ROOT', uploads)
+
+    def put(scenes, owner_kind='studio', owner_id=STUDIO_ID):
+        cur = sb.get_storyboard(owner_kind, owner_id)['rev']
+        return sb.put_storyboard(owner_kind, owner_id, {'rev': cur, 'scenes': scenes})
+    return put
+
+
+def _sc(sid, secs=5, **kw):
+    return dict({'id': sid, 'label': f'Scene {sid}', 'line': f'Line {sid}.', 'duration_sec': secs,
+                 'picture': None, 'edited': False}, **kw)
+
+
+def _render_body(**kw):
+    d = {'owner': {'kind': 'studio', 'id': STUDIO_ID}, 'engine_id': 'higgsfield', 'model_id': HIGGS_T2V,
+         'aspect_ratio': '16:9', 'idempotency_key': f'r{next(_n)}'}
+    d.update(kw)
+    return d
+
+
+def _job_posts(vendor, model_id):
+    return [c for c in vendor.to(f'/{model_id}', 'POST') if '/estimate/' not in c['url']]
+
+
+def _set_limit(client, engine_id, usd):
+    return client.put(f'/api/desk/engines/{engine_id}/limit', json={'job_limit_usd': usd})
+
+
+def _video_piece(client):
+    return client.post('/api/desk/pieces', json={'campaign_id': CID, 'kind': 'video', 'title': 'V'}).get_json()['id']
+
+
+def _piece_assets(client, pid):
+    return [p for p in client.get('/api/desk/pieces').get_json() if p['id'] == pid][0]['assets']
+
+
+def _two_clip_vendor(vendor, usd='0.21'):
+    vendor.on('POST', '/estimate/', vendor.json(200, {'credits': '3', 'usd': usd}))
+    vendor.on('POST', f'/{HIGGS_T2V}', vendor.json(200, {'status': 'queued', 'request_id': 'ra'}),
+              vendor.json(200, {'status': 'queued', 'request_id': 'rb'}))
+    for rid, name in (('ra', 'a'), ('rb', 'b')):
+        vendor.on('GET', f'/requests/{rid}/status',
+                  vendor.json(200, {'status': 'completed', 'video': {'url': f'https://cdn.higgs.example/{name}.mp4'}}))
+        vendor.on('GET', f'cdn.higgs.example/{name}.mp4', (200, {'content-type': 'video/mp4'}, f'CLIP-{name}'.encode()))
+
+
+@pytest.fixture
+def ffmpeg(monkeypatch):
+    """A pretend ffmpeg: records the argv and writes the output file."""
+    ran: list[list[str]] = []
+
+    def run(cmd):
+        ran.append(cmd)
+        Path(cmd[-1]).write_bytes(b'JOINED')
+        return 0, ''
+    monkeypatch.setattr(eng, '_ffmpeg', lambda: 'ffmpeg')
+    monkeypatch.setattr(eng, '_run_ffmpeg', run)
+    monkeypatch.setattr(eng, '_codecs_match', lambda paths: True)
+    return ran
+
+
+def test_engine_list_carries_the_per_job_limit(client):
+    assert all(e['job_limit_usd'] is None for e in client.get('/api/desk/engines').get_json()['engines'])
+    assert _set_limit(client, 'google', 4).get_json() == {'engine_id': 'google', 'job_limit_usd': 4.0}
+    by_id = {e['id']: e for e in client.get('/api/desk/engines').get_json()['engines']}
+    assert by_id['google']['job_limit_usd'] == 4.0 and by_id['openai']['job_limit_usd'] is None
+    assert _set_limit(client, 'google', None).get_json()['job_limit_usd'] is None
+
+
+@pytest.mark.parametrize('bad', [0, -1, 'five', True, 10 ** 9])
+def test_a_bad_limit_is_refused(client, bad):
+    assert _set_limit(client, 'google', bad).status_code == 400
+    assert _set_limit(client, 'nope', 1).status_code == 404
+
+
+def test_setting_a_limit_is_refused_for_an_unattended_caller(client, unattended):
+    assert _set_limit(client, 'google', 1).status_code == 403 and eng.get_limits() == {}
+
+
+def test_setting_a_limit_needs_the_passcode(gated):
+    r = gated.put('/api/desk/engines/google/limit', json={'job_limit_usd': 1})
+    assert r.status_code in (401, 403) and eng.get_limits() == {}
+    r = gated.put('/api/desk/engines/google/limit', json={'job_limit_usd': 1, 'passcode': PASSCODE})
+    assert r.status_code == 200 and eng.get_limits() == {'google': 1.0}
+
+
+def test_a_studio_job_with_no_campaign_needs_a_limit_and_is_held_to_it(client, vendor):
+    body = {k: v for k, v in _veo().items() if k != 'campaign_id'}
+    r = _submit(client, body)
+    assert (r.status_code, r.get_json()['code']) == (409, 'no_job_limit') and not vendor.calls
+    _set_limit(client, 'google', 3)                       # Veo 8 s at 720p = $3.20
+    r = _submit(client, {**body, 'desk': {'idempotency_key': 'lim2'}})
+    assert (r.status_code, r.get_json()['code']) == (409, 'over_job_limit') and not vendor.calls
+    est = client.post('/api/desk/engines/estimate', json=body).get_json()
+    assert est['refusal']['code'] == 'over_job_limit' and est['job_limit_usd'] == 3.0
+    _set_limit(client, 'google', 4)
+    vendor.on('POST', ':predictLongRunning', vendor.json(200, {'name': 'models/m/operations/x'}))
+    r = _submit(client, {**body, 'desk': {'idempotency_key': 'lim3'}})
+    assert r.status_code == 201 and r.get_json()['job']['campaign_id'] is None
+
+
+def test_the_limit_applies_inside_a_campaign_too(client, vendor):
+    _campaign(_own(100))
+    _set_limit(client, 'google', 3)
+    assert _submit(client, _veo()).get_json()['code'] == 'over_job_limit'
+    _set_limit(client, 'google', 4)
+    vendor.on('POST', ':predictLongRunning', vendor.json(200, {'name': 'models/m/operations/y'}))
+    assert _submit(client, _veo()).status_code == 201
+
+
+def test_render_post_is_refused_for_an_unattended_caller(client, vendor, unattended, board):
+    board([_sc('s1')])
+    eng.set_limit('higgsfield', 5)
+    r = client.post('/api/desk/engines/renders', json=_render_body())
+    assert r.status_code == 403 and not vendor.calls and eng._read_store()['renders'] == {}
+
+
+def test_render_post_needs_the_passcode(gated, vendor, board):
+    board([_sc('s1')])
+    eng.set_limit('higgsfield', 5)
+    r = gated.post('/api/desk/engines/renders', json=_render_body())
+    assert r.status_code in (401, 403) and not vendor.calls
+
+
+def test_render_estimate_prices_the_storyboard_and_shows_a_refusal_before_render(client, vendor, board):
+    board([_sc('s1'), _sc('s2', 7)])
+    _two_clip_vendor(vendor)
+    out = client.post('/api/desk/engines/render/estimate', json=_render_body()).get_json()
+    assert out['estimate']['usd'] == pytest.approx(0.42) and out['plan']['clips'] == 2
+    assert [s['duration_sec'] for s in out['plan']['scenes']] == [5, 10]          # 7 s snaps up to 10
+    assert out['plan']['needs_ffmpeg'] is True
+    assert out['refusal']['code'] == 'no_job_limit'                                  # nothing caps it yet
+    eng.set_limit('higgsfield', 0.4)
+    out = client.post('/api/desk/engines/render/estimate', json=_render_body()).get_json()
+    assert out['refusal']['code'] == 'over_job_limit'
+    eng.set_limit('higgsfield', 0.5)
+    assert client.post('/api/desk/engines/render/estimate', json=_render_body()).get_json()['refusal'] is None
+    assert not _job_posts(vendor, HIGGS_T2V)                                    # an estimate sends no job
+
+
+def test_render_total_over_the_per_job_limit_is_refused_before_any_clip_is_sent(client, vendor, board):
+    board([_sc('s1'), _sc('s2')])
+    _two_clip_vendor(vendor)
+    eng.set_limit('higgsfield', 0.3)                                                 # each clip fits, the total does not
+    r = client.post('/api/desk/engines/renders', json=_render_body())
+    assert (r.status_code, r.get_json()['code']) == (409, 'over_job_limit')
+    assert not _job_posts(vendor, HIGGS_T2V) and eng._read_store()['renders'] == {}
+
+
+def test_a_campaign_render_is_held_to_the_campaign_budget_total(client, vendor, board):
+    _campaign(_own(0.3))
+    pid = _video_piece(client)
+    board([_sc('s1'), _sc('s2')], 'piece', pid)
+    _two_clip_vendor(vendor)
+    eng.set_limit('higgsfield', 5)
+    body = _render_body(owner={'kind': 'piece', 'id': pid})
+    r = client.post('/api/desk/engines/renders', json=body)
+    assert (r.status_code, r.get_json()['code']) == (409, 'over_budget')
+    assert not _job_posts(vendor, HIGGS_T2V)
+    est = client.post('/api/desk/engines/render/estimate', json=body).get_json()
+    assert est['refusal']['code'] == 'over_budget' and est['budget']['amount'] == 0.3
+
+
+def test_render_without_a_scene_or_with_a_closed_campaign_is_refused(client, vendor, board):
+    eng.set_limit('higgsfield', 5)
+    r = client.post('/api/desk/engines/renders', json=_render_body())
+    assert r.get_json()['code'] == 'no_scenes'
+    _campaign(_own(5))
+    pid = _video_piece(client)
+    board([_sc('s1')], 'piece', pid)
+    store = _desk._read_store()
+    store['campaigns'][CID]['state'] = 'dropped'
+    _desk._write_store(store)
+    r = client.post('/api/desk/engines/renders', json=_render_body(owner={'kind': 'piece', 'id': pid}))
+    assert r.get_json()['code'] == 'campaign_closed' and not vendor.calls
+
+
+def test_render_idempotency_key_makes_a_retry_one_render(client, vendor, board):
+    board([_sc('s1')])
+    _two_clip_vendor(vendor)
+    eng.set_limit('higgsfield', 5)
+    body = _render_body(idempotency_key='same-click')
+    a, b = (client.post('/api/desk/engines/renders', json=body) for _ in range(2))
+    assert (a.status_code, b.status_code) == (201, 200) and b.get_json()['replay'] is True
+    assert len(_job_posts(vendor, HIGGS_T2V)) == 1
+    assert client.post('/api/desk/engines/renders', json={**body, 'idempotency_key': ''}).status_code == 400
+
+
+def test_a_one_scene_render_lands_in_the_library_and_attaches_to_the_piece(client, vendor, board, uploads):
+    _campaign(_own(5))
+    pid = _video_piece(client)
+    board([_sc('s1')], 'piece', pid)
+    _two_clip_vendor(vendor)
+    eng.set_limit('higgsfield', 5)
+    r = client.post('/api/desk/engines/renders', json=_render_body(owner={'kind': 'piece', 'id': pid}))
+    assert r.status_code == 201, r.get_json()
+    rid = r.get_json()['render']['render_id']
+    got = client.get(f'/api/desk/engines/renders/{rid}').get_json()['render']
+    assert got['status'] == 'ready' and got['progress'] == {'ready': 1, 'total': 1}
+    out = got['outputs'][0]
+    p = uploads / out['path']
+    assert p.read_bytes() == b'CLIP-a' and (uploads / 'desk' / 'library' / 'video' / 'Generated') in p.parents
+    assert out['attached_to'] == pid
+    assert out['path'] in [a['path'] for a in _piece_assets(client, pid)]
+    assert got['cost_usd'] == pytest.approx(0.21)
+    _assert_no_secret(json.dumps(got) + Path(eng.JOBS_PATH).read_text())
+    # the page can find it again after a reload
+    latest = client.get(f'/api/desk/engines/renders?owner_kind=piece&owner_id={pid}').get_json()['render']
+    assert latest['render_id'] == rid
+    assert client.get('/api/desk/engines/renders?owner_kind=nope&owner_id=x').status_code == 400
+
+
+def test_a_two_scene_render_is_stitched_with_stream_copy_when_codecs_match(client, vendor, board, uploads, ffmpeg):
+    board([_sc('s1'), _sc('s2')])
+    _two_clip_vendor(vendor)
+    eng.set_limit('higgsfield', 5)
+    rid = client.post('/api/desk/engines/renders', json=_render_body()).get_json()['render']['render_id']
+    got = client.get(f'/api/desk/engines/renders/{rid}').get_json()['render']
+    assert got['status'] == 'ready' and got['progress']['ready'] == 2 and len(got['clips']) == 2
+    assert len(ffmpeg) == 1
+    cmd = ffmpeg[0]
+    assert cmd[0] == 'ffmpeg' and cmd[cmd.index('-c') + 1] == 'copy' and '-vf' not in cmd
+    assert cmd[cmd.index('-f') + 1] == 'concat' and cmd[-1].endswith(f'{rid}.mp4')
+    assert (uploads / got['outputs'][0]['path']).read_bytes() == b'JOINED'
+    assert not list((uploads / 'desk' / 'library' / 'video' / 'Generated').glob('*.concat.txt'))
+    assert all((uploads / c['path']).is_file() for c in got['clips'])          # the clips stay in the library too
+
+
+def test_stitch_command_shape():
+    copy = eng.stitch_command('ff', 'list.txt', 'out.mp4', crop_square=False, copy=True)
+    assert copy == ['ff', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0',
+                    '-i', 'list.txt', '-c', 'copy', '-movflags', '+faststart', 'out.mp4']
+    mismatch = eng.stitch_command('ff', 'list.txt', 'out.mp4', crop_square=False, copy=False)
+    assert 'libx264' in mismatch and '-vf' not in mismatch and 'copy' not in mismatch
+    crop = eng.stitch_command('ff', 'list.txt', 'out.mp4', crop_square=True, copy=True)
+    assert '-vf' in crop and 'min(iw,ih)' in crop[crop.index('-vf') + 1] and 'libx264' in crop and 'copy' not in crop
+    assert eng._concat_list([Path("a'b.mp4")]) == "file 'a'\\''b.mp4'\n"
+
+
+def test_a_square_render_of_a_model_with_no_1_1_is_made_16_9_then_cropped(client, vendor, board, uploads, ffmpeg):
+    board([_sc('s1', 8)])
+    eng.set_limit('google', 5)
+    veo = dict(engine_id='google', model_id='veo-3.1-generate-preview', aspect_ratio='1:1', resolution='720p')
+    est = client.post('/api/desk/engines/render/estimate', json=_render_body(**veo)).get_json()
+    assert est['plan']['crop'] is True and est['plan']['generated_ratio'] == '16:9' and est['plan']['needs_ffmpeg']
+    vendor.on('POST', ':predictLongRunning', vendor.json(200, {'name': 'models/veo-3.1-generate-preview/operations/sq'}))
+    vendor.on('GET', '/operations/sq', vendor.json(200, {'done': True, 'response': {'generateVideoResponse': {
+        'generatedSamples': [{'video': {'uri': 'https://generativelanguage.googleapis.com/v1beta/files/sq:download'}}]}}}))
+    vendor.on('GET', 'files/sq:download', (200, {'content-type': 'video/mp4'}, b'SQCLIP'))
+    rid = client.post('/api/desk/engines/renders', json=_render_body(**veo)).get_json()['render']['render_id']
+    got = client.get(f'/api/desk/engines/renders/{rid}').get_json()['render']
+    assert got['status'] == 'ready' and got['aspect_ratio'] == '1:1'
+    assert json.loads(vendor.to(':predictLongRunning', 'POST')[0]['body'])['parameters']['aspectRatio'] == '16:9'
+    assert len(ffmpeg) == 1 and '-vf' in ffmpeg[0] and 'libx264' in ffmpeg[0]
+
+
+def test_ffmpeg_missing_holds_the_render_with_the_reason_and_keeps_the_clips(client, vendor, board, uploads, monkeypatch):
+    board([_sc('s1'), _sc('s2')])
+    _two_clip_vendor(vendor)
+    eng.set_limit('higgsfield', 5)
+    monkeypatch.setattr(eng, '_ffmpeg', lambda: None)
+    ran = []
+    monkeypatch.setattr(eng, '_run_ffmpeg', lambda cmd: ran.append(cmd) or (0, ''))
+    est = client.post('/api/desk/engines/render/estimate', json=_render_body()).get_json()
+    assert est['plan']['ffmpeg_available'] is False
+    rid = client.post('/api/desk/engines/renders', json=_render_body()).get_json()['render']['render_id']
+    got = client.get(f'/api/desk/engines/renders/{rid}').get_json()['render']
+    assert got['status'] == 'held' and got['hold']['kind'] == 'ffmpeg_missing'
+    assert 'Nothing is installed' in got['hold']['message']
+    assert len(got['clips']) == 2 and all((uploads / c['path']).is_file() for c in got['clips'])
+    assert got['outputs'] == [] and ran == []
+    # opening it again with ffmpeg present finishes it; the clips are not re-downloaded
+    n = len(vendor.to('cdn.higgs.example'))
+    monkeypatch.setattr(eng, '_ffmpeg', lambda: 'ffmpeg')
+    monkeypatch.setattr(eng, '_run_ffmpeg', lambda cmd: (Path(cmd[-1]).write_bytes(b'J'), (0, ''))[1])
+    monkeypatch.setattr(eng, '_codecs_match', lambda p: False)
+    done = client.get(f'/api/desk/engines/renders/{rid}').get_json()['render']
+    assert done['status'] == 'ready' and done['hold'] is None and len(done['outputs']) == 1
+    assert len(vendor.to('cdn.higgs.example')) == n
+
+
+def test_a_failed_join_holds_the_render_and_keeps_the_clips(client, vendor, board, monkeypatch):
+    board([_sc('s1'), _sc('s2')])
+    _two_clip_vendor(vendor)
+    eng.set_limit('higgsfield', 5)
+    monkeypatch.setattr(eng, '_ffmpeg', lambda: 'ffmpeg')
+    monkeypatch.setattr(eng, '_codecs_match', lambda p: True)
+    monkeypatch.setattr(eng, '_run_ffmpeg', lambda cmd: (1, 'Invalid data found'))
+    rid = client.post('/api/desk/engines/renders', json=_render_body()).get_json()['render']['render_id']
+    got = client.get(f'/api/desk/engines/renders/{rid}').get_json()['render']
+    assert got['status'] == 'held' and got['hold']['kind'] == 'stitch_failed' and 'Invalid data' in got['hold']['message']
+    assert len(got['clips']) == 2
+
+
+def test_a_clip_that_fails_fails_the_render_and_names_the_scene(client, vendor, board):
+    board([_sc('s1'), _sc('s2')])
+    _two_clip_vendor(vendor)
+    vendor.on('GET', '/requests/rb/status', vendor.json(200, {'status': 'nsfw'}))
+    eng.set_limit('higgsfield', 5)
+    rid = client.post('/api/desk/engines/renders', json=_render_body()).get_json()['render']['render_id']
+    got = client.get(f'/api/desk/engines/renders/{rid}').get_json()['render']
+    assert got['status'] == 'failed' and got['failure']['kind'] == 'clip_failed' and 'Scene s2' in got['failure']['message']
+
+
+def test_scene_pictures_go_as_the_first_frame_and_a_model_with_no_picture_input_refuses_them(client, vendor, board, uploads):
+    pic = uploads / 'desk' / 'library' / 'image' / 'Launch'
+    pic.mkdir(parents=True)
+    (pic / 'shot.png').write_bytes(_png())
+    board([_sc('s1', picture={'path': 'desk/library/image/Launch/shot.png'})])
+    eng.set_limit('higgsfield', 5)
+    r = client.post('/api/desk/engines/render/estimate', json=_render_body())          # text-to-video: no picture input
+    assert r.status_code == 400 and 'takes no picture' in r.get_json()['error']
+    vendor.on('POST', '/estimate/', vendor.json(200, {'credits': '3', 'usd': '0.21'}))
+    vendor.on('POST', 'files/generate-upload-url', vendor.json(200, {
+        'upload_url': 'https://s3.example/put', 'public_url': 'https://files.higgs.example/p.png',
+        'content_type': 'image/png', 'upload_headers': {}}))
+    vendor.on('PUT', 's3.example/put', (200, {}, b''))
+    vendor.on('POST', f'/{HIGGS_I2V}', vendor.json(200, {'status': 'queued', 'request_id': 'rp'}))
+    vendor.on('GET', '/requests/rp/status', vendor.json(200, {'status': 'queued'}))
+    r = client.post('/api/desk/engines/renders', json=_render_body(model_id=HIGGS_I2V))
+    assert r.status_code == 201, r.get_json()
+    assert vendor.to('s3.example/put', 'PUT')[0]['body'] == _png()
+    assert json.loads(_job_posts(vendor, HIGGS_I2V)[-1]['body'])['image_url'] == 'https://files.higgs.example/p.png'
+
+
+def test_a_studio_image_job_lands_in_the_library_image_folder(client, vendor, uploads):
+    eng.set_limit('google', 1)
+    vendor.on('POST', '/v1beta/interactions', vendor.json(200, {
+        'output_image': {'mime_type': 'image/png', 'data': base64.b64encode(_png(64, 64)).decode()}}))
+    body = {k: v for k, v in _gemini_img().items() if k != 'campaign_id'}
+    j = _submit(client, body).get_json()['job']
+    assert j['status'] == 'ready' and j['outputs'][0]['src'].startswith('/api/serve-image?path=')
+    assert (uploads / j['outputs'][0]['path']).is_file()
+    assert j['outputs'][0]['path'].startswith('desk/library/image/Generated/')
+
+
+def test_a_sync_image_job_for_a_piece_attaches_the_picture_to_it(client, vendor, board, uploads):
+    _campaign(_own(5))
+    pid = client.post('/api/desk/pieces', json={'campaign_id': CID, 'kind': 'image', 'title': 'I'}).get_json()['id']
+    vendor.on('POST', '/v1beta/interactions', vendor.json(200, {
+        'output_image': {'mime_type': 'image/png', 'data': base64.b64encode(_png(64, 64)).decode()}}))
+    j = _submit(client, _gemini_img(desk={'idempotency_key': 'pic1', 'piece_id': pid})).get_json()['job']
+    assert j['outputs'][0]['attached_to'] == pid
+    assert j['outputs'][0]['path'] in [a['path'] for a in _piece_assets(client, pid)]

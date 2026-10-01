@@ -439,7 +439,7 @@
       ${strip}
       <div class="desk-v1-sb-head">
         <h2 class="desk-v1-sb-title">New video · storyboard</h2>
-        <button type="button" class="btn-add" data-sb-render${rendering || (_sb.standalone && !_realScenes(detail).length) ? ' disabled' : ''}>Render</button>
+        ${_isLive() ? '' : `<button type="button" class="btn-add" data-sb-render${rendering || (_sb.standalone && !_realScenes(detail).length) ? ' disabled' : ''}>Render</button>`}
       </div>
       <div data-sb-notice>${_noScenesHTML(detail)}</div>
       ${_renderStatusHTML(fam)}
@@ -451,6 +451,7 @@
             ${_sb.standalone ? '<div class="desk-v1-sb-bin" data-sb-trash role="img" aria-label="Bin: drag a scene here to delete it" title="Drag a scene here to delete it"><span aria-hidden="true">🗑</span></div>' : ''}
           </div>
           ${_isLive() && !_sb.loadError ? '<div class="desk-v1-sb-addrow"><button type="button" class="btn-secondary" data-scene-add>Add scene</button></div>' : ''}
+          ${_isLive() && !_sb.loadError ? '<div data-sb-engine></div>' : ''}
         </div>
         <aside class="desk-v1-sb-agent" data-sb-agent>${_agentBoxHTML(ctx)}</aside>
       </div>
@@ -499,6 +500,9 @@
       if (render) render.disabled = !_realScenes(ctx.detail).length || !!(ctx.fam.render && ctx.fam.render.status === 'rendering');
     }
     if (focusSel) { const f = _sb.el.querySelector(focusSel); if (f) f.focus({ preventScroll: true }); }
+    // The scenes changed, so the price shown for the render is out of date.
+    const eng = _isLive() && _sb.el.querySelector('[data-sb-engine]');
+    if (eng && eng.__engRefresh) eng.__engRefresh();
   }
 
   // The timeline's reorder is the director strip's drag, committing through the
@@ -761,7 +765,12 @@
   function _wireSb(el) {
     const ctx = _sbCtx();
     if (!ctx) return;
-    el.querySelector('[data-sb-render]').onclick = _startRender;
+    // Live, Render is the engine panel's (estimate, passcode, a real job); the
+    // fixture button above exists in demo only.
+    const demoRender = el.querySelector('[data-sb-render]');
+    if (demoRender) demoRender.onclick = _startRender;
+    const engineHost = el.querySelector('[data-sb-engine]');
+    if (engineHost) window.DeskV1Engines.mountVideoRender(engineHost, { owner: _sbOwner(), projectId: ctx.camp.projectId || undefined });
     const add = el.querySelector('[data-scene-add]');
     if (add) add.onclick = _addScene;
     _wireScenes(el.querySelector('[data-scenes]'));
@@ -1102,6 +1111,7 @@
       { id: 'generate', label: 'Generate', hint: 'Abstract visuals only — never the product UI', glyph: '✨' },
     ],
   };
+  const ENGINE_SOURCE = { id: 'engine', label: 'Generate with an engine', hint: 'Your Higgsfield, Gemini or OpenAI account', glyph: '🎨' };
   const PRODUCT_KEY = 'desk_v1_studio_product';
   const _IMG_EXT = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp' };
 
@@ -1146,7 +1156,8 @@
   }
 
   function _imageSetupHTML() {
-    const srcs = CREATE_SOURCES.image;
+    // Live, a fourth source: a real engine (R1-W S9b). Demo has none: nothing there can spend.
+    const srcs = CREATE_SOURCES.image.concat(_isLive() ? [ENGINE_SOURCE] : []);
     if (!_sc.source) {
       return `<div class="desk-v1-what-sources" role="group" aria-label="Choose a source">${srcs.map((s) => `
         <button type="button" class="desk-v1-what-source" data-sc-source="${esc(s.id)}" aria-label="${esc(`${s.label}. ${s.hint}`)}" title="${esc(s.hint)}">
@@ -1159,7 +1170,7 @@
     const ctx = { card: _sc.card, fam: { kind: 'image' }, camp: { projectId: _sc.productId } };
     const body = _sc.source === 'capture' && !_sc.productId
       ? '<div class="desk-v1-what-later" data-sc-need-product>Pick a product above to capture from it.</div>'
-      : sourceBodyHTML(_sc.source, ctx);
+      : (_sc.source === ENGINE_SOURCE.id ? '<div data-sc-engine></div>' : sourceBodyHTML(_sc.source, ctx));
     return `<div class="desk-v1-what-chiprow"><span class="desk-v1-what-chip" data-sc-chip>${esc(src ? src.label : _sc.source)}</span>` +
       `<button type="button" class="desk-v1-what-change" data-sc-change-source>Change source</button></div>${body}`;
   }
@@ -1251,6 +1262,11 @@
     el.querySelectorAll('[data-sc-source]').forEach((b) => b.onclick = () => { _sc.source = b.dataset.scSource; _sc.card.ui = {}; _paintCreate(); });
     const change = el.querySelector('[data-sc-change-source]');
     if (change) change.onclick = () => { _sc.source = null; _paintCreate(); };
+    const engineHost = el.querySelector('[data-sc-engine]');
+    if (engineHost) {
+      window.DeskV1Engines.mountImageGenerate(engineHost, { key: 'studio', projectId: _sc.productId || undefined, onReady: () => { _loadLibrary(); } });
+      return;
+    }
     if (_sc.source) {
       wireSourceBody(el, { card: _sc.card, fam: { kind: 'image' }, camp: { projectId: _sc.productId } },
         { attach: _saveMade, repaint: _paintCreate, openStoryboard() {} });
