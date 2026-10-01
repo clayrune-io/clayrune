@@ -754,6 +754,8 @@ function _secApplyPreset(preset) {
     : (preset ? `paste the ${preset.secret_label}` : 'paste from your password manager');
   const twoFa = $('sec-2fa-help');
   if (twoFa) twoFa.hidden = !!preset;
+  const desc = $('sec-desc');
+  if (desc) desc.placeholder = preset ? 'Desk generation engine (renders for the Studio)' : 'Reddit account used for launch posts';
   const hint = $('sec-preset-hint');
   if (hint) {
     hint.hidden = !preset;
