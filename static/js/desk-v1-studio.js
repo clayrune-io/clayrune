@@ -87,7 +87,7 @@
   // The material library behind Studio home, read live from M22 (demo shows the
   // fixture's own folders). `error` is a real failure shown as one, never an
   // empty library.
-  const _lib = { error: null, recent: [], loaded: false };
+  const _lib = { error: null, recent: [], boards: [], loaded: false };
 
   // Studio's own items: what it made (a standalone item has no campaign), as
   // Recent rows. A video still rendering reads its percentage off the item.
@@ -121,6 +121,10 @@
       rows.push({ id: r.id, icon: RECENT_ICON[r.kind] || '•', title: r.title, kind: r.kind, campaignId: r.campaignId, meta, state: r.status });
     });
     if (_isLive()) {
+      const mine = new Set(_items().map((it) => it.id));
+      _lib.boards.filter((b) => !mine.has(b.id)).forEach((b) => rows.push({
+        id: b.id, icon: RECENT_ICON.video || '•', title: b.title || 'New video', kind: 'video', campaignId: null,
+        meta: `Draft · ${b.scenes} scene${b.scenes === 1 ? '' : 's'} · not attached`, state: 'draft' }));
       const seen = new Set(_items().map((it) => it.path).filter(Boolean));
       _lib.recent.filter((r) => !seen.has(r.path)).forEach((r) => rows.push({
         id: r.path, icon: RECENT_ICON[r.kind] || '•', title: r.title, kind: r.kind, campaignId: null,
@@ -278,6 +282,8 @@
       const all = ['video', 'image'].flatMap((k) => (lib[k] || []).flatMap((f) => f.items || []));
       _lib.recent = ((m && m.recent) || []).map((r) => { const hit = all.find((i) => i.path === r.id); return { kind: r.kind, title: r.title, path: r.id, src: hit ? hit.src : null }; });
       _lib.error = null;
+      // Live Studio drafts the server holds a storyboard for (they outlive the page).
+      return window.DeskV1Store.api('GET', '/api/desk/studio/storyboards').then((b) => { _lib.boards = (b && b.storyboards) || []; });
     }).catch((e) => { _lib.error = e && e.message ? e.message : String(e); });
   }
 
@@ -328,6 +334,33 @@
     if (_sb && _sb.standalone && !_items().includes(fam)) _items().unshift(fam);
   }
 
+  // Live (R1-W S9a, MC-1020), the storyboard is saved on the server per OWNER: a
+  // standalone Studio item, or the video piece a campaign's What opened. Every
+  // scene change below goes through _sceneCmd: demo keeps the plain commandBus
+  // command; live applies it, PUTs the whole list (guarded by the rev the page
+  // last read), and puts the page back on the server's list if that is refused.
+  function _sbOwner() { return { kind: _sb.standalone ? 'studio' : 'piece', id: _sb.familyId }; }
+  function _sceneCmd(ctx, spec) {
+    if (!_isLive()) return DeskV1Kit.commandBus.run(spec);
+    return window.DeskV1Store.storyboard.command(Object.assign({
+      owner: _sbOwner(), detail: ctx.detail, repaint: () => _paintScenes(),
+      extra: _sb.standalone ? () => ({ title: ctx.fam.title }) : undefined,
+    }, spec));
+  }
+  // Read the saved storyboard into `detail` and repaint. An answer that lands
+  // after the page moved on is dropped.
+  function _loadBoard(mine) {
+    const ctx = _sbCtx();
+    if (!ctx) return;
+    window.DeskV1Store.storyboard.load(_sbOwner(), ctx.detail).then(() => {
+      if (_sb === mine && mine.el.isConnected) _repaintSb();
+    }).catch((e) => {
+      if (_sb !== mine) return;
+      mine.loadError = e && e.message ? e.message : String(e);
+      if (mine.el.isConnected) _repaintSb();
+    });
+  }
+
   // Scenes are numbered among the real ones, so an example never takes a number.
   function _sceneHTML(s, scenes, editing) {
     const ph = !!s.placeholder;
@@ -340,12 +373,12 @@
         </div>`
       : `<div class="desk-v1-sb-scenetitle" data-scene-title>${ph ? '<span class="desk-v1-sb-example-chip" data-scene-example>Example</span> ' : `Scene ${n} · `}${esc(s.label)}</div>
          <div class="desk-v1-sb-line">${esc(s.line || '')}</div>`;
-    const del = _sb && _sb.standalone
+    const del = _sb && (_sb.standalone || _isLive())
       ? `<button type="button" class="desk-v1-sb-delete" data-scene-delete aria-label="Delete ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}" title="Delete this scene">🗑</button>`
       : '';
     return `<li class="desk-v1-sb-scene${ph ? ' desk-v1-sb-scene-example' : ''}" data-scene-id="${esc(s.id)}" data-scene-label="${esc(s.label)}"${ph ? ' data-scene-placeholder' : ''}>
       <button type="button" class="desk-v1-sb-handle" data-scene-handle aria-label="Move ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}. Arrow Up or Arrow Down reorders" title="Drag, or press Arrow Up / Arrow Down">⠿</button>
-      <div class="desk-v1-sb-thumb"><img src="${esc(s.thumb || '')}" alt="${ph ? 'Example capture' : 'Capture for scene ' + n}"><span class="desk-v1-sb-num" data-scene-num>${ph ? '·' : n}</span></div>
+      <div class="desk-v1-sb-thumb">${s.thumb || !_isLive() ? `<img src="${esc(s.thumb || '')}" alt="${ph ? 'Example capture' : 'Capture for scene ' + n}">` : ''}<span class="desk-v1-sb-num" data-scene-num>${ph ? '·' : n}</span></div>
       <div class="desk-v1-sb-body">
         ${title}
         <div class="desk-v1-sb-source">${esc(s.source || '')}</div>
@@ -353,6 +386,7 @@
       <div class="desk-v1-sb-meta">
         <span class="desk-v1-sb-dur">${esc(_mmss(s.durationSec || 0))}</span>
         <button type="button" class="desk-v1-sb-editbtn" data-scene-edit>${editing ? 'Done' : 'Edit'}</button>
+        ${_isLive() ? `<button type="button" class="desk-v1-sb-editbtn" data-scene-picture aria-label="${s.picture ? 'Replace' : 'Add'} the picture for ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}">${s.picture ? 'Replace picture' : 'Add picture'}</button>` : ''}
         ${del}
       </div>
     </li>`;
@@ -373,6 +407,8 @@
   // The standalone Render button and the note above the list read the real
   // scenes, not the sample rows.
   function _noScenesHTML(detail) {
+    if (_sb && _sb.loadError) return `<div class="desk-v1-camp-empty" data-sb-load-error>Could not load this storyboard: ${esc(_sb.loadError)}</div>`;
+    if (_isLive() && _sb && !detail.scenes.length) return `<div class="desk-v1-camp-empty" data-sb-no-scenes>No scenes yet. Add the first one below, then add its picture.</div>`;
     if (!(_sb && _sb.standalone) || _realScenes(detail).length) return '';
     const msg = detail.scenes.length
       ? 'No real scenes yet. The rows below are examples: edit one to make it a scene.'
@@ -414,6 +450,7 @@
             <ol class="desk-v1-sb-scenes" data-scenes aria-label="Scenes">${detail.scenes.map((s) => _sceneHTML(s, detail.scenes, _sb.editing === s.id)).join('')}</ol>
             ${_sb.standalone ? '<div class="desk-v1-sb-bin" data-sb-trash role="img" aria-label="Bin: drag a scene here to delete it" title="Drag a scene here to delete it"><span aria-hidden="true">🗑</span></div>' : ''}
           </div>
+          ${_isLive() && !_sb.loadError ? '<div class="desk-v1-sb-addrow"><button type="button" class="btn-secondary" data-scene-add>Add scene</button></div>' : ''}
         </div>
         <aside class="desk-v1-sb-agent" data-sb-agent>${_agentBoxHTML(ctx)}</aside>
       </div>
@@ -479,7 +516,7 @@
     if (idx < 0) return;
     const scene = detail.scenes[idx];
     _registerItem(ctx.fam);
-    DeskV1Kit.commandBus.run({
+    _sceneCmd(ctx, {
       label: `Deleted scene “${scene.label}”`,
       do: () => {
         const i = detail.scenes.indexOf(scene);
@@ -505,7 +542,7 @@
     const [moved] = after.splice(from, 1);
     after.splice(to, 0, moved);
     const label = arr[from].label;
-    DeskV1Kit.commandBus.run({
+    _sceneCmd(ctx, {
       label: `Moved scene “${label}”`,
       do: () => { apply(after); _paintScenes(`[data-scene-id="${fromId}"] [data-scene-handle]`); },
       undo: () => { apply(before); _paintScenes(); },
@@ -520,10 +557,51 @@
     const prev = { label: s.label, line: s.line, placeholder: !!s.placeholder };
     if (prev.label === patch.label && prev.line === patch.line) return;
     _registerItem(ctx.fam);
-    DeskV1Kit.commandBus.run({
+    _sceneCmd(ctx, {
       label: `Edited scene “${prev.label}”`,
       do: () => { s.label = patch.label; s.line = patch.line; s.placeholder = false; _paintScenes(); },
       undo: () => { s.label = prev.label; s.line = prev.line; s.placeholder = prev.placeholder; _paintScenes(); },
+    });
+  }
+
+  // Live only (R1-W S9a): a storyboard starts empty, so scenes are added by hand.
+  // The new scene opens in edit mode so it is named at once.
+  function _addScene() {
+    const ctx = _sbCtx();
+    if (!ctx) return;
+    const { detail } = ctx;
+    const scene = { id: 'sc-' + _uid(), label: 'New scene', line: '', durationSec: 3, edited: false, picture: null, thumb: '', source: '' };
+    _registerItem(ctx.fam);
+    _sceneCmd(ctx, {
+      label: 'Added a scene',
+      do: () => { detail.scenes.push(scene); if (_sb) _sb.editing = scene.id; _paintScenes(`[data-scene-id="${scene.id}"] [data-scene-edit-label]`); },
+      undo: () => {
+        const i = detail.scenes.findIndex((s) => s.id === scene.id);
+        if (i >= 0) detail.scenes.splice(i, 1);
+        if (_sb && _sb.editing === scene.id) _sb.editing = null;
+        _paintScenes();
+      },
+    });
+  }
+
+  // Live only: one picture for one scene. The file goes to the material library
+  // first (it is kept there even if the scene is later removed, so Undo can bring
+  // it back); the scene change is then an ordinary command.
+  async function _setScenePicture(sceneId, file) {
+    const ctx = _sbCtx();
+    const s = ctx && ctx.detail.scenes.find((x) => x.id === sceneId);
+    if (!s || !file) return;
+    let ref;
+    try { ref = await window.DeskV1Store.storyboard.uploadPicture(_sbOwner(), file); } catch (e) {
+      DeskV1Kit.toast(`The picture was not added: ${e && e.message ? e.message : e}`);
+      return;
+    }
+    const prev = { picture: s.picture || null, thumb: s.thumb || '' };
+    _registerItem(ctx.fam);
+    _sceneCmd(ctx, {
+      label: `${prev.picture ? 'Replaced' : 'Added'} the picture for “${s.label}”`,
+      do: () => { s.picture = ref; s.thumb = ref.src || ''; _paintScenes(); },
+      undo: () => { s.picture = prev.picture; s.thumb = prev.thumb; _paintScenes(); },
     });
   }
 
@@ -654,6 +732,15 @@
       });
       const del = li.querySelector('[data-scene-delete]');
       if (del) del.onclick = () => _deleteScene(id);
+      const pic = li.querySelector('[data-scene-picture]');
+      if (pic) pic.onclick = () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/png,image/jpeg,image/gif,image/webp';
+        input.setAttribute('data-scene-picture-input', '');
+        input.onchange = () => { if (input.files && input.files[0]) _setScenePicture(id, input.files[0]); };
+        input.click();
+      };
       const edit = li.querySelector('[data-scene-edit]');
       edit.onclick = () => {
         if (_sb.editing === id) {
@@ -675,6 +762,8 @@
     const ctx = _sbCtx();
     if (!ctx) return;
     el.querySelector('[data-sb-render]').onclick = _startRender;
+    const add = el.querySelector('[data-scene-add]');
+    if (add) add.onclick = _addScene;
     _wireScenes(el.querySelector('[data-scenes]'));
     if (_sb.standalone) _wireTimeline();
     _wireAgentBox(el.querySelector('[data-sb-agent]'), ctx);
@@ -685,6 +774,7 @@
     _sb = { el, campaignId: params.campaignId, familyId: params.familyId, editing: null, standalone: false };
     el.innerHTML = _sbHTML();
     _wireSb(el);
+    if (_isLive()) _loadBoard(_sb);
   }
 
   // ── Source bodies What opens (frames 15b, 16, 16c) ───────────────────────
@@ -1031,6 +1121,8 @@
     if (own) return own;
     const rec = (_studio().recent || []).find((r) => r.id === id);
     if (rec) return { id: rec.id, kind: rec.kind, title: rec.title, status: rec.status === 'rendered' ? 'saved' : 'draft', src: rec.src || null, path: null };
+    const b = _lib.boards.find((x) => x.id === id);
+    if (b) return { id: b.id, kind: 'video', title: b.title || 'New video', status: 'draft', render: null };
     const l = _lib.recent.find((r) => r.path === id);
     if (l) return { id: l.path, kind: l.kind, title: l.title, status: 'saved', src: l.src, path: l.path };
     return null;
@@ -1118,12 +1210,23 @@
       _wireSb(_sb.el);
       const mine = _sb;
       _loadGlobalAgents().then(() => { if (_sb === mine) _paintAgentBox(); });
+      // Live: an item Studio already made is read from the server once; a fresh
+      // draft has nothing saved yet.
+      if (_isLive() && _sc.needsLoad) { _sc.needsLoad = false; _loadBoard(mine); }
       const title = el.querySelector('[data-sc-title]');
       title.onchange = () => {
         const fam = _sc.item;
+        const prevTitle = fam.title;
         fam.title = title.value.trim() || 'New video';
         title.value = fam.title;
         _registerItem(fam);
+        if (_isLive() && fam.title !== prevTitle) {
+          window.DeskV1Store.storyboard.save(_sbOwner(), _sbCtx().detail, { title: fam.title }).catch((e) => {
+            fam.title = prevTitle;
+            title.value = prevTitle;
+            DeskV1Kit.toast(`The title was not saved: ${e && e.message ? e.message : e}`);
+          });
+        }
         if (typeof window.deskV1PatchParams === 'function') window.deskV1PatchParams({ itemId: fam.id });
       };
       return;
@@ -1224,7 +1327,7 @@
     params = params || {};
     const item = params.itemId ? _itemById(params.itemId) : null;
     const kind = item ? item.kind : (params.kind === 'video' ? 'video' : 'image');
-    _sc = { el, kind, item, productId: _defaultProduct(), source: null, card: { id: 'studio-create', ui: {} } };
+    _sc = { el, kind, item, productId: _defaultProduct(), source: null, card: { id: 'studio-create', ui: {} }, needsLoad: !!item && kind === 'video' };
     // A new video starts as an unregistered draft so its storyboard has an owner;
     // it joins Recent only once it is changed (see _registerItem).
     if (!item && kind === 'video') _sc.item = { id: 'studio-' + _uid(), kind: 'video', title: 'New video', status: 'draft', render: null };

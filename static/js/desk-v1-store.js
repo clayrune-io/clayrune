@@ -99,7 +99,9 @@
     let json = null;
     try { json = await res.json(); } catch (_) { /* a non-JSON body: fall through to the status text */ }
     if (!res.ok) {
-      throw new Error((json && (json.error || json.message)) || `HTTP ${res.status}`);
+      const err = new Error((json && (json.error || json.message)) || `HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
     }
     return json;
   }
@@ -197,5 +199,101 @@
     return { ok: true, result: null };
   }
 
-  window.DeskV1Store = { state, gate, load, run, write, api, live, demo };
+  // ── Storyboards (R1-W S9a = MC-1020) ──────────────────────────────────────
+  // A storyboard is persisted per OWNER, `{kind:'piece'|'studio', id}`: a video
+  // piece (shared by its versions) or a standalone Studio item. The server keeps
+  // the scene list whole and guards every write with a `rev` counter, so this
+  // side remembers the rev it last read or wrote per owner and sends it back; a
+  // stale one is a 409. Live mode only: demo mode never calls any of this.
+  //
+  // CLIENT scene  {id, label, line, durationSec, edited, picture, thumb, source}
+  // SERVER scene  {id, label, line, duration_sec, picture:{path,title,src}|null, edited}
+  // (`thumb` is the picture's src, `source` the demo capture label: not stored.)
+  const _sbRev = {};
+  const _sbChain = {};
+  function _sbKey(owner) { return `${owner.kind}:${owner.id}`; }
+  function _sbBase(owner) {
+    const id = encodeURIComponent(owner.id);
+    return owner.kind === 'studio' ? `/api/desk/studio/${id}/storyboard` : `/api/desk/pieces/${id}/storyboard`;
+  }
+  function _sceneIn(s) {
+    const pic = s.picture || null;
+    return { id: s.id, label: s.label, line: s.line || '', durationSec: s.duration_sec, edited: !!s.edited,
+      picture: pic, thumb: (pic && pic.src) || '', source: '' };
+  }
+  function _sceneOut(s) {
+    return { id: s.id, label: s.label, line: s.line || '', duration_sec: s.durationSec, edited: !!s.edited,
+      picture: s.picture ? { path: s.picture.path, title: s.picture.title } : null };
+  }
+  // Replace what `detail` holds with the server's board (and remember its rev).
+  function _sbAdopt(owner, detail, board) {
+    _sbRev[_sbKey(owner)] = board.rev || 0;
+    detail.scenes = (board.scenes || []).map(_sceneIn);
+    detail.pendingEdits = (board.pending_edits || []).map((p) => ({ id: p.id, label: p.label }));
+    return board;
+  }
+  async function sbLoad(owner, detail) {
+    return _sbAdopt(owner, detail, await api('GET', _sbBase(owner)));
+  }
+  // The whole list, serialized per owner so two quick changes never race on one
+  // rev. The body is built when the request RUNS, so a queued save carries the
+  // newest state. `extra` rides along (a Studio item's title).
+  function sbSave(owner, detail, extra) {
+    const key = _sbKey(owner);
+    const run = async () => {
+      const body = Object.assign({
+        rev: _sbRev[key] || 0,
+        scenes: (detail.scenes || []).filter((s) => !s.placeholder).map(_sceneOut),
+        pending_edits: (detail.pendingEdits || []).map((p) => ({ id: p.id, label: p.label })),
+      }, extra || {});
+      const board = await api('PUT', _sbBase(owner), body);
+      _sbRev[key] = board.rev;
+      return board;
+    };
+    const next = (_sbChain[key] || Promise.resolve()).then(run, run);
+    _sbChain[key] = next.catch(() => {});
+    return next;
+  }
+  // One scene picture up to the material library; the AssetRef comes back with
+  // its /api/serve-image src. The scene is changed by the caller's command.
+  function sbUploadPicture(owner, file) {
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+    return api('POST', `${_sbBase(owner)}/pictures`, fd);
+  }
+  // c: { owner, detail, label, do, undo, repaint, extra? }
+  //   do()/undo()  the local change and its inverse, each repainting (the same
+  //                pair the demo path hands commandBus).
+  //   repaint()    redraw after a resync.
+  // do() runs, then the whole list is PUT. A refusal brings the page back to
+  // the SERVER's list (a 409 means someone else changed it) and says so; if
+  // even that read fails the change is just un-done locally. A good write gets
+  // the bus's Undo toast, and the Undo is another PUT of the earlier list.
+  async function _sbSync(c, revert) {
+    try { await sbSave(c.owner, c.detail, c.extra ? c.extra() : undefined); return true; } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      let synced = false;
+      try { await sbLoad(c.owner, c.detail); synced = true; } catch (_) { /* server unreachable */ }
+      if (!synced) revert();
+      _toast(e && e.status === 409
+        ? `${c.label} was not saved: this storyboard was changed somewhere else. Showing the latest version; make the change again.`
+        : `${c.label} was not saved: ${msg}`);
+      if (typeof c.repaint === 'function') c.repaint();
+      return false;
+    }
+  }
+  async function sbCommand(c) {
+    c.do();
+    if (!(await _sbSync(c, c.undo))) return { ok: false };
+    const bus = window.DeskV1Kit && window.DeskV1Kit.commandBus;
+    const undo = async () => {
+      c.undo();
+      await _sbSync(Object.assign({}, c, { label: `Undoing “${c.label}”` }), c.do);
+    };
+    if (bus) bus.run({ label: c.label, do: () => {}, undo });
+    return { ok: true };
+  }
+
+  window.DeskV1Store = { state, gate, load, run, write, api, live, demo,
+    storyboard: { load: sbLoad, save: sbSave, uploadPicture: sbUploadPicture, command: sbCommand } };
 })();

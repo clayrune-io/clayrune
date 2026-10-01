@@ -404,6 +404,7 @@ def delete_piece(piece_id: str) -> bool:
             raise PieceError('this piece has a version that is sending or already sent '
                              f'({", ".join(sent)}); it cannot be deleted', 409)
         del pieces[piece_id]
+        store.get('storyboards', {}).pop(f'piece:{piece_id}', None)   # its storyboard (mc/desk_storyboard.py)
         _desk._write_store(store)
         return True
 

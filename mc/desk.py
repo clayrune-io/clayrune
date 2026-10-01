@@ -1846,6 +1846,7 @@ def delete_campaign(campaign_id: str) -> bool:
         pieces = store.get('pieces') or {}
         for pid in [k for k, p in pieces.items() if p.get('campaign_id') == campaign_id]:
             pieces.pop(pid, None)
+            store.get('storyboards', {}).pop(f'piece:{pid}', None)   # mc/desk_storyboard.py
         _write_store(store)
         return True
 
