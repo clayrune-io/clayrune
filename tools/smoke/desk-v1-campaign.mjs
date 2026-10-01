@@ -743,7 +743,8 @@ async function runPhoneLayout(browser) {
 // without throwing or printing "undefined"/"null"; ⑥ Launch carries a Project
 // select too (exactly one on the page), Start stays disabled until one is
 // picked, a pick goes through the commandBus (Undo reverts), and the picked
-// project's ceilings apply before Start. A project with no agent does not
+// project imposes no limit of its own (Presence retired, MC-977 2026-10-01: the
+// campaign's own limits are the only ones). A project with no agent does not
 // block Start. (The Agent picker itself is covered in desk-v1-how.mjs.) ─────
 async function runProjectSelect(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
@@ -820,12 +821,12 @@ async function runProjectSelect(browser) {
     ? ok(`R2-2g: Start is disabled until a project is picked ("${launch.missing.find((m) => /^Project/.test(m))}")`)
     : fail(`R2-2g: Launch not blocked on a missing project: ${JSON.stringify(launch)}`);
 
-  // Fill the plan by hand (accounts, cadence 3/wk, post cap) so the ceilings have something to check.
+  // Fill the plan by hand (accounts, cadence 3/wk, post cap) so a project's old ceilings would have something to refuse.
   await camp((c) => { c.plan.accounts = ['ch-x-ron']; c.plan.cadence.per_week = 3; c.plan.end = { date: null, post_cap: 12 }; });
   await rerender();
   await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
 
-  // Pick Engulfing scanner (x ceiling 2/wk, no desk agent): cadence 3 conflicts, Start stays disabled.
+  // Pick Engulfing scanner (it once capped x at 2/wk; no desk agent): the pick adds no limit, Start is enabled.
   await page.selectOption('[data-setup-project]', 'engulfing_scanner');
   await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
   const conflict = await page.evaluate(() => ({
@@ -837,9 +838,9 @@ async function runProjectSelect(browser) {
   (await pid()) === 'engulfing_scanner' && conflict.value === 'engulfing_scanner' && /Set campaign project to Engulfing scanner/.test(conflict.toast)
     ? ok(`R2-2g: picking a project on Launch sets camp.projectId and is a commandBus toast ("${conflict.toast.trim().slice(0, 60)}")`)
     : fail(`R2-2g: pick did not stick: ${JSON.stringify({ pid: await pid(), conflict })}`);
-  conflict.startDisabled && conflict.missing.some((m) => /cadence.*3\/wk is over Engulfing scanner's ceiling of 2\/wk/.test(m)) && !conflict.missing.some((m) => /^Project/.test(m))
-    ? ok(`R2-2g: after the pick the project's ceiling applies: "${conflict.missing.find((m) => /cadence/.test(m))}", Start still disabled`)
-    : fail(`R2-2g: ceiling conflict not shown after pick: ${JSON.stringify(conflict)}`);
+  !conflict.startDisabled && conflict.missing.length === 0
+    ? ok('R2-2g: after the pick the project imposes no cadence limit: the campaign\'s 3/wk stands, nothing missing, Start enabled')
+    : fail(`R2-2g: a project limit still applies after the pick: ${JSON.stringify(conflict)}`);
 
   // Undo reverts the pick: back to no project, Project listed again.
   await page.locator('.toast .toast-btn.primary').last().click();
@@ -849,12 +850,12 @@ async function runProjectSelect(browser) {
     ? ok('R2-2g: Undo reverts the Launch pick (camp.projectId null, select empty, conflict gone, project listed again)')
     : fail(`R2-2g: Undo did not revert: ${JSON.stringify({ pid: await pid(), undone })}`);
 
-  // Clayrune (x ceiling 3/wk): no conflict, Start enabled.
+  // Clayrune: no conflict, Start enabled.
   await page.selectOption('[data-setup-project]', 'clayrune');
   await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
   const okPick = await page.evaluate(() => ({ startDisabled: document.querySelector('[data-map-start-btn]').disabled, missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li, .desk-v1-launch-row[data-missing] .desk-v1-launch-val')).map((b) => b.textContent.trim()) }));
   (await pid()) === 'clayrune' && !okPick.startDisabled && okPick.missing.length === 0
-    ? ok('R2-2g: a project whose ceilings fit (Clayrune 3/wk) leaves nothing missing and enables Start')
+    ? ok('R2-2g: picking Clayrune leaves nothing missing and enables Start')
     : fail(`R2-2g: Clayrune pick wrong: ${JSON.stringify({ pid: await pid(), okPick })}`);
 
   // A project with NO agent (Engulfing scanner) must not block Start; the project-level label stays, no per-campaign picker.
