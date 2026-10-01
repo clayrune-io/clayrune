@@ -480,7 +480,7 @@ function _renderUsageBreakdownSection() {
     ? `<div class="ssp-hint-line ub-tpp-composition">Per point: ${[
         compPart('cache reads', comp.cache_read), compPart('cache writes', comp.cache_write),
         compPart('output', comp.output), compPart('fresh', comp.fresh)].filter(Boolean).join(' · ')}</div>
-       <div class="ssp-hint-line">This is what the volume is made of, not how the vendor weights each type — the data cannot separate those.</div>`
+       <div class="ssp-hint-line">This is what the volume is made of, not how the vendor weights each type. The data cannot separate those.</div>`
     : '';
   const tppHTML = tpp.status === 'ok'
     ? `<div class="ssp-row"><span class="ssp-k">Tokens per 1% (pooled rate)</span><span class="ssp-v">${_ubFmtTok(tppRate)} (p10 ${_ubFmtTok(tpp.p10)} · p90 ${_ubFmtTok(tpp.p90)}; ${tppSpan})</span></div>${compHTML}${tpp.note ? `<div class="ssp-hint-line">${esc(tpp.note)}</div>` : ''}`
