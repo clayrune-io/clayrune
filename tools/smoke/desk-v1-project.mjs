@@ -326,12 +326,16 @@ async function runPresenceCeilingClamp(browser) {
     ? ok(`presence: narrowing ch-x-ron to 2/wk applies at once and logs it: "${logLine.trim().slice(0, 80)}"`)
     : fail(`presence ceiling-narrow log wrong: ${JSON.stringify(logLine)}`);
 
+  // The summary strip no longer carries a cadence chip (dropped in 9eedc898,
+  // R2-11: it now holds only state + GOAL + CHANNELS). The clamp reads on the
+  // When stop's Cadence field, "≤ n/wk from <project>'s ceiling" (R2-9).
   await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
-  await page.waitForSelector('.desk-v1-campaign', { timeout: 4000 });
-  const chipsText = (await page.textContent('.desk-v1-camp-summary').catch(() => '') || '');
+  await page.evaluate(() => window.deskV1Nav('calendar', { campaignId: 'camp-1' }));
+  await page.waitForSelector('[data-cal-field-cadence]', { timeout: 4000 });
+  const chipsText = (await page.textContent('[data-cal-field-cadence]').catch(() => '') || '').trim();
   /≤2\/wk/.test(chipsText)
-    ? ok('presence: camp-1 chip clamps to "≤2/wk" from the lowered project ceiling')
-    : fail(`camp-1 chip not clamped: ${JSON.stringify(chipsText)}`);
+    ? ok(`presence: camp-1 When cadence clamps to "≤2/wk" from the lowered project ceiling: "${chipsText}"`)
+    : fail(`camp-1 cadence not clamped: ${JSON.stringify(chipsText)}`);
 
   reportUncaught(pageErrors, '[presence-ceiling-clamp]');
   await ctx.close();

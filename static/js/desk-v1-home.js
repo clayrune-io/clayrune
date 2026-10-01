@@ -401,6 +401,12 @@
     if (pieces.length) buckets.push({ kind: 'piece', versionId: pieces[0], text: `${pieces.length} piece${pieces.length === 1 ? '' : 's'} to approve` });
     if (videos.length) buckets.push({ kind: 'video', versionId: videos[0], text: `${videos.length} video${videos.length === 1 ? '' : 's'} to watch` });
     if (replies.length) buckets.push({ kind: 'reply', conversationId: replies[0].id, text: `${replies.length} repl${replies.length === 1 ? 'y' : 'ies'} waiting` });
+    // R2-15 (§10.4, §11.5 Q2): a closed term's retro with findings to confirm is
+    // this campaign's pill, not a second Home line. desk-v1-retro.js owns the
+    // count (undefined until that file loads); it is 0 once every finding is
+    // decided, so the pill goes away on the last Confirm/Reject.
+    const toConfirm = typeof window.deskV1RetroFindingsToConfirm === 'function' ? window.deskV1RetroFindingsToConfirm(camp.id) : 0;
+    if (toConfirm > 0) buckets.push({ kind: 'retro', text: `Retro ready: ${toConfirm} finding${toConfirm === 1 ? '' : 's'} to confirm` });
     if (!buckets.length) return null;
     const top = buckets[0];
     const extra = buckets.length - 1;
@@ -536,7 +542,8 @@
     const { needsyouKind, campaignId, projectId, versionId, conversationId } = ds;
     if (needsyouKind === 'piece') { deskV1HomeGotoReview(campaignId, versionId); return; }
     if (projectId) deskV1Nav('project', { projectId });
-    deskV1Nav('campaign', { campaignId, projectId: projectId || null });
+    // 'retro' lands on ① Goal, where the Retro section and its findings live.
+    deskV1Nav('campaign', needsyouKind === 'retro' ? { campaignId, projectId: projectId || null, panel: 'goal' } : { campaignId, projectId: projectId || null });
     if (needsyouKind === 'video') deskV1Nav('video', { campaignId, versionId });
     else if (needsyouKind === 'reply') deskV1Nav('conversations', { campaignId, conversationId });
     // 'held' / 'blocker': the campaign page itself is where that reason renders.

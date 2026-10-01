@@ -7,7 +7,7 @@
  * assertions across all three tones. T8's job is the two things no single
  * ticket owns:
  *
- *   PART A — aggregate: re-run all 12 existing Desk smokes and require every
+ *   PART A — aggregate: re-run every other Desk smoke (R2-13: 21 of them) and require every
  *   one green. This is the actual regression gate a "R0 exit" needs after
  *   7 lanes' worth of sequential merges (CLAUDE.md 2026-09-10: run smokes
  *   after EACH merge, not just the last one) — T8 runs last, so it is the
@@ -37,7 +37,7 @@
  *
  * RUN
  *   cd tools/smoke && node desk-v1-exit.mjs
- * Exit 0 = all 12 existing smokes green AND every PART B sweep holds;
+ * Exit 0 = every other Desk smoke green AND every PART B sweep holds;
  * 1 = something regressed. Also writes
  * docs/desk_v1/screens/exit_greyscale_<route>.png (default tone).
  */
@@ -140,6 +140,10 @@ const OTHER_SMOKES = [
   'desk-v1-calendar.mjs', 'desk-v1-video.mjs', 'desk-v1-conversations.mjs',
   'desk-v1-engagement.mjs',
   'desk-v1-results.mjs', 'desk.mjs', 'boot-smoke.mjs',
+  // R2-13: the smokes that own the map's stops and the playbook loop. Each
+  // runs its own 3-tone passes (how, where, studio, retro, project/Playbook).
+  'desk-v1-how.mjs', 'desk-v1-where.mjs', 'desk-v1-studio.mjs',
+  'desk-v1-retro.mjs', 'desk-v1-project.mjs', 'desk-v1-presence-readvia.mjs',
   'desk-v1-journey.mjs',
 ];
 
@@ -152,7 +156,13 @@ function runOtherSmokes() {
     const passed = r.status === 0;
     results.push({ file: f, passed, lastLine, status: r.status });
     if (passed) ok(`${f}: exit 0 — "${lastLine}"`);
-    else fail(`${f}: exit ${r.status} — "${lastLine}"`);
+    else {
+      fail(`${f}: exit ${r.status} — "${lastLine}"`);
+      // A smoke can print "All checks passed." and still exit 1 on a thrown
+      // error (stderr), so name the error rather than only the last stdout line.
+      const errTail = (r.stderr || '').trim().split(String.fromCharCode(10)).slice(0, 8).join(' | ');
+      if (errTail) console.log(`    stderr: ${errTail.slice(0, 600)}`);
+    }
   }
   return results;
 }
@@ -200,6 +210,26 @@ const SURFACES = [
     nav: async (page) => page.evaluate(() => window.deskV1Nav('conversations', { campaignId: 'camp-1' })) },
   { key: 'results', label: 'Results (camp-1)', wait: '.desk-v1-results',
     nav: async (page) => page.evaluate(() => window.deskV1Nav('results', { campaignId: 'camp-1' })) },
+  // R2-13: every stop of the map (camp-1, Active), the closed-term Retro, the
+  // Studio, and a project page whose Playbook holds confirmed findings.
+  { key: 'map-how', label: 'Map ① Brief (camp-1)', wait: '.desk-v1-how',
+    nav: async (page) => page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1', panel: 'how' })) },
+  { key: 'map-goal', label: 'Map ② Goal (camp-1)', wait: '.desk-v1-results',
+    nav: async (page) => page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1', panel: 'goal' })) },
+  { key: 'map-what', label: 'Map ③ What (camp-1)', wait: '[data-what-list]',
+    nav: async (page) => page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1', panel: 'what' })) },
+  { key: 'map-where', label: 'Map ④ Where (camp-1)', wait: '.desk-v1-where[data-where]',
+    nav: async (page) => page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1', panel: 'where' })) },
+  { key: 'map-when', label: 'Map ⑤ When (camp-1)', wait: '.desk-v1-calendar',
+    nav: async (page) => page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1', panel: 'when' })) },
+  { key: 'map-launch', label: 'Map ⑥ Launch (camp-1)', wait: '.desk-v1-launch-row',
+    nav: async (page) => page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1', panel: 'launch' })) },
+  { key: 'retro', label: 'Retro, closed term (camp-archived-1)', wait: '[data-retro-section]',
+    nav: async (page) => page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-archived-1', panel: 'goal' })) },
+  { key: 'studio', label: 'Studio', wait: '[data-studio]',
+    nav: async (page) => page.evaluate(() => window.deskV1Nav('studio', {})) },
+  { key: 'playbook', label: 'Project Playbook (clayrune)', wait: '.desk-v1-playbook-camplink',
+    nav: async (page) => page.evaluate(() => window.deskV1Nav('project', { projectId: 'clayrune' })) },
   { key: 'campaign-proposed', label: 'Campaign (camp-2, Proposed)', wait: '.desk-v1-rules-proposed',
     nav: async (page) => page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-2' })) },
   { key: 'start-sheet', label: 'Start sheet (camp-2)', wait: '.desk-v1-rules-sheet',
@@ -213,7 +243,7 @@ async function runA1AndA12Sweep(browser) {
     const { ctx, page, pageErrors } = await newBootedPage(browser, tone);
     for (const s of SURFACES) {
       await s.nav(page);
-      await page.waitForSelector(s.wait, { timeout: 8000 }).catch(() => {});
+      await page.waitForSelector(s.wait, { timeout: 8000 }).catch(() => fail(`[${tone.name}] surface "${s.label}" never rendered ${s.wait} (a sweep over a blank page proves nothing)`));
 
       const svgPaths = await page.$$eval('.modal-window[data-modal-id="__desk"] svg path', (els) => els.length);
       if (svgPaths === 0) ok(`[${tone.name}] A1: "${s.label}" has no SVG connector paths`);
@@ -239,7 +269,7 @@ async function runA15Sweep(browser) {
     const { ctx, page, pageErrors } = await newBootedPage(browser, tone);
     for (const s of SURFACES) {
       await s.nav(page);
-      await page.waitForSelector(s.wait, { timeout: 8000 }).catch(() => {});
+      await page.waitForSelector(s.wait, { timeout: 8000 }).catch(() => fail(`[${tone.name}] surface "${s.label}" never rendered ${s.wait} (a sweep over a blank page proves nothing)`));
 
       const labels = await page.$$eval('.modal-window[data-modal-id="__desk"] .desk-v1-state-label', (els) =>
         els.map((el) => ({
