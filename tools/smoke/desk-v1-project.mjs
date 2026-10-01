@@ -441,6 +441,72 @@ async function runNextPostAcrossCampaigns(browser) {
   await ctx.close();
 }
 
+// ── Batch 2 (Ron, phone: "I still don't see an easy way to delete a draft
+// campaign"): Draft project cards carry a visible ⋯ › Delete draft; the
+// campaign page shows a plain 'Discard draft' beside the state chip. Both reuse
+// deskV1DeleteDraftCampaign + its Undo; non-draft campaigns get neither. ─────
+async function runDraftDiscoverability(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+  const pick = await page.evaluate(() => {
+    const cs = window.DeskV1Fixtures.campaigns;
+    const mine = cs.filter((c) => c.projectId === 'clayrune' && c.state !== 'archived');
+    const d = mine.find((c) => c.state === 'active') || mine[0];
+    d.state = 'draft';
+    const other = mine.find((c) => c !== d);
+    return { draftId: d.id, otherId: other && other.id, otherState: other && other.state, n: cs.length };
+  });
+
+  await page.evaluate(() => window.deskV1Nav('project', { projectId: 'clayrune' }));
+  await page.waitForSelector('.desk-v1-project-camp-card', { timeout: 4000 });
+  const cards = await page.evaluate((p) => ({
+    draftHas: !!document.querySelector(`.desk-v1-project-camp-card[data-campaign-id="${p.draftId}"] [data-draft-more]`),
+    otherHas: p.otherId ? !!document.querySelector(`.desk-v1-project-camp-card[data-campaign-id="${p.otherId}"] [data-draft-more]`) : false,
+  }), pick);
+  if (cards.draftHas && !cards.otherHas) ok('Batch 2: only the Draft project card carries a ⋯');
+  else fail(`Batch 2: project-card ⋯ wrong: ${JSON.stringify(cards)}`);
+
+  await page.click(`.desk-v1-project-camp-card[data-campaign-id="${pick.draftId}"] [data-draft-more]`);
+  await page.waitForSelector('.desk-v1-camp-cardmenu [data-menu-delete-draft]', { timeout: 4000 });
+  const stillProject = await page.evaluate(() => !!document.querySelector('.desk-v1-project') && !document.querySelector('.desk-v1-campaign'));
+  if (stillProject) ok('Batch 2: ⋯ on a project card opens the menu without opening the campaign');
+  else fail('Batch 2: ⋯ click navigated into the campaign');
+  await page.click('.desk-v1-camp-cardmenu [data-menu-delete-draft]');
+  const gone = await page.evaluate((p) => ({ card: !!document.querySelector(`.desk-v1-project-camp-card[data-campaign-id="${p.draftId}"]`), n: window.DeskV1Fixtures.campaigns.length, onProject: !!document.querySelector('.desk-v1-project') }), pick);
+  if (!gone.card && gone.n === pick.n - 1 && gone.onProject) ok('Batch 2: project card ⋯ › Delete draft removes the card and the campaign, stays on the project');
+  else fail(`Batch 2: project-card delete wrong: ${JSON.stringify(gone)}`);
+  await page.locator('.toast-action').last().locator('.toast-btn.primary').click();
+  await page.waitForSelector(`.desk-v1-project-camp-card[data-campaign-id="${pick.draftId}"]`, { timeout: 4000 });
+  const restored = await page.evaluate(() => window.DeskV1Fixtures.campaigns.length);
+  if (restored === pick.n) ok('Batch 2: Undo restores the deleted draft card');
+  else fail(`Batch 2: Undo did not restore: ${restored} vs ${pick.n}`);
+
+  // Campaign page: 'Discard draft' beside the state chip.
+  await page.evaluate((id) => window.deskV1Nav('campaign', { campaignId: id, projectId: 'clayrune', panel: 'what' }), pick.draftId);
+  await page.waitForSelector('[data-discard-draft]', { timeout: 4000 });
+  const hdr = await page.evaluate(() => { const b = document.querySelector('[data-discard-draft]'); const pill = document.querySelector('.desk-v1-map-pill'); const br = b.getBoundingClientRect(); const pr = pill.getBoundingClientRect(); return { text: b.textContent.trim(), sameRow: Math.abs((br.top + br.bottom) / 2 - (pr.top + pr.bottom) / 2) < 30, visible: br.width > 0 && br.height > 0 }; });
+  if (hdr.text === 'Discard draft' && hdr.sameRow && hdr.visible) ok('Batch 2: campaign page shows a plain "Discard draft" beside the state chip');
+  else fail(`Batch 2: Discard draft wrong: ${JSON.stringify(hdr)}`);
+  await page.click('[data-discard-draft]');
+  await page.waitForSelector('.desk-v1-home-board', { timeout: 4000 });
+  const dn = await page.evaluate(() => window.DeskV1Fixtures.campaigns.length);
+  if (dn === pick.n - 1) ok('Batch 2: Discard draft deletes the campaign and returns Home');
+  else fail(`Batch 2: Discard draft left ${dn} campaigns (want ${pick.n - 1})`);
+  await page.locator('.toast-action').last().locator('.toast-btn.primary').click();
+  await page.waitForFunction((n) => window.DeskV1Fixtures.campaigns.length === n, pick.n, { timeout: 4000 }).then(() => ok('Batch 2: Undo after Discard draft restores the campaign'), () => fail('Batch 2: Undo after Discard draft did not restore'));
+
+  // Non-draft campaign page: no Discard action (Archive/Delete stay behind their confirm).
+  if (pick.otherId) {
+    await page.evaluate((id) => window.deskV1Nav('campaign', { campaignId: id, projectId: 'clayrune', panel: 'what' }), pick.otherId);
+    await page.waitForSelector('.desk-v1-map-tabs', { timeout: 4000 });
+    const nd = await page.evaluate(() => !!document.querySelector('[data-discard-draft]'));
+    if (!nd) ok(`Batch 2: a ${pick.otherState} campaign has no Discard draft (Archive/Delete keep their confirm)`);
+    else fail(`Batch 2: a ${pick.otherState} campaign shows Discard draft`);
+  }
+
+  reportUncaught(pageErrors, '[draft-discoverability]');
+  await ctx.close();
+}
+
 // ── IA6 — archived campaigns, unreachable since IA1 removed Home's archived
 // section, are reachable again via a project-page toggle; `More › Restore`
 // puts one back on the live campaign grid. ─────────────────────────────────
@@ -665,6 +731,7 @@ try {
   await runPresenceAddAccountConfirm(browser);
   await runProjectPauseResume(browser);
   await runNextPostAcrossCampaigns(browser);
+  await runDraftDiscoverability(browser);
   await runArchivedToggleRestore(browser);
   await runPlaybookGroups(browser);
   await runPlaybookCampaignLink(browser);

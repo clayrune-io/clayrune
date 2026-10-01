@@ -470,15 +470,9 @@
 /* R2-3b: Draft rows only — trash at the row's right edge, out of the column
    grid so the shared header still lines up; the row reserves room for it. */
 .desk-v1-home-row[data-state="draft"] { position: relative; padding-right: 52px; }
-.desk-v1-home-row-trash {
-  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
-  display: flex; align-items: center; justify-content: center; width: 32px; height: 32px;
-  background: none; border: 1px solid transparent; border-radius: 7px;
-  color: var(--text-faint); cursor: pointer; padding: 0;
-}
-.desk-v1-home-row-trash:hover, .desk-v1-home-row-trash:focus-visible {
-  color: var(--red-text, #c0392b); background: var(--surface3); border-color: var(--border2);
-}
+.desk-v1-home-row .desk-v1-home-row-more { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); }
+.desk-v1-home-row-more .desk-v1-camp-card-morebtn { font-size: 20px; padding: 4px 10px; color: var(--text-muted, var(--text-faint)); border: 1px solid var(--border2); border-radius: 7px; background: var(--surface); }
+.desk-v1-home-row-more .desk-v1-camp-card-morebtn:hover, .desk-v1-home-row-more .desk-v1-camp-card-morebtn:focus-visible { color: var(--text); background: var(--surface3); }
 .desk-v1-home-row:hover { background: var(--surface2); }
 .desk-v1-home-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .desk-v1-home-row-title { font-size: 13.5px; font-weight: 700; color: var(--text); }
@@ -2945,7 +2939,7 @@ button.desk-v1-because-chip { color: var(--accent-soft); font-weight: 600; curso
   .desk-v1-projects-picker { display: inline-flex; align-items: center; }
   /* G-6 / M-3: icon-only buttons (ⓘ 18px wide, ⋯ 21-30px wide) get a 44px square. */
   .desk-v1-info-btn, .desk-v1-camp-card-morebtn, .desk-v1-posy-send-arrow, .desk-v1-cal-navbtn,
-  .desk-v1-home-hold-fix, .desk-v1-home-row-trash { min-width: 44px; }
+  .desk-v1-home-hold-fix { min-width: 44px; }
   .desk-v1-info-btn, .desk-v1-camp-card-morebtn { display: inline-flex; align-items: center; justify-content: center; padding-left: 0; padding-right: 0; }
   /* P-2 on the 700-960 band: the header buttons lost their 44px with the phone stack */
   .desk-v1-project-pause-btn, .desk-v1-project-presence-btn { min-height: 44px; }
@@ -3011,4 +3005,21 @@ button.desk-v1-because-chip { color: var(--accent-soft); font-weight: 600; curso
 @media (max-width: 960px) {
   .desk-v1-where-msg-kind, .desk-v1-where-pill, .desk-v1-where-source-plat, .desk-v1-where-plat { font-size: 11px; }
   .desk-v1-where-avatar-badge { font-size: 10px; min-width: 16px; height: 16px; line-height: 14px; }
+}
+
+/* Draft delete discoverability (batch 2, Ron from phone): a ⋯ on Draft project
+   cards and a plain 'Discard draft' text action beside the campaign page's
+   state chip. */
+.desk-v1-project-camp-card { position: relative; }
+.desk-v1-project-camp-more { position: absolute; top: 6px; right: 6px; }
+.desk-v1-project-camp-more .desk-v1-camp-card-morebtn { font-size: 20px; padding: 4px 10px; border: 1px solid var(--border2); border-radius: 7px; background: var(--surface); }
+.desk-v1-project-camp-card:has(.desk-v1-project-camp-more) .desk-v1-project-camp-top { padding-right: 52px; }
+.desk-v1-map-discard {
+  background: none; border: none; padding: 0 4px; font: inherit; font-size: 12.5px; font-weight: 600;
+  color: var(--text-muted, var(--text-faint)); text-decoration: underline; cursor: pointer; flex: 0 0 auto;
+}
+.desk-v1-map-discard:hover, .desk-v1-map-discard:focus-visible { color: var(--red-text, #c0392b); }
+@media (max-width: 640px) {
+  .desk-v1-map-discard { order: 1; min-height: 44px; padding: 0 8px; }
+  .desk-v1-map-more { order: 2; }
 }

@@ -352,7 +352,9 @@
     const host = triggerEl.parentElement;
     const existing = host.querySelector(':scope > .desk-v1-camp-cardmenu');
     if (existing) { existing.remove(); return; }
-    host.style.position = 'relative';
+    // Only anchor a static host: a host the caller already positioned (Home's
+    // absolute ⋯ wrapper) must stay where it is or the button jumps.
+    if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
     const prePublish = _isPrePublish(camp);
     const menu = document.createElement('div');
     menu.className = 'desk-v1-camp-cardmenu';
@@ -492,25 +494,32 @@
     const moreHTML = camp.state === 'draft'
       ? `<div class="desk-v1-camp-card-more desk-v1-map-more"><button type="button" class="desk-v1-camp-card-morebtn" data-camp-more-btn aria-haspopup="menu" aria-label="More actions">&#8942;</button></div>`
       : '';
+    // Batch 2 (Ron, phone): the lone ⋮ read as dead space, so a Draft also
+    // carries a plain 'Discard draft' text action beside the state chip. Same
+    // deskV1DeleteDraftCampaign + Undo as the menu item; no new delete path.
+    const discardHTML = camp.state === 'draft'
+      ? `<button type="button" class="desk-v1-map-discard" data-discard-draft>Discard draft</button>` : '';
     el.innerHTML = `
       <div class="desk-v1-map-tabs" role="tablist">
         ${DeskV1Kit.stateLabelHTML(camp.state, { className: 'desk-v1-map-pill' })}
+        ${discardHTML}
         <div class="desk-v1-map-stops">${stopsHTML}</div>
         ${moreHTML}
       </div>`;
     el.querySelectorAll('[data-stop]').forEach((btn) => {
       btn.onclick = () => _gotoMapStop(camp, btn.getAttribute('data-stop'));
     });
+    const afterDraftAction = (result) => {
+      if (result === 'deleted' && typeof window.deskV1PopTo === 'function') window.deskV1PopTo('home');
+      else if (typeof window.deskV1Render === 'function') window.deskV1Render();
+    };
     const moreBtn = el.querySelector('[data-camp-more-btn]');
     if (moreBtn) moreBtn.onclick = (e) => {
       e.stopPropagation();
-      deskV1OpenCampaignMoreMenu(moreBtn, camp.id, {
-        onDone: (result) => {
-          if (result === 'deleted' && typeof window.deskV1PopTo === 'function') window.deskV1PopTo('home');
-          else if (typeof window.deskV1Render === 'function') window.deskV1Render();
-        },
-      });
+      deskV1OpenCampaignMoreMenu(moreBtn, camp.id, { onDone: afterDraftAction });
     };
+    const discardBtn = el.querySelector('[data-discard-draft]');
+    if (discardBtn) discardBtn.onclick = (e) => { e.stopPropagation(); deskV1DeleteDraftCampaign(camp.id, afterDraftAction); };
     // ≤960px the stops scroll sideways (desk-v1.css); a tab strip rebuilt on
     // every stop change would snap back to the first stop, so recentre the
     // current one (frame 10: "current stop in view").
