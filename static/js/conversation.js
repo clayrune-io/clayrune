@@ -2257,6 +2257,11 @@ function _isNoiseConvoRow(c, opts) {
   const AGENT_TRIGGERS = new Set(['schedule', 'hivemind_worker', 'hivemind_orchestrator', 'hivemind', 'auto', 'housekeeping']);
   const AGENT_SOURCES = new Set(['agent', 'api', 'cron']);  // programmatic dispatch → side flow
   if (_isStewardConvo(c)) return false;
+  // A human typed into a scheduled/steward thread (server `_mark_human_joined`,
+  // display-only): it is their chat now. Measured 2026-10-01 — Ron's Vector
+  // chat inside the 9am '[Brand inbox watch]' run vanished from Chats after a
+  // restart, because this gate dropped every trigger_type 'schedule' row.
+  if (c.human_joined) return false;
   if (opts && opts.channel && c.character && (c.trigger_type || '') === 'schedule') return false;
   if (AGENT_TRIGGERS.has(c.trigger_type || '')) return true;
   // MC-938 Phase 0: a persona dispatched without a browser Origin gets
@@ -2353,6 +2358,9 @@ function _userInitiatedConvos(projectId, includeHidden) {
       label: _lu, last_user: _lu, first_user: _fu,
       status: e.status || 'completed', turns: e.num_turns || 0,
       ts_relative: e.ts_relative || e.ts || '', trigger_type: e.trigger_type || '',
+      // Same reasoning as `trigger_type`: the noise gate keys on this, so an
+      // aged-out human-joined scheduled chat must carry it or it is dropped.
+      human_joined: !!e.human_joined,
       mtime: Date.parse(e.ts || e.started_at || '') / 1000 || 0,
       source: e.source || '', live: false,
       resumable: !!(csid || (psid && caps.supports_session_resume)),

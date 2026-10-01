@@ -1336,7 +1336,13 @@ def _backfill_agent_log_from_transcripts(project_id, project):
     max_age_days = int(CONFIG.get('agent_log_backfill_max_age_days', 60))
     cutoff_ts = _time.time() - max_age_days * 86400
 
-    transcripts = _recent_claude_transcripts(pp, limit=max_n)
+    # exclude_transforms: Scribe/condense/Distiller one-shots run with
+    # cwd=project_path, so each writes a transcript here. Measured 2026-10-01:
+    # 466 of drop_shipping_company's 500 log rows were exactly those, imported
+    # as synthesized "chats" and pushing every real conversation past the
+    # `agent_log_max_entries` cap (oldest survivor 2026-09-25). They were also
+    # the newest files, so they filled `max_n` before any real chat was seen.
+    transcripts = _recent_claude_transcripts(pp, limit=max_n, exclude_transforms=True)
     if not transcripts:
         return 0
 
