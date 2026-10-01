@@ -218,6 +218,19 @@
 @media (max-width: 960px) {
   .desk-v1-camp-main { flex-direction: column; }
   .desk-v1-camp-rightcol { flex: 0 0 auto; }
+  /* MC-977 mobile P-1: three fixed columns made 89px-wide campaign cards (one
+     title wrapped to 3-4 lines, ~235px tall each). auto-fill with a 240px floor
+     gives 1 column at 290-358px and still 3 at the 884px fold. */
+  .desk-v1-project-camps { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  /* P-2: header = name + state on line 1, the two actions share line 2 as
+     equal 44px single-line buttons (were 74x62 / 83x47, "Pause project" on 4 lines). */
+  .desk-v1-project-header { flex-wrap: wrap; row-gap: 8px; }
+  .desk-v1-project-name { min-width: 0; overflow-wrap: anywhere; }
+  .desk-v1-project-header-actions { flex: 1 1 100%; margin-left: 0; }
+  .desk-v1-project-pause-btn, .desk-v1-project-presence-btn {
+    flex: 1 1 0; min-width: 0; min-height: 44px; white-space: nowrap;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
 }
 
 /* ── T0b: shared kit (vocabulary, state label, channel badge, toast+Undo,
