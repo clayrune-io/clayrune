@@ -122,8 +122,7 @@
   // §7 v1 / §8 Q3 ("out of v1; Engagement shows `Replies: drafted for your
   // review`"): per-project banner off `project.presence.replies` so an
   // empty Sent lane never reads as broken, and "automated responses" reads
-  // as visibly off. Same copy rule as desk-v1-presence.js's own
-  // `_repliesCopy` — kept as its own copy here (not a shared export), same
+  // as visibly off. Kept as its own copy here (not a shared export), same
   // reasoning as the LANES duplication above. Shown only once a single
   // project is in scope — "per project" has nothing to say for "all".
   function _repliesBannerCopy(replies) {
