@@ -2864,3 +2864,89 @@ button.desk-v1-because-chip { color: var(--accent-soft); font-weight: 600; curso
 @media (max-width: 960px) {
   button.desk-v1-because-chip { min-height: 44px; padding: 0 12px; }
 }
+
+/* ── MC-977 mobile batch 2 (docs/desk_v1/MOBILE_REVIEW_2026-10.md "Batch 2") ──
+   Everything here is <=960px / <=640px; desktop (>=1024px) is untouched. One
+   section, last in the file, so it wins on order and a merge touches one hunk. */
+
+/* S-1: the Undo toast must never sit on a primary action. While the Desk is
+   open and a toast is up, the shell stops 56px above the toast row (toast is
+   one fixed-height line, 52px, above the tab bar), so Brief's "Next: Goal ›"
+   and every other bottom CTA scroll above it instead of under it. */
+@media (max-width: 960px) {
+  body:has(.modal-window[data-modal-id="__desk"]) .toast.toast-action {
+    min-height: 52px; box-sizing: border-box; padding-top: 4px; padding-bottom: 4px;
+  }
+  body:has(.modal-window[data-modal-id="__desk"]) .toast-action .toast-msg {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  body:has(#toast-container .toast-action) .modal-window[data-modal-id="__desk"] .desk-v1-shell { margin-bottom: 58px; }
+}
+
+/* M-1 stepper: six stops of 58px = 348px overflowed a 314px stepper, so Launch
+   was cut ("Lau"). On phone the stops share the row equally (52px each at 344),
+   no sideways scroll, nothing clipped. */
+@media (max-width: 640px) {
+  .desk-v1-map-stops { overflow: visible; }
+  .desk-v1-map-stop { flex: 1 1 0; min-width: 0; padding-left: 0; padding-right: 0; }
+  .desk-v1-map-stop-word { font-size: 11px; letter-spacing: -0.01em; }
+}
+
+/* WT-7 filter chips: one row, never two. A segmented control whose visible pill
+   is 30px tall while each hit area stays 44px (the pill is a ::before, the button
+   keeps min-height). Falls back to a sideways scroll if the words ever outgrow it. */
+@media (max-width: 640px) {
+  .desk-v1-what-filters { flex-wrap: nowrap; gap: 0; overflow-x: auto; scrollbar-width: none; }
+  .desk-v1-what-filters::-webkit-scrollbar { display: none; }
+  .desk-v1-what-filter {
+    position: relative; flex: 1 0 auto; background: none; border: none; border-radius: 0;
+    padding: 0 12px; white-space: nowrap; min-height: 44px;
+  }
+  .desk-v1-what-filter::before {
+    content: ''; position: absolute; inset: 7px 2px; border-radius: 999px; z-index: -1;
+    background: var(--surface2); border: 1px solid var(--border2);
+  }
+  .desk-v1-what-filter[aria-pressed="true"] { background: none; }
+  .desk-v1-what-filter[aria-pressed="true"]::before { background: var(--accent-dim); border-color: var(--accent); }
+  .desk-v1-what-filters { isolation: isolate; }
+}
+
+/* WT-6 piece cards: kind label column + title offset left a ~60px empty band at
+   the left, and an always-reserved 15px result line plus the wrapped ⋯ row left
+   another above the button. On phone the card is kind label (11px, above the
+   title), title, "on N channels", status -- stacked at content height -- with the
+   ⋯ tucked into the top-right corner instead of a row of its own. */
+@media (max-width: 640px) {
+  .desk-v1-what-row {
+    display: flex; flex-direction: column; align-items: stretch; flex-wrap: nowrap;
+    position: relative; gap: 4px; padding: 10px 12px;
+  }
+  .desk-v1-what-row .desk-v1-what-kind { flex: 0 0 auto; padding: 0 44px 0 0; font-size: 11px; line-height: 1.2; }
+  .desk-v1-what-row .desk-v1-what-main { flex: 0 0 auto; padding-right: 44px; gap: 2px; }
+  /* the title keeps its 44px hit area; it overlaps the (pointer-transparent) kind and
+     channels lines above and below instead of adding 2 x 12px of empty band */
+  .desk-v1-what-row .desk-v1-what-title { padding: 0; margin: -10px 0; position: relative; }
+  .desk-v1-what-row .desk-v1-what-kind, .desk-v1-what-row .desk-v1-what-on { pointer-events: none; }
+  .desk-v1-what-row .desk-v1-camp-card-result:empty { display: none; }
+  .desk-v1-what-row .desk-v1-what-status { flex: 0 0 auto; }
+  .desk-v1-what-row .desk-v1-camp-card-more { position: absolute; top: 0; right: 0; }
+}
+
+/* Touch targets (<=960px). The review found 100+ controls under 44px across the
+   shared form styles, Posy box, calendar, Presence and Review. One rule for the
+   class, then the few shapes where a bare min-height would wrap a label. */
+@media (max-width: 960px) {
+  .desk-v1-shell button, .desk-v1-shell select, .desk-v1-shell summary,
+  .desk-v1-shell input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]) {
+    min-height: 44px; box-sizing: border-box;
+  }
+  /* G-5 Back / crumb: 26px tall everywhere; the piece page's bare "‹" was 26x26. */
+  .desk-v1-back { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; }
+  .desk-v1-projects-picker { display: inline-flex; align-items: center; }
+  /* G-6 / M-3: icon-only buttons (ⓘ 18px wide, ⋯ 21-30px wide) get a 44px square. */
+  .desk-v1-info-btn, .desk-v1-camp-card-morebtn, .desk-v1-posy-send-arrow, .desk-v1-cal-navbtn,
+  .desk-v1-home-hold-fix, .desk-v1-home-row-trash { min-width: 44px; }
+  .desk-v1-info-btn, .desk-v1-camp-card-morebtn { display: inline-flex; align-items: center; justify-content: center; padding-left: 0; padding-right: 0; }
+  /* P-2 on the 700-960 band: the header buttons lost their 44px with the phone stack */
+  .desk-v1-project-pause-btn, .desk-v1-project-presence-btn { min-height: 44px; }
+}
