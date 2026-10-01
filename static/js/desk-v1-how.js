@@ -122,7 +122,7 @@
           ${project
             ? `<button type="button" class="desk-v1-how-suggest-btn" data-how-suggest>${esc(SUGGEST_TEXT)}</button>
           <div class="desk-v1-rules-hint">Writes draft suggestions into What, When and Where — nothing is committed until you accept it there.</div>`
-            : '<div class="desk-v1-rules-hint" data-how-no-agent>No agent yet — pick a project above, then an agent. Until then, fill in What, When and Where by hand.</div>'}
+            : '' /* MC-977 S-2: the "No agent yet" note lives once, in the campaign thread head (desk-v1-campaign.js) */}
         </div>
       </div>`;
 
