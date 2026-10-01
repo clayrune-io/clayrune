@@ -2396,10 +2396,48 @@
   /* The board scrolls sideways (frame 7b is desktop-only; no where-mobile
      frame). Every card is already a 44px-tall target; the small controls get
      a full tap size here. */
-  .desk-v1-where-msgs, .desk-v1-where-col { flex-basis: 78vw; }
   .desk-v1-where-colremove { width: 44px; height: 44px; font-size: 14px; }
   .desk-v1-where-connect { min-height: 44px; }
-  .desk-v1-where-source { width: calc(33% - 8px); min-width: 92px; min-height: 44px; }
+  .desk-v1-where-source { min-height: 44px; }
+
+  /* MC-977 mobile WH-1: Messages and every channel column were each 78vw in ONE
+     sideways-scrolling row, with Messages sticky at left -- so Messages was 90-93%
+     of the board, a channel column showed 10-35px beside it, and at 50% scroll
+     only 22px of one column showed: you could never see a column and drop onto it
+     at once. On phone the board is a STACK instead: Messages on top (list capped
+     at ~24vh, so it is a bounded strip, not the whole screen), each channel
+     column full-width beneath it. Chosen over a 45/55 side-by-side split because
+     at 290-358px that leaves Messages 130-160px wide (the message cards wrap to
+     3-4 lines) and one column 150px wide -- unreadable -- while the stack gives
+     both full width, and the first column starts inside the same screen as
+     Messages so a drag can still land. Tap (the Add-to menu) is the path for any
+     column further down: pointer-drag has no auto-scroll. */
+  .desk-v1-where-board { flex-direction: column; align-items: stretch; overflow-x: visible; gap: 10px; }
+  .desk-v1-where-msgs, .desk-v1-where-col { flex: 0 0 auto; width: auto; position: static; }
+  .desk-v1-where-msglist { max-height: clamp(140px, 24vh, 220px); }
+
+  /* WH-2: the SOURCES palette was 7 tiles of 92x114-161 (2 per row) with 31 text
+     elements at 9-10.5px. Now two compact 44px+ rows-of-two: avatar left, handle
+     and platform stacked beside it, every label >= 11px. */
+  .desk-v1-where-sources-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .desk-v1-where-source {
+    width: auto; min-width: 0; padding: 8px 10px;
+    display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; row-gap: 0;
+    align-items: center; text-align: left;
+  }
+  .desk-v1-where-source > .desk-v1-where-avatar { grid-row: 1 / span 2; }
+  .desk-v1-where-source-handle { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal; }
+  .desk-v1-where-source > .desk-v1-where-preview,
+  .desk-v1-where-source > .desk-v1-where-connect { grid-column: 1 / -1; justify-self: start; }
+  .desk-v1-where-msg-kind, .desk-v1-where-pill, .desk-v1-where-source-plat, .desk-v1-where-plat, .desk-v1-where-preview { font-size: 11px; }
+  .desk-v1-where-avatar-badge { font-size: 10px; min-width: 16px; height: 16px; line-height: 14px; }
+  /* WH-3: the "Preview · not connected" pill wrapped to 2-3 lines inside a source
+     tile. One line, short form ("Preview") inside the tile; the full text stays on
+     its title and wherever the pill sits on its own (What's create head). */
+  .desk-v1-where-source .desk-v1-where-preview { white-space: nowrap; font-size: 0; padding: 0; }
+  .desk-v1-where-source .desk-v1-where-preview::after {
+    content: attr(data-short); font-size: 11px; display: inline-block; padding: 0 7px;
+  }
 }
 
 /* Frame 7b shows the board at full width with no agent box beside it. */
