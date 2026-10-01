@@ -689,11 +689,11 @@ try {
     /2 session\(s\) ran on more than one model/.test(text)
       ? ok('mixed-model sessions noted under the model ranking')
       : fail(`mixed-session hint missing from: ${text.slice(0, 900)}`);
-    (/~2\.2 average agent turns per 1% \(~220 per full window\)/.test(text)
-      && /Turns vary 42x \(p10 150\.0k to p90 6\.27M tokens\); a short reply costs far less, about 6\.8 typical turns per 1%\./.test(text))
+    (/~2\.2 agent messages per 1% on average \(~220 per full window\)/.test(text)
+      && /Messages vary 42x in size \(most between 150\.0k and 6\.27M tokens\)\. Quick questions cost far less: about 6\.8 typical messages per 1%\. Long builds cost more\./.test(text))
       ? ok('turns per 1%: average-turn line + spread/typical-turn hint render from the payload')
       : fail(`turns-per-point lines missing from: ${text.slice(Math.max(0, text.indexOf("Per point")), text.indexOf("Per point") + 700)}`);
-    /\u2014/.test(text.slice(text.indexOf('average agent turns'), text.indexOf('typical turns per 1%') + 20))
+    /\u2014/.test(text.slice(text.indexOf('agent messages per 1%'), text.indexOf('typical messages per 1%') + 20))
       ? fail('em-dash in the turns-per-point text') : ok('turns-per-point text has no em-dash');
     const shot = resolve(REPO_ROOT, '_scratch', 'mc998-token-accounting-report-dark.png');
     await page.screenshot({ path: shot, fullPage: true });
@@ -713,7 +713,7 @@ try {
     };
     const { ctx, page } = await openMobileModal(browser, TOKEN_FIXTURE_ROWS, WINDOWS_FIXTURE);
     const surfaceText = await page.$eval('#usage-report-surface', (el) => el.textContent);
-    /~2\.2 average agent turns per 1% \(~220 per full window\)/.test(surfaceText) && /about 6\.8 typical turns per 1%/.test(surfaceText)
+    /~2\.2 agent messages per 1% on average \(~220 per full window\)/.test(surfaceText) && /about 6\.8 typical messages per 1%/.test(surfaceText)
       ? ok('phone: turns-per-point lines render (shared tppHTML)')
       : fail(`phone turns-per-point lines missing from: ${surfaceText.slice(0, 700)}`);
     const cardText = await page.$eval('.ub-cards', (el) => el.textContent);
