@@ -3,9 +3,9 @@
 //
 // Minimal IA1 build: header (name + state), campaign cards scoped to this
 // project (subject-glyph per §1's wireframe), and a project-scoped Needs-you
-// list. Presence settings (⚙) itself is a later ticket (§5: IA3, IA1's own
-// row only asks for the `presence` route as a stub) — this file only wires
-// the ⚙ button to that stub route so the affordance exists.
+// list. The header's agent button is the project's default planner (the one
+// project-level setting left; the Presence screen it used to live on is
+// retired, MC-977 2026-10-01).
 // IA2 (§4 T3 row, §1 wireframe "Posy box scoped About: <project>"): the
 // project-level Posy box, keyed `project:<pid>:project` so a draft/ask
 // started here is a distinct entry from any campaign/review/video scope
@@ -520,6 +520,41 @@
     deskV1RenderProject(el, params);
   }
 
+  // ── Default planner: who plans and drafts for this project when a campaign
+  // names none of its own (`presence.desk_agent`, PATCHed through to the
+  // backend; the fixture is mutated too so the page stays deterministic
+  // without a live server). The roster is every installed agent. ──────────
+  function _agentLabel(p) {
+    const r = DeskV1Kit.resolveDeskAgent(DeskV1Kit.deskAgentRef({ project: p }));
+    return r.name ? `${r.avatar ? r.avatar + ' ' : ''}${r.name}` : DeskV1Kit.UNRESOLVED_AGENT_LABEL;
+  }
+  let _agentList = null; // [{ref, name, avatar}], fetched once
+  function _fetchAgentList(cb) {
+    if (_agentList) { cb(_agentList); return; }
+    fetch('/api/characters').then((r) => r.json()).then((list) => {
+      _agentList = (list || []).map((c) => ({ ref: `${c.scope || 'global'}:${c.name}`, name: c.agent_name || c.display_name || c.name, avatar: c.avatar || '' }));
+      cb(_agentList);
+    }).catch(() => { _agentList = []; cb(_agentList); });
+  }
+  function _bindAgentPicker(el, p) {
+    const btn = el.querySelector('[data-project-agent]');
+    if (!btn || !p) return;
+    DeskV1Kit.onAgentsReady(() => { if (btn.isConnected) btn.textContent = _agentLabel(p); });
+    _fetchAgentList((list) => {
+      DeskV1Kit.bindAddToTrigger(btn, () => list.map((a) => ({ id: a.ref, label: `${a.avatar ? a.avatar + ' ' : ''}${a.name}` })), (ref) => {
+        const picked = list.find((a) => a.ref === ref);
+        p.presence = p.presence || {};
+        p.presence.desk_agent = ref;
+        fetch(`/api/desk/presence/${encodeURIComponent(p.id)}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ desk_agent: ref }),
+        }).catch(() => { /* fixture already applied; the backend call is best-effort in v1 */ });
+        DeskV1Kit.toast(`${picked ? picked.name : ref} now plans for ${p.name}.`);
+        deskV1RenderProject(el, { projectId: p.id });
+      }, { noAppendNew: true });
+    });
+  }
+
   function deskV1RenderProject(el, params) {
     const projectId = (params || {}).projectId;
     const p = _project(projectId);
@@ -534,7 +569,7 @@
             ${paused
               ? `<button type="button" class="desk-v1-project-pause-btn" data-resume-project-btn>&#9654; Resume project</button>`
               : `<button type="button" class="desk-v1-project-pause-btn" data-pause-project-btn>&#9208; Pause project</button>`}
-            <button type="button" class="desk-v1-project-presence-btn">&#9881; Presence</button>
+            <button type="button" class="desk-v1-project-agent-btn" data-project-agent>${esc(_agentLabel(p))}</button>
           </div>
         </div>
         <div class="desk-v1-project-nextpost-wrap" id="desk-v1-project-nextpost"></div>
@@ -569,8 +604,7 @@
     _renderNeedsYou(projectId);
     _renderEngagementStrip(projectId);
     _renderPosyBox(projectId, p);
-    const presenceBtn = el.querySelector('.desk-v1-project-presence-btn');
-    if (presenceBtn) presenceBtn.onclick = () => deskV1Nav('presence', { projectId });
+    _bindAgentPicker(el, p);
     const pauseBtn = el.querySelector('[data-pause-project-btn]');
     if (pauseBtn) pauseBtn.onclick = () => _pauseProject(projectId, el, params);
     const resumeBtn = el.querySelector('[data-resume-project-btn]');
