@@ -257,18 +257,14 @@
     _closeOverlay();
 
     const project = _project(camp.projectId);
-    // IA2 §3 row 20 (fixtures comment, desk-v1-fixtures.js): `plan.accounts`
-    // is bare channel ids since the T1 `plan.destinations[].account`/`.voice`
-    // shape was retired in favor of the project's own `presence.accounts[]`
-    // — no fixture has ever written `plan.destinations` (verified against
-    // camp-1/camp-3), so the old read here always showed "—" for Accounts.
-    // Resolve the label AND per-account voice through that same seam.
+    // `plan.accounts` is bare channel ids (workspace accounts); the voice each
+    // speaks in on this campaign comes from `DeskV1Kit.accountVoice`.
     const pickedChannels = (plan.accounts || []).map(_channel).filter(Boolean);
     const dests = (plan.accounts || []).map((chId) => {
       const ch = _channel(chId);
       const label = ch ? ch.label : chId;
-      const acct = ((project && project.presence && project.presence.accounts) || []).find((a) => a.channel_id === chId);
-      return acct && acct.voice ? `${label} (${acct.voice})` : label;
+      const voice = DeskV1Kit.accountVoice(plan, ch);
+      return voice ? `${label} (${voice})` : label;
     });
     const datesLabel = plan.end && (plan.end.date
       ? `Ends ${_fmtDateLong(plan.end.date)}`
@@ -280,14 +276,6 @@
       ? window.deskV1LaunchMissing(camp, project)
       : DeskV1Kit.validatePlan(plan, project);
     const eff = validity.effective;
-    // IA4 (§5 row IA4 acceptance: "inherited rows labelled 'from <project>'")
-    // — a presentation-only flag desk-v1-setup.js's step 2 stamps on the plan
-    // when it defaulted a bound from the project, distinct from
-    // `_effectiveCadence`'s own clamp-comparison flag (which stays false
-    // when a campaign's own value already equals the ceiling it inherited,
-    // as a freshly-drafted plan's does) — never a second validator/clamp,
-    // purely which label this sheet prints beside an already-computed value.
-    const inherited = plan._inheritedFields || {};
     // §5 IA4 acceptance ("zero connected accounts completes via '✋ You
     // publish it'"): when every picked account is manual-capability (no
     // account here can be posted to via API), there is nothing for Posy to
@@ -297,7 +285,6 @@
     const auth = {
       accounts: dests,
       frequencyPerWeek: eff.cadence_per_week,
-      frequencyFromProject: eff.cadence_from_project || !!inherited.cadence,
       dates: datesLabel,
       // §3 row 7: review mode is retired with no replacement — every piece
       // needs approval (§8 position), so the Start sheet no longer names it.
@@ -310,29 +297,21 @@
       // own, so this stays "—" unless there's a real end bound to name.
       stopConditions: _stopConditionsLabel(plan),
     };
-    const fromSuffix = ` · from ${project ? project.name : 'project'}`;
-
-    // §2.3 row 3: "inherited rows marked `from <project>` and a `Change for
-    // the project ›` link" — each row below that carries an inherited flag
-    // gets the link, opening IA3's Presence page for the campaign's own
-    // project (the same route desk-v1-project.js's own Presence button uses).
     const rows = [
-      ['Accounts', (auth.accounts || []).length ? (auth.accounts.join(', ') + (inherited.accounts ? fromSuffix : '')) : '—', !!inherited.accounts],
-      ['Frequency ceiling', auth.frequencyPerWeek != null
-        ? `Up to ${auth.frequencyPerWeek} a week${auth.frequencyFromProject ? fromSuffix : ''}`
-        : '—', !!auth.frequencyFromProject || !!inherited.cadence],
-      ['Dates', auth.dates ? (auth.dates + (inherited.end ? fromSuffix : '')) : '—', !!inherited.end],
-      ['Replies', auth.replies || '—', false],
-      ['Paid', auth.paid || 'Off', false],
-      ['Generation limits', auth.generationLimits || '—', false],
-      ['Stop conditions', auth.stopConditions || '—', false],
+      ['Accounts', (auth.accounts || []).length ? auth.accounts.join(', ') : '—'],
+      ['Frequency ceiling', auth.frequencyPerWeek != null ? `Up to ${auth.frequencyPerWeek} a week` : '—'],
+      ['Dates', auth.dates || '—'],
+      ['Replies', auth.replies || '—'],
+      ['Paid', auth.paid || 'Off'],
+      ['Generation limits', auth.generationLimits || '—'],
+      ['Stop conditions', auth.stopConditions || '—'],
     ];
 
     // §2.3 row 3: `validatePlan` ok is required to start — Confirm is
     // disabled until every plan bound resolves, and the sheet names each
     // missing one with the map stop that fixes it (R2-3b: the IA4 "step n"
     // numbering is gone with the setup steps; kit.js `missing[].stop`).
-    const _stopWord = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+    const _stopWord = (s) => (DeskV1Kit.MAP_STOP_WORDS[s] || s.charAt(0).toUpperCase() + s.slice(1));
     const missingLabel = validity.missing.map((m) => `${m.label} (${m.stop ? _stopWord(m.stop) : `step ${m.step}`})`).join(', ');
     // R2-2g: the project is picked at Launch, so a not-yet-started campaign
     // without one can't be confirmed from here either (this sheet is also
@@ -352,7 +331,7 @@
       <div class="desk-v1-rules-sheet" role="dialog" aria-modal="true" aria-label="Start campaign">
         <div class="desk-v1-rules-sheet-title">Start “${esc(camp.plan.title)}”</div>
         <div class="desk-v1-rules-sheet-body">
-          ${rows.map(([label, val, isInherited]) => `<div class="desk-v1-rules-authrow"><span class="desk-v1-rules-authrow-label">${esc(label)}</span><span class="desk-v1-rules-authrow-val">${esc(val)}</span>${isInherited ? ' <button type="button" class="desk-v1-rules-changeproject-link" data-change-project>Change for the project ›</button>' : ''}</div>`).join('')}
+          ${rows.map(([label, val]) => `<div class="desk-v1-rules-authrow"><span class="desk-v1-rules-authrow-label">${esc(label)}</span><span class="desk-v1-rules-authrow-val">${esc(val)}</span></div>`).join('')}
         </div>
         <div class="desk-v1-rules-sheet-note">${noteHTML}</div>
         <div class="desk-v1-rules-sheet-actions">
@@ -361,10 +340,6 @@
         </div>
       </div>`;
     shell.appendChild(wrap);
-
-    wrap.querySelectorAll('[data-change-project]').forEach((link) => {
-      link.onclick = () => { close(); deskV1Nav('presence', { projectId: camp.projectId }); };
-    });
 
     // Capture phase, not bubble: index.html's own boot-time Escape handler
     // (`focusedModalId` -> closeModalById) is a bubble-phase listener on

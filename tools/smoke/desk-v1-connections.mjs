@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 /**
- * Desk v1 (MC-977 R1-E part 2) — Presence "Read via" control.
+ * Desk v1 (MC-977, Presence retired 2026-10-01) — the Connections screen.
  *
- * Each X / LinkedIn account on the Presence page carries a segmented control:
- * Browser pane (free, the default) | X API (paid, ~$0.005 per read). Asserts:
+ * The one place anything external is connected, reached from the Desk header.
+ * Social accounts: every workspace account with a status and a Connect /
+ * Reconnect button; each X / LinkedIn account carries the "Read via" segmented
+ * control (R1-E): Browser pane (free, the default) | X API (paid, ~$0.005 per
+ * read). Generation engines is a placeholder heading only. Asserts:
+ *   - every workspace account is listed with a status word, the not-connected
+ *     Reddit account offers Connect, the lapsed LinkedIn page offers Reconnect;
+ *   - Where's "Connect" and Studio's online "Connect Dropbox" route here;
  *   - X and LinkedIn accounts show the control, the blog account does not;
  *   - the default is the browser pane (aria-pressed) with no stored choice;
  *   - clicking X API PATCHes /api/desk/presence/<p>/accounts/<ch>/read with
@@ -11,12 +17,13 @@
  *   - a coverage gap from the server is shown verbatim (never silenced);
  *   - a refused save (the server says no) shows its error and leaves the choice;
  *   - the profile input PATCHes browser_profile;
- *   - the control fits at 390 wide (no horizontal overflow).
- * Screenshots: docs/desk_v1/screens/presence_readvia_{1440,390}.png
+ *   - a stored choice survives leaving the screen and coming back;
+ *   - the screen fits at 344 wide (no horizontal overflow).
+ * Screenshots: docs/desk_v1/screens/retire_presence/connections_{1440,344}.png
  *
  * Hermetic: real index.html + static/, every /api route mocked, no real account.
  *
- * RUN  cd tools/smoke && node desk-v1-presence-readvia.mjs
+ * RUN  cd tools/smoke && node desk-v1-connections.mjs
  */
 import { readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -30,7 +37,7 @@ const CSS_DIR = resolve(REPO_ROOT, 'static', 'css');
 const ASSETS_DIR = resolve(REPO_ROOT, 'assets');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const ORIGIN = 'http://mc.smoke.test';
-const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
+const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens', 'retire_presence');
 mkdirSync(SHOT_DIR, { recursive: true });
 
 const MIME = { '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
@@ -84,8 +91,10 @@ async function fulfill(route) {
   return route.abort();
 }
 
-async function openPresence(browser, viewport) {
-  const ctx = await browser.newContext({ viewport });
+async function openConnections(browser, viewport) {
+  // A phone-width run must be a touch device too: `.modal-content` only drops its
+  // 380px desktop min-width under `(pointer: coarse)`, as on a real phone.
+  const ctx = await browser.newContext({ viewport, ...(viewport.width < 600 ? { hasTouch: true, isMobile: true } : {}) });
   const page = await ctx.newPage();
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
@@ -94,10 +103,8 @@ async function openPresence(browser, viewport) {
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
-  await page.click('.desk-v1-home-block-name[data-project-id="clayrune"]');
-  await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
-  await page.click('.desk-v1-project-presence-btn');
-  await page.waitForSelector('.desk-v1-presence-account-row', { timeout: 4000 });
+  await page.click('.desk-v1-home-connections-btn');
+  await page.waitForSelector('[data-connections] [data-conn-account]', { timeout: 4000 });
   return { ctx, page, pageErrors };
 }
 
@@ -108,7 +115,22 @@ async function run(browser) {
   // -- 1440: control, default, click, coverage, refusal, profile ----------------
   srv.coverage = [{ platform: 'x', state: 'not_connected', via: 'pane',
                     message: 'Not connected (sign in to X in the browser pane)' }];
-  const { ctx, page, pageErrors } = await openPresence(browser, { width: 1440, height: 900 });
+  const { ctx, page, pageErrors } = await openConnections(browser, { width: 1440, height: 900 });
+
+  // -- the screen itself: accounts, statuses, Connect, placeholder --------------
+  const listed = await page.$$eval('[data-conn-account]', (els) => els.map((e) => [e.dataset.connAccount, e.dataset.connState]));
+  const state = Object.fromEntries(listed);
+  check(listed.length === 7 && state['ch-x-ron'] === 'ok' && state['ch-li-page'] === 'reauth' && state['ch-reddit'] === 'off'
+        && state['ch-yt-clayrune'] === 'preview',
+        `all ${listed.length} workspace accounts listed with a status (${JSON.stringify(state)})`, `accounts wrong: ${JSON.stringify(listed)}`);
+  const btns = await page.$$eval('[data-conn-action]', (els) => Object.fromEntries(els.map((e) => [e.dataset.connAction, e.textContent.trim()])));
+  check(btns['ch-reddit'] === 'Connect' && btns['ch-li-page'] === 'Reconnect' && btns['ch-x-ron'] === 'Reconnect' && !('ch-yt-clayrune' in btns),
+        `Connect on the not-connected account, Reconnect on the others, none on a preview one (${JSON.stringify(btns)})`, `buttons wrong: ${JSON.stringify(btns)}`);
+  const engines = await page.$eval('[data-conn-section="engines"]', (e) => e.textContent.trim());
+  check(engines === 'Generation engines', 'Generation engines is a placeholder heading only', `engines section wrong: ${JSON.stringify(engines)}`);
+  await page.click('[data-conn-action="ch-reddit"]');
+  await page.waitForFunction(() => (document.querySelector('[data-conn-account="ch-reddit"]') || {}).dataset.connState === 'preview', null, { timeout: 4000 });
+  ok('Connect takes Reddit out of Not connected (it stays Preview: nothing is authenticated in R0)');
 
   const rows = await page.$$eval('[data-readvia-row]', (els) => els.map((e) => e.dataset.platform));
   // Every X/LinkedIn account gets one (R2-10's fixture added a second X account);
@@ -128,7 +150,7 @@ async function run(browser) {
   const gap = await page.$eval('[data-readvia-row="ch-x-ron"] [data-readvia-status]', (e) => e.textContent.trim());
   check(gap === 'Not connected (sign in to X in the browser pane)',
         `the server's coverage gap is shown verbatim: "${gap}"`, `gap text wrong: ${JSON.stringify(gap)}`);
-  await page.screenshot({ path: resolve(SHOT_DIR, 'presence_readvia_1440.png') });
+  await page.screenshot({ path: resolve(SHOT_DIR, 'connections_1440.png') });
 
   srv.coverage = [{ platform: 'x', state: 'not_connected', via: 'api', message: 'Not connected (no API token)' }];
   await page.click('[data-readvia-row="ch-x-ron"] [data-readvia="api"]');
@@ -166,6 +188,15 @@ async function run(browser) {
   check(last.body && last.body.browser_profile === 'x-main',
         'typing a profile name PATCHes browser_profile', `profile PATCH wrong: ${JSON.stringify(last)}`);
 
+  // A stored choice survives leaving the screen and coming back.
+  await page.click('[data-readvia-row="ch-x-ron"] [data-readvia="api"]');
+  await page.waitForFunction(() => (document.querySelector('[data-readvia-row="ch-x-ron"] [aria-pressed="true"]') || {}).dataset.readvia === 'api', null, { timeout: 4000 });
+  await page.evaluate(() => window.deskV1Nav('home', {}));
+  await page.waitForSelector('.desk-v1-home-connections-btn', { timeout: 4000 });
+  await page.click('.desk-v1-home-connections-btn');
+  await page.waitForSelector('[data-readvia-row="ch-x-ron"]', { timeout: 4000 });
+  check(await pressed(page, 'ch-x-ron') === 'api', 'the Read via choice persists across leaving and re-opening the screen', `choice lost: ${await pressed(page, 'ch-x-ron')}`);
+
   const li = await page.$eval('[data-readvia-row="ch-li-page"] [data-readvia="api"]', (b) => b.textContent.trim());
   check(li === 'LinkedIn API (paid)' && !(await page.$('[data-readvia-row="ch-li-page"] [data-readvia-profile]')),
         'LinkedIn: API option reads "LinkedIn API (paid)", no profile input (no pane reader yet)',
@@ -175,21 +206,21 @@ async function run(browser) {
   uncaught.forEach((e) => fail(`uncaught page error: ${e}`));
   await ctx.close();
 
-  // -- 390: no overflow, screenshot ---------------------------------------------
+  // -- 344: no overflow, screenshot ---------------------------------------------
   srv.coverage = [{ platform: 'x', state: 'not_connected', via: 'pane',
                     message: 'Not connected (sign in to X in the browser pane)' }];
-  const m = await openPresence(browser, { width: 390, height: 844 });
+  const m = await openConnections(browser, { width: 344, height: 760 });
   await m.page.waitForSelector('[data-readvia-row="ch-x-ron"]', { timeout: 4000 });
   await m.page.$eval('[data-readvia-row="ch-x-ron"]', (e) => e.scrollIntoView({ block: 'center' }));
   const over = await m.page.evaluate(() => {
-    const seg = document.querySelector('[data-readvia-row="ch-x-ron"] .desk-v1-presence-readvia-seg');
+    const seg = document.querySelector('[data-readvia-row="ch-x-ron"] .desk-v1-conn-readvia-seg');
     const r = seg.getBoundingClientRect();
     return { right: r.right, vw: window.innerWidth, doc: document.documentElement.scrollWidth };
   });
   check(over.right <= over.vw && over.doc <= over.vw,
-        `390px: control fits (right ${Math.round(over.right)} <= ${over.vw}, scrollWidth ${over.doc})`,
-        `390px overflow: ${JSON.stringify(over)}`);
-  await m.page.screenshot({ path: resolve(SHOT_DIR, 'presence_readvia_390.png') });
+        `344px: control fits (right ${Math.round(over.right)} <= ${over.vw}, scrollWidth ${over.doc})`,
+        `344px overflow: ${JSON.stringify(over)}`);
+  await m.page.screenshot({ path: resolve(SHOT_DIR, 'connections_344.png') });
   await m.ctx.close();
 }
 

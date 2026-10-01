@@ -333,11 +333,15 @@ async function run(browser) {
     : fail(`Where: message drag placed nothing in ${srcChannel}`);
   await page.screenshot({ path: resolve(SHOT_DIR, 'r2_13_journey_where_1440.png') });
 
-  // ── When: set the term, drag an own slot ─────────────────────────────────
+  // ── Brief owns the term now (Presence retired); When only places time ────
+  await gotoStop(page, 'how');
+  await page.waitForSelector('[data-how-limit="end_date"]', { timeout: 8000 });
+  await page.fill('[data-how-limit="end_date"]', iso(new Date(Date.now() + 60 * DAY)));
+  await page.$eval('[data-how-limit="end_date"]', (el) => el.dispatchEvent(new Event('change', { bubbles: true })));
+
+  // ── When: drag an own slot ───────────────────────────────────────────────
   await gotoStop(page, 'when');
   await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
-  await page.fill('[data-cal-field-end]', iso(new Date(Date.now() + 60 * DAY)));
-  await page.$eval('[data-cal-field-end]', (el) => el.dispatchEvent(new Event('change', { bubbles: true })));
   const dayKeys = await page.$$eval('.desk-v1-cal-row-slots .desk-v1-cal-slotcell', (els) => els.map((e) => e.dataset.dayKey));
   const cellSel = `.desk-v1-cal-row-slots .desk-v1-cal-slotcell[data-day-key="${dayKeys[4]}"]`;
   await drag(page, '[data-slot-handle]', cellSel);

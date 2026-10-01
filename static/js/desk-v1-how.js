@@ -39,34 +39,37 @@
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id) || null; }
   function _project(id) { return (_fx().projects || []).find((p) => p.id === id) || null; }
 
-  function _budgetSourceLabel(source) {
-    if (source === 'project') return 'Project earmark';
-    if (source === 'own') return 'Own budget';
-    return 'None';
+  // Limits (MC-977 2026-10-01, Presence retired): cadence, min gap, end date,
+  // post cap and budget are the campaign's own and are edited here, nowhere
+  // else. There is no project pool, so a budget is just an amount; a stored
+  // `source: 'project'` (the retired earmark) reads as the same amount.
+  function _budgetHint(how) {
+    return how.budget.source !== 'none'
+      ? `Up to $${how.budget.amount || 0} for this campaign. A raise widens what's approved; a lower amount does not restore an already-widened approval.`
+      : 'No budget set. Spend is capped only by the derived ceiling (posts × link rate).';
   }
 
-  // §11.3 item 2 pool line: "$<amount> / term earmarked from <project>'s
-  // $<pool>/<period> budget · $<remaining> remaining for other campaigns"
-  // (amended row R2-6, mockup frame 4). `remaining` is the project's pool
-  // minus every OTHER live campaign's own project-source earmark under the
-  // same project, minus THIS campaign's own amount — what's left for a
-  // campaign that isn't this one. Only meaningful for `source: 'project'`.
-  function _budgetPoolLine(camp, how, project) {
-    const pool = project && project.presence && project.presence.budget;
-    if (!pool) return null;
-    const others = (_fx().campaigns || [])
-      .filter((c) => c.id !== camp.id && c.projectId === camp.projectId && c.how && c.how.budget && c.how.budget.source === 'project')
-      .reduce((sum, c) => sum + (c.how.budget.amount || 0), 0);
-    const amount = how.budget.amount || 0;
-    const remaining = (pool.amount || 0) - others - amount;
-    return `$${amount} / term earmarked from ${esc(project.name)}'s $${pool.amount}/${esc(pool.period)} budget · $${remaining} remaining for other campaigns`;
-  }
-
-  function _budgetHint(camp, how, project) {
-    if (how.budget.source === 'project') {
-      return _budgetPoolLine(camp, how, project) || `${_budgetSourceLabel(how.budget.source)} · $${how.budget.amount || 0}.`;
-    }
-    return `${_budgetSourceLabel(how.budget.source)}${how.budget.source !== 'none' ? ` · $${how.budget.amount || 0}` : ''}. A raise (or None → Own → Project) widens what's approved; a lower amount does not restore an already-widened approval.`;
+  function _limitsHTML(camp) {
+    const plan = camp.plan || {};
+    const cad = plan.cadence || {};
+    const end = plan.end || {};
+    const endDate = end.date || (camp.term && camp.term.ends) || '';
+    const how = camp.how;
+    return `
+          <div class="desk-v1-how-card" data-how-limits-card>
+            <div class="desk-v1-how-card-title">Limits</div>
+            <div class="desk-v1-rules-inlinerow">Up to <input type="number" min="0" max="30" class="desk-v1-rules-numinput" data-how-limit="per_week" value="${esc(cad.per_week != null ? cad.per_week : '')}" placeholder="—"> posts a week</div>
+            <div class="desk-v1-rules-inlinerow">At least <input type="number" min="0" max="72" class="desk-v1-rules-numinput" data-how-limit="min_gap_h" value="${esc(cad.min_gap_h != null ? cad.min_gap_h : '')}" placeholder="—"> hours apart</div>
+            <div class="desk-v1-rules-inlinerow">Ends <input type="date" class="desk-v1-rules-textinput" data-how-limit="end_date" value="${esc(endDate)}"></div>
+            <div class="desk-v1-rules-inlinerow">Or after <input type="number" min="0" class="desk-v1-rules-numinput" data-how-limit="post_cap" value="${esc(end.post_cap != null ? end.post_cap : '')}" placeholder="none"> posts</div>
+            <div class="desk-v1-how-field-label">Budget (optional)</div>
+            <div class="desk-v1-how-budget-toggle" role="group" aria-label="Budget">
+              <button type="button" data-how-budget-btn="none" aria-pressed="${how.budget.source === 'none'}">None</button>
+              <button type="button" data-how-budget-btn="own" aria-pressed="${how.budget.source !== 'none'}">Set an amount</button>
+            </div>
+            ${how.budget.source !== 'none' ? `<div class="desk-v1-rules-inlinerow">$<input type="number" min="0" class="desk-v1-rules-numinput" data-how-budget-amount value="${esc(how.budget.amount || 0)}"></div>` : ''}
+            <div class="desk-v1-rules-hint" data-how-budget-hint>${esc(_budgetHint(how))}</div>
+          </div>`;
   }
 
   function deskV1RenderHow(el, params) {
@@ -75,6 +78,7 @@
     camp.how = camp.how || { strategy: '', angle: '', never_claim: '', agent: null, budget: { source: 'none' } };
     const how = camp.how;
     how.budget = how.budget || { source: 'none' };
+    if (how.budget.source === 'project') how.budget.source = 'own';
     const project = _project(camp.projectId);
 
     const projectEditable = camp.state === 'draft' || camp.state === 'proposed';
@@ -107,16 +111,7 @@
               <input type="text" class="desk-v1-rules-textinput" data-how-never-claim value="${esc(how.never_claim || '')}" placeholder="What this campaign never asserts.">
             </div>
           </div>
-          <div class="desk-v1-how-card" data-how-budget-card>
-            <div class="desk-v1-how-card-title">Budget (optional)</div>
-            <div class="desk-v1-how-budget-toggle" role="group" aria-label="Budget source">
-              <button type="button" data-how-budget-btn="none" aria-pressed="${how.budget.source === 'none'}">None</button>
-              <button type="button" data-how-budget-btn="project" aria-pressed="${how.budget.source === 'project'}">Project earmark</button>
-              <button type="button" data-how-budget-btn="own" aria-pressed="${how.budget.source === 'own'}">Own</button>
-            </div>
-            ${how.budget.source !== 'none' ? `<div class="desk-v1-rules-inlinerow">$<input type="number" min="0" class="desk-v1-rules-numinput" data-how-budget-amount value="${esc(how.budget.amount || 0)}"></div>` : ''}
-            <div class="desk-v1-rules-hint">${_budgetHint(camp, how, project)}</div>
-          </div>
+          ${_limitsHTML(camp)}
         </div>
         <div class="desk-v1-how-suggest">
           ${project
@@ -200,6 +195,25 @@
     } catch (e) { /* no Claydo on this surface — nothing to open */ }
   }
 
+  // Apply a limit edit. `get`/`set` read and write the one field; after `set`
+  // a started campaign with an approval on file asks first if the edit WIDENS
+  // it (the rule Launch's "Awaiting approval" applies, surfaced where the edit
+  // happens). Cancel puts the old value back. `repaint` re-reads the model.
+  function _applyLimit(camp, label, get, set, next, repaint) {
+    const prev = get();
+    set(next);
+    const bounds = window.deskV1CampaignBounds;
+    const live = camp.state !== 'draft' && camp.state !== 'proposed' && camp.approval && camp.approval.bounds && typeof bounds === 'function';
+    if (!live || !DeskV1Kit.boundsWiden(camp.approval.bounds, bounds(camp))) { repaint(); return; }
+    DeskV1Kit.openConfirmSheet({
+      title: `This widens what “${(camp.plan && camp.plan.title) || 'the campaign'}” can do`,
+      body: `${label} goes beyond what was approved. It needs your approval again on Launch before it takes effect.`,
+      note: 'An authorized user must confirm. Continue?',
+      onConfirm: repaint,
+      onDecline: () => { set(prev); repaint(); },
+    });
+  }
+
   function _bind(el, camp, project) {
     const how = camp.how;
 
@@ -210,21 +224,37 @@
     const neverClaimEl = el.querySelector('[data-how-never-claim]');
     if (neverClaimEl) neverClaimEl.addEventListener('change', () => { how.never_claim = neverClaimEl.value.trim(); });
 
+    // Every limit edit goes through _applyLimit (see above).
+    const repaint = () => deskV1RenderHow(el, { campaignId: camp.id });
     el.querySelectorAll('[data-how-budget-btn]').forEach((btn) => {
       btn.onclick = () => {
         const source = btn.getAttribute('data-how-budget-btn');
-        how.budget = how.budget || {};
-        how.budget.source = source;
-        if (source === 'none') how.budget.amount = 0;
-        else how.budget.amount = how.budget.amount || 0;
-        deskV1RenderHow(el, { campaignId: camp.id });
+        _applyLimit(camp, 'Budget', () => ({ source: how.budget.source, amount: how.budget.amount }),
+          (v) => { how.budget.source = v.source; how.budget.amount = v.amount; },
+          { source, amount: source === 'none' ? 0 : (how.budget.amount || 0) }, repaint);
       };
     });
     const amountEl = el.querySelector('[data-how-budget-amount]');
     if (amountEl) amountEl.addEventListener('change', () => {
-      how.budget.amount = parseInt(amountEl.value, 10) || 0;
-      const hint = el.querySelector('[data-how-budget-card] .desk-v1-rules-hint');
-      if (hint) hint.textContent = _budgetHint(camp, how, project);
+      _applyLimit(camp, 'Budget', () => how.budget.amount, (v) => { how.budget.amount = v; },
+        parseInt(amountEl.value, 10) || 0, () => {
+          const hint = el.querySelector('[data-how-budget-hint]');
+          if (hint) hint.textContent = _budgetHint(how);
+          amountEl.value = String(how.budget.amount || 0);
+        });
+    });
+    el.querySelectorAll('[data-how-limit]').forEach((inp) => {
+      const key = inp.getAttribute('data-how-limit');
+      inp.addEventListener('change', () => {
+        const plan = camp.plan = camp.plan || {};
+        const num = inp.value === '' ? null : (parseInt(inp.value, 10) || 0);
+        const label = { per_week: 'Posts a week', min_gap_h: 'Minimum gap', end_date: 'End date', post_cap: 'Post cap' }[key];
+        const holder = () => (key === 'per_week' || key === 'min_gap_h'
+          ? (plan.cadence = plan.cadence || {}) : (plan.end = plan.end || {}));
+        const field = key === 'end_date' ? 'date' : key;
+        _applyLimit(camp, label, () => holder()[field], (v) => { holder()[field] = v; },
+          key === 'end_date' ? (inp.value || null) : num, repaint);
+      });
     });
 
     const suggestBtn = el.querySelector('[data-how-suggest]');

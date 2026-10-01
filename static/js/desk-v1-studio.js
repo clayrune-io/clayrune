@@ -388,8 +388,8 @@
           <div class="desk-v1-online-warn-text">⚠ ${esc(a.label)} is not connected. Connecting grants Clayrune read access to that account. Review what gets shared before you connect —
             <button type="button" class="desk-v1-online-allows" data-online-allows aria-expanded="false">what this allows ›</button></div>
           <div class="desk-v1-online-scope" data-online-scope hidden>Preview of the scope: read-only. Clayrune would list the files in ${esc(a.label)} and copy the ones you pick; it would never post or change anything there.</div>
-          <button type="button" class="desk-v1-online-connect" data-online-connect="${esc(a.id)}" disabled aria-disabled="true">Connect ${esc(a.label)}</button>
-          <div class="desk-v1-online-later" data-online-later><span class="desk-v1-where-preview" data-preview>Preview · not connected</span> Connecting is not available yet: each real connector is its own backlog item.</div>
+          <button type="button" class="desk-v1-online-connect" data-online-connect="${esc(a.id)}">Connect ${esc(a.label)} ›</button>
+          <div class="desk-v1-online-later" data-online-later><span class="desk-v1-where-preview" data-preview>Preview · not connected</span> Connect it on the Connections screen.</div>
         </div>`;
       }
       const open = openId === a.id;
@@ -482,6 +482,8 @@
       if (!acct) return;
       api.attach({ id: 'asset-' + _uid(), kind, title: `${acct.label} · ${kind} ${Number(idx) + 1}`, src: (acct.thumbs || [])[Number(idx)] || null });
     });
+    // Connecting happens on the Connections screen only (MC-977 2026-10-01).
+    cardEl.querySelectorAll('[data-online-connect]').forEach((b) => b.onclick = () => window.deskV1Nav('connections'));
     cardEl.querySelectorAll('[data-online-allows]').forEach((b) => b.onclick = () => {
       const scope = b.closest('[data-online-unconnected]').querySelector('[data-online-scope]');
       const show = scope.hidden;

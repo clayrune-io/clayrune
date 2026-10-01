@@ -558,7 +558,7 @@
       btn.onclick = () => deskV1Nav('project', { projectId: btn.dataset.projectId });
     });
     host.querySelectorAll('.desk-v1-home-block-agent').forEach((btn) => {
-      btn.onclick = () => deskV1Nav('presence', { projectId: btn.dataset.projectId });
+      btn.onclick = () => deskV1Nav('project', { projectId: btn.dataset.projectId });
     });
     host.querySelectorAll('.desk-v1-home-block-newcamp').forEach((btn) => {
       btn.onclick = () => _startNewCampaign(btn.dataset.projectId);
@@ -691,6 +691,7 @@
     host.innerHTML = `
       <div class="desk-v1-home-crumbtools">
         <button type="button" class="desk-v1-home-studio-btn">&#127916; Studio</button>
+        <button type="button" class="desk-v1-home-connections-btn">&#128279; Connections</button>
         <button type="button" class="desk-v1-home-engagement-btn">&#128172; Engagement${_engagementCountSuffix()}</button>
         <button type="button" class="desk-v1-home-newcamp-page-btn">&#65291; New campaign</button>
       </div>`;
@@ -699,6 +700,8 @@
     if (engagementBtn) engagementBtn.onclick = () => deskV1Nav('engagement', {});
     const studioBtn = host.querySelector('.desk-v1-home-studio-btn');
     if (studioBtn) studioBtn.onclick = () => deskV1Nav('studio', {});
+    const connectionsBtn = host.querySelector('.desk-v1-home-connections-btn');
+    if (connectionsBtn) connectionsBtn.onclick = () => deskV1Nav('connections', {});
   }
 
   // ── simulated worker heartbeat (A13): Home shows no heartbeat chip ever —

@@ -175,8 +175,9 @@ async function runNewCampaignStepperFlow(browser) {
     const toState = await stopState(page, to);
     // R2-11: a stop whose Launch bound is unmet reads ⚠ (needs_you) even
     // after Next marked it done — a fresh draft has no accounts (Where) and no
-    // end date (When), so those two stay ⚠ and the rest read ✓.
-    const wantFrom = from === 'where' || from === 'when' ? 'needs_you' : 'done';
+    // end date (a limit, so the Brief owns it, Presence retired), so those two
+    // stay ⚠ and the rest read ✓.
+    const wantFrom = from === 'where' || from === 'how' ? 'needs_you' : 'done';
     fromState === wantFrom && toState === 'here'
       ? ok(`Next: ${from} -> ${to} (${from}=${wantFrom}, ${to}=here)`)
       : fail(`Next: ${from} -> ${to} wrong states: ${from}=${JSON.stringify(fromState)}, ${to}=${JSON.stringify(toState)}`);
@@ -264,7 +265,7 @@ async function runLaunchMissingLinks(browser) {
     : fail(`Start campaign disabled-state wrong: ${JSON.stringify(startDisabled)}`);
 
   const missingLinks = await page.$$eval('[data-missing-stop]', (els) => els.map((e) => ({ stop: e.dataset.missingStop, text: e.textContent.trim() })));
-  missingLinks.length === 2 && missingLinks.some((m) => m.stop === 'where') && missingLinks.some((m) => m.stop === 'when')
+  missingLinks.length === 2 && missingLinks.some((m) => m.stop === 'where') && missingLinks.some((m) => m.stop === 'how')
     ? ok(`⑥ Launch lists 2 missing items linking to their stops: ${JSON.stringify(missingLinks)}`)
     : fail(`⑥ Launch missing list wrong: ${JSON.stringify(missingLinks)}`);
 
@@ -596,9 +597,9 @@ async function runValidatePlanMissingEnd(browser) {
     const plan = Object.assign({}, camp.plan, { end: { date: null, post_cap: null } });
     return window.DeskV1Kit.validatePlan(plan);
   });
-  !result.ok && result.missing.some((m) => m.bound === 'end' && m.stop === 'when')
-    ? ok(`validatePlan() names the missing end date with its stop (When): ${JSON.stringify(result.missing)}`)
-    : fail(`validatePlan() did not flag the missing end date at When: ${JSON.stringify(result)}`);
+  !result.ok && result.missing.some((m) => m.bound === 'end' && m.stop === 'how')
+    ? ok(`validatePlan() names the missing end date with its stop (Brief, where limits live): ${JSON.stringify(result.missing)}`)
+    : fail(`validatePlan() did not flag the missing end date at the Brief: ${JSON.stringify(result)}`);
 
   const fullResult = await page.evaluate(() => window.DeskV1Kit.validatePlan(window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2').plan));
   fullResult.ok
@@ -807,7 +808,7 @@ async function runStartSheetGateMissingEnd(browser) {
     : fail('Start sheet Confirm should be disabled when the plan is missing its end bound');
 
   const noteText = (await page.textContent('.desk-v1-rules-sheet-note').catch(() => '') || '');
-  /end date \(When\)/.test(noteText) && !/step \d/.test(noteText)
+  /end date \(Brief\)/.test(noteText) && !/step \d/.test(noteText)
     ? ok(`Start sheet names the missing bound with its map stop: "${noteText.trim()}"`)
     : fail(`Start sheet note wrong: ${JSON.stringify(noteText)}`);
 
@@ -1040,39 +1041,6 @@ async function runR211RenewTerm(browser) {
   await ctx.close();
 }
 
-// §5.2: a project budget cut below the campaigns' earmarks clamps them and logs.
-async function runR211EarmarkClamp(browser) {
-  const { ctx, page, pageErrors } = await newTonePage(browser, { ls: {} });
-  await page.evaluate(() => {
-    const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1');
-    camp.how = camp.how || {};
-    camp.how.budget = { source: 'project', amount: 80 };
-    // the $80 earmark is part of what was approved, so the clamp narrows it.
-    camp.approval = { bounds: window.deskV1CampaignBounds(camp), at: new Date().toISOString(), term: 1 };
-  });
-  await page.click('.desk-v1-home-block-name[data-project-id="clayrune"]');
-  await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
-  await page.click('.desk-v1-project-presence-btn');
-  await page.waitForSelector('[data-budget-perperiod-input]', { timeout: 4000 });
-  await page.fill('[data-budget-perperiod-input]', '50');
-  await page.keyboard.press('Tab');
-  await page.click('[data-preview-apply]');
-  await page.waitForTimeout(80);
-  const res = await page.evaluate(() => {
-    const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1');
-    return { amount: camp.how.budget.amount, log: (camp.log || []).map((l) => l.text) };
-  });
-  res.amount === 50 && res.log.length === 1 && /Earmark clamped from \$80 to \$50/.test(res.log[0])
-    ? ok(`R2-11: a project budget cut to $50 clamps the $80 earmark and logs it ("${res.log[0]}")`)
-    : fail(`R2-11: clamp wrong: ${JSON.stringify(res)}`);
-  await navToProposedCampaign(page, 'camp-1');
-  await gotoLaunch(page, 'camp-1');
-  (await page.$('[data-launch-log]')) ? ok('R2-11: the clamp shows in the Launch page log') : fail('R2-11: no log block on Launch after the clamp');
-
-  reportUncaught(pageErrors, '[r2-11-clamp]');
-  await ctx.close();
-}
-
 async function main() {
   const browser = await chromium.launch();
   try {
@@ -1106,7 +1074,6 @@ async function main() {
     console.log('desk-v1-map: R2-11 Launch (bounds table, answer card, live, renew, clamp)');
     await runR211LaunchBounds(browser);
     await runR211RenewTerm(browser);
-    await runR211EarmarkClamp(browser);
   } finally {
     await browser.close();
   }

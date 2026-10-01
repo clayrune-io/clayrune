@@ -171,7 +171,25 @@ def _migrate_campaign_record(camp: dict) -> dict:
         tracked = goal.pop('tracked', None)
         if 'source' not in goal:
             goal['source'] = 'manual' if tracked else None
+    _retire_project_earmark(camp)
     return camp
+
+
+def _retire_project_earmark(camp: dict) -> None:
+    """MC-977 2026-10-01 (Presence screen retired): the project budget pool is
+    gone, so a `source: 'project'` earmark has nothing left to be drawn from and
+    nobody to edit it. Re-file it as the campaign's own amount: `amount` is
+    untouched and `was_source` keeps what it used to be, so nothing is lost and
+    re-running is a no-op. The approval snapshot is migrated the same way (its
+    stored `bounds_hash` is left alone: the amount, which is what the owner
+    approved, did not change).
+    """
+    budgets = [(camp.get('how') or {}).get('budget'),
+               ((camp.get('approval') or {}).get('bounds') or {}).get('budget')]
+    for b in budgets:
+        if isinstance(b, dict) and b.get('source') == 'project':
+            b['source'] = 'own'
+            b.setdefault('was_source', 'project')
 
 
 def _migrate_ledger_row(row: dict) -> dict:
@@ -1169,48 +1187,18 @@ def _campaign_bounds(camp: dict) -> dict:
     }
 
 
-def _earmarked_total_locked(store: dict, project_id: str, *, exclude_campaign_id: str | None = None) -> float:
-    total = 0.0
-    for c in store['campaigns'].values():
-        if c.get('project_id') != project_id:
-            continue
-        if exclude_campaign_id and c.get('id') == exclude_campaign_id:
-            continue
-        if c.get('state') in ('archived', 'dropped', 'done', 'completed'):
-            continue
-        b = (c.get('how') or {}).get('budget') or {}
-        if b.get('source') == 'project':
-            total += float(b.get('amount') or 0)
-    return total
-
-
-def project_earmarked_total(project_id: str, *, exclude_campaign_id: str | None = None) -> float:
-    """Sum of live campaigns' project-sourced earmarks for this project (§5.2)."""
-    with _store_lock:
-        store = _read_store()
-    return _earmarked_total_locked(store, project_id, exclude_campaign_id=exclude_campaign_id)
-
-
 def _check_earmark_locked(store: dict, project_id: str | None, budget: dict | None, *,
                           exclude_campaign_id: str | None = None) -> None:
-    """§5.2: "Launch refuses an earmark the project cannot cover and says by
-    how much." Only fires for a `source: 'project'` budget against a project
-    that has its own budget set — a project with no presence/budget yet has
-    nothing to enforce against (validatePlan's own project-optional stance).
+    """Retired (MC-977 2026-10-01, Presence screen retired). Section 5.2 used to
+    refuse a `source: 'project'` earmark the project's budget pool could not
+    cover; the pool is no longer editable anywhere, and a limit the user cannot
+    see and edit on the campaign must not refuse anything. Campaign budgets are
+    self-contained now, so this never raises. Kept (not deleted) so the two call
+    sites and any stored `presence.budget` need no migration; a `source:
+    'project'` budget from an old client is re-filed as the campaign's own amount
+    by `_retire_project_earmark` the next time the store is read.
     """
-    if not project_id or not budget or budget.get('source') != 'project':
-        return
-    presence = store.get('presences', {}).get(project_id)
-    if not presence:
-        return
-    proj_amount = (presence.get('budget') or {}).get('amount')
-    if proj_amount is None:
-        return
-    other = _earmarked_total_locked(store, project_id, exclude_campaign_id=exclude_campaign_id)
-    amount = float(budget.get('amount') or 0)
-    short = (other + amount) - float(proj_amount)
-    if short > 0:
-        raise ValueError(f'earmark exceeds project budget: short by ${short:g}')
+    return None
 
 
 def create_campaign(title: str, thesis: str, *, voice=None, voices=None,

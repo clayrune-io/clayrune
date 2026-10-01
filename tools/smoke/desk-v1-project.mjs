@@ -243,26 +243,24 @@ async function runNeedsYouDeepStack(browser) {
   await ctx.close();
 }
 
-// ── presence/engagement/piece routes reached directly rather than via the
-// review chain above (§5 row IA1: "presence (stub), engagement (stub), piece
-// (stub)"). Presence (IA3) and piece (IA5) are real pages now; engagement
-// remains an honest placeholder, never a blank pane. ──────────────────────
+// ── engagement/piece routes reached directly rather than via the review
+// chain above (§5 row IA1: "engagement (stub), piece (stub)"), plus the project
+// page's own settings (Presence retired, MC-977 2026-10-01: the one project-level
+// setting left is the default planner, picked from the header chip). ────────
 async function runStubRoutes(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
 
   await page.click('.desk-v1-home-block-name[data-project-id="clayrune"]');
   await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
 
-  // IA3 landed the real Presence page — no longer a stub route (was
-  // asserted as one in IA1; re-check on master before calling this a
-  // regression if it ever fails).
-  await page.click('.desk-v1-project-presence-btn');
-  await page.waitForSelector('.desk-v1-presence', { timeout: 4000 });
-  const accountCount = await page.$$eval('.desk-v1-presence-account-row', (els) => els.length);
-  accountCount === 6 // 3 + the 3 R2-10 Where-board fixture accounts (@clayrune, YouTube, Discord)
-    ? ok(`presence route: real page renders Clayrune's 6 bound accounts`)
-    : fail(`presence route wrong account count: ${accountCount}`);
-  await page.click('.desk-v1-back');
+  // The Presence page is gone: no button, no route, and the default planner is a
+  // header chip that opens the agent picker instead.
+  const gone = await page.$('.desk-v1-project-presence-btn');
+  const chip = (await page.textContent('[data-project-agent]').catch(() => '') || '').trim();
+  !gone && chip.length > 0 && !(await page.evaluate(() => typeof window.deskV1RenderPresence !== 'undefined'))
+    ? ok(`project page: no Presence button or route, default planner chip reads "${chip}"`)
+    : fail(`project page still has Presence (button=${!!gone}, chip=${JSON.stringify(chip)})`);
+  await page.evaluate(() => window.deskV1Nav('project', { projectId: 'clayrune' }));
   await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
 
   // IA7 landed the real Engagement dashboard — no longer a stub route (was
@@ -291,82 +289,6 @@ async function runStubRoutes(browser) {
     : fail(`piece route wrong: ${JSON.stringify(pieceTitle)}`);
 
   reportUncaught(pageErrors, '[stub-routes]');
-  await ctx.close();
-}
-
-// ── IA3 acceptance row: lowering a Presence ceiling narrows at once (no
-// confirm sheet — narrowing needs none) and clamps camp-1's effective-cadence
-// chip on the campaign page, with a log line left on the Presence page
-// itself (§2.1: "narrowing... clamps that campaign at once and logs it"). ──
-async function runPresenceCeilingClamp(browser) {
-  const { ctx, page, pageErrors } = await newBootedPage(browser);
-
-  await page.click('.desk-v1-home-block-name[data-project-id="clayrune"]');
-  await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
-  await page.click('.desk-v1-project-presence-btn');
-  await page.waitForSelector('.desk-v1-presence', { timeout: 4000 });
-
-  // Leave the input focused after fill() and the ceiling still fires a
-  // real blur-driven 'change' when the Apply click below steals focus —
-  // re-running the handler and replacing the preview mid-click. Tab off
-  // first so the one real 'change' happens here, not during the click.
-  const ceilInput = page.locator('[data-ceiling-input="ch-x-ron"]');
-  await ceilInput.fill('2');
-  await ceilInput.press('Tab');
-  await page.waitForSelector('[data-ceiling-preview="ch-x-ron"] [data-preview-apply]', { timeout: 2000 });
-  await page.click('[data-ceiling-preview="ch-x-ron"] [data-preview-apply]');
-  await page.waitForTimeout(50);
-
-  const logLine = (await page.textContent('#desk-v1-presence-log-list').catch(() => '') || '');
-  /lowered to 2\/wk — was 3/.test(logLine)
-    ? ok(`presence: narrowing ch-x-ron to 2/wk applies at once and logs it: "${logLine.trim().slice(0, 80)}"`)
-    : fail(`presence ceiling-narrow log wrong: ${JSON.stringify(logLine)}`);
-
-  // The summary strip no longer carries a cadence chip (dropped in 9eedc898,
-  // R2-11: it now holds only state + GOAL + CHANNELS). The clamp reads on the
-  // When stop's Cadence field, "≤ n/wk from <project>'s ceiling" (R2-9).
-  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
-  await page.evaluate(() => window.deskV1Nav('calendar', { campaignId: 'camp-1' }));
-  await page.waitForSelector('[data-cal-field-cadence]', { timeout: 4000 });
-  const chipsText = (await page.textContent('[data-cal-field-cadence]').catch(() => '') || '').trim();
-  /≤2\/wk/.test(chipsText)
-    ? ok(`presence: camp-1 When cadence clamps to "≤2/wk" from the lowered project ceiling: "${chipsText}"`)
-    : fail(`camp-1 cadence not clamped: ${JSON.stringify(chipsText)}`);
-
-  reportUncaught(pageErrors, '[presence-ceiling-clamp]');
-  await ctx.close();
-}
-
-// ── IA3 acceptance row: adding a Presence account widens what the project
-// can publish, so it requires the same confirm-sheet pattern as the Rules
-// popover's widening path (desk-v1-kit.js's openConfirmSheet). ─────────────
-async function runPresenceAddAccountConfirm(browser) {
-  const { ctx, page, pageErrors } = await newBootedPage(browser);
-
-  await page.click('.desk-v1-home-block-name[data-project-id="engulfing_scanner"]');
-  await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
-  await page.click('.desk-v1-project-presence-btn');
-  await page.waitForSelector('.desk-v1-presence', { timeout: 4000 });
-
-  const before = await page.$$eval('.desk-v1-presence-account-row', (els) => els.length);
-  await page.click('[data-addacct-trigger]');
-  await page.waitForSelector('.desk-v1-addto-menu button', { timeout: 2000 });
-  await page.click('.desk-v1-addto-menu button');
-
-  await page.waitForSelector('.desk-v1-rules-confirm-overlay', { timeout: 2000 });
-  const sheetTitle = (await page.textContent('.desk-v1-rules-confirm-overlay').catch(() => '') || '');
-  /widens what/.test(sheetTitle)
-    ? ok('presence: adding an account opens the widening confirm sheet')
-    : fail(`add-account confirm sheet wrong: ${JSON.stringify(sheetTitle)}`);
-
-  await page.click('[data-confirm-accept]');
-  await page.waitForSelector('.desk-v1-rules-confirm-overlay', { state: 'detached', timeout: 2000 });
-  const after = await page.$$eval('.desk-v1-presence-account-row', (els) => els.length);
-  after === before + 1
-    ? ok(`presence: confirming the sheet actually adds the account (${before} -> ${after})`)
-    : fail(`add-account count wrong after confirm: ${before} -> ${after}`);
-
-  reportUncaught(pageErrors, '[presence-addaccount-confirm]');
   await ctx.close();
 }
 
@@ -727,8 +649,6 @@ try {
   await runSecondProject(browser);
   await runNeedsYouDeepStack(browser);
   await runStubRoutes(browser);
-  await runPresenceCeilingClamp(browser);
-  await runPresenceAddAccountConfirm(browser);
   await runProjectPauseResume(browser);
   await runNextPostAcrossCampaigns(browser);
   await runDraftDiscoverability(browser);

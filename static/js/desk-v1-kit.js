@@ -53,6 +53,16 @@
     return (opts.campaign && opts.campaign.how && opts.campaign.how.agent) || presence.desk_agent || null;
   }
 
+  // The voice an account speaks in on THIS campaign. The campaign owns it
+  // (`plan.voices[channelId]`, edited on its Where board); the account's own
+  // default (`channel.voice`, a workspace-level asset) fills in until the
+  // campaign sets one. Empty string when neither exists.
+  function accountVoice(plan, channel) {
+    if (!channel) return '';
+    const own = plan && plan.voices && plan.voices[channel.id];
+    return own || channel.voice || '';
+  }
+
   // R2-18: the agents a campaign's Brief picker offers — those hired on the
   // project's floor (its live `roster` rows: `character` ref, not `removed_at`)
   // plus the project's own desk agent, so the default is always selectable.
@@ -913,35 +923,14 @@
     }
   }
 
-  // ── validatePresence (IA2, THE_DESK_V1_IA_REVISION.md §5) — the project's
-  // own required bound: at least one workspace account bound to it. A
-  // campaign can't set up until its project clears this (§2.3 step 0).
-  function validatePresence(project) {
-    const presence = (project && project.presence) || {};
-    const missing = [];
-    if (!(presence.accounts && presence.accounts.length)) missing.push({ bound: 'accounts', label: 'accounts' });
-    return { ok: missing.length === 0, missing };
-  }
-
-  // Effective cadence (§5 IA2 acceptance: "campaign cadence 5 under project
-  // ceiling 3 -> effective 3") — inherit the project's per-account ceiling
-  // when the campaign hasn't set its own, clamp DOWN to it when the campaign
-  // asks for more; never widen past what the project allows (§2.1: "Widening
-  // a project field... never widens a running campaign" runs the other
-  // direction, but a campaign may never exceed today's project ceiling
-  // either — one direction of the same inherit+clamp rule).
-  function _effectiveCadence(plan, project) {
+  // Effective cadence — the campaign's OWN per_week, nothing else. The
+  // project used to cap it (a per-account "ceiling" on the Presence screen);
+  // that screen is retired (MC-977 2026-10-01, Ron: one place per setting), so
+  // every limit a campaign runs under is one the user can see and edit on the
+  // campaign's Brief. `effective` keeps its shape for the callers that read it.
+  function _effectiveCadence(plan) {
     const campPerWeek = plan && plan.cadence ? plan.cadence.per_week : null;
-    const ceilings = (project && project.presence && project.presence.ceilings) || {};
-    const accounts = (plan && plan.accounts) || [];
-    let projCeiling = null;
-    accounts.forEach((chId) => {
-      const c = ceilings[chId];
-      if (c && c.per_week != null) projCeiling = projCeiling == null ? c.per_week : Math.min(projCeiling, c.per_week);
-    });
-    if (campPerWeek == null) return { value: projCeiling, fromProject: projCeiling != null };
-    if (projCeiling != null && projCeiling < campPerWeek) return { value: projCeiling, fromProject: true };
-    return { value: campPerWeek, fromProject: false };
+    return { value: campPerWeek == null ? null : campPerWeek, fromProject: false };
   }
 
   // ── validatePlan (§4: "one canonical plan object"; rescoped IA2 §5, IA
@@ -949,11 +938,10 @@
   // button, Resume and Renew all share. Checks the §2.3 step-2 bound table's
   // "Required to leave" rows — accounts, cadence, end date and/or post cap
   // (>=1). `source_projects` is retired (§3 row 14: owner is the parent
-  // project, implicit, no bound) and `min_gap_h` moved to the project's own
-  // ceilings (§3 row 22) — neither is a campaign-level plan bound any more.
-  // `project` is optional so callers without a resolved project (e.g. a
-  // just-created draft campaign) still get a usable result; effective
-  // cadence then falls back to the campaign's own value with no clamp.
+  // project, implicit, no bound). `min_gap_h` lives on `plan.cadence` again
+  // (Presence retired, MC-977 2026-10-01) but is not a required bound. `project`
+  // is accepted and ignored — no project-level ceiling clamps a campaign any
+  // more; the arg stays so existing callers need no change.
   //
   // Each bound now carries a `stop` (§2 map vocabulary: 'goal'|'how'|'what'|
   // 'when'|'where'|'launch') alongside the older numeric `step`, additive —
@@ -963,9 +951,9 @@
   const _PLAN_BOUNDS = [
     { bound: 'accounts', step: 2, stop: 'where', label: 'accounts',
       missing: (p) => !(p.accounts && p.accounts.length) },
-    { bound: 'cadence', step: 2, stop: 'when', label: 'cadence',
+    { bound: 'cadence', step: 2, stop: 'how', label: 'cadence',
       missing: (p) => !(p.cadence && p.cadence.per_week != null) },
-    { bound: 'end', step: 2, stop: 'when', label: 'end date',
+    { bound: 'end', step: 2, stop: 'how', label: 'end date',
       missing: (p) => !(p.end && (p.end.date != null || p.end.post_cap != null)) },
   ];
 
@@ -999,29 +987,15 @@
     if (days > _MAX_TERM_DAYS) return { bound: 'term', stop: 'launch', label: 'term', detail: `${Math.round(days)} days (max ${_MAX_TERM_DAYS})` };
     return null;
   }
-  // §5.2/§9 Q3 (binding): a project-funded budget is earmarked at Launch;
-  // Launch refuses an earmark the project cannot cover and says by how much.
-  // `opts.projectRemaining` is the caller's job to compute (project budget
-  // minus the sum of the OTHER live campaigns' earmarks) — this function
-  // stays a pure comparison, no cross-campaign lookup here.
-  function _howBudgetMissing(plan, opts) {
-    const budget = plan.how && plan.how.budget;
-    if (!budget || budget.source !== 'project' || opts.projectRemaining == null) return null;
-    const short = (budget.amount || 0) - opts.projectRemaining;
-    if (short > 0) return { bound: 'how_budget', stop: 'how', label: 'brief budget', detail: `short by $${short}` };
-    return null;
-  }
-
-  function validatePlan(plan, project, opts) {
+  function validatePlan(plan, project) {
     plan = plan || {};
-    opts = opts || {};
     const missing = _PLAN_BOUNDS
       .filter((b) => b.missing(plan))
       .map((b) => ({ bound: b.bound, step: b.step, stop: b.stop, label: b.label }));
-    [_goalMissing(plan), _termMissing(plan), _howBudgetMissing(plan, opts)]
+    [_goalMissing(plan), _termMissing(plan)]
       .filter(Boolean)
       .forEach((m) => missing.push(m));
-    const eff = _effectiveCadence(plan, project);
+    const eff = _effectiveCadence(plan);
     return {
       ok: missing.length === 0,
       missing,
@@ -1074,6 +1048,9 @@
   function _cadenceWiden(prevBounds, nextBounds) {
     const prev = (prevBounds && prevBounds.cadence) || {};
     const next = (nextBounds && nextBounds.cadence) || {};
+    // A tighter minimum gap lets the same campaign post more often, so a
+    // LOWER min_gap_h widens (only when both sides carry one).
+    if (prev.min_gap_h != null && next.min_gap_h != null && next.min_gap_h < prev.min_gap_h) return true;
     if (prev.per_week == null) return false;
     // A ceiling removed is looser than any finite one.
     return next.per_week == null || next.per_week > prev.per_week;
@@ -1101,14 +1078,13 @@
     if (!prev.ends) return false;
     return !next.ends || new Date(next.ends).getTime() > new Date(prev.ends).getTime();
   }
-  // §5.2: budget.amount raised, or budget.source switches 'own' -> 'project'
-  // (a pool that can be larger than the fixed own amount), is a widening.
-  // Equal or lower amount, or 'project' -> 'own', never widens.
+  // §5.2: budget.amount raised is a widening; equal or lower never is. (The
+  // 'own' -> 'project' source switch widened because a project pool could be
+  // larger; the pool is gone with the Presence screen, so only the amount counts.)
   function _budgetWiden(prevBounds, nextBounds) {
     const prevBudget = (prevBounds && prevBounds.budget) || {};
     const nextBudget = (nextBounds && nextBounds.budget) || {};
     if ((nextBudget.amount || 0) > (prevBudget.amount || 0)) return true;
-    if (prevBudget.source === 'own' && nextBudget.source === 'project') return true;
     return false;
   }
   function boundsWiden(prevBounds, nextBounds) {
@@ -1282,10 +1258,10 @@
     addToMenu, bindAddToTrigger, placePopover,
     infoIconHTML, bindInfoIcons,
     posyBoxHTML, bindPosyBox,
-    deskAgentRef, projectAgentChoices, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL, onAgentsReady,
+    deskAgentRef, accountVoice, projectAgentChoices, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL, onAgentsReady,
     anyPosyWorking, deskAgentWorkingLabel, paintPosyReadyNoDiff,
     openConfirmSheet,
-    validatePlan, validatePresence, MAX_TERM_DAYS: _MAX_TERM_DAYS,
+    validatePlan, MAX_TERM_DAYS: _MAX_TERM_DAYS,
     computeBoundsHash, boundsWiden, nextBoundsHash,
     RETRO_DIMENSIONS, retroVerdict,
     resolveBecause, becauseChipsHTML, bindBecauseChips,

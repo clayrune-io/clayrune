@@ -561,29 +561,28 @@ def test_presence_upsert_and_get(store):
     assert again['budget'] == {'amount': 300}, 'unrelated fields survive a partial patch'
 
 
-def test_earmark_sum_may_not_exceed_project_budget(store):
+def test_a_stored_project_pool_never_refuses_a_campaign_budget(store):
+    """Presence retired (MC-977 2026-10-01): a project pool nobody can edit must
+    not refuse a campaign's own budget, however small the stored pool is."""
     store.upsert_presence('proj-1', {'budget': {'amount': 100}})
     store.create_campaign('a', 'th', project_id='proj-1',
                           how={'budget': {'source': 'project', 'amount': 60}})
-    with pytest.raises(ValueError):
-        store.create_campaign('b', 'th', project_id='proj-1',
+    b = store.create_campaign('b', 'th', project_id='proj-1',
                               how={'budget': {'source': 'project', 'amount': 50}})
-    # own-funded budgets are never counted against the project pool
-    ok = store.create_campaign('c', 'th', project_id='proj-1',
-                               how={'budget': {'source': 'own', 'amount': 1000}})
-    assert ok['id']
+    up = store.update_campaign(b['id'], {'how': {'budget': {'source': 'own', 'amount': 5000}}})
+    assert up['how']['budget']['amount'] == 5000
 
 
-def test_earmark_check_excludes_the_campaign_being_updated(store):
-    store.upsert_presence('proj-1', {'budget': {'amount': 100}})
+def test_project_sourced_budgets_are_refiled_as_the_campaigns_own(store):
+    """The migration keeps the amount, records what it was, and is a no-op on a
+    second pass (also for the stored approval snapshot)."""
     c = store.create_campaign('a', 'th', project_id='proj-1',
                               how={'budget': {'source': 'project', 'amount': 60}})
-    # Raising its own earmark within the pool it already occupies must not
-    # double-count itself against the limit.
-    up = store.update_campaign(c['id'], {'how': {'budget': {'source': 'project', 'amount': 90}}})
-    assert up['how']['budget']['amount'] == 90
-    with pytest.raises(ValueError):
-        store.update_campaign(c['id'], {'how': {'budget': {'source': 'project', 'amount': 200}}})
+    got = next(x for x in store.list_campaigns() if x['id'] == c['id'])
+    assert got['how']['budget'] == {'source': 'own', 'amount': 60, 'was_source': 'project'}
+    assert got['approval']['bounds']['budget']['source'] == 'own'
+    again = next(x for x in store.list_campaigns() if x['id'] == c['id'])
+    assert again['how']['budget'] == got['how']['budget']
 
 
 def test_budget_raise_changes_bounds_hash_lowering_does_not(store):

@@ -671,3 +671,24 @@ overlap"); merging into one stop (option B) would have redone R2-9 and R2-10.
 | Ticket | Change | Builds on | Acceptance (smokes) |
 |---|---|---|---|
 | **R2-19** | Stop order becomes **Brief, Goal, What, Where, When, Launch** (`DeskV1Kit.MAP_STOPS`; stepper, Next/Back, project draft label and Home stage column all read it; route keys unchanged). **Where owns channel placement only** (which accounts, which messages go to each): version cards read `<kind> → <platform format>` and carry no time. **When owns time only**, for versions already placed in Where: its rows come from `plan.accounts`, its chips and Unscheduled tray list only versions placed on those accounts, and with nothing placed it shows an empty state `Nothing is placed yet` with `Go to Where ›` (cadence/term fields stay; grid and own-slots band give way). **When Suggest never creates a version and never moves one across accounts**: `deskV1CalendarSuggestFill` fills a slot only from a version Where placed (title, platform, account read off that version, never taken from the caller) and returns null otherwise. The §8 R2-10 frame-7b wording "time with platform glyph" on a version card is superseded. | R2-9, R2-10 | `desk-v1-map` (order Brief, Goal, What, Where, When, Launch; Back from When lands on Where), `desk-v1-campaign` (stepper words), `desk-v1-where` (0 of 11 cards carry a time, 3 tones), `desk-v1-calendar` (Suggest leaves every version's id/account/state identical; unplaced and unknown versions fill nothing; empty state + `Go to Where ›`) |
+
+### 11.8 Presence retired; Connections added (Ron 2026-09-30, MC-977, branch `desk-retire-presence`)
+
+Standing position: *Desk: whether a project needs its own Presence screen* (Presence duplicated Brief/What/Where/When;
+one place per setting). The screen, its route, and all four entry points (Home, project page, Rules, Where) are gone,
+and `desk-v1-presence.js` is deleted. No user-visible string in `static/` says "Presence".
+
+| Was on Presence | Now lives | Notes |
+|---|---|---|
+| Cadence caps, min gap, term | Campaign Brief / When only | `validatePlan` and the Calendar no longer clamp against `presence.ceilings`; the live-campaign raise confirm stays on the Brief edit |
+| Budget pool | Campaign budget only | `_check_earmark_locked` never refuses; a stored `source:'project'` budget is re-filed as the campaign's own amount on read (non-destructive) |
+| Accounts | Where lists the workspace's accounts | Launch, Rules and the picker read workspace accounts, not `presence.accounts` |
+| Voice per account | Where, on the card that places the account | |
+| Agent of choice | Campaign first stop, project default on the project page "Pick who plans" card | |
+| Read via + browser profile (R1-E) | **Connections** screen, per account | Same `/api/desk/presence/<pid>/accounts/<channel>/read` backend, unattended-caller refusal intact |
+| Audience, Strategy, Replies, Measurement, Recent changes | **No home** (UI removed) | Backend fields left in place; nothing else read them |
+
+**Connections** is one Desk route at home level (Studio/Engagement shape), reached from the Desk header. It is the
+single place to connect anything external: `Social accounts` (status, Connect/Reconnect, Read via, signed-in browser
+profile; Connect is fixture-only like the rest of R0) and a `Generation engines` placeholder heading (video + image engines) for a follow-up
+ticket. Where's "not connected" tray items and the Studio Online-source `Connect` route here.

@@ -140,83 +140,45 @@
     return when ? _dayKey(when) : null;
   }
 
-  // ── R2-9: When stop fields (Cadence · Min gap · Term · Post cap, §4.1 ④,
-  // frame 6). Cadence and min gap are inherited/clamped display only — the
-  // campaign never edits them here (min gap has no campaign-level field at
-  // all, §3 row 22: it moved to the project's own `presence.ceilings`); Term
-  // end and Post cap are the two real editable bounds (§4.1: "Required to
-  // launch: cadence, end date and/or post cap"), writing straight to
-  // `plan.end` so kit.js's existing `boundsWiden`/`_endWiden` (desk-v1-
-  // campaign.js `_renderLaunchPanel`) picks up a later end date as a widen
-  // and an earlier one as a narrow with no new wiring needed here. ─────────
-  function _effectiveMinGapH(campaign, project) {
-    const ceilings = (project && project.presence && project.presence.ceilings) || {};
-    const accounts = (campaign.plan && campaign.plan.accounts) || [];
-    let g = null;
-    accounts.forEach((chId) => {
-      const c = ceilings[chId];
-      if (c && c.min_gap_h != null) g = g == null ? c.min_gap_h : Math.min(g, c.min_gap_h);
-    });
-    return g;
-  }
-  // Raw project ceiling, independent of whether the campaign's own cadence
-  // happens to be under/equal to it (kit.js's `_effectiveCadence` only
-  // reports `fromProject` when the campaign left cadence unset — Dave review
-  // pass 1: the row's required format is "≤ n/wk from <project>'s ceiling"
-  // UNCONDITIONALLY whenever a ceiling exists, same pattern `_effectiveMinGapH`
-  // above already uses for the read-only Min gap field).
-  function _projectCadenceCeiling(campaign, project) {
-    const ceilings = (project && project.presence && project.presence.ceilings) || {};
-    const accounts = (campaign.plan && campaign.plan.accounts) || [];
-    let c = null;
-    accounts.forEach((chId) => {
-      const ceil = ceilings[chId];
-      if (ceil && ceil.per_week != null) c = c == null ? ceil.per_week : Math.min(c, ceil.per_week);
-    });
-    return c;
+  // ── When stop limits strip. The limits (posts a week, min gap, end date, post
+  // cap) are the campaign's own and are edited on its Brief — this stop only
+  // READS them (one place per setting, MC-977 2026-10-01), with a link back. ──
+  function _effectiveMinGapH(campaign) {
+    const g = campaign.plan && campaign.plan.cadence && campaign.plan.cadence.min_gap_h;
+    return g == null ? null : g;
   }
   function _cadenceFieldText(campaign, project) {
     const result = (window.DeskV1Kit && window.DeskV1Kit.validatePlan(campaign.plan, project)) || {};
     const eff = result.effective || {};
-    if (eff.cadence_per_week == null) return 'Not set';
-    const ceiling = _projectCadenceCeiling(campaign, project);
-    return ceiling != null
-      ? `≤${eff.cadence_per_week}/wk from ${project ? project.name : 'the project'}'s ceiling`
-      : `${eff.cadence_per_week}/wk`;
+    return eff.cadence_per_week == null ? 'Not set' : `${eff.cadence_per_week}/wk`;
   }
-  function _minGapFieldText(campaign, project) {
-    const g = _effectiveMinGapH(campaign, project);
-    return g == null ? 'Not set' : `${g}h (inherited, read-only)`;
+  function _minGapFieldText(campaign) {
+    const g = _effectiveMinGapH(campaign);
+    return g == null ? 'Not set' : `${g}h`;
   }
   function _fieldsHTML(campaign, project) {
     const plan = campaign.plan || {};
     const term = campaign.term || {};
     const startLabel = term.starts ? new Intl.DateTimeFormat(undefined, { timeZone: _userTz(), month: 'short', day: 'numeric' }).format(new Date(term.starts + 'T00:00:00')) : '—';
     const endDate = (plan.end && plan.end.date) || term.ends || '';
-    const postCap = plan.end && plan.end.post_cap != null ? plan.end.post_cap : '';
+    const endLabel = endDate ? new Intl.DateTimeFormat(undefined, { timeZone: _userTz(), month: 'short', day: 'numeric' }).format(new Date(endDate + 'T00:00:00')) : '—';
+    const postCap = plan.end && plan.end.post_cap != null ? String(plan.end.post_cap) : 'none';
     return `
       <div class="desk-v1-cal-fields">
         <div class="desk-v1-cal-field"><span class="desk-v1-cal-field-label">Cadence</span>
           <span class="desk-v1-cal-field-value" data-cal-field-cadence title="${esc(_cadenceFieldText(campaign, project))}"><span>${esc(_cadenceFieldText(campaign, project))}</span></span></div>
         <div class="desk-v1-cal-field"><span class="desk-v1-cal-field-label">Min gap</span>
-          <span class="desk-v1-cal-field-value" data-cal-field-mingap title="${esc(_minGapFieldText(campaign, project))}"><span>${esc(_minGapFieldText(campaign, project))}</span></span></div>
+          <span class="desk-v1-cal-field-value" data-cal-field-mingap title="${esc(_minGapFieldText(campaign))}"><span>${esc(_minGapFieldText(campaign))}</span></span></div>
         <div class="desk-v1-cal-field"><span class="desk-v1-cal-field-label">Term</span>
-          <span class="desk-v1-cal-field-value">${esc(startLabel)} – <input type="date" class="desk-v1-cal-field-date" data-cal-field-end value="${esc(endDate)}"></span></div>
+          <span class="desk-v1-cal-field-value" data-cal-field-term>${esc(startLabel)} – ${esc(endLabel)}</span></div>
         <div class="desk-v1-cal-field"><span class="desk-v1-cal-field-label">Post cap</span>
-          <input type="number" min="0" class="desk-v1-cal-field-num" data-cal-field-postcap placeholder="none" value="${esc(postCap)}"></div>
+          <span class="desk-v1-cal-field-value" data-cal-field-postcap>${esc(postCap)}</span></div>
+        <button type="button" class="desk-v1-cal-fields-edit" data-cal-edit-limits>Edit limits in Brief ›</button>
       </div>`;
   }
   function _bindFields(el, campaign) {
-    const endEl = el.querySelector('[data-cal-field-end]');
-    if (endEl) endEl.onchange = () => {
-      campaign.plan.end = campaign.plan.end || {};
-      campaign.plan.end.date = endEl.value || null;
-    };
-    const capEl = el.querySelector('[data-cal-field-postcap]');
-    if (capEl) capEl.onchange = () => {
-      campaign.plan.end = campaign.plan.end || {};
-      campaign.plan.end.post_cap = capEl.value === '' ? null : parseInt(capEl.value, 10);
-    };
+    const edit = el.querySelector('[data-cal-edit-limits]');
+    if (edit) edit.onclick = () => window.deskV1GotoCampaignPanel('how', { campaignId: campaign.id });
   }
 
   // ── R2-9: own slots (`when.slots[]`, §5's data addendum, frame 6). A slot
@@ -251,7 +213,7 @@
       const countThisWeek = slots.filter((s) => _weekKey(new Date(s.at)) === wk).length;
       if (countThisWeek + 1 > cap) return `over ${cap}/wk`;
     }
-    const minGap = _effectiveMinGapH(campaign, project);
+    const minGap = _effectiveMinGapH(campaign);
     if (minGap != null) {
       for (const s of slots) {
         const diffH = Math.abs(new Date(s.at).getTime() - at.getTime()) / 3600000;

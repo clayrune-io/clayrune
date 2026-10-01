@@ -143,7 +143,7 @@ const OTHER_SMOKES = [
   // R2-13: the smokes that own the map's stops and the playbook loop. Each
   // runs its own 3-tone passes (how, where, studio, retro, project/Playbook).
   'desk-v1-how.mjs', 'desk-v1-where.mjs', 'desk-v1-studio.mjs',
-  'desk-v1-retro.mjs', 'desk-v1-project.mjs', 'desk-v1-presence-readvia.mjs',
+  'desk-v1-retro.mjs', 'desk-v1-project.mjs', 'desk-v1-connections.mjs',
   'desk-v1-journey.mjs',
 ];
 
@@ -173,15 +173,15 @@ function runOtherSmokes() {
 const SURFACES = [
   { key: 'home', label: 'Home', wait: '.desk-v1-stub-link, .desk-v1-home',
     nav: async (page) => { await page.evaluate(() => { while (document.querySelector('.desk-v1-back')) document.querySelector('.desk-v1-back').click(); }); } },
-  // IA8: project/presence/setup/piece/engagement had no route in this
+  // IA8: project/connections/setup/piece/engagement had no route in this
   // sweep at all — T8's journey smoke (desk-v1-journey.mjs) drives them via
   // real clicks, but that is a single default-tone pass, not the A1/A12/A15
   // tone sweep every other surface here gets. Added so "exit 0 across all 3
   // tones" actually covers what IA8 touched, not just what IA1-IA7 already had.
   { key: 'project', label: 'Project (engulfing_scanner)', wait: '.desk-v1-project',
     nav: async (page) => page.evaluate(() => window.deskV1Nav('project', { projectId: 'engulfing_scanner' })) },
-  { key: 'presence', label: 'Presence (engulfing_scanner)', wait: '.desk-v1-presence',
-    nav: async (page) => page.evaluate(() => window.deskV1Nav('presence', { projectId: 'engulfing_scanner' })) },
+  { key: 'connections', label: 'Connections', wait: '[data-connections]',
+    nav: async (page) => page.evaluate(() => window.deskV1Nav('connections', {})) },
   // No draft-state campaign exists in the fixtures, so a new draft (R2-3b: the
   // map at ① Brief, no setup steps) is reached the way a real user reaches it:
   // Project -> "+ New campaign".
