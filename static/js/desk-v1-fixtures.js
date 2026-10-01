@@ -1174,6 +1174,15 @@
   // no capture backend, no connector, no renderer exists behind any of this.
   // Thumbnails are real captures of the product (standing position: real
   // screenshots by default).
+  // The files a fixture library folder lists. Images borrow the product captures
+  // as thumbnails; a video has no thumbnail (live, /api/serve-image serves images).
+  const _LIB_THUMBS = ['/assets/desk-thumb-home.png', '/assets/desk-thumb-campaign.png', '/assets/desk-thumb-calendar.png', '/assets/desk-thumb-review.png', '/assets/desk-thumb-results.png'];
+  function _libFiles(base, ext, kind, n) {
+    return Array.from({ length: n }, (_, i) => {
+      const name = `${base}-${String(i + 1).padStart(2, '0')}.${ext}`;
+      return { id: `${base}:${name}`, kind, title: name, src: kind === 'image' ? _LIB_THUMBS[i % _LIB_THUMBS.length] : null };
+    });
+  }
   const STUDIO = {
     // Recent (frame 11). The rendering video is NOT listed here: Studio reads it
     // off the families (`render.status === 'rendering'`) so its percentage is
@@ -1183,12 +1192,13 @@
       { id: 'rec-dashboard-hero', kind: 'image', title: 'Dashboard hero', campaignId: null, status: 'rendered', src: '/assets/desk-thumb-home.png' },
     ],
     // Material library (frame 11): folders with file counts.
+    // `items` is what opening a folder lists: one entry per file, `files` of them.
     library: [
-      { id: 'lib-screenshots', title: 'Product screenshots', files: 38 },
-      { id: 'lib-recordings', title: 'Screen recordings', files: 12 },
-      { id: 'lib-broll', title: 'B-roll clips', files: 9 },
-      { id: 'lib-brand', title: 'Brand assets', files: 21 },
-      { id: 'lib-renders', title: 'Renders', files: 5 },
+      { id: 'lib-screenshots', title: 'Product screenshots', files: 38, items: _libFiles('screenshot', 'png', 'image', 38) },
+      { id: 'lib-recordings', title: 'Screen recordings', files: 12, items: _libFiles('recording', 'mp4', 'video', 12) },
+      { id: 'lib-broll', title: 'B-roll clips', files: 9, items: _libFiles('broll', 'mp4', 'video', 9) },
+      { id: 'lib-brand', title: 'Brand assets', files: 21, items: _libFiles('brand', 'png', 'image', 21) },
+      { id: 'lib-renders', title: 'Renders', files: 5, items: _libFiles('render', 'mp4', 'video', 5) },
     ],
     // Capture from the product (frame 16): the screens a project exposes. A
     // project absent from this map has no capturable surface, and the tile reads

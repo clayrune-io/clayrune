@@ -2687,6 +2687,24 @@
 .desk-v1-studio-folder-glyph { font-size: 20px; }
 .desk-v1-studio-folder-name { font-size: 12.5px; font-weight: 700; color: var(--text); text-align: center; }
 .desk-v1-studio-folder-count { font-size: 11px; color: var(--text-faint); }
+/* An opened library folder lists its files in place, with a way back (MC-1024 follow-up) */
+.desk-v1-studio-lib.desk-v1-studio-lib-open { display: block; }
+.desk-v1-studio-folder { cursor: pointer; font-family: inherit; }
+.desk-v1-studio-folder:hover, .desk-v1-studio-folder:focus-visible { border-color: var(--accent); }
+.desk-v1-studio-folderbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.desk-v1-studio-folder-back {
+  background: none; border: none; color: var(--accent); font-size: 12.5px; font-weight: 700; cursor: pointer;
+  font-family: inherit; padding: 4px 2px;
+}
+.desk-v1-studio-folderbar-name { font-size: 12.5px; font-weight: 700; color: var(--text); }
+.desk-v1-studio-files { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+.desk-v1-studio-file { display: flex; flex-direction: column; gap: 6px; background: var(--surface); border: 1px solid var(--border2); border-radius: 8px; padding: 8px; }
+.desk-v1-studio-file-thumb {
+  display: flex; align-items: center; justify-content: center; height: 72px; border-radius: 6px; overflow: hidden;
+  background: var(--surface2); color: var(--text-faint); font-size: 20px;
+}
+.desk-v1-studio-file-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.desk-v1-studio-file-name { font-size: 11.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Standalone creation page (MC-1024): Studio's New video / New image, no campaign */
 .desk-v1-studio-create { display: flex; flex-direction: column; gap: 14px; padding: 4px 0 24px; }
@@ -2748,6 +2766,28 @@
   background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px; color: var(--text);
   font-size: 12.5px; padding: 9px 10px; font-family: inherit;
 }
+
+/* Placeholder example scenes: dimmed, not rendered, real once edited (MC-1024 follow-up) */
+.desk-v1-sb-scene-example { opacity: 0.5; border-style: dashed; }
+.desk-v1-sb-scene-example:hover, .desk-v1-sb-scene-example:focus-within { opacity: 0.85; }
+.desk-v1-sb-example-chip {
+  display: inline-block; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-faint); border: 1px solid var(--border2); border-radius: 999px; padding: 1px 7px;
+}
+.desk-v1-sb-delete {
+  background: none; border: none; cursor: pointer; font-size: 14px; padding: 4px 6px; border-radius: 6px;
+  color: var(--text-faint); font-family: inherit;
+}
+.desk-v1-sb-delete:hover, .desk-v1-sb-delete:focus-visible { color: var(--red-text); background: var(--red-dim); }
+/* The trash drop zone: a scene dragged onto it is deleted (same drag as reorder) */
+.desk-v1-sb-trashzone {
+  display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 10px; padding: 8px 12px;
+  border: 1px dashed var(--border2); border-radius: 8px; font-size: 12px; color: var(--text-faint);
+}
+.desk-v1-sb-trashzone.pd-drop-hover { border-color: var(--red-text); color: var(--red-text); background: var(--red-dim); }
+.desk-v1-sb-timeline-title { margin-top: 14px; margin-bottom: 6px; font-size: 12px; font-weight: 700; color: var(--text-dim); }
+.desk-v1-sb-timeline { min-height: 56px; }
+.desk-v1-sb-agent-pick { width: 100%; }
 
 /* What row: rendering progress (frame 14) */
 .desk-v1-what-progress { display: block; width: 120px; height: 4px; border-radius: 2px; background: var(--surface3); overflow: hidden; }
@@ -2837,7 +2877,9 @@
   .desk-v1-studio-tiles { grid-template-columns: 1fr; }
   .desk-v1-sb-layout, .desk-v1-writer { grid-template-columns: 1fr; }
   .desk-v1-sb-scene { flex-wrap: wrap; }
-  .desk-v1-sb-handle, .desk-v1-sb-editbtn, .desk-v1-writer-tab, .desk-v1-online-allows { min-height: 44px; }
+  .desk-v1-sb-handle, .desk-v1-sb-editbtn, .desk-v1-sb-delete, .desk-v1-writer-tab, .desk-v1-online-allows { min-height: 44px; }
+  .desk-v1-studio-folder-back { min-height: 44px; }
+  .desk-v1-sb-timeline { overflow-x: auto; }
   .desk-v1-home-studio-btn, .desk-v1-home-connections-btn { min-height: 44px; }
   .desk-v1-studio-tile, .desk-v1-studio-recent-row, .desk-v1-online-head, .desk-v1-online-thumb { min-height: 44px; }
 }
