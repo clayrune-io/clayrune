@@ -612,7 +612,7 @@
     const prospective = camp.term || (camp.plan && camp.plan.end && camp.plan.end.date ? { starts: _isoToday(), ends: camp.plan.end.date } : undefined);
     const plan = Object.assign({}, camp.plan, { term: prospective });
     const planResult = DeskV1Kit.validatePlan(plan, project) || { ok: true, missing: [] };
-    planResult.missing.forEach((m) => { if (m.bound === 'term') m.stop = 'when'; });
+    planResult.missing.forEach((m) => { if (m.bound === 'term') m.stop = 'how'; });
     if (!_projectEditable(camp)) return planResult;
     const extra = [];
     const goal = _goalReading(camp);
