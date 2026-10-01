@@ -646,7 +646,8 @@ try {
       rankings: { ...POPULATED_FIXTURE.rankings, rows: [
         { label: 'opus', input_processed_total: 1000, input_fresh: 100, input_cache_read: 800, input_cache_write: 100, output_tokens: 50, added: 1, session_count: 1 },
       ], mixed_session_count: 2, whole_session_attribution_count: 1 },
-      tokens_per_point: { status: 'ok', median: 50000, p10: 40000, p90: 60000, sample_count: 8, total_delta_pp: 41.5, run_count: 6, note: 'Indicative: account-wide bar' },
+      tokens_per_point: { status: 'ok', median: 50000, pooled_rate: 50000, p10: 40000, p90: 60000, sample_count: 8, total_delta_pp: 41.5, run_count: 6, note: 'Indicative: account-wide bar',
+        composition: { cache_read: { per_point: 48500, share: 0.971 }, cache_write: { per_point: 1200, share: 0.024 }, output: { per_point: 250, share: 0.005 }, fresh: { per_point: 80, share: 0.0000156 } } },
       segmented_bar: { status: 'ok', bar_change_pp: 10, estimated_pp: 6, unattributed_pp: 4, range_pp: [5, 7] },
     };
     const { ctx, page, pageErrors } = await openDesktopPopover(browser, TOKEN_FIXTURE, WINDOWS_FIXTURE);
@@ -664,9 +665,20 @@ try {
     /their unmeasured portions are excluded/.test(text) && !/aren't isolated to it yet/.test(text)
       ? ok('incomplete-coverage hint reworded: unmeasured portions excluded, not whole sessions')
       : fail(`old/absent incomplete-coverage hint: ${text.slice(0, 900)}`);
-    /41\.5pp over 6 runs/.test(text) && !/n=8/.test(text)
-      ? ok('Tokens per 1%: calibration evidence "41.5pp over 6 runs" replaces n=')
+    /41\.5pp over 6 stretches/.test(text) && !/n=8/.test(text) && !/6 runs/.test(text)
+      ? ok('Tokens per 1%: calibration evidence "41.5pp over 6 stretches" replaces n= (and "runs")')
       : fail(`calibration evidence missing from: ${text.slice(0, 900)}`);
+    /Tokens per 1% \(pooled rate\)/.test(text)
+      ? ok('Tokens per 1% is labelled "pooled rate"')
+      : fail(`pooled-rate label missing from: ${text.slice(0, 900)}`);
+    (/Per point: cache reads 48\.5k \(97\.1%\) · cache writes 1\.2k \(2\.4%\) · output <1K \(0\.5%\) · fresh <1K \(0\.0%\)/.test(text)
+      && /not how the vendor weights each type/.test(text))
+      ? ok('per-point composition line + "volume, not vendor weighting" caption render')
+      : fail(`composition line/caption missing from: ${text.slice(Math.max(0, text.indexOf("Per point")), text.indexOf("Per point") + 400)}`);
+    (await page.$eval('.sys-status-popover', (el) =>
+      [...el.querySelectorAll('span[title]')].some((n) => /^6 stretches$/.test(n.textContent) && /not an agent run/.test(n.title))))
+      ? ok('"stretches" carries a tooltip saying it is not an agent run')
+      : fail('stretches tooltip missing');
     /calibration-rate range/.test(text) && /not from bounds on attribution/.test(text)
       ? ok('estimate range labelled as calibration-rate variation, not attribution bounds')
       : fail(`range label missing from: ${text.slice(0, 900)}`);

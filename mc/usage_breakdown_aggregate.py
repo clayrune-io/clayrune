@@ -812,6 +812,12 @@ def _scope_matches(fact: Optional[dict], window_scope: str) -> Optional[bool]:
     return None
 
 
+# The input split carried on each segment (`_segment_delta`), summed per
+# interval beside input_processed_total so calibration can say what a point
+# is made of. Volume description only -- see `compute_calibration`.
+_COMPOSITION_KEYS = ('input_fresh', 'input_cache_read', 'input_cache_write')
+
+
 def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts_by_session: dict[str, dict],
                          *, provider: str, window_scope: str) -> list[dict]:
     """Consecutive fresh-sample pairs meeting the spec's eligibility rule:
@@ -907,6 +913,7 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
         coverage_complete = True
         input_processed_total = 0
         output_tokens = 0
+        parts = dict.fromkeys(_COMPOSITION_KEYS, 0)
         for sid, scope_ok, turns, unmeasured in evidence:
             # `_window_overlaps` (exclusive touch -- a span ending exactly at
             # t_a belongs to the PRIOR interval, not this one), not a
@@ -937,6 +944,8 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
             for t in contained:
                 input_processed_total += t['input_processed_total']
                 output_tokens += t['output_tokens']
+                for k in _COMPOSITION_KEYS:
+                    parts[k] += t.get(k) or 0
 
         out.append({
             'start': t_a, 'end': t_b, 'delta_pp': delta,
@@ -944,6 +953,7 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
             'coverage_complete': coverage_complete,
             'input_processed_total': input_processed_total,
             'output_tokens': output_tokens,
+            **parts,
         })
     return out
 
@@ -1041,6 +1051,13 @@ def compute_calibration(samples: list[dict], checkpoints: dict[str, dict], facts
                 'distinct_session_count': len(distinct_sessions), 'total_delta_pp': total_delta,
                 'all_intervals': intervals}
 
+    # What one point is MADE OF: each token type's total over the same
+    # calibratable intervals, per point of vendor delta, and its share of the
+    # workload. This is volume, NOT the vendor's weighting -- cache reads
+    # dwarf and track every other component, so the data cannot separate
+    # how the vendor weights each type (backlog 4668eafc journal, 2026-10-01).
+    component_totals = {k: sum(iv[k] for iv in calibratable) for k in _COMPOSITION_KEYS}
+    component_totals['output_tokens'] = sum(iv['output_tokens'] for iv in calibratable)
     runs = _contiguous_runs(calibratable)
     workload_lo, workload_hi = _pooled_ratio_range(
         runs, numerator=lambda iv: iv['input_processed_total'] + iv['output_tokens'])
@@ -1059,8 +1076,21 @@ def compute_calibration(samples: list[dict], checkpoints: dict[str, dict], facts
         'input_per_point': total_input / total_delta,
         'input_per_point_lo': input_lo,
         'input_per_point_hi': input_hi,
+        'component_per_point': {k: v / total_delta for k, v in component_totals.items()},
+        'component_share': {k: v / total_workload for k, v in component_totals.items()},
         'all_intervals': intervals,
     }
+
+
+def _composition_payload(calibration: dict) -> Optional[dict]:
+    """Per-point volume and workload share by token type, or None when the
+    calibration did not qualify. Keys are the UI's display names."""
+    per_point, share = calibration.get('component_per_point'), calibration.get('component_share')
+    if not per_point or not share:
+        return None
+    names = {'cache_read': 'input_cache_read', 'cache_write': 'input_cache_write',
+             'output': 'output_tokens', 'fresh': 'input_fresh'}
+    return {name: {'per_point': per_point[k], 'share': share[k]} for name, k in names.items()}
 
 
 def _percentile(sorted_values: list[float], pct: float) -> float:
@@ -1197,12 +1227,16 @@ def build_breakdown(*, provider: str, window_kind: str, window_scope: str,
             # block-bootstrap range -- `estimator`/`range_method` say so for
             # anything reading the raw JSON.
             'median': calibration.get('input_per_point'),
+            # Honest name for the same number: a pooled ratio-of-sums, not a
+            # median. `median` is kept equal for older consumers.
+            'pooled_rate': calibration.get('input_per_point'),
             'p10': calibration.get('input_per_point_lo'),
             'p90': calibration.get('input_per_point_hi'),
             'estimator': calibration.get('estimator'),
             'range_method': calibration.get('range_method'),
             'total_delta_pp': calibration.get('total_delta_pp'),
             'run_count': calibration.get('run_count'),
+            'composition': _composition_payload(calibration),
             'sample_count': calibration.get('eligible_interval_count', 0),
             'note': 'Indicative: account-wide bar',
         },
