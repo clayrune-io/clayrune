@@ -154,6 +154,9 @@ const campOf = (page, id, fn) => page.evaluate(([cid, src]) => {
 
 // The campaign page's stepper is the only way between stops a user has.
 async function gotoStop(page, stop) {
+  // Toasts stack top-right over the stepper's last stops and (headless, no
+  // timers elapsed) swallow the click; a user waits them out.
+  await page.evaluate(() => document.querySelectorAll('#toast-container .toast').forEach((t) => t.remove()));
   await page.click(`.desk-v1-map-stop[data-stop="${stop}"]`);
   await page.waitForSelector(`.desk-v1-map-stop[data-stop="${stop}"][data-state="here"]`, { timeout: 8000 });
 }
@@ -339,7 +342,184 @@ async function run(browser) {
     ? ok(`When: dragged an own slot onto ${dayKeys[4]} — "${ownLabel}"`)
     : fail(`When: own slot drag did not create a user slot (chip=${!!ownChip}, slots=${ownSlots})`);
   await page.screenshot({ path: resolve(SHOT_DIR, 'r2_13_journey_when_1440.png') });
-// __PART2__
+
+  // ── Launch: Start -> the campaign is Active ──────────────────────────────
+  // No control on any stop writes `plan.cadence.per_week` (When's Cadence is
+  // read-only text, desk-v1-calendar.js _cadenceFieldText) yet validatePlan
+  // lists it as required, so the one bound the UI cannot set is set on the
+  // fixture here, as desk-v1-map.mjs / desk-v1-campaign.mjs do. Reported as a
+  // finding in the R2-13 report, not worked around in product code.
+  await campOf(page, campA, (c) => { c.plan.cadence.per_week = 2; });
+  await gotoStop(page, 'launch');
+  const needSentence = await page.evaluate(() => { const n = document.querySelector('[data-launch-need]'); return n && !n.hidden ? n.textContent.trim() : ''; });
+  await page.waitForSelector('[data-map-start-btn]:not([disabled])', { timeout: 4000 }).catch(() => {});
+  const startEnabled = await page.evaluate(() => { const b = document.querySelector('[data-map-start-btn]'); return !!b && !b.disabled; });
+  startEnabled
+    ? ok('Launch: Start is enabled once Brief, Goal, What, Where and When hold the plan')
+    : fail(`Launch: Start still disabled: ${JSON.stringify(needSentence)}`);
+  await page.click('[data-map-start-btn]');
+  await page.waitForSelector('.desk-v1-rules-sheet', { timeout: 4000 });
+  await page.click('[data-sheet-confirm]');
+  await page.waitForSelector('.desk-v1-camp-state-pill', { timeout: 4000 });
+  const startedPill = await pillText(page);
+  /Active/.test(startedPill)
+    ? ok(`Start: campaign now Active: "${startedPill}"`)
+    : fail(`Start did not activate the campaign: ${JSON.stringify(startedPill)}`);
+
+  // ── Home: the new campaign's row reads Active · on track ──────────────────
+  async function gotoHome() {
+    while (await page.$('.desk-v1-back')) { await page.click('.desk-v1-back'); await page.waitForTimeout(20); }
+    await page.waitForSelector('.desk-v1-home-row', { timeout: 8000 });
+  }
+  await gotoHome();
+  const rowSel = `.desk-v1-home-row[data-campaign-id="${campA}"]`;
+  await page.waitForSelector(rowSel, { timeout: 4000 });
+  const rowStage = await text(page, `${rowSel} .desk-v1-home-row-stage`);
+  const rowPace = await text(page, `${rowSel} .desk-v1-home-row-pace`);
+  /Active/.test(rowStage) && /on track/i.test(rowPace)
+    ? ok(`Home: the new campaign's row reads "${rowStage}" · "${rowPace}"`)
+    : fail(`Home: row not Active · on track: stage=${JSON.stringify(rowStage)} pace=${JSON.stringify(rowPace)}`);
+  await page.screenshot({ path: resolve(SHOT_DIR, 'r2_13_journey_home_active_1440.png') });
+
+  // ── Term end (fixture clock) -> Needs-you `Retro ready` ───────────────────
+  // The product has no clock of its own and the backend retro run is not wired
+  // to the Desk fixtures, so "the term ended and the retro ran" is stood in by
+  // seeding what that run would have written: the term dates moved 61 days
+  // back, three ledger rows for the term, a closed retro keyed
+  // `<campaign>:<term>` (fixtures.js RETROS) and two proposed findings (F7,
+  // F8) on this project. The agent's Suggest reply is pointed at those same
+  // ids (plus an invented F99), so the later `Based on` check exercises the
+  // confirmed/rejected/invented split on the journey's own data.
+  const metricName = 'clicks';
+  await page.evaluate(({ id, starts, ends, posts }) => {
+    const fx = window.DeskV1Fixtures;
+    const c = fx.campaigns.find((x) => x.id === id);
+    c.term.starts = starts; c.term.ends = ends;
+    posts.forEach((at, i) => fx.ledger.push({
+      id: `post-${id}-${i + 1}`, piece_id: `piece-${id}-${i + 1}`, format: i === 2 ? 'image' : 'post', account: 'ch-x-ron',
+      campaign_id: id, project_id: c.projectId, term: 1, platform: 'x', voice: 'Ron (first person)', cost: 0.015,
+      published_at: at, outcomes: [],
+    }));
+    const mk = (fid, dimension, arms, ratio) => ({
+      id: fid, project_id: c.projectId, scope: 'project', dimension, arms, account: 'x:ron', metric: 'clicks',
+      effect: { ratio, direction: 'a>b' }, evidence: [{ campaign_id: id, term: 1, n_a: 14, n_b: 11 }],
+      n_total: 25, confidence: 'low', state: 'proposed', origin: 'unattended', decided_at: null, decided_by: null,
+    });
+    fx.playbook.findings.push(mk('F7', 'format', { a: 'post', b: 'image' }, 1.8), mk('F8', 'slot', { a: 'Tue/Thu 08-10', b: 'other slots' }, 2.1));
+    fx.retros[`${id}:1`] = {
+      campaign_id: id, project_id: c.projectId, term: 1, status: 'closed', computed_at: new Date().toISOString(),
+      metric: 'clicks', goal: { metric: 'trial downloads', target: 500, actual: 140, baseline: 0 },
+      spend: { publishing: 0.05, media_cost: 0, total: 0.05, ceiling: null, cost_per_outcome: 0.0004 },
+      dimensions: [
+        { dimension: 'format', verdict: 'finding', confidence: 'low', arms: { a: 'post', b: 'image' }, effect: { ratio: 1.8, direction: 'a>b' }, n_total: 25, evidence: [{ campaign_id: id, term: 1, n_a: 14, n_b: 11 }] },
+        { dimension: 'slot', verdict: 'finding', confidence: 'low', arms: { a: 'Tue/Thu 08-10', b: 'other slots' }, effect: { ratio: 2.1, direction: 'a>b' }, n_total: 25, evidence: [{ campaign_id: id, term: 1, n_a: 14, n_b: 11 }] },
+        { dimension: 'angle', verdict: 'too_few_campaigns', text: 'Too few campaigns to tell (1 and 1; need 3 each)' },
+      ],
+      summary: 'Term 1 closed: 140 of 500 trial downloads, $0.05 spent.',
+      findings: ['F7', 'F8'],
+    };
+    fx.suggestReply = {
+      what: [{ because: ['F7'] }, { because: ['F8', 'F99'] }, { because: 'untested' }],
+      when: { weekday: 2, time: '09:00', because: ['F8'] },
+      where: { because: 'untested' },
+    };
+  }, {
+    id: campA, starts: iso(new Date(Date.now() - 61 * DAY)), ends: iso(new Date(Date.now() - DAY)),
+    posts: [0, 1, 2].map((i) => new Date(Date.now() - (50 - i * 10) * DAY).toISOString()),
+  });
+  await page.evaluate(() => window.deskV1Nav('home'));
+  await page.waitForSelector(rowSel, { timeout: 8000 });
+  const needsYou = await text(page, `${rowSel} .desk-v1-home-row-needsyou`);
+  /Retro ready: 2 findings to confirm/.test(needsYou)
+    ? ok(`term end -> Home Needs-you reads "${needsYou}"`)
+    : fail(`term end -> Needs-you pill wrong: ${JSON.stringify(needsYou)}`);
+  await page.screenshot({ path: resolve(SHOT_DIR, 'r2_13_journey_home_retro_ready_1440.png') });
+
+  // ── Retro ready -> Goal: paste per-post numbers ───────────────────────────
+  await page.click(`${rowSel} .desk-v1-home-needsyou-pill`);
+  await page.waitForSelector('[data-retro-section] [data-retro-paste]', { timeout: 8000 });
+  const retroHead = await text(page, '.desk-v1-retro-title');
+  /Retro · Term 1/.test(retroHead)
+    ? ok(`Needs-you pill -> ① Goal shows "${retroHead}" with 2 proposed findings`)
+    : fail(`Needs-you pill landed wrong: ${JSON.stringify(retroHead)}`);
+  await page.fill('[data-retro-paste]', '120, 80, 45');
+  await page.click('[data-retro-paste-fill]');
+  const gridVals = await page.$$eval('.desk-v1-retro-grid-value', (els) => els.map((e) => e.textContent.trim()));
+  gridVals.join() === '120,80,45'
+    ? ok(`Goal: pasted per-post ${metricName} fill the grid in order: ${gridVals.join(' · ')}`)
+    : fail(`Goal: paste fill wrong: ${JSON.stringify(gridVals)}`);
+  await page.screenshot({ path: resolve(SHOT_DIR, 'r2_13_journey_retro_1440.png') });
+
+  // ── Confirm one finding, Reject one ───────────────────────────────────────
+  await page.click('[data-finding-id="F7"] [data-finding-confirm]');
+  await page.click('[data-finding-id="F8"] [data-finding-reject]');
+  const fstates = await page.evaluate(() => Object.fromEntries(['F7', 'F8'].map((f) => [f, window.DeskV1Fixtures.playbook.findings.find((x) => x.id === f).state])));
+  const toConfirm = await page.evaluate((id) => window.deskV1RetroFindingsToConfirm(id), campA);
+  fstates.F7 === 'confirmed' && fstates.F8 === 'rejected' && toConfirm === 0
+    ? ok(`Retro: Confirm F7, Reject F8 -> ${JSON.stringify(fstates)}, 0 left to confirm`)
+    : fail(`Retro decisions wrong: ${JSON.stringify(fstates)} left=${toConfirm}`);
+  const stub = await text(page, '.desk-v1-retro-findings .desk-v1-stub-inline');
+  /0 proposed findings/.test(stub) ? ok(`Retro: findings list reads "${stub}"`) : fail(`Retro list wrong after decisions: ${JSON.stringify(stub)}`);
+
+  // ── Renew term ────────────────────────────────────────────────────────────
+  await gotoStop(page, 'launch');
+  await page.waitForSelector('[data-renew-term]:not([disabled])', { timeout: 4000 });
+  await page.click('[data-renew-term]');
+  await page.waitForFunction(() => /Term 2/.test((document.querySelector('[data-launch-term]') || {}).textContent || ''), null, { timeout: 4000 });
+  const termInfo = await campOf(page, campA, (c) => ({ index: c.term.index, approvals: (c.approvals || []).length }));
+  termInfo.index === 2 && termInfo.approvals >= 1
+    ? ok(`Renew term: "${await text(page, '[data-launch-term]')}" with a new approval record (${termInfo.approvals})`)
+    : fail(`Renew term wrong: ${JSON.stringify(termInfo)}`);
+
+  // ── How: Suggest cites the confirmed finding, never the rejected one ──────
+  await gotoStop(page, 'how');
+  await page.click('[data-how-suggest]');
+  await page.waitForFunction(() => /suggested 3 pieces/.test(document.body.textContent || ''), null, { timeout: 6000 });
+  await gotoStop(page, 'what');
+  await page.waitForSelector('.desk-v1-suggested-list', { timeout: 4000 });
+  const chips = await page.$$eval('.desk-v1-suggested-list [data-because-finding]', (els) => els.map((e) => e.textContent.trim()));
+  const trying = await page.$$eval('.desk-v1-suggested-list [data-because-trying]', (els) => els.length);
+  chips.join() === 'Based on F7 ›' && trying === 1
+    ? ok(`What: Suggest shows ${JSON.stringify(chips)} + ${trying} "Trying" — F8 (rejected) and F99 (invented) show no chip`)
+    : fail(`What: Based-on chips wrong: ${JSON.stringify(chips)} trying=${trying}`);
+  await page.screenshot({ path: resolve(SHOT_DIR, 'r2_13_journey_based_on_1440.png') });
+  await page.click('[data-because-finding="F7"]');
+  await page.waitForSelector('.desk-v1-project', { timeout: 8000 });
+  ok('Based on F7 › opens the project page (Playbook)');
+
+  // ── Delete a never-started Draft (Undo) ──────────────────────────────────
+  await page.click('.desk-v1-project-newcamp-btn');
+  await page.waitForSelector('.desk-v1-map-stop[data-stop="how"]', { timeout: 8000 }); // ① Brief — never touched
+  const campB = await lastCampaignId(page);
+  await page.click('[data-camp-more-btn]');
+  await page.waitForSelector('.desk-v1-camp-cardmenu', { timeout: 4000 });
+  const menuText = (await page.textContent('.desk-v1-camp-cardmenu').catch(() => '') || '');
+  /Delete draft/.test(menuText) && !/Archive/.test(menuText)
+    ? ok('never-started Draft: More menu offers Delete draft (not Archive)')
+    : fail(`never-started Draft: More menu wrong: ${JSON.stringify(menuText)}`);
+  // R2-3b: no confirm sheet for a Draft — the Undo toast is the safety.
+  await page.click('.desk-v1-camp-cardmenu [data-menu-delete-draft]');
+  await page.waitForSelector('.toast', { timeout: 4000 });
+  // Toasts stack rather than replace, so always act on the LAST one.
+  const lastToast = () => page.locator('.toast').last();
+  const toastText = (await lastToast().textContent().catch(() => '') || '');
+  /Deleted/.test(toastText)
+    ? ok(`Delete: toast reads "${toastText.trim()}"`)
+    : fail(`Delete: toast wrong: ${JSON.stringify(toastText)}`);
+  (await page.evaluate((id) => !window.DeskV1Fixtures.campaigns.some((c) => c.id === id), campB))
+    ? ok('Delete: campaign removed from the fixture')
+    : fail('Delete: campaign still present after confirm');
+  // Delete navigated to Home synchronously; Undo only restores the fixture.
+  await lastToast().locator('.toast-btn.primary').click();
+  await page.waitForTimeout(50);
+  (await page.evaluate((id) => window.DeskV1Fixtures.campaigns.some((c) => c.id === id), campB))
+    ? ok('Undo: campaign restored to the fixture')
+    : fail('Undo: campaign was not restored');
+  await page.evaluate(() => window.deskV1Nav('project', { projectId: 'engulfing_scanner' }));
+  await page.waitForSelector('.desk-v1-project', { timeout: 8000 });
+  (await page.$(`.desk-v1-project-camp-card[data-campaign-id="${campB}"]`))
+    ? ok('Undo: the never-started Draft is visible on the project page again')
+    : fail('Undo: draft card did not reappear on the project page');
   reportUncaught(pageErrors, '[journey]');
   await ctx.close();
 }
