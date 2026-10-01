@@ -18,7 +18,10 @@
 // command (`deskV1CalendarRescheduleVersion`), so "one value, two views" holds
 // and the approval-window gate is the calendar's, not a second copy.
 //
-// Fixtures only (ground rule 3): nothing here calls a backend route.
+// Reads come from DeskV1Store (the fixtures in demo mode, M1's pieces live).
+// The only write on this page is `＋ Add media`, which is desk-v1-what.js's own
+// (`deskV1WhatAddMedia`): live it is M21, demo local only. The publish time is
+// the calendar's reschedule command, wired in slice S6, not here.
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -87,9 +90,16 @@
     return ch ? DeskV1Kit.channelBadge(ch, {}) : '<span class="desk-v1-camp-nochannel">No channel</span>';
   }
 
+  // A real piece carries its own text (M13 `body`); the fixture's pieces do not
+  // and keep using `contentPreview`.
+  function _bodyExcerpt(body) {
+    const t = String(body || '').trim();
+    return t.length > 400 ? t.slice(0, 400).trimEnd() + '…' : t;
+  }
+
   function _copyHTML(fam) {
     const versions = fam.versions || [];
-    const excerpt = (_fx().contentPreview || {})[fam.id];
+    const excerpt = (_fx().contentPreview || {})[fam.id] || _bodyExcerpt(fam.body);
     const rows = versions.map((v) => {
       const claims = (v.claims || []).length;
       const action = v.state === 'needs_review'

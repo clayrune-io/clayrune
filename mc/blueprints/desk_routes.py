@@ -41,6 +41,7 @@ from mc import desk_brief as _brief
 from mc import desk_engines as _engines
 from mc import desk_engagement as _engagement
 from mc import desk_harvest as _harvest
+from mc import desk_pieces as _pieces
 from mc import desk_retro as _retro
 from mc import desk_voice_seed as _seed
 from mc.blueprints.secrets_routes import _require_human_passcode
@@ -65,7 +66,7 @@ PROJECTS_DIR: Path = Path('data/projects')
 
 
 def wire(*, load_projects_fn=None, load_project_fn=None, dispatch_fn=None,
-         store_path=None, signals_path=None, projects_dir=None):
+         store_path=None, signals_path=None, projects_dir=None, uploads_root=None):
     global load_projects, load_project, dispatch_agent, PROJECTS_DIR
     if load_projects_fn is not None:
         load_projects = load_projects_fn
@@ -80,6 +81,8 @@ def wire(*, load_projects_fn=None, load_project_fn=None, dispatch_fn=None,
         _desk.SIGNALS_PATH = signals_path
     if projects_dir is not None:
         PROJECTS_DIR = Path(projects_dir)
+    if uploads_root is not None:
+        _pieces.UPLOADS_ROOT = Path(uploads_root)
 
 
 def _int_arg(name: str, default: int, *, lo: int = 1, hi: int = 1000) -> int:
@@ -557,6 +560,88 @@ def delete_campaign(campaign_id):
     if not _desk.delete_campaign(campaign_id):
         return jsonify({'error': 'campaign not found'}), 404
     return jsonify({'ok': True})
+
+
+# ── Pieces, versions, assets, materials (R1-W S4; plan M13-M18, M21, M22) ─────
+#
+# Every answer is the v1 piece (`mc.desk_pieces.v1_piece`, the fixture's
+# `family` shape). These are reversible data writes, so an agent may make them
+# (an agent suggesting a piece is the point); what NO route here can do is
+# approve: a version PATCH refuses `approved`/`scheduled`/`sending`/... outright
+# (the human approve route is slice S7).
+
+def _piece_call(fn, *args, status=200, **kw):
+    try:
+        out = fn(*args, **kw)
+    except _pieces.PieceError as e:
+        return jsonify({'error': str(e)}), e.status
+    return jsonify(out), status
+
+
+@bp.route('/api/desk/pieces', methods=['GET'])
+def list_pieces():
+    return jsonify(_pieces.list_pieces(campaign_id=request.args.get('campaign_id') or None))
+
+
+@bp.route('/api/desk/pieces', methods=['POST'])
+def create_piece():
+    d = request.get_json(silent=True) or {}
+    return _piece_call(_pieces.create_piece, d.get('campaign_id'), d.get('kind'), d.get('title'),
+                       piece_id=d.get('id'), body=d.get('body'), word_count=d.get('word_count'),
+                       source=d.get('source'), claims=d.get('claims'), status=201)
+
+
+@bp.route('/api/desk/pieces/<piece_id>', methods=['PATCH'])
+def update_piece(piece_id):
+    return _piece_call(_pieces.update_piece, piece_id, request.get_json(silent=True) or {})
+
+
+@bp.route('/api/desk/pieces/<piece_id>', methods=['DELETE'])
+def delete_piece(piece_id):
+    try:
+        found = _pieces.delete_piece(piece_id)
+    except _pieces.PieceError as e:
+        return jsonify({'error': str(e)}), e.status
+    if not found:
+        return jsonify({'error': 'piece not found'}), 404
+    return jsonify({'ok': True})
+
+
+@bp.route('/api/desk/pieces/<piece_id>/versions', methods=['POST'])
+def add_piece_version(piece_id):
+    d = request.get_json(silent=True) or {}
+    return _piece_call(_pieces.add_version, piece_id, d.get('account_id'), body=d.get('body'),
+                       version_id=d.get('id'), fmt=d.get('format'), status=201)
+
+
+@bp.route('/api/desk/pieces/<piece_id>/versions/<version_id>', methods=['PATCH'])
+def update_piece_version(piece_id, version_id):
+    return _piece_call(_pieces.update_version, piece_id, version_id, request.get_json(silent=True) or {})
+
+
+# M21. Two bodies: JSON `{path, title?, id?}` attaches a file already under
+# data/uploads (a library file); multipart `file` saves an upload into the
+# material library's Uploads folder and attaches it.
+@bp.route('/api/desk/pieces/<piece_id>/assets', methods=['POST'])
+def add_piece_asset(piece_id):
+    if request.files.get('file') is not None:
+        f = request.files['file']
+        return _piece_call(_pieces.save_upload, piece_id, f.filename or '', f.stream,
+                           title=request.form.get('title') or None,
+                           asset_id=request.form.get('id') or None, status=201)
+    d = request.get_json(silent=True) or {}
+    return _piece_call(_pieces.add_asset, piece_id, path=d.get('path'), title=d.get('title'),
+                       asset_id=d.get('id'), status=201)
+
+
+@bp.route('/api/desk/pieces/<piece_id>/assets/<asset_id>', methods=['DELETE'])
+def remove_piece_asset(piece_id, asset_id):
+    return _piece_call(_pieces.remove_asset, piece_id, asset_id)
+
+
+@bp.route('/api/desk/materials', methods=['GET'])
+def materials():
+    return _piece_call(_pieces.materials, request.args.get('campaign_id') or None)
 
 
 # ── Generation engines (MC-1019; plan M26/M27) ───────────────────────────────

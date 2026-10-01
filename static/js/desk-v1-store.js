@@ -74,22 +74,26 @@
   }
 
   // M1 → the object shape `_fx()` has always returned. `channels` is the
-  // workspace's accounts, `families` its pieces (none until slice S4 builds the
-  // piece store, so [] here is the real answer, not a placeholder).
+  // workspace's accounts, `families` its pieces (the v1 piece store, slice S4;
+  // `pieces` is the same array under the name M1 gives it).
   function _fromWorkspace(ws) {
     const s = _emptyState();
     s.projects = Array.isArray(ws.projects) ? ws.projects : [];
     s.campaigns = Array.isArray(ws.campaigns) ? ws.campaigns : [];
     s.channels = Array.isArray(ws.accounts) ? ws.accounts : [];
     s.pieces = Array.isArray(ws.pieces) ? ws.pieces : [];
+    s.families = s.pieces;
     return s;
   }
 
   // JSON in, JSON out, and a thrown Error carrying the SERVER's message so a
-  // caller (run() below) can show the user why instead of "failed".
+  // caller (run() below) can show the user why instead of "failed". A FormData
+  // body (a file upload) goes as multipart: no Content-Type, the browser sets
+  // the boundary.
   async function api(method, url, body) {
     const init = { method, headers: {} };
-    if (body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
+    if (typeof FormData !== 'undefined' && body instanceof FormData) init.body = body;
+    else if (body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
     let res;
     try { res = await fetch(url, init); } catch (e) { throw new Error(`network error: ${e && e.message ? e.message : e}`); }
     let json = null;
