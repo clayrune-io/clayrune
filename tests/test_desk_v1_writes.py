@@ -131,14 +131,14 @@ def test_legacy_create_is_unchanged(client):
 def test_v1_patch_translates_words_in_and_out(client):
     client.post('/api/desk/campaigns?shape=v1', json=_draft())
     r = client.patch('/api/desk/campaigns/camp-draft-1?shape=v1',
-                     json={'state': 'active', 'projectId': 'beta',
+                     json={'state': 'paused', 'projectId': 'beta',
                            'plan': {'title': 'Beta push', 'accounts': ['x:ron']}})
     assert r.status_code == 200, r.get_json()
     out = r.get_json()
-    assert out['state'] == 'active' and out['projectId'] == 'beta'
+    assert out['state'] == 'paused' and out['projectId'] == 'beta'
     assert out['plan']['title'] == 'Beta push'
     stored = _stored('camp-draft-1')
-    assert stored['state'] == 'running' and stored['project_id'] == 'beta'
+    assert stored['state'] == 'paused' and stored['project_id'] == 'beta'
     assert stored['title'] == 'Beta push'                    # mirrored from plan.title
     client.patch('/api/desk/campaigns/camp-draft-1?shape=v1', json={'state': 'archived'})
     assert _stored('camp-draft-1')['state'] == 'dropped'
@@ -152,10 +152,18 @@ def test_v1_patch_only_touches_the_keys_it_names(client):
     assert stored['state'] == 'draft'
 
 
-def test_v1_patch_start_gate_still_applies(client):
-    client.post('/api/desk/campaigns?shape=v1', json=_draft(goal={'metric': 'signups', 'target': None}))
+def test_v1_patch_cannot_start_a_campaign(client):
+    # R1-W S2: Start is its own human route (POST .../start), not a state PATCH.
+    client.post('/api/desk/campaigns?shape=v1', json=_draft())
     r = client.patch('/api/desk/campaigns/camp-draft-1?shape=v1', json={'state': 'active'})
-    assert r.status_code == 400 and 'cannot start' in r.get_json()['error']
+    assert r.status_code == 400 and '/start' in r.get_json()['error']
+    assert _stored('camp-draft-1')['state'] == 'draft'
+
+
+def test_v1_start_gate_still_applies(client):
+    client.post('/api/desk/campaigns?shape=v1', json=_draft(goal={'metric': 'signups', 'target': None}))
+    r = client.post('/api/desk/campaigns/camp-draft-1/start')
+    assert r.status_code == 409 and 'cannot start' in r.get_json()['error']
     assert _stored('camp-draft-1')['state'] == 'draft'
 
 

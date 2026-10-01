@@ -175,10 +175,14 @@
       const prevRef = (camp.how && camp.how.agent) || null;
       if (nextRef === prevRef) return;
       const picked = (_choicesCache[project.id] || []).find((c) => c.ref === nextRef);
-      DeskV1Kit.commandBus.run({
+      const render = () => { if (typeof window.deskV1Render === 'function') window.deskV1Render(); };
+      window.DeskV1Store.write({
         label: `Set campaign agent to ${picked ? picked.name : nextRef}`,
-        do: () => { camp.how.agent = nextRef; if (typeof window.deskV1Render === 'function') window.deskV1Render(); },
-        undo: () => { camp.how.agent = prevRef; if (typeof window.deskV1Render === 'function') window.deskV1Render(); },
+        apply: () => { camp.how.agent = nextRef; render(); },
+        unapply: () => { camp.how.agent = prevRef; },
+        repaint: render,
+        request: () => window.deskV1PatchCampaign(camp, ['plan', 'how']),
+        undoRequest: () => window.deskV1PatchCampaign(camp, ['plan', 'how']),
       });
     };
   }
@@ -195,6 +199,20 @@
     } catch (e) { /* no Claydo on this surface — nothing to open */ }
   }
 
+  // R1-W S2: a Brief edit saved to the server (live only; the demo store has
+  // none). The whole `plan` and `how` go up (the server replaces each key). A
+  // refusal puts the old value back through `rollback` and says why. A widening
+  // is saved like any other edit: the server then reports the campaign as
+  // awaiting approval until a human approves it on Launch.
+  function _persist(camp, label, rollback, repaint) {
+    if (!window.DeskV1Store.live()) return;
+    window.deskV1PatchCampaign(camp, ['plan', 'how']).catch((e) => {
+      if (rollback) rollback();
+      DeskV1Kit.toast(`${label} was not saved: ${e && e.message ? e.message : e}`);
+      if (repaint) repaint();
+    });
+  }
+
   // Apply a limit edit. `get`/`set` read and write the one field; after `set`
   // a started campaign with an approval on file asks first if the edit WIDENS
   // it (the rule Launch's "Awaiting approval" applies, surfaced where the edit
@@ -204,12 +222,13 @@
     set(next);
     const bounds = window.deskV1CampaignBounds;
     const live = camp.state !== 'draft' && camp.state !== 'proposed' && camp.approval && camp.approval.bounds && typeof bounds === 'function';
-    if (!live || !DeskV1Kit.boundsWiden(camp.approval.bounds, bounds(camp))) { repaint(); return; }
+    const keep = () => { repaint(); _persist(camp, label, () => set(prev), repaint); };
+    if (!live || !DeskV1Kit.boundsWiden(camp.approval.bounds, bounds(camp))) { keep(); return; }
     DeskV1Kit.openConfirmSheet({
       title: `This widens what “${(camp.plan && camp.plan.title) || 'the campaign'}” can do`,
       body: `${label} goes beyond what was approved. It needs your approval again on Launch before it takes effect.`,
       note: 'An authorized user must confirm. Continue?',
-      onConfirm: repaint,
+      onConfirm: keep,
       onDecline: () => { set(prev); repaint(); },
     });
   }
@@ -218,11 +237,11 @@
     const how = camp.how;
 
     const stratEl = el.querySelector('[data-how-strategy]');
-    if (stratEl) stratEl.addEventListener('change', () => { how.strategy = stratEl.value.trim(); });
+    if (stratEl) stratEl.addEventListener('change', () => { const prev = how.strategy; how.strategy = stratEl.value.trim(); _persist(camp, 'Strategy', () => { how.strategy = prev; stratEl.value = prev || ''; }); });
     const angleEl = el.querySelector('[data-how-angle]');
-    if (angleEl) angleEl.addEventListener('change', () => { how.angle = angleEl.value.trim(); });
+    if (angleEl) angleEl.addEventListener('change', () => { const prev = how.angle; how.angle = angleEl.value.trim(); _persist(camp, 'Angle', () => { how.angle = prev; angleEl.value = prev || ''; }); });
     const neverClaimEl = el.querySelector('[data-how-never-claim]');
-    if (neverClaimEl) neverClaimEl.addEventListener('change', () => { how.never_claim = neverClaimEl.value.trim(); });
+    if (neverClaimEl) neverClaimEl.addEventListener('change', () => { const prev = how.never_claim; how.never_claim = neverClaimEl.value.trim(); _persist(camp, 'Never-claim list', () => { how.never_claim = prev; neverClaimEl.value = prev || ''; }); });
 
     // Every limit edit goes through _applyLimit (see above).
     const repaint = () => deskV1RenderHow(el, { campaignId: camp.id });
