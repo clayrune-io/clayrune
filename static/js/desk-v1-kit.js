@@ -266,7 +266,7 @@
     if (typeof opts.undo === 'function' && typeof window.showActionToast === 'function') {
       return window.showActionToast(esc(message), [
         { label: 'Undo', primary: true, onclick: opts.undo },
-      ], { dismissOnAction: true, key: opts.key });
+      ], { dismissOnAction: true, key: opts.key, autoDismissMs: opts.durationMs || 10000 });
     }
     if (typeof window.showToast === 'function') window.showToast(message, opts.durationMs);
     return null;

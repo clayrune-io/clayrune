@@ -21,6 +21,22 @@
     padding: 0 14px 20px 14px;
   }
 }
+/* MC-977 mobile G-3: the Desk's Undo toast (324x89 at the TOP, y10-99) sat
+   exactly over the crumb Back control (y46-72) for ~20s, and the tap landed on
+   the toast. On phone while the Desk is open it now lives at the BOTTOM, above
+   the tab bar, as one compact row (message + Undo) instead of a stacked 89px
+   card. Scoped to the Desk being open so every other toast keeps its place. */
+@media (max-width: 960px) {
+  body:has(.modal-window[data-modal-id="__desk"]) #toast-container {
+    top: auto; bottom: calc(60px + env(safe-area-inset-bottom, 0px));
+  }
+  body:has(.modal-window[data-modal-id="__desk"]) .toast.toast-action {
+    flex-direction: row; align-items: center; gap: 10px; padding: 6px 6px 6px 12px;
+  }
+  body:has(.modal-window[data-modal-id="__desk"]) .toast-action .toast-msg { margin-bottom: 0; }
+  body:has(.modal-window[data-modal-id="__desk"]) .toast-action .toast-actions { flex: 0 0 auto; }
+  body:has(.modal-window[data-modal-id="__desk"]) .toast-action .toast-btn { min-height: 44px; padding: 0 16px; }
+}
 /* app.css's .agent-line is styled for terminal-style agent transcripts
    (JetBrains Mono) — everywhere the Desk reuses it (kit's Posy box, T7's
    Results read, any future caller) it's product copy, not a log line (12a:
