@@ -2075,7 +2075,7 @@ def record_outcome(post_id: str, metric: str, value, *,
 # Lane states, same vocabulary static/js/desk-v1-engagement.js `LANES` matches
 # on: needs_you = Incoming, needs_reply = Suggested (reply drafted, awaiting
 # the human), sent = Sent. The others never count as needing anyone.
-ENGAGEMENT_STATES = ('needs_you', 'needs_reply', 'sent', 'reviewed', 'no_reply', 'stale')
+ENGAGEMENT_STATES = ('needs_you', 'needs_reply', 'sent', 'reviewed', 'no_reply', 'stale', 'ignored')
 ENGAGEMENT_SOURCES = ('our_posts', 'mentions', 'discussions')
 
 
@@ -2139,6 +2139,100 @@ def mark_engagement_read(item_id: str, *, at: str | None = None) -> dict | None:
             row['read_at'] = at or now_iso()
             _write_store(store)
         return dict(row)
+
+
+# What a person may set on a feed row by hand (R1-W S8, plan M23b). `sent` is
+# written only by `record_engagement_reply` (a reply that really went out) and
+# `stale` only by the reader, so neither is settable here.
+_ENGAGEMENT_SETTABLE_STATES = ('needs_you', 'needs_reply', 'reviewed', 'no_reply', 'ignored')
+_ENGAGEMENT_DRAFT_MAX = 2000
+
+
+def get_engagement_item(item_id: str) -> dict | None:
+    with _store_lock:
+        row = _read_store()['engagement']['items'].get(item_id)
+        return json.loads(json.dumps(row)) if row else None
+
+
+def update_engagement_item(item_id: str, patch: dict, *, by: str = 'human') -> dict | None:
+    """Apply a hand edit to one feed row: `state` (see `_ENGAGEMENT_SETTABLE_STATES`),
+    `assigned_to` (a name, or None to unassign), `taken_over` (bool) and `draft`
+    (`{text}`; empty text clears it). None when the row does not exist; ValueError
+    for a value the row may not take, with nothing written.
+
+    A draft is the proposed reply, never a sent one: saving one moves a
+    `needs_you` row to `needs_reply` (the Suggested lane) and clearing it moves
+    it back. A row someone has taken over takes no new draft (taking over
+    cancels the queued reply), and a row already `sent` takes no state change.
+    """
+    unknown = set(patch) - {'state', 'assigned_to', 'taken_over', 'draft'}
+    if unknown:
+        raise ValueError(f'cannot change {sorted(unknown)}: only state, assigned_to, taken_over and draft')
+    with _store_lock:
+        store = _read_store()
+        row = store['engagement']['items'].get(item_id)
+        if row is None:
+            return None
+        new = dict(row)
+        if 'state' in patch:
+            if patch['state'] not in _ENGAGEMENT_SETTABLE_STATES:
+                raise ValueError(f"state must be one of {list(_ENGAGEMENT_SETTABLE_STATES)}")
+            if row.get('state') == 'sent':
+                raise ValueError('this reply was already sent')
+            new['state'] = patch['state']
+        if 'assigned_to' in patch:
+            who = patch['assigned_to']
+            if who is not None and not (isinstance(who, str) and 0 < len(who.strip()) <= 40):
+                raise ValueError('assigned_to must be a name of 1-40 characters, or null')
+            new['assigned_to'] = who.strip() if who else None
+        if 'taken_over' in patch:
+            if not isinstance(patch['taken_over'], bool):
+                raise ValueError('taken_over must be true or false')
+            new['taken_over'] = patch['taken_over']
+        if 'draft' in patch:
+            draft = patch['draft']
+            text = ((draft or {}).get('text') if isinstance(draft, dict) else None)
+            if draft is not None and not isinstance(draft, dict):
+                raise ValueError('draft must be {text} or null')
+            if text is not None and not isinstance(text, str):
+                raise ValueError('draft text must be text')
+            text = (text or '').strip()
+            if len(text) > _ENGAGEMENT_DRAFT_MAX:
+                raise ValueError(f'a draft is at most {_ENGAGEMENT_DRAFT_MAX} characters')
+            if text and new.get('taken_over'):
+                raise ValueError('this thread is taken over: resume it before a draft is saved')
+            if row.get('state') == 'sent':
+                raise ValueError('this reply was already sent')
+            new['draft'] = {'text': text, 'by': by, 'at': now_iso()} if text else None
+            if 'state' not in patch:
+                if text and new.get('state') == 'needs_you':
+                    new['state'] = 'needs_reply'
+                elif not text and new.get('state') == 'needs_reply':
+                    new['state'] = 'needs_you'
+        if new.get('taken_over') and 'draft' not in patch and new.get('draft'):
+            # Taking over cancels the queued reply: nothing the agent drafted
+            # may be sent as if it were still wanted.
+            new['draft'] = None
+            if new.get('state') == 'needs_reply' and 'state' not in patch:
+                new['state'] = 'needs_you'
+        store['engagement']['items'][item_id] = new
+        _write_store(store)
+        return json.loads(json.dumps(new))
+
+
+def record_engagement_reply(item_id: str, receipt: dict, text: str) -> dict | None:
+    """A reply really went out: state `sent`, with what was sent and its receipt."""
+    with _store_lock:
+        store = _read_store()
+        row = store['engagement']['items'].get(item_id)
+        if row is None:
+            return None
+        row['state'] = 'sent'
+        row['draft'] = None
+        row['reply'] = {'text': text, 'post_id': receipt.get('post_id'),
+                        'permalink': receipt.get('permalink'), 'posted_at': receipt.get('posted_at')}
+        _write_store(store)
+        return json.loads(json.dumps(row))
 
 
 def record_read(*, platform: str, project_id: str | None, kind: str, resources: int,

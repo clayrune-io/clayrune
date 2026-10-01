@@ -42,6 +42,7 @@ from mc import desk_engines as _engines
 from mc import desk_engagement as _engagement
 from mc import desk_harvest as _harvest
 from mc import desk_pieces as _pieces
+from mc import desk_publish as _publish
 from mc import desk_retro as _retro
 from mc import desk_voice_seed as _seed
 from mc.blueprints.secrets_routes import _require_human_passcode
@@ -505,6 +506,48 @@ def campaign_results(campaign_id):
     return jsonify(out)
 
 
+# M12 (R1-W S8): the Retro section's read. GET never writes: an interim retro
+# never proposes (§10.1) and a closed term's findings are proposed by the POST
+# below, which skips any dimension already proposed for that term, so opening
+# the page twice cannot add a finding twice.
+def _retro_args():
+    term = request.args.get('term')
+    if term in (None, ''):
+        return None, request.args.get('metric') or 'clicks', None
+    try:
+        return int(term), request.args.get('metric') or 'clicks', None
+    except ValueError:
+        return None, '', (jsonify({'error': 'term must be a whole number'}), 400)
+
+
+@bp.route('/api/desk/campaigns/<campaign_id>/retro', methods=['GET'])
+def campaign_retro(campaign_id):
+    term, metric, bad = _retro_args()
+    if bad:
+        return bad
+    out = _retro.campaign_retro(campaign_id, term, metric=metric)
+    if out is None:
+        return jsonify({'error': 'campaign not found'}), 404
+    return jsonify(out)
+
+
+@bp.route('/api/desk/campaigns/<campaign_id>/retro', methods=['POST'])
+def propose_campaign_retro(campaign_id):
+    """Run the closed-term retro and propose its findings (origin 'unattended',
+    like every retro finding: only a human click in the Retro section confirms
+    one). Refused for a term still running."""
+    term, metric, bad = _retro_args()
+    if bad:
+        return bad
+    try:
+        out = _retro.propose_campaign_retro(campaign_id, term, metric=metric)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 409
+    if out is None:
+        return jsonify({'error': 'campaign not found'}), 404
+    return jsonify(out)
+
+
 # The three human approval actions (R1-W S2; plan M6/M7/M8). Each writes
 # `camp['approved']`, the record the publisher checks, so each is refused for an
 # unattended caller: an agent session may edit a campaign (PATCH) but can never
@@ -787,6 +830,153 @@ def mark_engagement_read(item_id):
     if row is None:
         return jsonify({'error': 'engagement item not found'}), 404
     return jsonify(row)
+
+
+# ── Conversations (R1-W S8, plan M23 / M23b / M24) ───────────────────────────
+#
+# The reading side above never writes. These are the three writes a person makes
+# on one feed row. What may cost or reach a stranger is human-only: Send posts to
+# a platform (a retyped dashboard passcode per call, like Start/Approve/Renew),
+# and `state`, `assigned_to` and `taken_over` are a person's. An agent may do one
+# thing here, `draft`, because a draft is a proposal a human still has to send.
+
+_AGENT_MAY_PATCH = {'draft'}
+
+
+def _parent_post(item: dict) -> Optional[dict]:
+    """The ledger row of OUR post this row answers, or None. `post_id` is only
+    set by the reader for a reply that sits under one of our own posts."""
+    pid = item.get('post_id')
+    if not pid:
+        return None
+    return next((r for r in _desk.list_ledger(limit=100000) if r.get('id') == pid), None)
+
+
+@bp.route('/api/desk/engagement/<item_id>', methods=['GET'])
+def get_engagement(item_id):
+    """One feed row with what the thread view needs next to it: our post it
+    answers (None when it is a mention or a discussion), and the draft."""
+    item = _desk.get_engagement_item(item_id)
+    if item is None:
+        return jsonify({'error': 'engagement item not found'}), 404
+    parent = _parent_post(item)
+    item['parent_post'] = ({'id': parent.get('id'), 'body': parent.get('body'),
+                            'url': parent.get('url'), 'published_at': parent.get('published_at'),
+                            'platform': parent.get('platform'), 'account': parent.get('account')}
+                           if parent else None)
+    return jsonify(item)
+
+
+@bp.route('/api/desk/engagement/<item_id>', methods=['PATCH'])
+def patch_engagement(item_id):
+    d = request.get_json(silent=True) or {}
+    unattended = is_unattended_caller()
+    if unattended and set(d) - _AGENT_MAY_PATCH:
+        return jsonify({'error': 'an unattended agent session may only save a draft on a '
+                                 'conversation: state, assignment and take-over are a '
+                                 'person\'s'}), 403
+    try:
+        row = _desk.update_engagement_item(item_id, d, by='agent' if unattended else 'human')
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 409
+    if row is None:
+        return jsonify({'error': 'engagement item not found'}), 404
+    return jsonify(row)
+
+
+# Which platforms a reply can go out on from here. The publisher is X-only
+# (`desk_publish.publish` refuses anything else), so a LinkedIn or web row has no
+# send path yet and says so rather than pretending to.
+_REPLY_PLATFORMS = ('x',)
+
+
+@bp.route('/api/desk/engagement/<item_id>/reply', methods=['POST'])
+def send_engagement_reply(item_id):
+    """Send a reply for real. Human-only, retyped passcode, one reply per row
+    (the publisher keys its receipt on the row, so a double click cannot post
+    twice). The text sent is `text` if given, else the saved draft.
+
+    A reply is not gated on its campaign being running: it is a person's own
+    click, authorised by the passcode, not a scheduled post toward the cadence a
+    campaign approval bounds."""
+    d = request.get_json(silent=True) or {}
+    if is_unattended_caller():
+        return jsonify({'error': 'this action needs a human: an unattended agent session '
+                                 'cannot send a reply'}), 403
+    refused = _require_human_passcode(d)
+    if refused:
+        return refused
+    item = _desk.get_engagement_item(item_id)
+    if item is None:
+        return jsonify({'error': 'engagement item not found'}), 404
+    if item.get('state') == 'sent':
+        return jsonify({'error': 'this reply was already sent'}), 409
+    if item.get('taken_over'):
+        return jsonify({'error': 'this thread is taken over: resume it before sending'}), 409
+    if item.get('platform') not in _REPLY_PLATFORMS:
+        return jsonify({'error': f'replies cannot be sent to {item.get("platform")} from here yet: '
+                                 'open the post on the platform and reply there',
+                        'open_url': item.get('url')}), 409
+    text = d.get('text')
+    if text is None:
+        text = (item.get('draft') or {}).get('text')
+    if not isinstance(text, str) or not text.strip():
+        return jsonify({'error': 'there is no reply to send: write one or ask for a draft'}), 400
+    text = text.strip()
+    if len(text) > _desk._ENGAGEMENT_DRAFT_MAX:
+        return jsonify({'error': f'a reply is at most {_desk._ENGAGEMENT_DRAFT_MAX} characters'}), 400
+    try:
+        receipt = _publish.publish(
+            {'id': f'reply-{item_id}', 'platform': item['platform'], 'body': text,
+             'in_reply_to': item.get('external_id')},
+            consumer='desk_reply', project_id=item.get('project_id'), unattended=False)
+    except _publish.PublishError as e:
+        return jsonify({'error': str(e)}), 502
+    row = _desk.record_engagement_reply(item_id, receipt, text)
+    return jsonify(row)
+
+
+@bp.route('/api/desk/engagement/<item_id>/suggest-reply', methods=['POST'])
+def suggest_engagement_reply(item_id):
+    """Ask the project's picked agent to draft (or redraft) a reply. 202 with the
+    session id; the agent saves its draft with PATCH, nothing is sent."""
+    d = request.get_json(silent=True) or {}
+    item = _desk.get_engagement_item(item_id)
+    if item is None:
+        return jsonify({'error': 'engagement item not found'}), 404
+    if item.get('state') == 'sent':
+        return jsonify({'error': 'this reply was already sent'}), 409
+    if item.get('taken_over'):
+        return jsonify({'error': 'this thread is taken over: resume it before asking for a draft'}), 409
+    pid = item.get('project_id')
+    project = load_project(pid) if (load_project and pid) else None
+    if project is None:
+        return jsonify({'error': f'project {pid!r} not found'}), 404
+    camp = next((c for c in _desk.list_campaigns() if c.get('id') == item.get('campaign_id')), None)
+    agent_ref = _desk_agent_ref(project, camp)
+    if not agent_ref:
+        return _pick_agent_error(project)
+    if dispatch_agent is None:
+        return jsonify({'error': 'dispatch not wired'}), 503
+    voice = next((v for v in _desk.voice_names() if _brief.platform_for(v) == item.get('platform')), None)
+    parent = _parent_post(item)
+    note = d.get('note')
+    brief = _brief.build_reply_brief(
+        item, parent_text=(parent or {}).get('body'), voice=voice, campaign=camp,
+        project_name=project.get('name'),
+        note=note.strip()[:1000] if isinstance(note, str) and note.strip() else None)
+    try:
+        session_id = dispatch_agent(
+            pid, brief, '',
+            display_task=f'Draft a reply to {item.get("author") or "a conversation"}',
+            character=agent_ref,
+            source='agent', strict_character=True)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        _log(f'[desk] reply-draft dispatch failed for {item_id}: {e}')
+        return jsonify({'error': f'dispatch failed: {e}'}), 502
+    return jsonify({'ok': True, 'session_id': session_id}), 202
 
 
 @bp.route('/api/desk/engagement/poll', methods=['POST'])

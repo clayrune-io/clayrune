@@ -6,13 +6,14 @@
 // already established for their own campaign-page hooks — desk-v1-results.js
 // itself never branches on retro internals.
 //
-// Fixtures only (ground rule 3, same as desk-v1-campaign.js's own banner):
-// every Confirm/Edit/Reject/Don't-suggest-again mutates the in-memory
-// `DeskV1Fixtures.playbook` object directly through DeskV1Kit.commandBus.
-// The real `/api/desk/findings/*` routes (R1-L, merged) exist for whenever a
-// later ticket wires the Desk off fixtures entirely; this ticket's ids
-// ('F1'..'F4') are frontend-only and were never posted through them, so
-// calling those routes here would 404 against an empty server-side store.
+// desk_v1_live OFF (DEMO): every Confirm/Edit/Reject/Don't-suggest-again mutates
+// the in-memory `DeskV1Fixtures.playbook` object directly through
+// DeskV1Kit.commandBus. This ticket's ids ('F1'..'F4') are frontend-only and were
+// never posted through the real `/api/desk/findings/*` routes, so calling those
+// here would 404 against an empty server-side store: demo makes NO route call.
+//
+// desk_v1_live ON (R1-W S8, docs/desk_v1/R1W_WIRING_PLAN.md M12): the retro,
+// its per-post grid and its findings are the server's (see "Live data" below).
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -35,7 +36,7 @@
   function _ledgerRows(camp, retro) {
     const term = (retro && retro.term) || (camp.term && camp.term.index) || 1;
     return (_fx().ledger || [])
-      .filter((r) => r.campaign_id === camp.id && r.term === term)
+      .filter((r) => r.campaign_id === camp.id && (r.term || 1) === term)
       .slice()
       .sort((a, b) => (a.published_at < b.published_at ? -1 : 1));
   }
@@ -94,6 +95,143 @@
     return pairs.join(',');
   }
 
+  // ── Live data (R1-W S8, M12) ─────────────────────────────────────────────
+  // desk_v1_live ON: the retro is `GET /api/desk/campaigns/<id>/retro`, the
+  // per-post grid is the project's ledger (`GET /api/desk/ledger`), the
+  // findings come inside the retro, and every change is a route call.
+  // `Run retro now` on a closed term is the POST that proposes findings; a GET
+  // never writes. Nothing here runs with the flag off.
+  const _lv = {};   // retro key -> { phase: loading|ready|error, error, at }
+  const _hosts = {};   // retro key -> the mount that asked last (a read that lands after a re-mount repaints that one)
+  function _isLive() { return window.DeskV1Store.live(); }
+
+  function _adoptRetro(camp, r) {
+    const fx = _fx();
+    fx.retros = fx.retros || {};
+    fx.retros[_retroKey(camp)] = {
+      term: r.term, status: r.status, metric: r.metric, goal: r.goal || {}, spend: r.spend || {},
+      dimensions: r.dimensions || [], summary: r.summary || '', findings: r.findings || [],
+    };
+    const pb = _playbook();
+    pb.findings = pb.findings || [];
+    (r.finding_rows || []).forEach((f) => {
+      const i = pb.findings.findIndex((x) => x.id === f.id);
+      if (i >= 0) pb.findings[i] = f; else pb.findings.push(f);
+    });
+  }
+
+  async function _fetchRetro(camp) {
+    const S = window.DeskV1Store;
+    const r = await S.api('GET', '/api/desk/campaigns/' + encodeURIComponent(camp.id) + '/retro');
+    if (r && r.status === 'closed' && camp.projectId) {
+      // The grid's rows: this project's newest ledger rows, replacing the ones held for it.
+      const rows = await S.api('GET', '/api/desk/ledger?limit=1000&project_id=' + encodeURIComponent(camp.projectId));
+      const fx = _fx();
+      fx.ledger = (fx.ledger || []).filter((x) => x.project_id !== camp.projectId).concat(Array.isArray(rows) ? rows : []);
+    }
+    _adoptRetro(camp, r);
+  }
+
+  function _loadRetro(hostEl, camp) {
+    const key = _retroKey(camp);
+    _hosts[key] = hostEl;
+    const prev = _lv[key];
+    _lv[key] = prev && prev.phase === 'ready' ? Object.assign({}, prev, { inflight: true }) : { phase: 'loading', inflight: true };
+    _fetchRetro(camp).then(() => { _lv[key] = { phase: 'ready', at: Date.now() }; })
+      .catch((e) => { _lv[key] = { phase: 'error', error: e && e.message ? e.message : String(e) }; })
+      .then(() => { const h = _hosts[key]; if (h && h.isConnected) _renderRetroSection(h, camp); });
+  }
+
+  // Paints "loading" / the error INSTEAD of the section and returns true; false
+  // once the retro is there. An older read is refreshed behind the one on screen,
+  // never while a finding is being edited.
+  function _retroGate(hostEl, camp) {
+    const key = _retroKey(camp);
+    _hosts[key] = hostEl;
+    const e = _lv[key];
+    if (!e) _loadRetro(hostEl, camp);
+    else if (e.phase === 'ready' && !e.inflight && Date.now() - e.at > 60000 && !_editingId) _loadRetro(hostEl, camp);
+    const cur = _lv[key];
+    if (cur.phase === 'ready') return false;
+    if (cur.phase === 'error') {
+      hostEl.innerHTML = `<div class="desk-v1-retro" data-retro-section data-retro-error>
+        <div class="desk-v1-retro-head"><span class="desk-v1-retro-title">Retro</span></div>
+        <div class="desk-v1-stub-inline">Could not load the retro: ${esc(cur.error)}
+          <button type="button" class="desk-v1-retro-btn" data-retro-retry>Try again</button></div></div>`;
+      hostEl.querySelector('[data-retro-retry]').onclick = () => { delete _lv[key]; _renderRetroSection(hostEl, camp); };
+    } else {
+      hostEl.innerHTML = '<div class="desk-v1-retro" data-retro-section data-retro-loading><div class="desk-v1-retro-head"><span class="desk-v1-retro-title">Retro</span></div><div class="desk-v1-stub-inline">Loading the retro…</div></div>';
+    }
+    return true;
+  }
+
+  function _liveRunRetro(hostEl, camp) {
+    const S = window.DeskV1Store;
+    return S.run({
+      label: 'Ran the retro',
+      apply: () => {}, unapply: () => {},
+      repaint: () => _renderRetroSection(hostEl, camp),
+      irreversible: (r) => { const n = (r && r.findings || []).length; return n ? `Retro run: ${n} finding${n === 1 ? '' : 's'} to confirm.` : 'Retro run: no finding cleared the bar.'; },
+      request: async () => {
+        const r = await S.api('POST', '/api/desk/campaigns/' + encodeURIComponent(camp.id) + '/retro');
+        _adoptRetro(camp, r);
+        _renderRetroSection(hostEl, camp);
+        return r;
+      },
+    });
+  }
+
+  // One finding decision. Confirm / Reject / Don't-suggest are a person's: the
+  // server refuses an unattended caller. The server's finding replaces the local
+  // fields; a refusal leaves the card as it was and says why.
+  function _liveDecideFinding(f, label, route, body, hostEl, camp) {
+    const S = window.DeskV1Store;
+    const prev = JSON.parse(JSON.stringify(f));
+    return S.run({
+      label,
+      apply: () => {},
+      unapply: () => { Object.assign(f, prev); },
+      repaint: () => _renderRetroSection(hostEl, camp),
+      irreversible: true,
+      request: async () => {
+        const r = await S.api('POST', `/api/desk/findings/${encodeURIComponent(f.id)}/${route}`, Object.assign({ decided_by: 'human' }, body));
+        if (r && typeof r === 'object') Object.assign(f, r);
+        _editingId = null;
+        _renderRetroSection(hostEl, camp);
+        return r;
+      },
+    });
+  }
+
+  // Typed per-post numbers go to the ledger one POST each (the ledger keeps both
+  // a typed and a read number for a post, so a repeat is only sent when it
+  // differs), then the retro is read again: its dimensions moved with them.
+  function _liveFillGrid(camp, retro, values, hostEl) {
+    const S = window.DeskV1Store;
+    const rows = _ledgerRows(camp, retro);
+    const metric = retro.metric || 'clicks';
+    const todo = [];
+    for (let i = 0; i < Math.min(values.length, rows.length); i++) {
+      if (!isFinite(values[i])) continue;
+      if (_outcomeValue(rows[i], metric) !== values[i]) todo.push([rows[i], values[i]]);
+    }
+    if (!todo.length) return Promise.resolve({ ok: true });
+    return S.run({
+      label: `Filled ${todo.length} per-post ${metric} value${todo.length === 1 ? '' : 's'}`,
+      apply: () => {}, unapply: () => {},
+      repaint: () => _renderRetroSection(hostEl, camp),
+      irreversible: true,
+      request: async () => {
+        for (const [row, v] of todo) {
+          const upd = await S.api('POST', `/api/desk/ledger/${encodeURIComponent(row.id)}/outcome`, { metric, value: v, source: 'manual' });
+          if (upd && typeof upd === 'object') { const i = _fx().ledger.findIndex((x) => x.id === upd.id); if (i >= 0) _fx().ledger[i] = upd; }
+        }
+        await _fetchRetro(camp);
+        _renderRetroSection(hostEl, camp);
+      },
+    });
+  }
+
   // ── dimension table (§10.1) — reads the retro's OWN precomputed rows
   // (`RETRO_DIMENSIONS` on kit.js supplies only the label/note; the verdict,
   // arms and effect are the retro's, same "code computes, this file only
@@ -150,6 +288,7 @@
     const metric = retro.metric || 'clicks';
     const values = String(text || '').split(/[\n,]+/).map((s) => s.trim()).filter((s) => s !== '').map(Number);
     if (!values.length) return;
+    if (_isLive()) { _liveFillGrid(camp, retro, values, hostEl); return; }
     const n = Math.min(values.length, rows.length);
     const prevOutcomes = rows.slice(0, n).map((r) => (r.outcomes || []).slice());
     DeskV1Kit.commandBus.run({
@@ -215,6 +354,10 @@
   }
 
   function _confirmFinding(f, editedText, hostEl, camp) {
+    if (_isLive()) {
+      _liveDecideFinding(f, `Confirmed finding ${f.id}`, 'confirm', editedText != null ? { edited_text: editedText } : {}, hostEl, camp);
+      return;
+    }
     const prev = { state: f.state, origin: f.origin, decided_at: f.decided_at, decided_by: f.decided_by, edited_text: f.edited_text };
     DeskV1Kit.commandBus.run({
       label: `Confirmed finding ${f.id}`,
@@ -236,6 +379,11 @@
   // suppression) lives on the project page's Playbook, R2-16 — not this
   // section.
   function _rejectFinding(f, hostEl, camp, permanent) {
+    if (_isLive()) {
+      _liveDecideFinding(f, permanent ? `Won’t suggest finding ${f.id} again` : `Rejected finding ${f.id}`,
+        permanent ? 'dont-suggest-again' : 'reject', {}, hostEl, camp);
+      return;
+    }
     const prev = { state: f.state, decided_at: f.decided_at, decided_by: f.decided_by };
     const rejections = _playbook().rejections;
     let added;
@@ -306,7 +454,7 @@
     const spend = retro.spend || {};
     const closed = retro.status === 'closed';
     return `
-      <div class="desk-v1-retro-goal">${esc(goal.actual)} of ${esc(goal.target)} ${esc(goal.metric || '')}</div>
+      <div class="desk-v1-retro-goal">${goal.actual == null ? 'No goal number recorded' : esc(goal.actual)} of ${goal.target == null ? 'n/a' : esc(goal.target)} ${esc(goal.metric || '')}</div>
       <div class="desk-v1-retro-summary">${esc(retro.summary || '')}</div>
       <div class="desk-v1-retro-spend">
         Spend: ${esc(_money(spend.total))}${spend.ceiling != null ? ` of ${esc(_money(spend.ceiling))}` : ''}
@@ -320,6 +468,7 @@
 
   function _renderRetroSection(hostEl, camp) {
     if (!hostEl) return;
+    if (_isLive() && _retroGate(hostEl, camp)) return;
     const retro = _retroFor(camp);
     if (!retro) { hostEl.innerHTML = ''; return; }
     const closed = retro.status === 'closed';
@@ -342,9 +491,12 @@
         <div class="desk-v1-retro-head">
           <span class="desk-v1-retro-title">Retro · Term ${esc(retro.term)}</span>
           <span class="desk-v1-retro-status" data-status="${esc(retro.status)}">${closed ? 'Closed' : 'Interim'}</span>
+          ${(_isLive() && closed) ? '<button type="button" class="desk-v1-retro-btn desk-v1-retro-btn--primary" data-retro-propose title="Looks for findings in this term and proposes any that clear the bar. Nothing changes until you confirm one.">Run retro now</button>' : ''}
         </div>
         ${_bodyHTML(camp, retro)}
       </div>`;
+    const proposeBtn = hostEl.querySelector('[data-retro-propose]');
+    if (proposeBtn) proposeBtn.onclick = () => { proposeBtn.disabled = true; _liveRunRetro(hostEl, camp).then(() => { if (hostEl.isConnected) _renderRetroSection(hostEl, camp); }); };
     const gridBtn = hostEl.querySelector('[data-retro-paste-fill]');
     if (gridBtn) gridBtn.onclick = () => {
       const ta = hostEl.querySelector('[data-retro-paste]');
