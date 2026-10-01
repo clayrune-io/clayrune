@@ -2141,6 +2141,8 @@ _bp_desk.wire(
     # Needed for the incognito exclusion in the voice seeder — see
     # desk_voice_seed.incognito_dirs. The seeder refuses to guess it.
     projects_dir=DATA_DIR,
+    # Asset paths a piece may carry (`data/uploads`, the /api/serve-image root).
+    uploads_root=UPLOADS_DIR,
 )
 app.register_blueprint(_bp_desk.bp)
 

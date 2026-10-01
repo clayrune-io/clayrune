@@ -626,19 +626,46 @@
 
   // Save to What: the draft is handed to review. Placed versions still in
   // drafting / planned become `needs_review`; a piece with none carries the
-  // state on its draft. Returns the inverse.
+  // state on its draft. Returns the inverse; the inverse also carries what it
+  // changed (`changed`: [{id, from}], `draftFrom`) for persistInReview.
   function markInReview(fam) {
     const draft = fam.draft;
     const prev = { status: draft.status, states: (fam.versions || []).map((v) => [v, v.state]) };
+    const changed = [];
     draft.status = 'in_review';
-    (fam.versions || []).forEach((v) => { if (v.state === 'drafting' || v.state === 'planned') v.state = 'needs_review'; });
-    return () => { draft.status = prev.status; prev.states.forEach(([v, s]) => { v.state = s; }); };
+    (fam.versions || []).forEach((v) => {
+      if (v.state === 'drafting' || v.state === 'planned') { changed.push({ id: v.id, from: v.state }); v.state = 'needs_review'; }
+    });
+    const undo = () => { draft.status = prev.status; prev.states.forEach(([v, s]) => { v.state = s; }); };
+    undo.changed = changed;
+    undo.draftFrom = prev.status;
+    return undo;
+  }
+
+  // R1-W S4 (live only; resolves null at once in demo mode): markInReview's
+  // server side. Each version it moved goes through M18 (drafting|planned ->
+  // needs_review, never approved), the piece's draft status through M15;
+  // `reverse` writes the previous values back (the Undo). Bodies are NOT sent:
+  // the writer's tabs are canned text until Studio itself is wired, and a body
+  // PATCH here would overwrite a version's real text with it.
+  async function persistInReview(fam, undoMark, reverse) {
+    const store = window.DeskV1Store;
+    if (!store || !store.live() || !undoMark) return null;
+    const base = '/api/desk/pieces/' + encodeURIComponent(fam.id);
+    const queue = window.deskV1QueuePiece || ((id, fn) => fn());
+    return queue(fam.id, async () => {
+      for (const c of undoMark.changed || []) {
+        await store.api('PATCH', `${base}/versions/${encodeURIComponent(c.id)}`, { state: reverse ? c.from : 'needs_review' });
+      }
+      await store.api('PATCH', base, { draft_status: reverse ? (undoMark.draftFrom || null) : 'in_review' });
+      return null;
+    });
   }
 
   window.deskV1RenderStudio = deskV1RenderStudio;
   window.deskV1RenderStoryboard = deskV1RenderStoryboard;
   window.DeskV1Studio = {
     captureAvailable, sourceBodyHTML, wireSourceBody,
-    ensureStoryboard, ensureDraft, writerHTML, wireWriter, markInReview,
+    ensureStoryboard, ensureDraft, writerHTML, wireWriter, markInReview, persistInReview,
   };
 })();

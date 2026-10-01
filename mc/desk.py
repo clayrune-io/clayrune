@@ -141,6 +141,9 @@ def _empty_store() -> dict:
         # read outcome per project+platform so a gap is a recorded fact, not
         # an absence. See mc/desk_engagement.py.
         'engagement': {'items': {}, 'reads': [], 'coverage': {}},
+        # R1-W S4: the v1 piece store (pieces keyed by id, each with its
+        # versions[] and assets[]). See mc/desk_pieces.py.
+        'pieces': {},
     }
 
 
@@ -265,6 +268,7 @@ def _read_store() -> dict:
     data.setdefault('presences', {})
     data.setdefault('playbook', {'findings': {}, 'rejections': []})
     data.setdefault('engagement', {'items': {}, 'reads': [], 'coverage': {}})
+    data.setdefault('pieces', {})
     return _migrate_store(data)
 
 
@@ -1563,6 +1567,11 @@ def delete_campaign(campaign_id: str) -> bool:
         if campaign_id not in store['campaigns']:
             return False
         del store['campaigns'][campaign_id]
+        # A deleted campaign takes its pieces with it (R1-W S4): nothing else can
+        # reach them, and an orphan would still show up in M1's `pieces`.
+        pieces = store.get('pieces') or {}
+        for pid in [k for k, p in pieces.items() if p.get('campaign_id') == campaign_id]:
+            pieces.pop(pid, None)
         _write_store(store)
         return True
 
@@ -1938,9 +1947,15 @@ def v1_accounts(presences: dict) -> list[dict]:
     return list(seen.values())
 
 
+def _v1_pieces(store: dict) -> list[dict]:
+    from mc import desk_pieces  # lazy: desk_pieces imports this module
+    rows = sorted((store.get('pieces') or {}).values(), key=lambda p: (p.get('created_at') or '', p['id']))
+    return [desk_pieces.v1_piece(p) for p in rows]
+
+
 def v1_workspace(projects: Iterable[dict]) -> dict:
-    """M1: `{projects, campaigns, accounts, pieces}`. `pieces` is `[]` until the
-    piece store exists (slice S4): an honest empty list, not a placeholder."""
+    """M1: `{projects, campaigns, accounts, pieces}`. `pieces` are in the v1
+    family shape (`mc.desk_pieces.v1_piece`), oldest first."""
     with _store_lock:
         store = _read_store()
     presences = store['presences']
@@ -1967,7 +1982,7 @@ def v1_workspace(projects: Iterable[dict]) -> dict:
         'projects': rows,
         'campaigns': [v1_campaign(c) for c in camps],
         'accounts': v1_accounts(presences),
-        'pieces': [],
+        'pieces': _v1_pieces(store),
     }
 
 

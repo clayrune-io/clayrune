@@ -22,9 +22,11 @@
 // module is absent a source falls back to a labelled placeholder so nothing
 // pretends to work.
 //
-// Every mutation is a `DeskV1Kit.commandBus` command with an inverse (§10).
-// Fixtures only: nothing here calls a backend. The piece shape is read through
-// `DeskV1Kit.piece*` so What and Where agree on `on N channels`.
+// Every mutation is a command with an inverse (§10), run through
+// `DeskV1Store.write`: desk_v1_live ON also calls the piece routes (R1-W S4:
+// M14 create, M15 patch/pick-an-article, M16 delete, M21 attach/upload, M22
+// materials); OFF is demo mode, local only, no request. The piece shape is read
+// through `DeskV1Kit.piece*` so What and Where agree on `on N channels`.
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -33,6 +35,44 @@
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id) || null; }
   function _familiesFor(campaignId) { return (_fx().families || []).filter((f) => f.campaignId === campaignId); }
   function _bridge() { return window.deskV1CampaignWhatBridge || {}; }
+
+  // ── R1-W S4: the live routes ─────────────────────────────────────────────
+  function _isLive() { return window.DeskV1Store.live(); }
+  function _api(method, url, body) { return window.DeskV1Store.api(method, url, body); }
+  function _pieceUrl(id) { return '/api/desk/pieces/' + encodeURIComponent(id); }
+
+  // One write at a time per piece: a create-card's title edit, an upload and a
+  // delete can be clicked faster than the route answers, and a PATCH that
+  // overtakes the POST that makes the piece would 404. The chain never rejects
+  // (each caller still gets its own result); a failed link does not block the
+  // next one.
+  const _chain = {};
+  function _after(pieceId) { return _chain[pieceId] || Promise.resolve(); }
+  function _queue(pieceId, fn) {
+    const p = _after(pieceId).then(fn);
+    _chain[pieceId] = p.catch(() => {});
+    return p;
+  }
+  window.deskV1AfterPieceSaved = _after; // the piece page waits on it too
+  window.deskV1QueuePiece = _queue;      // Studio's save-to-review runs through it
+
+  // The material library and the existing-article list are server data (M22),
+  // read when a What is opened live. The fixture's own are used in demo mode.
+  // `error` is a real failure shown as one, never an empty library.
+  const _mats = { for: null, into: null, promise: null, error: null };
+  function _ensureMaterials(campaignId) {
+    if (!_isLive()) return Promise.resolve();
+    if (_mats.promise && _mats.for === campaignId && _mats.into === _fx()) return _mats.promise;
+    _mats.for = campaignId;
+    _mats.into = _fx();
+    _mats.error = null;
+    _mats.promise = _api('GET', '/api/desk/materials?campaign_id=' + encodeURIComponent(campaignId)).then((m) => {
+      const st = _fx();
+      st.materialLibrary = (m && m.library) || { video: [], image: [] };
+      st.existingArticles = (m && m.articles) || [];
+    }).catch((e) => { _mats.error = e && e.message ? e.message : String(e); });
+    return _mats.promise;
+  }
 
   let _seq = 0;
   function _uid() { return Date.now().toString(36) + (++_seq).toString(36); }
@@ -113,14 +153,17 @@
       assets: [], versions: [],
     };
     const card = { id: 'create-' + _uid(), familyId: fam.id, typeId: type.id, source: null, existingPick: null };
-    DeskV1Kit.commandBus.run({
+    DeskV1Store.write({
       label: `Added ${/^[aeiou]/i.test(type.label) ? 'an' : 'a'} ${type.label.toLowerCase()} piece`,
-      do: () => { _fx().families.push(fam); st.creates.unshift(card); _repaint(`[data-what-create="${card.id}"] [data-what-title]`); },
-      undo: () => {
+      apply: () => { _fx().families.push(fam); st.creates.unshift(card); _repaint(`[data-what-create="${card.id}"] [data-what-title]`); },
+      unapply: () => {
         const arr = _fx().families; const i = arr.findIndex((f) => f.id === fam.id); if (i >= 0) arr.splice(i, 1);
         const j = st.creates.indexOf(card); if (j >= 0) st.creates.splice(j, 1);
-        _repaint();
       },
+      repaint: () => _repaint(),
+      request: () => _queue(fam.id, () => _api('POST', '/api/desk/pieces',
+        { id: fam.id, campaign_id: camp.id, kind: fam.kind, title: fam.title })),
+      undoRequest: () => _queue(fam.id, () => _api('DELETE', _pieceUrl(fam.id))),
     });
   }
 
@@ -129,18 +172,40 @@
     const fam = _familiesFor(camp.id).find((f) => f.id === card.familyId);
     const famIdx = _fx().families.indexOf(fam);
     const cardIdx = st.creates.indexOf(card);
-    DeskV1Kit.commandBus.run({
+    DeskV1Store.write({
       label: `Removed the new ${fam ? fam.kind : 'piece'}`,
-      do: () => {
+      apply: () => {
         const i = _fx().families.indexOf(fam); if (i >= 0) _fx().families.splice(i, 1);
         const j = st.creates.indexOf(card); if (j >= 0) st.creates.splice(j, 1);
         _repaint();
       },
-      undo: () => {
+      unapply: () => {
         if (fam && famIdx >= 0) _fx().families.splice(Math.min(famIdx, _fx().families.length), 0, fam);
         st.creates.splice(Math.min(cardIdx, st.creates.length), 0, card);
-        _repaint();
       },
+      repaint: () => _repaint(),
+      request: () => (fam ? _queue(fam.id, () => _api('DELETE', _pieceUrl(fam.id))) : Promise.resolve(null)),
+      undoRequest: () => (fam ? _queue(fam.id, () => _api('POST', '/api/desk/pieces',
+        { id: fam.id, campaign_id: camp.id, kind: fam.kind, title: fam.title })) : Promise.resolve(null)),
+    });
+  }
+
+  // A title typed into a create-card. Demo mode keeps the plain local edit it
+  // always was (no Undo toast per keystroke-commit); live also PATCHes it.
+  function _renameCreate(fam, input) {
+    const prev = fam.title;
+    const next = input.value.trim() || _newTitle(fam.kind);
+    input.value = next;
+    if (!_isLive()) { fam.title = next; return; }
+    if (next === prev) return;
+    const patch = (title) => () => _queue(fam.id, () => _api('PATCH', _pieceUrl(fam.id), { title }));
+    DeskV1Store.write({
+      label: `Renamed “${prev}”`,
+      apply: () => { fam.title = next; },
+      unapply: () => { fam.title = prev; },
+      repaint: () => _repaint(),
+      request: patch(next),
+      undoRequest: patch(prev),
     });
   }
 
@@ -151,36 +216,77 @@
     if (j >= 0) st.creates.splice(j, 1);
   }
 
-  function _attachAsset(camp, fam, asset, card) {
+  // The M21 call for one asset, and the server's own answer written back onto
+  // the optimistic asset (its stored path and thumbnail URL). `upload` is a File
+  // (multipart, saved under data/uploads); otherwise the asset must already be a
+  // file under data/uploads (`asset.path`, a material-library file). An asset
+  // with neither (a Studio source that has produced no file) is REFUSED here, so
+  // the user is told it was not saved instead of seeing a thumbnail that is gone
+  // on reload.
+  function _assetRequest(fam, asset, upload, repaint) {
+    return () => _queue(fam.id, async () => {
+      let out;
+      if (upload) {
+        const fd = new FormData();
+        fd.append('file', upload, upload.name || 'upload');
+        fd.append('id', asset.id);
+        fd.append('title', asset.title || upload.name || '');
+        out = await _api('POST', _pieceUrl(fam.id) + '/assets', fd);
+      } else if (asset.path) {
+        out = await _api('POST', _pieceUrl(fam.id) + '/assets', { id: asset.id, path: asset.path, title: asset.title });
+      } else {
+        throw new Error('this source has not produced a file that can be saved yet');
+      }
+      const saved = ((out && out.assets) || []).find((a) => a.id === asset.id);
+      if (saved) Object.assign(asset, { kind: saved.kind, title: saved.title, path: saved.path, src: saved.src });
+      if (upload) _mats.promise = null; // the file now sits in the library's Uploads folder
+      if (repaint) repaint(); // the thumbnail is now the server's, not the local blob
+      return out;
+    });
+  }
+  function _assetUndo(fam, asset) {
+    return () => _queue(fam.id, () => _api('DELETE', _pieceUrl(fam.id) + '/assets/' + encodeURIComponent(asset.id)));
+  }
+
+  function _attachAsset(camp, fam, asset, card, upload) {
     const st = _state(camp.id);
     const cardIdx = card ? st.creates.indexOf(card) : -1;
-    DeskV1Kit.commandBus.run({
+    DeskV1Store.write({
       label: `Added “${asset.title}” to “${fam.title}”`,
-      do: () => {
+      apply: () => {
         fam.assets = (fam.assets || []).concat([asset]);
         if (card) _closeCreate(camp, card);
         _repaint();
       },
-      undo: () => {
+      unapply: () => {
         fam.assets = (fam.assets || []).filter((a) => a.id !== asset.id);
         if (card && cardIdx >= 0 && st.creates.indexOf(card) < 0) st.creates.splice(Math.min(cardIdx, st.creates.length), 0, card);
-        _repaint();
       },
+      repaint: () => _repaint(),
+      request: _assetRequest(fam, asset, upload, () => _repaint()),
+      undoRequest: _assetUndo(fam, asset),
     });
   }
 
   function _pickExistingArticle(camp, fam, art, card) {
     const st = _state(camp.id);
     const cardIdx = st.creates.indexOf(card);
-    const prev = { title: fam.title, wordCount: fam.wordCount };
-    DeskV1Kit.commandBus.run({
+    const prev = { title: fam.title, wordCount: fam.wordCount, source: fam.source || null };
+    const patch = (title, words, source) => () => _queue(fam.id, () => _api('PATCH', _pieceUrl(fam.id),
+      { title, word_count: words == null ? null : words, source }));
+    DeskV1Store.write({
       label: `Picked “${art.title}”`,
-      do: () => { fam.title = art.title; fam.wordCount = art.words; _closeCreate(camp, card); _repaint(); },
-      undo: () => {
-        fam.title = prev.title; fam.wordCount = prev.wordCount;
-        if (st.creates.indexOf(card) < 0) st.creates.splice(Math.min(cardIdx, st.creates.length), 0, card);
-        _repaint();
+      apply: () => {
+        fam.title = art.title; fam.wordCount = art.words; fam.source = { kind: 'article', ref: art.id };
+        _closeCreate(camp, card); _repaint();
       },
+      unapply: () => {
+        fam.title = prev.title; fam.wordCount = prev.wordCount; fam.source = prev.source;
+        if (st.creates.indexOf(card) < 0) st.creates.splice(Math.min(cardIdx, st.creates.length), 0, card);
+      },
+      repaint: () => _repaint(),
+      request: patch(art.title, art.words, { kind: 'article', ref: art.id }),
+      undoRequest: patch(prev.title, prev.wordCount, prev.source),
     });
   }
 
@@ -290,8 +396,31 @@
       </button>`).join('')}</div>`;
   }
 
-  function _uploadBodyHTML(kind) {
+  // Live, a library tile is one FILE (a piece is given a file, not a folder), so a
+  // folder's files are listed flat, the folder name standing where the file count
+  // does in demo. A video has no thumbnail URL (/api/serve-image serves images).
+  function _libTilesHTML(kind) {
     const lib = (_fx().materialLibrary || {})[kind === 'video' ? 'video' : 'image'] || [];
+    if (!_isLive()) {
+      return lib.map((m) => `
+        <button type="button" class="desk-v1-what-folder" data-what-folder="${esc(m.id)}">
+          <img class="desk-v1-what-folder-thumb" src="${esc(m.thumb)}" alt="">
+          <span class="desk-v1-what-folder-name">${esc(m.title)}</span>
+          <span class="desk-v1-what-folder-count">${esc(m.files)} files</span>
+        </button>`).join('');
+    }
+    if (_mats.error) return `<div class="desk-v1-what-later" data-what-lib-error>Could not load the material library: ${esc(_mats.error)}</div>`;
+    const files = lib.flatMap((m) => (m.items || []).map((it) => ({ it, folder: m.title })));
+    if (!files.length) return '<div class="desk-v1-what-later" data-what-lib-empty>The material library has no files yet. Upload one from this computer.</div>';
+    return files.map(({ it, folder }) => `
+        <button type="button" class="desk-v1-what-folder" data-what-libfile="${esc(it.path)}">
+          ${it.src ? `<img class="desk-v1-what-folder-thumb" src="${esc(it.src)}" alt="">` : '<span class="desk-v1-what-folder-thumb desk-v1-what-thumb-blank" aria-hidden="true">▶</span>'}
+          <span class="desk-v1-what-folder-name">${esc(it.title)}</span>
+          <span class="desk-v1-what-folder-count">${esc(folder)}</span>
+        </button>`).join('');
+  }
+
+  function _uploadBodyHTML(kind) {
     return `<div class="desk-v1-what-upload">
       <div class="desk-v1-what-dropzone" data-what-dropzone tabindex="0" role="group" aria-label="Drop a file here">
         <div class="desk-v1-what-dropzone-text">Drop ${kind === 'video' ? 'a video' : 'an image'} here</div>
@@ -299,17 +428,14 @@
         <input type="file" class="desk-v1-what-file" data-what-file accept="${kind === 'video' ? 'video/*' : 'image/*'}" hidden>
       </div>
       <div class="desk-v1-what-lib-title">Material library</div>
-      <div class="desk-v1-what-lib" data-what-lib>${lib.map((m) => `
-        <button type="button" class="desk-v1-what-folder" data-what-folder="${esc(m.id)}">
-          <img class="desk-v1-what-folder-thumb" src="${esc(m.thumb)}" alt="">
-          <span class="desk-v1-what-folder-name">${esc(m.title)}</span>
-          <span class="desk-v1-what-folder-count">${esc(m.files)} files</span>
-        </button>`).join('')}</div>
+      <div class="desk-v1-what-lib" data-what-lib>${_libTilesHTML(kind)}</div>
     </div>`;
   }
 
   function _browseBodyHTML() {
     const arts = _fx().existingArticles || [];
+    if (_isLive() && _mats.error) return `<div class="desk-v1-what-later" data-what-lib-error>Could not load existing articles: ${esc(_mats.error)}</div>`;
+    if (_isLive() && !arts.length) return '<div class="desk-v1-what-later" data-what-lib-empty>No other articles in the Desk yet.</div>';
     return `<div class="desk-v1-what-browse" data-what-browse-list>${arts.map((a) => `
       <button type="button" class="desk-v1-what-existing" data-what-existing="${esc(a.id)}">
         <span class="desk-v1-what-existing-title">${esc(a.title)}</span>
@@ -375,10 +501,13 @@
       onBack: () => { st.writer = null; _repaint(); },
       onSave: () => {
         let undoMark = null;
-        DeskV1Kit.commandBus.run({
+        DeskV1Store.write({
           label: `Saved “${fam.title}” to What`,
-          do: () => { undoMark = window.DeskV1Studio.markInReview(fam); st.writer = null; _repaint(); },
-          undo: () => { if (undoMark) undoMark(); _repaint(); },
+          apply: () => { undoMark = window.DeskV1Studio.markInReview(fam); st.writer = null; _repaint(); },
+          unapply: () => { if (undoMark) undoMark(); },
+          repaint: () => _repaint(),
+          request: () => window.DeskV1Studio.persistInReview(fam, undoMark),
+          undoRequest: () => window.DeskV1Studio.persistInReview(fam, undoMark, true),
         });
       },
     });
@@ -412,7 +541,7 @@
   function _attachFromFile(camp, fam, card, file, kind) {
     const isImg = kind === 'image' || /^image\//.test(file.type || '');
     const src = isImg && typeof URL !== 'undefined' && URL.createObjectURL ? URL.createObjectURL(file) : null;
-    _attachAsset(camp, fam, { id: 'asset-' + _uid(), kind: kind === 'video' ? 'video' : 'image', title: file.name || 'Upload', src }, card);
+    _attachAsset(camp, fam, { id: 'asset-' + _uid(), kind: kind === 'video' ? 'video' : 'image', title: file.name || 'Upload', src }, card, file);
   }
 
   function _wire(el, camp, st) {
@@ -441,7 +570,7 @@
       const fam = _familiesFor(camp.id).find((f) => f.id === cardEl.dataset.familyId);
       if (!card || !fam) return;
       const title = cardEl.querySelector('[data-what-title]');
-      title.onchange = () => { fam.title = title.value.trim() || _newTitle(fam.kind); title.value = fam.title; };
+      title.onchange = () => _renameCreate(fam, title);
       cardEl.querySelector('[data-what-remove]').onclick = () => _removeCreate(camp, card);
       cardEl.querySelectorAll('[data-what-source]').forEach((b) => b.onclick = () => {
         card.source = b.dataset.whatSource;
@@ -449,6 +578,10 @@
         // is a page of its own, not a body inside the card.
         if (card.source === 'write' && window.DeskV1Studio) { _closeCreate(camp, card); st.writer = { familyId: fam.id, tab: 0 }; _repaint(); return; }
         if (card.source === 'create' && typeof window.deskV1Nav === 'function') { _openStoryboard(camp, fam); return; }
+        if (_isLive() && (card.source === 'upload' || card.source === 'browse')) {
+          _ensureMaterials(camp.id).then(() => _repaint('[data-what-change-source]'));
+          return;
+        }
         _repaint('[data-what-change-source]');
       });
       if (window.DeskV1Studio) {
@@ -478,6 +611,11 @@
           if (f) _attachFromFile(camp, fam, card, f, fam.kind);
         });
       }
+      cardEl.querySelectorAll('[data-what-libfile]').forEach((b) => b.onclick = () => {
+        const lib = (_fx().materialLibrary || {})[fam.kind === 'video' ? 'video' : 'image'] || [];
+        const it = lib.flatMap((m) => m.items || []).find((x) => x.path === b.dataset.whatLibfile);
+        if (it) _attachAsset(camp, fam, { id: 'asset-' + _uid(), kind: it.kind, title: it.title, path: it.path, src: it.src }, card);
+      });
       cardEl.querySelectorAll('[data-what-folder]').forEach((b) => b.onclick = () => {
         const lib = (_fx().materialLibrary || {})[fam.kind === 'video' ? 'video' : 'image'] || [];
         const m = lib.find((x) => x.id === b.dataset.whatFolder);
@@ -540,6 +678,10 @@
   // ── `＋ Add media`: pick a Material library folder (rows and the piece page) ─
   // `onDone` repaints whichever surface opened it.
   function openAddMedia(triggerEl, fam, onDone) {
+    if (_isLive()) {
+      _ensureMaterials(fam.campaignId).then(() => _openAddMediaLive(triggerEl, fam, onDone));
+      return;
+    }
     const lib = _fx().materialLibrary || {};
     const isVideo = fam.kind === 'video';
     const folders = (isVideo ? lib.video : lib.image) || [];
@@ -549,11 +691,34 @@
       const m = folders.find((x) => x.id === id);
       if (!m) return;
       const asset = { id: 'asset-' + _uid(), kind: isVideo ? 'video' : 'image', title: m.title, src: m.thumb };
-      DeskV1Kit.commandBus.run({
-        label: `Added “${m.title}” to “${fam.title}”`,
-        do: () => { fam.assets = (fam.assets || []).concat([asset]); if (onDone) onDone(); },
-        undo: () => { fam.assets = (fam.assets || []).filter((a) => a.id !== asset.id); if (onDone) onDone(); },
-      });
+      _addMedia(fam, asset, onDone);
+    }, { noAppendNew: true });
+  }
+
+  function _addMedia(fam, asset, onDone) {
+    const repaint = () => { if (onDone) onDone(); };
+    DeskV1Store.write({
+      label: `Added “${asset.title}” to “${fam.title}”`,
+      apply: () => { fam.assets = (fam.assets || []).concat([asset]); repaint(); },
+      unapply: () => { fam.assets = (fam.assets || []).filter((a) => a.id !== asset.id); },
+      repaint,
+      request: _assetRequest(fam, asset, null, repaint),
+      undoRequest: _assetUndo(fam, asset),
+    });
+  }
+
+  // Live: the menu lists the library's FILES (a piece carries files), each one
+  // an M21 attach by path. A failed materials read is said, not shown as empty.
+  function _openAddMediaLive(triggerEl, fam, onDone) {
+    if (_mats.error) { DeskV1Kit.toast(`Could not load the material library: ${_mats.error}`); return; }
+    const lib = _fx().materialLibrary || {};
+    const files = ((fam.kind === 'video' ? lib.video : lib.image) || [])
+      .flatMap((m) => (m.items || []).map((it) => ({ it, folder: m.title })));
+    if (!files.length) { DeskV1Kit.toast('The material library has no files to add yet.'); return; }
+    DeskV1Kit.addToMenu(triggerEl, files.map(({ it, folder }) => ({ id: it.path, label: `${folder} / ${it.title}` })), (path) => {
+      const hit = files.find((x) => x.it.path === path);
+      if (!hit) return;
+      _addMedia(fam, { id: 'asset-' + _uid(), kind: hit.it.kind, title: hit.it.title, path: hit.it.path, src: hit.it.src }, onDone);
     }, { noAppendNew: true });
   }
 
