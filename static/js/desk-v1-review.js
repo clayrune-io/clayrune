@@ -780,6 +780,7 @@
     const rN = st.revision + 1;
     window.DeskV1Kit.commandBus.run({
       label: 'Removed the unsupported sentence → r' + rN,
+      destructive: true,
       do: () => { st.status = 'removed'; st.revision = rN; version.revision = rN; _renderAll(); },
       undo: () => { st.status = prevStatus; st.revision = rN - 1; version.revision = rN - 1; _renderAll(); },
     });
@@ -1075,6 +1076,10 @@
       channel && channel.capability === 'manual' ? 'Publishing task created' : (hasSchedule ? 'Scheduled' : 'Approved'));
   }
 
+  // Skip and Archive set a version aside, so they get the Undo toast; the other
+  // dispositions (Approve, Schedule, Publish) are routine and stay quiet.
+  const _DISCARD_STATES = new Set(['skipped', 'archived']);
+
   // Live Skip / Archive: M18 `state`, the two writable states a person may set.
   // Undo goes back to review, the only state this surface can restore it to.
   function _disposeLive(family, version, nextState, label) {
@@ -1082,6 +1087,7 @@
     const back = prev === 'needs_review' ? prev : 'needs_review';
     return _S().write({
       label,
+      destructive: _DISCARD_STATES.has(nextState),
       apply: () => { version.state = nextState; _advanceOrEmpty(); },
       unapply: () => { version.state = back; _advanceOrEmpty(); },
       request: () => _S().api('PATCH', _versionUrl(family, version), { state: nextState }),
@@ -1095,6 +1101,7 @@
     const prev = version.state;
     window.DeskV1Kit.commandBus.run({
       label,
+      destructive: _DISCARD_STATES.has(nextState),
       do: () => { version.state = nextState; _advanceOrEmpty(); },
       undo: () => { version.state = prev; _advanceOrEmpty(); },
     });

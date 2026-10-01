@@ -282,6 +282,7 @@
     const { snap, read } = _accountSnapshot(ch);
     window.DeskV1Store.write({
       label: `Removed ${ch.label}`,
+      destructive: true,
       apply: () => { const i = list.indexOf(ch); if (i >= 0) list.splice(i, 1); repaint(); },
       unapply: () => { if (list.indexOf(ch) < 0) list.splice(Math.min(idx, list.length), 0, ch); },
       repaint,

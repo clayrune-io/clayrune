@@ -283,15 +283,18 @@ async function runCardMenu(browser) {
   await page.click('[data-family-id="fam-30-testers"] [data-more-btn]');
   await page.waitForSelector('.desk-v1-camp-cardmenu', { timeout: 2000 });
   await page.click('.desk-v1-camp-cardmenu [data-menu-dup]');
-  await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
-  const dupToast = (await page.textContent('.toast').catch(() => '') || '');
-  /Duplicated/.test(dupToast)
-    ? ok(`Duplicate shows a commandBus toast: "${dupToast.trim()}"`)
-    : fail(`Duplicate toast missing/wrong: ${JSON.stringify(dupToast)}`);
+  await page.waitForTimeout(150);
+  // Quiet Undo (Ron 2026-10-01): a routine edit raises no toast; the Desk
+  // header's Undo carries the label instead.
+  const dupToast = (await page.$eval('.toast', (e) => e.textContent).catch(() => '') || '');
+  const dupUndo = (await page.getAttribute('#desk-v1-undo', 'title')) || '';
+  (dupToast === '' && /Duplicated/.test(dupUndo))
+    ? ok(`Duplicate raises no toast; the header Undo names it: "${dupUndo}"`)
+    : fail(`Duplicate should be quiet with a header Undo: toast=${JSON.stringify(dupToast)} undo=${JSON.stringify(dupUndo)}`);
   const dupExists = await page.evaluate(() => window.DeskV1Fixtures.families.some((f) => f.id.startsWith('fam-30-testers-copy-')));
   dupExists ? ok('the duplicated family exists in fixtures (a new What row)') : fail('duplicated family not found in fixtures');
-  await page.click('.toast .toast-btn.primary');
-  await page.waitForSelector('.toast', { state: 'detached', timeout: 2000 }).catch(() => {});
+  await page.click('#desk-v1-undo');
+  await page.waitForTimeout(150);
   const dupGone = await page.evaluate(() => !window.DeskV1Fixtures.families.some((f) => f.id.startsWith('fam-30-testers-copy-')));
   dupGone ? ok('Undo removes the duplicate') : fail('Undo did not remove the duplicated family');
 
@@ -303,7 +306,7 @@ async function runCardMenu(browser) {
   const statesBefore = await page.evaluate(() => window.DeskV1Fixtures.families.find((f) => f.id === 'fam-install-video').versions.map((v) => v.state));
   await page.click('.desk-v1-camp-cardmenu [data-menu-archive]');
   await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
-  const archiveToast = (await page.textContent('.toast').catch(() => '') || '');
+  const archiveToast = (await page.$eval('.toast', (e) => e.textContent).catch(() => '') || '');
   /Archived/.test(archiveToast)
     ? ok(`Archive shows a commandBus toast: "${archiveToast.trim()}"`)
     : fail(`Archive toast missing/wrong: ${JSON.stringify(archiveToast)}`);
@@ -388,7 +391,7 @@ async function runWhatTray(browser) {
 
   // Undo (attach), Undo (create) — the new piece is gone again.
   for (let i = 0; i < 2; i++) {
-    await page.locator('.toast .toast-btn.primary').last().click();
+    await page.click('#desk-v1-undo'); // quiet Undo (Ron 2026-10-01): the header button, not a toast
     await page.waitForTimeout(80);
   }
   (await famCount()) === n0 ? ok('Undo twice removes the piece again') : fail(`Undo left ${await famCount()} pieces, expected ${n0}`);
@@ -507,12 +510,14 @@ async function runPauseResume(browser) {
   await page.click('[data-pause-btn]');
   let state = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').state);
   state === 'paused' ? ok('T2/6.2: Pause sets camp-1 to paused') : fail(`T2/6.2: state after Pause: ${state}`);
-  await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
+  await page.waitForTimeout(150);
+  // Quiet Undo (Ron 2026-10-01): Pause is routine, so no toast; the header Undo names it.
   const pauseToast = (await lastToast().textContent().catch(() => '') || '');
-  /Paused/.test(pauseToast) && /Undo/.test(pauseToast)
-    ? ok(`T2/6.2: Pause shows an Undo toast: "${pauseToast.trim()}"`)
-    : fail(`T2/6.2: pause toast missing/wrong: ${JSON.stringify(pauseToast)}`);
-  await lastToast().locator('.toast-btn.primary').click();
+  const pauseUndo = (await page.getAttribute('#desk-v1-undo', 'title')) || '';
+  pauseToast === '' && /Paused/.test(pauseUndo)
+    ? ok(`T2/6.2: Pause raises no toast; the header Undo names it: "${pauseUndo}"`)
+    : fail(`T2/6.2: pause should be quiet with a header Undo: toast=${JSON.stringify(pauseToast)} undo=${JSON.stringify(pauseUndo)}`);
+  await page.click('#desk-v1-undo');
   await page.waitForTimeout(50);
   state = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').state);
   state === 'active' ? ok('T2/6.2: Undo restores camp-1 to active') : fail(`T2/6.2: state after Undo: ${state}`);
@@ -836,17 +841,17 @@ async function runProjectSelect(browser) {
     value: document.querySelector('[data-setup-project]').value,
     startDisabled: document.querySelector('[data-map-start-btn]').disabled,
     missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li, .desk-v1-launch-row[data-missing] .desk-v1-launch-val')).map((b) => b.textContent.trim()),
-    toast: (document.querySelector('.toast') || {}).textContent || '',
+    toast: (document.getElementById('desk-v1-undo') || {}).title || '', // quiet Undo (Ron 2026-10-01): the header Undo names it, no toast
   }));
   (await pid()) === 'engulfing_scanner' && conflict.value === 'engulfing_scanner' && /Set campaign project to Engulfing scanner/.test(conflict.toast)
-    ? ok(`R2-2g: picking a project on Launch sets camp.projectId and is a commandBus toast ("${conflict.toast.trim().slice(0, 60)}")`)
+    ? ok(`R2-2g: picking a project on Launch sets camp.projectId and is a command named by the header Undo ("${conflict.toast.trim().slice(0, 60)}")`)
     : fail(`R2-2g: pick did not stick: ${JSON.stringify({ pid: await pid(), conflict })}`);
   !conflict.startDisabled && conflict.missing.length === 0
     ? ok('R2-2g: after the pick the project imposes no cadence limit: the campaign\'s 3/wk stands, nothing missing, Start enabled')
     : fail(`R2-2g: a project limit still applies after the pick: ${JSON.stringify(conflict)}`);
 
   // Undo reverts the pick: back to no project, Project listed again.
-  await page.locator('.toast .toast-btn.primary').last().click();
+  await page.click('#desk-v1-undo'); // quiet Undo (Ron 2026-10-01)
   await page.waitForSelector('[data-setup-project]', { timeout: 4000 });
   const undone = await page.evaluate(() => ({ value: document.querySelector('[data-setup-project]').value, startDisabled: document.querySelector('[data-map-start-btn]').disabled, missing: Array.from(document.querySelectorAll('.desk-v1-map-launch-missing li, .desk-v1-launch-row[data-missing] .desk-v1-launch-val')).map((b) => b.textContent.trim()) }));
   (await pid()) === null && undone.value === '' && undone.startDisabled && undone.missing.some((m) => /^Project/.test(m)) && !undone.missing.some((m) => /cadence/.test(m))

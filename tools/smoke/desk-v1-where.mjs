@@ -303,8 +303,10 @@ async function runDrags(browser) {
     'drag 1: the message is still in Messages, pill now "on 3 channels"', `drag 1: message/pill wrong: ${JSON.stringify(msg(b, RETRO))}`);
   check(ron.versions.length === EXPECT.columns['ch-x-ron'] + 1 && (await versionTotal(page, 'camp-1')) === total0 + 1,
     `drag 1: @ron ${ron.versions.length} cards, campaign total ${total0} → ${total0 + 1}`, 'drag 1: counts wrong');
-  const undoVisible = await page.$$eval('.toast', (els) => els.some((e) => /Undo/.test(e.textContent) && /Undo anything/.test(e.textContent)));
-  check(undoVisible, 'drag 1: a toast with Undo names the piece', 'drag 1: no Undo toast');
+  // Quiet Undo (Ron 2026-10-01): a drop raises no toast; the header Undo names the piece.
+  const undoTitle = (await page.getAttribute('#desk-v1-undo', 'title')) || '';
+  const toasts1 = await page.$$eval('.toast', (els) => els.length);
+  check(toasts1 === 0 && /Undo anything/.test(undoTitle), 'drag 1: no toast, and the header Undo names the piece', `drag 1: toasts=${toasts1} header Undo=${JSON.stringify(undoTitle)}`);
 
   // Drag 2: that card @ron -> Clayrune Page MOVES it; total unchanged.
   const cardSel = `[data-where-version][data-version-id="${armInRon.versionId}"]`;

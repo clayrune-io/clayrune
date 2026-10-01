@@ -435,6 +435,40 @@
     }
   }
 
+  // ── Undo (header button + Ctrl/Cmd+Z). Routine edits raise no toast; they sit
+  // in DeskV1Kit.commandBus.history and this is how a person takes one back. ──
+  function _bus() { return window.DeskV1Kit && window.DeskV1Kit.commandBus; }
+  function _undoLast() {
+    const bus = _bus();
+    if (bus && bus.canUndo()) bus.undoLast();
+  }
+  function _syncUndoButton() {
+    const btn = document.getElementById('desk-v1-undo');
+    const bus = _bus();
+    if (!btn || !bus) return;
+    const cmd = bus.peek();
+    btn.disabled = !cmd;
+    const title = cmd ? 'Undo: ' + (cmd.label || 'the last change') + ' (Ctrl+Z)' : 'Nothing to undo';
+    btn.title = title;
+    btn.setAttribute('aria-label', title);
+  }
+  if (window.DeskV1Kit && window.DeskV1Kit.commandBus) window.DeskV1Kit.commandBus.onChange(_syncUndoButton);
+  document.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || String(e.key).toLowerCase() !== 'z') return;
+    const entry = openModals.get(MODAL_ID);
+    if (!entry || entry.minimized || !entry.element || !entry.element.isConnected) return;
+    const t = e.target;
+    // Inside the Desk modal only (focus on the bare page counts: a click on a
+    // card leaves it there), and never while the person is typing: the field's
+    // own Ctrl+Z must undo their typing, not a Desk command.
+    if (t && t !== document.body && t !== document.documentElement && !entry.element.contains(t)) return;
+    if (t && t.closest && t.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) return;
+    const bus = _bus();
+    if (!bus || !bus.canUndo()) return;
+    e.preventDefault();
+    bus.undoLast();
+  });
+
   function deskV1Open() {
     if (openModals.has(MODAL_ID)) {
       const entry = openModals.get(MODAL_ID);
@@ -454,6 +488,7 @@
       <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
         <span style="font-size:16px;font-weight:700;color:var(--text)">The Desk</span>
         <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
+          <button class="desk-v1-undo-btn" id="desk-v1-undo" type="button" data-desk-undo disabled aria-label="Undo" title="Nothing to undo"><span aria-hidden="true">&#8630;</span><span class="desk-v1-undo-text">Undo</span></button>
           <button class="modal-minimize" onclick="minimizeModal('${MODAL_ID}')" title="Minimize">&#x2015;</button>
           <button class="modal-close" onclick="closeModalById('${MODAL_ID}')" title="Close">&#10005;</button>
         </div>
@@ -471,6 +506,13 @@
     openModals.set(MODAL_ID, { projectId: null, element: win, minimized: false, zIndex: z });
     centerModalElement(win);
     focusModal(MODAL_ID);
+
+    // A fresh Desk window starts with a fresh Undo history: a command from a
+    // closed session reaches into objects the new one may have replaced.
+    if (window.DeskV1Kit && window.DeskV1Kit.commandBus) window.DeskV1Kit.commandBus.clear();
+    const undoBtn = win.querySelector('#desk-v1-undo');
+    if (undoBtn) undoBtn.onclick = () => _undoLast();
+    _syncUndoButton();
 
     _stack = [{ route: 'home', params: {} }];
     if (window.DeskV1Store.live()) _loadStoreThenRender(false);

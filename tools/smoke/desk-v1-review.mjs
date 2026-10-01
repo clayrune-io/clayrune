@@ -301,12 +301,13 @@ async function runA7ClaimFlow(browser) {
   if (!primaryDisabled) ok('A7: primary enabled once the only blocking claim is resolved');
   else fail('A7: primary still disabled after the blocking claim was resolved');
 
-  const toastText = (await page.textContent('.toast').catch(() => '') || '');
-  if (/r2/.test(toastText)) ok(`A7: toast announces the new revision: "${toastText.trim()}"`);
-  else fail(`A7: no revision-bearing toast after accept: ${JSON.stringify(toastText)}`);
+  // Quiet Undo (Ron 2026-10-01): no toast; the header Undo names the new revision.
+  const toastText = (await page.getAttribute('#desk-v1-undo', 'title')) || '';
+  if (/r2/.test(toastText)) ok(`A7: the header Undo names the new revision: "${toastText.trim()}"`);
+  else fail(`A7: no revision-bearing header Undo after accept: ${JSON.stringify(toastText)}`);
 
   // Undo puts it back exactly where accept found it (checked, r1, blocked).
-  await page.click('.toast .toast-btn.primary');
+  await page.click('#desk-v1-undo'); // quiet Undo (Ron 2026-10-01)
   await page.waitForSelector('.desk-v1-claimbar-checked', { timeout: 2000 });
   primaryDisabled = await page.$eval('[data-act-primary]', (b) => b.disabled);
   if (primaryDisabled) ok('A7: Undo restores the block (revision -> r1, "checked")');

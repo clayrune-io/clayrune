@@ -166,7 +166,8 @@ const openHow = async (page, id) => {
   await page.evaluate((cid) => window.deskV1GotoCampaignPanel('how', { campaignId: cid }), id);
   await settle(page, () => !!document.querySelector('[data-how-limit="per_week"]'));
 };
-const noUndo = (page) => page.evaluate(() => !/Undo/.test(document.body.innerText));
+// "No Undo offered" = no Undo button on any toast. (The Desk header's Undo is always on screen.)
+const noUndo = (page) => page.evaluate(() => !document.querySelector('.toast .toast-btn'));
 
 // ── 1: Start ───────────────────────────────────────────────────────────────
 async function start(browser) {

@@ -625,8 +625,7 @@ async function runBlockerAnswer(browser) {
   const goneCard = await page.$('.desk-v1-rules-blocker');
   !goneCard ? ok('answering the blocker removes its card') : fail('blocker card still present after answering');
 
-  await page.waitForSelector('.toast .toast-btn.primary', { timeout: 2000 }).catch(() => {});
-  await page.click('.toast .toast-btn.primary');
+  await page.click('#desk-v1-undo'); // quiet Undo (Ron 2026-10-01)
   await page.waitForTimeout(50);
   const backCard = await page.$('.desk-v1-rules-blocker');
   backCard ? ok('Undo restores the blocker card') : fail('Undo did not restore the blocker card');
@@ -701,8 +700,7 @@ async function runStartSheet(browser) {
     ? ok('Confirm sets the campaign Active and creates a policy record')
     : fail(`Confirm did not start the campaign correctly: ${JSON.stringify(afterConfirm)}`);
 
-  await page.waitForSelector('.toast .toast-btn.primary', { timeout: 2000 }).catch(() => {});
-  await page.click('.toast .toast-btn.primary');
+  await page.click('#desk-v1-undo'); // quiet Undo (Ron 2026-10-01)
   await page.waitForTimeout(50);
   const afterUndo = await page.evaluate(() => {
     const camp = window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-2');

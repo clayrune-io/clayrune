@@ -208,13 +208,14 @@ async function runIntakeCreate(browser) {
   }
 
   // Undo removes the family and returns to intake.
-  const toastText = (await page.textContent('.toast').catch(() => '') || '');
+  // Quiet Undo (Ron 2026-10-01): no toast; the header Undo names the command.
+  const toastText = (await page.getAttribute('#desk-v1-undo', 'title').catch(() => '') || '');
   if (/Started a storyboard/.test(toastText)) {
-    await page.click('.toast .toast-btn.primary');
+    await page.click('#desk-v1-undo');
     await page.waitForSelector('.desk-v1-video-intake', { timeout: 3000 });
     ok('intake: Undo removes the new family and returns to the intake sheet');
   } else {
-    fail(`intake: no Undo-able toast after create: ${JSON.stringify(toastText)}`);
+    fail(`intake: no header Undo after create: ${JSON.stringify(toastText)}`);
   }
 
   reportUncaught(pageErrors, '[intake-create]');
@@ -298,7 +299,7 @@ async function runSceneDragFlow(browser) {
   else fail(`drag-reorder failed: ${JSON.stringify(order)}`);
 
   // Undo restores the original order.
-  await page.click('.toast .toast-btn.primary');
+  await page.click('#desk-v1-undo'); // quiet Undo (Ron 2026-10-01)
   await page.waitForSelector('.desk-v1-video-scene', { timeout: 2000 });
   const restored = await page.$$eval('.desk-v1-video-scene', (els) => els.map((e) => e.dataset.sceneId));
   if (restored[0] === 'sc-1' && restored[1] === 'sc-2') ok('drag-reorder: Undo restores the original order');

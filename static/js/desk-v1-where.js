@@ -200,6 +200,7 @@
     };
     DeskV1Store.write({
       label: `Removed ${ch ? ch.label : channelId} from “${camp.plan.title}”${pending.length ? ` · ${pending.length} version${pending.length === 1 ? '' : 's'} archived` : ''}`,
+      destructive: true,
       apply: () => { camp.plan.accounts.splice(idx, 1); pending.forEach((v) => { v.state = 'archived'; }); _repaint(); },
       unapply: () => { camp.plan.accounts.splice(idx, 0, channelId); pending.forEach((v, i) => { v.state = prev[i]; }); },
       repaint: () => _repaint(),

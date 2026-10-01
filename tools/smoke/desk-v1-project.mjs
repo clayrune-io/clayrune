@@ -565,8 +565,8 @@ async function runPlaybookUndoReject(browser) {
   (await page.$('[data-playbook-rejected]')) === null
     ? ok('Playbook: rejected block disappears once nothing is rejected') : fail('rejected block still rendered');
 
-  // The toast's Undo puts it back.
-  await page.click('.toast-action .toast-btn.primary');
+  // The header Undo puts it back (quiet Undo, Ron 2026-10-01).
+  await page.click('#desk-v1-undo');
   await page.waitForTimeout(80);
   const undone = await snap();
   undone.state === 'rejected' && undone.rejections === 1 && !undone.listed
