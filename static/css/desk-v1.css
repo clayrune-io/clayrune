@@ -2259,6 +2259,16 @@
   .desk-v1-map-stops { flex-wrap: nowrap; overflow-x: auto; justify-content: flex-start; }
   .desk-v1-map-stop { flex: 0 0 auto; min-width: 58px; }
 }
+/* MC-977 mobile M-2: below 640px the pill, stops and the Draft's lone ⋮ each
+   took their own wrapped row (146px of stepper block). Now the state pill and
+   ⋮ share row 1 (⋮ pushed right), the stops scroll on a full-width row 2. The
+   884px fold already fits all three on one row, so it is left as it was. */
+@media (max-width: 640px) {
+  .desk-v1-map-tabs { row-gap: 6px; }
+  .desk-v1-map-pill { order: 1; }
+  .desk-v1-map-more { order: 2; margin-left: auto; align-self: center; }
+  .desk-v1-map-stops { order: 3; flex: 1 1 100%; }
+}
 
 /* ── R2-10: ⑤ Where board (frames 7a/7b; desk-v1-where.js) ───────────────── */
 .desk-v1-where { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
