@@ -3010,4 +3010,5 @@ button.desk-v1-because-chip { color: var(--accent-soft); font-weight: 600; curso
    but the 10px / 10.5px desktop labels are below the 11px floor on a touch device. */
 @media (max-width: 960px) {
   .desk-v1-where-msg-kind, .desk-v1-where-pill, .desk-v1-where-source-plat, .desk-v1-where-plat { font-size: 11px; }
+  .desk-v1-where-avatar-badge { font-size: 10px; min-width: 16px; height: 16px; line-height: 14px; }
 }
