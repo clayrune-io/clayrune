@@ -477,7 +477,19 @@
 }
 .desk-v1-home-block-newcamp:hover { text-decoration: underline; }
 .desk-v1-home-block-rows { display: flex; flex-direction: column; }
-.desk-v1-home-block-empty { padding: 14px; font-size: 12.5px; color: var(--text-faint); }
+.desk-v1-home-empty-newcamp {
+  display: block; margin: 10px auto 0; background: none; border: none; color: var(--accent);
+  font-size: 12.5px; font-weight: 600; cursor: pointer; padding: 0; font-family: inherit;
+}
+.desk-v1-home-empty-newcamp:hover { text-decoration: underline; }
+/* "Ended (N)": a quiet link under the board, not a section header. */
+.desk-v1-home-ended { margin-top: 14px; }
+.desk-v1-home-ended-toggle {
+  background: none; border: none; color: var(--text-faint); font-size: 12.5px; cursor: pointer;
+  padding: 4px 0; font-family: inherit;
+}
+.desk-v1-home-ended-toggle:hover { color: var(--text); text-decoration: underline; }
+.desk-v1-home-ended-blocks { display: flex; flex-direction: column; gap: 14px; margin-top: 8px; }
 
 .desk-v1-home-row {
   padding: 12px 14px; border-top: 1px solid var(--border2); cursor: pointer;

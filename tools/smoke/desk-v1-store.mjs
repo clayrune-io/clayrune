@@ -21,7 +21,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
-import { installDemoFixtures } from './desk-v1-fixture-api.mjs';
+import { installDemoFixtures, loadFixtures } from './desk-v1-fixture-api.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -47,10 +47,16 @@ const PROJECTS = [{
   distiller_max_explorations_per_session: 3, distiller_min_turns: 5,
   distiller_skip_errors: true, roster: [],
 }];
+// Home lists only projects that have a live campaign (Ron 2026-10-01), so the
+// project needs one to appear: a draft cloned from a fixture campaign, which
+// carries every field the surfaces read.
+const DRAFT = JSON.parse(JSON.stringify(loadFixtures().campaigns.find((c) => c.id === 'camp-1')));
+Object.assign(DRAFT, { id: 'zed-draft', projectId: PID, state: 'draft' });
+DRAFT.plan.title = 'Zed draft'; delete DRAFT.map; delete DRAFT.subject;
 const WORKSPACE = {
   projects: [{ id: PID, name: 'Server Project Zed', state: 'active', roster: [],
     presence: { replies: 'drafts', desk_agent: null, state: 'active' } }],
-  campaigns: [], accounts: [], pieces: [],
+  campaigns: [DRAFT], accounts: [], pieces: [],
 };
 
 let bad = 0;
