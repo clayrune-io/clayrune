@@ -377,7 +377,8 @@ replaces the fixture's `health:'held'` (`desk-v1-fixtures.js:186-187`) with a re
    the scan's rule 8 still names `renderBudget.perJobLimit`, which no longer has a home.
 4. Local engine: Remotion DROPPED (Ron 2026-10-01: every external service is signed and paid by the
    customer through a vendor API; Remotion has none, and on a hosted pod its licence would land on us).
-   Open for S9: what stitches a multi-scene video (scan rule 7) now that there is no local compositor.
+   Stitching (scan rule 7) and 1:1 crops: ffmpeg on the Clayrune host (Ron 2026-10-01). Free, no vendor
+   account; concat with stream copy when clips share a codec, re-encode only for crops/transitions.
 5. Output retention: download on `ready` (Veo deletes after 48 h) into the M22 library path.
 
 Slices S0-S8 depend on neither.
