@@ -21,11 +21,14 @@ a connection that is not there:
 
   X          ready iff the vault holds a readable `x.oauth-token`
              (`desk_publish.X_OAUTH_TOKEN_SECRET`); otherwise the reason says so.
-  LinkedIn   NOT ready, whatever the vault holds: posting as the Company Page
-             needs the `w_organization_social` scope (Community Management API
-             review, not approved) and there is no LinkedIn publisher yet.
-             `LINKEDIN_ORG_POSTING_APPROVED` is the one switch, flipped by
-             whoever lands the publisher, not by config.
+  LinkedIn   NOT ready, whatever the vault holds, until LinkedIn approves the
+             `w_organization_social` scope (Community Management API review):
+             posting as the Company Page needs it. The publisher exists
+             (`desk_publish`, S7); `LINKEDIN_ORG_POSTING_APPROVED` is the one
+             switch, flipped by whoever learns the review passed, not by config.
+             Once on, ready also needs a readable `linkedin.oauth-token` and the
+             account's `organization_id` (not a secret: it is in the Company
+             Page admin URL).
   manual     ready: the human publishes it (a blog); nothing to connect.
 """
 
@@ -36,7 +39,7 @@ import re
 from mc import desk as _desk
 from mc import secrets_store
 from mc.core import _log, now_iso
-from mc.desk_publish import X_OAUTH_TOKEN_SECRET
+from mc.desk_publish import LINKEDIN_TOKEN_SECRET, X_OAUTH_TOKEN_SECRET
 
 # Where the Desk can place anything in v1: X and the LinkedIn Company Page, plus
 # a blog the human publishes. YouTube / Discord / Reddit / Drive / Dropbox are
@@ -46,7 +49,6 @@ READ_PLATFORMS = ('x', 'linkedin')          # the ones a read route exists for
 CAPABILITIES = ('direct', 'manual')
 
 LINKEDIN_ORG_POSTING_APPROVED = False
-LINKEDIN_TOKEN_SECRET = 'linkedin.oauth-token'
 LINKEDIN_PENDING_REASON = 'LinkedIn app review pending (w_organization_social)'
 
 _TOKEN_SECRET = {'x': X_OAUTH_TOKEN_SECRET, 'linkedin': LINKEDIN_TOKEN_SECRET}
@@ -99,6 +101,9 @@ def publish_state(acc: dict, vault: dict | None = None) -> dict:
         if meta is None:
             return {'ready': False, 'reason': f'no {what} API token in the vault',
                     'secret': secret, 'unattended_ok': None}
+        if plat == 'linkedin' and not acc.get('organization_id'):
+            return {'ready': False, 'reason': 'no LinkedIn organization id on the account (Company Page admin URL)',
+                    'secret': secret, 'unattended_ok': None}
         if not secrets_store.is_readable(secret):
             return {'ready': False,
                     'reason': f'the {what} API token in the vault cannot be read (vault locked, or its key changed)',
@@ -121,7 +126,7 @@ def v1_account(acc: dict, vault: dict | None = None) -> dict:
         'created_at': acc.get('created_at'),
         'connected': pub['ready'], 'publish': pub,
     }
-    for k in ('read_via', 'browser_profile'):
+    for k in ('read_via', 'browser_profile', 'organization_id'):
         if acc.get(k):
             out[k] = acc[k]
     if acc.get('preview'):
@@ -196,7 +201,8 @@ def create_account(platform, identity, *, label=None, capability=None, voice=Non
     return v1_account(rec)
 
 
-_PATCHABLE = ('label', 'voice', 'read_via', 'browser_profile', 'project_id')
+_PATCHABLE = ('label', 'voice', 'read_via', 'browser_profile', 'project_id', 'organization_id')
+_ORG_ID = re.compile(r'^\d{1,20}$')
 
 
 def update_account(account_id: str, patch: dict) -> dict:
@@ -223,11 +229,19 @@ def update_account(account_id: str, patch: dict) -> dict:
     for k in ('label', 'voice'):
         if k in patch:
             clean[k] = _clean_text(patch[k], k, required=(k == 'label'))
+    org = None
+    if 'organization_id' in patch:
+        org = _clean_text(patch['organization_id'], 'organization_id')
+        if org and not _ORG_ID.match(org):
+            raise AccountError('organization_id is digits only (the number in the Company Page admin URL)')
+        clean['organization_id'] = org
     with _desk._store_lock:
         store = _desk._read_store()
         rec = store['accounts'].get(account_id)
         if rec is None:
             raise AccountError('account not found', 404)
+        if org is not None and rec.get('platform') != 'linkedin':
+            raise AccountError('organization_id applies to LinkedIn accounts only')
         if (read_via is not None or profile is not None) and rec.get('platform') not in READ_PLATFORMS:
             raise AccountError('read settings apply to X and LinkedIn accounts only')
         rec.update(clean)

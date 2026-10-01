@@ -9,14 +9,14 @@ WHERE IT LIVES: `store['pieces']` inside `data/desk.json`, under the same
 never a member (the LOAD-BEARING DATA_DIR rule in CLAUDE.md), so a piece is not
 a project record and needs no `EXCLUDED_SIDECAR_SUFFIXES` entry.
 
-THE APPROVAL GATE IS NOT HERE. `update_version` can move a version between
-`drafting`, `needs_review`, `planned`, `skipped` and `archived` and nothing
-else: it can never write `approved`, `scheduled`, `sending`, `submitted` or
-`verified_published`. Those belong to the human approve route and the publish
-tick, neither of which exists yet (plan M19, slice S7). A body or an account on
-a version that already carries an approval cannot be changed behind that
-approval: the version has to be sent back to `needs_review` first, which clears
-the stamp.
+THE APPROVAL GATE IS NOT IN THE PLAIN PATCH. `update_version` can move a version
+between `drafting`, `needs_review`, `planned`, `skipped` and `archived` and
+nothing else: it can never write `approved`, `scheduled`, `sending`,
+`submitted` or `verified_published`. Those belong to `approve_version` (plan
+M19, reached only through the human-only passcode route) and to the publish
+tick's `transition_version` (R1-W S7). A body or an account on a version that
+already carries an approval cannot be changed behind that approval: the version
+has to be sent back to `needs_review` first, which clears the stamp.
 
 ASSETS are references, not copies. A piece carries any number of them, and a
 campaign any number of pieces of one kind (Ron, 2026-09-29). An asset's `path`
@@ -28,9 +28,12 @@ with it.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -82,9 +85,10 @@ _SAFE_NAME = re.compile(r'[^A-Za-z0-9._ -]+')
 class PieceError(ValueError):
     """A refusal with the HTTP status the route should answer."""
 
-    def __init__(self, message: str, status: int = 400):
+    def __init__(self, message: str, status: int = 400, problems=None):
         super().__init__(message)
         self.status = status
+        self.problems = list(problems or [])
 
 
 def _uploads_root() -> Path:
@@ -248,6 +252,8 @@ def v1_piece(piece: dict) -> dict:
         }
         if v.get('format'):
             ver['format'] = v['format']
+        if v.get('manual'):
+            ver['manual'] = v['manual']
         if v.get('scheduled_at'):
             ver['publishAt'] = v['scheduled_at']
         receipt = v.get('receipt')
@@ -258,7 +264,8 @@ def v1_piece(piece: dict) -> dict:
         if claims:
             ver['claims'] = [{'id': c['id'],
                               'text': ((v.get('claims_state') or {}).get(c['id']) or {}).get('revised_text') or c['text'],
-                              'source': c.get('source'), 'verdict': _claim_verdict(piece, v, c)}
+                              'original': c['text'], 'source': c.get('source'),
+                              'verdict': _claim_verdict(piece, v, c)}
                              for c in claims]
         out['versions'].append(ver)
     return out
@@ -304,6 +311,14 @@ def get_piece(piece_id: str) -> dict:
     with _desk._store_lock:
         store = _desk._read_store()
     return v1_piece(_find(store, piece_id))
+
+
+def get_stored_piece(piece_id: str) -> dict:
+    """The piece as stored (a copy), with the fields the v1 shape drops: for
+    callers that need to read what a version was approved against."""
+    with _desk._store_lock:
+        store = _desk._read_store()
+    return _find(store, piece_id)
 
 
 def create_piece(campaign_id: str, kind: str, title: str = '', *, piece_id: str | None = None,
@@ -521,6 +536,149 @@ def update_version(piece_id: str, version_id: str, patch: dict) -> dict:
         piece['updated_at'] = now_iso()
         _desk._write_store(store)
         return v1_piece(piece)
+
+
+# -- approval and sending (R1-W S7; plan M19 and §4) --------------------------------
+
+# Where a version may be approved from. `failed` re-approves (a human click is the
+# retry; plan §2.D). `unknown_outcome` is NOT here: that post may be live, so a
+# plain re-approve would double post (see desk_publish.PublishError.maybe_posted).
+APPROVABLE_FROM = ('needs_review', 'held', 'failed')
+
+# `transition_version`'s whole vocabulary: target state -> the states it may be
+# entered from. The publish tick is the only caller; nothing here is reachable
+# from a route, so a client cannot write a send state.
+_SEND_TRANSITIONS = {
+    'sending': ('approved', 'scheduled'),
+    'submitted': ('sending',),
+    'verified_published': ('submitted',),
+    'failed': ('sending',),
+    'unknown_outcome': ('sending',),
+    'held': ('approved', 'scheduled'),
+    'approved': ('approved', 'scheduled'),      # same-state field write (a manual publishing task)
+    'you_reported': ('approved', 'scheduled', 'unknown_outcome'),
+}
+_SEND_FIELDS = ('receipt', 'failure', 'manual', 'approved')
+
+
+def _effective_body(piece: dict, ver: dict) -> str:
+    return (ver.get('body') or piece.get('body') or '').strip()
+
+
+def _body_sha(text: str) -> str:
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]
+
+
+def _approval_refusals(store: dict, piece: dict, ver: dict) -> list[str]:
+    """Why this version cannot be approved right now (empty = it can). Every
+    reason is listed, not just the first, so one click shows the whole fix list."""
+    from mc import desk_accounts  # lazy: desk_accounts imports this module's store
+    problems: list[str] = []
+    camp = (store.get('campaigns') or {}).get(piece.get('campaign_id'))
+    if camp is None:
+        problems.append('the campaign this piece belongs to no longer exists')
+    elif camp.get('state') != 'running':
+        problems.append(f"the campaign is not active (it is {_desk._V1_STATE_OUT.get(camp.get('state'), camp.get('state'))}): start it first")
+    elif _desk.awaiting_approval(camp):
+        problems.append('the campaign\'s limits changed since you approved them: approve them on Launch first')
+    acc = (store.get('accounts') or {}).get(ver.get('account_id'))
+    if acc is None:
+        problems.append('the account this version is for is not in the workspace')
+    else:
+        pub = desk_accounts.publish_state(acc)
+        if not pub['ready']:
+            problems.append(f"{acc.get('label') or acc.get('identity') or acc['id']} cannot publish: {pub['reason']}")
+        elif acc.get('capability') != 'manual' and (piece.get('kind') == 'video' or piece.get('assets')):
+            # The publisher sends text. A video, or a piece with attached media,
+            # would go out WITHOUT it and read as the whole post: refuse, never
+            # send a partial version of what was reviewed.
+            problems.append('this piece carries media (or is a video) and the publisher sends text only: '
+                            'put it on an account you publish by hand, or remove the media')
+    if not _effective_body(piece, ver):
+        problems.append('there is no text to publish')
+    blocked = [c['id'] for c in piece.get('claims') or [] if _claim_verdict(piece, ver, c) == 'blocked']
+    if blocked:
+        problems.append(f"{len(blocked)} claim(s) still have no source or decision: {', '.join(blocked[:3])}")
+    return problems
+
+
+def approve_version(piece_id: str, version_id: str, *, scheduled_at: object = ..., by: str = 'human',
+                    now: datetime | None = None) -> dict:
+    """The approval gate (plan M19). The caller (a human-only passcode route) has
+    already established that a person asked. Sets `approved` (no schedule: the
+    caller sends it now) or `scheduled` (a future time: the tick sends it), and
+    stamps what was approved: who, when, which account, and a hash of the exact
+    text, so the tick can refuse a version that changed after approval. Raises
+    PieceError(409, problems=[...]) when it cannot. Returns the v1 piece.
+
+    `scheduled_at` left unset uses the version's own scheduled time; an explicit
+    None means "now". A time already in the past is refused rather than quietly
+    becoming "post immediately"."""
+    now = now or datetime.now(timezone.utc)
+    when = None
+    if scheduled_at is not ...:
+        when = _clean_when(scheduled_at)
+    with _desk._store_lock:
+        store = _desk._read_store()
+        piece = _find(store, piece_id)
+        ver = _find_version(piece, version_id)
+        cur = ver.get('state')
+        if cur not in APPROVABLE_FROM:
+            raise PieceError(f'this version is {cur}: only a version that needs review, is held, or failed '
+                             'can be approved', 409)
+        if scheduled_at is ...:
+            when = ver.get('scheduled_at')
+        parsed = None
+        if when:
+            parsed = _desk._parse_dt(when)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            if parsed <= now - timedelta(seconds=60):
+                raise PieceError('that scheduled time has already passed: pick a later time, or approve now', 409)
+        problems = _approval_refusals(store, piece, ver)
+        if problems:
+            raise PieceError('cannot approve: ' + '; '.join(problems), 409, problems)
+        future = parsed is not None and parsed > now
+        ver['state'] = 'scheduled' if future else 'approved'
+        ver['scheduled_at'] = when if future else None
+        ver['approved'] = {'at': now_iso(), 'by': by, 'account_id': ver.get('account_id'),
+                           'body_sha': _body_sha(_effective_body(piece, ver))}
+        ver['failure'] = None
+        ver['manual'] = None
+        piece['updated_at'] = now_iso()
+        _desk._write_store(store)
+        return v1_piece(piece)
+
+
+def transition_version(piece_id: str, version_id: str, *, to: str, expect, **fields) -> dict | None:
+    """Compare-and-set one send-state change, the publish tick's only writer.
+    Moves a version to `to` only if it is CURRENTLY in `expect` (a state or a
+    tuple of them) AND `to` is reachable from there; returns the stored version
+    (a copy), or None when it was not in `expect`, so two callers racing for the
+    same version cannot both win `sending`. `fields` may set `receipt`,
+    `failure`, `manual`, `approved`. Entering `held` clears the approval stamp:
+    nothing approved is held, and a stale stamp would read as consent."""
+    if to not in _SEND_TRANSITIONS:
+        raise PieceError(f'{to!r} is not a send state')
+    unknown = sorted(k for k in fields if k not in _SEND_FIELDS)
+    if unknown:
+        raise PieceError(f'cannot set: {", ".join(unknown)}')
+    expect = (expect,) if isinstance(expect, str) else tuple(expect)
+    legal = [s for s in expect if s in _SEND_TRANSITIONS[to]]
+    with _desk._store_lock:
+        store = _desk._read_store()
+        piece = _find(store, piece_id)
+        ver = _find_version(piece, version_id)
+        if ver.get('state') not in legal:
+            return None
+        ver['state'] = to
+        ver.update(fields)
+        if to == 'held':
+            ver['approved'] = None
+            ver['slot_id'] = None
+        piece['updated_at'] = now_iso()
+        _desk._write_store(store)
+        return json.loads(json.dumps(ver))
 
 
 # -- assets -----------------------------------------------------------------------

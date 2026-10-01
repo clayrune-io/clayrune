@@ -1468,6 +1468,10 @@ def update_campaign(campaign_id: str, patch: dict, *, forbid_start: bool = False
                              'human actions), not by changing its state')
         if 'when' in patch:
             patch['when'] = _clean_campaign_when(patch['when'], store, campaign_id)
+        if isinstance(patch.get('how'), dict) and 'suggested' in patch['how']:
+            # `how.suggested` is the agent's, written only by set_suggestions: a
+            # client holding an older copy must not put it back or clear it.
+            patch['how'] = {k: v for k, v in patch['how'].items() if k != 'suggested'}
         for k, v in (patch or {}).items():
             if k in allowed:
                 camp[k] = v
@@ -1491,6 +1495,139 @@ def update_campaign(campaign_id: str, patch: dict, *, forbid_start: bool = False
         camp['updated_at'] = now_iso()
         _write_store(store)
         return camp
+
+
+# -- agent suggestions (R1-W S7; plan M9/M10) -----------------------------------
+#
+# The Brief's "Suggest What / When / Where": the campaign's desk agent proposes,
+# a human accepts. Stored under `camp['suggestions']`, NOT inside `camp['how']`,
+# because a client PATCH of `how` replaces the whole object and would wipe a
+# suggestion the agent wrote a moment earlier. `v1_campaign` projects it back as
+# `how.suggested` (the shape the surfaces already read) and `suggestBlocker`.
+# A suggestion is never a commitment: nothing here touches `plan`, `how.budget`
+# or `approved`, and any text that names a bound is refused (`_DESK_BOUND_RE`).
+
+SUGGESTION_KEYS = ('what', 'when', 'where', 'because', 'blocker')
+MAX_SUGGESTED = 12
+
+
+def _sugg_text(value, label: str, limit: int = 300, *, required: bool = True) -> str | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        if required:
+            raise ValueError(f'{label} is required')
+        return None
+    if not isinstance(value, str) or len(value) > limit:
+        raise ValueError(f'{label} must be text of at most {limit} characters')
+    text = value.strip()
+    if _DESK_BOUND_RE.search(text):
+        raise ValueError(f'{label} names a campaign limit ({text[:60]!r}): a suggestion proposes content, '
+                         'it never sets or raises a bound')
+    return text
+
+
+def _sugg_because(value, label: str) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) > 20 or not all(isinstance(b, str) and b for b in value):
+        raise ValueError(f'{label} because must be a list of finding ids')
+    return list(value)
+
+
+def set_suggestions(campaign_id: str, body: dict) -> dict | None:
+    """M10. Merge the keys present in `body` into the campaign's suggestions
+    (an absent key is left as it was; an empty list clears it). Returns the v1
+    campaign, or None when it does not exist. Raises ValueError (400)."""
+    if not isinstance(body, dict):
+        raise ValueError('body must be a JSON object')
+    unknown = sorted(k for k in body if k not in SUGGESTION_KEYS)
+    if unknown:
+        raise ValueError(f'cannot set: {", ".join(unknown)}')
+    for k in ('what', 'when', 'where'):
+        if k in body and (not isinstance(body[k], list) or len(body[k]) > MAX_SUGGESTED):
+            raise ValueError(f'{k} must be a list of at most {MAX_SUGGESTED}')
+    with _store_lock:
+        store = _read_store()
+        camp = store['campaigns'].get(campaign_id)
+        if not camp:
+            return None
+        accounts = store.get('accounts') or {}
+        sugg = dict(camp.get('suggestions') or {})
+
+        def channel(raw, label):
+            if raw is None:
+                return None
+            if raw not in accounts:
+                raise ValueError(f'{label} names an account that is not in the workspace: {raw!r}')
+            return raw
+
+        if 'what' in body:
+            what = []
+            for i, it in enumerate(body['what']):
+                if not isinstance(it, dict):
+                    raise ValueError('each what entry must be an object')
+                what.append({'title': _sugg_text(it.get('title'), f'what[{i}].title', 200),
+                             'channelId': channel(it.get('channel_id', it.get('channelId')), f'what[{i}]'),
+                             'because': _sugg_because(it.get('because'), f'what[{i}]')})
+            sugg['what'] = what
+        slots = None
+        if 'when' in body:
+            slots = []
+            for i, it in enumerate(body['when']):
+                if not isinstance(it, dict):
+                    raise ValueError('each when entry must be an object')
+                try:
+                    _parse_dt(it.get('at'))
+                except (ValueError, AttributeError, TypeError):
+                    raise ValueError(f'when[{i}] needs an ISO 8601 time in `at`')
+                slots.append({'id': _new_id('slot'), 'at': it['at'], 'origin': 'agent', 'state': 'suggested',
+                              'because': _sugg_because(it.get('because'), f'when[{i}]'),
+                              'label': _sugg_text(it.get('label'), f'when[{i}].label', 120, required=False)})
+            sugg['when'] = ({'label': slots[0]['label'] or f"{len(slots)} suggested time{'s' if len(slots) != 1 else ''}",
+                             'slotId': slots[0]['id'], 'because': slots[0]['because']} if slots else None)
+        if 'where' in body:
+            where = []
+            for i, it in enumerate(body['where']):
+                if not isinstance(it, dict):
+                    raise ValueError('each where entry must be an object')
+                cid = channel(it.get('channel_id', it.get('channelId')), f'where[{i}]')
+                if cid is None:
+                    raise ValueError(f'where[{i}] needs a channel_id')
+                where.append({'channelId': cid, 'label': accounts[cid].get('label') or accounts[cid].get('identity'),
+                              'because': _sugg_because(it.get('because'), f'where[{i}]')})
+            sugg['where'] = where[0] if where else None
+        if 'because' in body:
+            sugg['because'] = _sugg_because(body['because'], 'suggestion') or []
+        if 'blocker' in body:
+            b = body['blocker']
+            if b is None:
+                sugg['blocker'] = None
+            else:
+                if not isinstance(b, dict):
+                    raise ValueError('blocker must be an object {id, question, answers[]}')
+                answers = b.get('answers')
+                if not isinstance(answers, list) or not 2 <= len(answers) <= 6:
+                    raise ValueError('a blocker needs 2 to 6 answers to choose from')
+                bid = b.get('id')
+                if not isinstance(bid, str) or not re.match(r'^[A-Za-z0-9_-]{1,80}$', bid):
+                    raise ValueError('a blocker needs an id of 1-80 letters, digits, - or _')
+                clean_answers = []
+                for j, a in enumerate(answers):
+                    if not isinstance(a, dict) or not isinstance(a.get('id'), str):
+                        raise ValueError(f'blocker answer {j} needs an id and a label')
+                    clean_answers.append({'id': a['id'], 'label': _sugg_text(a.get('label'), f'blocker answer {j}', 120)})
+                sugg['blocker'] = {'id': bid, 'question': _sugg_text(b.get('question'), 'blocker question', 400),
+                                   'answers': clean_answers}
+        if slots is not None:
+            # Re-running Suggest replaces the still-suggested agent slots;
+            # the user's own and the accepted ones stay.
+            when = camp.get('when') if isinstance(camp.get('when'), dict) else {}
+            kept = [s for s in (when.get('slots') or []) if not (s.get('origin') == 'agent' and s.get('state') == 'suggested')]
+            camp['when'] = {'slots': kept + [{k: v for k, v in s.items() if k != 'label' and v is not None} for s in slots]}
+        sugg['updated_at'] = now_iso()
+        camp['suggestions'] = sugg
+        camp['updated_at'] = now_iso()
+        _write_store(store)
+        return v1_campaign(camp)
 
 
 # -- human approval snapshot (R1-W S2) -----------------------------------------
@@ -1962,6 +2099,13 @@ def v1_campaign(camp: dict) -> dict:
     # `goal.current` is derived, never the stored number (see `goal_current`).
     if isinstance(out.get('goal'), dict):
         out['goal']['current'] = goal_current(camp.get('goal'))
+    sugg = out.pop('suggestions', None)
+    if isinstance(sugg, dict):
+        how = out.get('how') if isinstance(out.get('how'), dict) else {}
+        how['suggested'] = {k: sugg.get(k) for k in ('what', 'when', 'where', 'because')
+                            if sugg.get(k) not in (None, [])}
+        out['how'] = how
+        out['suggestBlocker'] = sugg.get('blocker')
     return out
 
 
