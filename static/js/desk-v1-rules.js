@@ -469,6 +469,13 @@
   }
 
   window.deskV1HandlePosyInstruction = function (camp, text, posyBoxEl, selection) {
+    // Live: the "applied" reply below is simulated and would claim a change that
+    // never happened. Say nothing was done.
+    if (window.DeskV1Store.live()) {
+      DeskV1Kit.toast('This box is not connected to the agent yet. Nothing was changed.');
+      DeskV1Kit.paintPosyNotConnected(posyBoxEl);
+      return;
+    }
     const scopeLabel = (selection && selection.scope === 'card' && selection.label) || camp.plan.title;
     const before = `${scopeLabel} follows the existing rules.`;
     const widening = _WIDENING_RE.test(text);

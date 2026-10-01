@@ -131,6 +131,16 @@
   ];
 
   function _intakeHTML() {
+    // Live: the sample uploads and the client-only "Make a storyboard" below are
+    // demo behaviour; a new video is made in Studio, where it is saved.
+    if (_isLive()) {
+      return `<div class="desk-v1-video-intake" data-intake-live-redirect>
+        <div class="desk-v1-video-intake-title">Add a video</div>
+        <div class="desk-v1-video-notice">New videos are made in Studio, where they are saved to the Material library. They can be used in a campaign from there.</div>
+        <button type="button" class="desk-v1-video-primary" data-intake-open-studio>Open Studio</button>
+        ${_existingVideosLinkHTML(_campaign(_st.campaignId))}
+      </div>`;
+    }
     const camp = _campaign(_st.campaignId);
     const s = _st.intake;
     const tilesHTML = TILES.map((t) => `
@@ -229,6 +239,8 @@
   }
 
   function _wireIntake(el) {
+    const studioBtn = el.querySelector('[data-intake-open-studio]');
+    if (studioBtn) studioBtn.onclick = () => window.deskV1Nav('studio', {});
     el.querySelectorAll('[data-intake-tile]').forEach((b) => b.onclick = () => { _st.intake.tile = b.dataset.intakeTile; _renderAll(); });
     el.querySelectorAll('[data-chip-remove]').forEach((b) => b.onclick = () => { _st.intake.materials.splice(parseInt(b.dataset.chipRemove, 10), 1); _renderAll(); });
     const brief = el.querySelector('#desk-v1-video-brief');

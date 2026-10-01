@@ -1061,6 +1061,13 @@
   // Suggest task resolving while parked on How repaints nothing instead of
   // clobbering How with Content-tab HTML.
   function _runSuggestTask(camp, project, posyBoxEl) {
+    // Live: the placeholder pieces built below are demo content. The server has
+    // the real route (M9) but this box does not call it yet, so say so.
+    if (DeskV1Store.live()) {
+      DeskV1Kit.toast('Suggestions are not connected to the agent yet. Nothing was suggested or changed.');
+      if (posyBoxEl) DeskV1Kit.paintPosyNotConnected(posyBoxEl);
+      return;
+    }
     const plan = camp.plan || {};
     const accounts = plan.accounts || [];
     const title = plan.title || (camp.subject && camp.subject.label) || 'New campaign';

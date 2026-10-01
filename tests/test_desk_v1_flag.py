@@ -161,10 +161,11 @@ def test_open_desk_branches_to_v1_shell_when_flagged():
 
 
 # ── desk_v1_live (MC-1021 R1-W S0) ────────────────────────────────────────────
-# The v1 store reads live data only when this is on; default OFF until slice S5.
+# The v1 store reads live data only when this is on; default ON since slice S10
+# (every surface is wired, the fixtures no longer ship to the page).
 
-def test_load_config_defaults_desk_v1_live_off():
-    assert _server_config_defaults()['desk_v1_live'] is False
+def test_load_config_defaults_desk_v1_live_on():
+    assert _server_config_defaults()['desk_v1_live'] is True
 
 
 def test_desk_v1_live_is_an_editable_key(ctx):
@@ -185,13 +186,28 @@ def test_get_config_reports_desk_v1_live(ctx):
     assert ctx.client.get('/api/config').get_json()['desk_v1_live'] is False
 
 
-def test_fixtures_and_store_load_before_the_shell():
-    """Demo mode (desk_v1_live off) ships the fixtures: the store hands them to
-    the surfaces and the shell labels them. Both load ahead of the shell."""
+def test_store_loads_before_the_shell():
     html = (PROJECT_ROOT / 'static' / 'index.html').read_text(encoding='utf-8')
-    fx = html.index('/static/js/desk-v1-fixtures.js')
-    assert fx < html.index('/static/js/desk-v1-store.js') < html.index('/static/js/desk-v1-shell.js')
-    assert (PROJECT_ROOT / 'static' / 'js' / 'desk-v1-fixtures.js').exists()
+    assert html.index('/static/js/desk-v1-store.js') < html.index('/static/js/desk-v1-shell.js')
+
+
+def test_fixtures_are_not_served_to_the_page():
+    """R1-W S10: the fixture data is the smoke harness's, never production's.
+    The file lives under tools/smoke/fixtures/, index.html has no script tag
+    for it, and nothing under static/js/ reads `window.DeskV1Fixtures` except
+    the store (which reads it only if the harness injected it)."""
+    import re
+    html = (PROJECT_ROOT / 'static' / 'index.html').read_text(encoding='utf-8')
+    assert not re.search(r'<script[^>]*desk-v1-fixtures', html)
+    assert not (PROJECT_ROOT / 'static' / 'js' / 'desk-v1-fixtures.js').exists()
+    assert (PROJECT_ROOT / 'tools' / 'smoke' / 'fixtures' / 'desk-v1-fixtures.js').exists()
+    readers = []
+    for js in (PROJECT_ROOT / 'static' / 'js').glob('*.js'):
+        for n, line in enumerate(js.read_text(encoding='utf-8').splitlines(), 1):
+            code = line.split('//', 1)[0]
+            if 'DeskV1Fixtures' in code and js.name != 'desk-v1-store.js':
+                readers.append(f'{js.name}:{n}')
+    assert readers == []
 
 
 def test_shell_labels_demo_mode():

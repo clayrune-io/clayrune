@@ -73,7 +73,7 @@ _signals_lock = threading.Lock()
 
 # v2 (MC-977 IA revision 2 amend, R1-P): adds the presence store and the
 # campaign goal/term/how/map/approval shapes docs/THE_DESK_V1_IA_REVISION_2.md
-# §5 freezes (fixture-identical, see static/js/desk-v1-fixtures.js). `_migrate`
+# §5 freezes (fixture-identical, see tools/smoke/fixtures/desk-v1-fixtures.js). `_migrate`
 # below carries any v1 record forward on read.
 STORE_VERSION = 2
 
@@ -329,7 +329,7 @@ def _new_id(prefix: str) -> str:
 # -- presence (IA revision 2 §5.3; docs/THE_DESK_V1_IA_REVISION_2.md) --------
 #
 # The project-level record IA1 stubbed and R2-1 froze the fixture shape for
-# (static/js/desk-v1-fixtures.js PROJECTS[].presence): who plans/writes for
+# (tools/smoke/fixtures/desk-v1-fixtures.js PROJECTS[].presence): who plans/writes for
 # this project (`desk_agent`), the accounts bound to it, and the promotion
 # `budget` (§5.2 rename of `production` — see `_migrate_presence_record`).
 
