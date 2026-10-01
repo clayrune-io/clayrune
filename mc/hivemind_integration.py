@@ -172,8 +172,9 @@ def integrate(project: dict, hivemind_id: str, workstreams: list[dict],
                     break
                 push()
         finally:
-            _awt.unlink_runtime(link_proj, wt)
-            if not (wt / _SMOKE_NODE_MODULES).exists():
+            # prepare_delete also severs links an agent made itself, not just
+            # the one linked above; False = one survived, so never delete.
+            if _awt.prepare_delete(link_proj, wt) and not (wt / _SMOKE_NODE_MODULES).exists():
                 _git(base, ['worktree', 'remove', '--force', str(wt)], 60)
                 st['worktree_removed'] = not wt.exists()
             else:

@@ -194,6 +194,140 @@ def test_teardown_never_follows_link_into_real_dirs(project, repo):
     assert len(list((repo / '.venv').iterdir())) == 5, 'real .venv was damaged'
 
 
+def _make_dir_link(link: Path, target: Path) -> bool:
+    """Directory junction on Windows (what agents create with mklink /J), dir
+    symlink elsewhere. False when the platform won't let this process do it."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform == 'win32':
+        r = subprocess.run(['cmd', '/c', 'mklink', '/J', str(link), str(target)],
+                           capture_output=True, stdin=subprocess.DEVNULL)
+        return r.returncode == 0
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return True
+    except OSError:
+        return False
+
+
+def _main_dir_with_files(tmp: Path, n: int = 4) -> Path:
+    main = tmp / 'main_nm'
+    main.mkdir()
+    for i in range(n):
+        (main / f'f{i}.txt').write_text('real', encoding='utf-8')
+    return main
+
+
+def test_sever_links_unlinks_agent_made_link_and_keeps_target(tmp_path):
+    """An agent-made link (outside _shared_runtime) must be unlinked by the
+    teardown helper, leaving the target's files and removing the link."""
+    main = _main_dir_with_files(tmp_path)
+    wt = tmp_path / 'wt'
+    (wt / 'tools' / 'smoke').mkdir(parents=True)
+    link = wt / 'tools' / 'smoke' / 'node_modules'
+    if not _make_dir_link(link, main):
+        pytest.skip('cannot create a directory link on this platform')
+    ok, severed = w.sever_links(wt)
+    assert ok and severed == [str(link)]
+    assert not link.exists() and not link.is_symlink()
+    assert len(list(main.iterdir())) == 4, 'link target was damaged'
+    shutil.rmtree(wt)
+    assert not wt.exists()
+    assert len(list(main.iterdir())) == 4
+
+
+def test_sever_links_unlinks_file_symlink_where_supported(tmp_path):
+    target = tmp_path / 'real.txt'
+    target.write_text('real', encoding='utf-8')
+    wt = tmp_path / 'wt'
+    wt.mkdir()
+    try:
+        (wt / 'alias.txt').symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip('file symlinks not permitted here')
+    ok, severed = w.sever_links(wt)
+    assert ok and len(severed) == 1
+    assert not (wt / 'alias.txt').is_symlink()
+    assert target.read_text(encoding='utf-8') == 'real'
+
+
+def test_sever_links_fails_closed_when_a_dir_cannot_be_scanned(tmp_path, monkeypatch):
+    """If the walk cannot list a directory it cannot rule out a live link, so
+    it must report not-ok (the caller then refuses to delete)."""
+    wt = tmp_path / 'wt'
+    (wt / 'sub').mkdir(parents=True)
+    real_scandir = w.os.scandir
+
+    def flaky(p):
+        if str(p).endswith('sub'):
+            raise PermissionError('nope')
+        return real_scandir(p)
+
+    monkeypatch.setattr(w.os, 'scandir', flaky)
+    ok, _ = w.sever_links(wt)
+    assert not ok
+
+
+def test_remove_refuses_when_a_link_cannot_be_severed(project, tmp_path, monkeypatch):
+    """A link that survives unlinking must block the delete outright — never
+    fall through to `git worktree remove` / rmtree."""
+    main = _main_dir_with_files(tmp_path)
+    ok, path = w.create(project, 'stuck1')
+    assert ok, path
+    link = Path(path) / 'tools' / 'smoke' / 'node_modules'
+    if not _make_dir_link(link, main):
+        pytest.skip('cannot create a directory link on this platform')
+    monkeypatch.setattr(w, '_unlink_link', lambda p: (_ for _ in ()).throw(OSError('stuck')))
+    ok, msg = w.remove(project, 'stuck1', delete_branch=True, force=True)
+    assert not ok and 'refused' in msg
+    assert Path(path).exists()
+    assert len(list(main.iterdir())) == 4, 'delete ran despite an unsevered link'
+    monkeypatch.undo()
+    w.remove(project, 'stuck1', delete_branch=True, force=True)  # cleanup
+    assert len(list(main.iterdir())) == 4
+
+
+def test_remove_does_not_wipe_agent_made_link_target(project, tmp_path):
+    """THE 2026-10-01 incident: an agent junctions the main checkout's
+    tools/smoke/node_modules into its worktree; `git worktree remove --force`
+    then walked through it and emptied the main checkout's copy."""
+    main = _main_dir_with_files(tmp_path)
+    ok, path = w.create(project, 'smk1')
+    assert ok, path
+    link = Path(path) / 'tools' / 'smoke' / 'node_modules'
+    if not _make_dir_link(link, main):
+        pytest.skip('cannot create a directory link on this platform')
+    ok, msg = w.remove(project, 'smk1', delete_branch=True, force=True)
+    assert ok, msg
+    assert not Path(path).exists()
+    assert len(list(main.iterdir())) == 4, 'agent-made link target was wiped'
+
+
+def test_gc_does_not_wipe_agent_made_link_target(project, tmp_path):
+    """gc_stale reaps through remove(); same guarantee on that path."""
+    main = _main_dir_with_files(tmp_path)
+    # Like the real repo, node_modules is gitignored — an untracked link would
+    # otherwise count as uncommitted work and gc would (correctly) preserve it.
+    with open(Path(project['project_path']) / '.gitignore', 'a', encoding='utf-8') as f:
+        f.write('node_modules\n')
+    _git(project['project_path'], 'commit', '-q', '-am', 'ignore node_modules')
+    ok, path = w.create(project, 'gcl1')
+    assert ok, path
+    link = Path(path) / 'tools' / 'smoke' / 'node_modules'
+    if not _make_dir_link(link, main):
+        pytest.skip('cannot create a directory link on this platform')
+    out = w.gc_stale(project, live_session_ids=[])
+    assert out['removed'] == 1
+    assert not Path(path).exists()
+    assert len(list(main.iterdir())) == 4, 'gc followed an agent-made link'
+
+
+def test_remove_of_worktree_without_links_still_removes(project):
+    ok, path = w.create(project, 'plain1')
+    assert ok, path
+    ok, msg = w.remove(project, 'plain1', delete_branch=True, force=True)
+    assert ok and not Path(path).exists()
+
+
 def test_remove_refuses_to_destroy_uncommitted_work(project):
     """An automatic cleanup must never delete an agent's in-progress work."""
     _, path = w.create(project, 'unc1')
