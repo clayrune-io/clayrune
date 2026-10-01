@@ -28,7 +28,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
-import { loadFixtures, workspaceFromFixtures } from './desk-v1-fixture-api.mjs';
+import { loadFixtures, workspaceFromFixtures, installDemoFixtures } from './desk-v1-fixture-api.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -84,6 +84,7 @@ async function newPage(browser, { live, srv }) {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 1400 }, timezoneId: SMOKE_TZ });
   await ctx.clock.install({ time: SMOKE_NOW });
   const page = await ctx.newPage();
+  if (!live) await installDemoFixtures(page);   // demo mode is the harness's: the page ships no fixtures (S10)
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   await page.addInitScript(() => { window.__confirms = 0; window.confirm = () => { window.__confirms++; return true; }; });

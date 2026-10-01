@@ -665,6 +665,9 @@
   }
 
   function _handleMaterialAction(action) {
+    // Live: the canned intake and the "fixture only" upload below are demo
+    // behaviour. Material is made and kept in Studio, against the real library.
+    if (DeskV1Store.live()) { deskV1Nav('studio', {}); return; }
     if (action === 'create-video' || action === 'record') {
       const camps = _campaigns();
       deskV1Nav('video', camps.length ? { campaignId: camps[0].id } : {});

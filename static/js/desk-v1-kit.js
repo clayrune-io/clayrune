@@ -710,6 +710,14 @@
     output.innerHTML = `<div class="desk-v1-posy-status" aria-live="polite">${esc(name)} answered; nothing changed.</div>`;
   }
 
+  // Live mode (R1-W S10): a box whose agent path is not wired says so and ends
+  // the lifecycle, instead of a simulated reply claiming the agent answered.
+  function paintPosyNotConnected(boxEl) {
+    const output = boxEl && boxEl.querySelector('.desk-v1-posy-output');
+    if (!output) return;
+    output.innerHTML = '<div class="desk-v1-posy-status" data-posy-not-connected aria-live="polite">Not connected to the agent yet. Nothing was sent or changed.</div>';
+  }
+
   // The box's own ref lives on posyBoxHTML()'s `data-agent-ref` — read it
   // back off the DOM rather than asking every caller to pass it a second
   // time to bindPosyBox()/paintPosyReadyNoDiff() (both always operate on the
@@ -862,7 +870,12 @@
     if (!containerEl) return;
     opts = opts || {};
     const key = opts.draftKey || null;
-    const simulate = !!opts.taskLifecycle;
+    // Live (R1-W S10): `taskLifecycle` boxes are the R0 simulation, a canned
+    // "Working on it" then a made-up answer. A box whose agent route is wired
+    // passes taskLifecycle off in live (Review); every other one says it is not
+    // connected rather than pretend the agent answered.
+    const unwired = !!opts.taskLifecycle && !!window.DeskV1Store && window.DeskV1Store.live();
+    const simulate = !!opts.taskLifecycle && !unwired;
     containerEl.querySelectorAll('.desk-v1-posy-chips .agent-question-chip').forEach((btn) => {
       btn.onclick = () => {
         const ta = document.getElementById(inputId);
@@ -899,6 +912,11 @@
     const send = () => {
       const text = (ta && ta.value.trim()) || '';
       if (!text) return;
+      if (unwired) {
+        toast('This box is not connected to the agent yet. Nothing was sent or changed.');
+        paintPosyNotConnected(containerEl);
+        return;
+      }
       if (!simulate) {
         if (ta) ta.value = '';
         if (key) _entryFor(key).draftText = '';
@@ -1259,7 +1277,7 @@
     infoIconHTML, bindInfoIcons,
     posyBoxHTML, bindPosyBox,
     deskAgentRef, accountVoice, projectAgentChoices, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL, onAgentsReady,
-    anyPosyWorking, deskAgentWorkingLabel, paintPosyReadyNoDiff,
+    anyPosyWorking, deskAgentWorkingLabel, paintPosyReadyNoDiff, paintPosyNotConnected,
     openConfirmSheet,
     validatePlan, MAX_TERM_DAYS: _MAX_TERM_DAYS,
     computeBoundsHash, boundsWiden, nextBoundsHash,

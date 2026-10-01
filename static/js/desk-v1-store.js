@@ -9,11 +9,14 @@
 //   desk_v1_live ON   state() is hydrated from `GET /api/desk/workspace` (M1).
 //                     Until a slice wires a surface to a route the keys it
 //                     reads that M1 does not carry stay empty, never invented.
-//   desk_v1_live OFF  DEMO MODE, chosen by the user and labelled: state() is
-//                     `window.DeskV1Fixtures` itself (static/js/desk-v1-
-//                     fixtures.js), so a smoke that mutates it sees its own
-//                     writes, and demo() is true so the shell shows "Demo data
-//                     - not your workspace" on every page.
+//   desk_v1_live OFF  state() is `window.DeskV1Fixtures` when something put it
+//                     there, else empty and gate() says so. Production pages
+//                     never have it (S10: the fixtures live in tools/smoke/
+//                     fixtures/ and only the smoke harness injects them), so
+//                     OFF is an explicit "nothing to show" state. With the
+//                     harness's fixtures present a smoke that mutates them
+//                     sees its own writes, and demo() is true so the shell
+//                     shows "Demo data - not your workspace" on every page.
 //
 // DEMO IS NEVER A FALLBACK. Live ON never reads the fixtures: a failed live
 // load leaves `gate()` returning an error the shell paints (with Try again),
@@ -60,12 +63,14 @@
   function demo() { return !live() && !!window.DeskV1Fixtures; }
 
   // What the shell should paint INSTEAD of a surface, or null when the surfaces
-  // can render. `off` fires only if the fixture file itself failed to load.
+  // can render. `off` fires whenever the flag is off and no fixtures were
+  // injected, which is every production page since S10 (only the smoke
+  // harness puts `window.DeskV1Fixtures` there).
   function gate() {
     if (!live()) {
       return window.DeskV1Fixtures ? null : {
         kind: 'off',
-        message: 'Demo data did not load, and desk_v1_live is off, so there is nothing to show.',
+        message: 'The Desk workspace is switched off (desk_v1_live is off) and this build ships no demo data, so there is nothing to show. Turn desk_v1_live on in Settings.',
       };
     }
     if (_phase === 'ready') return null;

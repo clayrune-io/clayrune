@@ -21,6 +21,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { installDemoFixtures } from './desk-v1-fixture-api.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -57,9 +58,10 @@ const ok = (m) => console.log('  ✓ ' + m);
 const fail = (m) => { console.error('  ✗ ' + m); bad++; };
 
 // `m1` is read per request so a case can flip it between Try again clicks.
-async function newPage(browser, { live, m1 }) {
+async function newPage(browser, { live, m1, fixtures = !live }) {
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
   const page = await ctx.newPage();
+  if (fixtures) await installDemoFixtures(page);   // demo mode is the harness's: the page ships no fixtures (S10)
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   const hits = { m1: 0 };
@@ -126,6 +128,17 @@ async function liveOk(browser) {
   const rejected = await page.evaluate(() => window.DeskV1Store.run({}).then(() => 'resolved', () => 'rejected'));
   rejected === 'rejected' ? ok('run(): a malformed command is rejected, not run') : fail('malformed run() resolved');
 
+  // An agent box with no live route must not run the R0 simulation: no
+  // "Simulated reply", no made-up answer, an explicit "not connected" line.
+  await page.evaluate((projectId) => window.deskV1Nav('project', { projectId }), PID);
+  await settle(page, () => !!document.querySelector('#desk-v1-project-posy-input'));
+  await page.fill('#desk-v1-project-posy-input', 'Pause everything');
+  await page.click('[data-posy-send="desk-v1-project-posy-input"]');
+  await settle(page, () => !!document.querySelector('[data-posy-not-connected]'));
+  ok('live ON: an unwired agent box says it is not connected');
+  const simText = await deskText(page);
+  (!/Simulated reply|answered; nothing changed|Working on it/.test(simText)) ? ok('live ON: no simulated agent reply on an unwired box') : fail('simulated agent reply shown in live mode: ' + simText.slice(0, 200));
+
   const real = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   real.length ? real.forEach((e) => fail('page error: ' + e)) : ok('no uncaught page errors');
   await ctx.close();
@@ -180,11 +193,28 @@ async function demoMode(browser) {
   await ctx.close();
 }
 
+// Production since S10: the flag is off AND the page carries no fixtures. The
+// store must say so, not paint an empty Desk or reach for demo data.
+async function offNoFixtures(browser) {
+  const { ctx, page, hits } = await newPage(browser, { live: false, fixtures: false, m1: () => ({ status: 200, body: WORKSPACE }) });
+  await settle(page, () => !!document.querySelector('[data-store-gate="off"]'));
+  ok('flag off, no fixtures: the shell paints the explicit "off" state');
+  const t = await deskText(page);
+  /nothing to show/.test(t) ? ok('the off state says there is nothing to show') : fail('off state text: ' + t);
+  const fx = await page.evaluate(() => typeof window.DeskV1Fixtures);
+  fx === 'undefined' ? ok('window.DeskV1Fixtures does not exist on the page') : fail('fixtures present on a production-shaped page');
+  const banner = await page.$eval('#desk-v1-demo-banner', (el) => el.hidden);
+  banner ? ok('no demo banner (nothing is being demoed)') : fail('demo banner shown with no fixtures');
+  hits.m1 === 0 ? ok('M1 is not requested while the flag is off') : fail('M1 read with the flag off');
+  await ctx.close();
+}
+
 const browser = await chromium.launch();
 try {
   console.log('live ON, M1 answers'); await liveOk(browser);
   console.log('live ON, M1 fails'); await liveFails(browser);
   console.log('live OFF (demo mode)'); await demoMode(browser);
+  console.log('live OFF, no fixtures (production shape)'); await offNoFixtures(browser);
 } catch (e) { fail('harness error: ' + (e && e.stack || e)); }
 await browser.close();
 if (bad) { console.error(`\n❌ FAIL — ${bad} case(s)`); process.exit(1); }
