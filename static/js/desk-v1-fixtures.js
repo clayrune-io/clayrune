@@ -1180,7 +1180,7 @@
     // the What row's own number. These two are the drafts that have no family.
     recent: [
       { id: 'rec-retro-faq', kind: 'article', title: 'Retro FAQ', campaignId: 'camp-1', status: 'draft', savedAgo: '2h ago' },
-      { id: 'rec-dashboard-hero', kind: 'image', title: 'Dashboard hero', campaignId: null, status: 'rendered' },
+      { id: 'rec-dashboard-hero', kind: 'image', title: 'Dashboard hero', campaignId: null, status: 'rendered', src: '/assets/desk-thumb-home.png' },
     ],
     // Material library (frame 11): folders with file counts.
     library: [

@@ -57,6 +57,9 @@
     // Storyboard`. Both render from desk-v1-studio.js.
     studio:        { parent: 'home',     label: 'Studio',       render: () => window.deskV1RenderStudio },
     storyboard:    { parent: 'campaign', label: 'New video · Storyboard', render: () => window.deskV1RenderStoryboard },
+    // MC-1024: Studio's own creation page, no campaign: {kind} opens a new
+    // video/image, {itemId} an item Studio already made. Back is `‹ Studio`.
+    'studio-create': { parent: 'studio', label: (params) => (window.deskV1StudioCreateLabel ? window.deskV1StudioCreateLabel(params) : 'New'), render: () => window.deskV1RenderStudioCreate },
   };
 
   // T2 (§2, §8): conversations/results/calendar stop being separate routes —

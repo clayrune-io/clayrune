@@ -15,6 +15,10 @@
  *   - What → Article → Write new opens the writer: one tab per destination
  *     version, provenance line, the `? Assumed` claim both inline and in the
  *     Claims & sources panel, Save to What returns with the piece `in review`.
+ *   - Standalone (MC-1024): the New video / New image tiles open creation with no
+ *     campaign picker; a capture is saved to the Material library, listed in
+ *     Recent and in a campaign's What library picker; a no-campaign Recent row
+ *     opens the item; `Use in a campaign` attaches it as a piece.
  *   - Image → Capture: Screen picker + preview, capturing attaches; a project
  *     with no capturable surface reads `Not available for this project`.
  *   - Online source: connected accounts expand a thumbnail grid; an unconnected
@@ -152,14 +156,95 @@ async function runStudioHome(browser, tone) {
   const back = await text(page, '.desk-v1-back');
   check(/^‹\s*Desk$/.test(back), `${tag} Back reads "${back}"`, `${tag} Back wrong: ${JSON.stringify(back)}`);
 
-  // A tile asks which campaign, then lands on its What with the create-card open.
-  await page.click('[data-studio-new="video"]');
+  // The article tile still asks which campaign (the writer reads that campaign's
+  // How), then lands on its What with the create-card open.
+  await page.click('[data-studio-new="article"]');
   await page.waitForSelector('.desk-v1-add-menu, [role="menu"]', { timeout: 4000 });
   await page.click('[role="menu"] [role="menuitem"]:first-child, .desk-v1-add-menu button:first-child');
-  await page.waitForSelector('[data-what-create][data-kind="video"]', { timeout: 6000 });
-  check(true, `${tag} New video tile → pick a campaign → that What with a video create-card open`, '');
+  await page.waitForSelector('[data-what-create][data-kind="article"]', { timeout: 6000 });
+  check(true, `${tag} New article tile → pick a campaign → that What with an article create-card open`, '');
   reportUncaught(pageErrors, tag);
   await ctx.close();
+}
+
+// ── 1b. Studio is a standalone workshop (MC-1024) ────────────────────────
+async function openStudio(page) {
+  await page.evaluate(() => window.deskV1Nav('studio', {}));
+  await page.waitForSelector('[data-studio]', { timeout: 6000 });
+}
+
+async function runStandalone(browser, tone) {
+  const tag = `[${tone.name}]`;
+
+  // Video tile: the creation page opens at once, no campaign picker, no campaign.
+  let b = await newBootedPage(browser, tone);
+  let page = b.page;
+  await openStudio(page);
+  await page.click('[data-studio-new="video"]');
+  await page.waitForSelector('[data-studio-create][data-kind="video"] [data-storyboard]', { timeout: 6000 });
+  check((await page.$$('.desk-v1-add-menu, [role="menu"]')).length === 0, `${tag} New video tile opens creation with no campaign picker`, `${tag} a menu opened for the video tile`);
+  const strip = await text(page, '[data-sb-standalone]');
+  check(/not attached to a campaign/.test(strip) && (await page.$$('[data-returning-to]')).length === 0,
+    `${tag} the video page names no campaign: "${strip}"`, `${tag} video page still tied to a campaign: ${JSON.stringify(strip)}`);
+  check((await page.$$('[data-sc-product]')).length === 1 && (await page.$$('[data-what]')).length === 0,
+    `${tag} optional Product selector present, not on a campaign's What`, `${tag} product selector / What wrong`);
+  const back = await text(page, '.desk-v1-back');
+  check(/^‹\s*Studio$/.test(back), `${tag} Back reads "${back}"`, `${tag} Back wrong: ${JSON.stringify(back)}`);
+  reportUncaught(b.pageErrors, tag);
+  await b.ctx.close();
+
+  // Image tile → capture → saved to the library → Studio's Recent → What's library.
+  b = await newBootedPage(browser, tone);
+  page = b.page;
+  await openStudio(page);
+  await page.click('[data-studio-new="image"]');
+  await page.waitForSelector('[data-studio-create][data-kind="image"] [data-sc-source]', { timeout: 6000 });
+  check((await page.$$('.desk-v1-add-menu, [role="menu"]')).length === 0, `${tag} New image tile opens creation with no campaign picker`, `${tag} a menu opened for the image tile`);
+  const prodOpts = await page.$$eval('[data-sc-product] option', (els) => els.map((e) => e.value));
+  const prod = prodOpts.find((v) => v);
+  if (prod) await page.selectOption('[data-sc-product]', prod);
+  await page.click('[data-sc-source="capture"]');
+  await page.waitForSelector('[data-cap]', { timeout: 4000 });
+  await page.click('[data-cap-take]');
+  await page.waitForSelector('[data-studio-create][data-view="item"] [data-sc-item]', { timeout: 4000 });
+  const saved = await text(page, '[data-sc-saved]');
+  check(/Saved to the Material library/.test(saved), `${tag} the capture is saved to the library: "${saved}"`, `${tag} no library confirmation: ${JSON.stringify(saved)}`);
+  check((await page.$$('[data-sc-use]')).length === 1, `${tag} a finished item offers "Use in a campaign"`, `${tag} no Use in a campaign`);
+  const title = await text(page, '[data-sc-item-title]');
+
+  await openStudio(page);
+  const recent = await page.$$eval('[data-studio-recent-row]', (els) => els.map((e) => ({ t: e.textContent.replace(/\s+/g, ' ').trim(), c: e.dataset.campaignId || null })));
+  check(recent.some((r) => r.t.includes(title) && !r.c), `${tag} Recent lists "${title}" with no campaign`, `${tag} Recent missing the item: ${JSON.stringify(recent)}`);
+
+  // It is in the What source picker's library for any campaign.
+  await gotoWhat(page, 'camp-1');
+  await addCreate(page, 'image');
+  await page.click('[data-what-source="upload"]');
+  await page.waitForSelector('[data-what-lib]', { timeout: 4000 });
+  const libNames = await page.$$eval('[data-what-lib] [data-what-folder] .desk-v1-what-folder-name', (els) => els.map((e) => e.textContent.trim()));
+  check(libNames.includes(title), `${tag} the created item appears in a campaign's What library picker (${libNames.length} tiles)`, `${tag} library picker lacks "${title}": ${JSON.stringify(libNames)}`);
+  reportUncaught(b.pageErrors, tag);
+  await b.ctx.close();
+
+  // A Recent row with no campaign opens the item, not a campaign; Use in a
+  // campaign attaches it as a piece in that campaign's What.
+  b = await newBootedPage(browser, tone);
+  page = b.page;
+  await openStudio(page);
+  await page.click('[data-studio-recent-row="rec-dashboard-hero"]');
+  await page.waitForSelector('[data-studio-create][data-view="item"]', { timeout: 4000 });
+  check((await text(page, '[data-sc-item-title]')) === 'Dashboard hero' && (await page.$$('[data-what]')).length === 0,
+    `${tag} a Recent row with no campaign opens the item, not a campaign`, `${tag} Recent row did not open the item`);
+  await page.click('[data-sc-use]');
+  await page.waitForSelector('.desk-v1-add-menu, [role="menu"]', { timeout: 4000 });
+  const rowsBefore = await page.evaluate(() => window.DeskV1Fixtures.families.length);
+  await page.click('[role="menu"] [role="menuitem"]:first-child, .desk-v1-add-menu button:first-child');
+  await page.waitForSelector('[data-what]', { timeout: 6000 });
+  const attached = await page.evaluate(() => window.DeskV1Fixtures.families.filter((f) => f.title === 'Dashboard hero' && f.assets && f.assets.length).length);
+  const rowsAfter = await page.evaluate(() => window.DeskV1Fixtures.families.length);
+  check(attached === 1 && rowsAfter === rowsBefore + 1, `${tag} Use in a campaign attaches it as a piece in that What`, `${tag} attach wrong: attached=${attached} families ${rowsBefore}→${rowsAfter}`);
+  reportUncaught(b.pageErrors, tag);
+  await b.ctx.close();
 }
 
 // ── 2. storyboard, scene moves, render ───────────────────────────────────
@@ -441,6 +526,7 @@ try {
   for (const tone of TONES) {
     console.log(`\n== ${tone.name}`);
     await runStudioHome(browser, tone);
+    await runStandalone(browser, tone);
     await runStoryboard(browser, tone);
     await runWriter(browser, tone);
     await runImageBodies(browser, tone);

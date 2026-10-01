@@ -23,10 +23,21 @@
   function _studio() { return _fx().studio || {}; }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id) || null; }
   function _project(id) { return (_fx().projects || []).find((p) => p.id === id) || null; }
-  function _family(id) { return (_fx().families || []).find((f) => f.id === id) || null; }
+  // A standalone Studio video (MC-1024) is its own storyboard owner: the draft
+  // being worked on is found before the campaign pieces, so the scene commands
+  // below run unchanged on it.
+  function _family(id) {
+    if (_sc && _sc.item && _sc.item.id === id) return _sc.item;
+    return _items().find((f) => f.id === id) || (_fx().families || []).find((f) => f.id === id) || null;
+  }
+  function _isLive() { return window.DeskV1Store.live(); }
+  // What Studio itself made, newest first. Demo: on the fixture's `studio`;
+  // live: on the hydrated state, so it lasts the session (the files last).
+  function _items() { const s = _studio(); return s.items || (s.items = []); }
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id) || null; }
   function _campTitle(camp) { return (camp && camp.plan && camp.plan.title) || 'Campaign'; }
 
+  let _sc = null; // the mounted standalone creation page (MC-1024)
   let _seq = 0;
   function _uid() { return Date.now().toString(36) + (++_seq).toString(36); }
   function _mmss(totalSec) { const m = Math.floor(totalSec / 60), s = Math.round(totalSec % 60); return m + ':' + String(s).padStart(2, '0'); }
@@ -49,10 +60,29 @@
   ];
   const RECENT_ICON = { rendering: '⟳', article: '📄', image: '🖼', video: '🎬' };
 
-  // Recent: the videos still rendering (read off the families so the percentage
-  // is the What row's own number), then the fixture drafts that have no family.
+  // The material library behind Studio home, read live from M22 (demo shows the
+  // fixture's own folders). `error` is a real failure shown as one, never an
+  // empty library.
+  const _lib = { error: null, recent: [], loaded: false };
+
+  // Studio's own items: what it made (a standalone item has no campaign), as
+  // Recent rows. A video still rendering reads its percentage off the item.
+  function _itemMeta(it) {
+    if (it.render && it.render.status === 'rendering') return { state: 'rendering', meta: `Rendering ${it.render.progress != null ? it.render.progress : 0}% · not attached` };
+    if (it.status === 'saved') return { state: 'saved', meta: 'Saved to the Material library · not attached' };
+    return { state: 'draft', meta: 'Draft saved just now · not attached' };
+  }
+
+  // Recent: Studio's own items, the videos still rendering (read off the
+  // families so the percentage is the What row's own number), then the fixture
+  // drafts that have no family. Live, the newest library files stand in for the
+  // fixture drafts.
   function _recentRows() {
     const rows = [];
+    _items().forEach((it) => {
+      const m = _itemMeta(it);
+      rows.push({ id: it.id, icon: m.state === 'rendering' ? RECENT_ICON.rendering : (RECENT_ICON[it.kind] || '•'), title: it.title, kind: it.kind, campaignId: null, meta: m.meta, state: m.state });
+    });
     (_fx().families || []).forEach((f) => {
       if (!(f.render && f.render.status === 'rendering')) return;
       const camp = _campaign(f.campaignId);
@@ -66,16 +96,41 @@
         : `Rendered · ${camp ? 'for ' + _campTitle(camp) : 'not attached'}`;
       rows.push({ id: r.id, icon: RECENT_ICON[r.kind] || '•', title: r.title, kind: r.kind, campaignId: r.campaignId, meta, state: r.status });
     });
+    if (_isLive()) {
+      const seen = new Set(_items().map((it) => it.path).filter(Boolean));
+      _lib.recent.filter((r) => !seen.has(r.path)).forEach((r) => rows.push({
+        id: r.path, icon: RECENT_ICON[r.kind] || '•', title: r.title, kind: r.kind, campaignId: null,
+        meta: 'Saved to the Material library · not attached', state: 'saved' }));
+    }
     return rows;
+  }
+
+  // Studio home's library shelf: demo reads the fixture's folders, plus a
+  // `Studio` folder once something was saved; live reads M22's folders.
+  function _libFolders() {
+    if (_isLive()) {
+      const ml = _fx().materialLibrary || {};
+      return ['video', 'image'].flatMap((k) => (ml[k] || []).map((m) => ({ id: m.id, title: m.title, files: m.files })));
+    }
+    const made = _items().filter((it) => it.status === 'saved').length;
+    return (_studio().library || []).concat(made ? [{ id: 'lib-studio', title: 'Studio', files: made }] : []);
   }
 
   function _studioHTML() {
     const rows = _recentRows();
-    const lib = _studio().library || [];
+    const lib = _libFolders();
+    const libHTML = _isLive() && _lib.error
+      ? `<div class="desk-v1-camp-empty" data-studio-lib-error>Could not load the material library: ${esc(_lib.error)}</div>`
+      : lib.map((m) => `
+        <div class="desk-v1-studio-folder" data-studio-folder="${esc(m.id)}">
+          <span class="desk-v1-studio-folder-glyph" aria-hidden="true">📁</span>
+          <span class="desk-v1-studio-folder-name">${esc(m.title)}</span>
+          <span class="desk-v1-studio-folder-count">${esc(m.files)} files</span>
+        </div>`).join('');
     return `<div class="desk-v1-studio" data-studio>
       <h2 class="desk-v1-studio-title">Studio</h2>
       <div class="desk-v1-studio-tiles" role="group" aria-label="Start something new">${NEW_TILES.map((t) => `
-        <button type="button" class="desk-v1-studio-tile" data-studio-new="${esc(t.id)}" aria-haspopup="menu">
+        <button type="button" class="desk-v1-studio-tile" data-studio-new="${esc(t.id)}"${t.id === 'article' ? ' aria-haspopup="menu"' : ''}>
           <span class="desk-v1-studio-tile-glyph" aria-hidden="true">${esc(t.glyph)}</span>
           <span class="desk-v1-studio-tile-name">${esc(t.label)}</span>
           <span class="desk-v1-studio-tile-hint">${esc(t.hint)}</span>
@@ -90,23 +145,21 @@
           </span>
         </button>`).join('') : '<div class="desk-v1-camp-empty">Nothing made yet.</div>'}</div>
       <h3 class="desk-v1-studio-sub">Material library</h3>
-      <div class="desk-v1-studio-lib" data-studio-lib>${lib.map((m) => `
-        <div class="desk-v1-studio-folder" data-studio-folder="${esc(m.id)}">
-          <span class="desk-v1-studio-folder-glyph" aria-hidden="true">📁</span>
-          <span class="desk-v1-studio-folder-name">${esc(m.title)}</span>
-          <span class="desk-v1-studio-folder-count">${esc(m.files)} files</span>
-        </div>`).join('')}</div>
+      <div class="desk-v1-studio-lib" data-studio-lib>${libHTML}</div>
     </div>`;
   }
 
-  // A Studio tile makes a piece INSIDE a campaign (the piece lives on its What
-  // list), so it first asks which one, then lands on that campaign's What with
-  // the create-card already open.
+  // Studio is a standalone workshop (Ron 2026-10-01, MC-1024): the Video and
+  // Image tiles open their creation page directly, with no campaign. What they
+  // make is saved to the Material library and used on a campaign later. The
+  // Article tile still makes a piece INSIDE a campaign (the writer reads that
+  // campaign's How), so it alone asks which one.
   function _wireStudio(el) {
     el.querySelectorAll('[data-studio-new]').forEach((btn) => {
       btn.onclick = () => {
         const typeId = btn.dataset.studioNew;
-        const camps = (_fx().campaigns || []).filter((c) => ['active', 'proposed', 'draft', 'paused'].includes(c.state));
+        if (typeId === 'video' || typeId === 'image') { window.deskV1Nav('studio-create', { kind: typeId }); return; }
+        const camps = _campaignsToUse();
         if (!camps.length) { DeskV1Kit.toast('Start a campaign first, then make pieces for it here.'); return; }
         DeskV1Kit.addToMenu(btn, camps.map((c) => ({ id: c.id, label: _campTitle(c) })), (campId) => {
           if (typeof window.deskV1WhatStartCreate === 'function') window.deskV1WhatStartCreate(campId, typeId);
@@ -114,14 +167,40 @@
         }, { noAppendNew: true });
       };
     });
+    // A row with a campaign goes to that campaign's What; one with none is a
+    // Studio item, so it opens the item, not a campaign.
     el.querySelectorAll('[data-studio-recent-row]').forEach((row) => {
-      row.onclick = () => { if (row.dataset.campaignId) window.deskV1GotoCampaignPanel('what', { campaignId: row.dataset.campaignId }); };
+      row.onclick = () => {
+        if (row.dataset.campaignId) window.deskV1GotoCampaignPanel('what', { campaignId: row.dataset.campaignId });
+        else window.deskV1Nav('studio-create', { itemId: row.dataset.studioRecentRow });
+      };
     });
   }
 
+  function _campaignsToUse() {
+    return (_fx().campaigns || []).filter((c) => ['active', 'proposed', 'draft', 'paused'].includes(c.state));
+  }
+
+  let _studioEl = null;
   function deskV1RenderStudio(el) {
+    _studioEl = el;
     el.innerHTML = _studioHTML();
     _wireStudio(el);
+    if (_isLive()) _loadLibrary().then(() => {
+      if (_studioEl === el && el.isConnected) { el.innerHTML = _studioHTML(); _wireStudio(el); }
+    });
+  }
+
+  // M22, read when Studio home opens live. The same read hands What its library,
+  // so the cached copy on `materialLibrary` is the one both show.
+  function _loadLibrary() {
+    return window.DeskV1Store.api('GET', '/api/desk/materials').then((m) => {
+      _fx().materialLibrary = (m && m.library) || { video: [], image: [] };
+      const lib = _fx().materialLibrary;
+      const all = ['video', 'image'].flatMap((k) => (lib[k] || []).flatMap((f) => f.items || []));
+      _lib.recent = ((m && m.recent) || []).map((r) => { const hit = all.find((i) => i.path === r.id); return { kind: r.kind, title: r.title, path: r.id, src: hit ? hit.src : null }; });
+      _lib.error = null;
+    }).catch((e) => { _lib.error = e && e.message ? e.message : String(e); });
   }
 
   // ── Storyboard (frame 13) ────────────────────────────────────────────────
@@ -146,9 +225,17 @@
   function _sbCtx() {
     if (!_sb) return null;
     const fam = _family(_sb.familyId);
-    const camp = _campaign(_sb.campaignId);
+    // Standalone (Studio's own video): no campaign, so the "campaign" is just
+    // the product picked on the page, which is all the agent lookup reads.
+    const camp = _sb.standalone ? { projectId: _sc ? _sc.productId : '' } : _campaign(_sb.campaignId);
     if (!fam || !camp) return null;
     return { fam, camp, detail: ensureStoryboard(fam) };
+  }
+
+  // A standalone draft joins Studio's items (and so Recent) the first time it is
+  // changed, so opening the page and leaving leaves nothing behind.
+  function _registerItem(fam) {
+    if (_sb && _sb.standalone && !_items().includes(fam)) _items().unshift(fam);
   }
 
   function _sceneHTML(s, i, editing) {
@@ -176,7 +263,10 @@
   function _renderStatusHTML(fam) {
     const r = fam.render;
     if (!(r && r.status === 'rendering')) return '';
-    return `<div class="desk-v1-sb-rendering" data-sb-rendering>⟳ Rendering ${esc(r.progress != null ? r.progress : 0)}% — back on What the piece stays usable while it renders.</div>`;
+    const tail = _sb && _sb.standalone
+      ? 'preview only: the render engine is not wired yet, so this does not finish.'
+      : 'back on What the piece stays usable while it renders.';
+    return `<div class="desk-v1-sb-rendering" data-sb-rendering>⟳ Rendering ${esc(r.progress != null ? r.progress : 0)}% — ${tail}</div>`;
   }
 
   function _sbHTML() {
@@ -187,12 +277,16 @@
     const agentName = agent.name || 'Your agent';
     const avatar = agent.name && typeof window.avatarHTML === 'function' ? window.avatarHTML(agent.avatar, 28) : '<span class="desk-v1-sb-agent-avatar" aria-hidden="true">🤖</span>';
     const rendering = fam.render && fam.render.status === 'rendering';
+    const strip = _sb.standalone
+      ? `<div class="desk-v1-sb-returning" data-sb-standalone>Studio · <strong>not attached to a campaign</strong> <span>· use it in one from the Material library afterwards</span></div>`
+      : `<div class="desk-v1-sb-returning" data-returning-to>Returning to › <strong>${esc(_campTitle(camp))}</strong> <span>· What · ${esc(fam.title)}</span></div>`;
     return `<div class="desk-v1-sb" data-storyboard data-family-id="${esc(fam.id)}">
-      <div class="desk-v1-sb-returning" data-returning-to>Returning to › <strong>${esc(_campTitle(camp))}</strong> <span>· What · ${esc(fam.title)}</span></div>
+      ${strip}
       <div class="desk-v1-sb-head">
         <h2 class="desk-v1-sb-title">New video · storyboard</h2>
-        <button type="button" class="btn-add" data-sb-render${rendering ? ' disabled' : ''}>Render</button>
+        <button type="button" class="btn-add" data-sb-render${rendering || (_sb.standalone && !detail.scenes.length) ? ' disabled' : ''}>Render</button>
       </div>
+      ${_sb.standalone && !detail.scenes.length ? '<div class="desk-v1-camp-empty" data-sb-no-scenes>No scenes yet. Scenes come from product captures, which are not wired yet.</div>' : ''}
       ${_renderStatusHTML(fam)}
       <div class="desk-v1-sb-layout">
         <ol class="desk-v1-sb-scenes" data-scenes aria-label="Scenes">${detail.scenes.map((s, i) => _sceneHTML(s, i, _sb.editing === s.id)).join('')}</ol>
@@ -222,6 +316,7 @@
     const from = arr.findIndex((s) => s.id === fromId);
     const to = arr.findIndex((s) => s.id === toId);
     if (from < 0 || to < 0) return false;
+    _registerItem(ctx.fam);
     const before = arr.map((s) => s.id);
     const apply = (ids) => { ctx.detail.scenes = ids.map((id) => arr.find((s) => s.id === id)); };
     const after = before.slice();
@@ -242,6 +337,7 @@
     if (!s) return;
     const prev = { label: s.label, line: s.line };
     if (prev.label === patch.label && prev.line === patch.line) return;
+    _registerItem(ctx.fam);
     DeskV1Kit.commandBus.run({
       label: `Edited scene “${prev.label}”`,
       do: () => { s.label = patch.label; s.line = patch.line; _paintScenes(); },
@@ -254,6 +350,7 @@
     if (!ctx) return;
     const { fam } = ctx;
     const prev = fam.render || null;
+    _registerItem(fam);
     DeskV1Kit.commandBus.run({
       label: `Started rendering “${fam.title}”`,
       do: () => { fam.render = { jobId: 'render-' + _uid(), status: 'rendering', revision: 1, progress: 40 }; _repaintSb(); },
@@ -347,7 +444,7 @@
 
   function deskV1RenderStoryboard(el, params) {
     params = params || {};
-    _sb = { el, campaignId: params.campaignId, familyId: params.familyId, editing: null };
+    _sb = { el, campaignId: params.campaignId, familyId: params.familyId, editing: null, standalone: false };
     el.innerHTML = _sbHTML();
     _wireSb(el);
   }
@@ -443,7 +540,7 @@
     for (const ch of String(seed || 'abstract')) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }
     const hue = (n) => (h >>> n) % 360;
     const a = hue(0), b = hue(7), c = hue(13);
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200"><defs>` +
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200" viewBox="0 0 320 200"><defs>` +
       `<linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${a},70%,42%)"/><stop offset="1" stop-color="hsl(${b},70%,28%)"/></linearGradient></defs>` +
       `<rect width="320" height="200" fill="url(#g)"/>` +
       `<circle cx="${60 + (h % 120)}" cy="${50 + (h % 70)}" r="${46 + (h % 30)}" fill="hsl(${c},80%,60%)" opacity=".45"/>` +
@@ -662,7 +759,241 @@
     });
   }
 
+  // ── Standalone creation (MC-1024) ────────────────────────────────────────
+  // The `studio-create` route: {kind: 'video'|'image'} opens a new one, {itemId}
+  // opens one Studio already made. No campaign anywhere on the page. What it
+  // makes is saved to the Material library (live: M22's Studio folder; demo: the
+  // fixture library), and `Use in a campaign` is offered once it is finished.
+  // Rendering is still the demo path (slice S9 wires the engines), so a Studio
+  // video stays at `Rendering 40%` and reaches the library only once it can
+  // render for real.
+  const CREATE_SOURCES = {
+    image: [
+      { id: 'capture', label: 'Capture from the product', hint: 'A real screenshot of the app', glyph: '📸' },
+      { id: 'online', label: 'Online source', hint: 'YouTube channel, Google Drive, Dropbox', glyph: '🌐' },
+      { id: 'generate', label: 'Generate', hint: 'Abstract visuals only — never the product UI', glyph: '✨' },
+    ],
+  };
+  const PRODUCT_KEY = 'desk_v1_studio_product';
+  const _IMG_EXT = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp' };
+
+  // The product the capture reads: the only project, else the last one used.
+  function _defaultProduct() {
+    const ps = _fx().projects || [];
+    if (ps.length === 1) return ps[0].id;
+    try {
+      const last = localStorage.getItem(PRODUCT_KEY);
+      if (last && ps.some((p) => p.id === last)) return last;
+    } catch (e) { /* storage blocked: no default */ }
+    return '';
+  }
+
+  function _itemById(id) {
+    const own = _items().find((it) => it.id === id);
+    if (own) return own;
+    const rec = (_studio().recent || []).find((r) => r.id === id);
+    if (rec) return { id: rec.id, kind: rec.kind, title: rec.title, status: rec.status === 'rendered' ? 'saved' : 'draft', src: rec.src || null, path: null };
+    const l = _lib.recent.find((r) => r.path === id);
+    if (l) return { id: l.path, kind: l.kind, title: l.title, status: 'saved', src: l.src, path: l.path };
+    return null;
+  }
+
+  function studioCreateLabel(params) {
+    const it = params && params.itemId ? _itemById(params.itemId) : null;
+    if (it) return it.title;
+    return params && params.kind === 'video' ? 'New video' : 'New image';
+  }
+
+  function _productRowHTML() {
+    const ps = _fx().projects || [];
+    return `<div class="desk-v1-sc-product" data-sc-product-row>
+      <label class="desk-v1-sc-label" for="sc-product">Product</label>
+      <select class="desk-v1-cap-select" id="sc-product" data-sc-product>
+        <option value=""${_sc.productId ? '' : ' selected'}>None</option>${ps.map((p) =>
+          `<option value="${esc(p.id)}"${p.id === _sc.productId ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
+      <span class="desk-v1-sc-hint">Optional. Only used to capture from a product.</span>
+    </div>`;
+  }
+
+  function _imageSetupHTML() {
+    const srcs = CREATE_SOURCES.image;
+    if (!_sc.source) {
+      return `<div class="desk-v1-what-sources" role="group" aria-label="Choose a source">${srcs.map((s) => `
+        <button type="button" class="desk-v1-what-source" data-sc-source="${esc(s.id)}" aria-label="${esc(`${s.label}. ${s.hint}`)}" title="${esc(s.hint)}">
+          <span class="desk-v1-what-source-glyph" aria-hidden="true">${esc(s.glyph)}</span>
+          <span class="desk-v1-what-source-name">${esc(s.label)}</span>
+          <span class="desk-v1-what-source-hint">${esc(s.hint)}</span>
+        </button>`).join('')}</div>`;
+    }
+    const src = srcs.find((s) => s.id === _sc.source);
+    const ctx = { card: _sc.card, fam: { kind: 'image' }, camp: { projectId: _sc.productId } };
+    const body = _sc.source === 'capture' && !_sc.productId
+      ? '<div class="desk-v1-what-later" data-sc-need-product>Pick a product above to capture from it.</div>'
+      : sourceBodyHTML(_sc.source, ctx);
+    return `<div class="desk-v1-what-chiprow"><span class="desk-v1-what-chip" data-sc-chip>${esc(src ? src.label : _sc.source)}</span>` +
+      `<button type="button" class="desk-v1-what-change" data-sc-change-source>Change source</button></div>${body}`;
+  }
+
+  function _itemViewHTML(it) {
+    const blank = it.kind === 'video' ? '▶' : (RECENT_ICON[it.kind] || '•');
+    const needsFile = _isLive() && !it.path;
+    return `<h2 class="desk-v1-studio-title" data-sc-item-title>${esc(it.title)}</h2>
+      <div class="desk-v1-sc-item" data-sc-item data-item-id="${esc(it.id)}">
+        <div class="desk-v1-sc-preview">${it.src ? `<img src="${esc(it.src)}" alt="${esc(it.title)}">` : `<span class="desk-v1-sc-blank" aria-hidden="true">${esc(blank)}</span>`}</div>
+        <div class="desk-v1-sc-itemmeta"><span>${esc(it.kind)}</span><span data-sc-saved>Saved to the Material library · not attached to a campaign</span></div>
+      </div>
+      <div class="desk-v1-sc-actions">
+        <button type="button" class="btn-add" data-sc-use${needsFile ? ' disabled' : ''}>Use in a campaign ›</button>
+        <button type="button" class="btn-secondary" data-sc-another>Make another</button>
+      </div>`;
+  }
+
+  function _paintCreate() {
+    if (!_sc || !_sc.el.isConnected) return;
+    const it = _sc.item;
+    const view = it && it.status === 'saved' ? 'item' : (_sc.kind === 'video' ? 'storyboard' : 'sources');
+    let inner;
+    if (view === 'item') inner = _itemViewHTML(it);
+    else if (view === 'storyboard') {
+      inner = `<h2 class="desk-v1-studio-title">New video</h2>
+        <div class="desk-v1-sc-product">
+          <label class="desk-v1-sc-label" for="sc-title">Title</label>
+          <input type="text" class="desk-v1-sb-edit-input" id="sc-title" data-sc-title value="${esc(it.title)}">
+        </div>${_productRowHTML()}<div data-sc-body></div>`;
+    } else inner = `<h2 class="desk-v1-studio-title">New image</h2>${_productRowHTML()}${_imageSetupHTML()}`;
+    _sc.el.innerHTML = `<div class="desk-v1-studio-create" data-studio-create data-kind="${esc(_sc.kind)}" data-view="${view}">${inner}</div>`;
+    _wireCreate(view);
+  }
+
+  function _wireCreate(view) {
+    const el = _sc.el;
+    const prod = el.querySelector('[data-sc-product]');
+    if (prod) prod.onchange = () => {
+      _sc.productId = prod.value;
+      _sc.card.ui = {};
+      if (prod.value) { try { localStorage.setItem(PRODUCT_KEY, prod.value); } catch (e) { /* storage blocked: not remembered */ } }
+      _paintCreate();
+    };
+    if (view === 'storyboard') {
+      _sb = { el: el.querySelector('[data-sc-body]'), campaignId: null, familyId: _sc.item.id, editing: null, standalone: true };
+      _sb.el.innerHTML = _sbHTML();
+      _wireSb(_sb.el);
+      const title = el.querySelector('[data-sc-title]');
+      title.onchange = () => {
+        const fam = _sc.item;
+        fam.title = title.value.trim() || 'New video';
+        title.value = fam.title;
+        _registerItem(fam);
+        if (typeof window.deskV1PatchParams === 'function') window.deskV1PatchParams({ itemId: fam.id });
+      };
+      return;
+    }
+    if (view === 'item') {
+      const it = _sc.item;
+      el.querySelector('[data-sc-another]').onclick = () => {
+        deskV1RenderStudioCreate(el, { kind: it.kind });
+        if (typeof window.deskV1PatchParams === 'function') window.deskV1PatchParams({ kind: it.kind, itemId: null });
+      };
+      const use = el.querySelector('[data-sc-use]');
+      use.onclick = () => {
+        const camps = _campaignsToUse();
+        if (!camps.length) { DeskV1Kit.toast('Start a campaign first, then use this in one.'); return; }
+        DeskV1Kit.addToMenu(use, camps.map((c) => ({ id: c.id, label: _campTitle(c) })), async (campId) => {
+          if (typeof window.deskV1WhatUseLibraryItem !== 'function') return;
+          if (await window.deskV1WhatUseLibraryItem(campId, it)) window.deskV1GotoCampaignPanel('what', { campaignId: campId });
+        }, { noAppendNew: true });
+      };
+      return;
+    }
+    el.querySelectorAll('[data-sc-source]').forEach((b) => b.onclick = () => { _sc.source = b.dataset.scSource; _sc.card.ui = {}; _paintCreate(); });
+    const change = el.querySelector('[data-sc-change-source]');
+    if (change) change.onclick = () => { _sc.source = null; _paintCreate(); };
+    if (_sc.source) {
+      wireSourceBody(el, { card: _sc.card, fam: { kind: 'image' }, camp: { projectId: _sc.productId } },
+        { attach: _saveMade, repaint: _paintCreate, openStoryboard() {} });
+    }
+  }
+
+  // What Studio made goes to the Material library. Demo: the fixture library
+  // (one tile per item, so a What pick attaches exactly it) and an Undo. Live:
+  // a file in M22's Studio folder; there is no delete route, so a live save is a
+  // plain confirmation, not an Undo that would only un-draw it. A refusal rolls
+  // the page back to the sources and says why.
+  async function _srcBlob(src) {
+    if (!src) throw new Error('there is no image to save yet');
+    if (/^data:image\/svg/i.test(src)) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement('canvas');
+          c.width = 1280; c.height = 800;
+          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+          c.toBlob((b) => (b ? resolve(b) : reject(new Error('could not encode the image'))), 'image/png');
+        };
+        img.onerror = () => reject(new Error('could not draw the generated image'));
+        img.src = src;
+      });
+    }
+    const res = await fetch(src);
+    if (!res.ok) throw new Error(`could not read the image (HTTP ${res.status})`);
+    const b = await res.blob();
+    if (!_IMG_EXT[b.type]) throw new Error('only png, jpg, gif and webp images can be saved to the library');
+    return b;
+  }
+
+  function _saveMade(asset) {
+    const kind = asset.kind === 'video' ? 'video' : 'image';
+    const item = { id: 'studio-' + _uid(), kind, title: asset.title, status: 'saved', src: asset.src || null, path: null };
+    const tile = { id: 'mat-' + item.id, title: item.title, files: 1, thumb: item.src };
+    const shelf = () => {
+      const ml = _fx().materialLibrary || (_fx().materialLibrary = { video: [], image: [] });
+      return ml[kind] || (ml[kind] = []);
+    };
+    window.DeskV1Store.write({
+      label: `Saved “${item.title}” to the Material library`,
+      apply: () => {
+        _items().unshift(item);
+        if (_sc) _sc.item = item;
+        if (!_isLive()) shelf().push(tile);
+        _paintCreate();
+      },
+      unapply: () => {
+        const i = _items().indexOf(item); if (i >= 0) _items().splice(i, 1);
+        const arr = shelf(); const j = arr.indexOf(tile); if (j >= 0) arr.splice(j, 1);
+        if (_sc && _sc.item === item) _sc.item = null;
+      },
+      repaint: () => _paintCreate(),
+      request: async () => {
+        const blob = await _srcBlob(asset.src);
+        const name = (String(item.title).replace(/[^A-Za-z0-9 _-]+/g, '').trim().slice(0, 60) || 'studio') + _IMG_EXT[blob.type];
+        const fd = new FormData();
+        fd.append('file', blob, name);
+        fd.append('title', item.title);
+        return window.DeskV1Store.api('POST', '/api/desk/materials', fd);
+      },
+      irreversible: () => `Saved “${item.title}” to the Material library`,
+    }).then((r) => {
+      if (!r || !r.ok || !r.result) return;
+      Object.assign(item, { path: r.result.path, src: r.result.src || item.src });
+      if (typeof window.deskV1WhatInvalidateMaterials === 'function') window.deskV1WhatInvalidateMaterials();
+      _paintCreate();
+    });
+  }
+
+  function deskV1RenderStudioCreate(el, params) {
+    params = params || {};
+    const item = params.itemId ? _itemById(params.itemId) : null;
+    const kind = item ? item.kind : (params.kind === 'video' ? 'video' : 'image');
+    _sc = { el, kind, item, productId: _defaultProduct(), source: null, card: { id: 'studio-create', ui: {} } };
+    // A new video starts as an unregistered draft so its storyboard has an owner;
+    // it joins Recent only once it is changed (see _registerItem).
+    if (!item && kind === 'video') _sc.item = { id: 'studio-' + _uid(), kind: 'video', title: 'New video', status: 'draft', render: null };
+    _paintCreate();
+  }
+
   window.deskV1RenderStudio = deskV1RenderStudio;
+  window.deskV1RenderStudioCreate = deskV1RenderStudioCreate;
+  window.deskV1StudioCreateLabel = studioCreateLabel;
   window.deskV1RenderStoryboard = deskV1RenderStoryboard;
   window.DeskV1Studio = {
     captureAvailable, sourceBodyHTML, wireSourceBody,
