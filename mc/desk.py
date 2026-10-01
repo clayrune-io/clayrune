@@ -1350,6 +1350,79 @@ def create_campaign(title: str, thesis: str, *, voice=None, voices=None,
     return camp
 
 
+WHEN_SLOT_ORIGINS = ('user', 'agent')
+WHEN_SLOT_STATES = ('suggested', 'accepted')
+MAX_WHEN_SLOTS = 500
+
+
+def _clean_campaign_when(value, store: dict, campaign_id: str) -> dict:
+    """The When stop's own record, `campaign['when'] = {slots:[...]}` (R1-W S6):
+    time windows the user reserved (`origin:'user'`) or an agent proposed
+    (`origin:'agent'`, `state:'suggested'|'accepted'`), each optionally FILLED
+    with a version Where already placed. Time only: a slot never creates a
+    version and never names a different account than that version's, so a PATCH
+    cannot use When to place a message somewhere Where did not. Anything else in
+    the body is refused, not dropped. Raises ValueError (the route answers 400)."""
+    if not isinstance(value, dict):
+        raise ValueError('when must be an object')
+    extra = sorted(k for k in value if k != 'slots')
+    if extra:
+        raise ValueError(f'when cannot carry: {", ".join(extra)}')
+    slots = value.get('slots', [])
+    if not isinstance(slots, list) or len(slots) > MAX_WHEN_SLOTS:
+        raise ValueError(f'when.slots must be a list of at most {MAX_WHEN_SLOTS} slots')
+    placed: dict[str, str | None] = {}
+    for piece in (store.get('pieces') or {}).values():
+        if piece.get('campaign_id') == campaign_id:
+            for ver in piece.get('versions') or []:
+                placed[ver.get('id')] = ver.get('account_id')
+    seen: set[str] = set()
+    out = []
+    for s in slots:
+        if not isinstance(s, dict):
+            raise ValueError('each slot must be an object')
+        unknown = sorted(k for k in s if k not in ('id', 'at', 'origin', 'state', 'because', 'filled'))
+        if unknown:
+            raise ValueError(f'a slot cannot carry: {", ".join(unknown)}')
+        sid = s.get('id')
+        if not isinstance(sid, str) or not sid or len(sid) > 80 or sid in seen:
+            raise ValueError('each slot needs its own id (text, at most 80 characters)')
+        seen.add(sid)
+        at = s.get('at')
+        try:
+            _parse_dt(at)
+        except (ValueError, AttributeError, TypeError):
+            raise ValueError(f'slot {sid!r} needs an ISO 8601 time in `at`')
+        if s.get('origin') not in WHEN_SLOT_ORIGINS:
+            raise ValueError(f'slot {sid!r} origin must be one of {", ".join(WHEN_SLOT_ORIGINS)}')
+        if s.get('state') is not None and s['state'] not in WHEN_SLOT_STATES:
+            raise ValueError(f'slot {sid!r} state must be one of {", ".join(WHEN_SLOT_STATES)}')
+        because = s.get('because')
+        if because is not None and (not isinstance(because, list) or len(because) > 20
+                                    or not all(isinstance(b, str) for b in because)):
+            raise ValueError(f'slot {sid!r} because must be a list of finding ids')
+        clean = {k: s[k] for k in ('id', 'at', 'origin', 'state', 'because') if s.get(k) is not None}
+        filled = s.get('filled')
+        if filled is not None:
+            if not isinstance(filled, dict):
+                raise ValueError(f'slot {sid!r} filled must be an object')
+            bad = sorted(k for k in filled if k not in ('title', 'platform', 'channelId', 'versionId'))
+            if bad:
+                raise ValueError(f'slot {sid!r} filled cannot carry: {", ".join(bad)}')
+            if not all(v is None or isinstance(v, str) for v in filled.values()):
+                raise ValueError(f'slot {sid!r} filled values must be text')
+            vid = filled.get('versionId')
+            if vid is not None:
+                if vid not in placed:
+                    raise ValueError(f'slot {sid!r} is filled with a version this campaign does not have')
+                if filled.get('channelId') not in (None, placed[vid]):
+                    raise ValueError(f'slot {sid!r} names an account other than the one Where placed that '
+                                     'version on; When sets times, it does not move a message')
+            clean['filled'] = dict(filled)
+        out.append(clean)
+    return {'slots': out}
+
+
 def update_campaign(campaign_id: str, patch: dict, *, forbid_start: bool = False) -> dict | None:
     # `approved`, `approvals`, `terms`, `started_at`, `policy_record` are
     # deliberately NOT here: they are written only by the human-action routes
@@ -1393,6 +1466,8 @@ def update_campaign(campaign_id: str, patch: dict, *, forbid_start: bool = False
             raise ValueError('a campaign is started with POST /api/desk/campaigns/<id>/start, and '
                              'one with no approval on file is approved with .../approve (both are '
                              'human actions), not by changing its state')
+        if 'when' in patch:
+            patch['when'] = _clean_campaign_when(patch['when'], store, campaign_id)
         for k, v in (patch or {}).items():
             if k in allowed:
                 camp[k] = v
@@ -1896,7 +1971,7 @@ _V1_STATE_IN = {v1: stored for stored, v1 in _V1_STATE_OUT.items()}
 # draft object is client-local (`id` is read by the route, `_`-prefixed flags,
 # `rules`; `projectId` is renamed) and is dropped, never stored.
 _V1_BODY_KEYS = ('subject', 'plan', 'goal', 'term', 'how', 'map', 'state', 'thesis',
-                 'agenda', 'voice', 'voices')
+                 'agenda', 'voice', 'voices', 'when')
 
 
 def v1_campaign_in(body: dict) -> dict:

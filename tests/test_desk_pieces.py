@@ -231,6 +231,109 @@ def test_skipping_an_approved_version_clears_the_approval(env):
     assert out['state'] == 'skipped' and out['approved'] is None
 
 
+# -- R1-W S6: When sets times, it never approves or places ------------------------
+
+def test_scheduling_a_time_is_not_approval(env):
+    client, _, _ = env
+    p = _piece(client)
+    v = _version(client, p['id'])
+    url = f"/api/desk/pieces/{p['id']}/versions/{v['id']}"
+    assert client.patch(url, json={'state': 'planned'}).status_code == 200
+    out = client.patch(url, json={'scheduled_at': '2026-10-05T10:00:00-07:00'}).get_json()['versions'][0]
+    assert (out['state'], out['approved'], out['publishAt']) == ('planned', None, '2026-10-05T10:00:00-07:00')
+    # asking for the approved/scheduled state alongside the time is refused whole: no time lands either
+    r = client.patch(url, json={'scheduled_at': '2026-10-06T10:00:00-07:00', 'state': 'scheduled'})
+    assert r.status_code == 400
+    got = client.get(f'/api/desk/pieces?campaign_id={CID}').get_json()[0]['versions'][0]
+    assert (got['state'], got['approved'], got['publishAt']) == ('planned', None, '2026-10-05T10:00:00-07:00')
+
+
+def test_an_approved_version_keeps_its_approval_through_a_time_change(env):
+    client, _, tmp = env
+    p = _piece(client)
+    v = _version(client, p['id'])
+    _force(tmp, p['id'], v['id'], state='scheduled', approved={'at': 'x', 'by': 'human'},
+           scheduled_at='2026-10-05T10:00:00-07:00')
+    url = f"/api/desk/pieces/{p['id']}/versions/{v['id']}"
+    out = client.patch(url, json={'scheduled_at': '2026-10-05T16:00:00-07:00'}).get_json()['versions'][0]
+    assert (out['state'], out['approved']['by'], out['publishAt']) == ('scheduled', 'human', '2026-10-05T16:00:00-07:00')
+    # moving it to another day goes back through review in the same PATCH: time + needs_review, approval cleared
+    out = client.patch(url, json={'scheduled_at': '2026-10-08T09:00:00-07:00', 'state': 'needs_review'}).get_json()['versions'][0]
+    assert (out['state'], out['approved'], out['publishAt']) == ('needs_review', None, '2026-10-08T09:00:00-07:00')
+    # the approval does not come back by moving the time again
+    out = client.patch(url, json={'scheduled_at': None}).get_json()['versions'][0]
+    assert out['state'] == 'needs_review' and out['approved'] is None and 'publishAt' not in out
+
+
+@pytest.mark.parametrize('state', ['sending', 'submitted', 'verified_published', 'you_reported',
+                                   'unknown_outcome', 'failed'])
+def test_a_version_handed_to_a_platform_cannot_be_rescheduled(env, state):
+    client, _, tmp = env
+    p = _piece(client)
+    v = _version(client, p['id'])
+    _force(tmp, p['id'], v['id'], state=state, scheduled_at='2026-10-05T10:00:00-07:00')
+    r = client.patch(f"/api/desk/pieces/{p['id']}/versions/{v['id']}", json={'scheduled_at': '2026-10-09T10:00:00-07:00'})
+    assert r.status_code == 409
+    got = client.get(f'/api/desk/pieces?campaign_id={CID}').get_json()[0]['versions'][0]
+    assert got['publishAt'] == '2026-10-05T10:00:00-07:00'
+
+
+def _when(client, when):
+    return client.patch(f'/api/desk/campaigns/{CID}?shape=v1', json={'when': when})
+
+
+def _workspace_campaign(client):
+    return next(c for c in client.get('/api/desk/workspace').get_json()['campaigns'] if c['id'] == CID)
+
+
+def test_campaign_when_round_trips_slots_and_a_fill(env):
+    client, _, _ = env
+    p = _piece(client)
+    v = _version(client, p['id'], account='ch-x')
+    when = {'slots': [
+        {'id': 's1', 'at': '2026-10-05T14:00:00-07:00', 'origin': 'user',
+         'filled': {'title': 'A post', 'platform': 'x', 'channelId': 'ch-x', 'versionId': v['id']}},
+        {'id': 's2', 'at': '2026-10-06T09:00:00-07:00', 'origin': 'agent', 'state': 'suggested', 'because': ['f1']},
+    ]}
+    r = _when(client, when)
+    assert r.status_code == 200, r.get_json()
+    camp = _workspace_campaign(client)
+    assert camp['when'] == when
+    # a slot only reserves a time: it did not touch the version or the campaign's state
+    got = client.get(f'/api/desk/pieces?campaign_id={CID}').get_json()[0]['versions'][0]
+    assert got['state'] == 'drafting' and got['channelId'] == 'ch-x' and 'publishAt' not in got
+    assert camp['state'] == 'draft'
+
+
+@pytest.mark.parametrize('when', [
+    'tomorrow',
+    {'slots': 'x'},
+    {'slots': [], 'state': 'approved'},
+    {'slots': [{'id': 's', 'at': 'soon', 'origin': 'user'}]},
+    {'slots': [{'id': 's', 'at': '2026-10-05T14:00:00Z', 'origin': 'robot'}]},
+    {'slots': [{'id': 's', 'at': '2026-10-05T14:00:00Z', 'origin': 'user', 'state': 'approved'}]},
+    {'slots': [{'id': 's', 'at': '2026-10-05T14:00:00Z', 'origin': 'user', 'version': {}}]},
+    {'slots': [{'id': 's', 'at': '2026-10-05T14:00:00Z', 'origin': 'user'},
+               {'id': 's', 'at': '2026-10-06T14:00:00Z', 'origin': 'user'}]},
+    {'slots': [{'id': 's', 'at': '2026-10-05T14:00:00Z', 'origin': 'user', 'filled': {'versionId': 'ghost'}}]},
+])
+def test_campaign_when_refuses_what_it_does_not_own(env, when):
+    client, _, _ = env
+    assert _when(client, when).status_code == 400, when
+    assert not (_workspace_campaign(client).get('when') or {}).get('slots')
+
+
+def test_a_slot_cannot_move_a_version_to_another_account(env):
+    client, _, _ = env
+    p = _piece(client)
+    v = _version(client, p['id'], account='ch-x')
+    r = _when(client, {'slots': [{'id': 's', 'at': '2026-10-05T14:00:00Z', 'origin': 'agent',
+                                  'filled': {'versionId': v['id'], 'channelId': 'ch-li'}}]})
+    assert r.status_code == 400 and 'move a message' in r.get_json()['error']
+    got = client.get(f'/api/desk/pieces?campaign_id={CID}').get_json()[0]['versions']
+    assert [x['channelId'] for x in got] == ['ch-x']
+
+
 @pytest.mark.parametrize('state', ['sending', 'submitted', 'verified_published', 'you_reported',
                                    'unknown_outcome', 'failed'])
 def test_sent_versions_are_immutable_and_pin_their_piece(env, state):
