@@ -2950,3 +2950,58 @@ button.desk-v1-because-chip { color: var(--accent-soft); font-weight: 600; curso
   /* P-2 on the 700-960 band: the header buttons lost their 44px with the phone stack */
   .desk-v1-project-pause-btn, .desk-v1-project-presence-btn { min-height: 44px; }
 }
+
+/* WN-1/2 When + Calendar on phone: Cadence / Min-gap values were ellipsised at
+   120px ("12h (inherited, read-onl…"), the Term date wrapped ("Sep / 1 –") and
+   the agenda title column was squeezed to 57-86px by time + channel + status.
+   Fields go one per row and wrap their text instead of cutting it; each agenda
+   row is two lines -- time, channel, status on line 1, the full title on line 2. */
+@media (max-width: 640px) {
+  .desk-v1-cal-fields { grid-template-columns: minmax(0, 1fr); }
+  .desk-v1-cal-field-value > span { white-space: normal; overflow: visible; text-overflow: clip; }
+  .desk-v1-cal-agenda-item { flex-wrap: wrap; row-gap: 2px; }
+  .desk-v1-cal-agenda-title { flex: 1 1 100%; order: 5; white-space: normal; overflow: visible; text-overflow: clip; font-size: 13px; }
+}
+
+/* RV-1/2/3 Review on phone: the sticky action bar's -14px side margin was sized
+   for the old 28px gutter and now pushed the body 14px wider than the screen (it
+   scrolled sideways at every width). The primary label wraps to two lines instead
+   of ellipsising ("Approve and create publi…"), and the three secondary actions
+   share the row as equal 44px+ buttons (Skip was 29px wide). */
+@media (max-width: 960px) {
+  .desk-v1-review-actions { margin: 12px 0 0; padding: 12px 0 8px; }
+  .desk-v1-review-primary { white-space: normal; text-overflow: clip; line-height: 1.25; }
+  .desk-v1-review-secondary { display: flex; gap: 8px; }
+  .desk-v1-review-secondary button { flex: 1 1 0; min-width: 44px; }
+}
+
+/* Posy box (S-4): the "Pick who plans…" label and the "About: …" scope chip share
+   one head row; they wrap onto two lines each at 314px. Let the scope drop to its
+   own line (left-aligned, one line) rather than squeeze both. */
+@media (max-width: 640px) {
+  .desk-v1-posy-box .desk-thread-head { flex-wrap: wrap; row-gap: 0; }
+  .desk-v1-posy-scope { margin-left: 0; padding-left: 0; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+}
+
+/* Remaining icon / label shapes from the sweep. */
+@media (max-width: 960px) {
+  .desk-v1-project-engagement-open, .desk-v1-what-filter { min-width: 44px; }
+  .desk-v1-shell .btn-secondary, .desk-v1-rules-addbtn { white-space: nowrap; flex: 0 0 auto; min-width: 44px; }
+  /* font floors: the 10-10.5px glyph badges / chips the sweep still listed */
+  .desk-v1-camp-tab-badge, .desk-v1-claim-chip, .desk-v1-what-kind { font-size: 11px; }
+  /* ST-2: the video scene strip's "insert a scene here" gap was revealed only on :hover
+     (never on touch) and 22px wide -- always visible, a 44px square on touch screens. */
+  .desk-v1-video-insertgap { opacity: 1; width: 44px; margin: 0 -22px; }
+}
+/* X-2 Engagement filters: four 314x44 selects stacked = ~200px before the first row.
+   Two per row. */
+@media (max-width: 640px) {
+  .desk-v1-eng-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex-direction: unset; }
+}
+
+/* Where source tiles (WH-2 follow-up): the handle was ellipsised ("Clayrune p…") and the
+   platform glyph badge sat at 10px. Handle may take two lines; badge 11px. */
+@media (max-width: 699px) {
+  .desk-v1-where-source-handle { white-space: normal; overflow-wrap: anywhere; line-height: 1.2; }
+  .desk-v1-where-avatar-badge { font-size: 11px; min-width: 17px; height: 17px; line-height: 15px; }
+}
