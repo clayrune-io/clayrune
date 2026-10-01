@@ -36,8 +36,9 @@
     // route below — desk-v1-piece.js fills the slots via deskV1FillPiece*
     // hooks, it never owns the skeleton itself.
     piece:         { parent: 'campaign', label: _pieceLabel,   render: () => _renderPieceSkeleton },
-    // IA1 stub (§5 row IA1: "presence (stub)") — settings UI lands in IA3.
-    presence:      { parent: 'project', label: 'Presence',     render: () => window.deskV1RenderPresence },
+    // The one place anything external is connected (MC-977 2026-10-01); the
+    // Presence screen it replaces on the project page is retired.
+    connections:   { parent: 'home',    label: 'Connections',  render: () => window.deskV1RenderConnections },
     // IA1 stub (§5 row IA1: "engagement (stub)") — dashboard lands in IA7.
     engagement:    { parent: 'home',    label: 'Engagement',   render: () => window.deskV1RenderEngagement },
     // Empty label: T3 renders its own doc-label/count into the crumb-tools
