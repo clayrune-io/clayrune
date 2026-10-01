@@ -578,8 +578,9 @@ async function runR21PlanBoundsChecks(browser) {
     const noTarget = K.validatePlan({ ...base, goal: { metric: 'signups', source: 'manual' } }, null, {});
     const withTarget = K.validatePlan({ ...base, goal: { metric: 'signups', source: 'manual', target: 30 } }, null, {});
 
-    // §5.2/§9 Q3 binding: $120 earmark vs $100 project remaining -> missing
-    // names 'how' with "short by $20".
+    // §5.2/§9 Q3 binding RETIRED with the project budget pool (Presence retired,
+    // MC-977 2026-10-01): a campaign budget is self-contained, so a $120 amount
+    // against a stale `projectRemaining: 100` option must not flag anything.
     const short = K.validatePlan({ ...base, how: { budget: { source: 'project', amount: 120 } } }, null, { projectRemaining: 100 });
     const covered = K.validatePlan({ ...base, how: { budget: { source: 'project', amount: 80 } } }, null, { projectRemaining: 100 });
 
@@ -676,12 +677,12 @@ async function runR21PlanBoundsChecks(browser) {
   !result.withTargetOk
     ? ok('plan with goal target + source clears the goal bound')
     : fail('goal bound still missing once target + source are set');
-  result.shortMissing && result.shortMissing.detail === 'short by $20'
-    ? ok(`$120 earmark vs $100 project remaining -> missing names 'how' with "short by $20": ${JSON.stringify(result.shortMissing)}`)
-    : fail(`budget-earmark gate wrong: ${JSON.stringify(result.shortMissing)}`);
+  !result.shortMissing
+    ? ok('$120 budget with a stale $100 projectRemaining option flags nothing (the project pool is gone)')
+    : fail(`a project-pool budget gate still fires: ${JSON.stringify(result.shortMissing)}`);
   !result.coveredMissing
-    ? ok('$80 earmark vs $100 project remaining clears the how_budget bound')
-    : fail('how_budget bound still fired for a covered earmark');
+    ? ok('an $80 budget leaves the how_budget bound clear')
+    : fail('how_budget bound fired for a plain budget');
   result.widenedHash !== result.prevHash
     ? ok(`widening how.budget.amount (60 -> 80) changes the bounds hash: ${result.prevHash} -> ${result.widenedHash}`)
     : fail(`widening did not change the bounds hash: ${result.prevHash}`);
@@ -703,7 +704,7 @@ async function runR21PlanBoundsChecks(browser) {
 }
 
 // ── R2-1 (§8): fixture load has 0 'production' keys (renamed to
-// presence.budget).
+// presence.budget; that pool was itself retired 2026-10-01).
 async function runR21FixtureProductionKeyCheck(browser) {
   const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await ctx.newPage();
