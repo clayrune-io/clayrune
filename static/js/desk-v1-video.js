@@ -356,6 +356,18 @@
     return `<div class="desk-v1-video-renders">${rows}</div>`;
   }
 
+  // One scene tile of the strip. `edges` adds the trim handles (the director
+  // only); the Studio timeline (desk-v1-studio.js, via DeskV1VideoStrip below)
+  // draws the same tile without them.
+  function _sceneTileHTML(s, i, pct, edges) {
+    return `<div class="desk-v1-video-scene${s.edited ? ' desk-v1-video-scene-edited' : ''}" data-scene-id="${esc(s.id)}" style="flex-basis:${pct}%" tabindex="0">
+          ${edges ? `<span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-l" data-trim-edge="l" data-scene-id="${esc(s.id)}"></span>` : ''}
+          <div class="desk-v1-video-scene-thumb" aria-hidden="true"></div>
+          <span class="desk-v1-video-scene-label">${i + 1} &middot; ${esc(s.label)}${s.edited ? ' <span class="desk-v1-video-scene-dot">&#8226;</span>' : ''}</span>
+          ${edges ? `<span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-r" data-trim-edge="r" data-scene-id="${esc(s.id)}"></span>` : ''}
+        </div>`;
+  }
+
   function _storyboardTabHTML(family, detail, budget) {
     const total = _totalDuration(detail);
     const rendered = family.render && family.render.status === 'ready';
@@ -377,12 +389,7 @@
       const pct = total ? (s.durationSec / total * 100) : (100 / Math.max(1, (detail.scenes || []).length));
       return `
         ${i > 0 ? `<button type="button" class="desk-v1-video-insertgap" data-insert-at="${i}" aria-label="Insert a scene here" title="Insert a scene here">+</button>` : ''}
-        <div class="desk-v1-video-scene${s.edited ? ' desk-v1-video-scene-edited' : ''}" data-scene-id="${esc(s.id)}" style="flex-basis:${pct}%" tabindex="0">
-          <span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-l" data-trim-edge="l" data-scene-id="${esc(s.id)}"></span>
-          <div class="desk-v1-video-scene-thumb" aria-hidden="true"></div>
-          <span class="desk-v1-video-scene-label">${i + 1} &middot; ${esc(s.label)}${s.edited ? ' <span class="desk-v1-video-scene-dot">&#8226;</span>' : ''}</span>
-          <span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-r" data-trim-edge="r" data-scene-id="${esc(s.id)}"></span>
-        </div>`;
+        ${_sceneTileHTML(s, i, pct, true)}`;
     }).join('');
 
     const posyHTML = window.DeskV1Kit ? window.DeskV1Kit.posyBoxHTML({
@@ -550,12 +557,12 @@
     strip.querySelectorAll('.desk-v1-video-scene').forEach((tile) => {
       tile.addEventListener('pointerdown', (e) => {
         if (e.target.closest('[data-trim-edge]')) return; // the edge handle owns this gesture
-        _beginReorder(e, tile, detail);
+        _beginReorder(e, tile, (fromId, toId) => _reorderScene(detail, fromId, toId));
       });
     });
   }
 
-  function _beginReorder(e, tileEl, detail) {
+  function _beginReorder(e, tileEl, onReorder) {
     const fromId = tileEl.dataset.sceneId;
     window.PointerDrag.begin(tileEl, e, {
       isDragActive: () => !!_dragSt,
@@ -578,7 +585,7 @@
         const overTile = overEl && overEl.closest('.desk-v1-video-scene');
         return (overTile && overTile.dataset.sceneId !== fromId) ? overTile.dataset.sceneId : null;
       },
-      afterDrop: (st, toId) => { if (toId) _reorderScene(detail, fromId, toId); },
+      afterDrop: (st, toId) => { if (toId) onReorder(fromId, toId); },
       onTeardown: () => document.querySelectorAll('.desk-v1-video-scene-target').forEach((n) => n.classList.remove('desk-v1-video-scene-target')),
     });
   }
@@ -712,6 +719,22 @@
       },
     });
   }
+
+  // The scene strip as a reusable piece (MC-1024 follow-up): Studio's timeline
+  // bar is this strip over its real scenes, so the tile look and the drag are
+  // the director's own, not a second implementation. `onReorder(fromId, toId)`
+  // is the caller's commit; trim handles and insert gaps stay director-only.
+  window.DeskV1VideoStrip = {
+    html(scenes) {
+      const total = scenes.reduce((sum, s) => sum + (s.durationSec || 0), 0);
+      return scenes.map((s, i) => _sceneTileHTML(s, i, total ? (s.durationSec / total * 100) : (100 / Math.max(1, scenes.length)), false)).join('');
+    },
+    wire(stripEl, onReorder) {
+      stripEl.querySelectorAll('.desk-v1-video-scene').forEach((tile) => {
+        tile.addEventListener('pointerdown', (e) => _beginReorder(e, tile, onReorder));
+      });
+    },
+  };
 
   window.deskV1RenderVideo = deskV1RenderVideo;
 })();

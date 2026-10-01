@@ -52,6 +52,30 @@
     return DeskV1Kit.resolveDeskAgent(DeskV1Kit.deskAgentRef({ project: _project(camp && camp.projectId), campaign: camp }));
   }
 
+  // A standalone video's agent (MC-1024 follow-up): the one picked on the item
+  // (`item.agent`, a `scope:name` ref), else what the box always resolved.
+  // Only agents provisioned on ALL projects are offered, i.e. characters with
+  // scope global, read fresh from GET /api/characters each time a storyboard
+  // opens so one created since still shows. null until that read lands.
+  let _globalAgents = null;
+  function _loadGlobalAgents() {
+    return fetch('/api/characters').then((r) => r.json()).then((list) => {
+      _globalAgents = (Array.isArray(list) ? list : [])
+        .filter((c) => (c.scope || 'global') === 'global')
+        .map((c) => ({ ref: `global:${c.name}`, name: c.agent_name || c.display_name || c.name, avatar: c.avatar || '' }));
+    }).catch((e) => { console.warn('[desk] could not read the agent list:', e && e.message ? e.message : e); if (!_globalAgents) _globalAgents = []; });
+  }
+  function _pickedAgent(fam) {
+    if (!fam || !fam.agent) return null;
+    const hit = (_globalAgents || []).find((a) => a.ref === fam.agent);
+    if (hit) return { ref: hit.ref, name: hit.name, avatar: hit.avatar };
+    return window.DeskV1Kit ? DeskV1Kit.resolveDeskAgent(fam.agent) : null;
+  }
+  function _sbAgent(ctx) {
+    const picked = _sb && _sb.standalone ? _pickedAgent(ctx.fam) : null;
+    return picked && picked.name ? picked : _agentRec(ctx.camp);
+  }
+
   // ── Studio home (frame 11) ───────────────────────────────────────────────
   const NEW_TILES = [
     { id: 'video', label: 'New video', hint: 'Storyboard → render', glyph: '🎬' },
@@ -110,23 +134,47 @@
   function _libFolders() {
     if (_isLive()) {
       const ml = _fx().materialLibrary || {};
-      return ['video', 'image'].flatMap((k) => (ml[k] || []).map((m) => ({ id: m.id, title: m.title, files: m.files })));
+      return ['video', 'image'].flatMap((k) => (ml[k] || []).map((m) => ({ id: m.id, title: m.title, files: m.files, items: m.items })));
     }
-    const made = _items().filter((it) => it.status === 'saved').length;
-    return (_studio().library || []).concat(made ? [{ id: 'lib-studio', title: 'Studio', files: made }] : []);
+    const made = _items().filter((it) => it.status === 'saved');
+    return (_studio().library || []).concat(made.length ? [{ id: 'lib-studio', title: 'Studio', files: made.length, items: made }] : []);
+  }
+
+  // A folder's files for the open-folder view. Live: M22's own `items[]`; demo:
+  // the fixture folder's `items`, and the `Studio` folder is what Studio saved.
+  let _libOpen = null; // the folder open on Studio home, or null for the shelf
+  function _folderFiles(f) {
+    return (f.items || []).map((it) => ({ id: it.id, title: it.title, src: it.src || null, kind: it.kind }));
+  }
+
+  function _libHTML() {
+    if (_isLive() && _lib.error) return `<div class="desk-v1-camp-empty" data-studio-lib-error>Could not load the material library: ${esc(_lib.error)}</div>`;
+    const lib = _libFolders();
+    const open = _libOpen && lib.find((m) => m.id === _libOpen);
+    if (open) {
+      const files = _folderFiles(open);
+      return `<div class="desk-v1-studio-folderview" data-studio-folderview="${esc(open.id)}">
+        <div class="desk-v1-studio-folderbar">
+          <button type="button" class="desk-v1-studio-folder-back" data-studio-lib-back>‹ Material library</button>
+          <span class="desk-v1-studio-folderbar-name">${esc(open.title)} · ${files.length} ${files.length === 1 ? 'file' : 'files'}</span>
+        </div>
+        ${files.length ? `<div class="desk-v1-studio-files" data-studio-files>${files.map((f) => `
+          <div class="desk-v1-studio-file" data-studio-file="${esc(f.id)}">
+            <span class="desk-v1-studio-file-thumb">${f.src ? `<img src="${esc(f.src)}" alt="" loading="lazy">` : `<span aria-hidden="true">${f.kind === 'video' ? '▶' : '🖼'}</span>`}</span>
+            <span class="desk-v1-studio-file-name">${esc(f.title)}</span>
+          </div>`).join('')}</div>` : '<div class="desk-v1-camp-empty" data-studio-folder-empty>No files in this folder yet.</div>'}
+      </div>`;
+    }
+    return lib.map((m) => `
+        <button type="button" class="desk-v1-studio-folder" data-studio-folder="${esc(m.id)}">
+          <span class="desk-v1-studio-folder-glyph" aria-hidden="true">📁</span>
+          <span class="desk-v1-studio-folder-name">${esc(m.title)}</span>
+          <span class="desk-v1-studio-folder-count">${esc(m.files)} files</span>
+        </button>`).join('');
   }
 
   function _studioHTML() {
     const rows = _recentRows();
-    const lib = _libFolders();
-    const libHTML = _isLive() && _lib.error
-      ? `<div class="desk-v1-camp-empty" data-studio-lib-error>Could not load the material library: ${esc(_lib.error)}</div>`
-      : lib.map((m) => `
-        <div class="desk-v1-studio-folder" data-studio-folder="${esc(m.id)}">
-          <span class="desk-v1-studio-folder-glyph" aria-hidden="true">📁</span>
-          <span class="desk-v1-studio-folder-name">${esc(m.title)}</span>
-          <span class="desk-v1-studio-folder-count">${esc(m.files)} files</span>
-        </div>`).join('');
     return `<div class="desk-v1-studio" data-studio>
       <h2 class="desk-v1-studio-title">Studio</h2>
       <div class="desk-v1-studio-tiles" role="group" aria-label="Start something new">${NEW_TILES.map((t) => `
@@ -145,7 +193,7 @@
           </span>
         </button>`).join('') : '<div class="desk-v1-camp-empty">Nothing made yet.</div>'}</div>
       <h3 class="desk-v1-studio-sub">Material library</h3>
-      <div class="desk-v1-studio-lib" data-studio-lib>${libHTML}</div>
+      <div class="desk-v1-studio-lib" data-studio-lib>${_libHTML()}</div>
     </div>`;
   }
 
@@ -154,7 +202,36 @@
   // make is saved to the Material library and used on a campaign later. The
   // Article tile still makes a piece INSIDE a campaign (the writer reads that
   // campaign's How), so it alone asks which one.
+  function _paintLib(el) {
+    const box = el.querySelector('[data-studio-lib]');
+    if (!box) return;
+    box.innerHTML = _libHTML();
+    box.classList.toggle('desk-v1-studio-lib-open', !!box.querySelector('[data-studio-folderview]'));
+    _wireLib(el);
+  }
+
+  // A folder opens in place on the shelf, with a way back to the folders.
+  function _wireLib(el) {
+    el.querySelectorAll('[data-studio-folder]').forEach((b) => {
+      b.onclick = () => {
+        _libOpen = b.dataset.studioFolder;
+        _paintLib(el);
+        const back = el.querySelector('[data-studio-lib-back]');
+        if (back) back.focus({ preventScroll: true });
+      };
+    });
+    const back = el.querySelector('[data-studio-lib-back]');
+    if (back) back.onclick = () => {
+      const id = _libOpen;
+      _libOpen = null;
+      _paintLib(el);
+      const f = el.querySelector(`[data-studio-folder="${CSS.escape(id)}"]`);
+      if (f) f.focus({ preventScroll: true });
+    };
+  }
+
   function _wireStudio(el) {
+    _wireLib(el);
     el.querySelectorAll('[data-studio-new]').forEach((btn) => {
       btn.onclick = () => {
         const typeId = btn.dataset.studioNew;
@@ -184,6 +261,7 @@
   let _studioEl = null;
   function deskV1RenderStudio(el) {
     _studioEl = el;
+    _libOpen = null;
     el.innerHTML = _studioHTML();
     _wireStudio(el);
     if (_isLive()) _loadLibrary().then(() => {
@@ -206,17 +284,29 @@
   // ── Storyboard (frame 13) ────────────────────────────────────────────────
   // The scenes live on `videoDetail[familyId].scenes` — the same place the T5
   // director reads — with `line` / `source` / `thumb` added per scene.
+  //
+  // A standalone Studio video opens with the same four samples, but only scene 1
+  // is a real scene: 2 to 4 are `placeholder` examples (dimmed, left out of the
+  // render and the saved item) until the user edits them.
   function ensureStoryboard(fam) {
     const vd = _fx().videoDetail || (_fx().videoDetail = {});
     const d = vd[fam.id] || (vd[fam.id] = { brief: '', materials: [], scenes: [], pendingEdits: [], jobs: [] });
     if (!d.scenes.length) {
       const isDefaultTitle = /^new video$/i.test(String(fam.title || '').trim());
+      const standalone = !!(_sc && _sc.item && _sc.item.id === fam.id);
       d.scenes = (_studio().storyboard || []).map((s, i) => ({
         id: 'sc-' + _uid(), label: s.label, durationSec: s.durationSec, source: s.source, thumb: s.thumb,
         line: i === 0 && !isDefaultTitle ? fam.title : (s.line || 'One installer, no admin prompt.'),
+        placeholder: standalone && i > 0,
       }));
     }
     return d;
+  }
+  function _isReal(s) { return !s.placeholder; }
+  function _realScenes(detail) { return detail.scenes.filter(_isReal); }
+  // What Render and the saved item carry: the real scenes only.
+  function _scenePayload(detail) {
+    return _realScenes(detail).map((s) => ({ id: s.id, label: s.label, line: s.line, durationSec: s.durationSec, source: s.source, thumb: s.thumb }));
   }
 
   let _sb = null; // the mounted storyboard
@@ -238,17 +328,24 @@
     if (_sb && _sb.standalone && !_items().includes(fam)) _items().unshift(fam);
   }
 
-  function _sceneHTML(s, i, editing) {
+  // Scenes are numbered among the real ones, so an example never takes a number.
+  function _sceneHTML(s, scenes, editing) {
+    const ph = !!s.placeholder;
+    const n = ph ? 0 : scenes.filter(_isReal).indexOf(s) + 1;
+    const name = ph ? 'Example scene' : `Scene ${n}`;
     const title = editing
       ? `<div class="desk-v1-sb-edit">
-          <input type="text" class="desk-v1-sb-edit-input" data-scene-edit-label value="${esc(s.label)}" aria-label="Scene ${i + 1} title">
-          <input type="text" class="desk-v1-sb-edit-input" data-scene-edit-line value="${esc(s.line || '')}" aria-label="Scene ${i + 1} line">
+          <input type="text" class="desk-v1-sb-edit-input" data-scene-edit-label value="${esc(s.label)}" aria-label="${name} title">
+          <input type="text" class="desk-v1-sb-edit-input" data-scene-edit-line value="${esc(s.line || '')}" aria-label="${name} line">
         </div>`
-      : `<div class="desk-v1-sb-scenetitle" data-scene-title>Scene ${i + 1} · ${esc(s.label)}</div>
+      : `<div class="desk-v1-sb-scenetitle" data-scene-title>${ph ? '<span class="desk-v1-sb-example-chip" data-scene-example>Example</span> ' : `Scene ${n} · `}${esc(s.label)}</div>
          <div class="desk-v1-sb-line">${esc(s.line || '')}</div>`;
-    return `<li class="desk-v1-sb-scene" data-scene-id="${esc(s.id)}" data-scene-label="${esc(s.label)}">
-      <button type="button" class="desk-v1-sb-handle" data-scene-handle aria-label="Move scene ${i + 1}: ${esc(s.label)}. Arrow Up or Arrow Down reorders" title="Drag, or press Arrow Up / Arrow Down">⠿</button>
-      <div class="desk-v1-sb-thumb"><img src="${esc(s.thumb || '')}" alt="Capture for scene ${i + 1}"><span class="desk-v1-sb-num" data-scene-num>${i + 1}</span></div>
+    const del = _sb && _sb.standalone
+      ? `<button type="button" class="desk-v1-sb-delete" data-scene-delete aria-label="Delete ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}" title="Delete this scene">🗑</button>`
+      : '';
+    return `<li class="desk-v1-sb-scene${ph ? ' desk-v1-sb-scene-example' : ''}" data-scene-id="${esc(s.id)}" data-scene-label="${esc(s.label)}"${ph ? ' data-scene-placeholder' : ''}>
+      <button type="button" class="desk-v1-sb-handle" data-scene-handle aria-label="Move ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}. Arrow Up or Arrow Down reorders" title="Drag, or press Arrow Up / Arrow Down">⠿</button>
+      <div class="desk-v1-sb-thumb"><img src="${esc(s.thumb || '')}" alt="${ph ? 'Example capture' : 'Capture for scene ' + n}"><span class="desk-v1-sb-num" data-scene-num>${ph ? '·' : n}</span></div>
       <div class="desk-v1-sb-body">
         ${title}
         <div class="desk-v1-sb-source">${esc(s.source || '')}</div>
@@ -256,8 +353,31 @@
       <div class="desk-v1-sb-meta">
         <span class="desk-v1-sb-dur">${esc(_mmss(s.durationSec || 0))}</span>
         <button type="button" class="desk-v1-sb-editbtn" data-scene-edit>${editing ? 'Done' : 'Edit'}</button>
+        ${del}
       </div>
     </li>`;
+  }
+
+  // The Studio timeline bar (MC-1024 follow-up): the director's own scene strip
+  // (desk-v1-video.js, DeskV1VideoStrip) over the REAL scenes, widths in
+  // proportion to duration. The reorder drag is that strip's; its drop commits
+  // through the same _moveScene as the list, so the two stay in sync.
+  function _timelineHTML(detail) {
+    const real = _realScenes(detail);
+    if (!real.length || !window.DeskV1VideoStrip) return '';
+    const total = real.reduce((sum, s) => sum + (s.durationSec || 0), 0);
+    return `<div class="desk-v1-sb-timeline-title">Timeline · ${esc(_mmss(total))}</div>
+      <div class="desk-v1-video-scenestrip desk-v1-sb-timeline" data-sb-timeline aria-label="Timeline of real scenes. Drag a tile to reorder">${window.DeskV1VideoStrip.html(real)}</div>`;
+  }
+
+  // The standalone Render button and the note above the list read the real
+  // scenes, not the sample rows.
+  function _noScenesHTML(detail) {
+    if (!(_sb && _sb.standalone) || _realScenes(detail).length) return '';
+    const msg = detail.scenes.length
+      ? 'No real scenes yet. The rows below are examples: edit one to make it a scene.'
+      : 'No scenes yet. Scenes come from product captures, which are not wired yet.';
+    return `<div class="desk-v1-camp-empty" data-sb-no-scenes>${msg}</div>`;
   }
 
   function _renderStatusHTML(fam) {
@@ -273,9 +393,8 @@
     const ctx = _sbCtx();
     if (!ctx) return `<div class="desk-v1-stub"><div class="desk-v1-stub-body">This storyboard no longer exists.</div></div>`;
     const { fam, camp, detail } = ctx;
-    const agent = _agentRec(camp);
+    const agent = _sbAgent(ctx);
     const agentName = agent.name || 'Your agent';
-    const avatar = agent.name && typeof window.avatarHTML === 'function' ? window.avatarHTML(agent.avatar, 28) : '<span class="desk-v1-sb-agent-avatar" aria-hidden="true">🤖</span>';
     const rendering = fam.render && fam.render.status === 'rendering';
     const strip = _sb.standalone
       ? `<div class="desk-v1-sb-returning" data-sb-standalone>Studio · <strong>not attached to a campaign</strong> <span>· use it in one from the Material library afterwards</span></div>`
@@ -284,19 +403,44 @@
       ${strip}
       <div class="desk-v1-sb-head">
         <h2 class="desk-v1-sb-title">New video · storyboard</h2>
-        <button type="button" class="btn-add" data-sb-render${rendering || (_sb.standalone && !detail.scenes.length) ? ' disabled' : ''}>Render</button>
+        <button type="button" class="btn-add" data-sb-render${rendering || (_sb.standalone && !_realScenes(detail).length) ? ' disabled' : ''}>Render</button>
       </div>
-      ${_sb.standalone && !detail.scenes.length ? '<div class="desk-v1-camp-empty" data-sb-no-scenes>No scenes yet. Scenes come from product captures, which are not wired yet.</div>' : ''}
+      <div data-sb-notice>${_noScenesHTML(detail)}</div>
       ${_renderStatusHTML(fam)}
       <div class="desk-v1-sb-layout">
-        <ol class="desk-v1-sb-scenes" data-scenes aria-label="Scenes">${detail.scenes.map((s, i) => _sceneHTML(s, i, _sb.editing === s.id)).join('')}</ol>
-        <aside class="desk-v1-sb-agent" data-sb-agent>
-          <div class="desk-v1-sb-agent-head">${avatar}<strong>${esc(agentName)}</strong></div>
-          <p class="desk-v1-sb-agent-text">Scenes are pulled from real product captures. Pick a scene and tell me what to change.</p>
-          <input type="text" class="desk-v1-sb-agent-input" data-sb-ask placeholder="Ask ${esc(agentName)} to change a scene…" aria-label="Ask ${esc(agentName)} to change a scene">
-        </aside>
+        <div class="desk-v1-sb-main">
+          ${_sb.standalone ? '<div class="desk-v1-sb-trashzone" data-sb-trash><span aria-hidden="true">🗑</span> Drag a scene here to delete it</div>' : ''}
+          <ol class="desk-v1-sb-scenes" data-scenes aria-label="Scenes">${detail.scenes.map((s) => _sceneHTML(s, detail.scenes, _sb.editing === s.id)).join('')}</ol>
+          ${_sb.standalone ? `<div class="desk-v1-sb-timeline-wrap" data-sb-timeline-wrap>${_timelineHTML(detail)}</div>` : ''}
+        </div>
+        <aside class="desk-v1-sb-agent" data-sb-agent>${_agentBoxHTML(ctx)}</aside>
       </div>
     </div>`;
+  }
+
+  // The agent box: face + name, then (standalone only) the picker, then the ask
+  // line. Painted into the aside, and again on its own when a pick or the agent
+  // list lands, so a typed question is not lost to a full repaint.
+  function _agentBoxHTML(ctx) {
+    const agent = _sbAgent(ctx);
+    const agentName = agent.name || 'Your agent';
+    const avatar = agent.name && typeof window.avatarHTML === 'function' ? window.avatarHTML(agent.avatar, 28) : '<span class="desk-v1-sb-agent-avatar" aria-hidden="true">🤖</span>';
+    const defName = _agentRec(ctx.camp).name;
+    const picker = _sb.standalone ? `
+          <label class="desk-v1-sc-label" for="sb-agent-pick">Agent</label>
+          <select class="desk-v1-cap-select desk-v1-sb-agent-pick" id="sb-agent-pick" data-sb-agent-pick${_globalAgents ? '' : ' disabled'}>
+            <option value=""${ctx.fam.agent ? '' : ' selected'}>Default${defName ? ' · ' + esc(defName) : ''}</option>${(_globalAgents || []).map((a) =>
+              `<option value="${esc(a.ref)}"${a.ref === ctx.fam.agent ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}
+          </select>` : '';
+    return `<div class="desk-v1-sb-agent-head" data-sb-agent-head>${avatar}<strong>${esc(agentName)}</strong></div>${picker}
+          <p class="desk-v1-sb-agent-text">Scenes are pulled from real product captures. Pick a scene and tell me what to change.</p>
+          <input type="text" class="desk-v1-sb-agent-input" data-sb-ask placeholder="Ask ${esc(agentName)} to change a scene…" aria-label="Ask ${esc(agentName)} to change a scene">`;
+  }
+
+  // A standalone item carries its REAL scenes (the examples are not part of
+  // what is saved), kept current on every scene repaint.
+  function _syncItemScenes(ctx) {
+    if (_sb && _sb.standalone) ctx.fam.scenes = _scenePayload(ctx.detail);
   }
 
   function _paintScenes(focusSel) {
@@ -304,9 +448,45 @@
     const ctx = _sbCtx();
     const ol = _sb.el.querySelector('[data-scenes]');
     if (!ctx || !ol) return;
-    ol.innerHTML = ctx.detail.scenes.map((s, i) => _sceneHTML(s, i, _sb.editing === s.id)).join('');
+    _syncItemScenes(ctx);
+    ol.innerHTML = ctx.detail.scenes.map((s) => _sceneHTML(s, ctx.detail.scenes, _sb.editing === s.id)).join('');
     _wireScenes(ol);
+    if (_sb.standalone) {
+      const wrap = _sb.el.querySelector('[data-sb-timeline-wrap]');
+      if (wrap) { wrap.innerHTML = _timelineHTML(ctx.detail); _wireTimeline(); }
+      const note = _sb.el.querySelector('[data-sb-notice]');
+      if (note) note.innerHTML = _noScenesHTML(ctx.detail);
+      const render = _sb.el.querySelector('[data-sb-render]');
+      if (render) render.disabled = !_realScenes(ctx.detail).length || !!(ctx.fam.render && ctx.fam.render.status === 'rendering');
+    }
     if (focusSel) { const f = _sb.el.querySelector(focusSel); if (f) f.focus({ preventScroll: true }); }
+  }
+
+  // The timeline's reorder is the director strip's drag, committing through the
+  // same move the list uses.
+  function _wireTimeline() {
+    const strip = _sb && _sb.el.querySelector('[data-sb-timeline]');
+    if (strip && window.DeskV1VideoStrip) window.DeskV1VideoStrip.wire(strip, (fromId, toId) => _moveScene(fromId, toId));
+  }
+
+  function _deleteScene(sceneId) {
+    const ctx = _sbCtx();
+    if (!ctx) return;
+    const { detail } = ctx;
+    const idx = detail.scenes.findIndex((s) => s.id === sceneId);
+    if (idx < 0) return;
+    const scene = detail.scenes[idx];
+    _registerItem(ctx.fam);
+    DeskV1Kit.commandBus.run({
+      label: `Deleted scene “${scene.label}”`,
+      do: () => {
+        const i = detail.scenes.indexOf(scene);
+        if (i >= 0) detail.scenes.splice(i, 1);
+        if (_sb && _sb.editing === sceneId) _sb.editing = null;
+        _paintScenes();
+      },
+      undo: () => { detail.scenes.splice(Math.min(idx, detail.scenes.length), 0, scene); _paintScenes(); },
+    });
   }
 
   function _moveScene(fromId, toId) {
@@ -335,39 +515,91 @@
     const ctx = _sbCtx();
     const s = ctx && ctx.detail.scenes.find((x) => x.id === sceneId);
     if (!s) return;
-    const prev = { label: s.label, line: s.line };
+    const prev = { label: s.label, line: s.line, placeholder: !!s.placeholder };
     if (prev.label === patch.label && prev.line === patch.line) return;
     _registerItem(ctx.fam);
     DeskV1Kit.commandBus.run({
       label: `Edited scene “${prev.label}”`,
-      do: () => { s.label = patch.label; s.line = patch.line; _paintScenes(); },
-      undo: () => { s.label = prev.label; s.line = prev.line; _paintScenes(); },
+      do: () => { s.label = patch.label; s.line = patch.line; s.placeholder = false; _paintScenes(); },
+      undo: () => { s.label = prev.label; s.line = prev.line; s.placeholder = prev.placeholder; _paintScenes(); },
     });
   }
 
   function _startRender() {
     const ctx = _sbCtx();
     if (!ctx) return;
-    const { fam } = ctx;
+    const { fam, detail } = ctx;
     const prev = fam.render || null;
+    const scenes = _scenePayload(detail); // the examples are not rendered
+    if (_sb.standalone && !scenes.length) return;
     _registerItem(fam);
     DeskV1Kit.commandBus.run({
       label: `Started rendering “${fam.title}”`,
-      do: () => { fam.render = { jobId: 'render-' + _uid(), status: 'rendering', revision: 1, progress: 40 }; _repaintSb(); },
+      do: () => { fam.render = { jobId: 'render-' + _uid(), status: 'rendering', revision: 1, progress: 40, scenes }; _repaintSb(); },
       undo: () => { fam.render = prev; _repaintSb(); },
     });
   }
 
   function _repaintSb() {
     if (!_sb || !_sb.el.isConnected) return;
+    const ctx = _sbCtx();
+    if (ctx) _syncItemScenes(ctx);
     _sb.el.innerHTML = _sbHTML();
     _wireSb(_sb.el);
   }
 
+  // A pick (or the agent list landing) repaints only the agent box, so what was
+  // typed into its ask line survives.
+  function _paintAgentBox() {
+    if (!_sb || !_sb.el.isConnected) return;
+    const ctx = _sbCtx();
+    const box = _sb.el.querySelector('[data-sb-agent]');
+    if (!ctx || !box) return;
+    const keep = box.querySelector('[data-sb-ask]');
+    const typed = keep ? keep.value : '';
+    box.innerHTML = _agentBoxHTML(ctx);
+    _wireAgentBox(box, ctx);
+    const ask = box.querySelector('[data-sb-ask]');
+    if (ask && typed) ask.value = typed;
+  }
+
+  function _pickAgent(ref) {
+    const ctx = _sbCtx();
+    if (!ctx) return;
+    const prev = ctx.fam.agent || null;
+    if ((ref || null) === prev) return;
+    _registerItem(ctx.fam);
+    const name = ref ? (_pickedAgent({ agent: ref }) || {}).name || ref : 'the default agent';
+    DeskV1Kit.commandBus.run({
+      label: `Picked ${name} as the agent`,
+      do: () => { ctx.fam.agent = ref || null; _paintAgentBox(); },
+      undo: () => { ctx.fam.agent = prev; _paintAgentBox(); },
+    });
+  }
+
+  function _wireAgentBox(box, ctx) {
+    const pick = box.querySelector('[data-sb-agent-pick]');
+    if (pick) pick.onchange = () => _pickAgent(pick.value);
+    const ask = box.querySelector('[data-sb-ask]');
+    ask.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      const text = ask.value.trim();
+      if (!text) return;
+      e.preventDefault();
+      DeskV1Kit.toast(`Sent to ${_sbAgent(ctx).name || 'your agent'}: “${text}”`);
+      ask.value = '';
+    });
+  }
+
   function _sceneIdAt(x, y) {
     const hit = document.elementFromPoint(x, y);
-    const li = hit && hit.closest && hit.closest('[data-scene-id]');
+    const li = hit && hit.closest && hit.closest('.desk-v1-sb-scene[data-scene-id]');
     return li && _sb.el.contains(li) ? li.dataset.sceneId : null;
+  }
+  function _overTrash(x, y) {
+    const hit = document.elementFromPoint(x, y);
+    const z = hit && hit.closest && hit.closest('[data-sb-trash]');
+    return !!(z && _sb.el.contains(z));
   }
 
   function _beginSceneDrag(handle, e, sceneId) {
@@ -386,9 +618,18 @@
       onMove: (s, x, y) => {
         const over = _sceneIdAt(x, y);
         _sb.el.querySelectorAll('.desk-v1-sb-scene').forEach((li) => li.classList.toggle('pd-drop-hover', li.dataset.sceneId === over && over !== sceneId));
+        const trash = _sb.el.querySelector('[data-sb-trash]');
+        if (trash) trash.classList.toggle('pd-drop-hover', _overTrash(x, y));
       },
-      onDrop: (s, x, y) => { const over = _sceneIdAt(x, y); return over ? { over } : null; },
-      afterDrop: (s, target) => { if (target) _moveScene(sceneId, target.over); },
+      onDrop: (s, x, y) => {
+        if (_overTrash(x, y)) return { trash: true };
+        const over = _sceneIdAt(x, y);
+        return over ? { over } : null;
+      },
+      afterDrop: (s, target) => {
+        if (!target) return;
+        if (target.trash) _deleteScene(sceneId); else _moveScene(sceneId, target.over);
+      },
       onTeardown: () => { _sb.el.querySelectorAll('.pd-drop-hover').forEach((li) => li.classList.remove('pd-drop-hover')); },
     });
   }
@@ -409,6 +650,8 @@
         if (j < 0 || j >= arr.length) return;
         _moveScene(id, arr[j].id);
       });
+      const del = li.querySelector('[data-scene-delete]');
+      if (del) del.onclick = () => _deleteScene(id);
       const edit = li.querySelector('[data-scene-edit]');
       edit.onclick = () => {
         if (_sb.editing === id) {
@@ -431,15 +674,8 @@
     if (!ctx) return;
     el.querySelector('[data-sb-render]').onclick = _startRender;
     _wireScenes(el.querySelector('[data-scenes]'));
-    const ask = el.querySelector('[data-sb-ask]');
-    ask.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter') return;
-      const text = ask.value.trim();
-      if (!text) return;
-      e.preventDefault();
-      DeskV1Kit.toast(`Sent to ${_agentName(ctx.camp) || 'your agent'}: “${text}”`);
-      ask.value = '';
-    });
+    if (_sb.standalone) _wireTimeline();
+    _wireAgentBox(el.querySelector('[data-sb-agent]'), ctx);
   }
 
   function deskV1RenderStoryboard(el, params) {
@@ -878,6 +1114,8 @@
       _sb = { el: el.querySelector('[data-sc-body]'), campaignId: null, familyId: _sc.item.id, editing: null, standalone: true };
       _sb.el.innerHTML = _sbHTML();
       _wireSb(_sb.el);
+      const mine = _sb;
+      _loadGlobalAgents().then(() => { if (_sb === mine) _paintAgentBox(); });
       const title = el.querySelector('[data-sc-title]');
       title.onchange = () => {
         const fam = _sc.item;

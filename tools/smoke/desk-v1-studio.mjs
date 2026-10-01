@@ -19,6 +19,12 @@
  *     campaign picker; a capture is saved to the Material library, listed in
  *     Recent and in a campaign's What library picker; a no-campaign Recent row
  *     opens the item; `Use in a campaign` attaches it as a piece.
+ *   - Studio review fixes (MC-1024 follow-up): a library folder opens and lists
+ *     its files with a way back; a new video's scenes 2 to 4 are dimmed
+ *     examples left out of Render and the saved item until edited; a scene is
+ *     deleted by its trash button or by dragging it onto the trash zone (Undo
+ *     restores); the Your agent box is a picker of global agents only and the
+ *     pick persists on the item; the timeline bar reorders the list by drag.
  *   - Image → Capture: Screen picker + preview, capturing attaches; a project
  *     with no capturable surface reads `Not available for this project`.
  *   - Online source: connected accounts expand a thumbnail grid; an unconnected
@@ -67,7 +73,13 @@ const PROJECTS = [{
   distiller_max_explorations_per_session: 3, distiller_min_turns: 5,
   distiller_skip_errors: true, roster: [],
 }];
-const CHARACTERS = [{ scope: 'global', name: 'claydo', agent_name: 'Claydo', avatar: '🧱' }];
+// Two global agents and one project-only one: the Studio picker lists only the
+// agents provisioned on ALL projects (scope global).
+const CHARACTERS = [
+  { scope: 'global', name: 'claydo', agent_name: 'Claydo', avatar: '🧱' },
+  { scope: 'global', name: 'dave', agent_name: 'Dave', avatar: '🧭' },
+  { scope: 'project', name: 'projonly', agent_name: 'ProjOnly', avatar: '🔒' },
+];
 
 const TONES = [
   { name: 'default/dark', ls: {} },
@@ -243,6 +255,162 @@ async function runStandalone(browser, tone) {
   const attached = await page.evaluate(() => window.DeskV1Fixtures.families.filter((f) => f.title === 'Dashboard hero' && f.assets && f.assets.length).length);
   const rowsAfter = await page.evaluate(() => window.DeskV1Fixtures.families.length);
   check(attached === 1 && rowsAfter === rowsBefore + 1, `${tag} Use in a campaign attaches it as a piece in that What`, `${tag} attach wrong: attached=${attached} families ${rowsBefore}→${rowsAfter}`);
+  reportUncaught(b.pageErrors, tag);
+  await b.ctx.close();
+}
+
+// ── 1c. Studio review fixes (MC-1024 follow-up, Ron 2026-10-01) ──────────
+async function dragTo(page, fromSel, toSel) {
+  await page.locator(fromSel).scrollIntoViewIfNeeded();
+  const h = await page.locator(fromSel).boundingBox();
+  const t = await page.locator(toSel).boundingBox();
+  await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(h.x + h.width / 2 + 10, h.y + h.height / 2 - 10, { steps: 4 });
+  await page.mouse.move(t.x + t.width / 2, t.y + t.height / 2, { steps: 10 });
+  await page.waitForTimeout(40);
+  await page.mouse.up();
+  await page.waitForTimeout(100);
+}
+const sceneIds = (page) => page.$$eval('.desk-v1-sb-scene', (els) => els.map((e) => e.dataset.sceneId));
+async function openNewVideo(page) {
+  await openStudio(page);
+  await page.click('[data-studio-new="video"]');
+  await page.waitForSelector('[data-studio-create][data-kind="video"] [data-storyboard] .desk-v1-sb-scene', { timeout: 6000 });
+}
+// Make an example scene real the way a user does: Edit, change the title, Done.
+async function editSceneTitle(page, nth, label) {
+  await page.click(`.desk-v1-sb-scene:nth-child(${nth}) [data-scene-edit]`);
+  await page.fill(`.desk-v1-sb-scene:nth-child(${nth}) [data-scene-edit-label]`, label);
+  await page.click(`.desk-v1-sb-scene:nth-child(${nth}) [data-scene-edit]`);
+  await page.waitForTimeout(60);
+}
+const clearToasts = (page) => page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
+const agentReady = (page) => page.waitForFunction(() => { const s = document.querySelector('[data-sb-agent-pick]'); return s && !s.disabled; }, null, { timeout: 4000 });
+
+async function runStudioReview(browser, tone) {
+  const tag = `[${tone.name}]`;
+  const shot = tone.name === 'default/dark';
+
+  // 1. A library folder opens, lists its files, and has a way back.
+  let b = await newBootedPage(browser, tone);
+  let page = b.page;
+  await openStudio(page);
+  await page.click('[data-studio-folder="lib-screenshots"]');
+  await page.waitForSelector('[data-studio-folderview="lib-screenshots"]', { timeout: 4000 });
+  const files = await page.$$eval('[data-studio-file]', (els) => els.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
+  check(files.length === 38 && /screenshot-01\.png/.test(files[0]) && (await page.$$('[data-studio-folder]')).length === 0,
+    `${tag} a library folder opens in place and lists its ${files.length} files`, `${tag} folder view wrong: ${files.length} files ${JSON.stringify(files.slice(0, 2))}`);
+  check(/Product screenshots · 38 files/.test(await text(page, '.desk-v1-studio-folderbar-name')),
+    `${tag} the open folder is named with its file count`, `${tag} folder bar wrong`);
+  await page.click('[data-studio-lib-back]');
+  await page.waitForSelector('[data-studio-folder]', { timeout: 4000 });
+  check((await page.$$('[data-studio-folder]')).length === 5 && (await page.$$('[data-studio-folderview]')).length === 0,
+    `${tag} the back button returns to the 5 folders`, `${tag} back did not restore the shelf`);
+  if (shot) {
+    await page.click('[data-studio-folder="lib-screenshots"]');
+    await page.waitForSelector('[data-studio-file]');
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: resolve(SHOT_DIR, 'studio_review_1_folder_1440.png') });
+  }
+  reportUncaught(b.pageErrors, tag);
+  await b.ctx.close();
+
+  // 2. Scenes 2 to 4 are dimmed examples: not rendered, not saved, real once edited.
+  b = await newBootedPage(browser, tone);
+  page = b.page;
+  await openNewVideo(page);
+  const ph = await page.$$eval('.desk-v1-sb-scene', (els) => els.map((e) => ({ ph: e.hasAttribute('data-scene-placeholder'), op: Number(getComputedStyle(e).opacity) })));
+  check(ph.length === 4 && !ph[0].ph && ph.slice(1).every((x) => x.ph) && ph[0].op === 1 && ph.slice(1).every((x) => x.op < 1),
+    `${tag} a new video opens with 4 scenes: 1 real, 3 dimmed examples (opacity ${ph.slice(1).map((x) => x.op).join('/')})`, `${tag} scene states wrong: ${JSON.stringify(ph)}`);
+  if (shot) { await page.waitForTimeout(150); await page.screenshot({ path: resolve(SHOT_DIR, 'studio_review_2_examples_1440.png') }); }
+  await page.click('[data-sb-render]');
+  await page.waitForSelector('[data-sb-rendering]', { timeout: 4000 });
+  let item = await page.evaluate(() => window.DeskV1Store.state().studio.items[0]);
+  check(item.render.scenes.length === 1 && item.scenes.length === 1,
+    `${tag} Render and the saved item carry 1 scene, not the 3 examples`, `${tag} payload wrong: render ${item.render.scenes.length}, item ${item.scenes.length}`);
+  await clearToasts(page);
+  await editSceneTitle(page, 2, 'My own scene');
+  const after = await page.$$eval('.desk-v1-sb-scene', (els) => els.map((e) => e.hasAttribute('data-scene-placeholder')));
+  item = await page.evaluate(() => window.DeskV1Store.state().studio.items[0]);
+  check(after.join() === 'false,false,true,true' && item.scenes.length === 2 && item.scenes[1].label === 'My own scene',
+    `${tag} editing an example makes it a real scene (then 2 are saved)`, `${tag} edit did not promote the scene: ${after} / ${item.scenes.length}`);
+  reportUncaught(b.pageErrors, tag);
+  await b.ctx.close();
+
+  // 3. Delete: the trash button, then dragging onto the trash zone; both Undo.
+  b = await newBootedPage(browser, tone);
+  page = b.page;
+  await openNewVideo(page);
+  const ids0 = await sceneIds(page);
+  await page.click('.desk-v1-sb-scene:nth-child(1) [data-scene-delete]');
+  await page.waitForTimeout(80);
+  let ids = await sceneIds(page);
+  check(ids.length === 3 && !ids.includes(ids0[0]), `${tag} the trash button deletes a scene (4 → ${ids.length})`, `${tag} trash button did not delete: ${ids}`);
+  await page.click('.toast .toast-btn.primary');
+  await page.waitForTimeout(80);
+  check((await sceneIds(page)).join() === ids0.join(), `${tag} Undo restores the deleted scene in its place`, `${tag} Undo did not restore: ${await sceneIds(page)}`);
+  await clearToasts(page);
+  await dragTo(page, '.desk-v1-sb-scene:nth-child(2) [data-scene-handle]', '[data-sb-trash]');
+  ids = await sceneIds(page);
+  check(ids.length === 3 && !ids.includes(ids0[1]), `${tag} dragging a scene onto the trash zone deletes it (4 → ${ids.length})`, `${tag} drag-to-trash failed: ${ids}`);
+  await page.click('.toast .toast-btn.primary');
+  await page.waitForTimeout(80);
+  check((await sceneIds(page)).join() === ids0.join(), `${tag} Undo restores the scene dragged to the trash`, `${tag} Undo after drag-to-trash failed: ${await sceneIds(page)}`);
+  if (shot) { await clearToasts(page); await page.waitForTimeout(150); await page.screenshot({ path: resolve(SHOT_DIR, 'studio_review_3_trash_1440.png') }); }
+  reportUncaught(b.pageErrors, tag);
+  await b.ctx.close();
+
+  // 4. The agent box is a picker of global agents; the pick persists on the item.
+  b = await newBootedPage(browser, tone);
+  page = b.page;
+  await openNewVideo(page);
+  await agentReady(page);
+  const opts = await page.$$eval('[data-sb-agent-pick] option', (els) => els.map((e) => e.value));
+  check(opts.join() === ',global:claydo,global:dave', `${tag} the picker lists the default + global agents only: ${opts.join(' | ')}`, `${tag} picker options wrong: ${JSON.stringify(opts)}`);
+  await page.selectOption('[data-sb-agent-pick]', 'global:dave');
+  await page.waitForTimeout(60);
+  check((await text(page, '[data-sb-agent-head] strong')) === 'Dave' && /Ask Dave/.test((await page.getAttribute('[data-sb-ask]', 'placeholder')) || ''),
+    `${tag} the box takes the picked agent's name`, `${tag} agent box did not follow the pick: ${await text(page, '[data-sb-agent-head]')}`);
+  if (shot) { await clearToasts(page); await page.waitForTimeout(150); await page.screenshot({ path: resolve(SHOT_DIR, 'studio_review_4_agent_1440.png') }); }
+  const itemId = await page.evaluate(() => window.DeskV1Store.state().studio.items[0].id);
+  const stored = await page.evaluate(() => window.DeskV1Store.state().studio.items[0].agent);
+  await openStudio(page);
+  await page.click(`[data-studio-recent-row="${itemId}"]`);
+  await page.waitForSelector('[data-storyboard]', { timeout: 4000 });
+  await agentReady(page);
+  check(stored === 'global:dave' && (await page.inputValue('[data-sb-agent-pick]')) === 'global:dave',
+    `${tag} the pick is stored on the item and survives reopening it`, `${tag} pick not persisted: stored=${stored}`);
+  reportUncaught(b.pageErrors, tag);
+  await b.ctx.close();
+
+  // 5. The timeline bar: one tile per real scene, widths by duration, drag reorders the list.
+  b = await newBootedPage(browser, tone);
+  page = b.page;
+  await openNewVideo(page);
+  check((await page.$$('[data-sb-timeline] .desk-v1-video-scene')).length === 1, `${tag} the timeline starts with 1 tile (only scene 1 is real)`, `${tag} timeline tile count wrong`);
+  await editSceneTitle(page, 2, 'Second');
+  await editSceneTitle(page, 3, 'Third');
+  const tiles = await page.$$eval('[data-sb-timeline] .desk-v1-video-scene', (els) => els.map((e) => ({ id: e.dataset.sceneId, w: e.getBoundingClientRect().width })));
+  const durs = await page.$$eval('.desk-v1-sb-scene:not([data-scene-placeholder]) .desk-v1-sb-dur', (els) => els.map((e) => e.textContent));
+  check(tiles.length === 3 && (await page.$$('[data-sb-timeline] [data-trim-edge]')).length === 0,
+    `${tag} the timeline has one tile per real scene (${tiles.length}), no trim handles`, `${tag} timeline wrong: ${JSON.stringify(tiles)}`);
+  const secs = durs.map((d) => { const [m, sec] = d.split(':').map(Number); return m * 60 + sec; });
+  const wSum = tiles.reduce((a, x) => a + x.w, 0);
+  const sSum = secs.reduce((a, x) => a + x, 0);
+  check(tiles.every((t, i) => Math.abs(t.w / wSum - secs[i] / sSum) < 0.03),
+    `${tag} tile widths follow scene durations (${durs.join(' / ')})`, `${tag} widths not proportional: ${JSON.stringify(tiles)} vs ${durs}`);
+  if (shot) { await clearToasts(page); await page.locator('[data-sb-timeline]').scrollIntoViewIfNeeded(); await page.waitForTimeout(150); await page.screenshot({ path: resolve(SHOT_DIR, 'studio_review_5_timeline_1440.png') }); }
+  const listBefore = (await sceneIds(page)).slice(0, 3);
+  await clearToasts(page);
+  await dragTo(page, `[data-sb-timeline] [data-scene-id="${listBefore[2]}"]`, `[data-sb-timeline] [data-scene-id="${listBefore[0]}"]`);
+  const listAfter = (await sceneIds(page)).slice(0, 3);
+  const tlAfter = await page.$$eval('[data-sb-timeline] .desk-v1-video-scene', (els) => els.map((e) => e.dataset.sceneId));
+  check(listAfter[0] === listBefore[2] && listAfter.join() === tlAfter.join(),
+    `${tag} dragging a timeline tile reorders the list and the bar stays in sync`, `${tag} timeline drag wrong: list ${listBefore} -> ${listAfter}, bar ${tlAfter}`);
+  await dragTo(page, `.desk-v1-sb-scene[data-scene-id="${listAfter[1]}"] [data-scene-handle]`, `.desk-v1-sb-scene[data-scene-id="${listAfter[0]}"]`);
+  const tl2 = await page.$$eval('[data-sb-timeline] .desk-v1-video-scene', (els) => els.map((e) => e.dataset.sceneId));
+  check(tl2[0] === listAfter[1], `${tag} reordering the list updates the timeline`, `${tag} list drag did not update the bar: ${tl2}`);
   reportUncaught(b.pageErrors, tag);
   await b.ctx.close();
 }
@@ -527,6 +695,7 @@ try {
     console.log(`\n== ${tone.name}`);
     await runStudioHome(browser, tone);
     await runStandalone(browser, tone);
+    await runStudioReview(browser, tone);
     await runStoryboard(browser, tone);
     await runWriter(browser, tone);
     await runImageBodies(browser, tone);
