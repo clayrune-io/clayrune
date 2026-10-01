@@ -30,9 +30,41 @@ CODEX_UPDATE_COMMANDS = {
 # CLIs whose updater is the same whatever the install flavour.
 _SELF_UPDATING = {'claude': 'claude update'}
 
+# CLIs updated by their package manager, and the package each ships as (the
+# tools/cli-version-check.py CLIS table). Used ONLY when install_method() reads
+# the binary as living under that manager: a package name never picks a manager.
+NPM_PACKAGES = {
+    'gemini': '@google/gemini-cli',
+    'qwen': '@qwen-code/qwen-code',
+    'opencode': 'opencode-ai',
+}
+PYPI_PACKAGES = {'aider': 'aider-chat'}
 
-def install_method(binary_path: Any, platform: Optional[str] = None) -> str:
-    """'standalone' | 'standalone-windows' | 'npm' | 'brew' | '' (unknown),
+
+def sibling_python(binary_path: Any) -> Optional[str]:
+    """The interpreter beside (or one level above) a pip-installed console
+    script: a venv's bin/ or Scripts/, or a system Python's Scripts/. pip run
+    through THAT interpreter updates the copy the script belongs to; a bare
+    `pip` off PATH may not. None when there is none to point at."""
+    if not binary_path:
+        return None
+    try:
+        real = os.path.realpath(str(binary_path))
+    except Exception:
+        real = str(binary_path)
+    here = os.path.dirname(real)
+    for d in (here, os.path.dirname(here)):
+        for exe in ('python.exe', 'python3', 'python'):
+            cand = os.path.join(d, exe)
+            if os.path.isfile(cand):
+                return cand
+    return None
+
+
+def install_method(binary_path: Any, platform: Optional[str] = None,
+                   name: str = 'codex') -> str:
+    """'standalone' | 'standalone-windows' | 'npm' | 'brew' | 'pipx' | 'uv' |
+    'pip' | '' (unknown),
     read off WHERE the resolved binary lives -- never off what is merely on PATH.
 
     standalone: OpenAI's own installer (chatgpt.com/codex/install.sh), whose
@@ -41,6 +73,9 @@ def install_method(binary_path: Any, platform: Optional[str] = None) -> str:
       installer's %LOCALAPPDATA%\\Programs\\OpenAI\\Codex\\bin.
     npm: the real path sits under node_modules/ or an npm/nvm prefix.
     brew: the real path sits under a Cellar/ or Caskroom/.
+    pipx / uv: the real path sits under pipx/venvs/ or uv/tools/.
+    pip (aider only): a console script with an interpreter beside it.
+    `name` only selects the Windows npm shim spelling (<prefix>/npm/<name>).
     The symlink is resolved first: ~/.local/bin/codex alone says nothing."""
     if not binary_path:
         return ''
@@ -56,10 +91,16 @@ def install_method(binary_path: Any, platform: Optional[str] = None) -> str:
             return 'standalone-windows' if plat == 'win32' else 'standalone'
         if '/cellar/' in c or '/caskroom/' in c:
             return 'brew'
-        if '/node_modules/' in c or '/.nvm/' in c or '/.npm-global/' in c or '/npm/codex' in c:
+        if '/node_modules/' in c or '/.nvm/' in c or '/.npm-global/' in c or ('/npm/' + name) in c:
             return 'npm'
         if '/programs/openai/codex/' in c:
             return 'standalone-windows'
+        if '/pipx/venvs/' in c:
+            return 'pipx'
+        if '/uv/tools/' in c:
+            return 'uv'
+    if name in PYPI_PACKAGES and sibling_python(raw):
+        return 'pip'
     return ''
 
 
@@ -71,4 +112,14 @@ def update_command(name: str, binary_path: Any, platform: Optional[str] = None) 
         return _SELF_UPDATING[name]
     if name == 'codex':
         return CODEX_UPDATE_COMMANDS.get(install_method(binary_path, platform))
+    method = install_method(binary_path, platform, name)
+    if name in NPM_PACKAGES:
+        return ('npm install -g %s@latest' % NPM_PACKAGES[name]) if method == 'npm' else None
+    if name in PYPI_PACKAGES:
+        pkg = PYPI_PACKAGES[name]
+        return {'pipx': 'pipx upgrade ' + pkg,
+                'uv': 'uv tool upgrade ' + pkg,
+                # `python` is a placeholder: mc/cli_update.py swaps in
+                # sibling_python(binary) so pip runs in the right environment.
+                'pip': 'python -m pip install -U ' + pkg}.get(method)
     return None

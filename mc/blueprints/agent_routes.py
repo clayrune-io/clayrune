@@ -100,6 +100,7 @@ from mc.state import (
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 import mc.context_profile as _context_profile  # backlog 4a11b6a5: per-model context slim
 from mc import allowance_state as _allowance_state
+from mc import cli_update as _cli_update
 from mc import engine_fallback as _engine_fallback  # MC-961 opt-in vendor swap
 from mc import vision_bridge as _vision_bridge  # describe images for models that cannot see
 import mc.distiller as _distiller          # exploration read-floor (registered by server.py)
@@ -2233,6 +2234,9 @@ def agent_providers():
             'install_hint': h.install_hint,
             'update_hint': h.update_hint,
             'update_reason': h.update_reason,
+            # MC-1025: last daily CLI check / auto-update result (mc/cli_update.py)
+            # -- shown on the provider row; None before the first check.
+            'cli_update': _cli_update.provider_summary(rt.name),
             'auth_status': h.auth_state.status if h.auth_state else 'unknown',
             'auth_error_text': h.auth_state.error_text if h.auth_state else None,
             'capabilities': caps_dict,

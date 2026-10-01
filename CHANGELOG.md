@@ -6,6 +6,23 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-01] — Built-in daily agent-CLI update for every install (MC-1025 87caca56)
+
+- New `mc/cli_update.py` + `_cli_update_loop` (hourly tick, per-CLI daily cadence):
+  for each installed claude/codex/gemini/qwen/opencode/aider it reads the installed
+  version, finds `latest` (npm registry as a version oracle only; else GitHub
+  releases for codex / PyPI for aider; else "latest unknown" and no update), and if
+  behind runs the updater matching HOW it was installed (`mc/cli_install.py`
+  extended beyond codex). Unknown install method = reported, never updated.
+- A CLI with a live session, a registered child process, or a process running out
+  of its install dir is skipped and retried the next hour (MC-991 EBUSY lesson);
+  a failed process enumeration also skips. Nothing is ever killed.
+- State in `data/cli_update_state.json` (outside `data/projects/`). The provider
+  row shows "updated to X on <date>" or the failure/skip reason.
+- Config `cli_auto_update_enabled` (default ON, live, no restart); toggle in
+  Settings -> Providers. Tests: `tests/test_cli_update.py`; smoke:
+  `tools/smoke/settings-providers.mjs`.
+
 ## [2026-10-01] — Usage report: breakdown loads fast and retries (MC-998 4668eafc f9)
 
 - `GET /api/system/usage/breakdown` took 1.3-1.5s warm (3.9s with three in flight)

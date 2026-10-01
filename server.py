@@ -180,6 +180,11 @@ def _load_config():
         'question_channel_grace_s': 45,   # wait this long for a viewer before sending
         'question_channel_poll_s': 120,   # how often to scan the inbox for replies
 
+        # Daily agent-CLI update (MC-1025, mc/cli_update.py): ON for every
+        # install (Ron, 2026-10-01 -- a stale CLI broke Keegan's runs with no
+        # warning). Settings -> Providers toggles it; read live, no restart.
+        'cli_auto_update_enabled': True,
+
         # Keep the machine awake while an agent is running (mc/wake_lock.py).
         # The product runs agents on the user's own box; if it sleeps, the agent
         # stops. Off by default — opt-in per install.
@@ -2862,6 +2867,8 @@ app.register_blueprint(_bp_system.bp)
 _update_check_loop = _bp_system._update_check_loop
 # MC-991 Phase 2: server-side orphan CLI process sweep daemon (mc/process_sweep.py).
 _process_sweep_loop = _bp_system._process_sweep_loop
+# MC-1025: built-in daily agent-CLI update daemon (mc/cli_update.py).
+_cli_update_loop = _bp_system._cli_update_loop
 # MC-998 phase 4: Usage Breakdown allowance sampler + 90-day retention prune
 # (docs/USAGE_BREAKDOWN_SPEC.md "Sampling and durable facts").
 _usage_breakdown_sample_loop = _bp_system._usage_breakdown_sample_loop
@@ -2874,6 +2881,12 @@ _usage_breakdown_prune_loop = _bp_system._usage_breakdown_prune_loop
 from mc import allowance_state as _allowance_state  # noqa: E402
 
 _allowance_state.wire(_DATA_ROOT / 'data' / 'allowance_state.json')
+
+# ── Built-in agent-CLI update state (MC-1025) ───────────────────────────────
+# Same placement rule as allowance_state: beside data/, never in data/projects/.
+from mc import cli_update as _cli_update  # noqa: E402
+
+_cli_update.wire(_DATA_ROOT / 'data' / 'cli_update_state.json')
 
 # ── Terminal session endpoints ── extracted to
 # mc/blueprints/terminal_routes.py (1.8): the 5 /api/terminal/* routes +
@@ -3397,6 +3410,10 @@ def boot(check_port=True):
     # inside the loop body itself, not here — so flipping it takes effect on
     # the next tick without a restart.
     threading.Thread(target=_process_sweep_loop, daemon=True, name='process-sweep').start()
+    # MC-1025: daily agent-CLI update, every install. Off switch is config
+    # 'cli_auto_update_enabled' (default True), read inside the pass itself, so
+    # flipping it takes effect on the next hourly tick without a restart.
+    threading.Thread(target=_cli_update_loop, daemon=True, name='cli-update').start()
     # MC-997: leaked pane-Chromium sweep (mc/blueprints/browser_routes.py).
     # Off switch is config 'browser_pane_leak_sweep_enabled' (default True),
     # checked inside the sweep itself, not here — same "flip takes effect on

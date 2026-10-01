@@ -11,6 +11,7 @@ GET /api/system/loops exposes mc.obs heartbeats.
 """
 
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -26,7 +27,7 @@ from flask import Blueprint, jsonify, request
 
 import mc.agent_runtime as _agent_runtime
 from mc import allowance_state as _allowance_state
-from mc import obs, process_sweep, state
+from mc import cli_update, obs, process_sweep, state
 from mc.blueprints.terminal_routes import launch_pty_session
 from mc.blueprints.workflow_routes import _is_agent_caller
 from mc.blueprints.secrets_routes import _require_human_passcode
@@ -401,6 +402,57 @@ def _process_sweep_loop():
         except Exception as e:
             _log(f"[process-sweep] loop error: {e}", flush=True)
         _time.sleep(state._PROCESS_SWEEP_INTERVAL_S)
+
+
+def _cli_in_use_reasons(name):
+    """Why the agent CLI `name` must not be updated right now, one string per
+    reason ([] = nothing in Clayrune is using it). A live session of that
+    provider (running, or an idle Mode B process still holding the binary) and
+    a registered child process whose name/command mentions it both count --
+    MC-991: replacing a running exe EBUSYs and can leave the CLI downgraded."""
+    reasons = []
+    for sid, sess in list(agent_sessions.items()):
+        if (sess.get('provider') or 'claude').lower() != name:
+            continue
+        proc = sess.get('proc')
+        if sess.get('status') == 'running' or (proc is not None and proc.poll() is None):
+            reasons.append(f"session {str(sid)[:8]} ({sess.get('status')})")
+    with process_tracker_lock:
+        entries = list(tracked_processes.values())
+    word = re.compile(r'(?<![\w-])' + re.escape(name) + r'(?![\w-])', re.I)
+    for e in entries:
+        if not word.search(f"{e.get('name') or ''} {e.get('command_preview') or ''}"):
+            continue
+        proc = e.get('proc')
+        if (proc.poll() is None) if proc is not None else _pid_is_alive(e.get("pid")):
+            reasons.append(f"registered process pid {e.get('pid')}")
+    return reasons
+
+
+def _run_cli_update(force=False):
+    """One pass of the built-in agent-CLI update (mc/cli_update.py), honoring
+    `cli_auto_update_enabled` (default True). Off = no probe, no subprocess."""
+    return cli_update.run_once(
+        enabled_fn=lambda: bool(state.CONFIG.get('cli_auto_update_enabled', True)),
+        runtimes_fn=_agent_runtime.available_runtimes,
+        in_use_fn=_cli_in_use_reasons,
+        force=force,
+    )
+
+
+def _cli_update_loop():
+    """Daemon thread (MC-1025): wake hourly; cli_update.run_once decides which
+    CLIs are due (daily, or hourly after a skipped-in-use). Boot delay matches
+    the process sweep so revived sessions re-register before 'in use' is judged.
+    The toggle is read inside run_once, so flipping it needs no restart."""
+    _time.sleep(state._PROCESS_SWEEP_BOOT_DELAY_S)
+    while True:
+        obs.heartbeat('cli-update')
+        try:
+            _run_cli_update()
+        except Exception as e:
+            _log(f"[cli-update] loop error: {e}", flush=True)
+        _time.sleep(3600)
 
 
 @bp.route('/api/system/process-sweep', methods=['POST'])

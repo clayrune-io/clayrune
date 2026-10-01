@@ -154,6 +154,9 @@ _CONFIG_EDITABLE_KEYS = {
     # respawn needed. process_sweep_enabled OFF blocks every kill path, no
     # per-call override; process_sweep_dry_run reports without killing.
     'process_sweep_enabled', 'process_sweep_dry_run',
+    # Daily agent-CLI update (MC-1025, mc/cli_update.py). Read live inside every
+    # pass -- OFF stops all checks and updates, no restart.
+    'cli_auto_update_enabled',
     # Leaked pane-Chromium sweep (MC-997, mc/blueprints/browser_routes.py).
     # Read live by the periodic loop and the startup pass — no respawn needed.
     'browser_pane_leak_sweep_enabled',
