@@ -42,6 +42,7 @@ from mc import desk_engagement as _engagement
 from mc import desk_harvest as _harvest
 from mc import desk_retro as _retro
 from mc import desk_voice_seed as _seed
+from mc.blueprints.secrets_routes import _require_human_passcode
 from mc.core import _log
 from mc.unattended import is_unattended_caller
 
@@ -494,16 +495,22 @@ def update_campaign(campaign_id):
 # `camp['approved']`, the record the publisher checks, so each is refused for an
 # unattended caller: an agent session may edit a campaign (PATCH) but can never
 # approve, start or widen the approval of one. The answer is always the v1 shape.
+#
+# MC-995: `is_unattended_caller` alone is forgeable (any attended agent's curl can
+# carry an Origin header, and manual-chat sessions are exempt by design), so each
+# action ALSO requires the retyped dashboard passcode in the body, per call, the
+# same `_require_human_passcode` gate the other human-only routes use. With no
+# passcode configured it refuses 403 `passcode_required`, as everywhere else.
 
-def _human_only(action: str):
+def _human_only(action: str, data: dict):
     if is_unattended_caller():
         return jsonify({'error': f'this action needs a human: an unattended agent session '
                                  f'cannot {action} a campaign'}), 403
-    return None
+    return _require_human_passcode(data)
 
 
-def _approval_action(campaign_id: str, action: str, fn, **kw):
-    refused = _human_only(action)
+def _approval_action(campaign_id: str, action: str, fn, data: dict, **kw):
+    refused = _human_only(action, data)
     if refused:
         return refused
     try:
@@ -518,18 +525,20 @@ def _approval_action(campaign_id: str, action: str, fn, **kw):
 @bp.route('/api/desk/campaigns/<campaign_id>/start', methods=['POST'])
 def start_campaign(campaign_id):
     d = request.get_json(silent=True) or {}
-    return _approval_action(campaign_id, 'start', _desk.start_campaign,
+    return _approval_action(campaign_id, 'start', _desk.start_campaign, d,
                             policy_record=d.get('policy_record'))
 
 
 @bp.route('/api/desk/campaigns/<campaign_id>/approve', methods=['POST'])
 def approve_campaign(campaign_id):
-    return _approval_action(campaign_id, 'approve', _desk.approve_campaign)
+    d = request.get_json(silent=True) or {}
+    return _approval_action(campaign_id, 'approve', _desk.approve_campaign, d)
 
 
 @bp.route('/api/desk/campaigns/<campaign_id>/renew', methods=['POST'])
 def renew_campaign(campaign_id):
-    return _approval_action(campaign_id, 'renew', _desk.renew_campaign)
+    d = request.get_json(silent=True) or {}
+    return _approval_action(campaign_id, 'renew', _desk.renew_campaign, d)
 
 
 @bp.route('/api/desk/campaigns/<campaign_id>', methods=['DELETE'])
