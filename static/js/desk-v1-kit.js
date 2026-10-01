@@ -951,9 +951,9 @@
   const _PLAN_BOUNDS = [
     { bound: 'accounts', step: 2, stop: 'where', label: 'accounts',
       missing: (p) => !(p.accounts && p.accounts.length) },
-    { bound: 'cadence', step: 2, stop: 'when', label: 'cadence',
+    { bound: 'cadence', step: 2, stop: 'how', label: 'cadence',
       missing: (p) => !(p.cadence && p.cadence.per_week != null) },
-    { bound: 'end', step: 2, stop: 'when', label: 'end date',
+    { bound: 'end', step: 2, stop: 'how', label: 'end date',
       missing: (p) => !(p.end && (p.end.date != null || p.end.post_cap != null)) },
   ];
 
