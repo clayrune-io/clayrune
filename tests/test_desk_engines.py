@@ -221,7 +221,7 @@ def test_engines_listed_with_connected_status_and_no_secret(client):
     assert r.status_code == 200
     ids = {e['id']: e for e in r.get_json()['engines']}
     assert set(ids) == {'higgsfield', 'google', 'openai'}
-    assert all(e['connected'] == {'ready': True, 'vault_entry': e['auth']['vault_entry'], 'reason': None}
+    assert all(e['connected'] == {'ready': True, 'exists': True, 'vault_entry': e['auth']['vault_entry'], 'reason': None}
                for e in ids.values())
     assert {e['auth']['vault_entry'] for e in ids.values()} == {'higgsfield', 'gemini-api', 'openai-api'}
     assert all('vendor' not in m for e in ids.values() for m in e['models'])
@@ -235,8 +235,26 @@ def test_not_connected_reasons(client, vault):
     vault['entries']['higgsfield'] = (KEY_SECRET, '')          # key id missing
     ids = {e['id']: e['connected'] for e in client.get('/api/desk/engines').get_json()['engines']}
     assert ids['openai']['ready'] is False and "no vault entry named 'openai-api'" in ids['openai']['reason']
-    assert ids['higgsfield']['ready'] is False and 'username' in ids['higgsfield']['reason']
+    assert ids['higgsfield']['ready'] is False and 'API key ID' in ids['higgsfield']['reason']
     assert ids['google']['ready'] is True
+    # The Connect button opens an Add when the entry is missing, an Edit when it exists but is unusable.
+    assert ids['openai']['exists'] is False and ids['higgsfield']['exists'] is True
+
+
+def test_engines_expose_the_credential_form_spec(client):
+    ids = {e['id']: e['credential'] for e in client.get('/api/desk/engines').get_json()['engines']}
+    assert ids['higgsfield'] == {
+        'vault_entry': 'higgsfield', 'username_label': 'API key ID', 'username_required': True,
+        'secret_label': 'API key secret', 'hint': ids['higgsfield']['hint'], 'url': 'https://console.higgsfield.ai'}
+    assert ids['google']['vault_entry'] == 'gemini-api' and ids['google']['username_label'] is None
+    assert ids['google']['username_required'] is False and ids['google']['secret_label'] == 'Gemini API key'
+    assert 'billing' in ids['google']['hint'] and 'aistudio.google.com' in ids['google']['url']
+    assert ids['openai']['vault_entry'] == 'openai-api' and ids['openai']['username_label'] is None
+    assert ids['openai']['secret_label'] == 'OpenAI API key' and 'ChatGPT' in ids['openai']['hint']
+    assert 'platform.openai.com' in ids['openai']['url']
+    # the spec names the same vault entry the connector reads, and carries no value
+    from mc import desk_engines
+    assert all(c['vault_entry'] == desk_engines.ENGINES[i].auth['vault_entry'] for i, c in ids.items())
 
 
 # ── estimate ─────────────────────────────────────────────────────────────────

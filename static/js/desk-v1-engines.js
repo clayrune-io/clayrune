@@ -74,7 +74,9 @@
             : `A render over ${_usd(lim)} is refused before anything is sent.`}</span>
         </div>
       </div>
-      ${c.ready ? '' : '<button type="button" class="desk-v1-conn-btn" data-engine-secrets>Open Secrets ›</button>'}
+      ${c.ready
+        ? '<button type="button" class="desk-v1-conn-btn" data-engine-edit>Edit</button>'
+        : '<button type="button" class="desk-v1-conn-btn" data-engine-connect>Connect ›</button>'}
     </div>`;
   }
 
@@ -88,8 +90,18 @@
     (engines || []).forEach((e) => {
       const row = el.querySelector(`[data-conn-engine="${CSS.escape(e.id)}"]`);
       if (!row) return;
-      const sec = row.querySelector('[data-engine-secrets]');
-      if (sec) sec.onclick = () => { if (typeof window.openSecretsVault === 'function') window.openSecretsVault(); };
+      // Connect / Edit open the Secrets form with this engine's labels. The human
+      // types the value there and saves through the passcode-gated vault route;
+      // nothing on this screen holds or sends a credential.
+      const c = e.connected || {};
+      const openForm = (create) => {
+        if (e.credential && typeof window.openSecretEditor === 'function') window.openSecretEditor(c.vault_entry, { ...e.credential, create });
+        else if (typeof window.openSecretsVault === 'function') window.openSecretsVault();   // a server with no form spec
+      };
+      const connect = row.querySelector('[data-engine-connect]');
+      if (connect) connect.onclick = () => openForm(!c.exists);
+      const edit = row.querySelector('[data-engine-edit]');
+      if (edit) edit.onclick = () => openForm(false);
       const save = row.querySelector('[data-engine-limit-save]');
       const note = row.querySelector('[data-engine-limit-note]');
       save.onclick = async () => {

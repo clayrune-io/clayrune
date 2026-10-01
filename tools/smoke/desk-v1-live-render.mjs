@@ -231,8 +231,9 @@ async function connections(browser) {
   (/Not connected/.test(hs) && /higgsfield/.test(hs) && /Secrets/.test(hs)) ? ok('an unconnected engine says so, by vault entry NAME, with the reason: "' + hs + '"') : fail('higgsfield status: ' + hs);
   const gs = await txt(page, '[data-conn-engine="google"] [data-engine-status]');
   (/^Connected/.test(gs) && /gemini-api/.test(gs)) ? ok('a connected engine shows its vault entry name: "' + gs + '"') : fail('google status: ' + gs);
-  (await page.$('[data-conn-engine="higgsfield"] [data-engine-secrets]')) && !(await page.$('[data-conn-engine="google"] [data-engine-secrets]'))
-    ? ok('only an unconnected engine offers Open Secrets (a human creates the entry; nothing here types a credential)') : fail('Open Secrets buttons');
+  (await page.$('[data-conn-engine="higgsfield"] [data-engine-connect]')) && !(await page.$('[data-conn-engine="google"] [data-engine-connect]'))
+    && (await page.$('[data-conn-engine="google"] [data-engine-edit]')) && !(await page.$('[data-conn-engine="higgsfield"] [data-engine-edit]'))
+    ? ok('only an unconnected engine offers Connect, only a connected one Edit (a human creates the entry; nothing here types a credential)') : fail('Connect/Edit buttons');
   (await page.$$('[data-conn-section="engines"] input[type="password"], [data-conn-section="engines"] input[type="text"]')).length === 0
     ? ok('the engines section has no credential field') : fail('a text/password field is in the engines section');
   (await page.inputValue('[data-conn-engine="google"] [data-engine-limit-input]')) === '2' ? ok("Google's saved per-job limit (2) is shown") : fail('google limit value');
