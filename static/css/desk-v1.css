@@ -2378,6 +2378,7 @@
 .desk-v1-where-source-off { cursor: default; border-style: dashed; }
 .desk-v1-where-source-handle { font-size: 12px; font-weight: 700; color: var(--text); word-break: break-word; }
 .desk-v1-where-source-plat { font-size: 10.5px; color: var(--text-faint); }
+.desk-v1-where-source-reason { font-size: 10.5px; line-height: 1.3; color: var(--amber-text); }
 .desk-v1-where-connect {
   background: none; border: none; color: var(--accent); font-size: 11px; font-weight: 600; cursor: pointer;
   font-family: inherit; padding: 4px 2px; min-height: 24px;

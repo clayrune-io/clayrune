@@ -16,7 +16,9 @@
 //   version  -> other column     MOVES it (same version, new account)
 //   source   -> the board        ADDS that account's column (plan.accounts)
 // Every drop is a `DeskV1Kit.commandBus` command with an inverse (§10), so
-// each one toasts with Undo. Fixtures only: nothing here calls a backend.
+// each one toasts with Undo. Every command runs through `DeskV1Store.write`
+// (R1-W S5): desk_v1_live ON also calls the routes (the campaign's `plan` for a
+// column or a voice, M17/M18 for a version); OFF is demo mode, local only.
 //
 // Approval: the board never computes "Awaiting approval" itself. Adding a
 // column is a plain `plan.accounts.push`; Launch (desk-v1-campaign.js
@@ -42,6 +44,23 @@
 
   let _seq = 0;
   function _uid() { return Date.now().toString(36) + (++_seq).toString(36); }
+
+  // ── R1-W S5: the live routes ─────────────────────────────────────────────
+  function _api(method, url, body) { return window.DeskV1Store.api(method, url, body); }
+  function _pieceUrl(id) { return '/api/desk/pieces/' + encodeURIComponent(id); }
+  function _versionUrl(famId, vId) { return _pieceUrl(famId) + '/versions/' + encodeURIComponent(vId); }
+  function _patchPlan(camp) { return window.deskV1PatchCampaign(camp, ['plan']); }
+  // One write at a time per piece, shared with What (a version PATCH must not
+  // overtake the POST that makes the piece).
+  function _queue(famId, fn) {
+    return typeof window.deskV1QueuePiece === 'function' ? window.deskV1QueuePiece(famId, fn) : fn();
+  }
+  // M18 will not set approved/scheduled (only the human approve route can), so an
+  // Undo that would put a version back there lands it in review instead; the
+  // user is told, and approves it again.
+  const _M18_STATES = new Set(['drafting', 'needs_review', 'planned', 'skipped', 'archived']);
+  const _APPROVED = new Set(['approved', 'scheduled']);
+  function _restorable(state) { return _M18_STATES.has(state) ? state : 'needs_review'; }
 
   const PLATFORMS = {
     x: { word: 'X', glyph: '𝕏' },
@@ -127,10 +146,13 @@
     const ch = _channel(channelId);
     if (!ch) return;
     if (camp.plan.accounts.includes(channelId)) { DeskV1Kit.toast(`${ch.label} is already on “${camp.plan.title}”.`); return; }
-    DeskV1Kit.commandBus.run({
+    DeskV1Store.write({
       label: `Added ${ch.label} to “${camp.plan.title}”`,
-      do: () => { camp.plan.accounts.push(channelId); _repaint(); },
-      undo: () => { const i = camp.plan.accounts.indexOf(channelId); if (i >= 0) camp.plan.accounts.splice(i, 1); _repaint(); },
+      apply: () => { camp.plan.accounts.push(channelId); _repaint(); },
+      unapply: () => { const i = camp.plan.accounts.indexOf(channelId); if (i >= 0) camp.plan.accounts.splice(i, 1); },
+      repaint: () => _repaint(),
+      request: () => _patchPlan(camp),
+      undoRequest: () => _patchPlan(camp),
     });
   }
 
@@ -143,10 +165,46 @@
     if (idx < 0) return;
     const pending = _boardVersions(camp, channelId).map((x) => x.v).filter((v) => !_LOCKED.has(v.state));
     const prev = pending.map((v) => v.state);
-    DeskV1Kit.commandBus.run({
+    const before = camp.plan.accounts.slice();
+    const owner = (v) => _familiesFor(camp.id).find((f) => (f.versions || []).includes(v));
+    const archive = (v) => { const fam = owner(v); return fam ? _queue(fam.id, () => _api('PATCH', _versionUrl(fam.id, v.id), { state: 'archived' })) : null; };
+    const restore = (v, i) => { const fam = owner(v); return fam ? _queue(fam.id, () => _api('PATCH', _versionUrl(fam.id, v.id), { state: _restorable(prev[i]) })) : null; };
+    // Live: the plan first (the likely refusal, with nothing to undo), then each
+    // pending version archived (M18). A version that fails to archive puts the
+    // column back on the server, so the board never keeps half a removal.
+    const request = async () => {
+      await _patchPlan(camp);
+      const done = [];
+      try {
+        for (const v of pending) { await archive(v); done.push(v); }
+      } catch (e) {
+        try {
+          await _api('PATCH', '/api/desk/campaigns/' + encodeURIComponent(camp.id) + '?shape=v1',
+            { plan: Object.assign({}, camp.plan, { accounts: before }) });
+        } catch (_) { /* the original error is the one to show */ }
+        for (const v of done) { try { await restore(v, pending.indexOf(v)); } catch (_) { /* best effort */ } }
+        throw e;
+      }
+    };
+    const undoRequest = async () => {
+      await _patchPlan(camp);
+      let downgraded = 0;
+      for (const [i, v] of pending.entries()) {
+        await restore(v, i);
+        if (_restorable(prev[i]) !== prev[i]) { v.state = 'needs_review'; downgraded++; }
+      }
+      if (downgraded) {
+        DeskV1Kit.toast(`${downgraded} approved version${downgraded === 1 ? ' is' : 's are'} back in review: approve ${downgraded === 1 ? 'it' : 'them'} again.`);
+        _repaint();
+      }
+    };
+    DeskV1Store.write({
       label: `Removed ${ch ? ch.label : channelId} from “${camp.plan.title}”${pending.length ? ` · ${pending.length} version${pending.length === 1 ? '' : 's'} archived` : ''}`,
-      do: () => { camp.plan.accounts.splice(idx, 1); pending.forEach((v) => { v.state = 'archived'; }); _repaint(); },
-      undo: () => { camp.plan.accounts.splice(idx, 0, channelId); pending.forEach((v, i) => { v.state = prev[i]; }); _repaint(); },
+      apply: () => { camp.plan.accounts.splice(idx, 1); pending.forEach((v) => { v.state = 'archived'; }); _repaint(); },
+      unapply: () => { camp.plan.accounts.splice(idx, 0, channelId); pending.forEach((v, i) => { v.state = prev[i]; }); },
+      repaint: () => _repaint(),
+      request,
+      undoRequest,
     });
   }
 
@@ -154,10 +212,15 @@
     const ch = _channel(channelId);
     if (!camp.plan.accounts.includes(channelId)) return;
     const v = { id: `${fam.id}-v-${_uid()}`, channelId, state: 'drafting', revision: 0 };
-    DeskV1Kit.commandBus.run({
+    DeskV1Store.write({
       label: `Added a ${ch ? ch.label : 'new'} version of “${fam.title}”`,
-      do: () => { fam.versions.push(v); _repaint(); },
-      undo: () => { const i = fam.versions.indexOf(v); if (i >= 0) fam.versions.splice(i, 1); _repaint(); },
+      apply: () => { fam.versions.push(v); _repaint(); },
+      unapply: () => { const i = fam.versions.indexOf(v); if (i >= 0) fam.versions.splice(i, 1); },
+      repaint: () => _repaint(),
+      request: () => _queue(fam.id, () => _api('POST', _pieceUrl(fam.id) + '/versions', { id: v.id, account_id: channelId })),
+      // No route deletes a version: undoing an add archives it, which is how the
+      // board already reads a removed one.
+      undoRequest: () => _queue(fam.id, () => _api('PATCH', _versionUrl(fam.id, v.id), { state: 'archived' })),
     });
   }
 
@@ -171,10 +234,31 @@
     // A reviewed or scheduled version was approved for ITS account and format;
     // on another account it is a fresh draft again.
     const nextState = (prevState === 'needs_review' || prevState === 'approved' || prevState === 'scheduled') ? 'drafting' : prevState;
-    DeskV1Kit.commandBus.run({
+    // M18 refuses to change an approved version's account in place: it goes back
+    // to review first (which withdraws the approval), then moves as a draft.
+    const request = () => _queue(fam.id, async () => {
+      if (_APPROVED.has(prevState)) await _api('PATCH', _versionUrl(fam.id, v.id), { state: 'needs_review' });
+      const body = { account_id: toChannelId };
+      if (nextState !== prevState) body.state = nextState;
+      return _api('PATCH', _versionUrl(fam.id, v.id), body);
+    });
+    const undoRequest = () => _queue(fam.id, async () => {
+      const back = _restorable(prevState);
+      const out = await _api('PATCH', _versionUrl(fam.id, v.id), { account_id: prevChannel, state: back });
+      if (back !== prevState) {
+        v.state = back;
+        DeskV1Kit.toast(`“${fam.title}” is back in review: approve it again.`);
+        _repaint();
+      }
+      return out;
+    });
+    DeskV1Store.write({
       label: `Moved “${fam.title}” from ${from ? from.label : 'a column'} to ${to ? to.label : 'a column'}`,
-      do: () => { v.channelId = toChannelId; v.state = nextState; _repaint(); },
-      undo: () => { v.channelId = prevChannel; v.state = prevState; _repaint(); },
+      apply: () => { v.channelId = toChannelId; v.state = nextState; _repaint(); },
+      unapply: () => { v.channelId = prevChannel; v.state = prevState; },
+      repaint: () => _repaint(),
+      request,
+      undoRequest,
     });
   }
 
@@ -329,12 +413,17 @@
     </div>`;
   }
 
+  // A live account carries `publish` (R1-W S5): the tile names the account and
+  // says why it cannot be used, the reason the server computed (no token in the
+  // vault, LinkedIn app review pending). A demo tile has neither and stays as it was.
   function _offSourceHTML(ch) {
     const plat = _platform(ch);
-    return `<div class="desk-v1-where-source desk-v1-where-source-off" data-where-source-off data-channel-id="${esc(ch.id)}" data-platform="${esc(ch.platform)}">
+    const pub = ch.publish || null;
+    return `<div class="desk-v1-where-source desk-v1-where-source-off" data-where-source-off data-channel-id="${esc(ch.id)}" data-platform="${esc(ch.platform)}"${pub && pub.reason ? ` title="${esc(pub.reason)}"` : ''}>
       <span class="desk-v1-where-avatar desk-v1-where-avatar-off" aria-hidden="true"><span class="desk-v1-where-avatar-letter">?</span><span class="desk-v1-where-avatar-badge" data-platform="${esc(ch.platform)}">${esc(plat.glyph)}</span></span>
-      <div class="desk-v1-where-source-handle">not connected</div>
+      <div class="desk-v1-where-source-handle">${pub ? esc(ch.identity) : 'not connected'}</div>
       <div class="desk-v1-where-source-plat">${esc(plat.word)}</div>
+      ${pub ? `<div class="desk-v1-where-source-reason" data-where-reason>Not connected${pub.reason ? `: ${esc(pub.reason)}` : ''}</div>` : ''}
       <button type="button" class="desk-v1-where-connect" data-where-connect>Connect ›</button>
     </div>`;
   }
@@ -433,10 +522,13 @@
         const prev = (camp.plan.voices || {})[chId];
         const next = inp.value.trim();
         if (next === DeskV1Kit.accountVoice(camp.plan, ch)) return;
-        DeskV1Kit.commandBus.run({
+        DeskV1Store.write({
           label: `Set ${ch ? ch.identity : 'account'} voice to “${next || 'default'}”`,
-          do: () => { camp.plan.voices = camp.plan.voices || {}; if (next) camp.plan.voices[chId] = next; else delete camp.plan.voices[chId]; _repaint(); },
-          undo: () => { camp.plan.voices = camp.plan.voices || {}; if (prev) camp.plan.voices[chId] = prev; else delete camp.plan.voices[chId]; _repaint(); },
+          apply: () => { camp.plan.voices = camp.plan.voices || {}; if (next) camp.plan.voices[chId] = next; else delete camp.plan.voices[chId]; _repaint(); },
+          unapply: () => { camp.plan.voices = camp.plan.voices || {}; if (prev) camp.plan.voices[chId] = prev; else delete camp.plan.voices[chId]; },
+          repaint: () => _repaint(),
+          request: () => _patchPlan(camp),
+          undoRequest: () => _patchPlan(camp),
         });
       });
     });
