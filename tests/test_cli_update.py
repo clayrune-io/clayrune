@@ -414,7 +414,12 @@ def test_in_use_probe_sees_sessions_and_registered_processes(srv, monkeypatch):
     assert sr._cli_in_use_reasons('qwen') == []
 
 
-def test_provider_list_carries_the_cli_update_summary(srv, monkeypatch):
+def test_provider_list_carries_the_cli_update_summary(srv, monkeypatch, tmp_path):
+    from conftest import stub_codex_auth_state, stub_codex_models_cache
+    # GET /api/agent/providers asks the real codex who is signed in; stub it
+    # (same helpers tests/test_agent_routes.py uses) so no CLI is spawned.
+    stub_codex_auth_state(monkeypatch)
+    stub_codex_models_cache(monkeypatch, tmp_path)
     server, _sr, _state = srv
     from mc.blueprints import agent_routes
     monkeypatch.setattr(cli_update, '_STATE', {'clis': {'gemini': {
