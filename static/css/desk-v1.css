@@ -3023,3 +3023,19 @@ button.desk-v1-because-chip { color: var(--accent-soft); font-weight: 600; curso
   .desk-v1-map-discard { order: 1; min-height: 44px; padding: 0 8px; }
   .desk-v1-map-more { order: 2; }
 }
+
+/* GL-2 (batch 2): the Target / Baseline / Unit trio stacked into six rows of
+   label + one narrow input each. Label over input, three columns, one band. */
+@media (max-width: 960px) {
+  .desk-v1-goal-editor > .desk-v1-goal-row:nth-child(2) {
+    display: grid; grid-auto-flow: column; grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 0.85fr) minmax(0, 1.3fr);
+    column-gap: 10px; row-gap: 4px; align-items: stretch;
+  }
+  .desk-v1-goal-editor > .desk-v1-goal-row:nth-child(2) input { width: 100%; min-width: 0; box-sizing: border-box; }
+}
+@media (max-width: 960px) {
+  .desk-v1-goal-manual .desk-v1-rules-inlinerow { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 8px; }
+  .desk-v1-goal-manual .desk-v1-rules-inlinerow input { width: 100%; min-width: 0; box-sizing: border-box; }
+  .desk-v1-goal-manual .desk-v1-rules-inlinerow [data-manual-entry-add] { grid-column: 1 / -1; white-space: nowrap; }
+}
