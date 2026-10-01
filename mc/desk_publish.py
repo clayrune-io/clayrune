@@ -86,6 +86,7 @@ from pathlib import Path
 from typing import Any
 
 from mc.core import _atomic_write_text, _log, now_iso
+from mc import desk as _desk
 from mc import secrets_store
 
 # -- wired by server.py -------------------------------------------------------
@@ -220,6 +221,19 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
         existing = _read_store(strict=True)['receipts'].get(item_id)
         if existing is not None:
             return existing
+
+        # A Desk item names its campaign. The campaign must be running and its
+        # CURRENT bounds must still sit inside what a human approved (Start /
+        # Approve / Renew wrote that snapshot; a PATCH cannot). Checked after the
+        # receipt lookup, which is a fact about a post that already went out, and
+        # before any credential or network use. An item with no campaign_id (the
+        # legacy queue) is not a campaign post and is not gated here.
+        campaign_id = item.get('campaign_id')
+        if campaign_id:
+            blockers = _desk.publish_blockers(campaign_id)
+            if blockers:
+                raise PublishError(
+                    f"campaign {campaign_id} is not approved to publish: {'; '.join(blockers)}")
 
         if RECEIPTS_PATH is None:
             # Fail BEFORE any network call -- see module docstring on why this

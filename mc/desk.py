@@ -49,7 +49,7 @@ for the same reason `automation_suggestions` has no code path to the scheduler.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 import difflib
@@ -1284,10 +1284,17 @@ def create_campaign(title: str, thesis: str, *, voice=None, voices=None,
     return camp
 
 
-def update_campaign(campaign_id: str, patch: dict) -> dict | None:
+def update_campaign(campaign_id: str, patch: dict, *, forbid_start: bool = False) -> dict | None:
+    # `approved`, `approvals`, `terms`, `started_at`, `policy_record` are
+    # deliberately NOT here: they are written only by the human-action routes
+    # (`start_campaign`, `approve_campaign`, `renew_campaign`), never by a PATCH.
+    # `forbid_start` (the v1 route sets it) refuses a PATCH that would put a
+    # campaign into `running` without a human approval snapshot on file; the
+    # legacy Desk's "Start it" still activates through a plain PATCH.
     allowed = {'title', 'thesis', 'agenda', 'voice', 'voices', 'project_ids',
                'planned', 'state', 'visual',
-               'project_id', 'subject', 'plan', 'goal', 'term', 'how', 'map'}
+               'project_id', 'subject', 'plan', 'goal', 'term', 'how', 'map',
+               'when', 'answers', 'log'}
     patch = dict(patch or {})
     if 'state' in patch and patch['state'] not in CAMPAIGN_STATES:
         raise ValueError(f"unknown state {patch['state']!r}")
@@ -1315,6 +1322,11 @@ def update_campaign(campaign_id: str, patch: dict) -> dict | None:
         prev_bounds = (camp.get('approval') or {}).get('bounds') or _campaign_bounds(camp)
         prev_hash = (camp.get('approval') or {}).get('bounds_hash') or compute_bounds_hash(prev_bounds)
         prev_state = camp.get('state')
+        if (forbid_start and patch.get('state') == 'running' and prev_state != 'running'
+                and not camp.get('approved')):
+            raise ValueError('a campaign is started with POST /api/desk/campaigns/<id>/start, and '
+                             'one with no approval on file is approved with .../approve (both are '
+                             'human actions), not by changing its state')
         for k, v in (patch or {}).items():
             if k in allowed:
                 camp[k] = v
@@ -1336,6 +1348,211 @@ def update_campaign(campaign_id: str, patch: dict) -> dict | None:
             'bounds_hash': next_bounds_hash(prev_hash, prev_bounds, next_bounds),
         }
         camp['updated_at'] = now_iso()
+        _write_store(store)
+        return camp
+
+
+# -- human approval snapshot (R1-W S2) -----------------------------------------
+#
+# `camp['approval']` (written by create/update above) tracks the CURRENT bounds
+# and a hash that only moves on a widening: it cannot say what a human approved,
+# because an ordinary PATCH rewrites it. `camp['approved']` is the record that
+# can: {bounds, bounds_hash, at, by, term}, written ONLY by `start_campaign`,
+# `approve_campaign` and `renew_campaign`, each reached through a human-only
+# route, and absent from `update_campaign`'s allowlist. The publisher
+# (`mc.desk_publish.publish`, via `publish_blockers`) refuses unless the current
+# bounds still sit inside it. Standing position (desk release policy,
+# 2026-09-23): widening ANY bound voids the approval, and the Desk can never
+# approve or widen its own campaign.
+
+class ApprovalRefused(ValueError):
+    """A human-action route could not do what it was asked. `problems` lists
+    why (the routes answer 409 with them); the message joins them."""
+
+    def __init__(self, message: str, problems=None):
+        super().__init__(message)
+        self.problems = list(problems or [])
+
+
+def _approval_snapshot(camp: dict, *, by: str, at: str | None = None) -> dict:
+    bounds = json.loads(json.dumps(_campaign_bounds(camp)))
+    return {
+        'bounds': bounds,
+        'bounds_hash': compute_bounds_hash(bounds),
+        'at': at or now_iso(),
+        'by': by,
+        'term': (camp.get('term') or {}).get('index') or 1,
+    }
+
+
+def approval_problems(camp: dict) -> list[str]:
+    """Why this campaign's current bounds are NOT covered by a human approval
+    (empty list = covered). Fails closed: a record that is missing, that no
+    longer matches its own hash, or whose bounds cannot be compared with the
+    current ones, all count as not approved."""
+    ap = camp.get('approved')
+    if not isinstance(ap, dict) or not isinstance(ap.get('bounds'), dict):
+        return ['no human approval on file']
+    if compute_bounds_hash(ap['bounds']) != ap.get('bounds_hash'):
+        return ['the approval record does not match its own hash']
+    try:
+        widened = bounds_widen(ap['bounds'], _campaign_bounds(camp))
+    except (ValueError, TypeError):
+        return ['bounds could not be compared with the approved ones']
+    if widened:
+        return ['bounds were widened after the approval; a human must approve again']
+    return []
+
+
+def awaiting_approval(camp: dict) -> bool:
+    """A started campaign whose bounds the human has not approved (never, or
+    since widened). Draft/proposed/over campaigns are not "awaiting": nothing
+    about them can publish."""
+    return camp.get('state') in ('running', 'paused') and bool(approval_problems(camp))
+
+
+def publish_blockers(campaign_id: str) -> list[str]:
+    """What stops the publisher posting for this campaign right now. Empty =
+    clear. Called by `mc.desk_publish.publish` for any item that names its
+    campaign."""
+    with _store_lock:
+        camp = _read_store()['campaigns'].get(campaign_id)
+    if not camp:
+        return [f'campaign {campaign_id!r} not found']
+    if camp.get('state') != 'running':
+        return [f"campaign is {camp.get('state')!r}, not running"]
+    return approval_problems(camp)
+
+
+def _v1_start_problems(camp: dict) -> list[str]:
+    """`_start_gate_problems` plus the plan bounds the v1 client's
+    `validatePlan` requires (a project, an account, a cadence ceiling, an end
+    date or post cap), so a Start that skipped the browser's gate is refused
+    here too."""
+    problems = []
+    plan = camp.get('plan') or {}
+    if not camp.get('project_id'):
+        problems.append('no project')
+    if not plan.get('accounts'):
+        problems.append('no accounts')
+    if (plan.get('cadence') or {}).get('per_week') is None:
+        problems.append('no cadence ceiling')
+    end = plan.get('end') or {}
+    if not end.get('date') and end.get('post_cap') is None:
+        problems.append('no end date or post cap')
+    return problems + _start_gate_problems(camp)
+
+
+def start_campaign(campaign_id: str, *, by: str = 'human', policy_record: dict | None = None,
+                   today: str | None = None) -> dict | None:
+    """Start a draft/proposed campaign: the one place it becomes `running`
+    with a human approval on file. Opens term 1 (today to the plan's end date,
+    unless a term is already set), runs the Start gate on the result, stamps
+    `approved` and appends it to `approvals`. Raises `ApprovalRefused` (and
+    changes nothing) when the campaign is not startable. None if not found.
+    The caller has already established that a human asked for this."""
+    with _store_lock:
+        store = _read_store()
+        camp = store['campaigns'].get(campaign_id)
+        if not camp:
+            return None
+        if camp.get('state') not in ('draft', 'proposed'):
+            raise ApprovalRefused(f"campaign is {camp.get('state')!r}; only a draft or proposed "
+                                  f"campaign can be started")
+        now = now_iso()
+        trial = json.loads(json.dumps(camp))
+        term = trial.get('term') if isinstance(trial.get('term'), dict) else {}
+        if not term.get('starts'):
+            end = (trial.get('plan') or {}).get('end') or {}
+            trial['term'] = {'index': 1, 'starts': today or datetime.now().date().isoformat(),
+                             'ends': end.get('date') or None,
+                             'post_cap': end.get('post_cap')}
+        problems = _v1_start_problems(trial)
+        if problems:
+            raise ApprovalRefused('cannot start: ' + '; '.join(problems), problems)
+        trial['state'] = 'running'
+        trial['started_at'] = now
+        snap = _approval_snapshot(trial, by=by, at=now)
+        trial['approved'] = snap
+        trial['approvals'] = list(trial.get('approvals') or []) + [snap]
+        if isinstance(policy_record, dict):
+            trial['policy_record'] = policy_record
+        trial['updated_at'] = now
+        store['campaigns'][campaign_id] = trial
+        _write_store(store)
+        return trial
+
+
+def approve_campaign(campaign_id: str, *, by: str = 'human') -> dict | None:
+    """The human re-approves the bounds a started campaign now carries (after a
+    widening), replacing the snapshot and appending to `approvals`. Refuses a
+    campaign that has not started (Start is its own route) and bounds that
+    would fail the Start gate. None if not found."""
+    with _store_lock:
+        store = _read_store()
+        camp = store['campaigns'].get(campaign_id)
+        if not camp:
+            return None
+        if camp.get('state') not in ('running', 'paused'):
+            raise ApprovalRefused(f"campaign is {camp.get('state')!r}; only a started campaign "
+                                  f"is approved again (a new one is started)")
+        problems = _v1_start_problems(camp)
+        if problems:
+            raise ApprovalRefused('cannot approve: ' + '; '.join(problems), problems)
+        snap = _approval_snapshot(camp, by=by)
+        camp['approved'] = snap
+        camp['approvals'] = list(camp.get('approvals') or []) + [snap]
+        camp['updated_at'] = snap['at']
+        _write_store(store)
+        return camp
+
+
+def renew_campaign(campaign_id: str, *, by: str = 'human', today: str | None = None) -> dict | None:
+    """Open the next term of a started campaign whose current term has ended:
+    it starts where the last one ended and runs to the goal deadline or
+    MAX_TERM_DAYS, whichever is sooner, and gets a fresh approval record. Only
+    the TERM may be new relative to the approved bounds: if anything else was
+    widened since, renewing would approve it silently, so that is refused and
+    the human approves it first. None if not found."""
+    with _store_lock:
+        store = _read_store()
+        camp = store['campaigns'].get(campaign_id)
+        if not camp:
+            return None
+        if camp.get('state') not in ('running', 'paused'):
+            raise ApprovalRefused(f"campaign is {camp.get('state')!r}; only a started campaign renews")
+        term = camp.get('term') if isinstance(camp.get('term'), dict) else {}
+        if not term.get('ends'):
+            raise ApprovalRefused('this campaign has no term to renew')
+        today_d = (_parse_term_date(today).date() if today else datetime.now().date())
+        starts = _parse_term_date(term['ends'])
+        if starts.date() > today_d:
+            raise ApprovalRefused(f"term {term.get('index') or 1} has not ended yet "
+                                  f"(ends {str(term['ends'])[:10]})")
+        ap = camp.get('approved')
+        if not isinstance(ap, dict) or not isinstance(ap.get('bounds'), dict):
+            raise ApprovalRefused('no human approval on file to renew; approve the campaign first')
+        try:
+            other_widened = bounds_widen(ap['bounds'], {**_campaign_bounds(camp),
+                                                        'term': ap['bounds'].get('term') or {}})
+        except (ValueError, TypeError):
+            other_widened = True
+        if other_widened:
+            raise ApprovalRefused('bounds other than the term were widened since the last approval; '
+                                  'approve them first, then renew')
+        end_cap = starts + timedelta(days=MAX_TERM_DAYS)
+        deadline = (camp.get('goal') or {}).get('deadline')
+        ends = min(end_cap, _parse_term_date(deadline)) if deadline else end_cap
+        if not ends > starts:
+            raise ApprovalRefused('the goal deadline has passed, so there is no next term to renew')
+        nxt = {'index': (term.get('index') or 1) + 1, 'starts': starts.date().isoformat(),
+               'ends': ends.date().isoformat(), 'post_cap': term.get('post_cap')}
+        camp['terms'] = list(camp.get('terms') or [term]) + [nxt]
+        camp['term'] = nxt
+        snap = _approval_snapshot(camp, by=by)
+        camp['approved'] = snap
+        camp['approvals'] = list(camp.get('approvals') or []) + [snap]
+        camp['updated_at'] = snap['at']
         _write_store(store)
         return camp
 
@@ -1372,6 +1589,14 @@ def v1_campaign(camp: dict) -> dict:
     plan = out.get('plan') if isinstance(out.get('plan'), dict) else {}
     plan['title'] = plan.get('title') or camp.get('title') or ''
     out['plan'] = plan
+    # The client's `camp.approval` is "what a human approved" (it compares it to
+    # the bounds the Brief now holds). The stored `approval` is the legacy
+    # current-bounds tracker an ordinary PATCH rewrites, so a v1 reader gets the
+    # human snapshot under that name, or none, and the server's own verdict.
+    out['approval'] = out.get('approved')
+    out['awaiting_approval'] = awaiting_approval(camp)
+    out['startedAt'] = camp.get('started_at')
+    out['policyRecord'] = camp.get('policy_record')
     return out
 
 

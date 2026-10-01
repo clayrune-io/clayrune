@@ -481,12 +481,55 @@ def update_campaign(campaign_id):
     d = request.get_json(silent=True) or {}
     v1 = _wants_v1()
     try:
-        camp = _desk.update_campaign(campaign_id, _desk.v1_campaign_in(d) if v1 else d)
+        camp = _desk.update_campaign(campaign_id, _desk.v1_campaign_in(d) if v1 else d,
+                                     forbid_start=v1)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     if camp is None:
         return jsonify({'error': 'campaign not found'}), 404
     return jsonify(_desk.v1_campaign(camp) if v1 else camp)
+
+
+# The three human approval actions (R1-W S2; plan M6/M7/M8). Each writes
+# `camp['approved']`, the record the publisher checks, so each is refused for an
+# unattended caller: an agent session may edit a campaign (PATCH) but can never
+# approve, start or widen the approval of one. The answer is always the v1 shape.
+
+def _human_only(action: str):
+    if is_unattended_caller():
+        return jsonify({'error': f'this action needs a human: an unattended agent session '
+                                 f'cannot {action} a campaign'}), 403
+    return None
+
+
+def _approval_action(campaign_id: str, action: str, fn, **kw):
+    refused = _human_only(action)
+    if refused:
+        return refused
+    try:
+        camp = fn(campaign_id, **kw)
+    except _desk.ApprovalRefused as e:
+        return jsonify({'error': str(e), 'problems': e.problems}), 409
+    if camp is None:
+        return jsonify({'error': 'campaign not found'}), 404
+    return jsonify(_desk.v1_campaign(camp))
+
+
+@bp.route('/api/desk/campaigns/<campaign_id>/start', methods=['POST'])
+def start_campaign(campaign_id):
+    d = request.get_json(silent=True) or {}
+    return _approval_action(campaign_id, 'start', _desk.start_campaign,
+                            policy_record=d.get('policy_record'))
+
+
+@bp.route('/api/desk/campaigns/<campaign_id>/approve', methods=['POST'])
+def approve_campaign(campaign_id):
+    return _approval_action(campaign_id, 'approve', _desk.approve_campaign)
+
+
+@bp.route('/api/desk/campaigns/<campaign_id>/renew', methods=['POST'])
+def renew_campaign(campaign_id):
+    return _approval_action(campaign_id, 'renew', _desk.renew_campaign)
 
 
 @bp.route('/api/desk/campaigns/<campaign_id>', methods=['DELETE'])

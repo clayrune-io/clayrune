@@ -357,13 +357,20 @@
     wrap.querySelector('[data-sheet-confirm]').onclick = () => { close(); _startCampaign(camp, auth); };
   }
 
+  // R1-W S2: Start is a HUMAN action with its own route. Live, the bounds the sheet
+  // showed are saved, then POST /start has the server open term 1, run the Start
+  // gate and snapshot the approval (the record the publisher checks) and its
+  // answer replaces the optimistic values below. A refusal rolls everything back
+  // and toasts the server's reason. The route has no inverse, so no Undo toast.
   function _startCampaign(camp, auth) {
     const prevState = camp.state;
     const policyRecord = Object.assign({}, auth, { createdAt: new Date().toISOString() });
     const prev = { term: camp.term, terms: camp.terms, approval: camp.approval, approvals: camp.approvals, startedAt: camp.startedAt };
-    DeskV1Kit.commandBus.run({
+    const render = () => { if (typeof window.deskV1Render === 'function') window.deskV1Render(); };
+    window.DeskV1Store.write({
       label: `Started “${camp.plan.title}”`,
-      do: () => {
+      irreversible: true,
+      apply: () => {
         camp.state = 'active'; camp.policyRecord = policyRecord;
         // R2-11 (Launch, Live state): Start opens term 1 (today to the plan's
         // end date, unless a term was already set on When) and records the
@@ -379,12 +386,19 @@
           camp.approval = { bounds, bounds_hash: DeskV1Kit.computeBoundsHash(bounds), at: camp.startedAt, term: camp.term.index || 1 };
           camp.approvals = [camp.approval];
         }
-        if (typeof window.deskV1Render === 'function') window.deskV1Render();
+        render();
       },
-      undo: () => {
+      unapply: () => {
         camp.state = prevState; delete camp.policyRecord;
         Object.keys(prev).forEach((k) => { if (prev[k] === undefined) delete camp[k]; else camp[k] = prev[k]; });
-        if (typeof window.deskV1Render === 'function') window.deskV1Render();
+      },
+      repaint: render,
+      request: async () => {
+        const server = await window.deskV1CampaignAction(camp, 'start',
+          prev.term ? ['plan', 'how', 'goal', 'map', 'term'] : ['plan', 'how', 'goal', 'map'],
+          { policy_record: policyRecord });
+        render();
+        return server;
       },
     });
   }

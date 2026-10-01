@@ -72,6 +72,39 @@
   const _saving = new Map();
   function deskV1AfterCampaignSaved(id) { return _saving.get(id) || Promise.resolve(); }
 
+  // R1-W S2: whole top-level keys of `camp` PATCHed to the server (it replaces each
+  // key it is sent). `camp.how` and `camp.plan.how` are one object in the client
+  // model (desk-v1-how.js) but two after a round trip, so they are re-joined and
+  // go up together; the approval/term bookkeeping is never sent: Start / Approve /
+  // Renew own it. Resolves the v1 campaign the server now holds.
+  function deskV1PatchCampaign(camp, keys) {
+    if (camp.how && camp.plan) camp.plan.how = camp.how;
+    const body = {};
+    (keys || []).forEach((k) => { if (camp[k] !== undefined) body[k] = camp[k]; });
+    return deskV1AfterCampaignSaved(camp.id).then(() => window.DeskV1Store.api(
+      'PATCH', '/api/desk/campaigns/' + encodeURIComponent(camp.id) + '?shape=v1', body));
+  }
+
+  // The state the SERVER decides, copied onto the client's own campaign object
+  // (which the surfaces hold by identity) after a Start / Approve / Renew.
+  function deskV1AdoptServerCampaign(camp, server) {
+    if (!server) return;
+    ['state', 'term', 'terms', 'startedAt', 'approval', 'approvals', 'policyRecord'].forEach((k) => {
+      if (server[k] === undefined || server[k] === null) delete camp[k]; else camp[k] = server[k];
+    });
+  }
+
+  // The POST behind a human approval action (start / approve / renew). The
+  // client's bounds are saved first so the server snapshots what the user was
+  // looking at, then the action runs; the answer is adopted onto `camp`.
+  async function deskV1CampaignAction(camp, action, saveKeys, body) {
+    if (saveKeys && saveKeys.length) await deskV1PatchCampaign(camp, saveKeys);
+    const out = await window.DeskV1Store.api(
+      'POST', '/api/desk/campaigns/' + encodeURIComponent(camp.id) + '/' + action, body || {});
+    deskV1AdoptServerCampaign(camp, out);
+    return out;
+  }
+
   // Pushes `camp` into the store and, live, creates it server-side. Resolves
   // like DeskV1Store.write. `repaint` redraws whatever page the caller is on.
   function deskV1SaveNewDraft(camp, opts) {
@@ -242,5 +275,7 @@
   window.deskV1SaveNewDraft = deskV1SaveNewDraft;
   window.deskV1OpenNewDraft = deskV1OpenNewDraft;
   window.deskV1AfterCampaignSaved = deskV1AfterCampaignSaved;
+  window.deskV1PatchCampaign = deskV1PatchCampaign;
+  window.deskV1CampaignAction = deskV1CampaignAction;
   window.deskV1DiscardIfUntouchedDraft = deskV1DiscardIfUntouchedDraft;
 })();

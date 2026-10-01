@@ -166,15 +166,35 @@
     const pauseBtn = el.querySelector('[data-pause-btn]');
     if (pauseBtn) pauseBtn.onclick = () => {
       if (camp.state !== 'active') return;
-      const prev = camp.state;
-      DeskV1Kit.commandBus.run({
-        label: `Paused “${camp.plan.title}”`,
-        do: () => { camp.state = 'paused'; deskV1FillCampaignSummary(el, params); },
-        undo: () => { camp.state = prev; deskV1FillCampaignSummary(el, params); },
-      });
+      _writeState(camp, `Paused “${camp.plan.title}”`, 'paused', camp.state,
+        { repaint: () => deskV1FillCampaignSummary(el, params) });
     };
     const resumeBtn = el.querySelector('[data-resume-btn]');
     if (resumeBtn) resumeBtn.onclick = () => _openResumeSheet(camp, el, params);
+  }
+
+  // R1-W S2: a plain state change (pause / resume / archive / restore) as one
+  // DeskV1Store.write — optimistic, the PATCH, a rollback + the server's own
+  // reason on a refusal — and undone by PATCHing the previous state back. Resume
+  // is refused server-side for a campaign with no human approval on file.
+  function _writeState(camp, label, nextState, prevState, extra) {
+    extra = extra || {};
+    const patch = (state) => () => {
+      if (!DeskV1Store.live()) return Promise.resolve(null);
+      return window.deskV1AfterCampaignSaved(camp.id).then(() => DeskV1Store.api(
+        'PATCH', '/api/desk/campaigns/' + encodeURIComponent(camp.id) + '?shape=v1', { state }));
+    };
+    // extra.repaint(applied): applied is true once the change is in, false after
+    // an Undo or a refusal put the previous state back.
+    const repaint = () => { if (extra.repaint) extra.repaint(camp.state === nextState); };
+    DeskV1Store.write({
+      label,
+      apply: () => { camp.state = nextState; if (extra.apply) extra.apply(); repaint(); },
+      unapply: () => { camp.state = prevState; if (extra.unapply) extra.unapply(); },
+      repaint,
+      request: patch(nextState),
+      undoRequest: patch(prevState),
+    });
   }
 
   // ── Pause / Resume (§6.2) ──────────────────────────────────────────────
@@ -236,12 +256,7 @@
           DeskV1Kit.toast(`Can’t resume “${camp.plan.title}” — ${reason}. Fix it, then resume.`);
           return;
         }
-        const prev = camp.state;
-        DeskV1Kit.commandBus.run({
-          label: `Resumed “${camp.plan.title}”`,
-          do: () => { camp.state = 'active'; repaint(); },
-          undo: () => { camp.state = prev; repaint(); },
-        });
+        _writeState(camp, `Resumed “${camp.plan.title}”`, 'active', camp.state, { repaint });
       },
     });
   }
@@ -317,10 +332,10 @@
   // has expired, so the field has to outlive it.
   function _archiveCampaign(camp, onDone) {
     const prevState = camp.state;
-    DeskV1Kit.commandBus.run({
-      label: `Archived “${camp.plan.title}”`,
-      do: () => { camp._preArchiveState = prevState; camp.state = 'archived'; if (onDone) onDone('archived'); },
-      undo: () => { camp.state = prevState; delete camp._preArchiveState; if (onDone) onDone('restored'); },
+    _writeState(camp, `Archived “${camp.plan.title}”`, 'archived', prevState, {
+      apply: () => { camp._preArchiveState = prevState; },
+      unapply: () => { delete camp._preArchiveState; },
+      repaint: (applied) => { if (onDone) onDone(applied ? 'archived' : 'restored'); },
     });
   }
 
@@ -330,10 +345,10 @@
   // assuming "active" — an archived Paused campaign restores to Paused.
   function _restoreCampaign(camp, onDone) {
     const restoredState = camp._preArchiveState || 'active';
-    DeskV1Kit.commandBus.run({
-      label: `Restored “${camp.plan.title}”`,
-      do: () => { camp.state = restoredState; delete camp._preArchiveState; if (onDone) onDone('restored'); },
-      undo: () => { camp._preArchiveState = restoredState; camp.state = 'archived'; if (onDone) onDone('archived'); },
+    _writeState(camp, `Restored “${camp.plan.title}”`, restoredState, 'archived', {
+      apply: () => { delete camp._preArchiveState; },
+      unapply: () => { camp._preArchiveState = restoredState; },
+      repaint: (applied) => { if (onDone) onDone(applied ? 'restored' : 'archived'); },
     });
   }
   window.deskV1RestoreCampaign = _restoreCampaign;
@@ -766,9 +781,13 @@
     if (!(endMs > startsMs)) { DeskV1Kit.toast('The goal deadline has passed, so there is no next term to renew.'); return; }
     const iso = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
     const next = { index: (prevTerm.index || 1) + 1, starts: iso(startsMs), ends: iso(endMs), post_cap: prevTerm.post_cap != null ? prevTerm.post_cap : null };
-    DeskV1Kit.commandBus.run({
+    // R1-W S2: Renew is a human action with its own route; the server opens the
+    // term and records the new approval, and its answer replaces the optimistic
+    // values. No inverse route, so no Undo toast.
+    DeskV1Store.write({
       label: `Renewed “${camp.plan.title}”: term ${next.index}`,
-      do: () => {
+      irreversible: true,
+      apply: () => {
         camp.terms = (prevTerms && prevTerms.length ? prevTerms : [prevTerm]).concat([next]);
         camp.term = next;
         const bounds = _currentBounds(camp);
@@ -778,7 +797,35 @@
         camp.approvals = (prevApprovals || (prevApproval ? [prevApproval] : [])).concat([camp.approval]);
         repaint();
       },
-      undo: () => { camp.term = prevTerm; camp.terms = prevTerms; camp.approval = prevApproval; camp.approvals = prevApprovals; repaint(); },
+      unapply: () => { camp.term = prevTerm; camp.terms = prevTerms; camp.approval = prevApproval; camp.approvals = prevApprovals; },
+      repaint,
+      request: async () => { const out = await window.deskV1CampaignAction(camp, 'renew'); repaint(); return out; },
+    });
+  }
+
+  // R1-W S2: the human re-approves what a campaign now holds after a widening
+  // (the Launch panel's "Awaiting approval" state). The server snapshots the
+  // bounds it has, so the client's are saved first; nothing but this button (and
+  // Start / Renew) writes the approval the publisher checks. No inverse route.
+  function _approveBounds(camp, repaint) {
+    const prevApproval = camp.approval;
+    const prevApprovals = camp.approvals;
+    DeskV1Store.write({
+      label: `Approved “${camp.plan.title}”`,
+      irreversible: true,
+      apply: () => {
+        const bounds = _currentBounds(camp);
+        camp.approval = { bounds, bounds_hash: DeskV1Kit.computeBoundsHash(bounds), at: new Date().toISOString(), term: (camp.term && camp.term.index) || 1 };
+        camp.approvals = (prevApprovals || (prevApproval ? [prevApproval] : [])).concat([camp.approval]);
+        repaint();
+      },
+      unapply: () => { camp.approval = prevApproval; camp.approvals = prevApprovals; },
+      repaint,
+      request: async () => {
+        const out = await window.deskV1CampaignAction(camp, 'approve', ['plan', 'how', 'goal', 'term']);
+        repaint();
+        return out;
+      },
     });
   }
 
@@ -790,7 +837,16 @@
         <div class="desk-v1-map-launch">
           <div class="desk-v1-map-launch-status desk-v1-map-launch-awaiting">⚠ Awaiting approval</div>
           <div class="desk-v1-stub-inline">A change since the last approval (Brief stop) widens what this campaign can do. An authorized user needs to approve it again before it takes effect.</div>
+          <button type="button" class="desk-v1-map-launch-start" data-approve-bounds>Approve the new bounds</button>
         </div>`;
+      const approveBtn = el.querySelector('[data-approve-bounds]');
+      if (approveBtn) approveBtn.onclick = () => _approveBounds(camp, () => {
+        _renderLaunchPanel(el, params, camp);
+        const summaryEl = document.getElementById('desk-v1-camp-summary');
+        if (summaryEl) deskV1FillCampaignSummary(summaryEl, params);
+        const stripEl = document.getElementById('desk-v1-camp-tabstrip');
+        if (stripEl) deskV1FillCampaignTabStrip(stripEl, params);
+      });
       return;
     }
     const project = _project(camp.projectId);
@@ -891,12 +947,7 @@
     const pauseBtn = el.querySelector('[data-launch-pause]');
     if (pauseBtn) pauseBtn.onclick = () => {
       if (camp.state !== 'active') return;
-      const prev = camp.state;
-      DeskV1Kit.commandBus.run({
-        label: `Paused “${camp.plan.title}”`,
-        do: () => { camp.state = 'paused'; repaint(); },
-        undo: () => { camp.state = prev; repaint(); },
-      });
+      _writeState(camp, `Paused “${camp.plan.title}”`, 'paused', camp.state, { repaint });
     };
     const resumeBtn = el.querySelector('[data-launch-resume]');
     if (resumeBtn) resumeBtn.onclick = () => _openResumeSheet(camp, document.getElementById('desk-v1-camp-summary'), params, repaint);
