@@ -57,6 +57,24 @@ setTimeout(() => { _checkServerRestart(); }, 1500);
 // conversations). Shutdown shows a terminal "powered off" overlay — no respawn.
 // ── Update Clayrune (Settings → Server → Update) ──────────────────────────
 
+const _MAC_FALLBACK_TEXT = {
+  translocated: 'Clayrune is running from a temporary macOS location, so it cannot replace itself. Move it to Applications and reopen it, or download the new build.',
+  parent_not_writable: 'Clayrune cannot write to the folder it is installed in. Download the new build and replace the app yourself.',
+  no_bundle: 'Could not locate the running app. Download the new build and replace it yourself.',
+};
+
+// A failed swap rolls back silently from the user's side (the old app just
+// reopens), so surface the helper's last result for a day after it ran.
+async function _showLastMacUpdateResult(hint) {
+  try {
+    const snap = await (await fetch(API_BASE + '/api/system/update/progress')).json();
+    const r = snap.last_result;
+    if (!r || r.status === 'updated' || !r.ts || (Date.now() / 1000 - r.ts) > 86400) return;
+    hint.innerHTML += `<div style="font-size:12px;margin-top:6px;color:var(--red-text,#ef4444)">` +
+      `The last update attempt did not complete: ${esc(r.reason || r.status)}.</div>`;
+  } catch (_) { /* cosmetic */ }
+}
+
 async function refreshUpdateStatus() {
   const hint = document.getElementById('update-status-hint');
   const btn = document.getElementById('update-btn');
@@ -88,12 +106,23 @@ async function refreshUpdateStatus() {
     if (data.frozen) {
       btn.dataset.frozen = '1';
       btn.dataset.downloadUrl = data.download_url || '';
+      // MC-1026: an install that can replace itself updates in place; every
+      // other frozen install keeps the download link, with the reason shown.
+      if (data.in_place_update) btn.dataset.inPlace = '1'; else delete btn.dataset.inPlace;
       const builtLine = data.built_at ? ` <span style="opacity:.6">(built ${esc(data.built_at)})</span>` : '';
-      if (data.update_available) {
+      if (data.update_available && data.in_place_update) {
         hint.innerHTML =
           `<div style="font-size:12px;margin-bottom:4px"><strong>A new Mac build is available</strong>` +
           `${data.release_tag ? ' — ' + esc(data.release_tag) : ''}</div>` +
-          `<div style="font-size:12px;color:var(--text-dim)">Quit Clayrune, download the new build, and replace the app in Applications.</div>`;
+          `<div style="font-size:12px;color:var(--text-dim)">Clayrune will download it, verify the Apple signature, and restart into it. If the new version does not start, the current one is restored.</div>`;
+        btn.disabled = false;
+        btn.textContent = 'Update now';
+      } else if (data.update_available) {
+        const why = _MAC_FALLBACK_TEXT[data.in_place_blocker] || '';
+        hint.innerHTML =
+          `<div style="font-size:12px;margin-bottom:4px"><strong>A new Mac build is available</strong>` +
+          `${data.release_tag ? ' — ' + esc(data.release_tag) : ''}</div>` +
+          `<div style="font-size:12px;color:var(--text-dim)">${why ? esc(why) : 'Quit Clayrune, download the new build, and replace the app in Applications.'}</div>`;
         btn.disabled = false;
         btn.textContent = 'Download update';
       } else if (data.message) {
@@ -105,6 +134,7 @@ async function refreshUpdateStatus() {
         btn.disabled = true;
         btn.textContent = 'Up to date';
       }
+      _showLastMacUpdateResult(hint);
       return;
     }
     delete btn.dataset.frozen;
@@ -167,6 +197,9 @@ async function performClayruneUpdate() {
   // openExternal (not window.open) — pywebview on macOS silently drops a
   // script-invoked window.open() for external URLs; see its definition in
   // index.html for why.
+  if (btn.dataset.frozen === '1' && btn.dataset.inPlace === '1') {
+    return performInPlaceMacUpdate(btn, hint);
+  }
   if (btn.dataset.frozen === '1') {
     if (btn.dataset.downloadUrl) {
       openExternal(btn.dataset.downloadUrl);
@@ -204,6 +237,88 @@ async function performClayruneUpdate() {
     hint.textContent = 'Update error: ' + (e.message || e);
     btn.textContent = 'Failed';
   }
+}
+
+// MC-1026: frozen Mac .app updates itself. The server does download -> verify
+// -> swap in a background job; we poll its state, then wait for the new
+// process (the job record resets to idle in a fresh process) and reload.
+const _MAC_UPDATE_LABELS = {
+  downloading: 'Downloading the update',
+  extracting: 'Unpacking',
+  verifying: 'Verifying the Apple signature and notarization',
+  restarting: 'Restarting Clayrune',
+};
+
+async function performInPlaceMacUpdate(btn, hint) {
+  let force = false;
+  let note = '';
+  try {
+    const b = await (await fetch(API_BASE + '/api/system/restart/status')).json();
+    const n = (b.active_sessions || []).length + (b.active_hiveminds || []).length;
+    if (n) { force = true; note = `\n\n${n} running agent session${n === 1 ? '' : 's'} will be stopped.`; }
+  } catch (_) { /* the server re-checks and answers 409 if it matters */ }
+  if (!confirm('Download the latest Clayrune, verify it, and restart into it? Your data and config are preserved. '
+    + 'If the new version does not start, the current one is restored.' + note)) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Starting...';
+  const result = await humanProofFetch(API_BASE + '/api/system/update', {
+    method: 'POST',
+    body: JSON.stringify({ force }),
+  }, {
+    title: 'Update Clayrune',
+    description: 'Re-enter your dashboard passcode to download and install the update.',
+  });
+  if (result === null) { btn.disabled = false; btn.textContent = 'Update now'; return; }
+  if (!result.ok || !result.body.ok) {
+    hint.textContent = result.body.message || result.body.error || `Update failed (${result.status})`;
+    btn.textContent = 'Try again';
+    btn.disabled = false;
+    return;
+  }
+
+  const jobStart = result.body.started_at || 0;
+  let idleTicks = 0;
+  const deadline = Date.now() + 6 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 1000));
+    let snap = null;
+    try { snap = await (await fetch(API_BASE + '/api/system/update/progress')).json(); } catch (_) { snap = null; }
+    if (!snap) {  // server is down: it quit for the swap
+      btn.textContent = 'Restarting...';
+      hint.textContent = _MAC_UPDATE_LABELS.restarting + '…';
+      continue;
+    }
+    if (snap.state === 'failed') {
+      hint.textContent = snap.reason || 'Update failed.';  // left on screen: a refresh would replace the reason
+      btn.textContent = 'Try again';
+      btn.disabled = false;
+      return;
+    }
+    if (snap.state && snap.state !== 'idle') {
+      let text = (_MAC_UPDATE_LABELS[snap.state] || snap.state) + '…';
+      if (snap.state === 'downloading' && snap.bytes_total) {
+        text += ` ${Math.round(100 * (snap.bytes_done || 0) / snap.bytes_total)}%`;
+      }
+      hint.textContent = text;
+      btn.textContent = snap.state === 'restarting' ? 'Restarting...' : 'Updating...';
+      continue;
+    }
+    // idle again = a fresh process answered. The swap helper writes its
+    // result a moment after the new app starts; give it a few ticks.
+    const r = snap.last_result;
+    const fresh = r && r.ts && r.ts >= Math.floor(jobStart) - 5;
+    if (fresh && r.status !== 'updated') {
+      hint.textContent = `The update did not complete: ${r.reason || r.status}.`;
+      btn.textContent = 'Try again';
+      btn.disabled = false;
+      return;
+    }
+    if (fresh || ++idleTicks > 10) { location.reload(); return; }
+  }
+  hint.textContent = 'Clayrune did not come back within 6 minutes. Look for Clayrune in Applications and open it.';
+  btn.textContent = 'Try again';
+  btn.disabled = false;
 }
 
 async function performClayruneUpdateWithStash() {

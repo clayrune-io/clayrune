@@ -11,8 +11,8 @@ GET /api/system/loops exposes mc.obs heartbeats.
 """
 
 import json
-import re
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,7 +27,7 @@ from flask import Blueprint, jsonify, request
 
 import mc.agent_runtime as _agent_runtime
 from mc import allowance_state as _allowance_state
-from mc import cli_update, obs, process_sweep, state
+from mc import cli_update, mac_update, obs, process_sweep, state
 from mc.blueprints.terminal_routes import launch_pty_session
 from mc.blueprints.workflow_routes import _is_agent_caller
 from mc.blueprints.secrets_routes import _require_human_passcode
@@ -2165,6 +2165,17 @@ def _fetch_latest_macos_release_info(timeout=8):
         (a.get('browser_download_url') for a in assets if a.get('name') == _MACOS_ZIP_ASSET),
         _MACOS_DOWNLOAD_URL,
     )
+    # Integrity of the zip itself (MC-1026): the in-place updater checks the
+    # download against these. GitHub publishes `digest` ("sha256:<hex>") on
+    # release assets; '' when absent, never invented. They come from the
+    # asset record, not the build manifest, so the manifest cannot vouch for
+    # its own zip.
+    zip_asset = next((a for a in assets if a.get('name') == _MACOS_ZIP_ASSET), None) or {}
+    digest = str(zip_asset.get('digest') or '').strip().lower()
+    m = re.fullmatch(r'sha256:([0-9a-f]{64})', digest)
+    manifest['sha256'] = m.group(1) if m else ''
+    size = zip_asset.get('size')
+    manifest['size'] = size if isinstance(size, int) and size > 0 else None
     return manifest
 
 
@@ -2198,6 +2209,8 @@ def _frozen_update_status(bundled):
         base.update({
             'update_available': False,
             'message': 'Could not reach GitHub to check for updates.',
+            'in_place_update': False,
+            'in_place_blocker': mac_update.GITHUB_UNREACHABLE,
         })
         return base
 
@@ -2216,8 +2229,15 @@ def _frozen_update_status(bundled):
         'release_tag': remote.get('release_tag', ''),
         'release_notes': (remote.get('release_notes', '') or '')[:500],
         'download_url': remote.get('download_url', _MACOS_DOWNLOAD_URL),
+        'sha256': remote.get('sha256', ''),
+        'size': remote.get('size'),
         'update_available': update_available,
     })
+    # Can this install replace itself (MC-1026)? None = yes; else the reason
+    # the UI falls back to the download link. Path checks only, no subprocess.
+    blocker = mac_update.in_place_blocker()
+    base['in_place_update'] = blocker is None
+    base['in_place_blocker'] = blocker or ''
     return base
 
 
@@ -2428,6 +2448,100 @@ def system_update_cached():
     return jsonify(snap)
 
 
+def _frozen_download_fallback(frozen_status, reason=''):
+    """The pre-MC-1026 answer, kept for every install that cannot replace itself."""
+    return jsonify({
+        'ok': False,
+        'frozen': True,
+        'download_required': True,
+        'download_url': frozen_status.get('download_url', _MACOS_DOWNLOAD_URL),
+        'fallback_reason': reason,
+        'message': 'This is a downloaded Mac build, not a git checkout. Quit '
+                   'Clayrune, download the new build, and replace the app in '
+                   'Applications.' + (' ' + mac_update.FALLBACK_MESSAGES[reason]
+                                      if reason and reason != mac_update.NOT_FROZEN_MAC else ''),
+    })
+
+
+def _server_port():
+    try:
+        return int(os.environ.get('MC_PORT') or state.CONFIG.get('port', 5199))
+    except (TypeError, ValueError):
+        return 5199
+
+
+def _frozen_system_update(bundled):
+    """POST /api/system/update for a frozen build (MC-1026).
+
+    Eligible installs (frozen macOS .app, not translocated, parent folder
+    writable) start the background download -> verify -> swap job. Everything
+    else gets the download link, exactly as before. The job is human-only: an
+    agent's curl has no Origin header, and the retyped dashboard passcode (the
+    same guard as the stash branch) is required on top, because Origin alone is
+    forgeable.
+    """
+    frozen_status = _frozen_update_status(bundled)
+    reason = mac_update.in_place_blocker()
+    if reason is None and 'remote_commit' not in frozen_status:
+        reason = mac_update.GITHUB_UNREACHABLE
+    if reason is not None:
+        return _frozen_download_fallback(frozen_status, reason)
+
+    if _is_agent_caller():
+        return jsonify({
+            'error': ('updating the app in place is human-only: an agent must never '
+                      'replace the running Clayrune bundle.'),
+        }), 403
+    data = request.get_json(silent=True) or {}
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
+    if not frozen_status.get('update_available'):
+        return jsonify({'ok': False, 'frozen': True, 'error': 'no_update_available',
+                        'message': 'This build is already the latest release.'}), 409
+
+    force = bool(data.get('force'))
+    blockers = _get_active_restart_blockers()
+    has_blockers = bool(blockers['active_sessions'] or blockers['active_hiveminds'])
+    if has_blockers and not force:
+        return jsonify({'error': 'active flows present; stop them or pass "force": true',
+                        **blockers}), 409
+
+    # Captured now: _quit runs on the job thread, after this request is gone.
+    audit_entry = {
+        'ts': datetime.now(timezone.utc).isoformat(),
+        'source_ip': request.remote_addr or '',
+        'user_agent': request.headers.get('User-Agent', ''),
+        'tunneled': _is_cf_tunneled_request(),
+        'blockers_at_request': blockers,
+        'forced': force,
+        'action': 'mac-self-update',
+    }
+
+    def _quit():
+        _perform_server_shutdown_async(audit_entry)
+
+    def _has_blockers_now():
+        b = _get_active_restart_blockers()
+        return bool(b['active_sessions'] or b['active_hiveminds'])
+
+    started, err = mac_update.start_job(
+        release=frozen_status, port=_server_port(), data_dir=_DATA_ROOT / 'data',
+        quit_fn=_quit, blockers_fn=_has_blockers_now, force=force, log=_log)
+    if not started:
+        return jsonify({'error': err}), 409
+    return jsonify({'ok': True, 'started': True, **mac_update.job_snapshot()}), 202
+
+
+@bp.route('/api/system/update/progress')
+def system_update_progress():
+    """Pollable state of the in-place Mac update job, plus the swap helper's
+    last result (so a rollback is visible after the old app comes back)."""
+    snap = mac_update.job_snapshot()
+    snap['last_result'] = mac_update.read_last_result(_DATA_ROOT / 'data')
+    return jsonify(snap)
+
+
 @bp.route('/api/system/update', methods=['POST'])
 def system_update():
     """Update the install dir to the remote tip. The Settings UI calls this
@@ -2458,16 +2572,7 @@ def system_update():
         if getattr(sys, 'frozen', False):
             bundled = _load_bundled_build_info(repo_root)
             if bundled:
-                frozen_status = _frozen_update_status(bundled)
-                return jsonify({
-                    'ok': False,
-                    'frozen': True,
-                    'download_required': True,
-                    'download_url': frozen_status.get('download_url', _MACOS_DOWNLOAD_URL),
-                    'message': 'This is a downloaded Mac build, not a git checkout. Quit '
-                               'Clayrune, download the new build, and replace the app in '
-                               'Applications.',
-                })
+                return _frozen_system_update(bundled)
         return jsonify({'error': 'install dir is not a git checkout'}), 400
 
     data = request.get_json(silent=True) or {}

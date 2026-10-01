@@ -145,7 +145,19 @@ Secrets needed: `MACOS_CERT_P12_BASE64`, `MACOS_CERT_PASSWORD`,
 
 ---
 
-## Deferred: in-app "Install update" (v2, design only — no code)
+## In-app "Install update" (MC-1026, branch `mac-self-update`, not yet released)
+
+Built in `mc/mac_update.py` + `system_routes._frozen_system_update`. Download
+-> `ditto` extract -> gates (`codesign --verify --deep --strict`, `spctl`
+must say Notarized Developer ID, TeamIdentifier and CFBundleIdentifier equal
+the RUNNING app's) -> graceful quit -> a generated `/bin/sh` helper (written to
+the staging dir at run time, nothing new for the spec to bundle) swaps the
+bundle, reopens it, waits for the new build's own commit on the port and rolls back after ~60s of
+silence. Falls back to the download link when translocated, parent folder not
+writable, or not a frozen mac. Human-only (passcode + no agent caller). Not yet
+exercised on a real Mac. The v2 design notes below are kept for the rationale.
+
+### Original v2 design sketch
 
 Today "Check for updates" (v1, shipped 2026-09-14) gets a Mac user as far as
 a **Download** button that opens `Clayrune-macOS.zip`'s URL in the system

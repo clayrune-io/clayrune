@@ -6,6 +6,20 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-01] — Mac app updates itself in place (MC-1026 0a1cf8c2)
+
+- Frozen macOS `Clayrune.app`: `POST /api/system/update` now starts a background
+  job (poll `GET /api/system/update/progress`) that downloads the release zip,
+  extracts it with `ditto`, and replaces nothing until `codesign --verify
+  --deep --strict`, `spctl` (Notarized Developer ID), TeamIdentifier and
+  CFBundleIdentifier of the new bundle all match the running app.
+- A detached shell helper swaps the bundle after the app quits through its
+  normal path, reopens it, and restores the old bundle if the new one does not
+  answer within ~60s.
+- Translocated, read-only-parent and non-frozen installs keep the download link.
+  Human-only: agent callers get 403, passcode required.
+- Not yet run on a real Mac.
+
 ## [2026-10-01] — Pop Out opens the conversation in a real window (MC-1027 4889bdce)
 
 - The chat header's **Pop Out** now opens that conversation in its own window
