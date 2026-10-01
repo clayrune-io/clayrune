@@ -823,6 +823,13 @@ function _renderProviderRow(p, opts) {
   if (installed && p.version) {
     bits.push((/^\d/.test(String(p.version).trim()) ? 'v' : '') + esc(p.version));
   }
+  // MC-1025: last daily CLI check / auto-update result, from the server's
+  // cli_update sidecar. Failures read amber; everything else stays quiet.
+  const cu = installed && p.cli_update && p.cli_update.text ? p.cli_update : null;
+  if (cu) {
+    const warn = ['update_failed', 'update_no_change', 'unknown_install_method', 'updater_unavailable', 'version_unreadable', 'check_error'].includes(cu.status);
+    bits.push(`<span class="prov-cli-update" data-status="${esc(cu.status)}"${warn ? ' style="color:var(--amber)"' : ''}>${esc(cu.text)}</span>`);
+  }
   if (installed && !authOk && p.auth_error_text) bits.push(esc(String(p.auth_error_text).slice(0, 200)));
   if (!installed && p.install_hint) bits.push(`<span style="font-family:monospace;color:var(--accent)">${esc(p.install_hint)}</span>`);
   const detail = bits.length

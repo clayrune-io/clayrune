@@ -57,7 +57,8 @@ const providers = [
   { name: 'codex', display_name: 'Codex CLI', installed: true, version: '2.1.0', auth_status: 'ok',
     remote_login: true, install_hint: '', capabilities: {}, default: false, in_use: false },
   { name: 'gemini', display_name: 'Gemini CLI', installed: true, version: '0.9.0', auth_status: 'not_logged_in',
-    remote_login: false, install_hint: '', capabilities: { auth_probe_spends_quota: true }, default: false, in_use: false },
+    remote_login: false, install_hint: '', capabilities: { auth_probe_spends_quota: true }, default: false, in_use: false,
+    cli_update: { status: 'update_failed', text: 'Auto-update failed (2026-10-02): npm EACCES' } },
   { name: 'qwen', display_name: 'Qwen Code', installed: false, version: null, auth_status: 'unknown',
     remote_login: false, install_hint: 'npm install -g @qwen-code/qwen-code', capabilities: {}, default: false, in_use: false },
 ];
@@ -282,6 +283,32 @@ try {
     await page.waitForTimeout(50);
   }
   check(calls.put.some(b => b.default_provider === 'codex'), 'Default radio -> PUT default_provider=codex',
+    `puts: ${JSON.stringify(calls.put)}`);
+
+  // MC-1025: the daily CLI update's last result sits in the row's detail line
+  // (amber when it needs attention), and the section carries the on-by-default
+  // toggle, saved through the same passcode-gated PUT as every other setting.
+  const cliText = await page.textContent(
+    '#settings-providers-section .prov-row[data-provider="gemini"] .prov-cli-update');
+  check(/Auto-update failed.*EACCES/.test(cliText || ''), 'row shows the last CLI auto-update result',
+    `cli-update text: ${cliText}`);
+  check(await page.locator('#settings-providers-section .prov-row[data-provider="codex"] .prov-cli-update').count() === 0,
+    'a row with no check on record shows no CLI-update line');
+  check(await page.locator('#settings-cli-auto-update.on').count() === 1,
+    'CLI auto-update toggle is ON when config has no value (default on)');
+  await page.click('#settings-cli-auto-update');
+  await page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout: 5000 });
+  await page.evaluate(() => {
+    const win = document.querySelector('[data-modal-id^="__human-proof-"]');
+    const modalId = win.dataset.modalId;
+    document.getElementById(`hp-passcode-${modalId}`).value = 'smoke-dash-passcode';
+    window._hpSubmit(modalId);
+  });
+  for (let i = 0; i < 20 && !calls.put.some(b => b.cli_auto_update_enabled === false); i++) {
+    await page.waitForTimeout(50);
+  }
+  check(calls.put.some(b => b.cli_auto_update_enabled === false),
+    'CLI auto-update toggle -> PUT cli_auto_update_enabled=false',
     `puts: ${JSON.stringify(calls.put)}`);
 
   const geminiTitle = await page.getAttribute(
