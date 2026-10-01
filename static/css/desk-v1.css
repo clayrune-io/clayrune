@@ -2790,6 +2790,7 @@
    a scene dragged onto it is deleted. Phone: no gutter, the bin rides the bottom-right corner. */
 .desk-v1-sb-main { display: flex; flex-direction: column; min-width: 0; }
 .desk-v1-sb-listrow { display: flex; align-items: stretch; gap: 10px; min-width: 0; }
+.desk-v1-sb-addrow { display: flex; align-items: center; gap: 10px; margin: 10px 0; color: var(--text-dim); font-size: 12px; }
 .desk-v1-sb-listrow > .desk-v1-sb-scenes { flex: 1 1 auto; min-width: 0; }
 .desk-v1-sb-bin {
   flex: 0 0 48px; position: sticky; bottom: 12px; z-index: 3; align-self: flex-end;

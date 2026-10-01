@@ -45,6 +45,7 @@ from mc import desk_harvest as _harvest
 from mc import desk_pieces as _pieces
 from mc import desk_publish as _publish
 from mc import desk_retro as _retro
+from mc import desk_storyboard as _storyboard
 from mc import desk_tick as _tick
 from mc import desk_voice_seed as _seed
 from mc.blueprints.secrets_routes import _require_human_passcode
@@ -844,6 +845,68 @@ def save_material():
         return jsonify({'error': 'a file is required'}), 400
     return _piece_call(_pieces.save_to_library, f.filename or '', f.stream,
                        title=request.form.get('title') or None, status=201)
+
+
+# ── Storyboards (R1-W S9a = MC-1020; plan M25/M25b) ───────────────────────────
+#
+# One storyboard per video piece (shared by its versions) and one per standalone
+# Studio item. GET answers the stored list (an empty one at rev 0 when there is
+# none yet); PUT replaces the whole list and is guarded by the `rev` the caller
+# last read (a stale one is 409 with the current rev in `problems`). Reversible
+# data writes like every piece route, so an agent may make them. Rendering is NOT
+# here (S9b).
+
+def _storyboard_call(fn, *args, status=200):
+    try:
+        out = fn(*args)
+    except _pieces.PieceError as e:
+        body: dict = {'error': str(e)}
+        if e.problems:
+            body['problems'] = e.problems
+        return jsonify(body), e.status
+    return jsonify(out), status
+
+
+def _storyboard_picture(owner_kind: str, owner_id: str):
+    f = request.files.get('file')
+    if f is None:
+        return jsonify({'error': 'a file is required'}), 400
+    return _storyboard_call(_storyboard.save_picture, owner_kind, owner_id, f.filename or '', f.stream, status=201)
+
+
+@bp.route('/api/desk/pieces/<piece_id>/storyboard', methods=['GET'])
+def get_piece_storyboard(piece_id):
+    return _storyboard_call(_storyboard.get_storyboard, 'piece', piece_id)
+
+
+@bp.route('/api/desk/pieces/<piece_id>/storyboard', methods=['PUT'])
+def put_piece_storyboard(piece_id):
+    return _storyboard_call(_storyboard.put_storyboard, 'piece', piece_id, request.get_json(silent=True))
+
+
+@bp.route('/api/desk/pieces/<piece_id>/storyboard/pictures', methods=['POST'])
+def upload_piece_storyboard_picture(piece_id):
+    return _storyboard_picture('piece', piece_id)
+
+
+@bp.route('/api/desk/studio/storyboards', methods=['GET'])
+def list_studio_storyboards():
+    return jsonify({'storyboards': _storyboard.list_studio_storyboards()})
+
+
+@bp.route('/api/desk/studio/<item_id>/storyboard', methods=['GET'])
+def get_studio_storyboard(item_id):
+    return _storyboard_call(_storyboard.get_storyboard, 'studio', item_id)
+
+
+@bp.route('/api/desk/studio/<item_id>/storyboard', methods=['PUT'])
+def put_studio_storyboard(item_id):
+    return _storyboard_call(_storyboard.put_storyboard, 'studio', item_id, request.get_json(silent=True))
+
+
+@bp.route('/api/desk/studio/<item_id>/storyboard/pictures', methods=['POST'])
+def upload_studio_storyboard_picture(item_id):
+    return _storyboard_picture('studio', item_id)
 
 
 # ── Workspace accounts (R1-W S5; plan M2-M5, §2.C) ────────────────────────────

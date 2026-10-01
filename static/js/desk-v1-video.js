@@ -76,7 +76,35 @@
         brief: '', materials: [], uploadResult: null, connectUrl: '', connectResult: null,
       },
     };
+    if (view === 'director' && _isLive()) _ensureDetail(familyId);
     _renderAll();
+    if (view === 'director') _loadBoard(_st);
+  }
+
+  // Live (R1-W S9a, MC-1020): the director's scenes are the video piece's saved
+  // storyboard. The piece's detail row is created empty and filled from the
+  // server; every scene change goes through _cmd, which PUTs the whole list.
+  // Demo reads the fixture's own row and runs the plain commandBus command.
+  function _isLive() { return window.DeskV1Store.live(); }
+  function _ensureDetail(familyId) {
+    const vd = _fx().videoDetail || (_fx().videoDetail = {});
+    return vd[familyId] || (vd[familyId] = { brief: '', materials: [], scenes: [], pendingEdits: [], jobs: [] });
+  }
+  function _loadBoard(mine) {
+    if (!_isLive() || !mine.familyId) return;
+    const detail = _ensureDetail(mine.familyId);
+    window.DeskV1Store.storyboard.load({ kind: 'piece', id: mine.familyId }, detail).then(() => {
+      if (_st === mine && mine.el.isConnected) _renderAll();
+    }).catch((e) => {
+      if (_st !== mine) return;
+      mine.loadError = e && e.message ? e.message : String(e);
+      if (mine.el.isConnected) _renderAll();
+    });
+  }
+  function _cmd(detail, spec) {
+    const family = _family(_st.familyId);
+    if (!_isLive() || !family) return window.DeskV1Kit.commandBus.run(spec);
+    return window.DeskV1Store.storyboard.command(Object.assign({ owner: { kind: 'piece', id: family.id }, detail, repaint: _renderAll }, spec));
   }
 
   function _renderAll() {
@@ -418,6 +446,8 @@
             ${!canWatchReview ? `<span class="desk-v1-video-watchreason">${reviewCandidate ? 'Render this version before you can review it.' : 'Nothing waiting on review yet.'}</span>` : ''}
           </div>
           <div class="desk-v1-video-scenestrip" id="desk-v1-video-scenestrip">${strip}</div>
+          ${_st.loadError ? `<div class="desk-v1-camp-empty" data-sb-load-error>Could not load this storyboard: ${esc(_st.loadError)}</div>`
+            : (_isLive() ? `<div class="desk-v1-sb-addrow">${(detail.scenes || []).length ? '' : '<span data-sb-no-scenes>No scenes yet. </span>'}<button type="button" class="btn-secondary" data-add-scene>Add scene</button></div>` : '')}
           <div class="desk-v1-video-posy" id="desk-v1-video-posy">${posyHTML}</div>
           ${pendingHTML}
         </div>
@@ -479,6 +509,8 @@
     const renderBtn = el.querySelector('[data-render-btn]');
     if (renderBtn) renderBtn.onclick = () => _startRender(family, detail);
 
+    const addScene = el.querySelector('[data-add-scene]');
+    if (addScene) addScene.onclick = () => _insertScene(detail, (detail.scenes || []).length);
     el.querySelectorAll('[data-insert-at]').forEach((b) => b.onclick = () => _insertScene(detail, parseInt(b.dataset.insertAt, 10)));
     el.querySelectorAll('[data-video-tab]').forEach((b) => b.onclick = () => { _st.tab = b.dataset.videoTab; _renderAll(); });
 
@@ -529,8 +561,32 @@
     const name = window.prompt ? window.prompt('Insert a screenshot as a new scene — name it:', 'New scene') : null;
     if (name == null) return;
     const scene = { id: 'sc-' + Date.now().toString(36), label: name.trim() || 'New scene', durationSec: 3, edited: true };
+    if (!_isLive()) { _commitInsert(detail, index, scene); return; }
+    // Live: the scene's picture is chosen now (it goes to the material library
+    // first); cancelling the chooser inserts the scene with no picture.
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/png,image/jpeg,image/gif,image/webp';
+    input.setAttribute('data-scene-picture-input', '');
+    input.addEventListener('cancel', () => _commitInsert(detail, index, scene));
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0];
+      if (!file) { _commitInsert(detail, index, scene); return; }
+      try {
+        const ref = await window.DeskV1Store.storyboard.uploadPicture({ kind: 'piece', id: _st.familyId }, file);
+        scene.picture = ref;
+        scene.thumb = ref.src || '';
+      } catch (e) {
+        window.DeskV1Kit.toast('The picture was not added: ' + (e && e.message ? e.message : e) + '. The scene is added without one.');
+      }
+      _commitInsert(detail, index, scene);
+    });
+    input.click();
+  }
+
+  function _commitInsert(detail, index, scene) {
     const editLabel = 'Inserted “' + scene.label + '”';
-    window.DeskV1Kit.commandBus.run({
+    _cmd(detail, {
       label: editLabel,
       do: () => { detail.scenes.splice(index, 0, scene); detail.pendingEdits.push({ id: 'pe-' + scene.id, label: editLabel }); _renderAll(); },
       undo: () => {
@@ -597,7 +653,7 @@
     if (fromIdx < 0 || toIdx < 0) return;
     const fromLabel = detail.scenes[fromIdx].label;
     const editLabel = 'Reordered “' + fromLabel + '”';
-    window.DeskV1Kit.commandBus.run({
+    _cmd(detail, {
       label: editLabel,
       do: () => {
         const [moved] = detail.scenes.splice(fromIdx, 1);
@@ -662,7 +718,7 @@
     delete scene._liveDuration;
     if (finalDuration === startDuration) { _renderAll(); return; }
     const editLabel = 'Trimmed “' + scene.label + '” to ' + finalDuration + 's';
-    window.DeskV1Kit.commandBus.run({
+    _cmd(detail, {
       label: editLabel,
       do: () => { scene.durationSec = finalDuration; scene.edited = true; detail.pendingEdits.push({ id: 'pe-trim-' + scene.id + '-' + Date.now(), label: editLabel }); _renderAll(); },
       undo: () => {
