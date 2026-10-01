@@ -1,10 +1,14 @@
 // Desk v1 (MC-977) — T4: Calendar view (frame 12f, docs/desk_v1_r0_plan.md;
 // THE_DESK_V1_UI.md §3.3). Window-bridged module, no `import` (ground rule 1).
 //
-// Fixtures only (R0 has no backend store, no publishing, no spend): a
-// reschedule drag mutates the in-memory DeskV1Fixtures objects directly
-// through DeskV1Kit.commandBus, same "client-side over fixture data with
-// Undo" contract T3 already established for review.
+// A reschedule drag or a slot edit is one DeskV1Store.write: demo mode (flag
+// off) mutates the in-memory DeskV1Fixtures with an Undo toast, same "client-
+// side over fixture data" contract T3 established for review; desk_v1_live ON
+// (R1-W S6) also saves it, a version's time through PATCH
+// /api/desk/pieces/<id>/versions/<vid> {scheduled_at} (M18) and a campaign's
+// slots through PATCH /api/desk/campaigns/<id>?shape=v1 {when}, rolling back
+// with the server's reason on a refusal. Setting a time is never approval: the
+// only `state` this file ever sends is `needs_review`, to withdraw one.
 //
 // Reached today via `deskV1Nav('calendar', {campaignId})` (desk-v1-shell.js's
 // pre-registered route, T0a) — that IS "a way to mount it directly" while
@@ -20,6 +24,32 @@
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id) || null; }
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id) || null; }
   function _project(id) { return (_fx().projects || []).find((p) => p.id === id) || null; }
+  function _live() { return window.DeskV1Store.live(); }
+  function _api(method, url, body) { return window.DeskV1Store.api(method, url, body); }
+  function _toast(msg) { if (window.DeskV1Kit && window.DeskV1Kit.toast) window.DeskV1Kit.toast(msg); }
+  function _versionUrl(pieceId, versionId) {
+    return '/api/desk/pieces/' + encodeURIComponent(pieceId) + '/versions/' + encodeURIComponent(versionId);
+  }
+  // Two quick drags of one version must reach the server in the order they were
+  // made, and wait for a piece What is still saving (the same chain What uses).
+  function _queuePiece(pieceId, fn) {
+    return typeof window.deskV1QueuePiece === 'function' ? window.deskV1QueuePiece(pieceId, fn) : fn();
+  }
+  // `campaign.when` goes to the server whole (PATCH replaces it), so the body is
+  // read when the request RUNS, after any earlier slot write has settled or been
+  // rolled back. A campaign still being saved is waited for.
+  const _whenChain = {};
+  function _saveWhen(campaign) {
+    const after = _whenChain[campaign.id] || Promise.resolve();
+    const run = () => {
+      const saved = typeof window.deskV1AfterCampaignSaved === 'function' ? window.deskV1AfterCampaignSaved(campaign.id) : Promise.resolve();
+      return saved.then(() => _api('PATCH', '/api/desk/campaigns/' + encodeURIComponent(campaign.id) + '?shape=v1',
+        { when: JSON.parse(JSON.stringify(campaign.when || { slots: [] })) }));
+    };
+    const p = after.then(run);
+    _whenChain[campaign.id] = p.catch(() => {});
+    return p;
+  }
   function _findFamilyVersion(versionId) {
     for (const fam of (_fx().families || [])) {
       const v = (fam.versions || []).find((x) => x.id === versionId);
@@ -240,10 +270,13 @@
     const reason = _slotRefusal(at, campaign, project);
     if (reason) { _showSlotRefusal(el, reason); return; }
     const slot = { id: 'slot-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7), at: at.toISOString(), origin: 'user' };
-    window.DeskV1Kit.commandBus.run({
+    window.DeskV1Store.write({
       label: `Added your slot ${new Intl.DateTimeFormat(undefined, { timeZone: _userTz(), weekday: 'short', month: 'short', day: 'numeric' }).format(at)} · ${_fmtTime(at)}`,
-      do: () => { _clearSlotRefusal(el); _ownSlots(campaign).push(slot); _render(campaign); },
-      undo: () => { const arr = _ownSlots(campaign); const i = arr.findIndex((s) => s.id === slot.id); if (i >= 0) arr.splice(i, 1); _render(campaign); },
+      apply: () => { _clearSlotRefusal(el); _ownSlots(campaign).push(slot); _render(campaign); },
+      unapply: () => { const arr = _ownSlots(campaign); const i = arr.findIndex((s) => s.id === slot.id); if (i >= 0) arr.splice(i, 1); },
+      repaint: () => _render(campaign),
+      request: () => _saveWhen(campaign),
+      undoRequest: () => _saveWhen(campaign),
     });
   }
   // Test/Suggest seam: proposes a TIME — fills the first unfilled user slot (or
@@ -265,8 +298,17 @@
       : (placed.find((it) => !taken.has(it.version.id) && !_versionWhen(it.version)) || placed.find((it) => !taken.has(it.version.id)));
     if (!pick) return null;
     const ch = _channel(pick.version.channelId);
+    const prevFilled = target.filled;
     target.filled = { title: pick.family.title, platform: ch ? ch.platform : '', channelId: pick.version.channelId, versionId: pick.version.id };
     if (_mountEl && _state && _state.campaignId === campaignId) _render(campaign);
+    if (_live()) {
+      // Never leave a fill on screen the server does not have.
+      _saveWhen(campaign).catch((e) => {
+        if (prevFilled === undefined) delete target.filled; else target.filled = prevFilled;
+        _toast(`That time was not saved: ${e && e.message ? e.message : e}`);
+        if (_mountEl && _state && _state.campaignId === campaignId) _render(campaign);
+      });
+    }
     return target;
   }
 
@@ -461,10 +503,13 @@
       // an agent slot outside the rules is refused, not accepted.
       const reason = _slotRefusal(new Date(slot.at), campaign, _project(campaign.projectId));
       if (reason) { _showSlotRefusal(el, reason); return; }
-      window.DeskV1Kit.commandBus.run({
+      window.DeskV1Store.write({
         label: `Accepted the suggested slot ${_weekdayShort(new Date(slot.at))} ${_fmtTime(new Date(slot.at))}`,
-        do: () => { _clearSlotRefusal(el); slot.state = 'accepted'; _render(campaign); },
-        undo: () => { slot.state = 'suggested'; _render(campaign); },
+        apply: () => { _clearSlotRefusal(el); slot.state = 'accepted'; _render(campaign); },
+        unapply: () => { slot.state = 'suggested'; },
+        repaint: () => _render(campaign),
+        request: () => _saveWhen(campaign),
+        undoRequest: () => _saveWhen(campaign),
       });
     };
   }
@@ -828,39 +873,71 @@
   // ── reschedule command — the approval-window gate (see _approvalDayKey
   // above), then a commandBus command so it gets the same optimistic update
   // + Undo toast + announcement every other Desk v1 drop already gets. ────
+  // A version handed to a platform can no longer be moved (the server answers
+  // 409, `mc.desk_pieces.SENT_STATES`); live mode says so up front rather than
+  // drawing it moved and rolling back. Demo keeps its fixtures movable.
+  const _SENT_STATES = ['sending', 'submitted', 'verified_published', 'you_reported', 'unknown_outcome', 'failed'];
+  // Returns false only when the change was REFUSED (the caller says so); a user
+  // who cancels the approval prompt chose that, so it is not a failure.
   function _reschedule(found, newWhen, campaign) {
     const { family, version } = found;
+    const live = _live();
+    if (live && _SENT_STATES.includes(version.state)) {
+      _toast(`"${family.title}" is already ${String(version.state).replace(/_/g, ' ')}; its time cannot be changed.`);
+      return false;
+    }
     const priorIso = version.publishedAt || version.publishAt || null;
     const priorSchedule = (_fx().calendarSchedule || {})[version.id];
     const priorState = version.state;
+    const priorApproved = version.approved;
     const approvalKey = _approvalDayKey(version);
     const movingOutsideWindow = approvalKey && approvalKey !== _dayKey(newWhen);
 
     if (movingOutsideWindow) {
       const proceed = window.confirm('Moving this needs approval again — continue?');
-      if (!proceed) return;
+      if (!proceed) return true;
     }
 
-    window.DeskV1Kit.commandBus.run({
-      label: `Moved "${family.title}" to ${_fmtTime(newWhen)} · ${new Intl.DateTimeFormat(undefined, { timeZone: _userTz(), month: 'short', day: 'numeric' }).format(newWhen)}`,
-      do: () => {
+    const label = `Moved "${family.title}" to ${_fmtTime(newWhen)} · ${new Intl.DateTimeFormat(undefined, { timeZone: _userTz(), month: 'short', day: 'numeric' }).format(newWhen)}`;
+    const repaint = () => {
+      _render(campaign);
+      if (typeof window.deskV1PieceRepaint === 'function') window.deskV1PieceRepaint();
+    };
+    // Live, the only fields sent are the time and, when it leaves its approved
+    // day, `needs_review` (withdrawing the approval). It never asks for
+    // `approved` or `scheduled`: the server refuses that on this route and the
+    // approve route is a human action elsewhere.
+    const body = { scheduled_at: newWhen.toISOString() };
+    if (movingOutsideWindow) body.state = 'needs_review';
+    const priorBody = { scheduled_at: live ? (version.publishAt || null) : priorIso };
+    window.DeskV1Store.write({
+      label,
+      apply: () => {
         const iso = newWhen.toISOString();
-        if (version.publishedAt) version.publishedAt = iso;
+        if (live) version.publishAt = iso;
+        else if (version.publishedAt) version.publishedAt = iso;
         else if (version.publishAt) version.publishAt = iso;
         else { window.DeskV1Store.state().calendarSchedule = window.DeskV1Store.state().calendarSchedule || {}; window.DeskV1Store.state().calendarSchedule[version.id] = iso; }
-        if (movingOutsideWindow) version.state = 'needs_review';
-        _render(campaign);
-        if (typeof window.deskV1PieceRepaint === 'function') window.deskV1PieceRepaint();
+        if (movingOutsideWindow) { version.state = 'needs_review'; if (live) version.approved = null; }
+        repaint();
       },
-      undo: () => {
-        if (version.publishedAt) version.publishedAt = priorIso;
+      unapply: () => {
+        if (live) {
+          if (priorBody.scheduled_at) version.publishAt = priorBody.scheduled_at; else delete version.publishAt;
+          version.approved = priorApproved;
+        } else if (version.publishedAt) version.publishedAt = priorIso;
         else if (version.publishAt) version.publishAt = priorIso;
         else if (priorSchedule !== undefined) window.DeskV1Store.state().calendarSchedule[version.id] = priorSchedule;
         version.state = priorState;
-        _render(campaign);
-        if (typeof window.deskV1PieceRepaint === 'function') window.deskV1PieceRepaint();
       },
+      repaint,
+      request: () => _queuePiece(family.id, () => _api('PATCH', _versionUrl(family.id, version.id), body)),
+      undoRequest: () => _queuePiece(family.id, () => _api('PATCH', _versionUrl(family.id, version.id), priorBody)),
+      // A withdrawn approval cannot be restored by this route (only a human
+      // approve can set it), so there is nothing honest for Undo to do.
+      irreversible: movingOutsideWindow ? () => `${label}. Its approval was withdrawn; review it again before it goes out.` : undefined,
     });
+    return true;
   }
 
   // R2-7 (§4.3): the piece page's Versions rows edit a version's publish time
@@ -872,8 +949,7 @@
     if (!found) return false;
     const campaign = (_fx().campaigns || []).find((c) => c.id === found.family.campaignId);
     if (!campaign || isNaN(newWhen)) return false;
-    _reschedule(found, newWhen, campaign);
-    return true;
+    return _reschedule(found, newWhen, campaign);
   }
   function deskV1CalendarVersionWhen(version) { return _versionWhen(version); }
 
