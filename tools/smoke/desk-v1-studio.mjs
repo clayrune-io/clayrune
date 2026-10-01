@@ -328,11 +328,11 @@ async function runImageBodies(browser, tone) {
   const grids = await page.$$eval('[data-online-grid]', (els) => els.length);
   check(accts.join() === 'gdrive,gphotos' && grids === 1, `${tag} connected accounts ${accts.join(', ')}, first one expanded (${grids} grid)`, `${tag} online accounts wrong: ${accts} / ${grids}`);
   const warn = await text(page, '[data-online-unconnected="dropbox"]');
-  const connectDisabled = await page.locator('[data-online-connect="dropbox"]').isDisabled();
-  check(/read access/.test(warn) && /Connect Dropbox/.test(warn) && connectDisabled, `${tag} unconnected Dropbox: read-access warning + disabled "Connect Dropbox"`, `${tag} unconnected card wrong: ${warn} disabled=${connectDisabled}`);
+  const connectEnabled = await page.locator('[data-online-connect="dropbox"]').isEnabled();
+  check(/read access/.test(warn) && /Connect Dropbox/.test(warn) && connectEnabled, `${tag} unconnected Dropbox: read-access warning + "Connect Dropbox" routes to Connections`, `${tag} unconnected card wrong: ${warn} enabled=${connectEnabled}`);
   const dropboxGrid = await page.$$('[data-online-unconnected="dropbox"] img, [data-online-acct="dropbox"]');
   check(dropboxGrid.length === 0, `${tag} an unconnected source never shows a file grid`, `${tag} a file grid rendered for Dropbox`);
-  check(/Preview · not connected/.test(warn) && /backlog item/.test(warn), `${tag} the card names the later ticket (each connector its own backlog item)`, `${tag} no later-ticket line`);
+  check(/Preview · not connected/.test(warn) && /Connections screen/.test(warn), `${tag} the card points at the Connections screen`, `${tag} no Connections pointer`);
   await page.click('[data-online-allows]');
   check(await page.locator('[data-online-scope]').isVisible(), `${tag} "what this allows" expands the scope`, `${tag} scope did not expand`);
   await page.click('[data-online-toggle="gphotos"]');
@@ -375,7 +375,7 @@ async function runVideoBodies(browser, tone) {
   await page.waitForSelector('[data-online]', { timeout: 4000 });
   const accts = await page.$$eval('[data-online-acct]', (els) => els.map((e) => e.dataset.onlineAcct));
   check(accts.join() === 'yt,gdrive', `${tag} video online accounts: ${accts.join(', ')}`, `${tag} video online accounts wrong: ${accts}`);
-  check((await page.$$('[data-online-unconnected="dropbox"]')).length === 1 && await page.locator('[data-online-connect="dropbox"]').isDisabled(), `${tag} unconnected Dropbox is disabled`, `${tag} Dropbox connect enabled`);
+  check((await page.$$('[data-online-unconnected="dropbox"]')).length === 1 && await page.locator('[data-online-connect="dropbox"]').isEnabled(), `${tag} unconnected Dropbox offers Connect`, `${tag} Dropbox connect missing`);
   reportUncaught(pageErrors, tag);
   await ctx.close();
 
