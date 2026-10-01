@@ -46,6 +46,7 @@ import time
 
 from flask import Blueprint, jsonify, request
 
+from mc import proc_kill as _proc_kill
 from mc import secrets_store as vault
 from mc import totp as _totp
 from mc.blueprints import local_auth
@@ -726,7 +727,8 @@ def _kill_process_tree(proc: subprocess.Popen, job_handle=None) -> None:
             _log(f"[secrets] taskkill on server-exec pid {proc.pid} failed: {e}")
     else:
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            if not _proc_kill.kill_tree(proc.pid, signal.SIGKILL):
+                _log(f"[secrets] tree-kill signalled nothing for server-exec pid {proc.pid}")
         except Exception as e:
             _log(f"[secrets] killpg on server-exec pid {proc.pid} failed: {e}")
 
