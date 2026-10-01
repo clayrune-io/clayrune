@@ -563,13 +563,24 @@ if __name__ == '__main__':
 
     if _webview_ok:
         try:
+            # js_api: lets the page's Pop Out button open a real second window
+            # (WKWebView swallows script window.open — see mc/popout_windows.py).
+            from mc.popout_windows import PopoutApi
+            _popout_api = PopoutApi(webview, _port)
             _window = webview.create_window(
                 'Clayrune',
                 url=f'http://127.0.0.1:{_port}',
                 width=1400,
                 height=900,
                 min_size=(900, 600),
+                js_api=_popout_api,
             )
+            # Popped chat windows belong to the main one: closing it ends them
+            # too, instead of leaving the app alive on orphan windows.
+            try:
+                _window.events.closed += _popout_api.close_all
+            except Exception as _e:
+                print(f'[MissionControl] popout cleanup hook unavailable: {_e}')
 
             if _cli_warning:
                 def _show_warning():

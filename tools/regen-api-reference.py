@@ -59,6 +59,7 @@ EXCLUDED_PREFIXES = (
     '/api/guide/',           # UI walkthrough
     '/api/plans/delete',     # UI-only (use a different mechanism)
     '/api/presence',         # passive heartbeat from UI
+    '/api/popout/',          # pop-out window slot registry, UI-only
     '/v1/',                  # remote-access attestation
 )
 

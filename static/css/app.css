@@ -10356,3 +10356,49 @@
     50% { box-shadow: 0 0 0 5px var(--accent-dim), 0 0 26px 6px var(--accent); }
   }
 }
+
+/* ── Pop-out chat window (`/?popout=1&p=..&s=..`, html.mc-popout) ──────────────
+   The chat header's "Pop Out" opens ONE conversation in its own window. The
+   page is the normal SPA with the dashboard chrome removed: everything but the
+   project modal is hidden, and the modal is stretched over the whole window with
+   its header, tab strip, rail and surface cards hidden, leaving the thread and
+   composer. Written to hold at BOTH widths — above 960px the desktop 3-pane
+   (rail hidden here), at or below it the mobile drill-down already showing the
+   thread — so a user dragging the window narrow doesn't land on a different UI.
+   The `!important`s beat the Pages-mode / snapped / persisted-size geometry the
+   modal otherwise carries inline. */
+html.mc-popout .sidebar,
+html.mc-popout .main-area,
+html.mc-popout #claydo-fab,
+html.mc-popout #bottom-tab-bar,
+html.mc-popout #minimized-tray,
+html.mc-popout .minimized-tray,
+html.mc-popout .mobile-inbox-overlay,
+html.mc-popout .mobile-drawer,
+html.mc-popout .mobile-drawer-backdrop,
+html.mc-popout .sys-status-popover { display: none !important; }
+html.mc-popout .modal-layer { z-index: 300; }
+html.mc-popout .modal-window:not([data-modal-id^="__"]) {
+  position: fixed !important;
+  left: 0 !important; top: 0 !important; right: 0 !important; bottom: 0 !important;
+  width: auto !important; height: auto !important;
+  max-width: none !important; max-height: none !important;
+  transform: none !important; filter: none !important;
+}
+html.mc-popout .modal-window:not([data-modal-id^="__"]) > .modal-content {
+  width: 100% !important; height: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important; max-height: none !important;
+  border-radius: 0 !important; border: none !important; box-shadow: none !important;
+  resize: none !important;
+}
+html.mc-popout .modal-window:not([data-modal-id^="__"]) > .modal-content::after { display: none; }
+html.mc-popout .modal-window:not([data-modal-id^="__"]) > .modal-content > .modal-header,
+html.mc-popout .modal-window:not([data-modal-id^="__"]) > .modal-content > .card-summary,
+html.mc-popout .modal-window:not([data-modal-id^="__"]) > .modal-content > .modal-tab-bar,
+html.mc-popout .modal-back-to-chat,
+html.mc-popout .agent-panel-header,
+html.mc-popout .agent-rail,
+html.mc-popout .agent-rail-resizer,
+html.mc-popout .agent-surfaces,
+html.mc-popout .btn-popout:not(.btn-chat-search) { display: none !important; }

@@ -789,6 +789,12 @@ function _claimAgentOutputEvent(sessionId, msg) {
 }
 
 function connectAgentStream(projectId, sessionId) {
+  // A popped-out chat window (index.html `window.__mcPopout`) holds ONE live
+  // stream — its own conversation. The 15s running-session poll and other
+  // paths call this for every running session in agentHistory; letting them
+  // through would give each popped window N streams and starve the origin's
+  // 6-connection cap (docs: memory arch_sse_slot_management).
+  if (window.__mcPopout && sessionId !== window.__mcPopout.sid) return;
   if (agentEventSources[sessionId]) {
     agentEventSources[sessionId].close();
   }

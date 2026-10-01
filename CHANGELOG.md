@@ -6,6 +6,22 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-01] — Pop Out opens the conversation in a real window (MC-1027 4889bdce)
+
+- The chat header's **Pop Out** now opens that conversation in its own window
+  (`/?popout=1&p=<project>&s=<session>`: the same SPA, chat-only — thread,
+  composer, images, question cards; no sidebar or floor). The in-app viewer button
+  left the header; `openPlanViewer` stays for Show Plan / plan Review / rich-text.
+- Browser/Tauri: `window.open` named per session, so a second click focuses the
+  existing window. Frozen Mac app: `PopoutApi` (`mc/popout_windows.py`) is the
+  pywebview `js_api` bridge (WKWebView swallows script `window.open`); it builds
+  the URL itself and never takes one from the page.
+- Cap of 4 popped conversations, kept server-side (`/api/popout/claim|release`,
+  `mc/blueprints/popout_routes.py`): heartbeat-held, released on `pagehide`, ages
+  out after 90s. A popped window opens one stream (its own conversation) and
+  skips the main window's open-modal persistence. Hidden at <=960px.
+- Tests: `tests/test_popout_routes.py` (15); smoke `tools/smoke/popout-window.mjs`.
+
 ## [2026-10-01] — Built-in daily agent-CLI update for every install (MC-1025 87caca56)
 
 - New `mc/cli_update.py` + `_cli_update_loop` (hourly tick, per-CLI daily cadence):
