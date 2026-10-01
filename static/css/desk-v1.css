@@ -138,6 +138,9 @@
 .desk-v1-piece-header-top { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
 .desk-v1-piece-kind { font-size: 12px; font-weight: 600; color: var(--text-faint); }
 .desk-v1-piece-title { font-size: 20px; font-weight: 700; color: var(--text); margin: 0; }
+/* Phone/Fold: the crumb bar already carries the piece title on its own line,
+   so the h1 repeated it (Dave, batch-2 review). Desktop keeps the h1. */
+@media (max-width: 960px) { .desk-v1-piece-title { display: none; } }
 .desk-v1-piece-body { flex: 1 1 auto; min-width: 0; overflow-y: auto; }
 .desk-v1-piece-facetbody { display: flex; flex-direction: column; gap: 10px; }
 .desk-v1-piece-facetrow {
