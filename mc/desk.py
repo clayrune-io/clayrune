@@ -1567,6 +1567,222 @@ def delete_campaign(campaign_id: str) -> bool:
         return True
 
 
+# -- Goal: what a v1 client may write, and what the server derives (R1-W S3) ---
+#
+# docs/desk_v1/R1W_WIRING_PLAN.md M11. RULE (MET-01): a number with no data
+# behind it is None, never 0. `goal.current` is therefore never client-writable:
+# it is derived from the dated manual entries (`goal_current`), so a PATCH, a
+# draft body carrying `current: 0`, or a stale stored value cannot make the
+# Desk say "0 of 30" about something nobody measured.
+
+GOAL_HORIZONS = ('short', 'long')
+# `manual` is the one measurement source that exists (IA revision 2 §9 Q1); the
+# automatic feed read is not built, so a PATCH naming any other source is
+# refused rather than stored as a promise nothing keeps.
+GOAL_SOURCES = ('manual',)
+GOAL_WRITABLE = ('metric', 'target', 'baseline', 'unit', 'horizon', 'deadline', 'source', 'entries')
+MAX_GOAL_ENTRIES = 2000
+
+
+def _as_number(value):
+    """`value` as a finite float, or None. bool is not a number here, and a
+    numeric string is accepted (an outcome typed into a form arrives as one);
+    NaN/inf and everything else is None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except ValueError:
+            return None
+    if not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if value == value and value not in (float('inf'), float('-inf')) else None
+
+
+def v1_goal_in(goal) -> dict:
+    """The part of a v1 `goal` body the server will store. Allowlist: only the
+    keys in GOAL_WRITABLE, and only the ones present. Like every other key a v1
+    PATCH names, the result REPLACES the stored goal (the client sends its whole
+    goal). `current` and anything else the client's goal object happens to carry
+    are dropped, not stored. A value of the
+    wrong type raises ValueError (the route answers 400, the client rolls the
+    edit back)."""
+    if goal is None:
+        return {}
+    if not isinstance(goal, dict):
+        raise ValueError('goal must be an object')
+    out: dict = {}
+    for key in ('metric', 'unit'):
+        if key in goal:
+            v = goal[key]
+            if v is not None and not isinstance(v, str):
+                raise ValueError(f'goal.{key} must be text or null')
+            out[key] = (v.strip() or None) if isinstance(v, str) else None
+    for key in ('target', 'baseline'):
+        if key in goal:
+            v = goal[key]
+            if v is not None and (isinstance(v, str) or _as_number(v) is None):
+                raise ValueError(f'goal.{key} must be a number or null')
+            out[key] = v
+    if 'horizon' in goal:
+        if goal['horizon'] is not None and goal['horizon'] not in GOAL_HORIZONS:
+            raise ValueError(f'goal.horizon must be one of {GOAL_HORIZONS} or null')
+        out['horizon'] = goal['horizon']
+    if 'deadline' in goal:
+        d = goal['deadline']
+        if d is not None:
+            try:
+                _parse_term_date(d)
+            except (ValueError, TypeError):
+                raise ValueError('goal.deadline must be an ISO date or null')
+        out['deadline'] = d
+    if 'source' in goal:
+        src = goal['source'] or None
+        if src is not None and src not in GOAL_SOURCES:
+            raise ValueError(f'goal.source must be one of {GOAL_SOURCES} or null')
+        out['source'] = src
+    if 'entries' in goal:
+        entries = [] if goal['entries'] is None else goal['entries']
+        if not isinstance(entries, list) or len(entries) > MAX_GOAL_ENTRIES:
+            raise ValueError(f'goal.entries must be a list of at most {MAX_GOAL_ENTRIES}')
+        clean = []
+        for e in entries:
+            if not isinstance(e, dict):
+                raise ValueError('each goal entry must be {at, value}')
+            value = e.get('value')
+            if isinstance(value, (bool, str)) or _as_number(value) is None:
+                raise ValueError('each goal entry needs a numeric value')
+            try:
+                _parse_term_date(e.get('at'))
+            except (ValueError, TypeError):
+                raise ValueError('each goal entry needs an ISO date in `at`')
+            clean.append({'at': e['at'], 'value': value})
+        out['entries'] = clean
+    return out
+
+
+def _latest_entry(entries, start: datetime | None = None, end: datetime | None = None):
+    """The newest entry by `at`, optionally within [start, end). Ties keep the
+    first listed, the same rule the browser's own reduce uses, so Home and the
+    Goal stop cannot disagree about which entry is current. Entries that cannot
+    be read are skipped, not counted as 0."""
+    best, best_at = None, None
+    for e in entries if isinstance(entries, list) else []:
+        if not isinstance(e, dict) or _as_number(e.get('value')) is None:
+            continue
+        try:
+            at = _parse_term_date(e.get('at'))
+        except (ValueError, TypeError):
+            continue
+        if (start is not None and at < start) or (end is not None and at >= end):
+            continue
+        if best_at is None or at > best_at:
+            best, best_at = e, at
+    return best
+
+
+def goal_current(goal):
+    """Where the goal stands now: the newest manual entry's value, or None when
+    the goal has no measurement source or no entry yet. Never 0 for "no data"."""
+    if not isinstance(goal, dict) or goal.get('source') != 'manual':
+        return None
+    last = _latest_entry(goal.get('entries'))
+    return last['value'] if last else None
+
+
+def _term_window(term) -> tuple[datetime, datetime] | None:
+    """[starts, ends) of a term. A date-only `ends` runs through that day."""
+    if not isinstance(term, dict) or not term.get('starts') or not term.get('ends'):
+        return None
+    try:
+        start, end = _parse_term_date(term['starts']), _parse_term_date(term['ends'])
+    except (ValueError, TypeError):
+        return None
+    if len(str(term['ends']).strip()) <= 10:
+        end += timedelta(days=1)
+    return (start, end) if end > start else None
+
+
+def campaign_results(campaign_id: str, *, now: datetime | None = None) -> dict | None:
+    """M11: how a campaign is doing, read live (None for an unknown campaign).
+
+    `goal.current` is derived (`goal_current`); `terms[]` carries each term's own
+    reading (the newest entry dated inside that term's window, None when there is
+    none); `versions[]` is one row per post in the ledger naming this campaign,
+    with the value of the goal's metric among its recorded outcomes; `costs` is
+    what the ledger recorded. Every figure with nothing behind it is None and
+    says why (`metric_label`: 'delayed' = a measured outcome may still arrive,
+    'n/a' = the goal names no metric to read); no 0 stands in for it. `forecast`
+    is None until current, target and an elapsed share of the term all exist."""
+    now = now or datetime.now(timezone.utc)
+    with _store_lock:
+        store = _read_store()
+        camp = store['campaigns'].get(campaign_id)
+        if not camp:
+            return None
+        camp = json.loads(json.dumps(camp))
+        rows = [json.loads(json.dumps(r)) for r in store['ledger'] if r.get('campaign_id') == campaign_id]
+    goal = camp.get('goal') if isinstance(camp.get('goal'), dict) else {}
+    manual = goal.get('source') == 'manual'
+    current = goal_current(goal)
+    target = _as_number(goal.get('target'))
+    last = _latest_entry(goal.get('entries')) if manual else None
+
+    forecast = None
+    window = _term_window(camp.get('term'))
+    if current is not None and target is not None and target > 0 and window:
+        elapsed = (now - window[0]) / (window[1] - window[0])
+        if elapsed > 0:
+            projected = current / min(elapsed, 1)
+            forecast = {'projected': round(projected, 2), 'target': target,
+                        'label': 'on target' if projected >= target else 'below target'}
+
+    terms_src = camp['terms'] if isinstance(camp.get('terms'), list) and camp['terms'] \
+        else ([camp['term']] if isinstance(camp.get('term'), dict) else [])
+    terms = []
+    for t in terms_src:
+        if not isinstance(t, dict):
+            continue
+        w = _term_window(t)
+        reading = _latest_entry(goal.get('entries'), *w) if (w and manual) else None
+        t_target = _as_number(t.get('target'))
+        terms.append({'index': t.get('index'),
+                      'current': reading['value'] if reading else None,
+                      'target': t_target if t_target is not None else target})
+
+    metric = (goal.get('metric') or '').strip().lower()
+    versions = []
+    for r in sorted(rows, key=lambda r: r.get('published_at') or ''):
+        pick = None
+        for o in r.get('outcomes') or []:
+            if (isinstance(o, dict) and metric and str(o.get('metric') or '').strip().lower() == metric
+                    and _as_number(o.get('value')) is not None
+                    and (pick is None or str(o.get('at') or '') > str(pick.get('at') or ''))):
+                pick = o
+        if pick is not None:
+            versions.append({'version_id': r.get('id'), 'piece_id': r.get('piece_id'),
+                             'outcome': 'measured', 'metric': _as_number(pick['value']),
+                             'metric_label': goal.get('metric')})
+        else:
+            versions.append({'version_id': r.get('id'), 'piece_id': r.get('piece_id'),
+                             'outcome': 'unknown', 'metric': None,
+                             'metric_label': 'delayed' if metric else 'n/a'})
+
+    spend = round(sum(_as_number(r.get('cost')) or 0 for r in rows), 4) if rows else None
+    return {
+        'campaign_id': campaign_id,
+        'goal': {'current': current, 'target': target, 'deadline': goal.get('deadline'),
+                 'source': goal.get('source') or None,
+                 'freshness': last['at'] if last else None},
+        'forecast': forecast,
+        'terms': terms,
+        'versions': versions,
+        'costs': {'ledger': spend},
+    }
+
+
 # -- v1 workspace read model (R1-W S0, docs/desk_v1/R1W_WIRING_PLAN.md M1) ----
 #
 # Desk v1's store (static/js/desk-v1-store.js) reads ONE bootstrap payload. The
@@ -1597,6 +1813,9 @@ def v1_campaign(camp: dict) -> dict:
     out['awaiting_approval'] = awaiting_approval(camp)
     out['startedAt'] = camp.get('started_at')
     out['policyRecord'] = camp.get('policy_record')
+    # `goal.current` is derived, never the stored number (see `goal_current`).
+    if isinstance(out.get('goal'), dict):
+        out['goal']['current'] = goal_current(camp.get('goal'))
     return out
 
 
@@ -1621,6 +1840,8 @@ def v1_campaign_in(body: dict) -> dict:
     for k in _V1_BODY_KEYS:
         if k in body:
             out[k] = body[k]
+    if 'goal' in out:
+        out['goal'] = v1_goal_in(out['goal'])
     if 'state' in out:
         out['state'] = _V1_STATE_IN.get(out['state'], out['state'])
     if 'projectId' in body:
