@@ -18,10 +18,14 @@
   // project/product/feature/target". Two projects (clayrune, engulfing_scanner)
   // so Home's card grid and the Needs-you aggregate have more than one row to
   // prove they're cross-project, not a re-skinned single-campaign fixture.
-  // `presence` carries only the §2.1 fields IA1's stub Presence route needs a
-  // real project record to point at — IA3 builds the settings UI that edits
-  // these; full field set (strategy, production, measurement, visual_default)
-  // is that ticket's own fixture addition, not re-derived here.
+  //
+  // The Presence screen is RETIRED (MC-977 2026-10-01, Ron: one place per
+  // setting). `project.presence` now carries only what no campaign owns: the
+  // project's default planner (`desk_agent`), its pause state and the reply
+  // mode Engagement reads. Accounts are the workspace's (CHANNELS below, edited
+  // on Connections); limits, budget and voice live on each campaign. The
+  // backend presence record still stores the retired fields (nothing is
+  // migrated away), but no fixture models them any more.
   const PROJECTS = [
     {
       id: 'clayrune', name: 'Clayrune', state: 'active',
@@ -32,58 +36,21 @@
       // `global:claydo`. `engulfing_scanner` below has none: the empty case.
       roster: ['global:claydo', 'global:dave'],
       presence: {
-        accounts: [
-          { channel_id: 'ch-x-ron', voice: 'Ron (first person)' },
-          { channel_id: 'ch-li-page', voice: 'Clayrune page' },
-          { channel_id: 'ch-blog', voice: 'Clayrune blog' },
-          // R2-10 (frame 7b SOURCES tray): the second X account and the two
-          // preview-only accounts (§11.6 Q1) the Where board can place.
-          { channel_id: 'ch-x-clayrune', voice: 'Clayrune (company)' },
-          { channel_id: 'ch-yt-clayrune', voice: 'Clayrune channel' },
-          { channel_id: 'ch-discord-community', voice: 'Community server' },
-        ],
-        audience: 'Developers running coding agents',
-        ceilings: {
-          'ch-x-ron': { per_week: 3, min_gap_h: 12 },
-          'ch-li-page': { per_week: 3, min_gap_h: 12 },
-          'ch-blog': { per_week: 3, min_gap_h: 12 },
-          'ch-x-clayrune': { per_week: 3, min_gap_h: 12 },
-          'ch-yt-clayrune': { per_week: 3, min_gap_h: 12 },
-          'ch-discord-community': { per_week: 3, min_gap_h: 12 },
-        },
         replies: 'drafts',
-        // IA revision 2 §5.3: who plans and writes for this project, asked
-        // once in step 0 (R2-5, not built by this ticket — this fixture
-        // just demonstrates a resolved pick). `global:claydo` is a shipped
+        // IA revision 2 §5.3: who plans and writes for this project by default
+        // (a campaign's own `how.agent` wins). `global:claydo` is a shipped
         // default character, never the hardcoded, user-hired-only
         // `social-media-strategist` §5.3 flags as unsafe on a fresh install.
         desk_agent: 'global:claydo',
-        // §5.2: renamed from `production` — `amount` is the per-period pool
-        // covering both production AND publishing; `per_job`/`kinds` stay as
-        // safety caps, not money pools. $100/month here is the fixture's
-        // project remaining-budget case (R2-1 acceptance: a $120 earmark
-        // against this project is short by $20).
-        budget: { amount: 100, period: 'month', per_job: 20, kinds: [] },
-        // §5.3: measurement entries gain `kind: 'manual'` (the user types
-        // the current number; dated) — the only kind that exists today.
-        measurement: [{ event: 'tester signups', source: 'manual count', kind: 'manual', at: '2026-09-24T18:00:00Z', value: 11 }],
       },
     },
-    // K1: @ron on X is a workspace asset shared across projects, never
-    // duplicated per project — this project's own accounts[] reuses the SAME
-    // ch-x-ron id the clayrune project above also binds, at its own ceiling.
     {
       id: 'engulfing_scanner', name: 'Engulfing scanner', state: 'active',
       roster: [],
       presence: {
-        accounts: [{ channel_id: 'ch-x-ron', voice: 'Ron (first person)' }],
-        audience: 'Day traders evaluating signal tools',
-        ceilings: { 'ch-x-ron': { per_week: 2, min_gap_h: 12 } },
         replies: 'drafts',
         // desk_agent deliberately absent — demonstrates R2-5's "unresolvable
         // agent" fallback case (no pick made yet), unlike clayrune above.
-        budget: { amount: 40, period: 'month', per_job: 20, kinds: [] },
-        measurement: [],
       },
     },
   ];
@@ -156,13 +123,11 @@
       // which reads `plan`, not `rules`/`goal`. `end.date` matches
       // `goal.deadline` since this campaign has always run to its goal date.
       // IA2 §3: the fixture's `name` field retired (row 2, `plan.title` is
-      // the only copy); the per-campaign channel-id list retired (row 6,
-      // replaced by `plan.accounts`, a subset of the project's own
-      // `presence.accounts` — camp-1 uses all 3); `source_projects` retired
-      // (row 14, owner is the parent project, implicit); destination voice
-      // moved to `project.accounts[].voice` (row 20) so `plan.accounts` is
-      // bare channel ids; `cadence.min_gap_h`
-      // moved to the project's own `presence.ceilings` (row 22).
+      // the only copy); `plan.accounts` is bare workspace channel ids;
+      // `source_projects` retired (row 14, owner is the parent project,
+      // implicit). Presence retired (2026-10-01): the campaign owns its limits
+      // again (`cadence.per_week` + `min_gap_h`, `end`, `how.budget`) and its
+      // voices (`plan.voices`, falling back to each channel's own `voice`).
       plan: {
         brief: 'Windows users trying Claude Code should hear about the beta and sign up as testers.',
         title: 'Windows beta testers',
@@ -173,7 +138,7 @@
         // copy now; `how` itself is the SAME object as `campaign.how` above.
         how: _CAMP1_HOW,
         samples: [],
-        cadence: { per_week: 3 },
+        cadence: { per_week: 3, min_gap_h: 12 },
         end: { date: '2026-10-20', post_cap: null },
         replies: 'drafts',
         paid: false,
@@ -189,7 +154,7 @@
       approval: {
         bounds: {
           accounts: ['ch-x-ron', 'ch-li-page', 'ch-blog'],
-          cadence: { per_week: 3 },
+          cadence: { per_week: 3, min_gap_h: 12 },
           end: { date: '2026-10-20', post_cap: null },
           term: { ends: '2026-10-20' },
           budget: { source: 'none' },
@@ -214,27 +179,31 @@
     // every badge, including "Clayrune blog" below, which deliberately has
     // no platform glyph to space from).
     { id: 'ch-x-ron', platform: 'x', identity: '@ron', label: '𝕏 · @ron',
-      capability: 'direct', health: 'ok' },
+      capability: 'direct', health: 'ok', voice: 'Ron (first person)' },
     // "in · Clayrune page direct + held" (ground rule 3): its normal
     // capability is direct, but it is CURRENTLY held — the Home/campaign
     // Needs-you hold and the A13 worker-offline check both read this.
     { id: 'ch-li-page', platform: 'linkedin', identity: 'Clayrune page', label: 'in · Clayrune page',
-      capability: 'direct', health: 'held', holdReason: 'LinkedIn page disconnected' },
+      capability: 'direct', health: 'held', holdReason: 'LinkedIn page disconnected', voice: 'Clayrune page' },
     { id: 'ch-blog', platform: 'blog', identity: 'Clayrune blog', label: 'Clayrune blog',
-      capability: 'manual', health: 'ok' },
+      capability: 'manual', health: 'ok', voice: 'Clayrune blog' },
     // R2-10 (frame 7b SOURCES tray; §11.6 Q1 — Ron 2026-09-29: build the
     // tiles and placeholders so the mocked-up view is there). The second X
     // account is a real publishing account like @ron. `preview: true` marks
     // the accounts that render, drag, drop and remove like any other but
     // never publish, read or authenticate (v1 PUBLISHES to X + LinkedIn
     // only); `connected: false` is the one card the tray shows as
-    // `not connected · Connect ›` (→ Presence) and cannot be dragged.
+    // `not connected · Connect ›` (→ the Connections screen) and cannot be
+    // dragged. `voice` is the account's default voice (a workspace asset); a
+    // campaign overrides it in `plan.voices`. `read_via` / `browser_profile`
+    // (X + LinkedIn only) are edited on Connections; absent = the free
+    // browser pane.
     { id: 'ch-x-clayrune', platform: 'x', identity: '@clayrune', label: '𝕏 · @clayrune',
-      capability: 'direct', health: 'ok' },
+      capability: 'direct', health: 'ok', voice: 'Clayrune (company)' },
     { id: 'ch-yt-clayrune', platform: 'youtube', identity: 'Clayrune', label: '▶ · Clayrune',
-      capability: 'manual', health: 'ok', preview: true },
+      capability: 'manual', health: 'ok', preview: true, voice: 'Clayrune channel' },
     { id: 'ch-discord-community', platform: 'discord', identity: 'Community', label: 'Discord · Community',
-      capability: 'manual', health: 'ok', preview: true },
+      capability: 'manual', health: 'ok', preview: true, voice: 'Community server' },
     { id: 'ch-reddit', platform: 'reddit', identity: 'Reddit', label: 'Reddit',
       capability: 'manual', health: 'ok', preview: true, connected: false },
   ];
@@ -767,7 +736,7 @@
       accounts: ['ch-x-ron', 'ch-li-page'],
       angle: 'Frame restore points as the cheap insurance that makes trying agent changes low-risk.',
       samples: [],
-      cadence: { per_week: 2 },
+      cadence: { per_week: 2, min_gap_h: 12 },
       end: { date: '2026-10-20', post_cap: null },
       replies: 'drafts',
       paid: false,
@@ -846,7 +815,7 @@
       accounts: ['ch-x-ron'],
       angle: 'Show one real scanned setup end to end, from alert to outcome.',
       samples: [],
-      cadence: { per_week: 2 },
+      cadence: { per_week: 2, min_gap_h: 12 },
       end: { date: '2026-10-31', post_cap: null },
       replies: 'drafts',
       paid: false,
@@ -904,7 +873,7 @@
       accounts: ['ch-x-ron'],
       angle: 'Announce the Discord and invite people in.',
       samples: [],
-      cadence: { per_week: 2 },
+      cadence: { per_week: 2, min_gap_h: 12 },
       end: { date: '2026-11-15', post_cap: null },
       replies: 'drafts',
       paid: false,
@@ -951,7 +920,7 @@
       accounts: ['ch-x-ron'],
       angle: 'Show the wizard fixing a real broken import.',
       samples: [],
-      cadence: { per_week: 2 },
+      cadence: { per_week: 2, min_gap_h: 12 },
       end: { date: '2026-08-01', post_cap: null },
       replies: 'drafts',
       paid: false,

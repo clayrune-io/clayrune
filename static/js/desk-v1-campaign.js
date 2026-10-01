@@ -624,17 +624,13 @@
     if (!project) {
       extra.push({ bound: 'project', stop: 'launch', label: 'Project', detail: 'pick one' });
     } else {
+      // Accounts are the workspace's (Connections screen), not a per-project
+      // list: the only thing that can be wrong with a placed account is that
+      // it is not connected.
       const plan = camp.plan || {};
-      const presence = project.presence || {};
-      const connected = (presence.accounts || []).map((a) => a.channel_id);
-      const offProject = (plan.accounts || []).filter((id) => !connected.includes(id));
-      if (offProject.length) {
-        extra.push({ bound: 'accounts', stop: 'where', label: 'accounts', detail: `${offProject.map((id) => (_channel(id) || {}).label || id).join(', ')} not connected to ${project.name}` });
-      }
-      const perWeek = plan.cadence && plan.cadence.per_week;
-      const eff = planResult.effective || {};
-      if (perWeek != null && eff.cadence_from_project && eff.cadence_per_week != null && perWeek > eff.cadence_per_week) {
-        extra.push({ bound: 'cadence', stop: 'when', label: 'cadence', detail: `${perWeek}/wk is over ${project.name}'s ceiling of ${eff.cadence_per_week}/wk` });
+      const offline = (plan.accounts || []).filter((id) => (_channel(id) || {}).connected === false);
+      if (offline.length) {
+        extra.push({ bound: 'accounts', stop: 'where', label: 'accounts', detail: `${offline.map((id) => (_channel(id) || {}).label || id).join(', ')} not connected` });
       }
     }
     const missing = extra.concat(planResult.missing.filter((m) => !extra.some((x) => x.bound === m.bound)));
@@ -670,19 +666,18 @@
 
   function _launchRows(camp, project) {
     const plan = camp.plan || {};
-    const presence = (project && project.presence) || {};
     const accounts = plan.accounts || [];
     const accountsText = accounts.length
       ? accounts.map((id) => {
         const ch = _channel(id);
-        const acct = (presence.accounts || []).find((a) => a.channel_id === id);
         const label = ch ? ch.label : id;
-        return acct && acct.voice ? `${label} (${acct.voice})` : label;
+        const voice = DeskV1Kit.accountVoice(plan, ch);
+        return voice ? `${label} (${voice})` : label;
       }).join(' · ')
       : '—';
     const eff = (DeskV1Kit.validatePlan(plan, project) || {}).effective || {};
-    const gaps = accounts.map((id) => ((presence.ceilings || {})[id] || {}).min_gap_h).filter((g) => g != null);
-    const cadenceText = `${eff.cadence_per_week != null ? eff.cadence_per_week : '—'} / wk${gaps.length ? ` · ${Math.max.apply(null, gaps)}h` : ''}`;
+    const gap = plan.cadence && plan.cadence.min_gap_h;
+    const cadenceText = `${eff.cadence_per_week != null ? eff.cadence_per_week : '—'} / wk${gap != null ? ` · ${gap}h` : ''}`;
     const ends = (camp.term && camp.term.ends) || (plan.end && plan.end.date) || null;
     const cap = plan.end && plan.end.post_cap;
     const termText = ends
@@ -697,8 +692,9 @@
     const spendText = derived != null ? `derived · up to ${_money(derived)} (${posts} posts × ${_money(_DERIVED_COST_PER_POST)} link rate)` : 'derived · needs a cadence and an end date';
     const budget = (plan.how && plan.how.budget) || (camp.how && camp.how.budget) || { source: 'none' };
     let budgetText = 'none set · spend ceiling is the derived one';
-    if (budget.source === 'project') budgetText = `${_money(budget.amount || 0)} earmarked from ${project ? project.name : 'the project'}`;
-    else if (budget.source === 'own') budgetText = `${_money(budget.amount || 0)} own budget`;
+    // 'project' is the retired pool source (MC-977): a stored one reads as the
+    // campaign's own amount, which is what it always was.
+    if (budget.source === 'own' || budget.source === 'project') budgetText = `${_money(budget.amount || 0)} budget`;
     if (budget.source !== 'none' && derived != null && (budget.amount || 0) < derived) budgetText += ` · below the derived ${_money(derived)}, publishing would stop early`;
     const goal = _goalReading(camp);
     const goalText = goal.started
@@ -785,33 +781,6 @@
       undo: () => { camp.term = prevTerm; camp.terms = prevTerms; camp.approval = prevApproval; camp.approvals = prevApprovals; repaint(); },
     });
   }
-
-  // §5.2: "A project budget cut below live earmarks clamps those campaigns
-  // (narrowing rule) and logs it". Called by Presence after it applies a
-  // budget change. A clamp only ever lowers an earmark, so a running
-  // campaign keeps its approval; the entry lands in `camp.log`, shown on the
-  // Launch page. Campaigns are served in list order: earlier ones keep their
-  // earmark, later ones absorb the cut.
-  function _clampEarmarks(project) {
-    const pool = project && project.presence && project.presence.budget && project.presence.budget.amount;
-    if (pool == null) return [];
-    const clamped = [];
-    let used = 0;
-    _campaigns().filter((c) => c.projectId === project.id && !['archived', 'completed'].includes(c.state)).forEach((c) => {
-      const b = c.how && c.how.budget;
-      if (!b || b.source !== 'project') return;
-      const allowed = Math.max(0, pool - used);
-      if ((b.amount || 0) > allowed) {
-        const was = b.amount || 0;
-        b.amount = allowed;
-        (c.log = c.log || []).push({ at: new Date().toISOString(), text: `Earmark clamped from ${_money(was)} to ${_money(allowed)}: ${project.name}'s budget was cut to ${_money(pool)}.` });
-        clamped.push(c);
-      }
-      used += b.amount || 0;
-    });
-    return clamped;
-  }
-  window.deskV1ClampEarmarks = _clampEarmarks;
 
   function _renderLaunchPanel(el, params, camp) {
     if (!camp) { el.innerHTML = '<div class="desk-v1-stub-inline">Campaign not found.</div>'; return; }
