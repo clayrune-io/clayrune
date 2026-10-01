@@ -3,6 +3,7 @@
 # (python server.py) and is also imported by app.py's Flask thread; either path
 # rejects a too-old interpreter before the 3.10+ import chain loads.
 from mc import preflight  # noqa: F401
+from mc.proc_kill import POPEN_NEW_SESSION
 
 import hashlib
 import json
@@ -2266,6 +2267,14 @@ def _cleanup_persistent_agents():
                 session['proc'].stdin.close()
             except Exception:
                 pass
+            # Agent children now lead their own session (POPEN_NEW_SESSION) and no
+            # longer take the terminal's Ctrl-C with the server, so reap the
+            # whole tree here, not just the CLI pid (guarded: never the server).
+            try:
+                from mc.proc_kill import kill_tree as _kill_tree
+                _kill_tree(session['proc'].pid)
+            except Exception:
+                pass
             try:
                 session['proc'].kill()
             except Exception:
@@ -3055,7 +3064,7 @@ def _claude_followup_hook(handle, message, attachments=None):
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, cwd=pp,
             text=True, encoding='utf-8', errors='replace',
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
         existing['proc'] = proc
         existing['status'] = 'running'

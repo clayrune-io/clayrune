@@ -60,6 +60,7 @@ from mc.guardrail_hooks import launch_file_if_exists as _guardrail_launch_file
 from mc.guardrail_hooks import codex_hook_config_args as _guardrail_codex_hook_args
 from mc.guardrail_hooks import codex_fence_self_test as _codex_fence_self_test
 from mc.guardrail_hooks import hooks_dir as _guardrail_hooks_dir
+from mc.proc_kill import POPEN_NEW_SESSION
 
 # Per-vendor env var each CLI resolves fresh per invocation for a per-launch
 # settings override — verified additive with the user's own config (not a
@@ -3185,7 +3186,7 @@ class ClaudeRuntime(AgentRuntime):
                     cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE, cwd=cwd or str(Path.home()),
                     text=True, encoding='utf-8', errors='replace',
-                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
                 )
             except FileNotFoundError as e:
                 raise CLINotInstalledError(
@@ -4610,7 +4611,7 @@ class GeminiRuntime(AgentRuntime):
             errors='replace',
             env=env,
             creationflags=_POPEN_FLAGS,
-            startupinfo=_STARTUPINFO,
+            startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
         self._write_prompt_async(proc, full_prompt, mc_sid)
 
@@ -5077,7 +5078,7 @@ class GeminiRuntime(AgentRuntime):
             errors='replace',
             env=_inject_gemini_env(os.environ.copy(), _mcp_json),
             creationflags=_POPEN_FLAGS,
-            startupinfo=_STARTUPINFO,
+            startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
         self._write_prompt_async(proc, full_prompt, handle.mc_session_id)
         session['proc'] = proc
@@ -5287,7 +5288,7 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
         errors='replace',
         env=env,
         creationflags=_POPEN_FLAGS,
-        startupinfo=_STARTUPINFO,
+        startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
     )
 
     if prompt_via_stdin:
@@ -7256,7 +7257,7 @@ class QwenRuntime(AgentRuntime):
             cwd=handle.project_path,
             text=True, encoding='utf-8', errors='replace',
             env=env,
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
 
         def _send() -> None:
@@ -8942,7 +8943,7 @@ class CodexRuntime(AgentRuntime):
             stderr=subprocess.STDOUT,
             cwd=handle.project_path,
             text=True, encoding='utf-8', errors='replace',
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
 
         def _send() -> None:
@@ -9430,7 +9431,7 @@ class OpenCodeRuntime(AgentRuntime):
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, cwd=handle.project_path,
             text=True, encoding='utf-8', errors='replace',
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
 
         def _send() -> None:
@@ -9785,7 +9786,7 @@ class GooseRuntime(AgentRuntime):
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, cwd=handle.project_path,
             text=True, encoding='utf-8', errors='replace',
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
 
         def _send() -> None:
@@ -10104,7 +10105,7 @@ class AiderRuntime(AgentRuntime):
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, cwd=handle.project_path,
             text=True, encoding='utf-8', errors='replace',
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
         session['proc'] = proc
         session['status'] = 'running'
@@ -10420,7 +10421,7 @@ class KiroRuntime(AgentRuntime):
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, cwd=handle.project_path,
             text=True, encoding='utf-8', errors='replace',
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
         session['proc'] = proc
         session['status'] = 'running'

@@ -32,6 +32,8 @@ import signal
 import subprocess
 from typing import List, Optional, Union
 
+from mc import proc_kill as _proc_kill
+
 
 class PtyUnavailable(RuntimeError):
     """Raised by spawn() when a real PTY was requested but the platform
@@ -114,10 +116,11 @@ class _PosixPty:
             fcntl.ioctl(self._master_fd, termios.TIOCSWINSZ, winsize)
         except OSError:
             return
-        try:
-            os.killpg(os.getpgid(self.pid), signal.SIGWINCH)
-        except (OSError, ProcessLookupError):
-            pass
+        if not _proc_kill.safe_killpg(self.pid, signal.SIGWINCH):
+            try:
+                os.kill(self.pid, signal.SIGWINCH)
+            except OSError:
+                pass
 
     def isalive(self) -> bool:
         return self._proc.poll() is None
@@ -138,9 +141,7 @@ class _PosixPty:
     def close(self, force: bool = True) -> None:
         if self._proc.poll() is None:
             sig = signal.SIGKILL if force else signal.SIGTERM
-            try:
-                os.killpg(os.getpgid(self.pid), sig)
-            except (OSError, ProcessLookupError):
+            if not _proc_kill.kill_tree(self.pid, sig):
                 try:
                     self._proc.kill()
                 except Exception:

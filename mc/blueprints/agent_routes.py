@@ -51,6 +51,8 @@ _get_mem_write_lock or writes MEMORY.md.
 import concurrent.futures
 import contextlib
 from mc import engine_selection
+from mc import proc_kill as _proc_kill
+from mc.proc_kill import POPEN_NEW_SESSION
 from mc.runtime_attempt_owner import DispatchFacts
 from mc.unix_path import augment_unix_path
 import hashlib
@@ -524,12 +526,11 @@ def _kill_pid(pid, tree=False):
             return False
     else:
         if tree:
-            # Kill process group if possible
-            try:
-                os.killpg(os.getpgid(pid), 9)
+            # Guarded: never signals the server's own group (backlog 7cc8f7bc —
+            # Stop on an agent that shared the server's group SIGKILLed the
+            # server). Falls back to the pid's own subtree.
+            if _proc_kill.kill_tree(pid):
                 return True
-            except OSError:
-                pass
         try:
             os.kill(pid, 9)
             return True
@@ -3443,7 +3444,7 @@ def agent_auth_login_remote(provider):
             argv,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             cwd=_auth_probe_cwd(),
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -6237,7 +6238,7 @@ def _auto_recover_failed_resume(session):
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, cwd=pp,
                 text=True, encoding='utf-8', errors='replace',
-                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
             )
             _sysprompt_cleanup(_sp_path, proc)
             initial_msg = json.dumps({
@@ -6278,7 +6279,7 @@ def _auto_recover_failed_resume(session):
                 cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, cwd=pp,
                 text=True, encoding='utf-8', errors='replace',
-                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
             )
             _sysprompt_cleanup(_sp_path, proc)
             threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
@@ -7247,7 +7248,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, cwd=_revive_cwd,
                 text=True, encoding='utf-8', errors='replace',
-                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
             )
         except Exception as e:
             _log(f"[revive] {project_id}: spawn failed: {e}")
@@ -7361,7 +7362,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, cwd=_revive_cwd,
             text=True, encoding='utf-8', errors='replace',
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
     except Exception as e:
         _log(f"[revive] {project_id}: spawn failed: {e}")
@@ -9387,7 +9388,7 @@ def _auto_dispatch_followup(session, message):
             encoding='utf-8',
             errors='replace',
             creationflags=_POPEN_FLAGS,
-            startupinfo=_STARTUPINFO,
+            startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
     except Exception as e:
         session['log_lines'].append(f'[follow-up failed: {e}]')
@@ -11533,7 +11534,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 encoding='utf-8',
                 errors='replace',
                 creationflags=_POPEN_FLAGS,
-                startupinfo=_STARTUPINFO,
+                startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
             )
             _sysprompt_cleanup(_sp_path, proc)
 
@@ -11691,7 +11692,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 encoding='utf-8',
                 errors='replace',
                 creationflags=_POPEN_FLAGS,
-                startupinfo=_STARTUPINFO,
+                startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
             )
             _sysprompt_cleanup(_sp_path, proc)
 
@@ -13147,7 +13148,7 @@ def agent_followup(project_id):
                     rb['cmd'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, cwd=_session_cwd(rb['existing'], rb['pp']),
                     text=True, encoding='utf-8', errors='replace',
-                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
                 )
                 _sysprompt_cleanup(rb.get('sysprompt_path'), proc)
                 _log(f"[respawn-B] {rb['project_id']}: spawned PID {proc.pid}")
@@ -13278,7 +13279,7 @@ def agent_followup(project_id):
                 encoding='utf-8',
                 errors='replace',
                 creationflags=_POPEN_FLAGS,
-                startupinfo=_STARTUPINFO,
+                startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
             )
             _sysprompt_cleanup(_sp_path, proc)
             threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
@@ -13804,7 +13805,7 @@ def agent_interrupt(project_id, *, _internal=None):
                     cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, cwd=_session_cwd(session, pp),
                     text=True, encoding='utf-8', errors='replace',
-                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
                 )
                 _sysprompt_cleanup(_sp_path, proc)
                 threading.Thread(target=_hide_windows_delayed,
@@ -13876,7 +13877,7 @@ def agent_interrupt(project_id, *, _internal=None):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, cwd=_session_cwd(session, pp),
                     text=True, encoding='utf-8', errors='replace',
-                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
                 )
                 _sysprompt_cleanup(_sp_path, proc)
                 threading.Thread(target=_hide_windows_delayed,
