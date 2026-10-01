@@ -180,3 +180,62 @@ def test_real_tree_kill_leaves_the_caller_alive(new_session):
         except OSError:
             pass
     assert _alive(os.getpid())  # reaching this line IS the assertion
+
+
+# ── agent_runtime._kill_pid (backlog 0941c443) ───────────────────────────────
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX process groups')
+@pytest.mark.parametrize('new_session', [True, False],
+                         ids=['start_new_session', 'legacy_shared_group'])
+def test_runtime_kill_pid_reaps_the_grandchild_and_spares_the_caller(new_session):
+    """The respawn/teardown helper used to os.kill(pid, 9) the CLI only, so its
+    node/MCP grandchildren survived. Real processes, real helper."""
+    from mc import agent_runtime
+    kw = proc_kill.POPEN_NEW_SESSION if new_session else {}
+    child = subprocess.Popen([sys.executable, '-c', _CHILD],
+                             stdout=subprocess.PIPE, text=True, **kw)
+    try:
+        grandchild = int(child.stdout.readline())
+        agent_runtime._kill_pid(child.pid)
+        child.wait(timeout=5)
+        assert _gone(child.pid, grandchild), 'grandchild survived _kill_pid'
+    finally:
+        try:
+            child.kill()
+        except OSError:
+            pass
+    assert _alive(os.getpid())  # reaching this line IS the assertion
+
+
+def test_runtime_kill_pid_routes_posix_through_kill_tree(monkeypatch):
+    from mc import agent_runtime
+    monkeypatch.setattr(agent_runtime.sys, 'platform', 'linux')
+    seen = []
+    monkeypatch.setattr(agent_runtime._proc_kill, 'kill_tree',
+                        lambda pid, *a: seen.append(pid) or True)
+    raw = []
+    monkeypatch.setattr(agent_runtime.os, 'kill', lambda p, s: raw.append((p, s)))
+    agent_runtime._kill_pid(4100)
+    assert seen == [4100] and raw == []  # no second, bare kill after a tree kill
+
+
+def test_runtime_kill_pid_falls_back_to_bare_kill(monkeypatch):
+    from mc import agent_runtime
+    monkeypatch.setattr(agent_runtime.sys, 'platform', 'linux')
+    monkeypatch.setattr(agent_runtime._proc_kill, 'kill_tree', lambda pid, *a: False)
+    raw = []
+    monkeypatch.setattr(agent_runtime.os, 'kill', lambda p, s: raw.append((p, s)))
+    agent_runtime._kill_pid(4100)
+    assert raw == [(4100, 9)]
+
+
+def test_runtime_kill_pid_windows_still_taskkill_tree(monkeypatch):
+    from mc import agent_runtime
+    monkeypatch.setattr(agent_runtime.sys, 'platform', 'win32')
+    ran = []
+    monkeypatch.setattr(agent_runtime.subprocess, 'run',
+                        lambda cmd, **kw: ran.append(cmd))
+    monkeypatch.setattr(agent_runtime._proc_kill, 'kill_tree',
+                        lambda *a: pytest.fail('kill_tree must not run on Windows'))
+    agent_runtime._kill_pid(4100)
+    assert ran == [['taskkill', '/F', '/T', '/PID', '4100']]

@@ -60,6 +60,7 @@ from mc.guardrail_hooks import launch_file_if_exists as _guardrail_launch_file
 from mc.guardrail_hooks import codex_hook_config_args as _guardrail_codex_hook_args
 from mc.guardrail_hooks import codex_fence_self_test as _codex_fence_self_test
 from mc.guardrail_hooks import hooks_dir as _guardrail_hooks_dir
+from mc import proc_kill as _proc_kill
 from mc.proc_kill import POPEN_NEW_SESSION
 
 # Per-vendor env var each CLI resolves fresh per invocation for a per-launch
@@ -3463,6 +3464,12 @@ def _kill_pid(pid: int) -> None:
         except Exception:
             pass
     else:
+        # Whole tree, guarded (backlog 0941c443, follow-up to 7cc8f7bc): the CLI
+        # leads its own session (POPEN_NEW_SESSION), so one killpg also reaches
+        # its node/MCP grandchildren. kill_tree never signals the server's own
+        # group; if it signalled nothing, fall back to the bare pid.
+        if _proc_kill.kill_tree(pid):
+            return
         try:
             os.kill(pid, 9)
         except OSError:
