@@ -688,6 +688,17 @@ def materials():
     return _piece_call(_pieces.materials, request.args.get('campaign_id') or None)
 
 
+# MC-1024: Studio saves what it made into the library, attached to no campaign
+# and no piece. Multipart `file` (+ optional `title`); 201 with the library item.
+@bp.route('/api/desk/materials', methods=['POST'])
+def save_material():
+    f = request.files.get('file')
+    if f is None:
+        return jsonify({'error': 'a file is required'}), 400
+    return _piece_call(_pieces.save_to_library, f.filename or '', f.stream,
+                       title=request.form.get('title') or None, status=201)
+
+
 # ── Workspace accounts (R1-W S5; plan M2-M5, §2.C) ────────────────────────────
 #
 # An account is a place the Desk can put a message (`mc/desk_accounts.py`). The

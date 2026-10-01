@@ -2674,6 +2674,21 @@
 .desk-v1-studio-folder-name { font-size: 12.5px; font-weight: 700; color: var(--text); text-align: center; }
 .desk-v1-studio-folder-count { font-size: 11px; color: var(--text-faint); }
 
+/* Standalone creation page (MC-1024): Studio's New video / New image, no campaign */
+.desk-v1-studio-create { display: flex; flex-direction: column; gap: 14px; padding: 4px 0 24px; }
+.desk-v1-sc-product { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.desk-v1-sc-label { font-size: 12.5px; font-weight: 700; color: var(--text-dim); }
+.desk-v1-sc-hint { font-size: 11.5px; color: var(--text-faint); }
+.desk-v1-sc-item { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.desk-v1-sc-preview {
+  width: 320px; max-width: 100%; min-height: 120px; display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface2); padding: 8px; box-sizing: border-box;
+}
+.desk-v1-sc-preview img { display: block; width: 100%; max-height: 260px; object-fit: contain; border-radius: 6px; }
+.desk-v1-sc-blank { font-size: 28px; color: var(--text-dim); }
+.desk-v1-sc-itemmeta { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-faint); }
+.desk-v1-sc-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
 /* Storyboard (frame 13) */
 .desk-v1-sb { display: flex; flex-direction: column; gap: 14px; padding-bottom: 24px; }
 .desk-v1-sb-returning { font-size: 12px; color: var(--text-faint); border-bottom: 1px solid var(--border2); padding-bottom: 10px; }

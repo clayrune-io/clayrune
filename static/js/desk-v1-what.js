@@ -722,6 +722,37 @@
     }, { noAppendNew: true });
   }
 
+  // MC-1024: Studio's `Use in a campaign`. A library item Studio made becomes a
+  // piece of its own in the campaign's What (one piece, one asset), the same two
+  // writes a create-card's library pick makes (M14 create, M21 attach by path).
+  // Live needs the item's FILE: an item with none is refused here, before the
+  // piece is made, so no empty piece is left behind. Resolves true once written.
+  async function useLibraryItem(campaignId, item) {
+    const camp = _campaign(campaignId);
+    if (!camp || !item) return false;
+    const kind = item.kind === 'video' ? 'video' : 'image';
+    if (_isLive() && !item.path) {
+      DeskV1Kit.toast(`“${item.title}” has no saved file yet, so it cannot be added to a campaign.`);
+      return false;
+    }
+    const fam = { id: 'fam-new-' + _uid(), campaignId: camp.id, kind, title: item.title, assets: [], versions: [] };
+    const asset = { id: 'asset-' + _uid(), kind, title: item.title, path: item.path || undefined, src: item.src || null };
+    const r = await DeskV1Store.write({
+      label: `Added “${item.title}” to “${(camp.plan && camp.plan.title) || 'the campaign'}”`,
+      apply: () => { fam.assets = [asset]; _fx().families.push(fam); _repaint(); },
+      unapply: () => { const i = _fx().families.indexOf(fam); if (i >= 0) _fx().families.splice(i, 1); },
+      repaint: () => _repaint(),
+      request: async () => {
+        await _queue(fam.id, () => _api('POST', '/api/desk/pieces', { id: fam.id, campaign_id: camp.id, kind, title: fam.title }));
+        return _assetRequest(fam, asset, null, () => _repaint())();
+      },
+      undoRequest: () => _queue(fam.id, () => _api('DELETE', _pieceUrl(fam.id))),
+    });
+    return !!(r && r.ok);
+  }
+  // Studio saves a file into the library behind this campaign's cached read.
+  function invalidateMaterials() { _mats.promise = null; }
+
   // ── entry ────────────────────────────────────────────────────────────────
   function deskV1FillWhat(el, params, camp) {
     const st = _state(camp.id);
@@ -735,5 +766,7 @@
   window.deskV1FillWhat = deskV1FillWhat;
   window.deskV1RepaintWhat = deskV1RepaintWhat;
   window.deskV1WhatAddMedia = openAddMedia;
+  window.deskV1WhatUseLibraryItem = useLibraryItem;
+  window.deskV1WhatInvalidateMaterials = invalidateMaterials;
   window.deskV1WhatStartCreate = deskV1WhatStartCreate;
 })();

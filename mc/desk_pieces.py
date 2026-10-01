@@ -68,6 +68,7 @@ VIDEO_EXTS = ('.mp4', '.mov', '.webm', '.m4v')
 MAX_UPLOAD_BYTES = {'image': 25 * 1024 * 1024, 'video': 500 * 1024 * 1024}
 LIBRARY_ROOT = ('desk', 'library')       # under UPLOADS_ROOT: <kind>/<folder>/<file>
 UPLOAD_FOLDER = 'Uploads'               # where a file picked from the computer lands
+STUDIO_FOLDER = 'Studio'                # where a file Studio made lands (no campaign)
 
 MAX_TITLE = 200
 MAX_BODY = 100_000
@@ -570,19 +571,17 @@ def remove_asset(piece_id: str, asset_id: str) -> dict:
         return v1_piece(piece)
 
 
-def save_upload(piece_id: str, filename: str, stream, *, title=None, asset_id: str | None = None) -> dict:
-    """Write an uploaded file into the material library's Uploads folder and
-    attach it. Validates the piece, the type and the size BEFORE keeping a byte,
-    and removes the file if attaching then fails, so a refused upload leaves
+def _write_library_file(filename: str, stream, folder_name: str) -> tuple[Path, str]:
+    """Write `stream` into the material library under `<kind>/<folder_name>/`
+    and return `(dest, kind)`. Validates the type and the size while writing,
+    and removes the partial file on any failure, so a refused write leaves
     nothing behind."""
     kind = asset_kind_for(filename)
     if kind is None:
         raise PieceError('only image (png, jpg, gif, webp) and video (mp4, mov, webm, m4v) files can be uploaded')
-    with _desk._store_lock:
-        _find(_desk._read_store(), piece_id)
     stem, ext = os.path.splitext(Path(filename).name)
     safe = _SAFE_NAME.sub('_', stem).strip(' ._')[:60] or 'upload'
-    folder = _uploads_root().joinpath(*LIBRARY_ROOT, kind, UPLOAD_FOLDER)
+    folder = _uploads_root().joinpath(*LIBRARY_ROOT, kind, folder_name)
     folder.mkdir(parents=True, exist_ok=True)
     dest = folder / f'{safe}-{uuid.uuid4().hex[:8]}{ext.lower()}'
     cap = MAX_UPLOAD_BYTES[kind]
@@ -599,6 +598,26 @@ def save_upload(piece_id: str, filename: str, stream, *, title=None, asset_id: s
                 out.write(chunk)
         if written == 0:
             raise PieceError('that file is empty')
+    except BaseException:
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+        raise
+    return dest, kind
+
+
+def save_upload(piece_id: str, filename: str, stream, *, title=None, asset_id: str | None = None) -> dict:
+    """Write an uploaded file into the material library's Uploads folder and
+    attach it. Validates the piece, the type and the size BEFORE keeping a byte,
+    and removes the file if attaching then fails, so a refused upload leaves
+    nothing behind."""
+    if asset_kind_for(filename) is None:
+        raise PieceError('only image (png, jpg, gif, webp) and video (mp4, mov, webm, m4v) files can be uploaded')
+    with _desk._store_lock:
+        _find(_desk._read_store(), piece_id)
+    dest, _kind = _write_library_file(filename, stream, UPLOAD_FOLDER)
+    try:
         return add_asset(piece_id, path=_rel_of(dest.resolve()), title=title or Path(filename).name,
                          asset_id=asset_id)
     except BaseException:
@@ -607,6 +626,17 @@ def save_upload(piece_id: str, filename: str, stream, *, title=None, asset_id: s
         except OSError:
             pass
         raise
+
+
+def save_to_library(filename: str, stream, *, title=None) -> dict:
+    """Studio's save (MC-1024): write a file Studio made into the material
+    library's Studio folder, attached to NO piece and no campaign. Returns the
+    library item `{id, kind, title, path, src}`, the same shape `materials()`
+    lists, so a What source picker can offer it at once."""
+    dest, kind = _write_library_file(filename, stream, STUDIO_FOLDER)
+    real = dest.resolve()
+    rel = _rel_of(real)
+    return {'id': rel, 'kind': kind, 'title': _asset_title(real, title), 'path': rel, 'src': _src_for(rel, kind)}
 
 
 # -- materials (plan M22) ----------------------------------------------------------

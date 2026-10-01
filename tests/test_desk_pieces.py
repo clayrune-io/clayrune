@@ -463,6 +463,43 @@ def test_refused_uploads_leave_no_file(env, monkeypatch):
     assert not folder.exists() or not [f for f in folder.rglob('*') if f.is_file()]
 
 
+# -- Studio saves into the library, attached to nothing (MC-1024) ------------------
+
+def test_studio_save_lands_in_the_library_with_no_piece_and_is_listed(env):
+    client, uploads, _ = env
+    before = client.get('/api/desk/pieces').get_json()
+    r = client.post('/api/desk/materials', data={'file': (io.BytesIO(PNG), 'Hero art.png'), 'title': 'Hero art'},
+                    content_type='multipart/form-data')
+    assert r.status_code == 201, r.get_json()
+    item = r.get_json()
+    assert item['kind'] == 'image' and item['title'] == 'Hero art'
+    assert item['path'].startswith('desk/library/image/Studio/') and item['path'].endswith('.png')
+    assert item['id'] == item['path'] and item['src'].startswith('/api/serve-image?path=')
+    assert (uploads / item['path']).read_bytes() == PNG
+    # no piece, no campaign touched
+    assert client.get('/api/desk/pieces').get_json() == before
+    # the What source picker reads M22 for ANY campaign, and finds it
+    for cid in (CID, 'camp-2', None):
+        out = client.get('/api/desk/materials' + (f'?campaign_id={cid}' if cid else '')).get_json()
+        folder = next(f for f in out['library']['image'] if f['title'] == 'Studio')
+        assert [i['path'] for i in folder['items']] == [item['path']]
+
+
+def test_studio_save_refusals_leave_no_file(env, monkeypatch):
+    client, uploads, _ = env
+    url = '/api/desk/materials'
+    assert client.post(url, data={}, content_type='multipart/form-data').status_code == 400
+    r = client.post(url, data={'file': (io.BytesIO(b'MZ'), 'virus.exe')}, content_type='multipart/form-data')
+    assert r.status_code == 400
+    r = client.post(url, data={'file': (io.BytesIO(b''), 'empty.png')}, content_type='multipart/form-data')
+    assert r.status_code == 400
+    monkeypatch.setitem(_pieces.MAX_UPLOAD_BYTES, 'image', 10)
+    r = client.post(url, data={'file': (io.BytesIO(PNG), 'big.png')}, content_type='multipart/form-data')
+    assert r.status_code == 413
+    folder = uploads / 'desk' / 'library'
+    assert not folder.exists() or not [f for f in folder.rglob('*') if f.is_file()]
+
+
 # -- materials ----------------------------------------------------------------
 
 def test_materials_lists_folders_files_articles_and_no_invented_online(env):
