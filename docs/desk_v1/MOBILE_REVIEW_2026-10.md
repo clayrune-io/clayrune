@@ -254,3 +254,60 @@ Re-measured with the same Fold-UA Playwright probes as the review (fold344 = 344
 - **S-1, transient overlap:** right after "Start a new campaign" the Undo toast (G-3: bottom row, 10s) sits over the bottom 58px of the page, which is where "Next: Goal" is on a short Brief, so `elementFromPoint` at Next's centre returns Undo until the toast is dismissed or times out. An attempted fix (extra `padding-bottom` on `#desk-v1-body` while a toast is up) had no effect on the layout and was reverted. It is a snackbar overlap, not a clipped control; left for batch 2.
 - **fold884 (884px, inside the <=960px band)** gets the phone treatments (stacked Where board, full-width New campaign bar at 854x44). That follows the <=960px query; whether a tablet width wants a wider layout is a batch-2 question.
 - **Where drag on phone:** with the board stacked, a drag from Messages to a column below the fold is still limited by the lack of pointer-drag auto-scroll; the Add-to tap menu is the path.
+
+
+## Batch 2 fixes: before / after (branch `desk-mobile-fix-2`, MC-977 8f64d565)
+
+Same probes as batch 1 (fold344 = 344x882, fold884 = 884x1104). The sweep (`_scratch/mr2/sweep.mjs`, not committed) flags targets <44px, text <11px, ellipsised text and sideways overflow on 19 surfaces per width. After shots: `docs/desk_v1/screens/mobile_review/after2/<surface>_fold344.png` and `_fold884.png` (23 surfaces, including the Studio article body and the draft-delete states). Desktop >=1024px: every change sits in a `max-width: 960px` / `699px` query, except the new Desk-scoped `.btn-secondary` face (it styles buttons that had no styling at all).
+
+**Sweep totals at fold344, before -> after:** targets <44px 135 -> 1; ellipsised text 17 -> 0; text <11px 22 -> 12; surfaces scrolling sideways 1 (Review, 328/314) -> 0. At fold884: 1 target <44px, 0 ellipsised, 12 text <11px, 0 overflow. Page errors: 0 on all 38 surface/width runs. The 1 target left is the inline "Join the beta." link in Review copy (93x17). The 12 text elements left are the Where avatar-badge platform glyph (10px inside a 14px circle; the platform is also written out beside it).
+
+### Items called out in the brief
+
+| Item | Commit | Before -> after |
+|---|---|---|
+| S-1 Undo toast covers CTAs | `51c038d8`, `58540f25` | Toast copy is now "New campaign started". While a toast is up the Desk shell ends above it (`margin-bottom: 58px`), so bottom CTAs are never underneath. Measured fold344: toast 324x54 at y768-822, shell bottom 771 (inside its own 20px padding); p390 toast y730, shell 733; fold884 toast y990, shell 993. |
+| STEPPER clips end labels | `51c038d8` | scrollWidth 348 vs 314, 5 of 6 stops inside, 1 label clipped -> 314 = 314, 6/6 stops inside (52x56 each, x15..329), 0 labels clipped, label font 11px, no horizontal scroll. fold884 unchanged (789/789). |
+| WHAT filter chips | `51c038d8` | 2 rows, bar 94px -> 1 row, bar 44px (four 44px-tall chips; the height is padding, the pill itself is compact). |
+| WHAT piece cards | `51c038d8` | cards 196/217/246/196/246/246px (1,344px for 6), kind label a 49px column at 10.5px -> 104/125/152/104/152/152px (787px, -41%), kind label full-width above the title at 11px, empty row above the ⋯ button removed. fold884 keeps the desktop card (kind column 52px at 11px). |
+| 884 (Fold inner) | `196707de` | DECIDED: the phone rules now stop at 699px; from 700px the desktop shape returns on the surfaces that have one. **Home**: the desktop 6-column status table with a shared header, one row per campaign (stacked cards 219px each -> rows 69-85px). Not 2-up cards: Home's desktop shape is a table and it fits in 832px. **Where**: Messages (232px) beside the account columns, sideways scroll when more than fit (scrollWidth 964 vs 854), sticky Messages as the drag source; the stack at 884 wasted ~600px of width. **Where sources**: auto-fill grid, 4-across with descriptions. **Project header**: one row, name left, actions right (124px / 96px), instead of two 423px bars. **Project campaign cards**: stay 3 columns (277x98), unchanged. Brief, What and the stepper are single-column at any width by design. |
+
+### The ugly/nit rows not fixed in batch 1
+
+| Row(s) | Commit | Before -> after (fold344 unless stated) |
+|---|---|---|
+| H-3, H-4 Home pills / "Fix" | `51c038d8` | Needs-you pills 163x32 / 145x32 / 116x32, "Fix" 34x44, picker 110x27 -> 44px tall, "Fix" 44x44, picker 110x44. Home 4 targets <44 -> 0. (The worker-offline banner needs a fixture the sweep lacks; the "Fix" button is measured on the home smoke.) |
+| P-4, P-5 project / Playbook targets | `51c038d8`, `92106666` | New campaign 132x32, "Open ›" 41x19, Archived 290x20, Send 64x33 -> every target 44px tall (project 4 -> 0); subject label 288x17 on one line. |
+| M-3 ⋮ target | `51c038d8` | 21x44 / 30x44 -> 44x44 via the shared class rule. |
+| M-4 campaign summary strip | `92106666` | ≈110px before the goal line -> 100px (top row 44 + groups 46), Pause and ⋯ 44px tall. Improved, not removed. |
+| G-5, G-6, ST-1, ST-4, PC-1 back / ⓘ | `51c038d8`, `92106666` | Back 26px tall, ⓘ 18x44 -> 44px back; ⓘ 44x44 (Review). Piece 4 targets <44 -> 0. |
+| S-3, X-5 Brief form | `51c038d8` | selects 256x28, input 256x30, Budget pills 29px (two wrapped) -> 44px, one row. Setup 10 targets <44 -> 0. |
+| S-4 Posy box | `b8ff2ace`, `92106666` | scope chip 133x33 ellipsised, Send 64x33, placeholder wrapped to 2 lines and half-cut -> scope chip 174x44 wrapping instead of ellipsising, Send 64x44, placeholder on one line (scrollHeight 44 = clientHeight 44). |
+| GL-1, GL-2, RT-1, X-4 Goal / Results / Retro form | `92106666`, `b3aa273b` | inputs 64x25 / 252x28, "+ Add entry" 58x44 -> every input 44px (min 44, 9 inputs), Target/Baseline/Unit in one 3-up band, "+ Add entry" 72x44 on one line. Goal 14 -> 0 targets <44, Retro 4 -> 0. |
+| WN-1, WN-2, WN-3 When / Calendar | `92106666` | When: 7 ellipsised values (Cadence "≤3/wk from Clayrune's ce…" 183/120) -> 0; Calendar agenda rows 292x37 with an 81px title (5 of 5 truncated) -> 58px rows with a 292px title (0 truncated); smallest control 24px -> 44px. fold884: rows 44px, title 621px. When 20 -> 0, Calendar 20 -> 0 targets <44. |
+| WN-4 Calendar back button | `92106666` | ellipsised (287/198) -> not truncated (0 truncated on Calendar). |
+| ST-2 video insert-gap | `92106666` | 22x77 -> 44x77 (fold884 44x61). |
+| ST-3 Posy in video director | `b8ff2ace` | send arrow 30x30, scope 123x19, "Watch and review" 143x33 -> 44px; Video 7 -> 0 targets <44. |
+| RV-1, RV-2, RV-3 Review | `92106666` | body scrollWidth 328 vs 314 (the only scroller overflow in the sweep) -> 314/314 (fold884 854/854); the primary CTA "Approve and create publishing task" wraps to 210x56 instead of ellipsising; prev/next/Skip/ⓘ 44px. Review 5 -> 1 target <44 (the "Join the beta." link). |
+| X-1, X-2, X-3 Conversations / Engagement / Presence | `92106666` | Conversations 2 -> 0 targets <44; Engagement filters 314x31 stacked (≈160px) -> 2x2 at 153x44 (96px); Presence 14 -> 0. |
+| WH-2 leftover Where labels | `50443a95`, `87370da8` | text 9-10.5px -> every label >=11px except the avatar badge glyph, floored at 10px (see totals). |
+| L-1 Launch | `51c038d8` | 5 targets <44 -> 0 (shared rule). |
+| WT-6, WT-7 | `51c038d8` | see piece cards / chips above. |
+| Studio article body (not covered by the review) | `ddbfd5c6` | `.btn-secondary` had no rule anywhere, so "Back to What", "+ Add entry" and the writer's action row rendered as bare browser buttons (grey face, system text). Added a Desk-scoped face and wrapped the writer's action row below 640px. Also "Added a article piece" -> "Added an article piece". Article surface: 3 targets <44 and 2 text <11px -> 0 and 0. |
+
+### Added to batch 2 (Ron, from phone): discoverable "Delete draft"
+
+Commit `4688a610`. Reuses `deskV1DeleteDraftCampaign` and its Undo; no new delete path. (1) Home rows and project-page campaign cards in Draft carry a visible ⋯ (44x44) whose first item is "Delete draft", placed with the clamped popover helper. (2) The campaign page shows a plain "Discard draft" action beside the state chip while Draft, on phone and desktop. (3) Non-draft campaigns keep Archive/Delete behind the existing confirm. `desk-v1-home.mjs` covers delete-from-Home-row + Undo, `desk-v1-project.mjs` covers delete-from-project-card + Undo and the header action.
+
+### Verification
+
+`boot-smoke.mjs`, `desk.mjs` and all 20 `desk-v1-*.mjs` smokes: 22/22 exit 0 on the tip (`ddbfd5c6`). One smoke assertion changed with the phone floor (`9c2cd32f`: the review smoke's one-line Back check honours the 44px touch height).
+
+### Not fixed / caveats
+
+- **WH-4** per-account column head: still 62px tall (avatar, name, 44x44 ✕), a nit; shrinking it would take the ✕ under 44px.
+- **Where avatar badge glyph** stays 10px: it sits in a 14px circle and the platform is also written out beside it.
+- **"Join the beta." link** (93x17) in Review copy: an inline sentence link, left at its text height.
+- **Where at 884** scrolls sideways (964 vs 854) when Messages plus the account columns do not fit, as on desktop.
+- **Home at 884** is the desktop table, not two-up cards: there is no two-up card layout in desktop Home to restore.
+- **Measured in Playwright Fold-UA probes only** (344, 390, 412, 884), as in the review; not on a physical Fold or phone.

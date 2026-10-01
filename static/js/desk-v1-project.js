@@ -53,6 +53,7 @@
           <span class="desk-v1-project-camp-name">${esc(c.plan.title)}</span>
         </div>
         ${subj.label ? `<div class="desk-v1-project-camp-subject-label">${esc(subj.label)}</div>` : ''}
+        ${c.state === 'draft' ? `<div class="desk-v1-camp-card-more desk-v1-project-camp-more"><button type="button" class="desk-v1-camp-card-morebtn" data-draft-more="${esc(c.id)}" aria-haspopup="menu" aria-label="More actions for ${esc(c.plan.title || 'draft')}">&#8943;</button></div>` : ''}
       </div>`;
   }
 
@@ -404,8 +405,14 @@
     host.querySelectorAll('.desk-v1-project-camp-card').forEach((cardEl) => {
       const campaignId = cardEl.dataset.campaignId;
       const go = () => deskV1Nav('campaign', { campaignId, projectId });
-      cardEl.addEventListener('click', go);
-      cardEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
+      const inner = (e) => e.target.closest('.desk-v1-project-camp-more');
+      cardEl.addEventListener('click', (e) => { if (!inner(e)) go(); });
+      cardEl.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && !inner(e)) { e.preventDefault(); go(); } });
+      const moreBtn = cardEl.querySelector('[data-draft-more]');
+      if (moreBtn) moreBtn.onclick = (e) => {
+        e.stopPropagation();
+        if (typeof window.deskV1OpenCampaignMoreMenu === 'function') window.deskV1OpenCampaignMoreMenu(moreBtn, campaignId, { onDone: () => _renderCampaigns(projectId) });
+      };
     });
   }
 

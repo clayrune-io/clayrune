@@ -436,9 +436,11 @@ async function runPhoneLayout(browser) {
     // A single-line button's box also carries its own padding + border, on
     // top of the text's line-height — compare against THAT, not bare
     // line-height, or a correctly one-line button reads as "wrapped".
-    const oneLineBox = backLineH
+    // Phone touch-target rule (MC-977 batch 2) gives every button min-height 44px, so the
+    // one-line box is the larger of the content box and that floor.
+    const oneLineBox = Math.max(backLineH
       + parseFloat(backCS.paddingTop) + parseFloat(backCS.paddingBottom)
-      + parseFloat(backCS.borderTopWidth) + parseFloat(backCS.borderBottomWidth);
+      + parseFloat(backCS.borderTopWidth) + parseFloat(backCS.borderBottomWidth), parseFloat(backCS.minHeight) || 0);
     const controls = document.querySelector('.desk-v1-review-controls');
     const kids = Array.from(controls.children);
     const tops = kids.map((k) => k.getBoundingClientRect().top);

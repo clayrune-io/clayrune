@@ -431,14 +431,16 @@
   function _rowHTML(camp) {
     const kind = (camp.subject && camp.subject.kind) || '';
     const glyph = _SUBJECT_GLYPH[kind] || '';
-    // R2-3b (Ron 2026-09-30): a Draft row — only `draft`, never proposed or
-    // active — carries a trash button at its right edge; Undo is the safety.
+    // R2-3b (Ron 2026-09-30) + batch 2 (Ron, phone: "I still don't see an easy
+    // way to delete a draft"): a Draft row — only `draft`, never proposed or
+    // active — carries a visible ⋯ at its right edge whose menu opens on
+    // 'Delete draft' (the shared campaign more-menu); Undo is the safety.
     // A draft no longer has a subject or (project-less) a title to show.
     const title = camp.plan.title || 'Untitled draft';
     const subjectHTML = camp.subject
       ? `<div class="desk-v1-home-row-subject">${esc(glyph)} ${esc(kind)} &middot; ${esc(camp.subject.label || '')}</div>` : '';
     const trash = camp.state === 'draft'
-      ? `<button type="button" class="desk-v1-home-row-trash" data-delete-draft="${esc(camp.id)}" aria-label="Delete draft ${esc(title)}" title="Delete draft"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4h11M6 4V2.5h4V4M4 4l.6 9h6.8L12 4M6.6 6.5v4.5M9.4 6.5v4.5"/></svg></button>`
+      ? `<div class="desk-v1-camp-card-more desk-v1-home-row-more"><button type="button" class="desk-v1-camp-card-morebtn" data-draft-more="${esc(camp.id)}" aria-haspopup="menu" aria-label="More actions for ${esc(title)}">&#8943;</button></div>`
       : '';
     return `<div class="desk-v1-home-row" data-campaign-id="${esc(camp.id)}" data-project-id="${esc(camp.projectId)}" data-state="${esc(camp.state)}" role="button" tabindex="0">
       <div class="desk-v1-home-row-campaign">
@@ -520,7 +522,7 @@
     const camp = window.deskV1CreateDraftCampaign(projectId || null);
     camp._discardIfUntouched = true;
     DeskV1Kit.commandBus.run({
-      label: 'Started a new campaign',
+      label: 'New campaign started',
       do: () => { _fx().campaigns.push(camp); _renderStatusBoard(); },
       undo: () => {
         const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1);
@@ -564,7 +566,7 @@
     host.querySelectorAll('.desk-v1-home-row').forEach((rowEl) => {
       const { campaignId, projectId } = rowEl.dataset;
       const go = () => { deskV1Nav('campaign', { campaignId, projectId: projectId || null }); };
-      const inner = (e) => e.target.closest('.desk-v1-home-needsyou-pill, .desk-v1-home-row-trash');
+      const inner = (e) => e.target.closest('.desk-v1-home-needsyou-pill, .desk-v1-home-row-more');
       rowEl.addEventListener('click', (e) => { if (!inner(e)) go(); });
       rowEl.addEventListener('keydown', (e) => {
         if ((e.key === 'Enter' || e.key === ' ') && !inner(e)) { e.preventDefault(); go(); }
@@ -573,10 +575,10 @@
     host.querySelectorAll('.desk-v1-home-needsyou-pill').forEach((btn) => {
       btn.onclick = (e) => { e.stopPropagation(); _goToNeedsYou(btn.dataset); };
     });
-    host.querySelectorAll('[data-delete-draft]').forEach((btn) => {
+    host.querySelectorAll('[data-draft-more]').forEach((btn) => {
       btn.onclick = (e) => {
         e.stopPropagation();
-        if (typeof window.deskV1DeleteDraftCampaign === 'function') window.deskV1DeleteDraftCampaign(btn.dataset.deleteDraft, _renderStatusBoard);
+        if (typeof window.deskV1OpenCampaignMoreMenu === 'function') window.deskV1OpenCampaignMoreMenu(btn, btn.dataset.draftMore, { onDone: _renderStatusBoard });
       };
     });
   }

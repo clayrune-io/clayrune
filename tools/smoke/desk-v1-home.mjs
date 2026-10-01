@@ -514,9 +514,9 @@ async function runDraftDelete(browser) {
   // Non-draft rows: no trash.
   const nonDraft = await page.evaluate(() => {
     const rows = Array.from(document.querySelectorAll('.desk-v1-home-row')).filter((r) => r.dataset.state !== 'draft');
-    return { rows: rows.length, withTrash: rows.filter((r) => r.querySelector('[data-delete-draft]')).length, states: Array.from(new Set(rows.map((r) => r.dataset.state))) };
+    return { rows: rows.length, withTrash: rows.filter((r) => r.querySelector('[data-draft-more]')).length, states: Array.from(new Set(rows.map((r) => r.dataset.state))) };
   });
-  if (nonDraft.rows >= 2 && nonDraft.withTrash === 0 && nonDraft.states.includes('active') && nonDraft.states.includes('proposed')) ok(`R2-3b: non-draft rows (${nonDraft.states.join('/')}) have no trash button`);
+  if (nonDraft.rows >= 2 && nonDraft.withTrash === 0 && nonDraft.states.includes('active') && nonDraft.states.includes('proposed')) ok(`R2-3b: non-draft rows (${nonDraft.states.join('/')}) have no ⋯ button`);
   else fail(`R2-3b: non-draft rows wrong: ${JSON.stringify(nonDraft)}`);
 
   // Make a touched draft (typing a goal field) so Back keeps it on Home.
@@ -528,23 +528,30 @@ async function runDraftDelete(browser) {
   await page.dispatchEvent('[data-goal-field="metric"]', 'change');
   await page.click('.desk-v1-back');
   await page.waitForSelector('[data-no-project-block] .desk-v1-home-row[data-state="draft"]', { timeout: 4000 });
-  const trashInfo = await page.evaluate(() => {
+  const moreInfo = await page.evaluate(() => {
     const row = document.querySelector('.desk-v1-home-row[data-state="draft"]');
-    const t = row.querySelector('[data-delete-draft]');
+    const t = row.querySelector('[data-draft-more]');
     const rr = row.getBoundingClientRect(); const tr = t ? t.getBoundingClientRect() : null;
-    return { has: !!t, label: t && t.getAttribute('aria-label'), title: row.querySelector('.desk-v1-home-row-title').textContent, rightGap: tr ? rr.right - tr.right : null, insideRow: !!tr && tr.left >= rr.left && tr.right <= rr.right };
+    return { has: !!t, label: t && t.getAttribute('aria-label'), title: row.querySelector('.desk-v1-home-row-title').textContent, rightGap: tr ? rr.right - tr.right : null, insideRow: !!tr && tr.left >= rr.left && tr.right <= rr.right, text: t && t.textContent.trim() };
   });
-  if (trashInfo.has && trashInfo.label === `Delete draft ${trashInfo.title}` && trashInfo.insideRow && trashInfo.rightGap < 24) ok(`R2-3b: Draft row has a trash at its right edge, aria-label "${trashInfo.label}"`);
-  else fail(`R2-3b: draft trash wrong: ${JSON.stringify(trashInfo)}`);
+  if (moreInfo.has && moreInfo.label === `More actions for ${moreInfo.title}` && moreInfo.insideRow && moreInfo.rightGap < 24 && moreInfo.text) ok(`Batch 2: Draft row has a visible ⋯ at its right edge, aria-label "${moreInfo.label}"`);
+  else fail(`Batch 2: draft ⋯ wrong: ${JSON.stringify(moreInfo)}`);
 
-  // Click: deleted, not navigated (still on Home), no confirm sheet.
-  await page.click('[data-delete-draft]');
+  // ⋯ opens a menu whose first item is Delete draft; the row is not opened.
+  await page.click('[data-draft-more]');
+  await page.waitForSelector('.desk-v1-camp-cardmenu [data-menu-delete-draft]', { timeout: 4000 });
+  const firstItem = await page.evaluate(() => { const m = document.querySelector('.desk-v1-camp-cardmenu'); return { first: m.querySelector('button').textContent.trim(), onCampaign: !!document.querySelector('.desk-v1-campaign'), clamped: (() => { const r = m.getBoundingClientRect(); return r.left >= 0 && r.right <= window.innerWidth; })() }; });
+  if (firstItem.first === 'Delete draft' && !firstItem.onCampaign && firstItem.clamped) ok('Batch 2: ⋯ menu opens on "Delete draft", inside the viewport, without opening the row');
+  else fail(`Batch 2: ⋯ menu wrong: ${JSON.stringify(firstItem)}`);
+
+  // Choose it: deleted, not navigated (still on Home), no confirm sheet.
+  await page.click('.desk-v1-camp-cardmenu [data-menu-delete-draft]');
   const after = await page.evaluate(() => ({
     onHome: !!document.querySelector('.desk-v1-home-board'), onCampaign: !!document.querySelector('.desk-v1-campaign'),
     drafts: document.querySelectorAll('.desk-v1-home-row[data-state="draft"]').length, confirm: !!document.querySelector('.desk-v1-rules-confirm-overlay'),
   }));
-  if ((await count()) === n0 && after.onHome && !after.onCampaign && after.drafts === 0 && !after.confirm) ok('R2-3b: trash click deletes the draft, stays on Home (row not opened), no confirm dialog');
-  else fail(`R2-3b: trash click wrong: ${JSON.stringify({ n0, now: await count(), after })}`);
+  if ((await count()) === n0 && after.onHome && !after.onCampaign && after.drafts === 0 && !after.confirm) ok('R2-3b: ⋯ › Delete draft deletes the draft, stays on Home (row not opened), no confirm dialog');
+  else fail(`R2-3b: ⋯ › Delete draft wrong: ${JSON.stringify({ n0, now: await count(), after })}`);
 
   // Undo brings the row back.
   await page.locator('.toast-action').last().locator('.toast-btn.primary').click();
