@@ -8,6 +8,12 @@
   display: flex; flex-direction: column; height: 100%;
   padding: 0 24px 20px 28px;
 }
+/* Desktop too (Studio bin, 2026-10-01): `height:100%` sizes the shell to the WHOLE
+   modal while the modal header sits above it, so the shell (and the scroll body in
+   it) ran ~60px past the modal's clipped bottom edge: the last ~40px of every
+   page's scroll area was cut off, and anything pinned to the body's bottom (the
+   Studio bin) sat under the clip. Fill the remaining height, as phone already does. */
+.modal-window[data-modal-id="__desk"] .desk-v1-shell { height: auto; flex: 1 1 auto; min-height: 0; }
 /* Phone (MC-977 mobile fix batch 1, G-1/G-2): the modal is a flex column
    (header + shell), but `height:100%` sized the shell to the WHOLE modal, so
    it overran by the header's 44px and the last ~22px of every page (Brief's
@@ -2779,14 +2785,32 @@
   color: var(--text-faint); font-family: inherit;
 }
 .desk-v1-sb-delete:hover, .desk-v1-sb-delete:focus-visible { color: var(--red-text); background: var(--red-dim); }
-/* The trash drop zone: a scene dragged onto it is deleted (same drag as reorder) */
-.desk-v1-sb-trashzone {
-  display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 10px; padding: 8px 12px;
-  border: 1px dashed var(--border2); border-radius: 8px; font-size: 12px; color: var(--text-faint);
+/* The bin: a drop target in its own gutter at the lower-right of the scene column (sticky, so it
+   stays in view while the column is taller than the screen, and never covers a row's buttons);
+   a scene dragged onto it is deleted. Phone: no gutter, the bin rides the bottom-right corner. */
+.desk-v1-sb-main { display: flex; flex-direction: column; min-width: 0; }
+.desk-v1-sb-listrow { display: flex; align-items: stretch; gap: 10px; min-width: 0; }
+.desk-v1-sb-listrow > .desk-v1-sb-scenes { flex: 1 1 auto; min-width: 0; }
+.desk-v1-sb-bin {
+  flex: 0 0 48px; position: sticky; bottom: 12px; z-index: 3; align-self: flex-end;
+  display: flex; align-items: center; justify-content: center; width: 48px; height: 48px; font-size: 22px;
+  border: 1px dashed var(--border2); border-radius: 12px; background: var(--surface); color: var(--text-faint);
+  transition: transform 0.12s, background 0.12s, border-color 0.12s;
 }
-.desk-v1-sb-trashzone.pd-drop-hover { border-color: var(--red-text); color: var(--red-text); background: var(--red-dim); }
-.desk-v1-sb-timeline-title { margin-top: 14px; margin-bottom: 6px; font-size: 12px; font-weight: 700; color: var(--text-dim); }
+.desk-v1-sb-bin.pd-drop-hover { border-color: var(--red-text); border-style: solid; color: var(--red-text); background: var(--red-dim); transform: scale(1.18); }
+body.desk-v1-sb-drag-active .desk-v1-sb-bin { border-color: var(--text-faint); color: var(--text-dim); }
+@media (max-width: 960px) {
+  .desk-v1-sb-listrow { flex-direction: column; gap: 10px; }
+  .desk-v1-sb-bin { flex: 0 0 auto; }
+}
+/* The timeline bar sits at the top of the scene column. */
+.desk-v1-sb-timeline-wrap { margin-bottom: 12px; }
+.desk-v1-sb-timeline-title { margin-bottom: 6px; font-size: 12px; font-weight: 700; color: var(--text-dim); }
 .desk-v1-sb-timeline { min-height: 56px; }
+.desk-v1-sb-timeline .desk-v1-video-scene { min-height: 84px; }
+.desk-v1-sb-timeline .desk-v1-video-scene-thumb { position: relative; overflow: hidden; min-height: 56px; }
+/* contain, not cover: a wide tile (one long scene) would otherwise show a 10:1 slice of the frame */
+.desk-v1-sb-timeline .desk-v1-video-scene-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
 .desk-v1-sb-agent-pick { width: 100%; }
 
 /* What row: rendering progress (frame 14) */
