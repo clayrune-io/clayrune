@@ -275,6 +275,12 @@ class HealthStatus:
     auth_state: AuthState
     install_hint: str = ''
     diagnostic: str = ''
+    # An INSTALLED CLI that is too old to serve what Clayrune offers for it
+    # (Codex < the gpt-6 catalog). A setup state the UI resolves, not a refusal:
+    # `update_reason` is the sentence to show, `update_hint` the command the
+    # existing install-launch route may run ('' = no command we can vouch for).
+    update_hint: str = ''
+    update_reason: str = ''
 
 
 @dataclass
@@ -6145,7 +6151,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 _wtext = ev.payload.get('text', line)
                 _label = f"[{runtime.name} {_severity}] "
                 if (runtime.name == 'codex' and _severity == 'notice'
-                        and codex_error_is_notice(_wtext)):
+                        and _CODEX_HOOK_TRUST_RE.search(str(_wtext or ''))):
                     # Hook-trust bypass notice: fires every turn (required by
                     # guardrail_hooks.py:318). Raw capture above keeps the
                     # signal every occurrence; only the repeat CHAT line is
@@ -6165,6 +6171,10 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                     f"[{runtime.name} error] "
                     f"{_flatten_error_text(ev.payload.get('text', line))}")
                 session['last_output_time'] = _time.time()
+                if runtime.name == 'codex' and ev.payload.get('model_rejected'):
+                    # Read back in `finally` below: this turn gets ONE labelled
+                    # retry without -m (CodexRuntime.retry_without_model).
+                    session['_codex_model_refused'] = ev.payload['model_rejected']
             else:
                 raw_text = (ev.payload.get('text') or
                             (json.dumps(ev.payload) if ev.payload else line))
@@ -6189,6 +6199,14 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 session.setdefault('log_lines', TimestampedLines()).append(f'[capture EOF error: {e}]')
         if capture_failed:
             session['capture_status'] = 'incomplete'
+        # Codex refused the model slug (400 "not supported ... ChatGPT
+        # account"): respawn THIS turn once without -m, so the CLI's own
+        # default applies. A launched retry swaps session['proc'], so the
+        # `session.get('proc') is proc` gate below skips this reader's status
+        # write and the retry's own reader owns the final status.
+        if (runtime.name == 'codex' and rc != 0 and session.get('proc') is proc
+                and session.get('_codex_model_refused')):
+            cast('CodexRuntime', runtime).retry_without_model(handle, proc)
         # MC Tool Protocol: scan this turn's complete text for mc: blocks
         # (e.g. an emulated AskUserQuestion) and apply them before deciding
         # status — a question holds the turn in 'idle' awaiting the user's
@@ -7526,8 +7544,16 @@ def codex_reasoning_effort(effort: str) -> str:
 # a real error a notice is silence on a failure, which is strictly worse than
 # the cosmetic bug being fixed. Only add a pattern after seeing the line in a
 # transcript whose turn SUCCEEDED.
+_CODEX_HOOK_TRUST_RE = re.compile(r'`?--dangerously-bypass-hook-trust`? is enabled', re.I)
 _CODEX_NOTICE_PATTERNS = (
-    re.compile(r'`?--dangerously-bypass-hook-trust`? is enabled', re.I),
+    _CODEX_HOOK_TRUST_RE,
+    # Printed from the OPERATOR'S OWN ~/.codex/config.toml (a `service_tier`
+    # the account does not advertise), not by Clayrune; Codex falls back and
+    # carries on. Seen 2026-10-01 on Keegan's Mac, in the same turn that the
+    # model 400 killed -- so it was NOT observed on a succeeding turn, the bar
+    # this list sets. Kept anyway: the phrase is exact and names a config
+    # fallback, not a failure. Shown as a notice with its own text.
+    re.compile(r'Configured service tier \S+ is not advertised', re.I),
 )
 
 
@@ -7535,6 +7561,59 @@ def codex_error_is_notice(text: str) -> bool:
     """True when a codex `error` event is an advisory the run continues past."""
     t = str(text or '')
     return any(rx.search(t) for rx in _CODEX_NOTICE_PATTERNS)
+
+
+# The backend's refusal of a model slug the signed-in account/CLI pair cannot
+# serve. Live-captured 2026-10-01 from a Mac on codex-cli 0.153.0 (ChatGPT
+# sign-in): {"type":"error","status":400,"error":{"type":"invalid_request_error",
+# "message":"The 'gpt-6-sol' model is not supported when using Codex with a
+# ChatGPT account."}}. The wording blames the ACCOUNT, but the same account
+# runs gpt-6-sol on codex-cli 0.159.3 -- the real cause was the outdated CLI
+# (its catalog predates the slug), so nothing here keys on account type.
+_CODEX_MODEL_REJECTED_RE = re.compile(
+    r"The '([^']+)' model is not supported when using Codex with a ChatGPT account",
+    re.I)
+_CODEX_STATUS_RE = re.compile(r'"status"\s*:\s*(\d+)')
+
+
+def codex_model_rejection(text: str) -> Optional[str]:
+    """The refused model slug when `text` is Codex's "model not supported"
+    400, else None. Deterministic: the exact vendor phrase, and -- when the
+    payload carries a status at all -- that status must be 400."""
+    t = str(text or '')
+    m = _CODEX_MODEL_REJECTED_RE.search(t)
+    if not m:
+        return None
+    s = _CODEX_STATUS_RE.search(t)
+    if s and s.group(1) != '400':
+        return None
+    return m.group(1)
+
+
+# First codex-cli release whose OWN catalog carries the full gpt-6 line, read
+# 2026-10-01 from codex-rs/models-manager/models.json at each rust-v<ver> tag:
+# gpt-6-astra first appears in 0.154.0 (absent in 0.153.0); gpt-6-sol and
+# gpt-6-luna first appear in 0.157.0 (absent through 0.156.0). The 0.157.0
+# entries also carry OpenAI's own minimal_client_version of 0.155.0 for
+# sol/luna, i.e. older clients are not meant to be offered them at all. Below
+# 0.157.0 the CLI answers "Model metadata for gpt-6-sol not found" and the
+# backend may refuse the slug; Clayrune offers sol/luna, so that is the floor.
+CODEX_GPT6_CATALOG_MIN_CLI = (0, 157, 0)
+_CODEX_VERSION_RE = re.compile(r'(\d+)\.(\d+)\.(\d+)')
+
+
+def codex_cli_version_tuple(version: Optional[str]) -> Optional[Tuple[int, int, int]]:
+    """(major, minor, patch) from `codex --version` text, None if unparseable."""
+    m = _CODEX_VERSION_RE.search(version or '')
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
+
+# Install-method detection + updater table live in mc/cli_install.py, shared
+# with tools/cli-version-check.py. Kept under the old names for callers/tests.
+from mc.cli_install import (  # noqa: E402
+    CODEX_UPDATE_COMMANDS,
+    install_method as codex_install_method,
+)
 
 
 # The hook-trust notice fires once or twice on EVERY codex turn (it is a
@@ -8125,11 +8204,13 @@ class CodexRuntime(AgentRuntime):
                         payload={'text': _txt, 'severity': 'notice'},
                         raw=msg,
                     )
+                _refused = codex_model_rejection(_txt)
                 return AgentEvent(
                     type=EventType.ERROR, provider='codex',
                     session_id=session_id, mc_session_id=mc_session_id,
                     timestamp=_now_iso(),
-                    payload={'text': _txt},
+                    payload=({'text': _txt, 'model_rejected': _refused}
+                             if _refused else {'text': _txt}),
                     raw=msg,
                 )
             # ── codex 0.133 schema (content[] blocks) ───────────────────
@@ -8235,11 +8316,16 @@ class CodexRuntime(AgentRuntime):
                     payload={'text': err_msg, 'severity': 'notice'},
                     raw=msg,
                 )
+            # Classified from the structured payload here, never from the
+            # later text hint: explain_exit_error() sees only flattened text.
+            _refused = (codex_model_rejection(err_msg)
+                        if msg.get('status') in (None, 400, '400') else None)
             return AgentEvent(
                 type=EventType.ERROR, provider='codex',
                 session_id=session_id, mc_session_id=mc_session_id,
                 timestamp=_now_iso(),
-                payload={'text': err_msg},
+                payload=({'text': err_msg, 'model_rejected': _refused}
+                         if _refused else {'text': err_msg}),
                 raw=msg,
             )
         if etype == 'event_msg':
@@ -8716,10 +8802,13 @@ class CodexRuntime(AgentRuntime):
             )
         auth_status, auth_method = self._codex_auth_state()
         has_key = auth_status == 'ok'
+        update_hint, update_reason = self.cli_update_advice(version, p) if p else ('', '')
         return HealthStatus(
             installed=bool(p),
             binary_path=p,
             version=version,
+            update_hint=update_hint,
+            update_reason=update_reason,
             auth_state=AuthState(
                 # Local Codex auth is deterministic: either an API key or a
                 # ChatGPT OAuth token exists in ~/.codex/auth.json. Reporting
@@ -8730,6 +8819,124 @@ class CodexRuntime(AgentRuntime):
             ),
             install_hint='npm install -g @openai/codex' if is_npx else '',
         )
+
+    _cli_version_cache: Dict[str, Optional[str]] = {}
+
+    def _installed_cli_version(self) -> Optional[str]:
+        """`codex --version` text, memoised per resolved binary so a dispatch
+        never pays a subprocess for it twice; None when it cannot be read."""
+        p = self.resolve_binary()
+        key = str(p) if p else ''
+        if not key:
+            return None
+        if key not in CodexRuntime._cli_version_cache:
+            ver = None
+            try:
+                r = subprocess.run(self._cmd_prefix() + ['--version'],
+                                   capture_output=True, text=True,
+                                   encoding='utf-8', errors='replace', timeout=30,
+                                   creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+                raw = (r.stdout or r.stderr or '').strip()
+                ver = raw.splitlines()[0] if raw else None
+            except Exception as e:
+                from mc.core import _log
+                _log(f"[codex] --version probe failed: {e}", flush=True)
+            CodexRuntime._cli_version_cache[key] = ver
+        return CodexRuntime._cli_version_cache[key]
+
+    def _cache_slugs(self) -> Optional[set]:
+        """Every slug in the CLI's own ~/.codex/models_cache.json (any
+        visibility -- hidden entries are still servable), None when the file
+        is missing/unreadable/empty. That file is fetched per account by the
+        CLI itself, so it is the one authority we do not second-guess."""
+        try:
+            with open(self._model_cache_path(), 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            entries = data.get('models') if isinstance(data, dict) else None
+            slugs = {str(m['slug']) for m in (entries or [])
+                     if isinstance(m, dict) and m.get('slug')}
+            return slugs or None
+        except Exception:
+            return None
+
+    def _gate_model(self, model: str) -> Tuple[str, str]:
+        """(model to pass, warning) -- never hand `-m` a slug the installed
+        CLI cannot serve. Dropped to '' (the CLI's own default) with a
+        sentence naming the slug and the CLI version when the CLI's own cache
+        does not list it, or -- no cache to read -- when the CLI is older than
+        the gpt-6 catalog and the slug is a gpt-6 one. Ids in
+        _LEGACY_MODEL_IDS stay explicit-pass, as model_supported() already
+        promises. A missing cache with an unknown version passes the model
+        through: the one-shot refusal retry is the net for that case."""
+        if not model or model in self._LEGACY_MODEL_IDS:
+            return model, ''
+        ver = self._installed_cli_version()
+        slugs = self._cache_slugs()
+        if slugs is not None:
+            unlisted = model not in slugs
+        else:
+            v = codex_cli_version_tuple(ver)
+            unlisted = (v is not None and v < CODEX_GPT6_CATALOG_MIN_CLI
+                        and model.startswith('gpt-6'))
+        if not unlisted:
+            return model, ''
+        return '', (f"Model '{model}' is not in this Codex CLI's own model list "
+                    f"({ver or 'version unknown'}), so it was not requested; "
+                    f"Codex's native default is used for this run. "
+                    f"Update the Codex CLI from Settings > Providers to use it.")
+
+    def retry_without_model(self, handle: SessionHandle, old_proc) -> bool:
+        """ONE labelled respawn of the turn without -m after Codex refused
+        the model slug. Returns True when a retry was launched (the caller's
+        reader must then step aside), False when it must not retry: already
+        retried this turn, or nothing to retry with. Never loops: the flag is
+        consumed here and a retry that is refused again just fails."""
+        session = handle.session_dict
+        refused = session.pop('_codex_model_refused', '')
+        if not refused or session.get('_codex_retried_without_model'):
+            return False
+        prompt = session.get('_codex_last_prompt') or ''
+        if not prompt:
+            return False
+        session['_codex_retried_without_model'] = True
+        try:
+            session['log_lines'].append(
+                f"[codex warn] Codex refused model '{refused}' "
+                f"({self._installed_cli_version() or 'CLI version unknown'}); "
+                f"retrying this turn once with Codex's native default model. "
+                f"Update the Codex CLI from Settings > Providers to use '{refused}'.")
+            session['_codex_native_model'] = True
+            cmd = self.build_command(
+                model='', resume_id=session.get('_codex_last_resume') or '',
+                effort=session.get('_codex_effort', '') or '',
+                unattended_sandbox=session.get('_codex_unattended_sandbox', True),
+                fence_armed=session.get('_codex_fence_armed', True))
+            self._spawn_turn(handle, cmd, prompt, session.get('_codex_last_resume') or '')
+            return True
+        except Exception as e:
+            from mc.core import _log
+            _log(f"[codex] model-refusal retry failed to launch: {e}", flush=True)
+            return False
+
+    @staticmethod
+    def cli_update_advice(version: Optional[str],
+                          binary_path: Any = None) -> Tuple[str, str]:
+        """(update_hint, update_reason) when the installed CLI predates the
+        gpt-6 catalog Clayrune offers for it, else ('', ''). The hint is the
+        CODEX_UPDATE_COMMANDS entry matching HOW this binary was installed
+        (codex_install_method), so the in-app Update button runs the right
+        updater; '' with a reason when the method cannot be told -- the user
+        is then told to use the tool they installed it with, never guessed at."""
+        v = codex_cli_version_tuple(version)
+        if v is None or v >= CODEX_GPT6_CATALOG_MIN_CLI:
+            return '', ''
+        floor = '.'.join(str(x) for x in CODEX_GPT6_CATALOG_MIN_CLI)
+        reason = (f'Codex CLI {".".join(str(x) for x in v)} is older than {floor}, '
+                  f'the first release that knows the GPT-6 models.')
+        method = codex_install_method(binary_path)
+        if not method:
+            return '', reason + ' Update it with the same tool you installed it with.'
+        return CODEX_UPDATE_COMMANDS[method], reason + ' Update it to run them.'
 
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
@@ -8821,6 +9028,12 @@ class CodexRuntime(AgentRuntime):
                     'refusing unattended Codex launch: the steward fence '
                     f'self-test failed ({detail}). Codex hooks fail open, so '
                     'this run would have had no fence.')
+        model, _unlisted_warn = self._gate_model(model)
+        if _unlisted_warn and session_dict is not None:
+            session_dict.setdefault('log_lines', TimestampedLines()).append(
+                f'[codex warn] {_unlisted_warn}')
+            # Later turns re-state -m from `agent_model`; keep them native too.
+            session_dict['_codex_native_model'] = True
         cmd = self.build_command(model=model, resume_id=resume_id or '',
                                  effort=effort, unattended_sandbox=use_sandbox,
                                  fence_armed=fence_armed)
@@ -8859,6 +9072,10 @@ class CodexRuntime(AgentRuntime):
         if session_dict is not None:
             session_dict['_codex_unattended_sandbox'] = use_sandbox
             session_dict['_codex_fence_armed'] = fence_armed
+            # What retry_without_model() replays if this first turn's model
+            # slug is refused (_mode_a_dispatch consumes full_prompt itself).
+            session_dict['_codex_last_prompt'] = full_prompt
+            session_dict['_codex_last_resume'] = resume_id or ''
 
         return _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
@@ -8937,12 +9154,29 @@ class CodexRuntime(AgentRuntime):
         # before this change, or via a path that bypassed dispatch()) fails
         # safe to sandboxed, same posture as the decision function's own
         # missing-trigger_type case.
+        _model = '' if session.get('_codex_native_model') else self.session_model(handle)
+        _model, _unlisted_warn = self._gate_model(_model)
+        if _unlisted_warn:
+            session['_codex_native_model'] = True
+            session.setdefault('log_lines', TimestampedLines()).append(
+                f'[codex warn] {_unlisted_warn}')
         cmd = self.build_command(
-            model=self.session_model(handle), resume_id=resume_id,
+            model=_model, resume_id=resume_id,
             effort=session.get('_codex_effort', '') or '',
             unattended_sandbox=session.get('_codex_unattended_sandbox', True),
             # Read back like the sandbox posture; missing key fails safe to armed.
             fence_armed=session.get('_codex_fence_armed', True))
+        session.pop('_codex_retried_without_model', None)  # one retry PER turn
+        self._spawn_turn(handle, cmd, full_prompt, resume_id)
+
+    def _spawn_turn(self, handle: SessionHandle, cmd: List[str],
+                    full_prompt: str, resume_id: str) -> None:
+        """Start one codex turn and its reader. The prompt and resume id are
+        kept on the session so retry_without_model() can replay THIS turn."""
+        session = handle.session_dict
+        mc_sid = handle.mc_session_id
+        session['_codex_last_prompt'] = full_prompt
+        session['_codex_last_resume'] = resume_id
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -9098,6 +9332,16 @@ class CodexRuntime(AgentRuntime):
         return OneshotResult(text=last_text)
 
     def explain_exit_error(self, rc: int, log_tail: str) -> Optional[str]:
+        # First: the "model not supported ... ChatGPT account" 400 contains
+        # "chatgpt" and would otherwise fall into the auth branch below and
+        # read as "Codex isn't authenticated" -- it is signed in fine.
+        _refused = codex_model_rejection(log_tail or '')
+        if _refused:
+            return (f"Codex refused the model '{_refused}'. The installed Codex "
+                    f"CLI is probably too old to serve it: use Update on the "
+                    f"Codex card in Settings > Providers, pick another model "
+                    f"in the engine picker, or leave the model blank to use "
+                    f"Codex's own default.")
         s = (log_tail or '').lower()
         # Checked BEFORE the auth-hint match below on purpose: the real
         # usage_limit_exceeded message ("...purchase more credits...
