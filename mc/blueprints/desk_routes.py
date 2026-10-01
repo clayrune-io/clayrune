@@ -38,6 +38,7 @@ from flask import Blueprint, jsonify, request
 from mc import characters as _chars
 from mc import desk as _desk
 from mc import desk_brief as _brief
+from mc import desk_engines as _engines
 from mc import desk_engagement as _engagement
 from mc import desk_harvest as _harvest
 from mc import desk_retro as _retro
@@ -546,6 +547,71 @@ def delete_campaign(campaign_id):
     if not _desk.delete_campaign(campaign_id):
         return jsonify({'error': 'campaign not found'}), 404
     return jsonify({'ok': True})
+
+
+# ── Generation engines (MC-1019; plan M26/M27) ───────────────────────────────
+#
+# Backend for the Studio / Video surfaces: which engines exist and whether the
+# user has connected them, what a render would cost, and the job itself. The
+# credentials are vault entries (`higgsfield`, `gemini-api`, `openai-api`) that
+# a human creates; nothing here returns, logs or writes one.
+#
+# SUBMIT SPENDS THE USER'S MONEY, so it gets the same two gates as Start /
+# Approve / Renew: refused for an unattended caller, and the retyped dashboard
+# passcode (MC-995) on EVERY call. Estimate and poll spend nothing and take no
+# passcode; poll is what downloads the output once a job is ready.
+
+def _engine_refusal(e: '_engines.Refused'):
+    body = {'error': str(e), 'code': e.code}
+    body.update(e.extra)
+    return jsonify(body), e.status
+
+
+def _not_connected(e: '_engines.NotConnected'):
+    return jsonify({'error': e.reason, 'code': 'not_connected', 'engine_id': e.engine_id,
+                    'vault_entry': e.vault_entry}), 409
+
+
+@bp.route('/api/desk/engines', methods=['GET'])
+def list_engines():
+    return jsonify({'engines': _engines.list_engines(request.args.get('project_id') or None)})
+
+
+@bp.route('/api/desk/engines/estimate', methods=['POST'])
+def estimate_engine_job():
+    d = request.get_json(silent=True) or {}
+    try:
+        return jsonify(_engines.estimate(d, unattended=is_unattended_caller()))
+    except _engines.Refused as e:
+        return _engine_refusal(e)
+    except _engines.NotConnected as e:
+        return _not_connected(e)
+
+
+@bp.route('/api/desk/engines/jobs', methods=['POST'])
+def submit_engine_job():
+    d = request.get_json(silent=True) or {}
+    if is_unattended_caller():
+        return jsonify({'error': 'this action needs a human: an unattended agent session '
+                                 'cannot submit a render job (it spends money)'}), 403
+    refused = _require_human_passcode(d)
+    if refused:
+        return refused
+    try:
+        job, replay = _engines.submit(d, unattended=False)
+    except _engines.Refused as e:
+        return _engine_refusal(e)
+    except _engines.NotConnected as e:
+        return _not_connected(e)
+    return jsonify({'job': job, 'replay': replay}), (200 if replay else 201)
+
+
+@bp.route('/api/desk/engines/jobs/<job_id>', methods=['GET'])
+def get_engine_job(job_id):
+    job = _engines.poll(job_id, unattended=is_unattended_caller())
+    if job is None:
+        return jsonify({'error': 'job not found'}), 404
+    return jsonify({'job': job})
 
 
 # ── Story ledger ─────────────────────────────────────────────────────────────
