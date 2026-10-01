@@ -129,6 +129,12 @@
   //   undoRequest(result)  the route call that reverses the write, if one
   //                exists; if it refuses, the local change is put back.
   //   repaint()    optional, called after any rollback so the surface redraws.
+  //   irreversible optional: the route has no inverse (a finding's Re-confirm,
+  //                a project pause that already cascaded...). A live change then
+  //                gets a plain confirmation toast, NOT an Undo that would only
+  //                un-draw it locally while the server kept it. May be a
+  //                function (result) => message for a toast that reads the
+  //                server's answer.
   // Resolves { ok:true, result } or { ok:false, error } — never rejects, so a
   // click handler can `await` it without its own try/catch.
   async function run(cmd) {
@@ -148,6 +154,10 @@
       repaint();
       return { ok: false, error: msg };
     }
+    if (cmd.irreversible) {
+      _toast(typeof cmd.irreversible === 'function' ? cmd.irreversible(result) : (cmd.label || 'Saved'));
+      return { ok: true, result };
+    }
     const bus = window.DeskV1Kit && window.DeskV1Kit.commandBus;
     const undo = async () => {
       cmd.unapply();
@@ -166,5 +176,22 @@
     return { ok: true, result };
   }
 
-  window.DeskV1Store = { state, gate, load, run, api, live, demo };
+  // write(cmd): the one entry a surface uses for a change, same cmd as run().
+  //   live ON   -> run(): apply, the route call, rollback + toast on a refusal.
+  //   live OFF  -> DEMO: apply and the Undo toast through the command bus, and
+  //                NO route call: demo data must never reach a real backend.
+  // Resolves { ok, result?, error? } in both modes.
+  async function write(cmd) {
+    if (live()) return run(cmd);
+    if (!cmd || typeof cmd.apply !== 'function' || typeof cmd.unapply !== 'function') {
+      throw new Error('DeskV1Store.write: cmd needs apply() and unapply()');
+    }
+    cmd.apply();
+    const bus = window.DeskV1Kit && window.DeskV1Kit.commandBus;
+    const undo = () => { cmd.unapply(); if (typeof cmd.repaint === 'function') cmd.repaint(); };
+    if (bus) bus.run({ label: cmd.label, do: () => {}, undo });
+    return { ok: true, result: null };
+  }
+
+  window.DeskV1Store = { state, gate, load, run, write, api, live, demo };
 })();

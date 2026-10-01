@@ -3,10 +3,11 @@
 // screenshot goes to Ron before merge). Window-bridged module, no `import`
 // (ground rule 1).
 //
-// Fixtures only (ground rule 3): every drop/propose/pause mutates the
-// in-memory DeskV1Fixtures objects directly through DeskV1Kit.commandBus —
-// the same "client-side over fixture data with Undo" contract T3's review
-// surface already established. Nothing here calls a backend route.
+// R1-W S1: every change goes through DeskV1Store.write — optimistic apply with
+// Undo, and with `desk_v1_live` on also the route call (rolled back with the
+// server's own error on a refusal). Flag off is demo mode: the same local
+// change and Undo, no route call. Adding MATERIAL to a campaign (a new piece)
+// has no store yet (slice S4), so live mode refuses it rather than pretend.
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -81,19 +82,38 @@
       DeskV1Kit.toast(`${dragData.label} is already on “${camp.plan.title}”.`);
       return;
     }
+    if (dragData.type !== 'channel' && DeskV1Store.live()) {
+      DeskV1Kit.toast('Adding material to a campaign is not wired to the server yet.');
+      return;
+    }
     const cmd = _dropCommandFor(camp, dragData);
-    DeskV1Kit.commandBus.run({ label: cmd.label, do: () => { cmd.do(); _renderStatusBoard(); }, undo: () => { cmd.undo(); _renderStatusBoard(); } });
+    DeskV1Store.write({
+      label: cmd.label, apply: () => { cmd.do(); _renderStatusBoard(); }, unapply: cmd.undo, repaint: _renderStatusBoard,
+      request: () => _saveCampaignPlan(camp), undoRequest: () => _saveCampaignPlan(camp),
+    });
+  }
+
+  // PATCH replaces `plan` whole, so the current plan goes up in full. Waits for
+  // the campaign's own create if that is still in flight.
+  async function _saveCampaignPlan(camp) {
+    await window.deskV1AfterCampaignSaved(camp.id);
+    return DeskV1Store.api('PATCH', '/api/desk/campaigns/' + encodeURIComponent(camp.id) + '?shape=v1', { plan: camp.plan });
   }
 
   function _applyDropToNewCampaign(dragData) {
+    if (dragData.type !== 'channel' && DeskV1Store.live()) {
+      DeskV1Kit.toast('Adding material to a campaign is not wired to the server yet.');
+      return;
+    }
     const camp = _createProposedCampaign('New campaign');
     const cmd = _dropCommandFor(camp, dragData);
-    DeskV1Kit.commandBus.run({
+    // The account is on the plan before the POST, so one create carries both.
+    cmd.do();
+    const saved = window.deskV1SaveNewDraft(camp, {
       label: `Created “${camp.plan.title}” and added ${dragData.label}`,
-      do: () => { _fx().campaigns.push(camp); cmd.do(); _renderStatusBoard(); },
-      undo: () => { cmd.undo(); const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); _renderStatusBoard(); },
+      repaint: _renderStatusBoard,
     });
-    deskV1Nav('campaign', { campaignId: camp.id });
+    window.deskV1OpenNewDraft(saved, null, camp.id);
   }
 
   function _onCampaignPicked(pickedId, dragData) {
@@ -521,18 +541,11 @@
   function _startNewCampaign(projectId) {
     const camp = window.deskV1CreateDraftCampaign(projectId || null);
     camp._discardIfUntouched = true;
-    DeskV1Kit.commandBus.run({
-      label: 'New campaign started',
-      do: () => { _fx().campaigns.push(camp); _renderStatusBoard(); },
-      undo: () => {
-        const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1);
-        if (typeof window.deskV1Render === 'function') window.deskV1Render();
-      },
-    });
+    const saved = window.deskV1SaveNewDraft(camp, { repaint: _renderStatusBoard });
     // MC-977 mobile G-4: Home -> campaign pushes ONLY the campaign, so Back is
     // one tap to Home (where the user came from), not through a project page
     // they never opened. From a project page, the project is already on the stack.
-    deskV1Nav('campaign', { campaignId: camp.id, projectId: projectId || null });
+    window.deskV1OpenNewDraft(saved, projectId || null, camp.id);
   }
 
   // The crumb's "Projects: All ▾" is a label only today (desk-v1-shell.js

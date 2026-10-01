@@ -8,9 +8,10 @@
 // nobody touched. The filename stays so index.html's script list and the
 // `window.deskV1*` names the rest of the Desk calls don't move.
 //
-// Fixtures only (ground rule 3): a draft campaign is a plain object pushed
-// onto DeskV1Fixtures.campaigns, same client-side contract every other v1
-// surface uses.
+// A draft campaign is a plain object pushed onto the store's `campaigns`
+// (R1-W S1: through DeskV1Store.write, so live mode also POSTs it to
+// /api/desk/campaigns?shape=v1 and rolls back on a refusal; demo mode, flag
+// off, stays client-side with Undo and calls nothing).
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
   function _fx() { return window.DeskV1Store.state(); }
@@ -65,14 +66,44 @@
     };
   }
 
+  // Campaign ids whose POST is still in flight. A PATCH or DELETE for the same
+  // id must wait for it (`deskV1AfterCampaignSaved`), or the server would see
+  // the edit before the campaign exists and the create after the discard.
+  const _saving = new Map();
+  function deskV1AfterCampaignSaved(id) { return _saving.get(id) || Promise.resolve(); }
+
+  // Pushes `camp` into the store and, live, creates it server-side. Resolves
+  // like DeskV1Store.write. `repaint` redraws whatever page the caller is on.
+  function deskV1SaveNewDraft(camp, opts) {
+    opts = opts || {};
+    const S = window.DeskV1Store;
+    return S.write({
+      label: opts.label || 'New campaign started',
+      apply: () => { _fx().campaigns.push(camp); if (opts.repaint) opts.repaint(); },
+      unapply: () => { const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); },
+      repaint: () => { if (typeof window.deskV1Render === 'function') window.deskV1Render(); },
+      request: () => {
+        const p = S.api('POST', '/api/desk/campaigns?shape=v1', camp);
+        const tracked = p.then(() => {}, () => {}).then(() => { if (_saving.get(camp.id) === tracked) _saving.delete(camp.id); });
+        _saving.set(camp.id, tracked);
+        return p;
+      },
+      undoRequest: () => S.api('DELETE', '/api/desk/campaigns/' + encodeURIComponent(camp.id)),
+    });
+  }
+
+  // Opens the new draft's page. Live, only once the server has accepted it: a
+  // refusal rolls the draft back, and a page for a campaign that is not there
+  // would be a dead end.
+  function deskV1OpenNewDraft(saved, projectId, campaignId) {
+    const go = () => deskV1Nav('campaign', { campaignId, projectId: projectId || null });
+    if (window.DeskV1Store.live()) saved.then((r) => { if (r.ok) go(); }); else go();
+  }
+
   function deskV1NewCampaignInProject(projectId) {
     const camp = deskV1CreateDraftCampaign(projectId);
-    DeskV1Kit.commandBus.run({
-      label: 'New campaign started',
-      do: () => { _fx().campaigns.push(camp); },
-      undo: () => { const arr = _fx().campaigns; const i = arr.findIndex((c) => c.id === camp.id); if (i >= 0) arr.splice(i, 1); if (typeof window.deskV1Render === 'function') window.deskV1Render(); },
-    });
-    deskV1Nav('campaign', { campaignId: camp.id, projectId });
+    const saved = deskV1SaveNewDraft(camp);
+    deskV1OpenNewDraft(saved, projectId, camp.id);
   }
 
   // ── Project field (R2-2f, Ron 2026-09-30: "the project picker on the left
@@ -117,22 +148,36 @@
       // so a different project drops it (back to that project's own default).
       const prevAgent = camp.how ? camp.how.agent : null;
       const nextProject = _project(nextId);
-      DeskV1Kit.commandBus.run({
+      const nextTitle = (!plan.title || (prevProject && plan.title === _defaultTitle(prevProject))) ? _defaultTitle(nextProject) : plan.title;
+      const nextBrief = (!plan.brief || (prevProject && plan.brief === _defaultBrief(prevProject))) ? _defaultBrief(nextProject) : plan.brief;
+      const rerender = () => { if (typeof window.deskV1Render === 'function') window.deskV1Render(); };
+      window.DeskV1Store.write({
         label: `Set campaign project to ${nextProject ? nextProject.name : 'none'}`,
-        do: () => {
+        apply: () => {
           camp.projectId = nextId;
           camp._touched = true;
           if (camp.how) camp.how.agent = null;
-          if (!plan.title || (prevProject && plan.title === _defaultTitle(prevProject))) plan.title = _defaultTitle(nextProject);
-          if (!plan.brief || (prevProject && plan.brief === _defaultBrief(prevProject))) plan.brief = _defaultBrief(nextProject);
-          if (typeof window.deskV1Render === 'function') window.deskV1Render();
+          plan.title = nextTitle; plan.brief = nextBrief;
+          rerender();
         },
-        undo: () => {
+        unapply: () => {
           camp.projectId = prevId;
           camp._touched = prevTouched;
           if (camp.how) camp.how.agent = prevAgent;
           plan.title = prevTitle; plan.brief = prevBrief;
-          if (typeof window.deskV1Render === 'function') window.deskV1Render();
+        },
+        repaint: rerender,
+        // PATCH replaces whole top-level keys, so `plan` and `how` go in full.
+        request: async () => {
+          await deskV1AfterCampaignSaved(camp.id);
+          const body = { projectId: nextId, plan };
+          if (camp.how) body.how = camp.how;
+          return window.DeskV1Store.api('PATCH', '/api/desk/campaigns/' + encodeURIComponent(camp.id) + '?shape=v1', body);
+        },
+        undoRequest: () => {
+          const body = { projectId: prevId, plan };
+          if (camp.how) body.how = camp.how;
+          return window.DeskV1Store.api('PATCH', '/api/desk/campaigns/' + encodeURIComponent(camp.id) + '?shape=v1', body);
         },
       });
     };
@@ -176,6 +221,17 @@
     const arr = _campaigns();
     const i = arr.indexOf(camp);
     if (i >= 0) arr.splice(i, 1);
+    // Live, the draft also exists server-side (it was POSTed on creation):
+    // delete it too, after any POST still in flight. A failed delete puts the
+    // draft back so the page never hides one the server still holds.
+    if (i >= 0 && window.DeskV1Store.live()) {
+      deskV1AfterCampaignSaved(camp.id)
+        .then(() => window.DeskV1Store.api('DELETE', '/api/desk/campaigns/' + encodeURIComponent(camp.id)))
+        .catch((e) => {
+          arr.push(camp);
+          if (window.DeskV1Kit) DeskV1Kit.toast('Could not discard the empty draft: ' + (e && e.message ? e.message : e));
+        });
+    }
     return i >= 0;
   }
 
@@ -183,5 +239,8 @@
   window.deskV1CreateDraftCampaign = deskV1CreateDraftCampaign;
   window.deskV1MountProjectField = deskV1MountProjectField;
   window.deskV1NewCampaignInProject = deskV1NewCampaignInProject;
+  window.deskV1SaveNewDraft = deskV1SaveNewDraft;
+  window.deskV1OpenNewDraft = deskV1OpenNewDraft;
+  window.deskV1AfterCampaignSaved = deskV1AfterCampaignSaved;
   window.deskV1DiscardIfUntouchedDraft = deskV1DiscardIfUntouchedDraft;
 })();
