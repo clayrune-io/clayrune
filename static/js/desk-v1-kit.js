@@ -290,6 +290,76 @@
     },
   };
 
+  // ── Popover placement (MC-977 mobile fix batch 1: WT-4 / P-3 / H-5) ─────────
+  // ONE helper for every Desk popover that hangs off a trigger (Add to… menu,
+  // the ⋯ card menus, the Review ⋯ menu, ⓘ popovers). Their CSS anchors
+  // (`right:0`, `top:calc(100% + 4px)`) assume a roomy desktop row; on a phone
+  // a left-edge trigger with `right:0` put the menu 118px off the left edge,
+  // and a wrapped crumb made `top:100%` resolve against the crumb, not the
+  // button. This measures instead of assuming: it keeps the pop where it is in
+  // the DOM (still a child of its position:relative host, so scrolling and
+  // focus order are untouched) but sets left/top from the trigger's real rect,
+  // clamped to the visible bounds = the modal ∩ the scrolling Desk body ∩ the
+  // viewport. Horizontal: align to the trigger's edge on the side that has more
+  // room, then clamp. Vertical: below if it fits, else above, else the larger
+  // side with a max-height + scroll. Call it right after appending `pop`.
+  // opts.align 'start'|'end' forces the edge; opts.prefer 'above' tries above first.
+  function placePopover(pop, trigger, opts) {
+    if (!pop || !trigger || !pop.isConnected) return;
+    opts = opts || {};
+    const M = 8, GAP = 4;
+    const inter = (a, b) => ({
+      left: Math.max(a.left, b.left), top: Math.max(a.top, b.top),
+      right: Math.min(a.right, b.right), bottom: Math.min(a.bottom, b.bottom),
+    });
+    const vv = window.visualViewport;
+    let bounds = { left: 0, top: 0, right: vv ? vv.width : window.innerWidth, bottom: vv ? vv.height : window.innerHeight };
+    const modal = trigger.closest('.modal-content');
+    if (modal) bounds = inter(bounds, modal.getBoundingClientRect());
+    const scroller = trigger.closest('#desk-v1-body');
+    if (scroller) bounds = inter(bounds, scroller.getBoundingClientRect());
+    pop.style.maxWidth = '';
+    // The pop's own CSS max-width (the ⓘ popover's 260px) still applies; the
+    // bounds only ever tighten it.
+    const cssMax = parseFloat(getComputedStyle(pop).maxWidth);
+    const availW = Math.max(120, Math.min(isFinite(cssMax) ? cssMax : Infinity, bounds.right - bounds.left - 2 * M));
+
+    // Measure the natural size with the anchor CSS neutralised.
+    Object.assign(pop.style, { left: '0px', top: '0px', right: 'auto', bottom: 'auto', width: 'max-content', maxWidth: availW + 'px', maxHeight: '', overflowY: '' });
+    const pw = pop.offsetWidth;
+    const ph = pop.offsetHeight;
+    const t = trigger.getBoundingClientRect();
+
+    let align = opts.align;
+    if (!align) align = ((t.left + t.right) / 2 > (bounds.left + bounds.right) / 2) ? 'end' : 'start';
+    let L = align === 'end' ? t.right - pw : t.left;
+    L = Math.min(L, bounds.right - M - pw);
+    L = Math.max(L, bounds.left + M);
+
+    const roomBelow = bounds.bottom - M - (t.bottom + GAP);
+    const roomAbove = (t.top - GAP) - (bounds.top + M);
+    let above = opts.prefer === 'above';
+    if (above ? ph > roomAbove && roomBelow >= ph : ph > roomBelow && roomAbove >= ph) above = !above;
+    if (ph > (above ? roomAbove : roomBelow)) {
+      // Neither side fits: take the larger one and let the menu scroll.
+      above = roomAbove > roomBelow;
+      const room = Math.max(80, above ? roomAbove : roomBelow);
+      pop.style.maxHeight = room + 'px';
+      pop.style.overflowY = 'auto';
+    }
+    const usedH = Math.min(ph, Math.max(80, above ? roomAbove : roomBelow));
+    const T = above ? t.top - GAP - usedH : t.bottom + GAP;
+
+    const host = pop.offsetParent || document.body;
+    const hr = host === document.body || host === document.documentElement
+      ? { left: -window.scrollX, top: -window.scrollY }
+      : host.getBoundingClientRect();
+    const bl = host.clientLeft || 0;
+    const bt = host.clientTop || 0;
+    pop.style.left = Math.round(L - hr.left - bl + (host.scrollLeft || 0)) + 'px';
+    pop.style.top = Math.round(T - hr.top - bt + (host.scrollTop || 0)) + 'px';
+  }
+
   // ── Add to… ▾ menu (UX-05): every shelf item needs BOTH a drag path and a
   // click/keyboard path — focus + Enter, or a visible trigger, opens this
   // menu (campaigns + "New campaign"); Esc closes it and returns focus to
@@ -347,6 +417,7 @@
     const host = triggerEl.closest('.desk-v1-addto-wrap') || triggerEl.parentElement || document.body;
     if (host.style && !host.style.position) host.style.position = 'relative';
     host.appendChild(menu);
+    placePopover(menu, triggerEl);
     _openMenu = { el: menu, trigger: triggerEl, returnFocus: triggerEl };
     const first = menu.querySelector('button');
     if (first) first.focus();
@@ -405,6 +476,7 @@
         const host = btn.parentElement || containerEl;
         if (host.style && !host.style.position) host.style.position = 'relative';
         host.appendChild(pop);
+        placePopover(pop, btn);
         btn.dataset.infoOpen = '1';
         _openPopover = { el: pop, btn };
       };
@@ -1197,7 +1269,7 @@
     stateLabel, stateLabelHTML,
     channelBadge,
     announce, toast, commandBus,
-    addToMenu, bindAddToTrigger,
+    addToMenu, bindAddToTrigger, placePopover,
     infoIconHTML, bindInfoIcons,
     posyBoxHTML, bindPosyBox,
     deskAgentRef, projectAgentChoices, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL, onAgentsReady,

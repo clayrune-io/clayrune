@@ -363,6 +363,7 @@
         ? `<button type="button" data-menu-delete>Delete campaign</button>`
         : `<button type="button" data-menu-archive>Archive campaign</button>`;
     host.appendChild(menu);
+    DeskV1Kit.placePopover(menu, triggerEl);
     const close = () => { menu.remove(); document.removeEventListener('click', closer); };
     const closer = (e) => { if (!menu.contains(e.target) && e.target !== triggerEl) close(); };
     setTimeout(() => document.addEventListener('click', closer), 0);
@@ -1113,6 +1114,7 @@
       <button type="button" data-menu-archive>Archive</button>`;
     host.style.position = 'relative';
     host.appendChild(menu);
+    DeskV1Kit.placePopover(menu, triggerEl);
     const close = () => { menu.remove(); document.removeEventListener('click', closer); };
     const closer = (e) => { if (!menu.contains(e.target) && e.target !== triggerEl) close(); };
     setTimeout(() => document.addEventListener('click', closer), 0);

@@ -645,6 +645,7 @@
     menu.innerHTML = `<button type="button" data-publish-now ${disabled ? 'disabled title="' + esc(reason) + '"' : ''}>Publish now…</button>`;
     host.style.position = 'relative';
     host.appendChild(menu);
+    DeskV1Kit.placePopover(menu, triggerEl, { prefer: 'above' });
     if (!disabled) {
       menu.querySelector('[data-publish-now]').onclick = () => { menu.remove(); _dispose(family, version, 'verified_published', 'Published now'); };
     }
