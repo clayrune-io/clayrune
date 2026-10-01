@@ -359,18 +359,72 @@ function isSlashCommandLine(text) {
   return SLASH_COMMAND_RE.test(msg.trimStart());
 }
 
-// A Stop-hook block/resend boundary. The server emits '[stop-hook-redo]'
-// (agent_runtime.is_stop_hook_feedback). Buffers rebuilt from a transcript
-// BEFORE that fix instead hold the hook's feedback as a fake user prompt,
-// "> Ron: Stop hook feedback:\n...", and those stay in a live session's memory
-// until it is rebuilt again, so they are recognised here too.
-function isStopHookRedoLine(text) {
+// A Stop-hook block/resend boundary. The server emits '[stop-hook-redo:length]'
+// (the reply-length guard asked for a shorter RE-SEND) or '[stop-hook-redo:other]'
+// (permission-ask / turn guard: continue the work), see
+// agent_runtime.stop_hook_marker. Markers stored before the tag existed are the
+// bare '[stop-hook-redo]' ('untagged'). Buffers rebuilt from a transcript
+// BEFORE the marker existed instead hold the hook's feedback as a fake user
+// prompt, "> Ron: Stop hook feedback:\n...", and those stay in a live session's
+// memory until it is rebuilt again, so they are recognised here too.
+const _STOP_HOOK_MARKER_RE = /^\[stop-hook-redo(?::([\w-]+))?\]$/;
+const _STOP_HOOK_LENGTH_REASON = 'BREVITY RULE VIOLATED';
+
+// null when `text` is not a boundary; else 'length' | 'other' | 'untagged'.
+function stopHookRedoKind(text) {
   const t = (text || '').trim();
-  if (t === '[stop-hook-redo]') return true;
-  if (!t.startsWith('> ')) return false;
+  const m = _STOP_HOOK_MARKER_RE.exec(t);
+  if (m) return m[1] === 'length' ? 'length' : (m[1] ? 'other' : 'untagged');
+  if (!t.startsWith('> ')) return null;
   const body = t.slice(2);
   const sep = body.indexOf(': ');
-  return sep !== -1 && body.slice(sep + 2).startsWith('Stop hook feedback:');
+  if (sep === -1) return null;
+  const rest = body.slice(sep + 2);
+  if (!rest.startsWith('Stop hook feedback:')) return null;
+  return rest.slice('Stop hook feedback:'.length).trim().startsWith(_STOP_HOOK_LENGTH_REASON)
+    ? 'length' : 'other';
+}
+
+function isStopHookRedoLine(text) {
+  return stopHookRedoKind(text) !== null;
+}
+
+// The earlier draft may be hidden ONLY when the follow-up actually replaces
+// it (2026-10-01: a one-line meta reply, "nothing to resend", used to swallow
+// the full answer into "Show earlier draft"). One rule for the live and the
+// history renderer:
+//   - kind 'other' never collapses (the follow-up continues the work);
+//   - the follow-up needs >= 20 words, and
+//   - >= 40% of the SMALLER distinct content-word set (words of 4+ letters,
+//     minus stopwords) must appear in the other. Smaller, not the draft's: a
+//     compressed re-send is shorter than the draft by design, so measuring
+//     against the draft's size would reject the very re-send the length hook
+//     asks for, while an unrelated one-liner shares almost nothing.
+const STOP_HOOK_MIN_FOLLOW_WORDS = 20;
+const STOP_HOOK_MIN_OVERLAP = 0.4;
+const _STOP_HOOK_STOPWORDS = new Set((
+  'about above after again also been before being between both could does done down during each ' +
+  'from have having here into just like made make many more most much must only other over same ' +
+  'should since some such than that their them then there these they this those through under ' +
+  'until very want well were what when where which while will with within without would your yours'
+).split(' '));
+
+function _stopHookContentWords(text) {
+  const out = new Set();
+  const m = String(text || '').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+  for (const w of m) if (w.length >= 4 && !_STOP_HOOK_STOPWORDS.has(w)) out.add(w);
+  return out;
+}
+
+function stopHookDraftReplaced(kind, draftText, followText) {
+  if (kind !== 'length' && kind !== 'untagged') return false;
+  if ((String(followText || '').match(/\S+/g) || []).length < STOP_HOOK_MIN_FOLLOW_WORDS) return false;
+  const d = _stopHookContentWords(draftText);
+  const f = _stopHookContentWords(followText);
+  if (!d.size || !f.size) return false;
+  let shared = 0;
+  for (const w of f) if (d.has(w)) shared++;
+  return shared / Math.min(d.size, f.size) >= STOP_HOOK_MIN_OVERLAP;
 }
 
 function agentLineCls(text) {
@@ -441,14 +495,16 @@ function collapseIntoPlanButton(sessionId, container) {
 }
 
 // A Stop hook (reply-length/permission-ask/turn-guard) blocked the draft that
-// just streamed and the model re-sent a compressed version in the SAME turn —
-// server marks the boundary with a '[stop-hook-redo]' line (see
-// agent_runtime.is_stop_hook_feedback). Collapse whatever narration/output
-// landed since the last tool/prompt line (i.e. the retracted draft) into a
-// native <details> toggle, hidden by default, so the chat shows only the
-// final reply plus a small "Show earlier draft" affordance instead of both
-// replies back to back. Mirrors collapseIntoPlanButton's walk-back shape.
-function collapseIntoDraftBlock(sessionId, container) {
+// just streamed; the server marks the boundary with a '[stop-hook-redo:<kind>]'
+// line (see agent_runtime.stop_hook_marker). The draft is whatever narration/
+// output landed since the last tool/prompt line. It is hidden in a native
+// <details> toggle ("Show earlier draft") ONLY once the follow-up has arrived
+// and stopHookDraftReplaced() says it replaces the draft — until then (and for
+// good when it does not) the draft stays visible and the follow-up appends
+// below it. Mirrors collapseIntoPlanButton's walk-back shape.
+const _draftPending = new Map();  // sessionId -> {kind, container, els, draft, follow}
+
+function _trailingDraftElements(container) {
   const children = Array.from(container.children);
   const draftElements = [];
   for (let i = children.length - 1; i >= 0; i--) {
@@ -459,15 +515,45 @@ function collapseIntoDraftBlock(sessionId, container) {
         child.classList.contains('draft-block')) break;
     draftElements.unshift(child);
   }
-  if (draftElements.length === 0) return; // nothing to collapse — never hide a bare marker
+  return draftElements;
+}
 
+// Marker arrived: remember the draft, decide when the follow-up text shows up.
+function armDraftCollapse(sessionId, container, kind) {
+  _draftPending.delete(sessionId);
+  if (kind === 'other') return;
+  const els = _trailingDraftElements(container);
+  if (els.length === 0) return; // nothing to collapse — never hide a bare marker
+  _draftPending.set(sessionId, {
+    kind, container, els,
+    draft: els.map((e) => e.textContent || '').join('\n'), follow: '',
+  });
+}
+
+// Every line appended after the marker: feed it to the pending decision.
+function noteDraftFollowup(sessionId, line) {
+  const p = _draftPending.get(sessionId);
+  if (!p) return;
+  const cls = agentLineCls(line);
+  if (cls.includes('agent-line-tool') || cls.includes('agent-line-prompt')) {
+    _draftPending.delete(sessionId); // the follow-up moved on to other work
+    return;
+  }
+  if (cls !== 'agent-line' || !line.trim()) return;
+  p.follow += '\n' + line;
+  if (!stopHookDraftReplaced(p.kind, p.draft, p.follow)) return;
+  _draftPending.delete(sessionId);
+  collapseIntoDraftBlock(p.container, p.els);
+}
+
+function collapseIntoDraftBlock(container, draftElements) {
+  if (!draftElements.length || draftElements[0].parentNode !== container) return;
   const details = document.createElement('details');
   details.className = 'draft-block';
   const summary = document.createElement('summary');
   summary.textContent = 'Show earlier draft';
   details.appendChild(summary);
-  const insertBefore = draftElements[0];
-  container.insertBefore(details, insertBefore);
+  container.insertBefore(details, draftElements[0]);
   for (const el of draftElements) details.appendChild(el);
 }
 
@@ -530,7 +616,11 @@ window.isSlashCommandLine = isSlashCommandLine;
 window.SLASH_COMMAND_RE = SLASH_COMMAND_RE;
 window.collapseIntoPlanButton = collapseIntoPlanButton;
 window.collapseIntoDraftBlock = collapseIntoDraftBlock;
+window.armDraftCollapse = armDraftCollapse;
+window.noteDraftFollowup = noteDraftFollowup;
 window.isStopHookRedoLine = isStopHookRedoLine;
+window.stopHookRedoKind = stopHookRedoKind;
+window.stopHookDraftReplaced = stopHookDraftReplaced;
 window.expandAgentOutput = expandAgentOutput;
 window._isAgentOutputPinned = _isAgentOutputPinned;
 window._scheduleAgentPinScroll = _scheduleAgentPinScroll;

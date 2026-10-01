@@ -143,17 +143,17 @@ def test_transcript_buffer_lines_collapses_stop_hook_draft(monkeypatch):
     monkeypatch.setattr(ar, '_parse_transcript_messages', lambda f, max_messages=0, **kw: [
         {'role': 'user', 'text': 'Summarize the changes.'},
         {'role': 'assistant', 'text': 'A very long draft reply.'},
-        {'role': 'stop_hook_redo', 'text': ''},
+        {'role': 'stop_hook_redo', 'text': '', 'kind': 'length'},
         {'role': 'assistant', 'text': 'Short final reply.'},
     ])
     lines = ar._transcript_buffer_lines('/p', 'csid', 'Ron')
     # No fake "> Ron: Stop hook feedback..." bubble, and the marker survives
     # so the renderer can collapse the draft that precedes it.
     assert not any('Stop hook feedback' in l for l in lines)
-    assert '[stop-hook-redo]' in lines
+    assert '[stop-hook-redo:length]' in lines
     assert 'A very long draft reply.' in lines
     assert 'Short final reply.' in lines
-    marker_idx = lines.index('[stop-hook-redo]')
+    marker_idx = lines.index('[stop-hook-redo:length]')
     assert 'A very long draft reply.' in lines[marker_idx - 1]
     assert lines[-1] == 'Short final reply.'
 
@@ -211,11 +211,11 @@ def test_mode_a_reader_emits_boundary_marker(tmp_data_dir):
     lines = session['log_lines']
     assert 'A very long draft reply.' in lines
     assert 'Short final reply.' in lines
-    assert '[stop-hook-redo]' in lines
+    assert '[stop-hook-redo:length]' in lines
     # The synthetic hook turn is never rendered as its own text line.
     assert not any('Stop hook feedback' in ln for ln in lines)
     # Order: draft, marker, final.
-    assert lines.index('A very long draft reply.') < lines.index('[stop-hook-redo]') < lines.index('Short final reply.')
+    assert lines.index('A very long draft reply.') < lines.index('[stop-hook-redo:length]') < lines.index('Short final reply.')
 
 
 def test_mode_b_reader_emits_boundary_marker(tmp_data_dir):
@@ -231,9 +231,9 @@ def test_mode_b_reader_emits_boundary_marker(tmp_data_dir):
     lines = session['log_lines']
     assert 'A very long draft reply.' in lines
     assert 'Short final reply.' in lines
-    assert '[stop-hook-redo]' in lines
+    assert '[stop-hook-redo:length]' in lines
     assert not any('Stop hook feedback' in ln for ln in lines)
-    assert lines.index('A very long draft reply.') < lines.index('[stop-hook-redo]') < lines.index('Short final reply.')
+    assert lines.index('A very long draft reply.') < lines.index('[stop-hook-redo:length]') < lines.index('Short final reply.')
 
 
 def test_reader_turn_without_hook_is_unaffected(tmp_data_dir):
@@ -251,7 +251,7 @@ def test_reader_turn_without_hook_is_unaffected(tmp_data_dir):
     session['proc'] = proc
     server._read_agent_stream(proc, session)
     assert 'hello world' in session['log_lines']
-    assert '[stop-hook-redo]' not in session['log_lines']
+    assert not any(l.startswith('[stop-hook-redo') for l in session['log_lines'])
 
 
 # ── agent_log summary: must use the FINAL text, never the retracted draft ───
@@ -260,7 +260,7 @@ def test_last_reply_text_uses_final_reply_after_stop_hook():
     session = {'log_lines': [
         '> Ron: Summarize the changes.',
         'A very long draft reply.',
-        '[stop-hook-redo]',
+        '[stop-hook-redo:length]',
         'Short final reply.',
     ]}
     assert ar._last_reply_text(session) == 'Short final reply.'
@@ -307,9 +307,9 @@ def test_real_transcript_history_reload_never_shows_hook_as_user(monkeypatch):
     assert [l for l in lines if l.lstrip().startswith('> ')] == ['\n> Ron: What is the status?\n']
     assert lines == ['\n> Ron: What is the status?\n',
                      'DRAFT ONE: long first reply that tripped the brevity guard.',
-                     '[stop-hook-redo]', 'FINAL ONE: short resend.',
+                     '[stop-hook-redo:length]', 'FINAL ONE: short resend.',
                      'DRAFT TWO: long reply ending on a permission ask.',
-                     '[stop-hook-redo]', '[stop-hook-redo]',
+                     '[stop-hook-redo:length]', '[stop-hook-redo:other]',
                      'FINAL TWO: short resend after two blocks.']
 
 
@@ -386,7 +386,7 @@ def _run_revived(tmp_data_dir, monkeypatch, transcript_path, reader_name, stream
 def _assert_collapsed(lines):
     d = lines.index('DRAFT: long reply the brevity guard blocked.')
     f = lines.index('FINAL: compressed resend.')
-    assert lines[d + 1:f] == ['[stop-hook-redo]'], lines
+    assert lines[d + 1:f] == ['[stop-hook-redo:length]'], lines
 
 
 def test_revived_mode_b_live_turn_emits_marker(tmp_data_dir, monkeypatch):
@@ -415,7 +415,7 @@ def test_no_marker_when_transcript_shows_no_hook(tmp_data_dir, monkeypatch, tmp_
     f = tmp_path / 'nohook.jsonl'
     f.write_text('\n'.join(kept) + '\n', encoding='utf-8')
     lines, _ = _run_revived(tmp_data_dir, monkeypatch, f, '_read_agent_stream_b')
-    assert '[stop-hook-redo]' not in lines
+    assert not any(l.startswith('[stop-hook-redo') for l in lines)
 
 
 def test_ordinary_tool_turn_never_reads_the_transcript(tmp_data_dir, monkeypatch):
@@ -432,7 +432,7 @@ def test_ordinary_tool_turn_never_reads_the_transcript(tmp_data_dir, monkeypatch
         json.dumps({'type': 'result', 'num_turns': 1}),
     ]
     lines, calls = _run_revived(tmp_data_dir, monkeypatch, _REVIVED, '_read_agent_stream_b', stream)
-    assert calls == [] and '[stop-hook-redo]' not in lines
+    assert calls == [] and not any(l.startswith('[stop-hook-redo') for l in lines)
 
 
 # ── Live stream shape of Claude Code 2.1.274 (2026-09-18 regression) ─────────
@@ -483,7 +483,9 @@ def _run_live(tmp_data_dir, monkeypatch, reader_name):
 def _assert_live_collapsed(lines):
     d = next(i for i, l in enumerate(lines) if l.startswith('The sea has captivated'))
     f = next(i for i, l in enumerate(lines) if l.startswith('The sea is a vast'))
-    assert lines[d + 1:f] == ['[stop-hook-redo]'], lines
+    # The live fixture's hook reason is a generic test rule, not the
+    # reply-length guard's, so the boundary is tagged 'other'.
+    assert lines[d + 1:f] == ['[stop-hook-redo:other]'], lines
     assert not any('Stop hook feedback' in l for l in lines)
 
 
@@ -493,3 +495,152 @@ def test_live_stream_mode_b_collapses_resend(tmp_data_dir, monkeypatch):
 
 def test_live_stream_mode_a_collapses_resend(tmp_data_dir, monkeypatch):
     _assert_live_collapsed(_run_live(tmp_data_dir, monkeypatch, '_read_agent_stream'))
+
+
+# ── Hook KIND on the marker (2026-10-01, backlog 31324d7b) ───────────────────
+# A Stop-hook "Show earlier draft" collapse hid Dave's real answer: a length
+# hook fired, Dave's follow-up was a one-line meta reply, and the collapse
+# swallowed the full answer. The marker now says which hook blocked, so the
+# renderer only treats the reply-length guard's block as "the follow-up
+# re-sends the draft"; every other hook asks the model to CONTINUE.
+
+from mc.agent_runtime import (  # noqa: E402
+    stop_hook_block_kind_before, stop_hook_kind, stop_hook_kind_from_reasons,
+    stop_hook_marker,
+)
+
+_LENGTH_START = 'BREVITY RULE VIOLATED'
+_LENGTH_REASON = _LENGTH_START + ': that reply was 211 prose words against a 160-word hard ceiling.'
+_PERMISSION_START = 'You ended your turn ASKING PERMISSION'
+_PERMISSION_REASON = _PERMISSION_START + ' to do something reversible.'
+_TURN_GUARD_REASON = 'You ended your turn by ANNOUNCING work you have not actually done yet.'
+
+
+def _feedback(reason, as_blocks=False):
+    text = 'Stop hook feedback:\n' + reason
+    content = [{'type': 'text', 'text': text}] if as_blocks else text
+    return {'type': 'user', 'isSynthetic': True, 'message': {'role': 'user', 'content': content}}
+
+
+def test_kind_length_only_for_the_reply_length_guard():
+    assert stop_hook_kind(_feedback(_LENGTH_REASON)) == 'length'
+    assert stop_hook_kind(_feedback(_LENGTH_REASON, as_blocks=True)) == 'length'
+    assert stop_hook_kind(_feedback(_PERMISSION_REASON)) == 'other'
+    assert stop_hook_kind(_feedback(_TURN_GUARD_REASON)) == 'other'
+
+
+def test_kind_never_guesses_length():
+    assert stop_hook_kind({}) == 'other'
+    assert stop_hook_kind({'type': 'user', 'message': {'content': 'hello'}}) == 'other'
+    assert stop_hook_kind_from_reasons([]) == 'other'
+    assert stop_hook_kind_from_reasons(['']) == 'other'
+    # Two hooks blocked the same stop: the follow-up answers both, so only an
+    # all-length block is a pure "re-send shorter".
+    assert stop_hook_kind_from_reasons([_LENGTH_REASON, _PERMISSION_REASON]) == 'other'
+    assert stop_hook_kind_from_reasons([_LENGTH_REASON, _LENGTH_REASON]) == 'length'
+
+
+def test_marker_text():
+    assert stop_hook_marker('length') == '[stop-hook-redo:length]'
+    assert stop_hook_marker('other') == '[stop-hook-redo:other]'
+    assert stop_hook_marker('') == '[stop-hook-redo:other]'
+    assert stop_hook_marker('garbage') == '[stop-hook-redo:other]'
+
+
+def _revived_records_with_reason(reason):
+    return [json.loads(json.dumps(r).replace(_LENGTH_START, reason))
+            for r in _revived_records()]
+
+
+def test_block_kind_before_reads_each_record_shape():
+    """The transcript carries the block three ways; each one yields the kind."""
+    recs = _revived_records()
+    resend = next(r for r in recs if _text_of(r) == 'FINAL: compressed resend.')
+    draft = next(r for r in recs if _text_of(r) == 'DRAFT: long reply the brevity guard blocked.')
+    full = {r['uuid']: r for r in recs}
+    assert stop_hook_block_kind_before(full, resend['uuid']) == 'length'
+    assert stop_hook_block_kind_before(full, draft['uuid']) is None
+
+    keep = (resend['uuid'], draft['uuid'])
+    shapes = {
+        'feedback turn': lambda r: bool(r.get('isMeta')),
+        'attachment': lambda r: (r.get('attachment') or {}).get('type') == 'hook_blocking_error',
+        'summary': lambda r: r.get('subtype') == 'stop_hook_summary' and bool(r.get('hookErrors')),
+    }
+    for name, pred in shapes.items():
+        hook = [r for r in recs if pred(r)]
+        assert len(hook) == 1, name
+        subset = {r['uuid']: r for r in recs if r['uuid'] in keep or r.get('type') == 'assistant'}
+        subset[hook[0]['uuid']] = hook[0]
+        subset[resend['uuid']] = dict(subset[resend['uuid']], parentUuid=hook[0]['uuid'])
+        assert stop_hook_block_kind_before(subset, resend['uuid']) == 'length', name
+        swapped = {u: json.loads(json.dumps(r).replace(_LENGTH_START, _PERMISSION_START))
+                   for u, r in subset.items()}
+        assert stop_hook_block_kind_before(swapped, resend['uuid']) == 'other', name
+
+
+def test_stop_hook_precedes_still_true_for_any_kind():
+    recs = {r['uuid']: r for r in _revived_records_with_reason(_PERMISSION_START)}
+    resend = next(r for r in recs.values() if _text_of(r) == 'FINAL: compressed resend.')
+    assert stop_hook_precedes(recs, resend['uuid']) is True
+
+
+def _stream_with_reason(reason):
+    lines = list(_STOP_HOOK_STREAM_LINES)
+    lines[1] = json.dumps({'type': 'user', 'isMeta': True, 'session_id': 's1',
+                           'message': {'role': 'user', 'content': 'Stop hook feedback:\n' + reason}})
+    return lines
+
+
+def _run_stream(tmp_data_dir, reader_name, lines):
+    server = importlib.import_module("server")
+    importlib.reload(server)
+    session = _new_session('p-kind-' + reader_name)
+    proc = _FakeProc(lines)
+    session['proc'] = proc
+    getattr(server, reader_name)(proc, session)
+    return session['log_lines']
+
+
+def test_live_readers_tag_the_marker_with_the_hook_kind(tmp_data_dir):
+    for reader in ('_read_agent_stream', '_read_agent_stream_b'):
+        length = _run_stream(tmp_data_dir, reader, _stream_with_reason(_LENGTH_REASON))
+        assert [l for l in length if l.startswith('[stop-hook-redo')] == ['[stop-hook-redo:length]'], reader
+        for reason in (_PERMISSION_REASON, _TURN_GUARD_REASON):
+            other = _run_stream(tmp_data_dir, reader, _stream_with_reason(reason))
+            assert [l for l in other if l.startswith('[stop-hook-redo')] == ['[stop-hook-redo:other]'], reader
+
+
+def test_transcript_confirmed_marker_carries_the_kind(tmp_data_dir, monkeypatch, tmp_path):
+    """The path where the live stream never carries the feedback turn (revived
+    chats): the kind comes from the transcript's hook records."""
+    for reason, want in ((_LENGTH_START, 'length'), (_PERMISSION_START, 'other')):
+        recs = _revived_records_with_reason(reason)
+        f = tmp_path / (want + '.jsonl')
+        f.write_text('\n'.join(json.dumps(r) for r in recs) + '\n', encoding='utf-8')
+        for reader in ('_read_agent_stream', '_read_agent_stream_b'):
+            lines, _ = _run_revived(tmp_data_dir, monkeypatch, f, reader, _revived_stream(recs))
+            d = lines.index('DRAFT: long reply the brevity guard blocked.')
+            fi = lines.index('FINAL: compressed resend.')
+            assert lines[d + 1:fi] == ['[stop-hook-redo:%s]' % want], (reader, lines)
+
+
+def test_history_render_carries_the_hook_kind(tmp_path):
+    """parse_transcript_file -> role 'stop_hook_redo' carries `kind` (isMeta path)."""
+    for reason, want in ((_LENGTH_REASON, 'length'), (_PERMISSION_REASON, 'other')):
+        lines = [ln.replace('BREVITY RULE VIOLATED: too long.', reason) for ln in _STOP_HOOK_TRANSCRIPT]
+        msgs = ClaudeRuntime().parse_transcript_file(_write(tmp_path, lines))
+        assert [m.get('kind') for m in msgs if m['role'] == 'stop_hook_redo'] == [want]
+
+
+def test_history_render_without_is_meta_still_gets_the_kind(tmp_path):
+    """A CLI version with no isMeta: the attachment/summary records convert the
+    fake user turn, and they carry the reason too."""
+    stripped = []
+    for line in _REAL_FIXTURE.read_text(encoding='utf-8').splitlines():
+        rec = json.loads(line)
+        rec.pop('isMeta', None)
+        stripped.append(json.dumps(rec))
+    msgs = ClaudeRuntime().parse_transcript_file(_write(tmp_path, stripped))
+    kinds = [m.get('kind') for m in msgs if m['role'] == 'stop_hook_redo']
+    assert kinds == ['length', 'length', 'other'], kinds

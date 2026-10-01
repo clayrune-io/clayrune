@@ -561,9 +561,46 @@ def is_stop_hook_feedback(raw_msg: Dict[str, Any]) -> bool:
     return str(content).lstrip().startswith(STOP_HOOK_FEEDBACK_PREFIX)
 
 
-def stop_hook_precedes(records: Dict[str, Dict[str, Any]], uuid: str) -> bool:
-    """True when the transcript record `uuid` (an assistant message) was
-    produced right after a blocked Stop hook.
+# Which hook blocked. Only the reply-length guard asks the model to RE-SEND the
+# same content shorter (its reason starts with this fixed phrase); the
+# permission-ask / turn guards ask it to CONTINUE or take the action, so the
+# follow-up is new work and the earlier draft is still the answer. The renderer
+# collapses a draft only for 'length' (rich-text.js stopHookDraftReplaced).
+STOP_HOOK_LENGTH_REASON_PREFIX = 'BREVITY RULE VIOLATED'
+
+
+def stop_hook_kind_from_reasons(reasons: List[str]) -> str:
+    """'length' when EVERY blocking reason is the reply-length guard's, else
+    'other' (also for an empty / unreadable reason: never collapse on a guess)."""
+    reasons = [str(r).strip() for r in reasons if r and str(r).strip()]
+    if reasons and all(r.startswith(STOP_HOOK_LENGTH_REASON_PREFIX) for r in reasons):
+        return 'length'
+    return 'other'
+
+
+def stop_hook_marker(kind: str) -> str:
+    """The log line marking a Stop-hook boundary: '[stop-hook-redo:length]' or
+    '[stop-hook-redo:other]'."""
+    return '[stop-hook-redo:%s]' % ('length' if kind == 'length' else 'other')
+
+
+def stop_hook_kind(raw_msg: Dict[str, Any]) -> str:
+    """'length' | 'other' for a synthetic Stop-hook feedback turn (the CLI's
+    fixed prefix stripped, the hook's own reason classified)."""
+    if not is_stop_hook_feedback(raw_msg):
+        return 'other'
+    content = (raw_msg.get('message') or {}).get('content', '')
+    if isinstance(content, list):
+        content = ' '.join(
+            str(b.get('text', '')) for b in content if isinstance(b, dict))
+    reason = str(content).lstrip()[len(STOP_HOOK_FEEDBACK_PREFIX):]
+    return stop_hook_kind_from_reasons([reason])
+
+
+def stop_hook_block_kind_before(records: Dict[str, Dict[str, Any]], uuid: str) -> Optional[str]:
+    """None when the transcript record `uuid` (an assistant message) was NOT
+    produced right after a blocked Stop hook; otherwise the block's kind
+    ('length' | 'other').
 
     The live stream-json output never carries the hook's isMeta feedback turn
     (verified on a revived Mode B chat: the transcript has it, the reader never
@@ -576,27 +613,36 @@ def stop_hook_precedes(records: Dict[str, Dict[str, Any]], uuid: str) -> bool:
     `stop_hook_summary` (no hookErrors) is walked past, not matched."""
     rec = records.get(uuid)
     if not rec:
-        return False
+        return None
     mid = (rec.get('message') or {}).get('id')
     cur = records.get(str(rec.get('parentUuid') or ''))
     for _ in range(50):
         if cur is None:
-            return False
+            return None
         t = cur.get('type')
         if t == 'assistant':
             if not mid or (cur.get('message') or {}).get('id') != mid:
-                return False
+                return None
         elif t == 'system' and cur.get('subtype') == 'stop_hook_summary' \
                 and cur.get('hookErrors'):
-            return True
+            return stop_hook_kind_from_reasons(list(cur.get('hookErrors') or []))
         elif t == 'attachment':
             att = cur.get('attachment') or {}
             if att.get('type') == 'hook_blocking_error' and att.get('hookEvent') == 'Stop':
-                return True
+                be = att.get('blockingError')
+                if isinstance(be, dict):
+                    be = be.get('blockingError')
+                return stop_hook_kind_from_reasons([be or ''])
         elif t == 'user':
-            return is_stop_hook_feedback(cur)
+            return stop_hook_kind(cur) if is_stop_hook_feedback(cur) else None
         cur = records.get(cur.get('parentUuid'))
-    return False
+    return None
+
+
+def stop_hook_precedes(records: Dict[str, Dict[str, Any]], uuid: str) -> bool:
+    """True when the transcript record `uuid` was produced right after a blocked
+    Stop hook (any kind); see stop_hook_block_kind_before."""
+    return stop_hook_block_kind_before(records, uuid) is not None
 
 
 def _mark_stop_hook_from_record(raw_line: str, messages: List[Dict[str, Any]]) -> None:
@@ -616,19 +662,24 @@ def _mark_stop_hook_from_record(raw_line: str, messages: List[Dict[str, Any]]) -
     if isinstance(att, dict) and att.get('type') == 'hook_blocking_error' \
             and att.get('hookEvent') == 'Stop':
         if messages and messages[-1].get('role') == 'user':
+            be = att.get('blockingError')
+            if isinstance(be, dict):
+                be = be.get('blockingError')
             messages[-1] = {'role': 'stop_hook_redo', 'text': '',
+                            'kind': stop_hook_kind_from_reasons([be or '']),
                             'timestamp': messages[-1].get('timestamp', '')}
         return
     if rec.get('type') == 'system' and rec.get('subtype') == 'stop_hook_summary':
         errors = [str(e).strip()[:60] for e in (rec.get('hookErrors') or []) if str(e).strip()]
         if not errors:
             return
+        kind = stop_hook_kind_from_reasons(list(rec.get('hookErrors') or []))
         for i in range(len(messages) - 1, -1, -1):
             m = messages[i]
             if m.get('role') == 'stop_hook_redo':
                 continue
             if m.get('role') == 'user' and any(e in (m.get('text') or '') for e in errors):
-                messages[i] = {'role': 'stop_hook_redo', 'text': '',
+                messages[i] = {'role': 'stop_hook_redo', 'text': '', 'kind': kind,
                                'timestamp': m.get('timestamp', '')}
                 continue
             break
@@ -2863,7 +2914,8 @@ class ClaudeRuntime(AgentRuntime):
                             # text already in `messages` (the retracted draft)
                             # gets collapsed by the caller when it sees this.
                             messages.append({'role': 'stop_hook_redo',
-                                             'text': '', 'timestamp': ts})
+                                             'text': '', 'timestamp': ts,
+                                             'kind': stop_hook_kind(ev.raw or {})})
                             continue
                         content = ev.payload.get('content', '')
                         if isinstance(content, list):

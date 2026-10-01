@@ -1533,17 +1533,30 @@ function agentPanelHTML(p) {
           explBriefChars = 0;
           continue;
         }
-        // Stop-hook block/resend boundary (see agent_runtime.is_stop_hook_
-        // feedback): collapse the draft accumulated since the last tool/
-        // prompt line into a native <details> toggle instead of rendering
-        // both the retracted draft and the resend as if they were two
-        // separate replies. The marker itself renders nothing.
-        if (isStopHookRedoLine(line)) {
+        // Stop-hook block/resend boundary (see agent_runtime.stop_hook_marker):
+        // collapse the draft accumulated since the last tool/prompt line into
+        // a native <details> toggle ONLY when the follow-up (the narration up
+        // to the next tool/prompt/boundary line) actually replaces it —
+        // rich-text.js stopHookDraftReplaced, the same rule the live path
+        // applies as the follow-up streams in. Otherwise the draft stays in
+        // planBlock and the follow-up appends below it. The marker itself
+        // renders nothing.
+        const _redoKind = stopHookRedoKind(line);
+        if (_redoKind !== null) {
           flushTable();
           if (planRawLines.length > 0) {
-            result += `<details class="draft-block"><summary>Show earlier draft</summary>${planBlock}</details>`;
+            let _follow = '';
+            for (let _k = _i + 1; _k < buf.length; _k++) {
+              if (stopHookRedoKind(buf[_k]) !== null) break;
+              const _kc = agentLineCls(buf[_k]);
+              if (_kc.includes('agent-line-tool') || _kc.includes('agent-line-prompt')) break;
+              if (_kc === 'agent-line' && buf[_k].trim()) _follow += '\n' + buf[_k];
+            }
+            if (stopHookDraftReplaced(_redoKind, planRawLines.join('\n'), _follow)) {
+              result += `<details class="draft-block"><summary>Show earlier draft</summary>${planBlock}</details>`;
+              planBlock = ''; planRawLines = [];
+            }
           }
-          planBlock = ''; planRawLines = [];
           continue;
         }
         // Plan detection: when ExitPlanMode is hit, collapse prior non-tool lines
@@ -4961,15 +4974,19 @@ function appendAgentLine(sessionId, text, dateHint) {
     return;
   }
 
-  // Stop-hook block/resend boundary — collapse the draft just appended into
-  // a "Show earlier draft" toggle instead of rendering the marker itself.
-  // Must come before the other interceptions below; the marker is never a
+  // Stop-hook block/resend boundary — remember the draft just appended and
+  // decide, once the follow-up text has arrived, whether it replaces the draft
+  // ("Show earlier draft" toggle) or the draft stays visible (rich-text.js
+  // stopHookDraftReplaced). The marker itself renders nothing. Must come
+  // before the other interceptions below; the marker is never a
   // mermaid/team/table line.
-  if (isStopHookRedoLine(text)) {
-    collapseIntoDraftBlock(sessionId, el);
+  const _redoKind = stopHookRedoKind(text);
+  if (_redoKind !== null) {
+    armDraftCollapse(sessionId, el, _redoKind);
     if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
     return;
   }
+  noteDraftFollowup(sessionId, text);
 
   // Mermaid diagram interception. Must come before all other line handling
   // so ```mermaid fences are caught even if they look like other syntaxes.
