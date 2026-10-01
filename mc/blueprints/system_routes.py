@@ -1398,8 +1398,11 @@ def system_usage_breakdown_get():
     calibration_samples = store.list_allowance_samples(
         provider=provider, window_kind=window_kind, window_scope=window_scope, since=ninety_days_ago)
     session_facts = store.list_session_facts(since=ninety_days_ago)
-    code_deltas = {f['session_id']: (store.get_code_delta(f['session_id']) or {})
-                   for f in session_facts if f.get('session_id')}
+    # One batched read: the per-session get_code_delta loop opened a sqlite
+    # connection per session (~230ms of a ~1.35s request, 2026-10-01).
+    session_ids = [f['session_id'] for f in session_facts if f.get('session_id')]
+    batched_deltas = store.get_code_deltas(session_ids)
+    code_deltas = {sid: batched_deltas.get(sid) or {} for sid in session_ids}
     # {session_id: {'baseline': row|None, 'turn_starts': [row, ...],
     #  'completions': [row, ...], 'sample_ticks': [row, ...]}} -- a
     # multi-turn session appends one 'turn_start' and one 'completion' row

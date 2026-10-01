@@ -6,6 +6,19 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-01] — Usage report: breakdown loads fast and retries (MC-998 4668eafc f9)
+
+- `GET /api/system/usage/breakdown` took 1.3-1.5s warm (3.9s with three in flight)
+  on a live 90-day copy, so the first Usage-report open could blow the client's
+  8s abort and show "failed to load" until a refresh. `build_breakdown` now
+  memoizes calibration + turn sizes on a content digest of their inputs (bounded
+  LRU, single-flight, deep-copied out), so repeat requests and dimension/sort
+  changes cost ~115ms; any new sample/checkpoint/fact recomputes. The per-session
+  `get_code_delta` loop is one batched `get_code_deltas` read.
+- Client: the breakdown fetch (report + bar popup) uses a 25s timeout and one
+  automatic retry (not for 4xx, not for a superseded request).
+- Tests: `tests/test_usage_breakdown_speed.py`; smoke `usage-breakdown.mjs` 7c-2/7c-3.
+
 ## [2026-10-01] — v2.4.4 release (Mac update button, 288 commits since v2.4.3)
 
 - Release notes: `docs/RELEASE_NOTES_v2.4.4.md`. Leads with MC-1003: the Mac

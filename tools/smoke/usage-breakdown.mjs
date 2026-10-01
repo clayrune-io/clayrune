@@ -511,6 +511,58 @@ try {
     await ctx.close();
   }
   {
+    // 7c-2. MC-998 follow-up 9: the FIRST breakdown request failing (cold
+    // server cache + tunnel -> abort/5xx) must be retried once, silently --
+    // the user used to see "failed to load" and have to refresh by hand.
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await ctx.newPage();
+    let breakdownCalls = 0;
+    await page.route('**/*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/system/usage/breakdown') {
+        breakdownCalls++;
+        if (breakdownCalls === 1) return route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(POPULATED_FIXTURE) });
+      }
+      return routeHandler(POPULATED_FIXTURE, WINDOWS_FIXTURE)(route);
+    });
+    await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
+    await page.evaluate(() => { sidebarNav('usage-report'); });
+    await page.waitForSelector('#usage-report-surface .ub-table-wrap', { state: 'attached', timeout: 5000 });
+    const text3b = await page.$eval('.sys-status-popover', (el) => el.textContent);
+    (/proj-a/.test(text3b) && !/failed to load/i.test(text3b))
+      ? ok('a failed first request is retried once and the report renders (no "failed to load")')
+      : fail(`first-request failure was not retried: ${text3b.slice(0, 400)}`);
+    breakdownCalls === 2
+      ? ok('exactly one retry (2 breakdown requests)')
+      : fail(`expected 2 breakdown requests, saw ${breakdownCalls}`);
+    await ctx.close();
+  }
+  {
+    // 7c-3. A 4xx is a deterministic rejection: shown as failed, NOT retried.
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await ctx.newPage();
+    let breakdownCalls = 0;
+    await page.route('**/*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/system/usage/breakdown') {
+        breakdownCalls++;
+        return route.fulfill({ status: 400, contentType: 'application/json', body: '{"error":"bad"}' });
+      }
+      return routeHandler(POPULATED_FIXTURE, WINDOWS_FIXTURE)(route);
+    });
+    await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#usage-bar-strip', { state: 'attached', timeout: 15000 });
+    await page.evaluate(() => { sidebarNav('usage-report'); });
+    await page.waitForSelector('#usage-report-surface .ub-controls', { state: 'attached', timeout: 5000 });
+    await page.waitForTimeout(400);
+    breakdownCalls === 1
+      ? ok('a 4xx is not retried (1 request)')
+      : fail(`a 4xx must not be retried, saw ${breakdownCalls} requests`);
+    await ctx.close();
+  }
+  {
     // 7d. Finding #7's remaining P2 (windows-picker cache key): a failed
     // windows fetch after switching provider must NOT leave the PRIOR
     // provider's completed-window option selectable under the new one --
