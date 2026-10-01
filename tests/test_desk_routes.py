@@ -124,7 +124,9 @@ def test_campaign_crud(client):
     assert client.get('/api/desk/campaigns').get_json() == []
 
 
-def test_earmark_over_project_budget_is_a_400_at_the_route(client):
+def test_a_project_pool_no_longer_refuses_a_campaign_budget_at_the_route(client):
+    """Presence retired (MC-977 2026-10-01): the pool is not editable anywhere, so
+    it cannot be a reason to answer 400; the over-pool campaign is accepted."""
     _desk.upsert_presence('proj-1', {'budget': {'amount': 100}})
     ok = client.post('/api/desk/campaigns', json={
         'title': 'a', 'thesis': 'th', 'project_id': 'proj-1',
@@ -134,8 +136,7 @@ def test_earmark_over_project_budget_is_a_400_at_the_route(client):
     over = client.post('/api/desk/campaigns', json={
         'title': 'b', 'thesis': 'th', 'project_id': 'proj-1',
         'how': {'budget': {'source': 'project', 'amount': 50}}})
-    assert over.status_code == 400
-    assert 'earmark' in over.get_json()['error']
+    assert over.status_code == 201
 
 
 def test_a_campaign_without_a_thesis_is_refused(client):
