@@ -1,18 +1,24 @@
 #!/usr/bin/env node
 /**
- * Desk v1 (MC-977 IA revision, docs/THE_DESK_V1_IA_REVISION.md §5 row IA8)
- * — the acceptance journey (old T8, new path).
+ * Desk v1 (MC-977 IA revision 2, docs/THE_DESK_V1_IA_REVISION_2.md §8 row
+ * R2-13) — the acceptance journey on the map path.
  *
- * ONE continuous page, driven exactly the way a user would click it (no
- * deskV1Nav shortcuts except reaching Engagement, which the real UI itself
- * only reaches via Home's own button — see navHomeToEngagement below):
+ * ONE continuous page, driven the way a user clicks it:
  *
- *   Home -> engulfing_scanner -> new campaign (lands on the map at ① Brief,
- *   R2-18; R2-3b: no IA4 setup steps) -> left at ② Goal -> resume -> back to
- *   Brief -> forced Posy failure + Retry on the Brief stop's Suggest -> Accept all on ③ What ->
- *   ⑥ Launch -> Start -> open a piece -> What/How/When/Where -> Pause project
- *   -> Resume -> Engagement filtered to that project -> Delete a never-started
- *   Draft from its ⋯ menu (Undo).
+ *   Home -> Projects picker -> Engulfing scanner -> New campaign (opens on
+ *   ① Brief) -> Brief: pick the agent -> left at ② Goal, resume -> Goal: accept
+ *   a long goal -> Brief: Suggest (forced failure + Retry) -> ③ What: Accept
+ *   all, drop Video -> Create new -> Studio storyboard -> Render -> back ->
+ *   ④ Where: drag a source up + a message into it -> ⑤ When: drag an own slot
+ *   -> ⑥ Launch: Start -> Home row `Active · on track` -> term end (fixture
+ *   clock) -> Needs-you `Retro ready` -> Goal: paste per-post numbers ->
+ *   Confirm one finding, Reject one -> Renew term -> What: Suggest shows
+ *   `Based on F<n> ›` and never the rejected one -> Delete a never-started
+ *   Draft (Undo).
+ *
+ * R2-12 is deferred, so its steps are not here. Stand-ins, each commented at
+ * its place: the project's roster (Brief's agent picker), the plan's
+ * cadence (no control writes it), and the term-end retro (no backend clock).
  *
  * Each hop asserts what the user SEES (pill text, facet body copy, filtered
  * row ids, toast text) — never just that a selector exists.
@@ -355,7 +361,7 @@ async function run(browser) {
   await page.waitForSelector('[data-map-start-btn]:not([disabled])', { timeout: 4000 }).catch(() => {});
   const startEnabled = await page.evaluate(() => { const b = document.querySelector('[data-map-start-btn]'); return !!b && !b.disabled; });
   startEnabled
-    ? ok('Launch: Start is enabled once Brief, Goal, What, Where and When hold the plan')
+    ? ok('Launch: Start is enabled')
     : fail(`Launch: Start still disabled: ${JSON.stringify(needSentence)}`);
   await page.click('[data-map-start-btn]');
   await page.waitForSelector('.desk-v1-rules-sheet', { timeout: 4000 });
