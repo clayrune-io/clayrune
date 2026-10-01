@@ -86,6 +86,7 @@ install.log
 data/desk.json
 data/desk_signals.jsonl
 data/desk_receipts.json
+data/desk_engine_jobs.json
 data/agent_labels.json
 data/remote_enrollment_liveness.json
 data/coordination/

@@ -794,6 +794,8 @@ DESK_SIGNALS_PATH = _DATA_ROOT / 'data' / 'desk_signals.jsonl'
 # docstring); this only gives it somewhere durable to write once something
 # does.
 DESK_RECEIPTS_PATH = _DATA_ROOT / 'data' / 'desk_receipts.json'
+# mc.desk_engines' render jobs (MC-1019) -- same shelf, same reason.
+DESK_ENGINE_JOBS_PATH = _DATA_ROOT / 'data' / 'desk_engine_jobs.json'
 
 # Workflow builder (docs/WORKFLOW_BUILDER_SPEC.md, MC-871) — same reasoning as
 # the Desk above: definitions are a small JSON object, siblings of DATA_DIR
@@ -2147,6 +2149,13 @@ app.register_blueprint(_bp_desk.bp)
 # first), so this only gives it a durable path for its idempotency receipts.
 import mc.desk_publish as _desk_publish  # noqa: E402
 _desk_publish.RECEIPTS_PATH = DESK_RECEIPTS_PATH
+
+# mc.desk_engines (MC-1019): the render-job store (spend accounting, so it sits
+# beside the receipts, outside DATA_DIR) and the uploads root its outputs and
+# input assets must live under.
+import mc.desk_engines as _desk_engines  # noqa: E402
+_desk_engines.JOBS_PATH = DESK_ENGINE_JOBS_PATH
+_desk_engines.UPLOADS_ROOT = UPLOADS_DIR
 
 
 # ── Workflow builder (docs/WORKFLOW_BUILDER_SPEC.md, MC-871) ─────────────────
