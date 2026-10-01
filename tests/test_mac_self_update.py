@@ -207,10 +207,11 @@ def route(tmp_path, monkeypatch):
     monkeypatch.setattr(mu, 'in_place_blocker', lambda bundle=None: None)
 
     manifest = {'commit': 'bbb2222', 'commit_full': 'b' * 40,
-                'built_at': '2026-09-14T00:00:00+00:00', 'sha256': 'f' * 64, 'size': 4242}
+                'built_at': '2026-09-14T00:00:00+00:00'}
     release = json.dumps({'tag_name': 'v9.9.9', 'body': '', 'assets': [
         {'name': 'Clayrune-macOS.build.json', 'browser_download_url': MANIFEST_URL},
-        {'name': 'Clayrune-macOS.zip', 'browser_download_url': ZIP_URL}]}).encode()
+        {'name': 'Clayrune-macOS.zip', 'browser_download_url': ZIP_URL,
+         'digest': 'sha256:' + 'f' * 64, 'size': 4242}]}).encode()
 
     class _Resp:
         def __init__(self, b): self._b = b
@@ -467,9 +468,65 @@ class TestDownload:
         with pytest.raises(mu.UpdateAbort, match='incomplete'):
             mu._download('https://x.invalid/a.zip', tmp_path / 'a.zip', 5, '', lambda m: None)
 
+    def test_oversize_download_aborts(self, tmp_path, monkeypatch):
+        self._urlopen(monkeypatch, b'hello world')
+        with pytest.raises(mu.UpdateAbort, match='larger than expected'):
+            mu._download('https://x.invalid/a.zip', tmp_path / 'a.zip', 5, '', lambda m: None)
+
+    def test_size_matches_but_sha_differs_aborts(self, tmp_path, monkeypatch):
+        self._urlopen(monkeypatch, b'hellx')
+        import hashlib
+        with pytest.raises(mu.UpdateAbort, match='checksum'):
+            mu._download('https://x.invalid/a.zip', tmp_path / 'a.zip', 5,
+                         hashlib.sha256(b'hello').hexdigest(), lambda m: None)
+
     def test_non_https_refused(self, tmp_path):
         with pytest.raises(mu.UpdateAbort, match='non-HTTPS'):
             mu._download('http://x.invalid/a.zip', tmp_path / 'a.zip', None, '', lambda m: None)
+
+
+class TestReleaseIntegrityFields:
+    """_fetch_latest_macos_release_info takes size/sha256 from the zip ASSET
+    record (GitHub's `digest`), never from the build manifest."""
+
+    HEX = 'ab' * 32
+
+    def _fetch(self, monkeypatch, zip_asset, manifest=None):
+        import io
+        assets = [{'name': sr._MACOS_BUILD_MANIFEST_ASSET, 'browser_download_url': 'https://x.invalid/m.json',
+                   'digest': 'sha256:' + 'cd' * 32, 'size': 7}]
+        if zip_asset is not None:
+            assets.append({'name': sr._MACOS_ZIP_ASSET, 'browser_download_url': 'https://x.invalid/z.zip',
+                           **zip_asset})
+        bodies = [json.dumps({'tag_name': 'v9', 'body': 'n', 'assets': assets}).encode(),
+                  json.dumps(manifest or {'commit': 'c'}).encode()]
+
+        class Resp(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        monkeypatch.setattr(sr.urllib.request, 'urlopen', lambda req, timeout=8: Resp(bodies.pop(0)))
+        return sr._fetch_latest_macos_release_info()
+
+    def test_digest_and_size_parsed_from_zip_asset(self, monkeypatch):
+        r = self._fetch(monkeypatch, {'digest': 'sha256:' + self.HEX.upper(), 'size': 123456})
+        assert r['sha256'] == self.HEX and r['size'] == 123456
+
+    def test_missing_digest_is_empty_not_invented(self, monkeypatch):
+        r = self._fetch(monkeypatch, {'size': 99})
+        assert r['sha256'] == '' and r['size'] == 99
+
+    @pytest.mark.parametrize('digest', ['md5:' + 'a' * 32, 'sha256:xyz', 'sha256:' + 'a' * 63, '', None])
+    def test_malformed_digest_is_empty(self, monkeypatch, digest):
+        assert self._fetch(monkeypatch, {'digest': digest, 'size': 1})['sha256'] == ''
+
+    def test_no_zip_asset_leaves_both_empty(self, monkeypatch):
+        r = self._fetch(monkeypatch, None)
+        assert r['sha256'] == '' and r['size'] is None
+
+    def test_manifest_cannot_vouch_for_its_own_zip(self, monkeypatch):
+        r = self._fetch(monkeypatch, {'size': 5}, manifest={'sha256': 'f' * 64, 'size': 1})
+        assert r['sha256'] == '' and r['size'] == 5
 
 
 # ── the generated swap helper, run under a real sh ──────────────────────────

@@ -12,6 +12,7 @@ GET /api/system/loops exposes mc.obs heartbeats.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2113,6 +2114,17 @@ def _fetch_latest_macos_release_info(timeout=8):
         (a.get('browser_download_url') for a in assets if a.get('name') == _MACOS_ZIP_ASSET),
         _MACOS_DOWNLOAD_URL,
     )
+    # Integrity of the zip itself (MC-1026): the in-place updater checks the
+    # download against these. GitHub publishes `digest` ("sha256:<hex>") on
+    # release assets; '' when absent, never invented. They come from the
+    # asset record, not the build manifest, so the manifest cannot vouch for
+    # its own zip.
+    zip_asset = next((a for a in assets if a.get('name') == _MACOS_ZIP_ASSET), None) or {}
+    digest = str(zip_asset.get('digest') or '').strip().lower()
+    m = re.fullmatch(r'sha256:([0-9a-f]{64})', digest)
+    manifest['sha256'] = m.group(1) if m else ''
+    size = zip_asset.get('size')
+    manifest['size'] = size if isinstance(size, int) and size > 0 else None
     return manifest
 
 
