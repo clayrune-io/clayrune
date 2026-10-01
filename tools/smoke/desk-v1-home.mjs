@@ -458,10 +458,10 @@ async function runNoProjectDrafts(browser) {
   // Per-block untouched (project prefilled, nothing changed) -> Back discards too.
   await page.click('.desk-v1-home-block[data-project-id="engulfing_scanner"] .desk-v1-home-block-newcamp');
   await page.waitForSelector('.desk-v1-campaign', { timeout: 4000 });
-  await page.click('.desk-v1-back');
+  // MC-977 G-4: Home -> campaign pushes only the campaign, so ONE Back lands on Home.
   await page.click('.desk-v1-back');
   await page.waitForSelector('.desk-v1-home-block', { timeout: 4000 });
-  if ((await campCount()) === n0) ok('R2-2f: untouched per-block draft + Back (project page, then Home) leaves nothing behind');
+  if ((await campCount()) === n0) ok('R2-2f: untouched per-block draft + Back (straight to Home) leaves nothing behind');
   else fail(`R2-2f: untouched per-block draft survived Back: count ${await campCount()} vs ${n0}`);
 
   // Touched (typed a goal field on the Goal stop) -> Back keeps it, listed

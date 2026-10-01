@@ -222,26 +222,22 @@ async function runNeedsYouDeepStack(browser) {
     ? ok(`piece's Back label is the campaign title + its ③ What stop: "${c.back}"`)
     : fail(`piece Back label wrong: ${JSON.stringify(c)}`);
 
+  // MC-977 G-4: Home -> campaign no longer pushes the project page, so the stack a
+  // Needs-you deep link builds is Home, campaign, piece, review: Back from the
+  // campaign goes straight to Home ("Desk"), where the user came from.
   await page.click('.desk-v1-back');
   await page.waitForSelector('.desk-v1-campaign', { timeout: 4000 });
   c = await crumb(page);
-  c.title === 'Windows beta testers' && c.back === '‹ Clayrune'
-    ? ok(`campaign's Back label is the project entry's title: "${c.back}"`)
+  c.title === 'Windows beta testers' && c.back === '‹ Desk'
+    ? ok(`campaign's Back label is Home ("Desk"), where the deep link came from: "${c.back}"`)
     : fail(`campaign Back label wrong: ${JSON.stringify(c)}`);
-
-  await page.click('.desk-v1-back');
-  await page.waitForSelector('.desk-v1-project', { timeout: 4000 });
-  c = await crumb(page);
-  c.title === 'Clayrune' && c.back === '‹ Desk'
-    ? ok(`project's Back label is Home ("Desk"): "${c.back}"`)
-    : fail(`project Back label wrong: ${JSON.stringify(c)}`);
 
   await page.click('.desk-v1-back');
   await page.waitForSelector('.desk-v1-home', { timeout: 4000 });
   const backGone = await page.$('.desk-v1-back');
   !backGone
-    ? ok('5-deep stack (home, project, campaign, piece, review) exhausted in exactly 4 Backs, landing on root Home with no Back button')
-    : fail('Home unexpectedly still shows a Back button — stack deeper than 5');
+    ? ok('4-deep stack (home, campaign, piece, review) exhausted in exactly 3 Backs, landing on root Home with no Back button')
+    : fail('Home unexpectedly still shows a Back button — stack deeper than 4');
 
   reportUncaught(pageErrors, '[needsyou-deep-stack]');
   await ctx.close();
