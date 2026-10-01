@@ -375,8 +375,9 @@ replaces the fixture's `health:'held'` (`desk-v1-fixtures.js:186-187`) with a re
 2. Vault entry names per engine (Higgsfield key id+secret, Google, OpenAI).
 3. Budget source for renders: the campaign's `how.budget` (Presence pool retired) vs a per-job limit;
    the scan's rule 8 still names `renderBudget.perJobLimit`, which no longer has a home.
-4. Local engine: Remotion licence answer (Ron's call); without it the worker heartbeat and the local
-   compositor (needed for multi-scene video, scan rule 7) have no engine.
+4. Local engine: Remotion DROPPED (Ron 2026-10-01: every external service is signed and paid by the
+   customer through a vendor API; Remotion has none, and on a hosted pod its licence would land on us).
+   Open for S9: what stitches a multi-scene video (scan rule 7) now that there is no local compositor.
 5. Output retention: download on `ready` (Veo deletes after 48 h) into the M22 library path.
 
 Slices S0-S8 depend on neither.
