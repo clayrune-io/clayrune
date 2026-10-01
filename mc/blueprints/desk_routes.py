@@ -491,6 +491,16 @@ def update_campaign(campaign_id):
     return jsonify(_desk.v1_campaign(camp) if v1 else camp)
 
 
+# M11 (R1-W S3): the Goal stop's read. Derived on the server, so a figure with no
+# data behind it arrives as null, never 0 (see `mc.desk.campaign_results`).
+@bp.route('/api/desk/campaigns/<campaign_id>/results', methods=['GET'])
+def campaign_results(campaign_id):
+    out = _desk.campaign_results(campaign_id)
+    if out is None:
+        return jsonify({'error': 'campaign not found'}), 404
+    return jsonify(out)
+
+
 # The three human approval actions (R1-W S2; plan M6/M7/M8). Each writes
 # `camp['approved']`, the record the publisher checks, so each is refused for an
 # unattended caller: an agent session may edit a campaign (PATCH) but can never
