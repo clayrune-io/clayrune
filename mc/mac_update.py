@@ -352,7 +352,7 @@ safe_rm() {{
 }}
 # $1 = commit the process on the port reported; true if it is the verified build.
 commit_matches() {{
-  [ -n "$1" ] || return 1
+  [ "${{#1}}" -ge 7 ] || return 1  # a 1-6 char "commit" would prefix-match anything
   case "$EXPECT" in "$1"*) return 0 ;; esac
   case "$1" in "$EXPECT"*) return 0 ;; esac
   return 1

@@ -651,6 +651,7 @@ class TestSwapHelper:
     @needs_sh
     @pytest.mark.parametrize('body', [
         '{"commit":"deadbee"}',                 # a different build holds the port
+        '{"commit":"abc"}',                     # too short: would prefix-match the real one
         '{"status":"ok"}',                      # some other server entirely: 200, no commit
         '{"remote_commit":"abc1234"}',          # only a look-alike key
         '<html>hello</html>',
