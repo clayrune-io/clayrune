@@ -413,6 +413,83 @@ async function runStudioReview(browser, tone) {
   check(tl2[0] === listAfter[1], `${tag} reordering the list updates the timeline`, `${tag} list drag did not update the bar: ${tl2}`);
   reportUncaught(b.pageErrors, tag);
   await b.ctx.close();
+
+  // 6. Layout (Ron 2026-10-01): the timeline tops the scene column, the bin is a
+  // small icon in its lower-right, timeline tiles carry the scene's thumbnail.
+  // Desktop widths and a phone width: nothing clipped, bin reachable, no overlap
+  // with the Your agent box.
+  const VIEWPORTS = [{ w: 1280, h: 900 }, { w: 1440, h: 950 }, { w: 1920, h: 1000 }, { w: 390, h: 844 }];
+  for (const vp of VIEWPORTS) {
+    const vtag = `${tag} ${vp.w}px`;
+    b = await newBootedPage(browser, tone, { width: vp.w, height: vp.h });
+    page = b.page;
+    await openNewVideo(page);
+    await page.waitForTimeout(150);
+    const g = await page.evaluate(() => {
+      const r = (sel) => { const e = document.querySelector(sel); if (!e) return null; const bx = e.getBoundingClientRect(); return { x: bx.x, y: bx.y, r: bx.right, b: bx.bottom, w: bx.width, h: bx.height }; };
+      const bin = document.querySelector('[data-sb-trash]');
+      const img = document.querySelector('[data-sb-timeline] .desk-v1-video-scene-thumb img');
+      const ib = img ? img.getBoundingClientRect() : null;
+      return {
+        main: r('.desk-v1-sb-main'), tl: r('[data-sb-timeline-wrap]'), first: r('.desk-v1-sb-scene'), lastScene: r('.desk-v1-sb-scene:last-child'),
+        bin: r('[data-sb-trash]'), agent: r('[data-sb-agent]'),
+        oldZone: !!document.querySelector('.desk-v1-sb-trashzone'),
+        binText: bin ? bin.textContent.trim() : '',
+        img: img ? { src: img.getAttribute('src'), done: img.complete, nw: img.naturalWidth, vis: ib.width > 0 && ib.height > 0 } : null,
+        docW: document.documentElement.scrollWidth, winW: window.innerWidth,
+      };
+    });
+    check(g.tl && g.first && g.tl.b <= g.first.y + 1, `${vtag} the timeline is above the first scene (${Math.round(g.tl.b)} <= ${Math.round(g.first.y)})`, `${vtag} timeline not above the scenes: ${JSON.stringify([g.tl, g.first])}`);
+    check(!g.oldZone && g.bin && g.bin.w <= 64 && g.bin.h <= 64 && g.binText === '🗑',
+      `${vtag} the full-width trash bar is gone; the bin is a ${Math.round(g.bin.w)}x${Math.round(g.bin.h)} icon`, `${vtag} bin wrong: ${JSON.stringify([g.oldZone, g.bin, g.binText])}`);
+    check(g.bin && g.main && g.bin.r >= g.main.r - 4 && g.bin.r <= g.main.r + 1 && g.bin.y >= g.first.y,
+      `${vtag} the bin sits at the column's right edge (${Math.round(g.bin.r)} vs ${Math.round(g.main.r)}), below the timeline`, `${vtag} bin not lower-right of the column: ${JSON.stringify([g.bin, g.main])}`);
+    // The bin is sticky: it rides the screen's bottom edge while the column is taller
+    // than the screen, and settles in the column's lower-right corner (own gutter beside
+    // the scenes on desktop, below the last scene on a phone) once scrolled to the end.
+    check(g.bin.y >= g.main.y && g.bin.b <= g.main.b + 1, `${vtag} the bin stays inside the scene column`, `${vtag} bin outside the column: ${JSON.stringify([g.bin, g.main])}`);
+    const end = await page.evaluate(() => {
+      for (let e = document.querySelector('[data-sb-trash]').parentElement; e; e = e.parentElement) if (e.scrollHeight > e.clientHeight) e.scrollTop = e.scrollHeight;
+      const bn = document.querySelector('[data-sb-trash]').getBoundingClientRect();
+      const ls = document.querySelector('.desk-v1-sb-scene:last-child').getBoundingClientRect();
+      const mn = document.querySelector('.desk-v1-sb-main').getBoundingClientRect();
+      return { binX: bn.x, binY: bn.y, binB: bn.bottom, lastR: ls.right, lastB: ls.bottom, mainB: mn.bottom };
+    });
+    check((end.binX >= end.lastR - 1 || end.binY >= end.lastB - 1) && end.binB >= end.lastB - 1 && end.binB <= end.mainB + 1, `${vtag} scrolled to the end, the bin sits in the column's lower-right corner, clear of the last scene`, `${vtag} bin not below the last scene at the end: ${JSON.stringify(end)}`);
+    if (vp.w > 960) check(g.bin.x >= g.first.r - 1, `${vtag} the bin has its own gutter: it never covers a scene row's buttons (${Math.round(g.bin.x)} >= ${Math.round(g.first.r)})`, `${vtag} bin overlaps the scene rows: ${JSON.stringify([g.bin, g.first])}`);
+    const overlapAgent = g.agent && g.bin.r > g.agent.x && g.bin.x < g.agent.r && g.bin.b > g.agent.y && g.bin.y < g.agent.b;
+    check(!overlapAgent, `${vtag} the bin does not overlap the Your agent box`, `${vtag} bin overlaps the agent box: ${JSON.stringify([g.bin, g.agent])}`);
+    check(g.docW <= g.winW + 1 && g.main.r <= g.winW + 1 && g.main.x >= -1, `${vtag} nothing clipped sideways (page ${g.docW} <= ${g.winW}, column ${Math.round(g.main.x)}..${Math.round(g.main.r)})`, `${vtag} horizontal clipping: ${JSON.stringify([g.docW, g.winW, g.main])}`);
+    check(g.img && g.img.done && g.img.nw > 0 && g.img.vis, `${vtag} the timeline tile shows the scene thumbnail (${g.img && g.img.src})`, `${vtag} timeline tile has no loaded img: ${JSON.stringify(g.img)}`);
+    await page.locator('[data-sb-trash]').scrollIntoViewIfNeeded();
+    const binBox = await page.locator('[data-sb-trash]').boundingBox();
+    const topEl = await page.evaluate((p) => { const e = document.elementFromPoint(p.x, p.y); return e && (e.closest('[data-sb-trash]') ? 'bin' : (e.className || e.tagName)); }, { x: binBox.x + binBox.width / 2, y: binBox.y + binBox.height / 2 });
+    check(topEl === 'bin' && binBox.y >= 0 && binBox.y + binBox.height <= vp.h, `${vtag} the bin is reachable: on screen and the top element at its centre`, `${vtag} bin not reachable: ${topEl} ${JSON.stringify(binBox)}`);
+    if (vp.w === 1440 || vp.w === 390) {
+      // the bin highlights while a scene is dragged over it
+      await page.locator('.desk-v1-sb-scene:nth-child(2) [data-scene-handle]').scrollIntoViewIfNeeded();
+      const hb = await page.locator('.desk-v1-sb-scene:nth-child(2) [data-scene-handle]').boundingBox();
+      const bb = await page.locator('[data-sb-trash]').boundingBox();
+      await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(hb.x + hb.width / 2 + 10, hb.y + hb.height / 2 - 10, { steps: 4 });
+      await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2, { steps: 10 });
+      await page.waitForTimeout(60);
+      const hot = await page.evaluate(() => document.querySelector('[data-sb-trash]').classList.contains('pd-drop-hover'));
+      if (vp.w === 1440 && shot) await page.screenshot({ path: resolve(SHOT_DIR, 'studio_timeline_top_bin_hover_1440.png') });
+      await page.mouse.up();
+      await page.waitForTimeout(100);
+      check(hot, `${vtag} the bin highlights while a scene is dragged over it`, `${vtag} bin did not highlight on drag-over`);
+      await clearToasts(page);
+    }
+    if (shot && (vp.w === 1440 || vp.w === 390)) {
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.waitForTimeout(150);
+      await page.screenshot({ path: resolve(SHOT_DIR, `studio_timeline_top_${vp.w}.png`) });
+    }
+    reportUncaught(b.pageErrors, vtag);
+    await b.ctx.close();
+  }
 }
 
 // ── 2. storyboard, scene moves, render ───────────────────────────────────

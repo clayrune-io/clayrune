@@ -409,9 +409,11 @@
       ${_renderStatusHTML(fam)}
       <div class="desk-v1-sb-layout">
         <div class="desk-v1-sb-main">
-          ${_sb.standalone ? '<div class="desk-v1-sb-trashzone" data-sb-trash><span aria-hidden="true">🗑</span> Drag a scene here to delete it</div>' : ''}
-          <ol class="desk-v1-sb-scenes" data-scenes aria-label="Scenes">${detail.scenes.map((s) => _sceneHTML(s, detail.scenes, _sb.editing === s.id)).join('')}</ol>
           ${_sb.standalone ? `<div class="desk-v1-sb-timeline-wrap" data-sb-timeline-wrap>${_timelineHTML(detail)}</div>` : ''}
+          <div class="desk-v1-sb-listrow">
+            <ol class="desk-v1-sb-scenes" data-scenes aria-label="Scenes">${detail.scenes.map((s) => _sceneHTML(s, detail.scenes, _sb.editing === s.id)).join('')}</ol>
+            ${_sb.standalone ? '<div class="desk-v1-sb-bin" data-sb-trash role="img" aria-label="Bin: drag a scene here to delete it" title="Drag a scene here to delete it"><span aria-hidden="true">🗑</span></div>' : ''}
+          </div>
         </div>
         <aside class="desk-v1-sb-agent" data-sb-agent>${_agentBoxHTML(ctx)}</aside>
       </div>

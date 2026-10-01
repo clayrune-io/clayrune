@@ -358,11 +358,12 @@
 
   // One scene tile of the strip. `edges` adds the trim handles (the director
   // only); the Studio timeline (desk-v1-studio.js, via DeskV1VideoStrip below)
-  // draws the same tile without them.
+  // draws the same tile without them, and with the scene's own capture in the
+  // thumb slot when the scene carries one (the director's scenes do not).
   function _sceneTileHTML(s, i, pct, edges) {
     return `<div class="desk-v1-video-scene${s.edited ? ' desk-v1-video-scene-edited' : ''}" data-scene-id="${esc(s.id)}" style="flex-basis:${pct}%" tabindex="0">
           ${edges ? `<span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-l" data-trim-edge="l" data-scene-id="${esc(s.id)}"></span>` : ''}
-          <div class="desk-v1-video-scene-thumb" aria-hidden="true"></div>
+          <div class="desk-v1-video-scene-thumb" aria-hidden="true">${s.thumb ? `<img src="${esc(s.thumb)}" alt="" draggable="false">` : ''}</div>
           <span class="desk-v1-video-scene-label">${i + 1} &middot; ${esc(s.label)}${s.edited ? ' <span class="desk-v1-video-scene-dot">&#8226;</span>' : ''}</span>
           ${edges ? `<span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-r" data-trim-edge="r" data-scene-id="${esc(s.id)}"></span>` : ''}
         </div>`;
