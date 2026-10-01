@@ -50,8 +50,8 @@
   // ── Goal editor (§4.1 row: "metric, target number, baseline, unit,
   // horizon, deadline, measurement source"). Adding a measurement source (or
   // a manual entry) doesn't widen any launch approval — same "applies at
-  // once, no confirm sheet" precedent as Presence's own measurement list
-  // (`desk-v1-presence.js` `_measurementHTML`). ────────────────────────────
+  // once, no confirm sheet" precedent as the measurement list that was
+  // on the retired Presence screen. ────────────────────────────
   function _editorHTML(goal) {
     return `
       <div class="desk-v1-goal-editor">
