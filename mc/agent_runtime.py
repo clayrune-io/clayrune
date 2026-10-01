@@ -8820,15 +8820,31 @@ class CodexRuntime(AgentRuntime):
             install_hint='npm install -g @openai/codex' if is_npx else '',
         )
 
-    _cli_version_cache: Dict[str, Optional[str]] = {}
+    _cli_version_cache: Dict[Tuple[str, str, int, int], Optional[str]] = {}
+
+    @staticmethod
+    def _binary_stamp(p: Any) -> Tuple[str, str, int, int]:
+        """Identity of the binary on disk: (path, symlink target, mtime_ns,
+        size). The in-app Update keeps the SAME path (~/.local/bin/codex ->
+        packages/standalone/current/...), so a path-only key kept the OLD
+        version until a server restart; the target, mtime or size changes
+        whenever the file is replaced."""
+        path = str(p)
+        try:
+            real = os.path.realpath(path)
+            st = os.stat(real)
+            return path, real, st.st_mtime_ns, st.st_size
+        except OSError:
+            return path, path, 0, 0
 
     def _installed_cli_version(self) -> Optional[str]:
-        """`codex --version` text, memoised per resolved binary so a dispatch
-        never pays a subprocess for it twice; None when it cannot be read."""
+        """`codex --version` text, memoised per binary identity so a dispatch
+        never pays a subprocess for it twice but a replaced binary re-probes;
+        None when it cannot be read."""
         p = self.resolve_binary()
-        key = str(p) if p else ''
-        if not key:
+        if not p:
             return None
+        key = self._binary_stamp(p)
         if key not in CodexRuntime._cli_version_cache:
             ver = None
             try:

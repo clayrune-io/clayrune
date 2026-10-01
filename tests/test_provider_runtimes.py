@@ -3031,3 +3031,61 @@ def test_codex_service_tier_config_notice_is_a_notice_with_its_own_text():
     assert any(l.startswith('[codex notice] ') and 'service tier priority' in l
                for l in session['log_lines'])
     assert not any('[codex error]' in l or 'hook-trust' in l for l in session['log_lines'])
+
+
+class TestCodexVersionMemoInvalidatesOnBinaryReplace:
+    """The in-app Update keeps the SAME path, so a path-only memo served the
+    pre-update version until a server restart (review of 44585202)."""
+
+    def _rig(self, monkeypatch, tmp_path):
+        import subprocess as _sp
+        import mc.agent_runtime as ar
+        exe = tmp_path / 'codex'
+        exe.write_bytes(b'v1')
+        monkeypatch.setattr(CodexRuntime, '_cli_version_cache', {})
+        monkeypatch.setattr(CodexRuntime, 'resolve_binary', lambda self: str(exe))
+        monkeypatch.setattr(CodexRuntime, '_cmd_prefix', lambda self: [str(exe)])
+        shown = {'v': 'codex-cli 0.153.0', 'probes': 0}
+
+        def fake_run(cmd, **kw):
+            shown['probes'] += 1
+            return _sp.CompletedProcess(cmd, 0, stdout=shown['v'] + '\n', stderr='')
+
+        monkeypatch.setattr(ar.subprocess, 'run', fake_run)
+        return exe, shown
+
+    def test_unchanged_binary_is_probed_once(self, monkeypatch, tmp_path):
+        _exe, shown = self._rig(monkeypatch, tmp_path)
+        rt = CodexRuntime()
+        assert rt._installed_cli_version() == 'codex-cli 0.153.0'
+        assert rt._installed_cli_version() == 'codex-cli 0.153.0'
+        assert shown['probes'] == 1
+
+    def test_replaced_binary_at_same_path_reprobes(self, monkeypatch, tmp_path):
+        import os
+        exe, shown = self._rig(monkeypatch, tmp_path)
+        rt = CodexRuntime()
+        assert rt._installed_cli_version() == 'codex-cli 0.153.0'
+        exe.write_bytes(b'v2-longer')
+        st = exe.stat()
+        os.utime(exe, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+        shown['v'] = 'codex-cli 0.160.0'
+        assert rt._installed_cli_version() == 'codex-cli 0.160.0'
+        assert shown['probes'] == 2
+
+    def test_symlink_retargeted_to_new_version_reprobes(self, monkeypatch, tmp_path):
+        import os
+        old = tmp_path / 'v1'; old.write_bytes(b'same')
+        new = tmp_path / 'v2'; new.write_bytes(b'same')
+        link = tmp_path / 'link'
+        try:
+            os.symlink(old, link)
+        except (OSError, NotImplementedError):
+            pytest.skip('symlinks unavailable')
+        _exe, shown = self._rig(monkeypatch, tmp_path)
+        monkeypatch.setattr(CodexRuntime, 'resolve_binary', lambda self: str(link))
+        rt = CodexRuntime()
+        rt._installed_cli_version()
+        link.unlink(); os.symlink(new, link)
+        shown['v'] = 'codex-cli 0.160.0'
+        assert rt._installed_cli_version() == 'codex-cli 0.160.0'
