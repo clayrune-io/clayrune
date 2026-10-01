@@ -414,7 +414,7 @@ async function writerSave(browser) {
   !approvals.length ? ok('no request carried an approval state') : fail('an approval state was sent: ' + JSON.stringify(approvals));
 
   // Undo reverses both on the server.
-  await page.getByRole('button', { name: 'Undo' }).last().click();
+  await page.click('#desk-v1-undo'); // quiet Undo (Ron 2026-10-01): the header button, not a toast
   await page.waitForTimeout(500);
   const sp2 = srv.pieces.find((p) => p.id === id);
   (sp2.versions[0].state === 'drafting' && (!sp2.draft || sp2.draft.status === 'drafting'))

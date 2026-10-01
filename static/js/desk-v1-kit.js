@@ -265,39 +265,70 @@
     requestAnimationFrame(() => { el.textContent = text || ''; });
   }
 
-  // ── Toast with Undo + client command bus (§10: every drop is a command
-  // carrying its own inverse, an optimistic UI update, a toast offering
-  // Undo, and an announcement). Reuses `showActionToast` (index.html) — the
-  // same richer toast the update-available prompt already uses — rather
-  // than forking a second toast implementation for this one extra button. ──
+  // ── Toast with Undo + client command bus (§10: every edit is a command
+  // carrying its own inverse, an optimistic UI update, an announcement and an
+  // entry in the Undo history). A toast with Undo is raised ONLY for a command
+  // marked `destructive: true` (delete / remove / archive / skip): routine
+  // edits (a drag, a reorder, a rename) stay quiet and are undone from the
+  // Desk header's Undo button or Ctrl/Cmd+Z (desk-v1-shell.js). Every Desk
+  // toast shares ONE key, so a new one replaces the old instead of stacking.
+  // Reuses `showActionToast` / `showToast` (index.html). ──
+  const TOAST_KEY = 'desk-v1';
+  const DESTRUCTIVE_TOAST_MS = 6000;
   function toast(message, opts) {
     opts = opts || {};
     announce(message);
+    const key = opts.key || TOAST_KEY;
     if (typeof opts.undo === 'function' && typeof window.showActionToast === 'function') {
       return window.showActionToast(esc(message), [
         { label: 'Undo', primary: true, onclick: opts.undo },
-      ], { dismissOnAction: true, key: opts.key, autoDismissMs: opts.durationMs || 10000 });
+      ], { dismissOnAction: true, key, autoDismissMs: opts.durationMs || DESTRUCTIVE_TOAST_MS });
     }
-    if (typeof window.showToast === 'function') window.showToast(message, opts.durationMs);
+    if (typeof window.showToast === 'function') window.showToast(message, opts.durationMs, key);
     return null;
   }
 
+  const _HISTORY_MAX = 50;
+  const _busListeners = [];
   const commandBus = {
     history: [],
-    // cmd: { label, do, undo }. `do` runs immediately (the optimistic
-    // update); Undo on the toast runs `undo` and nothing else. A command
-    // with no inverse is not a command this bus accepts — that is the whole
-    // point of the bus (§10's "every drop... a toast with Undo").
+    // cmd: { label, do, undo, destructive? }. `do` runs immediately (the
+    // optimistic update). A command with no inverse is not a command this bus
+    // accepts: every edit stays undoable (§10). Only `destructive` ones raise
+    // the Undo toast; the rest are announced and left in `history`.
     run(cmd) {
       if (!cmd || typeof cmd.do !== 'function' || typeof cmd.undo !== 'function') {
         throw new Error('DeskV1Kit.commandBus.run: cmd needs both do() and undo()');
       }
       cmd.do();
       this.history.push(cmd);
-      toast(cmd.label || 'Done', {
-        undo: () => { cmd.undo(); this.history.pop(); },
-      });
+      if (this.history.length > _HISTORY_MAX) this.history.shift();
+      this._changed();
+      const label = cmd.label || 'Done';
+      if (cmd.destructive) toast(label, { undo: () => this._undoCmd(cmd) });
+      else announce(label);
     },
+    // Undo one command wherever it sits in the history (a toast's Undo can
+    // outlive later commands), then tell the header button.
+    _undoCmd(cmd) {
+      const i = this.history.lastIndexOf(cmd);
+      if (i >= 0) this.history.splice(i, 1);
+      this._changed();
+      return cmd.undo();
+    },
+    canUndo() { return this.history.length > 0; },
+    peek() { return this.history.length ? this.history[this.history.length - 1] : null; },
+    // Undo the most recent command (header button, Ctrl/Cmd+Z). Returns its label.
+    undoLast() {
+      const cmd = this.peek();
+      if (!cmd) return null;
+      this._undoCmd(cmd);
+      announce('Undid: ' + (cmd.label || 'the last change'));
+      return cmd.label || '';
+    },
+    clear() { this.history.length = 0; this._changed(); },
+    onChange(fn) { if (typeof fn === 'function') _busListeners.push(fn); },
+    _changed() { _busListeners.forEach((fn) => { try { fn(); } catch (e) { /* a listener must not break an edit */ } }); },
   };
 
   // ── Popover placement (MC-977 mobile fix batch 1: WT-4 / P-3 / H-5) ─────────

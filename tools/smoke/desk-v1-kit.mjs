@@ -194,9 +194,13 @@ async function runInteractionChecks(browser) {
       // messages both re-fire for a screen reader) — read it after one.
       requestAnimationFrame(() => {
         const announced = (document.getElementById('desk-v1-sr-announcer') || {}).textContent || null;
-        const btn = document.querySelector('.toast.toast-action .toast-btn.primary');
-        const hasBtn = !!btn && /undo/i.test(btn.textContent || '');
-        if (btn) btn.click();
+        // Quiet Undo (Ron 2026-10-01): a routine command raises NO toast; only a
+        // `destructive: true` one does. Undo goes through the bus (header
+        // button / Ctrl+Z), not a toast button.
+        const quiet = document.querySelectorAll('.toast.toast-action').length === 0;
+        const canUndo = K.commandBus.canUndo() && /Clayrune blog/.test((K.commandBus.peek() || {}).label || '');
+        const hasBtn = quiet && canUndo;
+        K.commandBus.undoLast();
         setTimeout(() => {
           resolvePromise({ didVal, undidVal, hasBtn, announced, historyLenAfterUndo: K.commandBus.history.length });
         }, 50);
@@ -205,10 +209,10 @@ async function runInteractionChecks(browser) {
   });
   if (cmdResult.didVal === 1) ok('commandBus.run: do() fires immediately (optimistic update)');
   else fail('commandBus.run: do() did not fire');
-  if (cmdResult.hasBtn) ok('commandBus.run: toast renders with a primary "Undo" button');
-  else fail('commandBus.run: no Undo button found on the toast');
-  if (cmdResult.undidVal === 1) ok('commandBus.run: clicking Undo calls the command\'s undo()');
-  else fail('commandBus.run: Undo button did not invoke undo()');
+  if (cmdResult.hasBtn) ok('commandBus.run: a routine command raises no toast and stays undoable (history + peek)');
+  else fail('commandBus.run: a routine command toasted, or was not left in the Undo history');
+  if (cmdResult.undidVal === 1) ok('commandBus.run: undoLast() calls the command\'s undo()');
+  else fail('commandBus.run: undoLast() did not invoke undo()');
   if (cmdResult.historyLenAfterUndo === 0) ok('commandBus.run: history pops the command once undone');
   else fail(`commandBus.run: expected empty history after undo, got length ${cmdResult.historyLenAfterUndo}`);
   if (cmdResult.announced && /Install in two minutes/.test(cmdResult.announced)) {

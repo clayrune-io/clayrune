@@ -277,7 +277,7 @@ async function threadAndWrites(browser) {
   await settle(page, () => document.querySelector('[data-conv-id="eng-a1"] .desk-v1-conv-reason')?.textContent.includes('Ignored'));
   const ign = calls(srv, 'PATCH', /^\/api\/desk\/engagement\/eng-a1$/);
   (ign.length === 1 && ign[0].body.state === 'ignored') ? ok('Ignore is PATCH {state:"ignored"} and the row reads Ignored') : fail('ignore PATCH: ' + JSON.stringify(ign));
-  await clickToast(page, 'Undo');
+  await page.click('#desk-v1-undo'); // quiet Undo (Ron 2026-10-01): Ignore is routine, no toast
   await settle(page, () => !document.querySelector('[data-conv-id="eng-a1"] .desk-v1-conv-reason')?.textContent.includes('Ignored'));
   const undone = calls(srv, 'PATCH', /^\/api\/desk\/engagement\/eng-a1$/);
   (undone.length === 2 && undone[1].body.state === 'needs_reply')
@@ -319,7 +319,8 @@ async function send(browser) {
   const post = calls(srv, 'POST', /^\/api\/desk\/engagement\/eng-a1\/reply$/);
   (post.length === 1 && post[0].body.text === 'No admin rights needed.' && post[0].body.passcode === PASSCODE)
     ? ok('the right passcode sends the draft text in one POST and the row reads Sent') : fail('reply POST: ' + JSON.stringify(post));
-  const noUndo = await page.evaluate(() => !/Undo/.test(document.body.innerText));
+  // Quiet Undo (Ron 2026-10-01): the header always has an Undo button, so test the toast and what the button would undo.
+  const noUndo = await page.evaluate(() => !/Undo/.test([...document.querySelectorAll('.toast')].map((t) => t.innerText).join(' ')) && !/sent|reply/i.test(document.getElementById('desk-v1-undo').title.replace(/^Undo: Edited.*/i, '')));
   noUndo ? ok('a sent reply offers no Undo (it cannot be unsent)') : fail('Undo offered on a sent reply');
   await page.waitForSelector('[data-conv-send][disabled]', { timeout: 3000 }).then(() => ok('Send is disabled once sent')).catch(() => fail('Send still enabled after sent'));
 
@@ -421,7 +422,7 @@ async function retro(browser) {
   const conf = calls(srv, 'POST', /^\/api\/desk\/findings\/F-live-1\/confirm$/);
   (conf.length === 1 && conf[0].body.edited_text === 'Video wins on clicks.' && !('passcode' in conf[0].body))
     ? ok('Save & Confirm is one POST /confirm carrying the edited wording; the card leaves the list') : fail('confirm: ' + JSON.stringify(conf));
-  const noUndo = await page.evaluate(() => !/Undo/.test(document.body.innerText));
+  const noUndo = await page.evaluate(() => !/Undo/.test([...document.querySelectorAll('.toast')].map((t) => t.innerText).join(' ')) && !/confirm|finding/i.test(document.getElementById('desk-v1-undo').title));
   noUndo ? ok('a live finding decision offers no Undo (the route has no inverse)') : fail('Undo offered on a live decision');
   await ctx.close();
 

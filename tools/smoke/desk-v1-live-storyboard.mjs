@@ -213,8 +213,10 @@ async function studio(browser) {
   await page.waitForTimeout(250);
   JSON.stringify(srv.boards[itemKey].scenes.map((s) => s.label)) === '["Middle","Opening","Closing"]'
     ? ok('Arrow Down on a handle PUTs the new order') : fail('after reorder: ' + JSON.stringify(srv.boards[itemKey].scenes.map((s) => s.label)));
-  (await page.$('.toast:has-text("Moved scene") .toast-btn.primary')) ? ok('the Undo toast is shown for the saved reorder') : fail('no Undo toast for the reorder');
-  await page.click('.toast:has-text("Moved scene") .toast-btn.primary');
+  // Quiet Undo (Ron 2026-10-01): a saved reorder raises no toast; the header Undo names it.
+  const moveUndo = (await page.getAttribute('#desk-v1-undo', 'title')) || '';
+  (!(await page.$('.toast')) && /Moved scene/.test(moveUndo)) ? ok(`a saved reorder raises no toast; the header Undo names it: "${moveUndo}"`) : fail(`reorder should be quiet with a header Undo: ${moveUndo}`);
+  await page.click('#desk-v1-undo');
   await page.waitForTimeout(300);
   JSON.stringify(srv.boards[itemKey].scenes.map((s) => s.label)) === '["Opening","Middle","Closing"]'
     ? ok('Undo is another PUT: the server has the earlier order again') : fail('after undo: ' + JSON.stringify(srv.boards[itemKey].scenes.map((s) => s.label)));

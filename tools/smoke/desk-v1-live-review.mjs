@@ -292,7 +292,7 @@ async function claims(browser) {
     ? ok('it says "Source on file", never "supports" or "verified": nobody read the source') : fail('bar: ' + bar);
   (await primary(page).isEnabled()) ? ok('Approve is enabled once the claim has a source') : fail('Approve still disabled');
 
-  await page.locator('.toast-btn', { hasText: 'Undo' }).first().click();
+  await page.click('#desk-v1-undo'); // quiet Undo (Ron 2026-10-01): adding a source is routine, no toast
   await settle(page, () => /No source for this/.test((document.querySelector('[data-claim-bar="c1"]') || {}).innerText || ''));
   await page.waitForTimeout(100);
   const pp2 = calls(srv, 'PATCH', /^\/api\/desk\/pieces\/p-1$/);
@@ -305,7 +305,7 @@ async function claims(browser) {
   const vp = calls(srv, 'PATCH', /\/versions\/v-x$/);
   (vp.length === 1 && vp[0].body.claims_state.c1.status === 'accepted' && vp[0].body.revision === 1 && !('body' in vp[0].body) && !('state' in vp[0].body))
     ? ok('Accept as written PATCHes claims_state accepted + revision 1, and no state') : fail('accept: ' + JSON.stringify(vp.map((r) => r.body)));
-  await page.locator('.toast-btn', { hasText: 'Undo' }).first().click();
+  await page.click('#desk-v1-undo'); // quiet Undo (Ron 2026-10-01): accepting a claim is routine, no toast
   await settle(page, () => /No source for this/.test((document.querySelector('[data-claim-bar="c1"]') || {}).innerText || ''));
   await page.waitForTimeout(100);
   const vp2 = calls(srv, 'PATCH', /\/versions\/v-x$/);

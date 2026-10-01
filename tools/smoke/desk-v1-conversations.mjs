@@ -250,11 +250,13 @@ async function runSimulatedSend(browser) {
   await page.waitForSelector('.desk-v1-conv-layout', { timeout: 8000 });
 
   await page.click('[data-conv-send]');
-  await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
-  const toastText = (await page.textContent('.toast').catch(() => '') || '');
-  /Sent your reply/.test(toastText)
-    ? ok(`Send fires the commandBus toast: "${toastText.trim()}"`)
-    : fail(`Send toast missing/wrong: ${JSON.stringify(toastText)}`);
+  await page.waitForTimeout(150);
+  // Quiet Undo (Ron 2026-10-01): no toast; the header Undo names the send.
+  const toastText = (await page.$eval('.toast', (e) => e.textContent).catch(() => '') || '');
+  const sendUndo = (await page.getAttribute('#desk-v1-undo', 'title')) || '';
+  (toastText === '' && /Sent your reply/.test(sendUndo))
+    ? ok(`Send raises no toast; the header Undo names it: "${sendUndo}"`)
+    : fail(`Send should be quiet with a header Undo: toast=${JSON.stringify(toastText)} undo=${JSON.stringify(sendUndo)}`);
 
   const state = await page.evaluate(() => (window.DeskV1Fixtures.conversations || []).find((c) => c.id === 'conv-1').state);
   state === 'sent'

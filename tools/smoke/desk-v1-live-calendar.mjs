@@ -204,7 +204,7 @@ async function trayDrop(browser) {
   (new Date(stored.publishAt).toISOString() === want && stored.state === 'planned')
     ? ok('the server holds the time and the version is still `planned`: scheduling is not approval') : fail('server version: ' + JSON.stringify(stored));
 
-  await page.locator('.toast-btn', { hasText: 'Undo' }).first().click();
+  await page.click('#desk-v1-undo'); // quiet Undo (Ron 2026-10-01): the header button, not a toast
   await settle(page, () => !document.querySelector('[data-chip-version="v-unsched"]'));
   await page.waitForTimeout(100);
   const undo = calls(srv, 'PATCH', /\/versions\/v-unsched$/);
@@ -225,7 +225,7 @@ async function moves(browser) {
   // 2: same approved day, 15:00 -> 17:30 (Wed 2026-09-30 in the pinned zone)
   await keyboardMove(page, 'v-sched', '2026-09-30T17:30');
   await until(() => calls(srv, 'PATCH', /\/versions\/v-sched$/).length === 1);
-  await page.waitForSelector('.toast');
+  await page.waitForSelector('#desk-v1-undo:not([disabled])'); // quiet Undo: no toast to wait for
   let p = calls(srv, 'PATCH', /\/versions\/v-sched$/);
   const s1 = sv(srv, 'p-a', 'v-sched');
   (p.length === 1 && JSON.stringify(Object.keys(p[0].body)) === '["scheduled_at"]' && s1.state === 'scheduled' && s1.approved)
@@ -284,7 +284,7 @@ async function slots(browser) {
   // New own slot (Fri 2026-10-02 14:00 default)
   await dragTo(page, '[data-slot-handle]', '.desk-v1-cal-row-slots .desk-v1-cal-slotcell[data-day-key="2026-10-02"]', '.desk-v1-cal-slot-handle-dragging');
   await settle(page, () => window.DeskV1Store.state().campaigns[0].when.slots.length === 2);
-  await page.waitForSelector('.toast-btn');
+  await page.waitForSelector('#desk-v1-undo:not([disabled])'); // quiet Undo: no toast to wait for
   let p = calls(srv, 'PATCH', /^\/api\/desk\/campaigns\/camp-1$/);
   const mine = p.length === 1 && p[0].search === '?shape=v1' && p[0].body.when.slots.find((s) => s.origin === 'user');
   (mine && p[0].body.when.slots.length === 2 && srv.camp.when.slots.length === 2)

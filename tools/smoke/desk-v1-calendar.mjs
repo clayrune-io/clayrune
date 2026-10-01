@@ -354,18 +354,19 @@ async function runKeyboardReschedule(browser) {
 
   await page.fill('[data-kbd-when]', '2026-10-05T09:00');
   await page.click('[data-kbd-move]');
-  await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
-  const toastText = (await page.textContent('.toast').catch(() => '') || '');
-  /Moved/.test(toastText) && /Install in two minutes/.test(toastText)
-    ? ok(`commandBus toast confirms the move: "${toastText.trim()}"`)
-    : fail(`toast missing/wrong after keyboard move: ${JSON.stringify(toastText)}`);
+  await page.waitForTimeout(150);
+  // Quiet Undo (Ron 2026-10-01): no toast; the header Undo names the move.
+  const toastText = (await page.getAttribute('#desk-v1-undo', 'title')) || '';
+  /Moved/.test(toastText) && /Install in two minutes/.test(toastText) && (await page.$$('.toast')).length === 0
+    ? ok(`the move raises no toast; the header Undo names it: "${toastText.trim()}"`)
+    : fail(`header Undo missing/wrong after keyboard move: ${JSON.stringify(toastText)}`);
 
   const movedKey = await page.evaluate(() => window.DeskV1Fixtures.calendarSchedule['v-install-blog']);
   movedKey && movedKey.startsWith('2026-10-05')
     ? ok(`fixture mutated in place: calendarSchedule['v-install-blog'] = ${movedKey}`)
     : fail(`fixture not mutated as expected: ${JSON.stringify(movedKey)}`);
 
-  await page.click('.toast .toast-btn.primary');
+  await page.click('#desk-v1-undo');
   await page.waitForTimeout(50);
   const revertedKey = await page.evaluate(() => window.DeskV1Fixtures.calendarSchedule['v-install-blog']);
   revertedKey === '2026-10-01T15:00:00-07:00'
@@ -606,11 +607,12 @@ async function runR29SlotCreateAndRefusal(browser) {
   // same Undo contract every other Desk v1 drop already gets. Toasts stack
   // (no `opts.key`, so each add appends a new one rather than replacing the
   // last) — target the LAST toast, not the first, or this undoes Monday's.
-  const toastText = (await page.textContent('.toast:last-of-type').catch(() => '') || '');
+  // Quiet Undo (Ron 2026-10-01): no toast; the header Undo (the last command) names the add.
+  const toastText = (await page.getAttribute('#desk-v1-undo', 'title')) || '';
   /Added your slot/.test(toastText)
-    ? ok(`R2-9: commandBus toast confirms the slot add: "${toastText.trim()}"`)
-    : fail(`R2-9: toast missing/wrong after slot add: ${JSON.stringify(toastText)}`);
-  await page.click('.toast:last-of-type .toast-btn.primary');
+    ? ok(`R2-9: the header Undo names the slot add: "${toastText.trim()}"`)
+    : fail(`R2-9: header Undo missing/wrong after slot add: ${JSON.stringify(toastText)}`);
+  await page.click('#desk-v1-undo');
   await page.waitForTimeout(50);
   const wedChipsAfterUndo = await page.$$eval(`.desk-v1-cal-row-slots .desk-v1-cal-slotcell[data-day-key="${dayKeys[2]}"] .desk-v1-cal-slotchip`, (els) => els.length);
   wedChipsAfterUndo === 0

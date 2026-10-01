@@ -252,7 +252,7 @@ async function pauseResume(browser) {
   calls(srv, 'PATCH', /^\/api\/desk\/campaigns\//).length === 0 ? ok('the cascade is server-side: no campaign PATCH from the browser') : fail('browser PATCHed campaigns');
   const st = [await stateOf(page, 'c-active'), await stateOf(page, 'c-prop')];
   (st[0] === 'paused' && st[1] === 'paused') ? ok('both campaigns are paused locally') : fail('local states ' + st);
-  const noUndo = await page.evaluate(() => !document.body.innerText.includes('Undo'));
+  const noUndo = await page.evaluate(() => !document.querySelector('.toast .toast-btn')); // the header Undo is always on screen
   noUndo ? ok('a live pause offers no Undo (the route has no inverse)') : fail('Undo offered on a live pause');
 
   // Resume: the server's start gate holds c-active; the browser must not resume it.
@@ -318,7 +318,7 @@ async function playbook(browser) {
   await settle(page, () => document.querySelector('[data-finding-id="F-live-1"]').dataset.findingState === 'confirmed');
   const posted = calls(srv, 'POST', /reconfirm$/).pop();
   (posted && posted.body && posted.body.decided_by) ? ok('Re-confirm POSTs the route with a decider') : fail('reconfirm body: ' + JSON.stringify(posted));
-  const noUndo = await page.evaluate(() => !/Undo/.test(document.body.innerText));
+  const noUndo = await page.evaluate(() => !document.querySelector('.toast .toast-btn')); // the header Undo is always on screen
   noUndo ? ok('a live finding decision offers no Undo (the route has no inverse)') : fail('Undo offered on a live decision');
   const origin = await page.evaluate(() => window.DeskV1Store.state().playbook.findings.find((f) => f.id === 'F-live-1').origin);
   origin === 'interactive' ? ok("the server's finding replaced the local one (origin interactive)") : fail('origin ' + origin);

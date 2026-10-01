@@ -194,6 +194,7 @@
       repaint,
       request: patch(nextState),
       undoRequest: patch(prevState),
+      destructive: !!extra.destructive,
     });
   }
 
@@ -287,6 +288,7 @@
     let campIdx, famRemoved, convRemoved;
     DeskV1Kit.commandBus.run({
       label: `Deleted “${camp.plan.title || 'Untitled draft'}”`,
+      destructive: true,
       do: () => {
         campIdx = campaigns.indexOf(camp);
         famRemoved = [];
@@ -336,6 +338,7 @@
       apply: () => { camp._preArchiveState = prevState; },
       unapply: () => { delete camp._preArchiveState; },
       repaint: (applied) => { if (onDone) onDone(applied ? 'archived' : 'restored'); },
+      destructive: true,
     });
   }
 
@@ -1233,6 +1236,7 @@
     const prev = targets.map((v) => v.state);
     DeskV1Kit.commandBus.run({
       label: `${label} “${fam.title}”`,
+      destructive: true,
       do: () => { targets.forEach((v) => { v.state = nextState; }); _renderList(_campaign(fam.campaignId)); },
       undo: () => { targets.forEach((v, i) => { v.state = prev[i]; }); _renderList(_campaign(fam.campaignId)); },
     });

@@ -3197,3 +3197,16 @@ button.desk-v1-because-chip { color: var(--accent-soft); font-weight: 600; curso
 .desk-v1-engine-outputs { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }
 .desk-v1-engine-saved { color: var(--text-dim); font-size: 12px; }
 .desk-v1-engine-img { max-width: 100%; max-height: 260px; border-radius: 8px; display: block; margin: 6px 0; }
+
+/* Desk header Undo (shell): routine edits raise no toast, this is how they are
+   taken back. Sits left of Minimize in the modal's control group. */
+.desk-v1-undo-btn {
+  height: 32px; padding: 0 10px; border-radius: 6px; gap: 5px;
+  background: var(--surface3); border: 1px solid var(--border);
+  color: var(--text); font-size: 12px; font-weight: 600; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.desk-v1-undo-btn:hover:not(:disabled) { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+.desk-v1-undo-btn:disabled { color: var(--text-dim); opacity: 0.45; cursor: default; }
+@media (max-width: 960px) { .desk-v1-undo-btn .desk-v1-undo-text { display: none; } .desk-v1-undo-btn { width: 32px; padding: 0; font-size: 16px; } }

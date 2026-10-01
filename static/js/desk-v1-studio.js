@@ -522,6 +522,7 @@
     _registerItem(ctx.fam);
     _sceneCmd(ctx, {
       label: `Deleted scene “${scene.label}”`,
+      destructive: true,
       do: () => {
         const i = detail.scenes.indexOf(scene);
         if (i >= 0) detail.scenes.splice(i, 1);

@@ -163,7 +163,7 @@ async function runSectionsAndIdentity(browser) {
   const after = await page.$$eval('[data-piece-media] .desk-v1-what-thumb', (els) => els.length);
   if (after === 3) ok('＋ Add media: a third asset lands on the piece');
   else fail(`＋ Add media: expected 3 assets, got ${after}`);
-  await page.locator('.toast button', { hasText: 'Undo' }).first().click();
+  await page.click('#desk-v1-undo'); // quiet Undo (Ron 2026-10-01)
   await page.waitForFunction(() => document.querySelectorAll('[data-piece-media] .desk-v1-what-thumb').length === 2, null, { timeout: 2000 }).catch(() => {});
   const undone = await page.$$eval('[data-piece-media] .desk-v1-what-thumb', (els) => els.length);
   if (undone === 2) ok('＋ Add media: Undo removes it again');
@@ -203,14 +203,16 @@ async function runVersionTime(browser) {
   });
   if (calWhen === next) ok(`Versions: editing the publish time moves the calendar value (${before} -> ${calWhen})`);
   else fail(`Versions: calendar value ${calWhen}, expected ${next}`);
-  const undo = page.locator('.toast button', { hasText: 'Undo' });
+  const undo = page.locator('#desk-v1-undo:not([disabled])'); // quiet Undo (Ron 2026-10-01)
   if (await undo.count()) {
     await undo.first().click();
     await page.waitForTimeout(150);
+    // fill() already fires `change`, and the line above fires it again: two moves to the same time are in the history.
+    if ((await page.$eval(sel, (i) => i.value)) !== before && await undo.count()) { await undo.first().click(); await page.waitForTimeout(150); }
     const restored = await page.$eval(sel, (i) => i.value);
     if (restored === before) ok('Versions: Undo restores the publish time');
     else fail(`Versions: Undo left ${restored}, expected ${before}`);
-  } else fail('Versions: no Undo toast after a time edit');
+  } else fail('Versions: no header Undo after a time edit');
   reportUncaught(pageErrors, '[version-time]');
   await ctx.close();
 }

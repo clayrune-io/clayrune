@@ -2506,7 +2506,7 @@ function _toastSwipeable(el) {
   el.addEventListener('pointercancel', end);
 }
 
-function showToast(message, durationMs = 5000) {
+function showToast(message, durationMs = 5000, key) {
   const container = document.getElementById('toast-container');
   if (!container) return;
   // First-run setup fires a save on nearly every click (theme, accent, model
@@ -2522,9 +2522,19 @@ function showToast(message, durationMs = 5000) {
   el.className = 'toast';
   el.innerHTML = `<span class="toast-icon">i</span><span class="toast-msg">${esc(message)}</span>`;
   _toastSwipeable(el);
-  container.appendChild(el);
+  // `key`: a repeat of the same kind REPLACES its earlier toast in place
+  // (same contract as showActionToast), so a burst never stacks.
+  const prev = key ? _toastLive(container).find(c => c.dataset.toastKey === key) || null : null;
+  if (key) el.dataset.toastKey = key;
+  if (prev) {
+    if (prev._dismissTimer) clearTimeout(prev._dismissTimer);
+    el.style.animation = 'none';
+    prev.replaceWith(el);
+  } else {
+    container.appendChild(el);
+  }
   _toastTrim(container);
-  setTimeout(() => {
+  el._dismissTimer = setTimeout(() => {
     el.classList.add('toast-out');
     el.addEventListener('animationend', () => el.remove());
   }, durationMs);

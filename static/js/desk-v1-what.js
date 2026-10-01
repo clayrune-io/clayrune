@@ -174,6 +174,7 @@
     const cardIdx = st.creates.indexOf(card);
     DeskV1Store.write({
       label: `Removed the new ${fam ? fam.kind : 'piece'}`,
+      destructive: true,
       apply: () => {
         const i = _fx().families.indexOf(fam); if (i >= 0) _fx().families.splice(i, 1);
         const j = st.creates.indexOf(card); if (j >= 0) st.creates.splice(j, 1);

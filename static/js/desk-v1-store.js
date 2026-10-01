@@ -140,6 +140,9 @@
   //   undoRequest(result)  the route call that reverses the write, if one
   //                exists; if it refuses, the local change is put back.
   //   repaint()    optional, called after any rollback so the surface redraws.
+  //   destructive  optional: a delete / remove / archive / skip. Only these get
+  //                the Undo toast; every other change is silent and is undone
+  //                from the Desk header's Undo (or Ctrl/Cmd+Z).
   //   irreversible optional: the route has no inverse (a finding's Re-confirm,
   //                a project pause that already cascaded...). A live change then
   //                gets a plain confirmation toast, NOT an Undo that would only
@@ -183,7 +186,7 @@
     // The change has already happened (apply + request above), so the bus's own
     // `do` is a no-op: it is here for the Undo toast, the history and the
     // announcement, the same three things every other v1 command gets.
-    if (bus) bus.run({ label: cmd.label, do: () => {}, undo });
+    if (bus) bus.run({ label: cmd.label, do: () => {}, undo, destructive: !!cmd.destructive });
     return { ok: true, result };
   }
 
@@ -200,7 +203,7 @@
     cmd.apply();
     const bus = window.DeskV1Kit && window.DeskV1Kit.commandBus;
     const undo = () => { cmd.unapply(); if (typeof cmd.repaint === 'function') cmd.repaint(); };
-    if (bus) bus.run({ label: cmd.label, do: () => {}, undo });
+    if (bus) bus.run({ label: cmd.label, do: () => {}, undo, destructive: !!cmd.destructive });
     return { ok: true, result: null };
   }
 
@@ -295,7 +298,7 @@
       c.undo();
       await _sbSync(Object.assign({}, c, { label: `Undoing “${c.label}”` }), c.do);
     };
-    if (bus) bus.run({ label: c.label, do: () => {}, undo });
+    if (bus) bus.run({ label: c.label, do: () => {}, undo, destructive: !!c.destructive });
     return { ok: true };
   }
 
