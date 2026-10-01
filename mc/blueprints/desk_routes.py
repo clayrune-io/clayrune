@@ -147,17 +147,29 @@ def patch_presence(project_id):
     if not project:
         return jsonify({'error': 'project not found'}), 404
     d = request.get_json(silent=True) or {}
-    # Only `desk_agent` is writable here. `upsert_presence` would take any
-    # key, including `budget`, whose earmark bounds are enforced elsewhere —
-    # this route must not become a way around them.
-    if set(d) - {'desk_agent'}:
-        return jsonify({'error': 'only desk_agent may be set here'}), 400
+    # Only `desk_agent` and `state` are writable here. `upsert_presence` would
+    # take any key, including `budget`, whose earmark bounds are enforced
+    # elsewhere — this route must not become a way around them.
+    if set(d) - {'desk_agent', 'state'}:
+        return jsonify({'error': 'only desk_agent and state may be set here'}), 400
+    if 'state' in d and d['state'] not in _desk.PROJECT_STATES:
+        return jsonify({'error': f"state must be one of {list(_desk.PROJECT_STATES)}"}), 400
     if d.get('desk_agent') is not None:
         ref = d['desk_agent']
         if not isinstance(ref, str) or not _valid_agent_ref(project, ref):
             return jsonify({'error': f'unknown agent {ref!r} — pick one from '
                                       f'/api/characters?project_id={project_id}'}), 400
-    return jsonify(_desk.upsert_presence(project_id, d))
+    if 'state' not in d:
+        return jsonify(_desk.upsert_presence(project_id, d))
+    # Pausing/resuming a project cascades to its campaigns in the same write
+    # (R1-W S1), so the state never lands without them. `desk_agent`, if sent
+    # too, is merged first so one request is one outcome.
+    if 'desk_agent' in d:
+        _desk.upsert_presence(project_id, {'desk_agent': d['desk_agent']})
+    result = _desk.set_project_state(project_id, d['state'])
+    return jsonify(dict(result['presence'], cascade={
+        'campaigns': result['campaigns'], 'changed': result['changed'],
+        'held': result['held']}))
 
 
 # ── Workspace read (R1-W S0, M1) ─────────────────────────────────────────────
@@ -402,9 +414,50 @@ def list_campaigns():
     return jsonify(_desk.list_campaigns(state=request.args.get('state')))
 
 
+# `?shape=v1` marks a Desk v1 caller (static/js/desk-v1-store.js): the body is
+# the v1 campaign object and the answer is the v1 shape, with the state words
+# translated HERE while the store keeps the legacy ones (R1-W S1; plan §2.B,
+# decision 1). Without it both directions are exactly what they always were, so
+# the legacy Desk is untouched.
+_CLIENT_CAMPAIGN_ID = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
+
+
+def _wants_v1() -> bool:
+    return request.args.get('shape') == 'v1'
+
+
+def _create_campaign_v1(d: dict):
+    """A v1 create is a draft or a proposal, never a started campaign: Start is
+    its own gated route, so a body naming any other state is refused rather
+    than quietly downgraded. The id may be the client's own (the optimistic
+    draft already navigated to it); a taken id is a 409, not an overwrite."""
+    body = _desk.v1_campaign_in(d)
+    state = body.pop('state', 'proposed')
+    if state not in ('draft', 'proposed'):
+        return jsonify({'error': 'a new campaign starts as a draft or a proposal'}), 400
+    cid = d.get('id')
+    if cid is not None and not (isinstance(cid, str) and _CLIENT_CAMPAIGN_ID.match(cid)):
+        return jsonify({'error': 'campaign id must be 1-80 letters, digits, - or _'}), 400
+    try:
+        camp = _desk.create_campaign(
+            body.get('title') or '', body.get('thesis') or '',
+            voices=body.get('voices') or body.get('voice'),
+            agenda=body.get('agenda') or '', project_id=body.get('project_id'),
+            plan=body.get('plan'), goal=body.get('goal'), term=body.get('term'),
+            how=body.get('how'), map_=body.get('map'), subject=body.get('subject'),
+            state=state, campaign_id=cid, voiceless_ok=True)
+    except _desk.CampaignExists:
+        return jsonify({'error': 'a campaign with that id already exists'}), 409
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify(_desk.v1_campaign(camp)), 201
+
+
 @bp.route('/api/desk/campaigns', methods=['POST'])
 def create_campaign():
     d = request.get_json(silent=True) or {}
+    if _wants_v1():
+        return _create_campaign_v1(d)
     if not d.get('title') or not d.get('thesis'):
         # A campaign without a thesis is a folder. The thesis is what makes the
         # Board answer "why is this running now" instead of listing pending items.
@@ -425,13 +478,15 @@ def create_campaign():
 
 @bp.route('/api/desk/campaigns/<campaign_id>', methods=['PATCH'])
 def update_campaign(campaign_id):
+    d = request.get_json(silent=True) or {}
+    v1 = _wants_v1()
     try:
-        camp = _desk.update_campaign(campaign_id, request.get_json(silent=True) or {})
+        camp = _desk.update_campaign(campaign_id, _desk.v1_campaign_in(d) if v1 else d)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     if camp is None:
         return jsonify({'error': 'campaign not found'}), 404
-    return jsonify(camp)
+    return jsonify(_desk.v1_campaign(camp) if v1 else camp)
 
 
 @bp.route('/api/desk/campaigns/<campaign_id>', methods=['DELETE'])

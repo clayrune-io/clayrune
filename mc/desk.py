@@ -1071,7 +1071,10 @@ def signal_is_ruled_on(signal_id: str) -> bool:
     return False
 
 
-CAMPAIGN_STATES = ('proposed', 'running', 'paused', 'done', 'dropped')
+# `draft` is the v1 Desk's first state: a campaign nobody has proposed yet, still
+# being filled in through the six map stops (R1-W S1). The legacy Desk never
+# creates one.
+CAMPAIGN_STATES = ('draft', 'proposed', 'running', 'paused', 'done', 'dropped')
 
 
 MAX_TERM_DAYS = 90
@@ -1201,13 +1204,19 @@ def _check_earmark_locked(store: dict, project_id: str | None, budget: dict | No
     return None
 
 
+class CampaignExists(ValueError):
+    """A client-chosen campaign id is already taken (the route answers 409)."""
+
+
 def create_campaign(title: str, thesis: str, *, voice=None, voices=None,
                     agenda: str = '', project_ids: Iterable[str] = (),
                     planned: Iterable[str] = (), visual: str | None = None,
                     project_id: str | None = None, plan: dict | None = None,
                     goal: dict | None = None, term: dict | None = None,
                     how: dict | None = None, map_: dict | None = None,
-                    subject: dict | None = None) -> dict:
+                    subject: dict | None = None, state: str = 'proposed',
+                    campaign_id: str | None = None,
+                    voiceless_ok: bool = False) -> dict:
     # A CAMPAIGN CARRIES A SET OF VOICES, NOT ONE. Ron asked whether a campaign
     # should also pick a platform; the sharper version of his question is that a
     # single-voice campaign can only ever reach ONE room, and a thesis usually
@@ -1218,17 +1227,26 @@ def create_campaign(title: str, thesis: str, *, voice=None, voices=None,
     # Platform stays derived from the voice. See `campaign_platforms`.
     #
     # `voice=` is still accepted so older callers and stored records keep working.
-    voices = _normalise_voices(voices or voice)
-    if not voices:
+    # A v1 draft/proposal has no voice yet: voice is chosen per account in Where
+    # and Start is what requires one (R1-W S1). Such a caller gets NO voice, not
+    # the default one `_normalise_voices` would otherwise fill in; a caller that
+    # names voices still has them validated. The legacy route still refuses.
+    if voiceless_ok and not (voices or voice):
+        voices = []
+    else:
+        voices = _normalise_voices(voices or voice)
+    if not voices and not voiceless_ok:
         raise ValueError('no voices exist yet; create one before a campaign')
+    if state not in CAMPAIGN_STATES:
+        raise ValueError(f'unknown state {state!r}')
     camp = {
-        'id': _new_id('camp'),
+        'id': campaign_id or _new_id('camp'),
         'title': (title or '').strip(),
         'thesis': (thesis or '').strip(),
         'agenda': agenda,
         'voices': voices,
         # Kept in sync for anything still reading the singular field.
-        'voice': voices[0],
+        'voice': voices[0] if voices else None,
         'project_ids': list(project_ids),
         'planned': list(planned),   # intended posts, in order
         # What kind of visual this campaign's posts need. Defaults to a real
@@ -1236,7 +1254,7 @@ def create_campaign(title: str, thesis: str, *, voice=None, voices=None,
         # 2026-09-10) rather than leaving the writer to skip the visual or
         # invent one.
         'visual': (visual or '').strip() or DEFAULT_VISUAL_REQUIREMENT,
-        'state': 'proposed',
+        'state': state,
         'created_at': now_iso(),
         'updated_at': now_iso(),
         # IA revision 2 §5.1 (R1-P amend): additive alongside the legacy
@@ -1257,6 +1275,8 @@ def create_campaign(title: str, thesis: str, *, voice=None, voices=None,
         # can hand a `how.budget` to on day one (no separate Launch route
         # exists yet; this ticket is the backend shapes, not R2-11).
         _check_earmark_locked(store, project_id, (camp['how'] or {}).get('budget'))
+        if camp['id'] in store['campaigns']:
+            raise CampaignExists(camp['id'])
         bounds = _campaign_bounds(camp)
         camp['approval'] = {'bounds': bounds, 'bounds_hash': compute_bounds_hash(bounds)}
         store['campaigns'][camp['id']] = camp
@@ -1353,6 +1373,99 @@ def v1_campaign(camp: dict) -> dict:
     plan['title'] = plan.get('title') or camp.get('title') or ''
     out['plan'] = plan
     return out
+
+
+_V1_STATE_IN = {v1: stored for stored, v1 in _V1_STATE_OUT.items()}
+
+# What a v1 client may name in a create/patch body. Everything else on the v1
+# draft object is client-local (`id` is read by the route, `_`-prefixed flags,
+# `rules`; `projectId` is renamed) and is dropped, never stored.
+_V1_BODY_KEYS = ('subject', 'plan', 'goal', 'term', 'how', 'map', 'state', 'thesis',
+                 'agenda', 'voice', 'voices')
+
+
+def v1_campaign_in(body: dict) -> dict:
+    """The inverse of `v1_campaign`: a v1-shaped create/patch body in the stored
+    vocabulary. `state` words are translated (active->running, completed->done,
+    archived->dropped), `projectId` becomes `project_id`, and `plan.title` is
+    mirrored to `title` so the legacy Desk and the v1 surfaces never disagree
+    about a campaign's name. Only keys present in `body` are present in the
+    result, so a PATCH stays a patch."""
+    body = body if isinstance(body, dict) else {}
+    out: dict = {}
+    for k in _V1_BODY_KEYS:
+        if k in body:
+            out[k] = body[k]
+    if 'state' in out:
+        out['state'] = _V1_STATE_IN.get(out['state'], out['state'])
+    if 'projectId' in body:
+        out['project_id'] = body['projectId']
+    elif 'project_id' in body:
+        out['project_id'] = body['project_id']
+    plan = out.get('plan')
+    if isinstance(plan, dict):
+        if 'title' in plan:
+            out['title'] = (plan.get('title') or '').strip()
+        if 'thesis' not in out and plan.get('brief') is not None:
+            out['thesis'] = (plan.get('brief') or '').strip()
+    return out
+
+
+PROJECT_STATES = ('active', 'paused')
+# A campaign in one of these is over (or already paused): pausing leaves it be.
+_NOT_PAUSABLE = ('done', 'dropped', 'paused')
+
+
+def set_project_state(project_id: str, state: str) -> dict:
+    """Pause or resume a project AND its campaigns in one write, so a half-
+    paused project is impossible (R1-W S1; the v1 project page used to do this
+    in the browser only).
+
+    pause:  every campaign of the project that is not over and not already
+            paused records `pre_pause_state` and becomes `paused`.
+    resume: every campaign carrying `pre_pause_state` goes back to it. One going
+            back to `running` is re-run through `_start_gate_problems`, the same
+            gate Start uses, and one that fails stays paused (reported in
+            `held`) rather than reactivating with a bound it can no longer meet.
+
+    Returns `{presence, campaigns, changed, held}`; `campaigns` are the v1
+    shapes of every campaign this call touched."""
+    if state not in PROJECT_STATES:
+        raise ValueError(f'state must be one of {PROJECT_STATES}')
+    changed: list[dict] = []
+    held: list[dict] = []
+    with _store_lock:
+        store = _read_store()
+        rec = store['presences'].get(project_id) or _empty_presence(project_id)
+        rec['state'] = state
+        rec['project_id'] = project_id
+        rec['updated_at'] = now_iso()
+        store['presences'][project_id] = rec
+        for camp in store['campaigns'].values():
+            if camp.get('project_id') != project_id:
+                continue
+            cur = camp.get('state')
+            if state == 'paused':
+                if cur in _NOT_PAUSABLE:
+                    continue
+                camp['pre_pause_state'] = cur
+                camp['state'] = 'paused'
+            else:
+                target = camp.get('pre_pause_state')
+                if cur != 'paused' or not target:
+                    continue
+                if target == 'running':
+                    problems = _start_gate_problems(camp)
+                    if problems:
+                        held.append({'id': camp['id'], 'reasons': problems})
+                        continue
+                camp['state'] = target
+                camp.pop('pre_pause_state', None)
+            camp['updated_at'] = now_iso()
+            changed.append(camp)
+        _write_store(store)
+        return {'presence': rec, 'campaigns': [v1_campaign(c) for c in changed],
+                'changed': len(changed), 'held': held}
 
 
 def v1_accounts(presences: dict) -> list[dict]:

@@ -6,6 +6,11 @@
 // list. The header's agent button is the project's default planner (the one
 // project-level setting left; the Presence screen it used to live on is
 // retired, MC-977 2026-10-01).
+// R1-W S1: writes go through DeskV1Store (static/js/desk-v1-store.js). With
+// `desk_v1_live` on they call the Desk routes (finding decisions, project
+// pause/resume and its cascade, the default planner) and roll back on a
+// refusal; flag off is demo mode, local only. Live, the Playbook reads
+// GET /api/desk/findings (M1 does not carry findings).
 // IA2 (§4 T3 row, §1 wireframe "Posy box scoped About: <project>"): the
 // project-level Posy box, keyed `project:<pid>:project` so a draft/ask
 // started here is a distinct entry from any campaign/review/video scope
@@ -205,11 +210,12 @@
   // No Home line — a retro with findings to confirm is already a Needs-you
   // row (§10.4), so this page is the only place the confirmed set shows.
   //
-  // Fixtures only, same as desk-v1-retro.js (see its banner): every state
-  // change mutates `DeskV1Fixtures.playbook` through DeskV1Kit.commandBus,
-  // mirroring what `/api/desk/findings/<id>/{reconfirm,retire,undo-reject}`
-  // (R1-L) do — the fixture ids (F1..) were never posted to that store, so
-  // calling the routes here would 404. Only Ron's click moves a finding
+  // Live, each button POSTs the matching /api/desk/findings/<id>/{reconfirm,
+  // retire,undo-reject} route (R1-L) and takes the server's finding back.
+  // Those routes have no inverse, so a live decision gets a plain toast, not
+  // an Undo that would only un-draw it here. Demo (flag off) mutates the
+  // fixtures through the command bus with Undo and calls nothing (its ids
+  // F1.. were never posted to the store). Only Ron's click moves a finding
   // between states (§10.2); nothing here runs unattended.
   //
   // Every row carries `data-finding-id` and an evidence disclosure so a
@@ -218,6 +224,44 @@
   const _evidenceOpen = new Set();
 
   function _playbook() { const fx = _fx(); fx.playbook = fx.playbook || { findings: [], rejections: [] }; return fx.playbook; }
+
+  // Live only: M1 carries no findings, so the page asks for this project's. A
+  // failure is shown, not rendered as an empty Playbook (an empty one reads as
+  // "no findings yet", which would be a lie).
+  const _findingsAt = {};
+  function _loadFindings(projectId) {
+    const S = window.DeskV1Store;
+    if (!S.live()) return;
+    // A re-render of the same page (a pause, an agent pick) is not a reason to
+    // ask again; coming back to the project later is.
+    if (Date.now() - (_findingsAt[projectId] || 0) < 30000) return;
+    _findingsAt[projectId] = Date.now();
+    S.api('GET', '/api/desk/findings?project_id=' + encodeURIComponent(projectId)).then((rows) => {
+      const pb = _playbook();
+      pb.findings = (pb.findings || []).filter((f) => f.project_id !== projectId).concat(Array.isArray(rows) ? rows : []);
+      _renderPlaybook(projectId);
+    }).catch((e) => {
+      delete _findingsAt[projectId];
+      const host = document.getElementById('desk-v1-project-playbook');
+      if (host) host.innerHTML = `<div class="desk-v1-project-camps-head"><span>Playbook</span></div><div class="desk-v1-home-needsyou-empty" data-playbook-error>Could not load the playbook: ${esc(e && e.message ? e.message : e)}</div>`;
+    });
+  }
+
+  // One finding decision: optimistic local change, then (live) the route; the
+  // server's finding replaces the local fields on success.
+  function _decideFinding(f, projectId, label, route, apply, unapply) {
+    const S = window.DeskV1Store;
+    return S.write({
+      label, apply, unapply,
+      repaint: () => _renderPlaybook(projectId),
+      irreversible: true,
+      request: async () => {
+        const r = await S.api('POST', `/api/desk/findings/${encodeURIComponent(f.id)}/${route}`, { decided_by: 'ron' });
+        if (r && typeof r === 'object') Object.assign(f, r);
+        return r;
+      },
+    });
+  }
   function _findingsIn(projectId, state) {
     return (_playbook().findings || []).filter((f) => f.project_id === projectId && f.state === state);
   }
@@ -336,30 +380,22 @@
   // 'interactive', stale markers cleared, decided by Ron.
   function _reconfirm(f, projectId) {
     const prev = { state: f.state, origin: f.origin, decided_at: f.decided_at, decided_by: f.decided_by, stale_at: f.stale_at, stale_reason: f.stale_reason };
-    DeskV1Kit.commandBus.run({
-      label: `Re-confirmed finding ${f.id}`,
-      do: () => {
-        f.state = 'confirmed'; f.origin = 'interactive';
-        f.decided_at = new Date().toISOString(); f.decided_by = 'ron';
-        f.stale_at = null; f.stale_reason = null;
-        _renderPlaybook(projectId);
-      },
-      undo: () => { Object.assign(f, prev); _renderPlaybook(projectId); },
-    });
+    _decideFinding(f, projectId, `Re-confirmed finding ${f.id}`, 'reconfirm', () => {
+      f.state = 'confirmed'; f.origin = 'interactive';
+      f.decided_at = new Date().toISOString(); f.decided_by = 'ron';
+      f.stale_at = null; f.stale_reason = null;
+      _renderPlaybook(projectId);
+    }, () => { Object.assign(f, prev); });
   }
 
   // stale -> retired (R1-L `retire_finding`): a closed chapter, records no
   // rejection and blocks nothing; a retired finding shows nowhere on this page.
   function _retire(f, projectId) {
     const prev = { state: f.state, decided_at: f.decided_at, decided_by: f.decided_by };
-    DeskV1Kit.commandBus.run({
-      label: `Retired finding ${f.id}`,
-      do: () => {
-        f.state = 'retired'; f.decided_at = new Date().toISOString(); f.decided_by = 'ron';
-        _renderPlaybook(projectId);
-      },
-      undo: () => { Object.assign(f, prev); _renderPlaybook(projectId); },
-    });
+    _decideFinding(f, projectId, `Retired finding ${f.id}`, 'retire', () => {
+      f.state = 'retired'; f.decided_at = new Date().toISOString(); f.decided_by = 'ron';
+      _renderPlaybook(projectId);
+    }, () => { Object.assign(f, prev); });
   }
 
   function _sameRejection(f, r) {
@@ -378,20 +414,15 @@
     const evCamp = (f.evidence && f.evidence[0]) || null;
     const retro = evCamp ? (_fx().retros || {})[`${evCamp.campaign_id}:${evCamp.term}`] : null;
     const listed = !!(retro && (retro.findings || []).includes(f.id));
-    DeskV1Kit.commandBus.run({
-      label: `Undid reject on finding ${f.id}`,
-      do: () => {
-        f.state = 'proposed'; f.decided_at = null; f.decided_by = null;
-        pb.rejections = (pb.rejections || []).filter((r) => !_sameRejection(f, r));
-        if (retro && !listed) { retro.findings = retro.findings || []; retro.findings.push(f.id); }
-        _renderPlaybook(projectId);
-      },
-      undo: () => {
-        Object.assign(f, prev);
-        pb.rejections = prevRejections;
-        if (retro && !listed) retro.findings = (retro.findings || []).filter((id) => id !== f.id);
-        _renderPlaybook(projectId);
-      },
+    _decideFinding(f, projectId, `Undid reject on finding ${f.id}`, 'undo-reject', () => {
+      f.state = 'proposed'; f.decided_at = null; f.decided_by = null;
+      pb.rejections = (pb.rejections || []).filter((r) => !_sameRejection(f, r));
+      if (retro && !listed) { retro.findings = retro.findings || []; retro.findings.push(f.id); }
+      _renderPlaybook(projectId);
+    }, () => {
+      Object.assign(f, prev);
+      pb.rejections = prevRejections;
+      if (retro && !listed) retro.findings = (retro.findings || []).filter((id) => id !== f.id);
     });
   }
 
@@ -481,49 +512,101 @@
     return _campaigns().filter((c) => c.projectId === projectId && c.state !== 'archived' && c.state !== 'completed');
   }
 
-  function _pauseProject(projectId, el, params) {
-    const p = _project(projectId);
-    if (!p) return;
-    p.presence = p.presence || {};
-    p.presence.state = 'paused';
-    let paused = 0;
-    _pausableCampaigns(projectId).forEach((c) => {
-      if (c.state === 'paused') return;
-      c._prePauseState = c.state;
-      c.state = 'paused';
-      paused++;
-    });
-    DeskV1Kit.toast(`Paused ${p.name} — ${paused} campaign${paused === 1 ? '' : 's'} paused with it.`);
-    deskV1RenderProject(el, params);
+  // The state a paused campaign goes back to: the server's `pre_pause_state`
+  // (live, from M1 or a pause response) or the local `_prePauseState` (demo).
+  function _preState(c) { return c._prePauseState || c.pre_pause_state || null; }
+
+  function _stateMessage(p, next, changed, held) {
+    const n = `${changed} campaign${changed === 1 ? '' : 's'}`;
+    if (next === 'paused') return `Paused ${p.name} — ${n} paused with it.`;
+    return held
+      ? `Resumed ${p.name} — ${n} back running, ${held} still needs setup fixed before it can resume.`
+      : `Resumed ${p.name} — ${n} back running.`;
   }
 
-  function _resumeProject(projectId, el, params) {
+  // Pause / Resume (one function: they differ only in direction). Demo mutates
+  // locally, as it always has, and gets a message toast with no Undo. Live, the
+  // PATCH is one request that cascades to the campaigns SERVER-side (so a
+  // half-paused project is impossible) and the answer decides which campaigns
+  // resumed and which the start gate held; the optimistic guess is corrected
+  // from it. The route has no inverse, so there is no Undo.
+  function _setProjectState(projectId, next, el, params) {
     const p = _project(projectId);
     if (!p) return;
+    const S = window.DeskV1Store;
     p.presence = p.presence || {};
-    p.presence.state = 'active';
-    let resumed = 0, held = 0;
-    _pausableCampaigns(projectId).forEach((c) => {
-      if (!c._prePauseState) return;
-      const result = DeskV1Kit.validatePlan(c.plan, p);
-      if (result.ok) {
-        c.state = c._prePauseState;
-        delete c._prePauseState;
-        resumed++;
-      } else {
-        held++;
-      }
+    const prevState = p.presence.state;
+    let touched = [];
+    let held = 0;
+    const apply = () => {
+      p.presence.state = next;
+      touched = []; held = 0;
+      _pausableCampaigns(projectId).forEach((c) => {
+        const prev = { state: c.state, _prePauseState: c._prePauseState, pre_pause_state: c.pre_pause_state };
+        if (next === 'paused') {
+          if (c.state === 'paused') return;
+          c._prePauseState = c.state;
+          c.state = 'paused';
+        } else {
+          const back = _preState(c);
+          if (!back) return;
+          // Live, the server's start gate decides; the local validatePlan is only
+          // the demo's stand-in for it.
+          if (!S.live() && !DeskV1Kit.validatePlan(c.plan, p).ok) { held++; return; }
+          c.state = back;
+          delete c._prePauseState; delete c.pre_pause_state;
+        }
+        touched.push({ c, prev });
+      });
+    };
+    const rerender = () => deskV1RenderProject(el, params);
+    if (!S.live()) {
+      apply();
+      DeskV1Kit.toast(_stateMessage(p, next, touched.length, held));
+      rerender();
+      return;
+    }
+    S.run({
+      label: next === 'paused' ? `Paused ${p.name}` : `Resumed ${p.name}`,
+      apply: () => { apply(); rerender(); },
+      unapply: () => {
+        p.presence.state = prevState;
+        touched.forEach(({ c, prev }) => {
+          ['state', '_prePauseState', 'pre_pause_state'].forEach((k) => { if (prev[k] === undefined) delete c[k]; else c[k] = prev[k]; });
+        });
+      },
+      repaint: rerender,
+      irreversible: (r) => {
+        const cas = (r && r.cascade) || {};
+        return _stateMessage(p, next, cas.changed || 0, (cas.held || []).length);
+      },
+      request: async () => {
+        const r = await S.api('PATCH', `/api/desk/presence/${encodeURIComponent(projectId)}`, { state: next });
+        const byId = {};
+        ((r && r.cascade && r.cascade.campaigns) || []).forEach((sc) => { byId[sc.id] = sc; });
+        // What the server did wins: undo the guess for a campaign it left alone,
+        // take its state for every one it moved.
+        touched.forEach(({ c, prev }) => {
+          if (byId[c.id]) return;
+          ['state', '_prePauseState', 'pre_pause_state'].forEach((k) => { if (prev[k] === undefined) delete c[k]; else c[k] = prev[k]; });
+        });
+        _campaigns().forEach((c) => {
+          const sc = byId[c.id];
+          if (!sc) return;
+          c.state = sc.state;
+          delete c._prePauseState;
+          if (sc.pre_pause_state) c.pre_pause_state = sc.pre_pause_state; else delete c.pre_pause_state;
+        });
+        rerender();
+        return r;
+      },
     });
-    DeskV1Kit.toast(held
-      ? `Resumed ${p.name} — ${resumed} campaign${resumed === 1 ? '' : 's'} back running, ${held} still needs setup fixed before it can resume.`
-      : `Resumed ${p.name} — ${resumed} campaign${resumed === 1 ? '' : 's'} back running.`);
-    deskV1RenderProject(el, params);
   }
 
   // ── Default planner: who plans and drafts for this project when a campaign
-  // names none of its own (`presence.desk_agent`, PATCHed through to the
-  // backend; the fixture is mutated too so the page stays deterministic
-  // without a live server). The roster is every installed agent. ──────────
+  // names none of its own (`presence.desk_agent`; live, PATCHed through and
+  // rolled back if the server refuses it; demo, local only). The roster is
+  // every installed agent. ──────────
   function _agentLabel(p) {
     const r = DeskV1Kit.resolveDeskAgent(DeskV1Kit.deskAgentRef({ project: p }));
     return r.name ? `${r.avatar ? r.avatar + ' ' : ''}${r.name}` : DeskV1Kit.UNRESOLVED_AGENT_LABEL;
@@ -544,13 +627,16 @@
       DeskV1Kit.bindAddToTrigger(btn, () => list.map((a) => ({ id: a.ref, label: `${a.avatar ? a.avatar + ' ' : ''}${a.name}` })), (ref) => {
         const picked = list.find((a) => a.ref === ref);
         p.presence = p.presence || {};
-        p.presence.desk_agent = ref;
-        fetch(`/api/desk/presence/${encodeURIComponent(p.id)}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ desk_agent: ref }),
-        }).catch(() => { /* fixture already applied; the backend call is best-effort in v1 */ });
-        DeskV1Kit.toast(`${picked ? picked.name : ref} now plans for ${p.name}.`);
-        deskV1RenderProject(el, { projectId: p.id });
+        const prevRef = p.presence.desk_agent;
+        const rerender = () => deskV1RenderProject(el, { projectId: p.id });
+        window.DeskV1Store.write({
+          label: `${picked ? picked.name : ref} now plans for ${p.name}.`,
+          apply: () => { p.presence.desk_agent = ref; rerender(); },
+          unapply: () => { p.presence.desk_agent = prevRef; },
+          repaint: rerender,
+          request: () => window.DeskV1Store.api('PATCH', `/api/desk/presence/${encodeURIComponent(p.id)}`, { desk_agent: ref }),
+          undoRequest: () => window.DeskV1Store.api('PATCH', `/api/desk/presence/${encodeURIComponent(p.id)}`, { desk_agent: prevRef }),
+        });
       }, { noAppendNew: true });
     });
   }
@@ -597,6 +683,7 @@
     _renderCampaigns(projectId);
     _renderArchived(projectId);
     _renderPlaybook(projectId);
+    _loadFindings(projectId);
     if (focusId) {
       const row = el.querySelector(`[data-finding-id="${String(focusId).replace(/"/g, '')}"]`);
       if (row) { row.setAttribute('data-finding-focus', ''); if (row.scrollIntoView) row.scrollIntoView({ block: 'center' }); }
@@ -606,9 +693,9 @@
     _renderPosyBox(projectId, p);
     _bindAgentPicker(el, p);
     const pauseBtn = el.querySelector('[data-pause-project-btn]');
-    if (pauseBtn) pauseBtn.onclick = () => _pauseProject(projectId, el, params);
+    if (pauseBtn) pauseBtn.onclick = () => _setProjectState(projectId, 'paused', el, params);
     const resumeBtn = el.querySelector('[data-resume-project-btn]');
-    if (resumeBtn) resumeBtn.onclick = () => _resumeProject(projectId, el, params);
+    if (resumeBtn) resumeBtn.onclick = () => _setProjectState(projectId, 'active', el, params);
     const newCampBtn = el.querySelector('.desk-v1-project-newcamp-btn');
     if (newCampBtn) newCampBtn.onclick = () => window.deskV1NewCampaignInProject(projectId);
   }
