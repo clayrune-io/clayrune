@@ -452,7 +452,7 @@
           ${pendingHTML}
         </div>
         <div class="desk-v1-video-rail">
-          ${_renderCardHTML(family, detail, budget, total)}
+          ${window.DeskV1Store.live() ? '<div data-eng-host></div>' : _renderCardHTML(family, detail, budget, total)}
         </div>
       </div>`;
   }
@@ -503,6 +503,11 @@
       const v = (family.versions || []).find((x) => x.state === 'needs_review');
       if (v) window.deskV1Nav('review', { campaignId: _st.campaignId, versionId: v.id });
     };
+
+    // Live, Render is the engine panel (estimate, passcode, a real job): the
+    // fixture card above is demo only.
+    const engineHost = el.querySelector('[data-eng-host]');
+    if (engineHost) window.DeskV1Engines.mountVideoRender(engineHost, { owner: { kind: 'piece', id: family.id } });
 
     const raiseBtn = el.querySelector('[data-raise-budget]');
     if (raiseBtn) raiseBtn.onclick = () => window.deskV1GotoCampaignPanel('how', { campaignId: _st.campaignId });

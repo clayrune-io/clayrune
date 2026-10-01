@@ -16,15 +16,20 @@ rules hold:
     unattended caller AND requires the retyped dashboard passcode per call
     (MC-995), exactly like Start/Approve/Renew. This module does not know about
     HTTP callers; it trusts that gate.
-  * **The only render cap is the campaign's `how.budget`.** A job whose
-    estimate exceeds what is left of it is refused (409, nothing sent). There
-    is deliberately no per-job limit (Dave, 2026-10-01). A campaign with no
-    budget set has nothing left to spend, so it refuses too.
+  * **Two render caps, both refuse before anything is sent (409).** The
+    engine's per-job USD limit (set by the user on Connections, stored in the
+    job store beside the spend it guards) and, for a campaign render, what is
+    left of the campaign's `how.budget` (a campaign with no budget set has
+    nothing left to spend). A render with NO campaign (Studio) is capped by
+    the per-job limit alone, so it refuses until the user has set one for that
+    engine. (Per-job limit added 2026-10-01, journal c7ac1e8c; it replaces the
+    earlier "no per-job limit" rule.)
   * **Idempotent on `desk.idempotency_key`.** A retried click returns the first
     job and makes no second vendor call and no second reservation.
   * **Poll, never webhook** (scan rule 1). Output is downloaded on `ready` into
-    `data/uploads/desk/generated/<campaign>/` (scan rule 2; Veo deletes after
-    48 h). `GET job` is what advances a job; nothing here runs on a timer.
+    the material library, `data/uploads/desk/library/<kind>/Generated/` (scan
+    rule 2; Veo deletes after 48 h) and, when the job names a piece
+    (`desk.piece_id`), attached to it. `GET job` is what advances a job; nothing here runs on a timer.
   * **Vendor HTTP is one function**, `_http_request`. Tests replace it; no test
     in the repo reaches a vendor.
 
@@ -40,10 +45,14 @@ on short notice.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import math
 import mimetypes
 import re
+import shutil
 import socket
+import subprocess
 import threading
 import urllib.error
 import urllib.parse
@@ -55,6 +64,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from mc import desk as _desk
+from mc import desk_pieces as _pieces
 from mc import secrets_store
 from mc.core import _atomic_write_text, _log, now_iso
 
@@ -911,7 +921,7 @@ def _adapter(model: ModelDescriptor):
 # -- job store ----------------------------------------------------------------
 
 def _empty_store() -> dict:
-    return {'version': STORE_VERSION, 'jobs': {}, 'idem': {}}
+    return {'version': STORE_VERSION, 'jobs': {}, 'idem': {}, 'limits': {}, 'renders': {}, 'render_idem': {}}
 
 
 def _read_store() -> dict:
@@ -926,7 +936,8 @@ def _read_store() -> dict:
                            f'refusing to continue so spend is not undercounted') from e
     if not isinstance(data, dict) or not isinstance(data.get('jobs'), dict):
         raise RuntimeError(f'engine job store {JOBS_PATH} is malformed')
-    data.setdefault('idem', {})
+    for k in ('idem', 'limits', 'renders', 'render_idem'):
+        data.setdefault(k, {})
     return data
 
 
@@ -987,6 +998,66 @@ def budget_state(campaign_id: str, *, _store: dict | None = None) -> dict:
                  if r.get('campaign_id') == campaign_id)
     return {'amount': round(amount, 6), 'spent': round(spent, 6),
             'remaining': round(max(amount - spent, 0.0), 6), 'source': b.get('source', 'none')}
+
+
+# -- per-job limit (set per engine on Connections) -----------------------------
+
+MAX_JOB_LIMIT_USD = 10_000.0
+
+
+def get_limits() -> dict:
+    """`{engine_id: usd}` for every engine that has a per-job limit set."""
+    with _lock:
+        return {k: float(v) for k, v in _read_store()['limits'].items() if k in ENGINES}
+
+
+def set_limit(engine_id: str, usd: Any) -> dict:
+    """Set (a positive number) or clear (None) one engine's per-job limit.
+    Returns `{engine_id, job_limit_usd}`. The route that reaches this is
+    human-only: raising a limit loosens a spending gate."""
+    if engine_id not in ENGINES:
+        raise Refused('unknown_engine', f'unknown engine {engine_id!r}', 404)
+    if usd is not None:
+        if isinstance(usd, bool) or not isinstance(usd, (int, float)) or usd != usd \
+                or not 0 < usd <= MAX_JOB_LIMIT_USD:
+            raise Refused('invalid_input',
+                          f'the limit must be a number above 0 and at most {MAX_JOB_LIMIT_USD:,.0f} USD (or null to clear it)', 400)
+        usd = round(float(usd), 6)
+    with _lock:
+        store = _read_store()
+        if usd is None:
+            store['limits'].pop(engine_id, None)
+        else:
+            store['limits'][engine_id] = usd
+        _write_store(store)
+    return {'engine_id': engine_id, 'job_limit_usd': usd}
+
+
+def check_caps(usd: float, engine_id: str, campaign_id: str | None, store: dict, *, estimate: dict | None = None,
+               enforce_limit: bool = True) -> dict:
+    """Raise `Refused` when `usd` (the estimate for ONE Render click) is over a
+    cap; otherwise return `{limit, budget}` for display. `enforce_limit=False`
+    is for the child jobs of a render whose total was already checked."""
+    limit = store['limits'].get(engine_id) if enforce_limit else None
+    if enforce_limit:
+        if limit is None and not campaign_id:
+            raise Refused('no_job_limit',
+                          f"no per-job limit is set for {ENGINES[engine_id].label}: nothing else caps a render "
+                          f"outside a campaign, so set one on Connections first", 409)
+        if limit is not None and usd > limit + 1e-9:
+            raise Refused('over_job_limit',
+                          f"estimate ${usd:.4f} is over the ${limit:.2f} per-job limit for "
+                          f"{ENGINES[engine_id].label} (change it on Connections)", 409,
+                          job_limit_usd=limit, **({"estimate": estimate} if estimate else {}))
+    budget = None
+    if campaign_id:
+        budget = budget_state(campaign_id, _store=store)
+        if usd > budget['remaining'] + 1e-9:
+            raise Refused('over_budget',
+                          f"estimate ${usd:.4f} is over the campaign's remaining budget "
+                          f"${budget['remaining']:.4f} (amount ${budget['amount']:.2f}, spent ${budget['spent']:.4f})",
+                          409, budget=budget, **({"estimate": estimate} if estimate else {}))
+    return {'limit': limit, 'budget': budget}
 
 
 # -- request parsing ----------------------------------------------------------
@@ -1056,11 +1127,14 @@ def _project_for(campaign_id: str) -> str | None:
 # -- public operations --------------------------------------------------------
 
 def list_engines(project_id: str | None = None) -> list[dict]:
-    """Every engine descriptor with its connected status. Metadata only."""
+    """Every engine descriptor with its connected status and the per-job USD
+    limit the user set for it (null = none). Metadata only."""
+    limits = get_limits()
     out = []
     for e in _ENGINES:
         d = e.public()
         d['connected'] = connection(e.id, project_id)
+        d['job_limit_usd'] = limits.get(e.id)
         out.append(d)
     return out
 
@@ -1080,21 +1154,36 @@ def estimate(d: dict, *, unattended: bool = False) -> dict:
         raise
     except EngineError as e:
         raise Refused('estimate_failed', str(e), 502, failure=e.kind)
-    out = {'estimate': est.public()}
+    return with_caps({'estimate': est.public()}, est.usd, req.engine_id, campaign_id)
+
+
+def with_caps(out: dict, usd: float, engine_id: str, campaign_id: str | None) -> dict:
+    """Add what the user needs BEFORE pressing Render: the engine's per-job
+    limit, the campaign budget, and `refusal` = the reason a Render of `usd`
+    would be refused (null when it would go through)."""
+    with _lock:
+        store = _read_store()
+    out['job_limit_usd'] = store['limits'].get(engine_id)
+    out['refusal'] = None
     if campaign_id:
-        b = budget_state(campaign_id)
+        b = budget_state(campaign_id, _store=store)
         out['budget'] = b
-        out['fits'] = est.usd <= b['remaining'] + 1e-9
+        out['fits'] = usd <= b['remaining'] + 1e-9
+    try:
+        check_caps(usd, engine_id, campaign_id or None, store)
+    except Refused as e:
+        out['refusal'] = {'code': e.code, 'message': str(e)}
     return out
 
 
-def _new_job(req: GenerationRequest, camp: dict, est: Estimate) -> dict:
+def _new_job(req: GenerationRequest, camp: dict | None, est: Estimate, project_id: str | None = None) -> dict:
     now = now_iso()
     return {
         'job_id': f'gen-{uuid.uuid4().hex[:10]}', 'engine_id': req.engine_id, 'model_id': req.model_id,
         'kind': req.kind, 'status': 'queued', 'failure': None, 'outputs': [],
         'cost_usd': round(est.usd, 6), 'estimate': est.public(),
-        'campaign_id': camp['id'], 'project_id': camp.get('project_id'),
+        'campaign_id': camp['id'] if camp else None,
+        'project_id': camp.get('project_id') if camp else project_id,
         'desk': dict(req.desk), 'request': asdict(req), 'engine_ref': None,
         'created_at': now, 'updated_at': now,
     }
@@ -1108,31 +1197,44 @@ def _fail(job: dict, kind: str, message: str, *, free: bool) -> None:
         job['cost_usd'] = 0.0
 
 
-def submit(d: dict, *, unattended: bool = False) -> tuple[dict, bool]:
-    """Submit one render job -> (job, replay). SPENDS MONEY: the route gates
-    on a human + the passcode before calling this. Raises `Refused`,
-    `NotConnected` (nothing sent) or returns the job (queued/rendering/ready)."""
-    req = parse_request(d)
-    key = req.desk.get('idempotency_key')
-    if not isinstance(key, str) or not key.strip() or len(key) > 120:
-        raise Refused('invalid_input', 'desk.idempotency_key is required (a retried click must not spend twice)', 400)
+def _render_scope(d: dict) -> tuple[str | None, dict | None, str | None]:
+    """`(campaign_id, campaign, project_id)` for a render request. A request
+    with no `campaign_id` is a Studio render: no campaign, so no campaign
+    budget, and the engine's per-job limit is its only cap."""
     campaign_id = d.get('campaign_id')
-    if not isinstance(campaign_id, str) or not campaign_id:
-        raise Refused('invalid_input', 'campaign_id is required: the campaign budget is the only cap on a render', 400)
+    if campaign_id in (None, ''):
+        pid = d.get('project_id')
+        return None, None, pid if isinstance(pid, str) and pid else None
+    if not isinstance(campaign_id, str):
+        raise Refused('invalid_input', 'campaign_id must be a string', 400)
     camp = _campaign(campaign_id)
     if camp is None:
         raise Refused('campaign_not_found', 'campaign not found', 404)
     if camp.get('state') in ('done', 'dropped'):
         raise Refused('campaign_closed', f"campaign is {camp.get('state')}; it cannot render", 409)
+    return campaign_id, camp, camp.get('project_id')
+
+
+def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False) -> tuple[dict, bool]:
+    """Submit one render job -> (job, replay). SPENDS MONEY: the route gates
+    on a human + the passcode before calling this. Raises `Refused`,
+    `NotConnected` (nothing sent) or returns the job (queued/rendering/ready).
+    `_skip_limit` is for the children of `render()`, whose TOTAL was already
+    held to the per-job limit; the campaign budget is still checked per job."""
+    req = parse_request(d)
+    key = req.desk.get('idempotency_key')
+    if not isinstance(key, str) or not key.strip() or len(key) > 120:
+        raise Refused('invalid_input', 'desk.idempotency_key is required (a retried click must not spend twice)', 400)
+    campaign_id, camp, project_id = _render_scope(d)
     _eng, model = _resolve(req)
-    idem = f'{campaign_id}:{key}'
+    idem = f'{campaign_id or "-"}:{key}'
 
     with _lock:
         existing = _read_store()['idem'].get(idem)
         if existing:
             return _public_job(_read_store()['jobs'][existing]), True
 
-    creds = _creds(req.engine_id, camp.get('project_id'), unattended)
+    creds = _creds(req.engine_id, project_id, unattended)
     adapter = _adapter(model)
     try:
         est = adapter.estimate(model, req, creds)
@@ -1143,13 +1245,9 @@ def submit(d: dict, *, unattended: bool = False) -> tuple[dict, bool]:
         store = _read_store()
         if idem in store['idem']:
             return _public_job(store['jobs'][store['idem'][idem]]), True
-        b = budget_state(campaign_id, _store=store)
-        if est.usd > b['remaining'] + 1e-9:
-            raise Refused('over_budget',
-                          f"estimate ${est.usd:.4f} is over the campaign's remaining budget "
-                          f"${b['remaining']:.4f} (amount ${b['amount']:.2f}, spent ${b['spent']:.4f})",
-                          409, estimate=est.public(), budget=b)
-        job = _new_job(req, camp, est)
+        check_caps(est.usd, req.engine_id, campaign_id, store, estimate=est.public(),
+                   enforce_limit=not _skip_limit)
+        job = _new_job(req, camp, est, project_id)
         store['jobs'][job['job_id']] = job
         store['idem'][idem] = job['job_id']
         _write_store(store)
@@ -1309,20 +1407,531 @@ def _png_jpeg_size(data: bytes) -> tuple[int | None, int | None]:
     return None, None
 
 
-def _save_outputs(job: dict, req: GenerationRequest, blobs: list) -> list[dict]:
-    """Write each output under `data/uploads/desk/generated/<campaign>/` and
-    describe it. The library path is the one the Desk materials list and
-    /api/serve-image share."""
+LIBRARY_ROOT = ('desk', 'library')          # the same tree mc/desk_pieces.py lists as the Material library
+GENERATED_FOLDER = 'Generated'              # <library>/<video|image>/Generated/
+
+
+def _library_folder(kind: str) -> Path:
     if UPLOADS_ROOT is None:
         raise EngineError('engine', 'the uploads directory is not wired; cannot keep the output')
-    folder = Path(UPLOADS_ROOT) / 'desk' / 'generated' / re.sub(r'[^A-Za-z0-9_-]', '_', job.get('campaign_id') or 'misc')
+    folder = Path(UPLOADS_ROOT).joinpath(*LIBRARY_ROOT, 'video' if kind == 'video' else 'image', GENERATED_FOLDER)
     folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def _describe_output(path: Path, mime: str, *, width=None, height=None, duration_sec=None) -> dict:
+    """What a saved output looks like to the page: the library path (relative
+    to data/uploads, the form every Desk asset uses) and, for an image, the
+    /api/serve-image URL the browser can draw."""
+    root = Path(UPLOADS_ROOT).resolve()  # type: ignore[arg-type]
+    rel = path.resolve().relative_to(root).as_posix()
+    is_image = mime.startswith('image/')
+    return {'local_path': str(path), 'path': rel, 'mime': mime, 'width': width, 'height': height,
+            'duration_sec': duration_sec,
+            'src': ('/api/serve-image?path=' + urllib.parse.quote(str(root / rel), safe='')) if is_image else None}
+
+
+def _attach_to_piece(piece_id: str | None, outputs: list[dict]) -> None:
+    """Attach saved outputs to the piece that asked for them. The files are
+    already in the library, so a refusal here (piece deleted meanwhile, 50
+    assets already) keeps the output and says why on it; it never loses it."""
+    if not piece_id:
+        return
+    for o in outputs:
+        try:
+            _pieces.add_asset(piece_id, path=o['path'], title=Path(o['path']).name)
+            o['attached_to'] = piece_id
+        except Exception as e:
+            o['attach_error'] = _safe(e)
+            _log(f'[desk_engines] could not attach {o["path"]} to piece {piece_id}: {_safe(e)}', flush=True)
+
+
+def _save_outputs(job: dict, req: GenerationRequest, blobs: list) -> list[dict]:
+    """Write each output into the material library
+    (`data/uploads/desk/library/<video|image>/Generated/`, the tree the Desk
+    materials list and /api/serve-image share), never left only on the vendor
+    (Veo removes it after 48 h), and attach it to `desk.piece_id` when the job
+    names a piece. (The clips of a stitched render name no piece: the finished
+    video attaches instead, see `render()`.)"""
+    folder = _library_folder(req.kind)
     out = []
     for n, (data, mime) in enumerate(blobs):
         mime = mime if mime in _EXT else ('video/mp4' if req.kind == 'video' else 'image/png')
         path = folder / f"{job['job_id']}-{n}{_EXT.get(mime) or mimetypes.guess_extension(mime) or ''}"
         path.write_bytes(data)
         w, h = _png_jpeg_size(data)
-        out.append({'local_path': str(path), 'mime': mime, 'width': w, 'height': h,
-                    'duration_sec': req.duration_sec if req.kind == 'video' else None})
+        out.append(_describe_output(path, mime, width=w, height=h,
+                                    duration_sec=req.duration_sec if req.kind == 'video' else None))
+    _attach_to_piece((job.get('desk') or {}).get('piece_id'), out)
     return out
+
+
+# -- storyboard render (video): one clip per scene, then stitch / crop ----------
+#
+# A video render is the persisted storyboard (mc/desk_storyboard.py) turned into
+# one engine job per scene, then joined by ffmpeg on THIS machine (no vendor
+# account, no cost; Remotion was dropped, journal c7ac1e8c item 5). The whole
+# render is one Render click, so the per-job limit is checked against the TOTAL
+# of its scenes, and a campaign render is checked against what is left of
+# `how.budget` for that total too, before the first clip is sent. ffmpeg missing
+# never fails a paid render: the clips are already in the library, the render is
+# `held` with the reason, and nothing is installed for the user.
+
+RENDER_STATUSES = ('queued', 'rendering', 'ready', 'held', 'failed')
+_RATIO_NATIVE_FALLBACK = '16:9'          # what a model with no 1:1 is generated at, then cropped
+_FFMPEG_TIMEOUT = 600
+_finalizing: set[str] = set()
+
+
+def _ffmpeg() -> str | None:
+    """The ffmpeg on this host's PATH, or None. Never installed for the user."""
+    return shutil.which('ffmpeg')
+
+
+def _ffprobe() -> str | None:
+    return shutil.which('ffprobe')
+
+
+def _run_ffmpeg(cmd: list[str]) -> tuple[int, str]:
+    """Run one ffmpeg command -> (returncode, stderr tail). The one place the
+    join starts a subprocess, so tests replace it."""
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=_FFMPEG_TIMEOUT, check=False)
+    except subprocess.TimeoutExpired:
+        return 124, f'timed out after {_FFMPEG_TIMEOUT}s'
+    except OSError as e:
+        return 127, _safe(e)
+    return p.returncode, (p.stderr or '')[-600:]
+
+
+def stitch_command(ffmpeg: str, list_file: str, out_path: str, *, crop_square: bool, copy: bool) -> list[str]:
+    """The ffmpeg argv that joins the clips named in `list_file` (concat
+    demuxer) into `out_path`. Stream copy only when nothing changes the
+    pictures (`copy` and no crop); a 1:1 crop is a centre square, which has to
+    re-encode the video."""
+    cmd = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', list_file]
+    if copy and not crop_square:
+        cmd += ['-c', 'copy']
+    else:
+        if crop_square:
+            cmd += ['-vf', "crop='min(iw,ih)':'min(iw,ih)'"]
+        cmd += ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p', '-c:a', 'aac']
+    cmd += ['-movflags', '+faststart', out_path]
+    return cmd
+
+
+def _concat_list(paths: list[Path]) -> str:
+    def q(p: Path) -> str:
+        return str(p).replace('\\', '/').replace("'", "'\\''")
+    return ''.join(f"file '{q(p)}'\n" for p in paths)
+
+
+def _codecs_match(paths: list[Path]) -> bool:
+    """True only when ffprobe says every clip has the same video codec, size,
+    pixel format and audio codec, the condition under which the concat demuxer
+    can copy streams. No ffprobe, or any probe failure, is a mismatch: the
+    caller then re-encodes, which is always correct, only slower."""
+    probe = _ffprobe()
+    if probe is None:
+        return False
+    seen = None
+    for p in paths:
+        cmd = [probe, '-v', 'error', '-show_entries', 'stream=codec_type,codec_name,width,height,pix_fmt',
+               '-of', 'json', str(p)]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
+            streams = json.loads(res.stdout or '{}').get('streams') or []
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            return False
+        if res.returncode != 0 or not streams:
+            return False
+        sig = sorted((s.get('codec_type'), s.get('codec_name'), s.get('width'), s.get('height'), s.get('pix_fmt'))
+                     for s in streams)
+        if seen is None:
+            seen = sig
+        elif sig != seen:
+            return False
+    return True
+
+
+def _scene_prompt(scene: dict) -> str:
+    label, line = (scene.get('label') or '').strip(), (scene.get('line') or '').strip()
+    return f'{label}. {line}' if label and line else (line or label)
+
+
+def _snap_duration(model: ModelDescriptor, seconds) -> int:
+    """The shortest length this model offers that covers the scene (the longest,
+    when the scene is longer than any it offers)."""
+    need = max(1, int(math.ceil(float(seconds or 1))))
+    durs = model.durations_sec
+    if isinstance(durs, list) and durs:
+        longer = [d for d in durs if d >= need]
+        return min(longer) if longer else max(durs)
+    return need
+
+
+def _owner_scope(owner: Any, d: dict) -> tuple[str, str, str | None, str | None]:
+    """`(kind, id, campaign_id, project_id)` of whose storyboard this is. A
+    piece's campaign is read from the piece, never taken from the request, so a
+    caller cannot dodge a campaign budget by leaving it out."""
+    if not isinstance(owner, dict) or owner.get('kind') not in ('piece', 'studio') \
+            or not isinstance(owner.get('id'), str) or not owner['id']:
+        raise Refused('invalid_input', 'owner must be {"kind": "piece"|"studio", "id": "<id>"}', 400)
+    kind, oid = owner['kind'], owner['id']
+    if kind == 'piece':
+        try:
+            piece = _pieces.get_stored_piece(oid)
+        except _pieces.PieceError as e:
+            raise Refused('piece_not_found', str(e), e.status)
+        campaign_id = piece.get('campaign_id')
+        camp = _campaign(campaign_id) if campaign_id else None
+        if camp is not None and camp.get('state') in ('done', 'dropped'):
+            raise Refused('campaign_closed', f"campaign is {camp.get('state')}; it cannot render", 409)
+        return kind, oid, campaign_id or None, (camp or {}).get('project_id')
+    pid = d.get('project_id')
+    return kind, oid, None, pid if isinstance(pid, str) and pid else None
+
+
+def _plan_render(d: dict, *, unattended: bool) -> dict:
+    """Validate a storyboard render and price it. Sends nothing, spends nothing.
+    Raises `Refused` (the request or the storyboard cannot be rendered) or
+    `NotConnected`."""
+    from mc import desk_storyboard as _storyboard
+    if not isinstance(d, dict):
+        raise Refused('invalid_input', 'body must be a JSON object', 400)
+    kind, oid, campaign_id, project_id = _owner_scope(d.get('owner'), d)
+    try:
+        board = _storyboard.get_storyboard(kind, oid)
+    except _pieces.PieceError as e:
+        raise Refused('storyboard_unavailable', str(e), e.status)
+    scenes = board['scenes']
+    if not scenes:
+        raise Refused('no_scenes', 'this storyboard has no scenes to render: add one first', 409)
+
+    engine_id, model_id = str(d.get('engine_id') or '').strip(), str(d.get('model_id') or '').strip()
+    eng = ENGINES.get(engine_id)
+    if eng is None:
+        raise Refused('unknown_engine', f'unknown engine {engine_id!r}', 400)
+    model = get_model(engine_id, model_id)
+    if model is None:
+        raise Refused('unknown_model', f'{engine_id} has no model {model_id!r}', 400)
+    if model.kind != 'video':
+        raise Refused('invalid_input', f'{model_id} makes {model.kind}, not video', 400)
+
+    ratio = str(d.get('aspect_ratio') or '').strip()
+    if ratio not in _DESK_RATIOS:
+        raise Refused('invalid_input', f'aspect_ratio must be one of {", ".join(_DESK_RATIOS)}', 400)
+    gen_ratio, crop = ratio, False
+    if model.aspect_ratios and ratio not in model.aspect_ratios:
+        if ratio == '1:1' and _RATIO_NATIVE_FALLBACK in model.aspect_ratios:
+            gen_ratio, crop = _RATIO_NATIVE_FALLBACK, True
+        else:
+            raise Refused('invalid_input', f'{model_id} cannot do {ratio} (it does {", ".join(model.aspect_ratios)})', 400)
+    resolution = d.get('resolution') if isinstance(d.get('resolution'), str) and d.get('resolution') else None
+    if resolution is None and model.resolutions:
+        resolution = model.resolutions[0]
+    audio = d.get('audio') if isinstance(d.get('audio'), bool) else None
+
+    creds = None
+    adapter = _adapter(model)
+    if eng.estimate == 'endpoint':
+        creds = _creds(engine_id, project_id, unattended)
+    problems, rows, total, approximate = [], [], 0.0, False
+    root = Path(UPLOADS_ROOT).resolve() if UPLOADS_ROOT is not None else None
+    for n, sc in enumerate(scenes, 1):
+        where = f'scene {n} ({sc.get("label") or "untitled"})'
+        pic = sc.get('picture')
+        first_frame, refs = None, []
+        if pic:
+            ref = {'path': str(root / pic['path'])} if root is not None else None
+            if model.inputs.get('first_frame'):
+                first_frame = ref
+            elif model.inputs.get('reference_images_max', 0) >= 1:
+                refs = [ref]
+            else:
+                problems.append(f'{where} has a picture, but {model_id} takes no picture: choose an '
+                                f'image-to-video model, or remove the picture')
+                continue
+        secs = _snap_duration(model, sc.get('duration_sec'))
+        req = GenerationRequest(
+            engine_id=engine_id, model_id=model_id, kind='video', prompt=_scene_prompt(sc),
+            aspect_ratio=gen_ratio, duration_sec=secs, resolution=resolution, audio=audio,
+            first_frame=first_frame, reference_images=refs, desk={'scene_id': sc['id']})
+        bad = validate_request(model, req)
+        if bad:
+            problems.extend(f'{where}: {b}' for b in bad)
+            continue
+        try:
+            est = adapter.estimate(model, req, creds or _Creds(secret=''))
+        except Refused as e:
+            problems.append(f'{where}: {e}')
+            continue
+        except EngineError as e:
+            raise Refused('estimate_failed', f'could not get a price for {where}, so nothing was sent: {e}', 502, failure=e.kind)
+        total += est.usd
+        approximate = approximate or est.approximate
+        rows.append({'scene': sc, 'req': req, 'est': est, 'requested_sec': sc.get('duration_sec')})
+    if problems:
+        raise Refused('invalid_input', '; '.join(problems), 400, problems=problems)
+    return {'kind': kind, 'owner_id': oid, 'campaign_id': campaign_id, 'project_id': project_id,
+            'engine_id': engine_id, 'model_id': model_id, 'aspect_ratio': ratio, 'generated_ratio': gen_ratio,
+            'crop_square': crop, 'rows': rows, 'total_usd': round(total, 6), 'approximate': approximate,
+            'needs_ffmpeg': crop or len(rows) > 1}
+
+
+def _plan_public(plan: dict) -> dict:
+    return {
+        'clips': len(plan['rows']), 'total_usd': plan['total_usd'], 'approximate': plan['approximate'],
+        'aspect_ratio': plan['aspect_ratio'], 'generated_ratio': plan['generated_ratio'], 'crop': plan['crop_square'],
+        'needs_ffmpeg': plan['needs_ffmpeg'],
+        'ffmpeg_available': (_ffmpeg() is not None) if plan['needs_ffmpeg'] else None,
+        'scenes': [{'scene_id': r['scene']['id'], 'label': r['scene'].get('label') or '',
+                    'requested_sec': r['requested_sec'], 'duration_sec': r['req'].duration_sec,
+                    'has_picture': bool(r['scene'].get('picture')), 'usd': round(r['est'].usd, 6)}
+                   for r in plan['rows']],
+    }
+
+
+def estimate_render(d: dict, *, unattended: bool = False) -> dict:
+    """What a storyboard render would cost and whether it would be refused,
+    BEFORE the user presses Render. Free: a vendor estimate call costs nothing,
+    so no passcode."""
+    plan = _plan_render(d, unattended=unattended)
+    out = {'plan': _plan_public(plan), 'estimate': {'usd': plan['total_usd'], 'approximate': plan['approximate']}}
+    return with_caps(out, plan['total_usd'], plan['engine_id'], plan['campaign_id'])
+
+
+def _public_render(r: dict, jobs: dict) -> dict:
+    kids = [{'scene_id': c['scene_id'], 'label': c.get('label', ''), 'job_id': c['job_id'],
+             'status': (jobs.get(c['job_id']) or {}).get('status', 'queued'),
+             'failure': (jobs.get(c['job_id']) or {}).get('failure')} for c in r.get('children') or []]
+    done = sum(1 for k in kids if k['status'] == 'ready')
+    return {
+        'render_id': r['render_id'], 'kind': 'video', 'status': r['status'], 'hold': r.get('hold'),
+        'failure': r.get('failure'), 'owner': r['owner'], 'campaign_id': r.get('campaign_id'),
+        'engine_id': r['engine_id'], 'model_id': r['model_id'], 'aspect_ratio': r['aspect_ratio'],
+        'progress': {'ready': done, 'total': r.get('clip_count', len(kids))}, 'scenes': kids,
+        'outputs': r.get('outputs') or [], 'clips': r.get('clips') or [],
+        'cost_usd': round(sum(_num((jobs.get(c['job_id']) or {}).get('cost_usd')) for c in r.get('children') or []), 6),
+        'estimate': r.get('estimate'), 'created_at': r.get('created_at'), 'updated_at': r.get('updated_at'),
+    }
+
+
+def _render_view(render_id: str) -> dict | None:
+    with _lock:
+        store = _read_store()
+    r = store['renders'].get(render_id)
+    return _public_render(r, store['jobs']) if r else None
+
+
+def get_render(render_id: str) -> dict | None:
+    return _render_view(render_id)
+
+
+def latest_render(owner_kind: str, owner_id: str) -> dict | None:
+    """The newest render of one owner's storyboard, so a reloaded page can show
+    it again (progress, or the finished video)."""
+    with _lock:
+        store = _read_store()
+    mine = [r for r in store['renders'].values()
+            if r['owner'] == {'kind': owner_kind, 'id': owner_id}]
+    if not mine:
+        return None
+    mine.sort(key=lambda r: r.get('created_at') or '')
+    return _public_render(mine[-1], store['jobs'])
+
+
+def render(d: dict, *, unattended: bool = False) -> tuple[dict, bool]:
+    """Start a storyboard render -> (render, replay). SPENDS MONEY (one engine
+    job per scene): the route gates on a human + the passcode first. Refuses
+    before the first clip is sent when the TOTAL is over the engine's per-job
+    limit or the campaign's remaining budget."""
+    plan = _plan_render(d, unattended=unattended)
+    key = d.get('idempotency_key')
+    if not isinstance(key, str) or not key.strip() or len(key) > 120:
+        raise Refused('invalid_input', 'idempotency_key is required (a retried click must not spend twice)', 400)
+    ridem = f"{plan['kind']}:{plan['owner_id']}:{key}"
+    with _lock:
+        existing = _read_store()['render_idem'].get(ridem)
+    if existing:
+        return _render_view(existing), True  # type: ignore[return-value]
+
+    campaign_id = plan['campaign_id']
+    with _lock:
+        store = _read_store()
+        if ridem in store['render_idem']:
+            return _public_render(store['renders'][store['render_idem'][ridem]], store['jobs']), True
+        check_caps(plan['total_usd'], plan['engine_id'], campaign_id, store,
+                   estimate={'usd': plan['total_usd'], 'approximate': plan['approximate']})
+        now = now_iso()
+        rec = {
+            'render_id': f'rnd-{uuid.uuid4().hex[:10]}', 'status': 'queued', 'hold': None, 'failure': None,
+            'owner': {'kind': plan['kind'], 'id': plan['owner_id']}, 'campaign_id': campaign_id,
+            'project_id': plan['project_id'], 'engine_id': plan['engine_id'], 'model_id': plan['model_id'],
+            'aspect_ratio': plan['aspect_ratio'], 'crop_square': plan['crop_square'],
+            'clip_count': len(plan['rows']), 'children': [], 'outputs': [], 'clips': [],
+            'estimate': {'usd': plan['total_usd'], 'approximate': plan['approximate']},
+            'created_at': now, 'updated_at': now,
+        }
+        store['renders'][rec['render_id']] = rec
+        store['render_idem'][ridem] = rec['render_id']
+        _write_store(store)
+    rid = rec['render_id']
+
+    def mutate(fn: Callable[[dict], None]) -> None:
+        with _lock:
+            s = _read_store()
+            fn(s['renders'][rid])
+            s['renders'][rid]['updated_at'] = now_iso()
+            _write_store(s)
+
+    def unwind() -> None:
+        with _lock:
+            s = _read_store()
+            s['renders'].pop(rid, None)
+            s['render_idem'].pop(ridem, None)
+            _write_store(s)
+
+    for n, row in enumerate(plan['rows']):
+        sid = row['scene']['id']
+        body = asdict(row['req'])
+        body['desk'] = {'scene_id': sid,
+                        'idempotency_key': 'r-' + hashlib.sha1(f'{ridem}|{sid}'.encode()).hexdigest()[:32]}
+        if campaign_id:
+            body['campaign_id'] = campaign_id
+        elif plan['project_id']:
+            body['project_id'] = plan['project_id']
+        try:
+            job, _replay = submit(body, unattended=unattended, _skip_limit=True)
+        except (Refused, NotConnected) as e:
+            if n == 0:                       # nothing was sent: leave no trace
+                unwind()
+                raise
+            msg = str(e) if isinstance(e, Refused) else e.reason
+            mutate(lambda r, n=n, msg=msg: r.update(status='failed', failure={
+                'kind': 'partial', 'message': f'scene {n + 1} was not sent ({msg}); the {n} earlier '
+                                              f'clip{"s" if n != 1 else ""} already went out and are billed'}))
+            break
+        mutate(lambda r, j=job, s=row['scene']: r['children'].append(
+            {'scene_id': s['id'], 'label': s.get('label') or '', 'job_id': j['job_id']}))
+        if job['status'] == 'failed':
+            mutate(lambda r, j=job, n=n: r.update(status='failed', failure={
+                'kind': 'clip_failed',
+                'message': f"scene {n + 1}: {(j.get('failure') or {}).get('message', 'the engine failed')}"}))
+            break
+    else:
+        mutate(lambda r: r.update(status='rendering'))
+    # A sync engine (or a vendor that finishes at once) may already be done.
+    return poll_render(rid, unattended=unattended), False  # type: ignore[return-value]
+
+
+def poll_render(render_id: str, *, unattended: bool = False) -> dict | None:
+    """Advance one render: poll every clip job once, and when all are ready
+    stitch / crop them into the library and attach the result. Free. A render
+    that is `held` (ffmpeg missing, or the join failed) tries again here."""
+    with _lock:
+        store = _read_store()
+    r = store['renders'].get(render_id)
+    if r is None:
+        return None
+    if r['status'] in ('ready', 'failed'):
+        return _public_render(r, store['jobs'])
+    children = r.get('children') or []
+    jobs = {}
+    for c in children:
+        j = poll(c['job_id'], unattended=unattended)
+        if j is not None:
+            jobs[c['job_id']] = j
+    bad = [c for c in children if (jobs.get(c['job_id']) or {}).get('status') == 'failed']
+    if bad:
+        c = bad[0]
+        msg = ((jobs[c['job_id']].get('failure') or {}).get('message')) or 'the engine failed'
+        with _lock:
+            s = _read_store()
+            rr = s['renders'][render_id]
+            if rr['status'] not in ('ready', 'failed'):
+                rr.update(status='failed', updated_at=now_iso(), failure={
+                    'kind': 'clip_failed', 'message': f"scene “{c.get('label') or c['scene_id']}”: {msg}"})
+                _write_store(s)
+        return _render_view(render_id)
+    if len(children) < r.get('clip_count', 0) or any(
+            (jobs.get(c['job_id']) or {}).get('status') != 'ready' for c in children):
+        with _lock:
+            s = _read_store()
+            rr = s['renders'][render_id]
+            if rr['status'] in ('queued', 'rendering') and children:
+                rr['status'] = 'rendering'
+                _write_store(s)
+        return _render_view(render_id)
+    return _finalize_render(render_id, jobs)
+
+
+def _finalize_render(render_id: str, jobs: dict) -> dict | None:
+    with _lock:
+        if render_id in _finalizing:
+            return _render_view(render_id)
+        _finalizing.add(render_id)
+    try:
+        return _join_clips(render_id, jobs)
+    finally:
+        with _lock:
+            _finalizing.discard(render_id)
+
+
+def _join_clips(render_id: str, jobs: dict) -> dict | None:
+    """All clips are downloaded: join / crop them with ffmpeg, attach the
+    result, or hold the render with the reason. Runs outside the store lock."""
+    with _lock:
+        r = dict(_read_store()['renders'][render_id])
+    if r['status'] in ('ready', 'failed'):
+        return _render_view(render_id)
+    clips = [o for c in r['children'] for o in (jobs[c['job_id']].get('outputs') or [])]
+    clip_paths = [Path(o['local_path']) for o in clips]
+
+    def settle(**fields) -> dict | None:
+        with _lock:
+            s = _read_store()
+            s['renders'][render_id].update(fields, updated_at=now_iso())
+            _write_store(s)
+        return _render_view(render_id)
+
+    def hold(kind: str, message: str) -> dict | None:
+        return settle(status='held', hold={'kind': kind, 'message': message}, clips=clips)
+
+    if not clip_paths or any(not p.is_file() for p in clip_paths):
+        return hold('clips_missing', 'a downloaded clip is missing from the library, so the render cannot be joined')
+    total_sec = sum(_num(o.get('duration_sec')) for o in clips) or None
+
+    if len(clips) == 1 and not r['crop_square']:
+        outputs = [dict(clips[0])]
+    else:
+        ffmpeg = _ffmpeg()
+        if ffmpeg is None:
+            what = 'cropped to 1:1' if len(clips) == 1 else ('joined' + (' and cropped to 1:1' if r['crop_square'] else ''))
+            return hold('ffmpeg_missing',
+                        f'ffmpeg is not installed on this machine, so the {len(clips)} clip{"s" if len(clips) != 1 else ""} '
+                        f'could not be {what}. They are saved in your Material library (video / {GENERATED_FOLDER}). '
+                        f'Install ffmpeg yourself, then open this render again. Nothing is installed for you.')
+        out_path = _library_folder('video') / f'{render_id}.mp4'
+        list_file = out_path.with_suffix('.concat.txt')
+        try:
+            list_file.write_text(_concat_list(clip_paths), encoding='utf-8')
+            cmd = stitch_command(ffmpeg, str(list_file), str(out_path), crop_square=bool(r['crop_square']),
+                                 copy=_codecs_match(clip_paths))
+            code, tail = _run_ffmpeg(cmd)
+        finally:
+            try:
+                list_file.unlink()
+            except OSError:
+                pass
+        if code != 0 or not out_path.is_file():
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
+            _log(f'[desk_engines] ffmpeg join failed for {render_id}: rc={code} {tail}', flush=True)
+            return hold('stitch_failed', f'ffmpeg could not join the clips (exit {code}). The clips are saved in your '
+                                         f'Material library. {tail.strip()[-300:]}')
+        outputs = [_describe_output(out_path, 'video/mp4', duration_sec=total_sec)]
+    _attach_to_piece(r['owner']['id'] if r['owner']['kind'] == 'piece' else None, outputs)
+    return settle(status='ready', hold=None, failure=None, outputs=outputs, clips=clips)
