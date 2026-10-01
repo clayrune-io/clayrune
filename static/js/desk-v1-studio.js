@@ -61,7 +61,7 @@
   function _loadGlobalAgents() {
     return fetch('/api/characters').then((r) => r.json()).then((list) => {
       _globalAgents = (Array.isArray(list) ? list : [])
-        .filter((c) => (c.scope || 'global') === 'global')
+        .filter((c) => c.scope === 'global')
         .map((c) => ({ ref: `global:${c.name}`, name: c.agent_name || c.display_name || c.name, avatar: c.avatar || '' }));
     }).catch((e) => { console.warn('[desk] could not read the agent list:', e && e.message ? e.message : e); if (!_globalAgents) _globalAgents = []; });
   }
