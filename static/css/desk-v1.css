@@ -3005,3 +3005,9 @@ button.desk-v1-because-chip { color: var(--accent-soft); font-weight: 600; curso
   .desk-v1-where-source-handle { white-space: normal; overflow-wrap: anywhere; line-height: 1.2; }
   .desk-v1-where-avatar-badge { font-size: 11px; min-width: 17px; height: 17px; line-height: 15px; }
 }
+
+/* 884 Fold inner: the Where board keeps its desktop two-column shape from 700px,
+   but the 10px / 10.5px desktop labels are below the 11px floor on a touch device. */
+@media (max-width: 960px) {
+  .desk-v1-where-msg-kind, .desk-v1-where-pill, .desk-v1-where-source-plat, .desk-v1-where-plat { font-size: 11px; }
+}
