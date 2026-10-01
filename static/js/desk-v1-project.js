@@ -180,6 +180,7 @@
         menu.setAttribute('role', 'menu');
         menu.innerHTML = `<button type="button" data-restore-btn>Restore</button>`;
         host2.appendChild(menu);
+        DeskV1Kit.placePopover(menu, btn);
         const close = () => { menu.remove(); document.removeEventListener('click', closer); };
         const closer = (ev) => { if (!menu.contains(ev.target) && ev.target !== btn) close(); };
         setTimeout(() => document.addEventListener('click', closer), 0);

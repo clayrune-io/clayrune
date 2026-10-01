@@ -458,13 +458,15 @@ async function runPhone(browser) {
     const rm = document.querySelector('[data-where-remove]');
     const cn = document.querySelector('[data-where-connect]');
     return {
-      boardScrolls: board.scrollWidth > board.clientWidth + 4,
+      // MC-977 WH-1: on phone the board STACKS (Messages above full-width columns)
+      // instead of scrolling sideways, so nothing may overflow it horizontally.
+      boardStacks: getComputedStyle(board).flexDirection === 'column' && board.scrollWidth <= board.clientWidth + 4,
       pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 2,
       removeH: Math.round(rm.getBoundingClientRect().height),
       connectH: Math.round(cn.getBoundingClientRect().height),
     };
   });
-  check(m.boardScrolls && !m.pageOverflow, `phone: the board scrolls inside itself, the page does not (${JSON.stringify(m)})`, `phone: overflow wrong ${JSON.stringify(m)}`);
+  check(m.boardStacks && !m.pageOverflow, `phone: the board stacks (no sideways scroll), the page does not scroll sideways (${JSON.stringify(m)})`, `phone: overflow wrong ${JSON.stringify(m)}`);
   check(m.removeH >= 44 && m.connectH >= 44, `phone: ✕ ${m.removeH}px and Connect › ${m.connectH}px tall (≥ 44)`, `phone: tap targets too small ${JSON.stringify(m)}`);
   await page.waitForTimeout(80);
   await page.screenshot({ path: resolve(SHOT_DIR, 'r2_10_where_phone_390.png') });

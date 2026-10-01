@@ -527,7 +527,9 @@
         if (typeof window.deskV1Render === 'function') window.deskV1Render();
       },
     });
-    if (projectId) deskV1Nav('project', { projectId });
+    // MC-977 mobile G-4: Home -> campaign pushes ONLY the campaign, so Back is
+    // one tap to Home (where the user came from), not through a project page
+    // they never opened. From a project page, the project is already on the stack.
     deskV1Nav('campaign', { campaignId: camp.id, projectId: projectId || null });
   }
 
@@ -541,7 +543,7 @@
   function _goToNeedsYou(ds) {
     const { needsyouKind, campaignId, projectId, versionId, conversationId } = ds;
     if (needsyouKind === 'piece') { deskV1HomeGotoReview(campaignId, versionId); return; }
-    if (projectId) deskV1Nav('project', { projectId });
+    // (G-4: no project push — Back returns to Home, where the user came from.)
     // 'retro' lands on ① Goal, where the Retro section and its findings live.
     deskV1Nav('campaign', needsyouKind === 'retro' ? { campaignId, projectId: projectId || null, panel: 'goal' } : { campaignId, projectId: projectId || null });
     if (needsyouKind === 'video') deskV1Nav('video', { campaignId, versionId });
@@ -561,7 +563,7 @@
     });
     host.querySelectorAll('.desk-v1-home-row').forEach((rowEl) => {
       const { campaignId, projectId } = rowEl.dataset;
-      const go = () => { if (projectId) deskV1Nav('project', { projectId }); deskV1Nav('campaign', { campaignId, projectId: projectId || null }); };
+      const go = () => { deskV1Nav('campaign', { campaignId, projectId: projectId || null }); };
       const inner = (e) => e.target.closest('.desk-v1-home-needsyou-pill, .desk-v1-home-row-trash');
       rowEl.addEventListener('click', (e) => { if (!inner(e)) go(); });
       rowEl.addEventListener('keydown', (e) => {
@@ -604,6 +606,9 @@
     _bindStatusBoard(host);
   }
 
+  // (MC-977 mobile G-4 update: the stack is now Home -> campaign -> piece ->
+  // review — the project page is no longer pushed from Home, so Back retraces
+  // the path the user actually took. The rest of this comment is the IA1 history.)
   // IA1 (§5 row IA1's acceptance: "Needs-you deep link into a review builds
   // the 5-deep stack") — a "piece to approve" row used to jump straight from
   // Home to 'review' (a 2-deep stack). §1's hierarchy now runs Home ->
@@ -618,7 +623,7 @@
   function deskV1HomeGotoReview(campaignId, versionId) {
     const camp = _campaign(campaignId);
     const projectId = camp && camp.projectId;
-    if (projectId) deskV1Nav('project', { projectId });
+    // G-4: no project push — Back walks piece -> campaign -> Home (the real path).
     deskV1Nav('campaign', { campaignId, projectId });
     deskV1Nav('piece', { campaignId, versionId, projectId });
     deskV1Nav('review', { campaignId, versionId, projectId });

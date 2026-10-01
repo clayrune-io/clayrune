@@ -275,7 +275,7 @@
 
   // ── view ─────────────────────────────────────────────────────────────────
   function _previewTag(ch) {
-    return ch && ch.preview ? '<span class="desk-v1-where-preview" data-preview>Preview · not connected</span>' : '';
+    return ch && ch.preview ? '<span class="desk-v1-where-preview" data-preview data-short="Preview" title="Preview · not connected">Preview · not connected</span>' : '';
   }
 
   function _messageHTML(camp, fam, cols) {

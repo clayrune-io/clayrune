@@ -8,6 +8,35 @@
   display: flex; flex-direction: column; height: 100%;
   padding: 0 24px 20px 28px;
 }
+/* Phone (MC-977 mobile fix batch 1, G-1/G-2): the modal is a flex column
+   (header + shell), but `height:100%` sized the shell to the WHOLE modal, so
+   it overran by the header's 44px and the last ~22px of every page (Brief's
+   "Next", the Where palette, the Posy box) sat under the bottom tab bar. Fill
+   the remaining height instead. Gutters shrink from 28/24 to 14 so a 344px
+   screen gives its content 314px, not 290 (84% -> 91%). ≤960px only: desktop
+   keeps its geometry. */
+@media (max-width: 960px) {
+  .desk-v1-shell {
+    height: auto; flex: 1 1 auto; min-height: 0;
+    padding: 0 14px 20px 14px;
+  }
+}
+/* MC-977 mobile G-3: the Desk's Undo toast (324x89 at the TOP, y10-99) sat
+   exactly over the crumb Back control (y46-72) for ~20s, and the tap landed on
+   the toast. On phone while the Desk is open it now lives at the BOTTOM, above
+   the tab bar, as one compact row (message + Undo) instead of a stacked 89px
+   card. Scoped to the Desk being open so every other toast keeps its place. */
+@media (max-width: 960px) {
+  body:has(.modal-window[data-modal-id="__desk"]) #toast-container {
+    top: auto; bottom: calc(60px + env(safe-area-inset-bottom, 0px));
+  }
+  body:has(.modal-window[data-modal-id="__desk"]) .toast.toast-action {
+    flex-direction: row; align-items: center; gap: 10px; padding: 6px 6px 6px 12px;
+  }
+  body:has(.modal-window[data-modal-id="__desk"]) .toast-action .toast-msg { margin-bottom: 0; }
+  body:has(.modal-window[data-modal-id="__desk"]) .toast-action .toast-actions { flex: 0 0 auto; }
+  body:has(.modal-window[data-modal-id="__desk"]) .toast-action .toast-btn { min-height: 44px; padding: 0 16px; }
+}
 /* app.css's .agent-line is styled for terminal-style agent transcripts
    (JetBrains Mono) — everywhere the Desk reuses it (kit's Posy box, T7's
    Results read, any future caller) it's product copy, not a log line (12a:
@@ -205,6 +234,19 @@
 @media (max-width: 960px) {
   .desk-v1-camp-main { flex-direction: column; }
   .desk-v1-camp-rightcol { flex: 0 0 auto; }
+  /* MC-977 mobile P-1: three fixed columns made 89px-wide campaign cards (one
+     title wrapped to 3-4 lines, ~235px tall each). auto-fill with a 240px floor
+     gives 1 column at 290-358px and still 3 at the 884px fold. */
+  .desk-v1-project-camps { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  /* P-2: header = name + state on line 1, the two actions share line 2 as
+     equal 44px single-line buttons (were 74x62 / 83x47, "Pause project" on 4 lines). */
+  .desk-v1-project-header { flex-wrap: wrap; row-gap: 8px; }
+  .desk-v1-project-name { min-width: 0; overflow-wrap: anywhere; }
+  .desk-v1-project-header-actions { flex: 1 1 100%; margin-left: 0; }
+  .desk-v1-project-pause-btn, .desk-v1-project-presence-btn {
+    flex: 1 1 0; min-width: 0; min-height: 44px; white-space: nowrap;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
 }
 
 /* ── T0b: shared kit (vocabulary, state label, channel badge, toast+Undo,
@@ -553,6 +595,27 @@
     min-height: 44px;
   }
   .desk-v1-home-needsyou-pill { min-height: 32px; }
+  /* MC-977 mobile H-1: the Studio / Engagement / New campaign row was 315px
+     in a 290px column (flex-shrink on the nowrap buttons let "Engagement · 5"
+     wrap to 3 lines, 3 different heights, "New campaign" flush to the edge).
+     Now: the tools slot takes its own full row, Studio + Engagement share the
+     first line (equal, never wrap), the primary New campaign is a full-width
+     second line. Every button is one text line at the same 44px height. */
+  .desk-v1-home-crumbtools { flex: 1 1 100%; flex-wrap: wrap; margin-left: 0; gap: 8px; min-width: 0; }
+  .desk-v1-home-studio-btn, .desk-v1-home-engagement-btn, .desk-v1-home-newcamp-page-btn {
+    white-space: nowrap; min-height: 44px; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .desk-v1-home-studio-btn, .desk-v1-home-engagement-btn { flex: 1 1 0; min-width: 0; padding-left: 8px; padding-right: 8px; }
+  .desk-v1-home-newcamp-page-btn { flex: 1 1 100%; }
+  /* H-2: project block head = name + New campaign on line 1, the agent chip
+     on its own line 2 (ellipsized, never a 3-line pill). */
+  .desk-v1-home-block-head { flex-wrap: wrap; row-gap: 6px; }
+  .desk-v1-home-block-name { flex: 1 1 0; min-width: 0; text-align: left; overflow-wrap: anywhere; min-height: 44px; }
+  .desk-v1-home-block-newcamp { flex: 0 0 auto; white-space: nowrap; min-height: 44px; margin-left: 0; }
+  .desk-v1-home-block-agent {
+    order: 3; flex: 1 1 100%; min-height: 44px; max-width: 100%; box-sizing: border-box;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; justify-content: center;
+  }
 }
 
 /* ── T2a: Campaign page + Content list ───────────────────────────────────── */
@@ -2212,6 +2275,16 @@
   .desk-v1-map-stops { flex-wrap: nowrap; overflow-x: auto; justify-content: flex-start; }
   .desk-v1-map-stop { flex: 0 0 auto; min-width: 58px; }
 }
+/* MC-977 mobile M-2: below 640px the pill, stops and the Draft's lone ⋮ each
+   took their own wrapped row (146px of stepper block). Now the state pill and
+   ⋮ share row 1 (⋮ pushed right), the stops scroll on a full-width row 2. The
+   884px fold already fits all three on one row, so it is left as it was. */
+@media (max-width: 640px) {
+  .desk-v1-map-tabs { row-gap: 6px; }
+  .desk-v1-map-pill { order: 1; }
+  .desk-v1-map-more { order: 2; margin-left: auto; align-self: center; }
+  .desk-v1-map-stops { order: 3; flex: 1 1 100%; }
+}
 
 /* ── R2-10: ⑤ Where board (frames 7a/7b; desk-v1-where.js) ───────────────── */
 .desk-v1-where { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
@@ -2323,10 +2396,48 @@
   /* The board scrolls sideways (frame 7b is desktop-only; no where-mobile
      frame). Every card is already a 44px-tall target; the small controls get
      a full tap size here. */
-  .desk-v1-where-msgs, .desk-v1-where-col { flex-basis: 78vw; }
   .desk-v1-where-colremove { width: 44px; height: 44px; font-size: 14px; }
   .desk-v1-where-connect { min-height: 44px; }
-  .desk-v1-where-source { width: calc(33% - 8px); min-width: 92px; min-height: 44px; }
+  .desk-v1-where-source { min-height: 44px; }
+
+  /* MC-977 mobile WH-1: Messages and every channel column were each 78vw in ONE
+     sideways-scrolling row, with Messages sticky at left -- so Messages was 90-93%
+     of the board, a channel column showed 10-35px beside it, and at 50% scroll
+     only 22px of one column showed: you could never see a column and drop onto it
+     at once. On phone the board is a STACK instead: Messages on top (list capped
+     at ~24vh, so it is a bounded strip, not the whole screen), each channel
+     column full-width beneath it. Chosen over a 45/55 side-by-side split because
+     at 290-358px that leaves Messages 130-160px wide (the message cards wrap to
+     3-4 lines) and one column 150px wide -- unreadable -- while the stack gives
+     both full width, and the first column starts inside the same screen as
+     Messages so a drag can still land. Tap (the Add-to menu) is the path for any
+     column further down: pointer-drag has no auto-scroll. */
+  .desk-v1-where-board { flex-direction: column; align-items: stretch; overflow-x: visible; gap: 10px; }
+  .desk-v1-where-msgs, .desk-v1-where-col { flex: 0 0 auto; width: auto; position: static; }
+  .desk-v1-where-msglist { max-height: clamp(140px, 24vh, 220px); }
+
+  /* WH-2: the SOURCES palette was 7 tiles of 92x114-161 (2 per row) with 31 text
+     elements at 9-10.5px. Now two compact 44px+ rows-of-two: avatar left, handle
+     and platform stacked beside it, every label >= 11px. */
+  .desk-v1-where-sources-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .desk-v1-where-source {
+    width: auto; min-width: 0; padding: 8px 10px;
+    display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; row-gap: 0;
+    align-items: center; text-align: left;
+  }
+  .desk-v1-where-source > .desk-v1-where-avatar { grid-row: 1 / span 2; }
+  .desk-v1-where-source-handle { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal; }
+  .desk-v1-where-source > .desk-v1-where-preview,
+  .desk-v1-where-source > .desk-v1-where-connect { grid-column: 1 / -1; justify-self: start; }
+  .desk-v1-where-msg-kind, .desk-v1-where-pill, .desk-v1-where-source-plat, .desk-v1-where-plat, .desk-v1-where-preview { font-size: 11px; }
+  .desk-v1-where-avatar-badge { font-size: 10px; min-width: 16px; height: 16px; line-height: 14px; }
+  /* WH-3: the "Preview · not connected" pill wrapped to 2-3 lines inside a source
+     tile. One line, short form ("Preview") inside the tile; the full text stays on
+     its title and wherever the pill sits on its own (What's create head). */
+  .desk-v1-where-source .desk-v1-where-preview { white-space: nowrap; font-size: 0; padding: 0; }
+  .desk-v1-where-source .desk-v1-where-preview::after {
+    content: attr(data-short); font-size: 11px; display: inline-block; padding: 0 7px;
+  }
 }
 
 /* Frame 7b shows the board at full width with no agent box beside it. */
@@ -2460,9 +2571,44 @@
   .desk-v1-what-main { flex-basis: calc(100% - 100px); }
   .desk-v1-what-status { flex-basis: 100%; align-items: flex-start; text-align: left; flex-direction: row; flex-wrap: wrap; gap: 4px 12px; }
   .desk-v1-what-filter, .desk-v1-what-title, .desk-v1-what-addmedia, .desk-v1-what-change, .desk-v1-what-create-x { min-height: 44px; }
-  .desk-v1-what-type { width: calc(33% - 8px); min-width: 92px; min-height: 44px; }
   .desk-v1-what-source { min-height: 44px; }
   .desk-v1-piece-facetrow { flex-wrap: wrap; }
+
+  /* MC-977 mobile WT-1/WT-2 (Dave's call): the Content Types tray was 3 rows of
+     92x70-90 tiles = 315px, 36% of a 882px screen, and sat over the rows it was
+     meant to feed (217/217px of "Install in two minutes" hidden). It is now ONE
+     row, all five tiles visible at once, icon + short label only, ~84px tall.
+     Chosen over a collapsed bar because adding a piece stays a single tap (a
+     collapsed bar costs two), and over a horizontally scrolling strip because
+     the tiles are also drag sources (touch-action: pan-y) -- a sideways-scrolling
+     parent would fight that drag on a phone. The "Preview" pill and the
+     "drag one into the campaign" clause drop out here; the pill still shows on
+     the piece once added, and tapping a tile is the phone gesture. */
+  .desk-v1-what-tray { padding: 8px 10px; }
+  .desk-v1-what-tray-title { margin-bottom: 6px; }
+  .desk-v1-what-tray-drag { display: none; }
+  .desk-v1-what-tray-row { flex-wrap: nowrap; gap: 6px; }
+  .desk-v1-what-type { flex: 1 1 0; width: auto; min-width: 0; min-height: 44px; padding: 6px 2px; gap: 2px; justify-content: center; }
+  .desk-v1-what-type-glyph { font-size: 15px; line-height: 1; }
+  .desk-v1-what-type-name { font-size: 11px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .desk-v1-what-type .desk-v1-where-preview { display: none; }
+
+  /* WT-5 (Dave's call): source picker tiles = small icon + short label, two to a
+     row; the description line is desktop-only (it stays on the tile's title and
+     aria-label). Was four 264x86 tiles, 374px of stack for four choices. The short
+     label comes from data-short so the DOM text (and desktop) are unchanged. */
+  .desk-v1-what-sources { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .desk-v1-what-source { flex-direction: row; align-items: center; gap: 8px; padding: 8px 10px; }
+  .desk-v1-what-source-glyph { font-size: 15px; line-height: 1; flex: 0 0 auto; }
+  .desk-v1-what-source-hint { display: none; }
+  .desk-v1-what-source-name { font-size: 0; min-width: 0; }
+  .desk-v1-what-source-name::after { content: attr(data-short); font-size: 12.5px; white-space: nowrap; }
+}
+/* A short viewport (on-screen keyboard, URL bar) can't afford a sticky tray over a
+   focused field (WT-1: at vh 618 the title input sat under a tile). It scrolls with
+   the page instead. */
+@media (max-width: 960px) and (max-height: 600px) {
+  .desk-v1-what-tray { position: static; }
 }
 
 /* ── R2-8: Studio + creation bodies (frames 11-14, 15b, 16, 16c; desk-v1-studio.js) ── */

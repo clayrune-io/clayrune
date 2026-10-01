@@ -1015,6 +1015,17 @@ function mcPushSurfaceHistory() {
 // modal's opener never pushed one — a bug, or a modal opened by a path this
 // doesn't cover yet) closeModalById is the safe fallback, same as the X.
 function mcModalHeaderBack(modalId) {
+  // MC-977 mobile G-4: inside the Desk's own sub-pages (campaign, project,
+  // piece, ...) the header ← must do what the crumb's "‹ <parent>" does -- pop
+  // the Desk's own page stack to where the user came from -- not close the whole
+  // Desk. At the Desk's root page the stack has nothing to pop, so it falls
+  // through to the normal close below. The history sentinel is left alone: the
+  // Desk surface is still open, so the hardware back still has its one entry.
+  if (modalId === '__desk' && typeof window.deskV1CanGoBack === 'function'
+      && window.deskV1CanGoBack() && typeof window.deskV1Back === 'function') {
+    window.deskV1Back();
+    return;
+  }
   const hasSentinel = _mcDrawerHistoryActive || _mcSettingsNavDepth > 0
     || _mcSettingsHistoryActive || _mcSurfaceOpen || _mcResumeHistoryActive
     || _mcConvHistoryActive || _mcModalHistoryActive || _mcInboxOpen

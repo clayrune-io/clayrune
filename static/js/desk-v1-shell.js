@@ -448,6 +448,9 @@
   window.deskV1Open = deskV1Open;
   window.deskV1Nav = deskV1Nav;
   window.deskV1Back = deskV1Back;
+  // True while the Desk is inside a sub-page (a parent entry exists on the stack);
+  // the mobile modal header's ← asks this (mobile.js mcModalHeaderBack, MC-977 G-4).
+  window.deskV1CanGoBack = () => _stack.length > 1;
   window.deskV1Render = deskV1Render;
   window.deskV1PatchParams = deskV1PatchParams;
   window.deskV1PopTo = deskV1PopTo;
