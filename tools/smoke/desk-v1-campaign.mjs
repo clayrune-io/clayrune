@@ -305,11 +305,12 @@ async function runCardMenu(browser) {
   await page.waitForSelector('.desk-v1-camp-cardmenu', { timeout: 2000 });
   const statesBefore = await page.evaluate(() => window.DeskV1Fixtures.families.find((f) => f.id === 'fam-install-video').versions.map((v) => v.state));
   await page.click('.desk-v1-camp-cardmenu [data-menu-archive]');
-  await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
-  const archiveToast = (await page.$eval('.toast', (e) => e.textContent).catch(() => '') || '');
-  /Archived/.test(archiveToast)
-    ? ok(`Archive shows a commandBus toast: "${archiveToast.trim()}"`)
-    : fail(`Archive toast missing/wrong: ${JSON.stringify(archiveToast)}`);
+  // Ron 2026-10-02: no destructive-command popup; the header Undo names the archive.
+  await page.waitForTimeout(100);
+  const archiveToast = (await page.getAttribute('#desk-v1-undo', 'title')) || '';
+  /Archived/.test(archiveToast) && (await page.$$('.toast')).length === 0
+    ? ok(`Archive raises no toast; the header Undo names it: "${archiveToast.trim()}"`)
+    : fail(`Archive should be quiet with a header Undo: ${JSON.stringify(archiveToast)}`);
   const statesAfter = await page.evaluate(() => {
     const fam = window.DeskV1Fixtures.families.find((f) => f.id === 'fam-install-video');
     return fam.versions.map((v) => v.state);
@@ -317,7 +318,7 @@ async function runCardMenu(browser) {
   statesAfter.filter((s) => s === 'archived').length === 2 // the already-published one is left alone (terminal)
     ? ok(`A5: Archive only touched the non-terminal versions, verified_published left alone: ${JSON.stringify(statesAfter)}`)
     : fail(`Archive touched the wrong versions: ${JSON.stringify(statesAfter)}`);
-  await page.click('.toast .toast-btn.primary');
+  await page.click('#desk-v1-undo');
   await page.waitForTimeout(50);
   const statesRestored = await page.evaluate(() => {
     const fam = window.DeskV1Fixtures.families.find((f) => f.id === 'fam-install-video');
@@ -471,10 +472,10 @@ async function runCampaignPageMoreMenu(browser) {
   await page.click('.desk-v1-camp-cardmenu [data-menu-archive]');
   await page.waitForSelector('.desk-v1-rules-confirm-overlay', { timeout: 2000 });
   await page.click('[data-confirm-accept]');
-  await page.waitForSelector('.toast', { timeout: 2000 }).catch(() => {});
+  await page.waitForTimeout(100);
   const archivedState = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').state);
   archivedState === 'archived' ? ok('item 3: confirming Archive on the campaign page sets state to archived') : fail(`item 3: state after confirm: ${archivedState}`);
-  await page.click('.toast .toast-btn.primary');
+  await page.click('#desk-v1-undo');
   await page.waitForTimeout(50);
   const restoredState = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').state);
   restoredState === 'active' ? ok('item 3: Undo restores the campaign to active') : fail(`item 3: state after Undo: ${restoredState}`);

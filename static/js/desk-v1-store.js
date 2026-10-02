@@ -24,7 +24,7 @@
 //
 // `run()` is the write path: optimistic apply, the route call, and on a
 // refusal a rollback plus a toast carrying the server's own error text. It
-// wraps DeskV1Kit.commandBus, so a successful write still gets its Undo toast.
+// wraps DeskV1Kit.commandBus, so a successful write is undoable from the header's Undo.
 (function () {
   // Collection keys the surfaces index into. An empty state has to carry the
   // right TYPE for each (an array where a surface calls .find, an object where
@@ -140,9 +140,9 @@
   //   undoRequest(result)  the route call that reverses the write, if one
   //                exists; if it refuses, the local change is put back.
   //   repaint()    optional, called after any rollback so the surface redraws.
-  //   destructive  optional: a delete / remove / archive / skip. Only these get
-  //                the Undo toast; every other change is silent and is undone
-  //                from the Desk header's Undo (or Ctrl/Cmd+Z).
+  //   destructive  optional: a delete / remove / archive / skip. Only these pulse
+  //                the Undo button; every change is undone from the Desk
+  //                header's Undo (or Ctrl/Cmd+Z). No popup.
   //   irreversible optional: the route has no inverse (a finding's Re-confirm,
   //                a project pause that already cascaded...). A live change then
   //                gets a plain confirmation toast, NOT an Undo that would only

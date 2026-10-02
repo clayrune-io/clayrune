@@ -451,7 +451,7 @@ async function skipAskEdit(browser) {
   await page.waitForTimeout(100);
   const sp = calls(srv, 'PATCH', /v-skip$/);
   (sp.length === 1 && JSON.stringify(sp[0].body) === '{"state":"skipped"}') ? ok('Skip PATCHes {state:"skipped"}') : fail('skip: ' + JSON.stringify(sp.map((r) => r.body)));
-  await page.locator('.toast-btn', { hasText: 'Undo' }).first().click();
+  await page.click('#desk-v1-undo'); // Ron 2026-10-02: no destructive popup; the header Undo
   await page.waitForTimeout(150);
   const sp2 = calls(srv, 'PATCH', /v-skip$/);
   (sp2.length === 2 && sp2[1].body.state === 'needs_review' && find(srv, 'p-2', 'v-skip').v.state === 'needs_review')

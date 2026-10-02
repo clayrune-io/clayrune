@@ -267,10 +267,11 @@
 
   // ── Toast with Undo + client command bus (§10: every edit is a command
   // carrying its own inverse, an optimistic UI update, an announcement and an
-  // entry in the Undo history). A toast with Undo is raised ONLY for a command
-  // marked `destructive: true` (delete / remove / archive / skip): routine
-  // edits (a drag, a reorder, a rename) stay quiet and are undone from the
-  // Desk header's Undo button or Ctrl/Cmd+Z (desk-v1-shell.js). Every Desk
+  // entry in the Undo history). Every command, destructive or not, is undone
+  // from the Desk header's Undo button or Ctrl/Cmd+Z (desk-v1-shell.js); a
+  // `destructive: true` one (delete / remove / archive / skip) also pulses that
+  // button (no popup since 2026-10-02). `toast(msg, {undo})` remains for the
+  // callers that still pass an undo of their own. Every Desk
   // toast shares ONE key, so a new one replaces the old instead of stacking.
   // Reuses `showActionToast` / `showToast` (index.html). ──
   const TOAST_KEY = 'desk-v1';
@@ -290,6 +291,7 @@
 
   const _HISTORY_MAX = 50;
   const _busListeners = [];
+  const _destructiveListeners = [];
   const commandBus = {
     history: [],
     // cmd: { label, do, undo, destructive? }. `do` runs immediately (the
@@ -305,8 +307,11 @@
       if (this.history.length > _HISTORY_MAX) this.history.shift();
       this._changed();
       const label = cmd.label || 'Done';
-      if (cmd.destructive) toast(label, { undo: () => this._undoCmd(cmd) });
-      else announce(label);
+      // No popup for a destructive command (Ron, 2026-10-02): its Undo lives on the
+      // header button and, on the storyboard, beside the bin. `onDestructive`
+      // listeners give those buttons a visual cue so the delete is not silent.
+      announce(label);
+      if (cmd.destructive) _destructiveListeners.forEach((fn) => { try { fn(cmd); } catch (e) { /* a cue must not break an edit */ } });
     },
     // Undo one command wherever it sits in the history (a toast's Undo can
     // outlive later commands), then tell the header button.
@@ -328,6 +333,7 @@
     },
     clear() { this.history.length = 0; this._changed(); },
     onChange(fn) { if (typeof fn === 'function') _busListeners.push(fn); },
+    onDestructive(fn) { if (typeof fn === 'function') _destructiveListeners.push(fn); },
     _changed() { _busListeners.forEach((fn) => { try { fn(); } catch (e) { /* a listener must not break an edit */ } }); },
   };
 

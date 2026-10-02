@@ -453,6 +453,17 @@
     btn.setAttribute('aria-label', title);
   }
   if (window.DeskV1Kit && window.DeskV1Kit.commandBus) window.DeskV1Kit.commandBus.onChange(_syncUndoButton);
+  // A destructive command raises no popup: the Undo button pulses instead (the CSS
+  // swaps the motion for a still highlight under prefers-reduced-motion).
+  function _pulseUndoButtons() {
+    document.querySelectorAll('#desk-v1-undo, [data-sb-undo]').forEach((b) => {
+      b.classList.remove('desk-v1-undo-pulse');
+      void b.offsetWidth; // restart the animation if a second delete lands inside the first's pulse
+      b.classList.add('desk-v1-undo-pulse');
+      setTimeout(() => b.classList.remove('desk-v1-undo-pulse'), 1200);
+    });
+  }
+  if (window.DeskV1Kit && window.DeskV1Kit.commandBus) window.DeskV1Kit.commandBus.onDestructive(_pulseUndoButtons);
   document.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || String(e.key).toLowerCase() !== 'z') return;
     const entry = openModals.get(MODAL_ID);

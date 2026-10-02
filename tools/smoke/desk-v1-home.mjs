@@ -556,8 +556,10 @@ async function runDraftDelete(browser) {
   if ((await count()) === n0 && after.onHome && !after.onCampaign && after.drafts === 0 && !after.confirm) ok('R2-3b: ⋯ › Delete draft deletes the draft, stays on Home (row not opened), no confirm dialog');
   else fail(`R2-3b: ⋯ › Delete draft wrong: ${JSON.stringify({ n0, now: await count(), after })}`);
 
-  // Undo brings the row back.
-  await page.locator('.toast-action').last().locator('.toast-btn.primary').click();
+  // Undo brings the row back (Ron 2026-10-02: no popup; the header Undo names the delete).
+  if ((await page.$$('.toast')).length === 0 && /Deleted/.test((await page.getAttribute('#desk-v1-undo', 'title')) || '')) ok('R2-3b: the delete raises no toast; the header Undo names it');
+  else fail('R2-3b: a destructive delete should raise no toast and name itself on the header Undo');
+  await page.click('#desk-v1-undo');
   await page.waitForSelector('.desk-v1-home-row[data-state="draft"]', { timeout: 4000 });
   if ((await count()) === n0 + 1) ok('R2-3b: Undo restores the deleted draft row');
   else fail(`R2-3b: Undo did not restore the draft: ${await count()} vs ${n0 + 1}`);

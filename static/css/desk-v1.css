@@ -2804,8 +2804,20 @@
 .desk-v1-sb-listrow { display: flex; align-items: stretch; gap: 10px; min-width: 0; }
 .desk-v1-sb-addrow { display: flex; align-items: center; gap: 10px; margin: 10px 0; color: var(--text-dim); font-size: 12px; }
 .desk-v1-sb-listrow > .desk-v1-sb-scenes { flex: 1 1 auto; min-width: 0; }
-.desk-v1-sb-bin {
+.desk-v1-sb-bincol {
   flex: 0 0 48px; position: sticky; bottom: 12px; z-index: 3; align-self: flex-end;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+.desk-v1-sb-undo {
+  width: 36px; height: 36px; border-radius: 10px; font-size: 18px; line-height: 1; cursor: pointer; font-family: inherit;
+  background: var(--surface); border: 1px solid var(--border2); color: var(--text);
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.desk-v1-sb-undo:hover:not(:disabled), .desk-v1-sb-undo:focus-visible { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+.desk-v1-sb-undo:disabled { color: var(--text-dim); opacity: 0.45; cursor: default; }
+.desk-v1-sb-bin {
+  flex: 0 0 48px;
   display: flex; align-items: center; justify-content: center; width: 48px; height: 48px; font-size: 22px;
   border: 1px dashed var(--border2); border-radius: 12px; background: var(--surface); color: var(--text-faint);
   transition: transform 0.12s, background 0.12s, border-color 0.12s;
@@ -2814,7 +2826,26 @@
 body.desk-v1-sb-drag-active .desk-v1-sb-bin { border-color: var(--text-faint); color: var(--text-dim); }
 @media (max-width: 960px) {
   .desk-v1-sb-listrow { flex-direction: column; gap: 10px; }
+  .desk-v1-sb-bincol { flex: 0 0 auto; flex-direction: row; }
   .desk-v1-sb-bin { flex: 0 0 auto; }
+  .desk-v1-sb-undo { width: 44px; height: 44px; }
+}
+/* The selected scene (where a pasted picture lands), on its row and its timeline tile. */
+.desk-v1-sb-scene.desk-v1-sb-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.desk-v1-video-scene.desk-v1-sb-selected { box-shadow: inset 0 0 0 2px var(--accent); }
+/* A timeline tile on a phone: the page still scrolls until the long-press drag starts
+   (the class is on the tile only while dragging), and the press is not a text select. */
+.desk-v1-sb-timeline .desk-v1-video-scene { user-select: none; -webkit-touch-callout: none; }
+.desk-v1-sb-timeline .desk-v1-video-scene-dragging { touch-action: none; }
+/* No popup on a delete: its Undo buttons pulse once instead. Reduced motion gets a still highlight. */
+@keyframes desk-v1-undo-pulse {
+  0% { box-shadow: 0 0 0 0 var(--accent); transform: scale(1); }
+  35% { box-shadow: 0 0 0 6px transparent; transform: scale(1.12); }
+  100% { box-shadow: 0 0 0 0 transparent; transform: scale(1); }
+}
+.desk-v1-undo-pulse { animation: desk-v1-undo-pulse 0.9s ease-out 1; }
+@media (prefers-reduced-motion: reduce) {
+  .desk-v1-undo-pulse { animation: none; background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
 }
 /* The timeline bar sits at the top of the scene column. */
 .desk-v1-sb-timeline-wrap { margin-bottom: 12px; }
