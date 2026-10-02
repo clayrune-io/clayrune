@@ -159,7 +159,7 @@ let _bpFailToastAt = 0;
 function _bpNoteSendFailure(res) {
   if (!res || res.ok || Date.now() - _bpFailToastAt < 5000) return;
   _bpFailToastAt = Date.now();
-  if (typeof showToast === 'function') showToast(`Input did not reach the page (HTTP ${res.status}) — is the Clayrune server up to date?`);
+  if (typeof showToast === 'function') showToast(`Input did not reach the page (HTTP ${res.status}). Is the Clayrune server up to date?`);
 }
 
 // Soft-keyboard (touch) typing. Android Gboard does not deliver one clean
