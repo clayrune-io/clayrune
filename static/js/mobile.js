@@ -308,6 +308,11 @@
     if (!t || Math.abs(t.clientX - _tx) > 10 || Math.abs(t.clientY - _ty) > 10) return;  // a scroll, not a tap
     const el = e.target;
     if (el === a || (el && el.closest && el.closest(_CONTROLS))) return;
+    // The browser pane owns its own focus: a tap on its frame moves focus to the
+    // hidden typing input ON touchend (browser-pane.js), which runs BEFORE this
+    // bubbling listener, so blurring here closed the keyboard the instant it
+    // opened (Android, 8b163675). A tap inside the pane is never "done typing".
+    if (el && el.closest && el.closest('#mc-browser-pane')) return;
     try { a.blur(); } catch (err) {}
     settle();
   }, { passive: true });

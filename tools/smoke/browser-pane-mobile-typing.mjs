@@ -15,6 +15,11 @@
 //     keyboard edits (else the tail of a word lands in the next field), end the
 //     old field's composition (else its autocorrect replays into the new one),
 //     and still dismiss the dashboard's own outside-click menus.
+//  4. REAL mobile.js (Ron, 2026-10-02): its document-level touchend "tap on
+//     ordinary content = done typing" handler blurred the pane's typing input
+//     the instant the pane focused it on touchend (8b163675 moved focus there),
+//     so the keyboard never opened. The stub below cannot catch that, so one
+//     test loads the REAL static/js/mobile.js (SMOKE_MOBILE_JS overrides it).
 //
 // Hermetic, like browser-pane-ime-shortcuts.mjs: the REAL static/js/browser-pane.js
 // against a stubbed API in real Chromium with an Android UA, touch and the
@@ -27,6 +32,8 @@ import { readFileSync } from 'fs';
 
 const JS = readFileSync(process.env.SMOKE_PANE_JS
   || new URL('../../static/js/browser-pane.js', import.meta.url), 'utf8');
+const MOBILE_JS = readFileSync(process.env.SMOKE_MOBILE_JS
+  || new URL('../../static/js/mobile.js', import.meta.url), 'utf8');
 const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
 
 const browser = await chromium.launch();
@@ -34,7 +41,7 @@ const fails = [];
 const fail = m => { fails.push(m); console.log(`❌ FAIL — ${m}`); };
 const ok = m => console.log(`✅ ${m}`);
 
-async function newPage({ android = true, firstPostDelayMs = 0, editDelayMs = 0 } = {}) {
+async function newPage({ android = true, firstPostDelayMs = 0, editDelayMs = 0, realMobileJs = false } = {}) {
   const posts = [];
   const context = await browser.newContext(android
     ? { userAgent: ANDROID_UA, viewport: { width: 412, height: 915 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2.6 }
@@ -45,6 +52,8 @@ async function newPage({ android = true, firstPostDelayMs = 0, editDelayMs = 0 }
     const url = route.request().url();
     if (url.endsWith('/browser-pane.js'))
       return route.fulfill({ contentType: 'application/javascript', body: JS });
+    if (url.endsWith('/static/js/mobile.js'))
+      return route.fulfill({ contentType: 'application/javascript', body: MOBILE_JS });
     if (url.includes('/api/browser/launch'))
       return route.fulfill({ status: 201, contentType: 'application/json',
         body: JSON.stringify({ session_id: 'sid-1', url: 'about:blank',
@@ -71,10 +80,13 @@ async function newPage({ android = true, firstPostDelayMs = 0, editDelayMs = 0 }
          // height whenever a text field is focused. Reproduced here (not loaded)
          // because the pane's reaction to that variable is what is under test.
          document.documentElement.style.setProperty('--mc-app-vh','915px');
-         addEventListener('focusin', e => { if (/INPUT|TEXTAREA/.test(e.target.tagName)) document.documentElement.style.setProperty('--mc-app-vh','560px'); });
-         addEventListener('focusout', () => setTimeout(() => {
-           if (!/INPUT|TEXTAREA/.test((document.activeElement||{}).tagName||'')) document.documentElement.style.setProperty('--mc-app-vh','915px'); }, 0));
+         if (!${realMobileJs}) {
+           addEventListener('focusin', e => { if (/INPUT|TEXTAREA/.test(e.target.tagName)) document.documentElement.style.setProperty('--mc-app-vh','560px'); });
+           addEventListener('focusout', () => setTimeout(() => {
+             if (!/INPUT|TEXTAREA/.test((document.activeElement||{}).tagName||'')) document.documentElement.style.setProperty('--mc-app-vh','915px'); }, 0));
+         }
        </script>
+       ${realMobileJs ? '<script type="module" src="/static/js/mobile.js"></script>' : ''}
        <script type="module" src="/static/js/browser-pane.js"></script></body>` });
   });
   await page.goto('http://localhost:9/');
@@ -337,6 +349,43 @@ async function testTapAndLongPress() {
   await context.close();
 }
 
+// Real mobile.js loaded: a tap on the frame must leave the typing input focused.
+async function testTapKeepsKeyboardWithRealMobileJs() {
+  const { page, context } = await newPage({ realMobileJs: true });
+  await page.evaluate(() => document.activeElement && document.activeElement.blur());
+  const p = await framePoint(page);
+  for (const n of [1, 2]) {
+    await page.touchscreen.tap(p.x, p.y);
+    await page.waitForTimeout(400);
+    const a = await page.evaluate(() => (document.activeElement || {}).dataset && document.activeElement.dataset.bp);
+    if (a !== 'ime-shadow') fail(`real mobile.js: tap #${n} left focus on ${JSON.stringify(a)}, not the typing input — mobile.js blurred it and the keyboard never opens`);
+    else ok(`real mobile.js: tap #${n} on the frame keeps the typing input focused (keyboard stays open)`);
+  }
+  // A tap on ordinary dashboard content must still dismiss the keyboard (what that handler exists for).
+  await page.evaluate(() => { const d = document.createElement('div'); d.style.cssText = 'position:fixed;left:0;top:0;width:40px;height:40px;z-index:1'; document.body.appendChild(d); });
+  await page.touchscreen.tap(20, 20);
+  await page.waitForTimeout(300);
+  const b = await page.evaluate(() => (document.activeElement || {}).tagName);
+  if (b === 'INPUT' || b === 'TEXTAREA') fail('real mobile.js: a tap outside the pane no longer dismisses the keyboard');
+  else ok('real mobile.js: a tap outside the pane still dismisses the keyboard');
+  await context.close();
+}
+
+// A server that rejects the input POST (e.g. one that predates the `edit` kind
+// answers 400) must not fail silently while the keyboard sits open.
+async function testRejectedInputIsVisible() {
+  const { page, context } = await newPage();
+  await page.route('**/api/browser/input', route => route.fulfill({ status: 400, contentType: 'application/json', body: '{"error":"bad input payload"}' }));
+  await page.evaluate(() => { window.__toast = null; });
+  await shadow(page).focus();
+  await commit(await context.newCDPSession(page), 'hello');
+  await page.waitForTimeout(900);
+  const t = await page.evaluate(() => window.__toast);
+  if (!t || !/HTTP 400/.test(t)) fail(`rejected input: expected a toast naming the HTTP status, got ${JSON.stringify(t)}`);
+  else ok('rejected input: a 400 from the server surfaces as a toast instead of vanishing');
+  await context.close();
+}
+
 async function testMenuPaste() {
   const { page, posts, context } = await newPage();
   await page.locator('#mc-browser-pane [data-bp="menu"]').tap();
@@ -455,6 +504,8 @@ await testOrdering();
 await testDesktopUnchanged();
 await testKeyboardDoesNotResizeFrame();
 await testTapAndLongPress();
+await testTapKeepsKeyboardWithRealMobileJs();
+await testRejectedInputIsVisible();
 await testMenuPaste();
 await testTapQueuesBehindTyping();
 await testTapEndsComposition();
