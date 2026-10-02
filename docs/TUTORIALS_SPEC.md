@@ -109,6 +109,16 @@ Release only when every entry point reaches this single lesson; all three action
 
 Before adding lessons, Dave reviews the pilot with Ron: where help was needed, whether figure versus type became clear, whether hiring felt real, and which cues became annoying. Record step starts, verified completions, pauses, target failures and Hint use locally, without chat contents or remote analytics. No additional lesson implementation until this review adjusts or accepts the pilot.
 
+## Floor lesson v2 — create a new agent (Ron, 2026-10-02)
+
+Ron, after using the pilot: the Floor lesson "should also guide on how to hire new agent, assign its base vendor and agent". This counts as the pilot review the spec gates new lessons on: the pilot is accepted, and the Floor lesson grows by one block of steps.
+
+- New steps after Hire: create a new agent type from the Bench, choose its vendor (provider), choose its model, save it, then hire it onto Learn practice. Steps advance on evidence from the practice store (the saved practice character with that provider and model, then a practice roster entry), never on clicks.
+- Practice only: `POST /api/characters` and the character mutation routes go to the in-tab practice store while a run is active. No real character is created. A human click still creates every practice character; the agent-creation position (2026-09-14) is unaffected.
+- The vendor step must work on a fresh install with no provider signed in: picking a vendor in practice does not require it to be signed in, and the copy says so.
+- Bump the lesson version. Completed v1 history stays completed; an unfinished v1 run gets the explained restart.
+- Sequenced after `learn-workflows` (Tobin, 2026-10-02) because both change `static/js/learn.js`.
+
 ## LATER
 
 - Backlog: create, prioritize and complete a practice item.
