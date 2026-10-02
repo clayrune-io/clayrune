@@ -657,8 +657,25 @@ function _mergeShorterHistory(sessionId, incoming, source, incomingTs) {
     }
     break;
   }
-  const tail = anchor >= 0 ? incoming.slice(anchor + 1) : [];
-  const tailTs = anchor >= 0 && Array.isArray(incomingTs) ? incomingTs.slice(anchor + 1) : [];
+  // No anchor normally means `incoming` is an OLDER, shorter copy of what is
+  // shown (fork / cap) and there is nothing new in it. But a copy that shares
+  // NOT ONE line with the screen cannot be a copy of it: it is a different
+  // segment, new content. A cold-resumed Codex/Qwen/Gemini chat is exactly
+  // that: the server's log_lines hold only the new turn (the prior turns live
+  // in the provider's own transcript, not in log_lines), while the screen
+  // holds the read-only reconstruct plus its "send a message to resume"
+  // banner. The reset replay of that turn's first lines (`> Ron: ...`) was
+  // dropped here, so the user's own message never rendered. Take it all.
+  let disjoint = false;
+  if (anchor < 0) {
+    const onScreen = new Set();
+    for (const s of shown) { const t = (s || '').trim(); if (t) onScreen.add(t); }
+    const fresh = incoming.filter(l => (l || '').trim());
+    disjoint = fresh.length > 0 && !fresh.some(l => onScreen.has(l.trim()));
+  }
+  const tail = anchor >= 0 ? incoming.slice(anchor + 1) : (disjoint ? incoming.slice() : []);
+  const tailTs = Array.isArray(incomingTs)
+    ? (anchor >= 0 ? incomingTs.slice(anchor + 1) : (disjoint ? incomingTs.slice() : [])) : [];
   const key = `${source}:${shown.length}:${incoming.length}`;
   if (_historyShrinkWarned[sessionId] !== key) {
     _historyShrinkWarned[sessionId] = key;
@@ -671,6 +688,12 @@ function _mergeShorterHistory(sessionId, incoming, source, incomingTs) {
   tail.forEach((line, i) => {
     shown.push(line);
     agentOutputTimestamps[sessionId].push(tailTs[i] || null);
+    // Same echo-dedup as the SSE and reconcile append paths: the real
+    // `> Ron:` line replaces sendFollowup's DOM-only echo, never sits beside it.
+    if (line && line.trimStart().startsWith('> ')) {
+      const echo = document.getElementById(`agent-output-${sessionId}`)?.querySelector('.agent-echo');
+      if (echo) echo.remove();
+    }
     // null/undefined ts → `false` ("no date known", never guess "now" for a
     // reconciled historical line — see _maybeInsertDateDivider's contract).
     appendAgentLine(sessionId, line, tailTs[i] || false);
