@@ -146,6 +146,53 @@ function _unobscured(el) {
   const hit = document.elementFromPoint(x, y);
   return !!hit && (el.contains(hit) || (hit.closest && hit.closest('.lrn-bubble') === null && hit.contains(el)));
 }
+// The part of `tile` that is actually on screen and not under another window:
+// sample it on an 8px grid and keep the cells that hit-test to the tile. Returns
+// the bounding box of those cells plus the hit cell nearest its centre (the
+// drop point), or null when less than EXPOSED_MIN x EXPOSED_MIN is exposed.
+const EXPOSED_MIN = 40, EXPOSED_STEP = 8;
+function _exposedOf(tile) {
+  if (!tile || !tile.isConnected) return null;
+  const r = tile.getBoundingClientRect();
+  const x0 = Math.max(0, r.left), y0 = Math.max(0, r.top);
+  const x1 = Math.min(window.innerWidth, r.right), y1 = Math.min(window.innerHeight, r.bottom);
+  if (x1 - x0 < EXPOSED_MIN || y1 - y0 < EXPOSED_MIN) return null;
+  const hits = [];
+  let L = Infinity, T = Infinity, R = -Infinity, B = -Infinity;
+  const h = EXPOSED_STEP / 2;
+  for (let y = y0 + h; y < y1; y += EXPOSED_STEP) {
+    for (let x = x0 + h; x < x1; x += EXPOSED_STEP) {
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || !tile.contains(hit)) continue;
+      hits.push([x, y]);
+      L = Math.min(L, x - h); T = Math.min(T, y - h); R = Math.max(R, x + h); B = Math.max(B, y + h);
+    }
+  }
+  // Area as well as extent, so a thin L-shaped strip cannot pass for a drop zone.
+  if (R - L < EXPOSED_MIN || B - T < EXPOSED_MIN || hits.length * EXPOSED_STEP * EXPOSED_STEP < EXPOSED_MIN * EXPOSED_MIN) return null;
+  const cx = (L + R) / 2, cy = (T + B) / 2;
+  let best = hits[0], bd = Infinity;
+  for (const p of hits) { const d = Math.hypot(p[0] - cx, p[1] - cy); if (d < bd) { bd = d; best = p; } }
+  return { rect: { left: L, top: T, right: R, bottom: B, width: R - L, height: B - T }, x: best[0], y: best[1] };
+}
+// A stand-in element for the exposed part of a tile, so the arrow, the bubble
+// placement and the hand can treat it like any other destination. Re-sampled at
+// most every 250ms; the caller hands over a fresh one on every lesson tick.
+function _exposedTarget(tile, first) {
+  let snap = first, at = performance.now();
+  const get = () => {
+    const n = performance.now();
+    if (n - at > 250) { snap = _exposedOf(tile); at = n; }
+    return snap;
+  };
+  const none = { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
+  return {
+    virtual: true, tile,
+    get isConnected() { return tile.isConnected && !!get(); },
+    getBoundingClientRect() { const sn = get(); return sn ? sn.rect : none; },
+    get point() { const sn = get(); return sn ? { x: sn.x, y: sn.y } : null; },
+  };
+}
 function _floorFront() {
   const e = (typeof openModals !== 'undefined') ? openModals.get('__floor') : null;
   return !!(e && !e.minimized && e.element.classList.contains('focused'));
@@ -173,8 +220,11 @@ function _resolveStep() {
   const destSel = _isMobile()
     ? `#projects-col .mc-chat-row[data-id="${P.PID}"]`
     : `#projects-col .card[data-id="${P.PID}"]`;
-  const dest = _q(destSel);
-  return { el: card, cue: card, dest: dest && _measurable(dest) && _unobscured(dest) ? dest : null };
+  const tile = _q(destSel);
+  // Desktop: the tile is usually half under the Floor window; the drag lands on the
+  // part that is showing. Phone: the row is behind the full-screen Floor, so null.
+  const ex = tile && _measurable(tile) ? _exposedOf(tile) : null;
+  return { el: card, cue: card, dest: ex ? _exposedTarget(tile, ex) : null };
 }
 
 // ── Bubble, outline, arrow ───────────────────────────────────────────────────
@@ -343,6 +393,14 @@ function _placeBubble(rects) {
   } else delete b.dataset.tail;
 }
 
+// The strip the dragged card travels across, so the bubble is not placed on it.
+function _pathRect(from, to) {
+  const a = from.getBoundingClientRect(), pt = to.virtual ? to.point : null, b = to.getBoundingClientRect();
+  const ax = a.left + a.width / 2, ay = a.top + a.height / 2;
+  const bx = pt ? pt.x : b.left + b.width / 2, by = pt ? pt.y : b.top + b.height / 2;
+  const left = Math.min(ax, bx) - 30, right = Math.max(ax, bx) + 30, top = Math.min(ay, by) - 50, bottom = Math.max(ay, by) + 30;
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
 function _rectOf(el) { const r = el.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; }
 
 function _showOutline(el) {
@@ -431,9 +489,10 @@ const HAND_ORDER = ['glide', 'press', 'hold', 'lift', 'rest', 'carry', 'release'
 
 function _handCentre(el) {
   const r = el.getBoundingClientRect();
-  return { x: r.left + r.width / 2, y: r.top + r.height / 2, r };
+  const pt = el.virtual ? el.point : null;   // an exposed-part target lands on a point that really is the tile
+  return { x: pt ? pt.x : r.left + r.width / 2, y: pt ? pt.y : r.top + r.height / 2, r };
 }
-function _handLive(el) { return !!el && el.isConnected && _measurable(el); }
+function _handLive(el) { return !!el && el.isConnected && (el.virtual || _measurable(el)); }
 // An arc that bulges upward so the carry reads as lifting, not sliding.
 function _handPath(a, b, p) {
   const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
@@ -598,8 +657,15 @@ let _handHoldUntil = 0;
 
 function _syncHand(res) {
   if (S.hirePending || Date.now() < _handHoldUntil) { Hand.stop(); return; }
-  if (res.dest) Hand.drag(res.el, res.dest);
-  else Hand.click(res.cue || res.el);
+  if (res.dest) { Hand.drag(res.el, res.dest); return; }
+  if (_step().hire) {
+    // No usable drop zone (phone, or too little of the tile showing): tapping the
+    // card hires nothing, so show the gesture the user can actually complete.
+    const btn = _q('#lrn-bubble [data-lrn="hire"]', _root);
+    if (btn && _measurable(btn)) Hand.click(btn); else Hand.stop();
+    return;
+  }
+  Hand.click(res.cue || res.el);
 }
 
 // ── Engine: steps ────────────────────────────────────────────────────────────
@@ -710,9 +776,9 @@ function _tick() {
     _scrollOnce(res.el);
     _showOutline(_isMobile() && st.id === 'hire' ? res.el : res.el);
     _showArrow(res.cue || res.el, res.dest || null, false);
-    _syncHand(res);
     _renderBubble();
-    _placeBubble([_rectOf(res.el), res.dest ? _rectOf(res.dest) : null]);
+    _placeBubble([_rectOf(res.el), res.dest ? _rectOf(res.dest) : null, res.dest ? _pathRect(res.el, res.dest) : null]);
+    _syncHand(res);   // after the bubble is placed: the hand may point at a button inside it
     return;
   }
 

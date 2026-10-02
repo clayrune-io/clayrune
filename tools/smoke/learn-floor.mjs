@@ -862,6 +862,13 @@ try {
           coversCue: cx >= hr.left - 2 && cx <= hr.right + 2 && cy >= hr.top - 2 && cy <= hr.bottom + 2,
           coversDest: !!d && (d.left + d.width / 2) >= hr.left - 2 && (d.left + d.width / 2) <= hr.right + 2 && (d.top + d.height / 2) >= hr.top - 2 && (d.top + d.height / 2) <= hr.bottom + 2,
           hitsHand: !!(hit && hit.closest('#lrn-hand')),
+          // The fingertip is the scale origin, so it stays put while the hand presses.
+          tipHitsDest: (() => {
+            const dq = ds ? document.querySelector(ds) : null; if (!dq) return false;
+            const tx = hr.left + 15.4 * hr.width / 44, ty = hr.top + 5 * hr.height / 53, dr = dq.getBoundingClientRect();
+            const h2 = document.elementFromPoint(tx, ty);
+            return tx >= dr.left && tx <= dr.right && ty >= dr.top && ty <= dr.bottom && !!h2 && dq.contains(h2);
+          })(),
           parts: Object.fromEntries(['lrn-hand', 'lrn-hand-ghost', 'lrn-hand-ripple', 'lrn-hand-hold', 'lrn-hand-drop'].map((id) => [id, part(id)])),
           ghostInert: ghost.querySelectorAll('[id],[onclick],[onpointerdown],[data-fl-type]').length === 0,
           ghostHasCard: ghost.textContent,
@@ -962,9 +969,8 @@ try {
       const gc = { x: g.rect.left + g.rect.width / 2, y: g.rect.top + g.rect.height / 2 };
       check(allNone(f) && !f.hitsHand, 'desktop step 3: ghost, ring and hand are all pointer-events none mid-drag');
       check(await page.evaluate(() => !!document.getElementById('lrn-arrow') && !document.getElementById('lrn-arrow').hidden), 'desktop step 3: the arrow toward the tile is still shown');
-      await shoot(page, 'hand-drag-1440');
       f = await handAt(page, ['release'], GUIDE, GUIDE, DEST);
-      check(f.coversDest, 'desktop step 3: the hand releases on the practice tile');
+      check(f.tipHitsDest, 'desktop step 3: the hand releases on the practice tile');
       check(f.parts['lrn-hand-drop'] && !f.parts['lrn-hand-drop'].hidden, 'desktop step 3: a drop pulse shows on the destination');
       check(await page.evaluate(() => window.LearnPractice.roster().length === 0), 'the demonstration itself hires nothing');
       check(serverWrites(h).length === 0, 'the hand demonstration caused zero server writes');
@@ -985,13 +991,23 @@ try {
       check(true, 'desktop step 3: an abandoned drag brings the hand back on the same step');
       check((await state(page)).step === 2 && (await state(page)).phase === 'active', 'the abandoned drag left step 3 active');
 
-      // Tile covered: no drag across nothing. A click at the card, plus the arrow.
+      // Tile covered: no drag across nothing, and tapping the card hires nothing, so
+      // the click goes on the bubble's "Hire to practice" button instead.
+      const HIRE = '#lrn-bubble [data-lrn="hire"]';
       await page.addStyleTag({ content: '#projects-col .card[data-id="learn_practice"] { visibility: hidden !important; }' });
       await page.waitForTimeout(700);
-      f = await handAt(page, ['rest'], GUIDE, GUIDE);
-      check(f.kind === 'click' && f.coversCue, 'desktop step 3 with no reachable tile: a click cue at the card instead of a drag');
+      f = await handAt(page, ['rest'], HIRE, HIRE);
+      check(f.kind === 'click' && f.overlaps && f.coversCue, 'desktop step 3 with no reachable tile: a click cue on the Hire to practice button');
       check(f.parts['lrn-hand-ghost'].hidden, 'desktop step 3 with no reachable tile: no ghost');
       await page.evaluate(() => { document.querySelectorAll('style').forEach((s) => { if (/visibility: hidden !important/.test(s.textContent) && /learn_practice/.test(s.textContent)) s.remove(); }); });
+
+      // Less than 40x40 of the tile showing is not a drop zone either: same button.
+      await page.evaluate(() => { document.querySelector('.modal-window[data-modal-id="__floor"]').style.left = '100px'; });
+      await page.waitForTimeout(700);
+      const sliver = await page.evaluate(() => { const t = document.querySelector('#projects-col .card[data-id="learn_practice"]').getBoundingClientRect(), w = document.querySelector('.modal-window[data-modal-id="__floor"]').getBoundingClientRect(); return Math.min(t.right, w.left) - Math.max(t.left, 0); });
+      check(sliver > 0 && sliver < 40, 'desktop: the Floor now leaves only a ' + Math.round(sliver) + 'px sliver of the tile');
+      f = await handAt(page, ['rest'], HIRE, HIRE);
+      check(f.kind === 'click' && f.overlaps && f.coversCue, 'desktop step 3 with a sliver under 40px: a click cue on the Hire to practice button, not a drag');
 
       // Completing the step removes the hand.
       await page.click('#lrn-bubble [data-lrn="hire"]');
@@ -1002,6 +1018,47 @@ try {
       await page.evaluate(() => LearnEngine.leave());
       check(await page.$('#lrn-hand') === null, 'leaving removes the hand from the page');
       check(realErrors(h).length === 0, 'no uncaught page errors in section 11a' + (realErrors(h).length ? ': ' + realErrors(h).join(' | ') : ''));
+      await h.ctx.close();
+    }
+
+    // ── 11a2. Desktop 1440, default layout: the real lesson flow, no window moved ──
+    // The Floor covers most of the practice tile here, so the drag must land on
+    // the sliver that is showing.
+    {
+      const h = await newPage(browser, { width: 1440, height: 900 });
+      const { page } = h;
+      await boot(h);
+      await page.evaluate(() => LearnEngine.start('floor-v1', 'test'));
+      await toStep3(page);
+      const DEST = '#projects-col .card[data-id="learn_practice"]';
+      const geo = await page.evaluate(() => {
+        const t = document.querySelector('#projects-col .card[data-id="learn_practice"]').getBoundingClientRect(), w = document.querySelector('.modal-window[data-modal-id="__floor"]').getBoundingClientRect();
+        const mid = document.elementFromPoint(t.left + t.width / 2, t.top + t.height / 2);
+        return { shown: Math.min(t.right, w.left) - Math.max(t.left, 0), centreCovered: !mid || !mid.closest('.card[data-id="learn_practice"]') };
+      });
+      check(geo.centreCovered && geo.shown >= 40, 'desktop 1440 default layout: the tile centre is under the Floor but ' + Math.round(geo.shown) + 'px of it shows');
+      let f = await handAt(page, ['hold'], GUIDE, GUIDE, DEST);
+      check(f.kind === 'drag' && f.overlaps && f.coversCue, 'desktop 1440 step 3: data-kind=drag, the hand presses the Guide card');
+      f = await handAt(page, ['carry'], GUIDE, GUIDE, DEST);
+      await page.waitForTimeout(500);
+      f = await handAt(page, ['carry'], GUIDE, GUIDE, DEST);
+      check(!f.parts['lrn-hand-ghost'].hidden && f.ghostInert && /Guide/.test(f.ghostHasCard) && allNone(f) && !f.hitsHand, 'desktop 1440 step 3: the Guide ghost travels with the hand, all parts pointer-events none');
+      // The bubble and arrow keep clear of the path the card travels.
+      const clear = await page.evaluate(() => {
+        const c = document.querySelector('#floor-body .fl-bench-card[data-fl-type="project:guide"]').getBoundingClientRect(), g = document.getElementById('lrn-hand').getBoundingClientRect();
+        const b = document.getElementById('lrn-bubble').getBoundingClientRect();
+        const ax = c.left + c.width / 2, ay = c.top + c.height / 2, bx = g.left + 15.4, by = g.top + 5;
+        for (let i = 0; i <= 20; i++) { const x = ax + (bx - ax) * i / 20, y = ay + (by - ay) * i / 20; if (x > b.left && x < b.right && y > b.top && y < b.bottom) return false; }
+        return true;
+      });
+      check(clear, 'desktop 1440 step 3: the bubble is not on the drag path');
+      await shoot(page, 'hand-drag-1440');
+      f = await handAt(page, ['release'], GUIDE, GUIDE, DEST);
+      check(f.kind === 'drag' && f.tipHitsDest, 'desktop 1440 step 3: the drop point is inside the tile\'s visible part (the fingertip hit-tests to the tile)');
+      check(!f.parts['lrn-hand-drop'].hidden, 'desktop 1440 step 3: the drop pulse shows on the exposed part of the tile');
+      check(await page.evaluate(() => window.LearnPractice.roster().length === 0), 'desktop 1440: the demonstration hires nothing');
+      check(serverWrites(h).length === 0, 'desktop 1440: zero server writes');
+      check(realErrors(h).length === 0, 'no uncaught page errors in section 11a2' + (realErrors(h).length ? ': ' + realErrors(h).join(' | ') : ''));
       await h.ctx.close();
     }
 
@@ -1017,9 +1074,13 @@ try {
       await toStep3(page);
       const dest = await tileVisible(page);
       check(!dest, 'phone 390: the practice row is behind the full-screen Floor, so the lesson cannot drag onto it');
-      f = await handAt(page, ['rest'], GUIDE, GUIDE);
-      check(f.kind === 'click' && f.overlaps && f.coversCue && allNone(f) && !f.hitsHand, 'phone step 3: with the row covered the cue is a click at the card, never a drag across nothing');
-      check(f.parts['lrn-hand-ghost'].hidden, 'phone step 3: no ghost for a click cue');
+      const HIRE = '#lrn-bubble [data-lrn="hire"]';
+      await page.waitForTimeout(4500);   // let the "Practice only" toast from the earlier clicks clear, so the shot is clean
+      f = await handAt(page, ['press'], HIRE, HIRE);
+      check(f.kind === 'click' && f.overlaps && f.coversCue && allNone(f), 'phone step 3: the cue is a click on the Hire to practice button (tapping the card hires nothing)');
+      check(f.parts['lrn-hand-ghost'].hidden && f.parts['lrn-hand-hold'].hidden, 'phone step 3: no ghost and no long-press ring for a click cue');
+      check(await page.evaluate(() => { const hr = document.getElementById('lrn-hand').getBoundingClientRect(), b = document.querySelector('#lrn-bubble [data-lrn="hire"]').getBoundingClientRect(), hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return hr.width > 0 && hit === document.querySelector('#lrn-bubble [data-lrn="hire"]'); }), 'phone step 3: the button under the hand still receives the tap (hand is not in the way)');
+      await shoot(page, 'hand-button-390');
       // The reusable drag(from, to) on a phone: long-press with a fill ring, then the drag.
       // Driven directly on a paused lesson (nothing re-syncs the hand) because the lesson's own destination is covered here.
       await page.tap('#lrn-bubble [data-lrn="pause"]');
