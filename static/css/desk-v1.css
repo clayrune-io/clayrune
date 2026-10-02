@@ -182,6 +182,8 @@
 .desk-v1-project-pause-btn:hover, .desk-v1-project-agent-btn:hover, .desk-v1-project-newcamp-btn:hover {
   background: var(--surface3); color: var(--text);
 }
+.desk-v1-project-agent-btn { display: inline-flex; align-items: center; gap: 6px; }
+.desk-v1-project-agent-btn .av { width: 20px; height: 20px; object-fit: contain; }
 .desk-v1-project-camps-head {
   display: flex; align-items: center; justify-content: space-between; flex: 0 0 auto;
   font-size: 12px; font-weight: 700; color: var(--text-dim); letter-spacing: 0.03em;
@@ -313,6 +315,72 @@
 }
 .desk-v1-addto-menu button:hover,
 .desk-v1-addto-menu button:focus { background: var(--accent-dim); outline: none; }
+
+/* Agent list (Ron 2026-10-02) — the one agent picker: figure + name + one-line
+   role per row. A fixed full-screen layer (outside every overflow/transform
+   ancestor, above the modal layers) holds the list; at <=640px the layer dims
+   and the list is a bottom sheet, wider than the viewport it never is. */
+.desk-v1-agentlist-layer { position: fixed; inset: 0; z-index: 1660; }
+.desk-v1-agentlist {
+  position: fixed; box-sizing: border-box; min-width: 260px; max-width: min(420px, calc(100vw - 16px));
+  background: var(--surface3); border: 1px solid var(--border); border-radius: 10px;
+  padding: 4px; box-shadow: 0 8px 28px rgba(0,0,0,0.28); overflow-y: auto;
+}
+.desk-v1-agentlist-title { display: none; }
+.desk-v1-agentlist-row {
+  display: flex; align-items: center; gap: 10px; min-height: 48px; box-sizing: border-box;
+  padding: 7px 10px; border-radius: 7px; cursor: pointer; color: var(--text);
+}
+.desk-v1-agentlist-row:hover, .desk-v1-agentlist-row:focus { background: var(--accent-dim); outline: none; }
+.desk-v1-agentlist-row:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.desk-v1-agentlist-row[aria-selected="true"] { background: var(--accent-dim); }
+.desk-v1-agentlist-face, .desk-v1-agentlist-plus {
+  flex: 0 0 32px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+}
+.desk-v1-agentlist-face .av { width: 32px; height: 32px; object-fit: contain; }
+.desk-v1-agentlist-plus { font-size: 20px; font-weight: 600; color: var(--accent); }
+.desk-v1-agentlist-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.desk-v1-agentlist-name { font-size: 13.5px; font-weight: 600; }
+.desk-v1-agentlist-tag { font-size: 11.5px; font-weight: 500; color: var(--text-dim); }
+.desk-v1-agentlist-role { font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.desk-v1-agentlist-check { flex: 0 0 auto; color: var(--accent); font-weight: 700; }
+.desk-v1-agentlist-action { border-top: 1px solid var(--border2); border-radius: 0 0 7px 7px; }
+.desk-v1-agentlist-action ~ .desk-v1-agentlist-action { border-top: none; border-radius: 7px; }
+.desk-v1-agentlist-action .desk-v1-agentlist-name { color: var(--accent); }
+@media (max-width: 640px) {
+  .desk-v1-agentlist-layer { background: rgba(0,0,0,0.45); }
+  .desk-v1-agentlist {
+    position: fixed !important; left: 0 !important; right: 0 !important; top: auto !important; bottom: 0 !important;
+    width: auto !important; max-width: none !important; max-height: 78vh !important; min-width: 0;
+    border-radius: 16px 16px 0 0; padding: 6px 8px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  .desk-v1-agentlist-title { display: block; font-size: 13px; font-weight: 700; color: var(--text); padding: 10px 10px 6px; }
+  .desk-v1-agentlist-row { min-height: 54px; }
+  /* The Desk parks its toast at the BOTTOM on a phone (MC-977, above the tab
+     bar), which is exactly where this sheet sits, and the toast's z-index
+     (100000) is above the sheet's: "Hired Dave onto …" lay across the Hire row.
+     While the sheet is open the toast goes to the top instead, over the dimmed
+     header. Selector carries the Desk scope so it outranks the MC-977 rule. */
+  body:has(.desk-v1-agentlist-layer):has(.modal-window[data-modal-id="__desk"]) #toast-container {
+    top: calc(10px + env(safe-area-inset-top, 0px)); bottom: auto;
+  }
+}
+
+/* The Agent picker's trigger on the Campaign card: a full-width field showing
+   the chosen agent's figure + name (+ role), caret at the right. */
+.desk-v1-agentpick-btn {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; box-sizing: border-box;
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px;
+  color: var(--text); font-family: inherit; font-size: 13.5px; text-align: left; padding: 6px 10px; cursor: pointer;
+}
+.desk-v1-agentpick-btn:hover:not(:disabled), .desk-v1-agentpick-btn:focus-visible { border-color: var(--accent); outline: none; }
+.desk-v1-agentpick-btn:disabled { opacity: 0.6; cursor: default; }
+.desk-v1-agentpick-btn .av { flex: 0 0 auto; width: 28px; height: 28px; object-fit: contain; }
+.desk-v1-agentpick-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.desk-v1-agentpick-name { font-weight: 600; }
+.desk-v1-agentpick-role { font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.desk-v1-agentpick-empty { color: var(--text-dim); }
+.desk-v1-agentpick-caret { flex: 0 0 auto; color: var(--text-dim); font-size: 11px; }
 
 /* ⓘ popover (§9: explanations behind ⓘ, nothing else on screen for it). */
 .desk-v1-info-btn {

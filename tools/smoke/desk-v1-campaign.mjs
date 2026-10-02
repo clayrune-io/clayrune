@@ -778,7 +778,7 @@ async function runProjectSelect(browser) {
     crumb: document.querySelectorAll('#desk-v1-crumb .desk-v1-projects-picker').length,
     gate: /Setup\s*[—-]\s*Pick a project/.test(document.querySelector('.desk-v1-campaign').innerText),
     step1: !!document.querySelector('[data-setup-title]') || /Setup\s+\d\s+of\s+3/.test(document.querySelector('.desk-v1-campaign').innerText),
-    agentDisabled: (document.querySelector('select[data-how-agent]') || {}).disabled,
+    agentDisabled: (document.querySelector('[data-how-agent]') || {}).disabled,
   }));
   first.selects === 1 && first.value === '' && first.crumb === 0 && !first.gate && !first.step1 && first.agentDisabled === true
     ? ok('R2-18: a project-less draft lands on Brief with ONE empty project select, a disabled agent picker, NO crumb picker and no "Setup — Pick a project" gate')
@@ -878,8 +878,8 @@ async function runProjectSelect(browser) {
     picker: document.querySelectorAll('[data-agent-pick], .desk-v1-posy-agentpick').length,
   }));
   const engAgent = await page.evaluate(() => window.DeskV1Fixtures.projects.find((p) => p.id === 'engulfing_scanner').presence.desk_agent || null);
-  engAgent === null && !noAgent.startDisabled && noAgent.missing.length === 0 && noAgent.picker === 0 && /Pick who plans for this campaign/.test(noAgent.agentLabel) && (await camp((c) => !(c.how && c.how.agent)))
-    ? ok('R2-2g: a project with no agent does not block Start, keeps the campaign-level "Pick who plans for this campaign" label, no per-campaign picker, camp.how.agent unset')
+  engAgent === null && !noAgent.startDisabled && noAgent.missing.length === 0 && noAgent.picker === 0 && /No agent yet, pick one in Campaign/.test(noAgent.agentLabel) && (await camp((c) => !(c.how && c.how.agent)))
+    ? ok('R2-2g: a project with no agent does not block Start, keeps the campaign-level "No agent yet, pick one in Campaign" label, no per-campaign picker, camp.how.agent unset')
     : fail(`R2-2g: missing agent blocks/changes Launch: ${JSON.stringify({ engAgent, noAgent })}`);
   await page.click('[data-map-start-btn]');
   await page.waitForSelector('[data-sheet-confirm]', { timeout: 4000 });

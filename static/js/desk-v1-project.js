@@ -607,24 +607,26 @@
   // names none of its own (`presence.desk_agent`; live, PATCHed through and
   // rolled back if the server refuses it; demo, local only). The roster is
   // every installed agent. ──────────
-  function _agentLabel(p) {
+  // Figure + name (never the avatar ref as text); the unresolved prompt is plain text.
+  function _agentLabelHTML(p) {
     const r = DeskV1Kit.resolveDeskAgent(DeskV1Kit.deskAgentRef({ project: p }));
-    return r.name ? `${r.avatar ? r.avatar + ' ' : ''}${r.name}` : DeskV1Kit.UNRESOLVED_AGENT_LABEL;
+    return r.name ? `${DeskV1Kit.agentFaceHTML(r.avatar, 20)} ${esc(r.name)}` : esc(DeskV1Kit.UNRESOLVED_AGENT_LABEL);
   }
   let _agentList = null; // [{ref, name, avatar}], fetched once
   function _fetchAgentList(cb) {
     if (_agentList) { cb(_agentList); return; }
     fetch('/api/characters').then((r) => r.json()).then((list) => {
-      _agentList = (list || []).map((c) => ({ ref: `${c.scope || 'global'}:${c.name}`, name: c.agent_name || c.display_name || c.name, avatar: c.avatar || '' }));
+      _agentList = (list || []).map((c) => ({ ref: `${c.scope || 'global'}:${c.name}`, name: c.agent_name || c.display_name || c.name, avatar: c.avatar || '', role: DeskV1Kit.agentRole(c.description) }));
       cb(_agentList);
     }).catch(() => { _agentList = []; cb(_agentList); });
   }
   function _bindAgentPicker(el, p) {
     const btn = el.querySelector('[data-project-agent]');
     if (!btn || !p) return;
-    DeskV1Kit.onAgentsReady(() => { if (btn.isConnected) btn.textContent = _agentLabel(p); });
+    DeskV1Kit.onAgentsReady(() => { if (btn.isConnected) btn.innerHTML = _agentLabelHTML(p); });
     _fetchAgentList((list) => {
-      DeskV1Kit.bindAddToTrigger(btn, () => list.map((a) => ({ id: a.ref, label: `${a.avatar ? a.avatar + ' ' : ''}${a.name}` })), (ref) => {
+      btn.setAttribute('aria-haspopup', 'listbox');
+      btn.onclick = () => DeskV1Kit.agentListPopover(btn, list.map((a) => ({ id: a.ref, name: a.name, avatar: a.avatar, role: a.role })), (ref) => {
         const picked = list.find((a) => a.ref === ref);
         p.presence = p.presence || {};
         const prevRef = p.presence.desk_agent;
@@ -637,7 +639,7 @@
           request: () => window.DeskV1Store.api('PATCH', `/api/desk/presence/${encodeURIComponent(p.id)}`, { desk_agent: ref }),
           undoRequest: () => window.DeskV1Store.api('PATCH', `/api/desk/presence/${encodeURIComponent(p.id)}`, { desk_agent: prevRef }),
         });
-      }, { noAppendNew: true });
+      }, { selectedId: DeskV1Kit.deskAgentRef({ project: p }), label: 'Default planner', title: `Who plans for ${p.name}` });
     });
   }
 
@@ -655,7 +657,7 @@
             ${paused
               ? `<button type="button" class="desk-v1-project-pause-btn" data-resume-project-btn>&#9654; Resume project</button>`
               : `<button type="button" class="desk-v1-project-pause-btn" data-pause-project-btn>&#9208; Pause project</button>`}
-            <button type="button" class="desk-v1-project-agent-btn" data-project-agent>${esc(_agentLabel(p))}</button>
+            <button type="button" class="desk-v1-project-agent-btn" data-project-agent>${_agentLabelHTML(p)}</button>
           </div>
         </div>
         <div class="desk-v1-project-nextpost-wrap" id="desk-v1-project-nextpost"></div>

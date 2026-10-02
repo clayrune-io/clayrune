@@ -1292,9 +1292,24 @@
     el.innerHTML = `<div class="desk-v1-camp-posy">${DeskV1Kit.posyBoxHTML({
       inputId: 'desk-v1-camp-posy-input', scopeLabel, suggestion: sugg.suggestion, chips: sugg.chips, agentRef, pickAgent: true,
     })}</div>`;
-    const pickAgentBtn = el.querySelector('[data-pick-agent-btn]');
-    if (pickAgentBtn) pickAgentBtn.onclick = () => {
-      if (typeof window.deskV1PickCampaignAgent === 'function') window.deskV1PickCampaignAgent(camp, project, pickAgentBtn);
+    // The box only SHOWS the agent. With none chosen its name is a link to the
+    // Campaign card on Brief (the one picker): open Brief if another stop is up,
+    // scroll the card into view and put focus on the picker.
+    const gotoAgentBtn = el.querySelector('[data-goto-campaign-agent]');
+    if (gotoAgentBtn) gotoAgentBtn.onclick = () => {
+      const focusCard = () => {
+        const card = document.querySelector('[data-how-frame]');
+        if (!card) return;
+        card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        const pick = card.querySelector('[data-how-agent]');
+        if (pick && !pick.disabled) pick.focus({ preventScroll: true });
+        else { const proj = card.querySelector('[data-setup-project]'); if (proj) proj.focus({ preventScroll: true }); }
+      };
+      if (document.querySelector('[data-how-frame]')) focusCard();
+      else if (typeof window.deskV1GotoCampaignPanel === 'function') {
+        window.deskV1GotoCampaignPanel('how', { campaignId: camp.id });
+        setTimeout(focusCard, 60);
+      }
     };
     // §3.4 INS-01/02/03/04 (before → after, widening confirm, durable rule
     // chips) is T2b's Posy-instruction handler — backward-compatible seam,

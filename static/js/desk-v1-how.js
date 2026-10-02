@@ -94,7 +94,7 @@
             ${projectEditable ? '' : `<div class="desk-v1-rules-hint" data-how-project-ro>Project: ${esc(project ? project.name : 'none')}</div>`}
             <div class="desk-v1-rules-group" data-how-agent-group>
               <div class="desk-v1-rules-group-title">Agent</div>
-              <select class="desk-v1-goal-select" data-how-agent aria-label="Agent" disabled></select>
+              <button type="button" class="desk-v1-agentpick-btn" data-how-agent data-value="" aria-haspopup="listbox" aria-expanded="false" aria-label="Agent" disabled></button>
               <div class="desk-v1-rules-hint" data-how-agent-hint></div>
             </div>
           </div>
@@ -137,52 +137,84 @@
   // "Loading agents…" while the roster is fetched again.
   const _choicesCache = {};
 
-  // R2-18 Agent picker: options = the agents hired on the selected project's
-  // floor (`DeskV1Kit.projectAgentChoices`, never a hardcoded list), selected =
-  // the campaign's own `how.agent`, else the project's desk agent (labelled
-  // "project default"). Last option `+ Create new agent` hands off to Claydo's
-  // existing "Create an agent character" flow — nothing here creates one.
+  // R2-18 Agent picker, the ONE place a campaign's agent is chosen (Ron
+  // 2026-10-02; the right-hand agent box only shows the result). Choices = the
+  // agents hired on the selected project's floor (`DeskV1Kit.projectAgentChoices`,
+  // never a hardcoded list); current = the campaign's own `how.agent`, else the
+  // project's desk agent (tagged "(project default)"). The current agent is
+  // ALWAYS in the list and on the button, even when the roster fetch has not
+  // caught up with a hire — the old <select> went blank in that window. Each row
+  // is figure + name + one-line role; the last two rows are `+ Hire an agent
+  // onto <project>…` and `+ Create new agent` (which hands off to Claydo's
+  // existing "Create an agent character" flow — nothing here creates one).
   // Disabled, with a hint, until a project is picked.
+  function _currentAgent(camp, project) {
+    const def = (project.presence || {}).desk_agent || null;
+    const ref = (camp.how && camp.how.agent) || def;
+    return { ref, def, rec: ref ? DeskV1Kit.resolveDeskAgent(ref) : null };
+  }
+
+  const _CARET = '<span class="desk-v1-agentpick-caret" aria-hidden="true">&#9662;</span>';
+  function _pickerLabel(text) {
+    return `<span class="desk-v1-agentpick-text"><span class="desk-v1-agentpick-name desk-v1-agentpick-empty">${esc(text)}</span></span>${_CARET}`;
+  }
+  function _pickerButtonHTML(cur) {
+    if (!cur.rec || !cur.rec.name) return _pickerLabel('Pick an agent');
+    return `${DeskV1Kit.agentFaceHTML(cur.rec.avatar, 28)}<span class="desk-v1-agentpick-text"><span class="desk-v1-agentpick-name">${esc(cur.rec.name)}${cur.ref === cur.def ? ' (project default)' : ''}</span>${cur.rec.role ? `<span class="desk-v1-agentpick-role">${esc(cur.rec.role)}</span>` : ''}</span>${_CARET}`;
+  }
+
   function _paintAgent(el, camp, project) {
-    const sel = el.querySelector('[data-how-agent]');
+    const btn = el.querySelector('[data-how-agent]');
     const hint = el.querySelector('[data-how-agent-hint]');
-    if (!sel) return;
+    if (!btn) return;
     if (!project) {
-      sel.innerHTML = '<option value="" selected disabled>Pick a project first</option>';
-      sel.disabled = true;
+      btn.innerHTML = _pickerLabel('Pick a project first');
+      btn.disabled = true;
       hint.textContent = 'The agents you can choose are the ones hired on the project.';
       return;
     }
+    const show = (cur) => {
+      btn.dataset.value = (cur.rec && cur.rec.name) ? cur.ref : '';
+      btn.innerHTML = _pickerButtonHTML(cur);
+    };
     const fill = (choices) => {
-      if (!sel.isConnected) return;
-      const def = (project.presence || {}).desk_agent || null;
-      const cur = (camp.how && camp.how.agent) || def;
-      const known = choices.some((c) => c.ref === cur);
-      sel.innerHTML =
-        (known ? '' : '<option value="" selected disabled>Pick an agent</option>') +
-        choices.map((c) => `<option value="${esc(c.ref)}" ${c.ref === cur ? 'selected' : ''}>${esc(c.name)}${c.ref === def ? ' (project default)' : ''}</option>`).join('') +
-        `<option value="__hire__">+ Hire an agent onto ${esc(project.name)}…</option>` +
-        '<option value="__create__">+ Create new agent</option>';
-      sel.disabled = false;
+      if (!btn.isConnected) return;
+      show(_currentAgent(camp, project));
+      btn.disabled = false;
       hint.textContent = choices.length
         ? `These are the agents hired on ${project.name}. To add another, choose “Hire an agent onto ${project.name}…”. Plans and drafts for this campaign only.`
         : `No agents are hired on ${project.name} yet. Choose “Hire an agent onto ${project.name}…”, or create a new one.`;
     };
     if (_choicesCache[project.id]) fill(_choicesCache[project.id]);
-    else { sel.innerHTML = '<option value="" selected disabled>Loading agents…</option>'; sel.disabled = true; hint.textContent = ''; }
+    else {
+      const cur = _currentAgent(camp, project);
+      if (cur.rec && cur.rec.name) show(cur);
+      else { btn.dataset.value = ''; btn.innerHTML = _pickerLabel('Loading agents…'); }
+      btn.disabled = true; hint.textContent = '';
+    }
     DeskV1Kit.projectAgentChoices(project).then((choices) => { _choicesCache[project.id] = choices; fill(choices); });
 
-    sel.onchange = () => {
-      const prevRef = (camp.how && camp.how.agent) || (project.presence || {}).desk_agent || '';
-      if (sel.value === '__create__') { _createAgent(); _paintAgent(el, camp, project); return; }
-      if (sel.value === '__hire__') { sel.value = prevRef; _hireMenu(camp, project, sel); return; }
-      _setCampaignAgent(camp, sel.value || null, (_choicesCache[project.id] || []).find((c) => c.ref === sel.value));
+    btn.onclick = () => {
+      const cur = _currentAgent(camp, project);
+      const list = (_choicesCache[project.id] || []).slice();
+      // A hire's roster row can land after the pick: the chosen agent still shows.
+      if (cur.rec && cur.rec.name && !list.some((c) => c.ref === cur.ref)) list.unshift({ ref: cur.ref, name: cur.rec.name, avatar: cur.rec.avatar, role: cur.rec.role });
+      const items = list.map((c) => ({ id: c.ref, name: c.name, avatar: c.avatar, role: c.role, tag: c.ref === cur.def ? '(project default)' : '' }))
+        .concat([
+          { id: '__hire__', name: `Hire an agent onto ${project.name}…`, action: true },
+          { id: '__create__', name: 'Create new agent', action: true },
+        ]);
+      DeskV1Kit.agentListPopover(btn, items, (id) => {
+        if (id === '__create__') { _createAgent(); return; }
+        if (id === '__hire__') { _hireMenu(camp, project, btn); return; }
+        _setCampaignAgent(camp, id, list.find((c) => c.ref === id));
+      }, { selectedId: cur.ref, label: 'Agent', title: 'Choose the agent for this campaign' });
     };
   }
 
-  // The one write both pickers share (the Brief's Agent select and the campaign
-  // box's "Pick who plans for this campaign ›"): sets the campaign's own
-  // `how.agent`, saved through the same Store write / PATCH, with Undo.
+  // The one write for the campaign's agent (the Agent picker above, and a hire
+  // through "+ Hire an agent…"): sets the campaign's own `how.agent`, saved
+  // through the Store write / PATCH, with Undo.
   function _setCampaignAgent(camp, nextRef, picked) {
     const prevRef = (camp.how && camp.how.agent) || null;
     if (nextRef === prevRef) return;
@@ -198,10 +230,11 @@
   }
 
   // "+ Hire an agent onto <project>…": the installed agents NOT hired on this
-  // project (GET /api/characters?project_id=, minus the project's roster), as a
-  // small menu under `anchor`. Picking one is the user's own click; it hires
-  // through floor.js's roster/hire route (the one drag-to-hire uses) and then
-  // selects the agent for THIS campaign. Nothing here hires on its own.
+  // project (GET /api/characters?project_id=, minus the project's roster), as the
+  // same figure list the Agent picker uses, under `anchor`. Picking one is the
+  // user's own click; it hires through floor.js's roster/hire route (the one
+  // drag-to-hire uses), refreshes the choices and selects the agent for THIS
+  // campaign. Nothing here hires on its own.
   async function _hireMenu(camp, project, anchor) {
     let hired = [], installed = [];
     try {
@@ -211,39 +244,21 @@
     } catch (e) { DeskV1Kit.toast('Could not load the agents: ' + (e && e.message ? e.message : e)); return; }
     const have = new Set(hired.map((c) => c.ref));
     const cands = (Array.isArray(installed) ? installed : [])
-      .map((c) => ({ ref: `${c.scope || 'global'}:${c.name}`, scope: c.scope || 'global', name: c.name, label: c.agent_name || c.display_name || c.name, avatar: c.avatar || '', shadowed: !!c.shadowed_by_project }))
+      .map((c) => ({ ref: `${c.scope || 'global'}:${c.name}`, scope: c.scope || 'global', name: c.name, label: c.agent_name || c.display_name || c.name, avatar: c.avatar || '', role: DeskV1Kit.agentRole(c.description), shadowed: !!c.shadowed_by_project }))
       .filter((c) => !c.shadowed && !have.has(c.ref));
     if (!cands.length) {
       DeskV1Kit.toast(`Every installed agent is already hired on ${project.name}. Create a new one from the Agent list.`);
       return;
     }
-    DeskV1Kit.addToMenu(anchor, cands.map((c) => ({ id: c.ref, label: `${c.avatar ? c.avatar + ' ' : ''}${c.label}` })), async (ref) => {
+    DeskV1Kit.agentListPopover(anchor, cands.map((c) => ({ id: c.ref, name: c.label, avatar: c.avatar, role: c.role })), async (ref) => {
       const c = cands.find((x) => x.ref === ref);
       if (!c || typeof window.floorHireQuiet !== 'function') return;
       const data = await window.floorHireQuiet(c.scope, c.name, project.id, c.label);
       if (!data) return;
       delete _choicesCache[project.id];
       _setCampaignAgent(camp, c.ref, { name: c.label });
-    }, { noAppendNew: true });
+    }, { label: 'Hire an agent', title: `Hire an agent onto ${project.name}` });
   }
-
-  // The campaign box's "Pick who plans for this campaign ›": the same choices
-  // as the Agent select, as a menu under the box's name, plus the hire/create
-  // doors. The pick is `_setCampaignAgent`, the select's own write.
-  async function pickCampaignAgent(camp, project, anchor) {
-    if (!project) return;
-    const choices = await DeskV1Kit.projectAgentChoices(project);
-    _choicesCache[project.id] = choices;
-    const def = (project.presence || {}).desk_agent || null;
-    const items = choices.map((c) => ({ id: c.ref, label: `${c.avatar ? c.avatar + ' ' : ''}${c.name}${c.ref === def ? ' (project default)' : ''}` }))
-      .concat([{ id: '__hire__', label: `+ Hire an agent onto ${project.name}…` }, { id: '__create__', label: '+ Create new agent' }]);
-    DeskV1Kit.addToMenu(anchor, items, (id) => {
-      if (id === '__create__') { _createAgent(); return; }
-      if (id === '__hire__') { _hireMenu(camp, project, anchor); return; }
-      _setCampaignAgent(camp, id, choices.find((c) => c.ref === id));
-    }, { noAppendNew: true });
-  }
-  window.deskV1PickCampaignAgent = pickCampaignAgent;
 
   // Same hand-off conversation.js's `_createNewPersona` uses (that helper is
   // module-private, so the four lines are repeated here): open Claydo in

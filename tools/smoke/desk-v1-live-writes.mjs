@@ -283,7 +283,7 @@ async function planner(browser) {
   await openProject(page);
   const pick = async (label) => {
     await page.click('[data-project-agent]');
-    await page.click(`.desk-v1-addto-menu button:has-text("${label}")`);
+    await page.click(`.desk-v1-agentlist [role="option"]:has-text("${label}")`);
   };
   await pick('Claydo');
   await settle(page, () => /Claydo now plans for Live Project/.test(document.body.innerText));
