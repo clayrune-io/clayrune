@@ -1453,6 +1453,7 @@ function agentPanelHTML(p) {
           result += `<div class="chat-date-divider" data-date="${esc(_lastDividerKey)}"><span class="chat-date-divider-pill">${esc(_formatDateDivider(_dDate))}</span></div>`;
         }
       }
+      const _interimDim = isInterimDimProvider(activeSession && activeSession.provider);
       let tableLines = [];
       let planBlock = '';   // accumulates non-tool lines for plan detection
       let planRawLines = []; // raw text for plan viewer
@@ -1612,6 +1613,12 @@ function agentPanelHTML(p) {
           const div = `<div class="${cls}" dir="auto">${html}${_brainstormBtn}</div>`;
           // Tool lines and user prompts reset plan-block accumulator
           if (cls.includes('agent-line-tool') || cls.includes('agent-line-prompt')) {
+            // Codex preamble: narration that a tool line follows is interim,
+            // rendered subordinate so it isn't read as a second copy of the
+            // final answer (rich-text.js markInterimNarration, live twin).
+            if (_interimDim && cls.includes('agent-line-tool') && planRawLines.some(l => l.trim() && agentLineCls(l) === 'agent-line')) {
+              planBlock = `<div class="agent-interim-wrap">${planBlock}</div>`;
+            }
             result += planBlock + div;
             planBlock = ''; planRawLines = [];
             // A user message re-arms the header for whatever the agent says
@@ -5069,6 +5076,9 @@ function appendAgentLine(sessionId, text, dateHint) {
     div.innerHTML = formatAgentText(text);
   }
   el.appendChild(div);
+  if (cls.includes('agent-line-tool') && isInterimDimProvider((agentStatusCache[sessionId] || {}).provider)) {
+    markInterimNarration(el, div);
+  }
   if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
 
   // Plan detection: [tool: ExitPlanMode] signals end of plan (claude + supports_plan_mode only)

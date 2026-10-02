@@ -5242,6 +5242,20 @@
   .agent-output .draft-block summary::before { content: '\25B8 '; }
   .agent-output .draft-block[open] summary::before { content: '\25BE '; }
   .agent-output .draft-block[open] summary { color: var(--text); }
+  /* Codex preamble: narration followed by a tool line is interim, not the
+     answer. Subordinate but fully readable (never collapsed). Live path marks
+     the elements; the cold-render path wraps them in .agent-interim-wrap, a
+     display:contents box so the flex bubble layout is unchanged. */
+  .agent-output .agent-interim-wrap { display: contents; }
+  .agent-output .agent-line.agent-interim,
+  .agent-output .agent-interim-wrap > .agent-line:not(.agent-line-error):not(.agent-line-coverage),
+  .agent-output .hl-table.agent-interim,
+  .agent-output .hl-table-pre.agent-interim,
+  .agent-output .agent-interim-wrap > .hl-table,
+  .agent-output .agent-interim-wrap > .hl-table-pre {
+    opacity: 0.62;
+    font-size: calc(var(--mc-zoom-font, 12.5px) * 0.88);
+  }
   /* Server-side markers that carry no user-facing content (currently just the
      stop-hook-redo boundary) when a renderer doesn't specially intercept them
      (conversation.js does, ahead of agentLineCls — see collapseIntoDraftBlock). */
