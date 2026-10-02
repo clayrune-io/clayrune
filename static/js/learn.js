@@ -207,7 +207,8 @@ function _bubbleHTML() {
     copy = L.done; ack = true;
     actions = `<button class="lrn-btn" data-lrn="return-floor">Return to Floor</button>
       <button class="lrn-btn" data-lrn="replay">Replay</button>
-      <button class="lrn-btn" data-lrn="hub">Learn</button>`;
+      <button class="lrn-btn" data-lrn="hub">Learn</button>
+      <button class="lrn-btn lrn-foot-leave" data-lrn="leave">Close</button>`;
   } else if (ph === 'paused') {
     copy = S.pauseMsg || 'Paused. Your progress is saved.';
     actions = `<button class="lrn-btn lrn-primary" data-lrn="resume">Resume</button>
