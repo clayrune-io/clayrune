@@ -1491,11 +1491,62 @@ def _compute_code_delta(session):
             'head_commits': ','.join(head_commits), 'added': added, 'deleted': deleted}
 
 
-def _worktree_merge_back_on_end(session):
+def _live_registered_processes():
+    """Snapshot of Clayrune's process registry, live PIDs only — the source
+    `agent_worktree.live_process_refs` checks before deleting a worktree
+    (MC-1029). `proc` handles are dropped: they are not needed and the copy
+    must not outlive the registry lock."""
+    with process_tracker_lock:
+        entries = [{k: v for k, v in e.items() if k != 'proc'}
+                   for e in tracked_processes.values()]
+    return [e for e in entries
+            if isinstance(e.get('pid'), int) and _pid_is_alive(e['pid'])]
+
+
+_agent_worktree.set_live_process_source(_live_registered_processes)
+
+# MC-1029: a worktree whose removal was deferred (a registered process still
+# uses it) is retried on a slow timer rather than only at the next server
+# startup gc. 5-minute spacing, one pending timer per session, 24h cap.
+_WORKTREE_RETRY_SECONDS = 300
+_WORKTREE_RETRY_MAX_ATTEMPTS = 288
+_worktree_retry_pending: set = set()
+_worktree_retry_lock = threading.Lock()
+
+
+def _worktree_schedule_retry(session, attempt):
+    sid = session.get('session_id', '')
+    if attempt >= _WORKTREE_RETRY_MAX_ATTEMPTS:
+        _log(f"[worktree] giving up deferred removal of {sid[:12]} after "
+             f"{attempt} retries; left for the startup gc")
+        return
+    with _worktree_retry_lock:
+        if sid in _worktree_retry_pending:
+            return
+        _worktree_retry_pending.add(sid)
+    t = threading.Timer(_WORKTREE_RETRY_SECONDS, _worktree_retry_removal,
+                        args=(session, attempt + 1))
+    t.daemon = True
+    t.start()
+
+
+def _worktree_retry_removal(session, attempt):
+    sid = session.get('session_id', '')
+    with _worktree_retry_lock:
+        _worktree_retry_pending.discard(sid)
+    live = agent_sessions.get(sid)
+    if live and live.get('status') in ('running', 'idle'):
+        return  # resumed since; its own end re-runs the merge-back/removal
+    _worktree_merge_back_on_end(session, _attempt=attempt)
+
+
+def _worktree_merge_back_on_end(session, _attempt=0):
     """Merge an isolated agent's committed work back into the base branch when
     its session ends. Without this the work sits stranded on the agent branch
     and isolation silently becomes work loss. Best-effort; on conflict the
-    branch is preserved and the user is told."""
+    branch is preserved and the user is told. Removal itself refuses/defers
+    (see `agent_worktree.remove`): a deferral — a registered process still
+    uses the tree — is retried on a timer (`_attempt` counts retries)."""
     if not session or not session.get('_worktree_isolated'):
         return
     sid = session.get('session_id', '')
@@ -1505,16 +1556,23 @@ def _worktree_merge_back_on_end(session):
         if not p:
             return
         status, detail = _agent_worktree.merge_back(p, sid)
-        if status == 'clean':
-            _agent_worktree.remove(p, sid, delete_branch=True)
+        if status in ('clean', 'nothing'):
+            ok, msg = _agent_worktree.remove(p, sid, delete_branch=True)
+            if not ok:
+                if msg.startswith('deferred:'):
+                    if _attempt == 0:
+                        _log_agent_activity(
+                            pid, f'Agent worktree kept ({sid[:8]}): {msg[10:]}; '
+                                 f'retrying every {_WORKTREE_RETRY_SECONDS // 60} min')
+                    _worktree_schedule_retry(session, _attempt)
+                else:
+                    _log(f"[worktree] removal of {sid[:12]} not done: {msg}")
         elif status in ('conflict', 'dirty'):
             # Preserve everything and surface it — never auto-resolve, never
             # delete work.
             _log_agent_activity(
                 pid, f'Agent worktree needs manual merge ({status}): '
                      f'branch {_agent_worktree.branch_name(sid)} — {detail[:120]}')
-        elif status == 'nothing':
-            _agent_worktree.remove(p, sid, delete_branch=True)
     except Exception as e:
         _log(f"[worktree] merge-back failed for {sid[:12]}: {e}")
 

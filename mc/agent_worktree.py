@@ -55,6 +55,9 @@ import mc.project_sync as _sync
 _log_activity = None
 _load_project = None
 _log = None
+# MC-1029: returns the live entries of Clayrune's process registry. Set by
+# agent_routes (which owns the registry); None = no registry, guard is a no-op.
+_live_processes: Callable[[], Iterable[dict]] | None = None
 
 # Runtime dirs that are gitignored but load-bearing for an agent. Linked into
 # every worktree. Order matters only for readability. `data/projects` is nested
@@ -94,6 +97,12 @@ def register(log_activity, load_project, log):
 def _plog(msg: str) -> None:
     if _log:
         _log(msg)
+
+
+def set_live_process_source(fn: Callable[[], Iterable[dict]] | None) -> None:
+    """Inject the live process-registry snapshot used by `live_process_refs`."""
+    global _live_processes
+    _live_processes = fn
 
 
 def _lock(project_id: str) -> threading.Lock:
@@ -531,6 +540,175 @@ def merge_back(project: dict, session_id: str, target_ref: str = ''):
     return 'conflict', msg
 
 
+# ── Teardown guards (MC-1029) ───────────────────────────────────────────────
+#
+# Incident 2026-10-01: a registered background script ran from a worktree's
+# `_scratch/`; the session ended, `remove()` deleted the worktree, and the
+# script plus every output vanished while the process kept waiting. Two
+# separate holes: (1) a LIVE process still depended on the tree; (2) gitignored
+# work (`_scratch/`) is invisible to `has_unmerged_work` (`git status` skips
+# ignored files), so a "clean" worktree can still hold the agent's only copy.
+
+SCRATCH_DIR = '_scratch'
+
+
+def _norm_path(p: str) -> str:
+    return os.path.normpath(p).replace('\\', '/').lower()
+
+
+def _command_lines(pids: list[int]) -> dict[int, str]:
+    """Full command line per live PID without psutil (which is not a declared
+    dependency): /proc on Linux, one PowerShell CIM query on Windows. Absent
+    PIDs are simply missing from the result. Never raises. The registry keeps
+    only an 80-char preview — shorter than a worktree path — so this is the
+    only way to see `python C:\\...\\_scratch\\x.py` in full."""
+    out: dict[int, str] = {}
+    if not pids:
+        return out
+    try:
+        if _IS_WINDOWS:
+            filt = ' or '.join(f'ProcessId={int(p)}' for p in pids)
+            script = (f"Get-CimInstance Win32_Process -Filter '{filt}' | "
+                      "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }")
+            r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
+                               capture_output=True, stdin=subprocess.DEVNULL, text=True,
+                               encoding='utf-8', errors='replace', timeout=20,
+                               creationflags=_sync._POPEN_FLAGS, startupinfo=_sync._STARTUPINFO)
+            for line in r.stdout.splitlines():
+                pid_s, _, cmd = line.partition('\t')
+                if pid_s.strip().isdigit():
+                    out[int(pid_s)] = cmd
+        else:
+            for p in pids:
+                try:
+                    raw = Path(f'/proc/{int(p)}/cmdline').read_bytes()
+                    out[int(p)] = raw.replace(b'\0', b' ').decode('utf-8', 'replace')
+                except OSError:
+                    pass
+    except Exception as e:
+        _plog(f"[worktree] command-line lookup failed: {e}")
+    return out
+
+
+def live_process_refs(project: dict, session_id: str) -> list[dict]:
+    """Registered, still-running processes that depend on this worktree.
+
+    A registry entry counts when its recorded command mentions the worktree
+    path, or when the live process's full command line does (psutil also
+    checks its cwd when installed). The session's own agent/housekeeping
+    process is excluded: it always runs in its worktree and is not "work that
+    outlives the session". Known gap: with no psutil, a process that merely
+    has the worktree as its cwd (`python x.py` run from inside it) and a short
+    preview is not seen — Windows exposes no stdlib cwd lookup.
+    Returns [] when no registry source is wired. Never raises.
+    """
+    wt = worktree_path(project, session_id)
+    if wt is None or _live_processes is None:
+        return []
+    try:
+        entries = list(_live_processes())
+    except Exception as e:
+        _plog(f"[worktree] process registry snapshot failed: {e}")
+        return []
+    needle = re.compile(re.escape(_norm_path(str(wt))) + r'(?![A-Za-z0-9_-])')
+    try:
+        import psutil  # optional; same policy as the guardian's hung-vs-thinking probe
+    except ImportError:
+        psutil = None
+    # Other sessions' agent CLIs run in their own trees, never this one; only
+    # scripts/jobs/terminals are plausible dependents, and skipping the rest
+    # keeps the no-psutil command-line lookup to a handful of PIDs.
+    candidates = [e for e in entries if not (
+        e.get('type') in ('agent', 'housekeeping'))]
+    hits = []
+    unmatched = []
+    for e in candidates:
+        try:
+            if needle.search(_norm_path(e.get('command_preview') or '')):
+                hits.append(e)
+            else:
+                unmatched.append(e)
+        except Exception as ex:
+            _plog(f"[worktree] process ref check failed for entry {e.get('pid')}: {ex}")
+    if psutil is None:
+        cmds = _command_lines([e['pid'] for e in unmatched if isinstance(e.get('pid'), int)])
+    else:
+        cmds = {}
+    for e in unmatched:
+        try:
+            pid = e.get('pid')
+            texts = [cmds[pid]] if pid in cmds else []
+            if psutil is not None and isinstance(pid, int):
+                try:
+                    pr = psutil.Process(pid)
+                    texts.append(pr.cwd())
+                    texts.extend(pr.cmdline())
+                except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                    pass
+            if any(needle.search(_norm_path(t)) for t in texts if t):
+                hits.append(e)
+        except Exception as ex:
+            _plog(f"[worktree] process ref check failed for entry {e.get('pid')}: {ex}")
+    return hits
+
+
+def _scratch_walk(scratch: Path) -> tuple[list[Path], list[str]]:
+    """Regular files under `scratch` (relative paths) plus links skipped. Never
+    descends into or copies through a link — same rule as `sever_links`: a
+    walk that follows a junction would copy (and later delete) the target."""
+    files: list[Path] = []
+    links: list[str] = []
+    stack = [scratch]
+    while stack:
+        cur = stack.pop()
+        with os.scandir(cur) as it:
+            for e in it:
+                if _is_link(e.path):
+                    links.append(e.path)
+                elif e.is_dir(follow_symlinks=False):
+                    stack.append(Path(e.path))
+                elif e.is_file(follow_symlinks=False):
+                    files.append(Path(e.path).relative_to(scratch))
+    return files, links
+
+
+def archive_scratch(wt: Path, session_id: str) -> tuple[bool, str, int]:
+    """Copy `<wt>/_scratch` to `<data>/data/agent_scratch/<session_id>/` (outside
+    every worktree and gitignored) so the tree can be deleted without losing it.
+
+    Returns (ok, dest_or_error, n_files). (True, '', 0) when there is nothing to
+    archive. ok=False means the copy could not be verified — the caller must
+    keep the worktree. Copies are size-verified before returning ok.
+    """
+    scratch = wt / SCRATCH_DIR
+    if _is_link(str(scratch)) or not scratch.is_dir():
+        return True, '', 0
+    try:
+        files, links = _scratch_walk(scratch)
+        if not files:
+            return True, '', 0
+        if _sync._data_root is None:
+            return False, 'no data root configured for the scratch archive', len(files)
+        root = Path(_sync._data_root) / 'data' / 'agent_scratch'
+        dest = root / session_id
+        n = 2
+        while dest.exists():
+            dest = root / f'{session_id}-{n}'
+            n += 1
+        for rel in files:
+            out = dest / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(scratch / rel), str(out))
+            if out.stat().st_size != (scratch / rel).stat().st_size:
+                return False, f'size mismatch copying {rel} to {dest}', len(files)
+        if links:
+            _plog(f"[worktree] scratch archive for {session_id[:12]} skipped "
+                  f"{len(links)} link(s): {', '.join(links[:3])}")
+        return True, str(dest), len(files)
+    except Exception as e:
+        return False, f'scratch archive failed: {e}', 0
+
+
 def remove(project: dict, session_id: str, delete_branch: bool = False,
            force: bool = False):
     """Tear down an agent worktree. Unlinks runtime junctions FIRST so the
@@ -546,7 +724,27 @@ def remove(project: dict, session_id: str, delete_branch: bool = False,
         return True, 'nothing to remove'
     if not force and has_unmerged_work(project, session_id):
         return False, 'refused: worktree has unmerged or uncommitted work'
+    if not force:
+        refs = live_process_refs(project, session_id)
+        if refs:
+            pids = ', '.join(str(r.get('pid')) for r in refs[:5])
+            _plog(f"[worktree] remove {session_id[:12]} deferred: {len(refs)} "
+                  f"registered process(es) still reference the worktree (pid {pids})")
+            return False, (f'deferred: {len(refs)} registered process(es) still use '
+                           f'the worktree (pid {pids})')
     with _lock(pid):
+        # Gitignored `_scratch/` is invisible to has_unmerged_work; archive it
+        # outside the tree first. Failure keeps the worktree (force overrides).
+        ok, dest, n_scratch = archive_scratch(wt, session_id)
+        if not ok and not force:
+            _plog(f"[worktree] remove {session_id[:12]} refused: {dest}")
+            return False, f'refused: could not archive {SCRATCH_DIR}: {dest}'
+        if n_scratch and ok:
+            _plog(f"[worktree] archived {n_scratch} {SCRATCH_DIR} file(s) of "
+                  f"{session_id[:12]} to {dest}")
+            if _log_activity:
+                _log_activity(pid, f'Agent worktree {session_id[:8]}: {n_scratch} '
+                                   f'{SCRATCH_DIR} file(s) archived to {dest}')
         if not prepare_delete(project, wt):  # MUST precede any delete
             _plog(f"[worktree] remove {session_id[:12]} refused: a link under "
                   f"the worktree could not be severed")
@@ -678,7 +876,9 @@ def gc_stale(project: dict, live_session_ids, merge_first: bool = True,
         else:
             out['preserved'].append(sid)
             _plog(f"[worktree] gc PRESERVED {sid[:12]} — {msg}")
-            if use_cache:
+            # A deferral is transient (a process will exit); caching its
+            # fingerprint would pin the verdict until HEAD/dirty changed.
+            if use_cache and not msg.startswith('deferred:'):
                 wt = worktree_path(project, sid)
                 fp = _fingerprint(wt) if wt is not None and wt.exists() else None
                 if fp is not None:
