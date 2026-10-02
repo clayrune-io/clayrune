@@ -33,6 +33,12 @@ rules hold:
   * **Vendor HTTP is one function**, `_http_request`. Tests replace it; no test
     in the repo reaches a vendor.
 
+Two Higgsfield routes (Ron 2026-10-02): `higgsfield_mcp` (default, "Sign in with
+Higgsfield": MCP at mcp.higgsfield.ai, the user's plan CREDITS, token kept fresh by
+`mc/desk_oauth.py`) and `higgsfield` (Advanced, the developer API key, USD). A credits
+engine is capped by its per-job limit IN CREDITS only: the campaign budget is a USD
+number and has no exchange rate to credits, so it is not applied to credit jobs.
+
 Credentials are never sent to a host other than the vendor's own: redirects
 are not followed automatically (`urllib` would forward a custom header such as
 `x-goog-api-key` to wherever a 3xx points) and the presigned Higgsfield upload
@@ -64,6 +70,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from mc import desk as _desk
+from mc import desk_oauth as _oauth
 from mc import desk_pieces as _pieces
 from mc import secrets_store
 from mc.core import _atomic_write_text, _log, now_iso
@@ -79,6 +86,7 @@ STORE_VERSION = 1
 
 # Vault names (Dave, 2026-10-01). `google` is a browser login, not an API key.
 VAULT_HIGGSFIELD = 'higgsfield'
+VAULT_HIGGSFIELD_MCP = 'oauth.higgsfield'     # the sign-in record desk_oauth keeps; never read here directly
 VAULT_GEMINI = 'gemini-api'
 VAULT_OPENAI = 'openai-api'
 
@@ -170,6 +178,13 @@ class EngineDescriptor:
     # hint only, never a value; `username_label` None = the engine has no
     # username half and the form hides that field.
     credential: dict = field(default_factory=dict)
+    # "usd" for a priced-in-dollars engine; "credits" for a plan-credit engine (the
+    # per-job limit and the estimate are then in credits, see check_caps).
+    currency: str = 'usd'
+    # `group` lets Connections show two routes to one service as one card; `advanced`
+    # marks the route a non-expert should not start with.
+    group: str | None = None
+    advanced: bool = False
 
     def public(self) -> dict:
         d = asdict(self)
@@ -251,6 +266,19 @@ def _higgs_model(path: str, kind: str, label: str, *, durations=None, ratios=Non
         vendor={'adapter': 'higgsfield'})
 
 
+def _higgs_mcp_model(model_id: str, kind: str, label: str, *, count_max: int = 1) -> ModelDescriptor:
+    # Prices are NOT data here: the engine quotes credits per call (get_cost), so
+    # `price` only says where the number comes from. Ratios/durations are left open
+    # on purpose: the server accepts or adjusts them and reports it in `adjustments`.
+    return ModelDescriptor(
+        model_id=model_id, kind=kind, label=label,
+        inputs={'text': True, 'first_frame': False, 'last_frame': False,
+                'reference_images_max': 0, 'reference_kinds': []},
+        durations_sec='any' if kind == 'video' else [], count_max=count_max,
+        price={'unit': 'credit', 'usd': {}, 'read': '2026-10-02'},
+        vendor={'adapter': 'higgsfield_mcp'})
+
+
 def _credential(vault_entry: str, secret_label: str, hint: str, url: str, *,
                 username_label: str | None = None, username_required: bool = False) -> dict:
     # `entry_type` locks the Secrets form's type: a two-part credential is an
@@ -266,7 +294,21 @@ def _credential(vault_entry: str, secret_label: str, hint: str, url: str, *,
 # (Higgsfield) read the username half through `secrets_store.get_username`.
 _ENGINES: list[EngineDescriptor] = [
     EngineDescriptor(
-        id='higgsfield', label='Higgsfield',
+        id='higgsfield_mcp', label='Higgsfield (sign in)',
+        auth={'kind': 'oauth', 'vault_entry': VAULT_HIGGSFIELD_MCP, 'service': 'higgsfield'},
+        job_model='poll', output_ttl_hours=4, estimate='endpoint', prices_read='2026-10-02',
+        models=[
+            _higgs_mcp_model('gpt_image_2_5', 'image', 'GPT Image 2.5 (image)', count_max=4),
+            _higgs_mcp_model('soul_2', 'image', 'Soul 2 (portraits, fashion)', count_max=4),
+            _higgs_mcp_model('nano_banana', 'image', 'Nano Banana (image)', count_max=4),
+            _higgs_mcp_model('z_image', 'image', 'Z Image (fast, low cost)', count_max=4),
+            _higgs_mcp_model('seedance_2_5', 'video', 'Seedance 2.5 (video)'),
+            _higgs_mcp_model('kling3_0', 'video', 'Kling 3.0 (video)'),
+        ],
+        credential={'vault_entry': VAULT_HIGGSFIELD_MCP, 'kind': 'signin', 'url': 'https://higgsfield.ai'},
+        currency='credits', group='higgsfield'),
+    EngineDescriptor(
+        id='higgsfield', label='Higgsfield (API key)',
         auth={'kind': 'key_id_secret', 'vault_entry': VAULT_HIGGSFIELD},
         job_model='poll', output_ttl_hours=168, estimate='endpoint', prices_read='2026-09-30',
         models=[
@@ -287,7 +329,8 @@ _ENGINES: list[EngineDescriptor] = [
         credential=_credential(
             VAULT_HIGGSFIELD, 'API key secret',
             'Create an API key in the Higgsfield console; it shows a key ID and a key secret.',
-            'https://console.higgsfield.ai', username_label='API key ID', username_required=True)),
+            'https://console.higgsfield.ai', username_label='API key ID', username_required=True),
+        group='higgsfield', advanced=True),
     EngineDescriptor(
         id='google', label='Google (Veo + Gemini image)',
         auth={'kind': 'api_key', 'vault_entry': VAULT_GEMINI},
@@ -469,6 +512,12 @@ def connection(engine_id: str, project_id: str | None = None) -> dict:
     `exists` tells the Connect button whether to open the form as Add or Edit."""
     eng = ENGINES[engine_id]
     name = eng.auth['vault_entry']
+    if eng.auth['kind'] == 'oauth':
+        st = _oauth.status(eng.auth['service'])
+        return {'ready': st['state'] == 'connected', 'vault_entry': name,
+                'exists': st['state'] != 'not_connected', 'state': st['state'],
+                'reason': None if st['state'] == 'connected' else (
+                    st['reason'] or f'{eng.label} is not signed in yet')}
     exists = False
     try:
         visible = {s['name']: s for s in secrets_store.list_secrets(project_id)}
@@ -495,6 +544,13 @@ def _creds(engine_id: str, project_id: str | None, unattended: bool) -> _Creds:
     status = connection(engine_id, project_id)
     if not status['ready']:
         raise NotConnected(engine_id, status['reason'], name)
+    if eng.auth['kind'] == 'oauth':
+        try:
+            token = _oauth.access_token(eng.auth['service'], consumer='desk_engines',
+                                        project_id=project_id, unattended=unattended)
+        except _oauth.OAuthError as e:
+            raise NotConnected(engine_id, str(e), name) from e
+        return _Creds(secret=token)
     try:
         secret = secrets_store.get_secret_value(
             name, consumer='desk_engines', project_id=project_id, unattended=unattended)
@@ -603,9 +659,15 @@ class Estimate:
     read: str
     approximate: bool = False
     note: str | None = None
+    credits: float | None = None        # a credits engine: the quote; `usd` is then 0.0
+    adjustments: dict | None = None     # what the engine changed in the request (shown, never hidden)
 
     def public(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        for k in ('credits', 'adjustments'):     # keep the USD engines' shape exactly as it was
+            if d.get(k) is None:
+                d.pop(k, None)
+        return d
 
 
 # PROXY, not a measurement: OpenAI publishes no per-image price for
@@ -740,6 +802,177 @@ class HiggsfieldAdapter:
 
     def fetch(self, model, item, creds) -> list:
         return [_download(u) for u in item['urls']]
+
+
+_HIGGS_MCP_URL = 'https://mcp.higgsfield.ai/mcp'
+_MCP_PROTOCOL = '2025-11-25'
+_MCP_TIMEOUT = 60               # job_status sync:true holds up to ~25 s server-side
+_MCP_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _mcp_post(token: str, body: dict, *, expect_id: int | None, timeout: float = _MCP_TIMEOUT) -> dict | None:
+    """One JSON-RPC POST to the Higgsfield MCP endpoint -> the `result` of the
+    response with id `expect_id` (None for a notification). The server answers
+    in an SSE stream (or plain JSON); the stream is read only until our id
+    arrives, so a server that keeps it open cannot hang us. The one function
+    the MCP tests replace. Transport failures raise a NON-definitive EngineError:
+    a call that timed out may still have been acted on."""
+    headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/json, text/event-stream',
+               'Content-Type': 'application/json', 'MCP-Protocol-Version': _MCP_PROTOCOL}
+    req = urllib.request.Request(_HIGGS_MCP_URL, data=json.dumps(body).encode('utf-8'),
+                                 method='POST', headers=headers)
+    try:
+        resp = _OPENER.open(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        resp = e
+    except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError, OSError) as e:
+        raise EngineError('engine', f'no usable response from Higgsfield: {_safe(e)}', definitive=False) from e
+    try:
+        status = int(getattr(resp, 'status', None) or resp.getcode() or 0)
+        if status >= 400:
+            if status == 401:
+                raise EngineError('auth', 'Higgsfield rejected the saved sign-in (HTTP 401); sign in again on Connections')
+            raise _classify_http(status, resp.read(64 * 1024))
+        if expect_id is None:
+            return None
+        ctype = (resp.headers.get('content-type') or '').split(';')[0].strip()
+        try:
+            if ctype == 'text/event-stream':
+                data, seen = [], 0
+                for raw in resp:
+                    seen += len(raw)
+                    if seen > _MCP_MAX_BYTES:
+                        raise ValueError('response too large')
+                    line = raw.decode('utf-8', errors='replace').rstrip('\r\n')
+                    if line.startswith('data:'):
+                        data.append(line[5:].lstrip())
+                    elif line == '' and data:
+                        hit = _mcp_match(data, expect_id)
+                        data = []
+                        if hit is not None:
+                            return hit
+                hit = _mcp_match(data, expect_id) if data else None
+            else:
+                hit = _mcp_match([resp.read(_MCP_MAX_BYTES + 1).decode('utf-8', errors='replace')], expect_id)
+        except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError, OSError, ValueError) as e:
+            raise EngineError('engine', f'no usable response from Higgsfield: {_safe(e)}', definitive=False) from e
+        if hit is None:
+            raise EngineError('engine', 'Higgsfield answered with no result for the request', definitive=False)
+        return hit
+    finally:
+        resp.close()
+
+
+def _mcp_match(chunks: list, rid: int) -> dict | None:
+    try:
+        msg = json.loads('\n'.join(chunks))
+    except ValueError:
+        return None
+    for m in (msg if isinstance(msg, list) else [msg]):
+        if isinstance(m, dict) and m.get('id') == rid and ('result' in m or 'error' in m):
+            if 'error' in m:
+                err = m['error'] if isinstance(m['error'], dict) else {}
+                raise EngineError('invalid_input', f"Higgsfield refused the call: {_safe(err.get('message') or m['error'])}")
+            return m['result'] if isinstance(m['result'], dict) else {}
+    return None
+
+
+def _mcp_text(res: dict) -> str:
+    return '\n'.join(c.get('text', '') for c in (res.get('content') or [])
+                     if isinstance(c, dict) and c.get('type') == 'text')
+
+
+def _mcp_data(res: dict) -> dict:
+    sc = res.get('structuredContent', res.get('structured'))
+    if isinstance(sc, dict):
+        return sc
+    try:
+        j = json.loads(_mcp_text(res))
+    except ValueError:
+        return {}
+    return j if isinstance(j, dict) else {}
+
+
+class HiggsfieldMcpAdapter:
+    """Higgsfield over MCP, on the user's own plan credits. Same four methods as
+    every adapter. Proven against the live server 2026-10-02 (spike section 8):
+    `get_cost: true` quotes credits and submits nothing, `use_unlim` is pinned
+    false so only credits are ever spent, a job is polled with
+    `job_status {jobId, sync: true}`, and the result URL is signed for ~4 hours."""
+
+    _TOOLS = {'image': 'generate_image', 'video': 'generate_video'}
+
+    def _call(self, creds: _Creds, tool: str, arguments: dict) -> dict:
+        _mcp_post(creds.secret, {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
+            'protocolVersion': _MCP_PROTOCOL, 'capabilities': {},
+            'clientInfo': {'name': 'Clayrune', 'version': '1'}}}, expect_id=1)
+        _mcp_post(creds.secret, {'jsonrpc': '2.0', 'method': 'notifications/initialized'}, expect_id=None)
+        res = _mcp_post(creds.secret, {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+                                       'params': {'name': tool, 'arguments': arguments}}, expect_id=2)
+        res = res or {}
+        if res.get('isError'):
+            raise _classify_http(400, _mcp_text(res).encode('utf-8'))
+        return res
+
+    @staticmethod
+    def _params(model: ModelDescriptor, req: GenerationRequest, **extra) -> dict:
+        p: dict = {'model': model.model_id, 'prompt': req.prompt, 'count': req.count,
+                   'aspect_ratio': req.aspect_ratio, 'use_unlim': False}     # credits only, never the free allowance
+        if req.kind == 'video' and req.duration_sec:
+            p['duration'] = req.duration_sec
+        p.update(extra)
+        return {'params': p}
+
+    def estimate(self, model, req, creds) -> Estimate:
+        out = _mcp_data(self._call(creds, self._TOOLS[model.kind], self._params(model, req, get_cost=True)))
+        cost = out.get('cost')
+        val = (cost.get('credits_exact', cost.get('credits')) if isinstance(cost, dict) else None)
+        if isinstance(val, bool) or not isinstance(val, (int, float)) or val != val or val < 0:
+            raise EngineError('engine', 'Higgsfield returned no usable credit quote, so nothing was sent')
+        adj = out.get('adjustments') if isinstance(out.get('adjustments'), dict) and out.get('adjustments') else None
+        return Estimate(usd=0.0, credits=float(val), basis='engine', read=now_iso(), adjustments=adj)
+
+    def submit(self, model, req, creds) -> dict:
+        out = _mcp_data(self._call(creds, self._TOOLS[model.kind], self._params(model, req)))
+        ids = [r.get('id') for r in (out.get('results') or []) if isinstance(r, dict)]
+        if not ids or not all(isinstance(i, str) and _REF_OK.match(i) for i in ids):
+            raise EngineError('engine', 'Higgsfield accepted the job but returned no job id', definitive=False)
+        adj = out.get('adjustments') if isinstance(out.get('adjustments'), dict) and out.get('adjustments') else None
+        return {'ref': {'job_ids': ids}, 'adjustments': adj}
+
+    def poll(self, model, ref, creds) -> dict:
+        ids = ref.get('job_ids') or []
+        if not ids or not all(isinstance(i, str) and _REF_OK.match(i) for i in ids):
+            raise EngineError('engine', 'stored job id is malformed')
+        urls, state = [], 'ready'
+        for jid in ids:
+            gen = _mcp_data(self._call(creds, 'job_status', {'jobId': jid, 'sync': True})).get('generation')
+            gen = gen if isinstance(gen, dict) else {}
+            st = str(gen.get('status') or '').lower()
+            if st in ('failed', 'error'):
+                return {'state': 'failed', 'kind': 'engine', 'free': False,
+                        'message': _safe(gen.get('error') or 'Higgsfield reported a failure')}
+            if st == 'nsfw':
+                return {'state': 'failed', 'kind': 'moderation', 'free': True,
+                        'message': 'the engine moderation filter rejected the content'}
+            if st in ('canceled', 'cancelled'):
+                return {'state': 'failed', 'kind': 'canceled', 'message': 'the job was canceled', 'free': True}
+            if st in ('completed', 'complete', 'succeeded'):
+                url = (gen.get('results') or {}).get('rawUrl') if isinstance(gen.get('results'), dict) else None
+                if not isinstance(url, str) or not url:
+                    return {'state': 'failed', 'kind': 'engine', 'free': False,
+                            'message': 'completed with no output URL'}
+                urls.append(url)
+            elif st in ('queued', 'pending'):
+                state = 'queued' if state == 'ready' else state
+            else:
+                state = 'rendering'
+        if state == 'ready':
+            return {'state': 'ready', 'urls': urls}
+        return {'state': state}
+
+    def fetch(self, model, item, creds) -> list:
+        return [_download(u) for u in item['urls']]     # signed CDN links: no Higgsfield token is sent
 
 
 class VeoAdapter:
@@ -939,6 +1172,7 @@ def _multipart(fields: dict, files: list) -> tuple[bytes, str]:
 
 ADAPTERS: dict[str, Any] = {
     'higgsfield': HiggsfieldAdapter(),
+    'higgsfield_mcp': HiggsfieldMcpAdapter(),
     'veo': VeoAdapter(),
     'gemini_image': GeminiImageAdapter(),
     'openai_image': OpenAIImageAdapter(),
@@ -981,6 +1215,16 @@ def _write_store(store: dict) -> None:
 
 def _public_job(job: dict) -> dict:
     """The Job shape of the contract. `engine_ref` stays server-side."""
+    out = _public_job_usd(job)
+    if job.get('cost_credits') is not None:          # a credits engine: say so in the unit it spends
+        out['cost_credits'] = job['cost_credits']
+        out['currency'] = 'credits'
+    if job.get('adjustments'):
+        out['adjustments'] = job['adjustments']
+    return out
+
+
+def _public_job_usd(job: dict) -> dict:
     return {
         'job_id': job['job_id'], 'status': job['status'], 'failure': job.get('failure'),
         'progress': None, 'outputs': job.get('outputs') or [], 'cost_usd': job.get('cost_usd', 0.0),
@@ -1036,6 +1280,15 @@ def budget_state(campaign_id: str, *, _store: dict | None = None) -> dict:
 MAX_JOB_LIMIT_USD = 10_000.0
 
 
+def _is_credits(engine_id: str) -> bool:
+    return ENGINES[engine_id].currency == 'credits'
+
+
+def _amount(est: 'Estimate', engine_id: str) -> float:
+    """What a cap compares against: credits for a credits engine, else USD."""
+    return float(est.credits or 0.0) if _is_credits(engine_id) else est.usd
+
+
 def get_limits() -> dict:
     """`{engine_id: usd}` for every engine that has a per-job limit set."""
     with _lock:
@@ -1043,16 +1296,18 @@ def get_limits() -> dict:
 
 
 def set_limit(engine_id: str, usd: Any) -> dict:
-    """Set (a positive number) or clear (None) one engine's per-job limit.
-    Returns `{engine_id, job_limit_usd}`. The route that reaches this is
-    human-only: raising a limit loosens a spending gate."""
+    """Set (a positive number) or clear (None) one engine's per-job limit, in
+    the engine's own unit (USD, or credits for a credits engine). Returns
+    `{engine_id, job_limit_usd}` or `{engine_id, job_limit_credits}`. The route
+    that reaches this is human-only: raising a limit loosens a spending gate."""
     if engine_id not in ENGINES:
         raise Refused('unknown_engine', f'unknown engine {engine_id!r}', 404)
+    unit = 'credits' if _is_credits(engine_id) else 'USD'
     if usd is not None:
         if isinstance(usd, bool) or not isinstance(usd, (int, float)) or usd != usd \
                 or not 0 < usd <= MAX_JOB_LIMIT_USD:
             raise Refused('invalid_input',
-                          f'the limit must be a number above 0 and at most {MAX_JOB_LIMIT_USD:,.0f} USD (or null to clear it)', 400)
+                          f'the limit must be a number above 0 and at most {MAX_JOB_LIMIT_USD:,.0f} {unit} (or null to clear it)', 400)
         usd = round(float(usd), 6)
     with _lock:
         store = _read_store()
@@ -1061,7 +1316,7 @@ def set_limit(engine_id: str, usd: Any) -> dict:
         else:
             store['limits'][engine_id] = usd
         _write_store(store)
-    return {'engine_id': engine_id, 'job_limit_usd': usd}
+    return {'engine_id': engine_id, ('job_limit_credits' if unit == 'credits' else 'job_limit_usd'): usd}
 
 
 def check_caps(usd: float, engine_id: str, campaign_id: str | None, store: dict, *, estimate: dict | None = None,
@@ -1069,6 +1324,22 @@ def check_caps(usd: float, engine_id: str, campaign_id: str | None, store: dict,
     """Raise `Refused` when `usd` (the estimate for ONE Render click) is over a
     cap; otherwise return `{limit, budget}` for display. `enforce_limit=False`
     is for the child jobs of a render whose total was already checked."""
+    if _is_credits(engine_id):
+        # Credits: the per-job limit is the ONLY cap. The campaign budget is USD
+        # and there is no exchange rate to credits, so it is not applied here;
+        # a credits engine therefore always needs a limit (no campaign fallback).
+        climit = store['limits'].get(engine_id) if enforce_limit else None
+        if enforce_limit:
+            label = ENGINES[engine_id].label
+            if climit is None:
+                raise Refused('no_job_limit',
+                              f"no per-job limit is set for {label}: set one in credits on Connections first", 409)
+            if usd > climit + 1e-9:
+                raise Refused('over_job_limit',
+                              f"estimate {usd:g} credits is over the {climit:g} credit per-job limit for "
+                              f"{label} (change it on Connections)", 409,
+                              job_limit_credits=climit, **({"estimate": estimate} if estimate else {}))
+        return {'limit': climit, 'budget': None}
     limit = store['limits'].get(engine_id) if enforce_limit else None
     if enforce_limit:
         if limit is None and not campaign_id:
@@ -1165,7 +1436,9 @@ def list_engines(project_id: str | None = None) -> list[dict]:
     for e in _ENGINES:
         d = e.public()
         d['connected'] = connection(e.id, project_id)
-        d['job_limit_usd'] = limits.get(e.id)
+        d['job_limit_usd'] = None if e.currency == 'credits' else limits.get(e.id)
+        if e.currency == 'credits':
+            d['job_limit_credits'] = limits.get(e.id)
         out.append(d)
     return out
 
@@ -1185,7 +1458,7 @@ def estimate(d: dict, *, unattended: bool = False) -> dict:
         raise
     except EngineError as e:
         raise Refused('estimate_failed', str(e), 502, failure=e.kind)
-    return with_caps({'estimate': est.public()}, est.usd, req.engine_id, campaign_id)
+    return with_caps({'estimate': est.public()}, _amount(est, req.engine_id), req.engine_id, campaign_id)
 
 
 def with_caps(out: dict, usd: float, engine_id: str, campaign_id: str | None) -> dict:
@@ -1194,9 +1467,14 @@ def with_caps(out: dict, usd: float, engine_id: str, campaign_id: str | None) ->
     would be refused (null when it would go through)."""
     with _lock:
         store = _read_store()
-    out['job_limit_usd'] = store['limits'].get(engine_id)
+    if _is_credits(engine_id):
+        out['job_limit_usd'] = None
+        out['job_limit_credits'] = store['limits'].get(engine_id)
+        out['currency'] = 'credits'
+    else:
+        out['job_limit_usd'] = store['limits'].get(engine_id)
     out['refusal'] = None
-    if campaign_id:
+    if campaign_id and not _is_credits(engine_id):
         b = budget_state(campaign_id, _store=store)
         out['budget'] = b
         out['fits'] = usd <= b['remaining'] + 1e-9
@@ -1213,6 +1491,8 @@ def _new_job(req: GenerationRequest, camp: dict | None, est: Estimate, project_i
         'job_id': f'gen-{uuid.uuid4().hex[:10]}', 'engine_id': req.engine_id, 'model_id': req.model_id,
         'kind': req.kind, 'status': 'queued', 'failure': None, 'outputs': [],
         'cost_usd': round(est.usd, 6), 'estimate': est.public(),
+        **({'cost_credits': round(est.credits, 6), 'adjustments': est.adjustments}
+           if est.credits is not None else {}),
         'campaign_id': camp['id'] if camp else None,
         'project_id': camp.get('project_id') if camp else project_id,
         'desk': dict(req.desk), 'request': asdict(req), 'engine_ref': None,
@@ -1226,6 +1506,8 @@ def _fail(job: dict, kind: str, message: str, *, free: bool) -> None:
     job['updated_at'] = now_iso()
     if free:
         job['cost_usd'] = 0.0
+        if job.get('cost_credits') is not None:
+            job['cost_credits'] = 0.0
 
 
 def _render_scope(d: dict) -> tuple[str | None, dict | None, str | None]:
@@ -1276,7 +1558,7 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False) -> t
         store = _read_store()
         if idem in store['idem']:
             return _public_job(store['jobs'][store['idem'][idem]]), True
-        check_caps(est.usd, req.engine_id, campaign_id, store, estimate=est.public(),
+        check_caps(_amount(est, req.engine_id), req.engine_id, campaign_id, store, estimate=est.public(),
                    enforce_limit=not _skip_limit)
         job = _new_job(req, camp, est, project_id)
         store['jobs'][job['job_id']] = job
@@ -1339,6 +1621,8 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False) -> t
     def accepted(j):
         j['engine_ref'] = res['ref']
         j['status'] = 'queued'
+        if res.get('adjustments'):
+            j['adjustments'] = res['adjustments']     # what the engine changed, shown to the user
     return _public_job(settle(accepted)), False
 
 
@@ -1667,7 +1951,7 @@ def _plan_render(d: dict, *, unattended: bool) -> dict:
     adapter = _adapter(model)
     if eng.estimate == 'endpoint':
         creds = _creds(engine_id, project_id, unattended)
-    problems, rows, total, approximate = [], [], 0.0, False
+    problems, rows, total, total_amount, approximate = [], [], 0.0, 0.0, False
     root = Path(UPLOADS_ROOT).resolve() if UPLOADS_ROOT is not None else None
     for n, sc in enumerate(scenes, 1):
         where = f'scene {n} ({sc.get("label") or "untitled"})'
@@ -1700,25 +1984,36 @@ def _plan_render(d: dict, *, unattended: bool) -> dict:
         except EngineError as e:
             raise Refused('estimate_failed', f'could not get a price for {where}, so nothing was sent: {e}', 502, failure=e.kind)
         total += est.usd
+        total_amount += _amount(est, engine_id)
         approximate = approximate or est.approximate
         rows.append({'scene': sc, 'req': req, 'est': est, 'requested_sec': sc.get('duration_sec')})
     if problems:
         raise Refused('invalid_input', '; '.join(problems), 400, problems=problems)
     return {'kind': kind, 'owner_id': oid, 'campaign_id': campaign_id, 'project_id': project_id,
             'engine_id': engine_id, 'model_id': model_id, 'aspect_ratio': ratio, 'generated_ratio': gen_ratio,
-            'crop_square': crop, 'rows': rows, 'total_usd': round(total, 6), 'approximate': approximate,
+            'crop_square': crop, 'rows': rows, 'total_usd': round(total, 6), 'total_amount': round(total_amount, 6),
+            'currency': eng.currency, 'approximate': approximate,
             'needs_ffmpeg': crop or len(rows) > 1}
+
+
+def _plan_estimate(plan: dict) -> dict:
+    est = {'usd': plan['total_usd'], 'approximate': plan['approximate']}
+    if plan['currency'] == 'credits':
+        est['credits'] = plan['total_amount']
+    return est
 
 
 def _plan_public(plan: dict) -> dict:
     return {
         'clips': len(plan['rows']), 'total_usd': plan['total_usd'], 'approximate': plan['approximate'],
+        **({'total_credits': plan['total_amount'], 'currency': 'credits'} if plan['currency'] == 'credits' else {}),
         'aspect_ratio': plan['aspect_ratio'], 'generated_ratio': plan['generated_ratio'], 'crop': plan['crop_square'],
         'needs_ffmpeg': plan['needs_ffmpeg'],
         'ffmpeg_available': (_ffmpeg() is not None) if plan['needs_ffmpeg'] else None,
         'scenes': [{'scene_id': r['scene']['id'], 'label': r['scene'].get('label') or '',
                     'requested_sec': r['requested_sec'], 'duration_sec': r['req'].duration_sec,
-                    'has_picture': bool(r['scene'].get('picture')), 'usd': round(r['est'].usd, 6)}
+                    'has_picture': bool(r['scene'].get('picture')), 'usd': round(r['est'].usd, 6),
+                    **({'credits': r['est'].credits} if r['est'].credits is not None else {})}
                    for r in plan['rows']],
     }
 
@@ -1728,8 +2023,8 @@ def estimate_render(d: dict, *, unattended: bool = False) -> dict:
     BEFORE the user presses Render. Free: a vendor estimate call costs nothing,
     so no passcode."""
     plan = _plan_render(d, unattended=unattended)
-    out = {'plan': _plan_public(plan), 'estimate': {'usd': plan['total_usd'], 'approximate': plan['approximate']}}
-    return with_caps(out, plan['total_usd'], plan['engine_id'], plan['campaign_id'])
+    out = {'plan': _plan_public(plan), 'estimate': _plan_estimate(plan)}
+    return with_caps(out, plan['total_amount'], plan['engine_id'], plan['campaign_id'])
 
 
 def _public_render(r: dict, jobs: dict) -> dict:
@@ -1744,6 +2039,8 @@ def _public_render(r: dict, jobs: dict) -> dict:
         'progress': {'ready': done, 'total': r.get('clip_count', len(kids))}, 'scenes': kids,
         'outputs': r.get('outputs') or [], 'clips': r.get('clips') or [],
         'cost_usd': round(sum(_num((jobs.get(c['job_id']) or {}).get('cost_usd')) for c in r.get('children') or []), 6),
+        **({'cost_credits': round(sum(_num((jobs.get(c['job_id']) or {}).get('cost_credits')) for c in r.get('children') or []), 6),
+            'currency': 'credits'} if (r.get('estimate') or {}).get('credits') is not None else {}),
         'estimate': r.get('estimate'), 'created_at': r.get('created_at'), 'updated_at': r.get('updated_at'),
     }
 
@@ -1792,8 +2089,8 @@ def render(d: dict, *, unattended: bool = False) -> tuple[dict, bool]:
         store = _read_store()
         if ridem in store['render_idem']:
             return _public_render(store['renders'][store['render_idem'][ridem]], store['jobs']), True
-        check_caps(plan['total_usd'], plan['engine_id'], campaign_id, store,
-                   estimate={'usd': plan['total_usd'], 'approximate': plan['approximate']})
+        check_caps(plan['total_amount'], plan['engine_id'], campaign_id, store,
+                   estimate=_plan_estimate(plan))
         now = now_iso()
         rec = {
             'render_id': f'rnd-{uuid.uuid4().hex[:10]}', 'status': 'queued', 'hold': None, 'failure': None,
@@ -1801,7 +2098,7 @@ def render(d: dict, *, unattended: bool = False) -> tuple[dict, bool]:
             'project_id': plan['project_id'], 'engine_id': plan['engine_id'], 'model_id': plan['model_id'],
             'aspect_ratio': plan['aspect_ratio'], 'crop_square': plan['crop_square'],
             'clip_count': len(plan['rows']), 'children': [], 'outputs': [], 'clips': [],
-            'estimate': {'usd': plan['total_usd'], 'approximate': plan['approximate']},
+            'estimate': _plan_estimate(plan),
             'created_at': now, 'updated_at': now,
         }
         store['renders'][rec['render_id']] = rec

@@ -6,6 +6,27 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-02] — Desk Connections: guided Connect for every service
+
+- **One shared sign-in connector** (`mc/desk_oauth.py`): start, loopback callback,
+  code exchange, refresh before expiry, revoke on Disconnect. The token is written
+  by one function (`secrets_store.set_secret`) as the result of a human sign-in; no
+  route returns it and nothing logs it. Start/Disconnect are human-only and take the
+  retyped dashboard passcode (MC-995). Each service signs in on its own named
+  browser-pane profile (`desk-<service>`).
+- **Higgsfield**: "Sign in with Higgsfield" (default, MCP, spends plan credits;
+  per-job limit is in credits) and "Advanced: use an API key instead" (developer API,
+  USD). New MCP adapter beside the REST one: `get_cost` estimate, `use_unlim:false`,
+  `job_status` sync poll, download on completion, server `adjustments` surfaced.
+- **X**: three step wizard (create the app, save Client ID and secret, Sign in with X);
+  `desk_publish` now uses the refreshed token instead of a static ~2h Bearer.
+- **Gemini / OpenAI**: numbered steps with the exact key page, a paste box saved
+  through the passcode-gated Secrets write, and a Test connection (list models).
+- **LinkedIn** stays awaiting approval; its card says what to apply for and links it.
+- Tests: `tests/test_desk_oauth.py`, `tests/test_desk_engines.py`; smoke
+  `tools/smoke/desk-connect-guides.mjs`; `desk-v1-live-accounts.mjs` and
+  `desk-v1-live-render.mjs` updated (no more "Open Secrets" dead end).
+
 ## [2026-10-02] — Mobile composer fit (keyboard open)
 
 - **Composer growth now pushes the thread up** instead of overflowing the modal:

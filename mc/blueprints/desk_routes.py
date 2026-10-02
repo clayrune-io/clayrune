@@ -40,6 +40,7 @@ from mc import desk as _desk
 from mc import desk_accounts as _accounts
 from mc import desk_brief as _brief
 from mc import desk_engines as _engines
+from mc import desk_oauth as _oauth
 from mc import desk_engagement as _engagement
 from mc import desk_harvest as _harvest
 from mc import desk_pieces as _pieces
@@ -1057,6 +1058,64 @@ def set_engine_limit(engine_id):
         return jsonify(_engines.set_limit(engine_id, d.get('job_limit_usd')))
     except _engines.Refused as e:
         return _engine_refusal(e)
+
+
+# -- Connections: guided sign-in and key test (mc/desk_oauth.py) ---------------
+# Starting or ending a sign-in is human-only, with the retyped dashboard passcode
+# on every call (MC-995), like Start / Approve: it decides whose account the Desk
+# acts as. No route here returns a token, a state or a code; the page only learns
+# connected / needs sign-in / not connected. The provider's redirect never comes
+# to these routes: it lands on desk_oauth's own short-lived loopback listener.
+# "Test connection" spends nothing but is refused to an unattended caller, since
+# it makes a call with a saved key.
+
+def _connect_error(e: '_oauth.OAuthError'):
+    return jsonify({'error': str(e), 'code': e.code}), e.status
+
+
+@bp.route('/api/desk/connect/status', methods=['GET'])
+def connect_status():
+    return jsonify(_oauth.overview())
+
+
+@bp.route('/api/desk/connect/<service>/start', methods=['POST'])
+def connect_start(service):
+    d = request.get_json(silent=True) or {}
+    refused = _human_only('start a sign-in for', d, 'a service')
+    if refused:
+        return refused
+    try:
+        return jsonify(_oauth.start(service)), 201
+    except _oauth.OAuthError as e:
+        return _connect_error(e)
+
+
+@bp.route('/api/desk/connect/flows/<flow_id>', methods=['GET'])
+def connect_flow(flow_id):
+    return jsonify(_oauth.flow_status(flow_id))
+
+
+@bp.route('/api/desk/connect/<service>/disconnect', methods=['POST'])
+def connect_disconnect(service):
+    d = request.get_json(silent=True) or {}
+    refused = _human_only('disconnect', d, 'a service')
+    if refused:
+        return refused
+    try:
+        return jsonify(_oauth.disconnect(service))
+    except _oauth.OAuthError as e:
+        return _connect_error(e)
+
+
+@bp.route('/api/desk/connect/<service>/test', methods=['POST'])
+def connect_test(service):
+    if is_unattended_caller():
+        return jsonify({'error': 'this action needs a human: an unattended agent session '
+                                 'cannot test a saved key'}), 403
+    try:
+        return jsonify(_oauth.test_key(service))
+    except _oauth.OAuthError as e:
+        return _connect_error(e)
 
 
 # A storyboard render: one engine job per scene, then joined (ffmpeg, this

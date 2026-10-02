@@ -20,10 +20,10 @@
 //
 // Live (R1-W S5): accounts are the workspace's (M2-M5, mc/desk_accounts.py). A
 // row shows what the SERVER derived, `account.publish`: "Publishing: connected",
-// or "not connected" with its reason (no X API token in the vault, LinkedIn app
-// review pending) and, when a vault entry would fix it, `Open Secrets ›` (a
-// human creates the credential there; nothing on this screen types one). The
-// fixture Connect button is gone: it would claim a connection nothing made.
+// or "not connected" with its reason. X gets a step-by-step Connect (create the
+// X app, paste its Client ID, sign in: static/js/desk-v1-guides.js) that ends in
+// a verified Connected; LinkedIn says in one line what to apply for. The fixture
+// Connect button is gone: it would claim a connection nothing made.
 // Read via goes to M4 (`PATCH /api/desk/accounts/<id>`), still filed under the
 // project that uses the account so engagement has something to poll. Add and
 // Remove are M3/M5. YouTube / Discord / Reddit and the cloud drives stay
@@ -35,6 +35,9 @@
   function _channels() { return _fx().channels || []; }
   function _projects() { return _fx().projects || []; }
   function _campaigns() { return _fx().campaigns || []; }
+
+  const _xOpen = new Set();   // account ids whose X steps are open; survives a repaint
+  let _connOv = null;          // GET /api/desk/connect/status, dropped when a sign-in changes
 
   // Only X and LinkedIn have a read route; every other platform shows no control.
   const READ_VIA_PLATFORMS = ['x', 'linkedin'];
@@ -95,16 +98,22 @@
   function _publishHTML(ch) {
     const pub = ch.publish;
     if (!pub || ch.preview) return '';
-    const fix = !pub.ready && pub.secret
-      ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-conn-secrets="${esc(ch.id)}">Open Secrets ›</button>` : '';
+    const isX = ch.platform === 'x' && ch.capability !== 'manual';
+    const open = isX && _xOpen.has(ch.id);
+    // A reason that names the vault is for the server log; the page says it in plain words.
+    const reason = pub.reason && !/vault/i.test(pub.reason) ? pub.reason : '';
+    const fix = isX
+      ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-conn-x-guide="${esc(ch.id)}" aria-expanded="${open}">${open ? 'Hide steps' : (pub.ready ? 'Manage' : 'Connect X')}</button>`
+      : '';
     const note = pub.ready && pub.unattended_ok === false
-      ? `<div class="desk-v1-rules-hint" data-conn-unattended>Scheduled posts will be held: the vault entry <code>${esc(pub.secret)}</code> does not allow unattended use. “Approve now” still posts.</div>` : '';
+      ? '<div class="desk-v1-rules-hint" data-conn-unattended>Scheduled posts will be held: the saved sign-in is not allowed for unattended use. “Approve now” still posts.</div>' : '';
+    const li = ch.platform === 'linkedin' && !pub.ready && window.DeskV1Guides ? window.DeskV1Guides.linkedinHTML() : '';
     return `
         <div class="desk-v1-conn-publish" data-conn-publish data-ready="${pub.ready ? 'true' : 'false'}">
           <span class="desk-v1-how-field-label">Publishing</span>
-          <span data-conn-publish-text>${pub.ready ? 'connected' : `not connected${pub.reason ? ` (${esc(pub.reason)})` : ''}`}</span>
+          <span data-conn-publish-text>${pub.ready ? 'connected' : `not connected${reason ? ` (${esc(reason)})` : ''}`}</span>
           ${fix}
-        </div>${note}`;
+        </div>${note}${li}${open ? `<div data-conn-x-wizard="${esc(ch.id)}">${_connOv ? window.DeskV1Guides.xWizardHTML(_connOv) : '<div class="desk-v1-stub-empty">Loading…</div>'}</div>` : ''}`;
   }
 
   function _accountHTML(ch) {
@@ -356,8 +365,19 @@
       if (btn) _bindAction(btn, ch, repaint);
       const rm = row.querySelector('[data-conn-remove]');
       if (rm) rm.onclick = () => _removeAccount(ch, repaint);
-      const sec = row.querySelector('[data-conn-secrets]');
-      if (sec) sec.onclick = () => { if (typeof window.openSecretsVault === 'function') window.openSecretsVault(); };
+      const xg = row.querySelector('[data-conn-x-guide]');
+      if (xg) xg.onclick = () => {
+        if (_xOpen.has(ch.id)) _xOpen.delete(ch.id); else { _xOpen.add(ch.id); _connOv = null; }
+        repaint();
+      };
+      const xw = row.querySelector('[data-conn-x-wizard]');
+      if (xw && _connOv) {
+        window.DeskV1Guides.bindXWizard(xw, { onChange: () => { _connOv = null; _recheck(el, repaint); } });
+      } else if (xw) {
+        window.DeskV1Guides.overview({ force: true }).then((o) => { _connOv = o; repaint(); }).catch((err) => {
+          xw.innerHTML = `<div class="desk-v1-stub-empty">Could not load the steps: ${esc(err && err.message ? err.message : err)}</div>`;
+        });
+      }
       _bindReadVia(row, ch, repaint);
     });
     const recheck = el.querySelector('[data-conn-recheck]');

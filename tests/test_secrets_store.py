@@ -1634,3 +1634,49 @@ def test_backup_import_ignores_an_unknown_entry_type(vault):
     vault.import_all_from_backup(json.dumps(outer).encode('utf-8'),
                                  'pass-phrase-1', consumer='test')
     assert _types(vault)['gh.token'] == ('api_key', True)
+
+
+# ── Server-internal sign-in entries (`oauth.*`, Desk Connections) ────────────
+#
+# The Desk's sign-in records hold a live access token AND its refresh token. The
+# server's own adapters read them (`internal=True`); no agent-facing dispense
+# path may, whatever `allow_unattended` says (it stays True so the scheduled
+# Desk tick can publish through the server's own adapter).
+
+@pytest.mark.parametrize('name', ['oauth.x', 'oauth.higgsfield'])
+def test_oauth_entries_are_never_dispensed_to_an_agent_path(vault, name):
+    vault.set_secret(name, '{"access_token":"ACCESS-SENTINEL","refresh_token":"REFRESH-SENTINEL"}',
+                     allow_unattended=True)
+    for unattended in (False, True):
+        with pytest.raises(vault.SecretDenied) as e:
+            vault.get_secret_value(name, consumer='with-secret', unattended=unattended)
+        assert 'never hands out' in str(e.value) and 'SENTINEL' not in str(e.value)
+    with pytest.raises(vault.SecretDenied):                                  # {{secret:...}} placeholder
+        vault.resolve_placeholders('curl -H "Authorization: Bearer {{secret:%s}}"' % name, consumer='exec')
+    with pytest.raises(vault.SecretDenied):                                  # --env VAR=name
+        vault.env_for([('TOKEN', name)], consumer='with-secret')
+    assert [r for r in vault.audit_tail(50) if r.get('name') == name and r.get('reason') == 'server_internal']
+
+
+def test_the_servers_own_adapters_can_still_read_an_oauth_entry(vault):
+    vault.set_secret('oauth.x', '{"access_token":"A"}', allow_unattended=True)
+    assert vault.get_secret_value('oauth.x', consumer='desk_oauth', unattended=True, internal=True) == '{"access_token":"A"}'
+    vault.set_secret('x.client-id', 'cid-12345')
+    assert vault.get_secret_value('x.client-id', consumer='t') == 'cid-12345'    # only oauth.* is withheld
+
+
+def test_with_secret_cli_refuses_oauth_names(vault, monkeypatch, capsys):
+    import importlib.util
+    import sys as _sys
+
+    vault.set_secret('oauth.higgsfield', '{"access_token":"ACCESS-SENTINEL"}', allow_unattended=True)
+    spec = importlib.util.spec_from_file_location(
+        'with_secret_oauth', Path(__file__).resolve().parent.parent / 'tools' / 'with-secret.py')
+    assert spec is not None and spec.loader is not None
+    with_secret = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(with_secret)
+    monkeypatch.setattr(with_secret, 'vault', vault)
+    rc = with_secret.main(['--env', 'T=oauth.higgsfield', '--', _sys.executable, '-c', 'print("SHOULD NOT RUN")'])
+    out = capsys.readouterr()
+    assert rc == 2 and 'SHOULD NOT RUN' not in out.out + out.err and 'SENTINEL' not in out.out + out.err
+    assert 'never hands out' in out.out + out.err

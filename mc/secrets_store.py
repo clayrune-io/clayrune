@@ -342,6 +342,21 @@ def valid_name(name: str) -> bool:
     return bool(_NAME_RE.match(name or ''))
 
 
+# Entries the SERVER keeps for itself: the Desk's sign-in records
+# (`mc/desk_oauth.py`: `oauth.x`, `oauth.higgsfield`) hold a live access token AND
+# its refresh token as one JSON value. They are written by the server after a human
+# signs in and read only by the server's own adapters, so no agent-facing path may
+# dispense one: `{{secret:oauth.x}}`, `--env`, `--stdin`, TOTP and the exec route all
+# end in `get_secret_value`, which refuses them unless the caller passes
+# `internal=True`. Deny by default, regardless of `allow_unattended` (that flag stays
+# on so scheduled publishing, which is the server's own adapter, keeps working).
+SERVER_INTERNAL_PREFIX = 'oauth.'
+
+
+def is_server_internal(name: str) -> bool:
+    return str(name or '').startswith(SERVER_INTERNAL_PREFIX)
+
+
 # ── Master key ───────────────────────────────────────────────────────────────
 
 def _keyring_disabled() -> bool:
@@ -2380,8 +2395,12 @@ def get_secret_value(name: str,
                      *,
                      consumer: str,
                      project_id: str | None = None,
-                     unattended: bool = False) -> str:
+                     unattended: bool = False,
+                     internal: bool = False) -> str:
     """Decrypt and dispense a value. Every call is audited.
+
+    ``internal=True`` is for the server's own adapters only and is the one way to
+    read a ``SERVER_INTERNAL_PREFIX`` entry; no agent-facing path sets it.
 
     ``consumer`` is a short free-text label for the audit trail
     (``'browser-login'``, ``'with-secret'``, ``'send_mail'``). ``unattended``
@@ -2391,6 +2410,12 @@ def get_secret_value(name: str,
     MC-923 module comment above for why that OR-with-detection step happens
     at the call site instead of in here).
     """
+    if is_server_internal(name) and not internal:
+        _audit('denied', name=name, consumer=consumer, project=project_id,
+               unattended=unattended, reason='server_internal')
+        raise SecretDenied(
+            f"'{name}' is a sign-in Clayrune keeps for itself and never hands out. "
+            f"Use the Desk's Connections screen to connect or disconnect it.")
     with _lock:
         store = _load_store()
         rec = store['secrets'].get(name)

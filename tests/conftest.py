@@ -150,6 +150,20 @@ def _no_live_state_writes():
         raise AssertionError("live operator state written:\n  " + "\n  ".join(new))
 
 
+@pytest.fixture(autouse=True)
+def _desk_oauth_reads_no_real_vault(monkeypatch):
+    """`mc.desk_oauth` decides signed-in / not from the vault's metadata. A test
+    that did not set that up must read "no sign-in" (the legacy pasted-token path),
+    never this machine's real vault: with X signed in, desk_publish/desk_accounts
+    tests would otherwise change behaviour. Tests of the connector itself replace
+    `_meta` with their own fake."""
+    try:
+        from mc import desk_oauth
+    except Exception:
+        return
+    monkeypatch.setattr(desk_oauth, '_meta', lambda service: None)
+
+
 def stub_codex_auth_state(monkeypatch, state=('not_logged_in', None)):
     """Stop a test from asking the operator's real Codex CLI who is signed in.
 
