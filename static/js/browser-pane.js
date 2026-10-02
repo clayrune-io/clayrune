@@ -128,10 +128,15 @@ const _bpKeyCodes = {
 // Typing is order-sensitive and each keystroke is its own POST: two in flight
 // can land swapped ("rno" for "ron", an Enter ahead of the text before it).
 // Keyboard-ish kinds therefore go through one chain, a request starting only
-// once the previous settled; pointer/wheel stay fire-and-forget. A request that
-// hangs is aborted after 5s so one stuck POST cannot freeze typing. NOTHING
-// typed is logged here or server-side -- this carries passwords.
+// once the previous settled. So do DISCRETE pointer events (press/release/click):
+// a tap moves focus, and one that overtook the queued edits typed the tail of
+// the previous word into the NEXT field. Continuous input (mouseMoved, wheel)
+// stays fire-and-forget -- it carries no focus change and must not queue behind
+// typing. A request that hangs is aborted after 5s so one stuck POST cannot
+// freeze typing. NOTHING typed is logged here or server-side -- this carries
+// passwords.
 const _BP_ORDERED = new Set(['text', 'key', 'ime', 'edit']);
+const _BP_ORDERED_MOUSE = new Set(['mousePressed', 'mouseReleased', 'click']);
 let _bpOrderedChain = Promise.resolve();
 function _bpSend(body) {
   if (!_bpSession) return;
@@ -140,7 +145,8 @@ function _bpSend(body) {
     body: JSON.stringify({ session_id: _bpSession, ...body }),
   };
   const url = (window.API_BASE || '') + '/api/browser/input';
-  if (!_BP_ORDERED.has(body.type)) { fetch(url, init).catch(() => {}); return; }
+  const ordered = _BP_ORDERED.has(body.type) || (body.type === 'mouse' && _BP_ORDERED_MOUSE.has(body.action));
+  if (!ordered) { fetch(url, init).catch(() => {}); return; }
   _bpOrderedChain = _bpOrderedChain.then(() => fetch(url, {
     ...init, signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined,
   })).catch(() => {});
@@ -158,6 +164,18 @@ function _bpIsTouchTyping() {
   try {
     return /Android/i.test(navigator.userAgent) || window.matchMedia('(pointer: coarse)').matches;
   } catch (e) { return false; }
+}
+
+// Re-create, for the dashboard's document-level listeners only, the mouse events
+// a tap would have produced had we not cancelled touchend.
+function _bpReplayTapToHost(target, x, y) {
+  if (!target) return;
+  const init = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0 };
+  try {
+    target.dispatchEvent(new MouseEvent('mousedown', { ...init, buttons: 1 }));
+    target.dispatchEvent(new MouseEvent('mouseup', { ...init, buttons: 0 }));
+    target.dispatchEvent(new MouseEvent('click', { ...init, buttons: 0 }));
+  } catch (err) { /* cosmetic: dismissers just stay open */ }
 }
 
 // What the page must do to turn `prev` into `next`, assuming its caret sits at
@@ -767,6 +785,17 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     if (_shadowComposing) return;
     imeShadow.value = ''; _shadowMirror = '';
   };
+  // A TAP moves to a different field, so whatever Gboard is still composing
+  // belongs to the old one. Re-focusing the already-focused input does not end
+  // a composition (no focusout, no compositionend), and the plain reset above
+  // deliberately skips a composing shadow -- so the old word survived and its
+  // autocorrect replayed into the new field. Blurring finishes the composition
+  // and makes the IME restart on the next focus; then the shadow is emptied.
+  const _endShadowComposition = () => {
+    if (_shadowComposing && document.activeElement === imeShadow) imeShadow.blur();
+    _shadowComposing = false;
+    _resetShadow();
+  };
   const _scheduleShadowReset = () => {
     clearTimeout(_shadowResetTimer);
     _shadowResetTimer = setTimeout(_resetShadow, 1500);
@@ -868,14 +897,21 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       // mousedown handler would send the same press a second time (a double
       // click -- a checkbox tapped once toggled twice).
       if (e.cancelable) e.preventDefault();
+      // End the previous field's composition BEFORE the click is queued, so any
+      // edit the blur flushes is ordered ahead of the press, not after it.
+      _endShadowComposition();
       const c = _bpCoords(img, { clientX: touch.sx, clientY: touch.sy });
       _bpSend({ type: 'mouse', action: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...c });
       _bpSend({ type: 'mouse', action: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, ...c });
       // Keyboard focus, as the suppressed mousedown used to do it.
       const r = img.getBoundingClientRect();
       imeShadow.style.left = (touch.sx - r.left) + 'px'; imeShadow.style.top = (touch.sy - r.top) + 'px';
-      _resetShadow();
       imeShadow.focus();
+      // The suppressed mouse events also carried the dashboard's own "click
+      // outside" dismissers (the ⋮ menu, session menus: document mousedown;
+      // others: click). Replay them on the frame's PARENT -- not the <img>, whose
+      // own mousedown handler would send the press a second time.
+      _bpReplayTapToHost(img.parentElement, touch.sx, touch.sy);
     } else if (touch && touch.long && e.cancelable) {
       e.preventDefault();                        // no synthesized click after a long-press
     }
