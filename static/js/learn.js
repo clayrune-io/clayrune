@@ -187,6 +187,11 @@ function _ensureRoot() {
     <div class="lrn-banner" id="lrn-banner">Practice only. Nothing here touches your real projects.</div>
     <div class="lrn-outline" id="lrn-outline" hidden></div>
     <div class="lrn-arrow" id="lrn-arrow" hidden aria-hidden="true"><div class="lrn-arrow-in"><svg viewBox="0 0 24 24" width="28" height="28"><path d="M3 12h15M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div></div>
+    <div class="lrn-hand-drop" id="lrn-hand-drop" hidden aria-hidden="true"></div>
+    <div class="lrn-hand-ghost" id="lrn-hand-ghost" hidden aria-hidden="true"></div>
+    <div class="lrn-hand-ring" id="lrn-hand-ripple" hidden aria-hidden="true"></div>
+    <div class="lrn-hand-ring lrn-hand-hold" id="lrn-hand-hold" hidden aria-hidden="true"></div>
+    <div class="lrn-hand" id="lrn-hand" hidden aria-hidden="true">${HAND_SVG}</div>
     <div class="lrn-bubble" id="lrn-bubble" role="dialog" aria-label="Claydo practice" tabindex="-1"></div>
     <div class="lrn-dots" id="lrn-dots" hidden aria-hidden="true"></div>`;
   document.body.appendChild(_root);
@@ -382,6 +387,221 @@ function _showArrow(cueEl, towardEl, restart) {
   }
 }
 
+// ── Hand cue ─────────────────────────────────────────────────────────────────
+// A pointing hand that SHOWS the gesture instead of describing it. Two generic
+// calls so any lesson can reuse it: Hand.click(target) taps the target;
+// Hand.drag(from, to) presses `from`, carries a translucent ghost of it onto
+// `to`, and drops. Everything lives in #lrn-root, is pointer-events: none, and
+// is drawn from LIVE rects every frame, so a resize, a scroll or a Floor poll
+// that replaces the nodes never leaves it pointing where the target used to be
+// (the caller hands it the freshly resolved nodes on every tick).
+// On a phone the real drag begins with a long press, so the hand holds first.
+// Under reduced motion / Quiet effects it is a static hand on the target.
+const HAND_W = 44, HAND_H = 53;
+const HAND_TIP_X = 15.4, HAND_TIP_Y = 5;          // fingertip, in element px (viewBox 40x48 at 1.1x)
+const HAND_HOLD_MS = 500;                         // phone long-press; the real one (pointer-drag.js) fires at 400
+const HAND_RESUME_MS = 800;                       // after the user lets go, wait out the verify tick before returning
+const HAND_SVG = `<svg viewBox="0 0 40 48" width="${HAND_W}" height="${HAND_H}" focusable="false" aria-hidden="true">
+  <path d="M10 25V8.5A4 4 0 0 1 18 8.5V19A3 3 0 0 1 24 19.5A3 3 0 0 1 30 21A3 3 0 0 1 35 23.5V35Q35 44 26 44H19Q12 44 9.5 38L4.6 29.4A2.4 2.4 0 0 1 8.8 27L10 29Z" fill="#f6e6cc" stroke="#7a4a2a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M24 19.5V25M30 21V25" fill="none" stroke="#7a4a2a" stroke-width="1.6" stroke-linecap="round"/>
+</svg>`;
+
+const _clamp01 = (x) => Math.max(0, Math.min(1, x));
+const _lerp = (a, b, p) => a + (b - a) * p;
+const _easeOut = (p) => 1 - Math.pow(1 - p, 3);
+const _easeInOut = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+const _segP = (t, a, b) => (b > a ? _clamp01((t - a) / (b - a)) : 1);
+
+// One loop of the cue as consecutive named phases (ms). The phase name is
+// published on #lrn-hand[data-phase] so a test can wait for a moment, not a time.
+function _handPlan(kind, phone) {
+  let t = 0;
+  const p = {};
+  const add = (name, d) => { p[name] = [t, t + d]; t += d; };
+  add('glide', 700); add('press', 200);
+  if (kind === 'click') {
+    add('hold', 100); add('lift', 250); add('rest', 800); add('fade', 200);
+  } else {
+    add('hold', phone ? HAND_HOLD_MS : 100); add('carry', 1200); add('release', 250); add('fade', 250); add('gap', 1000);
+  }
+  p.total = t;
+  return p;
+}
+const HAND_ORDER = ['glide', 'press', 'hold', 'lift', 'rest', 'carry', 'release', 'fade', 'gap'];
+
+function _handCentre(el) {
+  const r = el.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2, r };
+}
+function _handLive(el) { return !!el && el.isConnected && _measurable(el); }
+// An arc that bulges upward so the carry reads as lifting, not sliding.
+function _handPath(a, b, p) {
+  const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+  let nx = -dy / len, ny = dx / len;
+  if (ny > 0) { nx = -nx; ny = -ny; }
+  const bulge = Math.sin(Math.PI * p) * Math.min(48, len * 0.12);
+  return { x: a.x + dx * p + nx * bulge, y: a.y + dy * p + ny * bulge };
+}
+
+const Hand = (() => {
+  let h = null;   // { mode, kind, phone, from, to, plan, t0, lap, raf, ghostScale }
+
+  function els() {
+    if (!_root || !_root.isConnected) return null;
+    const g = (id) => _q('#' + id, _root);
+    const E = { hand: g('lrn-hand'), ripple: g('lrn-hand-ripple'), hold: g('lrn-hand-hold'), ghost: g('lrn-hand-ghost'), drop: g('lrn-hand-drop') };
+    return E.hand ? E : null;
+  }
+  function hideAll(E) {
+    for (const k of Object.keys(E)) if (E[k]) E[k].hidden = true;
+    E.hand.removeAttribute('data-kind'); E.hand.removeAttribute('data-phase');
+    if (E.ghost) E.ghost.innerHTML = '';
+  }
+  const at = (el, x, y, s) => { el.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) scale(${s})`; };
+
+  // A translucent copy of the grabbed card. Inert: no ids, handlers or data-*
+  // survive the clone, so nothing document-wide can ever match it.
+  function buildGhost(E, el) {
+    const r = el.getBoundingClientRect();
+    const c = el.cloneNode(true);
+    for (const n of [c, ...c.querySelectorAll('*')]) {
+      for (const a of Array.from(n.attributes)) {
+        if (a.name === 'id' || a.name.startsWith('on') || a.name.startsWith('data-') || a.name === 'tabindex'
+          || a.name === 'role' || a.name.startsWith('aria-')) n.removeAttribute(a.name);
+      }
+    }
+    c.style.cssText += ';margin:0;width:100%;height:100%;box-sizing:border-box;pointer-events:none';
+    E.ghost.innerHTML = '';
+    E.ghost.appendChild(c);
+    E.ghost.style.width = r.width + 'px';
+    E.ghost.style.height = r.height + 'px';
+    h.ghostScale = Math.min(1, 170 / r.width, 110 / r.height);
+  }
+
+  function drawStatic(E) {
+    if (!_handLive(h.from)) { hideAll(E); return; }
+    const c = _handCentre(h.from);
+    for (const k of ['ripple', 'hold', 'ghost', 'drop']) E[k].hidden = true;
+    E.hand.hidden = false; E.hand.dataset.kind = 'static'; E.hand.dataset.phase = 'static';
+    at(E.hand, c.x - HAND_TIP_X, c.y - HAND_TIP_Y, 1);
+    E.hand.style.opacity = '1';
+  }
+
+  function draw(E, t) {
+    const P = h.plan, drag = h.kind === 'drag';
+    if (!_handLive(h.from) || (drag && !_handLive(h.to))) { hideAll(E); return; }
+    const name = HAND_ORDER.find((n) => P[n] && t >= P[n][0] && t < P[n][1]) || 'gap';
+    const prog = (n) => (P[n] ? _segP(t, P[n][0], P[n][1]) : 0);
+    const a = _handCentre(h.from), c0 = { x: a.x, y: a.y };
+    const b = drag ? _handCentre(h.to) : null, c1 = b ? { x: b.x, y: b.y } : c0;
+    const start = { x: c0.x + 72, y: c0.y + 56 };
+    let tip = c0, scale = 1, opacity = 1;
+    if (name === 'glide') { const p = _easeOut(prog('glide')); tip = { x: _lerp(start.x, c0.x, p), y: _lerp(start.y, c0.y, p) }; opacity = _clamp01(p * 2.2); }
+    else if (name === 'press') scale = _lerp(1, 0.88, _easeOut(prog('press')));
+    else if (name === 'hold') scale = 0.88;
+    else if (name === 'lift') scale = _lerp(0.88, 1, _easeOut(prog('lift')));
+    else if (name === 'carry') { tip = _handPath(c0, c1, _easeInOut(prog('carry'))); scale = 0.9; }
+    else if (name === 'release') { tip = c1; scale = _lerp(0.9, 1, _easeOut(prog('release'))); }
+    else if (name === 'fade') { tip = drag ? c1 : c0; opacity = 1 - prog('fade'); }
+    else if (name === 'gap') { tip = drag ? c1 : c0; opacity = 0; }
+    // 'rest': the hand stays on the target at full size and opacity.
+
+    E.hand.hidden = opacity <= 0.001;
+    E.hand.dataset.kind = h.kind;       // hideAll() clears it when a target blinks out of view mid-loop
+    E.hand.dataset.phase = name;
+    at(E.hand, tip.x - HAND_TIP_X, tip.y - HAND_TIP_Y, scale);
+    E.hand.style.opacity = String(opacity);
+
+    // Ripple at the fingertip when the finger lands.
+    const rp = _segP(t, P.press[0] + 80, P.press[0] + 730);
+    const showRipple = rp > 0 && rp < 1;
+    E.ripple.hidden = !showRipple;
+    if (showRipple) { at(E.ripple, c0.x, c0.y, _lerp(0.3, 1.6, _easeOut(rp))); E.ripple.style.opacity = String((1 - rp) * 0.85); }
+
+    // Phone long-press: a ring fills while the finger holds, then the drag starts.
+    const showHold = drag && h.phone && name === 'hold';
+    E.hold.hidden = !showHold;
+    if (showHold) { at(E.hold, c0.x, c0.y, 1); E.hold.style.setProperty('--lrn-p', prog('hold').toFixed(3)); }
+
+    if (!drag) { E.ghost.hidden = true; E.drop.hidden = true; return; }
+
+    // Ghost of the card: lifted at the grab, rides the fingertip, fades on drop.
+    let ga = 0, gc = c0, gs = 1;
+    if (name === 'hold') ga = h.phone ? 0 : 0.55 * prog('hold');
+    else if (name === 'carry') { ga = 0.55 * (h.phone ? _clamp01(prog('carry') * 8) : 1); gc = tip; gs = _lerp(1, h.ghostScale, _easeOut(_clamp01(prog('carry') * 4))); }
+    else if (name === 'release') { ga = 0.55 * (1 - prog('release')); gc = c1; gs = h.ghostScale * _lerp(1, 0.8, prog('release')); }
+    E.ghost.hidden = ga <= 0.001;
+    if (!E.ghost.hidden) {
+      const gw = parseFloat(E.ghost.style.width) || a.r.width, gh = parseFloat(E.ghost.style.height) || a.r.height;
+      at(E.ghost, gc.x - gw / 2, gc.y - gh / 2, gs);
+      E.ghost.style.opacity = String(ga);
+    }
+
+    // Drop pulse on the destination tile.
+    const dp = _segP(t, P.release[0], P.fade[1] + 150);
+    const showDrop = t >= P.release[0] && dp < 1 && name !== 'gap';
+    E.drop.hidden = !showDrop;
+    if (showDrop) {
+      const r = b.r;
+      E.drop.style.left = r.left + 'px'; E.drop.style.top = r.top + 'px';
+      E.drop.style.width = r.width + 'px'; E.drop.style.height = r.height + 'px';
+      E.drop.style.transform = `scale(${_lerp(1, 1.04, dp)})`;
+      E.drop.style.opacity = String((1 - dp) * 0.9);
+    }
+  }
+
+  function loop(now) {
+    if (!h) return;
+    h.raf = requestAnimationFrame(loop);
+    const E = els();
+    if (!E) return;
+    if (!h.t0) h.t0 = now;
+    const el = now - h.t0, lap = Math.floor(el / h.plan.total);
+    // A new loop re-reads the grabbed card (its open/closed state may have changed);
+    // an empty ghost means a Floor poll swapped the card out mid-loop (hideAll cleared it).
+    if (lap !== h.lap || (h.kind === 'drag' && !E.ghost.firstChild)) {
+      h.lap = lap;
+      if (h.kind === 'drag' && _handLive(h.from)) buildGhost(E, h.from);
+    }
+    draw(E, el % h.plan.total);
+  }
+
+  function set(kind, from, to) {
+    _ensureRoot();
+    const E = els();
+    if (!E || !from) { stop(); return; }
+    const phone = _isMobile(), mode = _reduced() ? 'static' : kind;
+    if (h && h.mode === mode && h.phone === phone) {
+      h.from = from; h.to = to || null;                     // fresh nodes after a Floor poll; the loop keeps its place
+      if (mode === 'static') drawStatic(E);
+      return;
+    }
+    stop();
+    h = { mode, kind, phone, from, to: to || null, plan: _handPlan(kind, phone), t0: 0, lap: -1, raf: 0, ghostScale: 1 };
+    E.hand.dataset.kind = mode === 'static' ? 'static' : kind;
+    if (mode === 'static') drawStatic(E);
+    else h.raf = requestAnimationFrame(loop);
+  }
+  function stop() {
+    if (h && h.raf) cancelAnimationFrame(h.raf);
+    h = null;
+    const E = els();
+    if (E) hideAll(E);
+  }
+  return { click: (target) => set('click', target, null), drag: (from, to) => set('drag', from, to), stop, get active() { return !!h; } };
+})();
+
+// While the user holds the real target (or has just let go), the hand stays away:
+// it must never dance over their own drag, and a click that is about to verify
+// must not flash it back. Infinity = a pointer is down on the target.
+let _handHoldUntil = 0;
+
+function _syncHand(res) {
+  if (S.hirePending || Date.now() < _handHoldUntil) { Hand.stop(); return; }
+  if (res.dest) Hand.drag(res.el, res.dest);
+  else Hand.click(res.cue || res.el);
+}
+
 // ── Engine: steps ────────────────────────────────────────────────────────────
 function _clearTimers() {
   if (_tickTimer) { clearInterval(_tickTimer); _tickTimer = null; }
@@ -393,6 +613,7 @@ function _hideDecor() {
   const o = _q('#lrn-outline', _root), a = _q('#lrn-arrow', _root);
   if (o) o.hidden = true;
   if (a) { a.hidden = true; a.classList.remove('lrn-nudge'); }
+  Hand.stop();
 }
 
 async function _enterStep(idx) {
@@ -405,6 +626,7 @@ async function _enterStep(idx) {
   S.stepStartedMs = Date.now();
   S.unresolvedSince = null; S.awaySince = null; S.floorWasFront = false; S.scrolled = false;
   S.nudgesStopped = false; S.tickNow = false; S.pendingEvidence = null;
+  _handHoldUntil = 0; Hand.stop();
   _patch(S.lessonId, (r) => { r.step = idx; r.stepStartedAt = S.stepStartedMs; r.status = 'active'; });
   _ev('step-start', { step: _step().id });
   _renderBubble(true);
@@ -474,7 +696,12 @@ function _tick() {
 
   if (st.hire) _watchHireFailure();
 
-  if (dragging) { _renderBubble(); return; }   // freeze highlights during a drag
+  if (dragging) {   // freeze highlights during a drag, and keep the hand off the user's own drag
+    _handHoldUntil = Math.max(_handHoldUntil, Date.now() + HAND_RESUME_MS);
+    Hand.stop();
+    _renderBubble();
+    return;
+  }
 
   const res = front ? _resolveStep() : { error: 'away' };
   if (res.el && _measurable(res.el) && _unobscured(res.el)) {
@@ -483,6 +710,7 @@ function _tick() {
     _scrollOnce(res.el);
     _showOutline(_isMobile() && st.id === 'hire' ? res.el : res.el);
     _showArrow(res.cue || res.el, res.dest || null, false);
+    _syncHand(res);
     _renderBubble();
     _placeBubble([_rectOf(res.el), res.dest ? _rectOf(res.dest) : null]);
     return;
@@ -734,6 +962,8 @@ function leave(quiet) {
     _patch(S.lessonId, (r) => { if (r.status === 'active') r.status = 'paused'; });
     _ev('leave', { step: _step() ? _step().id : '' });
   }
+  Hand.stop();
+  _handHoldUntil = 0;
   S = null;
   _bubbleSig = '';
   if (_root) { _root.remove(); _root = null; }
@@ -786,12 +1016,21 @@ document.addEventListener('keydown', (e) => {
 }, true);
 
 // Any pointer input stops the arrow's nudging (it holds still instead).
-document.addEventListener('pointerdown', () => {
+// A press ON the target is the user starting the real action: the hand leaves
+// at once and stays away until they let go (and the verify tick has run).
+document.addEventListener('pointerdown', (e) => {
   if (!S || !_root) return;
   S.nudgesStopped = true;
   const a = _q('#lrn-arrow', _root);
   if (a) a.classList.remove('lrn-nudge');
+  if (S.phase === 'active' && Hand.active) {
+    const res = _resolveStep();
+    if (res.el && res.el.contains && res.el.contains(e.target)) { _handHoldUntil = Infinity; Hand.stop(); }
+  }
 }, true);
+const _handLetGo = () => { if (_handHoldUntil === Infinity) _handHoldUntil = Date.now() + HAND_RESUME_MS; };
+document.addEventListener('pointerup', _handLetGo, true);
+document.addEventListener('pointercancel', _handLetGo, true);
 
 window.addEventListener('resize', () => { if (S) _tick(); });
 if (window.visualViewport) window.visualViewport.addEventListener('resize', () => { if (S) _tick(); });
@@ -970,6 +1209,7 @@ function _showOffer() {
 window.LearnEngine = {
   LESSON_ID,
   start: startLesson, leave, notify, onFloorOpened, startFromHub: hubStart,
+  hand: { click: Hand.click, drag: Hand.drag, stop: Hand.stop },
   hasLesson: (id) => Object.prototype.hasOwnProperty.call(LESSONS, id),
   lessonChip: (id) => (LESSONS[id] ? LESSONS[id].chip : ''),
   get state() { return S ? { lesson: S.lessonId, phase: S.phase, step: S.idx, run: S.runId } : null; },
