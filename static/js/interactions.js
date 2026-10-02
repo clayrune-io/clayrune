@@ -828,6 +828,21 @@ const RESIZE_ZONE = 40; // px from bottom-right corner
 // Corner drag resize (single finger)
 document.getElementById('modal-layer').addEventListener('touchstart', (e) => {
   if (modalDrag || chatResize) return;
+  // Two defects lived here (4th "split screen" recurrence, 2026-10-02, Z Fold):
+  //  1. On the phone layout the sheet is full-viewport and its height belongs to
+  //     --mc-app-vh (app.css: .modal-content height). The grip is invisible there
+  //     (`::after { display:none }`, `resize:none`), yet this zone still claimed the
+  //     touch — and its touchmove writes an INLINE px height on .modal-content, which
+  //     outranks the var. A thumb that rolled 15px while pressing Send froze the
+  //     sheet at keyboard height for good: --mc-app-vh recovered to full, the sheet
+  //     did not, and no viewport signal could ever see it.
+  //  2. e.preventDefault() on touchstart cancels the synthesized click, so Send —
+  //     which sits inside the 40px bottom-right zone once the composer hugs the
+  //     edge (82b38155) — silently did nothing whenever the tap landed low-right.
+  // So: no corner resize at all on the phone layout, and elsewhere a control under
+  // the finger always wins over the zone.
+  if (window.innerWidth <= 960) return;
+  if (e.target.closest('input, textarea, select, button, a, label, [role="button"], [contenteditable]')) return;
   const content = e.target.closest('.modal-content');
   if (!content) return;
   const t = e.touches[0];
