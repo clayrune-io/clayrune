@@ -149,7 +149,17 @@ function _bpSend(body) {
   if (!ordered) { fetch(url, init).catch(() => {}); return; }
   _bpOrderedChain = _bpOrderedChain.then(() => fetch(url, {
     ...init, signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined,
-  })).catch(() => {});
+  })).then(_bpNoteSendFailure).catch(() => {});
+}
+
+// A rejected input POST used to vanish: a server that predates the `edit` kind
+// answers 400 to every touch-typed word, and the pane just sat there with the
+// keyboard open and nothing arriving. Say so (throttled; never the payload).
+let _bpFailToastAt = 0;
+function _bpNoteSendFailure(res) {
+  if (!res || res.ok || Date.now() - _bpFailToastAt < 5000) return;
+  _bpFailToastAt = Date.now();
+  if (typeof showToast === 'function') showToast(`Input did not reach the page (HTTP ${res.status}) — is the Clayrune server up to date?`);
 }
 
 // Soft-keyboard (touch) typing. Android Gboard does not deliver one clean
