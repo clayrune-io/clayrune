@@ -215,7 +215,7 @@ async function runCycle(page, label, taId, imgKey) {
   await page.fill(`#agent-task-${PID}`, 'hello there');
   if (SHOT_DIR) await page.screenshot({ path: resolve(SHOT_DIR, 'new-typed.png') });
   const ph = (await probe(page, `agent-task-${PID}`)).placeholder;
-  check('mobile +New: placeholder unchanged', /^Describe a task for /.test(ph), ph);
+  check('mobile +New: short one-line placeholder', ph === 'Describe a task…', ph);
   check('mobile +New: no uncaught exceptions', page.__errors.length === 0, page.__errors.join(' | '));
   await page.context().close();
 }
@@ -239,7 +239,7 @@ for (const status of ['completed', 'running']) {
     const stop2 = await page.evaluate((sid) => !!document.querySelector(`#stop-btn-${sid} .btn-stop`), SID);
     check('running: Stop still present while send is showing', stop2);
     const ph = (await probe(page, `agent-followup-${SID}`)).placeholder;
-    check('running: placeholder unchanged', ph === 'Interrupt and redirect agent...', ph);
+    check('running: short one-line placeholder', ph === 'Redirect agent…', ph);
   }
   check(`mobile follow-up (${status}): no uncaught exceptions`, page.__errors.length === 0, page.__errors.join(' | '));
   await page.context().close();

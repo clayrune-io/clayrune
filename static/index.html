@@ -1878,7 +1878,7 @@ function sizeAgentChat(win, sessionId) {
   const savedH = textareaHeights[followupId];
   if (savedH) {
     const ta = document.getElementById(followupId);
-    if (ta && ta.style.height !== savedH) ta.style.height = savedH;
+    if (ta && !ta.closest('.composer-field') && ta.style.height !== savedH) ta.style.height = savedH;
   }
   const scrollBody = win.querySelector('.modal-scroll-body');
   const chat = win.querySelector('.agent-chat');
@@ -2151,7 +2151,9 @@ function refreshModalById(modalId) {
     if (ta.id && ta.value) saved[ta.id] = ta.value;
     // Capture any height above the CSS min-height (38px) so even a single-row
     // user drag is preserved. A small buffer (40) avoids re-saving the default.
-    if (ta.id && ta.tagName === 'TEXTAREA' && ta.offsetHeight > 40) {
+    // The mobile pill (.composer-field) sizes itself to its text; pinning its
+    // height here would freeze it at whatever it happened to be last refresh.
+    if (ta.id && ta.tagName === 'TEXTAREA' && ta.offsetHeight > 40 && !ta.closest('.composer-field')) {
       textareaHeights[ta.id] = ta.offsetHeight + 'px';
     }
     if (ta === document.activeElement) {
@@ -2301,7 +2303,7 @@ function refreshModalById(modalId) {
   }
   for (const [id, h] of Object.entries(textareaHeights)) {
     const el = document.getElementById(id);
-    if (el) el.style.height = h;
+    if (el && !el.closest('.composer-field')) el.style.height = h;
   }
   // Mobile composer: the mic/send slot follows the text just restored above.
   if (typeof window.syncAllComposerActions === 'function') window.syncAllComposerActions();

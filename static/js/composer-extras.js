@@ -66,12 +66,30 @@ function syncComposerAction(textareaId) {
   const slot = document.querySelector(`.composer-action[data-for="${textareaId}"]`);
   if (!slot) return;
   const ta = document.getElementById(textareaId);
+  // WhatsApp: the camera steps aside while there is text, so typing gets the
+  // width. Keyed on TEXT only — a queued attachment with an empty field keeps
+  // the camera (you may want a second photo). CSS reads [data-has-text].
+  const field = ta && ta.closest('.composer-field');
+  if (field) {
+    const has = ta.value.trim() ? '1' : '0';
+    if (field.dataset.hasText !== has) field.dataset.hasText = has;
+    _composerAutosize(ta);
+  }
   const mic = slot.querySelector('.btn-mic');
   if (!ta || !mic) { slot.dataset.mode = 'send'; return; }
   const queued = (agentPendingImages[slot.dataset.key] || []).length > 0;
   // While dictating, the button is the way to stop — keep it a mic until then.
   const mode = (ta.value.trim() || queued) && !mic.classList.contains('recording') ? 'send' : 'mic';
   if (slot.dataset.mode !== mode) slot.dataset.mode = mode;
+}
+// The mobile field starts at one line and grows with content (CSS caps it at
+// ~5 lines, then it scrolls). `field-sizing: content` does this natively in
+// current Chromium/Android WebView; this is the fallback for engines without it.
+const _FIELD_SIZING = (() => { try { return CSS.supports('field-sizing', 'content'); } catch (_) { return false; } })();
+function _composerAutosize(ta) {
+  if (_FIELD_SIZING || !ta) return;
+  ta.style.height = 'auto';
+  if (ta.scrollHeight > 0) ta.style.height = ta.scrollHeight + 'px';
 }
 function syncAllComposerActions() {
   document.querySelectorAll('.composer-action').forEach(el => syncComposerAction(el.dataset.for));
@@ -650,8 +668,8 @@ async function openRulesModal(projectId) {
 // ── Emoji picker (agent-chat composers, desktop) ────────────────────────────
 // A small popover, not the project-emoji modal in modal-manager.js: that one is
 // a single-pick dialog bound to a project id, this one inserts at the caret and
-// stays open for several picks. The button is hidden at <=960px in CSS — a
-// phone's own keyboard already has emojis (Ron, 2026-10-02).
+// stays open for several picks. At <=960px the button lives INSIDE the composer
+// pill, left (WhatsApp pattern, Ron 2026-10-02); outside a pill it stays hidden.
 const CHAT_EMOJI_GROUPS = [
   ['Faces', ['😀', '😃', '😄', '😁', '😆', '😅', '😂', '🙂', '😉', '😊', '😍', '🤔',
              '😎', '🥳', '😴', '😬', '🙄', '😢', '😭', '😡', '🤯', '🥲', '😇', '🤗']],
@@ -662,7 +680,11 @@ const CHAT_EMOJI_GROUPS = [
                '❤️', '💔', '🧡', '➡️', '🔁']],
   ['Nature & food', ['🌱', '🌞', '🌙', '🌈', '☕', '🍕', '🍰', '🐶', '🐱', '🦄']],
 ];
-let _chatEmojiPop = null;   // { el, textareaId, btn }
+let _chatEmojiPop = null;   // { el, textareaId, btn, phone, w }
+// Phone layout: the picker opens as a full-width strip above the composer pill,
+// placed against the VISUAL viewport so an open keyboard never hides it or
+// pushes it off-screen.
+const _emojiPhone = () => window.matchMedia('(max-width: 960px)').matches;
 
 function emojiBtnHTML(textareaId) {
   // onmousedown preventDefault keeps the textarea focused (and its caret) while
@@ -680,7 +702,56 @@ function closeChatEmojiPicker() {
   pop.el.remove();
   document.removeEventListener('mousedown', _chatEmojiOutside, true);
   document.removeEventListener('keydown', _chatEmojiKey, true);
-  window.removeEventListener('resize', closeChatEmojiPicker);
+  window.removeEventListener('resize', _chatEmojiResize);
+  _chatEmojiTimers.forEach(clearTimeout); _chatEmojiTimers = [];
+  if (window.visualViewport) {
+    window.visualViewport.removeEventListener('resize', _chatEmojiPlaceSoon);
+    window.visualViewport.removeEventListener('scroll', _chatEmojiPlaceSoon);
+  }
+}
+// Desktop: any resize closes it (anchored by pixel). Phone: the keyboard
+// opening/closing is a HEIGHT-only resize, so re-place instead of closing; a
+// width change (rotation) still closes it.
+function _chatEmojiResize() {
+  const pop = _chatEmojiPop;
+  if (!pop) return;
+  if (pop.phone && window.innerWidth === pop.w) { _chatEmojiPlaceSoon(); return; }
+  closeChatEmojiPicker();
+}
+// The mobile modal re-fits its height a beat AFTER the keyboard resize (mobile.js
+// drives it from visualViewport), so the pill moves after our first placement.
+// Re-place as it settles.
+let _chatEmojiTimers = [];
+function _chatEmojiPlaceSoon() {
+  _chatEmojiPlace();
+  _chatEmojiTimers.forEach(clearTimeout);
+  _chatEmojiTimers = [100, 300, 700].map(ms => setTimeout(_chatEmojiPlace, ms));
+}
+function _chatEmojiPlace() {
+  const pop = _chatEmojiPop;
+  if (!pop) return;
+  if (!pop.btn.isConnected) { closeChatEmojiPicker(); return; }
+  const el = pop.el;
+  const vv = window.visualViewport;
+  const vw = vv ? vv.width : window.innerWidth;
+  const vl = vv ? vv.offsetLeft : 0;
+  const vt = vv ? vv.offsetTop : 0;
+  if (pop.phone) {
+    // Anchor to the whole pill, not just the button.
+    const r = (pop.btn.closest('.composer-field') || pop.btn).getBoundingClientRect();
+    const w = Math.min(vw - 16, 360);
+    el.style.width = w + 'px';
+    el.style.left = Math.round(vl + (vw - w) / 2) + 'px';
+    el.style.maxHeight = Math.max(120, Math.min(280, r.top - 6 - vt - 8)) + 'px';
+    el.style.bottom = 'auto';
+    el.style.top = Math.max(vt + 8, Math.round(r.top - 6 - el.offsetHeight)) + 'px';
+  } else {
+    // Above the button, right edges aligned, clamped inside the viewport.
+    const r = pop.btn.getBoundingClientRect();
+    const w = el.offsetWidth;
+    el.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w)) + 'px';
+    el.style.bottom = Math.max(8, window.innerHeight - r.top + 6) + 'px';
+  }
 }
 function _chatEmojiOutside(ev) {
   const pop = _chatEmojiPop;
@@ -705,7 +776,9 @@ function insertEmojiAtCaret(textareaId, emoji) {
   const end = ta.selectionEnd == null ? start : ta.selectionEnd;
   ta.setRangeText(emoji, start, end, 'end');
   ta.dispatchEvent(new Event('input', { bubbles: true }));
-  ta.focus();
+  // Phone: don't summon the keyboard because a cell was tapped (it would cover
+  // the picker). A field that already has focus simply keeps it.
+  if (!_emojiPhone()) ta.focus();
 }
 
 function toggleChatEmojiPicker(textareaId) {
@@ -729,15 +802,15 @@ function toggleChatEmojiPicker(textareaId) {
     if (cell) insertEmojiAtCaret(textareaId, cell.dataset.emoji);
   });
   document.body.appendChild(el);
-  // Anchor above the button, right edges aligned, clamped inside the viewport.
-  const r = btn.getBoundingClientRect();
-  const w = el.offsetWidth;
-  el.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w)) + 'px';
-  el.style.bottom = Math.max(8, window.innerHeight - r.top + 6) + 'px';
-  _chatEmojiPop = { el, textareaId, btn };
+  _chatEmojiPop = { el, textareaId, btn, phone: _emojiPhone(), w: window.innerWidth };
+  _chatEmojiPlace();
   document.addEventListener('mousedown', _chatEmojiOutside, true);
   document.addEventListener('keydown', _chatEmojiKey, true);
-  window.addEventListener('resize', closeChatEmojiPicker);
+  window.addEventListener('resize', _chatEmojiResize);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', _chatEmojiPlaceSoon);
+    window.visualViewport.addEventListener('scroll', _chatEmojiPlaceSoon);
+  }
 }
 
 // ── interop: window re-exposure for inline/generated/cross-module callers ──

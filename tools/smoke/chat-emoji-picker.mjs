@@ -8,7 +8,8 @@
  *     and the second pick lands at the end;
  *   * it stays open for several picks, closes on an outside click, on Esc, and
  *     on a second press of its own button;
- *   * at <=960px the button is hidden (a phone's keyboard already has emojis).
+ *   * at <=960px the button sits inside the composer pill, left (mobile-composer-room.mjs
+ *     covers the phone picker's placement).
  *
  * Hermetic, same harness shape as slash-autocomplete.mjs.
  * RUN:  cd tools/smoke && node chat-emoji-picker.mjs
@@ -141,15 +142,22 @@ async function openComposer(viewport) {
   await page.context().close();
 }
 
-// ── Mobile (<=960px): the button is hidden ─────────────────────────────────
+// ── Mobile (<=960px): the button moves INSIDE the composer pill, left ──────
 {
   const page = await openComposer({ width: 600, height: 900 });
   const btn = `#btn-emoji-agent-task-${PID}`;
-  // Rendered (so this is not vacuous — the composer is up) but display:none.
-  const rendered = await page.locator(btn).count();
-  const display = rendered ? await page.locator(btn).evaluate(e => getComputedStyle(e).display) : '';
-  check('mobile: emoji button is in the DOM but display:none at <=960px',
-    rendered === 1 && display === 'none', `rendered=${rendered} display=${display}`);
+  const m = await page.evaluate((sel) => {
+    const b = document.querySelector(sel);
+    if (!b) return { found: false };
+    const f = b.closest('.composer-field');
+    const r = b.getBoundingClientRect();
+    return { found: true, inField: !!f, first: !!f && f.firstElementChild === b,
+      shown: getComputedStyle(b).display !== 'none' && r.width > 0 };
+  }, btn);
+  check('mobile: one emoji button, visible, first inside the composer pill (left)',
+    m.found && m.inField && m.first && m.shown, JSON.stringify(m));
+  check('mobile: no second emoji button outside the pill',
+    await page.locator('.btn-emoji').count() === 1);
   await page.context().close();
 }
 
