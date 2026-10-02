@@ -97,7 +97,7 @@ async function boot(browser, width, height) {
     if (path === '/api/projects') return J(PROJECTS);
     if (path === '/api/config') return J({ desk_v1: true, user_timezone: '' });
     if (path === '/api/characters') return J(CHARACTERS);
-    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#c96"/></svg>' });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/svg+xml', headers: { 'cache-control': 'max-age=86400' }, body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#c96"/></svg>' });
     if (path === '/api/floor') return J({ bench: [] });
     const m = path.match(/^\/api\/project\/([^/]+)\/roster\/hire$/);
     if (m && req.method() === 'POST') {
@@ -133,10 +133,16 @@ async function openCampaign(page, id, stop) {
 const openPicker = async (page) => {
   await page.click('[data-how-agent]');
   await page.waitForSelector('.desk-v1-agentlist [role="option"]', { timeout: 3000 });
+  await listFiguresLoaded(page);
 };
+// A figure still in flight is an empty hole in a screenshot (and `complete` is
+// false); wait for them so the shots and the figure assertions see what a user does.
+const listFiguresLoaded = (page) => page.waitForFunction(() => Array.from(document.querySelectorAll('.desk-v1-agentlist img.av-fig')).every((i) => i.complete && i.naturalWidth > 0), null, { timeout: 3000 });
+// Every non-action row (including the selected / current-agent one) holds a LOADED figure.
+const rowsAllHaveFigure = (rows) => rows.filter((r) => !/^__/.test(r.id)).every((r) => r.figure && r.loaded);
 const pickerRows = (page) => page.$$eval('.desk-v1-agentlist [role="option"]', (rs) => rs.map((r) => ({
   id: r.dataset.agentId, text: r.textContent.replace(/\s+/g, ' ').trim(), sel: r.getAttribute('aria-selected') === 'true',
-  figure: !!r.querySelector('img.av-fig'), role: (r.querySelector('.desk-v1-agentlist-role') || {}).textContent || '',
+  figure: !!r.querySelector('img.av-fig'), loaded: !!r.querySelector('img.av-fig') && r.querySelector('img.av-fig').complete && r.querySelector('img.av-fig').naturalWidth > 0, role: (r.querySelector('.desk-v1-agentlist-role') || {}).textContent || '',
 })));
 const noFigText = (page) => page.evaluate(() => !(/\bfig:[a-z]/.test(document.body.innerText) || Array.from(document.querySelectorAll('option, button, [role="option"]')).some((e) => /\bfig:[a-z]/.test(e.textContent))));
 
@@ -230,10 +236,11 @@ async function run(browser, width, height) {
   await openPicker(page);
   await page.click('.desk-v1-agentlist [data-agent-id="__hire__"]');
   await page.waitForFunction(() => /Dave/.test((document.querySelector('.desk-v1-agentlist') || {}).textContent || ''), null, { timeout: 4000 });
+  await listFiguresLoaded(page);
   const cands = await pickerRows(page);
   check(cands.length === 3 && cands.some((c) => /Dave/.test(c.text)) && cands.some((c) => /Tilda Test/.test(c.text)) && cands.some((c) => /Claydo/.test(c.text)),
     `${tag} 4 hire list shows the installed agents not hired here: ${JSON.stringify(cands.map((c) => c.text))}`, `${tag} 4 hire list wrong: ${JSON.stringify(cands)}`);
-  check(cands.every((c) => c.figure), `${tag} 2 every hire row renders its figure (<img>)`, `${tag} 2 a hire row has no figure: ${JSON.stringify(cands)}`);
+  check(rowsAllHaveFigure(cands), `${tag} 2 every hire row renders its figure (<img>, loaded)`, `${tag} 2 a hire row has no figure: ${JSON.stringify(cands)}`);
   check(cands.every((c) => /\S/.test(c.role)) && cands.find((c) => /Claydo/.test(c.text)).role === 'The mascot who builds new agents.',
     `${tag} 2 each hire row carries a one-line role (first sentence only)`, `${tag} 2 roles wrong: ${JSON.stringify(cands.map((c) => c.role))}`);
   check(await noFigText(page), `${tag} 2 no raw "fig:" text in the Hire list`, `${tag} 2 raw fig: text in the Hire list`);
@@ -260,8 +267,21 @@ async function run(browser, width, height) {
     `${tag} 2 the right-hand box shows Dave's figure + name as plain text (no control)`, `${tag} 2 box state wrong: ${JSON.stringify(after)}`);
   await openPicker(page);
   const rows1 = await pickerRows(page);
-  check(rows1.filter((r) => r.sel).length === 1 && rows1.find((r) => r.sel).id === 'global:dave' && rows1.filter((r) => r.figure).length === rows1.filter((r) => !/^__/.test(r.id)).length,
-    `${tag} 2 reopened, exactly the current agent is marked and every agent row has a figure`, `${tag} 2 reopened picker wrong: ${JSON.stringify(rows1)}`);
+  check(rows1.filter((r) => r.sel).length === 1 && rows1.find((r) => r.sel).id === 'global:dave' && rowsAllHaveFigure(rows1) && rows1.find((r) => r.sel).figure,
+    `${tag} 2 reopened, exactly the current agent is marked and EVERY agent row, the selected one included, holds a loaded figure`, `${tag} 2 reopened picker wrong: ${JSON.stringify(rows1)}`);
+  // A toast raised while the picker is open must not sit on top of it (at 390 the Desk
+  // parks toasts at the bottom, where the sheet is: it lay across the Hire row).
+  await page.evaluate(() => window.DeskV1Kit.toast('Hired Dave onto Engulfing scanner.'));
+  await page.waitForSelector('#toast-container .toast', { timeout: 2000 });
+  await page.waitForTimeout(450); // toastIn is 300ms
+  const ov = await page.evaluate(() => {
+    const r = (e) => { const b = e.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom }; };
+    const sheet = r(document.querySelector('.desk-v1-agentlist'));
+    const toasts = Array.from(document.querySelectorAll('#toast-container .toast')).map(r);
+    const hit = (a, b) => a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t;
+    return { sheet, toasts, overlap: toasts.some((t) => hit(t, sheet)), visible: toasts.length > 0 && toasts.every((t) => t.t >= 0 && t.b <= innerHeight && t.l >= 0 && t.r <= innerWidth) };
+  });
+  check(ov.visible && !ov.overlap, `${tag} 2 a toast raised with the picker open is fully on screen and clear of the list`, `${tag} 2 toast overlaps the picker: ${JSON.stringify(ov)}`);
   await page.screenshot({ path: resolve(SHOTS, `${width}-2-picker-open.png`) });
   // Keyboard: arrow to another agent, Enter picks it (writes how.agent), Undo is the store's.
   await page.keyboard.press('ArrowDown');
@@ -299,7 +319,7 @@ async function run(browser, width, height) {
     `${tag} 3 a campaign agent missing from the roster still shows on the picker ("${blank.t}"), never blank`, `${tag} 3 picker blank/wrong: ${JSON.stringify(blank)}`);
   await openPicker(page);
   const rowsB = await pickerRows(page);
-  check(rowsB.some((r) => r.id === 'global:not-hired' && r.sel), `${tag} 3 ...and it is listed and marked in the open picker`, `${tag} 3 current agent missing from the list: ${JSON.stringify(rowsB)}`);
+  check(rowsB.some((r) => r.id === 'global:not-hired' && r.sel && r.figure && r.loaded), `${tag} 3 ...and it is listed, marked, and holds its figure in the open picker`, `${tag} 3 current agent missing from the list: ${JSON.stringify(rowsB)}`);
   await page.keyboard.press('Escape');
   await page.evaluate(() => { window.DeskV1Fixtures.campaigns.find((x) => x.id === 'camp-1').how.agent = null; });
 

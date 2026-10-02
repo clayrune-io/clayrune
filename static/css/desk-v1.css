@@ -356,6 +356,14 @@
   }
   .desk-v1-agentlist-title { display: block; font-size: 13px; font-weight: 700; color: var(--text); padding: 10px 10px 6px; }
   .desk-v1-agentlist-row { min-height: 54px; }
+  /* The Desk parks its toast at the BOTTOM on a phone (MC-977, above the tab
+     bar), which is exactly where this sheet sits, and the toast's z-index
+     (100000) is above the sheet's: "Hired Dave onto …" lay across the Hire row.
+     While the sheet is open the toast goes to the top instead, over the dimmed
+     header. Selector carries the Desk scope so it outranks the MC-977 rule. */
+  body:has(.desk-v1-agentlist-layer):has(.modal-window[data-modal-id="__desk"]) #toast-container {
+    top: calc(10px + env(safe-area-inset-top, 0px)); bottom: auto;
+  }
 }
 
 /* The Agent picker's trigger on the Campaign card: a full-width field showing

@@ -22,7 +22,11 @@
 - The right-hand agent box only shows the chosen agent (figure + name, not a
   control). With none chosen it reads "No agent yet, pick one in Campaign" and that
   link takes you to the Campaign card's picker.
-- Smokes: `desk-campaign-ui-fixes.mjs` (no `<select>`, figures per row, hire ->
+- On a phone the bottom sheet no longer sits under the Desk's toast: toasts sit at
+  the bottom there (MC-977) and out-ranked the sheet, so "Hired Dave onto …" lay
+  across the Hire row. While the sheet is open the toast moves to the top.
+- Smokes: `desk-campaign-ui-fixes.mjs` (no `<select>`, figures per row incl. the
+  selected one, a toast clear of the open list, hire ->
   selected, right box inert, no `fig:` text), `desk-v1-how.mjs`, `-journey.mjs`,
   `-campaign.mjs`, `-live-writes.mjs`.
 
