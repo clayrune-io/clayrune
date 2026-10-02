@@ -20,15 +20,29 @@
 //     the instant the pane focused it on touchend (8b163675 moved focus there),
 //     so the keyboard never opened. The stub below cannot catch that, so one
 //     test loads the REAL static/js/mobile.js (SMOKE_MOBILE_JS overrides it).
+//  5. TAP AIM ON A ZOOMED-OUT PAGE (Ron, 2026-10-02, real phone, Google): the
+//     keyboard opened and NO keystroke reached the page. A page with no
+//     viewport meta is laid out 980px wide under mobile emulation and drawn at
+//     412/980, but Input.dispatchMouseEvent reads x/y as LAYOUT px, so the tap
+//     on the search box landed ~2.4x too close to the origin, the box never got
+//     focus and insertText had nowhere to go. testRealBackendTapOnZoomedOutPage
+//     runs this against the REAL blueprint + real Chromium (the harness).
+//  6. BACK TO CHAT (Ron, 2026-10-02): the mobile header's top-left arrow stopped
+//     the browser session (same glyph as the browser Back). It now hides the
+//     pane and keeps the session; "Close browser" in the menu ends it.
 //
-// Hermetic, like browser-pane-ime-shortcuts.mjs: the REAL static/js/browser-pane.js
+// Hermetic, like browser-pane-ime-shortcuts.mjs (all but #5): the REAL static/js/browser-pane.js
 // against a stubbed API in real Chromium with an Android UA, touch and the
 // soft-keyboard sequences driven through CDP (Input.imeSetComposition /
 // insertText are real composition + beforeinput + input events). Set
 // SMOKE_PANE_JS to run it against another copy of the file (e.g. master's, to
 // prove it goes red without the fix).
 import { chromium } from 'playwright';
-import { readFileSync } from 'fs';
+import { readFileSync, mkdtempSync, rmSync } from 'fs';
+import { spawn } from 'child_process';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import net from 'net';
 
 const JS = readFileSync(process.env.SMOKE_PANE_JS
   || new URL('../../static/js/browser-pane.js', import.meta.url), 'utf8');
@@ -497,6 +511,120 @@ async function testTapDismissesHostMenu() {
   await context.close();
 }
 
+// ── 5. real backend: tap -> focus -> type on a zoomed-out page ──────────────
+const freePort = () => new Promise(res => {
+  const sv = net.createServer(); sv.listen(0, '127.0.0.1', () => { const p = sv.address().port; sv.close(() => res(p)); });
+});
+// "Back to chat" (the header's top-left control) is a way OUT of the pane, not a
+// way to end the browser: it used to POST /api/browser/stop behind the same
+// arrow glyph the bottom bar uses for browser-Back, so Ron's sessions vanished
+// shortly after he used them. It must hide the pane and keep the session; only
+// the menu's "Close browser" stops it.
+async function testBackToChatKeepsSession() {
+  const { page, context } = await newPage();
+  const stops = [];
+  page.on('request', r => { if (r.url().includes('/api/browser/stop')) stops.push(r.postData()); });
+  const hide = page.locator('#mc-browser-pane [data-bp="hide"]');
+  if (await page.locator('#mc-browser-pane [data-bp="bar"] [data-bp="close"]').count())
+    fail('the header still has a close control wired to the back arrow');
+  const glyph = await hide.innerHTML();
+  const bottomBack = await page.locator('#mc-browser-pane [data-bp="back"]').innerHTML();
+  if (glyph.includes('8592') || glyph.includes('←') || glyph === bottomBack)
+    fail('Back to chat still reads as the browser Back arrow');
+  await hide.tap();
+  await settle(page);
+  const hidden = await page.evaluate(() => getComputedStyle(document.getElementById('mc-browser-pane')).display);
+  if (hidden !== 'none') fail(`Back to chat did not hide the pane (display ${hidden})`);
+  else if (stops.length) fail(`Back to chat stopped the session (${stops.length} stop POSTs)`);
+  else if (await page.locator('#minimized-tray .minimized-chip').count() !== 1) fail('no dock chip to reopen the hidden pane');
+  else {
+    await page.locator('#minimized-tray .minimized-chip').first().tap();
+    await settle(page);
+    const back = await page.evaluate(() => getComputedStyle(document.getElementById('mc-browser-pane')).display);
+    if (back === 'none') fail('the dock chip did not bring the pane back');
+    else if (stops.length) fail('reopening the pane stopped the session');
+    else ok('Back to chat: hides the pane, keeps the session (no stop), reopens from the dock chip, distinct glyph');
+  }
+  // Explicit end: the menu's "Close browser".
+  await page.locator('#mc-browser-pane [data-bp="menu"]').tap();
+  await page.locator('#mc-browser-pane [data-bp="mobmenu"] [data-bp="close"]').tap();
+  await settle(page);
+  if (stops.length !== 1 || !String(stops[0]).includes('sid-1')) fail(`menu "Close browser" should stop sid-1 exactly once, saw ${JSON.stringify(stops)}`);
+  else if (await page.locator('#mc-browser-pane').count()) fail('menu "Close browser" left the pane mounted');
+  else ok('menu "Close browser": stops the session and removes the pane');
+  await context.close();
+}
+
+async function testRealBackendTapOnZoomedOutPage() {
+  const REPO = new URL('../../', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+  const tmp = mkdtempSync(join(tmpdir(), 'bp-mobile-typing-'));
+  const port = await freePort();
+  const harness = spawn(process.env.PYTHON || 'python',
+    [join(REPO, 'tools/smoke/browser_pane_harness.py'), String(port), tmp],
+    { cwd: REPO, stdio: ['pipe', 'pipe', 'pipe'] });
+  let out = '';
+  harness.stderr.on('data', d => { out += d; });
+  const pagePort = await new Promise((res, rej) => {
+    const t = setTimeout(() => rej(new Error('harness did not start:\n' + out)), 30000);
+    harness.stdout.on('data', d => { out += d; const m = /READY \d+ (\d+)/.exec(out); if (m) { clearTimeout(t); res(Number(m[1])); } });
+    harness.on('exit', c => rej(new Error(`harness exited ${c}:\n${out}`)));
+  });
+  const BASE = `http://127.0.0.1:${port}`;
+  const context = await browser.newContext({ userAgent: ANDROID_UA, viewport: { width: 412, height: 915 }, hasTouch: true });
+  const page = await context.newPage();
+  page.on('pageerror', e => fail(`real-backend: page error: ${e.message}`));
+  try {
+    await page.goto(BASE + '/');
+    await page.waitForFunction(() => typeof window.openBrowserPane === 'function');
+    await page.evaluate(u => window.openBrowserPane(u, 'smoke'), `http://127.0.0.1:${pagePort}/scale.html`);
+    await page.waitForSelector('#mc-browser-pane');
+    const getJson = (path, init) => page.evaluate(([p, i]) => fetch(p, i).then(r => r.json()), [path, init]);
+    const sid = await (async () => {
+      for (let i = 0; i < 100; i++) {
+        const st = await getJson('/api/project/smoke/browser/status');
+        if (st.sessions && st.sessions[0]) return st.sessions[0].session_id;
+        await page.waitForTimeout(100);
+      }
+      return null;
+    })();
+    if (!sid) { fail('real-backend: no session launched'); return; }
+    // Wait for the zoomed-out premise: frames report a pageScaleFactor < 1.
+    let st = null;
+    for (let i = 0; i < 100; i++) {
+      st = await getJson('/_harness/session/' + sid);
+      if (st.page_scale && st.page_scale < 0.6 && st.frame && st.frame[0]) break;
+      await page.waitForTimeout(150);
+    }
+    if (!(st && st.page_scale && st.page_scale < 0.6)) { fail(`real-backend: premise lost, the no-meta page is not drawn zoomed out (page_scale=${st && st.page_scale}); the test no longer proves anything`); return; }
+    ok(`real-backend: the no-viewport-meta page is drawn zoomed out (pageScaleFactor ${st.page_scale.toFixed(3)})`);
+    // Where the textarea (layout centre 650,350) sits in the PICTURE the user sees.
+    const [fw, fh] = st.frame;
+    const pt = await page.evaluate(([fw, fh, ps]) => {
+      const r = document.querySelector('#mc-browser-pane [data-bp="screen"]').getBoundingClientRect();
+      const sc = Math.min(r.width / fw, r.height / fh);
+      return { x: r.left + (r.width - fw * sc) / 2 + 650 * ps * sc, y: r.top + (r.height - fh * sc) / 2 + 350 * ps * sc };
+    }, [fw, fh, st.page_scale]);
+    const cdp = await context.newCDPSession(page);
+    await page.touchscreen.tap(pt.x, pt.y);
+    await page.waitForTimeout(400);
+    await commit(cdp, 'hello');
+    let text = '';
+    for (let i = 0; i < 50 && !text.includes('typed:hello'); i++) {
+      await page.waitForTimeout(200);
+      const r = await getJson('/api/browser/read', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sid, selector: 'body' }) });
+      text = JSON.stringify(r);
+    }
+    if (!text.includes('typed:hello')) fail(`real-backend: a tap on the page's field (picture ${pt.x.toFixed(0)},${pt.y.toFixed(0)}) then typing "hello" never reached it; the tap missed the field. read: ${text.replace(/"warning":"[^"]*",?/, "").slice(0, 500)}`);
+    else ok('real-backend: tap on a zoomed-out page focuses its field and soft-keyboard typing arrives in it');
+    await getJson('/api/browser/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sid }) });
+  } finally {
+    await context.close();
+    try { harness.stdin.end(); } catch (e) {}
+    setTimeout(() => { try { harness.kill(); } catch (e) {} rmSync(tmp, { recursive: true, force: true }); }, 2000).unref();
+  }
+}
+
 await testTyping();
 await testSuggestionAndAutocorrect();
 await testEmojiAndEmptyBackspaceAndEnter();
@@ -510,6 +638,8 @@ await testMenuPaste();
 await testTapQueuesBehindTyping();
 await testTapEndsComposition();
 await testTapDismissesHostMenu();
+await testBackToChatKeepsSession();
+await testRealBackendTapOnZoomedOutPage();
 await browser.close();
 
 if (!fails.length) console.log('✅ PASS — Android soft-keyboard typing, keyboard-stable frame, long-press paste and paste fallback verified against the real static/js/browser-pane.js.');

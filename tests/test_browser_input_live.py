@@ -135,6 +135,14 @@ document.addEventListener('contextmenu', e => window.mouseLog.push(
 </script></body></html>"""
 
 
+# A page with NO <meta name=viewport>: under mobile emulation Chromium lays it
+# out 980px wide and zooms the picture out to fit (pageScaleFactor 412/980).
+SCALE_PAGE = """<!doctype html><html><body style="margin:0">
+<textarea id="q" style="position:absolute;left:500px;top:300px;width:300px;height:100px"></textarea>
+<div id="s" style="position:absolute;left:100px;top:600px;width:300px;height:100px;overflow:auto"><div style="height:1000px"></div></div>
+</body></html>"""
+
+
 @pytest.fixture
 def chromium():
     exe = br._find_chromium()
@@ -145,7 +153,8 @@ def chromium():
     udd = tempfile.mkdtemp(prefix='mc-input-test-')
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            body = (PAGE if self.path == '/' else '<p>landed</p>').encode()
+            body = (PAGE if self.path == '/' else SCALE_PAGE if self.path == '/scale'
+                    else '<p>landed</p>').encode()
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')
             self.end_headers()
@@ -219,8 +228,8 @@ def chromium():
         srv.shutdown()
 
 
-def _send(call, data):
-    for method, params in br._input_commands(data):
+def _send(call, data, page_scale=1.0):
+    for method, params in br._input_commands(data, page_scale=page_scale):
         assert 'error' not in call(method, params)
 
 
@@ -291,3 +300,88 @@ def test_file_chooser_intercepted_and_attach_sets_real_file(chromium, tmp_path):
     assert evaluate("document.getElementById('f').files.length") == 1
     assert evaluate("document.getElementById('f').files[0].name") == 'upload-me.txt'
     assert evaluate("document.getElementById('f').files[0].size") == len('hello from the live test')
+
+
+# ---- mobile pane: taps must be aimed through the page scale ----------------
+# Android, 2026-10-02 (Ron, real phone): the keyboard opened and NO keystroke
+# reached the page. The tap that should focus Google's search box never hit it.
+# Google, served with no viewport meta, laid out 980px wide and was drawn at
+# 0.42x in the 412px pane; the pane aimed in picture px, but Chromium reads
+# Input.dispatchMouseEvent x/y as LAYOUT px, so a tap on the box at picture
+# (273,147) landed at layout (273,147): nowhere near. Measured on the emulator:
+# mousedown clientX/Y == the x/y sent while visualViewport.scale was 0.42.
+
+def _mobile_page(chromium, vw=412, vh=733):
+    """Put the fixture's tab in the pane's mobile mode on SCALE_PAGE and return
+    the pageScaleFactor Chromium reports on a screencast frame."""
+    call, evaluate, wait_for_event = chromium
+    call('Page.enable')
+    for method, params in (br._mobile_metrics_cmd(vw, vh, 2),
+                           ('Emulation.setTouchEmulationEnabled',
+                            {'enabled': True, 'maxTouchPoints': 5})):
+        assert 'error' not in call(method, params)
+    base = evaluate('location.origin')
+    call('Page.navigate', {'url': base + '/scale'})
+    for _ in range(50):
+        if (evaluate('location.pathname') == '/scale'
+                and evaluate('document.readyState') == 'complete'):
+            break
+        time.sleep(0.1)
+    call('Page.startScreencast', {'format': 'jpeg', 'quality': 40})
+    frame = wait_for_event('Page.screencastFrame', timeout=10)
+    assert frame, 'no screencast frame'
+    return (frame.get('metadata') or {}).get('pageScaleFactor')
+
+
+def test_mobile_frame_reports_the_zoomed_out_page_scale(chromium):
+    scale = _mobile_page(chromium)
+    # 412 / 980: the premise of the fix. If a Chromium update starts honouring
+    # the scale in Input.dispatchMouseEvent this goes red and the fix is moot.
+    assert scale is not None and 0.3 < scale < 0.6
+
+
+def test_tap_on_the_picture_focuses_the_box_and_edit_types_into_it(chromium):
+    call, evaluate, _wait = chromium
+    scale = _mobile_page(chromium)
+    # Picture position of the textarea's centre (layout 650,350), as the pane
+    # computes it from the frame it shows.
+    px, py = 650 * scale, 350 * scale
+    for action in ('mousePressed', 'mouseReleased'):
+        _send(call, {'type': 'mouse', 'action': action, 'x': px, 'y': py,
+                     'buttons': 1 if action == 'mousePressed' else 0},
+              page_scale=scale)
+    assert evaluate('document.activeElement.id') == 'q'
+    _send(call, {'type': 'edit', 'delete': 0, 'text': 'hello'})
+    assert evaluate("document.getElementById('q').value") == 'hello'
+
+
+def test_wheel_over_a_scroller_scrolls_that_scroller(chromium):
+    call, evaluate, _wait = chromium
+    scale = _mobile_page(chromium)
+    # Pointer over the inner scroller (layout 250,650) as the picture shows it.
+    # Unscaled it would sit over empty body and the inner box would not move.
+    _send(call, {'type': 'wheel', 'x': 250 * scale, 'y': 650 * scale,
+                 'deltaX': 0, 'deltaY': 100}, page_scale=scale)
+    time.sleep(0.5)
+    assert evaluate("document.getElementById('s').scrollTop") > 0
+
+
+def test_wheel_deltas_are_not_rescaled(chromium):
+    call, evaluate, _wait = chromium
+    scale = _mobile_page(chromium)
+    evaluate("document.body.style.height = '3000px'")
+    # Chromium turns a delta given in picture px into layout px itself
+    # (100 picture px -> 100/scale layout px). Scaling it again here would
+    # scroll the page 1/scale^2 -- measured, so pinned.
+    _send(call, {'type': 'wheel', 'x': 5, 'y': 5, 'deltaX': 0, 'deltaY': 100},
+          page_scale=scale)
+    time.sleep(0.5)
+    assert abs(evaluate('window.scrollY') - 100 / scale) < 5
+
+
+def test_input_commands_ignore_a_nonsense_page_scale():
+    for bad in (None, 'x', 0, -1, 0.01, 99):
+        c = br._input_commands({'type': 'mouse', 'action': 'mousePressed', 'x': 10, 'y': 20}, page_scale=bad)
+        assert (c[0][1]['x'], c[0][1]['y']) == (10, 20)
+    c = br._input_commands({'type': 'mouse', 'action': 'mousePressed', 'x': 10, 'y': 20}, page_scale=0.5)
+    assert (c[0][1]['x'], c[0][1]['y']) == (20, 40)

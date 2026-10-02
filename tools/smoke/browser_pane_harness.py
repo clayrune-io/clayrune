@@ -79,6 +79,7 @@ def _session_state(sid):
     if not s:
         return {'error': 'unknown session'}, 404
     return {'view': s.get('view'), 'frame': [s.get('frame_w'), s.get('frame_h')],
+            'page_scale': s.get('page_scale'),
             'window_chrome': {str(k): v for k, v in (s.get('window_chrome') or {}).items()},
             'error': s.get('error'), 'dpr': s.get('dpr')}
 
@@ -100,6 +101,13 @@ PAGES = {
     '/page.html': b"""<!doctype html><title>Harness page</title>
       <body style="margin:0;background:#1565c0;color:#fff;font:40px sans-serif">
       <h1 id="h">harness page</h1></body>""",
+    # NO <meta name=viewport>: under mobile emulation Chromium lays this out
+    # 980px wide and draws it zoomed out (the Google-home-page situation).
+    '/scale.html': b"""<!doctype html><title>Scale</title>
+      <body style="margin:0;background:#222;color:#fff;font:40px sans-serif">
+      <textarea id="q" style="position:absolute;left:500px;top:300px;width:300px;height:100px"
+        oninput="document.getElementById('out').textContent='typed:'+this.value"></textarea>
+      <div id="out" style="position:absolute;left:20px;top:20px">typed:</div></body>""",
     '/popup.html': b"""<!doctype html><title>Opener</title>
       <body style="margin:0;background:#2e7d32;color:#fff;font:40px sans-serif">
       <button id="b" style="font-size:40px"

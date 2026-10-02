@@ -2357,6 +2357,12 @@
     /* Sidebar is display:none here, so the tray's desktop offset (left:
        var(--sidebar-w)) must not apply — nothing to clip against. */
     .minimized-tray { left: 0; }
+    /* The bottom tab bar (z 400, 50px) would otherwise paint over the tray, so a
+       hidden browser pane's chip (the only way back to it) would be unreachable.
+       Only while the bar is showing (conversation view hides it, and the
+       tray's own 0/24px rules apply). Written to tie the usage-strip rule's
+       specificity (it also sets bottom) and win by coming later. */
+    body:has(.bottom-tab-bar:not(.mc-bar-hidden)) .minimized-tray { bottom: calc(52px + env(safe-area-inset-bottom)); z-index: 410; }
     .card-summary { display: none !important; }
     /* Height tracks the visual viewport (var(--mc-app-vh), set by
        mcViewportHeightSync) so the modal shrinks above the soft keyboard and
