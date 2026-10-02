@@ -2662,6 +2662,20 @@ def _input_commands(data):
         })]
     if kind == 'text':
         return [('Input.insertText', {'text': data.get('text', '')})]
+    if kind == 'edit':
+        # Touch typing (Android Gboard): the pane mirrors its hidden input's
+        # value and sends the DIFF as one request -- `delete` Backspaces, then
+        # `text` inserted. One request keeps the delete-then-insert pair atomic
+        # and ordered, which N separate key/text POSTs are not (they race).
+        # Never logged: this carries whatever the user types, including passwords.
+        n = max(0, min(int(data.get('delete') or 0), 256))
+        cmds = []
+        for _ in range(n):
+            cmds += _input_commands({'type': 'key', 'key': 'Backspace', 'keyCode': 8})
+        text = data.get('text') or ''
+        if text:
+            cmds.append(('Input.insertText', {'text': str(text)}))
+        return cmds
     if kind == 'key':
         p = _key_event_params(data)
         up = {k: v for k, v in p.items() if k != 'text'}

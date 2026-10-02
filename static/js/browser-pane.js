@@ -125,12 +125,51 @@ const _bpKeyCodes = {
   Home: 36, End: 35, PageUp: 33, PageDown: 34,
 };
 
+// Typing is order-sensitive and each keystroke is its own POST: two in flight
+// can land swapped ("rno" for "ron", an Enter ahead of the text before it).
+// Keyboard-ish kinds therefore go through one chain, a request starting only
+// once the previous settled; pointer/wheel stay fire-and-forget. A request that
+// hangs is aborted after 5s so one stuck POST cannot freeze typing. NOTHING
+// typed is logged here or server-side -- this carries passwords.
+const _BP_ORDERED = new Set(['text', 'key', 'ime', 'edit']);
+let _bpOrderedChain = Promise.resolve();
 function _bpSend(body) {
   if (!_bpSession) return;
-  fetch((window.API_BASE || '') + '/api/browser/input', {
+  const init = {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: _bpSession, ...body }),
-  }).catch(() => {});
+  };
+  const url = (window.API_BASE || '') + '/api/browser/input';
+  if (!_BP_ORDERED.has(body.type)) { fetch(url, init).catch(() => {}); return; }
+  _bpOrderedChain = _bpOrderedChain.then(() => fetch(url, {
+    ...init, signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined,
+  })).catch(() => {});
+}
+
+// Soft-keyboard (touch) typing. Android Gboard does not deliver one clean
+// keydown per letter: it reports key 'Unidentified' / keyCode 229 and moves
+// text through composition (a whole word stays "composing" until space) or
+// beforeinput/input. Forwarding keydowns therefore drops the letters, so on a
+// touch device the hidden input's own value is the source of truth and every
+// `input` event is mirrored to the page as a diff (see _bpDiffEdit). Desktop
+// (incl. CJK IME, whose composition the page should underline) is unchanged.
+// "Desktop site" on Android drops "Android" from the UA, hence the pointer test.
+function _bpIsTouchTyping() {
+  try {
+    return /Android/i.test(navigator.userAgent) || window.matchMedia('(pointer: coarse)').matches;
+  } catch (e) { return false; }
+}
+
+// What the page must do to turn `prev` into `next`, assuming its caret sits at
+// the end: Backspace the changed tail of `prev`, then type the changed tail of
+// `next`. Handles typing, deleting, autocorrect and suggestion replacement
+// uniformly. Counts code points (not UTF-16 units) so an emoji is one Backspace.
+function _bpDiffEdit(prev, next) {
+  let i = 0;
+  const n = Math.min(prev.length, next.length);
+  while (i < n && prev.charCodeAt(i) === next.charCodeAt(i)) i++;
+  if (i > 0 && (prev.charCodeAt(i - 1) & 0xFC00) === 0xD800) i--;   // never split a surrogate pair
+  return { del: Array.from(prev.slice(i)).length, text: next.slice(i) };
 }
 
 // The <img> is width:100%;height:100% (fills the pane) with object-fit:contain
@@ -249,7 +288,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   const _bpMiddleHtml = `
     <div style="flex:1;position:relative;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden">
       <img data-bp="screen" tabindex="0"
-        style="width:100%;height:100%;object-fit:contain;aspect-ratio:${BP_VIEW_W}/${BP_VIEW_H};outline:none;cursor:default;user-select:none" draggable="false">
+        style="width:100%;height:100%;object-fit:contain;aspect-ratio:${BP_VIEW_W}/${BP_VIEW_H};outline:none;cursor:default;user-select:none;-webkit-touch-callout:none;-webkit-user-select:none" draggable="false">
       <!-- Real, editable keyboard-focus target (gap #7, IME). A plain
            tabindex <img> can receive keydown but browsers only ever engage an
            OS IME (Pinyin/Japanese/Korean input) over an editable element — a
@@ -435,13 +474,10 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
         menu.style.display = 'none';
     };
     document.addEventListener('mousedown', _bpMobMenuOffHandler, true);
-    $('mm-paste').onclick = async () => {
-      menu.style.display = 'none';
-      imeShadow.focus();
-      if (await _bpPasteViaApi()) return;
-      const t = prompt('Paste here and press OK — this types it into the page:');
-      if (t) _bpSend({ type: 'text', text: t });
-    };
+    // No imeShadow.focus() here (that raised the keyboard for nothing); the
+    // text goes to whatever the page has focused via CDP either way. When the
+    // clipboard API is unavailable (plain http) the paste sheet takes over.
+    $('mm-paste').onclick = () => { menu.style.display = 'none'; pasteFromClipboard(); };
     $('mm-copy').onclick = async () => { menu.style.display = 'none'; imeShadow.focus(); await _bpCopySelection(false); };
     $('mm-profile').onclick = (e) => { e.stopPropagation(); menu.style.display = 'none'; _bpToggleSessionMenu(win, pid); };
 
@@ -509,12 +545,103 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     grip.addEventListener('pointercancel', _endRz);
   }
 
+  // ── touch state + long-press menu + paste sheet (shared by every layout) ──
+  // A finger long-press on the frame can't raise the browser's native Paste
+  // menu (the frame is an <img>, and the real field lives in the remote page),
+  // so the pane shows its own Paste / Copy menu at the finger. Paste reads the
+  // clipboard when the browser allows it and otherwise opens the paste sheet:
+  // a plain textarea, which every phone lets you long-press -> Paste into.
+  let touch = null, lastTouchAt = 0, lpTimer = null, lpHideTimer = null;
+  const box0 = img.parentElement;
+  const lpBtn = 'background:none;border:none;color:#eee;padding:12px 18px;font-size:15px;cursor:pointer;touch-action:manipulation';
+  const lpMenu = document.createElement('div');
+  lpMenu.dataset.bp = 'lp-menu';
+  lpMenu.style.cssText = 'display:none;position:absolute;z-index:6;background:#2a2a2a;border:1px solid #555;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.5);overflow:hidden';
+  lpMenu.innerHTML = `<button data-bp="lp-paste" style="${lpBtn}">Paste</button><button data-bp="lp-copy" style="${lpBtn};border-left:1px solid #444">Copy</button>`;
+  box0.appendChild(lpMenu);
+  const pasteSheet = document.createElement('div');
+  pasteSheet.dataset.bp = 'paste-sheet';
+  // Pinned to the TOP of the frame area so the soft keyboard never covers it.
+  pasteSheet.style.cssText = 'display:none;position:absolute;left:0;right:0;top:0;z-index:8;background:#2a2a2a;border-bottom:1px solid #555;padding:10px;flex-direction:column;gap:8px';
+  pasteSheet.innerHTML = `
+    <div style="color:#bbb;font-size:12px">Long-press the box, choose Paste, then Send. It is typed into the page.</div>
+    <textarea data-bp="paste-text" rows="3" autocomplete="off" autocapitalize="off" spellcheck="false"
+      style="width:100%;box-sizing:border-box;font-size:16px;background:#111;color:#eee;border:1px solid #444;border-radius:8px;padding:8px"></textarea>
+    <div style="display:flex;justify-content:flex-end;gap:8px">
+      <button data-bp="paste-cancel" style="background:none;border:1px solid #555;color:#ddd;border-radius:6px;padding:8px 14px;cursor:pointer">Cancel</button>
+      <button data-bp="paste-send" style="background:#3a7ae0;border:none;color:#fff;border-radius:6px;padding:8px 18px;cursor:pointer">Send</button>
+    </div>`;
+  box0.appendChild(pasteSheet);
+  const pasteText = pasteSheet.querySelector('[data-bp="paste-text"]');
+  const hideLongPress = () => { clearTimeout(lpHideTimer); lpMenu.style.display = 'none'; };
+  const openPasteSheet = () => {
+    hideLongPress();
+    pasteText.value = '';
+    pasteSheet.style.display = 'flex';
+    pasteText.focus();
+  };
+  const closePasteSheet = () => { pasteSheet.style.display = 'none'; pasteText.blur(); };
+  pasteSheet.querySelector('[data-bp="paste-cancel"]').onclick = closePasteSheet;
+  pasteSheet.querySelector('[data-bp="paste-send"]').onclick = () => {
+    const t = pasteText.value;
+    closePasteSheet();
+    if (t) _bpSend({ type: 'text', text: t });
+  };
+  const pasteFromClipboard = async () => { if (!(await _bpPasteViaApi())) openPasteSheet(); };
+  const showLongPress = (t, cx, cy) => {
+    if (!t || t.long) return;
+    t.long = true;
+    // Click first so the remote field under the finger is focused when Paste lands.
+    const c = _bpCoords(img, { clientX: cx, clientY: cy });
+    _bpSend({ type: 'mouse', action: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...c });
+    _bpSend({ type: 'mouse', action: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, ...c });
+    const r = box0.getBoundingClientRect();
+    lpMenu.style.display = 'flex';
+    lpMenu.style.left = Math.max(4, Math.min(r.width - lpMenu.offsetWidth - 4, cx - r.left - lpMenu.offsetWidth / 2)) + 'px';
+    lpMenu.style.top = Math.max(4, cy - r.top - lpMenu.offsetHeight - 16) + 'px';
+    try { if (navigator.vibrate) navigator.vibrate(12); } catch (e) {}
+    clearTimeout(lpHideTimer); lpHideTimer = setTimeout(hideLongPress, 7000);
+  };
+  lpMenu.querySelector('[data-bp="lp-paste"]').onclick = () => { hideLongPress(); pasteFromClipboard(); };
+  lpMenu.querySelector('[data-bp="lp-copy"]').onclick = () => { hideLongPress(); _bpCopySelection(false); };
+
+  // ── mobile: the soft keyboard must not re-layout the pane ──
+  // mobile.js shrinks --mc-app-vh by the keyboard's height whenever a text field
+  // is focused (the hidden ime-shadow counts), so every keyboard open shrank the
+  // pane, re-fit the remote page to the shorter box (the ResizeObserver below
+  // reports it) and rescaled the frame under the user's finger. Freeze the pane
+  // at its full height while focus is inside it: the keyboard then overlays the
+  // bottom of the frame, the frame stays put, and the browser pans only if it
+  // must reveal the focused input. Thawed when focus leaves the pane, and on
+  // rotation (a stale frozen height would be the wrong shape).
+  if (mobile) {
+    let frozenH = 0, frozenW = 0;
+    const freeze = () => {
+      if (frozenH) return;
+      const h = Math.max(win.getBoundingClientRect().height, window.innerHeight);
+      if (h < 100) return;
+      frozenH = h; frozenW = window.innerWidth;
+      win.style.height = h + 'px';
+    };
+    const thaw = () => { if (!frozenH) return; frozenH = 0; win.style.height = 'var(--mc-app-vh, 100dvh)'; };
+    win.addEventListener('focusin', freeze);
+    win.addEventListener('focusout', () => setTimeout(() => { if (!win.contains(document.activeElement)) thaw(); }, 0));
+    if (_bpResizeHandler) window.removeEventListener('resize', _bpResizeHandler);
+    _bpResizeHandler = () => {
+      if (!frozenH || window.innerWidth === frozenW) return;
+      thaw();
+      setTimeout(() => { if (win.contains(document.activeElement)) freeze(); }, 400);
+    };
+    window.addEventListener('resize', _bpResizeHandler);
+  }
+
   // ── input forwarding ──
   img.addEventListener('mousedown', e => {
     e.preventDefault(); _bpPressed = true;
     // Keyboard focus goes to imeShadow, not img (see its declaration) — parked
     // at the click point so an OS IME's candidate window follows the caret.
     imeShadow.style.left = e.offsetX + 'px'; imeShadow.style.top = e.offsetY + 'px';
+    _resetShadow();
     imeShadow.focus();
     const c = _bpCoords(img, e);
     _bpSend({ type: 'mouse', action: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...c });
@@ -538,6 +665,9 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   // itself) appeared instead of anything the target page could ever show.
   img.addEventListener('contextmenu', e => {
     e.preventDefault();
+    // A finger long-press fires this too (Android's own timing). That is the
+    // paste/copy gesture, not a right click -- open the pane's menu instead.
+    if (touch || Date.now() - lastTouchAt < 1500) { if (touch) showLongPress(touch, e.clientX, e.clientY); return; }
     const c = _bpCoords(img, e);
     _bpSend({ type: 'mouse', action: 'click', button: 'right', clickCount: 1, ...c });
   });
@@ -604,11 +734,69 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     // progress, so let it through rather than preventDefault-ing it for no
     // reason.
     if (['Control', 'Alt', 'Meta', 'Shift'].includes(e.key)) return;
+    if (_bpIsTouchTyping()) {
+      // Soft keyboard: text is mirrored from the `input` event below, never from
+      // keydown (Gboard reports 229/'Unidentified' for ordinary letters, and
+      // preventDefault-ing those is what ate the typing). So leave every text
+      // key alone, and Backspace too while the shadow holds text -- the field
+      // deletes it and `input` forwards the deletion. Anything else (Enter, Tab,
+      // arrows, Backspace on an empty field) is a real key for the page.
+      if (e.keyCode === 229 || e.key === 'Unidentified' || e.key.length === 1) return;
+      if (e.key === 'Backspace' && imeShadow.value) return;
+      if (e.key === 'Backspace') _bpLastBackspaceAt = Date.now();
+      if (e.key === 'Enter') _resetShadow();     // a new line is a new typing context
+    }
     e.preventDefault();
     if (e.key.length === 1) _bpSend({ type: 'text', text: e.key });
     else if (_bpKeyCodes[e.key] != null)
       _bpSend({ type: 'key', key: e.key, code: e.code, keyCode: _bpKeyCodes[e.key] });
   });
+
+  // ── touch typing: the shadow input's VALUE is the source of truth ──
+  // `_shadowMirror` is what the page has been sent for the shadow's current
+  // value. Each `input` event sends the diff against it (see _bpDiffEdit), so a
+  // word Gboard keeps "composing" until space reaches the page letter by letter
+  // (an email or password with no space would otherwise never commit), a
+  // suggestion pick replaces rather than doubles, and Backspace deletes one.
+  // The shadow is emptied a beat after typing stops (never mid-composition) so
+  // it can't grow, and on every new tap so a stale word can't be autocorrected
+  // into text that now belongs to a different field.
+  let _shadowMirror = '', _shadowComposing = false, _shadowResetTimer = null, _bpLastBackspaceAt = 0;
+  const _resetShadow = () => {
+    clearTimeout(_shadowResetTimer);
+    if (_shadowComposing) return;
+    imeShadow.value = ''; _shadowMirror = '';
+  };
+  const _scheduleShadowReset = () => {
+    clearTimeout(_shadowResetTimer);
+    _shadowResetTimer = setTimeout(_resetShadow, 1500);
+  };
+  imeShadow.addEventListener('input', () => {
+    if (!_bpIsTouchTyping()) return;
+    const next = imeShadow.value;
+    const d = _bpDiffEdit(_shadowMirror, next);
+    _shadowMirror = next;
+    if (d.del || d.text) _bpSend({ type: 'edit', delete: d.del, text: d.text });
+    _scheduleShadowReset();
+  });
+  // Gboard's Backspace on an EMPTY field changes no value, so no `input` fires;
+  // it arrives as beforeinput deleteContentBackward (keydown 229) instead. Same
+  // for a keyboard "Enter" delivered as a line break. The 80ms guard stops a
+  // device that reports BOTH this and a real Backspace keydown from deleting twice.
+  imeShadow.addEventListener('beforeinput', e => {
+    if (!_bpIsTouchTyping()) return;
+    if (e.inputType === 'deleteContentBackward' && !imeShadow.value) {
+      if (Date.now() - _bpLastBackspaceAt < 80) return;
+      _bpLastBackspaceAt = Date.now();
+      _bpSend({ type: 'key', key: 'Backspace', code: 'Backspace', keyCode: 8 });
+    } else if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') {
+      e.preventDefault();
+      _bpSend({ type: 'key', key: 'Enter', code: 'Enter', keyCode: 13 });
+      _resetShadow();
+    }
+  });
+  imeShadow.addEventListener('compositionstart', () => { _shadowComposing = true; });
+  imeShadow.addEventListener('focusout', () => { _shadowComposing = false; });
 
   // ── IME composition (gap #7) — CJK and other composed input. imeShadow is a
   // real editable <input> (see its declaration) because Chromium only ever
@@ -618,10 +806,15 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   // UI tracks it; 'end' commits the final text via insertText. imeShadow's
   // own value is cleared after commit so it never accumulates text the pane
   // has already forwarded.
+  // On a touch device the `input` mirror above already delivered everything the
+  // composition produced, so forwarding it here too would double-send.
   imeShadow.addEventListener('compositionupdate', e => {
+    if (_bpIsTouchTyping()) return;
     _bpSend({ type: 'ime', phase: 'update', text: e.data || '' });
   });
   imeShadow.addEventListener('compositionend', e => {
+    _shadowComposing = false;
+    if (_bpIsTouchTyping()) { _scheduleShadowReset(); return; }
     _bpSend({ type: 'ime', phase: 'end', text: e.data || '' });
     imeShadow.value = '';
   });
@@ -640,18 +833,23 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   // ── touch: drag-to-scroll, tap-to-click (mouse events don't map on phones) ──
   // preventDefault on move/end also suppresses the synthetic mouse events so a
   // scroll isn't mis-fired as a click.
-  let touch = null;
   img.addEventListener('touchstart', e => {
+    clearTimeout(lpTimer);
     if (e.touches.length !== 1) { touch = null; return; }
     const t = e.touches[0];
-    touch = { x: t.clientX, y: t.clientY, sx: t.clientX, sy: t.clientY, moved: false };
-    imeShadow.focus();
+    touch = { x: t.clientX, y: t.clientY, sx: t.clientX, sy: t.clientY, moved: false, long: false };
+    lastTouchAt = Date.now();
+    hideLongPress();
+    // NOT imeShadow.focus() here: focusing on finger-DOWN opened the keyboard the
+    // instant a long-press began, which resized the screen and slid the target
+    // out from under the finger. Focus moves to touchend, and only for a tap.
+    lpTimer = setTimeout(() => { if (touch && !touch.moved) showLongPress(touch, touch.sx, touch.sy); }, 500);
   }, { passive: true });
   img.addEventListener('touchmove', e => {
     if (!touch || e.touches.length !== 1) return;
     e.preventDefault();
     const t = e.touches[0], c = _bpContentRect(img);
-    if (Math.abs(t.clientX - touch.sx) > 6 || Math.abs(t.clientY - touch.sy) > 6) touch.moved = true;
+    if (Math.abs(t.clientX - touch.sx) > 6 || Math.abs(t.clientY - touch.sy) > 6) { touch.moved = true; clearTimeout(lpTimer); }
     // finger up → content scrolls down: deltaY = (prev - current), scaled to page px.
     // One uniform scale (not separate w/h ratios) -- the content rect never
     // distorts the frame's aspect, so x and y scale by the same factor.
@@ -663,13 +861,27 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     touch.x = t.clientX; touch.y = t.clientY;
   }, { passive: false });
   img.addEventListener('touchend', e => {
-    if (touch && !touch.moved) {  // a tap → click at the start point
+    clearTimeout(lpTimer);
+    lastTouchAt = Date.now();
+    if (touch && !touch.moved && !touch.long) {  // a tap → click at the start point
+      // Suppress the synthesized mousedown/up that would follow: the pane's
+      // mousedown handler would send the same press a second time (a double
+      // click -- a checkbox tapped once toggled twice).
+      if (e.cancelable) e.preventDefault();
       const c = _bpCoords(img, { clientX: touch.sx, clientY: touch.sy });
       _bpSend({ type: 'mouse', action: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...c });
       _bpSend({ type: 'mouse', action: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, ...c });
+      // Keyboard focus, as the suppressed mousedown used to do it.
+      const r = img.getBoundingClientRect();
+      imeShadow.style.left = (touch.sx - r.left) + 'px'; imeShadow.style.top = (touch.sy - r.top) + 'px';
+      _resetShadow();
+      imeShadow.focus();
+    } else if (touch && touch.long && e.cancelable) {
+      e.preventDefault();                        // no synthesized click after a long-press
     }
     touch = null;
   });
+  img.addEventListener('touchcancel', () => { clearTimeout(lpTimer); touch = null; });
 
   // ── frame stream ──
   _bpES = new EventSource((window.API_BASE || '') + '/api/browser/stream?session_id=' + _bpSession);
