@@ -36,12 +36,21 @@ def test_iframe_gets_desktop_override_on_a_desktop_pane():
     assert br._guard_ua_override(s, 'page') == _DESKTOP
 
 
-def test_iframe_follows_mobile_mode_page_keeps_desktop():
+def test_iframe_and_page_follow_mobile_mode():
     s = {'ua_override': _DESKTOP, 'device_mode': 'mobile'}
-    ua = br._guard_ua_override(s, 'iframe')['userAgent']
-    assert 'Mobile' in ua and 'Chrome/153.0.0.0' in ua
-    # Pages: unchanged pre-MC-992 behaviour, the reader applies mobile itself.
+    for kind in ('iframe', 'page'):
+        ua = br._guard_ua_override(s, kind)['userAgent']
+        assert 'Mobile' in ua and 'Chrome/153.0.0.0' in ua
+    # A page used to keep the desktop override "because the reader applies mobile
+    # itself" -- but the guard is attached first and its override wins, so every
+    # request of a mobile pane said Windows (Ron, 2026-10-02: Google served the
+    # desktop site). The guard must carry the mode itself.
+
+
+def test_desktop_site_keeps_the_desktop_ua_in_mobile_mode():
+    s = {'ua_override': _DESKTOP, 'device_mode': 'mobile', 'desktop_site': True}
     assert br._guard_ua_override(s, 'page') == _DESKTOP
+    assert br._guard_ua_override(s, 'iframe') == _DESKTOP
 
 
 def test_workers_are_released_never_overridden():

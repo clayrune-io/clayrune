@@ -135,21 +135,65 @@ const _bpKeyCodes = {
 // typing. A request that hangs is aborted after 5s so one stuck POST cannot
 // freeze typing. NOTHING typed is logged here or server-side -- this carries
 // passwords.
-const _BP_ORDERED = new Set(['text', 'key', 'ime', 'edit']);
+const _BP_ORDERED = new Set(['text', 'key', 'ime', 'edit', 'zoom', 'site']);
 const _BP_ORDERED_MOUSE = new Set(['mousePressed', 'mouseReleased', 'click']);
-let _bpOrderedChain = Promise.resolve();
+const _BP_EDIT_MAX_BACKSPACES = 256;   // the server clamps one `edit` to this many
+const _bpOrderedQueue = [];
+let _bpOrderedBusy = false;
+
+// Two queued text bodies -> one that does the same thing, or null. While a POST
+// is in flight the next keystrokes pile up behind it; over a tunnel a POST costs
+// a whole round trip, so sending each as its own request made the Nth letter
+// appear ~N round trips late (12 characters took 4-6s on the emulator, measured
+// 2026-10-02). `b` runs after `a`, so b's Backspaces eat a's tail first.
+//   text+text -> text (concatenated);  edit+edit -> edit.
+// Code points throughout, like _bpDiffEdit: an emoji is one Backspace.
+function _bpMergeTextBodies(a, b) {
+  if (a.session_id !== b.session_id || a.type !== b.type) return null;
+  // A pinch streams absolute targets: only the newest matters.
+  if (a.type === 'zoom' || a.type === 'site') return b;
+  if (a.type === 'text') return { ...a, text: (a.text || '') + (b.text || '') };
+  if (a.type !== 'edit') return null;
+  const aText = Array.from(a.text || ''), bBack = b.delete || 0;
+  const back = (a.delete || 0) + Math.max(0, bBack - aText.length);
+  if (back > _BP_EDIT_MAX_BACKSPACES) return null;
+  return { ...a, delete: back, text: aText.slice(0, Math.max(0, aText.length - bBack)).join('') + (b.text || '') };
+}
+
+// Order is the contract: ONE request in flight, the next starting once it
+// settled, and only ADJACENT text bodies merge -- a key / press / release
+// between them is a barrier nothing crosses. A request that hangs is aborted
+// after 5s so one stuck POST cannot freeze typing.
+function _bpPumpOrdered() {
+  if (_bpOrderedBusy) return;
+  _bpOrderedBusy = true;
+  const url = (window.API_BASE || '') + '/api/browser/input';
+  (async () => {
+    try {
+      while (_bpOrderedQueue.length) {
+        let body = _bpOrderedQueue.shift();
+        for (let m; _bpOrderedQueue.length && (m = _bpMergeTextBodies(body, _bpOrderedQueue[0])); ) {
+          body = m; _bpOrderedQueue.shift();
+        }
+        try {
+          _bpNoteSendFailure(await fetch(url, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+            signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined,
+          }));
+        } catch (e) { /* aborted or offline: drop this one, keep typing alive */ }
+      }
+    } finally { _bpOrderedBusy = false; }
+  })();
+}
+
 function _bpSend(body) {
   if (!_bpSession) return;
-  const init = {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: _bpSession, ...body }),
-  };
-  const url = (window.API_BASE || '') + '/api/browser/input';
+  const full = { session_id: _bpSession, ...body };
   const ordered = _BP_ORDERED.has(body.type) || (body.type === 'mouse' && _BP_ORDERED_MOUSE.has(body.action));
-  if (!ordered) { fetch(url, init).catch(() => {}); return; }
-  _bpOrderedChain = _bpOrderedChain.then(() => fetch(url, {
-    ...init, signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined,
-  })).then(_bpNoteSendFailure).catch(() => {});
+  if (ordered) { _bpOrderedQueue.push(full); _bpPumpOrdered(); return; }
+  fetch((window.API_BASE || '') + '/api/browser/input', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(full),
+  }).catch(() => {});
 }
 
 // A rejected input POST used to vanish: a server that predates the `edit` kind
@@ -239,6 +283,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   const pid = projectId || window.currentProjectId ||
     (typeof activeProjectId !== 'undefined' ? activeProjectId : null) || 'mission_control';
   let curProfile = null;
+  let desktopSite = false;   // the session's "Desktop site" choice; lives server-side, persists with the session
   if (sessionId) {
     // Attach mode: adopt the existing session, read its current URL for the bar.
     _bpSession = sessionId;
@@ -246,7 +291,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       const st = await fetch((window.API_BASE || '') +
         `/api/project/${encodeURIComponent(pid)}/browser/status`).then(r => r.json());
       const s = (st.sessions || []).find(x => x.session_id === sessionId);
-      if (s) { curProfile = s.profile || null; if (!url) url = s.url; }
+      if (s) { curProfile = s.profile || null; desktopSite = !!s.desktop_site; if (!url) url = s.url; }
     } catch (e) {}
   } else {
     let data;
@@ -266,6 +311,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     }
     _bpSession = data.session_id;
     curProfile = data.profile || null;
+    desktopSite = !!data.desktop_site;
   }
 
   // ── DOM ──
@@ -371,6 +417,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       <div data-bp="mobmenu" style="display:none;flex-direction:column;position:absolute;right:6px;bottom:calc(100% + 6px);min-width:200px;background:#2a2a2a;border:1px solid #444;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.5);overflow:hidden;z-index:6;font-size:13px;color:#eee">
         <button data-bp="mm-paste" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px">&#128203; Paste clipboard</button>
         <button data-bp="mm-copy" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px">${_BP_COPY_ICON_SVG} Copy selection</button>
+        <button data-bp="mm-desktop" role="menuitemcheckbox" aria-checked="false" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px;border-top:1px solid #3a3a3a"><span data-bp="mm-desktop-box" style="display:inline-block;width:16px;height:16px;border:2px solid #888;border-radius:3px;box-sizing:border-box;text-align:center;line-height:12px;font-size:12px;color:#111"></span> Desktop site</button>
         <button data-bp="mm-profile" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;border-top:1px solid #3a3a3a">Profile: <span data-bp="profile" style="color:#9ecb9e"></span></button>
         <button data-bp="close" style="background:none;border:none;color:#ff8a80;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px;border-top:1px solid #3a3a3a">&#10005; Close browser</button>
       </div>
@@ -514,6 +561,21 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     // reflexive "go back" killed the session (Ron, 2026-10-02).
     $('hide').onclick = () => { menu.style.display = 'none'; _bpMinimizePane(win, pid); };
     $('mm-profile').onclick = (e) => { e.stopPropagation(); menu.style.display = 'none'; _bpToggleSessionMenu(win, pid); };
+    // "Desktop site", like Chrome's: the server swaps the UA and reloads the page
+    // under it; the choice is remembered on the session, not in this tab.
+    const paintDesktopSite = () => {
+      $('mm-desktop').setAttribute('aria-checked', desktopSite ? 'true' : 'false');
+      const box = $('mm-desktop-box');
+      box.textContent = desktopSite ? '✓' : '';
+      box.style.background = desktopSite ? '#9ecb9e' : 'none';
+    };
+    paintDesktopSite();
+    $('mm-desktop').onclick = () => {
+      desktopSite = !desktopSite;
+      paintDesktopSite();
+      menu.style.display = 'none';
+      _bpSend({ type: 'site', desktop: desktopSite });
+    };
 
     // ── mobile: tab switcher screen, not a strip — see _bpRenderMobileTabSwitcher.
     const switcher = $('tabswitch');
@@ -586,6 +648,19 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   // clipboard when the browser allows it and otherwise opens the paste sheet:
   // a plain textarea, which every phone lets you long-press -> Paste into.
   let touch = null, lastTouchAt = 0, lpTimer = null, lpHideTimer = null;
+  // Pinch-to-zoom: the page's own scale (reported by each frame), and the
+  // gesture in flight. See _zoom_commands in browser_routes.py for why this is a
+  // real page zoom and not a scaled picture.
+  let pageScale = 1, pinch = null;
+  const _pinchGeom = (e) => {
+    const a = e.touches[0], b = e.touches[1];
+    return { d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1,
+             cx: (a.clientX + b.clientX) / 2, cy: (a.clientY + b.clientY) / 2 };
+  };
+  const _sendPinch = (p) => {
+    p.sentAt = Date.now();
+    _bpSend({ type: 'zoom', scale: p.target, ..._bpCoords(img, { clientX: p.cx, clientY: p.cy }) });
+  };
   const box0 = img.parentElement;
   const lpBtn = 'background:none;border:none;color:#eee;padding:12px 18px;font-size:15px;cursor:pointer;touch-action:manipulation';
   const lpMenu = document.createElement('div');
@@ -880,6 +955,13 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   // scroll isn't mis-fired as a click.
   img.addEventListener('touchstart', e => {
     clearTimeout(lpTimer);
+    if (e.touches.length === 2) {
+      hideLongPress();
+      pinch = { ..._pinchGeom(e), s0: pageScale, d0: 0, target: pageScale, sentAt: 0, dirty: false };
+      pinch.d0 = pinch.d;
+      touch = null;
+      return;
+    }
     if (e.touches.length !== 1) { touch = null; return; }
     const t = e.touches[0];
     touch = { x: t.clientX, y: t.clientY, sx: t.clientX, sy: t.clientY, moved: false, long: false };
@@ -891,6 +973,22 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     lpTimer = setTimeout(() => { if (touch && !touch.moved) showLongPress(touch, touch.sx, touch.sy); }, 500);
   }, { passive: true });
   img.addEventListener('touchmove', e => {
+    if (pinch && e.touches.length === 2) {
+      e.preventDefault();
+      const g = _pinchGeom(e), c = _bpContentRect(img);
+      // The fingers' midpoint moving pans (same wheel path as a one-finger drag);
+      // their spread changing zooms, about that midpoint.
+      if (Math.abs(g.cx - pinch.cx) > 0.5 || Math.abs(g.cy - pinch.cy) > 0.5) {
+        _bpSend({ type: 'wheel', ..._bpCoords(img, { clientX: g.cx, clientY: g.cy }),
+                  deltaX: (pinch.cx - g.cx) / c.scale, deltaY: (pinch.cy - g.cy) / c.scale });
+      }
+      pinch.cx = g.cx; pinch.cy = g.cy;
+      pinch.target = Math.max(0.25, Math.min(5, pinch.s0 * g.d / pinch.d0));
+      pinch.dirty = true;
+      // ~15 requests a second: each is a POST, over a tunnel a round trip.
+      if (Date.now() - pinch.sentAt > 70) { pinch.dirty = false; _sendPinch(pinch); }
+      return;
+    }
     if (!touch || e.touches.length !== 1) return;
     e.preventDefault();
     const t = e.touches[0], c = _bpContentRect(img);
@@ -908,6 +1006,12 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   img.addEventListener('touchend', e => {
     clearTimeout(lpTimer);
     lastTouchAt = Date.now();
+    if (pinch) {                    // the last send of a gesture must not be a throttled-away one
+      if (pinch.dirty) _sendPinch(pinch);
+      if (e.touches.length < 2) pinch = null;
+      if (e.cancelable) e.preventDefault();
+      return;
+    }
     if (touch && !touch.moved && !touch.long) {  // a tap → click at the start point
       // Suppress the synthesized mousedown/up that would follow: the pane's
       // mousedown handler would send the same press a second time (a double
@@ -933,7 +1037,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     }
     touch = null;
   });
-  img.addEventListener('touchcancel', () => { clearTimeout(lpTimer); touch = null; });
+  img.addEventListener('touchcancel', () => { clearTimeout(lpTimer); touch = null; pinch = null; });
 
   // ── frame stream ──
   _bpES = new EventSource((window.API_BASE || '') + '/api/browser/stream?session_id=' + _bpSession);
@@ -961,6 +1065,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       _bpViewW = d.w; _bpViewH = d.h;
       img.style.aspectRatio = d.w + '/' + d.h;
     }
+    if (d.s) pageScale = d.s;
     if (d.img) { img.src = 'data:image/jpeg;base64,' + d.img; spin.style.color = '#4caf50'; }
     if (d.url && document.activeElement !== urlInput) urlInput.value = _bpDisplayUrl(d.url);
     if (d.status && d.status !== 'running') {
@@ -1738,6 +1843,7 @@ if (document.readyState === 'loading') {
   setTimeout(() => { _bpRestoreOnLoad(); _bpStartPoll(); }, 0);
 }
 
+window._bpMergeTextBodies = _bpMergeTextBodies;   // pinned by tools/smoke/browser-pane-mobile-site.mjs
 window.openBrowserPane = openBrowserPane;
 window.closeBrowserPane = closeBrowserPane;
 // Attach the UI pane to an already-running session (agent-launched via API).

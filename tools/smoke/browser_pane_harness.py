@@ -80,6 +80,8 @@ def _session_state(sid):
         return {'error': 'unknown session'}, 404
     return {'view': s.get('view'), 'frame': [s.get('frame_w'), s.get('frame_h')],
             'page_scale': s.get('page_scale'),
+            'desktop_site': s.get('desktop_site'), 'device_mode': s.get('device_mode'),
+            'mobile': s.get('mobile'), 'ua': (s.get('ua_override') or {}).get('userAgent'),
             'window_chrome': {str(k): v for k, v in (s.get('window_chrome') or {}).items()},
             'error': s.get('error'), 'dpr': s.get('dpr')}
 
@@ -91,7 +93,11 @@ def _registered():
 
 @app.route('/')
 def _shell():
-    return """<!doctype html><body style="margin:0;background:#333">
+    # The viewport meta is what the real app's index.html carries: without it a
+    # phone WebView lays the shell out ~980px wide and `_bpIsMobile()` reads
+    # false. (Playwright desktop/hasTouch smokes are unaffected by it.)
+    return """<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
+    <body style="margin:0;background:#333">
     <div id="modal-layer"></div><div id="minimized-tray"></div>
     <script>window.nextModalZ = 100;</script>
     <script type="module" src="/static/js/browser-pane.js"></script></body>"""
@@ -107,7 +113,20 @@ PAGES = {
       <body style="margin:0;background:#222;color:#fff;font:40px sans-serif">
       <textarea id="q" style="position:absolute;left:500px;top:300px;width:300px;height:100px"
         oninput="document.getElementById('out').textContent='typed:'+this.value"></textarea>
-      <div id="out" style="position:absolute;left:20px;top:20px">typed:</div></body>""",
+      <div id="out" style="position:absolute;left:20px;top:20px">typed:</div>
+      <div id="vv" style="position:absolute;left:20px;top:80px;font-size:20px"></div>
+      <script>setInterval(function(){var v=window.visualViewport;
+        document.getElementById('vv').textContent='vv:'+[v.pageLeft,v.pageTop,v.scale,scrollX,scrollY,innerWidth,innerHeight].map(function(x){return Math.round(x*100)/100}).join(',')},100)</script></body>""",
+    # Typing probe: a full-page textarea whose page background changes colour
+    # with the number of characters typed, so a screencast frame says exactly how
+    # many keystrokes it contains. Has a viewport meta (no page-scale zoom).
+    '/type.html': b"""<!doctype html><title>Type</title>
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      <body style="margin:0;background:rgb(0,0,0)">
+      <textarea id="q" autofocus style="position:fixed;inset:0;width:100%;height:100%;border:0;
+        outline:0;background:transparent;color:#fff;font:24px sans-serif;resize:none"
+        oninput="var n=this.value.length;document.body.style.background=
+          'rgb('+(n*37)%256+','+(n*91)%256+','+(n*53)%256+')'"></textarea></body>""",
     '/popup.html': b"""<!doctype html><title>Opener</title>
       <body style="margin:0;background:#2e7d32;color:#fff;font:40px sans-serif">
       <button id="b" style="font-size:40px"
@@ -116,9 +135,35 @@ PAGES = {
 }
 
 
+# /ua.html answers by User-Agent, the way Google does: a phone UA gets a page
+# with a viewport meta, anything else gets the desktop one (NO meta, so it is
+# laid out 980px wide). `ua_hits` records which one each request got, in order,
+# so a smoke can see a desktop load FOLLOWED BY a mobile one (the reload).
+ua_hits = []
+ua_strings = []
+UA_MOBILE = b"""<!doctype html><title>UA</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <body style="margin:0;background:#00695c;color:#fff;font:40px sans-serif"><h1 id="site">MOBILE-SITE</h1></body>"""
+UA_DESKTOP = b"""<!doctype html><title>UA</title>
+  <body style="margin:0;background:#4527a0;color:#fff;font:40px sans-serif"><h1 id="site">DESKTOP-SITE</h1>
+  <div style="width:980px;height:1400px"></div></body>"""
+
+
+@app.route('/_harness/uahits')
+def _uahits():
+    return {'hits': list(ua_hits), 'uas': list(ua_strings)}
+
+
 class _Pages(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        body = PAGES.get(self.path.split('?')[0])
+        path = self.path.split('?')[0]
+        if path == '/ua.html':
+            mobile = 'Mobile' in (self.headers.get('User-Agent') or '')
+            ua_hits.append('mobile' if mobile else 'desktop')
+            ua_strings.append(self.headers.get('User-Agent'))
+            body = UA_MOBILE if mobile else UA_DESKTOP
+        else:
+            body = PAGES.get(path)
         self.send_response(200 if body else 404)
         self.send_header('Content-Type', 'text/html')
         self.end_headers()
