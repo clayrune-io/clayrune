@@ -220,10 +220,15 @@ def test_engines_listed_with_connected_status_and_no_secret(client):
     r = client.get('/api/desk/engines')
     assert r.status_code == 200
     ids = {e['id']: e for e in r.get_json()['engines']}
-    assert set(ids) == {'higgsfield', 'google', 'openai'}
+    assert set(ids) == {'higgsfield', 'higgsfield_mcp', 'google', 'openai'}
+    keyed = {k: v for k, v in ids.items() if k != 'higgsfield_mcp'}
     assert all(e['connected'] == {'ready': True, 'exists': True, 'vault_entry': e['auth']['vault_entry'], 'reason': None}
-               for e in ids.values())
-    assert {e['auth']['vault_entry'] for e in ids.values()} == {'higgsfield', 'gemini-api', 'openai-api'}
+               for e in keyed.values())
+    assert {e['auth']['vault_entry'] for e in keyed.values()} == {'higgsfield', 'gemini-api', 'openai-api'}
+    # The sign-in route has no key in the vault: it reads as not signed in, with the state for the card.
+    assert ids['higgsfield_mcp']['connected']['ready'] is False
+    assert ids['higgsfield_mcp']['connected']['state'] == 'not_connected'
+    assert ids['higgsfield_mcp']['currency'] == 'credits' and ids['higgsfield']['currency'] == 'usd'
     assert all('vendor' not in m for e in ids.values() for m in e['models'])
     veo = next(m for m in ids['google']['models'] if m['model_id'] == 'veo-3.1-generate-preview')
     assert veo['status'] == 'preview' and veo['aspect_ratios'] == ['9:16', '16:9']

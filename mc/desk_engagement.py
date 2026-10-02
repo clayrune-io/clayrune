@@ -71,6 +71,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from mc import desk as _desk
+from mc import desk_oauth as _oauth
 from mc import secrets_store
 from mc.core import _log
 
@@ -201,6 +202,11 @@ class XReader(Reader):
         except Exception as e:
             return {'connected': False, 'short': 'no API token',
                     'reason': f'vault unreadable: {e}'}
+        if _oauth.SERVICES['x']['vault'] in names:      # signed in from Connections
+            st = _oauth.status('x')
+            if st['state'] == 'connected':
+                return {'connected': True, 'reason': None, 'short': None}
+            return {'connected': False, 'short': 'sign in again', 'reason': st['reason']}
         if X_READ_SECRET not in names:
             return {'connected': False, 'short': 'no API token',
                     'reason': f'no X read credential (vault entry {X_READ_SECRET!r} is not set)'}
@@ -210,8 +216,8 @@ class XReader(Reader):
         if self._token:
             return self._token
         try:
-            return secrets_store.get_secret_value(X_READ_SECRET, consumer='desk_engagement')
-        except secrets_store.SecretsError as e:
+            return _oauth.x_token(consumer='desk_engagement')
+        except (secrets_store.SecretsError, _oauth.OAuthError) as e:
             raise ReadError(f'credential unavailable: {e}') from e
 
     def fetch_mentions(self, *, since_id, known_posts):

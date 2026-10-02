@@ -3,13 +3,13 @@
 //
 // Three surfaces share this file because they share one server (mc/desk_engines.py)
 // and one rule: nothing here ever holds a credential. The page only learns, per
-// engine, whether its vault entry exists (`connected.ready` + the entry's NAME) —
-// a human creates the entry in Secrets, and nothing on this screen types one.
+// engine, whether it is connected (`connected.ready`); how to connect is the guided
+// flow in desk-v1-guides.js (sign in, or paste a key step by step).
 //
 //   connectionsHTML / bindConnections   Connections' "Generation engines": each
-//        engine, connected or not by vault name, and the per-job USD limit the
-//        user sets for it (human-only + the retyped passcode: raising it loosens
-//        a spending gate).
+//        engine with its guided Connect, and the per-job limit the user sets for
+//        it, in dollars or (Higgsfield sign-in) plan credits (human-only + the
+//        retyped passcode: raising it loosens a spending gate).
 //   mountVideoRender(host, {owner})     Studio's New video and the T5 director:
 //        engine + model picker, the estimate BEFORE Render, Render (passcode),
 //        job progress polled, the refusal reason when over a cap, the result.
@@ -27,6 +27,13 @@
   function _toast(msg) { if (window.DeskV1Kit && window.DeskV1Kit.toast) window.DeskV1Kit.toast(msg); }
   function _usd(n) { return n == null || isNaN(n) ? '—' : '$' + Number(n).toFixed(Number(n) < 1 ? 4 : 2).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1'); }
   function _uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+
+  // A plan-credit engine (Higgsfield sign-in) is priced in credits, every other in dollars.
+  function _credits(n) { return n == null || isNaN(n) ? '—' : Number(n).toFixed(2).replace(/\.?0+$/, '') + ' credits'; }
+  function _isCredits(e) { return !!e && e.currency === 'credits'; }
+  function _fmt(e, n) { return _isCredits(e) ? _credits(n) : _usd(n); }
+  // The number a render is priced at, in the engine's own unit.
+  function _amount(e, est) { return !est ? null : (_isCredits(e) ? est.credits : est.usd); }
 
   const POLL_MS = 3000;
   const RATIOS = ['16:9', '9:16', '1:1'];
@@ -53,69 +60,130 @@
   }
 
   // ── Connections ──────────────────────────────────────────────────────────
-  function _engineRowHTML(e) {
+  // One card per service. Higgsfield has two routes: signing in (the default; it
+  // spends the plan's credits) and an API key (Advanced; it spends dollars).
+  const _openGuides = new Set();      // engine ids whose guide is expanded; survives a repaint
+
+  function _stateWord(e) {
     const c = e.connected || {};
-    const kinds = Array.from(new Set((e.models || []).map((m) => m.kind))).join(' + ');
-    const lim = e.job_limit_usd;
-    return `<div class="desk-v1-conn-row desk-v1-engine-row" data-conn-engine="${esc(e.id)}">
-      <div class="desk-v1-conn-main">
-        <strong>${esc(e.label)}</strong> <span class="desk-v1-conn-kind">${esc(kinds)}</span>
-        <div class="desk-v1-conn-status" data-engine-status data-ready="${c.ready ? 'true' : 'false'}">
-          ${c.ready ? 'Connected' : 'Not connected'} · vault entry <code>${esc(c.vault_entry || '')}</code>${c.ready ? '' : ` · ${esc(c.reason || '')}`}
-        </div>
-        <div class="desk-v1-engine-limit">
-          <label>Per-job limit (USD)
-            <input type="number" min="0" step="0.5" class="desk-v1-sb-edit-input" data-engine-limit-input
-              value="${lim == null ? '' : esc(lim)}" placeholder="not set" aria-label="Per-job limit in USD for ${esc(e.label)}">
+    if (c.ready) return { key: 'ok', word: 'Connected' };
+    if (c.state === 'needs_signin') return { key: 'reauth', word: 'Needs sign-in' };
+    return { key: 'off', word: 'Not connected' };
+  }
+
+  function _limitHTML(e) {
+    const credits = _isCredits(e);
+    const lim = credits ? e.job_limit_credits : e.job_limit_usd;
+    return `<div class="desk-v1-engine-limit">
+          <label>${credits ? 'Most one job may spend (credits)' : 'Most one job may spend (USD)'}
+            <input type="number" min="0" step="${credits ? '1' : '0.5'}" class="desk-v1-sb-edit-input" data-engine-limit-input
+              value="${lim == null ? '' : esc(lim)}" placeholder="not set" aria-label="Per-job limit in ${credits ? 'credits' : 'USD'} for ${esc(e.label)}">
           </label>
           <button type="button" class="btn-secondary" data-engine-limit-save>Save limit</button>
           <span class="desk-v1-engine-limit-note" data-engine-limit-note>${lim == null
             ? 'Not set: a Studio render is refused until you set one (nothing else caps it).'
-            : `A render over ${_usd(lim)} is refused before anything is sent.`}</span>
+            : `A render over ${_fmt(e, lim)} is refused before anything is sent.`}</span>
+        </div>`;
+  }
+
+  function _engineRowHTML(e) {
+    const c = e.connected || {};
+    const st = _stateWord(e);
+    const kinds = Array.from(new Set((e.models || []).map((m) => m.kind))).join(' + ');
+    const oauth = e.auth && e.auth.kind === 'oauth';
+    const guide = window.DeskV1Guides && window.DeskV1Guides.keyGuideFor(e.id);
+    const open = _openGuides.has(e.id);
+    let action = '';
+    if (oauth) {
+      action = c.ready
+        ? '<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-engine-signin>Sign in again</button><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-engine-disconnect>Disconnect</button>'
+        : `<button type="button" class="desk-v1-conn-btn" data-engine-signin>${st.key === 'reauth' ? 'Sign in again' : 'Sign in with Higgsfield'}</button>`;
+    } else if (guide) {
+      action = `<button type="button" class="desk-v1-conn-btn${c.ready ? ' desk-v1-conn-btn-inline' : ''}" data-engine-guide aria-expanded="${open}">${open ? 'Hide steps' : (c.ready ? 'Replace key' : 'Connect')}</button>`;
+    }
+    return `<div class="desk-v1-conn-row desk-v1-engine-row" data-conn-engine="${esc(e.id)}" data-currency="${_isCredits(e) ? 'credits' : 'usd'}">
+      <div class="desk-v1-conn-main">
+        <strong>${esc(e.label)}</strong> <span class="desk-v1-conn-kind">${esc(kinds)}</span>
+        <div class="desk-v1-conn-status" data-engine-status data-ready="${c.ready ? 'true' : 'false'}" data-state="${st.key}">
+          ${esc(st.word)}${c.ready || !c.reason || !oauth ? '' : ` · ${esc(c.reason)}`}
         </div>
+        ${oauth ? `<div class="desk-v1-rules-hint">${c.ready ? 'Signed in. Renders use the credits in your Higgsfield plan.' : 'Uses the credits in your Higgsfield plan. Nothing is charged in dollars.'}</div>` : ''}
+        <div class="desk-v1-guide-status" data-guide-status role="status"></div>
+        ${_limitHTML(e)}
+        ${guide && open ? window.DeskV1Guides.keyGuideHTML(e.id, !!c.ready) : ''}
       </div>
-      ${c.ready
-        ? '<button type="button" class="desk-v1-conn-btn" data-engine-edit>Edit</button>'
-        : '<button type="button" class="desk-v1-conn-btn" data-engine-connect>Connect ›</button>'}
+      ${action ? `<div class="desk-v1-conn-actions">${action}</div>` : ''}
     </div>`;
   }
 
   function connectionsHTML(engines) {
     if (!engines) return '<div class="desk-v1-stub-empty" data-engines-loading>Loading engines…</div>';
     if (!engines.length) return '<div class="desk-v1-stub-empty">No generation engines.</div>';
-    return engines.map(_engineRowHTML).join('');
+    const out = [];
+    const done = new Set();
+    engines.forEach((e) => {
+      if (done.has(e.id)) return;
+      const mates = e.group ? engines.filter((x) => x.group === e.group) : [e];
+      mates.forEach((x) => done.add(x.id));
+      if (mates.length === 1) { out.push(_engineRowHTML(e)); return; }
+      const main = mates.filter((x) => !x.advanced);
+      const adv = mates.filter((x) => x.advanced);
+      out.push(`<div class="desk-v1-conn-group" data-conn-group="${esc(e.group)}">${main.map(_engineRowHTML).join('')}
+        ${adv.length ? `<details class="desk-v1-conn-advanced" data-conn-advanced${adv.some((x) => _openGuides.has(x.id)) ? ' open' : ''}>
+          <summary>Advanced: use an API key instead</summary>
+          <div class="desk-v1-rules-hint">An API key is billed in dollars on your Higgsfield developer account, not from your plan credits.</div>
+          ${adv.map(_engineRowHTML).join('')}</details>` : ''}</div>`);
+    });
+    return out.join('');
   }
 
   function bindConnections(el, engines, repaint) {
+    const G = window.DeskV1Guides;
     (engines || []).forEach((e) => {
       const row = el.querySelector(`[data-conn-engine="${CSS.escape(e.id)}"]`);
       if (!row) return;
-      // Connect / Edit open the Secrets form with this engine's labels. The human
-      // types the value there and saves through the passcode-gated vault route;
-      // nothing on this screen holds or sends a credential.
-      const c = e.connected || {};
-      const openForm = (create) => {
-        if (e.credential && typeof window.openSecretEditor === 'function') window.openSecretEditor(c.vault_entry, { ...e.credential, create });
-        else if (typeof window.openSecretsVault === 'function') window.openSecretsVault();   // a server with no form spec
-      };
-      const connect = row.querySelector('[data-engine-connect]');
-      if (connect) connect.onclick = () => openForm(!c.exists);
-      const edit = row.querySelector('[data-engine-edit]');
-      if (edit) edit.onclick = () => openForm(false);
-      const save = row.querySelector('[data-engine-limit-save]');
       const note = row.querySelector('[data-engine-limit-note]');
+      const status = row.querySelector('[data-guide-status]');
+      const reload = () => list(null, { force: true }).then(() => repaint()).catch(() => repaint());
+      const signin = row.querySelector('[data-engine-signin]');
+      if (signin) signin.onclick = async () => {
+        signin.disabled = true;
+        const out = await G.signIn(e.auth.service, { say: (t) => { status.textContent = t; status.dataset.state = 'pending'; }, alive: () => row.isConnected });
+        if (!row.isConnected) return;
+        if (out.ok) { _toast('Higgsfield is connected'); reload(); return; }
+        status.textContent = out.message || ''; status.dataset.state = 'bad';
+        signin.disabled = false;
+      };
+      const off = row.querySelector('[data-engine-disconnect]');
+      if (off) off.onclick = async () => {
+        off.disabled = true;
+        try { await G.disconnect(e.auth.service); _toast('Higgsfield disconnected'); reload(); }
+        catch (err) { status.textContent = err && err.message ? err.message : String(err); status.dataset.state = 'bad'; off.disabled = false; }
+      };
+      const gbtn = row.querySelector('[data-engine-guide]');
+      if (gbtn) gbtn.onclick = () => { if (_openGuides.has(e.id)) _openGuides.delete(e.id); else _openGuides.add(e.id); repaint(); };
+      if (G && G.keyGuideFor(e.id) && _openGuides.has(e.id)) {
+        // A saved key flips the card to Connected in place (the guide stays open for the test).
+        G.bindKeyGuide(row, e.id, { onSaved: () => list(null, { force: true }).then((fresh) => {
+          Object.assign(e, fresh.find((x) => x.id === e.id) || {});
+          const s = row.querySelector('[data-engine-status]');
+          if (s) { s.textContent = (e.connected && e.connected.ready) ? 'Connected' : 'Not connected'; s.dataset.ready = String(!!(e.connected && e.connected.ready)); s.dataset.state = (e.connected && e.connected.ready) ? 'ok' : 'off'; }
+        }).catch(() => {}) });
+      }
+      const save = row.querySelector('[data-engine-limit-save]');
       save.onclick = async () => {
         const raw = row.querySelector('[data-engine-limit-input]').value.trim();
-        const usd = raw === '' ? null : Number(raw);
-        if (usd !== null && !(usd > 0)) { note.textContent = 'Enter an amount above 0, or leave it empty to clear the limit.'; return; }
+        const val = raw === '' ? null : Number(raw);
+        if (val !== null && !(val > 0)) { note.textContent = 'Enter an amount above 0, or leave it empty to clear the limit.'; return; }
         save.disabled = true;
         try {
-          const out = await _humanPost('PUT', `/api/desk/engines/${encodeURIComponent(e.id)}/limit`, { job_limit_usd: usd }, {
-            title: usd == null ? 'Clear the per-job limit' : 'Set the per-job limit',
-            description: `Re-enter your dashboard passcode to ${usd == null ? 'clear' : 'set'} the per-job limit for ${e.label}${usd == null ? '' : ' to ' + _usd(usd)}. Renders over it are refused before anything is sent.`,
+          const out = await _humanPost('PUT', `/api/desk/engines/${encodeURIComponent(e.id)}/limit`, { job_limit_usd: val }, {
+            title: val == null ? 'Clear the per-job limit' : 'Set the per-job limit',
+            description: `Re-enter your dashboard passcode to ${val == null ? 'clear' : 'set'} the per-job limit for ${e.label}${val == null ? '' : ' to ' + _fmt(e, val)}. Renders over it are refused before anything is sent.`,
           });
-          e.job_limit_usd = out.job_limit_usd;
-          _toast(out.job_limit_usd == null ? `Cleared the ${e.label} limit` : `${e.label}: renders over ${_usd(out.job_limit_usd)} are refused`);
+          const now = _isCredits(e) ? out.job_limit_credits : out.job_limit_usd;
+          if (_isCredits(e)) e.job_limit_credits = now; else e.job_limit_usd = now;
+          _toast(now == null ? `Cleared the ${e.label} limit` : `${e.label}: renders over ${_fmt(e, now)} are refused`);
           repaint();
         } catch (err) {
           note.textContent = err && err.message ? err.message : String(err);
@@ -151,18 +219,21 @@
     </div>`;
   }
 
-  function _estimateHTML(st) {
+  function _estimateHTML(st, eng) {
     if (st.estimating) return '<div class="desk-v1-engine-est" data-eng-estimate data-state="pricing">Pricing this render…</div>';
     if (st.estimateError) return `<div class="desk-v1-engine-est" data-eng-estimate data-state="refused"><span data-eng-reason>${esc(st.estimateError)}</span></div>`;
     const e = st.estimate;
     if (!e) return '<div class="desk-v1-engine-est" data-eng-estimate data-state="none"></div>';
     const lines = [];
     if (e.plan) lines.push(`${e.plan.clips} clip${e.plan.clips === 1 ? '' : 's'}${e.plan.crop ? ', then cropped to 1:1' : ''}${e.plan.clips > 1 && !e.plan.crop ? ', then joined' : ''}`);
-    if (e.job_limit_usd != null) lines.push(`limit ${_usd(e.job_limit_usd)} per job`);
+    if (_isCredits(eng) ? e.job_limit_credits != null : e.job_limit_usd != null) lines.push(`limit ${_fmt(eng, _isCredits(eng) ? e.job_limit_credits : e.job_limit_usd)} per job`);
+    if (e.estimate && e.estimate.adjustments) {
+      Object.keys(e.estimate.adjustments).forEach((k) => lines.push(`${eng ? eng.label : 'The engine'} changed ${k}: ${typeof e.estimate.adjustments[k] === 'object' ? JSON.stringify(e.estimate.adjustments[k]) : e.estimate.adjustments[k]}`));
+    }
     if (e.budget) lines.push(`campaign budget left ${_usd(e.budget.remaining)}`);
     if (e.plan && e.plan.needs_ffmpeg && e.plan.ffmpeg_available === false) lines.push('ffmpeg is not installed on this machine: the clips are made and kept, and the render is held until you install it');
     return `<div class="desk-v1-engine-est" data-eng-estimate data-state="${e.refusal ? 'refused' : 'ok'}">
-      <div>Estimate <strong data-eng-usd>${esc(_usd(e.estimate && e.estimate.usd))}</strong>${e.estimate && e.estimate.approximate ? ' (approximate)' : ''}</div>
+      <div>Estimate <strong data-eng-usd>${esc(_fmt(eng, _amount(eng, e.estimate)))}</strong>${e.estimate && e.estimate.approximate ? ' (approximate)' : ''}</div>
       ${lines.length ? `<div class="desk-v1-engine-est-detail">${esc(lines.join(' · '))}</div>` : ''}
       ${e.refusal ? `<div class="desk-v1-engine-refusal" data-eng-reason>${esc(e.refusal.message)}</div>` : ''}
     </div>`;
@@ -173,7 +244,7 @@
     if (!r) return '';
     const word = { queued: 'Queued', rendering: 'Rendering', ready: 'Ready', held: 'Held', failed: 'Failed' }[r.status] || r.status;
     const p = r.progress || { ready: 0, total: 0 };
-    const bits = [`<div data-eng-render-status data-status="${esc(r.status)}">${r.status === 'rendering' || r.status === 'queued' ? '⟳ ' : ''}${esc(word)} · ${p.ready}/${p.total} clips${r.cost_usd ? ` · ${esc(_usd(r.cost_usd))} spent` : ''}</div>`];
+    const bits = [`<div data-eng-render-status data-status="${esc(r.status)}">${r.status === 'rendering' || r.status === 'queued' ? '⟳ ' : ''}${esc(word)} · ${p.ready}/${p.total} clips${r.cost_credits ? ` · ${esc(_credits(r.cost_credits))} spent` : (r.cost_usd ? ` · ${esc(_usd(r.cost_usd))} spent` : '')}</div>`];
     if (r.hold) bits.push(`<div class="desk-v1-engine-refusal" data-eng-hold>${esc(r.hold)}</div>`);
     if (r.failure) bits.push(`<div class="desk-v1-engine-refusal" data-eng-failure>${esc(typeof r.failure === 'string' ? r.failure : (r.failure.message || JSON.stringify(r.failure)))}</div>`);
     (r.scenes || []).filter((s) => s.failure).forEach((s) => bits.push(`<div class="desk-v1-engine-refusal">Scene “${esc(s.label)}”: ${esc(typeof s.failure === 'string' ? s.failure : (s.failure.message || ''))}</div>`));
@@ -207,11 +278,11 @@
       host.innerHTML = `<div class="desk-v1-engine-panel" data-eng-panel data-kind="video">
         <div class="desk-v1-engine-head">Render with an engine</div>
         ${_pickersHTML(p, st, 'video')}
-        ${conn.ready ? '' : `<div class="desk-v1-engine-refusal" data-eng-not-connected>${esc(p.engine.label)} is not connected: ${esc(conn.reason || '')}. A human adds the vault entry in Secrets.</div>`}
-        ${_estimateHTML(st)}
+        ${conn.ready ? '' : `<div class="desk-v1-engine-refusal" data-eng-not-connected>${esc(p.engine.label)} is not connected yet. Open Connections in the Desk header to set it up.</div>`}
+        ${_estimateHTML(st, p.engine)}
         ${st.error ? `<div class="desk-v1-engine-refusal" data-eng-error>${esc(st.error)}</div>` : ''}
         <div class="desk-v1-engine-actions">
-          <button type="button" class="btn-add" data-eng-render-btn${canRender ? '' : ' disabled'}>${busy ? 'Rendering…' : 'Render'}${st.estimate && st.estimate.estimate && !busy ? ` · ${esc(_usd(st.estimate.estimate.usd))}` : ''}</button>
+          <button type="button" class="btn-add" data-eng-render-btn${canRender ? '' : ' disabled'}>${busy ? 'Rendering…' : 'Render'}${st.estimate && st.estimate.estimate && !busy ? ` · ${esc(_fmt(p.engine, _amount(p.engine, st.estimate.estimate)))}` : ''}</button>
           <button type="button" class="btn-secondary" data-eng-reprice${busy ? ' disabled' : ''}>Price again</button>
         </div>
         ${_renderResultHTML(st.render)}
@@ -262,24 +333,24 @@
 
     const submit = async (engines) => {
       const p = _pick(engines, 'video', st);
-      let usd = st.estimate && st.estimate.estimate ? st.estimate.estimate.usd : null;
+      let usd = st.estimate && st.estimate.estimate ? _amount(p.engine, st.estimate.estimate) : null;
       st.submitting = true; st.error = null; paint(engines);
       try {
         // The scenes may have changed since the price on screen was worked out:
         // price them again, and if the number moved, show it and stop. The user
         // approves a price they have seen.
         const fresh = await _api('POST', '/api/desk/engines/render/estimate', body());
-        const now = fresh.estimate ? fresh.estimate.usd : null;
+        const now = fresh.estimate ? _amount(p.engine, fresh.estimate) : null;
         st.estimate = fresh;
         if (now !== usd) {
           st.submitting = false;
-          st.error = `The price changed to ${_usd(now)} because the storyboard changed. Check it, then press Render again.`;
+          st.error = `The price changed to ${_fmt(p.engine, now)} because the storyboard changed. Check it, then press Render again.`;
           paint(engines);
           return;
         }
         const out = await _humanPost('POST', '/api/desk/engines/renders', body({ idempotency_key: _uid() }), {
           title: 'Render this video',
-          description: `Re-enter your dashboard passcode to render this storyboard with ${p.engine.label} (${p.model.label}). It spends about ${_usd(usd)} of your account with them, and the clips are saved to your Material library.`,
+          description: `Re-enter your dashboard passcode to render this storyboard with ${p.engine.label} (${p.model.label}). It spends about ${_fmt(p.engine, usd)} of ${_isCredits(p.engine) ? 'the credits in your plan' : 'your account'} with them, and the clips are saved to your Material library.`,
         });
         st.render = out.render;
         _toast('Render started');
@@ -337,14 +408,14 @@
         <label class="desk-v1-sc-label" for="eng-prompt">Describe the picture</label>
         <textarea class="desk-v1-sb-edit-input" id="eng-prompt" rows="3" data-eng-prompt placeholder="What should the picture show?">${esc(st.prompt)}</textarea>
         ${_pickersHTML(p, st, 'image')}
-        ${conn.ready ? '' : `<div class="desk-v1-engine-refusal" data-eng-not-connected>${esc(p.engine.label)} is not connected: ${esc(conn.reason || '')}. A human adds the vault entry in Secrets.</div>`}
-        ${st.prompt.trim() ? _estimateHTML(st) : '<div class="desk-v1-engine-est" data-eng-estimate data-state="none">Type a description to see the price.</div>'}
+        ${conn.ready ? '' : `<div class="desk-v1-engine-refusal" data-eng-not-connected>${esc(p.engine.label)} is not connected yet. Open Connections in the Desk header to set it up.</div>`}
+        ${st.prompt.trim() ? _estimateHTML(st, p.engine) : '<div class="desk-v1-engine-est" data-eng-estimate data-state="none">Type a description to see the price.</div>'}
         ${st.error ? `<div class="desk-v1-engine-refusal" data-eng-error>${esc(st.error)}</div>` : ''}
         <div class="desk-v1-engine-actions">
-          <button type="button" class="btn-add" data-eng-render-btn${canGo ? '' : ' disabled'}>${busy ? 'Generating…' : 'Generate'}${st.estimate && st.estimate.estimate && !busy ? ` · ${esc(_usd(st.estimate.estimate.usd))}` : ''}</button>
+          <button type="button" class="btn-add" data-eng-render-btn${canGo ? '' : ' disabled'}>${busy ? 'Generating…' : 'Generate'}${st.estimate && st.estimate.estimate && !busy ? ` · ${esc(_fmt(p.engine, _amount(p.engine, st.estimate.estimate)))}` : ''}</button>
         </div>
         ${j ? `<div class="desk-v1-engine-result" data-eng-render>
-          <div data-eng-render-status data-status="${esc(j.status)}">${running ? '⟳ ' : ''}${esc(j.status === 'ready' ? 'Ready' : j.status === 'failed' ? 'Failed' : 'Generating')}${j.cost_usd ? ` · ${esc(_usd(j.cost_usd))} spent` : ''}</div>
+          <div data-eng-render-status data-status="${esc(j.status)}">${running ? '⟳ ' : ''}${esc(j.status === 'ready' ? 'Ready' : j.status === 'failed' ? 'Failed' : 'Generating')}${j.cost_credits ? ` · ${esc(_credits(j.cost_credits))} spent` : (j.cost_usd ? ` · ${esc(_usd(j.cost_usd))} spent` : '')}</div>
           ${j.failure ? `<div class="desk-v1-engine-refusal" data-eng-failure>${esc(typeof j.failure === 'string' ? j.failure : (j.failure.message || ''))}</div>` : ''}
           ${outs.map((o) => `<div data-eng-output data-path="${esc(o.path)}">${o.src ? `<img class="desk-v1-engine-img" src="${esc(o.src)}" alt="Generated picture">` : ''}<div class="desk-v1-engine-saved">Saved to the Material library: ${esc(o.path)}</div></div>`).join('')}
         </div>` : ''}
@@ -398,12 +469,12 @@
 
     const submit = async (engines) => {
       const p = _pick(engines, 'image', st);
-      const usd = st.estimate && st.estimate.estimate ? st.estimate.estimate.usd : null;
+      const usd = st.estimate && st.estimate.estimate ? _amount(p.engine, st.estimate.estimate) : null;
       st.submitting = true; st.error = null; paint(engines);
       try {
         const out = await _humanPost('POST', '/api/desk/engines/jobs', body({ desk: { idempotency_key: _uid() } }), {
           title: 'Generate this picture',
-          description: `Re-enter your dashboard passcode to generate this picture with ${p.engine.label} (${p.model.label}). It spends about ${_usd(usd)} of your account with them, and the picture is saved to your Material library.`,
+          description: `Re-enter your dashboard passcode to generate this picture with ${p.engine.label} (${p.model.label}). It spends about ${_fmt(p.engine, usd)} of ${_isCredits(p.engine) ? 'the credits in your plan' : 'your account'} with them, and the picture is saved to your Material library.`,
         });
         st.job = out.job;
         if (st.job.status === 'ready' && typeof opts.onReady === 'function') opts.onReady(st.job);

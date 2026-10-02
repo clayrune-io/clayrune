@@ -37,6 +37,7 @@ from __future__ import annotations
 import re
 
 from mc import desk as _desk
+from mc import desk_oauth as _oauth
 from mc import secrets_store
 from mc.core import _log, now_iso
 from mc.desk_publish import LINKEDIN_TOKEN_SECRET, X_OAUTH_TOKEN_SECRET
@@ -93,6 +94,16 @@ def publish_state(acc: dict, vault: dict | None = None) -> dict:
         # otherwise offer "Open Secrets" for a connection nothing can make yet.
         return {'ready': False, 'reason': LINKEDIN_PENDING_REASON,
                 'secret': None, 'unattended_ok': None}
+    if plat == 'x':
+        # A sign-in made from Connections wins over a hand-pasted `x.oauth-token`.
+        st = _oauth.status('x')
+        if st['state'] == 'connected':
+            vault = _vault_meta() if vault is None else vault
+            meta = vault.get(_oauth.SERVICES['x']['vault']) or {}
+            return {'ready': True, 'reason': None, 'secret': _oauth.SERVICES['x']['vault'],
+                    'unattended_ok': bool(meta.get('allow_unattended', True))}
+        if st['state'] == 'needs_signin':
+            return {'ready': False, 'reason': st['reason'], 'secret': None, 'unattended_ok': None}
     if plat in _TOKEN_SECRET:
         secret = _TOKEN_SECRET[plat]
         what = 'X' if plat == 'x' else 'LinkedIn'

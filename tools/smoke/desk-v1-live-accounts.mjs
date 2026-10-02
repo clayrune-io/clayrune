@@ -6,8 +6,8 @@
  * What is under test is which requests the browser makes and what it paints from
  * the answers (the routes themselves are pinned by tests/test_desk_accounts.py):
  *   1. Connections -> a row paints the SERVER's derived `publish` ("Publishing: not
- *                     connected (reason)"), `Open Secrets ›` only when a vault entry would
- *                     fix it, no fixture Connect button, the extra channels as placeholders.
+ *                     connected (reason)"), a step-by-step `Connect X` on X only (a reason that
+ *                     names the vault is not shown; the steps say it in plain words), no fixture Connect button, the extra channels as placeholders.
  *   2. Add / remove-> the form POSTs M3 with no credential field; the server's answer is
  *                     adopted; Undo DELETEs; ✕ DELETEs M5; a refused remove is rolled back.
  *   3. Read via    -> PATCHes M4 `/api/desk/accounts/<id>`, filed under the project that uses it.
@@ -159,19 +159,20 @@ async function connectionsRead(browser) {
   const rows = await page.$$eval('[data-conn-account]', (els) => els.map((e) => ({
     id: e.dataset.connAccount, state: e.dataset.connState,
     publish: (e.querySelector('[data-conn-publish-text]') || {}).textContent || '',
-    secrets: !!e.querySelector('[data-conn-secrets]'), action: !!e.querySelector('[data-conn-action]'),
+    secrets: !!e.querySelector('[data-conn-x-guide]'), action: !!e.querySelector('[data-conn-action]'),
   })));
   const x = rows.find((r) => r.id === 'ch-x-ron');
   const li = rows.find((r) => r.id === 'ch-li-page');
   check(rows.length === srv.accounts.length, `the rows are the server's accounts (${rows.length})`, 'rows: ' + JSON.stringify(rows.map((r) => r.id)));
-  check(x && x.state === 'off' && /not connected \(no X API token in the vault\)/.test(x.publish), `X: Publishing reads the server's reason ("${x && x.publish}")`, 'X row: ' + JSON.stringify(x));
+  check(x && x.state === 'off' && /^not connected$/.test(x.publish.trim()), `X: Publishing reads "not connected" (a vault-naming reason is left to the steps) ("${x && x.publish}")`, 'X row: ' + JSON.stringify(x));
   check(li && li.state === 'off' && /w_organization_social/.test(li.publish), 'the LinkedIn page shows NOT connected with the app-review reason, never faked', 'LinkedIn row: ' + JSON.stringify(li));
-  check(x.secrets && !li.secrets, '`Open Secrets ›` appears where a vault entry would fix it (X) and not where none can (LinkedIn page)', 'secrets buttons: ' + JSON.stringify(rows.map((r) => [r.id, r.secrets])));
+  check(x.secrets && !li.secrets, '`Connect X` appears on the X account and not on the LinkedIn page', 'secrets buttons: ' + JSON.stringify(rows.map((r) => [r.id, r.secrets])));
   check(rows.every((r) => !r.action), 'no fixture Connect / Reconnect button on any live row', 'a Connect button survived live');
-  await page.click('[data-conn-account="ch-x-ron"] [data-conn-secrets]');
-  check((await page.evaluate(() => window.__vaultOpened)) === 1, '`Open Secrets ›` opens the vault (and types nothing)', 'vault not opened');
   const typed = await page.$$('[data-connections] input[type="password"], [data-connections] input[name*="token" i], [data-connections] input[name*="secret" i]');
-  check(typed.length === 0, 'no credential field exists on the screen', 'a credential input is on Connections');
+  check(typed.length === 0, 'no credential field exists on the screen until a guide is opened', 'a credential input is on Connections');
+  await page.click('[data-conn-account="ch-x-ron"] [data-conn-x-guide]');
+  await page.waitForSelector('[data-conn-account="ch-x-ron"] [data-conn-x-wizard]', { timeout: 4000 });
+  check(!(await page.evaluate(() => window.__vaultOpened)), '`Connect X` opens its own steps, not the Secrets panel', 'the Secrets panel was opened');
 
   const ph = await page.$$eval('[data-conn-placeholder]', (els) => els.map((e) => e.dataset.connPlaceholder));
   check(JSON.stringify(ph) === JSON.stringify(['youtube', 'discord', 'reddit']), `YouTube / Discord / Reddit stay placeholder tiles (${ph})`, 'placeholders: ' + JSON.stringify(ph));
@@ -209,7 +210,7 @@ async function addRemove(browser) {
     'the add body carries no credential field', 'add body keys: ' + Object.keys(post[0].body));
   const newId = post[0].body.id;
   const painted = await page.$eval(`[data-conn-account="${newId}"] [data-conn-publish-text]`, (e) => e.textContent).catch(() => null);
-  check(/no X API token in the vault/.test(painted || ''), `the new row takes the server's derived state ("${painted}")`, 'new row publish: ' + painted);
+  check(/^not connected$/.test((painted || '').trim()), `the new row takes the server's derived state ("${painted}")`, 'new row publish: ' + painted);
   check(srv.accounts.length === before + 1, 'the server holds the account', 'server accounts: ' + srv.accounts.length);
 
   // Remove: M5; a refusal rolls the row back with the server's reason.

@@ -61,9 +61,11 @@ records a fact instead of deciding one.
 
 ## The credential (vault rule 3, CLAUDE.md)
 
-`X_OAUTH_TOKEN_SECRET` names a vault secret a HUMAN creates in step 3 — this
-module only ever resolves it by name via `secrets_store.get_secret_value`
-and never logs or returns the value. It is a different secret from the
+The X token comes from `mc.desk_oauth.x_token`: the sign-in a human made from
+Connections (an access token that lapses within hours and is refreshed there
+before it is handed over), else `X_OAUTH_TOKEN_SECRET`, a vault secret a HUMAN
+pastes. This module only ever resolves it by name and never logs or returns
+the value. It is a different secret from the
 `x.com` *website* login the 2026-09-22 Desk audit found already in the vault
 (`kind: password`, for signing into x.com by hand) — an OAuth user access
 token is not a password and does not belong in the same entry.
@@ -109,6 +111,7 @@ from typing import Any
 
 from mc.core import _atomic_write_text, _log, now_iso
 from mc import desk as _desk
+from mc import desk_oauth as _oauth
 from mc import secrets_store
 
 # -- wired by server.py -------------------------------------------------------
@@ -335,9 +338,8 @@ def verify_post(platform: str, post_id: str, *, consumer: str = 'desk_publish',
     if platform != 'x':
         return None
     try:
-        token = secrets_store.get_secret_value(
-            X_OAUTH_TOKEN_SECRET, consumer=consumer, project_id=project_id, unattended=unattended)
-    except secrets_store.SecretsError as e:
+        token = _oauth.x_token(consumer=consumer, project_id=project_id, unattended=unattended)
+    except (secrets_store.SecretsError, _oauth.OAuthError) as e:
         raise PublishError(f'credential unavailable: {e}') from e
     try:
         payload = _get_tweet(token, str(post_id))
@@ -424,10 +426,14 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
                 'without durable idempotency in place')
 
         try:
-            token = secrets_store.get_secret_value(
-                X_OAUTH_TOKEN_SECRET if platform == 'x' else LINKEDIN_TOKEN_SECRET,
-                consumer=consumer, project_id=project_id, unattended=unattended)
-        except secrets_store.SecretsError as e:
+            if platform == 'x':
+                # A sign-in from Connections (refreshed here, never a ~2 hour static
+                # token), else the hand-pasted `x.oauth-token`.
+                token = _oauth.x_token(consumer=consumer, project_id=project_id, unattended=unattended)
+            else:
+                token = secrets_store.get_secret_value(
+                    LINKEDIN_TOKEN_SECRET, consumer=consumer, project_id=project_id, unattended=unattended)
+        except (secrets_store.SecretsError, _oauth.OAuthError) as e:
             raise PublishError(f'credential unavailable: {e}') from e
 
         if platform == 'linkedin':
