@@ -2602,6 +2602,7 @@ def export_all_for_backup(passphrase: str, *, consumer: str,
                 'scope': rec.get('scope', 'global'),
                 'allow_unattended': bool(rec.get('allow_unattended', True)),
                 'kind': rec.get('kind', KIND_PASSWORD),
+                'entry_type': rec.get('entry_type'),
                 'issuer': rec.get('issuer', ''), 'account': rec.get('account', ''),
                 'digits': rec.get('digits', 6), 'period': rec.get('period', 30),
                 'algorithm': rec.get('algorithm', 'SHA1'),
@@ -2646,6 +2647,10 @@ def _import_entry_raw(entry: dict[str, Any]) -> None:
         for key in ('issuer', 'account', 'digits', 'period', 'algorithm'):
             if entry.get(key) is not None:
                 rec[key] = entry[key]
+        # The human's type choice travels with the backup. Same allowlist as
+        # set_secret; absent/unknown stays unset and is inferred at read time.
+        if entry.get('entry_type') in ENTRY_TYPES:
+            rec['entry_type'] = entry['entry_type']
         store['secrets'][name] = rec
         store['key_backend'] = key_backend()
         _save_store(store)

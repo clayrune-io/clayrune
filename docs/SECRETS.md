@@ -155,8 +155,11 @@ half is still `{{secret:name}}`.
 
 Entries saved before this have no `entry_type`. They are **read** as `login` when
 they carry a username or are a 2FA seed, otherwise `api_key` — reported with
-`entry_type_inferred: true`, and never written back (an edit that omits the type
-keeps whatever is stored, including "nothing"). A 2FA seed is always `login`,
+`entry_type_inferred: true`. The server never writes the guess back: a PATCH that
+omits the type keeps whatever is stored, including "nothing". The form does send
+one: it opens on the inferred type and Save writes the type shown, so the first
+edit from the UI freezes the guess into the record (the chip is visible and can
+be changed first). A 2FA seed is always `login`,
 whatever type a request names.
 
 Desk generation engines lock the type: Higgsfield is an `api_key_pair`, Gemini

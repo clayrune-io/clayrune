@@ -1588,3 +1588,49 @@ def test_repair_does_not_follow_a_symlink_into_the_quarantine_tree(
     assert after == before, (
         "the symlink target's ACL changed — the repair walk followed the "
         "symlink out of the quarantine tree")
+
+
+# ── Backup carries the human's entry_type ────────────────────────────────────
+
+def _types(vault):
+    return {r['name']: (r['entry_type'], r['entry_type_inferred'])
+            for r in vault.list_secrets()}
+
+
+def test_backup_round_trip_keeps_entry_type(vault):
+    """A Token and an API-key pair must come back as what the human chose, not
+    as the read-time inference (a token reads as 'API key', a pair as 'login')."""
+    vault.set_secret('gh.token', 'ghp_value_one', entry_type='token')
+    vault.set_secret('higgsfield', 'key-secret', username='kid-1',
+                     entry_type='api_key_pair')
+    vault.set_secret('legacy.key', 'plain-value')   # no type chosen
+    blob = vault.export_all_for_backup('pass-phrase-1', consumer='test')
+    for n in ('gh.token', 'higgsfield', 'legacy.key'):
+        vault.delete_secret(n)
+    out = vault.import_all_from_backup(blob, 'pass-phrase-1', consumer='test',
+                                       on_collision='replace')
+    assert sorted(out['imported']) == ['gh.token', 'higgsfield', 'legacy.key']
+    got = _types(vault)
+    assert got['gh.token'] == ('token', False)
+    assert got['higgsfield'] == ('api_key_pair', False)
+    assert got['legacy.key'][1] is True          # still inferred, not frozen
+
+
+def test_backup_import_ignores_an_unknown_entry_type(vault):
+    """The allowlist applies on import too: a tampered/unknown type is dropped
+    and the entry falls back to read-time inference."""
+    vault.set_secret('gh.token', 'ghp_value_one', entry_type='token')
+    blob = vault.export_all_for_backup('pass-phrase-1', consumer='test')
+    # Re-seal the same payload with a bogus type, as a hand-edited archive would.
+    outer = json.loads(blob.decode('utf-8'))
+    key = vault._scrypt_key('pass-phrase-1', base64.b64decode(outer['salt']))
+    nonce = base64.b64decode(outer['nonce'])
+    data = json.loads(vault._aesgcm(key).decrypt(
+        nonce, base64.b64decode(outer['ciphertext']), vault._EXPORT_AAD))
+    data['entries'][0]['entry_type'] = 'root'
+    outer['ciphertext'] = base64.b64encode(vault._aesgcm(key).encrypt(
+        nonce, json.dumps(data).encode('utf-8'), vault._EXPORT_AAD)).decode('ascii')
+    vault.delete_secret('gh.token')
+    vault.import_all_from_backup(json.dumps(outer).encode('utf-8'),
+                                 'pass-phrase-1', consumer='test')
+    assert _types(vault)['gh.token'] == ('api_key', True)

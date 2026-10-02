@@ -357,6 +357,35 @@ async function typesLegacyAndPresets(browser) {
   }
 }
 
+// An engine preset must not outlive the editor it locked: Edit higgsfield, Cancel, Edit a Token -> the
+// Token form opens as Token (not the type held before the preset), and Save sends entry_type=token.
+async function stalePreset(browser) {
+  const srv = { googleReady: true, writes: [], secrets: [
+    { name: 'higgsfield', username: 'kid-1', kind: 'password', entry_type: 'api_key_pair', entry_type_inferred: false, scope: 'global', allow_unattended: true, description: '' },
+    { name: 'tok', username: '', kind: 'password', entry_type: 'token', entry_type_inferred: false, scope: 'global', allow_unattended: true, description: '' },
+  ] };
+  const { ctx, page, pageErrors } = await newPage(browser, srv, { width: 1440, height: 900 });
+  await openConnections(page);   // loads the engine specs the preset lookup reads
+  await page.evaluate(() => window.openSecretEditor('higgsfield'));
+  await page.waitForSelector(form, { timeout: 8000 });
+  await settle(page, () => document.getElementById('sec-user-name').textContent === 'API key ID');
+  check((await radioChecked(page)) === 'api_key_pair' && (await radiosDisabled(page)), 'higgsfield opens locked as API key pair', 'higgsfield: ' + await radioChecked(page));
+  await page.click(`${form} .btn-secondary`);   // Cancel
+  await settle(page, () => !document.querySelector('.modal-window[data-modal-id="__secret-edit"]'));
+  await page.evaluate(() => window.openSecretEditor('tok'));
+  await page.waitForSelector(form, { timeout: 8000 });
+  const s = await shape(page);
+  check((await radioChecked(page)) === 'token' && !(await radiosDisabled(page)) && !s.user && s.valueLabel === 'Token',
+    'a Token edit after a preset edit opens as Token, unlocked, no username', 'token after preset: ' + JSON.stringify(s) + await radioChecked(page));
+  await page.fill('#sec-desc', 'edited');
+  await page.click('#sec-save');
+  await settle(page, () => !document.querySelector('.modal-window[data-modal-id="__secret-edit"]'));
+  check(srv.writes.length === 1 && srv.writes[0].method === 'PATCH' && srv.writes[0].body.entry_type === 'token' && srv.writes[0].body.username === '',
+    'saving it sends entry_type=token, not the stale pre-preset type', 'write: ' + JSON.stringify(srv.writes));
+  pageErrors.forEach((e) => fail('page error: ' + e));
+  await ctx.close();
+}
+
 const browser = await chromium.launch();
 try {
   console.log('1. Higgsfield Connect'); await higgsfield(browser);
@@ -365,6 +394,7 @@ try {
   console.log('4. Plain Add'); await plainAdd(browser);
   console.log('5. Entry types'); await types(browser);
   console.log('6. Legacy entries + engine presets'); await typesLegacyAndPresets(browser);
+  console.log('7. A preset does not outlive its editor'); await stalePreset(browser);
 } finally { await browser.close(); }
 console.log(bad ? `\n${bad} check(s) FAILED` : '\nall checks passed');
 process.exit(bad ? 1 : 0);
