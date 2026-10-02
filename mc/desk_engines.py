@@ -253,7 +253,11 @@ def _higgs_model(path: str, kind: str, label: str, *, durations=None, ratios=Non
 
 def _credential(vault_entry: str, secret_label: str, hint: str, url: str, *,
                 username_label: str | None = None, username_required: bool = False) -> dict:
+    # `entry_type` locks the Secrets form's type: a two-part credential is an
+    # API key pair (the key ID rides the username slot), anything else a single
+    # API key. The labels stay the engine's own wording.
     return {'vault_entry': vault_entry, 'username_label': username_label,
+            'entry_type': 'api_key_pair' if username_label else 'api_key',
             'username_required': bool(username_label and username_required),
             'secret_label': secret_label, 'hint': hint, 'url': url}
 

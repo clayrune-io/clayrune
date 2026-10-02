@@ -496,3 +496,91 @@ def test_vault_lock_retire_legacy_route_refuses_before_passphrase_set(client):
     passcode = _set_passcode()
     res = client.post('/api/secrets/vault-lock/retire-legacy', json={'passcode': passcode})
     assert res.status_code == 400
+
+
+# ── entry types (Login / API key / API key pair / Token) ─────────────────────
+
+def _entry(client, name='reddit.password'):
+    return {s['name']: s for s in client.get('/api/secrets').get_json()['secrets']}[name]
+
+
+def test_entry_type_is_allowlisted_server_side(client):
+    for bad in ('password', 'LOGIN', 'oauth', 'api key'):
+        r = _create(client, entry_type=bad)
+        assert r.status_code == 400, bad
+        assert 'unknown entry type' in r.get_json()['error']
+    assert client.get('/api/secrets').get_json()['secrets'] == []
+    for good in ('login', 'api_key', 'api_key_pair', 'token'):
+        r = _create(client, name='t.' + good.replace('_', '-'), entry_type=good,
+                    username='kid' if good in ('login', 'api_key_pair') else '')
+        assert r.status_code == 200, (good, r.get_json())
+        assert r.get_json()['entry_type'] == good and r.get_json()['entry_type_inferred'] is False
+
+
+def test_entry_type_is_written_through_the_passcode_gate_only(client):
+    _set_passcode(PASSCODE)
+    r = client.post('/api/secrets', json={'name': 'x.token', 'value': SECRET, 'entry_type': 'token'})
+    assert r.status_code in (401, 403)
+    assert client.get('/api/secrets').get_json()['secrets'] == []
+    _create(client, name='x.token', entry_type='token')
+    r = client.patch('/api/secrets/x.token', json={'entry_type': 'api_key'})
+    assert r.status_code in (401, 403)
+    assert _entry(client, 'x.token')['entry_type'] == 'token'
+
+
+def test_legacy_entries_infer_login_with_username_else_api_key(client):
+    _create(client, name='old.login', username='u/ron')            # no entry_type sent
+    _create(client, name='old.key')
+    a, b = _entry(client, 'old.login'), _entry(client, 'old.key')
+    assert (a['entry_type'], a['entry_type_inferred']) == ('login', True)
+    assert (b['entry_type'], b['entry_type_inferred']) == ('api_key', True)
+    # a 2FA seed with no username is the Login type's 2FA half, not an API key
+    _create(client, name='old.2fa', value='JBSWY3DPEHPK3PXP', kind='totp')
+    assert _entry(client, 'old.2fa')['entry_type'] == 'login'
+
+
+def test_inferred_type_is_never_written_back_by_an_edit(client):
+    from mc import secrets_store
+    _create(client, name='old.key')
+    client.patch('/api/secrets/old.key', json={'description': 'renamed', 'passcode': PASSCODE})
+    assert 'entry_type' not in secrets_store._load_store()['secrets']['old.key']
+    assert _entry(client, 'old.key')['entry_type_inferred'] is True
+
+
+def test_an_edit_that_omits_entry_type_keeps_the_stored_one(client):
+    _create(client, name='k.pair', entry_type='api_key_pair', username='kid-1')
+    client.patch('/api/secrets/k.pair', json={'description': 'x', 'passcode': PASSCODE})
+    e = _entry(client, 'k.pair')
+    assert (e['entry_type'], e['username'], e['entry_type_inferred']) == ('api_key_pair', 'kid-1', False)
+
+
+def test_api_key_and_token_have_no_username_slot(client):
+    r = _create(client, name='o.key', entry_type='api_key', username='stale')
+    assert r.get_json()['username'] == ''
+    # switching a Login to an API key through an edit drops the old username too
+    _create(client, name='o.login', entry_type='login', username='u/ron')
+    r = client.patch('/api/secrets/o.login', json={'entry_type': 'token', 'passcode': PASSCODE})
+    assert r.status_code == 200 and r.get_json()['username'] == ''
+
+
+def test_api_key_pair_needs_its_key_id_and_serves_it_as_the_user_placeholder(client):
+    r = _create(client, name='h.pair', entry_type='api_key_pair')
+    assert r.status_code == 400 and 'Key ID' in r.get_json()['error']
+    _create(client, name='h.pair', entry_type='api_key_pair', username='kid-9')
+    from mc import secrets_store
+    assert secrets_store.get_username('h.pair') == 'kid-9'         # {{user:h.pair}} still resolves
+
+
+def test_entry_type_and_totp_seed(client):
+    # an otpauth link pasted under any type is a Login's 2FA half
+    r = _create(client, name='t.2fa', entry_type='api_key',
+                value='otpauth://totp/Acme:ron?secret=JBSWY3DPEHPK3PXP&issuer=Acme')
+    assert r.status_code == 200 and r.get_json()['kind'] == 'totp' and r.get_json()['entry_type'] == 'login'
+
+
+def test_entry_type_responses_never_carry_the_value(client):
+    for et in ('login', 'api_key', 'api_key_pair', 'token'):
+        r = _create(client, name='v.' + et.replace('_', '-'), entry_type=et, username='kid')
+        assert SECRET not in r.get_data(as_text=True)
+    assert SECRET not in client.get('/api/secrets').get_data(as_text=True)
+    assert SECRET not in client.get('/api/secrets/audit').get_data(as_text=True)

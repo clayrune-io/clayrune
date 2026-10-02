@@ -233,6 +233,16 @@ def api_secrets_list():
     })
 
 
+def _entry_type_arg(data: dict):
+    """``entry_type`` from a save body, or None when the client did not send
+    one. Anything present but not a string is passed on as-is so the store's
+    allowlist rejects it rather than it being quietly ignored."""
+    et = data.get('entry_type')
+    if et is None or et == '':
+        return None
+    return et.strip() if isinstance(et, str) else str(et)
+
+
 @bp.route('/api/secrets', methods=['POST'])
 def api_secrets_set():
     if is_unattended_caller():
@@ -258,6 +268,7 @@ def api_secrets_set():
             scope=(data.get('scope') or 'global').strip() or 'global',
             allow_unattended=bool(data.get('allow_unattended', True)),
             kind=(data.get('kind') or vault.KIND_PASSWORD).strip(),
+            entry_type=_entry_type_arg(data),
         )
     except vault.SecretsError as e:
         return _err(e)
@@ -299,6 +310,10 @@ def api_secrets_patch(name: str):
             # entry into a password on a description edit, and the breakage
             # would only surface as a failed login much later.
             kind=data.get('kind', current.get('kind', vault.KIND_PASSWORD)),
+            # Not carried from `current`: that is the effective (possibly
+            # inferred) type, and freezing a guess into the record on every
+            # edit is not what an edit asked for. None keeps the stored one.
+            entry_type=_entry_type_arg(data),
         )
     except vault.SecretNotFound as e:
         return _err(e, 404)
