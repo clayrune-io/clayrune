@@ -907,7 +907,7 @@ def _guard_ua_override(session, target_type):
     the pane is in NOW (a mobile page with a desktop-UA frame inside it is a
     mismatch of its own); a page keeps the desktop override the guard always
     gave it -- the reader re-applies mobile to popups once it attaches."""
-    if target_type == 'iframe' and session.get('device_mode') == 'mobile':
+    if session.get('device_mode') == 'mobile':
         return _mobile_ua_override(session)
     return session.get('ua_override')
 
@@ -1020,10 +1020,30 @@ def _start_ua_guard(session, port):
             pass
         return
 
+    ua_sids: set = set()
+    ua_q: queue.Queue = queue.Queue()
+    session['ua_guard_q'] = ua_q
+
     def guard():
-        ws.settimeout(0.5)
+        ws.settimeout(0.1)
         try:
             while session.get('status') == 'running':
+                # A UA change from the reader (mobile <-> desktop, Desktop site):
+                # the override that counts is the one THIS connection set, so the
+                # new string has to be re-sent down every session it holds.
+                while True:
+                    try:
+                        ua_new, done = ua_q.get_nowait()
+                    except queue.Empty:
+                        break
+                    for sid_ in list(ua_sids):
+                        try:
+                            ws.send(json.dumps({'id': 0, 'sessionId': sid_,
+                                                'method': 'Network.setUserAgentOverride',
+                                                'params': ua_new}))
+                        except Exception as e:
+                            print(f"[browser] UA guard re-send failed: {e}", flush=True)
+                    done.set()
                 if held:
                     msg = held.pop(0)
                 else:
@@ -1031,11 +1051,16 @@ def _start_ua_guard(session, port):
                         msg = json.loads(ws.recv() or '{}')
                     except websocket.WebSocketTimeoutException:
                         continue
+                if msg.get('method') == 'Target.detachedFromTarget':
+                    ua_sids.discard((msg.get('params') or {}).get('sessionId'))
+                    continue
                 if msg.get('method') != 'Target.attachedToTarget':
                     continue
                 p = msg.get('params') or {}
                 sid = p.get('sessionId')
                 ttype = (p.get('targetInfo') or {}).get('type')
+                if ttype in _UA_OVERRIDE_TYPES:
+                    ua_sids.add(sid)
                 try:
                     # Same connection, same session: Chromium runs these in
                     # order, so the override is in place before the release.
@@ -1079,6 +1104,19 @@ def _start_ua_guard(session, port):
                      name=f"ua-guard-{session.get('session_id')}").start()
 
 
+def _guard_set_ua(session, ua, timeout=1.5):
+    """Hand a UA override to the guard connection and wait until it has gone out
+    on every session the guard holds (see `guard` in _start_ua_guard): the
+    caller reloads right after, and the reload must already carry the new one."""
+    q = session.get('ua_guard_q')
+    if q is None or not ua:
+        return
+    done = threading.Event()
+    q.put((ua, done))
+    if not done.wait(timeout):
+        print("[browser] UA guard did not apply the UA change in time", flush=True)
+
+
 def _ua_metadata(low, high):
     """navigator.userAgentData values -> CDP Emulation.UserAgentMetadata.
     Brand names are stripped of any Headless marker too, in case a future
@@ -1116,6 +1154,12 @@ def _mobile_ua_override(session):
     (never worse than staying on desktop presentation)."""
     base = session.get('ua_override')
     if not base or not base.get('userAgent'):
+        return base
+    # "Desktop site" (the pane's mobile menu, like Chrome's): the phone-sized
+    # emulated screen and touch stay, only the UA claims to be a desktop. Every
+    # caller -- mode switch, new tab, popup -- goes through here, so the choice
+    # holds on all of them.
+    if session.get('desktop_site'):
         return base
     m = _CHROME_VER_RE.search(base['userAgent'])
     ver = m.group(1) if m else '131.0.0.0'
@@ -1387,9 +1431,19 @@ def _apply_view(session, view, mobile=None):
     session['screencast_params'] = _screencast_params_for(session.get('dpr', 1), view)
     is_mobile = bool(mobile) if mobile is not None else session.get('device_mode') == 'mobile'
     q = session['cmd_queue']
+    prev_mode = session.get('device_mode')
     if is_mobile:
         for cmd in _device_mode_commands(session, True, view):
             q.put(cmd)
+        # A page loaded under the desktop UA already has its desktop HTML: the
+        # UA/metrics switch does not re-ask the site, so Google stayed a
+        # 980px-wide layout drawn at 0.42 (Ron, 2026-10-02, a session an agent
+        # launched at 1280x800 and the phone then flipped to mobile). Reload so
+        # the site serves the mobile one. Only on a real desktop->mobile switch
+        # of a live session: a mobile LAUNCH sets the mode before its first
+        # navigation (prev_mode is None there), so it has nothing to reload.
+        if prev_mode == 'desktop' and session.get('device_mode') == 'mobile':
+            q.put(('Page.reload', {}))
         if session.get('status') == 'running' and not session.get('screencast_paused'):
             q.put(('Page.stopScreencast', {}))
             q.put(('Page.startScreencast', session['screencast_params']))
@@ -1398,6 +1452,8 @@ def _apply_view(session, view, mobile=None):
         if mobile is not None:
             for cmd in _device_mode_commands(session, False, view):
                 q.put(cmd)
+            if prev_mode == 'mobile' and session.get('device_mode') == 'desktop':
+                q.put(('Page.reload', {}))   # the converse: drop the mobile HTML
 
 
 def _page_disposition(session, target_info):
@@ -1582,7 +1638,10 @@ def _run_cdp(session):
             m = {'id': _next_id(), 'method': method, 'params': params or {}}
             if session_id:
                 m['sessionId'] = session_id
+            elif method == 'Network.setUserAgentOverride':
+                _guard_set_ua(session, params)
             ws.send(json.dumps(m))
+            return m['id']
 
         def start_screencast(session_id=None):
             # The caps only DOWNSCALE an oversized frame; they must stay at
@@ -1669,7 +1728,24 @@ def _run_cdp(session):
         # just launched Chromium at, so the override's declared size matches
         # the real window from the first frame (see _device_mode_commands).
         if session.get('mobile'):
-            for method, params in _device_mode_commands(session, True):
+            # Not just `_device_mode_commands`: the pane's first viewport report
+            # (mobile:true) can reach the server while this thread is still in
+            # the UA guard above, and enter mobile mode with NO UA known yet
+            # (`_mobile_ua_override` has nothing to build on). Then this call
+            # sees "already mobile" and returns []; the mode switch's one-time
+            # UA/touch never went out and the first navigation below loaded the
+            # DESKTOP site (measured 2026-10-02: a pane opened from the phone
+            # reached google-style UA sniffing as a desktop browser). So the
+            # launch always states metrics, touch and UA itself, before navigate.
+            cmds = _device_mode_commands(session, True)
+            if not cmds:
+                vw, vh = session.get('device_mode_view') or session.get('view') or (VIEW_W, VIEW_H)
+                cmds = [_mobile_metrics_cmd(vw, vh, session.get('dpr', 1)),
+                        ('Emulation.setTouchEmulationEnabled', {'enabled': True, 'maxTouchPoints': 5})]
+            mobile_ua = _mobile_ua_override(session)
+            if mobile_ua and not any(m == 'Network.setUserAgentOverride' for m, _ in cmds):
+                cmds.append(('Network.setUserAgentOverride', mobile_ua))
+            for method, params in cmds:
                 send(method, params)
         elif session.get('ua_override'):
             send('Network.setUserAgentOverride', session['ua_override'])
@@ -1699,6 +1775,12 @@ def _run_cdp(session):
                             # always stamps the active tab's session_id.
                             session['requested_tabs'] = session.get('requested_tabs', 0) + 1
                             send('Target.createTarget', {'url': params.get('url') or 'about:blank'})
+                        elif method == '_zoom':
+                            _zoom_request(session, params, send, _active_session_id(session))
+                        elif method == '_zoom_probe':
+                            if session.get('lm_id') is None:
+                                session['lm_id'] = send('Page.getLayoutMetrics', {},
+                                                        session_id=_active_session_id(session))
                         elif method == '_dialog_response':
                             tabs = session.get('tabs') or {}
                             dlg_sid = (tabs.get(params.get('target_id')) or {}).get('session_id')
@@ -1753,6 +1835,14 @@ def _run_cdp(session):
                 continue
             method = msg.get('method')
             msg_sid = msg.get('sessionId')  # flat-mode target routing (top-level field)
+            if msg.get('id') is not None and msg.get('id') == session.get('lm_id'):
+                session['lm_id'] = None
+                try:
+                    _zoom_answer(session, (msg.get('result') or {}).get('cssVisualViewport') or {},
+                                 send, _active_session_id(session))
+                except Exception as e:
+                    print(f'[browser] zoom reconcile failed: {e}', flush=True)
+                continue
             if method == 'Page.screencastFrame':
                 p = msg['params']
                 # Only the ACTIVE tab has a screencast running, so in the
@@ -1779,6 +1869,8 @@ def _run_cdp(session):
                     # through it (see _input_commands).
                     if md.get('pageScaleFactor'):
                         session['page_scale'] = md['pageScaleFactor']
+                        for cmd in _zoom_settle(session, md):
+                            session['cmd_queue'].put(cmd)
                     session['frame_seq'] = session.get('frame_seq', 0) + 1
                 try:
                     ack = {'id': _next_id(), 'method': 'Page.screencastFrameAck',
@@ -2435,6 +2527,7 @@ def browser_launch():
     vw, vh = session.get('view') or (VIEW_W, VIEW_H)
     return jsonify({'session_id': session['session_id'], 'url': session['url'],
                     'profile': session.get('profile'), 'reused': reused,
+                    'desktop_site': bool(session.get('desktop_site')),
                     'dpr': session.get('dpr', 1),
                     'view': {'w': vw, 'h': vh}}), (200 if reused else 201)
 
@@ -2480,7 +2573,8 @@ def _stream_gen(session):
             payload = json.dumps({'seq': seq, 'img': session['frame'],
                                   'url': session.get('live_url') or session.get('url'),
                                   'w': session.get('frame_w'),
-                                  'h': session.get('frame_h')})
+                                  'h': session.get('frame_h'),
+                                  's': session.get('page_scale')})
             yield f'data: {payload}\n\n'
             sent = True
         if dl_seq != last_dl:
@@ -2625,6 +2719,128 @@ def _key_event_params(data):
     if len(key) == 1 and not (mods & 7):
         params['text'] = key
     return params
+
+
+_ZOOM_MIN, _ZOOM_MAX = 0.25, 5.0   # Chromium clamps to the page's own min/max anyway
+_ZOOM_PRED_TTL = 0.6                # a zoom's expected result is forgotten after this long
+
+
+def _zoom_commands(session, data, base):
+    """Pinch-to-zoom: a REAL page zoom, not a stretched picture.
+
+    `Emulation.setPageScaleFactor` is the browser's own pinch scale, so the
+    renderer re-rasterises at the new scale (text stays crisp), and taps stay
+    accurate with no new mapping: Input.dispatchMouseEvent takes layout-viewport
+    px and Chromium adds the visual viewport's page offset itself (measured:
+    zoomed to 2 with the viewport at page 513,276, a click at picture
+    (274,148) hit the textarea at layout 650,350). `Input.synthesizePinchGesture`
+    was measured to do nothing on this headless Chromium, and
+    `user-scalable=no` pages refuse a scale change exactly as they do in Chrome.
+
+    setPageScaleFactor zooms about the viewport's top-left, so a pinch about
+    (x, y) -- picture px -- needs the visual viewport panned to keep the page
+    point under the fingers still: o1 = o0 + p/s0 - p/s1, in page px. Panning
+    is a mouse wheel, the one input measured to move the visual viewport (a wheel
+    delta of d moves it d PAGE px at any scale). `base` = (scale, offsetX,
+    offsetY) is where the viewport is NOW: the previous step's prediction while a
+    pinch is in flight, else the real thing from Page.getLayoutMetrics (the
+    screencast metadata's scrollOffset is the LAYOUT scroll, not the visual
+    viewport's). The result is reconciled against reality once the first frame
+    at the new scale lands (`_zoom_answer`), because Chromium clamps the
+    offset to page bounds and we do not know them."""
+    s1 = max(_ZOOM_MIN, min(_ZOOM_MAX, float(data['scale'])))
+    fx, fy = float(data.get('x', 0)), float(data.get('y', 0))
+    s0, ox0, oy0 = base
+    ox1 = max(0.0, ox0 + fx / s0 - fx / s1)
+    oy1 = max(0.0, oy0 + fy / s0 - fy / s1)
+    session['zoom_pred'] = {'s': s1, 'ox': ox1, 'oy': oy1, 'at': _time.monotonic()}
+    cmds = [('Emulation.setPageScaleFactor', {'pageScaleFactor': s1})]
+    dx, dy = ox1 - ox0, oy1 - oy0
+    if abs(dx) >= 0.5 or abs(dy) >= 0.5:
+        cmds.append(_zoom_pan_cmd(session, dx, dy, s1))
+    return cmds
+
+
+def _zoom_pan_cmd(session, dx, dy, scale):
+    """A wheel at the middle of the viewport; the delta is in page px."""
+    cx = (session.get('frame_w') or VIEW_W) / 2 / scale
+    cy = (session.get('frame_h') or VIEW_H) / 2 / scale
+    return ('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': cx, 'y': cy,
+                                         'deltaX': dx, 'deltaY': dy})
+
+
+def _zoom_live_pred(session):
+    pred = session.get('zoom_pred')
+    if pred and _time.monotonic() - pred['at'] <= _ZOOM_PRED_TTL:
+        return pred
+    return None
+
+
+def _zoom_request(session, data, send, sid):
+    """A pinch step reached the reader. Mid-pinch the previous step's prediction
+    is the base; at the start of one there is none, so ask the page where its
+    visual viewport really is and finish the step when the answer arrives
+    (`_zoom_answer`). Steps that arrive meanwhile replace the pending one: the
+    scale is absolute, so only the newest matters."""
+    pred = _zoom_live_pred(session)
+    if pred:
+        for method, params in _zoom_commands(session, data, (pred['s'], pred['ox'], pred['oy'])):
+            send(method, params, session_id=sid)
+        return
+    session['zoom_pending'] = data
+    if session.get('lm_id') is None:
+        session['lm_id'] = send('Page.getLayoutMetrics', {}, session_id=sid)
+
+
+def _zoom_settle(session, md):
+    """A screencast frame arrived: if it is the one a pending zoom predicted
+    (same scale), ask where the viewport really landed. A frame that never
+    matches (the page clamped the scale) retires the prediction after the TTL."""
+    pred = session.get('zoom_pred')
+    if not pred or pred.get('probed'):
+        return []
+    if abs((md.get('pageScaleFactor') or 0) - pred['s']) >= 0.02:
+        if _time.monotonic() - pred['at'] > _ZOOM_PRED_TTL:
+            session['zoom_pred'] = None
+        return []
+    pred['probed'] = True
+    session['zoom_probe_target'] = pred
+    return [('_zoom_probe', {})]
+
+
+def _zoom_answer(session, vv, send, sid):
+    """Page.getLayoutMetrics answered. Either a pinch step was waiting for its
+    base, or this is the settle check: pan once if the viewport landed away from
+    where the anchor math put it."""
+    real = (float(vv.get('scale') or 1.0), float(vv.get('pageX') or 0), float(vv.get('pageY') or 0))
+    pending = session.pop('zoom_pending', None)
+    if pending is not None:
+        for method, params in _zoom_commands(session, pending, real):
+            send(method, params, session_id=sid)
+        return
+    pred = session.get('zoom_probe_target')
+    if not pred or pred is not session.get('zoom_pred'):
+        return                      # a newer pinch step superseded the one probed
+    if abs(real[0] - pred['s']) >= 0.02:
+        session['zoom_pred'] = None
+        return
+    # The wheel pan is a smooth-scroll ANIMATION: a reading taken right after the
+    # frame lands is mid-flight (measured: 152 of an intended 216), and "correcting"
+    # that overshoots once the animation finishes. Wait until two readings agree.
+    last = pred.get('last')
+    pred['last'] = real
+    if last is None or abs(last[1] - real[1]) > 0.5 or abs(last[2] - real[2]) > 0.5:
+        pred['tries'] = pred.get('tries', 0) + 1
+        if pred['tries'] < 10:
+            t = threading.Timer(0.1, session['cmd_queue'].put, [('_zoom_probe', {})])
+            t.daemon = True
+            t.start()
+            return
+    session['zoom_pred'] = None
+    ex, ey = pred['ox'] - real[1], pred['oy'] - real[2]
+    if abs(ex) >= 1.5 or abs(ey) >= 1.5:
+        m, params = _zoom_pan_cmd(session, ex, ey, real[0])
+        send(m, params, session_id=sid)
 
 
 def _inverse_page_scale(page_scale):
@@ -2785,6 +3001,22 @@ def browser_input():
                 q.put(('Page.startScreencast', session.get('screencast_params', _SCREENCAST_PARAMS)))
             else:
                 return jsonify({'error': f'unknown screencast action: {action!r}'}), 400
+        elif kind == 'zoom':
+            # Pinch-to-zoom (a real page scale; see _zoom_commands).
+            q.put(('_zoom', {'scale': data['scale'], 'x': data.get('x', 0), 'y': data.get('y', 0)}))
+        elif kind == 'site':
+            # The mobile menu's "Desktop site" switch (like Chrome's): persisted
+            # on the session so it survives the pane closing and reopening, and
+            # applied by re-sending the UA then reloading, since the site only
+            # chooses its HTML on request.
+            desktop = bool(data.get('desktop'))
+            if desktop != bool(session.get('desktop_site')):
+                session['desktop_site'] = desktop
+                if session.get('device_mode') == 'mobile':
+                    ua = _mobile_ua_override(session)
+                    if ua:
+                        q.put(('Network.setUserAgentOverride', ua))
+                    q.put(('Page.reload', {}))
         elif kind == 'viewport':
             # The pane's on-screen size changed (opened, resized, tab strip
             # appeared): make the page that size so it renders 1:1. Sized in
@@ -3454,6 +3686,7 @@ def browser_status(project_id):
         if s.get('project_id') == project_id:
             out.append({'session_id': sid, 'url': s.get('url'),
                         'status': s.get('status'), 'profile': s.get('profile'),
+                        'desktop_site': bool(s.get('desktop_site')),
                         'started_at': s.get('started_at')})
     return jsonify({'sessions': out})
 
