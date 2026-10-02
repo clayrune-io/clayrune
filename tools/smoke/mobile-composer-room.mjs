@@ -111,7 +111,7 @@ async function openFollowupComposer(page, status) {
     agentHistory.unshift({ projectId: pid, sessionId: sid, projectName: 'Composer Room', task: 'a task', status, startedAt: now });
     agentStatusCache[sid] = { status, task: 'a task', projectId: pid, startedAt: now, claudeSessionId: 'csid-room',
       character: { name: 'rusk', agent_name: 'Rusk' }, provider: 'claude' };
-    agentOutputBuffers[sid] = ['> hello', 'assistant line'];
+    agentOutputBuffers[sid] = ['> hello', ...Array.from({ length: 40 }, (_, i) => 'assistant line ' + i)];
     conversationsCache[pid] = [{ claude_session_id: 'csid-room', mc_session_id: sid, character: null, mtime: 1000, ts_relative: 'just now', status, turns: 1, label: 'a task', first_user: 'a task', last_user: 'a task' }];
     openProjectModal(pid);
     openConversation(pid, 'csid-room', sid, status === 'running');
@@ -211,10 +211,6 @@ async function runComposer(page, label, taId, shotName) {
   check(`${label}: picker cells are comfortable tap targets (>= 36px)`,
     await page.evaluate(() => document.querySelector('.cep-cell').getBoundingClientRect().width >= 36));
   if (shotName && SHOT_DIR) await page.screenshot({ path: resolve(SHOT_DIR, shotName.replace('.png', '-emoji.png')) });
-  const first = await page.locator('.cep-cell').first().getAttribute('data-emoji');
-  await page.locator('.cep-cell').first().tap();
-  check(`${label}: tapping a cell inserts it`, (await page.inputValue(ta)) === first, JSON.stringify(await page.inputValue(ta)));
-  check(`${label}: picker stays open for more picks`, await page.locator('.chat-emoji-pop').count() === 1);
   // Keyboard opening = height-only resize: picker re-places, stays on screen.
   const vp = page.viewportSize();
   await page.setViewportSize({ width: vp.width, height: Math.round(vp.height * 0.55) });
@@ -222,6 +218,17 @@ async function runComposer(page, label, taId, shotName) {
   g = await pickerGeo();
   check(`${label}: short viewport (keyboard) keeps the picker open, on screen, above the pill`,
     g && g.t >= 0 && g.b <= g.pillTop && g.b <= g.vh, JSON.stringify(g));
+  // One pick on a phone closes the tray (Ron, 2026-10-02) and leaves the caret in
+  // the field so the keyboard stays up.
+  const first = await page.locator('.cep-cell').first().getAttribute('data-emoji');
+  await page.locator('.cep-cell').first().tap();
+  check(`${label}: tapping a cell inserts it`, (await page.inputValue(ta)) === first, JSON.stringify(await page.inputValue(ta)));
+  check(`${label}: one pick closes the picker (phone)`, await page.locator('.chat-emoji-pop').count() === 0);
+  check(`${label}: ...and the textarea keeps focus (keyboard stays up)`,
+    await page.evaluate((id) => document.activeElement === document.getElementById(id), taId));
+  // Reopen to prove outside-tap still closes it.
+  await page.tap(emojiBtn);
+  await page.waitForSelector('.chat-emoji-pop', { timeout: 2000 });
   await page.setViewportSize(vp);
   await page.waitForTimeout(100);
   await page.mouse.click(5, 5);
@@ -250,6 +257,72 @@ for (const tone of ['warm', 'dark']) {
       await runComposer(page, `${tag} follow-up (${status})`, `agent-followup-${SID}`,
         (width === 360 || width === 390) && status === 'running' ? shot('followup-running') : null);
       check(`${tag} follow-up (${status}): no uncaught exceptions`, page.__errors.length === 0, page.__errors.join(' | '));
+      await page.context().close();
+    }
+  }
+}
+
+// ── Keyboard-open fit (Ron, 2026-10-02, real phone) ─────────────────────────
+// At 2 lines the pill fit; at a 3rd the textarea grew but the pill bottom, the
+// paperclip and the round action button were cut off by the bottom of the modal
+// because sizeAgentChat never re-ran on composer growth and the thread kept its
+// one-line height. Emulate a keyboard (viewport height -> 55%), type 1..6 lines,
+// and require the whole composer inside the modal's visible rect every time.
+async function fitProbe(page) {
+  return page.evaluate((id) => {
+    const ta = document.getElementById(id);
+    const field = ta.closest('.composer-field');
+    const row = ta.closest('.agent-chat-input-row');
+    const win = ta.closest('.modal-window');
+    const chat = ta.closest('.agent-chat');
+    const out = chat.querySelector('.agent-output');
+    const R = (e) => { const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom }; };
+    const act = row.querySelector('.composer-action');
+    const actBtn = act && [...act.children].find((b) => getComputedStyle(b).display !== 'none');
+    const w = R(win), c = R(chat);
+    return {
+      vh: innerHeight, vw: innerWidth,
+      bottomLimit: Math.min(w.b, c.b, innerHeight),
+      pill: R(field), clip: R(field.querySelector('.btn-attach:not(.btn-camera)')), action: R(actBtn),
+      out: R(out), outH: out.getBoundingClientRect().height,
+      taScrolls: ta.scrollHeight > ta.clientHeight + 1, taH: ta.offsetHeight,
+    };
+  }, `agent-followup-${SID}`);
+}
+
+for (const tone of ['warm', 'dark']) {
+  for (const width of WIDTHS) {
+    for (const status of ['completed', 'running']) {
+      const tag = `${width}px ${tone} keyboard-open fit (${status})`;
+      const page = await openPage({ width, height: 800 }, tone);
+      await openFollowupComposer(page, status);
+      await page.setViewportSize({ width, height: 440 });   // keyboard up: ~55% of 800
+      await page.waitForTimeout(600);
+      await page.click(`#agent-followup-${SID}`);
+      let prevOutH = Infinity;
+      for (let n = 1; n <= 6; n++) {
+        await page.fill(`#agent-followup-${SID}`, Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n'));
+        await page.waitForTimeout(350);
+        const f = await fitProbe(page);
+        const inside = (g) => g.b <= f.bottomLimit + 0.5 && g.t >= 0 && g.l >= 0 && g.r <= f.vw;
+        check(`${tag}, ${n} line(s): pill, paperclip and action button fully inside the modal's visible rect`,
+          inside(f.pill) && inside(f.clip) && inside(f.action), JSON.stringify({ limit: f.bottomLimit, pill: f.pill, clip: f.clip, action: f.action }));
+        check(`${tag}, ${n} line(s): thread ends above the pill (grows upward, not downward)`,
+          f.out.b <= f.pill.t + 0.5, `out.b=${f.out.b} pill.t=${f.pill.t}`);
+        if (n >= 3) check(`${tag}, ${n} line(s): thread shrank to make room`, f.outH <= prevOutH + 0.5, `${prevOutH} -> ${f.outH}`);
+        if (n === 6) check(`${tag}, 6 lines: textarea caps and scrolls`, f.taScrolls, `taH=${f.taH}`);
+        if ((n === 3 || n === 5) && SHOT_DIR && width === 390 && tone === 'warm' && status === 'completed') {
+          mkdirSync(SHOT_DIR, { recursive: true });
+          await page.screenshot({ path: resolve(SHOT_DIR, `mobile-composer-fit-390-${n}lines.png`) });
+        }
+        prevOutH = Math.min(prevOutH, f.outH);
+      }
+      // Shrinking back gives the thread its room back.
+      await page.fill(`#agent-followup-${SID}`, '');
+      await page.waitForTimeout(350);
+      const z = await fitProbe(page);
+      check(`${tag}: cleared → composer back to one line, thread regains height`, z.outH > prevOutH + 20, `${prevOutH} -> ${z.outH}`);
+      check(`${tag}: no uncaught exceptions`, page.__errors.length === 0, page.__errors.join(' | '));
       await page.context().close();
     }
   }

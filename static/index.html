@@ -1943,6 +1943,28 @@ function sizeAgentChat(win, sessionId) {
   const chatInputEl = chat.querySelector('.agent-chat-input');
   const chatInputRowEl = chat.querySelector('.agent-chat-input-row');
   const sepH = sep ? sep.offsetHeight : 0;
+  // The composer grows on its own as the user types (textarea autosize), and
+  // nothing else here fires when it does: the output keeps the height it was
+  // given for a one-line composer, so a 3rd+ line pushed the pill, paperclip and
+  // send button past the bottom of the modal (Ron, phone, keyboard open,
+  // 2026-10-02). Re-run sizing whenever the composer's own box changes. Watch the
+  // row and textarea too: if the output ever over-allocates, chat-input itself is
+  // squashed and its own size stops moving, but the content boxes inside it still
+  // report the real growth. Bound to the element, so a modal rebuild (which makes
+  // a new chat-input) drops the old observer with the old node.
+  if (chatInputEl && !chatInputEl._fitObserver && typeof ResizeObserver === 'function') {
+    let _fitRaf = 0;
+    const _fitObs = new ResizeObserver(() => {
+      if (_fitRaf) return;
+      _fitRaf = requestAnimationFrame(() => {
+        _fitRaf = 0;
+        const _w = chatInputEl.closest('.modal-window');
+        if (_w) sizeAgentChat(_w, sessionId); else _fitObs.disconnect();
+      });
+    });
+    [chatInputEl, chatInputRowEl, chatInputEl.querySelector('textarea')].forEach(e => { if (e) _fitObs.observe(e); });
+    chatInputEl._fitObserver = _fitObs;
+  }
   // In-chat search bar (chat-search.js): a sibling ahead of .agent-output that
   // this function predates. On the .agent-3pane layout flexbox handles it for
   // free (see the bail-out above); on THIS explicit-height layout — still the
