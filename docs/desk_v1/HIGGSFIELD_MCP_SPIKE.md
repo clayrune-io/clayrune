@@ -271,3 +271,32 @@ changelog, rules or product code change is implied.
 [hf-skill]: https://github.com/higgsfield-ai/skills/blob/main/higgsfield-video-explainer/SKILL.md
 [hf-cli]: https://github.com/higgsfield-ai/cli
 [schema-issue]: https://github.com/higgsfield-ai/cli/issues/93
+
+## 8. Integration proof, 2026-10-02 (Dave; script `_scratch/hf_proof2/hf_proof_run.py`, not committed)
+
+Items 1 to 4 of section 7 now have runtime evidence for **image**; video, uploads
+and item 5 remain untested.
+
+1. **Onboarding works for a new client.** DCR returned 201 (granted scope
+   `openid email offline_access`), loopback callback on `127.0.0.1:<port>`
+   accepted, `state` and `iss` verified, token exchange 200 with a refresh token
+   (access token lifetime 86399 s). DCR returns no `registration_client_uri`, so
+   a registered client cannot be deleted; tokens revoke cleanly (200).
+2. **Transport:** protocol `2025-11-25` negotiated, SSE responses, no session id.
+   `tools/list` returned 131 tools in one page.
+3. **Pre-spend price exists, but not in the model list.** `models_explore` carries
+   no cost field. Price comes from `generate_image` with `params.get_cost: true`
+   (returns `cost.credits_exact`, submits nothing). Quotes seen: soul_cast,
+   soul_2, soul_cinematic 0.12; z_image 0.15; gpt_image_2 0.5; nano_banana 1;
+   cinematic_studio_2_5 and marketing_studio_image 2 credits. Pin
+   `use_unlim: false` or the server decides which balance pays.
+4. **Minimum-cost image run:** soul_cast, quoted 0.12, charged exactly 0.12
+   (balance delta and `transactions` both show -0.12). The server silently applied
+   `aspect_ratio 16:9` and `params.budget 50` (returned under `adjustments`; the
+   adapter must surface these). Poll with `job_status {jobId, sync:true}`; a loose
+   `status` match picks `marketing_studio_v2_status` and fails. Result: 500x288
+   webp on `cdn.higgsfield.ai`, signed URL expiring ~4 h, so download on completion.
+
+Lesson recorded: run 3 wrongly concluded "no pre-submit price" from the model list
+alone; the tool descriptions documented `get_cost`. Read every tool description
+before declaring a capability absent.
