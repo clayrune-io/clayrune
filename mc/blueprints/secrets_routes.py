@@ -296,7 +296,9 @@ def api_secrets_patch(name: str):
             return jsonify({'error': f"no secret named '{name}'"}), 404
         value = data.get('value')
         if not isinstance(value, str) or not value:
-            value = vault.get_secret_value(name, consumer='api:patch')
+            # Re-seal, never return: human-only (passcode above). `internal` lets a
+            # metadata edit of a server-kept sign-in entry (`oauth.*`) re-read it.
+            value = vault.get_secret_value(name, consumer='api:patch', internal=True)
         rec = vault.set_secret(
             name,
             value,

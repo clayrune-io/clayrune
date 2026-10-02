@@ -22,7 +22,12 @@ mock would hide. Pinned:
     without the retyped dashboard passcode (MC-995);
   * X: confidential vs public client authentication on the token call, the fixed
     callback port, a hand-pasted legacy token still used until a sign-in exists;
-  * "Test connection" makes one read call and never returns the key.
+  * "Test connection" makes one read call and never returns the key;
+  * audit fixes (Wren, desk-connect-guides): disconnect and sign-in take the
+    refresh lock so an in-flight refresh cannot resurrect a deleted entry; an
+    unattended refresh reads the X client secret under that secret's own policy;
+    a vault failure while saving ends the flow and frees the port; any 400/401 on
+    a refresh needs a new sign-in; endpoints from provider metadata must be https.
 """
 import json
 import sys
@@ -111,7 +116,9 @@ def vault(monkeypatch):
         state['writes'].append(name)
         return {'name': name}
 
-    def get_secret_value(name, *, consumer, project_id=None, unattended=False):
+    def get_secret_value(name, *, consumer, project_id=None, unattended=False, internal=False):
+        if name.startswith('oauth.') and not internal:
+            raise secrets_store.SecretDenied(name)
         r = state['entries'].get(name)
         if r is None:
             raise secrets_store.SecretNotFound(name)
@@ -547,6 +554,134 @@ def test_test_connection_unreachable_is_reported(provider, vault):
     provider.on('GET', 'generativelanguage', OSError('no route'))
     out = oauth.test_key('gemini')
     assert out['ok'] is False and 'could not reach' in out['message']
+
+
+# -- audit fixes -------------------------------------------------------------------
+
+def test_disconnect_waits_for_an_in_flight_refresh_and_the_entry_stays_deleted(provider, vault):
+    _sign_in_higgsfield(provider)
+    _expire(vault)
+    provider.on('POST', HF_REVOKE, (200, {}))
+    in_refresh, release = threading.Event(), threading.Event()
+    inner = oauth._http
+
+    def gated(method, url, **kw):
+        if url == HF_TOKEN:
+            in_refresh.set()
+            assert release.wait(10)
+            return 200, {}, json.dumps({'access_token': ACCESS_2, 'refresh_token': REFRESH_2,
+                                        'expires_in': 3600}).encode()
+        return inner(method, url, **kw)
+
+    oauth._http = gated
+    try:
+        refresher = threading.Thread(target=lambda: oauth.access_token('higgsfield', consumer='t'))
+        refresher.start()
+        assert in_refresh.wait(10)
+        out: dict = {}
+        remover = threading.Thread(target=lambda: out.update(oauth.disconnect('higgsfield')))
+        remover.start()
+        remover.join(0.3)
+        assert remover.is_alive(), 'disconnect did not wait for the refresh in flight'
+        release.set()
+        refresher.join(10)
+        remover.join(10)
+    finally:
+        oauth._http = inner
+    assert out['deleted'] is True
+    assert 'oauth.higgsfield' not in vault['entries']
+    assert oauth.status('higgsfield')['state'] == 'not_connected'
+
+
+def test_an_unattended_x_refresh_honours_the_client_secret_policy(provider, vault, x_port):
+    _x_app(vault, secret=True)
+    provider.on('POST', 'api.x.com/2/oauth2/token', (200, {'access_token': ACCESS_1, 'refresh_token': REFRESH_1,
+                                                          'expires_in': 7200}))
+    out = oauth.start('x')
+    _hit(out['redirect_uri'], code='c', state=_state_of(out['auth_url'])['state'])
+    _expire(vault, 'oauth.x')
+    vault['entries']['x.client-secret']['allow_unattended'] = False
+    n = len(provider.calls)
+    with pytest.raises(oauth.OAuthError) as e:
+        oauth.x_token(consumer='desk_publish', unattended=True)
+    assert e.value.code == 'unavailable' and len(provider.calls) == n
+    provider.on('POST', 'api.x.com/2/oauth2/token', (200, {'access_token': ACCESS_2, 'expires_in': 7200}))
+    assert oauth.x_token(consumer='desk_publish', unattended=False) == ACCESS_2
+
+
+def test_a_vault_failure_while_saving_ends_the_flow_and_frees_the_port(provider, vault, monkeypatch, logs):
+    _hf_discovery(provider)
+    provider.on('POST', HF_TOKEN, (200, {'access_token': ACCESS_1, 'refresh_token': REFRESH_1, 'expires_in': 3600}))
+
+    def boom(*a, **k):
+        raise PermissionError('disk is read-only')
+    monkeypatch.setattr(secrets_store, 'set_secret', boom)
+    out = oauth.start('higgsfield')
+    status, page = _hit(out['redirect_uri'], code='c', state=_state_of(out['auth_url'])['state'])
+    assert status == 400 and 'could not be saved' in page
+    flow = oauth.flow_status(out['flow_id'])
+    assert flow['status'] == 'error' and 'could not be saved' in flow['message']
+    assert ACCESS_1 not in page + flow['message'] + '\n'.join(logs)
+    for _ in range(50):                                      # the listener (and so the port) is released
+        try:
+            urllib.request.urlopen(out['redirect_uri'] + '?code=x&state=y', timeout=1)
+        except urllib.error.HTTPError:
+            pass
+        except OSError:
+            break
+        threading.Event().wait(0.05)
+    else:
+        pytest.fail('the callback listener stayed open after the vault failed')
+
+
+@pytest.mark.parametrize('status_,body', [
+    (400, {'error': 'invalid_request'}), (401, {'error': 'invalid_client'}), (400, {}), (401, {'error': 'something_new'})])
+def test_any_400_or_401_on_a_refresh_needs_a_new_sign_in(provider, vault, status_, body):
+    _sign_in_higgsfield(provider)
+    _expire(vault)
+    provider.on('POST', HF_TOKEN, (status_, body))
+    with pytest.raises(oauth.OAuthError) as e:
+        oauth.access_token('higgsfield', consumer='t')
+    assert e.value.code == 'needs_signin'
+    assert oauth.status('higgsfield')['state'] == 'needs_signin'
+    n = len(provider.calls)
+    with pytest.raises(oauth.OAuthError):
+        oauth.access_token('higgsfield', consumer='t')
+    assert len(provider.calls) == n                          # not retried on every use
+
+
+def test_a_5xx_on_a_refresh_is_retried_later_not_a_new_sign_in(provider, vault):
+    _sign_in_higgsfield(provider)
+    _expire(vault)
+    provider.on('POST', HF_TOKEN, (503, {}))
+    with pytest.raises(oauth.OAuthError) as e:
+        oauth.access_token('higgsfield', consumer='t')
+    assert e.value.code == 'refresh_failed' and oauth.status('higgsfield')['state'] == 'connected'
+
+
+def test_discovery_refuses_a_non_https_endpoint(provider, vault):
+    _hf_discovery(provider)
+    provider.on('GET', AS_META, (200, {
+        'issuer': 'https://clerk.higgsfield.ai', 'authorization_endpoint': 'https://clerk.higgsfield.ai/oauth/authorize',
+        'token_endpoint': 'http://clerk.higgsfield.ai/oauth/token',
+        'registration_endpoint': 'https://clerk.higgsfield.ai/oauth/register', 'code_challenge_methods_supported': ['S256']}))
+    with pytest.raises(oauth.OAuthError) as e:
+        oauth.start('higgsfield')
+    assert e.value.code == 'insecure_endpoint' and oauth._flows == {}
+    assert not provider.to('/oauth/register')                # nothing was registered, no code was ever sent
+
+
+def test_discovery_refuses_a_non_https_resource_and_any_call_to_one(provider, vault):
+    provider.on('GET', PRM, (200, {'resource': 'http://mcp.higgsfield.ai/mcp',
+                                   'authorization_servers': ['https://clerk.higgsfield.ai']}))
+    with pytest.raises(oauth.OAuthError) as e:
+        oauth.start('higgsfield')
+    assert e.value.code == 'insecure_endpoint'
+    with pytest.raises(oauth.OAuthError) as e2:
+        oauth._call('POST', 'http://evil.example/token', form={'code': 'x'})
+    assert e2.value.code == 'insecure_endpoint'
+    assert oauth._https_ok('http://127.0.0.1:53682/callback') and oauth._https_ok('http://localhost:1/x')
+    assert not oauth._https_ok('ftp://a.example/') and not oauth._https_ok('')
 
 
 # -- routes: human-only, passcode, no token in any answer ------------------------------

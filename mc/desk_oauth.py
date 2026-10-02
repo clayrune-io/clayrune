@@ -124,8 +124,22 @@ def _http(method: str, url: str, *, headers: dict | None = None, body: bytes | N
                                       max_bytes=1024 * 1024)
 
 
+def _https_ok(url: Any) -> bool:
+    """True for an https URL, or http on loopback (the only cleartext this module
+    may use). Endpoints come from provider metadata and dynamic registration, so
+    a provider-supplied `http://` address must never receive a code or a token."""
+    try:
+        u = urllib.parse.urlsplit(str(url or ''))
+    except ValueError:
+        return False
+    return bool(u.hostname) and (u.scheme == 'https' or (
+        u.scheme == 'http' and u.hostname in ('127.0.0.1', 'localhost', '::1')))
+
+
 def _call(method: str, url: str, *, headers: dict | None = None, form: dict | None = None,
           json_body: Any = None) -> tuple[int, Any]:
+    if not _https_ok(url):
+        raise OAuthError('insecure_endpoint', 'a sign-in address was not secure (https), so nothing was sent', 502)
     h = dict(headers or {})
     body = None
     if form is not None:
@@ -201,7 +215,7 @@ def _read_record(service: str, *, consumer: str, project_id: str | None = None,
     d = _def(service)
     try:
         raw = secrets_store.get_secret_value(d['vault'], consumer=consumer, project_id=project_id,
-                                             unattended=unattended)
+                                             unattended=unattended, internal=True)
     except secrets_store.SecretNotFound as e:
         raise OAuthError('not_connected', f"{d['label']} is not signed in yet") from e
     except secrets_store.SecretsError as e:
@@ -274,10 +288,13 @@ def _pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
-def _vault_plain(name: str) -> str | None:
-    """An app credential the human saved (X Client ID / secret). None if absent."""
+def _vault_plain(name: str, *, project_id: str | None = None, unattended: bool = False) -> str | None:
+    """An app credential the human saved (X Client ID / secret). None if absent.
+    `unattended` / `project_id` are the caller's, so the entry's own policy
+    (`allow_unattended`, `scope`) applies to this read as it does to the token's."""
     try:
-        return secrets_store.get_secret_value(name, consumer='desk_oauth')
+        return secrets_store.get_secret_value(name, consumer='desk_oauth', project_id=project_id,
+                                              unattended=unattended)
     except secrets_store.SecretNotFound:
         return None
     except secrets_store.SecretsError as e:
@@ -289,11 +306,18 @@ def _discover_higgsfield() -> dict[str, Any]:
     status_, prm = _call('GET', d['discovery'])
     if status_ != 200 or not isinstance(prm, dict) or not prm.get('resource'):
         raise OAuthError('discovery_failed', 'could not read how to sign in to Higgsfield', 502)
+    if not _https_ok(prm['resource']):
+        raise OAuthError('insecure_endpoint', 'Higgsfield offered a sign-in address that is not secure, so nothing was sent', 502)
     for asu in prm.get('authorization_servers') or []:
         st, meta = _call('GET', str(asu).rstrip('/') + '/.well-known/oauth-authorization-server')
         if (st == 200 and isinstance(meta, dict) and meta.get('registration_endpoint')
                 and meta.get('authorization_endpoint') and meta.get('token_endpoint')
                 and 'S256' in (meta.get('code_challenge_methods_supported') or [])):
+            for k in ('registration_endpoint', 'authorization_endpoint', 'token_endpoint'):
+                if not _https_ok(meta[k]):
+                    raise OAuthError('insecure_endpoint', 'Higgsfield offered a sign-in address that is not secure, so nothing was sent', 502)
+            if meta.get('revocation_endpoint') and not _https_ok(meta['revocation_endpoint']):
+                meta = {k: v for k, v in meta.items() if k != 'revocation_endpoint'}
             return {'resource': prm['resource'], 'scopes': list(prm.get('scopes_supported') or []),
                     'meta': meta}
     raise OAuthError('discovery_failed', 'Higgsfield did not offer a sign-in this app can use', 502)
@@ -462,7 +486,8 @@ def flow_status(flow_id: str) -> dict[str, Any]:
 
 # -- exchange / callback --------------------------------------------------------
 
-def _client_auth(service: str, form: dict, headers: dict) -> None:
+def _client_auth(service: str, form: dict, headers: dict, *, project_id: str | None = None,
+                 unattended: bool = False) -> None:
     """Add the client's own authentication to a token-endpoint call. X: a
     confidential app sends Basic client_id:secret and no body client_id; a
     public one (no saved secret) sends client_id in the body. Higgsfield is a
@@ -470,8 +495,9 @@ def _client_auth(service: str, form: dict, headers: dict) -> None:
     if service != 'x':
         return
     d = SERVICES['x']
-    secret = _vault_plain(d['client_secret_secret'])
-    cid = form.get('client_id') or _vault_plain(d['client_id_secret']) or ''
+    secret = _vault_plain(d['client_secret_secret'], project_id=project_id, unattended=unattended)
+    cid = form.get('client_id') or _vault_plain(d['client_id_secret'], project_id=project_id,
+                                                unattended=unattended) or ''
     if secret:
         headers['Authorization'] = 'Basic ' + base64.b64encode(f'{cid}:{secret}'.encode()).decode()
         form.pop('client_id', None)
@@ -482,7 +508,10 @@ def _client_auth(service: str, form: dict, headers: dict) -> None:
 def _token_response(service: str, st: int, body: Any, what: str) -> dict[str, Any]:
     if st >= 300 or not isinstance(body, dict) or not body.get('access_token'):
         err = body.get('error') if isinstance(body, dict) else None
-        if st in (400, 401) and err in ('invalid_grant', 'invalid_token', 'unauthorized_client'):
+        # A refresh the provider answers 400/401 will never work by retrying, whatever
+        # the error code says (X also sends invalid_request / invalid_client): the
+        # human has to sign in again. Left as 'connected' it would retry on every publish.
+        if st in (400, 401) and (what == 'refresh' or err in ('invalid_grant', 'invalid_token', 'unauthorized_client')):
             raise OAuthError('needs_signin', f"{SERVICES[service]['label']} no longer accepts the saved sign-in; sign in again")
         raise OAuthError(f'{what}_failed', f"{SERVICES[service]['label']} did not accept the {what} "
                                            f"(HTTP {st}{': ' + _safe(err) if err else ''})", 502)
@@ -541,11 +570,15 @@ def complete(params: dict[str, str]) -> tuple[bool, str]:
         secrets_store.register_dispensed(SERVICES[service]['vault'], rec['access_token'])
         if rec['refresh_token']:
             secrets_store.register_dispensed(SERVICES[service]['vault'], rec['refresh_token'])
-        _store_record(service, rec)
+        with _refresh_locks[service]:       # a refresh in flight must not land after (or over) this sign-in
+            _store_record(service, rec)
     except OAuthError as e:
         return fail(str(e))
     except secrets_store.SecretsError as e:
         return fail(f'Signed in, but the sign-in could not be saved: {_safe(e)}')
+    except Exception as e:      # e.g. a vault OSError: end the flow and free the port, never leave it 'working'
+        _log(f'[desk_oauth] saving the {service} sign-in failed: {type(e).__name__}', flush=True)
+        return fail(f'Signed in, but the sign-in could not be saved ({type(e).__name__}). Try again.')
     with _lock:
         flow['status'], flow['message'] = 'done', f'{label} is connected.'
         flow.pop('verifier', None)
@@ -557,7 +590,8 @@ def complete(params: dict[str, str]) -> tuple[bool, str]:
 
 # -- use + refresh --------------------------------------------------------------
 
-def _refresh(service: str, rec: dict[str, Any]) -> dict[str, Any]:
+def _refresh(service: str, rec: dict[str, Any], *, project_id: str | None = None,
+             unattended: bool = False) -> dict[str, Any]:
     label = SERVICES[service]['label']
     if not rec.get('refresh_token'):
         _store_record(service, {**rec, 'needs_signin': True})
@@ -567,7 +601,7 @@ def _refresh(service: str, rec: dict[str, Any]) -> dict[str, Any]:
     if rec.get('resource'):
         form['resource'] = rec['resource']
     headers: dict[str, str] = {}
-    _client_auth(service, form, headers)
+    _client_auth(service, form, headers, project_id=project_id, unattended=unattended)
     st, body = _call('POST', rec['token_endpoint'], headers=headers, form=form)
     try:
         tok = _token_response(service, st, body, 'refresh')
@@ -600,7 +634,7 @@ def access_token(service: str, *, consumer: str, project_id: str | None = None,
         rec = _read_record(service, consumer=consumer, project_id=project_id, unattended=unattended)
         if rec.get('expires_at', 0) - time.time() > REFRESH_SKEW_S:
             return rec['access_token']
-        return _refresh(service, rec)['access_token']
+        return _refresh(service, rec, project_id=project_id, unattended=unattended)['access_token']
 
 
 def x_token(*, consumer: str, project_id: str | None = None, unattended: bool = False) -> str:
@@ -621,29 +655,30 @@ def disconnect(service: str) -> dict[str, Any]:
     entry. `revoked` is True only when the provider answered 2xx for every token
     sent; the local sign-in is removed either way."""
     d = _def(service)
-    revoked: bool | None = None
-    try:
-        rec = _read_record(service, consumer='desk_oauth:disconnect')
-    except OAuthError:
-        rec = None
-    if rec and rec.get('revocation_endpoint'):
-        results = []
-        for hint, key in (('refresh_token', 'refresh_token'), ('access_token', 'access_token')):
-            if not rec.get(key):
-                continue
-            form = {'token': rec[key], 'token_type_hint': hint, 'client_id': rec.get('client_id') or ''}
-            headers: dict[str, str] = {}
-            try:
-                _client_auth(service, form, headers)
-                st, _b = _call('POST', rec['revocation_endpoint'], headers=headers, form=form)
-                results.append(200 <= st < 300)
-            except OAuthError:
-                results.append(False)
-        revoked = bool(results) and all(results)
-    try:
-        deleted = secrets_store.delete_secret(d['vault'])
-    except secrets_store.SecretsError as e:
-        raise OAuthError('unavailable', _safe(e)) from e
+    with _refresh_locks[service]:   # an in-flight refresh must finish first, or it re-creates the entry we delete
+        revoked: bool | None = None
+        try:
+            rec = _read_record(service, consumer='desk_oauth:disconnect')
+        except OAuthError:
+            rec = None
+        if rec and rec.get('revocation_endpoint'):
+            results = []
+            for hint, key in (('refresh_token', 'refresh_token'), ('access_token', 'access_token')):
+                if not rec.get(key):
+                    continue
+                form = {'token': rec[key], 'token_type_hint': hint, 'client_id': rec.get('client_id') or ''}
+                headers: dict[str, str] = {}
+                try:
+                    _client_auth(service, form, headers)
+                    st, _b = _call('POST', rec['revocation_endpoint'], headers=headers, form=form)
+                    results.append(200 <= st < 300)
+                except OAuthError:
+                    results.append(False)
+            revoked = bool(results) and all(results)
+        try:
+            deleted = secrets_store.delete_secret(d['vault'])
+        except secrets_store.SecretsError as e:
+            raise OAuthError('unavailable', _safe(e)) from e
     _log(f'[desk_oauth] {service} disconnected (revoked={revoked})', flush=True)
     return {'service': service, 'deleted': bool(deleted), 'revoked': revoked}
 
