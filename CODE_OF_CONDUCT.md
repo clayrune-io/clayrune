@@ -36,7 +36,7 @@ This Code of Conduct applies within all community spaces, and also applies when 
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at GitHub's private reporting form for this repository (open the [Security tab](https://github.com/clayrune-io/clayrune/security), choose "Report a vulnerability", and start the title with "Conduct:"; see [SECURITY.md](SECURITY.md) if the button is not there). All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at [hello@clayrune.io](mailto:hello@clayrune.io). All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any incident.
 

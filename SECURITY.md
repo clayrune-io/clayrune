@@ -16,11 +16,9 @@ allow a few days.
 That form is visible only to the maintainer, and it lets us talk to you, and
 credit you if you want credit, without anything being public before a fix ships.
 
-**If you do not see the "Report a vulnerability" button**, private reporting is
-switched off for the moment. Open a public issue titled "Security contact
-request" and put no details in it. Say only that you have something to report,
-and a private channel will be arranged. Please do not put the vulnerability
-itself in that issue.
+**If you do not see the "Report a vulnerability" button**, email
+[hello@clayrune.io](mailto:hello@clayrune.io) with "Security" in the subject.
+Please do not put vulnerability details in a public issue.
 
 ## What to expect
 
