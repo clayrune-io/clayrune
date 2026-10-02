@@ -237,11 +237,11 @@ function _bubbleHTML() {
     <div class="lrn-foot">
       <button class="lrn-link" data-lrn="pause">Pause</button>
       <button class="lrn-link" data-lrn="hint">Hint</button>
-      <button class="lrn-link" data-lrn="leave">Leave practice</button>
+      <button class="lrn-link lrn-foot-leave" data-lrn="leave">Leave practice</button>
       <button class="lrn-link lrn-quiet-toggle" data-lrn="quiet" aria-pressed="${_quiet() ? 'true' : 'false'}">Quiet effects</button>
     </div>`;
   const leaveOnly = (ph === 'paused' || ph === 'restart' || ph === 'unavailable')
-    ? `<div class="lrn-foot"><button class="lrn-link" data-lrn="leave">Leave practice</button></div>` : '';
+    ? `<div class="lrn-foot lrn-foot-leave"><button class="lrn-link" data-lrn="leave">Leave practice</button></div>` : '';
   const head = ph === 'completed'
     ? `<span class="lrn-seal" aria-hidden="true">✓</span>`
     : '';
@@ -250,6 +250,7 @@ function _bubbleHTML() {
       <img class="lrn-claydo" src="/assets/claydo-idle.webp" alt="" draggable="false">
       <span class="lrn-title">${_esc(L.title)}</span>
       <span class="lrn-progress" role="status" aria-live="polite">${done}/${total}</span>
+      <button class="lrn-leave" data-lrn="leave" aria-label="Leave practice">Leave</button>
       <button class="lrn-collapse" data-lrn="collapse" aria-label="${S.collapsed ? 'Expand' : 'Collapse'} the practice bubble" aria-expanded="${S.collapsed ? 'false' : 'true'}">${S.collapsed ? '▴' : '▾'}</button>
     </div>
     <div class="lrn-task">${ph === 'completed' ? 'Practice complete' : _esc('Step ' + (S.idx + 1) + ' of ' + total + ': ' + st.short)}</div>
