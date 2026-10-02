@@ -11,6 +11,10 @@
 //     inside it, finger-down no longer opens the keyboard, and a long-press
 //     opens the pane's own Paste/Copy menu (+ a paste sheet when the clipboard
 //     API is unavailable).
+//  3. REVIEW FOLLOW-UPS (Fenn, 2026-10-02): a tap must queue BEHIND pending
+//     keyboard edits (else the tail of a word lands in the next field), end the
+//     old field's composition (else its autocorrect replays into the new one),
+//     and still dismiss the dashboard's own outside-click menus.
 //
 // Hermetic, like browser-pane-ime-shortcuts.mjs: the REAL static/js/browser-pane.js
 // against a stubbed API in real Chromium with an Android UA, touch and the
@@ -30,7 +34,7 @@ const fails = [];
 const fail = m => { fails.push(m); console.log(`❌ FAIL — ${m}`); };
 const ok = m => console.log(`✅ ${m}`);
 
-async function newPage({ android = true, firstPostDelayMs = 0 } = {}) {
+async function newPage({ android = true, firstPostDelayMs = 0, editDelayMs = 0 } = {}) {
   const posts = [];
   const context = await browser.newContext(android
     ? { userAgent: ANDROID_UA, viewport: { width: 412, height: 915 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2.6 }
@@ -49,6 +53,7 @@ async function newPage({ android = true, firstPostDelayMs = 0 } = {}) {
       const body = JSON.parse(route.request().postData() || '{}');
       posts.push(body);
       if (body.type === 'edit' && n++ === 0 && firstPostDelayMs) await new Promise(r => setTimeout(r, firstPostDelayMs));
+      if (body.type === 'edit' && editDelayMs) await new Promise(r => setTimeout(r, editDelayMs));   // a slow link
       return route.fulfill({ contentType: 'application/json', body: '{"ok":true}' });
     }
     if (url.includes('/browser/status'))
@@ -355,6 +360,94 @@ async function testMenuPaste() {
   await context.close();
 }
 
+// ── 3. review follow-ups ────────────────────────────────────────────────────
+const framePoint = (page, dy = 0) => page.evaluate(dy => {
+  const b = document.querySelector('#mc-browser-pane [data-bp="screen"]').getBoundingClientRect();
+  return { x: b.left + b.width / 2, y: b.top + b.height / 2 + dy };
+}, dy);
+
+async function testTapQueuesBehindTyping() {
+  // Every edit takes 250ms to be answered (a slow tunnel). Type a word, then tap
+  // the next field at once: the click must reach the server AFTER the last edit.
+  const { page, posts, cdp, context } = await newPage({ editDelayMs: 250 });
+  await shadow(page).focus();
+  const a = await framePoint(page, -100), b = await framePoint(page, 100);
+  await page.touchscreen.tap(a.x, a.y);                 // field A
+  await page.waitForTimeout(900);                       // let that tap's own POSTs drain
+  posts.length = 0;
+  for (const w of ['r', 'ro', 'ron', 'ronl', 'ronle']) await compose(cdp, w);   // 5 edits, ~1.25s to drain
+  await page.touchscreen.tap(b.x, b.y);                 // field B, mid-queue
+  await page.waitForTimeout(150);
+  if (posts.some(p => p.type === 'mouse'))
+    fail(`tap ordering: the tap's click reached the server while edits were still queued: ${JSON.stringify(posts.map(p => p.type + ':' + (p.action || '')))}`);
+  else ok('tap ordering: the click is held back while earlier edits are still draining');
+  // Continuous input is NOT held back: a scroll goes out immediately.
+  await touchAt(cdp, 'touchStart', a.x, a.y);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: a.x, y: a.y - 40 }] });
+  await touchAt(cdp, 'touchEnd');
+  await page.waitForTimeout(100);
+  if (!posts.some(p => p.type === 'wheel')) fail('tap ordering: wheel was queued behind typing (it must stay fire-and-forget)');
+  else ok('tap ordering: wheel/scroll still goes out immediately, not queued behind typing');
+  await page.waitForTimeout(2200);
+  const seq = posts.filter(p => p.type === 'edit' || (p.type === 'mouse' && p.action !== 'mouseMoved')).map(p => p.type === 'edit' ? 'E' : p.action[5].toUpperCase());
+  const firstMouse = seq.findIndex(x => x === 'P' || x === 'R'), lastEdit = seq.lastIndexOf('E');
+  if (firstMouse < 0) fail(`tap ordering: the click never arrived (${seq.join('')})`);
+  else if (firstMouse < lastEdit) fail(`tap ordering: a click overtook queued edits -> ${seq.join('')}`);
+  else ok(`tap ordering: all edits land before the tap's press/release (${seq.join('')})`);
+  await context.close();
+}
+
+async function testTapEndsComposition() {
+  const { page, posts, cdp, context } = await newPage();
+  const a = await framePoint(page, -100), b = await framePoint(page, 100);
+  await page.touchscreen.tap(a.x, a.y);                 // field A takes the keyboard
+  await page.waitForTimeout(200);
+  await compose(cdp, 'teh');                            // Gboard: word still composing (no space)
+  await settle(page);
+  await page.touchscreen.tap(b.x, b.y);                 // field B
+  await page.waitForTimeout(250);
+  const val = await shadow(page).inputValue();
+  if (val !== '') fail(`composition: tapping another field left the old word in the shadow input (${JSON.stringify(val)})`);
+  else ok('composition: tapping another field empties the shadow even while Gboard was composing');
+  const focused = await page.evaluate(() => (document.activeElement || {}).dataset?.bp);
+  if (focused !== 'ime-shadow') fail(`composition: typing input lost focus after the tap (${focused}) -- the keyboard would close`);
+  else ok('composition: the typing input is still focused after the tap (keyboard stays up)');
+  posts.length = 0;
+  await compose(cdp, 'the ');                          // would be Gboard autocorrecting the OLD composition
+  await settle(page);
+  const edits = posts.filter(p => p.type === 'edit');
+  if (edits.some(p => p.delete > 0)) fail(`composition: old field's autocorrect replayed into the new field as Backspaces -> ${JSON.stringify(edits)}`);
+  else if (remoteText(edits) !== 'the ') fail(`composition: new field should receive exactly "the ", got ${JSON.stringify(remoteText(edits))}`);
+  else ok('composition: the new field gets a clean word, no stale Backspaces from the old one');
+  await context.close();
+}
+
+async function testTapDismissesHostMenu() {
+  const { page, posts, context } = await newPage();
+  await page.evaluate(() => {
+    window.__hostMouse = [];
+    for (const t of ['mousedown', 'mouseup', 'click']) document.addEventListener(t, () => window.__hostMouse.push(t), true);
+  });
+  await page.locator('#mc-browser-pane [data-bp="menu"]').tap();
+  const menu = page.locator('#mc-browser-pane [data-bp="mobmenu"]');
+  if (!(await menu.isVisible())) { fail('menu dismiss: the menu button did not open the menu'); await context.close(); return; }
+  const p = await framePoint(page);
+  posts.length = 0;
+  await page.evaluate(() => { window.__hostMouse.length = 0; });
+  await page.touchscreen.tap(p.x, p.y);
+  await page.waitForTimeout(250);
+  if (await menu.isVisible()) fail('menu dismiss: tapping the page frame left the overflow menu open (touchend cancel swallowed the host mousedown)');
+  else ok('menu dismiss: tapping the frame closes the overflow menu again');
+  const hm = await page.evaluate(() => window.__hostMouse.join(','));
+  if (hm !== 'mousedown,mouseup,click') fail(`menu dismiss: host document should see one mousedown/mouseup/click for a tap, saw ${hm}`);
+  else ok('menu dismiss: host document-level listeners see the tap (mousedown, mouseup, click)');
+  const m = posts.filter(x => x.type === 'mouse');
+  if (m.filter(x => x.action === 'mousePressed').length !== 1 || m.filter(x => x.action === 'mouseReleased').length !== 1)
+    fail(`menu dismiss: the replay must not double-send the click to the page: ${JSON.stringify(m)}`);
+  else ok('menu dismiss: the page still gets exactly one press + one release');
+  await context.close();
+}
+
 await testTyping();
 await testSuggestionAndAutocorrect();
 await testEmojiAndEmptyBackspaceAndEnter();
@@ -363,6 +456,9 @@ await testDesktopUnchanged();
 await testKeyboardDoesNotResizeFrame();
 await testTapAndLongPress();
 await testMenuPaste();
+await testTapQueuesBehindTyping();
+await testTapEndsComposition();
+await testTapDismissesHostMenu();
 await browser.close();
 
 if (!fails.length) console.log('✅ PASS — Android soft-keyboard typing, keyboard-stable frame, long-press paste and paste fallback verified against the real static/js/browser-pane.js.');
