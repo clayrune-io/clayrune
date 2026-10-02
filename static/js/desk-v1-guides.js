@@ -11,7 +11,8 @@
 //                              saves through the passcode-gated Secrets write
 //                              path, and a Test connection button (one free read).
 //   xWizardHTML / bindXWizard  X: create the developer app, paste its Client ID
-//                              (and Client Secret if X showed one), sign in.
+//                              (Native App: no secret; a Web App's secret sits under
+//                              Advanced), sign in.
 //   linkedinHTML               LinkedIn: what to apply for, one line and a link.
 //
 // Nothing here holds a credential longer than one request: a pasted value goes
@@ -230,11 +231,11 @@
           <li>Press “New App” and give it any name.</li>
           <li>Open the app's settings and set up user authentication.</li>
           <li>App permissions: choose “Read and write”.</li>
-          <li>Type of app: choose “Web App, Automated App or Bot” (X then shows a Client Secret too). “Native App” also works and has no secret.</li>
+          <li>Type of app: choose “Native App”. It has no secret to keep track of.</li>
           <li>Callback URI / Redirect URL: paste exactly <code data-x-callback>${esc(cb)}</code>
             <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-x-copy="${esc(cb)}">Copy</button></li>
           <li>Website URL: any web address, for example your own site.</li>
-          <li>Save. X then shows a Client ID (and a Client Secret). Keep that page open for the next step.</li>
+          <li>Save. X then shows a Client ID. Keep that page open for the next step.</li>
         </ol>
         <p class="desk-v1-guide-note">When you sign in, Clayrune asks X for these permissions: <code>${esc(scopes)}</code>. Posting and reading your own account, and staying signed in.</p>
       </section>
@@ -242,7 +243,10 @@
         <div class="desk-v1-guide-step-head"><span class="desk-v1-guide-num">2</span> Paste your app's details <span class="desk-v1-guide-done" data-x-done="2"${app.client_id ? '' : ' hidden'}>saved</span></div>
         <div class="desk-v1-guide-paste">
           <label>Client ID <input type="password" class="desk-v1-rules-textinput" data-x-client-id autocomplete="off" spellcheck="false" placeholder="${app.client_id ? 'Saved. Paste a new one to replace it' : 'Paste the Client ID'}"></label>
-          <label>Client Secret (only if X showed one) <input type="password" class="desk-v1-rules-textinput" data-x-client-secret autocomplete="off" spellcheck="false" placeholder="${app.client_secret ? 'Saved. Paste a new one to replace it' : 'Leave empty if there is none'}"></label>
+          <details class="desk-v1-conn-advanced" data-x-advanced${app.client_secret ? ' open' : ''}>
+            <summary>Advanced: my app is a Web App</summary>
+            <label>Client Secret <input type="password" class="desk-v1-rules-textinput" data-x-client-secret autocomplete="off" spellcheck="false" placeholder="${app.client_secret ? 'Saved. Paste a new one to replace it' : 'Only if X showed one'}"></label>
+          </details>
           <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-x-save>Save app details</button>
         </div>
       </section>

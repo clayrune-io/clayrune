@@ -201,7 +201,7 @@ async function higgsfield(browser) {
   await settle(page, () => window.__proofs.length === 1);
   check(calls(srv, 'POST', /\/connect\/higgsfield\/start$/).length === 0 && (await pane(page)).length === 0, 'a cancelled passcode prompt starts no sign-in and opens no page');
   await page.evaluate(() => { window.__cancelProof = false; });
-  await settle(page, () => !document.querySelector('[data-conn-engine="higgsfield_mcp"] [data-engine-signin]').disabled || true);
+  await settle(page, () => !(document.querySelector('[data-conn-engine="higgsfield_mcp"] [data-engine-signin]') || {}).disabled || true);
   await page.evaluate(() => { document.querySelector('[data-conn-engine="higgsfield_mcp"] [data-engine-signin]').disabled = false; });
 
   await page.click(`${row} [data-engine-signin]`);
@@ -213,18 +213,18 @@ async function higgsfield(browser) {
   check(p0.profile === 'desk-higgsfield' && /auth\.higgsfield\.example/.test(p0.url), 'the sign-in page opens in the pane on the named profile "desk-higgsfield"');
   check(/Finish signing in/.test(await txt(page, `${row} [data-guide-status]`)), 'the card tells the user what to do next');
   srv.ov.higgsfield.state = 'connected'; srv.flows['flow-1'].status = 'done';
-  await settle(page, () => /^Connected$/.test(document.querySelector('[data-conn-engine="higgsfield_mcp"] [data-engine-status]').textContent.trim()));
+  await settle(page, () => /^Connected$/.test((document.querySelector('[data-conn-engine="higgsfield_mcp"] [data-engine-status]') || {}).textContent?.trim()));
   ok('the card polls itself and ends on a verified "Connected"');
   check(!!(await page.$(`${row} [data-engine-disconnect]`)), 'Disconnect is offered once connected');
 
   await page.fill(`${row} [data-engine-limit-input]`, '25');
   await page.click(`${row} [data-engine-limit-save]`);
-  await settle(page, () => /25 credits/.test(document.querySelector('[data-conn-engine="higgsfield_mcp"] [data-engine-limit-note]').textContent));
+  await settle(page, () => /25 credits/.test((document.querySelector('[data-conn-engine="higgsfield_mcp"] [data-engine-limit-note]') || {}).textContent));
   const put = calls(srv, 'PUT', /higgsfield_mcp\/limit$/);
   check(put.length === 1 && put[0].body.job_limit_usd === 25, 'the credit limit is saved through the passcode prompt and shown as "25 credits"');
 
   await page.click(`${row} [data-engine-disconnect]`);
-  await settle(page, () => /^Not connected/.test(document.querySelector('[data-conn-engine="higgsfield_mcp"] [data-engine-status]').textContent.trim()));
+  await settle(page, () => /^Not connected/.test((document.querySelector('[data-conn-engine="higgsfield_mcp"] [data-engine-status]') || {}).textContent?.trim()));
   const pf2 = await proofs(page);
   check(calls(srv, 'POST', /\/connect\/higgsfield\/disconnect$/).length === 1 && /Disconnect Higgsfield/.test(pf2[pf2.length - 1].title), 'Disconnect is one POST through the passcode prompt');
 
@@ -256,7 +256,7 @@ async function keyPaste(browser) {
 
   await page.fill('[data-guide="google"] [data-guide-key]', KEY_SENTINEL);
   await page.click('[data-guide="google"] [data-guide-save]');
-  await settle(page, () => /accepted the key/.test(document.querySelector('[data-guide="google"] [data-guide-result]').textContent));
+  await settle(page, () => /accepted the key/.test((document.querySelector('[data-guide="google"] [data-guide-result]') || {}).textContent));
   const sec = calls(srv, 'POST', /secrets$/);
   const pf = await proofs(page);
   check(sec.length === 1 && sec[0].body.name === 'gemini-api' && sec[0].body.value === KEY_SENTINEL && /Save this key/.test(pf[0].title), 'the key is saved as gemini-api through the passcode prompt');
@@ -265,7 +265,7 @@ async function keyPaste(browser) {
   check(/^Connected$/.test(await txt(page, `${row} [data-engine-status]`)), 'the card now says Connected');
   srv.testOk = false;
   await page.click('[data-guide="google"] [data-guide-test]');
-  await settle(page, () => /did not accept/.test(document.querySelector('[data-guide="google"] [data-guide-result]').textContent));
+  await settle(page, () => /did not accept/.test((document.querySelector('[data-guide="google"] [data-guide-result]') || {}).textContent));
   ok('Test connection shows the provider refusal plainly: "' + (await txt(page, '[data-guide="google"] [data-guide-result]')) + '"');
   srv.testOk = true;
 
@@ -275,7 +275,7 @@ async function keyPaste(browser) {
   check((await page.getAttribute('[data-guide="openai"] [data-guide-link]', 'href')) === 'https://platform.openai.com/api-keys', 'OpenAI links platform.openai.com/api-keys');
   await page.fill('[data-guide="openai"] [data-guide-key]', 'sk-SENTINEL-openai-0000');
   await page.click('[data-guide="openai"] [data-guide-save]');
-  await settle(page, () => /accepted the key/.test(document.querySelector('[data-guide="openai"] [data-guide-result]').textContent));
+  await settle(page, () => /accepted the key/.test((document.querySelector('[data-guide="openai"] [data-guide-result]') || {}).textContent));
   check(calls(srv, 'POST', /secrets$/).some((r) => r.body.name === 'openai-api') && calls(srv, 'POST', /connect\/openai\/test$/).length === 1, 'OpenAI saves as openai-api and tests');
 
   const html = await page.content();
@@ -297,7 +297,7 @@ async function xWizard(browser) {
   const w = '[data-guide="x"]';
   check((await txt(page, `${w} [data-x-callback]`)) === 'http://127.0.0.1:53682/callback', 'step 1 shows the exact callback address to paste into X');
   check(/tweet\.read tweet\.write users\.read offline\.access/.test(await txt(page, w)), 'the four permissions are listed');
-  check(/pay-per-use billing/.test(await txt(page, w)) && /Read and write/.test(await txt(page, w)) && /Web App, Automated App or Bot/.test(await txt(page, w)), 'billing, permission and app type are spelled out');
+  check(/pay-per-use billing/.test(await txt(page, w)) && /Read and write/.test(await txt(page, w)) && /choose “Native App”/.test(await txt(page, w)), 'billing, permission and app type are spelled out');
   await page.click(`${w} [data-x-portal]`);
   const p0 = (await pane(page))[0];
   check(p0 && p0.url === 'https://console.x.com' && p0.profile === 'desk-x', 'the X developer page opens in the pane on the "desk-x" profile');
@@ -306,10 +306,13 @@ async function xWizard(browser) {
   // Public app: Client ID only.
   await page.fill(`${w} [data-x-client-id]`, 'CLIENT-ID-ONLY');
   await page.click(`${w} [data-x-save]`);
-  await settle(page, () => !document.querySelector('[data-guide="x"] [data-x-signin]').disabled);
+  await settle(page, () => !(document.querySelector('[data-guide="x"] [data-x-signin]') || {}).disabled);
   let secs = calls(srv, 'POST', /secrets$/);
   check(secs.length === 1 && secs[0].body.name === 'x.client-id', 'a Client ID alone saves one entry (a public app has no secret)');
-  // Confidential app: add the secret afterwards.
+  // A Web App (confidential) keeps its secret under Advanced, closed by default.
+  check(!(await page.evaluate((sel) => document.querySelector(sel).open, `${w} [data-x-advanced]`)) && /Advanced: my app is a Web App/.test(await txt(page, `${w} [data-x-advanced] summary`)), 'the Client Secret sits under a closed "Advanced: my app is a Web App"');
+  check(!/Web App, Automated App or Bot/.test(await txt(page, `${w} [data-x-step="1"]`)), 'step 1 no longer steers anyone to a Web App');
+  await page.click(`${w} [data-x-advanced] summary`);
   await page.fill(`${w} [data-x-client-secret]`, SECRET_SENTINEL);
   await page.click(`${w} [data-x-save]`);
   for (let i = 0; i < 80 && calls(srv, 'POST', /secrets$/).length < 2; i++) await page.waitForTimeout(50);
@@ -323,7 +326,7 @@ async function xWizard(browser) {
   check(p1.profile === 'desk-x' && /x\.com\/i\/oauth2\/authorize/.test(p1.url), '"Sign in with X" opens X in the pane on the "desk-x" profile');
   check(calls(srv, 'POST', /connect\/x\/start$/).length === 1, 'the sign-in starts with one POST (through the passcode prompt)');
   srv.xConnected = true; srv.ov.x.state = 'connected'; srv.flows['flow-1'].status = 'done';
-  await settle(page, () => /Connected/.test(document.querySelector('[data-conn-account][data-platform="x"] [data-conn-status]').textContent));
+  await settle(page, () => /Connected/.test((document.querySelector('[data-conn-account][data-platform="x"] [data-conn-status]') || {}).textContent));
   ok('the X account ends on "Connected"');
   check(/X is connected/.test(await txt(page, `${xrow} [data-guide="x"]`)) || /Manage/.test(await txt(page, guideBtn)), 'the wizard shows it is connected');
 
@@ -348,7 +351,7 @@ async function xWizard(browser) {
 
   // Disconnect X
   await page.click(`${xrow} [data-x-disconnect]`);
-  await settle(page, () => /Not connected/.test(document.querySelector('[data-conn-account][data-platform="x"] [data-conn-status]').textContent));
+  await settle(page, () => /Not connected/.test((document.querySelector('[data-conn-account][data-platform="x"] [data-conn-status]') || {}).textContent));
   ok('Disconnect X returns the account to Not connected');
   realErrors(pageErrors).forEach((e) => fail('page error: ' + e));
   await ctx.close();
