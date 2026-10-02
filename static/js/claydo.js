@@ -220,6 +220,7 @@ async function restoreClaydoSession() {
         const triggering = (prior && prior.role === 'user') ? (prior.text || '') : '';
         _claydoRenderBrainstormChip(el, [{kind: 'brainstorm-offer'}], triggering);
       }
+      if (m.role !== 'user' && m.lessonOffer) _claydoRenderLessonChip(el, m.lessonOffer);
     }
     histDiv.scrollTop = histDiv.scrollHeight;
   }
@@ -601,7 +602,11 @@ async function submitClaydo() {
           // only the boolean, keyed off the triggering user message (this
           // turn's `question`), never re-derived from replayed marker text.
           const _brainstormOffer = actions.some((x) => x.kind === 'brainstorm-offer');
-          _claydoHistory.push({role: 'assistant', text: cleanText, ready: _ready, brainstormOffer: _brainstormOffer});
+          // Lesson chip: same rule. Only the registered lesson id rides along, and
+          // only a click on the chip launches anything (_claydoRunAction ignores it).
+          const _lessonOffer = (actions.find((x) => x.kind === 'lesson' && window.LearnEngine
+            && window.LearnEngine.hasLesson(x.id)) || {}).id || '';
+          _claydoHistory.push({role: 'assistant', text: cleanText, ready: _ready, brainstormOffer: _brainstormOffer, lessonOffer: _lessonOffer});
           const histCap = _claydoMode === 'ask' ? 12 : 24;
           if (_claydoHistory.length > histCap) {
             _claydoHistory = _claydoHistory.slice(-histCap);
@@ -609,6 +614,7 @@ async function submitClaydo() {
           _claydoDispatchActions(actions);
           _claydoRenderReadyCard(botMsg, actions, cleanText);
           _claydoRenderBrainstormChip(botMsg, actions, question);
+          _claydoRenderLessonChip(botMsg, _lessonOffer);
           _claydoSaveSession();
         }
       }
@@ -673,7 +679,7 @@ function _claydoRenderError(botMsg, message, originalQuestion) {
 // is the reply's last fenced block; the offer marker only shows a chip.
 function _claydoParseMarkers(raw) {
   const actions = [];
-  const re = /\[clayrune:(goto|open-modal|highlight|prompt-ready|character-ready|brainstorm-offer)(\s+[^\]]+)?\]/g;
+  const re = /\[clayrune:(goto|open-modal|highlight|prompt-ready|character-ready|brainstorm-offer|lesson)(\s+[^\]]+)?\]/g;
   const cleanText = raw.replace(re, (_match, kind, attrs) => {
     const out = {kind};
     // Parse key="value" pairs (also accept key=value for unquoted nums).
@@ -813,6 +819,20 @@ function _claydoRenderBrainstormChip(botMsg, actions, triggeringMessage) {
   chip.className = 'claydo-chip claydo-brainstorm-offer-chip';
   chip.innerHTML = '<span class="claydo-chip-ico">&#x1F4A1;</span> Brainstorm an idea';
   chip.onclick = () => _claydoOpenBrainstormSeed(triggeringMessage || '');
+  botMsg.appendChild(chip);
+}
+
+// Learn lesson chip (docs/TUTORIALS_SPEC.md). The marker names a lesson id; it
+// is honoured only if the id is registered in LearnEngine, and it never launches
+// anything by itself. The click is the user's, and starts the same lesson the
+// hub, the Floor header and the first-open offer start.
+function _claydoRenderLessonChip(botMsg, lessonId) {
+  if (!lessonId || !window.LearnEngine || !window.LearnEngine.hasLesson(lessonId)) return;
+  const chip = document.createElement('button');
+  chip.className = 'claydo-chip claydo-lesson-chip';
+  chip.dataset.lesson = lessonId;
+  chip.textContent = window.LearnEngine.lessonChip(lessonId);
+  chip.onclick = () => window.LearnEngine.start(lessonId, 'claydo');
   botMsg.appendChild(chip);
 }
 

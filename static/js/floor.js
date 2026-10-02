@@ -50,6 +50,8 @@ async function openFloor() {
         <span class="dave-sub" id="floor-counts">loading…</span></span>
       <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
         <button class="btn-header-action" style="padding:5px 12px;font-size:11px;margin-right:6px"
+          onclick="LearnEngine.start('floor-v1','floor-header')">Learn the Floor</button>
+        <button class="btn-header-action" style="padding:5px 12px;font-size:11px;margin-right:6px"
           onclick="refreshFloor()">Refresh</button>
         <button class="modal-minimize" onclick="minimizeModal('${FLOOR_MODAL}')" title="Minimize">&#x2015;</button>
         <button class="modal-close" onclick="closeFloor()" title="Close">&#10005;</button>
@@ -66,6 +68,9 @@ async function openFloor() {
   focusModal(FLOOR_MODAL);
 
   await refreshFloor();
+  // Learn (learn.js) offers the Floor lesson once, on the first fresh opening.
+  // Never on a re-focus of an already-open window, and never while practicing.
+  if (window.LearnEngine && window.LearnEngine.onFloorOpened) window.LearnEngine.onFloorOpened();
 }
 
 // The poll is tied to the window, not to the page. A board nobody is looking
@@ -272,7 +277,12 @@ function _floorFigure(pid, f) {
   const dragAttrs = f.character
     ? ` onpointerdown="floorFigDown(event,'${esc(pid)}','${esc(f.character.scope || 'global')}','${esc(f.character.name)}','${esc(f.character.display)}','${esc(f.avatar || '')}')"`
     : '';
+  // data-fl-* are the identity + action hooks the Learn lesson resolves by
+  // (docs/TUTORIALS_SPEC.md "Persistence and maintenance"); role/tabindex make
+  // the figure operable from the keyboard (see the #floor-body keydown below).
   return `<div class="fl-fig fl-${esc(visualState)}${f.character ? ' fl-draggable' : ''}"${dragAttrs}
+      data-fl-session="${esc(f.session_id)}" data-fl-pid="${esc(pid)}" data-fl-action="open-chat"
+      role="button" tabindex="0" aria-label="Open chat: ${esc(f.name || 'unnamed')}"
       onclick="floorOpenFigure('${esc(pid)}','${esc(f.claude_session_id)}','${esc(f.session_id)}')"
       title="${esc(f.task || '')}">
     ${_floorAvatar(f)}
@@ -316,7 +326,7 @@ function _floorRoom(r) {
   // one grey list.
   const tint = r.color ? ` style="border-left-color:${esc(r.color)}"` : '';
   const needs = r.figures.some(f => f.state === 'asking');
-  return `<div class="fl-room${needs ? ' fl-room-needs' : ''}"${tint}>
+  return `<div class="fl-room${needs ? ' fl-room-needs' : ''}" data-fl-room="${esc(r.id)}"${tint}>
     <div class="fl-room-head">
       <span class="fl-room-swatch"${r.color ? ` style="background:${esc(r.color)}"` : ''}></span>
       <span class="fl-room-name" onclick="openProjectModal('${esc(r.id)}')"
@@ -377,8 +387,11 @@ function _floorBench(bench, rooms, quiet) {
     // dropped anywhere, not even on their own project (Ron, 2026-09-16).
     const bHome = b.scope === 'project' ? (b.project_id || '') : '';
     const bDrag = ` onpointerdown="floorFigDown(event,'${esc(bHome)}','${esc(b.scope || 'global')}','${esc(b.name)}','${esc(b.display)}','${esc(b.avatar || '')}')"`;
-    return `<div class="fl-bench-card fl-draggable${open ? ' fl-bench-open' : ''}"${tint}${bDrag}>
-      <div class="fl-bench-main" onclick="floorTogglePicker('${esc(key)}')">
+    return `<div class="fl-bench-card fl-draggable${open ? ' fl-bench-open' : ''}"${tint}${bDrag}
+        data-fl-type="${esc((b.scope || 'global') + ':' + b.name)}" data-fl-pid="${esc(bHome)}">
+      <div class="fl-bench-main" data-fl-action="open-type" role="button" tabindex="0"
+        aria-expanded="${open ? 'true' : 'false'}" aria-label="${esc(b.display)}: choose a room"
+        onclick="floorTogglePicker('${esc(key)}')">
         <span class="fl-face fl-face-bench">${_floorAvatarHTML(b.avatar, FLOOR_FACE_PX)}${_floorProviderBadge(b.provider)}</span>
         <span class="fl-bench-top"><span class="fl-who">${esc(b.display)}</span>
           ${b.display === b.name ? '' : `<span class="fl-type">${esc(b.name)}</span>`}
@@ -438,8 +451,29 @@ function _floorRoomPicker(b, rooms, quiet) {
 
 function floorTogglePicker(key) {
   floorPickerFor = floorPickerFor === key ? null : key;
+  if (window.LearnEngine) window.LearnEngine.notify('toggle-type', { key, open: floorPickerFor === key });
   refreshFloor();
 }
+
+// Close the bench picker without re-picking. The Learn lesson calls this in
+// step preparation so "open the Guide card" is observed as a user change.
+function floorClosePicker() {
+  if (floorPickerFor === null) return;
+  floorPickerFor = null;
+  refreshFloor();
+}
+
+// Keyboard parity for the two click-only affordances. Enter/Space on the
+// figure or the bench card's main area is the same activation as a click; it
+// fires only when the key target IS the control, so the pencil/hire/rename
+// buttons nested inside keep their own behaviour.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const t = e.target;
+  if (!t || !t.matches || !t.matches('#floor-body [data-fl-action]')) return;
+  e.preventDefault();
+  t.click();
+});
 
 function floorPlace(scope, name, display, projectId) {
   // Lands on the +NEW CHAT screen, not on whatever chat happened to be open.
@@ -505,6 +539,7 @@ function floorOpenFigure(pid, csid, mcSessionId) {
   // stamped the moment a drag crosses the activation threshold (§9.3's 8px/
   // long-press gate), so "grabbed and dropped" never also reopens the chat.
   if (Date.now() - _lastHireDragEnd < 300) return;
+  if (window.LearnEngine) window.LearnEngine.notify('open-figure', { pid, csid, sid: mcSessionId });
   // Hierarchy is for delegation, not for inspection (DAVE_DESIGN §8): a figure
   // is always directly reachable, never only through whoever spawned it.
   openProjectModal(pid);
@@ -735,6 +770,10 @@ async function _hireCharacter(scope, name, projectId, hiredBy) {
     }
     return data;
   } catch (e) {
+    // The lesson (learn.js) shows this text next to its Retry, so a failed
+    // practice hire reads the real error rather than a generic one.
+    window._floorLastHireError = e.message;
+    window._floorLastHireErrorAt = Date.now();
     if (window.showToast) showToast('Could not hire: ' + e.message, 4000);
     return null;
   }
@@ -842,6 +881,7 @@ window.floorOpenFigure = floorOpenFigure;
 window.floorRename = floorRename;
 window.floorSetAvatar = floorSetAvatar;
 window.floorTogglePicker = floorTogglePicker;
+window.floorClosePicker = floorClosePicker;
 window.floorPlace = floorPlace;
 window.floorHire = floorHire;
 window.floorEditType = floorEditType;
