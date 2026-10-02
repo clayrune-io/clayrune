@@ -868,7 +868,21 @@ async function floorHireMenu(currentPid, scope, name, display) {
   if (window.refreshFloor) refreshFloor();
 }
 
+// The Desk's "Hire an agent onto <project>…" (Brief Agent picker). Same
+// roster/hire route and toast as the drag drop and the Hire-to-project menu,
+// but it does NOT hand off to the Channel rail (_hireOpenChannel): the user is
+// mid-campaign and must stay on the Brief. Human click only; resolves to the
+// route's response, or null after a toast when the hire failed.
+async function floorHireQuiet(scope, name, projectId, display) {
+  const data = await _hireCharacter(scope, name, projectId, 'desk');
+  if (!data) return null;
+  _hireToast(data, display || name, projectId);
+  if (window.refreshFloor) refreshFloor();
+  return data;
+}
+
 // ── Interop: re-expose for inline / generated-on*= callers. Runtime-only.
+window.floorHireQuiet = floorHireQuiet;
 //    `openFloor` ← sidebarNav('floor'). The rest ← generated on*= handlers
 //    inside the board (refresh button, quiet toggle, figure and room clicks).
 window.openFloor = openFloor;

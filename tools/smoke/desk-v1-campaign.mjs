@@ -877,8 +877,8 @@ async function runProjectSelect(browser) {
     picker: document.querySelectorAll('[data-agent-pick], .desk-v1-posy-agentpick').length,
   }));
   const engAgent = await page.evaluate(() => window.DeskV1Fixtures.projects.find((p) => p.id === 'engulfing_scanner').presence.desk_agent || null);
-  engAgent === null && !noAgent.startDisabled && noAgent.missing.length === 0 && noAgent.picker === 0 && /Pick who plans for this project/.test(noAgent.agentLabel) && (await camp((c) => !(c.how && c.how.agent)))
-    ? ok('R2-2g: a project with no agent does not block Start, keeps its project-level "Pick who plans for this project" label, no per-campaign picker, camp.how.agent unset')
+  engAgent === null && !noAgent.startDisabled && noAgent.missing.length === 0 && noAgent.picker === 0 && /Pick who plans for this campaign/.test(noAgent.agentLabel) && (await camp((c) => !(c.how && c.how.agent)))
+    ? ok('R2-2g: a project with no agent does not block Start, keeps the campaign-level "Pick who plans for this campaign" label, no per-campaign picker, camp.how.agent unset')
     : fail(`R2-2g: missing agent blocks/changes Launch: ${JSON.stringify({ engAgent, noAgent })}`);
   await page.click('[data-map-start-btn]');
   await page.waitForSelector('[data-sheet-confirm]', { timeout: 4000 });

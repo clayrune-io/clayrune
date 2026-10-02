@@ -330,6 +330,19 @@ def test_campaign_lifecycle(store):
     assert store.list_campaigns() == []
 
 
+def test_started_campaign_with_no_project_can_be_given_one(store):
+    # Ron 2026-10-02, 'Clayrune promotion': started before a project was
+    # required, project_id null. The Desk UI now shows the project picker for
+    # exactly that case, so the PATCH it sends must be accepted on a running
+    # campaign and must stick.
+    c = store.create_campaign('Clayrune promotion', 'thesis')
+    running = store.update_campaign(c['id'], {'state': 'running'})
+    assert running['state'] == 'running' and not running.get('project_id')
+    got = store.update_campaign(c['id'], {'project_id': 'clayrune'})
+    assert got['state'] == 'running' and got['project_id'] == 'clayrune'
+    assert store.list_campaigns(state='running')[0]['project_id'] == 'clayrune'
+
+
 def test_campaign_rejects_bad_state_and_voice(store):
     c = store.create_campaign('t', 'thesis')
     with pytest.raises(ValueError):

@@ -177,7 +177,9 @@
         <select class="desk-v1-goal-select" data-setup-project aria-label="Project">
           ${picked ? '' : '<option value="" selected disabled>Pick a project</option>'}${opts}
         </select>
-        ${picked ? '' : '<div class="desk-v1-rules-hint" data-setup-project-hint>Its accounts and limits come from the project, and its agents are the ones hired there. A campaign can’t launch without one.</div>'}
+        ${picked ? '' : `<div class="desk-v1-rules-hint" data-setup-project-hint>${(camp.state === 'draft' || camp.state === 'proposed')
+          ? 'Its accounts and limits come from the project, and its agents are the ones hired there. A campaign can’t launch without one.'
+          : 'This campaign started without a project. Pick one for its accounts, limits and agents; once set, it stays.'}</div>`}
       </div>`;
   }
 

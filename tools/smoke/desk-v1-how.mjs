@@ -179,8 +179,8 @@ async function run(browser) {
   // "+ Create new agent" last; it defaults to the project's desk agent.
   await page.waitForFunction(() => { const s = document.querySelector('[data-how-agent]'); return s && !s.disabled && s.options.length > 1; }, null, { timeout: 4000 }).catch(() => {});
   const agentOpts = await page.$$eval('[data-how-agent] option', (os) => os.map((o) => ({ v: o.value, t: o.textContent.trim(), sel: o.selected })));
-  agentOpts.length === 3 && agentOpts[0].v === 'global:claydo' && agentOpts[1].v === 'global:dave' && agentOpts[2].v === '__create__'
-    ? ok(`Brief: agent picker lists the project's hired agents then "+ Create new agent": ${JSON.stringify(agentOpts.map((o) => o.t))}`)
+  agentOpts.length === 4 && agentOpts[0].v === 'global:claydo' && agentOpts[1].v === 'global:dave' && agentOpts[2].v === '__hire__' && agentOpts[3].v === '__create__'
+    ? ok(`Brief: agent picker lists the project's hired agents, "+ Hire an agent onto…", then "+ Create new agent": ${JSON.stringify(agentOpts.map((o) => o.t))}`)
     : fail(`Brief: agent picker options wrong: ${JSON.stringify(agentOpts)}`);
   agentOpts.some((o) => o.sel && o.v === 'global:claydo') && /project default/.test((agentOpts[0] || {}).t || '')
     ? ok('Brief: agent picker defaults to the project desk agent, labelled "(project default)"')

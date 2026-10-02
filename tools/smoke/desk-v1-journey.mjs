@@ -211,8 +211,8 @@ async function run(browser) {
     ? ok('Brief: Project select is pre-filled from the project page')
     : fail(`Brief: project select not pre-filled: ${JSON.stringify(projSel)}`);
   const agentOpts = await page.$$eval('[data-how-agent] option', (os) => os.map((o) => o.textContent.trim()));
-  agentOpts.length === 4 && agentOpts[3] === '+ Create new agent' && /Claydo/.test(agentOpts[1]) && /Dave/.test(agentOpts[2])
-    ? ok(`Brief: agent picker offers the project's hired agents then "+ Create new agent": ${JSON.stringify(agentOpts)}`)
+  agentOpts.length === 5 && agentOpts[4] === '+ Create new agent' && /^\+ Hire an agent onto/.test(agentOpts[3]) && /Claydo/.test(agentOpts[1]) && /Dave/.test(agentOpts[2])
+    ? ok(`Brief: agent picker offers the project's hired agents, "+ Hire an agent onto <project>…", then "+ Create new agent": ${JSON.stringify(agentOpts)}`)
     : fail(`Brief: agent picker wrong: ${JSON.stringify(agentOpts)}`);
   await page.selectOption('[data-how-agent]', 'global:dave');
   await page.waitForTimeout(80);
