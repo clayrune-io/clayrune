@@ -136,6 +136,17 @@ function _hpShow(modalId) {
 // fresh install goes straight to "set one" instead of asking for a passcode
 // that cannot exist yet (avoids a pointless round trip through bad_passcode).
 async function humanProofFetch(url, fetchOptions, opts) {
+  // Learn practice (static/js/learn-practice.js) answers or refuses every /api
+  // call in this tab, so nothing sent from here can reach the server. There is
+  // no gate to prove a human to, and a passcode prompt would only teach a
+  // lesson to type one. The server-side guard is untouched.
+  if (window.LearnPractice && window.LearnPractice.active) {
+    const resp = await fetch(url, Object.assign({}, fetchOptions || {}, {
+      method: (fetchOptions && fetchOptions.method) || 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, (fetchOptions && fetchOptions.headers) || {}),
+    }));
+    return { ok: resp.ok, status: resp.status, body: await resp.json().catch(() => ({})) };
+  }
   const modalId = '__human-proof-' + (++_hpModalSeq);
   const title = (opts && opts.title) || 'Confirm';
   const description = (opts && opts.description)

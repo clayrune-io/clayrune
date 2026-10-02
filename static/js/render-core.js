@@ -721,7 +721,7 @@ function modalContentHTML(p) {
             <button class="modal-menu-item${activeTab==='activity'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','activity')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-activity"/></svg></span> Activity
             </button>
-            <button class="modal-menu-item${activeTab==='workflows'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','workflows')">
+            <button class="modal-menu-item${activeTab==='workflows'?' active':''}" data-tab-name="workflows" onclick="_mcMenuSwitchTab('${esc(p.id)}','workflows')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-workflow"/></svg></span> Workflows
             </button>
             <div class="modal-menu-sep"></div>
@@ -920,7 +920,7 @@ function modalContentHTML(p) {
       <div class="modal-tab ${activeTab==='agent-log'?'active':''}" data-tab-name="agent-log" onclick="switchModalTab('${esc(p.id)}','agent-log')">Agent Log</div>
       <div class="modal-tab ${activeTab==='documents'?'active':''}" onclick="switchModalTab('${esc(p.id)}','documents')">Documents</div>
       <div class="modal-tab ${activeTab==='activity'?'active':''}" onclick="switchModalTab('${esc(p.id)}','activity')">Activity</div>
-      <div class="modal-tab ${activeTab==='workflows'?'active':''}" onclick="switchModalTab('${esc(p.id)}','workflows')">Workflows</div>
+      <div class="modal-tab ${activeTab==='workflows'?'active':''}" data-tab-name="workflows" onclick="switchModalTab('${esc(p.id)}','workflows')">Workflows</div>
       ${(activeTab === 'workflows') ? `<div class="modal-tab-search">
         <input type="text" id="tab-search-${esc(p.id)}" placeholder="Filter..."
           value="${esc(modalSearchQuery[p.id] || '')}"

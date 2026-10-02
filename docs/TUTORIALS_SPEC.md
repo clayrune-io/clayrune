@@ -122,7 +122,7 @@ Ron, after using the pilot: the Floor lesson "should also guide on how to hire n
 ## LATER
 
 - Backlog: create, prioritize and complete a practice item.
-- Workflows: place nodes, connect them and save a practice canvas.
+- Workflows: place nodes, connect them and save a practice canvas. **Built 2026-10-02 as `workflows-v1`** (see Lesson 2 at the end).
 - Scheduler/Automation: configure and inspect an inert practice schedule.
 - Desk campaigns: create and edit a practice campaign draft.
 - Desk storyboards: add and revise scenes with real product pictures.
@@ -140,3 +140,12 @@ Ron, after using the pilot: the Floor lesson "should also guide on how to hire n
 3. **Progress owner: B, browser-local** (forced by decision 2). Same fields as the Persistence section, stored in localStorage under a `learn.*` namespace. No cross-browser resume, no takeover lease; drop those requirements and their smoke assertions. Completion survives reload and lesson revisions as specified.
 
 Everything else in this spec stands as written, including every acceptance criterion that does not depend on a server practice store or cross-client lease.
+
+## Lesson 2: Workflows (`workflows-v1`, built 2026-10-02 after Ron accepted the Floor pilot)
+
+Four actions: open a blank canvas from the practice project's Workflows tab, place an Approval gate (drag, or a tap on the toolbar tool), connect the Trigger's dot to it (drag, or the bubble's explicit "Connect it for me"), save. Same browser-only practice store as the Floor: `learn-practice.js` answers `/api/workflows` and `/api/schedules` in the tab; Run, Draft, Schedule and cancel get the "Practice only" refusal. Smoke: `tools/smoke/learn-workflows.mjs`.
+
+- **Evidence.** Steps 1 to 3 read the builder's own model through `window._wfLearn.state()` (nodes and `trigger.entry` live in `def`, not the DOM); step 4 reads the practice store's saved record. Connecting from the Trigger writes `trigger.entry`, not an edge, so that is the evidence for "trigger wired to the step".
+- **No-drag fallbacks.** "Place it for me" calls `_wfPlaceToolAtFreeSpot('approval')` and "Connect it for me" calls `_wfMakeRoot(name)`: the same calls a toolbar tap and a port drag end in. No new builder UI was added.
+- **Reload.** The canvas is in memory, so a reload empties it. Resume restores an empty canvas and, if the saved step needs a placed or wired step, goes back to the step that makes it and says so. Only practice state resets.
+- **Engine.** Lesson definitions carry `surfaceKey`, `backLabel`, `returnLabel` and an optional per-step `fallback`; progress, telemetry and the hub are per lesson id.

@@ -1747,11 +1747,11 @@ function _wfRenderBody(st) {
 function _wfRenderToolbarTools() {
   return `<span class="wfb-toolbar-tools" role="group" aria-label="Add a step">
     <button type="button" class="wfb-toolbar-tool" title="${Object.keys(_WF_ACTION_META).length} verbs &middot; no agent"
-      onpointerdown="_wfPaletteDown(event,'action',null,null,true)">&#9881; <span class="wfb-toolbar-tool-label">Action</span></button>
+      data-wf-tool="action" onpointerdown="_wfPaletteDown(event,'action',null,null,true)">&#9881; <span class="wfb-toolbar-tool-label">Action</span></button>
     <button type="button" class="wfb-toolbar-tool" title="a human decides"
-      onpointerdown="_wfPaletteDown(event,'approval',null,null,true)">&#9995; <span class="wfb-toolbar-tool-label">Approval gate</span></button>
+      data-wf-tool="approval" onpointerdown="_wfPaletteDown(event,'approval',null,null,true)">&#9995; <span class="wfb-toolbar-tool-label">Approval gate</span></button>
     <button type="button" class="wfb-toolbar-tool" title="a delay, or until a time"
-      onpointerdown="_wfPaletteDown(event,'wait',null,null,true)">&#9203; <span class="wfb-toolbar-tool-label">Wait</span></button>
+      data-wf-tool="wait" onpointerdown="_wfPaletteDown(event,'wait',null,null,true)">&#9203; <span class="wfb-toolbar-tool-label">Wait</span></button>
   </span>`;
 }
 
@@ -4856,6 +4856,19 @@ window._wfActionGroupChanged = _wfActionGroupChanged;
 window._wfRerenderWaitFields = _wfRerenderWaitFields;
 window._wfInsertMenuToggle = _wfInsertMenuToggle;
 window._wfSave = _wfSave;
+// Learn (workflows-v1) fallbacks: the same two calls a toolbar tap and a port drag end in.
+window._wfPlaceToolAtFreeSpot = _wfPlaceToolAtFreeSpot;
+window._wfMakeRoot = _wfMakeRoot;
+// Read-only view of the canvas MODEL for the lesson's evidence checks (nodes
+// and trigger.entry live in `def`, not in the DOM), and the one reset it needs:
+// a practice canvas must not outlive its run in the singleton, or the next real
+// Workflows tab would ask to discard its unsaved changes.
+window._wfLearn = {
+  state: () => (_wfState && _wfState._wf ? { projectId: _wfState.projectId, wf: _wfState._wf } : null),
+  discard: (projectId) => {
+    if (_wfState && _wfState.projectId === projectId) { _wfStopLivePoll(); _wfState = null; }
+  },
+};
 window._wfRunNow = _wfRunNow;
 window._wfCancelRun = _wfCancelRun;
 window._wfMarkDirty = _wfMarkDirty;
