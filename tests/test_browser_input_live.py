@@ -96,6 +96,28 @@ def test_ime_unknown_phase_is_refused():
         br._input_commands({'type': 'ime', 'phase': 'start', 'text': 'x'})
 
 
+def test_edit_deletes_then_inserts_in_order():
+    # Touch typing sends the diff of the pane's hidden input as ONE request:
+    # N Backspaces first, then the replacement text.
+    cmds = br._input_commands({'type': 'edit', 'delete': 2, 'text': 'the'})
+    names = [c[0] for c in cmds]
+    assert names == ['Input.dispatchKeyEvent'] * 4 + ['Input.insertText']
+    downs = [c[1] for c in cmds if c[0] == 'Input.dispatchKeyEvent' and c[1]['type'] != 'keyUp']
+    assert [d['key'] for d in downs] == ['Backspace', 'Backspace']
+    assert cmds[-1] == ('Input.insertText', {'text': 'the'})
+
+
+def test_edit_insert_only_and_delete_only():
+    assert br._input_commands({'type': 'edit', 'text': 'r'}) == [('Input.insertText', {'text': 'r'})]
+    assert len(br._input_commands({'type': 'edit', 'delete': 1})) == 2
+    assert br._input_commands({'type': 'edit'}) == []
+
+
+def test_edit_delete_count_is_capped():
+    # A bad/hostile payload must not queue an unbounded number of CDP calls.
+    assert len(br._input_commands({'type': 'edit', 'delete': 10 ** 6})) == 256 * 2
+
+
 # ---- live: a real Chromium, a local page ------------------------------------
 
 PAGE = """<!doctype html><html><body style="margin:0">
