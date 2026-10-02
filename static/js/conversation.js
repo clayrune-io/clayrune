@@ -2526,7 +2526,11 @@ function updateRailRowStatus(sessionId) {
   // reconciles bucketing.
   const charKey = _convCharKey({ character: s.character, identity: s.identity });
   if (charKey) {
-    document.querySelectorAll(`.channel-row[data-char-key="${q(charKey)}"]`).forEach(row => {
+    // Scoped to THIS session's project: with two project modals open side by
+    // side, a bare data-char-key match lit the same persona's row in every
+    // modal — "Working" on a project where that person was on the Bench
+    // (Ron, 2026-10-02). A person's live state is per project.
+    document.querySelectorAll(`.channel-row[data-char-key="${q(charKey)}"][data-project-id="${q(s.projectId)}"]`).forEach(row => {
       const time = row.querySelector('.conv-time');
       if (time) {
         if (state === 'waiting') time.innerHTML = '<span class="conv-live-badge waiting">Waiting for you</span>';
@@ -2991,7 +2995,7 @@ function _channelRowHTML(p, r, inRoom, expanded) {
     ? `<button class="conv-unhire" onclick="event.stopPropagation();unhireFromProject('${esc(p.id)}','${esc(r.key)}','${name}')"
         title="Remove from this project — conversation history stays" aria-label="Remove from project">&#10005;</button>`
     : '';
-  return `<div class="conv-row channel-row${expanded ? ' expanded' : ''}" data-search="${esc(search)}" data-char-key="${esc(r.key)}" data-ts-relative="${esc(r.tsRelative || '')}"
+  return `<div class="conv-row channel-row${expanded ? ' expanded' : ''}" data-search="${esc(search)}" data-char-key="${esc(r.key)}" data-project-id="${esc(p.id)}" data-ts-relative="${esc(r.tsRelative || '')}"
       aria-expanded="${expanded ? 'true' : 'false'}"
       onclick="toggleChannelPerson('${esc(p.id)}','${esc(r.key)}')" title="${name}${ch.deleted ? ' (persona since deleted)' : ''}">
     <span class="conv-face">${face}</span>
