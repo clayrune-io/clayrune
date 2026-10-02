@@ -4387,7 +4387,45 @@
   }
   .agent-3pane .agent-main .agent-chat-input-row .btn-emoji:hover,
   .agent-3pane .agent-main .agent-input-row .btn-emoji:hover { color: var(--text); background: transparent !important; }
-  @media (max-width: 960px) { .btn-emoji, .chat-emoji-pop { display: none !important; } }
+  /* Phone: the emoji button is shown ONLY inside the composer pill (left); a
+     bare one (desktop layout in a narrow window, split pane) stays hidden. */
+  @media (max-width: 960px) {
+    .btn-emoji { display: none !important; }
+    .composer-field .btn-emoji { display: inline-flex !important; }
+  }
+  /* ── Mobile composer room (Ron, 2026-10-02) ──────────────────────────────
+     Last in the file on purpose: the base .agent-chat-input / .btn-attach
+     rules above would otherwise out-rank the earlier 960px composer block by
+     source order. Pill, left→right: 😀 · field · 📎 · 📷, then the round
+     mic⇄send button outside. */
+  @media (max-width: 960px) {
+    /* One frame, not two: the chat box loses its border and the composer its
+       14px side padding; the panel hugs the screen edge while a chat is open. */
+    .agent-chat { border: none; }
+    .agent-chat-input { padding: 6px 0 8px; }
+    .agent-panel:has(> .agent-chat) { padding: 6px 4px !important; }
+    .agent-input-row .composer-field, .agent-chat-input-row .composer-field {
+      align-items: flex-end; gap: 0; padding: 2px 2px 2px 4px;
+    }
+    .composer-field .btn-emoji, .composer-field .btn-attach {
+      width: 40px; height: 40px; margin-bottom: 2px; font-size: 23px;
+      background: transparent !important; border: none !important; color: var(--text-dim);
+    }
+    .composer-field .btn-camera { font-size: 22px; }
+    .composer-field[data-has-text="1"] .btn-camera { display: none; }
+    /* Starts at exactly one line, grows with the text to ~5 lines, then scrolls
+       (the scrollbar is hidden globally). field-sizing does the growing; JS in
+       composer-extras.js covers engines without it. */
+    .agent-input-row .composer-field .agent-task-input,
+    .agent-chat-input-row .composer-field .agent-task-input {
+      field-sizing: content; min-height: 44px; max-height: 118px; overflow-y: auto;
+      padding: 10px 4px; line-height: 1.5; min-width: 0;
+    }
+    /* A placeholder that wraps would show as a half-clipped second row. */
+    .composer-field .agent-task-input::placeholder {
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+  }
   .chat-emoji-pop {
     position: fixed; z-index: 10001;
     width: 296px; max-height: 280px; overflow-y: auto;

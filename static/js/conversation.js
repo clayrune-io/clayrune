@@ -1268,7 +1268,12 @@ function agentPanelHTML(p) {
   // and the placeholder addresses is the SAME read used by the face-card grid
   // below, the status line, and the §8 sheet — one source of truth.
   const _personName = noActiveTab ? _composerActiveCharName(p) : _activeSessionPersonName(activeSession, p);
-  const _dispatchPlaceholder = incOn ? 'Incognito — not saved to memory...' : `Describe a task for ${esc(_personName)}...`;
+  // Phone: the field is ~180px wide (emoji, clip, camera share the pill), so the
+  // placeholder must fit ONE line there — a wrapped placeholder shows a clipped
+  // second row. The persona is already named by the thread header / status line.
+  const _dispatchPlaceholder = mobileMode
+    ? (incOn ? 'Incognito chat…' : 'Describe a task…')
+    : (incOn ? 'Incognito — not saved to memory...' : `Describe a task for ${esc(_personName)}...`);
   const _attachInput = _pcaps.image_attach ? `
     <input type="file" multiple id="agent-attach-input-${esc(p.id)}" class="agent-attach-input"
       onchange="handleAgentAttachPick(event,'${esc(p.id)}')">` : '';
@@ -1358,7 +1363,7 @@ function agentPanelHTML(p) {
     ${_attachInput}
     ${mobileMode && _pcaps.image_attach ? cameraInputHTML(esc(p.id)) : ''}
     ${mobileMode ? '' : _dispatchPlusBtn}
-    ${mobileMode ? '<div class="composer-field">' : ''}
+    ${mobileMode ? `<div class="composer-field">${emojiBtnHTML(`agent-task-${esc(p.id)}`)}` : ''}
     <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-task-${esc(p.id)}" rows="1"
       data-project="${esc(p.id)}"
       placeholder="${_dispatchPlaceholder}"
@@ -1368,7 +1373,7 @@ function agentPanelHTML(p) {
     ${mobileMode ? _attachBtn : ''}
     ${mobileMode && _pcaps.image_attach ? cameraBtnHTML(esc(p.id)) : ''}
     ${mobileMode ? '</div>' : ''}
-    ${emojiBtnHTML(`agent-task-${esc(p.id)}`)}
+    ${mobileMode ? '' : emojiBtnHTML(`agent-task-${esc(p.id)}`)}
     ${mobileMode ? composerActionHTML(`agent-task-${esc(p.id)}`, esc(p.id), _dispatchBtn) : `${_dispatchMicBtn}${_dispatchBtn}`}
   </div>`;
   // Mobile compose = flex column: the preview / starter chips / resume picker
@@ -1729,17 +1734,17 @@ function agentPanelHTML(p) {
             ${_fuAttachInput}
             ${mobileMode && _pcaps.image_attach ? cameraInputHTML(`fu_${esc(activeSessionId)}`) : ''}
             ${mobileMode ? '' : _fuPlusBtn}
-            ${mobileMode ? '<div class="composer-field">' : ''}
+            ${mobileMode ? `<div class="composer-field">${emojiBtnHTML(`agent-followup-${esc(activeSessionId)}`)}` : ''}
             <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-followup-${esc(activeSessionId)}" rows="1"
               data-project="${esc(p.id)}"
-              placeholder="${st === 'error' ? 'Type to continue from where it stopped...' : st === 'stopped' ? 'Type to resume conversation...' : st === 'running' ? (mobileMode ? 'Interrupt and redirect agent...' : 'Interrupt and redirect agent... (Enter to send)') : 'Send follow-up...'}"
+              placeholder="${mobileMode ? (st === 'error' ? 'Continue…' : st === 'stopped' ? 'Resume…' : st === 'running' ? 'Redirect agent…' : 'Message') : (st === 'error' ? 'Type to continue from where it stopped...' : st === 'stopped' ? 'Type to resume conversation...' : st === 'running' ? 'Interrupt and redirect agent... (Enter to send)' : 'Send follow-up...')}"
               onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(activeSessionId)}'),'${esc(p.id)}')"
               onpaste="${_pcaps.image_attach ? `handleAgentPaste(event,'fu_${esc(activeSessionId)}')` : ''}"
             ></textarea>
             ${mobileMode ? _fuAttachBtn : ''}
             ${mobileMode && _pcaps.image_attach ? cameraBtnHTML(`fu_${esc(activeSessionId)}`) : ''}
             ${mobileMode ? '</div>' : ''}
-            ${emojiBtnHTML(`agent-followup-${esc(activeSessionId)}`)}
+            ${mobileMode ? '' : emojiBtnHTML(`agent-followup-${esc(activeSessionId)}`)}
             ${mobileMode
               ? composerActionHTML(`agent-followup-${esc(activeSessionId)}`, `fu_${esc(activeSessionId)}`,
                   `<button class="btn-send-arrow" onclick="sendFollowup('${esc(p.id)}','${esc(activeSessionId)}')" title="Send" aria-label="Send">&#8593;</button>`)

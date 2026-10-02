@@ -6,6 +6,19 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-02] — Mobile composer room (<=960px)
+
+- **Emoji button inside the pill, left** (WhatsApp pattern); the picker opens as a
+  full-width strip above the pill, placed against the visual viewport so the
+  keyboard never hides it, and a pick does not raise the keyboard.
+- **Width reclaimed**: chat box border and the composer's 14px side padding gone,
+  panel hugs the edge while a chat is open; icons 40px targets, 22-23px glyphs.
+- **Camera hides while the field has text** (`[data-has-text]`), returns when empty.
+- **One-line placeholders** on phone ('Describe a task…', 'Redirect agent…',
+  'Resume…', 'Message'); the field starts at one line and grows to ~5, then
+  scrolls (`field-sizing: content`, JS fallback). `refreshModalById` no longer
+  pins the pill textarea's height inline. Smoke: `tools/smoke/mobile-composer-room.mjs`.
+
 ## [2026-10-02] — Chat emojis: composer picker, agent opt-in, WhatsApp-style mobile composer
 
 - **Emoji picker** beside the agent-chat input (desktop; hidden at <=960px, the
