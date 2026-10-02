@@ -37,7 +37,51 @@ function micBtnHTML(textareaId) {
     title="Voice dictation — tap to record, tap again to stop"
     onclick="toggleAgentMic('${textareaId}')">&#127908;</button>`;
 }
-// Per-textarea recording state. `gen` is a monotonic counter that lets stale
+// ── Mobile WhatsApp-style composer (<=960px) ────────────────────────────────
+// One round action button OUTSIDE the field, right: the MIC while the field is
+// empty, the SEND arrow as soon as there is text or a queued attachment. Both
+// keep their own handlers (toggleAgentMic / dispatchAgent|sendFollowup) — this
+// only decides which of the two shows. Inside the field, right: 📎 and 📷.
+// A running agent does not change this: Stop lives in the pane header
+// (#stop-btn-<sid>), never in the composer row, so typing during a turn shows
+// Send (= interrupt-and-redirect, as before) and nothing here touches Stop.
+function cameraInputHTML(key) {
+  return `<input type="file" accept="image/*" capture="environment" id="agent-camera-input-${key}" class="agent-attach-input"
+    onchange="handleAgentAttachPick(event,'${key}')">`;
+}
+function cameraBtnHTML(key) {
+  return `<button class="btn-attach btn-camera" type="button" title="Take a photo" aria-label="Take a photo"
+    onclick="triggerAgentCamera('${key}')">&#128247;</button>`;
+}
+function triggerAgentCamera(key) {
+  const input = document.getElementById(`agent-camera-input-${key}`);
+  if (input) input.click();
+}
+function composerActionHTML(textareaId, imgKey, sendBtnHTML) {
+  const mic = micBtnHTML(textareaId);
+  // No speech backend → nothing to swap to, so the slot is just Send.
+  return `<div class="composer-action" data-for="${textareaId}" data-key="${imgKey}" data-mode="${mic ? 'mic' : 'send'}">${mic}${sendBtnHTML}</div>`;
+}
+function syncComposerAction(textareaId) {
+  const slot = document.querySelector(`.composer-action[data-for="${textareaId}"]`);
+  if (!slot) return;
+  const ta = document.getElementById(textareaId);
+  const mic = slot.querySelector('.btn-mic');
+  if (!ta || !mic) { slot.dataset.mode = 'send'; return; }
+  const queued = (agentPendingImages[slot.dataset.key] || []).length > 0;
+  // While dictating, the button is the way to stop — keep it a mic until then.
+  const mode = (ta.value.trim() || queued) && !mic.classList.contains('recording') ? 'send' : 'mic';
+  if (slot.dataset.mode !== mode) slot.dataset.mode = mode;
+}
+function syncAllComposerActions() {
+  document.querySelectorAll('.composer-action').forEach(el => syncComposerAction(el.dataset.for));
+}
+document.addEventListener('input', e => {
+  const t = e.target;
+  if (t && t.id && t.classList && t.classList.contains('agent-task-input')) syncComposerAction(t.id);
+}, true);
+
+// Per-textarea recording state.`gen` is a monotonic counter that lets stale
 // listeners from a previous session (e.g. after a modal rebuild) recognize
 // they no longer belong to the current run and bail out.
 const _micState = {};
@@ -45,6 +89,7 @@ let _micGen = 0;
 function _micUiOff(textareaId) {
   const btn = document.getElementById(`btn-mic-${textareaId}`);
   if (btn) btn.classList.remove('recording');
+  syncComposerAction(textareaId);
 }
 function toggleAgentMic(textareaId) {
   // Synchronous dispatcher — never awaits. Avoids click being "swallowed"
@@ -602,8 +647,111 @@ async function openRulesModal(projectId) {
 }
 
 
+// ── Emoji picker (agent-chat composers, desktop) ────────────────────────────
+// A small popover, not the project-emoji modal in modal-manager.js: that one is
+// a single-pick dialog bound to a project id, this one inserts at the caret and
+// stays open for several picks. The button is hidden at <=960px in CSS — a
+// phone's own keyboard already has emojis (Ron, 2026-10-02).
+const CHAT_EMOJI_GROUPS = [
+  ['Faces', ['😀', '😃', '😄', '😁', '😆', '😅', '😂', '🙂', '😉', '😊', '😍', '🤔',
+             '😎', '🥳', '😴', '😬', '🙄', '😢', '😭', '😡', '🤯', '🥲', '😇', '🤗']],
+  ['Gestures', ['👍', '👎', '👏', '🙌', '🙏', '💪', '👀', '🤝', '👋', '✌️', '🤞', '👌']],
+  ['Work', ['💻', '🛠️', '⚙️', '🔧', '🐛', '📝', '📚', '🔍', '📌', '📎', '📅', '📊',
+            '📈', '💡', '🔒', '🔑', '📦', '🚀', '🧪', '🔥']],
+  ['Symbols', ['✅', '❌', '⚠️', '❓', '❗', '💯', '✨', '⭐', '⚡', '🎉', '🎯', '💬',
+               '❤️', '💔', '🧡', '➡️', '🔁']],
+  ['Nature & food', ['🌱', '🌞', '🌙', '🌈', '☕', '🍕', '🍰', '🐶', '🐱', '🦄']],
+];
+let _chatEmojiPop = null;   // { el, textareaId, btn }
+
+function emojiBtnHTML(textareaId) {
+  // onmousedown preventDefault keeps the textarea focused (and its caret) while
+  // the button is pressed.
+  return `<button class="btn-emoji" type="button" id="btn-emoji-${textareaId}"
+    title="Emoji (Windows: press Win + . for the OS picker)" aria-label="Insert emoji"
+    aria-haspopup="true" onmousedown="event.preventDefault()"
+    onclick="toggleChatEmojiPicker('${textareaId}')">&#128578;</button>`;
+}
+
+function closeChatEmojiPicker() {
+  const pop = _chatEmojiPop;
+  if (!pop) return;
+  _chatEmojiPop = null;
+  pop.el.remove();
+  document.removeEventListener('mousedown', _chatEmojiOutside, true);
+  document.removeEventListener('keydown', _chatEmojiKey, true);
+  window.removeEventListener('resize', closeChatEmojiPicker);
+}
+function _chatEmojiOutside(ev) {
+  const pop = _chatEmojiPop;
+  if (!pop) return;
+  if (pop.el.contains(ev.target) || (pop.btn && pop.btn.contains(ev.target))) return;
+  closeChatEmojiPicker();
+}
+function _chatEmojiKey(ev) {
+  if (ev.key !== 'Escape' || !_chatEmojiPop) return;
+  const ta = document.getElementById(_chatEmojiPop.textareaId);
+  ev.stopPropagation();   // this Esc dismisses the picker, nothing underneath it
+  closeChatEmojiPicker();
+  if (ta) ta.focus();
+}
+
+// Insert at the textarea's caret (replacing any selection), keep focus, and fire
+// `input` so the composer's autosize / draft handlers see the change.
+function insertEmojiAtCaret(textareaId, emoji) {
+  const ta = document.getElementById(textareaId);
+  if (!ta) { closeChatEmojiPicker(); return; }
+  const start = ta.selectionStart == null ? ta.value.length : ta.selectionStart;
+  const end = ta.selectionEnd == null ? start : ta.selectionEnd;
+  ta.setRangeText(emoji, start, end, 'end');
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  ta.focus();
+}
+
+function toggleChatEmojiPicker(textareaId) {
+  const wasOpenHere = _chatEmojiPop && _chatEmojiPop.textareaId === textareaId;
+  closeChatEmojiPicker();
+  if (wasOpenHere) return;
+  const btn = document.getElementById(`btn-emoji-${textareaId}`);
+  if (!btn) return;
+  const el = document.createElement('div');
+  el.className = 'chat-emoji-pop';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', 'Emoji picker');
+  el.innerHTML = CHAT_EMOJI_GROUPS.map(([label, list]) => `
+    <div class="cep-label">${label}</div>
+    <div class="cep-grid">${list.map(e => `<button type="button" class="cep-cell" data-emoji="${e}">${e}</button>`).join('')}</div>`
+  ).join('');
+  // Cells must not steal focus from the textarea, or the caret is lost.
+  el.addEventListener('mousedown', ev => ev.preventDefault());
+  el.addEventListener('click', ev => {
+    const cell = ev.target.closest('.cep-cell');
+    if (cell) insertEmojiAtCaret(textareaId, cell.dataset.emoji);
+  });
+  document.body.appendChild(el);
+  // Anchor above the button, right edges aligned, clamped inside the viewport.
+  const r = btn.getBoundingClientRect();
+  const w = el.offsetWidth;
+  el.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w)) + 'px';
+  el.style.bottom = Math.max(8, window.innerHeight - r.top + 6) + 'px';
+  _chatEmojiPop = { el, textareaId, btn };
+  document.addEventListener('mousedown', _chatEmojiOutside, true);
+  document.addEventListener('keydown', _chatEmojiKey, true);
+  window.addEventListener('resize', closeChatEmojiPicker);
+}
+
 // ── interop: window re-exposure for inline/generated/cross-module callers ──
+window.emojiBtnHTML = emojiBtnHTML;
+window.toggleChatEmojiPicker = toggleChatEmojiPicker;
+window.closeChatEmojiPicker = closeChatEmojiPicker;
+window.insertEmojiAtCaret = insertEmojiAtCaret;
 window.micBtnHTML = micBtnHTML;
+window.cameraInputHTML = cameraInputHTML;
+window.cameraBtnHTML = cameraBtnHTML;
+window.triggerAgentCamera = triggerAgentCamera;
+window.composerActionHTML = composerActionHTML;
+window.syncComposerAction = syncComposerAction;
+window.syncAllComposerActions = syncAllComposerActions;
 window.handleAgentAttachPick = handleAgentAttachPick;
 window.renderAgentImagePreviews = renderAgentImagePreviews;
 window.uploadAgentImages = uploadAgentImages;

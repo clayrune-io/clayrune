@@ -1579,7 +1579,13 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
         value="${esc((rec.skills || []).join(', '))}"
         placeholder="audit-doc, frontend-design">
       <div id="pe-skill-chips" class="persona-skill-row"></div>
-      <label>Engine <span class="claydo-save-hint">(optional — leave on Default and it behaves exactly as before)</span></label>
+      <label>Emojis <span class="claydo-save-hint">(whether this one may use an occasional emoji — Inherit follows Settings &rsaquo; Agent &rsaquo; Agents may use emojis)</span></label>
+      <select id="pe-emojis">
+        <option value="" ${rec.emojis ? '' : 'selected'}>Inherit from Settings</option>
+        <option value="on" ${rec.emojis === 'on' ? 'selected' : ''}>On</option>
+        <option value="off" ${rec.emojis === 'off' ? 'selected' : ''}>Off</option>
+      </select>
+      <label>Engine<span class="claydo-save-hint">(optional — leave on Default and it behaves exactly as before)</span></label>
       <div class="persona-engine-row">
         <select id="pe-provider">${_peProviderOptions((rec.engine || {}).provider)}</select>
         <select id="pe-model">${_peModelOptions((rec.engine || {}).model, (rec.engine || {}).provider)}</select>
@@ -1858,6 +1864,8 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
           // make a face unremovable from the only screen that sets one.
           avatar: panel.querySelector('#pe-avatar').value,
           skills: panel.querySelector('#pe-skills').value,
+          // Always sent: '' = Inherit (clears the key), like skills above.
+          emojis: panel.querySelector('#pe-emojis').value,
           project_id: scope === 'project' ? projectId : null,
         }),
       }, {

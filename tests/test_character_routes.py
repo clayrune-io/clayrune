@@ -795,3 +795,49 @@ class TestSuggestIdentity:
         data = r.get_json()
         assert data['agent_name']
         assert data['avatar'] == ''
+
+
+class TestEmojis:
+    """`emojis` on a character (Ron, 2026-10-02): on / off / absent (inherit the
+    global `agent_emojis_enabled`). Same three-state contract as avatar/skills."""
+
+    def _file(self, client):
+        return (client.proj_agents / 'code-reviewer.md').read_text(encoding='utf-8')
+
+    def test_create_stores_and_get_returns_it(self, client):
+        r = client.post('/api/characters', json=_payload(emojis='on'))
+        assert r.status_code == 201
+        assert r.get_json()['emojis'] == 'on'
+        assert 'emojis: on' in self._file(client)
+
+    def test_absent_means_inherit_and_writes_nothing(self, client):
+        client.post('/api/characters', json=_payload())
+        assert 'emojis' not in client.get(
+            '/api/characters/project/code-reviewer?project_id=tchar').get_json()
+        assert 'emojis:' not in self._file(client)
+
+    def test_put_sets_clears_and_an_unrelated_put_carries_it(self, client):
+        client.post('/api/characters', json=_payload())
+        url = '/api/characters/project/code-reviewer'
+        assert client.put(url, json={'project_id': 'tchar', 'emojis': 'off'}
+                          ).get_json()['emojis'] == 'off'
+        # A PUT that does not send the key must not wipe it.
+        client.put(url, json={'project_id': 'tchar', 'description': 'Reworded.'})
+        assert 'emojis: off' in self._file(client)
+        # '' is the editor's "Inherit": clears the key.
+        assert 'emojis' not in client.put(
+            url, json={'project_id': 'tchar', 'emojis': ''}).get_json()
+        assert 'emojis:' not in self._file(client)
+
+    def test_a_bad_value_is_refused_not_read_as_inherit(self, client):
+        client.post('/api/characters', json=_payload())
+        r = client.put('/api/characters/project/code-reviewer',
+                       json={'project_id': 'tchar', 'emojis': 'sometimes'})
+        assert r.status_code == 400 and 'emojis must be' in r.get_json()['error']
+
+    def test_move_carries_it(self, client):
+        client.post('/api/characters', json=_payload(emojis='on'))
+        r = client.post('/api/characters/project/code-reviewer/move'
+                        '?project_id=tchar', json={'to_scope': 'global'})
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()['character']['emojis'] == 'on'

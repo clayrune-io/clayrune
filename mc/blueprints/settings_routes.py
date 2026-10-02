@@ -178,6 +178,7 @@ _CONFIG_EDITABLE_KEYS = {
     # and this setting never gates dispatch or completion.
     'delegation_payload_warning_bytes',
     'mobile_brief_replies_enabled', 'brief_replies_always_enabled',
+    'agent_emojis_enabled',
     'auto_model_enabled', 'auto_model_classifier_model',
     'auto_model_classifier_timeout_secs',
     # Per-model context-profile overrides (mc/context_profile.py). Read live
@@ -314,6 +315,8 @@ _RESPAWN_TRIGGER_KEYS = {
     'activity_states_enabled',
     # System-prompt directive — rides in the context the sticky respawn rebuilds.
     'brief_replies_always_enabled',
+    # Same: the emoji permission line rides in the context the respawn rebuilds.
+    'agent_emojis_enabled',
 }
 
 @bp.route('/api/config')

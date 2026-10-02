@@ -6,6 +6,22 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-02] — Chat emojis: composer picker, agent opt-in, WhatsApp-style mobile composer
+
+- **Emoji picker** beside the agent-chat input (desktop; hidden at <=960px, the
+  phone keyboard has its own). Curated ~80 emojis, inserts at the caret, keeps
+  focus, closes on outside click / Esc. `static/js/composer-extras.js`.
+- **Agents may use emojis**: global `agent_emojis_enabled` (Settings > Agent,
+  default OFF) plus a per-character `emojis` override (inherit / on / off). When
+  it resolves ON the CHARACTER section carries one line; OFF adds nothing.
+- **Mobile composer (<=960px)** works like WhatsApp: one round button outside
+  the field, the mic while the field is empty, Send once there is text or a
+  queued attachment; paperclip and a camera button (`capture=environment`) sit
+  inside the field. Stop stays in the pane header. Desktop layout unchanged.
+- Smokes: `chat-emoji-picker.mjs`, `mobile-composer-action.mjs`; tests:
+  `tests/test_agent_emojis.py`. `mobile-midturn-viewport.mjs` now fires `input`
+  when it fills the field, as a keystroke would.
+
 ## [2026-10-01] — Learn hub + Floor practice lesson (docs/TUTORIALS_SPEC.md)
 
 - New **Learn** entry (sidebar, mobile drawer, Ctrl+K) opens "Learn with Claydo",

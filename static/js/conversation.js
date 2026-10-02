@@ -930,6 +930,7 @@ function fillStarterChip(projectId, text) {
   const ta = document.getElementById(`agent-task-${projectId}`);
   if (!ta) return;
   ta.value = text;
+  window.syncComposerAction(ta.id);
   // #6: don't pop the mobile keyboard just from tapping a chip — only focus on
   // desktop. On mobile the user taps the field or Dispatch when ready.
   if (window.innerWidth > 960) {
@@ -1355,7 +1356,9 @@ function agentPanelHTML(p) {
     ondragleave="handleAgentDragLeave(event,this)"
     ondrop="${_pcaps.image_attach ? `handleAgentDrop(event,'${esc(p.id)}')` : 'event.preventDefault()'}">
     ${_attachInput}
+    ${mobileMode && _pcaps.image_attach ? cameraInputHTML(esc(p.id)) : ''}
     ${mobileMode ? '' : _dispatchPlusBtn}
+    ${mobileMode ? '<div class="composer-field">' : ''}
     <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-task-${esc(p.id)}" rows="1"
       data-project="${esc(p.id)}"
       placeholder="${_dispatchPlaceholder}"
@@ -1363,8 +1366,10 @@ function agentPanelHTML(p) {
       onpaste="${_pcaps.image_attach ? `handleAgentPaste(event,'${esc(p.id)}')` : ''}"
     ></textarea>
     ${mobileMode ? _attachBtn : ''}
-    ${_dispatchMicBtn}
-    ${_dispatchBtn}
+    ${mobileMode && _pcaps.image_attach ? cameraBtnHTML(esc(p.id)) : ''}
+    ${mobileMode ? '</div>' : ''}
+    ${emojiBtnHTML(`agent-task-${esc(p.id)}`)}
+    ${mobileMode ? composerActionHTML(`agent-task-${esc(p.id)}`, esc(p.id), _dispatchBtn) : `${_dispatchMicBtn}${_dispatchBtn}`}
   </div>`;
   // Mobile compose = flex column: the preview / starter chips / resume picker
   // SCROLL in the top area, and the composer stays pinned to the BOTTOM edge
@@ -1722,7 +1727,9 @@ function agentPanelHTML(p) {
               ondragleave="handleAgentDragLeave(event,this)"
               ondrop="${_pcaps.image_attach ? `handleAgentDrop(event,'fu_${esc(activeSessionId)}')` : 'event.preventDefault()'}">
             ${_fuAttachInput}
+            ${mobileMode && _pcaps.image_attach ? cameraInputHTML(`fu_${esc(activeSessionId)}`) : ''}
             ${mobileMode ? '' : _fuPlusBtn}
+            ${mobileMode ? '<div class="composer-field">' : ''}
             <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-followup-${esc(activeSessionId)}" rows="1"
               data-project="${esc(p.id)}"
               placeholder="${st === 'error' ? 'Type to continue from where it stopped...' : st === 'stopped' ? 'Type to resume conversation...' : st === 'running' ? (mobileMode ? 'Interrupt and redirect agent...' : 'Interrupt and redirect agent... (Enter to send)') : 'Send follow-up...'}"
@@ -1730,10 +1737,13 @@ function agentPanelHTML(p) {
               onpaste="${_pcaps.image_attach ? `handleAgentPaste(event,'fu_${esc(activeSessionId)}')` : ''}"
             ></textarea>
             ${mobileMode ? _fuAttachBtn : ''}
-            ${_fuMicBtn}
+            ${mobileMode && _pcaps.image_attach ? cameraBtnHTML(`fu_${esc(activeSessionId)}`) : ''}
+            ${mobileMode ? '</div>' : ''}
+            ${emojiBtnHTML(`agent-followup-${esc(activeSessionId)}`)}
             ${mobileMode
-              ? `<button class="btn-send-arrow" onclick="sendFollowup('${esc(p.id)}','${esc(activeSessionId)}')" title="Send" aria-label="Send">&#8593;</button>`
-              : `<button class="btn-dispatch" onclick="sendFollowup('${esc(p.id)}','${esc(activeSessionId)}')">Send</button>`}
+              ? composerActionHTML(`agent-followup-${esc(activeSessionId)}`, `fu_${esc(activeSessionId)}`,
+                  `<button class="btn-send-arrow" onclick="sendFollowup('${esc(p.id)}','${esc(activeSessionId)}')" title="Send" aria-label="Send">&#8593;</button>`)
+              : `${_fuMicBtn}<button class="btn-dispatch" onclick="sendFollowup('${esc(p.id)}','${esc(activeSessionId)}')">Send</button>`}
           </div>
         </div>` : '';
 
@@ -4285,6 +4295,7 @@ function splitPaneHTML(p, sid, isPrimary) {
           placeholder="${isRunning ? 'Redirect…' : 'Reply…'}"
           onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(sid)}'),'${esc(p.id)}')"
           onpaste="${_spCaps.image_attach ? `handleAgentPaste(event,'${esc(_spKey)}')` : ''}"></textarea>
+        ${emojiBtnHTML(`agent-followup-${esc(sid)}`)}
         <button class="btn-dispatch" onclick="sendFollowup('${esc(p.id)}','${esc(sid)}')">Send</button>
       </div></div>` : '';
   return `<div class="agent-split-pane${isPrimary ? ' primary' : ''}" data-sid="${esc(sid)}">
@@ -5557,6 +5568,7 @@ async function sendFollowup(projectId, sessionId) {
   // field no longer focused, so no yield) and send it a second time.
   input.value = '';
   if (input.id) delete textareaValues[input.id];
+  if (input.id) window.syncComposerAction(input.id);
 
   if (_mobileSend) {
     try { input.blur(); } catch (e) {}

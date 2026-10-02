@@ -434,6 +434,10 @@ def _load_config():
         # short and elaborates only when asked. Supersedes the phone-only gate
         # above. Off by default.
         'brief_replies_always_enabled': False,
+        # Agents may use an occasional emoji (default OFF — opt-in, the user's
+        # choice). One short permission line in the character/voice section of
+        # the agent's context; a character's own `emojis` (on/off) overrides it.
+        'agent_emojis_enabled': False,
         # Auto model router (experimental, default OFF). When on, every dispatch
         # runs a cheap Haiku classifier on the prompt and picks Haiku/Sonnet/Opus
         # based on task complexity. When off, the user-selected model is used

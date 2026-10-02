@@ -92,6 +92,27 @@ def avatar_figure(value):
     return n if n and all(c.isalnum() or c in '-_' for c in n) else ''
 
 
+# ── Whether it may use emojis (Ron, 2026-10-02) ─────────────────────────────
+# A per-character override of the global `agent_emojis_enabled` setting. Three
+# states, stored in the frontmatter like the other optional keys: absent =
+# inherit the global, 'on' / 'off' = this type decides for itself. The editor
+# sends '' for inherit, which clears the key.
+EMOJIS_KEY = 'emojis'
+VALID_EMOJIS = ('on', 'off')
+
+
+def clean_emojis(value):
+    """Normalise to 'on' / 'off', or '' (inherit). Booleans from a JSON caller
+    map to on/off. Anything else is refused by the caller, not guessed at here:
+    see write_character."""
+    if value is True:
+        return 'on'
+    if value is False:
+        return 'off'
+    v = str(value or '').strip().lower()
+    return v if v in VALID_EMOJIS else ''
+
+
 # ── The toolkit it works with (Ron, 2026-08-24) ─────────────────────────────
 # A DECLARATION, never a gate. Claude Code decides which skills it exposes and
 # nothing here narrows that — what this does is tell the agent which of them are
@@ -271,6 +292,9 @@ def _read_one(path: Path, scope: str, project_id: str | None,
     skills = clean_skills(meta.get(SKILLS_KEY))
     if skills:
         rec[SKILLS_KEY] = skills
+    emojis = clean_emojis(meta.get(EMOJIS_KEY))
+    if emojis:
+        rec[EMOJIS_KEY] = emojis
     if project_id and scope == 'project':
         rec['project_id'] = project_id
     if include_body:
@@ -384,7 +408,8 @@ def write_character(scope: str, name: str, description: str, body: str,
                     engine: dict[str, Any] | None = None,
                     agent_name: str | None = None,
                     avatar: str | None = None,
-                    skills: Any = None) -> dict[str, Any]:
+                    skills: Any = None,
+                    emojis: Any = None) -> dict[str, Any]:
     """Create or update `<scope agents dir>/<name>.md`. Raises ValueError on
     bad input, FileExistsError on collision without overwrite.
 
@@ -436,6 +461,20 @@ def write_character(scope: str, name: str, description: str, body: str,
         cleaned_sk = clean_skills(skills)
         if cleaned_sk:
             front[SKILLS_KEY] = ', '.join(cleaned_sk)
+    # Same three-state contract once more: None carries forward, '' clears (back
+    # to inheriting the global setting), 'on' / 'off' sets. A value that is none
+    # of those is refused rather than silently read as "inherit".
+    if emojis is None:
+        prior = _read_one(existing, scope, None, include_body=False) if existing else None
+        carried = (prior or {}).get(EMOJIS_KEY)
+        if carried:
+            front[EMOJIS_KEY] = carried
+    else:
+        cleaned_em = clean_emojis(emojis)
+        if emojis not in ('', False) and not cleaned_em:
+            raise ValueError(f'emojis must be one of on, off or empty (got {emojis!r})')
+        if cleaned_em:
+            front[EMOJIS_KEY] = cleaned_em
     for k in ENGINE_KEYS:
         v = (engine or {}).get(k)
         v = v.strip() if isinstance(v, str) else ''

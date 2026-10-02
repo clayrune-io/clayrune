@@ -320,6 +320,7 @@ async function dispatchAgent(projectId) {
   if (!task && !resumeId) { input.focus(); return; }
   input.value = '';
   if (input.id) delete textareaValues[input.id];
+  if (input.id) window.syncComposerAction(input.id);
 
   // Compute all display state synchronously before any async work so the UI
   // can switch to the chat view immediately (the dispatch POST + auto-router
