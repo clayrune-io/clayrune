@@ -658,7 +658,7 @@ try {
     });
     check(dock.mobileClass && dock.left <= 12 && dock.vw - dock.right <= 12, 'at 390 px the bubble is a full-width bottom dock');
     check(dock.tabTop === null ? dock.bottom <= dock.vh : dock.bottom <= dock.tabTop + 1, 'the dock sits above the bottom navigation / safe area');
-    const targets = await page.evaluate(() => Array.from(document.querySelectorAll('#lrn-bubble button')).map((b) => { const r = b.getBoundingClientRect(); return [b.textContent.trim().slice(0, 14), Math.round(r.height), Math.round(r.width)]; }));
+    const targets = await page.evaluate(() => Array.from(document.querySelectorAll('#lrn-bubble button')).map((b) => { const r = b.getBoundingClientRect(); return [b.textContent.trim().slice(0, 14), Math.round(r.height), Math.round(r.width)]; }).filter(([, hgt, wid]) => hgt > 0 || wid > 0));
     check(targets.every(([, hgt, wid]) => hgt >= 44 || wid >= 44 && hgt >= 40), 'tutorial controls are touch-sized (>=44 px)' + (targets.some(([, hgt]) => hgt < 44) ? ' ' + JSON.stringify(targets) : ''));
     const noTouchNone = await page.evaluate(() => !Array.from(document.querySelectorAll('#lrn-root, #lrn-root *')).some((e) => getComputedStyle(e).touchAction === 'none'));
     check(noTouchNone, 'no fixed touch-action: none on the tutorial layer');
@@ -764,6 +764,77 @@ try {
     check(labels.every((t) => !/[—–]/.test(t)), 'the Claydo chip label has no em-dash');
     await page.evaluate(() => LearnEngine.leave());
     check(realErrors(h).length === 0, 'no uncaught page errors in section 9' + (realErrors(h).length ? ': ' + realErrors(h).join(' | ') : ''));
+    await h.ctx.close();
+  }
+
+  // ══ 10. Phone: a visible, tappable Leave in EVERY phase (MC-1031) ══
+  console.log('10. Phone Leave control in every phase (390, 344)');
+  for (const [w, hgt] of [[390, 844], [344, 882]]) {
+    const h = await newPage(browser, { width: w, height: hgt, touch: true });
+    const { page } = h;
+    await boot(h);
+    // The bubble's first Leave control must be reachable: laid out, fully inside the
+    // viewport, >=44 px, and what a finger at its centre actually hits.
+    const leaveReach = (label) => page.evaluate((l) => {
+      const b = document.getElementById('lrn-bubble');
+      const btn = b && Array.from(b.querySelectorAll('[data-lrn="leave"]')).find((e) => e.getBoundingClientRect().width > 0);
+      if (!btn) return `${l}: no laid-out Leave control`;
+      const r = btn.getBoundingClientRect(), br = b.getBoundingClientRect();
+      if (r.width < 44 || r.height < 44) return `${l}: Leave is ${Math.round(r.width)}x${Math.round(r.height)}, under 44px`;
+      if (r.left < 0 || r.top < 0 || r.right > innerWidth || r.bottom > innerHeight) return `${l}: Leave is outside the viewport`;
+      if (br.left < 0 || br.top < 0 || br.right > innerWidth || br.bottom > innerHeight) return `${l}: the bubble is outside the viewport`;
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return hit && (hit === btn || btn.contains(hit)) ? '' : `${l}: something else covers Leave (${hit && (hit.id || hit.className)})`;
+    }, label);
+    const phoneLeave = async (label, setup, expectStatus) => {
+      await page.evaluate(() => LearnEngine.start('floor-v1', 'test', { fresh: true }));
+      await waitStep(page, 0);
+      await setup();
+      const why = await leaveReach(`${w}px ${label}`);
+      check(why === '', `${w}px, ${label}: a visible, in-viewport, >=44px Leave that nothing covers` + (why ? ' (' + why + ')' : ''));
+      await shoot(page, `phone-${w}-${label.replace(/\W+/g, '-')}`);
+      const at = await page.evaluate(() => {
+        const btn = Array.from(document.querySelectorAll('#lrn-bubble [data-lrn="leave"]')).find((e) => e.getBoundingClientRect().width > 0);
+        const r = btn ? btn.getBoundingClientRect() : null;
+        return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+      });
+      if (at) await page.touchscreen.tap(at.x, at.y);
+      else await page.evaluate(() => LearnEngine.leave());   // keep going so every phase reports
+      const gone = await page.evaluate(() => !document.getElementById('lrn-root') && !window.LearnEngine.state && !window.LearnPractice.active && !document.body.classList.contains('lrn-practicing'));
+      check(gone, `${w}px, ${label}: tapping Leave ends the lesson and restores the real surface`);
+      check(await page.waitForSelector('#projects-col .card[data-id="real_home"], #projects-col .mc-chat-row[data-id="real_home"]', { timeout: 3000 }).then(() => true, () => false), `${w}px, ${label}: the real dashboard is back after Leave`);
+      if (expectStatus) check((await lessonRec(page)).status === expectStatus, `${w}px, ${label}: progress is ${expectStatus} after Leave`);
+      await page.evaluate(() => { for (const id of ['__learn', '__floor']) if (typeof closeModalById === 'function' && openModals.has(id)) closeModalById(id); });
+    };
+    await phoneLeave('active step', async () => {}, 'paused');
+    await phoneLeave('hint shown', async () => { await page.tap('#lrn-bubble [data-lrn="hint"]'); }, 'paused');
+    await phoneLeave('collapsed', async () => { await page.tap('#lrn-bubble [data-lrn="collapse"]'); }, 'paused');
+    await phoneLeave('paused', async () => { await page.tap('#lrn-bubble [data-lrn="pause"]'); await waitStep(page, 0, 'paused', 3000); }, 'paused');
+    await phoneLeave('chat modal open', async () => {
+      await page.tap('#floor-body .fl-fig[data-fl-session="learn-pip"]');
+      await page.waitForSelector('#agent-output-learn-pip', { timeout: 5000 });
+    }, 'paused');
+    await phoneLeave('Learn hub open', async () => {
+      await page.evaluate(() => openLearn());
+      await page.waitForSelector('.modal-window[data-modal-id="__learn"]', { timeout: 4000 });
+    }, 'paused');
+    await phoneLeave('completed', async () => { await playLesson(page, 'touch'); }, 'completed');
+    await phoneLeave('target unavailable', async () => {
+      await page.addStyleTag({ content: '#floor-body .fl-fig { display: none !important; }' });
+      await page.waitForFunction(() => window.LearnEngine.state.phase === 'unavailable', null, { timeout: 9000 });
+    }, 'paused');
+    check(realErrors(h).length === 0, `no uncaught page errors in section 10 at ${w}` + (realErrors(h).length ? ': ' + realErrors(h).join(' | ') : ''));
+    await h.ctx.close();
+  }
+  {
+    const h = await newPage(browser, { width: 1400, height: 900 });
+    const { page } = h;
+    await boot(h);
+    await page.evaluate(() => LearnEngine.start('floor-v1', 'test'));
+    await waitStep(page, 0);
+    check(await page.evaluate(() => { const e = document.querySelector('#lrn-bubble .lrn-leave'); return !!e && getComputedStyle(e).display === 'none'; }), 'desktop 1400: the phone header Leave stays hidden');
+    check(await page.evaluate(() => { const e = document.querySelector('#lrn-bubble .lrn-foot-leave'); return !!e && getComputedStyle(e).display !== 'none'; }), 'desktop 1400: the footer "Leave practice" is still shown');
+    await page.evaluate(() => LearnEngine.leave());
     await h.ctx.close();
   }
 

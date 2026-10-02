@@ -10462,6 +10462,9 @@ html.mc-popout .btn-popout:not(.btn-chat-search) { display: none !important; }
   border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
 .lrn-collapse { display: none; background: none; border: 0; color: var(--text-dim); cursor: pointer;
   min-width: 44px; min-height: 44px; margin: -10px -10px -10px 0; font-size: 14px; }
+/* Phone-only exit in the always-visible header: the footer lives in .lrn-body,
+   which collapses away, and the completed phase has no footer at all. */
+.lrn-leave { display: none; }
 .lrn-task { font-size: 11px; color: var(--text-dim); margin: 4px 0 6px 36px; }
 .lrn-copy { margin: 2px 0 6px; }
 .lrn-copy.lrn-ack { font-weight: 600; }
@@ -10499,6 +10502,10 @@ html.mc-popout .btn-popout:not(.btn-chat-search) { display: none !important; }
 @media (max-width: 960px) {
   .lrn-bubble { left: 8px; right: 8px; width: auto; }
   .lrn-collapse { display: block; }
+  .lrn-leave { display: block; background: none; border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); cursor: pointer; font-size: 12px; font-weight: 600; min-width: 44px; min-height: 44px;
+    margin: -10px 0; padding: 0 10px; }
+  .lrn-foot-leave { display: none; }
   .lrn-btn { min-height: 44px; padding: 8px 14px; }
   .lrn-link { min-height: 44px; padding: 0 4px; }
   .lrn-bubble.lrn-collapsed .lrn-body { display: none; }
