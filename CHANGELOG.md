@@ -6,6 +6,25 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-01] — Learn hub + Floor practice lesson (docs/TUTORIALS_SPEC.md)
+
+- New **Learn** entry (sidebar, mobile drawer, Ctrl+K) opens "Learn with Claydo",
+  one card: **The Floor**, a three-action lesson (find Pip and open its chat, open
+  the Guide Bench card, hire Guide). Also reachable from a once-only first-open
+  offer, a "Learn the Floor" Floor-header button, and an Ask Claydo
+  "Start Floor practice" chip (`[clayrune:lesson id="floor-v1"]`, registered ids only).
+- Separate engine `static/js/learn.js` beside the tour; tour and setup untouched.
+  A step advances only on evidence (rendered practice transcript, opened Bench
+  card, committed practice roster), never on Next, a click count or a timer.
+- Practice is browser-only (`static/js/learn-practice.js`): while a run is active
+  `fetch`/`EventSource` are answered by an in-tab store, nothing practice-related
+  is created on the server, and any write that would leave practice (dispatch,
+  send, publish) is refused with a visible "Practice only" message. Progress in
+  `localStorage` under `learn.*`.
+- Floor figure and Bench card gain `data-fl-*` identity hooks plus keyboard
+  operation (role/tabindex, Enter/Space); `floorClosePicker()` added.
+- Smoke: `tools/smoke/learn-floor.mjs` (141 checks).
+
 ## [2026-10-01] — Mac app updates itself in place (MC-1026 0a1cf8c2)
 
 - Frozen macOS `Clayrune.app`: `POST /api/system/update` now starts a background

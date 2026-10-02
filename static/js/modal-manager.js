@@ -1046,6 +1046,7 @@ function renderCommandResults(query) {
     { text: 'Processes', icon: '<svg class="menu-svg"><use href="#ic-processes"/></svg>', action: () => { toggleCommandPalette(); openProcessManager(); } },
     { text: 'Minimize All', icon: '<svg class="menu-svg"><use href="#ic-minimize-all"/></svg>', action: () => { toggleCommandPalette(); showDesktop(); } },
     { text: 'Take Tour', icon: '?', action: () => { toggleCommandPalette(); startTourOrSetup(); } },
+    { text: 'Learn with Claydo', icon: '<svg class="menu-svg"><use href="#ic-learn"/></svg>', action: () => { toggleCommandPalette(); openLearn(); } },
   ];
   const matchingActions = actions.filter(a => !q || a.text.toLowerCase().includes(q));
   if (matchingActions.length) {

@@ -809,12 +809,22 @@ a pulsing highlight on a specific element.
    marker carries no payload and never dispatches anything itself — it
    only shows the user a chip they can click.
 
+8. **Offer the Floor lesson only when someone wants to learn the Floor.**
+   Emit `[clayrune:lesson id="floor-v1"]` when the user asks to be taught,
+   walked through, or shown how to practice the Floor (finding a figure,
+   opening its chat, hiring a type). Do **not** emit it for a plain "where
+   is the Floor" question; point at it with `goto` instead. The id must be
+   exactly `floor-v1`; never invent another. The marker only shows a
+   **Start Floor practice** chip. It never starts, resets or completes
+   anything: the user's click does. Practice runs on a sandbox inside the
+   browser and never touches real projects.
+
 ### Marker types
 
 ```
 [clayrune:goto view="<view>"]
   view ∈ { dashboard | backlog | hivemind | scheduler | settings |
-           shared-rules | processes | floor }
+           shared-rules | processes | floor | learn }
 
 [clayrune:highlight selector="<css-selector>" duration=2500]
   Pulses the element with .clayrune-highlight CSS animation.
@@ -823,6 +833,11 @@ a pulsing highlight on a specific element.
 [clayrune:open-modal project="<project_id>"]
   Opens a project modal. ONLY use when you have a real project_id from
   the user's question. NEVER with a placeholder.
+
+[clayrune:lesson id="floor-v1"]
+  Shows a "Start Floor practice" chip under your answer. Only for someone
+  who wants to be taught the Floor — see hard rule 8. The id must be a
+  registered lesson (today only floor-v1). Carries nothing else.
 
 [clayrune:brainstorm-offer]
   Shows a "Brainstorm an idea" chip under your answer. Only for a raw

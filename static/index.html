@@ -461,6 +461,7 @@
     <symbol id="ic-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></symbol>
     <symbol id="ic-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
     <symbol id="ic-floor" viewBox="0 0 24 24"><rect x="3" y="4" width="8" height="7" rx="1.5"/><rect x="13" y="4" width="8" height="7" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><circle cx="7" cy="7.5" r="1.3"/><circle cx="17" cy="7.5" r="1.3"/><circle cx="8" cy="17" r="1.3"/><circle cx="14" cy="17" r="1.3"/></symbol>
+    <symbol id="ic-learn" viewBox="0 0 24 24"><path d="M22 10 12 5 2 10l10 5 10-5z"/><path d="M6 12.2V17c0 1.1 2.7 3 6 3s6-1.9 6-3v-4.8"/><path d="M22 10v6"/></symbol>
     <symbol id="ic-hivemind" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/></symbol>
     <symbol id="ic-skills" viewBox="0 0 24 24"><path d="M15.5 6a3.5 3.5 0 0 0-6.9-.8L8.5 6H6a2 2 0 0 0-2 2v2.5l.8.1a3.5 3.5 0 0 1 0 6.9l-.8.1V20a2 2 0 0 0 2 2h2.5l-.1-.8a3.5 3.5 0 0 1 6.9 0l-.1.8H18a2 2 0 0 0 2-2v-2.5l-.8-.1a3.5 3.5 0 0 1 0-6.9l.8-.1V8a2 2 0 0 0-2-2h-2.5z"/></symbol>
     <symbol id="ic-personas" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
@@ -563,6 +564,10 @@
     <div class="sidebar-item" data-nav="history" onclick="sidebarNav('history')">
       <span class="si-icon"><svg class="si-svg"><use href="#ic-history"/></svg></span>
       <span class="si-label">History</span>
+    </div>
+    <div class="sidebar-item" data-nav="learn" onclick="sidebarNav('learn')" title="Practice Clayrune with Claydo, on a sandbox that never touches your projects">
+      <span class="si-icon"><svg class="si-svg"><use href="#ic-learn"/></svg></span>
+      <span class="si-label">Learn</span>
     </div>
 
     <div class="sidebar-section-label sidebar-adv-toggle" id="sidebar-adv-toggle" onclick="toggleAdvancedSection()">
@@ -908,6 +913,9 @@
     </div>
     <div class="mobile-drawer-item" data-nav="history" onclick="mobileDrawerNav('history')">
       <span class="mdi-icon"><svg class="mdi-svg"><use href="#ic-history"/></svg></span><span class="mdi-label">History</span>
+    </div>
+    <div class="mobile-drawer-item" data-nav="learn" onclick="mobileDrawerNav('learn')">
+      <span class="mdi-icon"><svg class="mdi-svg"><use href="#ic-learn"/></svg></span><span class="mdi-label">Learn</span>
     </div>
     <div class="mobile-drawer-item" data-nav="shared-rules" onclick="mobileDrawerNav('shared-rules')">
       <span class="mdi-icon"><svg class="mdi-svg"><use href="#ic-rules"/></svg></span><span class="mdi-label">Shared Rules</span>
@@ -1726,6 +1734,7 @@ function sidebarNav(target) {
   }
   else if (target === 'inbox') openInboxSurface();
   else if (target === 'floor') openFloor();
+  else if (target === 'learn') openLearn();
   else if (target === 'history') openHistory();
   else if (target === 'scheduler') openScheduler();
   else if (target === 'calendar') openSchedulerCalendar();
@@ -4022,6 +4031,10 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/claydo.js"></script>
 <script type="module" src="/static/js/mobile-pairing.js"></script>
 <script type="module" src="/static/js/walkthrough.js"></script>
+<!-- Learn: lesson engine beside the tour (docs/TUTORIALS_SPEC.md). learn-practice.js
+     wraps fetch/EventSource for the browser-only practice context, so it loads first. -->
+<script type="module" src="/static/js/learn-practice.js"></script>
+<script type="module" src="/static/js/learn.js"></script>
 <script type="module" src="/static/js/first-run.js"></script>
 <script type="module" src="/static/js/team-card.js"></script>
 <script type="module" src="/static/js/exploration-card.js"></script>
