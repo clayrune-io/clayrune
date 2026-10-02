@@ -2303,6 +2303,8 @@ function refreshModalById(modalId) {
     const el = document.getElementById(id);
     if (el) el.style.height = h;
   }
+  // Mobile composer: the mic/send slot follows the text just restored above.
+  if (typeof window.syncAllComposerActions === 'function') window.syncAllComposerActions();
   if (focusedId) {
     const el = document.getElementById(focusedId);
     if (el) {

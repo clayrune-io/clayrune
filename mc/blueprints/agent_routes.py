@@ -993,7 +993,8 @@ def _context_fingerprint(project):
         pass
     # Config values that reach the prompt directly.
     for k in ('agent_name', 'user_name', 'read_floor_topk',
-              'read_floor_link_expand', 'sticky_agent_settings'):
+              'read_floor_link_expand', 'sticky_agent_settings',
+              'agent_emojis_enabled'):
         h.update(f'{k}={state.CONFIG.get(k)}|'.encode('utf-8', 'replace'))
     return h.hexdigest()[:16]
 
@@ -5027,6 +5028,10 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
               " recognisably you. If your reply could have been written by any"
               " other agent on the roster, you have dropped the character, not"
               " obeyed the rules.")
+    elif _emoji_line():
+        # No persona, so no CHARACTER section for the override to live in: the
+        # global setting alone decides.
+        parts.append(_emoji_line())
 
     # NOTE: Project memory (MEMORY.md) is NOT injected here — the Claude CLI
     # already reads ~/.claude/projects/<path>/memory/MEMORY.md natively.
@@ -10308,6 +10313,28 @@ def _character_near_matches(pp, name, limit=3):
         return []
 
 
+# Opt-in, the user's choice (Ron, 2026-10-02): global `agent_emojis_enabled`
+# (default off) with a per-character override. Deliberately ONE short line in the
+# character/voice section — the behavior tail has a byte budget and this is voice.
+_EMOJI_LINE = ("You may use an occasional emoji where it adds warmth; never in "
+               "code, commit messages, or public/published text.")
+
+
+def _emoji_line(character_emojis=''):
+    """The emoji permission line, or '' when it resolves OFF.
+
+    `character_emojis` is the character's own override ('on' | 'off' | '' for
+    inherit); the global setting decides only when the character does not.
+    """
+    if character_emojis == 'on':
+        on = True
+    elif character_emojis == 'off':
+        on = False
+    else:
+        on = bool(state.CONFIG.get('agent_emojis_enabled', False))
+    return _EMOJI_LINE if on else ''
+
+
 def _resolve_character(pp, character, project=None, strict=False):
     """Resolve a chat's character to (meta, body).
 
@@ -10392,7 +10419,15 @@ def _resolve_character(pp, character, project=None, strict=False):
     skills = rec.get('skills')
     if skills:
         meta['skills'] = skills
-    return meta, (rec.get('body') or '')
+    # The emoji line rides in the persona body (the character/voice section),
+    # resolved here so every caller that threads character_body through
+    # _build_agent_context gets the per-character override with no signature
+    # change. The no-persona case is handled in _build_agent_context itself.
+    body = rec.get('body') or ''
+    line = _emoji_line(rec.get('emojis') or '')
+    if line and body.strip():
+        body = body.rstrip() + '\n\n' + line
+    return meta, body
 
 
 def _prior_character(project_id, resume_id, provider=''):

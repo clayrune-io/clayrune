@@ -218,6 +218,8 @@ async function checkIdleSendRecoversHeight(page) {
     const ta = document.getElementById(`agent-followup-${sid}`);
     ta.focus();
     ta.value = 'a follow-up';
+    // A real keystroke fires `input`; the mobile composer swaps mic -> send on it.
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
     window.__vv.height = window.innerHeight - kb;
     window.__vv.dispatchEvent(new Event('resize'));
   }, { sid: SID, kb: KB });

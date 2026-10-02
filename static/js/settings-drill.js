@@ -521,6 +521,13 @@ async function _renderSettings() {
       </div>
       <div class="settings-row">
         <div>
+          <div class="settings-label">Agents may use emojis</div>
+          <div class="settings-hint">Lets agents add an occasional emoji where it adds warmth — never in code, commit messages, or published text. Off by default; an individual agent type can override this in its editor.</div>
+        </div>
+        ${toggle('agent_emojis_enabled', cfg.agent_emojis_enabled)}
+      </div>
+      <div class="settings-row">
+        <div>
           <div class="settings-label">Sticky settings</div>
           <div class="settings-hint">Bakes brevity + model/effort into each chat at spawn (cached, fewer tokens per turn) instead of re-sending every message. Changing one of those mid-chat resumes the agent so it takes effect. Experimental.</div>
         </div>

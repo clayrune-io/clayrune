@@ -237,7 +237,8 @@ def create_character_route():
                                      overwrite=overwrite, engine=engine,
                                      agent_name=data.get('agent_name'),
                                      avatar=data.get('avatar'),
-                                     skills=data.get('skills'))
+                                     skills=data.get('skills'),
+                                     emojis=data.get('emojis'))
     except FileExistsError as e:
         return jsonify({'error': str(e)}), 409
     except ValueError as e:
@@ -716,13 +717,14 @@ def update_character_route(scope, name):
     agent_name = data.get('agent_name') if 'agent_name' in data else None
     avatar = data.get('avatar') if 'avatar' in data else None
     skills = data.get('skills') if 'skills' in data else None
+    emojis = data.get('emojis') if 'emojis' in data else None
 
     try:
         rec = _chars.write_character(scope, name, description, body,
                                      project_path=project_path,
                                      overwrite=True, engine=engine,
                                      agent_name=agent_name, avatar=avatar,
-                                     skills=skills)
+                                     skills=skills, emojis=emojis)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except OSError as e:
@@ -1057,7 +1059,8 @@ def move_character_route(scope, name):
             to_scope, name, rec.get('description') or '', rec.get('body') or '',
             project_path=to_path, overwrite=False,
             engine=rec.get('engine'), agent_name=rec.get('agent_name'),
-            avatar=rec.get('avatar'), skills=rec.get('skills'))
+            avatar=rec.get('avatar'), skills=rec.get('skills'),
+            emojis=rec.get('emojis'))
     except FileExistsError:
         return jsonify({
             'error': f'a character called {name!r} already lives there — '

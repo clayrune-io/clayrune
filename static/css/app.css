@@ -3738,11 +3738,30 @@
      Single rounded pill: ＋ · text · 📎 · 🎤 · circular ↑. Applies to both the
      +New dispatch row and the in-chat follow-up row. */
   @media (max-width: 960px) {
+    /* WhatsApp layout: the row is bare; the pill is .composer-field (text +
+       📎 + 📷) and ONE round action button (.composer-action: mic ⇄ send)
+       sits outside it on the right. */
     .agent-input-row, .agent-chat-input-row {
-      background: var(--bg); border: 1px solid var(--border2);
-      border-radius: 24px; padding: 5px 6px 5px 8px; gap: 4px; align-items: center;
+      background: transparent; border: none; padding: 0; gap: 6px; align-items: flex-end;
     }
-    .agent-input-row.drag-over, .agent-chat-input-row.drag-over { border-color: var(--accent); }
+    .agent-input-row .composer-field, .agent-chat-input-row .composer-field {
+      flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px;
+      background: var(--bg); border: 1px solid var(--border2);
+      border-radius: 24px; padding: 2px 6px 2px 12px;
+    }
+    .agent-input-row.drag-over .composer-field, .agent-chat-input-row.drag-over .composer-field { border-color: var(--accent); }
+    .composer-action { display: flex; flex-shrink: 0; }
+    .composer-action[data-mode="mic"] .btn-send-arrow,
+    .composer-action[data-mode="send"] .btn-mic { display: none; }
+    /* Same round accent button in both modes, so the swap reads as one control. */
+    .agent-input-row .composer-action .btn-mic, .agent-chat-input-row .composer-action .btn-mic,
+    .composer-action .btn-send-arrow {
+      width: 48px; height: 48px; border-radius: 50%; border: none !important;
+      background: var(--accent) !important; color: #fff; font-size: 20px; line-height: 1;
+    }
+    .agent-input-row .composer-action .btn-mic.recording, .agent-chat-input-row .composer-action .btn-mic.recording {
+      background: #e85a4a !important;
+    }
     /* Textarea sits transparent inside the pill (comfortable single line that
        auto-grows) — no inner box/border. */
     .agent-input-row .agent-task-input, .agent-chat-input-row .agent-task-input {
@@ -4345,6 +4364,46 @@
     0%, 100% { box-shadow: 0 0 0 0 rgba(232,90,74,0.55); }
     50% { box-shadow: 0 0 0 6px rgba(232,90,74,0); }
   }
+  /* Emoji picker button + popover (composer-extras.js). Desktop only: a phone's
+     keyboard already has emojis, so the button is gone at <=960px. */
+  .btn-emoji {
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    flex-shrink: 0;
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    width: 32px; height: 32px;
+    font-size: 16px; line-height: 1;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .btn-emoji:hover { background: var(--surface3); color: var(--text); border-color: var(--accent); }
+  .agent-3pane .agent-main .agent-chat-input-row .btn-emoji,
+  .agent-3pane .agent-main .agent-input-row .btn-emoji {
+    background: transparent !important; border: none !important; color: var(--text-dim);
+    width: 36px; height: 36px;
+  }
+  .agent-3pane .agent-main .agent-chat-input-row .btn-emoji:hover,
+  .agent-3pane .agent-main .agent-input-row .btn-emoji:hover { color: var(--text); background: transparent !important; }
+  @media (max-width: 960px) { .btn-emoji, .chat-emoji-pop { display: none !important; } }
+  .chat-emoji-pop {
+    position: fixed; z-index: 10001;
+    width: 296px; max-height: 280px; overflow-y: auto;
+    background: var(--surface); border: 1px solid var(--border2);
+    border-radius: 12px; padding: 8px 10px 10px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+  }
+  .cep-label { color: var(--text-dim); font-size: 11px; font-weight: 600; margin: 6px 2px 4px; }
+  .cep-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; }
+  .cep-cell {
+    display: flex; align-items: center; justify-content: center;
+    aspect-ratio: 1; font-size: 18px; line-height: 1;
+    background: transparent; border: 1px solid transparent; border-radius: 6px;
+    cursor: pointer; padding: 0;
+  }
+  .cep-cell:hover { background: var(--surface2); border-color: var(--border); }
   .agent-output::-webkit-scrollbar { width: 5px; }
   .agent-output::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
   /* ── Chat-bubble mode — DEFAULT at all widths ──────────────────────
