@@ -133,11 +133,15 @@
 
     el.innerHTML = `
       <div class="desk-v1-camp-summary-top">
-        ${stateHTML}
-        <div class="desk-v1-camp-summary-top-actions">
+        <div class="desk-v1-camp-statuscontrol" data-status-control data-state="${esc(camp.state)}">
+          ${stateHTML}
           ${camp.state === 'paused'
-            ? `<button type="button" class="desk-v1-camp-pause-btn" data-resume-btn>▶ Resume</button>`
-            : `<button type="button" class="desk-v1-camp-pause-btn" data-pause-btn ${camp.state !== 'active' ? 'disabled' : ''}>⏸ Pause</button>`}
+            ? `<button type="button" class="desk-v1-camp-pause-btn desk-v1-camp-status-action" data-resume-btn>▶ Resume</button>`
+            : camp.state === 'active'
+              ? `<button type="button" class="desk-v1-camp-pause-btn desk-v1-camp-status-action" data-pause-btn>⏸ Pause</button>`
+              : ''}
+        </div>
+        <div class="desk-v1-camp-summary-top-actions">
           ${camp.state !== 'archived' ? `<div class="desk-v1-camp-card-more">
             <button type="button" class="desk-v1-camp-card-morebtn" data-camp-more-btn aria-haspopup="menu" aria-label="More actions">⋯</button>
           </div>` : ''}
@@ -598,6 +602,11 @@
 
   // R2-2g: the project is required to start and can change until then.
   function _projectEditable(camp) { return camp.state === 'draft' || camp.state === 'proposed'; }
+  // The project FIELD shows for a not-started campaign (it can change until
+  // Start), and for a started one that has no project at all (Ron 2026-10-02,
+  // 'Clayrune promotion': started before a project was required, then stuck
+  // on 'Project: none'). Once a started campaign has a project it locks again.
+  function _projectPickable(camp) { return _projectEditable(camp) || !camp.projectId; }
 
   // validatePlan's bounds plus the two that only exist once a project does
   // (R2-2g, Ron 2026-09-30: the project is picked at Launch): no project at
@@ -859,6 +868,7 @@
     // missing bound shows inline on its own row. The select is editable while
     // the campaign hasn't started (draft / proposed), a read-only line after.
     const projectEditable = _projectEditable(camp);
+    const projectPickable = _projectPickable(camp);
     const missingByRow = {};
     result.missing.forEach((m) => { if (_BOUND_ROW[m.bound]) missingByRow[_BOUND_ROW[m.bound]] = m; });
     const rowsHTML = _launchRows(camp, project).map(([key, label, text]) => {
@@ -910,7 +920,7 @@
     el.innerHTML = `
       <div class="desk-v1-launch${question ? ' desk-v1-launch-has-side' : ''}">
         <div class="desk-v1-launch-main">
-          ${projectEditable ? '' : `<div class="desk-v1-rules-hint" data-launch-project-ro>Project: ${esc(project ? project.name : 'none')}</div>`}
+          ${projectPickable ? '' : `<div class="desk-v1-rules-hint" data-launch-project-ro>Project: ${esc(project ? project.name : 'none')}</div>`}
           ${projectHTML}
           <div class="desk-v1-launch-bounds" role="table" aria-label="Bounds">
             <div class="desk-v1-launch-bounds-title">Bounds</div>
@@ -921,7 +931,7 @@
         </div>
         ${questionHTML}
       </div>`;
-    if (projectEditable && typeof window.deskV1MountProjectField === 'function') {
+    if (projectPickable && typeof window.deskV1MountProjectField === 'function') {
       window.deskV1MountProjectField(el.querySelector('.desk-v1-launch-main'), camp);
     }
     const repaint = () => {
@@ -1280,8 +1290,12 @@
       return;
     }
     el.innerHTML = `<div class="desk-v1-camp-posy">${DeskV1Kit.posyBoxHTML({
-      inputId: 'desk-v1-camp-posy-input', scopeLabel, suggestion: sugg.suggestion, chips: sugg.chips, agentRef,
+      inputId: 'desk-v1-camp-posy-input', scopeLabel, suggestion: sugg.suggestion, chips: sugg.chips, agentRef, pickAgent: true,
     })}</div>`;
+    const pickAgentBtn = el.querySelector('[data-pick-agent-btn]');
+    if (pickAgentBtn) pickAgentBtn.onclick = () => {
+      if (typeof window.deskV1PickCampaignAgent === 'function') window.deskV1PickCampaignAgent(camp, project, pickAgentBtn);
+    };
     // §3.4 INS-01/02/03/04 (before → after, widening confirm, durable rule
     // chips) is T2b's Posy-instruction handler — backward-compatible seam,
     // same shape as the two hooks above: falls back to the plain toast T2a

@@ -340,6 +340,20 @@
 .desk-v1-posy-scope:hover { color: var(--accent); }
 .desk-v1-posy-output { min-height: 0; padding: 0; background: transparent; }
 .desk-v1-posy-chips { margin: 0; }
+/* The input is the box's only text field and the rail is narrow, so the
+   placeholder wraps. Two lines minimum (13px × 1.5 + 2×9px padding + border),
+   growing with the text via the kit's fit() up to its max-height. */
+.desk-v1-posy-box .agent-input-row { align-items: flex-end; margin-bottom: 0; }
+.desk-v1-posy-box .desk-v1-posy-input {
+  box-sizing: border-box; min-width: 0; min-height: 62px; max-height: 192px;
+  padding: 9px 12px; line-height: 1.5; overflow-y: auto;
+}
+.desk-v1-posy-pickagent {
+  background: none; border: none; padding: 0; font-family: inherit; text-align: left;
+  cursor: pointer; color: var(--text); text-decoration: underline; text-decoration-color: var(--border2);
+  text-underline-offset: 3px;
+}
+.desk-v1-posy-pickagent:hover, .desk-v1-posy-pickagent:focus-visible { color: var(--accent); text-decoration-color: var(--accent); }
 
 /* compact:true (frame 12b) — no avatar/name to push away from, so the scope
    chip sits at the row's own left edge instead of being shoved right. */
@@ -498,7 +512,10 @@
 /* R2-3b: Draft rows only — trash at the row's right edge, out of the column
    grid so the shared header still lines up; the row reserves room for it. */
 .desk-v1-home-row[data-state="draft"] { position: relative; padding-right: 52px; }
-.desk-v1-home-row .desk-v1-home-row-more { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); }
+/* No `transform` here: it makes the wrapper the containing block of the
+   position:fixed ⋯ menu (placePopover), so the menu was positioned against
+   the wrapper and then clipped by .desk-v1-home-block's overflow:hidden. */
+.desk-v1-home-row .desk-v1-home-row-more { position: absolute; right: 6px; top: 0; bottom: 0; display: flex; align-items: center; }
 .desk-v1-home-row-more .desk-v1-camp-card-morebtn { font-size: 20px; padding: 4px 10px; color: var(--text-muted, var(--text-faint)); border: 1px solid var(--border2); border-radius: 7px; background: var(--surface); }
 .desk-v1-home-row-more .desk-v1-camp-card-morebtn:hover, .desk-v1-home-row-more .desk-v1-camp-card-morebtn:focus-visible { color: var(--text); background: var(--surface3); }
 .desk-v1-home-row:hover { background: var(--surface2); }
@@ -670,6 +687,18 @@
 }
 .desk-v1-camp-pause-btn:hover:not(:disabled) { background: var(--surface3); color: var(--text); }
 .desk-v1-camp-pause-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* One joined status control (Ron 2026-10-02): the state pill is the label
+   half, Pause/Resume the button half, sharing one border and radius. Other
+   states render the pill alone. */
+.desk-v1-camp-statuscontrol { display: inline-flex; align-items: stretch; min-width: 0; }
+.desk-v1-camp-statuscontrol .desk-v1-camp-state-pill { display: inline-flex; align-items: center; }
+.desk-v1-camp-statuscontrol .desk-v1-camp-status-action {
+  border-radius: 0 999px 999px 0; border-left: none; padding: 4px 12px 4px 10px; white-space: nowrap;
+}
+.desk-v1-camp-statuscontrol[data-state="active"] .desk-v1-camp-state-pill,
+.desk-v1-camp-statuscontrol[data-state="paused"] .desk-v1-camp-state-pill { border-radius: 999px 0 0 999px; }
+.desk-v1-camp-statuscontrol[data-state="active"] .desk-v1-camp-status-action { border-color: var(--green-text); }
+.desk-v1-camp-statuscontrol[data-state="paused"] .desk-v1-camp-status-action { border-color: var(--amber-text); }
 
 .desk-v1-camp-summary-groups { display: flex; gap: 32px; flex-wrap: wrap; }
 .desk-v1-camp-summary-group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }

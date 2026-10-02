@@ -30,8 +30,10 @@
     _agentsReadyCallbacks = [];
     cbs.forEach((cb) => cb());
   }
-  function _loadAgents() {
-    return fetch('/api/characters').then((r) => r.json()).then((list) => {
+  // `projectId` also lists that project's own (project-scope) characters, so a
+  // hired project-local agent resolves. Each call replaces the map.
+  function _loadAgents(projectId) {
+    return fetch('/api/characters' + (projectId ? '?project_id=' + encodeURIComponent(projectId) : '')).then((r) => r.json()).then((list) => {
       const map = {};
       (list || []).forEach((c) => { map[`${c.scope || 'global'}:${c.name}`] = c; });
       _agentsByRef = map;
@@ -42,6 +44,9 @@
   _loadAgents();
 
   const UNRESOLVED_AGENT_LABEL = 'Pick who plans for this project ›';
+  // The agent is per CAMPAIGN (standing position, Ron 2026-09-30): the campaign
+  // page's box says so. Project-level surfaces keep UNRESOLVED_AGENT_LABEL.
+  const UNRESOLVED_CAMPAIGN_AGENT_LABEL = 'Pick who plans for this campaign ›';
 
   // opts: {project, campaign}. R2-18 (Ron 2026-09-30, reversing the same-day
   // "agents per project only" ruling): the agent belongs to the CAMPAIGN —
@@ -80,7 +85,7 @@
         const rec = (Array.isArray(list) ? list : (list && list.projects) || []).find((x) => x.id === project.id);
         return ((rec && rec.roster) || []).filter((r) => !r.removed_at).map((r) => r.character);
       }).catch(() => []);
-    return Promise.all([refsP, _loadAgents()]).then(([refs]) => {
+    return Promise.all([refsP, _loadAgents(project.id)]).then(([refs]) => {
       const def = (project.presence || {}).desk_agent;
       const all = (def ? [def] : []).concat(refs.filter((r) => r && r !== def));
       return all.map((ref) => ({ ref, rec: resolveDeskAgent(ref) }))
@@ -114,7 +119,8 @@
     document.querySelectorAll('.desk-v1-posy-box[data-agent-ref]:not(.desk-v1-posy-box-compact)').forEach((box) => {
       const resolved = resolveDeskAgent(box.getAttribute('data-agent-ref') || null);
       const nameEl = box.querySelector('.desk-thread-name');
-      if (nameEl) nameEl.textContent = resolved.name || UNRESOLVED_AGENT_LABEL;
+      const unresolvedLabel = box.hasAttribute('data-pick-agent') ? UNRESOLVED_CAMPAIGN_AGENT_LABEL : UNRESOLVED_AGENT_LABEL;
+      if (nameEl) nameEl.textContent = resolved.name || unresolvedLabel;
       const head = box.querySelector('.desk-thread-head');
       if (head && head.firstElementChild && resolved.name && typeof window.avatarHTML === 'function') {
         head.firstElementChild.outerHTML = window.avatarHTML(resolved.avatar, 24);
@@ -602,7 +608,13 @@
     const ref = opts.agentRef || null;
     const resolved = resolveDeskAgent(ref);
     const avatar = (!compact && resolved.name && typeof window.avatarHTML === 'function') ? window.avatarHTML(resolved.avatar, 24) : '';
-    const nameHTML = compact ? '' : `<span class="desk-thread-name">${esc(resolved.name || UNRESOLVED_AGENT_LABEL)}</span>`;
+    // opts.pickAgent (campaign page): the name is a button that opens the
+    // campaign's agent picker, and an unset agent reads "this campaign".
+    const unresolvedLabel = opts.pickAgent ? UNRESOLVED_CAMPAIGN_AGENT_LABEL : UNRESOLVED_AGENT_LABEL;
+    const nameHTML = compact ? ''
+      : opts.pickAgent
+        ? `<button type="button" class="desk-thread-name desk-v1-posy-pickagent" data-pick-agent-btn aria-haspopup="menu">${esc(resolved.name || unresolvedLabel)}</button>`
+        : `<span class="desk-thread-name">${esc(resolved.name || unresolvedLabel)}</span>`;
     const scope = opts.scopeLabel
       ? `<button type="button" class="desk-v1-posy-scope" data-scope-trigger="1">About: ${esc(opts.scopeLabel)} &#9662;</button>`
       : '';
@@ -619,12 +631,12 @@
       ? `<button type="button" class="desk-v1-posy-send-arrow" data-posy-send="${esc(inputId)}" aria-label="Send">&#10148;</button>`
       : `<button class="btn-dispatch" data-posy-send="${esc(inputId)}">Send</button>`;
     return `
-      <div class="desk-v1-posy-box${compact ? ' desk-v1-posy-box-compact' : ''}" data-agent-ref="${esc(ref || '')}">
+      <div class="desk-v1-posy-box${compact ? ' desk-v1-posy-box-compact' : ''}" data-agent-ref="${esc(ref || '')}"${opts.pickAgent ? ' data-pick-agent' : ''}>
         <div class="desk-thread-head">${avatar}${nameHTML}${scope}</div>
         <div class="agent-output desk-v1-posy-output">${suggestionHTML}</div>
         ${chipsHTML}
         <div class="agent-input-row">
-          <textarea class="agent-task-input" id="${esc(inputId)}" rows="1" placeholder="Tell ${esc(resolved.name || 'your agent')} what to change…"></textarea>
+          <textarea class="agent-task-input desk-v1-posy-input" id="${esc(inputId)}" rows="2" placeholder="Tell ${esc(resolved.name || 'your agent')} what to change…"></textarea>
           ${sendBtnHTML}
         </div>
       </div>`;
@@ -811,7 +823,7 @@
     ask._resolve = setTimeout(() => {
       if (ask.state !== 'sending') return;
       ask.state = 'accepted';
-      if (ctx && ctx.ta) ctx.ta.value = ''; // draft cleared NOW, not at Send.
+      if (ctx && ctx.ta) { ctx.ta.value = ''; ctx.ta.dispatchEvent(new Event('input')); } // draft cleared NOW, not at Send.
       entry.draftText = '';
       _paintPosyOutput(ctx, ask);
       const force = window.__deskV1PosyForce;
@@ -910,7 +922,7 @@
     containerEl.querySelectorAll('.desk-v1-posy-chips .agent-question-chip').forEach((btn) => {
       btn.onclick = () => {
         const ta = document.getElementById(inputId);
-        if (ta) { ta.value = btn.dataset.chip || ''; ta.focus(); }
+        if (ta) { ta.value = btn.dataset.chip || ''; ta.dispatchEvent(new Event('input')); ta.focus(); }
       };
     });
     // §5: "R0 is simulated and says so" — a durable footer, not tied to any
@@ -924,6 +936,18 @@
     const ta = document.getElementById(inputId);
     const agentName = resolveDeskAgent(_refFromContainer(containerEl)).name || 'your agent';
     const ctx = { containerEl, ta, key, onSend, agentName };
+    // The box is narrow (a 320px rail), so the placeholder wraps: start two
+    // lines tall (CSS min-height) and grow with the text up to ~8 lines. Any
+    // programmatic value change (chips, Send clearing it) dispatches `input`
+    // so this refits too.
+    if (ta) {
+      const fit = () => {
+        ta.style.height = 'auto';
+        if (ta.scrollHeight > 0) ta.style.height = Math.min(ta.scrollHeight + 2, 190) + 'px';
+      };
+      ta.addEventListener('input', fit);
+      requestAnimationFrame(fit);
+    }
     if (ta && key) {
       const entry = _entryFor(key);
       if (entry.draftText) ta.value = entry.draftText;
@@ -949,7 +973,7 @@
         return;
       }
       if (!simulate) {
-        if (ta) ta.value = '';
+        if (ta) { ta.value = ''; ta.dispatchEvent(new Event('input')); }
         if (key) _entryFor(key).draftText = '';
         onSend(text);
         return;
@@ -1307,7 +1331,7 @@
     addToMenu, bindAddToTrigger, placePopover,
     infoIconHTML, bindInfoIcons,
     posyBoxHTML, bindPosyBox,
-    deskAgentRef, accountVoice, projectAgentChoices, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL, onAgentsReady,
+    deskAgentRef, accountVoice, projectAgentChoices, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL, UNRESOLVED_CAMPAIGN_AGENT_LABEL, onAgentsReady,
     anyPosyWorking, deskAgentWorkingLabel, paintPosyReadyNoDiff, paintPosyNotConnected,
     openConfirmSheet,
     validatePlan, MAX_TERM_DAYS: _MAX_TERM_DAYS,

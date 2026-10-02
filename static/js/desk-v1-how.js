@@ -81,7 +81,9 @@
     if (how.budget.source === 'project') how.budget.source = 'own';
     const project = _project(camp.projectId);
 
-    const projectEditable = camp.state === 'draft' || camp.state === 'proposed';
+    // Not-started campaigns can change project; a started one only when it
+    // has none (it was started before a project was required), then it locks.
+    const projectEditable = camp.state === 'draft' || camp.state === 'proposed' || !camp.projectId;
 
     el.innerHTML = `
       <div class="desk-v1-how">
@@ -159,33 +161,89 @@
       sel.innerHTML =
         (known ? '' : '<option value="" selected disabled>Pick an agent</option>') +
         choices.map((c) => `<option value="${esc(c.ref)}" ${c.ref === cur ? 'selected' : ''}>${esc(c.name)}${c.ref === def ? ' (project default)' : ''}</option>`).join('') +
+        `<option value="__hire__">+ Hire an agent onto ${esc(project.name)}…</option>` +
         '<option value="__create__">+ Create new agent</option>';
       sel.disabled = false;
       hint.textContent = choices.length
-        ? `Hired on ${project.name}. Plans and drafts for this campaign only.`
-        : `No agents hired on ${project.name} yet — create one, or hire one from the Floor.`;
+        ? `These are the agents hired on ${project.name}. To add another, choose “Hire an agent onto ${project.name}…”. Plans and drafts for this campaign only.`
+        : `No agents are hired on ${project.name} yet. Choose “Hire an agent onto ${project.name}…”, or create a new one.`;
     };
     if (_choicesCache[project.id]) fill(_choicesCache[project.id]);
     else { sel.innerHTML = '<option value="" selected disabled>Loading agents…</option>'; sel.disabled = true; hint.textContent = ''; }
     DeskV1Kit.projectAgentChoices(project).then((choices) => { _choicesCache[project.id] = choices; fill(choices); });
 
     sel.onchange = () => {
+      const prevRef = (camp.how && camp.how.agent) || (project.presence || {}).desk_agent || '';
       if (sel.value === '__create__') { _createAgent(); _paintAgent(el, camp, project); return; }
-      const nextRef = sel.value || null;
-      const prevRef = (camp.how && camp.how.agent) || null;
-      if (nextRef === prevRef) return;
-      const picked = (_choicesCache[project.id] || []).find((c) => c.ref === nextRef);
-      const render = () => { if (typeof window.deskV1Render === 'function') window.deskV1Render(); };
-      window.DeskV1Store.write({
-        label: `Set campaign agent to ${picked ? picked.name : nextRef}`,
-        apply: () => { camp.how.agent = nextRef; render(); },
-        unapply: () => { camp.how.agent = prevRef; },
-        repaint: render,
-        request: () => window.deskV1PatchCampaign(camp, ['plan', 'how']),
-        undoRequest: () => window.deskV1PatchCampaign(camp, ['plan', 'how']),
-      });
+      if (sel.value === '__hire__') { sel.value = prevRef; _hireMenu(camp, project, sel); return; }
+      _setCampaignAgent(camp, sel.value || null, (_choicesCache[project.id] || []).find((c) => c.ref === sel.value));
     };
   }
+
+  // The one write both pickers share (the Brief's Agent select and the campaign
+  // box's "Pick who plans for this campaign ›"): sets the campaign's own
+  // `how.agent`, saved through the same Store write / PATCH, with Undo.
+  function _setCampaignAgent(camp, nextRef, picked) {
+    const prevRef = (camp.how && camp.how.agent) || null;
+    if (nextRef === prevRef) return;
+    const render = () => { if (typeof window.deskV1Render === 'function') window.deskV1Render(); };
+    window.DeskV1Store.write({
+      label: `Set campaign agent to ${picked ? picked.name : nextRef}`,
+      apply: () => { camp.how.agent = nextRef; render(); },
+      unapply: () => { camp.how.agent = prevRef; },
+      repaint: render,
+      request: () => window.deskV1PatchCampaign(camp, ['plan', 'how']),
+      undoRequest: () => window.deskV1PatchCampaign(camp, ['plan', 'how']),
+    });
+  }
+
+  // "+ Hire an agent onto <project>…": the installed agents NOT hired on this
+  // project (GET /api/characters?project_id=, minus the project's roster), as a
+  // small menu under `anchor`. Picking one is the user's own click; it hires
+  // through floor.js's roster/hire route (the one drag-to-hire uses) and then
+  // selects the agent for THIS campaign. Nothing here hires on its own.
+  async function _hireMenu(camp, project, anchor) {
+    let hired = [], installed = [];
+    try {
+      hired = await DeskV1Kit.projectAgentChoices(project);
+      const r = await fetch('/api/characters?project_id=' + encodeURIComponent(project.id));
+      installed = await r.json();
+    } catch (e) { DeskV1Kit.toast('Could not load the agents: ' + (e && e.message ? e.message : e)); return; }
+    const have = new Set(hired.map((c) => c.ref));
+    const cands = (Array.isArray(installed) ? installed : [])
+      .map((c) => ({ ref: `${c.scope || 'global'}:${c.name}`, scope: c.scope || 'global', name: c.name, label: c.agent_name || c.display_name || c.name, avatar: c.avatar || '', shadowed: !!c.shadowed_by_project }))
+      .filter((c) => !c.shadowed && !have.has(c.ref));
+    if (!cands.length) {
+      DeskV1Kit.toast(`Every installed agent is already hired on ${project.name}. Create a new one from the Agent list.`);
+      return;
+    }
+    DeskV1Kit.addToMenu(anchor, cands.map((c) => ({ id: c.ref, label: `${c.avatar ? c.avatar + ' ' : ''}${c.label}` })), async (ref) => {
+      const c = cands.find((x) => x.ref === ref);
+      if (!c || typeof window.floorHireQuiet !== 'function') return;
+      const data = await window.floorHireQuiet(c.scope, c.name, project.id, c.label);
+      if (!data) return;
+      delete _choicesCache[project.id];
+      _setCampaignAgent(camp, c.ref, { name: c.label });
+    }, { noAppendNew: true });
+  }
+
+  // The campaign box's "Pick who plans for this campaign ›": the same choices
+  // as the Agent select, as a menu under the box's name, plus the hire/create
+  // doors. The pick is `_setCampaignAgent`, the select's own write.
+  async function pickCampaignAgent(camp, project, anchor) {
+    if (!project) return;
+    const choices = await DeskV1Kit.projectAgentChoices(project);
+    _choicesCache[project.id] = choices;
+    const def = (project.presence || {}).desk_agent || null;
+    const items = choices.map((c) => ({ id: c.ref, label: `${c.avatar ? c.avatar + ' ' : ''}${c.name}${c.ref === def ? ' (project default)' : ''}` }))
+      .concat([{ id: '__hire__', label: `+ Hire an agent onto ${project.name}…` }, { id: '__create__', label: '+ Create new agent' }]);
+    DeskV1Kit.addToMenu(anchor, items, (id) => {
+      if (id === '__create__') { _createAgent(); return; }
+      if (id === '__hire__') { _hireMenu(camp, project, anchor); return; }
+      _setCampaignAgent(camp, id, choices.find((c) => c.ref === id));
+    }, { noAppendNew: true });
+  }
+  window.deskV1PickCampaignAgent = pickCampaignAgent;
 
   // Same hand-off conversation.js's `_createNewPersona` uses (that helper is
   // module-private, so the four lines are repeated here): open Claydo in
