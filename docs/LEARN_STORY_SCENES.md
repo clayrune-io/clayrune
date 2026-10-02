@@ -12,6 +12,15 @@ with these cases." Not abstract diagrams, not product tours. Each scene needs
 a one-row mapping table (story to product) so it never teaches something
 false.
 
+**Outside Clayrune entirely (Ron, 2026-10-02):** the scene shows a normal
+office, never Clayrune screens. HR is an animated HR department with its own
+clay figure, not the Bench redrawn. "The entire scenario should relate real
+life scenarios outside Clayrune." The cast is the existing clay figures
+(`fig:*` sprites), which makes the characters familiar once the user meets
+them again on the Floor. The link to the product is made only at the cut to
+practice ("Now you do it"); the mapping tables below are for whoever builds
+the scene and are not shown to the user.
+
 ## Floor scene: "We need a QA engineer"
 
 Ron's words: "show animation of Claydo as manager talking to someone else that
@@ -23,9 +32,10 @@ the hub):
 
 1. Claydo (manager) at a project desk with a teammate. Bubble: "This project
    keeps shipping bugs. We need a QA engineer."
-2. Claydo walks to HR (the Bench, drawn as a desk with figure cards).
-3. HR looks through the cards: no QA engineer. HR creates one, picks where it
-   comes from (vendor) and how strong it is (model).
+2. Claydo walks down the hall to the HR department (an office with its own
+   clay HR figure and a filing cabinet of staff folders).
+3. HR looks through the folders: no QA engineer on staff. HR recruits one,
+   choosing which agency to hire from (vendor) and how senior (model).
 4. The new figure walks to the project and sits down. Bubble: "Hired. Nobody
    has given me a task yet."
 5. Cut to practice: "Now you do it."
@@ -35,9 +45,9 @@ Mapping to the product, so the story never teaches something false:
 | Story | Product |
 | --- | --- |
 | Manager | Claydo, the narrator |
-| HR | The Bench (agent types you can hire) |
-| HR creates a QA engineer | Create agent in the character editor (Floor v2) |
-| Picks vendor and model | Provider and model fields |
+| HR department and its staff folders | The Bench (agent types you can hire) |
+| HR recruits a QA engineer | Create agent in the character editor (Floor v2) |
+| Which agency, how senior | Provider and model fields |
 | Sits at the project desk | Hire onto a project; does not start a task |
 
 ## Workflows scene: "The Monday report" (draft)
