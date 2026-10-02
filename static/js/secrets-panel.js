@@ -887,6 +887,9 @@ async function openSecretEditor(name, preset) {
   // An entry saved before types existed arrives with the server's inference
   // (a username makes it a Login, otherwise an API key); a new one starts as a Login.
   _secType = (existing && _SEC_TYPES[existing.entry_type]) ? existing.entry_type : 'login';
+  // Preset state outlives the editor it locked; clear it so a stale preset cannot
+  // hand its saved "type before" back to this entry in _secApplyPreset.
+  _secPreset = null; _secTypeBeforePreset = _secType;
   const typeChips = _SEC_TYPE_ORDER.map((t) => `
     <label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:5px 12px;
                   border:1px solid var(--border);border-radius:99px;cursor:pointer">
