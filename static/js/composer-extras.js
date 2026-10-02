@@ -776,9 +776,12 @@ function insertEmojiAtCaret(textareaId, emoji) {
   const end = ta.selectionEnd == null ? start : ta.selectionEnd;
   ta.setRangeText(emoji, start, end, 'end');
   ta.dispatchEvent(new Event('input', { bubbles: true }));
-  // Phone: don't summon the keyboard because a cell was tapped (it would cover
-  // the picker). A field that already has focus simply keeps it.
-  if (!_emojiPhone()) ta.focus();
+  // Phone: one pick and the tray is done (Ron, 2026-10-02: it stayed open and
+  // covered the thread). Close it, and keep the caret in the field so the
+  // keyboard stays up for the next word. Desktop keeps the tray open for
+  // several picks.
+  if (_emojiPhone()) closeChatEmojiPicker();
+  ta.focus();
 }
 
 function toggleChatEmojiPicker(textareaId) {

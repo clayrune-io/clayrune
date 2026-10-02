@@ -6,6 +6,24 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-02] — Mobile composer fit (keyboard open)
+
+- **Composer growth now pushes the thread up** instead of overflowing the modal:
+  `sizeAgentChat` watches the composer (chat-input, its row and the textarea) with
+  a ResizeObserver and re-sizes the thread on every height change. Before, the
+  thread kept its one-line height, so from the 3rd line the pill bottom, paperclip
+  and send button fell below the modal edge above the keyboard. Pill, clip and
+  send now stay inside at 1-6 lines, then the field scrolls.
+- **Emoji tray closes after one pick on a phone** and the textarea keeps focus
+  (keyboard stays up). Desktop keeps the tray open for several picks.
+- Stop beside a COMPLETED header is intentional, not a bug: `idle` (Mode B
+  process alive between turns) is labelled "Completed" by `consoleStatusLabel`
+  and shows Stop (`updateStopButtonUI`; same rule since the original stop work).
+- Smoke: `tools/smoke/mobile-composer-room.mjs` gained a keyboard-open fit run
+  (viewport 440 of 800, 1-6 lines, 360/390/412, warm + dark, completed + running)
+  and the pick-closes-picker checks. Screenshots: `docs/screenshots/mobile-composer-fit-390-3lines.png`
+  and `-5lines.png`.
+
 ## [2026-10-02] — Mobile composer room (<=960px)
 
 - **Emoji button inside the pill, left** (WhatsApp pattern); the picker opens as a
