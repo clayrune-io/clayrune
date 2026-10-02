@@ -25,6 +25,9 @@ data/projects/*_skill_stats_archive.jsonl
 data/projects/*/
 data/uploads/*
 data/media/*
+# Archived agent-worktree _scratch/ (MC-1029): copied out before a worktree is
+# deleted. Untracked here would make the main tree 'dirty' and block merge-back.
+data/agent_scratch/
 !data/projects/.gitkeep
 !data/uploads/.gitkeep
 !data/media/.gitkeep
