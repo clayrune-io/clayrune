@@ -8,10 +8,11 @@
  *     block of the position:fixed menu, so .desk-v1-home-block's
  *     overflow:hidden clipped it. Pin: the menu is inside the viewport AND the
  *     element at its centre / bottom edge is the menu (not the card behind it).
- *  2. "Pick who plans for this …" on the campaign box was inert. Pin: it reads
- *     "this campaign", opens a picker, and picking sets the CAMPAIGN's agent
- *     (`how.agent`) — the box then shows the agent's name and the Brief's
- *     Agent select agrees.
+ *  2. ONE agent picker (Ron 2026-10-02): the Campaign card's Agent picker on
+ *     Brief is the only place to choose; it shows each agent's FIGURE + name +
+ *     role (never a `fig:` ref as text), keyboard + bottom sheet at 390. The
+ *     right-hand box only SHOWS the agent (figure + name, not a control); with
+ *     none it reads "No agent yet, pick one in Campaign" and links to the card.
  *  3. The "Tell your agent what to change" box was one line tall, so the
  *     wrapped placeholder was cut off. Pin: >= 2 lines tall and it grows.
  *  4. Only already-hired agents were offered, which read as broken. Pin:
@@ -70,9 +71,9 @@ const mkProject = (id, name, roster) => ({
 });
 const PROJECTS = [mkProject('clayrune', 'Clayrune', []), mkProject('engulfing_scanner', 'Engulfing scanner', [])];
 const CHARACTERS = [
-  { scope: 'global', name: 'claydo', agent_name: 'Claydo', avatar: '🧱' },
-  { scope: 'global', name: 'dave', agent_name: 'Dave', avatar: '🛡️' },
-  { scope: 'global', name: 'not-hired', agent_name: 'Tilda Test', avatar: '👻' },
+  { scope: 'global', name: 'claydo', agent_name: 'Claydo', avatar: 'fig:newcomer', description: 'The mascot who builds new agents. Second sentence is cut.' },
+  { scope: 'global', name: 'dave', agent_name: 'Dave', avatar: 'fig:smith', description: 'Program manager that keeps long work moving.' },
+  { scope: 'global', name: 'not-hired', agent_name: 'Tilda Test', avatar: 'fig:courier', description: 'Posts and replies for the project.' },
 ];
 
 let bad = 0;
@@ -96,6 +97,7 @@ async function boot(browser, width, height) {
     if (path === '/api/projects') return J(PROJECTS);
     if (path === '/api/config') return J({ desk_v1: true, user_timezone: '' });
     if (path === '/api/characters') return J(CHARACTERS);
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#c96"/></svg>' });
     if (path === '/api/floor') return J({ bench: [] });
     const m = path.match(/^\/api\/project\/([^/]+)\/roster\/hire$/);
     if (m && req.method() === 'POST') {
@@ -126,6 +128,17 @@ async function openCampaign(page, id, stop) {
     await page.waitForSelector('.desk-v1-how', { timeout: 8000 });
   }
 }
+
+// The one Agent picker (Brief > Campaign card): open it, read its rows, pick one.
+const openPicker = async (page) => {
+  await page.click('[data-how-agent]');
+  await page.waitForSelector('.desk-v1-agentlist [role="option"]', { timeout: 3000 });
+};
+const pickerRows = (page) => page.$$eval('.desk-v1-agentlist [role="option"]', (rs) => rs.map((r) => ({
+  id: r.dataset.agentId, text: r.textContent.replace(/\s+/g, ' ').trim(), sel: r.getAttribute('aria-selected') === 'true',
+  figure: !!r.querySelector('img.av-fig'), role: (r.querySelector('.desk-v1-agentlist-role') || {}).textContent || '',
+})));
+const noFigText = (page) => page.evaluate(() => !(/\bfig:[a-z]/.test(document.body.innerText) || Array.from(document.querySelectorAll('option, button, [role="option"]')).some((e) => /\bfig:[a-z]/.test(e.textContent))));
 
 const rectOf = (page, sel) => page.$eval(sel, (el) => { const r = el.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, h: r.height }; });
 
@@ -167,9 +180,9 @@ async function run(browser, width, height) {
 
   // ── 3 + 2 + 4 on a campaign whose project has no agent (Engulfing) ──────
   await openCampaign(page, 'camp-3', 'how');
-  const label = await page.$eval('.desk-v1-camp-posy [data-pick-agent-btn]', (b) => b.textContent.trim());
-  check(/Pick who plans for this campaign/.test(label) && !/this project/.test(label),
-    `${tag} 2 unset agent reads "${label}"`, `${tag} 2 label wrong: ${label}`);
+  const label = await page.$eval('.desk-v1-camp-posy [data-goto-campaign-agent]', (b) => b.textContent.trim());
+  check(label === 'No agent yet, pick one in Campaign',
+    `${tag} 2 unset agent reads "${label}" (a link, not a picker)`, `${tag} 2 label wrong: ${label}`);
 
   // 3: the Tell-your-agent box
   const ta0 = await page.$eval('.desk-v1-posy-input', (t) => { const cs = getComputedStyle(t); return { h: t.getBoundingClientRect().height, line: parseFloat(cs.lineHeight), padT: parseFloat(cs.paddingTop), padB: parseFloat(cs.paddingBottom), clipped: t.scrollHeight > t.clientHeight + 1, ph: t.placeholder }; });
@@ -186,59 +199,109 @@ async function run(browser, width, height) {
   const ta2 = await page.$eval('.desk-v1-posy-input', (t) => t.getBoundingClientRect().height);
   check(Math.abs(ta2 - ta0.h) < 2, `${tag} 3 input shrinks back when emptied`, `${tag} 3 input stayed tall: ${ta2} vs ${ta0.h}`);
 
-  // 4: Agent select options (Engulfing has no hired agents)
+  // 4: Agent picker rows (Engulfing has no hired agents)
   await page.waitForFunction(() => { const s = document.querySelector('[data-how-agent]'); return s && !s.disabled; }, null, { timeout: 4000 });
-  const opts = await page.$$eval('[data-how-agent] option', (os) => os.map((o) => o.value));
-  const hireIdx = opts.indexOf('__hire__'), createIdx = opts.indexOf('__create__');
-  check(hireIdx >= 0 && createIdx === hireIdx + 1 && createIdx === opts.length - 1,
-    `${tag} 4 select offers "+ Hire an agent onto Engulfing scanner…" right before "+ Create new agent"`,
-    `${tag} 4 select options wrong: ${JSON.stringify(opts)}`);
+  check(await page.$eval('[data-how-agent]', (b) => b.tagName === 'BUTTON') && (await page.$$('select[data-how-agent]')).length === 0,
+    `${tag} 4 the Agent control is a button + listbox, not a native <select>`, `${tag} 4 Agent control is still a <select>`);
   const hint = await page.$eval('[data-how-agent-hint]', (h) => h.textContent);
-  check(/hired on Engulfing scanner/i.test(hint) && /Hire an agent onto/.test(hint), `${tag} 4 hint explains the list and how to add: "${hint}"`, `${tag} 4 hint wrong: ${hint}`);
+  check(/hired on Engulfing scanner/i.test(hint) || /No agents are hired on Engulfing scanner/i.test(hint), `${tag} 4 hint explains the list and how to add: "${hint}"`, `${tag} 4 hint wrong: ${hint}`);
+  await openPicker(page);
+  const rows0 = await pickerRows(page);
+  const ids0 = rows0.map((r) => r.id);
+  const hireIdx = ids0.indexOf('__hire__'), createIdx = ids0.indexOf('__create__');
+  check(hireIdx >= 0 && createIdx === hireIdx + 1 && createIdx === ids0.length - 1,
+    `${tag} 4 picker offers "+ Hire an agent onto Engulfing scanner…" right before "+ Create new agent" (last)`,
+    `${tag} 4 picker rows wrong: ${JSON.stringify(ids0)}`);
+  check(await noFigText(page), `${tag} 2 no raw "fig:" text on screen with the picker open`, `${tag} 2 raw fig: text is visible`);
+  await page.keyboard.press('Escape');
+  check((await page.$('.desk-v1-agentlist')) === null && (await page.evaluate(() => document.activeElement && document.activeElement.hasAttribute('data-how-agent'))),
+    `${tag} 2 Esc closes the picker and returns focus to the Agent button`, `${tag} 2 Esc did not close/refocus`);
 
-  // 2: the box picker (menu from the name), Dave is picked for the campaign
-  check(hires.length === 0, `${tag} 4 opening the pickers has hired nothing`, `${tag} 4 hired before any click: ${JSON.stringify(hires)}`);
-  await page.click('.desk-v1-camp-posy [data-pick-agent-btn]');
-  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 3000 });
-  const boxItems = await page.$$eval('.desk-v1-addto-menu button', (bs) => bs.map((b) => b.textContent.trim()));
-  check(boxItems.some((t) => /Hire an agent onto Engulfing scanner/.test(t)) && boxItems.some((t) => /Create new agent/.test(t)),
-    `${tag} 2 box picker menu offers hire + create: ${JSON.stringify(boxItems)}`, `${tag} 2 box picker menu wrong: ${JSON.stringify(boxItems)}`);
-  await page.screenshot({ path: resolve(SHOTS, `${width}-2-box-picker.png`) });
+  // 2: the right-hand box SHOWS, never chooses. Nothing in it opens a picker.
+  check(hires.length === 0, `${tag} 4 opening the picker has hired nothing`, `${tag} 4 hired before any click: ${JSON.stringify(hires)}`);
+  await page.click('.desk-v1-camp-posy [data-goto-campaign-agent]');
+  await page.waitForTimeout(150);
+  check((await page.$('.desk-v1-agentlist')) === null && (await page.$('.desk-v1-addto-menu')) === null,
+    `${tag} 2 clicking the box's "No agent yet" link opens no picker (it goes to the Campaign card)`, `${tag} 2 the box opened a picker`);
+  check(await page.evaluate(() => document.activeElement && document.activeElement.hasAttribute('data-how-agent')),
+    `${tag} 2 ...and puts focus on the Campaign card's Agent picker`, `${tag} 2 focus did not reach the Agent picker`);
 
-  // Hire through the box: pick the hire door, then Dave (not hired on Engulfing).
-  await page.click('.desk-v1-addto-menu button:has-text("Hire an agent")');
-  await page.waitForFunction(() => /Dave/.test((document.querySelector('.desk-v1-addto-menu') || {}).textContent || ''), null, { timeout: 4000 });
-  const cands = await page.$$eval('.desk-v1-addto-menu button', (bs) => bs.map((b) => b.textContent.trim()));
-  check(cands.length === 3 && cands.some((t) => /Dave/.test(t)) && cands.some((t) => /Tilda Test/.test(t)) && cands.some((t) => /Claydo/.test(t)),
-    `${tag} 4 hire menu lists the installed agents not hired here: ${JSON.stringify(cands)}`, `${tag} 4 hire menu wrong: ${JSON.stringify(cands)}`);
+  // Hire through the picker: the Hire row, then Dave (not hired on Engulfing).
+  await openPicker(page);
+  await page.click('.desk-v1-agentlist [data-agent-id="__hire__"]');
+  await page.waitForFunction(() => /Dave/.test((document.querySelector('.desk-v1-agentlist') || {}).textContent || ''), null, { timeout: 4000 });
+  const cands = await pickerRows(page);
+  check(cands.length === 3 && cands.some((c) => /Dave/.test(c.text)) && cands.some((c) => /Tilda Test/.test(c.text)) && cands.some((c) => /Claydo/.test(c.text)),
+    `${tag} 4 hire list shows the installed agents not hired here: ${JSON.stringify(cands.map((c) => c.text))}`, `${tag} 4 hire list wrong: ${JSON.stringify(cands)}`);
+  check(cands.every((c) => c.figure), `${tag} 2 every hire row renders its figure (<img>)`, `${tag} 2 a hire row has no figure: ${JSON.stringify(cands)}`);
+  check(cands.every((c) => /\S/.test(c.role)) && cands.find((c) => /Claydo/.test(c.text)).role === 'The mascot who builds new agents.',
+    `${tag} 2 each hire row carries a one-line role (first sentence only)`, `${tag} 2 roles wrong: ${JSON.stringify(cands.map((c) => c.role))}`);
+  check(await noFigText(page), `${tag} 2 no raw "fig:" text in the Hire list`, `${tag} 2 raw fig: text in the Hire list`);
+  await page.screenshot({ path: resolve(SHOTS, `${width}-2-hire-list.png`) });
   check(hires.length === 0, `${tag} 4 listing candidates still hired nothing`, `${tag} 4 hired on listing: ${JSON.stringify(hires)}`);
-  await page.click('.desk-v1-addto-menu button:has-text("Dave")');
-  await page.waitForFunction(() => /Dave/.test((document.querySelector('.desk-v1-camp-posy [data-pick-agent-btn]') || {}).textContent || ''), null, { timeout: 4000 });
+  await page.click('.desk-v1-agentlist [data-agent-id="global:dave"]');
+  await page.waitForFunction(() => (document.querySelector('[data-how-agent]') || {}).dataset.value === 'global:dave', null, { timeout: 4000 });
   check(hires.length === 1 && hires[0].project === 'engulfing_scanner' && hires[0].character === 'global:dave' && hires[0].hired_by === 'desk',
     `${tag} 4 one click hired Dave via the roster/hire route: ${JSON.stringify(hires[0])}`, `${tag} 4 hire call wrong: ${JSON.stringify(hires)}`);
   const after = await page.evaluate(() => ({
     stored: window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-3').how.agent,
-    box: document.querySelector('.desk-v1-camp-posy [data-pick-agent-btn]').textContent.trim(),
-    selected: (document.querySelector('[data-how-agent]') || {}).value,
+    boxName: document.querySelector('.desk-v1-camp-posy .desk-thread-name').textContent.trim(),
+    boxTag: document.querySelector('.desk-v1-camp-posy .desk-thread-name').tagName,
+    boxFigure: !!document.querySelector('.desk-v1-camp-posy .desk-thread-head img.av-fig'),
+    boxControls: document.querySelectorAll('.desk-v1-camp-posy .desk-thread-head button:not([data-scope-trigger]), .desk-v1-camp-posy [data-pick-agent-btn], .desk-v1-camp-posy [data-goto-campaign-agent]').length,
+    value: (document.querySelector('[data-how-agent]') || {}).dataset.value,
+    btn: (document.querySelector('[data-how-agent]') || {}).textContent.replace(/\s+/g, ' ').trim(),
+    btnFigure: !!document.querySelector('[data-how-agent] img.av-fig'),
     placeholder: document.querySelector('.desk-v1-posy-input').placeholder,
   }));
-  check(after.stored === 'global:dave' && after.box === 'Dave' && after.selected === 'global:dave' && /Dave/.test(after.placeholder),
-    `${tag} 2 box now shows "Dave"; campaign how.agent=global:dave; Agent select agrees`, `${tag} 2 after-pick state wrong: ${JSON.stringify(after)}`);
-  await page.screenshot({ path: resolve(SHOTS, `${width}-2-after-pick.png`) });
+  check(after.stored === 'global:dave' && after.value === 'global:dave' && /^Dave/.test(after.btn) && after.btnFigure,
+    `${tag} 3 after the hire the Agent picker shows the hired agent selected: "${after.btn}" with its figure`, `${tag} 3 picker not on the hired agent: ${JSON.stringify(after)}`);
+  check(after.boxName === 'Dave' && after.boxTag === 'SPAN' && after.boxFigure && after.boxControls === 0 && /Dave/.test(after.placeholder),
+    `${tag} 2 the right-hand box shows Dave's figure + name as plain text (no control)`, `${tag} 2 box state wrong: ${JSON.stringify(after)}`);
+  await openPicker(page);
+  const rows1 = await pickerRows(page);
+  check(rows1.filter((r) => r.sel).length === 1 && rows1.find((r) => r.sel).id === 'global:dave' && rows1.filter((r) => r.figure).length === rows1.filter((r) => !/^__/.test(r.id)).length,
+    `${tag} 2 reopened, exactly the current agent is marked and every agent row has a figure`, `${tag} 2 reopened picker wrong: ${JSON.stringify(rows1)}`);
+  await page.screenshot({ path: resolve(SHOTS, `${width}-2-picker-open.png`) });
+  // Keyboard: arrow to another agent, Enter picks it (writes how.agent), Undo is the store's.
+  await page.keyboard.press('ArrowDown');
+  const focused = await page.evaluate(() => document.activeElement && document.activeElement.dataset.agentId);
+  check(focused && focused !== 'global:dave', `${tag} 2 ArrowDown moves the highlight (now ${focused})`, `${tag} 2 ArrowDown did nothing`);
+  await page.keyboard.press('Escape');
 
   // 4 again on the select path (Clayrune: claydo+dave hired, Tilda Test is not)
   await openCampaign(page, 'camp-1', 'how');
-  await page.waitForFunction(() => { const s = document.querySelector('[data-how-agent]'); return s && !s.disabled && s.options.length > 1; }, null, { timeout: 4000 });
-  await page.selectOption('[data-how-agent]', '__hire__');
-  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 3000 });
-  const c2 = await page.$$eval('.desk-v1-addto-menu button', (bs) => bs.map((b) => b.textContent.trim()));
-  check(c2.length === 1 && /Tilda Test/.test(c2[0]), `${tag} 4 select path lists only the unhired agent: ${JSON.stringify(c2)}`, `${tag} 4 select hire list wrong: ${JSON.stringify(c2)}`);
+  await page.waitForFunction(() => { const s = document.querySelector('[data-how-agent]'); return s && !s.disabled; }, null, { timeout: 4000 });
+  await openPicker(page);
+  await page.click('.desk-v1-agentlist [data-agent-id="__hire__"]');
+  await page.waitForFunction(() => /Tilda Test/.test((document.querySelector('.desk-v1-agentlist') || {}).textContent || ''), null, { timeout: 3000 });
+  const c2 = await pickerRows(page);
+  check(c2.length === 1 && /Tilda Test/.test(c2[0].text), `${tag} 4 Clayrune: the Hire list shows only the unhired agent: ${JSON.stringify(c2.map((c) => c.text))}`, `${tag} 4 hire list wrong: ${JSON.stringify(c2)}`);
   await page.screenshot({ path: resolve(SHOTS, `${width}-4-hire-menu.png`) });
   const before = hires.length;
-  await page.click('.desk-v1-addto-menu button');
-  await page.waitForFunction(() => (document.querySelector('[data-how-agent]') || {}).value === 'global:not-hired', null, { timeout: 4000 });
+  await page.click('.desk-v1-agentlist [role="option"]');
+  await page.waitForFunction(() => (document.querySelector('[data-how-agent]') || {}).dataset.value === 'global:not-hired', null, { timeout: 4000 });
   check(hires.length === before + 1 && hires[before].character === 'global:not-hired' && hires[before].project === 'clayrune',
     `${tag} 4 select path hired and selected the agent for the campaign`, `${tag} 4 select path wrong: ${JSON.stringify(hires)}`);
+
+  // ── 3. Blank state: a chosen agent the roster does not list yet still shows ──
+  // (the hire's roster row can land after the pick; the old select went blank).
+  await page.evaluate(() => {
+    const c = window.DeskV1Fixtures.campaigns.find((x) => x.id === 'camp-1');
+    const p = window.DeskV1Fixtures.projects.find((x) => x.id === c.projectId);
+    p.roster = p.roster.filter((r) => r !== 'global:not-hired');
+    c.how.agent = 'global:not-hired';
+    window.deskV1Render();
+  });
+  await page.waitForFunction(() => { const s = document.querySelector('[data-how-agent]'); return s && !s.disabled; }, null, { timeout: 4000 });
+  const blank = await page.$eval('[data-how-agent]', (b) => ({ v: b.dataset.value, t: b.textContent.replace(/\s+/g, ' ').trim(), fig: !!b.querySelector('img.av-fig') }));
+  check(blank.v === 'global:not-hired' && /^Tilda Test/.test(blank.t) && blank.fig,
+    `${tag} 3 a campaign agent missing from the roster still shows on the picker ("${blank.t}"), never blank`, `${tag} 3 picker blank/wrong: ${JSON.stringify(blank)}`);
+  await openPicker(page);
+  const rowsB = await pickerRows(page);
+  check(rowsB.some((r) => r.id === 'global:not-hired' && r.sel), `${tag} 3 ...and it is listed and marked in the open picker`, `${tag} 3 current agent missing from the list: ${JSON.stringify(rowsB)}`);
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => { window.DeskV1Fixtures.campaigns.find((x) => x.id === 'camp-1').how.agent = null; });
 
   // ── 5. One joined status control ────────────────────────────────────────
   await openCampaign(page, 'camp-1');
@@ -306,8 +369,8 @@ async function run(browser, width, height) {
       `${tag} 6 ${panel}: picking Clayrune assigned it and the field locked ("${after6.roText}")`,
       `${tag} 6 ${panel}: assign/lock wrong: ${JSON.stringify({ stored6, after6 })}`);
     if (panel === 'how') {
-      await page.waitForFunction(() => { const s = document.querySelector('[data-how-agent]'); return s && !s.disabled && s.options.length > 1; }, null, { timeout: 4000 });
-      ok(`${tag} 6 how: the Agent select now works off the chosen project`);
+      await page.waitForFunction(() => { const s = document.querySelector('[data-how-agent]'); return s && !s.disabled; }, null, { timeout: 4000 });
+      ok(`${tag} 6 how: the Agent picker now works off the chosen project`);
     }
   }
   // A started campaign that HAS a project stays locked (no regression).

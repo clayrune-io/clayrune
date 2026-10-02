@@ -6,6 +6,26 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-02] — Desk: one agent picker, showing the figures
+
+- The campaign's agent is chosen in ONE place, the Campaign card on Brief. The
+  native `<select>` is now a button + listbox: each row is the agent's figure
+  (`avatarHTML`, same as the Floor/Bench), name and a one-line role; the current one
+  is marked, "(project default)" stays, "+ Hire an agent onto <project>…" and
+  "+ Create new agent" are the last rows. Arrows/Home/End/Enter/Esc work; at 640px
+  and below it opens as a bottom sheet. Shared component: `DeskV1Kit.agentListPopover`.
+- The "Hire an agent onto <project>…" list and the project page's default-planner
+  chip use it too, so no `fig:smith` text shows anywhere on the Desk any more.
+- Fixed the blank Agent field: the campaign's current agent always shows, even when
+  the project roster has not caught up with a hire; after a hire the choices refresh
+  and the hired agent is selected.
+- The right-hand agent box only shows the chosen agent (figure + name, not a
+  control). With none chosen it reads "No agent yet, pick one in Campaign" and that
+  link takes you to the Campaign card's picker.
+- Smokes: `desk-campaign-ui-fixes.mjs` (no `<select>`, figures per row, hire ->
+  selected, right box inert, no `fig:` text), `desk-v1-how.mjs`, `-journey.mjs`,
+  `-campaign.mjs`, `-live-writes.mjs`.
+
 ## [2026-10-02] — Desk Connections: guided Connect for every service
 
 - **One shared sign-in connector** (`mc/desk_oauth.py`): start, loopback callback,

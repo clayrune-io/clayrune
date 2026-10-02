@@ -46,7 +46,9 @@
   const UNRESOLVED_AGENT_LABEL = 'Pick who plans for this project ›';
   // The agent is per CAMPAIGN (standing position, Ron 2026-09-30): the campaign
   // page's box says so. Project-level surfaces keep UNRESOLVED_AGENT_LABEL.
-  const UNRESOLVED_CAMPAIGN_AGENT_LABEL = 'Pick who plans for this campaign ›';
+  // Ron 2026-10-02: the campaign page's box only SHOWS the agent; the one
+  // place to choose is the Campaign card on Brief, and this label links there.
+  const UNRESOLVED_CAMPAIGN_AGENT_LABEL = 'No agent yet, pick one in Campaign';
 
   // opts: {project, campaign}. R2-18 (Ron 2026-09-30, reversing the same-day
   // "agents per project only" ruling): the agent belongs to the CAMPAIGN —
@@ -90,7 +92,7 @@
       const all = (def ? [def] : []).concat(refs.filter((r) => r && r !== def));
       return all.map((ref) => ({ ref, rec: resolveDeskAgent(ref) }))
         .filter((x) => x.rec.name)
-        .map((x) => ({ ref: x.ref, name: x.rec.name, avatar: x.rec.avatar }));
+        .map((x) => ({ ref: x.ref, name: x.rec.name, avatar: x.rec.avatar, role: x.rec.role }));
     });
   }
 
@@ -101,7 +103,7 @@
     if (!ref || !_agentsByRef) return { ref: ref || null, name: null, avatar: '' };
     const rec = _agentsByRef[ref];
     if (!rec) return { ref, name: null, avatar: '' };
-    return { ref, name: rec.agent_name || rec.display_name || rec.name, avatar: rec.avatar || '' };
+    return { ref, name: rec.agent_name || rec.display_name || rec.name, avatar: rec.avatar || '', role: agentRole(rec.description) };
   }
 
   // Convenience for the many sentence-embedded copy spots ("Tell X what to
@@ -119,13 +121,22 @@
     document.querySelectorAll('.desk-v1-posy-box[data-agent-ref]:not(.desk-v1-posy-box-compact)').forEach((box) => {
       const resolved = resolveDeskAgent(box.getAttribute('data-agent-ref') || null);
       const nameEl = box.querySelector('.desk-thread-name');
-      const unresolvedLabel = box.hasAttribute('data-pick-agent') ? UNRESOLVED_CAMPAIGN_AGENT_LABEL : UNRESOLVED_AGENT_LABEL;
-      if (nameEl) nameEl.textContent = resolved.name || unresolvedLabel;
+      const showOnly = box.hasAttribute('data-pick-agent');
+      const unresolvedLabel = showOnly ? UNRESOLVED_CAMPAIGN_AGENT_LABEL : UNRESOLVED_AGENT_LABEL;
+      // The campaign box's name is a link to the Campaign card only while no
+      // agent is chosen; once one resolves it is plain text, not a control.
+      if (nameEl && showOnly && (nameEl.tagName === 'BUTTON') === !!resolved.name) nameEl.outerHTML = _agentNameHTML(resolved.name, true, unresolvedLabel);
+      else if (nameEl) nameEl.textContent = resolved.name || unresolvedLabel;
       const head = box.querySelector('.desk-thread-head');
       if (head && head.firstElementChild && resolved.name && typeof window.avatarHTML === 'function') {
         head.firstElementChild.outerHTML = window.avatarHTML(resolved.avatar, 24);
       }
     });
+  }
+
+  function _agentNameHTML(name, showOnly, unresolvedLabel) {
+    if (showOnly && !name) return `<button type="button" class="desk-thread-name desk-v1-posy-pickagent" data-goto-campaign-agent>${esc(unresolvedLabel)}</button>`;
+    return `<span class="desk-thread-name">${esc(name || unresolvedLabel)}</span>`;
   }
 
   // ── §9 vocabulary: 15 version states + 6 campaign states, glyph + word ───
@@ -505,6 +516,86 @@
     });
   }
 
+  // ── Agent list (Ron 2026-10-02: ONE agent picker, showing the figures). The
+  // Campaign card's Agent picker and the "Hire an agent onto <project>…" list
+  // both open this; so does the project page's default-planner button. A
+  // listbox of rows — figure (window.avatarHTML, the Floor/Bench renderer),
+  // name, one-line role — with the current one marked. Below 640px it is a
+  // bottom sheet over a dimming layer. Keys: arrows/Home/End move, Enter or
+  // Space picks, Esc closes and returns focus to the trigger. Never prints an
+  // avatar ref as text: a `fig:smith` ref is only ever an <img>.
+  let _openAgentList = null;
+  function _closeAgentList(refocus) {
+    if (!_openAgentList) return;
+    const { layer, trigger, onKey } = _openAgentList;
+    document.removeEventListener('keydown', onKey, true);
+    if (layer.parentNode) layer.parentNode.removeChild(layer);
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    _openAgentList = null;
+    if (refocus && trigger && trigger.isConnected && typeof trigger.focus === 'function') trigger.focus();
+  }
+  // First sentence of a character's description, capped to read on one line.
+  function agentRole(desc) {
+    const t = String(desc || '').replace(/\s+/g, ' ').trim();
+    if (!t) return '';
+    const m = t.match(/^(.+?[.!?])(\s|$)/);
+    const one = m ? m[1] : t;
+    return one.length > 90 ? one.slice(0, 89).trimEnd() + '…' : one;
+  }
+  function agentFaceHTML(avatar, size) {
+    return typeof window.avatarHTML === 'function' ? window.avatarHTML(avatar, size) : '';
+  }
+  // items: [{id, name, role?, avatar?, tag?, action?}] — `action` rows (hire /
+  // create) carry a plus instead of a figure. opts: {selectedId, label, title}.
+  function agentListPopover(trigger, items, onPick, opts) {
+    if (!trigger) return;
+    opts = opts || {};
+    _closeAgentList(false);
+    const layer = document.createElement('div');
+    layer.className = 'desk-v1-agentlist-layer';
+    const list = document.createElement('div');
+    list.className = 'desk-v1-agentlist';
+    list.setAttribute('role', 'listbox');
+    list.setAttribute('aria-label', opts.label || 'Agents');
+    list.innerHTML = (opts.title ? `<div class="desk-v1-agentlist-title">${esc(opts.title)}</div>` : '') +
+      (items || []).map((it) => {
+        const sel = !it.action && it.id === opts.selectedId;
+        const face = it.action
+          ? '<span class="desk-v1-agentlist-plus" aria-hidden="true">+</span>'
+          : `<span class="desk-v1-agentlist-face">${agentFaceHTML(it.avatar, 32)}</span>`;
+        return `<div class="desk-v1-agentlist-row${it.action ? ' desk-v1-agentlist-action' : ''}" role="option" tabindex="-1" data-agent-id="${esc(it.id)}" aria-selected="${sel ? 'true' : 'false'}">
+          ${face}
+          <span class="desk-v1-agentlist-text"><span class="desk-v1-agentlist-name">${esc(it.name)}${it.tag ? ` <span class="desk-v1-agentlist-tag">${esc(it.tag)}</span>` : ''}</span>${it.role ? `<span class="desk-v1-agentlist-role">${esc(it.role)}</span>` : ''}</span>
+          ${sel ? '<span class="desk-v1-agentlist-check" aria-hidden="true">✓</span>' : ''}
+        </div>`;
+      }).join('');
+    layer.appendChild(list);
+    document.body.appendChild(layer);
+    const rows = Array.from(list.querySelectorAll('[role="option"]'));
+    const pick = (row) => { const id = row.getAttribute('data-agent-id'); _closeAgentList(true); onPick(id); };
+    rows.forEach((row) => row.addEventListener('click', () => pick(row)));
+    layer.addEventListener('mousedown', (e) => { if (e.target === layer) { e.preventDefault(); _closeAgentList(true); } });
+    const onKey = (e) => {
+      if (!_openAgentList || _openAgentList.layer !== layer) return;
+      if (!trigger.isConnected) { _closeAgentList(false); return; }
+      const idx = rows.indexOf(document.activeElement);
+      const to = (i) => { e.preventDefault(); e.stopPropagation(); if (rows[i]) rows[i].focus(); };
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); _closeAgentList(true); }
+      else if (e.key === 'ArrowDown') to(idx < 0 ? 0 : (idx + 1) % rows.length);
+      else if (e.key === 'ArrowUp') to(idx <= 0 ? rows.length - 1 : idx - 1);
+      else if (e.key === 'Home') to(0);
+      else if (e.key === 'End') to(rows.length - 1);
+      else if ((e.key === 'Enter' || e.key === ' ') && idx >= 0) { e.preventDefault(); e.stopPropagation(); pick(rows[idx]); }
+      else if (e.key === 'Tab') _closeAgentList(false);
+    };
+    document.addEventListener('keydown', onKey, true);
+    trigger.setAttribute('aria-expanded', 'true');
+    _openAgentList = { layer, trigger, onKey };
+    if (!window.matchMedia('(max-width: 640px)').matches) placePopover(list, trigger, { align: 'start' });
+    const start = rows.find((r) => r.getAttribute('aria-selected') === 'true') || rows[0];
+    if (start) start.focus();
+  }
+
   // ── ⓘ popover (§9: "Explanations go behind ⓘ. Keep only what the current
   // decision needs on screen.") — one open at a time, closed by Esc or an
   // outside click, same convention as the Add to… menu above. ─────────────
@@ -614,13 +705,11 @@
     const ref = opts.agentRef || null;
     const resolved = resolveDeskAgent(ref);
     const avatar = (!compact && resolved.name && typeof window.avatarHTML === 'function') ? window.avatarHTML(resolved.avatar, 24) : '';
-    // opts.pickAgent (campaign page): the name is a button that opens the
-    // campaign's agent picker, and an unset agent reads "this campaign".
+    // opts.pickAgent (campaign page): the box only SHOWS the campaign's agent
+    // (figure + name, not a control). With none chosen the name is a link to
+    // the Campaign card on Brief, where the one picker lives.
     const unresolvedLabel = opts.pickAgent ? UNRESOLVED_CAMPAIGN_AGENT_LABEL : UNRESOLVED_AGENT_LABEL;
-    const nameHTML = compact ? ''
-      : opts.pickAgent
-        ? `<button type="button" class="desk-thread-name desk-v1-posy-pickagent" data-pick-agent-btn aria-haspopup="menu">${esc(resolved.name || unresolvedLabel)}</button>`
-        : `<span class="desk-thread-name">${esc(resolved.name || unresolvedLabel)}</span>`;
+    const nameHTML = compact ? '' : _agentNameHTML(resolved.name, !!opts.pickAgent, unresolvedLabel);
     const scope = opts.scopeLabel
       ? `<button type="button" class="desk-v1-posy-scope" data-scope-trigger="1">About: ${esc(opts.scopeLabel)} &#9662;</button>`
       : '';
@@ -1334,7 +1423,7 @@
     stateLabel, stateLabelHTML,
     channelBadge,
     announce, toast, commandBus,
-    addToMenu, bindAddToTrigger, placePopover,
+    addToMenu, bindAddToTrigger, placePopover, agentListPopover, agentRole, agentFaceHTML,
     infoIconHTML, bindInfoIcons,
     posyBoxHTML, bindPosyBox,
     deskAgentRef, accountVoice, projectAgentChoices, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL, UNRESOLVED_CAMPAIGN_AGENT_LABEL, onAgentsReady,

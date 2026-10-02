@@ -74,6 +74,10 @@ const CHARACTERS = [
 ];
 
 let charReqsAfterHow_ = 0;
+// The one Agent picker (Brief > Campaign card): rows of the open listbox.
+const pickerRows = (page) => page.$$eval('.desk-v1-agentlist [role="option"]', (rs) => rs.map((r) => ({ id: r.dataset.agentId, t: r.textContent.replace(/\s+/g, ' ').trim(), sel: r.getAttribute('aria-selected') === 'true', fig: !!r.querySelector('.av') })));
+const openAgentPicker = async (page) => { await page.click('[data-how-agent]'); await page.waitForSelector('.desk-v1-agentlist [role="option"]', { timeout: 3000 }); };
+
 let bad = 0;
 const ok = (m) => console.log('  ✓ ' + m);
 const fail = (m) => { console.error('  ✗ ' + m); bad++; };
@@ -177,14 +181,18 @@ async function run(browser) {
   // R2-18: the agent belongs to the CAMPAIGN — the Brief offers the agents hired
   // on the project's floor (roster), never the whole /api/characters list, plus
   // "+ Create new agent" last; it defaults to the project's desk agent.
-  await page.waitForFunction(() => { const s = document.querySelector('[data-how-agent]'); return s && !s.disabled && s.options.length > 1; }, null, { timeout: 4000 }).catch(() => {});
-  const agentOpts = await page.$$eval('[data-how-agent] option', (os) => os.map((o) => ({ v: o.value, t: o.textContent.trim(), sel: o.selected })));
+  await page.waitForFunction(() => { const s = document.querySelector('[data-how-agent]'); return s && !s.disabled; }, null, { timeout: 4000 }).catch(() => {});
+  await openAgentPicker(page);
+  const agentOpts = (await pickerRows(page)).map((o) => ({ v: o.id, t: o.t, sel: o.sel, fig: o.fig }));
   agentOpts.length === 4 && agentOpts[0].v === 'global:claydo' && agentOpts[1].v === 'global:dave' && agentOpts[2].v === '__hire__' && agentOpts[3].v === '__create__'
     ? ok(`Brief: agent picker lists the project's hired agents, "+ Hire an agent onto…", then "+ Create new agent": ${JSON.stringify(agentOpts.map((o) => o.t))}`)
     : fail(`Brief: agent picker options wrong: ${JSON.stringify(agentOpts)}`);
   agentOpts.some((o) => o.sel && o.v === 'global:claydo') && /project default/.test((agentOpts[0] || {}).t || '')
     ? ok('Brief: agent picker defaults to the project desk agent, labelled "(project default)"')
     : fail(`Brief: default not the desk agent: ${JSON.stringify(agentOpts)}`);
+  agentOpts.slice(0, 2).every((o) => o.fig)
+    ? ok('Brief: every agent row renders a figure (.av), not an avatar ref as text')
+    : fail(`Brief: an agent row has no figure: ${JSON.stringify(agentOpts)}`);
   charReqsAfterHow_ = charRequests.length - charReqsBeforeHow;
   charReqsAfterHow_ >= 1
     ? ok(`Brief: agent roster is fetched live from /api/characters (${charReqsAfterHow_} request(s))`)
@@ -192,7 +200,7 @@ async function run(browser) {
 
   // Picking Dave writes the campaign's own `how.agent`; the resolver now
   // prefers it over the project's presence.desk_agent; Undo restores it.
-  await page.selectOption('[data-how-agent]', 'global:dave');
+  await page.click('.desk-v1-agentlist [data-agent-id="global:dave"]');
   const resolvedDave = await page.evaluate(() => {
     const c = window.DeskV1Fixtures.campaigns.find((x) => x.id === 'camp-1');
     const p = window.DeskV1Fixtures.projects.find((x) => x.id === c.projectId);

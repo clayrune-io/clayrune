@@ -205,16 +205,18 @@ async function run(browser) {
   const campA = await lastCampaignId(page);
 
   // ── Brief: pick the agent (R2-18's "Change agent"); the agent box names it ─
-  await page.waitForFunction(() => { const s = document.querySelector('[data-how-agent]'); return s && !s.disabled && s.options.length > 1; }, null, { timeout: 6000 });
+  await page.waitForFunction(() => { const s = document.querySelector('[data-how-agent]'); return s && !s.disabled; }, null, { timeout: 6000 });
   const projSel = await page.$eval('[data-setup-project]', (s) => s.value).catch(() => null);
   projSel === 'engulfing_scanner'
     ? ok('Brief: Project select is pre-filled from the project page')
     : fail(`Brief: project select not pre-filled: ${JSON.stringify(projSel)}`);
-  const agentOpts = await page.$$eval('[data-how-agent] option', (os) => os.map((o) => o.textContent.trim()));
-  agentOpts.length === 5 && agentOpts[4] === '+ Create new agent' && /^\+ Hire an agent onto/.test(agentOpts[3]) && /Claydo/.test(agentOpts[1]) && /Dave/.test(agentOpts[2])
+  await page.click('[data-how-agent]');
+  await page.waitForSelector('.desk-v1-agentlist [role="option"]', { timeout: 3000 });
+  const agentOpts = await page.$$eval('.desk-v1-agentlist [role="option"]', (os) => os.map((o) => o.querySelector('.desk-v1-agentlist-name').textContent.trim().replace(/\s+/g, ' ')));
+  agentOpts.length === 4 && agentOpts[3] === 'Create new agent' && /^Hire an agent onto/.test(agentOpts[2]) && /Claydo/.test(agentOpts[0]) && /Dave/.test(agentOpts[1])
     ? ok(`Brief: agent picker offers the project's hired agents, "+ Hire an agent onto <project>…", then "+ Create new agent": ${JSON.stringify(agentOpts)}`)
     : fail(`Brief: agent picker wrong: ${JSON.stringify(agentOpts)}`);
-  await page.selectOption('[data-how-agent]', 'global:dave');
+  await page.click('.desk-v1-agentlist [data-agent-id="global:dave"]');
   await page.waitForTimeout(80);
   const agentName = await text(page, '.desk-v1-posy-box .desk-thread-name');
   const storedAgent = await campOf(page, campA, (c) => c.how.agent);
