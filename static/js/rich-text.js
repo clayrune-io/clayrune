@@ -546,6 +546,31 @@ function noteDraftFollowup(sessionId, line) {
   collapseIntoDraftBlock(p.container, p.els);
 }
 
+// Codex's `exec --json` agent messages carry no commentary/final_answer phase
+// (only the rollout file does), so the only signal that a narration block is a
+// preamble rather than the answer is what follows it: a tool line. Applies to
+// codex sessions only for now; Claude and the rest render unchanged.
+function isInterimDimProvider(provider) {
+  return provider === 'codex';
+}
+
+// A tool line just landed after `toolEl`: the narration/table blocks directly
+// above it (back to the previous tool/prompt/divider) are interim. Marked with
+// a class rather than wrapped, so the flex bubble layout is untouched. Same
+// walk-back shape as _trailingDraftElements. History twin: the
+// .agent-interim-wrap in conversation.js agentPanelHTML.
+function markInterimNarration(container, toolEl) {
+  for (let el = toolEl.previousElementSibling; el; el = el.previousElementSibling) {
+    const c = el.classList;
+    if (c.contains('agent-line-tool') || c.contains('agent-line-prompt') ||
+        c.contains('chat-date-divider') || c.contains('plan-show-btn') ||
+        c.contains('draft-block') || c.contains('agent-interim')) break;
+    if (c.contains('hl-table') || c.contains('hl-table-pre') || el.className === 'agent-line') {
+      c.add('agent-interim');
+    }
+  }
+}
+
 function collapseIntoDraftBlock(container, draftElements) {
   if (!draftElements.length || draftElements[0].parentNode !== container) return;
   const details = document.createElement('details');
@@ -616,6 +641,8 @@ window.isSlashCommandLine = isSlashCommandLine;
 window.SLASH_COMMAND_RE = SLASH_COMMAND_RE;
 window.collapseIntoPlanButton = collapseIntoPlanButton;
 window.collapseIntoDraftBlock = collapseIntoDraftBlock;
+window.isInterimDimProvider = isInterimDimProvider;
+window.markInterimNarration = markInterimNarration;
 window.armDraftCollapse = armDraftCollapse;
 window.noteDraftFollowup = noteDraftFollowup;
 window.isStopHookRedoLine = isStopHookRedoLine;
