@@ -4964,7 +4964,12 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             + ". Others are still available if a task genuinely calls for one — "
             "this names the ones you were hired for, it does not fence you in.")
     if user_name:
-        parts.append(f"The user's name is {user_name}. Address them accordingly.")
+        # "Address them accordingly" read as "open every reply with the name"
+        # to GPT-family engines (Codex agents prefixed each reply "Ron, ...").
+        parts.append(
+            f"The user's name is {user_name}. Use it only where a person "
+            "naturally would (a greeting, a direct question); do not open, "
+            "address or sign every reply with it.")
     # Sticky brevity: when sticky_agent_settings is on, the device-neutral brief
     # directive lives HERE (cached, once per spawn) instead of being prepended to
     # every user turn by _apply_mobile_brief. Flipping the toggle mid-session is
