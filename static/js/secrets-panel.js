@@ -140,6 +140,7 @@ async function refreshSecretsList() {
     return;
   }
 
+  const presets = await _secLoadPresets();
   list.innerHTML = secrets.map(s => {
     const scopeBadge = s.scope === 'global'
       ? '<span style="font-size:10px;color:var(--text-faint)">all projects</span>'
@@ -148,6 +149,13 @@ async function refreshSecretsList() {
       <span title="Two-factor code generator${s.issuer ? ' — ' + esc(s.issuer) : ''}"
             style="font-size:10px;padding:1px 6px;border:1px solid var(--border);
                    border-radius:99px;color:var(--text-faint)">2FA code</span>` : '';
+    // A 2FA seed already carries its own tag. An entry whose type was only
+    // inferred takes the engine's type when it is one an engine owns (Higgsfield
+    // saved before types existed has a username, so it infers as a Login).
+    const eType = (s.entry_type_inferred && presets[s.name] && presets[s.name].entry_type) || s.entry_type;
+    const typeTag = (s.kind === 'totp' || !_SEC_TYPES[eType]) ? '' : `
+      <span data-sec-type="${esc(eType)}" style="font-size:10px;padding:1px 6px;border:1px solid var(--border);
+                   border-radius:99px;color:var(--text-faint)">${esc(_SEC_TYPES[eType].label)}</span>`;
     const attended = s.allow_unattended ? '' : `
       <span title="Steward and scheduled runs are refused this credential"
             style="font-size:10px;padding:1px 6px;border:1px solid var(--border);
@@ -162,7 +170,7 @@ async function refreshSecretsList() {
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <code style="font-size:13px;color:var(--text);font-family:var(--mono)">${esc(s.name)}</code>
             ${s.username ? `<span style="font-size:11px;color:var(--text-faint);font-family:var(--mono)">${esc(s.username)}</span>` : ''}
-            ${scopeBadge}${totpBadge}${attended}
+            ${typeTag}${scopeBadge}${totpBadge}${attended}
           </div>
           ${s.description ? `<div style="font-size:11px;color:var(--text-faint);margin-top:3px">${esc(s.description)}</div>` : ''}
           <div style="font-size:10px;color:var(--text-faint);margin-top:3px">${used}</div>
@@ -714,10 +722,44 @@ async function toggleSecretsAudit() {
 
 // ── Editor ───────────────────────────────────────────────────────────────────
 
+// What each entry type shows. `user` null = the type has no username slot. A
+// key pair's Key ID rides the entry's username slot (so {{user:name}} and the
+// Desk connectors keep working); the form just labels it for what it is.
+const _SEC_TYPES = {
+  login: {
+    label: 'Login',
+    user: { label: 'Username', required: false, placeholder: 'ron@example.com',
+      help: 'The other half of a login. Referenced as <code>{{user:NAME}}</code>, and shown in the list so two accounts on the same site stay apart. Not encrypted — it is an identifier, not a credential.' },
+    value: { label: 'Password', placeholder: 'paste from your password manager' },
+    twofa: true, namePh: 'reddit.password', descPh: 'Reddit account used for launch posts',
+  },
+  api_key: {
+    label: 'API key', user: null,
+    value: { label: 'API key', placeholder: 'paste the API key' },
+    twofa: false, namePh: 'openai.api-key', descPh: 'OpenAI key for the weekly digest',
+  },
+  api_key_pair: {
+    label: 'API key pair',
+    user: { label: 'Key ID', required: true, placeholder: 'paste the key ID',
+      help: 'The public half of the pair, stored beside the secret as one entry. Referenced as <code>{{user:NAME}}</code>. Not encrypted — it is an identifier, not a credential.' },
+    value: { label: 'Key secret', placeholder: 'paste the key secret' },
+    twofa: false, namePh: 'higgsfield.key', descPh: 'Higgsfield key for video generation',
+  },
+  token: {
+    label: 'Token', user: null,
+    value: { label: 'Token', placeholder: 'paste the token' },
+    twofa: false, namePh: 'github.token', descPh: 'GitHub token for the release script',
+  },
+};
+const _SEC_TYPE_ORDER = ['login', 'api_key', 'api_key_pair', 'token'];
+
 // A Desk generation engine's credential form spec (GET /api/desk/engines →
-// `credential`): labels, a hint and the vendor URL. Metadata only; the human
-// still types the value and submits through the passcode-gated save below.
+// `credential`): its entry_type (which locks the type), its own labels, a hint
+// and the vendor URL. Metadata only; the human still types the value and
+// submits through the passcode-gated save below.
 let _secPreset = null;
+let _secType = 'login';
+let _secTypeBeforePreset = 'login';
 let _secIsNew = true;
 let _secPresetsByName = null;
 
@@ -732,30 +774,52 @@ function _secLoadPresets() {
   }).catch(() => ({}));
 }
 
-// Relabel the open editor from `preset` (null = the stock form). Safe to call
-// repeatedly: it always writes every labelled node, so a preset never sticks.
-function _secApplyPreset(preset) {
-  _secPreset = preset || null;
+// Redraw the open editor from `_secType` + `_secPreset` (a preset keeps the
+// engine's own wording over the type's). Safe to call repeatedly: it always
+// writes every labelled node, so nothing from a previous type or preset sticks.
+function _secRender() {
+  const preset = _secPreset;
+  const T = _SEC_TYPES[_secType] || _SEC_TYPES.login;
   const $ = (id) => document.getElementById(id);
-  const hasUser = !preset || !!preset.username_label;
+  const hasUser = !!T.user;
   const userBlock = $('sec-user-block');
   if (userBlock) userBlock.hidden = !hasUser;
   const set = (id, text) => { const el = $(id); if (el) el.textContent = text; };
-  set('sec-user-name', preset && preset.username_label ? preset.username_label : 'Username');
-  set('sec-user-opt', preset && preset.username_label
-    ? (preset.username_required ? ' — required' : ' — optional') : ' — optional');
+  const uLabel = (preset && preset.username_label) || (T.user && T.user.label) || 'Username';
+  const uRequired = preset && preset.username_label ? !!preset.username_required : !!(T.user && T.user.required);
+  set('sec-user-name', uLabel);
+  set('sec-user-opt', uRequired ? ' — required' : ' — optional');
   const user = $('sec-user');
-  if (user) user.placeholder = preset && preset.username_label ? `paste the ${preset.username_label}` : 'ron@example.com';
+  if (user) user.placeholder = preset && preset.username_label ? `paste the ${preset.username_label}` : (T.user ? T.user.placeholder : '');
   const userHelp = $('sec-user-help');
-  if (userHelp) userHelp.hidden = !!preset;
-  set('sec-value-name', preset ? preset.secret_label : 'Value');
+  if (userHelp) {
+    userHelp.hidden = !!preset || !hasUser;
+    userHelp.innerHTML = hasUser ? T.user.help.replace('NAME', esc((($('sec-name') && $('sec-name').value) || '').trim() || 'name')) : '';
+  }
+  set('sec-value-name', preset ? preset.secret_label : T.value.label);
   const value = $('sec-value');
   if (value) value.placeholder = !_secIsNew ? 'unchanged'
-    : (preset ? `paste the ${preset.secret_label}` : 'paste from your password manager');
+    : (preset ? `paste the ${preset.secret_label}` : T.value.placeholder);
   const twoFa = $('sec-2fa-help');
-  if (twoFa) twoFa.hidden = !!preset;
+  if (twoFa) twoFa.hidden = !!preset || !T.twofa;
+  const nameEl = $('sec-name');
+  if (nameEl) nameEl.placeholder = T.namePh;
   const desc = $('sec-desc');
-  if (desc) desc.placeholder = preset ? 'Desk generation engine (renders for the Studio)' : 'Reddit account used for launch posts';
+  if (desc) desc.placeholder = preset ? 'Desk generation engine (renders for the Studio)' : T.descPh;
+  // The type chips: the chosen one is checked; a preset locks the whole group.
+  document.querySelectorAll('input[name="sec-type"]').forEach((r) => {
+    r.checked = r.value === _secType;
+    r.disabled = !!preset;
+    const chip = r.closest('label');
+    if (chip) {
+      chip.style.borderColor = r.checked ? 'var(--accent)' : 'var(--border)';
+      chip.style.color = r.checked ? 'var(--accent)' : 'var(--text)';
+      chip.style.opacity = r.disabled && !r.checked ? '0.4' : '1';
+      chip.style.cursor = r.disabled ? 'default' : 'pointer';
+    }
+  });
+  const typeHelp = $('sec-type-help');
+  if (typeHelp) typeHelp.hidden = !preset;
   const hint = $('sec-preset-hint');
   if (hint) {
     hint.hidden = !preset;
@@ -780,6 +844,26 @@ function _secApplyPreset(preset) {
   }
 }
 
+// An engine preset locks its type; with none, the human's pick stands.
+// Dropping the preset (the name typed no longer matches an engine) gives back
+// the type the human had picked before it locked one.
+function _secApplyPreset(preset) {
+  if (preset && !_secPreset) _secTypeBeforePreset = _secType;
+  if (!preset && _secPreset) _secType = _secTypeBeforePreset;
+  _secPreset = preset || null;
+  if (preset && _SEC_TYPES[preset.entry_type]) _secType = preset.entry_type;
+  _secRender();
+}
+
+// A type chip was picked. Fields the new type does not have are cleared, so a
+// username typed under Login cannot ride along into an API key save.
+function _secSetType(type) {
+  if (_secPreset || !_SEC_TYPES[type] || type === _secType) { _secRender(); return; }
+  _secType = type;
+  if (!_SEC_TYPES[type].user) { const u = document.getElementById('sec-user'); if (u) u.value = ''; }
+  _secRender();
+}
+
 // `preset`: a credential spec from an engine row. `preset.create` opens an Add
 // with `name` prefilled (the entry does not exist yet); without it a given
 // name is an Edit, as ever. A plain Add also picks a preset up by the name typed.
@@ -800,6 +884,15 @@ async function openSecretEditor(name, preset) {
       existing = ((await res.json()).secrets || []).find(s => s.name === name) || null;
     } catch (e) { /* fall through to a blank form */ }
   }
+  // An entry saved before types existed arrives with the server's inference
+  // (a username makes it a Login, otherwise an API key); a new one starts as a Login.
+  _secType = (existing && _SEC_TYPES[existing.entry_type]) ? existing.entry_type : 'login';
+  const typeChips = _SEC_TYPE_ORDER.map((t) => `
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:5px 12px;
+                  border:1px solid var(--border);border-radius:99px;cursor:pointer">
+      <input type="radio" name="sec-type" value="${t}" onchange="_secSetType('${t}')"
+             style="margin:0"> ${esc(_SEC_TYPES[t].label)}
+    </label>`).join('');
 
   const realProjects = (allProjects || []).filter(p => !isIncognitoProject(p));
   const curScope = (existing && existing.scope) || 'global';
@@ -831,6 +924,15 @@ async function openSecretEditor(name, preset) {
         This goes straight from your browser to this machine. It is encrypted
         with a key held in your OS keychain and stored outside the repo, so it
         is never committed and never reaches the agent's transcript.
+      </div>
+
+      <div>
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px"><span class="sec-step"></span>Type</label>
+        <div id="sec-type-row" role="radiogroup" aria-label="Credential type"
+             style="display:flex;gap:6px;flex-wrap:wrap">${typeChips}</div>
+        <div id="sec-type-help" hidden style="font-size:10px;color:var(--text-faint);margin-top:3px">
+          Set by the engine this credential belongs to.
+        </div>
       </div>
 
       <div>
@@ -956,7 +1058,7 @@ async function openSecretEditor(name, preset) {
     const nameEl = document.getElementById('sec-name');
     const retarget = async () => {
       const found = (await _secLoadPresets())[nameEl.value.trim()] || null;
-      if (found !== _secPreset) _secApplyPreset(found);
+      if (found !== _secPreset) _secApplyPreset(found); else _secRender();   // re-render: {{user:NAME}} help follows the name
     };
     nameEl.addEventListener('input', retarget);
     _secLoadPresets();
@@ -992,20 +1094,22 @@ async function saveSecret(modalId, isNew) {
 
   const fail = (msg) => { if (status) { status.textContent = msg; status.style.color = 'var(--danger,#c0553f)'; } };
   // A Google Authenticator export names its own accounts, so the name field is
-  // not required (and would be meaningless) for that path.
-  const isBulkImport = /^otpauth-migration:\/\//i.test(value.trim());
+  // not required (and would be meaningless) for that path. Only a Login has 2FA.
+  const isBulkImport = _secType === 'login' && /^otpauth-migration:\/\//i.test(value.trim());
   if (!name && !isBulkImport) return fail('Give it a name.');
   if (isNew && !value) return fail(_secPreset ? `Paste the ${_secPreset.secret_label}.` : 'Paste the value you want stored.');
   if (scopeIsProject && !scope) return fail('Pick a project, or choose “Every project”.');
-  // A preset without a username field (Gemini, OpenAI) stores none, whatever a
-  // previous name left typed in the hidden input.
-  const username = (_secPreset && !_secPreset.username_label)
-    ? '' : (document.getElementById('sec-user')?.value || '').trim();
+  // A type with no username slot (API key, Token, and so the Gemini/OpenAI
+  // presets) stores none, whatever a previous type left typed in the hidden input.
+  const T = _SEC_TYPES[_secType] || _SEC_TYPES.login;
+  const username = !T.user ? '' : (document.getElementById('sec-user')?.value || '').trim();
   if (_secPreset && _secPreset.username_required && !username) return fail(`Enter the ${_secPreset.username_label}.`);
+  if (!_secPreset && T.user && T.user.required && !username) return fail(`Enter the ${T.user.label}.`);
 
   const body = {
     name,
     username,
+    entry_type: _secType,
     description: document.getElementById('sec-desc')?.value || '',
     scope,
     allow_unattended: !!document.getElementById('sec-unattended')?.checked,
@@ -1020,7 +1124,7 @@ async function saveSecret(modalId, isNew) {
     // A Google Authenticator export carries MANY accounts, so it can't go
     // through the single-secret path — route it to the importer instead of
     // storing the whole payload as one useless blob.
-    if (/^otpauth-migration:\/\//i.test(value.trim())) {
+    if (isBulkImport) {
       // MC-995: bulk-importing TOTP secrets is human-only-gated server-side.
       const result = await humanProofFetch(API_BASE + '/api/secrets/import-authenticator', {
         method: 'POST',
@@ -1064,6 +1168,14 @@ async function saveSecret(modalId, isNew) {
       return fail('Saved, but this server build does not store usernames yet — '
                   + 'restart Clayrune, then re-enter the username.');
     }
+    // Same trap for the type: an older server ignores `entry_type`, the save
+    // "succeeds", and the form's choice silently never took.
+    if (!data.entry_type) {
+      if (valueEl) valueEl.value = '';
+      refreshSecretsList();
+      return fail('Saved, but this server build does not store entry types yet — '
+                  + 'restart Clayrune, then re-save to set the type.');
+    }
     // Drop the plaintext from the DOM the moment it is no longer needed.
     if (valueEl) valueEl.value = '';
     closeModalById(modalId);
@@ -1089,6 +1201,7 @@ window.copySecretPlaceholder = copySecretPlaceholder;
 window.toggleSecretsAudit = toggleSecretsAudit;
 window._secToggleReveal = _secToggleReveal;
 window._secScopeChanged = _secScopeChanged;
+window._secSetType = _secSetType;
 // This module's `<script type="module">` tag means none of its top-level
 // functions are implicitly global — every onclick="fnName()" below needs an
 // explicit window.fnName export or it ReferenceErrors and does nothing.

@@ -244,9 +244,10 @@ def test_not_connected_reasons(client, vault):
 def test_engines_expose_the_credential_form_spec(client):
     ids = {e['id']: e['credential'] for e in client.get('/api/desk/engines').get_json()['engines']}
     assert ids['higgsfield'] == {
-        'vault_entry': 'higgsfield', 'username_label': 'API key ID', 'username_required': True,
+        'vault_entry': 'higgsfield', 'username_label': 'API key ID', 'entry_type': 'api_key_pair', 'username_required': True,
         'secret_label': 'API key secret', 'hint': ids['higgsfield']['hint'], 'url': 'https://console.higgsfield.ai'}
     assert ids['google']['vault_entry'] == 'gemini-api' and ids['google']['username_label'] is None
+    assert ids['google']['entry_type'] == 'api_key' and ids['openai']['entry_type'] == 'api_key'
     assert ids['google']['username_required'] is False and ids['google']['secret_label'] == 'Gemini API key'
     assert 'billing' in ids['google']['hint'] and 'aistudio.google.com' in ids['google']['url']
     assert ids['openai']['vault_entry'] == 'openai-api' and ids['openai']['username_label'] is None

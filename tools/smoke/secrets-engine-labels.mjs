@@ -39,11 +39,11 @@ const check = (cond, good, bad_) => (cond ? ok(good) : fail(bad_ || good));
 
 // Same shapes the real GET /api/desk/engines returns (mc/desk_engines.py ENGINES[*].credential).
 const CRED = {
-  higgsfield: { vault_entry: 'higgsfield', username_label: 'API key ID', username_required: true, secret_label: 'API key secret',
+  higgsfield: { vault_entry: 'higgsfield', username_label: 'API key ID', entry_type: 'api_key_pair', username_required: true, secret_label: 'API key secret',
     hint: 'Create an API key in the Higgsfield console; it shows a key ID and a key secret.', url: 'https://console.higgsfield.ai' },
-  google: { vault_entry: 'gemini-api', username_label: null, username_required: false, secret_label: 'Gemini API key',
+  google: { vault_entry: 'gemini-api', username_label: null, entry_type: 'api_key', username_required: false, secret_label: 'Gemini API key',
     hint: 'Create the key in Google AI Studio; billing must be on for the project or Veo is refused.', url: 'https://aistudio.google.com/apikey' },
-  openai: { vault_entry: 'openai-api', username_label: null, username_required: false, secret_label: 'OpenAI API key',
+  openai: { vault_entry: 'openai-api', username_label: null, entry_type: 'api_key', username_required: false, secret_label: 'OpenAI API key',
     hint: 'Create the key on platform.openai.com; a ChatGPT or Codex plan does not include API use.', url: 'https://platform.openai.com/api-keys' },
 };
 const engines = (srv) => [
@@ -138,7 +138,7 @@ async function higgsfield(browser) {
   const hint = await txt(page, '#sec-preset-hint');
   check(/Higgsfield console/.test(hint) && (await page.$eval('#sec-preset-hint a', (a) => a.href)).startsWith('https://console.higgsfield.ai'), 'the hint names where to get it and links the vendor', 'hint: ' + hint);
   check(!(await hidden(page, '#sec-user-block')), 'the username field is visible', 'username hidden');
-  check((await steps(page)) === '1. 2. 3. 4. 5. 6.', 'steps are numbered 1..6', 'steps: ' + await steps(page));
+  check((await steps(page)) === '1. 2. 3. 4. 5. 6. 7.', 'steps are numbered 1..7', 'steps: ' + await steps(page));
   if (SHOTS) { mkdirSync(SHOTS, { recursive: true }); await page.screenshot({ path: resolve(SHOTS, 'higgsfield-1440.png') }); }
 
   await page.fill('#sec-value', 'secret-value');
@@ -176,7 +176,7 @@ async function gemini(browser) {
   check(await hidden(page, '#sec-user-block'), 'the Gemini form has no username field', 'username block visible');
   check((await txt(page, '#sec-value-name')) === 'Gemini API key', 'secret field is labelled "Gemini API key"', 'label');
   check(/billing must be on/.test(await txt(page, '#sec-preset-hint')) && (await page.$eval('#sec-preset-hint a', (a) => a.href)).includes('aistudio.google.com'), 'hint says billing must be on and links AI Studio', 'hint: ' + await txt(page, '#sec-preset-hint'));
-  check((await steps(page)) === '1. 2. 3. 4. 5.', 'steps renumber to 1..5 with the field hidden', 'steps: ' + await steps(page));
+  check((await steps(page)) === '1. 2. 3. 4. 5. 6.', 'steps renumber to 1..6 with the field hidden', 'steps: ' + await steps(page));
   await page.evaluate(() => { document.getElementById('sec-user').value = 'stale-typed'; });   // hidden input must not leak into the save
   await page.fill('#sec-value', 'g-key');
   await page.click('#sec-save');
@@ -216,8 +216,8 @@ async function plainAdd(browser) {
   const stock = async () => ({ user: await txt(page, '#sec-user-label'), val: await txt(page, '#sec-value-name'), ph: await page.getAttribute('#sec-user', 'placeholder'),
     twofa: !(await hidden(page, '#sec-2fa-help')), hint: await hidden(page, '#sec-preset-hint'), steps: await steps(page) });
   let s = await stock();
-  check(s.user === '2. Username — optional' && s.val === 'Value' && s.ph === 'ron@example.com' && s.twofa && s.hint && s.steps === '1. 2. 3. 4. 5. 6.',
-    'a plain Add is the stock form: "2. Username — optional" / Value / 2FA note', 'stock: ' + JSON.stringify(s));
+  check(s.user === '3. Username — optional' && s.val === 'Password' && s.ph === 'ron@example.com' && s.twofa && s.hint && s.steps === '1. 2. 3. 4. 5. 6. 7.',
+    'a plain Add is the stock form: "3. Username — optional" / Password / 2FA note', 'stock: ' + JSON.stringify(s));
   await page.fill('#sec-name', 'openai-api');
   await settle(page, () => document.getElementById('sec-value-name').textContent === 'OpenAI API key');
   check(await hidden(page, '#sec-user-block') && /ChatGPT or Codex plan/.test(await txt(page, '#sec-preset-hint')), 'typing a known vault name (openai-api) applies the OpenAI preset', 'openai preset');
@@ -225,11 +225,136 @@ async function plainAdd(browser) {
   await settle(page, () => document.getElementById('sec-user-name').textContent === 'API key ID');
   check(!(await hidden(page, '#sec-user-block')), 'typing higgsfield switches to the Higgsfield preset', 'higgsfield preset');
   await page.fill('#sec-name', 'reddit.password');
-  await settle(page, () => document.getElementById('sec-value-name').textContent === 'Value');
+  await settle(page, () => document.getElementById('sec-value-name').textContent === 'Password');
   s = await stock();
-  check(s.user === '2. Username — optional' && s.ph === 'ron@example.com' && s.twofa && s.steps === '1. 2. 3. 4. 5. 6.', 'any other name goes back to the stock form', 'reverted: ' + JSON.stringify(s));
+  check(s.user === '3. Username — optional' && s.ph === 'ron@example.com' && s.twofa && s.steps === '1. 2. 3. 4. 5. 6. 7.', 'any other name goes back to the stock form', 'reverted: ' + JSON.stringify(s));
   pageErrors.forEach((e) => fail('page error: ' + e));
   await ctx.close();
+}
+
+// ── Entry types (Ron 2026-10-01): the form opens with a Type step; each type shows only its own fields ──
+const radioChecked = (page) => page.$eval(`${form} input[name="sec-type"]:checked`, (e) => e.value).catch(() => null);
+const radiosDisabled = (page) => page.$$eval(`${form} input[name="sec-type"]`, (els) => els.every((e) => e.disabled));
+const pickType = async (page, t) => { await page.click(`${form} input[name="sec-type"][value="${t}"]`); };
+const shape = async (page) => ({
+  user: !(await hidden(page, '#sec-user-block')), twofa: !(await hidden(page, '#sec-2fa-help')),
+  userLabel: await txt(page, '#sec-user-name'), valueLabel: await txt(page, '#sec-value-name'),
+  userVal: await page.inputValue('#sec-user'),
+});
+
+async function types(browser) {
+  const srv = { secrets: [], writes: [], googleReady: false };
+  const { ctx, page, pageErrors } = await newPage(browser, srv, { width: 1440, height: 900 });
+  await page.evaluate(() => window.openSecretEditor(null));
+  await page.waitForSelector(form, { timeout: 8000 });
+  const labels = await page.$$eval(`${form} #sec-type-row label`, (els) => els.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
+  check(JSON.stringify(labels) === JSON.stringify(['Login', 'API key', 'API key pair', 'Token']), 'the form offers Login / API key / API key pair / Token', 'chips: ' + labels);
+  check((await page.$eval(`${form} .sec-step`, (e) => e.parentElement.textContent.replace(/\s+/g, ' ').trim())) === '1. Type', 'Type is the first step', 'first step');
+  check((await radioChecked(page)) === 'login', 'a new entry starts as a Login', 'default type: ' + await radioChecked(page));
+  let s = await shape(page);
+  check(s.user && s.twofa && s.userLabel === 'Username' && s.valueLabel === 'Password', 'Login: Username + Password + the 2FA note', 'login: ' + JSON.stringify(s));
+  const shot = async (p, name) => { if (SHOTS) { mkdirSync(SHOTS, { recursive: true }); await p.screenshot({ path: resolve(SHOTS, name) }); } };
+  await shot(page, 'type-login-1440.png');
+
+  await page.fill('#sec-user', 'typed-under-login');
+  await pickType(page, 'api_key');
+  s = await shape(page);
+  check(!s.user && !s.twofa && s.valueLabel === 'API key' && s.userVal === '', 'API key: one field "API key", no username, no 2FA, the typed username is cleared', 'api_key: ' + JSON.stringify(s));
+  check((await steps(page)) === '1. 2. 3. 4. 5. 6.', 'steps renumber with the username hidden', 'steps: ' + await steps(page));
+  await shot(page, 'type-api-key-1440.png');
+  await page.fill('#sec-name', 'openai.api-key'); await page.fill('#sec-value', 'sk-1');
+  await page.click('#sec-save');
+  await settle(page, () => !document.querySelector('.modal-window[data-modal-id="__secret-edit"]'));
+  check(srv.writes.length === 1 && srv.writes[0].body.entry_type === 'api_key' && srv.writes[0].body.username === '' && srv.writes[0].body.value === 'sk-1',
+    'saving an API key sends entry_type=api_key and no username', 'write: ' + JSON.stringify(srv.writes));
+
+  await page.evaluate(() => window.openSecretEditor(null));
+  await page.waitForSelector(form, { timeout: 8000 });
+  await pickType(page, 'api_key_pair');
+  s = await shape(page);
+  check(s.user && !s.twofa && s.userLabel === 'Key ID' && s.valueLabel === 'Key secret' && /required/.test(await txt(page, '#sec-user-opt')), 'API key pair: "Key ID — required" + "Key secret", no 2FA', 'pair: ' + JSON.stringify(s));
+  await shot(page, 'type-api-key-pair-1440.png');
+  await page.fill('#sec-name', 'acme.key'); await page.fill('#sec-value', 'sec-1');
+  await page.click('#sec-save');
+  await settle(page, () => /Enter the Key ID/.test(document.getElementById('sec-status').textContent));
+  check(srv.writes.length === 1, 'a pair without a Key ID is refused in the page', 'writes: ' + srv.writes.length);
+  await page.fill('#sec-user', 'kid-7');
+  await page.click('#sec-save');
+  await settle(page, () => !document.querySelector('.modal-window[data-modal-id="__secret-edit"]'));
+  check(srv.writes.length === 2 && srv.writes[1].body.entry_type === 'api_key_pair' && srv.writes[1].body.username === 'kid-7',
+    'saving a pair sends entry_type=api_key_pair with the Key ID in the username slot', 'write: ' + JSON.stringify(srv.writes[1]));
+
+  await page.evaluate(() => window.openSecretEditor(null));
+  await page.waitForSelector(form, { timeout: 8000 });
+  await pickType(page, 'token');
+  s = await shape(page);
+  check(!s.user && !s.twofa && s.valueLabel === 'Token', 'Token: one field "Token", no username, no 2FA', 'token: ' + JSON.stringify(s));
+  await shot(page, 'type-token-1440.png');
+  await pickType(page, 'login');
+  await page.fill('#sec-user', 'x');
+  await pickType(page, 'token'); await pickType(page, 'login');   // the username does not survive a trip through a type without one
+  s = await shape(page);
+  check(s.user && s.twofa && s.valueLabel === 'Password' && s.userVal === '', 'switching back to Login restores its fields, empty', 'back: ' + JSON.stringify(s));
+  pageErrors.forEach((e) => fail('page error: ' + e));
+  await ctx.close();
+}
+
+async function typesLegacyAndPresets(browser) {
+  const srv = { googleReady: true, writes: [], secrets: [
+    { name: 'old.login', username: 'u/ron', kind: 'password', entry_type: 'login', entry_type_inferred: true, scope: 'global', allow_unattended: true, description: '' },
+    { name: 'old.key', username: '', kind: 'password', entry_type: 'api_key', entry_type_inferred: true, scope: 'global', allow_unattended: true, description: '' },
+    { name: 'tok', username: '', kind: 'password', entry_type: 'token', entry_type_inferred: false, scope: 'global', allow_unattended: true, description: '' },
+    { name: 'higgsfield', username: 'kid-1', kind: 'password', entry_type: 'login', entry_type_inferred: true, scope: 'global', allow_unattended: true, description: '' },
+    { name: 'gemini-api', username: '', kind: 'password', entry_type: 'api_key', entry_type_inferred: false, scope: 'global', allow_unattended: true, description: '' },
+  ] };
+  const { ctx, page, pageErrors } = await newPage(browser, srv, { width: 1440, height: 900 });
+  await openConnections(page);   // loads the engine specs the preset lookup reads
+  await page.evaluate(() => window.openSecretsVault());
+  await page.waitForSelector('#secrets-list [data-sec-type]', { timeout: 8000 });
+  const tags = await page.$$eval('#secrets-list [data-sec-type]', (els) => els.map((e) => e.closest('div[style*="flex:1"]').querySelector('code').textContent + '=' + e.textContent.trim()));
+  check(JSON.stringify(tags) === JSON.stringify(['old.login=Login', 'old.key=API key', 'tok=Token', 'higgsfield=API key pair', 'gemini-api=API key']),
+    'each list row carries a type tag (an engine entry saved before types shows its engine type)', 'tags: ' + JSON.stringify(tags));
+  await page.evaluate(() => closeModalById('__secrets'));
+
+  await page.evaluate(() => window.openSecretEditor('old.login'));
+  await page.waitForSelector(form, { timeout: 8000 });
+  let s = await shape(page);
+  check((await radioChecked(page)) === 'login' && s.user && s.userVal === 'u/ron' && s.twofa, 'a legacy entry with a username opens as Login, username intact', 'legacy login: ' + JSON.stringify(s) + await radioChecked(page));
+  await page.evaluate(() => closeModalById('__secret-edit'));
+  await page.evaluate(() => window.openSecretEditor('old.key'));
+  await page.waitForSelector(form, { timeout: 8000 });
+  s = await shape(page);
+  check((await radioChecked(page)) === 'api_key' && !s.user && !s.twofa, 'a legacy entry with no username opens as API key', 'legacy key: ' + JSON.stringify(s));
+  await page.fill('#sec-desc', 'edited');
+  await page.click('#sec-save');
+  await settle(page, () => !document.querySelector('.modal-window[data-modal-id="__secret-edit"]'));
+  check(srv.writes.length === 1 && srv.writes[0].method === 'PATCH' && srv.writes[0].body.entry_type === 'api_key' && srv.writes[0].body.username === '',
+    'editing sends the type the form showed (PATCH)', 'write: ' + JSON.stringify(srv.writes));
+
+  await page.evaluate(() => window.openSecretEditor('higgsfield'));
+  await page.waitForSelector(form, { timeout: 8000 });
+  await settle(page, () => document.getElementById('sec-user-name').textContent === 'API key ID');
+  s = await shape(page);
+  check((await radioChecked(page)) === 'api_key_pair' && (await radiosDisabled(page)) && s.user && s.valueLabel === 'API key secret' && s.userVal === 'kid-1',
+    'a preset locks the type: higgsfield = API key pair with its own "API key ID" / "API key secret" labels', 'higgsfield: ' + JSON.stringify(s));
+  await page.evaluate(() => closeModalById('__secret-edit'));
+  await page.evaluate(() => window.openSecretEditor('gemini-api'));
+  await page.waitForSelector(form, { timeout: 8000 });
+  await settle(page, () => document.getElementById('sec-value-name').textContent === 'Gemini API key');
+  check((await radioChecked(page)) === 'api_key' && (await radiosDisabled(page)) && (await hidden(page, '#sec-user-block')), 'gemini-api = API key, locked, no username', 'gemini');
+  pageErrors.forEach((e) => fail('page error: ' + e));
+  await ctx.close();
+
+  if (SHOTS) {
+    for (const t of ['login', 'api_key', 'api_key_pair', 'token']) {
+      const m = await newPage(browser, { secrets: [], writes: [], googleReady: false }, { width: 390, height: 844 });
+      await m.page.evaluate(() => window.openSecretEditor(null));
+      await m.page.waitForSelector(form, { timeout: 8000 });
+      await pickType(m.page, t);
+      await m.page.screenshot({ path: resolve(SHOTS, `type-${t.replace(/_/g, '-')}-390.png`) });
+      await m.ctx.close();
+    }
+  }
 }
 
 const browser = await chromium.launch();
@@ -238,6 +363,8 @@ try {
   console.log('2. Gemini Connect'); await gemini(browser);
   console.log('3. Edit'); await edit(browser);
   console.log('4. Plain Add'); await plainAdd(browser);
+  console.log('5. Entry types'); await types(browser);
+  console.log('6. Legacy entries + engine presets'); await typesLegacyAndPresets(browser);
 } finally { await browser.close(); }
 console.log(bad ? `\n${bad} check(s) FAILED` : '\nall checks passed');
 process.exit(bad ? 1 : 0);

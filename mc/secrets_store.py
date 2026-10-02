@@ -309,6 +309,34 @@ _USER_PLACEHOLDER_RE = re.compile(r'\{\{\s*user:\s*([a-z0-9][a-z0-9._-]{0,63})\s
 KIND_PASSWORD = 'password'
 KIND_TOTP = 'totp'
 
+# `kind` above is what the value IS to the server (a plain secret vs a TOTP seed
+# that gets turned into codes). `entry_type` is what the human said they were
+# storing, so the Secrets form can show only the fields that type has. Metadata
+# only, never part of the ciphertext; it changes no dispensing behaviour.
+#
+#   login         username + password, optionally a 2FA seed pasted as the value
+#   api_key       one value, no username
+#   api_key_pair  a Key ID + a Key secret. ONE entry: the Key ID lives in the
+#                 existing ``username`` slot so ``{{user:name}}`` / ``--user`` /
+#                 ``get_username`` (and mc/desk_engines.py) keep working
+#   token         one value, no username
+ENTRY_LOGIN = 'login'
+ENTRY_API_KEY = 'api_key'
+ENTRY_API_KEY_PAIR = 'api_key_pair'
+ENTRY_TOKEN = 'token'
+ENTRY_TYPES = (ENTRY_LOGIN, ENTRY_API_KEY, ENTRY_API_KEY_PAIR, ENTRY_TOKEN)
+# Types with no username slot at all: a stale username is dropped on save.
+_ENTRY_TYPES_WITHOUT_USERNAME = (ENTRY_API_KEY, ENTRY_TOKEN)
+
+
+def infer_entry_type(rec: dict[str, Any]) -> str:
+    """The type of an entry saved before ``entry_type`` existed (or without
+    one): a 2FA seed or anything with a username is a Login, else an API key.
+    Read-time only — nothing rewrites a stored record to record the guess."""
+    if rec.get('kind') == KIND_TOTP or str(rec.get('username', '') or ''):
+        return ENTRY_LOGIN
+    return ENTRY_API_KEY
+
 
 def valid_name(name: str) -> bool:
     return bool(_NAME_RE.match(name or ''))
@@ -2025,6 +2053,11 @@ def _public(name: str, rec: dict[str, Any]) -> dict[str, Any]:
         'last_used_at': rec.get('last_used_at'),
         'use_count': int(rec.get('use_count', 0) or 0),
         'kind': rec.get('kind', KIND_PASSWORD),
+        # Stored type, else the legacy inference; `entry_type_inferred` lets the
+        # UI tell a guess from something the human chose.
+        'entry_type': (rec.get('entry_type') if rec.get('entry_type') in ENTRY_TYPES
+                       else infer_entry_type(rec)),
+        'entry_type_inferred': rec.get('entry_type') not in ENTRY_TYPES,
         # A TOTP entry's params are not sensitive (they're printed next to the
         # QR code on every enrolment page) and the UI needs them to label it.
         'issuer': rec.get('issuer', ''),
@@ -2092,7 +2125,8 @@ def set_secret(name: str,
                hint: str = '',
                scope: str = 'global',
                allow_unattended: bool = True,
-               kind: str = KIND_PASSWORD) -> dict[str, Any]:
+               kind: str = KIND_PASSWORD,
+               entry_type: str | None = None) -> dict[str, Any]:
     """Create or replace a secret. Human-initiated only — no agent path calls
     this (see the module docstring's authority note).
 
@@ -2128,10 +2162,25 @@ def set_secret(name: str,
 
     if kind not in (KIND_PASSWORD, KIND_TOTP):
         raise SecretsError(f"unknown secret kind '{kind}'")
+    if entry_type is not None and entry_type not in ENTRY_TYPES:
+        raise SecretsError(
+            f"unknown entry type '{entry_type}' — use one of: "
+            f"{', '.join(ENTRY_TYPES)}")
 
     with _lock:
         store = _load_store()
         existing = store['secrets'].get(name) or {}
+        # None = "not said": keep what the entry already carries, so a metadata
+        # edit from a client that predates the field cannot erase the choice.
+        if entry_type is None and existing.get('entry_type') in ENTRY_TYPES:
+            entry_type = existing['entry_type']
+        # A 2FA seed is always the Login type's 2FA half, whatever was asked.
+        if kind == KIND_TOTP and entry_type is not None:
+            entry_type = ENTRY_LOGIN
+        if entry_type in _ENTRY_TYPES_WITHOUT_USERNAME:
+            username = ''
+        elif entry_type == ENTRY_API_KEY_PAIR and not str(username or '').strip():
+            raise SecretsError('an API key pair needs its Key ID (stored in the username slot)')
         # A rotated value invalidates the old one for redaction purposes.
         if existing:
             try:
@@ -2151,6 +2200,8 @@ def set_secret(name: str,
             'use_count': int(existing.get('use_count', 0) or 0),
             'kind': kind,
         })
+        if entry_type is not None:
+            rec['entry_type'] = entry_type
         # Carry forward TOTP params on a metadata-only edit that re-seals the
         # same seed, so re-saving a SHA256/8-digit entry doesn't silently reset
         # it to the defaults and start producing wrong codes.
@@ -2164,7 +2215,7 @@ def set_secret(name: str,
         _save_store(store)
 
     _audit('set', name=name, scope=scope, allow_unattended=bool(allow_unattended),
-           kind=kind, replaced=bool(existing))
+           kind=kind, entry_type=entry_type, replaced=bool(existing))
     return _public(name, rec)
 
 

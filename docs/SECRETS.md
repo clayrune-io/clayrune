@@ -130,6 +130,39 @@ that gate — an unattended run that learns the username still cannot log in.
 `{{user:x}}` on an entry that has none, so a dry run catches it before the
 command runs.
 
+### Entry types (Login / API key / API key pair / Token)
+
+The add/edit form opens with a **Type** step and shows only that type's fields.
+The choice is stored as `entry_type` on the entry — metadata only, never part of
+the ciphertext, returned by `GET /api/secrets` — and is validated server-side
+against an allowlist (`mc/secrets_store.py` `ENTRY_TYPES`; anything else is a
+400). It is separate from `kind` (`password` / `totp`), which says what the
+*value* is to the server; `entry_type` says what the human is storing and changes
+no dispensing behaviour. It travels through the same human-only, passcode-gated
+`POST` / `PATCH` as every other field — there is no other write path.
+
+| Type | Fields | Username slot |
+|---|---|---|
+| `login` | Username (optional) + Password; an `otpauth://` link pasted as the value makes it a 2FA seed | the username |
+| `api_key` | one field, "API key" | none — a stored username is dropped on save |
+| `api_key_pair` | "Key ID" (required) + "Key secret" | **the Key ID** |
+| `token` | one field, "Token" | none — a stored username is dropped on save |
+
+Storage stays **one entry**: a key pair's Key ID uses the existing `username`
+slot, so `{{user:name}}`, `--user VAR=name` and `secrets_store.get_username`
+(which `mc/desk_engines.py` reads for Higgsfield) work unchanged, and the Secret
+half is still `{{secret:name}}`.
+
+Entries saved before this have no `entry_type`. They are **read** as `login` when
+they carry a username or are a 2FA seed, otherwise `api_key` — reported with
+`entry_type_inferred: true`, and never written back (an edit that omits the type
+keeps whatever is stored, including "nothing"). A 2FA seed is always `login`,
+whatever type a request names.
+
+Desk generation engines lock the type: Higgsfield is an `api_key_pair`, Gemini
+and OpenAI are `api_key` (`credential.entry_type` in `GET /api/desk/engines`).
+They keep their own wording ("API key ID" / "API key secret") over the type's.
+
 Other injection shapes for tools that don't read env vars:
 
 | Flag | Effect |
