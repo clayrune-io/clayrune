@@ -347,14 +347,14 @@ async function runStudioReview(browser, tone) {
   await page.waitForTimeout(80);
   let ids = await sceneIds(page);
   check(ids.length === 3 && !ids.includes(ids0[0]), `${tag} the trash button deletes a scene (4 → ${ids.length})`, `${tag} trash button did not delete: ${ids}`);
-  await page.click('.toast .toast-btn.primary');
+  await page.click('#desk-v1-undo'); // Ron 2026-10-02: no destructive popup; the header Undo
   await page.waitForTimeout(80);
   check((await sceneIds(page)).join() === ids0.join(), `${tag} Undo restores the deleted scene in its place`, `${tag} Undo did not restore: ${await sceneIds(page)}`);
   await clearToasts(page);
   await dragTo(page, '.desk-v1-sb-scene:nth-child(2) [data-scene-handle]', '[data-sb-trash]');
   ids = await sceneIds(page);
   check(ids.length === 3 && !ids.includes(ids0[1]), `${tag} dragging a scene onto the trash zone deletes it (4 → ${ids.length})`, `${tag} drag-to-trash failed: ${ids}`);
-  await page.click('.toast .toast-btn.primary');
+  await page.click('#desk-v1-undo'); // Ron 2026-10-02: no destructive popup; the header Undo
   await page.waitForTimeout(80);
   check((await sceneIds(page)).join() === ids0.join(), `${tag} Undo restores the scene dragged to the trash`, `${tag} Undo after drag-to-trash failed: ${await sceneIds(page)}`);
   if (shot) { await clearToasts(page); await page.waitForTimeout(150); await page.screenshot({ path: resolve(SHOT_DIR, 'studio_review_3_trash_1440.png') }); }

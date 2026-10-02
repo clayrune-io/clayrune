@@ -174,23 +174,24 @@ async function run(browser) {
   await page.click('.desk-v1-sb-scene:nth-child(2) [data-scene-edit]'); // Done
   await page.waitForTimeout(80);
 
-  // 4. Delete: exactly one toast with Undo; a second delete replaces it.
+  // 4. Delete (Ron 2026-10-02): no popup at all; the header Undo names the latest delete.
   await page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
   const ids0 = await sceneIds(page);
   await page.click('.desk-v1-sb-scene:nth-child(1) [data-scene-delete]');
   await page.waitForTimeout(100);
-  check(await toastCount(page) === 1 && (await page.$$('.toast .toast-btn.primary')).length === 1,
-    'deleting a scene raises exactly one toast with an Undo button', `delete toast wrong: ${await toastCount(page)} toast(s)`);
+  check(await toastCount(page) === 0, 'deleting a scene raises no toast', `delete toast wrong: ${await toastCount(page)} toast(s)`);
+  check(/Deleted scene/.test(await page.getAttribute('#desk-v1-undo', 'title')) && !(await page.$eval('#desk-v1-undo', (b) => b.disabled)),
+    'the header Undo is enabled and names the delete', `header Undo after delete: ${await page.getAttribute('#desk-v1-undo', 'title')}`);
   await page.click('.desk-v1-sb-scene:nth-child(1) [data-scene-delete]');
   await page.waitForTimeout(100);
-  check(await toastCount(page) === 1, 'a second delete replaces the toast (still one)', `${await toastCount(page)} toasts after a second delete`);
-  const msg = await page.textContent('.toast .toast-msg');
-  check(/Deleted scene/.test(msg), `the toast reads the latest delete (\`${msg.trim()}\`)`, `toast text wrong: ${msg}`);
-  await page.click('.toast .toast-btn.primary');
+  check(await toastCount(page) === 0, 'a second delete raises no toast either', `${await toastCount(page)} toasts after a second delete`);
+  const msg = await page.getAttribute('#desk-v1-undo', 'title');
+  check(/Deleted scene/.test(msg), `the header Undo reads the latest delete (\`${msg.trim()}\`)`, `header Undo text wrong: ${msg}`);
+  await page.click('#desk-v1-undo');
   await page.waitForTimeout(100);
   const restored = await sceneIds(page);
   check(restored.join() === ids0.slice(1).join(),
-    'the toast Undo restores the second deleted scene only (the first stays deleted)', `Undo restored wrong: ${restored} vs ${ids0}`);
+    'the header Undo restores the second deleted scene only (the first stays deleted)', `Undo restored wrong: ${restored} vs ${ids0}`);
 
   // 5. A plain message (a refusal) replaces rather than stacks.
   await page.evaluate(() => { window.DeskV1Kit.toast('First problem'); window.DeskV1Kit.toast('Second problem'); });

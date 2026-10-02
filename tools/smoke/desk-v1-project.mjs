@@ -399,7 +399,7 @@ async function runDraftDiscoverability(browser) {
   const gone = await page.evaluate((p) => ({ card: !!document.querySelector(`.desk-v1-project-camp-card[data-campaign-id="${p.draftId}"]`), n: window.DeskV1Fixtures.campaigns.length, onProject: !!document.querySelector('.desk-v1-project') }), pick);
   if (!gone.card && gone.n === pick.n - 1 && gone.onProject) ok('Batch 2: project card ⋯ › Delete draft removes the card and the campaign, stays on the project');
   else fail(`Batch 2: project-card delete wrong: ${JSON.stringify(gone)}`);
-  await page.locator('.toast-action').last().locator('.toast-btn.primary').click();
+  await page.click('#desk-v1-undo'); // Ron 2026-10-02: no destructive popup; the header Undo
   await page.waitForSelector(`.desk-v1-project-camp-card[data-campaign-id="${pick.draftId}"]`, { timeout: 4000 });
   const restored = await page.evaluate(() => window.DeskV1Fixtures.campaigns.length);
   if (restored === pick.n) ok('Batch 2: Undo restores the deleted draft card');
@@ -416,7 +416,7 @@ async function runDraftDiscoverability(browser) {
   const dn = await page.evaluate(() => window.DeskV1Fixtures.campaigns.length);
   if (dn === pick.n - 1) ok('Batch 2: Discard draft deletes the campaign and returns Home');
   else fail(`Batch 2: Discard draft left ${dn} campaigns (want ${pick.n - 1})`);
-  await page.locator('.toast-action').last().locator('.toast-btn.primary').click();
+  await page.click('#desk-v1-undo'); // Ron 2026-10-02: no destructive popup; the header Undo
   await page.waitForFunction((n) => window.DeskV1Fixtures.campaigns.length === n, pick.n, { timeout: 4000 }).then(() => ok('Batch 2: Undo after Discard draft restores the campaign'), () => fail('Batch 2: Undo after Discard draft did not restore'));
 
   // Non-draft campaign page: no Discard action (Archive/Delete stay behind their confirm).

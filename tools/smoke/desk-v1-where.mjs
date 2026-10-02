@@ -367,9 +367,8 @@ async function runRemove(browser) {
   const status = await launchStatus(page);
   check(!/Awaiting approval/.test(status), `✕ on an Active campaign is narrowing — approval kept, Launch reads "${status}"`, `✕ wrongly reopened approval: ${JSON.stringify(status)}`);
   await backToWhere(page);
-  // Undo (the toast's own) restores the column and every archived version.
-  const undoBtn = page.locator('.toast button', { hasText: 'Undo' }).first();
-  await undoBtn.click();
+  // Undo (the header's; Ron 2026-10-02 removed the popup) restores the column and every archived version.
+  await page.click('#desk-v1-undo');
   await page.waitForTimeout(100);
   b = await readBoard(page);
   const pendingAfter = await page.evaluate(() => window.DeskV1Fixtures.families.filter((f) => f.campaignId === 'camp-1')

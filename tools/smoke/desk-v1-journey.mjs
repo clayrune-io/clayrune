@@ -512,18 +512,17 @@ async function run(browser) {
     : fail(`never-started Draft: More menu wrong: ${JSON.stringify(menuText)}`);
   // R2-3b: no confirm sheet for a Draft — the Undo toast is the safety.
   await page.click('.desk-v1-camp-cardmenu [data-menu-delete-draft]');
-  await page.waitForSelector('.toast', { timeout: 4000 });
-  // Toasts stack rather than replace, so always act on the LAST one.
-  const lastToast = () => page.locator('.toast').last();
-  const toastText = (await lastToast().textContent().catch(() => '') || '');
-  /Deleted/.test(toastText)
-    ? ok(`Delete: toast reads "${toastText.trim()}"`)
-    : fail(`Delete: toast wrong: ${JSON.stringify(toastText)}`);
+  // Ron 2026-10-02: no destructive popup; the header Undo names the delete.
+  await page.waitForTimeout(100);
+  const toastText = (await page.getAttribute('#desk-v1-undo', 'title')) || '';
+  /Deleted/.test(toastText) && (await page.$$('.toast')).length === 0
+    ? ok(`Delete: raises no toast; the header Undo reads "${toastText.trim()}"`)
+    : fail(`Delete: should be quiet with a header Undo: ${JSON.stringify(toastText)}`);
   (await page.evaluate((id) => !window.DeskV1Fixtures.campaigns.some((c) => c.id === id), campB))
     ? ok('Delete: campaign removed from the fixture')
     : fail('Delete: campaign still present after confirm');
   // Delete navigated to Home synchronously; Undo only restores the fixture.
-  await lastToast().locator('.toast-btn.primary').click();
+  await page.click('#desk-v1-undo');
   await page.waitForTimeout(50);
   (await page.evaluate((id) => window.DeskV1Fixtures.campaigns.some((c) => c.id === id), campB))
     ? ok('Undo: campaign restored to the fixture')

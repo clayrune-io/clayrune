@@ -636,15 +636,24 @@
     });
   }
 
-  function _beginReorder(e, tileEl, onReorder) {
+  // `extra` (the Studio timeline only): { trashSel, onTrash(sceneId), activeBodyClass,
+  // ghostClass } lets a tile be dropped on a bin as well as on another tile.
+  function _beginReorder(e, tileEl, onReorder, extra) {
+    extra = extra || {};
     const fromId = tileEl.dataset.sceneId;
+    const trashAt = (x, y) => {
+      if (!extra.trashSel) return null;
+      const hit = document.elementFromPoint(x, y);
+      return (hit && hit.closest && hit.closest(extra.trashSel)) || null;
+    };
     window.PointerDrag.begin(tileEl, e, {
       isDragActive: () => !!_dragSt,
       getDragState: () => _dragSt,
       setDragState: (s) => { _dragSt = s; },
       data: { fromId },
       draggingClass: 'desk-v1-video-scene-dragging',
-      ghostClass: 'desk-v1-video-scene-ghost',
+      activeBodyClass: extra.activeBodyClass,
+      ghostClass: extra.ghostClass || 'desk-v1-video-scene-ghost',
       ghostHTML: () => tileEl.querySelector('.desk-v1-video-scene-label').innerHTML,
       ghostRotationDeg: -3,
       ghostOffsetX: 12, ghostOffsetY: 12,
@@ -653,14 +662,22 @@
         const overTile = overEl && overEl.closest('.desk-v1-video-scene');
         document.querySelectorAll('.desk-v1-video-scene-target').forEach((n) => n.classList.remove('desk-v1-video-scene-target'));
         if (overTile && overTile.dataset.sceneId !== fromId) overTile.classList.add('desk-v1-video-scene-target');
+        if (extra.trashSel) document.querySelectorAll(extra.trashSel).forEach((n) => n.classList.toggle('pd-drop-hover', n === trashAt(x, y)));
       },
       onDrop: (st, x, y) => {
+        if (trashAt(x, y)) return { trash: true };
         const overEl = document.elementFromPoint(x, y);
         const overTile = overEl && overEl.closest('.desk-v1-video-scene');
-        return (overTile && overTile.dataset.sceneId !== fromId) ? overTile.dataset.sceneId : null;
+        return (overTile && overTile.dataset.sceneId !== fromId) ? { toId: overTile.dataset.sceneId } : null;
       },
-      afterDrop: (st, toId) => { if (toId) onReorder(fromId, toId); },
-      onTeardown: () => document.querySelectorAll('.desk-v1-video-scene-target').forEach((n) => n.classList.remove('desk-v1-video-scene-target')),
+      afterDrop: (st, r) => {
+        if (!r) return;
+        if (r.trash) { if (extra.onTrash) extra.onTrash(fromId); } else onReorder(fromId, r.toId);
+      },
+      onTeardown: () => {
+        document.querySelectorAll('.desk-v1-video-scene-target').forEach((n) => n.classList.remove('desk-v1-video-scene-target'));
+        if (extra.trashSel) document.querySelectorAll(extra.trashSel).forEach((n) => n.classList.remove('pd-drop-hover'));
+      },
     });
   }
 
@@ -803,9 +820,19 @@
       const total = scenes.reduce((sum, s) => sum + (s.durationSec || 0), 0);
       return scenes.map((s, i) => _sceneTileHTML(s, i, total ? (s.durationSec / total * 100) : (100 / Math.max(1, scenes.length)), false)).join('');
     },
-    wire(stripEl, onReorder) {
+    // `extra` adds the Studio's bin (see _beginReorder) and `onSelect(sceneId)`, called
+    // on a plain click. The touchmove guard keeps the page from scrolling under a
+    // touch drag that is already running (the body class marks it); a touch that
+    // never reaches the long-press still scrolls the page as usual.
+    wire(stripEl, onReorder, extra) {
       stripEl.querySelectorAll('.desk-v1-video-scene').forEach((tile) => {
-        tile.addEventListener('pointerdown', (e) => _beginReorder(e, tile, onReorder));
+        tile.addEventListener('pointerdown', (e) => _beginReorder(e, tile, onReorder, extra));
+        if (extra && extra.onSelect) tile.addEventListener('click', () => extra.onSelect(tile.dataset.sceneId));
+        if (extra && extra.activeBodyClass) {
+          tile.addEventListener('touchmove', (e) => {
+            if (e.cancelable && document.body.classList.contains(extra.activeBodyClass)) e.preventDefault();
+          }, { passive: false });
+        }
       });
     },
   };

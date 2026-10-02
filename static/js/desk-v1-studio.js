@@ -376,7 +376,7 @@
     const del = _sb && (_sb.standalone || _isLive())
       ? `<button type="button" class="desk-v1-sb-delete" data-scene-delete aria-label="Delete ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}" title="Delete this scene">🗑</button>`
       : '';
-    return `<li class="desk-v1-sb-scene${ph ? ' desk-v1-sb-scene-example' : ''}" data-scene-id="${esc(s.id)}" data-scene-label="${esc(s.label)}"${ph ? ' data-scene-placeholder' : ''}>
+    return `<li class="desk-v1-sb-scene${ph ? ' desk-v1-sb-scene-example' : ''}${_sb && _sb.selected === s.id ? ' desk-v1-sb-selected' : ''}" data-scene-id="${esc(s.id)}" data-scene-label="${esc(s.label)}"${ph ? ' data-scene-placeholder' : ''}>
       <button type="button" class="desk-v1-sb-handle" data-scene-handle aria-label="Move ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}. Arrow Up or Arrow Down reorders" title="Drag, or press Arrow Up / Arrow Down">⠿</button>
       <div class="desk-v1-sb-thumb">${s.thumb || !_isLive() ? `<img src="${esc(s.thumb || '')}" alt="${ph ? 'Example capture' : 'Capture for scene ' + n}">` : ''}<span class="desk-v1-sb-num" data-scene-num>${ph ? '·' : n}</span></div>
       <div class="desk-v1-sb-body">
@@ -387,6 +387,7 @@
         <span class="desk-v1-sb-dur">${esc(_mmss(s.durationSec || 0))}</span>
         <button type="button" class="desk-v1-sb-editbtn" data-scene-edit>${editing ? 'Done' : 'Edit'}</button>
         ${_isLive() ? `<button type="button" class="desk-v1-sb-editbtn" data-scene-picture aria-label="${s.picture ? 'Replace' : 'Add'} the picture for ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}">${s.picture ? 'Replace picture' : 'Add picture'}</button>` : ''}
+        ${_isLive() ? `<button type="button" class="desk-v1-sb-editbtn" data-scene-paste aria-label="Paste a picture from the clipboard into ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}" title="Paste a picture from the clipboard">Paste</button>` : ''}
         ${del}
       </div>
     </li>`;
@@ -448,7 +449,10 @@
           ${_sb.standalone ? `<div class="desk-v1-sb-timeline-wrap" data-sb-timeline-wrap>${_timelineHTML(detail)}</div>` : ''}
           <div class="desk-v1-sb-listrow">
             <ol class="desk-v1-sb-scenes" data-scenes aria-label="Scenes">${detail.scenes.map((s) => _sceneHTML(s, detail.scenes, _sb.editing === s.id)).join('')}</ol>
-            ${_sb.standalone ? '<div class="desk-v1-sb-bin" data-sb-trash role="img" aria-label="Bin: drag a scene here to delete it" title="Drag a scene here to delete it"><span aria-hidden="true">🗑</span></div>' : ''}
+            ${_sb.standalone ? `<div class="desk-v1-sb-bincol">
+              <button type="button" class="desk-v1-sb-undo" data-sb-undo disabled aria-label="Nothing to undo" title="Nothing to undo"><span aria-hidden="true">&#8630;</span></button>
+              <div class="desk-v1-sb-bin" data-sb-trash role="img" aria-label="Bin: drag a scene here to delete it" title="Drag a scene here to delete it"><span aria-hidden="true">🗑</span></div>
+            </div>` : ''}
           </div>
           ${_isLive() && !_sb.loadError ? '<div class="desk-v1-sb-addrow"><button type="button" class="btn-secondary" data-scene-add>Add scene</button></div>' : ''}
           ${_isLive() && !_sb.loadError ? '<div data-sb-engine></div>' : ''}
@@ -499,6 +503,7 @@
       const render = _sb.el.querySelector('[data-sb-render]');
       if (render) render.disabled = !_realScenes(ctx.detail).length || !!(ctx.fam.render && ctx.fam.render.status === 'rendering');
     }
+    _markSelected();
     if (focusSel) { const f = _sb.el.querySelector(focusSel); if (f) f.focus({ preventScroll: true }); }
     // The scenes changed, so the price shown for the render is out of date.
     const eng = _isLive() && _sb.el.querySelector('[data-sb-engine]');
@@ -509,7 +514,15 @@
   // same move the list uses.
   function _wireTimeline() {
     const strip = _sb && _sb.el.querySelector('[data-sb-timeline]');
-    if (strip && window.DeskV1VideoStrip) window.DeskV1VideoStrip.wire(strip, (fromId, toId) => _moveScene(fromId, toId));
+    if (!strip || !window.DeskV1VideoStrip) return;
+    // A tile can also be dragged onto the bin: the same delete as the row's.
+    window.DeskV1VideoStrip.wire(strip, (fromId, toId) => _moveScene(fromId, toId), {
+      trashSel: '[data-sb-trash]',
+      onTrash: (sceneId) => _deleteScene(sceneId),
+      onSelect: (sceneId) => _selectScene(sceneId, true),
+      activeBodyClass: 'desk-v1-sb-drag-active',
+      ghostClass: 'pd-ghost desk-v1-video-scene-ghost',
+    });
   }
 
   function _deleteScene(sceneId) {
@@ -579,7 +592,7 @@
     _registerItem(ctx.fam);
     _sceneCmd(ctx, {
       label: 'Added a scene',
-      do: () => { detail.scenes.push(scene); if (_sb) _sb.editing = scene.id; _paintScenes(`[data-scene-id="${scene.id}"] [data-scene-edit-label]`); },
+      do: () => { detail.scenes.push(scene); if (_sb) { _sb.editing = scene.id; _sb.selected = scene.id; } _paintScenes(`[data-scene-id="${scene.id}"] [data-scene-edit-label]`); },
       undo: () => {
         const i = detail.scenes.findIndex((s) => s.id === scene.id);
         if (i >= 0) detail.scenes.splice(i, 1);
@@ -608,6 +621,130 @@
       do: () => { s.picture = ref; s.thumb = ref.src || ''; _paintScenes(); },
       undo: () => { s.picture = prev.picture; s.thumb = prev.thumb; _paintScenes(); },
     });
+  }
+
+  // ── Pasted pictures (Ron 2026-10-02) ─────────────────────────────────────────
+  // A pasted picture goes up through the SAME call as Add picture (the material
+  // library, the server's own type and size limits), then ONE command: the first
+  // picture becomes the target scene's picture, each further one a new scene right
+  // after it. With no target scene every picture is a new scene at the end.
+  const _PASTE_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+  function _pastedFile(file, i) {
+    const ext = _PASTE_EXT[file.type];
+    if (!ext) return null;
+    // A clipboard screenshot is always called "image.png"; a copied FILE keeps its own name.
+    if (file.name && !/^image\.\w+$/i.test(file.name) && /\.(png|jpe?g|gif|webp)$/i.test(file.name)) return file;
+    const stamp = new Date().toTimeString().slice(0, 8).replace(/:/g, '');
+    return new File([file], `pasted-picture-${stamp}${i ? '-' + (i + 1) : ''}.${ext}`, { type: file.type });
+  }
+
+  async function _addPastedPictures(files, targetId) {
+    const mine = _sb;
+    if (!mine || !_isLive() || !files.length) return;
+    const refs = [];
+    let refused = '';
+    for (let i = 0; i < files.length; i++) {
+      const f = _pastedFile(files[i], i);
+      if (!f) { refused = 'only PNG, JPEG, GIF and WebP pictures can be added'; continue; }
+      try { refs.push(await window.DeskV1Store.storyboard.uploadPicture(_sbOwner(), f)); } catch (e) { refused = e && e.message ? e.message : String(e); }
+    }
+    if (refused) DeskV1Kit.toast(`${refs.length ? 'Some pasted pictures were' : 'The pasted picture was'} not added: ${refused}`);
+    const ctx = _sb === mine ? _sbCtx() : null;
+    if (!ctx || !refs.length) return;
+    const { detail } = ctx;
+    const target = (targetId && detail.scenes.find((x) => x.id === targetId && _isReal(x))) || null;
+    const prev = target ? { picture: target.picture || null, thumb: target.thumb || '' } : null;
+    const added = (target ? refs.slice(1) : refs).map((ref) => ({
+      id: 'sc-' + _uid(), label: 'New scene', line: '', durationSec: 3, edited: false, picture: ref, thumb: ref.src || '', source: '',
+    }));
+    _registerItem(ctx.fam);
+    _sceneCmd(ctx, {
+      label: refs.length > 1 ? `Pasted ${refs.length} pictures`
+        : target ? `${prev.picture ? 'Replaced' : 'Added'} the picture for “${target.label}”` : 'Pasted a picture as a new scene',
+      do: () => {
+        if (target) { target.picture = refs[0]; target.thumb = refs[0].src || ''; }
+        detail.scenes.splice(target ? detail.scenes.indexOf(target) + 1 : detail.scenes.length, 0, ...added);
+        _paintScenes();
+      },
+      undo: () => {
+        added.forEach((a) => { const i = detail.scenes.indexOf(a); if (i >= 0) detail.scenes.splice(i, 1); });
+        if (target) { target.picture = prev.picture; target.thumb = prev.thumb; }
+        _paintScenes();
+      },
+    });
+  }
+
+  // The Paste button: the async Clipboard API, which is what phones and the https
+  // tunnel allow. A refusal is said in one line and points at Add picture.
+  async function _pasteFromClipboard(sceneId) {
+    const mine = _sb;
+    const refusal = 'This browser would not let Clayrune read the clipboard. Use Add picture instead.';
+    if (!(navigator.clipboard && navigator.clipboard.read)) { DeskV1Kit.toast(refusal); return; }
+    const files = [];
+    try {
+      for (const item of await navigator.clipboard.read()) {
+        const type = item.types.find((t) => /^image\//.test(t));
+        if (type) files.push(new File([await item.getType(type)], 'image.' + (_PASTE_EXT[type] || 'png'), { type }));
+      }
+    } catch (e) {
+      DeskV1Kit.toast(refusal);
+      return;
+    }
+    if (_sb !== mine) return;
+    if (!files.length) { DeskV1Kit.toast('There is no picture on the clipboard. Copy one first, or use Add picture.'); return; }
+    _addPastedPictures(files, sceneId);
+  }
+
+  // Ctrl/Cmd+V on the storyboard (the page, not a text field): the clipboard's
+  // pictures go into the selected scene. Anything else, pasted text included, is
+  // left alone, so normal paste into the title boxes and the ask line is untouched.
+  document.addEventListener('paste', (e) => {
+    if (!_sb || !_sb.el.isConnected || !_isLive() || !_sb.el.getClientRects().length) return;
+    const t = e.target;
+    if (t && t.closest && t.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) return;
+    const files = Array.from((e.clipboardData && e.clipboardData.files) || []).filter((f) => /^image\//.test(f.type));
+    if (!files.length) return;
+    e.preventDefault();
+    _addPastedPictures(files, _sb.selected || null);
+  });
+
+  // Selection: the scene a paste lands in. A click on a row or a timeline tile
+  // selects it; a second click on the row's own body (not a button) lets go.
+  function _markSelected() {
+    if (!_sb || !_sb.el.isConnected) return;
+    const tiles = Array.from(_sb.el.querySelectorAll('[data-scene-id]'));
+    if (_sb.selected && !tiles.some((n) => n.dataset.sceneId === _sb.selected)) _sb.selected = null;
+    tiles.forEach((n) => {
+      const on = n.dataset.sceneId === _sb.selected;
+      n.classList.toggle('desk-v1-sb-selected', on);
+      if (n.classList.contains('desk-v1-sb-scene')) { if (on) n.setAttribute('aria-current', 'true'); else n.removeAttribute('aria-current'); }
+    });
+  }
+  function _selectScene(sceneId, keep) {
+    if (!_sb) return;
+    _sb.selected = (!keep && _sb.selected === sceneId) ? null : sceneId;
+    _markSelected();
+  }
+
+  // The Undo button beside the bin: the header button's own undo, so a delete
+  // is one click from where it happened now that no toast offers it.
+  function _syncSbUndo() {
+    const btn = _sb && _sb.el.isConnected && _sb.el.querySelector('[data-sb-undo]');
+    const bus = window.DeskV1Kit && window.DeskV1Kit.commandBus;
+    if (!btn || !bus) return;
+    const cmd = bus.peek();
+    btn.disabled = !cmd;
+    const title = cmd ? 'Undo: ' + (cmd.label || 'the last change') : 'Nothing to undo';
+    btn.title = title;
+    btn.setAttribute('aria-label', title);
+  }
+  let _sbBusHooked = false;
+  function _hookSbUndo(el) {
+    const bus = window.DeskV1Kit && window.DeskV1Kit.commandBus;
+    if (bus && !_sbBusHooked) { bus.onChange(_syncSbUndo); _sbBusHooked = true; }
+    const btn = el.querySelector('[data-sb-undo]');
+    if (btn) btn.onclick = () => { if (bus && bus.canUndo()) bus.undoLast(); };
+    _syncSbUndo();
   }
 
   function _startRender() {
@@ -746,6 +883,12 @@
         input.onchange = () => { if (input.files && input.files[0]) _setScenePicture(id, input.files[0]); };
         input.click();
       };
+      const paste = li.querySelector('[data-scene-paste]');
+      if (paste) paste.onclick = () => { _selectScene(id, true); _pasteFromClipboard(id); };
+      li.addEventListener('click', (e) => {
+        if (li.hasAttribute('data-scene-placeholder')) return;
+        _selectScene(id, !!(e.target.closest && e.target.closest('button, input, textarea, select, a')));
+      });
       const edit = li.querySelector('[data-scene-edit]');
       edit.onclick = () => {
         if (_sb.editing === id) {
@@ -775,13 +918,14 @@
     const add = el.querySelector('[data-scene-add]');
     if (add) add.onclick = _addScene;
     _wireScenes(el.querySelector('[data-scenes]'));
-    if (_sb.standalone) _wireTimeline();
+    if (_sb.standalone) { _wireTimeline(); _hookSbUndo(el); }
+    _markSelected();
     _wireAgentBox(el.querySelector('[data-sb-agent]'), ctx);
   }
 
   function deskV1RenderStoryboard(el, params) {
     params = params || {};
-    _sb = { el, campaignId: params.campaignId, familyId: params.familyId, editing: null, standalone: false };
+    _sb = { el, campaignId: params.campaignId, familyId: params.familyId, editing: null, selected: null, standalone: false };
     el.innerHTML = _sbHTML();
     _wireSb(el);
     if (_isLive()) _loadBoard(_sb);
@@ -1217,7 +1361,7 @@
       _paintCreate();
     };
     if (view === 'storyboard') {
-      _sb = { el: el.querySelector('[data-sc-body]'), campaignId: null, familyId: _sc.item.id, editing: null, standalone: true };
+      _sb = { el: el.querySelector('[data-sc-body]'), campaignId: null, familyId: _sc.item.id, editing: null, selected: null, standalone: true };
       _sb.el.innerHTML = _sbHTML();
       _wireSb(_sb.el);
       const mine = _sb;
