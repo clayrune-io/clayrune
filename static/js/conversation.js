@@ -4812,16 +4812,24 @@ function _forkNoticeHTML(sessionId) {
 function _renderForkNotice(sessionId) {
   const old = document.getElementById(`fork-notice-${sessionId}`);
   const html = _forkNoticeHTML(sessionId);
-  if (!html) { if (old) old.remove(); return; }
+  // The notice sits in .agent-chat above the thread, and sizeAgentChat sizes the
+  // thread around it (f6cf05fd) — so any add/replace/remove here must re-measure,
+  // or the composer is pushed off the bottom until the next unrelated refresh.
+  const _resize = () => {
+    const out = document.getElementById(`agent-output-${sessionId}`);
+    const win = out && out.closest('.modal-window');
+    if (win && typeof sizeAgentChat === 'function') sizeAgentChat(win, sessionId);
+  };
+  if (!html) { if (old) { old.remove(); _resize(); } return; }
   const host = document.createElement('div');
   host.innerHTML = html;
   const fresh = host.firstElementChild;
   if (old) {
-    if (old.dataset.key !== fresh.dataset.key) old.replaceWith(fresh);
+    if (old.dataset.key !== fresh.dataset.key) { old.replaceWith(fresh); _resize(); }
     return;
   }
   const out = document.getElementById(`agent-output-${sessionId}`);
-  if (out && out.parentNode) out.parentNode.insertBefore(fresh, out);
+  if (out && out.parentNode) { out.parentNode.insertBefore(fresh, out); _resize(); }
 }
 window._forkNoticeHTML = _forkNoticeHTML;
 window._renderForkNotice = _renderForkNotice;
