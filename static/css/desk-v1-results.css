@@ -1,0 +1,231 @@
+/* Desk v1 — Results. Split from desk-v1.css (one unit, one file); load order is in static/index.html. */
+/* ── T7: Results ──────────────────────────────────────────────────────────── */
+
+/* No frame is drawn for this surface (gap map C6). R2-4 (IA revision 2
+   §4.1 row "① Goal") replaced the old §7 Results layout wholesale: single
+   column, editor on top, effectiveness panel below it once Active. See the
+   ticket's final report for every call made without a frame to check
+   against. */
+.desk-v1-results { display: flex; flex-direction: column; gap: 18px; max-width: 680px; }
+.desk-v1-goal { display: flex; flex-direction: column; gap: 16px; }
+
+.desk-v1-goal-editor {
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface);
+  padding: 16px 18px; display: flex; flex-direction: column; gap: 12px;
+}
+.desk-v1-goal-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.desk-v1-goal-label { font-size: 12px; font-weight: 600; color: var(--text-dim); }
+.desk-v1-goal-unitinput { width: 96px; }
+.desk-v1-goal-select, .desk-v1-goal-dateinput {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px;
+  color: var(--text); font-size: 13px; padding: 4px 8px; font-family: inherit;
+}
+.desk-v1-goal-editor-hint { font-size: 12.5px; color: var(--amber-text); }
+
+.desk-v1-goal-manual { display: flex; flex-direction: column; gap: 8px; padding-top: 4px; border-top: 1px solid var(--border2); }
+.desk-v1-goal-manual-list { display: flex; flex-direction: column; gap: 2px; }
+
+.desk-v1-goal-effectiveness {
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface);
+  padding: 16px 18px;
+}
+.desk-v1-goal-untracked { font-size: 13px; color: var(--amber-text); font-weight: 600; }
+.desk-v1-goal-progress-top { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.desk-v1-goal-progress-number { font-size: 34px; font-weight: 800; color: var(--text); }
+.desk-v1-goal-progress-target { font-size: 13px; color: var(--text-dim); }
+.desk-v1-goal-progress-bar {
+  height: 6px; border-radius: 3px; background: var(--surface3); overflow: hidden; margin-top: 10px;
+}
+.desk-v1-goal-progress-fill { height: 100%; background: var(--accent-soft); border-radius: 3px; }
+.desk-v1-goal-pace { font-size: 12.5px; margin-top: 10px; display: flex; align-items: center; gap: 5px; }
+.desk-v1-goal-pace[data-pace="behind"] { color: var(--amber-text); }
+.desk-v1-goal-pace[data-pace="on_track"] { color: var(--green-text); }
+.desk-v1-goal-pace[data-pace="ahead"] { color: var(--green-text); }
+.desk-v1-goal-cost { font-size: 12.5px; color: var(--text-dim); margin-top: 8px; }
+.desk-v1-goal-terms { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border2); }
+.desk-v1-goal-term-row { font-size: 12.5px; color: var(--text); }
+
+@media (max-width: 960px) {
+  .desk-v1-results { max-width: none; }
+  .desk-v1-goal-progress-number { font-size: 28px; }
+  .desk-v1-goal-row { flex-direction: column; align-items: stretch; }
+  .desk-v1-goal-manual [data-manual-entry-add] { min-height: 44px; }
+}
+
+/* R2-15 (§8, §10): Retro section at the foot of the Goal stop's effectiveness
+   panel. Same boxed-card language as .desk-v1-goal-editor/-effectiveness
+   above (this file's own §10.4 note: "own file, own hook" — desk-v1-retro.js
+   mounts here through .desk-v1-retro-mount, results.js never styles it). */
+.desk-v1-retro-mount { display: flex; flex-direction: column; }
+.desk-v1-retro {
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface);
+  padding: 16px 18px; display: flex; flex-direction: column; gap: 12px;
+}
+.desk-v1-retro-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.desk-v1-retro-title { font-size: 13px; font-weight: 700; color: var(--text); }
+.desk-v1-retro-status {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+  background: var(--surface2); color: var(--text-dim);
+}
+.desk-v1-retro-status[data-status="closed"] { background: var(--accent-dim, var(--surface3)); color: var(--text); }
+.desk-v1-retro-goal { font-size: 14px; font-weight: 700; color: var(--text); }
+.desk-v1-retro-summary { font-size: 13px; color: var(--text-dim); line-height: 1.5; }
+.desk-v1-retro-spend { font-size: 12px; color: var(--text-faint); }
+
+.desk-v1-retro-dims { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--border2); }
+.desk-v1-retro-dim-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
+.desk-v1-retro-dim-label { font-weight: 600; color: var(--text-dim); min-width: 96px; }
+.desk-v1-retro-dim-detail { color: var(--text); }
+.desk-v1-retro-dim-note { color: var(--text-faint); font-style: italic; }
+
+.desk-v1-retro-grid { display: flex; flex-direction: column; gap: 4px; padding-top: 6px; border-top: 1px solid var(--border2); }
+.desk-v1-retro-grid-head { font-size: 12px; font-weight: 600; color: var(--text-dim); margin-bottom: 2px; }
+.desk-v1-retro-grid-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--text); padding: 2px 0; }
+.desk-v1-retro-grid-date { color: var(--text-faint); width: 84px; }
+.desk-v1-retro-grid-format { color: var(--text-dim); width: 56px; }
+.desk-v1-retro-grid-value { color: var(--text); }
+.desk-v1-retro-paste { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.desk-v1-retro-pastearea { min-height: 60px; }
+
+.desk-v1-retro-findings { display: flex; flex-direction: column; gap: 10px; padding-top: 6px; border-top: 1px solid var(--border2); }
+.desk-v1-retro-findings-head { font-size: 12px; font-weight: 600; color: var(--text-dim); }
+.desk-v1-retro-finding {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 9px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+}
+.desk-v1-retro-finding-text { font-size: 13px; color: var(--text); line-height: 1.5; }
+.desk-v1-retro-finding-why { font-size: 12px; color: var(--text-faint); font-style: italic; }
+.desk-v1-retro-finding-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.desk-v1-retro-finding-editarea { min-height: 52px; }
+.desk-v1-retro-finding-cancel {
+  background: transparent; border: none; color: var(--text-faint); font-size: 12.5px;
+  cursor: pointer; font-family: inherit; padding: 0 4px;
+}
+.desk-v1-retro-finding-cancel:hover { color: var(--text); }
+
+/* Dave's review of 89827bad: every Retro action rendered as a bare browser
+   <button> — `.btn-secondary` (Fill grid/Confirm/Save & Confirm/Run retro
+   now) has no rule anywhere in this file (same gap the How step's own
+   comment above already names, desk-v1.css:1899), and Edit/Reject/Don't
+   suggest again/Cancel carried no class at all. Two dedicated classes
+   instead of fixing `.btn-secondary` globally — that class has other
+   callers elsewhere this ticket doesn't own. */
+.desk-v1-retro-btn {
+  background: var(--surface); border: 1px solid var(--border2); border-radius: 8px;
+  color: var(--text); font-size: 13px; font-weight: 600; min-height: 36px;
+  padding: 7px 12px; cursor: pointer; font-family: inherit; align-self: flex-start;
+}
+.desk-v1-retro-btn:hover { background: var(--surface2); }
+.desk-v1-retro-btn--primary {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.desk-v1-retro-btn--primary:hover { background: var(--accent-soft); }
+.desk-v1-retro-btn--danger { color: var(--red-text); }
+
+@media (max-width: 960px) {
+  .desk-v1-retro-finding-actions button, .desk-v1-retro-btn { min-height: 44px; }
+  .desk-v1-retro-grid-row { flex-wrap: wrap; }
+}
+
+/* IA7: Engagement dashboard (docs/THE_DESK_V1_IA_REVISION.md §7) — three
+   lanes + filters, reached from Home's header count, a project's Engagement
+   strip "Open ›", or (campaignId case) handed off to the conversations
+   component entirely, so no `.desk-v1-eng-*` rule below applies there. */
+.desk-v1-engagement { display: flex; flex-direction: column; gap: 12px; }
+.desk-v1-eng-lanes { display: flex; gap: 8px; flex-wrap: wrap; }
+.desk-v1-eng-lane {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px;
+  color: var(--text-dim); font-size: 12.5px; font-weight: 600; cursor: pointer;
+  padding: 7px 12px; font-family: inherit; transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.desk-v1-eng-lane:hover { background: var(--surface3); color: var(--text); }
+.desk-v1-eng-lane.is-active { background: var(--accent-dim, var(--surface3)); border-color: var(--accent); color: var(--text); }
+.desk-v1-eng-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+.desk-v1-eng-filter {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 7px;
+  color: var(--text-dim); font-size: 12px; padding: 6px 8px; font-family: inherit;
+}
+.desk-v1-eng-replies-banner {
+  font-size: 11.5px; color: var(--text-faint); background: var(--surface2);
+  border: 1px solid var(--border2); border-radius: 7px; padding: 6px 10px;
+}
+.desk-v1-eng-rows { display: flex; flex-direction: column; gap: 8px; }
+.desk-v1-eng-row {
+  display: flex; flex-direction: column; gap: 3px; text-align: left;
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 9px;
+  padding: 10px 12px; cursor: pointer; font-family: inherit; transition: background 0.15s;
+}
+.desk-v1-eng-row:hover { background: var(--surface3); }
+.desk-v1-eng-row-meta { font-size: 11px; color: var(--text-faint); }
+.desk-v1-eng-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.desk-v1-eng-author { font-size: 13px; font-weight: 700; color: var(--text); }
+.desk-v1-eng-age { font-size: 11px; color: var(--text-faint); }
+.desk-v1-eng-snippet { font-size: 12.5px; color: var(--text-dim); }
+.desk-v1-eng-empty { font-size: 12.5px; color: var(--text-faint); padding: 10px 0; }
+
+@media (max-width: 960px) {
+  .desk-v1-eng-lane, .desk-v1-eng-row { min-height: 44px; }
+  .desk-v1-eng-filters { flex-direction: column; }
+}
+
+/* R2-6 (THE_DESK_V1_IA_REVISION_2.md §11 amended row, §11.3): ② How stop
+   panel. Two boxed cards (Strategy, Budget) matching mockup frame 4 —
+   .desk-v1-how-card is the same surface/border/radius language as
+   .desk-v1-project-camp-card, just with a bold title row instead of a
+   click target. Reuses .desk-v1-rules-textarea/-textinput/-numinput/
+   -inlinerow/-hint as-is (same component set the rules popover and
+   Presence page already established) — only the card wrapper, the field
+   label row, the Budget segmented toggle and the panel's own scroll
+   wrapper + "n suggested" banner (also used by ④'s calendar and shared
+   with ③'s Content-tab list) are new. */
+.desk-v1-how { display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 0; }
+/* Dave's review (2e24880e follow-up): `.desk-v1-how-suggest` used to be a
+   `position: sticky` LAST child of this same scrolling flex column — inside
+   a column flex container, a sticky child's "stuck" bottom position is
+   computed against the flex line, not the padding box, so it pinned itself
+   OVER the tail of the Budget card even at scrollTop 0 (measured: card
+   bottom 794.75, suggest bar 612.25-688.25 — already overlapping before any
+   scroll). Splitting the scroll region from the footer sidesteps the bug
+   outright: only `.desk-v1-how-scroll` scrolls, `.desk-v1-how-suggest` is a
+   plain static footer that can never be scrolled under. */
+.desk-v1-how-scroll { display: flex; flex-direction: column; gap: 14px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.desk-v1-how-card {
+  display: flex; flex-direction: column; gap: 12px;
+  background: var(--surface); border: 1px solid var(--border2); border-radius: 10px; padding: 16px;
+}
+.desk-v1-how-card-title { font-size: 14px; font-weight: 700; color: var(--text); }
+.desk-v1-how-field { display: flex; flex-direction: column; gap: 4px; }
+.desk-v1-how-field-label { font-size: 12px; font-weight: 600; color: var(--text-dim); }
+.desk-v1-how-budget-toggle { display: flex; flex-wrap: wrap; gap: 8px; }
+.desk-v1-how-budget-toggle button {
+  background: var(--surface3); border: 1px solid var(--border2); border-radius: 999px; color: var(--text-dim);
+  font-size: 12.5px; font-weight: 600; padding: 6px 14px; cursor: pointer; font-family: inherit;
+}
+.desk-v1-how-budget-toggle button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* Dave's review (858a7098): Suggest is the primary action and mustn't sit
+   below the fold at 1440x900 — the mockup's bare screen (no dashboard chrome)
+   has room to spare, the real modal doesn't. A plain footer OUTSIDE
+   `.desk-v1-how-scroll` (see that rule's comment) guarantees it stays in
+   view regardless of how tall the two cards above grow, without the sticky
+   approach's flex-overlap bug; `border-top` stands in for the old sticky
+   bar's `background` divider now that there's nothing for it to cover. */
+.desk-v1-how-suggest {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  flex: 0 0 auto; padding-top: 12px; border-top: 1px solid var(--border2);
+}
+/* Filled-accent primary button, same visual language as .desk-v1-map-next/
+   -launch-start (the mockup's solid blue "Suggest What / When / Where") —
+   .btn-secondary (Retry/Edit/Cancel's class) has no rule anywhere, so this
+   button was rendering as a bare unstyled <button>. */
+.desk-v1-how-suggest-btn {
+  background: var(--accent); border: none; border-radius: 8px; color: #fff;
+  font-size: 13px; font-weight: 700; padding: 11px 16px; cursor: pointer;
+  font-family: inherit; min-height: 44px;
+}
+.desk-v1-how-suggest-btn:hover { background: var(--accent-soft); }
+.desk-v1-camp-suggested-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px;
+  padding: 8px 12px; margin-bottom: 10px; font-size: 13px; color: var(--text);
+}
+

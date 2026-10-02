@@ -1,0 +1,190 @@
+/* Desk v1 — shared kit: vocabulary, state label, channel badge, toast+Undo, pointer-drag, legacy banner. Split from desk-v1.css (one unit, one file); load order is in static/index.html. */
+/* ── T0b: shared kit (vocabulary, state label, channel badge, toast+Undo,
+   Add to… menu, ⓘ popover, Posy box) ───────────────────────────────────── */
+
+/* Glyph + word together (A15: status must read in greyscale — color is a
+   second signal here, never the only one). */
+.desk-v1-state-label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-dim); }
+.desk-v1-state-glyph { font-size: 12px; line-height: 1; }
+.desk-v1-state-word { font-weight: 600; }
+.desk-v1-state-label[data-state="blocked"] .desk-v1-state-glyph,
+.desk-v1-state-label[data-state="failed"] .desk-v1-state-glyph { color: var(--red-text); }
+.desk-v1-state-label[data-state="held"] .desk-v1-state-glyph { color: var(--amber-text); }
+.desk-v1-state-label[data-state="verified_published"] .desk-v1-state-glyph,
+.desk-v1-state-label[data-state="approved"] .desk-v1-state-glyph,
+.desk-v1-state-label[data-state="scheduled"] .desk-v1-state-glyph,
+.desk-v1-state-label[data-state="completed"] .desk-v1-state-glyph { color: var(--accent-soft); }
+
+/* Identity first (UX-02) — a suffix glyph only for held/manual, per
+   desk-v1-kit.js's channelBadge() comment on why the default stays quiet. */
+.desk-v1-channel-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+  background: var(--surface3); border: 1px solid var(--border2); color: var(--text);
+}
+.desk-v1-channel-badge[data-health="held"] { border-color: var(--amber-text); color: var(--amber-text); }
+.desk-v1-channel-badge[data-capability="manual"] { color: var(--text-dim); }
+
+/* Add to… ▾ menu (UX-05) — same dropdown shape as the Queue's insert menu
+   (app.css .desk-insert-menu), not a new visual language. */
+.desk-v1-addto-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 20;
+  background: var(--surface3); border: 1px solid var(--border); border-radius: 8px;
+  padding: 4px; min-width: 180px; box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+}
+/* R2-2e: a trigger at the right edge of its row (Home's crumb New campaign)
+   opens the menu right-aligned to the button, not off the row's left edge. */
+.desk-v1-addto-wrap-right { position: relative; display: inline-block; }
+.desk-v1-addto-wrap-right > .desk-v1-addto-menu { left: auto; right: 0; }
+.desk-v1-addto-menu button {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--text); font-size: 12px; padding: 7px 9px; border-radius: 5px; cursor: pointer;
+  font-family: inherit;
+}
+.desk-v1-addto-menu button:hover,
+.desk-v1-addto-menu button:focus { background: var(--accent-dim); outline: none; }
+
+/* Agent list (Ron 2026-10-02) — the one agent picker: figure + name + one-line
+   role per row. A fixed full-screen layer (outside every overflow/transform
+   ancestor, above the modal layers) holds the list; at <=640px the layer dims
+   and the list is a bottom sheet, wider than the viewport it never is. */
+.desk-v1-agentlist-layer { position: fixed; inset: 0; z-index: 1660; }
+.desk-v1-agentlist {
+  position: fixed; box-sizing: border-box; min-width: 260px; max-width: min(420px, calc(100vw - 16px));
+  background: var(--surface3); border: 1px solid var(--border); border-radius: 10px;
+  padding: 4px; box-shadow: 0 8px 28px rgba(0,0,0,0.28); overflow-y: auto;
+}
+.desk-v1-agentlist-title { display: none; }
+.desk-v1-agentlist-row {
+  display: flex; align-items: center; gap: 10px; min-height: 48px; box-sizing: border-box;
+  padding: 7px 10px; border-radius: 7px; cursor: pointer; color: var(--text);
+}
+.desk-v1-agentlist-row:hover, .desk-v1-agentlist-row:focus { background: var(--accent-dim); outline: none; }
+.desk-v1-agentlist-row:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.desk-v1-agentlist-row[aria-selected="true"] { background: var(--accent-dim); }
+.desk-v1-agentlist-face, .desk-v1-agentlist-plus {
+  flex: 0 0 32px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+}
+.desk-v1-agentlist-face .av { width: 32px; height: 32px; object-fit: contain; }
+.desk-v1-agentlist-plus { font-size: 20px; font-weight: 600; color: var(--accent); }
+.desk-v1-agentlist-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.desk-v1-agentlist-name { font-size: 13.5px; font-weight: 600; }
+.desk-v1-agentlist-tag { font-size: 11.5px; font-weight: 500; color: var(--text-dim); }
+.desk-v1-agentlist-role { font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.desk-v1-agentlist-check { flex: 0 0 auto; color: var(--accent); font-weight: 700; }
+.desk-v1-agentlist-action { border-top: 1px solid var(--border2); border-radius: 0 0 7px 7px; }
+.desk-v1-agentlist-action ~ .desk-v1-agentlist-action { border-top: none; border-radius: 7px; }
+.desk-v1-agentlist-action .desk-v1-agentlist-name { color: var(--accent); }
+@media (max-width: 640px) {
+  .desk-v1-agentlist-layer { background: rgba(0,0,0,0.45); }
+  .desk-v1-agentlist {
+    position: fixed !important; left: 0 !important; right: 0 !important; top: auto !important; bottom: 0 !important;
+    width: auto !important; max-width: none !important; max-height: 78vh !important; min-width: 0;
+    border-radius: 16px 16px 0 0; padding: 6px 8px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  .desk-v1-agentlist-title { display: block; font-size: 13px; font-weight: 700; color: var(--text); padding: 10px 10px 6px; }
+  .desk-v1-agentlist-row { min-height: 54px; }
+  /* The Desk parks its toast at the BOTTOM on a phone (MC-977, above the tab
+     bar), which is exactly where this sheet sits, and the toast's z-index
+     (100000) is above the sheet's: "Hired Dave onto …" lay across the Hire row.
+     While the sheet is open the toast goes to the top instead, over the dimmed
+     header. Selector carries the Desk scope so it outranks the MC-977 rule. */
+  body:has(.desk-v1-agentlist-layer):has(.modal-window[data-modal-id="__desk"]) #toast-container {
+    top: calc(10px + env(safe-area-inset-top, 0px)); bottom: auto;
+  }
+}
+
+/* The Agent picker's trigger on the Campaign card: a full-width field showing
+   the chosen agent's figure + name (+ role), caret at the right. */
+.desk-v1-agentpick-btn {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; box-sizing: border-box;
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px;
+  color: var(--text); font-family: inherit; font-size: 13.5px; text-align: left; padding: 6px 10px; cursor: pointer;
+}
+.desk-v1-agentpick-btn:hover:not(:disabled), .desk-v1-agentpick-btn:focus-visible { border-color: var(--accent); outline: none; }
+.desk-v1-agentpick-btn:disabled { opacity: 0.6; cursor: default; }
+.desk-v1-agentpick-btn .av { flex: 0 0 auto; width: 28px; height: 28px; object-fit: contain; }
+.desk-v1-agentpick-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.desk-v1-agentpick-name { font-weight: 600; }
+.desk-v1-agentpick-role { font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.desk-v1-agentpick-empty { color: var(--text-dim); }
+.desk-v1-agentpick-caret { flex: 0 0 auto; color: var(--text-dim); font-size: 11px; }
+
+/* ⓘ popover (§9: explanations behind ⓘ, nothing else on screen for it). */
+.desk-v1-info-btn {
+  background: none; border: none; color: var(--text-faint); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0 2px; vertical-align: middle;
+}
+.desk-v1-info-btn:hover { color: var(--accent); }
+.desk-v1-info-popover {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; max-width: 260px;
+  background: var(--surface3); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font-size: 12px; color: var(--text-dim); line-height: 1.4;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+}
+
+/* Posy box — reuses .agent-output/.agent-question-chip/.agent-input-row
+   verbatim (app.css); only this wrapper's own chrome is new. */
+.desk-v1-posy-box {
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface);
+  padding: 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.desk-v1-posy-scope {
+  margin-left: auto; background: none; border: none; color: var(--text-dim);
+  font-size: 11.5px; cursor: pointer; font-family: inherit; padding: 2px 4px;
+}
+.desk-v1-posy-scope:hover { color: var(--accent); }
+.desk-v1-posy-output { min-height: 0; padding: 0; background: transparent; }
+.desk-v1-posy-chips { margin: 0; }
+/* The input is the box's only text field and the rail is narrow, so the
+   placeholder wraps. Two lines minimum (13px × 1.5 + 2×9px padding + border),
+   growing with the text via the kit's fit() up to its max-height. */
+.desk-v1-posy-box .agent-input-row { align-items: flex-end; margin-bottom: 0; }
+.desk-v1-posy-box .desk-v1-posy-input {
+  box-sizing: border-box; min-width: 0; min-height: 62px; max-height: 192px;
+  padding: 9px 12px; line-height: 1.5; overflow-y: auto;
+}
+.desk-v1-posy-pickagent {
+  background: none; border: none; padding: 0; font-family: inherit; text-align: left;
+  cursor: pointer; color: var(--text); text-decoration: underline; text-decoration-color: var(--border2);
+  text-underline-offset: 3px;
+}
+.desk-v1-posy-pickagent:hover, .desk-v1-posy-pickagent:focus-visible { color: var(--accent); text-decoration-color: var(--accent); }
+
+/* compact:true (frame 12b) — no avatar/name to push away from, so the scope
+   chip sits at the row's own left edge instead of being shoved right. */
+.desk-v1-posy-box-compact .desk-thread-head { margin-bottom: 0; }
+.desk-v1-posy-box-compact .desk-v1-posy-scope { margin-left: 0; padding-left: 0; }
+/* sendStyle:'arrow' (frame 12b) — round icon button beside the input,
+   instead of the text .btn-dispatch pill. */
+.desk-v1-posy-send-arrow {
+  flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%;
+  background: var(--green); color: var(--bg); border: none; cursor: pointer;
+  font-size: 13px; line-height: 1; display: flex; align-items: center; justify-content: center;
+}
+.desk-v1-posy-send-arrow:hover { background: var(--green-text); }
+
+@media (max-width: 960px) {
+  .desk-v1-addto-menu button,
+  .desk-v1-info-btn { min-height: 44px; }
+}
+
+/* ── T0c: pointer-drag extraction ────────────────────────────────────────── */
+/* Generic building blocks for callers of static/js/pointer-drag.js (frame
+   12a: the ghost, the dashed target, the result line). Drag-to-hire
+   (floor.js) keeps its own `.hire-*` classes and app.css styling unchanged —
+   these are for the NEXT caller (T1's promote box), not a restyle of the
+   existing one. */
+.pd-ghost {
+  position: fixed; z-index: 99999; opacity: 0.9; pointer-events: none;
+  transform: translate(-50%, -50%) rotate(var(--pd-rotate, -3deg));
+}
+.pd-drop-target {
+  border: 1px dashed var(--border2); border-radius: 10px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.pd-drop-target.pd-drop-hover { border-color: var(--accent); background: var(--accent-dim); }
+.pd-drop-target.pd-drop-refused { border-color: var(--border); opacity: 0.5; cursor: not-allowed; }
+
+/* ── T0d: legacy read-only banner ────────────────────────────────────────── */
+

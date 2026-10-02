@@ -1,0 +1,172 @@
+/* Desk v1 — Where board. Split from desk-v1.css (one unit, one file); load order is in static/index.html. */
+/* ── R2-10: ⑤ Where board (frames 7a/7b; desk-v1-where.js) ───────────────── */
+.desk-v1-where { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.desk-v1-where-board {
+  display: flex; align-items: flex-start; gap: 12px; overflow-x: auto; padding-bottom: 6px;
+}
+.desk-v1-where-msgs, .desk-v1-where-col {
+  flex: 0 0 232px; min-width: 0; background: var(--surface); border: 1px solid var(--border2);
+  border-radius: 10px; display: flex; flex-direction: column;
+}
+/* Sticky, so once the board scrolls sideways past 3 accounts the Messages column
+   stays in reach as the drag source for whichever column is in view. */
+.desk-v1-where-msgs { background: var(--surface2); position: sticky; left: 0; z-index: 2; }
+.desk-v1-where-msghead { padding: 10px 12px 8px; border-bottom: 1px solid var(--border); }
+.desk-v1-where-msgtitle { font-size: 13px; font-weight: 700; color: var(--text); }
+.desk-v1-where-msgsub { font-size: 11px; color: var(--text-faint); }
+.desk-v1-where-msglist, .desk-v1-where-colbody {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  /* A long column scrolls inside itself so the SOURCES tray below stays within
+     reach of the same drag (pointer-drag has no auto-scroll). */
+  max-height: clamp(160px, 32vh, 360px); overflow-y: auto;
+}
+.desk-v1-where-msgwrap, .desk-v1-where-vwrap { position: relative; }
+
+.desk-v1-where-msg, .desk-v1-where-vcard, .desk-v1-where-source {
+  background: var(--surface3); border: 1px solid var(--border2); border-radius: 8px;
+  cursor: grab; touch-action: pan-y; user-select: none;
+}
+.desk-v1-where-msg { padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
+.desk-v1-where-msg:hover, .desk-v1-where-vcard:hover, .desk-v1-where-source:hover { border-color: var(--accent); }
+.desk-v1-where-msg:focus-visible, .desk-v1-where-vcard:focus-visible, .desk-v1-where-source:focus-visible,
+.desk-v1-where-colremove:focus-visible, .desk-v1-where-connect:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.desk-v1-where-msg-kind { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); }
+.desk-v1-where-msg-title { font-size: 12.5px; font-weight: 700; color: var(--text); }
+.desk-v1-where-pill {
+  align-self: flex-start; font-size: 10.5px; font-weight: 600; color: var(--text-dim);
+  background: var(--accent-dim); border-radius: 999px; padding: 1px 8px;
+}
+
+.desk-v1-where-col.pd-drop-target { border: 1px dashed var(--border2); }
+.desk-v1-where-col.pd-drop-target.pd-drop-hover { border-color: var(--accent); background: var(--accent-dim); }
+.desk-v1-where-colhead { display: flex; align-items: center; gap: 10px; padding: 10px 10px 8px; }
+.desk-v1-where-colname { flex: 1; min-width: 0; }
+.desk-v1-where-voice { display: flex; flex-direction: column; gap: 3px; padding: 0 10px 8px; font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.02em; }
+.desk-v1-where-voice input { text-transform: none; letter-spacing: 0; font-size: 12.5px; }
+.desk-v1-where-handle { font-size: 13px; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk-v1-where-plat { font-size: 11px; color: var(--text-faint); }
+.desk-v1-where-colremove {
+  flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; border: none; cursor: pointer;
+  background: var(--surface3); color: var(--text-dim); font-size: 11px; line-height: 1; font-family: inherit;
+}
+.desk-v1-where-colremove:hover { background: var(--red-dim); color: var(--red-text); }
+.desk-v1-where-colempty {
+  font-size: 12px; color: var(--text-faint); text-align: center; padding: 18px 8px;
+}
+.desk-v1-where-nocols { align-self: center; font-size: 12.5px; color: var(--text-dim); padding: 0 12px; }
+
+.desk-v1-where-vcard { padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+.desk-v1-where-vtitle { font-size: 12.5px; font-weight: 700; color: var(--text); }
+.desk-v1-where-vformat { font-size: 11.5px; color: var(--text-dim); }
+
+/* account avatar + platform badge — a letter on a hashed colour, so the colour
+   is decoration and the handle beside it is what identifies the account. */
+.desk-v1-where-avatar {
+  position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 50%; color: #fff; font-size: 14px; font-weight: 700;
+}
+.desk-v1-where-avatar-off { background: var(--surface3); color: var(--text-dim); }
+.desk-v1-where-avatar-badge {
+  position: absolute; right: -4px; bottom: -4px; min-width: 15px; height: 15px; padding: 0 2px;
+  border-radius: 8px; background: var(--surface); border: 1px solid var(--border2);
+  color: var(--text); font-size: 9px; font-weight: 700; line-height: 13px; text-align: center; box-sizing: border-box;
+}
+.desk-v1-where-preview {
+  display: inline-block; margin-top: 2px; font-size: 10px; font-weight: 600; color: var(--amber-text);
+  background: var(--amber-dim); border-radius: 999px; padding: 0 7px;
+}
+
+.desk-v1-where-rule { margin: 0; font-size: 11.5px; color: var(--text-faint); }
+.desk-v1-where-sources { border: 1px solid var(--border2); border-radius: 10px; background: var(--surface); padding: 10px 12px 12px; }
+.desk-v1-where-sources-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 8px;
+}
+.desk-v1-where-sources-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.desk-v1-where-source {
+  width: 96px; padding: 10px 6px; display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center;
+}
+.desk-v1-where-source.is-used { opacity: 0.55; }
+.desk-v1-where-source-off { cursor: default; border-style: dashed; }
+.desk-v1-where-source-handle { font-size: 12px; font-weight: 700; color: var(--text); word-break: break-word; }
+.desk-v1-where-source-plat { font-size: 10.5px; color: var(--text-faint); }
+.desk-v1-where-source-reason { font-size: 10.5px; line-height: 1.3; color: var(--amber-text); }
+.desk-v1-where-connect {
+  background: none; border: none; color: var(--accent); font-size: 11px; font-weight: 600; cursor: pointer;
+  font-family: inherit; padding: 4px 2px; min-height: 24px;
+}
+.desk-v1-where-connect:hover { text-decoration: underline; }
+
+.desk-v1-where-notice {
+  background: var(--amber-dim); border: 1px solid var(--amber-text); border-radius: 8px;
+  color: var(--amber-text); font-size: 12.5px; font-weight: 600; padding: 8px 12px;
+}
+.desk-v1-where-notice-link {
+  background: none; border: none; color: inherit; text-decoration: underline; cursor: pointer;
+  font: inherit; padding: 0 0 0 6px;
+}
+.desk-v1-where-suggest { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.desk-v1-where-dragging { opacity: 0.45; }
+.desk-v1-where-drag-active { cursor: grabbing; }
+
+@media (max-width: 960px) {
+  /* The board scrolls sideways (frame 7b is desktop-only; no where-mobile
+     frame). Every card is already a 44px-tall target; the small controls get
+     a full tap size here. */
+  .desk-v1-where-colremove { width: 44px; height: 44px; font-size: 14px; }
+  .desk-v1-where-connect { min-height: 44px; }
+  .desk-v1-where-source { min-height: 44px; }
+}
+/* MC-977 mobile batch 2 (884 decision): the stacked board + compact tiles are
+   for PHONE widths (<700px). From 700px (Fold inner screen, tablets) Where
+   keeps its desktop shape -- Messages column beside the account columns,
+   sideways scroll when more than fit, sticky Messages as the drag source --
+   because 832px holds Messages (232px) plus two columns, which is a board; the
+   stack there would waste 600px of width. */
+@media (max-width: 699px) {
+  /* MC-977 mobile WH-1: Messages and every channel column were each 78vw in ONE
+     sideways-scrolling row, with Messages sticky at left -- so Messages was 90-93%
+     of the board, a channel column showed 10-35px beside it, and at 50% scroll
+     only 22px of one column showed: you could never see a column and drop onto it
+     at once. On phone the board is a STACK instead: Messages on top (list capped
+     at ~24vh, so it is a bounded strip, not the whole screen), each channel
+     column full-width beneath it. Chosen over a 45/55 side-by-side split because
+     at 290-358px that leaves Messages 130-160px wide (the message cards wrap to
+     3-4 lines) and one column 150px wide -- unreadable -- while the stack gives
+     both full width, and the first column starts inside the same screen as
+     Messages so a drag can still land. Tap (the Add-to menu) is the path for any
+     column further down: pointer-drag has no auto-scroll. */
+  .desk-v1-where-board { flex-direction: column; align-items: stretch; overflow-x: visible; gap: 10px; }
+  .desk-v1-where-msgs, .desk-v1-where-col { flex: 0 0 auto; width: auto; position: static; }
+  .desk-v1-where-msglist { max-height: clamp(140px, 24vh, 220px); }
+
+  /* WH-2: the SOURCES palette was 7 tiles of 92x114-161 (2 per row) with 31 text
+     elements at 9-10.5px. Now two compact 44px+ rows-of-two: avatar left, handle
+     and platform stacked beside it, every label >= 11px. */
+  .desk-v1-where-sources-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .desk-v1-where-source {
+    width: auto; min-width: 0; padding: 8px 10px;
+    display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; row-gap: 0;
+    align-items: center; text-align: left;
+  }
+  .desk-v1-where-source > .desk-v1-where-avatar { grid-row: 1 / span 2; }
+  .desk-v1-where-source-handle { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal; }
+  .desk-v1-where-source > .desk-v1-where-preview,
+  .desk-v1-where-source > .desk-v1-where-connect { grid-column: 1 / -1; justify-self: start; }
+  .desk-v1-where-msg-kind, .desk-v1-where-pill, .desk-v1-where-source-plat, .desk-v1-where-plat, .desk-v1-where-preview { font-size: 11px; }
+  .desk-v1-where-avatar-badge { font-size: 10px; min-width: 16px; height: 16px; line-height: 14px; }
+  /* WH-3: the "Preview · not connected" pill wrapped to 2-3 lines inside a source
+     tile. One line, short form ("Preview") inside the tile; the full text stays on
+     its title and wherever the pill sits on its own (What's create head). */
+  .desk-v1-where-source .desk-v1-where-preview { white-space: nowrap; font-size: 0; padding: 0; }
+  .desk-v1-where-source .desk-v1-where-preview::after {
+    content: attr(data-short); font-size: 11px; display: inline-block; padding: 0 7px;
+  }
+}
+@media (min-width: 700px) and (max-width: 960px) {
+  .desk-v1-where-sources-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+  .desk-v1-where-source { width: auto; min-width: 0; }
+}
+
+/* Frame 7b shows the board at full width with no agent box beside it. */
+.desk-v1-camp-main:has(> .desk-v1-camp-tabbody[data-panel="where"]) > .desk-v1-camp-rightcol { display: none; }
+
