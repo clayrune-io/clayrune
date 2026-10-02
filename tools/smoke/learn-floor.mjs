@@ -197,7 +197,7 @@ try {
       btn: document.querySelector('#lrn-hub-body .lrn-card-go').innerText.trim(),
     }));
     check(hub.title.startsWith('Learn with Claydo'), 'hub titled "Learn with Claydo"');
-    check(hub.cards === 1, 'hub shows exactly one card');
+    check(hub.cards === 2, 'hub lists both lessons (Floor first, then Workflows)');
     check(/The Floor/.test(hub.text) && /Find a figure, open a chat, hire a type\./.test(hub.text) && /3 actions · Practice only/.test(hub.text),
       'card carries the specced title, subtitle and metadata');
     check(hub.btn === 'Start', 'new user sees the Start state');

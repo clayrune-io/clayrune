@@ -12,6 +12,9 @@
 // for a real write (dispatch, send, publish, rename, settings) is refused here
 // with a visible "Practice only" message instead of being sent.
 //
+// Two lessons share this store: the Floor (roster) and Workflows (practice
+// workflow records). Both are scoped to the run id, so a Replay starts empty.
+//
 // Exposed as window.LearnPractice, consumed by learn.js. Registered once at
 // module load: the wrapper stays installed and routes only while `active`,
 // so there is no uninstall path that could clobber another fetch wrapper.
@@ -21,6 +24,7 @@ const PRACTICE_SID = 'learn-pip';
 const PRACTICE_CSID = 'learn-pip-transcript';
 const GUIDE_REF = 'project:guide';
 const LS_ROSTER = 'learn.practice.roster';
+const LS_WORKFLOWS = 'learn.practice.workflows';
 const PRACTICE_TRANSCRIPT = 'This is a practice conversation. No agent is running.';
 const PRACTICE_REFUSAL = 'Practice only. This would reach your real projects, so it was not sent.';
 
@@ -31,6 +35,7 @@ let _seq = 0;            // monotonic id for committed practice writes
 const _refused = [];     // [{method, path}] — what was refused, for the smoke
 const _unhandled = [];   // practice-project reads nobody answered
 let _failHire = '';      // test seam: the next hire answers with this error
+let _failSave = '';      // test seam: the next workflow save answers with this error
 
 function _loadRoster() {
   try {
@@ -47,6 +52,24 @@ function _saveRoster(state) {
 function _roster() {
   const s = _loadRoster();
   return s.runId === _runId ? s.roster : [];
+}
+
+// Practice workflows: the records the Workflows lesson saves. Same scoping as
+// the roster: tied to the run id, so a Replay starts with none.
+function _loadWorkflows() {
+  try {
+    const s = JSON.parse(localStorage.getItem(LS_WORKFLOWS) || 'null');
+    if (s && Array.isArray(s.workflows)) return s;
+  } catch (e) { /* fall through to an empty list */ }
+  return { runId: '', workflows: [] };
+}
+function _saveWorkflows(state) {
+  try { localStorage.setItem(LS_WORKFLOWS, JSON.stringify(state)); }
+  catch (e) { console.warn('[learn] could not save the practice workflows:', e); }
+}
+function _workflows() {
+  const s = _loadWorkflows();
+  return s.runId === _runId ? s.workflows : [];
 }
 
 function _pipFigure() {
@@ -153,6 +176,43 @@ function _hire(body) {
   return _json({ roster, already_hired: already });
 }
 
+// The workflow create/update write. Mirrors the shape the real route answers
+// with (`{ok, workflow}`) so the builder's own Save runs unchanged. A small
+// subset of mc/workflows.py::validate_workflow: enough that a nameless or empty
+// canvas fails the same way, not so much that it becomes a second validator.
+// Committed to the practice list BEFORE responding; the lesson reads that list,
+// never the DOM.
+function _saveWorkflow(body, id) {
+  if (_failSave) {
+    const msg = _failSave; _failSave = '';
+    return _json({ ok: false, error: msg }, 500);
+  }
+  const nodes = Array.isArray(body.nodes) ? body.nodes : [];
+  const names = nodes.map((n) => n && n.name);
+  if (!String(body.name || '').trim()) return _json({ ok: false, error: 'name is required' }, 400);
+  if (!nodes.length) return _json({ ok: false, error: 'a workflow needs at least one step' }, 400);
+  if (names.some((n, i) => !n || names.indexOf(n) !== i)) return _json({ ok: false, error: 'step names must be unique' }, 400);
+  const edges = Array.isArray(body.edges) ? body.edges : [];
+  if (edges.some((e) => !names.includes(e.from) || !names.includes(e.to))) {
+    return _json({ ok: false, error: 'an edge points at a step that does not exist' }, 400);
+  }
+  const state = _loadWorkflows();
+  const list = state.runId === _runId ? state.workflows : [];
+  const now = new Date().toISOString();
+  const prev = id ? list.find((w) => w.id === id) : null;
+  if (id && !prev) return _json({ ok: false, error: 'workflow not found' }, 404);
+  const rec = {
+    id: prev ? prev.id : 'pw-' + Date.now().toString(36) + (++_seq),
+    name: String(body.name).trim(), description: body.description || '',
+    enabled: body.enabled !== false, trigger: body.trigger || { type: 'manual' },
+    nodes, edges, format: 2, run_id: _runId, seq: ++_seq,
+    created_at: prev ? prev.created_at : now, saved_at: now,
+  };
+  if (prev) list[list.indexOf(prev)] = rec; else list.push(rec);
+  _saveWorkflows({ runId: _runId, workflows: list });
+  return _json({ ok: true, workflow: rec });
+}
+
 function _readBody(init) {
   try { return JSON.parse((init && init.body) || '{}'); } catch (e) { return {}; }
 }
@@ -175,11 +235,17 @@ function _route(method, url, init) {
     if (path === '/api/projects') return _json([projectRecord()]);
     if (path === '/api/floor') return _json(floorPayload());
     if (path === '/api/characters') return _json(_charactersFor(u));
+    // The Workflows lesson: the builder lists and reloads its practice records,
+    // and finds no schedule pointing at them.
+    if (path === '/api/workflows') return _json(JSON.parse(JSON.stringify(_workflows())));
+    if (path === '/api/schedules') return _json([]);
+    if (/^\/api\/workflows\/[^/]+\/runs$/.test(path)) return _json([]);
     if (isPracticeProject) {
       if (sub === '/agent/status') return _json({ sessions: [_sessionRecord()] });
       if (sub === '/agent/log') return _json([]);
       if (sub === '/conversations') return _json([_conversationRow()]);
       if (sub === '/backlog' || sub === '/social/queue') return _json([]);
+      if (sub === '/workflows') return _json({ workflows: [] });
       if (sub === '/terminal/status') return _json({ sessions: [] });
       _unhandled.push({ method, path });
       return _json({ error: 'Not available in practice.', practice_only: true }, 404);
@@ -190,11 +256,18 @@ function _route(method, url, init) {
   if (isPracticeProject && method === 'POST' && sub === '/roster/hire') {
     return _hire(_readBody(init));
   }
+  if (method === 'POST' && path === '/api/workflows') return _saveWorkflow(_readBody(init), null);
+  const putId = method === 'PUT' && path.match(/^\/api\/workflows\/([^/]+)$/);
+  if (putId) return _saveWorkflow(_readBody(init), decodeURIComponent(putId[1]));
   // Claydo's own answer stream is a read of the guide, not a write to a project.
   if (path.startsWith('/api/guide/')) return null;
   // The presence heartbeat reports which chats are open. A practice chat is not
   // a real session, so it is answered here instead of being sent.
   if (path === '/api/presence') return _json({ ok: true });
+  // The phone viewport watchdog (mobile.js) reports a stuck layout on its own.
+  // That is telemetry, not a user write: dropped here without a "Practice only"
+  // toast the user did nothing to earn.
+  if (path === '/api/diag/viewport') return _json({ ok: true });
   return _refuse(method, path);
 }
 
@@ -257,6 +330,7 @@ window.LearnPractice = {
     _gen++; _active = true; _runId = runId;
     if (fresh) _saveRoster({ runId, roster: [] });
     else if (_loadRoster().runId !== runId) _saveRoster({ runId, roster: [] });
+    if (fresh || _loadWorkflows().runId !== runId) _saveWorkflows({ runId, workflows: [] });
   },
   leave() { _gen++; _active = false; },
   // The authoritative practice roster for a run: committed store state, not DOM.
@@ -264,6 +338,13 @@ window.LearnPractice = {
     const s = _loadRoster();
     return s.runId === (runId || _runId) ? s.roster.slice() : [];
   },
+  // The practice workflow records committed by Save for a run: store state, not DOM.
+  workflows(runId) {
+    const s = _loadWorkflows();
+    return s.runId === (runId || _runId) ? JSON.parse(JSON.stringify(s.workflows)) : [];
+  },
+  // Test seam: make the next practice workflow save fail with `message`.
+  failNextSave(message) { _failSave = message || 'Practice save failed.'; },
   // Test seam: make the next practice hire fail with `message`.
   failNextHire(message) { _failHire = message || 'Practice hire failed.'; },
 };
