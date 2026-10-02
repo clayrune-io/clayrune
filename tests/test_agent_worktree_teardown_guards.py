@@ -153,9 +153,11 @@ def test_live_process_matched_by_full_command_line_when_preview_is_truncated(
     assert ok, path
     script = f'{path}/_scratch/x.py'
     child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)', script],
-                             cwd=str(tmp_path), stdin=subprocess.DEVNULL)
+                             cwd=str(tmp_path), stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     bystander = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
-                                 cwd=str(tmp_path), stdin=subprocess.DEVNULL)
+                                 cwd=str(tmp_path), stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         w.set_live_process_source(lambda: [
             _entry(path, pid=child.pid, command_preview='python x.py'),
@@ -180,7 +182,8 @@ def test_live_process_matched_by_cwd_when_psutil_present(project, archive_root):
     ok, path = w.create(project, 'live5')
     assert ok, path
     child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
-                             cwd=path, stdin=subprocess.DEVNULL)
+                             cwd=path, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         w.set_live_process_source(lambda: [
             _entry(path, pid=child.pid, command_preview='python _scratch/x.py')])
