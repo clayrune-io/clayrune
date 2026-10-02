@@ -10509,6 +10509,27 @@ html.mc-popout .btn-popout:not(.btn-chat-search) { display: none !important; }
 .lrn-arrow.lrn-nudge .lrn-arrow-in { animation: lrn-nudge 600ms ease-in-out 2; }
 @keyframes lrn-nudge { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(6px); } }
 
+/* Hand cue (learn.js `Hand`): positions and phases are driven per frame from JS,
+   so there is no CSS animation here to switch off. The hand and its rings sit ABOVE
+   the bubble (z 1901) because step 3 can point at the bubble's own Hire button;
+   the ghost and drop pulse stay below it. pointer-events: none so it can sit
+   over a live drag. */
+.lrn-hand, .lrn-hand-ghost, .lrn-hand-ring, .lrn-hand-drop { position: fixed; left: 0; top: 0; pointer-events: none; }
+.lrn-hand { z-index: 1902; width: 44px; height: 53px; transform-origin: 15.4px 5px; will-change: transform, opacity;
+  filter: drop-shadow(0 3px 4px rgba(0,0,0,0.35)); }
+.lrn-hand svg { display: block; width: 100%; height: 100%; }
+.lrn-hand-ghost { z-index: 2; opacity: 0; transform-origin: 50% 50%; border-radius: 12px; overflow: hidden;
+  box-shadow: 0 8px 22px rgba(0,0,0,0.35); }
+.lrn-hand-ghost > * { pointer-events: none; }
+.lrn-hand-ring { z-index: 1902; width: 38px; height: 38px; margin: -19px 0 0 -19px; box-sizing: border-box;
+  border: 3px solid var(--accent); border-radius: 50%; }
+.lrn-hand-ring.lrn-hand-hold { width: 48px; height: 48px; margin: -24px 0 0 -24px; border: 0;
+  background: conic-gradient(var(--accent) calc(var(--lrn-p, 0) * 360deg), color-mix(in srgb, var(--accent) 22%, transparent) 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 6px), #000 calc(100% - 5px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 6px), #000 calc(100% - 5px)); }
+.lrn-hand-drop { z-index: 2; box-sizing: border-box; border: 3px solid var(--accent); border-radius: 12px;
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 25%, transparent); }
+
 .lrn-bubble {
   position: fixed; z-index: 1901; pointer-events: auto; box-sizing: border-box;
   background: var(--surface); color: var(--text); border: 1px solid var(--accent);
