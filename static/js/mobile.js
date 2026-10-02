@@ -37,9 +37,29 @@
   // Gated to <=960px (mobile only) and capped to one POST per page load.
   const _DIAG_MAX_EVENTS = 30;
   const _DIAG_STUCK_MS = 1500;
+  // The first cut latched ONE post per page load and sent it with
+  // sendBeacon. Ron reproduced the bug on 2026-10-02 and data/diag/ stayed
+  // empty, for two independent reasons (journal 40ff4ab5, "MC-988 reopened"):
+  //   1. TRIGGER: the detector reset whenever a field was focused, but the
+  //      known stuck shape IS a focused field (down-button dismiss leaves
+  //      focus on the composer). It could only ever fire for the no-field
+  //      cases that the watchdogs already repair within 500ms.
+  //   2. DELIVERY: sendBeacon on the Capacitor APK bypasses the native shell's
+  //      fetch/XHR wrappers that attach the Cloudflare Access service-token
+  //      headers, so the tunnel bounces it. One lost shot = silence forever.
+  // So: trigger on "the room was there and we did not take it" (focused or
+  // not), send with fetch (the wrapped path), cap at 3 per load with a
+  // cooldown, keep a failed payload for replay on the next load, and post a
+  // once-a-day 'armed' line so an empty file can never again mean both "no
+  // bug" and "pipeline broken".
+  const _DIAG_MAX_SENDS = 3;
+  const _DIAG_COOLDOWN_MS = 60000;
+  const _DIAG_LAG_MS = 300;
   let _diagEvents = [];
   let _diagStuckSince = 0;
-  let _diagSent = false;
+  let _diagSends = 0;
+  let _diagLastSendAt = 0;
+  let _roomSince = 0;       // first time we saw unclaimed room (0 = none outstanding)
   function _diagIsMobile() { return window.innerWidth <= 960; }
   function _diagNumbers() {
     return {
@@ -55,16 +75,30 @@
     };
   }
   // Never allowed to block or delay apply() — every call site adds this
-  // AFTER the real work, and every failure inside is swallowed.
-  function _diagRecord(source) {
+  // AFTER the real work, and every failure inside is swallowed. `extra`
+  // carries per-event facts (e.g. queueDelayMs: how long the event sat in the
+  // main-thread queue before our handler ran — the direct measure of "the
+  // page was too busy to react", which the watchdog numbers alone can't show).
+  function _diagRecord(source, extra) {
     if (!_diagIsMobile()) return;
     try {
       const row = _diagNumbers();
       row.ts = Date.now();
       row.source = source;
+      if (extra) Object.assign(row, extra);
       _diagEvents.push(row);
       if (_diagEvents.length > _DIAG_MAX_EVENTS) _diagEvents.shift();
     } catch (e) { /* diagnostic only — never throw */ }
+  }
+  // Main-thread queue delay of a DOM event: now minus the time the browser
+  // stamped on it. null when the event carries no usable timeStamp.
+  function _queueDelay(e) {
+    try {
+      const t = e && e.timeStamp;
+      if (typeof t !== 'number' || !isFinite(t) || t <= 0) return null;
+      const d = Math.round(performance.now() - t);
+      return d >= 0 && d < 60000 ? d : null;
+    } catch (err) { return null; }
   }
   function _diagOpenModalHeight() {
     try {
@@ -76,50 +110,130 @@
     } catch (e) { /* best-effort */ }
     return null;
   }
-  function _diagSend() {
-    if (_diagSent) return;
-    _diagSent = true;
+  const _DIAG_PENDING_KEY = 'mc_vp_diag_pending';
+  // Only a payload stored by a PREVIOUS load is replayed; one stored a moment
+  // ago by this load's own failed post must not be consumed by the boot ping.
+  let _pendingFromPrevLoad = null;
+  try { _pendingFromPrevLoad = localStorage.getItem(_DIAG_PENDING_KEY); } catch (e) { /* storage blocked */ }
+  const _DIAG_ARMED_KEY = 'mc_vp_diag_armed';
+  function _diagPost(body, onFail) {
+    // fetch, not sendBeacon: the live page is not unloading, and fetch is the
+    // path the native shell wraps with the tunnel credentials.
     try {
-      const payload = JSON.stringify({
+      fetch('/api/diag/viewport', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body, keepalive: body.length < 60000,
+      }).then(r => { if (!r.ok) throw new Error('http ' + r.status); })
+        .catch(() => { try { if (onFail) onFail(); } catch (e) { /* swallow */ } });
+    } catch (e) { try { if (onFail) onFail(); } catch (e2) { /* swallow */ } }
+  }
+  function _diagSend(reason, extra) {
+    if (_diagSends >= _DIAG_MAX_SENDS) return;
+    if (_diagLastSendAt && Date.now() - _diagLastSendAt < _DIAG_COOLDOWN_MS) return;
+    _diagSends++;
+    _diagLastSendAt = Date.now();
+    try {
+      const f = document.activeElement;
+      const payload = JSON.stringify(Object.assign({
+        kind: 'stuck',
+        reason: reason || 'stuck',
         ts: Date.now(),
         events: _diagEvents.slice(),
         current: _diagNumbers(),
         modalHeight: _diagOpenModalHeight(),
+        fieldFocused: _isField(f),
+        sinceFieldActivityMs: _lastFieldActivityAt ? Date.now() - _lastFieldActivityAt : null,
+        vvTrusted: _vvTrusted,
         devicePixelRatio: window.devicePixelRatio || null,
         ua: navigator.userAgent || '',
         capacitor: !!window.Capacitor,
+      }, extra || {}));
+      _diagPost(payload, () => {
+        // Delivery failed: free the slot and keep the evidence for next load.
+        _diagSends = Math.max(0, _diagSends - 1);
+        try { if (payload.length < 32000) localStorage.setItem(_DIAG_PENDING_KEY, payload); } catch (e) { /* storage full/blocked */ }
       });
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon('/api/diag/viewport', new Blob([payload], { type: 'application/json' }));
-      } else {
-        fetch('/api/diag/viewport', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: payload, keepalive: true,
-        }).catch(() => {});
-      }
     } catch (e) { /* fire-and-forget — never throw */ }
   }
-  // Stuck iff no field is focused (a focused field's inset IS the keyboard,
-  // not a bug) AND either half of the INSIDE/OUTSIDE test above holds, for
-  // >=1.5s straight — a single bad reading (mid-transition) must not fire.
+  // Once a day per device: proof the client armed itself and the endpoint is
+  // reachable from THIS client (APK, tunnel, LAN). Also replays a payload that
+  // failed to deliver on a previous load.
+  function _diagBoot() {
+    if (!_diagIsMobile()) return;
+    try {
+      const pending = _pendingFromPrevLoad;
+      _pendingFromPrevLoad = null;
+      if (pending) {
+        if (localStorage.getItem(_DIAG_PENDING_KEY) === pending) localStorage.removeItem(_DIAG_PENDING_KEY);
+        _diagPost(pending.replace(/^\{/, '{"replayed":true,'), () => {
+          try { localStorage.setItem(_DIAG_PENDING_KEY, pending); } catch (e) { /* storage blocked */ }
+        });
+      }
+      const last = parseInt(localStorage.getItem(_DIAG_ARMED_KEY) || '0', 10) || 0;
+      if (Date.now() - last < 24 * 3600 * 1000) return;
+      localStorage.setItem(_DIAG_ARMED_KEY, String(Date.now()));
+      _diagPost(JSON.stringify({
+        kind: 'armed', ts: Date.now(), current: _diagNumbers(),
+        devicePixelRatio: window.devicePixelRatio || null,
+        ua: navigator.userAgent || '', capacitor: !!window.Capacitor,
+      }), () => { try { localStorage.removeItem(_DIAG_ARMED_KEY); } catch (e) { /* swallow */ } });
+    } catch (e) { /* diagnostic only */ }
+  }
+  setTimeout(_diagBoot, 3000);
+  // Two ways to be stuck, both reported:
+  //  (a) UNCLAIMED ROOM — the viewport offers >= MIN_KB more than we have
+  //      allocated, and it stays unclaimed for >= 1.5s. Covers a focused
+  //      composer (vv says the keyboard is gone), which the old detector
+  //      excluded by construction. With no field focused the layout viewport
+  //      is the evidence; with a field focused only vv is (a live keyboard
+  //      legitimately leaves layoutH - allocated == keyboard height).
+  //  (b) OUTSIDE THE WEBVIEW — nothing focused and the layout viewport itself
+  //      is short of the screen (the native shell never resized back); not
+  //      fixable from JS but worth knowing.
+  // Plus recovery LAG: room that was eventually claimed, but slower than
+  // _DIAG_LAG_MS — the "delay" Ron feels even when nothing is permanently stuck.
+  function _unclaimedRoom() {
+    const focused = _isField(document.activeElement);
+    let room = 0;
+    if (vv && vv.height) room = Math.max(room, vv.height + (vv.offsetTop || 0) - _lastApplied);
+    if (!focused) room = Math.max(room, (window.innerHeight || 0) - _lastApplied);
+    return _lastApplied > 0 ? room : 0;
+  }
   function _diagCheckStuck() {
-    if (_diagSent || !_diagIsMobile()) return;
-    if (_isField(document.activeElement)) { _diagStuckSince = 0; return; }
+    if (_diagSends >= _DIAG_MAX_SENDS || !_diagIsMobile()) return;
     const lh = layoutH();
     const availH = (window.screen && window.screen.availHeight) || 0;
-    const stuck = (_lastApplied > 0 && _lastApplied < lh - 100)
-                || (availH > 0 && lh < 0.75 * availH);
+    const stuck = (_unclaimedRoom() > MIN_KB)
+                || (!_isField(document.activeElement) && availH > 0 && lh < 0.75 * availH);
     if (!stuck) { _diagStuckSince = 0; return; }
     if (!_diagStuckSince) { _diagStuckSince = Date.now(); return; }
-    if (Date.now() - _diagStuckSince >= _DIAG_STUCK_MS) _diagSend();
+    if (Date.now() - _diagStuckSince >= _DIAG_STUCK_MS) _diagSend('stuck');
+  }
+  // Called on every poll tick (cheap reads only): times how long unclaimed
+  // room waits before apply() takes it. apply()'s grow branch closes it out.
+  function _diagRoomTick() {
+    if (_unclaimedRoom() > MIN_KB) { if (!_roomSince) _roomSince = Date.now(); }
+    else _roomSince = 0;
+  }
+  function _diagRoomClaimed() {
+    if (!_roomSince) return;
+    const lag = Date.now() - _roomSince;
+    _roomSince = 0;
+    if (lag >= _DIAG_LAG_MS) _diagSend('recovery-lag', { lagMs: lag });
   }
   function _renudgeOpenModals() {
     try {
       if (typeof openModals === 'undefined' || typeof sizeAgentChat !== 'function') return;
       openModals.forEach((entry, id) => {
         if (!entry || entry.minimized || !entry.element) return;
-        const sid = (typeof activeAgentTab !== 'undefined') ? activeAgentTab[entry.projectId || id] : null;
+        const key = entry.projectId || id;
+        const sid = (typeof activeAgentTab !== 'undefined') ? activeAgentTab[key] : null;
         if (sid) sizeAgentChat(entry.element, sid);
+        // The split (2nd) pane latches its own explicit px heights; the modal's
+        // ResizeObserver sizes both, so this direct path must too or it leaves
+        // the second pane at keyboard height until the observer next fires.
+        const sp = (typeof splitAgentTab !== 'undefined') ? splitAgentTab[key] : null;
+        if (sp && sp !== sid) sizeAgentChat(entry.element, sp);
       });
     } catch (e) { /* best-effort relayout — never block the height write */ }
   }
@@ -172,9 +286,27 @@
     if (_fieldLooksLive()) return;
     forceFull();
   }
+  // MC-988 (reopened 2026-10-02): THE viewport-recovery handler. Ron's rule —
+  // when the keyboard is reduced or dismissed the pane returns to full height
+  // at once, before and independent of any send, queue, respawn, turn status
+  // or server round-trip. So this is the only place the height is decided; the
+  // vv/window resize events and the watchdogs call it SYNCHRONOUSLY (not via
+  // rAF), and nothing here reads send/turn/agent state. The only gates are the
+  // physical ones: a field must be focused for an inset to exist at all, and
+  // the vv reading must not be known-stale.
+  let _lastLayoutH = 0;
   function apply(_diagSource) {
     _raf = 0;
     const lh = layoutH();
+    // Layout-viewport growth is evidence that does not depend on visualViewport
+    // at all: in `resizes-content` (Android WebView adjustResize — the
+    // Capacitor APK) the window itself resized back up, so the keyboard is
+    // gone whatever a lagging/stale vv.height still says. Stop believing that
+    // reading until vv reports something new (the same _vvTrusted contract
+    // forceFull() uses), instead of sizing the app off a stale short vv for as
+    // long as the field keeps focus. Smaller jumps (URL bar) are not a keyboard.
+    if (_lastLayoutH > 0 && lh - _lastLayoutH >= MIN_KB) _vvTrusted = false;
+    _lastLayoutH = lh;
     const vh = (vv && vv.height) ? vv.height : lh;
     // Size from the LAYOUT viewport minus a keyboard inset, rather than from
     // visualViewport.height directly. The inset is only believed when a text
@@ -199,7 +331,7 @@
     // the thread refills the reclaimed space in the same frame instead of
     // leaving a dead band under it. Deliberately narrower than a synthetic
     // window 'resize', which would also force a full dashboard re-render.
-    if (grew) _renudgeOpenModals();
+    if (grew) { _renudgeOpenModals(); _diagRoomClaimed(); }
   }
   function schedule() { if (!_raf) _raf = requestAnimationFrame(apply); }
   // Re-apply across a settle window: some Android WebViews report a stale
@@ -232,11 +364,24 @@
     settle();
   }
   apply();
+  // Resize events decide the height IN the event, not a frame later via rAF:
+  // when the keyboard is reduced or dismissed the pane must be full height in
+  // the same frame as the visualViewport/window resize (MC-988, Ron's rule).
+  // schedule() still follows, to re-check once layout has settled.
   if (vv) {
-    vv.addEventListener('resize', () => { _vvTrusted = true; schedule(); _diagRecord('vv-resize'); });
-    vv.addEventListener('scroll', () => { _vvTrusted = true; schedule(); _diagRecord('vv-scroll'); });
+    vv.addEventListener('resize', e => {
+      _vvTrusted = true; _diagRecord('vv-resize', { queueDelayMs: _queueDelay(e) });
+      apply('vv-resize'); schedule();
+    });
+    vv.addEventListener('scroll', e => {
+      _vvTrusted = true; _diagRecord('vv-scroll', { queueDelayMs: _queueDelay(e) });
+      apply('vv-scroll'); schedule();
+    });
   }
-  window.addEventListener('resize', () => { schedule(); _diagRecord('window-resize'); });
+  window.addEventListener('resize', e => {
+    _diagRecord('window-resize', { queueDelayMs: _queueDelay(e) });
+    apply('window-resize'); schedule();
+  });
   // A one-shot apply() at a guessed 200ms couldn't help if the post-rotation
   // layout/vv values hadn't settled yet — same flakiness settle() already
   // exists to cover, so use it here too instead of a single fixed-delay guess.
@@ -247,37 +392,43 @@
   // reliable signal when the vv event is flaky. Settle on both.
   document.addEventListener('focusin', e => { if (_isField(e.target)) { settle(); _diagRecord('focusin'); } });
   document.addEventListener('focusout', e => { if (_isField(e.target)) { settle(); _diagRecord('focusout'); } });
-  // Down-button keyboard dismiss keeps focus ON the field and fires NEITHER a
-  // focusout NOR (on some Android WebViews) a visualViewport 'resize' — so
-  // nothing re-runs apply() and the modal stays pinned short (the reported
-  // half-screen). A light watchdog catches it: whenever the visual viewport is
-  // meaningfully taller than what we've allocated, there is unused room (the
-  // keyboard is gone) → re-sync. It only ever expands, so it can't fight a
-  // legitimately open keyboard.
-  if (vv) setInterval(() => { if (vv.height - _lastApplied > 6) schedule(); }, 500);
-  // Second watchdog, on the layout viewport. The one above can't help when
-  // vv.height itself is the stale value (some Android WebViews stop updating it
-  // after a down-button dismiss) — then vv.height === _lastApplied forever and
-  // the app stays pinned short. The layout viewport doesn't go stale, so if we
-  // have allocated meaningfully less than it and no text field is focused,
-  // there is no keyboard and the missing space is ours to take back.
-  //
-  // Deliberately still bails whenever a field is focused, at this 500ms
-  // cadence: `layoutH() - _lastApplied > 6` is true for the ENTIRE duration
-  // of any correctly-tracked open keyboard (that gap IS the inset, not
-  // evidence of staleness), so gating this tight a poll on _fieldLooksLive()
-  // alone force-recovers every ordinary "focused, keyboard up, hasn't typed
-  // in the last 2s yet" moment — including the instant right after a fresh,
-  // legitimate focus — not just the stale-dismiss case. Measured regression
-  // during review (2026-09-25): it broke the plain "focus a field, keyboard
-  // opens" baseline outright. The focused-field self-heal lives in the
-  // slower, deliberately-rare invariant below instead.
+  // Watchdogs. One 100ms poll (was two 500ms ones: up to half a second of dead
+  // pane whenever an event never came) doing cheap reads only, calling apply()
+  // synchronously the moment there is room we have not taken.
+  //  - vv watchdog: a down-button dismiss keeps focus ON the field and fires
+  //    NEITHER a focusout NOR (on some Android WebViews) a vv 'resize', so
+  //    nothing re-runs apply(). Whenever the visual viewport is meaningfully
+  //    taller than what we've allocated, the keyboard is gone → re-sync. It
+  //    only ever expands, so it can't fight a legitimately open keyboard.
+  //  - layout watchdog: vv.height itself can be the stale value (then
+  //    vv.height === _lastApplied forever). The layout viewport doesn't go
+  //    stale, so if we have allocated meaningfully less than it and NO field
+  //    is focused, there is no keyboard and the missing space is ours.
+  //    Deliberately bails whenever a field is focused: `layoutH() -
+  //    _lastApplied > 6` is true for the ENTIRE duration of any correctly-
+  //    tracked open keyboard in resizes-visual mode (that gap IS the inset);
+  //    gating on _fieldLooksLive() alone force-recovers every "focused,
+  //    keyboard up, hasn't typed in 2s" moment (measured regression,
+  //    2026-09-25). The focused-field + stale-vv case is handled by LAYOUT
+  //    GROWTH in apply() (resizes-content) and by the event-driven paths
+  //    (turn settle, backgrounding) — never by a standing timer.
+  // A tick that arrives much later than 100ms means the main thread was busy
+  // (agent output rendering): logged, because that is what a late recovery
+  // looks like from the outside.
+  let _tickN = 0, _lastTickAt = 0;
   setInterval(() => {
-    if (_isField(document.activeElement)) return;
-    if (layoutH() - _lastApplied > 6) schedule();
-  }, 500);
-  // Same 500ms cadence carries the stuck-pane diagnostic — no separate timer.
-  setInterval(_diagCheckStuck, 500);
+    const now = performance.now();
+    if (_lastTickAt && now - _lastTickAt > 400) _diagRecord('tick-gap', { gapMs: Math.round(now - _lastTickAt) });
+    _lastTickAt = now;
+    const focused = _isField(document.activeElement);
+    _diagRoomTick();
+    if (vv && vv.height - _lastApplied > 6) apply('watchdog-vv');
+    else if (!focused && (window.innerHeight || 0) - _lastApplied > 6) apply('watchdog-layout');
+    if (++_tickN % 5 === 0) {   // 500ms cadence for the costlier reads
+      if (!focused && layoutH() - _lastApplied > 6) apply('watchdog-layout');
+      _diagCheckStuck();
+    }
+  }, 100);
   // NO standing timer for a focused field (Dave, 2026-09-25 review of 8d4ca7d).
   // An 8s invariant gated on RECENT_ACTIVITY_MS fires during every ordinary
   // 2-8s pause with a genuinely open keyboard (reading the reply, thinking,
