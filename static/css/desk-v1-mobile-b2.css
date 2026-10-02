@@ -1,0 +1,199 @@
+/* Desk v1 — COMPAT TAIL: MC-977 mobile batch 2 overrides. Cascade-ordered; must stay after every screen file above it. Split from desk-v1.css (one unit, one file); load order is in static/index.html. */
+/* ── MC-977 mobile batch 2 (docs/desk_v1/MOBILE_REVIEW_2026-10.md "Batch 2") ──
+   Everything here is <=960px / <=640px; desktop (>=1024px) is untouched. One
+   section, last in the file, so it wins on order and a merge touches one hunk. */
+
+/* S-1: the Undo toast must never sit on a primary action. While the Desk is
+   open and a toast is up, the shell stops 56px above the toast row (toast is
+   one fixed-height line, 52px, above the tab bar), so Brief's "Next: Goal ›"
+   and every other bottom CTA scroll above it instead of under it. */
+@media (max-width: 960px) {
+  body:has(.modal-window[data-modal-id="__desk"]) .toast.toast-action {
+    min-height: 52px; box-sizing: border-box; padding-top: 4px; padding-bottom: 4px;
+  }
+  body:has(.modal-window[data-modal-id="__desk"]) .toast-action .toast-msg {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  body:has(#toast-container .toast-action) .modal-window[data-modal-id="__desk"] .desk-v1-shell { margin-bottom: 58px; }
+}
+
+/* M-1 stepper: six stops of 58px = 348px overflowed a 314px stepper, so Launch
+   was cut ("Lau"). On phone the stops share the row equally (52px each at 344),
+   no sideways scroll, nothing clipped. */
+@media (max-width: 640px) {
+  .desk-v1-map-stops { overflow: visible; }
+  .desk-v1-map-stop { flex: 1 1 0; min-width: 0; padding-left: 0; padding-right: 0; }
+  .desk-v1-map-stop-word { font-size: 11px; letter-spacing: -0.01em; }
+}
+
+/* WT-7 filter chips: one row, never two. A segmented control whose visible pill
+   is 30px tall while each hit area stays 44px (the pill is a ::before, the button
+   keeps min-height). Falls back to a sideways scroll if the words ever outgrow it. */
+@media (max-width: 640px) {
+  .desk-v1-what-filters { flex-wrap: nowrap; gap: 0; overflow-x: auto; scrollbar-width: none; }
+  .desk-v1-what-filters::-webkit-scrollbar { display: none; }
+  .desk-v1-what-filter {
+    position: relative; flex: 1 0 auto; background: none; border: none; border-radius: 0;
+    padding: 0 12px; white-space: nowrap; min-height: 44px;
+  }
+  .desk-v1-what-filter::before {
+    content: ''; position: absolute; inset: 7px 2px; border-radius: 999px; z-index: -1;
+    background: var(--surface2); border: 1px solid var(--border2);
+  }
+  .desk-v1-what-filter[aria-pressed="true"] { background: none; }
+  .desk-v1-what-filter[aria-pressed="true"]::before { background: var(--accent-dim); border-color: var(--accent); }
+  .desk-v1-what-filters { isolation: isolate; }
+}
+
+/* WT-6 piece cards: kind label column + title offset left a ~60px empty band at
+   the left, and an always-reserved 15px result line plus the wrapped ⋯ row left
+   another above the button. On phone the card is kind label (11px, above the
+   title), title, "on N channels", status -- stacked at content height -- with the
+   ⋯ tucked into the top-right corner instead of a row of its own. */
+@media (max-width: 640px) {
+  .desk-v1-what-row {
+    display: flex; flex-direction: column; align-items: stretch; flex-wrap: nowrap;
+    position: relative; gap: 4px; padding: 10px 12px;
+  }
+  .desk-v1-what-row .desk-v1-what-kind { flex: 0 0 auto; padding: 0 44px 0 0; font-size: 11px; line-height: 1.2; }
+  .desk-v1-what-row .desk-v1-what-main { flex: 0 0 auto; padding-right: 44px; gap: 2px; }
+  /* the title keeps its 44px hit area; it overlaps the (pointer-transparent) kind and
+     channels lines above and below instead of adding 2 x 12px of empty band */
+  .desk-v1-what-row .desk-v1-what-title { padding: 0; margin: -10px 0; position: relative; }
+  .desk-v1-what-row .desk-v1-what-kind, .desk-v1-what-row .desk-v1-what-on { pointer-events: none; }
+  .desk-v1-what-row .desk-v1-camp-card-result:empty { display: none; }
+  .desk-v1-what-row .desk-v1-what-status { flex: 0 0 auto; }
+  .desk-v1-what-row .desk-v1-camp-card-more { position: absolute; top: 0; right: 0; }
+}
+
+/* Touch targets (<=960px). The review found 100+ controls under 44px across the
+   shared form styles, Posy box, calendar, Presence and Review. One rule for the
+   class, then the few shapes where a bare min-height would wrap a label. */
+@media (max-width: 960px) {
+  .desk-v1-shell button, .desk-v1-shell select, .desk-v1-shell summary,
+  .desk-v1-shell input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]) {
+    min-height: 44px; box-sizing: border-box;
+  }
+  /* G-5 Back / crumb: 26px tall everywhere; the piece page's bare "‹" was 26x26. */
+  .desk-v1-back { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; }
+  .desk-v1-projects-picker { display: inline-flex; align-items: center; }
+  /* G-6 / M-3: icon-only buttons (ⓘ 18px wide, ⋯ 21-30px wide) get a 44px square. */
+  .desk-v1-info-btn, .desk-v1-camp-card-morebtn, .desk-v1-posy-send-arrow, .desk-v1-cal-navbtn,
+  .desk-v1-home-hold-fix { min-width: 44px; }
+  .desk-v1-info-btn, .desk-v1-camp-card-morebtn { display: inline-flex; align-items: center; justify-content: center; padding-left: 0; padding-right: 0; }
+  /* P-2 on the 700-960 band: the header buttons lost their 44px with the phone stack */
+  .desk-v1-project-pause-btn, .desk-v1-project-agent-btn { min-height: 44px; }
+}
+
+/* WN-1/2 When + Calendar on phone: Cadence / Min-gap values were ellipsised at
+   120px ("12h (inherited, read-onl…"), the Term date wrapped ("Sep / 1 –") and
+   the agenda title column was squeezed to 57-86px by time + channel + status.
+   Fields go one per row and wrap their text instead of cutting it; each agenda
+   row is two lines -- time, channel, status on line 1, the full title on line 2. */
+@media (max-width: 640px) {
+  .desk-v1-cal-fields { grid-template-columns: minmax(0, 1fr); }
+  .desk-v1-cal-field-value > span { white-space: normal; overflow: visible; text-overflow: clip; }
+  .desk-v1-cal-agenda-item { flex-wrap: wrap; row-gap: 2px; }
+  .desk-v1-cal-agenda-title { flex: 1 1 100%; order: 5; white-space: normal; overflow: visible; text-overflow: clip; font-size: 13px; }
+}
+
+/* RV-1/2/3 Review on phone: the sticky action bar's -14px side margin was sized
+   for the old 28px gutter and now pushed the body 14px wider than the screen (it
+   scrolled sideways at every width). The primary label wraps to two lines instead
+   of ellipsising ("Approve and create publi…"), and the three secondary actions
+   share the row as equal 44px+ buttons (Skip was 29px wide). */
+@media (max-width: 960px) {
+  .desk-v1-review-actions { margin: 12px 0 0; padding: 12px 0 8px; }
+  .desk-v1-review-primary { white-space: normal; text-overflow: clip; line-height: 1.25; }
+  .desk-v1-review-secondary { display: flex; gap: 8px; }
+  .desk-v1-review-secondary button { flex: 1 1 0; min-width: 44px; }
+}
+
+/* Posy box (S-4): the "Pick who plans…" label and the "About: …" scope chip share
+   one head row; they wrap onto two lines each at 314px. Let the scope drop to its
+   own line (left-aligned, one line) rather than squeeze both. */
+@media (max-width: 640px) {
+  .desk-v1-posy-box .desk-thread-head { flex-wrap: wrap; row-gap: 0; }
+  .desk-v1-posy-scope { margin-left: 0; padding-left: 0; white-space: normal; max-width: 100%; text-align: left; }
+}
+
+/* Remaining icon / label shapes from the sweep. */
+@media (max-width: 960px) {
+  .desk-v1-project-engagement-open, .desk-v1-what-filter { min-width: 44px; }
+  .desk-v1-shell .btn-secondary, .desk-v1-rules-addbtn { white-space: nowrap; flex: 0 0 auto; min-width: 44px; }
+  /* font floors: the 10-10.5px glyph badges / chips the sweep still listed */
+  .desk-v1-camp-tab-badge, .desk-v1-claim-chip, .desk-v1-what-kind { font-size: 11px; }
+  /* ST-2: the video scene strip's "insert a scene here" gap was revealed only on :hover
+     (never on touch) and 22px wide -- always visible, a 44px square on touch screens. */
+  .desk-v1-video-insertgap { opacity: 1; width: 44px; margin: 0 -22px; }
+}
+/* X-2 Engagement filters: four 314x44 selects stacked = ~200px before the first row.
+   Two per row. */
+@media (max-width: 640px) {
+  .desk-v1-eng-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex-direction: unset; }
+}
+
+/* Where source tiles (WH-2 follow-up): the handle was ellipsised ("Clayrune p…") and the
+   platform glyph badge sat at 10px. Handle may take two lines; badge 11px. */
+@media (max-width: 699px) {
+  .desk-v1-where-source-handle { white-space: normal; overflow-wrap: anywhere; line-height: 1.2; }
+  .desk-v1-where-avatar-badge { font-size: 11px; min-width: 17px; height: 17px; line-height: 15px; }
+}
+
+/* 884 Fold inner: the Where board keeps its desktop two-column shape from 700px,
+   but the 10px / 10.5px desktop labels are below the 11px floor on a touch device. */
+@media (max-width: 960px) {
+  .desk-v1-where-msg-kind, .desk-v1-where-pill, .desk-v1-where-source-plat, .desk-v1-where-plat { font-size: 11px; }
+  .desk-v1-where-avatar-badge { font-size: 10px; min-width: 16px; height: 16px; line-height: 14px; }
+}
+
+/* Draft delete discoverability (batch 2, Ron from phone): a ⋯ on Draft project
+   cards and a plain 'Discard draft' text action beside the campaign page's
+   state chip. */
+.desk-v1-project-camp-card { position: relative; }
+.desk-v1-project-camp-more { position: absolute; top: 6px; right: 6px; }
+.desk-v1-project-camp-more .desk-v1-camp-card-morebtn { font-size: 20px; padding: 4px 10px; border: 1px solid var(--border2); border-radius: 7px; background: var(--surface); }
+.desk-v1-project-camp-card:has(.desk-v1-project-camp-more) .desk-v1-project-camp-top { padding-right: 52px; }
+.desk-v1-map-discard {
+  background: none; border: none; padding: 0 4px; font: inherit; font-size: 12.5px; font-weight: 600;
+  color: var(--text-muted, var(--text-faint)); text-decoration: underline; cursor: pointer; flex: 0 0 auto;
+}
+.desk-v1-map-discard:hover, .desk-v1-map-discard:focus-visible { color: var(--red-text, #c0392b); }
+@media (max-width: 640px) {
+  .desk-v1-map-discard { order: 1; min-height: 44px; padding: 0 8px; }
+  .desk-v1-map-more { order: 2; }
+}
+
+/* GL-2 (batch 2): the Target / Baseline / Unit trio stacked into six rows of
+   label + one narrow input each. Label over input, three columns, one band. */
+@media (max-width: 960px) {
+  .desk-v1-goal-editor > .desk-v1-goal-row:nth-child(2) {
+    display: grid; grid-auto-flow: column; grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 0.85fr) minmax(0, 1.3fr);
+    column-gap: 10px; row-gap: 4px; align-items: stretch;
+  }
+  .desk-v1-goal-editor > .desk-v1-goal-row:nth-child(2) input { width: 100%; min-width: 0; box-sizing: border-box; }
+}
+@media (max-width: 960px) {
+  .desk-v1-goal-manual .desk-v1-rules-inlinerow { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 8px; }
+  .desk-v1-goal-manual .desk-v1-rules-inlinerow input { width: 100%; min-width: 0; box-sizing: border-box; }
+  .desk-v1-goal-manual .desk-v1-rules-inlinerow [data-manual-entry-add] { grid-column: 1 / -1; white-space: nowrap; }
+}
+
+/* Studio article body / Goal "+ Add entry" (batch 2, the surface the review could not
+   reach): `.btn-secondary` has no rule anywhere, so "Back to What", "+ Add entry" and
+   the other Desk callers rendered as bare browser buttons (grey face, black system
+   text). Scoped to the Desk shell rather than the global class, as the Retro buttons
+   above were. */
+.desk-v1-shell .btn-secondary {
+  background: var(--surface); border: 1px solid var(--border2); border-radius: 8px;
+  color: var(--text); font-family: inherit; font-size: 13px; font-weight: 600;
+  padding: 7px 14px; cursor: pointer;
+}
+.desk-v1-shell .btn-secondary:hover, .desk-v1-shell .btn-secondary:focus-visible { background: var(--surface2); }
+.desk-v1-shell .btn-secondary:disabled { opacity: 0.55; cursor: default; }
+@media (max-width: 640px) {
+  .desk-v1-writer-actions { flex-wrap: wrap; }
+  .desk-v1-writer-actions button { flex: 1 1 140px; }
+}
+
