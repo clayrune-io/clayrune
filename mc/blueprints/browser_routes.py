@@ -1775,6 +1775,10 @@ def _run_cdp(session):
                     dw, dh = md.get('deviceWidth'), md.get('deviceHeight')
                     if dw and dh:
                         session['frame_w'], session['frame_h'] = int(dw), int(dh)
+                    # The zoom the picture is drawn at: input must be aimed
+                    # through it (see _input_commands).
+                    if md.get('pageScaleFactor'):
+                        session['page_scale'] = md['pageScaleFactor']
                     session['frame_seq'] = session.get('frame_seq', 0) + 1
                 try:
                     ack = {'id': _next_id(), 'method': 'Page.screencastFrameAck',
@@ -2623,16 +2627,38 @@ def _key_event_params(data):
     return params
 
 
-def _input_commands(data):
+def _inverse_page_scale(page_scale):
+    """1/pageScaleFactor, or 1 for anything that is not a sane zoom (no frame
+    yet, garbage). Bounded so one bad metadata frame cannot fling every click
+    off the page."""
+    try:
+        ps = float(page_scale)
+    except (TypeError, ValueError):
+        return 1.0
+    return 1.0 / ps if 0.1 <= ps <= 10 else 1.0
+
+
+def _input_commands(data, page_scale=1.0):
     """Translate one /api/browser/input request into the CDP commands to queue.
 
     Pure (no session, no socket) so the translation is unit-testable, and the
     live test in tests/test_browser_input_live.py drives a real Chromium with
-    exactly these commands."""
+    exactly these commands.
+
+    page_scale is the pageScaleFactor of the frame the user is looking at.
+    The pane aims in PICTURE px, but Input.dispatchMouseEvent reads x/y as
+    LAYOUT px, and the two differ whenever the page is zoomed out -- under
+    mobile emulation a page with no viewport meta (desktop-only sites, Google's
+    home page) is laid out 980px wide and drawn at 412/980. Unscaled, every tap
+    on such a page lands ~2.4x too close to the origin: the soft keyboard opens
+    (the pane's own input is focused) and the page's field never gets the
+    text. Wheel x/y follow the same convention; wheel DELTAS do not -- Chromium
+    already scales those (pinned in test_browser_input_live.py)."""
     kind = data.get('type')
+    inv = _inverse_page_scale(page_scale)
     if kind == 'mouse':
-        # x,y are already in VIEW_W x VIEW_H page coords (pane scales them)
-        x, y = float(data['x']), float(data['y'])
+        # x,y are in the frame the user sees (the pane scales them to it)
+        x, y = float(data['x']) * inv, float(data['y']) * inv
         button = data.get('button', 'left')
         action = data.get('action') or 'click'
         if action == 'click':
@@ -2657,7 +2683,7 @@ def _input_commands(data):
         })]
     if kind == 'wheel':
         return [('Input.dispatchMouseEvent', {
-            'type': 'mouseWheel', 'x': float(data['x']), 'y': float(data['y']),
+            'type': 'mouseWheel', 'x': float(data['x']) * inv, 'y': float(data['y']) * inv,
             'deltaX': float(data.get('deltaX', 0)), 'deltaY': float(data.get('deltaY', 0)),
         })]
     if kind == 'text':
@@ -2775,7 +2801,7 @@ def browser_input():
             mobile = data.get('mobile') if 'mobile' in data else None
             threading.Thread(target=_apply_view, args=(session, view, mobile), daemon=True).start()
         else:
-            for cmd in _input_commands(data):
+            for cmd in _input_commands(data, page_scale=session.get('page_scale', 1.0)):
                 q.put(cmd)
     except (KeyError, ValueError, TypeError) as e:
         return jsonify({'error': f'bad input payload: {e}'}), 400

@@ -351,7 +351,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   if (mobile) {
     win.innerHTML = `
     <div data-bp="bar" style="display:flex;align-items:center;gap:8px;padding:calc(8px + env(safe-area-inset-top)) 10px 8px;background:#2a2a2a;flex:0 0 auto">
-      <button data-bp="close" title="Back to chat" aria-label="Back to chat" style="background:none;border:none;color:#ddd;font-size:22px;line-height:1;cursor:pointer;padding:4px 8px;flex:0 0 auto">&#8592;</button>
+      <button data-bp="hide" title="Back to chat (the browser keeps running)" aria-label="Back to chat" style="background:none;border:none;color:#ddd;font-size:22px;line-height:1;cursor:pointer;padding:4px 8px;flex:0 0 auto"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:block"><path d="M5 9l7 7 7-7"/></svg></button>
       <form data-bp="urlform" style="display:contents">
       <input data-bp="url" type="text" inputmode="url" enterkeyhint="go" spellcheck="false" autocapitalize="off"
         value="${_bpDisplayUrl(url).replace(/"/g,'&quot;')}"
@@ -372,6 +372,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
         <button data-bp="mm-paste" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px">&#128203; Paste clipboard</button>
         <button data-bp="mm-copy" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px">${_BP_COPY_ICON_SVG} Copy selection</button>
         <button data-bp="mm-profile" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;border-top:1px solid #3a3a3a">Profile: <span data-bp="profile" style="color:#9ecb9e"></span></button>
+        <button data-bp="close" style="background:none;border:none;color:#ff8a80;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px;border-top:1px solid #3a3a3a">&#10005; Close browser</button>
       </div>
     </div>
     <div data-bp="tabswitch" style="display:none;flex-direction:column;position:absolute;inset:0;background:#1e1e1e;z-index:7">
@@ -507,6 +508,11 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     // clipboard API is unavailable (plain http) the paste sheet takes over.
     $('mm-paste').onclick = () => { menu.style.display = 'none'; pasteFromClipboard(); };
     $('mm-copy').onclick = async () => { menu.style.display = 'none'; imeShadow.focus(); await _bpCopySelection(false); };
+    // "Back to chat" HIDES the pane (same minimize path as desktop, chip in the
+    // dock) and leaves the session running; only the menu's "Close browser"
+    // ends it. It used to POST /api/browser/stop behind a back arrow, so a
+    // reflexive "go back" killed the session (Ron, 2026-10-02).
+    $('hide').onclick = () => { menu.style.display = 'none'; _bpMinimizePane(win, pid); };
     $('mm-profile').onclick = (e) => { e.stopPropagation(); menu.style.display = 'none'; _bpToggleSessionMenu(win, pid); };
 
     // ── mobile: tab switcher screen, not a strip — see _bpRenderMobileTabSwitcher.

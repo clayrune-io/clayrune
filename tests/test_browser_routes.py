@@ -1923,3 +1923,17 @@ def test_leak_sweep_reports_kill_failure_for_an_unkillable_throwaway(profiles, m
     report = br.sweep_leaked_pane_chromiums()
     assert [c['action'] for c in report['failed']] == ['kill_failed']
     assert report['closed'] == []
+
+
+def test_input_mouse_is_aimed_through_the_sessions_page_scale(app_client):
+    # Android 2026-10-02: a zoomed-out (no viewport meta) page drawn at 0.5x
+    # must receive a tap at picture (10,20) as layout (20,40).
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running',
+                                 'url': 'https://example.com', 'page_scale': 0.5,
+                                 'cmd_queue': __import__('queue').Queue()}
+    resp = app_client.post('/api/browser/input', json={
+        'session_id': 'sid-1', 'type': 'mouse', 'action': 'mousePressed',
+        'x': 10, 'y': 20, 'buttons': 1})
+    assert resp.status_code == 200
+    _method, params = browser_sessions['sid-1']['cmd_queue'].get_nowait()
+    assert (params['x'], params['y']) == (20, 40)

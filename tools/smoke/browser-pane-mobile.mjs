@@ -80,7 +80,9 @@ function layout(page) {
     const win = document.getElementById('mc-browser-pane');
     const r = win.getBoundingClientRect();
     const url = win.querySelector('[data-bp="url"]');
-    const close = win.querySelector('[data-bp="close"]');
+    // The header's way out: mobile "Back to chat" (hide), desktop X (close).
+    // Mobile's "close" is the collapsed menu's Close browser item, not the header.
+    const close = win.querySelector('[data-bp="hide"], [data-bp="bar"] [data-bp="close"]');
     const grip = win.querySelector('[data-bp="grip"]');
     const cr = close ? close.getBoundingClientRect() : null;
     return {
