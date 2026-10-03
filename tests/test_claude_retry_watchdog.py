@@ -7,8 +7,10 @@ reset, emitting `system/api_retry` every ~30 s. Measured against a fake local
 300, retry_delay_ms 899715 -> 869715 -> 839715.
 
 Three pieces, all pinned here:
-  1. the launch env: set for exactly the fence's unattended trigger types,
-     never for an attended chat, never over an explicit operator value;
+  1. the launch env (mc.launch_marker.launch_env, one env per spawn site,
+     composed with the fence launch marker): set for exactly the fence's
+     unattended trigger types, never for an attended chat, never over an
+     explicit operator value;
   2. ClaudeRuntime.parse_event turns the event into API_RETRY with a visible line;
   3. both Claude stdout readers treat it as output (last_output_time), because
      Guardian State 2 kills a `running` proc silent > 600 s with idle CPU, and a
@@ -24,6 +26,8 @@ from pathlib import Path
 import pytest
 
 import mc.agent_runtime as art
+from mc import launch_marker
+from mc.launch_marker import launch_env
 from steward import fence
 from tests.test_revive_notify_carry import ar, _project, CSID  # noqa: F401
 
@@ -49,14 +53,16 @@ def _line(delay_ms, attempt=1, status=429, error='rate_limit', cap=300):
 @pytest.mark.parametrize('trigger_type', sorted(fence._UNATTENDED_TRIGGER_TYPES))
 def test_env_set_for_every_trigger_type_the_fence_calls_unattended(trigger_type, monkeypatch):
     monkeypatch.delenv(VAR, raising=False)
-    env = art.claude_retry_watchdog_env(trigger_type)
-    assert env is not None and env[VAR] == '1'
+    env = launch_env(trigger_type)
+    assert env[VAR] == '1'
+    # composed with, not replacing, the fence launch marker
+    assert env[launch_marker.LAUNCH_MARKER_ENV] == '1'
     # a full copy of the server env, not a bare dict (Popen(env=) replaces it)
     assert env.get('PATH') == art.os.environ.get('PATH')
 
 
-def test_unattended_set_is_the_fences_own_object_not_a_copy():
-    assert art._UNATTENDED_TRIGGER_TYPES is fence._UNATTENDED_TRIGGER_TYPES
+def test_unattended_set_is_the_fences_own_contents_not_a_second_list():
+    assert launch_marker.UNATTENDED_TRIGGER_TYPES == fence._UNATTENDED_TRIGGER_TYPES
     assert {'schedule', 'workflow', 'dispatch', 'hivemind_orchestrator',
             'hivemind_worker'} == set(fence._UNATTENDED_TRIGGER_TYPES)
 
@@ -64,25 +70,39 @@ def test_unattended_set_is_the_fences_own_object_not_a_copy():
 @pytest.mark.parametrize('trigger_type', ['manual', '', None, 'some_future_type'])
 def test_env_untouched_for_attended_or_unknown(trigger_type, monkeypatch):
     monkeypatch.delenv(VAR, raising=False)
-    assert art.claude_retry_watchdog_env(trigger_type) is None
+    assert VAR not in launch_env(trigger_type)
 
 
 @pytest.mark.parametrize('value', ['0', '1', 'false'])
 def test_explicit_operator_value_is_respected(value, monkeypatch):
     monkeypatch.setenv(VAR, value)
-    # None = Popen inherits the operator's value unchanged (an explicit 0 stays 0)
-    assert art.claude_retry_watchdog_env('schedule') is None
+    assert launch_env('schedule')[VAR] == value  # an explicit 0 stays 0
 
 
 def test_empty_operator_value_counts_as_unset(monkeypatch):
     monkeypatch.setenv(VAR, '')
-    assert art.claude_retry_watchdog_env('schedule')[VAR] == '1'
+    assert launch_env('schedule')[VAR] == '1'
+
+
+def test_watchdog_does_not_depend_on_the_fence_switch(monkeypatch):
+    from mc import state
+    monkeypatch.delenv(VAR, raising=False)
+    monkeypatch.setitem(state.CONFIG, 'fence_unattended_enabled', False)
+    env = launch_env('schedule')
+    assert env[VAR] == '1' and launch_marker.LAUNCH_MARKER_ENV not in env
 
 
 def test_helper_does_not_mutate_the_server_environment(monkeypatch):
     monkeypatch.delenv(VAR, raising=False)
-    art.claude_retry_watchdog_env('schedule')
+    launch_env('schedule')
     assert VAR not in art.os.environ
+
+
+def test_no_second_watchdog_env_helper_or_env_kwarg_left_in_the_spawn_sites():
+    """Both branches once added `env=` to the same Popen; the merge was a
+    SyntaxError. The only env= on a Claude spawn is launch_env."""
+    for rel in ('mc/blueprints/agent_routes.py', 'server.py', 'mc/agent_runtime.py'):
+        assert 'claude_retry_watchdog_env' not in (REPO / rel).read_text(encoding='utf-8')
 
 
 def test_every_claude_popen_in_the_routes_passes_env():
@@ -140,10 +160,9 @@ def test_revive_launch_env_follows_the_rows_trigger_type(
     assert ar._revive_from_agent_log('p1', 's1', 'go', _project(tmp_path)) is not None
     assert len(seen) == 1
     env = seen[0].get('env')
-    if expect:
-        assert env is not None and env[VAR] == '1'
-    else:
-        assert env is None
+    assert env is not None
+    assert (env.get(VAR) == '1') is expect
+    assert (env.get(launch_marker.LAUNCH_MARKER_ENV) == '1') is expect
 
 
 @pytest.mark.parametrize('trigger_type,expect', [('schedule', True), ('manual', False)])
@@ -160,7 +179,9 @@ def test_queued_followup_respawn_env_follows_the_sessions_trigger_type(
     ar._auto_dispatch_followup(session, 'continue')
     assert len(seen) == 1
     env = seen[0].get('env')
-    assert (env is not None and env[VAR] == '1') if expect else env is None
+    assert env is not None
+    assert (env.get(VAR) == '1') is expect
+    assert (env.get(launch_marker.LAUNCH_MARKER_ENV) == '1') is expect
 
 
 # ── 2. parse_event ───────────────────────────────────────────────────────────
@@ -282,3 +303,57 @@ def test_api_retry_json_never_lands_in_the_chat(tmp_data_dir):
     session['proc'] = proc
     server._read_agent_stream(proc, session)
     assert not any('api_retry' in ln or '{' in ln for ln in session['log_lines'])
+
+
+# ── 4. the guardian's 10 minute stall kill, against the real tick ─────────────
+
+class _AliveProc:
+    pid = 424242
+
+    def poll(self):
+        return None
+
+
+def _guardian_session(last_output_ago, now):
+    return {'project_id': 'p-retry', 'session_id': 'mc-retry', 'status': 'running',
+            'mode': 'B', 'proc': _AliveProc(), 'provider': 'claude', 'log_lines': [],
+            'last_output_time': now - last_output_ago,
+            'last_status_change_time': now - last_output_ago}
+
+
+@pytest.fixture
+def guardian(monkeypatch):
+    from mc.blueprints import agent_routes as routes
+    killed = []
+    monkeypatch.setattr(routes, '_proc_is_cpu_idle', lambda *a: True)  # a wait is CPU-idle
+    monkeypatch.setattr(routes, '_pid_is_alive', lambda pid: True)  # fake pid: skip State 1
+    monkeypatch.setattr(routes, '_kill_proc_background', killed.append)
+    return routes, killed
+
+
+def test_control_guardian_kills_a_claude_run_silent_past_600s(guardian):
+    routes, killed = guardian
+    now = routes._time.time()
+    s = _guardian_session(routes.GUARDIAN_HUNG_TIMEOUT + 60, now)
+    routes._guardian_check_session('mc-retry', s, now)
+    assert len(killed) == 1 and s['guardian_state'] == 'needs_attention'
+
+
+def test_guardian_spares_a_session_that_is_in_api_retry(guardian):
+    """A rate-limit wait is silent and CPU-idle, i.e. exactly State 2's profile.
+    It is spared only because each api_retry event (every ~30 s) restamps
+    last_output_time through the real reader hook."""
+    routes, killed = guardian
+    now = routes._time.time()
+    s = _guardian_session(5 * 3600, now)  # had been silent for hours before the wait
+    for delay in (899715, 869715, 839715):
+        routes._note_api_retry(s, _line(delay))
+        routes._guardian_check_session('mc-retry', s, routes._time.time() + 30)
+    assert killed == [] and 'guardian_state' not in s
+    stamped = s['last_output_time']
+    # inside the window after the latest event: spared
+    routes._guardian_check_session('mc-retry', s, stamped + routes.GUARDIAN_HUNG_TIMEOUT - 1)
+    assert killed == []
+    # the watchdog only resets the clock: if the events stop for >600 s it is hung again
+    routes._guardian_check_session('mc-retry', s, stamped + routes.GUARDIAN_HUNG_TIMEOUT + 1)
+    assert len(killed) == 1

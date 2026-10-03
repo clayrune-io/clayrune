@@ -6420,7 +6420,6 @@ def _auto_recover_failed_resume(session):
                 text=True, encoding='utf-8', errors='replace',
                 env=_launch_marker.launch_env(session.get('trigger_type')),
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-                env=_agent_runtime.claude_retry_watchdog_env(session.get('trigger_type')),
             )
             _sysprompt_cleanup(_sp_path, proc)
             initial_msg = json.dumps({
@@ -6463,7 +6462,6 @@ def _auto_recover_failed_resume(session):
                 text=True, encoding='utf-8', errors='replace',
                 env=_launch_marker.launch_env(session.get('trigger_type')),
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-                env=_agent_runtime.claude_retry_watchdog_env(session.get('trigger_type')),
             )
             _sysprompt_cleanup(_sp_path, proc)
             threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
@@ -7520,7 +7518,6 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                 text=True, encoding='utf-8', errors='replace',
                 env=_launch_marker.launch_env(entry.get('trigger_type')),
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-                env=_agent_runtime.claude_retry_watchdog_env(entry.get('trigger_type')),
             )
         except Exception as e:
             _log(f"[revive] {project_id}: spawn failed: {e}")
@@ -7637,7 +7634,6 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             text=True, encoding='utf-8', errors='replace',
             env=_launch_marker.launch_env(entry.get('trigger_type')),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-            env=_agent_runtime.claude_retry_watchdog_env(entry.get('trigger_type')),
         )
     except Exception as e:
         _log(f"[revive] {project_id}: spawn failed: {e}")
@@ -9677,7 +9673,6 @@ def _auto_dispatch_followup(session, message):
             creationflags=_POPEN_FLAGS,
             env=_launch_marker.launch_env(session.get('trigger_type')),
             startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-            env=_agent_runtime.claude_retry_watchdog_env(session.get('trigger_type')),
         )
     except Exception as e:
         session['log_lines'].append(f'[follow-up failed: {e}]')
@@ -11856,7 +11851,6 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 creationflags=_POPEN_FLAGS,
                 env=_launch_marker.launch_env(trigger_type),
                 startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-                env=_agent_runtime.claude_retry_watchdog_env(trigger_type),
             )
             _sysprompt_cleanup(_sp_path, proc)
 
@@ -12017,7 +12011,6 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 creationflags=_POPEN_FLAGS,
                 env=_launch_marker.launch_env(trigger_type),
                 startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-                env=_agent_runtime.claude_retry_watchdog_env(trigger_type),
             )
             _sysprompt_cleanup(_sp_path, proc)
 
@@ -13486,7 +13479,6 @@ def agent_followup(project_id):
                     text=True, encoding='utf-8', errors='replace',
                     env=_launch_marker.launch_env(rb['existing'].get('trigger_type')),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-                    env=_agent_runtime.claude_retry_watchdog_env(rb['existing'].get('trigger_type')),
                 )
                 _sysprompt_cleanup(rb.get('sysprompt_path'), proc)
                 _log(f"[respawn-B] {rb['project_id']}: spawned PID {proc.pid}")
@@ -13619,7 +13611,6 @@ def agent_followup(project_id):
                 creationflags=_POPEN_FLAGS,
                 env=_launch_marker.launch_env(existing.get('trigger_type')),
                 startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-                env=_agent_runtime.claude_retry_watchdog_env(existing.get('trigger_type')),
             )
             _sysprompt_cleanup(_sp_path, proc)
             threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
@@ -14147,7 +14138,6 @@ def agent_interrupt(project_id, *, _internal=None):
                     text=True, encoding='utf-8', errors='replace',
                     env=_launch_marker.launch_env(session.get('trigger_type')),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-                    env=_agent_runtime.claude_retry_watchdog_env(session.get('trigger_type')),
                 )
                 _sysprompt_cleanup(_sp_path, proc)
                 threading.Thread(target=_hide_windows_delayed,
@@ -14221,7 +14211,6 @@ def agent_interrupt(project_id, *, _internal=None):
                     text=True, encoding='utf-8', errors='replace',
                     env=_launch_marker.launch_env(session.get('trigger_type')),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-                    env=_agent_runtime.claude_retry_watchdog_env(session.get('trigger_type')),
                 )
                 _sysprompt_cleanup(_sp_path, proc)
                 threading.Thread(target=_hide_windows_delayed,

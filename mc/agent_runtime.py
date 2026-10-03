@@ -47,9 +47,6 @@ from mc.unix_path import nvm_bin_dirs as _nvm_bin_dirs
 # nothing from mc/, so this is a one-way, cycle-free dependency (mirrors the
 # existing mc/blueprints/{scheduler,steward}_routes.py -> steward imports).
 from steward.fence import _UNATTENDED_TRIGGER_TYPES as _CODEX_UNATTENDED_TRIGGER_TYPES
-# Same set, neutral name, for the Claude-side retry watchdog below (one
-# definition of "unattended", never a second list).
-from steward.fence import _UNATTENDED_TRIGGER_TYPES
 import hashlib
 import tempfile
 from datetime import timedelta
@@ -5844,33 +5841,10 @@ def _find_claude_transcript(cwd, session_id):
 # emitting a `system/api_retry` stream-json event every ~30 s. That is what an
 # UNATTENDED run wants (nobody is there to re-send it) and what an attended chat
 # does not (the human wants the error now, not a silent multi-hour wait).
-CLAUDE_RETRY_WATCHDOG_ENV = 'CLAUDE_CODE_RETRY_WATCHDOG'
 # A status line is re-shown for the same wait at most this often (the CLI emits
 # an event every ~30 s; log_lines is append-only, so one line per event would
 # put 30 lines in the chat for a 15 min wait and 600 for a 5 h one).
 API_RETRY_NOTICE_EVERY_S = 300
-
-
-def claude_retry_watchdog_env(trigger_type):
-    """Env dict for a Claude launch with the retry watchdog on, or None.
-
-    None means "leave the launch environment alone" (Popen(env=None) inherits),
-    so an attended launch is byte-identical to before. Set only for a session
-    whose trigger_type is in steward.fence._UNATTENDED_TRIGGER_TYPES -- the one
-    definition of "nobody is reading this session turn by turn" (schedule,
-    workflow, dispatch, hivemind_*). Anything else, including a missing or
-    unrecognised trigger_type, stays attended (fail toward the old behaviour:
-    a run that ends on a 429 is visible; a silent hours-long wait nobody asked
-    for is not). An explicit CLAUDE_CODE_RETRY_WATCHDOG in the server's
-    environment, 0 included, is the operator's choice and is never overridden.
-    """
-    if trigger_type not in _UNATTENDED_TRIGGER_TYPES:
-        return None
-    if (os.environ.get(CLAUDE_RETRY_WATCHDOG_ENV) or '').strip():
-        return None
-    env = os.environ.copy()
-    env[CLAUDE_RETRY_WATCHDOG_ENV] = '1'
-    return env
 
 
 def _retry_wait_label(delay_ms):

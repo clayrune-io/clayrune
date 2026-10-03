@@ -32,7 +32,8 @@ UNATTENDED = ['dispatch', 'schedule', 'workflow', 'hivemind_orchestrator', 'hive
 
 @pytest.mark.parametrize('trigger_type', UNATTENDED)
 def test_unattended_trigger_types_set_the_marker(trigger_type):
-    assert launch_env(trigger_type, base={'A': '1'}) == {'A': '1', LAUNCH_MARKER_ENV: '1'}
+    assert launch_env(trigger_type, base={'A': '1'}) == {
+        'A': '1', LAUNCH_MARKER_ENV: '1', launch_marker.RETRY_WATCHDOG_ENV: '1'}
 
 
 @pytest.mark.parametrize('trigger_type', ['manual', '', None, 'some_future_type'])
