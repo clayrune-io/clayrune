@@ -1684,6 +1684,13 @@ def _startup_memory_maintenance():
         sweep_orphan_tmpfiles([_DATA_ROOT / 'data'])
     except Exception as e:
         _log(f"[tmp-sweep] bootstrap failed: {e}")
+    try:
+        # Dispatch attribution needs psutil; an update that pulled new code but
+        # not new packages leaves it missing and silently trusting Origin.
+        from mc.caller_attribution import warn_if_degraded
+        warn_if_degraded()
+    except Exception as e:
+        _log(f"[dispatch] attribution startup check failed: {e}")
 
 
 # ── Revive-from-agent-log + transcript buffer renderers ── moved to

@@ -217,7 +217,8 @@ def test_managed_roots_covers_sessions_and_tracked_jobs_but_not_exited_procs():
     roots = ca.managed_roots(
         {'a': {'proc': live, 'session_id': 'a'}, 'b': {'proc': dead, 'session_id': 'b'},
          'c': {'session_id': 'c'}},
-        {13: {'session_id': 'a', 'type': 'agent_job'}, 14: {'session_id': ''}})
+        {13: {'session_id': 'a', 'type': 'agent_job', 'proc': SimpleNamespace(pid=13, poll=lambda: None)},
+         14: {'session_id': ''}})
     assert roots == {11: 'a', 13: 'a'}
 
 

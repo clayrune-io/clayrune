@@ -75,8 +75,39 @@ def _is_loopback(addr: str) -> bool:
     return bool((mapped or ip).is_loopback)
 
 
+# Creation-time slack when matching a tracked PID to the process we spawned
+# (same tolerance the startup reaper uses, mc/process_ledger.py).
+_CREATE_TIME_SLACK_S = 2.0
+
+
+def _tracked_pid_is_ours(pid: int, entry: Dict[str, Any], psutil) -> bool:
+    """Is `pid` still the process Clayrune registered, not a stranger that
+    inherited the number after it exited?
+
+    A live Popen handle settles it: poll() is None only while that very child
+    runs, so the PID cannot belong to anyone else. An exited handle is a no.
+    Without a handle the stored creation time must match the live process's
+    (an entry with neither, or a process psutil cannot read, is not ours --
+    a reused browser/proxy PID must never inherit a dead session's fence)."""
+    proc = (entry or {}).get('proc')
+    if proc is not None:
+        try:
+            return proc.poll() is None
+        except Exception:
+            pass                          # unusable handle: fall to identity
+    recorded = (entry or {}).get('create_time')
+    if not isinstance(recorded, (int, float)) or psutil is None:
+        return False
+    try:
+        live = float(psutil.Process(pid).create_time())
+    except Exception:
+        return False
+    return abs(live - float(recorded)) <= _CREATE_TIME_SLACK_S
+
+
 def managed_roots(agent_sessions: Dict[str, Any],
-                  tracked_processes: Dict[int, Dict[str, Any]]) -> Dict[int, str]:
+                  tracked_processes: Dict[int, Dict[str, Any]],
+                  psutil_mod=None) -> Dict[int, str]:
     """{pid: session_id} for every live process Clayrune spawned on behalf of
     an agent session: the session's own CLI process, plus the processes the
     process tracker holds against a session id (background jobs run as a
@@ -93,9 +124,14 @@ def managed_roots(agent_sessions: Dict[str, Any],
         except Exception:
             pass
         roots[pid] = str((sess or {}).get('session_id') or sid)
+    psutil = None
     for pid, entry in list(tracked_processes.items()):
         sid = (entry or {}).get('session_id')
-        if sid and isinstance(pid, int) and pid > 0 and pid not in roots:
+        if not (sid and isinstance(pid, int) and pid > 0) or pid in roots:
+            continue
+        if (entry or {}).get('proc') is None and psutil is None:
+            psutil = psutil_mod or _load_psutil()
+        if _tracked_pid_is_ours(pid, entry, psutil):
             roots[pid] = str(sid)
     return roots
 
@@ -190,13 +226,15 @@ def _attribute(peer_addr, peer_port, server_port, roots, own_pid, psutil_mod):
         owner = None                     # e.g. macOS without root: use the fallback
     if owner is None:
         hit, incomplete = _search_managed_trees(psutil, roots, peer_port, server_port)
-        if hit:
-            root_pid, owner_pid = hit
-            return Attribution(ATTRIBUTED, roots[root_pid], root_pid,
-                               f'socket owned by pid {owner_pid} under session pid {root_pid}')
-        if incomplete:
-            return Attribution(UNAVAILABLE, detail='could not inspect every managed process')
-        return Attribution(UNATTRIBUTED, detail='peer socket is not in any managed process tree')
+        if hit is None:
+            if incomplete:
+                return Attribution(UNAVAILABLE, detail='could not inspect every managed process')
+            return Attribution(UNATTRIBUTED, detail='peer socket is not in any managed process tree')
+        # The socket was found under a managed root's tree, but that tree can
+        # contain the server itself (server started from an agent's shell), so
+        # the owner still goes through the same walk -- and the same stop at
+        # the server PID -- as a system-wide hit.
+        owner = hit[1]
 
     try:
         proc = psutil.Process(owner)
@@ -251,3 +289,17 @@ def resolve_dispatch(request, trigger_type: str, source: str,
         if not has_origin:
             return 'dispatch', 'agent'
     return trigger_type, source
+
+
+def warn_if_degraded() -> bool:
+    """Startup check: True when attribution can run. Without psutil every
+    dispatch lookup is `unavailable`, so a request carrying an Origin header
+    is trusted as the UI again -- the exact spoof this module closes -- and the
+    only sign is a per-request log line. Say so once, loudly, at boot. Never
+    raises."""
+    if _load_psutil() is not None:
+        return True
+    _log("[dispatch] WARNING: psutil is not installed -- dispatch caller attribution is "
+         "DEGRADED: an agent can pose as the UI with an Origin header and get an unfenced "
+         "child. Fix: python -m pip install -r requirements.txt, then restart.", flush=True)
+    return False
