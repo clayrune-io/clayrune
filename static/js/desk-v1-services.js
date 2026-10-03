@@ -44,8 +44,8 @@
     const c = s.credential || {};
     if (!c.name) return '<span data-svc-cred-state="none">No credential named: agents see this service but have nothing to sign in with.</span>';
     return c.in_vault
-      ? `<span data-svc-cred-state="found">Credential <code>${esc(c.name)}</code>: found in Secrets.</span>`
-      : `<span data-svc-cred-state="missing">Credential <code>${esc(c.name)}</code>: nothing in Secrets has that name yet. Add it there.</span>`;
+      ? `<span data-svc-cred-state="found"><code>${esc(c.name)}</code>: found in Secrets.</span>`
+      : `<span data-svc-cred-state="missing"><code>${esc(c.name)}</code>: nothing in Secrets has that name yet. Add it there.</span>`;
   }
 
   // The detail panel body for one saved service.
