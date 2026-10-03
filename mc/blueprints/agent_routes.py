@@ -6514,6 +6514,19 @@ def _load_agent_log(project_id):
         return []
 
 
+def _launch_project_path(p, session_dict_override=None):
+    """The project's registered path AS OF THIS LAUNCH, for the session dict's
+    `_launch_project_path` key (MC-1037 round 3). Set once, read only by
+    /api/session/trigger-type, never refreshed from the project record: a later
+    POST /api/project/<id> that rewrites `project_path` must not change what a
+    live session is told its memory dir is. A pre-registered dict that already
+    carries the key (Hivemind worker) keeps it."""
+    prior = (session_dict_override or {}).get('_launch_project_path')
+    if prior:
+        return str(prior)
+    return str((p or {}).get('project_path') or '')
+
+
 @bp.route('/api/session/trigger-type')
 def get_session_trigger_type():
     """Look up the trigger_type MC recorded for a Claude session at dispatch
@@ -6541,6 +6554,14 @@ def get_session_trigger_type():
     config flag, and it runs as a stateless subprocess on every single
     PreToolUse hook call — piggybacking here halves its per-tool-call HTTP
     overhead instead of adding a second `/api/config` round trip.
+
+    `project_path` (MC-1037, 2026-10-03) rides along for a LIVE session only: the
+    project's registered path as recorded on the session at LAUNCH
+    (`_launch_project_path`), which is where the fence derives the session's
+    memory dir. It is an immutable launch fact, not the shell's cwd (which
+    moves) and not a fresh `load_project()` (a project edit would move it).
+    Absent when the session predates the field (revived after a restart) or the
+    project had no path; the fence reads absent as "no memory-dir exception".
     """
     csid = (request.args.get('claude_session_id') or '').strip()
     if not csid:
@@ -6548,8 +6569,12 @@ def get_session_trigger_type():
     fue = bool(state.CONFIG.get('fence_unattended_enabled', True))
     for s in agent_sessions.values():
         if s.get('claude_session_id') == csid:
-            return jsonify({'found': True, 'trigger_type': s.get('trigger_type') or 'manual',
-                            'fence_unattended_enabled': fue})
+            body = {'found': True, 'trigger_type': s.get('trigger_type') or 'manual',
+                    'fence_unattended_enabled': fue}
+            pp = s.get('_launch_project_path')
+            if pp:
+                body['project_path'] = pp
+            return jsonify(body)
     for log_file in DATA_DIR.glob('*_agent_log.json'):
         try:
             entries = json.loads(log_file.read_text(encoding='utf-8'))
@@ -10049,6 +10074,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             'incognito': bool(incognito),
             'trigger_type': trigger_type,
             'trigger_id': trigger_id,
+            '_launch_project_path': _launch_project_path(p),
             'provider': provider_name,
             'agent_model': model,
             'requested_effort': _requested_effort(
@@ -11825,6 +11851,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 'incognito': bool(incognito),
                 'trigger_type': trigger_type,
                 'trigger_id': trigger_id,
+                '_launch_project_path': _launch_project_path(p, session_dict_override),  # MC-1037 r3
                 # Who dispatched this: '' (legacy/unknown) · 'ui' (app) · 'agent'
                 # (programmatic / agent self-dispatch). Lets the mobile
                 # conversations list route agent-initiated chats to the side flow.
@@ -11954,6 +11981,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 'incognito': bool(incognito),
                 'trigger_type': trigger_type,
                 'trigger_id': trigger_id,
+                '_launch_project_path': _launch_project_path(p, session_dict_override),  # MC-1037 r3
                 # Who dispatched this: '' (legacy/unknown) · 'ui' (app) · 'agent'
                 # (programmatic / agent self-dispatch). Lets the mobile
                 # conversations list route agent-initiated chats to the side flow.
