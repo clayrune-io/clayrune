@@ -667,7 +667,11 @@ try {
         .then((v) => v ? ok('mobile: the .mc-chat-row picks up .hire-target/.hire-hover through the faded modal, same as a desktop .card')
                        : fail('mobile: .mc-chat-row never got marked as a hover target'));
       await mpage2.mouse.up();
-      await mpage2.waitForTimeout(600);
+      // _hireOpenChannel (floor.js) deliberately defers the Channel hand-off by
+      // 500ms after the drop, so the thread shell lands ~600ms out: a fixed 600ms
+      // wait had 100ms of slack and raced on any loaded machine. Wait for the
+      // shell itself; the assertions below still report if it never arrives.
+      await mpage2.waitForSelector(`.modal-window[data-modal-id="${PID_TARGET}"] .conv-thread-name`, { timeout: 5000 }).catch(() => {});
       mHireCalls2.length === 1
         ? ok(`mobile: POST .../roster/hire fired on a drop onto .mc-chat-row (${JSON.stringify(mHireCalls2[0])})`)
         : fail(`mobile: expected exactly 1 hire call from the mobile drop, got ${mHireCalls2.length}`);

@@ -1399,7 +1399,13 @@ async function fetchProjects() {
       try {
         const res = await fetchFailFast(API_BASE + '/api/projects', {}, TIMEOUT_MS);
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        allProjects = _preserveOpenSocial(_preserveOpenBacklogs(await res.json()));
+        const rows = await res.json();
+        // render() calls window-exposed module functions (isMobileChatList, ...). On a
+        // cold boot this fetch can resolve BEFORE the deferred modules evaluate; the
+        // ReferenceError then lands in this catch and costs a 600ms backoff retry
+        // before first paint. Hold the first paint for the module gate instead.
+        await _modulesReady;
+        allProjects = _preserveOpenSocial(_preserveOpenBacklogs(rows));
         applyOrder();
         render();
         return;
