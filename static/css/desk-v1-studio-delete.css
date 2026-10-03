@@ -1,0 +1,25 @@
+/* Studio Recent: the bin at a row's right end (static/js/desk-v1-studio-delete.js).
+   On a pointer device it shows while the row is hovered or holds focus; with no
+   hover (a phone) or under 960px it is always there. A blocked row keeps its bin,
+   dimmed, so the reason in its tooltip can be found and read. */
+.desk-v1-studio-recent-del {
+  flex: 0 0 auto; width: 44px; display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: none; cursor: pointer; font-size: 15px; font-family: inherit;
+  color: var(--text-dim, var(--text-faint)); opacity: 0; transition: opacity 0.12s;
+}
+.desk-v1-studio-recent-item:hover .desk-v1-studio-recent-del,
+.desk-v1-studio-recent-item:focus-within .desk-v1-studio-recent-del,
+.desk-v1-studio-recent-del:focus-visible { opacity: 1; }
+.desk-v1-studio-recent-del:hover, .desk-v1-studio-recent-del:focus-visible { color: var(--red-text); background: var(--red-dim); }
+.desk-v1-studio-recent-del[aria-disabled="true"] { cursor: not-allowed; }
+.desk-v1-studio-recent-del[aria-disabled="true"]:hover,
+.desk-v1-studio-recent-del[aria-disabled="true"]:focus-visible { color: var(--text-faint); background: none; }
+.desk-v1-studio-recent-item:hover .desk-v1-studio-recent-del[aria-disabled="true"],
+.desk-v1-studio-recent-item:focus-within .desk-v1-studio-recent-del[aria-disabled="true"] { opacity: 0.45; }
+@media (hover: none), (max-width: 960px) {
+  .desk-v1-studio-recent-del { opacity: 1; min-height: 44px; }
+  .desk-v1-studio-recent-del[aria-disabled="true"] { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .desk-v1-studio-recent-del { transition: none; }
+}
