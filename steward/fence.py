@@ -429,6 +429,135 @@ _PY_EXEC_OR_SEND_RE = re.compile(
 _PY_C_HAS_EXPANSION_RE = re.compile(r'\$\{?\w+|\$\(|`')
 
 
+# ── curl data-argument masking (MC-1037, 2026-10-02) ─────────────────────────
+# A backlog POST whose JSON text merely MENTIONED pushing was blocked in
+# clayrune_cloud: `curl -s -X POST .../backlog -d '{"text":"... git push ..."}'`
+# (the apostrophe spelt '"'"'). curl never executes its arguments, so the value
+# after -d / --data* / --json is data, the same class as a commit-message body.
+#
+# Unlike the regex masks below, this one must not trust a regex's idea of
+# "inside quotes": `echo ' -d "'; <cmd>; echo '"'` hands a regex a span the
+# shell RUNS. So it lexes the command with its own quote state machine and
+# masks a value only when every one of these holds; any doubt returns the
+# command UNCHANGED, which still blocks:
+#   • every quote pairs, and nothing in the text makes bash and PowerShell pair
+#     quotes differently (an unquoted backslash, backtick or #; $' or $"; $( or
+#     a process substitution; a here-doc; a curly quote, which PowerShell reads as a quote; inside "..."
+#     a backslash, $ or backtick). The Bash tool and Codex's PowerShell shell
+#     both reach this function, so it has to be right for both;
+#   • curl is the FIRST word of its own shell segment. `bash -c "curl ..."`,
+#     `eval curl ...`, `sudo curl ...`, `$(curl ...)` keep being scanned whole;
+#   • the value is nothing but quoted pieces ('..', "..", or a mix like
+#     '..'"'"'..'), so no unquoted text or expansion can ride along;
+#   • the command does not address a route that runs shell text
+#     (/api/terminal/*, /api/secrets/exec): there the body IS a command.
+_CURL_DATA_OPTS = frozenset({'-d', '--data', '--data-raw', '--data-binary',
+                             '--data-ascii', '--data-urlencode', '--json'})
+_CURL_HEADS = frozenset({'curl', 'curl.exe'})
+_CURLY_QUOTES = '‘’‚‛“”„'
+_SHELL_EXEC_ROUTE_RE = re.compile(r'/api/(?:terminal|secrets/exec)\b', re.I)
+
+
+def _lex_shell_segments(cmd: str):
+    """[[(start, end, [(quote, text), ...]), ...], ...] — shell segments, each a
+    list of words, each word its start/end offsets plus its pieces. quote is
+    "'", '"' or '' (unquoted). None when the text cannot be lexed identically
+    by bash and PowerShell (see the section comment)."""
+    if any(c in cmd for c in _CURLY_QUOTES):
+        return None
+    segments: list = []
+    words: list = []
+    parts: list = []
+    wstart = -1
+    i, n = 0, len(cmd)
+
+    def end_word(end):
+        nonlocal parts, wstart
+        if parts:
+            words.append((wstart, end, parts))
+        parts, wstart = [], -1
+
+    def end_segment():
+        nonlocal words
+        if words:
+            segments.append(words)
+        words = []
+
+    while i < n:
+        c = cmd[i]
+        if c in ' \t\r':
+            end_word(i)
+            i += 1
+        elif c in '\n;|()' or (c == '&' and not (
+                (i > 0 and cmd[i - 1] in '<>') or cmd[i + 1:i + 2] == '>')):
+            end_word(i)
+            end_segment()
+            i += 1
+        elif c == "'":
+            j = cmd.find("'", i + 1)
+            if j < 0:
+                return None
+            if not parts:
+                wstart = i
+            parts.append(("'", cmd[i + 1:j]))
+            i = j + 1
+        elif c == '"':
+            j = i + 1
+            while j < n and cmd[j] != '"':
+                if cmd[j] in '\\$`':
+                    return None
+                j += 1
+            if j >= n:
+                return None
+            if not parts:
+                wstart = i
+            parts.append(('"', cmd[i + 1:j]))
+            i = j + 1
+        else:
+            if c in '\\`#' or (c == '$' and cmd[i + 1:i + 2] in ("'", '"', '(')) \
+                    or cmd[i:i + 2] in ('<<', '<(', '>('):
+                return None
+            if not parts:
+                wstart = i
+            if parts and parts[-1][0] == '':
+                parts[-1] = ('', parts[-1][1] + c)
+            else:
+                parts.append(('', c))
+            i += 1
+    end_word(n)
+    end_segment()
+    return segments
+
+
+def _mask_curl_data_args(cmd: str) -> str:
+    """Replace the quoted value of a top-level curl's -d/--data*/--json with the
+    inert placeholder. Returns `cmd` unchanged unless every condition in the
+    section comment above holds. Never raises."""
+    try:
+        if 'curl' not in cmd.lower() or _SHELL_EXEC_ROUTE_RE.search(cmd):
+            return cmd
+        segments = _lex_shell_segments(cmd)
+        if not segments:
+            return cmd
+        spans = []
+        for words in segments:
+            head = words[0][2]
+            if len(head) != 1 or head[0][0] != '' or \
+                    head[0][1].lower().rsplit('/', 1)[-1] not in _CURL_HEADS:
+                continue
+            for k in range(1, len(words) - 1):
+                opt, val = words[k][2], words[k + 1]
+                if len(opt) == 1 and opt[0][0] == '' and opt[0][1] in _CURL_DATA_OPTS \
+                        and all(q for q, _ in val[2]):
+                    spans.append((val[0], val[1]))
+        out = cmd
+        for start, end in sorted(spans, reverse=True):
+            out = f"{out[:start]}'{_MASK_TOKEN}'{out[end:]}"
+        return out
+    except Exception:
+        return cmd
+
+
 def _mask_inert_prose(cmd: str) -> str:
     """Replace provably-inert data spans with a placeholder. Best-effort and
     conservative: any span we cannot PROVE inert is left untouched (fails
@@ -456,7 +585,10 @@ def _mask_inert_prose(cmd: str) -> str:
             return m.group(0)
         return f"{m.group('head')}{_MASK_TOKEN}\n{m.group('term')}"
 
-    out = _MSG_ARG_RE.sub(_msg_repl, cmd)
+    # Runs FIRST, on the original text: its quote pairing is its own (below),
+    # not inherited from the regex masks that follow.
+    out = _mask_curl_data_args(cmd)
+    out = _MSG_ARG_RE.sub(_msg_repl, out)
     out = _GREP_PATTERN_RE.sub(_grep_repl, out)
     out = _PY_C_ARG_RE.sub(_py_c_repl, out)
     out = _HEREDOC_RE.sub(_block_repl, out)
@@ -1583,15 +1715,123 @@ def check_vault_file_access(tool_name: str, tool_input: dict,
     return FenceDecision(False, '')
 
 
-def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
+# ── Own-project memory topic files (MC-1037, Ron 2026-10-02: "Yes he should") ─
+# The `.claude` rule below exists to stop self-installed skills and global
+# config edits. A project's memory TOPIC files are neither, and Clayrune
+# already writes memory for unattended sessions server-side; refusing the
+# agent's own notes only made it stop and ask. So a fenced session may Write /
+# Edit / MultiEdit / apply_patch `*.md` files directly inside ITS OWN project's
+# memory dir, and nothing else under `.claude`.
+#
+# "Its own project" comes from the session's cwd (the hook payload's `cwd`;
+# check_install_dir_write rests on the same fact: Clayrune launches `claude`
+# in the project, an agent worktree being <project>/.clayrune/agents/<id>),
+# NEVER from the path being written or anything else in tool_input. The dir
+# is then derived the way the server does (mc.memory._native_memory_path,
+# pinned against the real one by tests/test_fence_memory_dir.py).
+#
+# Allowed: <memory dir>/<name>.md, where the RESOLVED target (symlinks and
+# junctions followed, `..` collapsed, 8.3 names expanded) sits directly in
+# the RESOLVED memory dir. Everything the server maintains, a subdirectory,
+# another project's memory, a name with a trailing dot or space, an NTFS
+# stream, an 8.3-looking alias, or anything we cannot resolve stays blocked.
+_MEMORY_SERVER_FILES = ('memory.md', 'memory_archive.md', 'session_log.md')
+_SHORT_NAME_ALIAS_RE = re.compile(r'~\d')
+_AGENT_WORKTREE_PARTS = ('.clayrune', 'agents')
+
+
+def _claude_projects_root() -> Path:
+    """~/.claude/projects — mirrors server.py's CLAUDE_HOME, resolving the home
+    dir like _vault_home() does. Split out so tests can point it at a tmp dir."""
+    home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
+            or str(Path.home()))
+    return Path(home) / '.claude' / 'projects'
+
+
+def _session_project_root(cwd: Optional[str] = None) -> Optional[Path]:
+    """The session's project root: its cwd, or for an agent worktree
+    (<project>/.clayrune/agents/<id>[/...]) the project that owns it."""
+    try:
+        resolved = (Path(cwd) if cwd else Path.cwd()).resolve()
+    except Exception:
+        return None
+    parts = resolved.parts
+    for i in range(1, len(parts) - 2):
+        if tuple(p.lower() for p in parts[i:i + 2]) == _AGENT_WORKTREE_PARTS:
+            return Path(*parts[:i])
+    return resolved
+
+
+def _own_memory_dir(cwd: Optional[str] = None) -> Optional[Path]:
+    """This session's project memory dir, picked the way
+    mc.memory._native_memory_path picks it (including its underscore→dash
+    alternate, which is the real one for a path like `...\\_claude\\...`)."""
+    root = _session_project_root(cwd)
+    if root is None:
+        return None
+    encoded = str(root).replace(':', '-').replace('\\', '-').replace('/', '-')
+    if not encoded:
+        return None
+    base = _claude_projects_root()
+    mem = base / encoded / 'memory' / 'MEMORY.md'
+    alt_encoded = encoded.replace('_', '-')
+    if alt_encoded != encoded:
+        alt = base / alt_encoded / 'memory' / 'MEMORY.md'
+        if alt.exists() and mem.exists():
+            if alt.stat().st_mtime > mem.stat().st_mtime:
+                return alt.parent
+        elif alt.exists():
+            return alt.parent
+    return mem.parent
+
+
+def _is_own_memory_topic_file(raw: str, cwd: Optional[str] = None) -> bool:
+    """True only for <this session's memory dir>/<name>.md. Fails closed: any
+    doubt, any error, is False and the `.claude` rule blocks as before."""
+    try:
+        if not raw or '\x00' in raw:
+            return False
+        stripped = raw.strip()
+        if stripped.startswith(('\\\\?\\', '\\\\.\\', '//?/', '//./')):
+            return False
+        mem = _own_memory_dir(cwd)
+        if mem is None:
+            return False
+        target = Path(stripped)
+        if not target.is_absolute():
+            target = (Path(cwd) if cwd else Path.cwd()) / target
+        mem_real = mem.resolve()
+        # The memory dir itself must not be a link: a junction at
+        # projects/<own>/memory pointing at another project's memory would
+        # make "own dir" mean "theirs". Only the projects root may be a link.
+        if os.path.normcase(str(mem_real)) != os.path.normcase(
+                str(_claude_projects_root().resolve() / mem.parent.name / mem.name)):
+            return False
+        target_real = target.resolve()
+        name = target_real.name
+        low = name.lower()
+        if not low.endswith('.md') or low == '.md' or low in _MEMORY_SERVER_FILES:
+            return False
+        if ':' in name or name != name.rstrip(' .') or _SHORT_NAME_ALIAS_RE.search(name):
+            return False
+        return os.path.normcase(str(target_real.parent)) == os.path.normcase(str(mem_real))
+    except Exception:
+        return False
+
+
+def classify_action(tool_name: str, tool_input: dict,
+                    cwd: Optional[str] = None) -> FenceDecision:
     """Classify any tool call. Bash is where terminal danger lives; other tools
     default to allow (edits/writes are working-tree-reversible). Extend here if a
-    non-Bash irreversible surface appears (e.g. an MCP tool that sends email)."""
+    non-Bash irreversible surface appears (e.g. an MCP tool that sends email).
+
+    `cwd` is the hook payload's cwd (None = this process's). It is read only to
+    find the session's OWN project memory dir, never to widen anything else."""
     name = (tool_name or '')
     ti = tool_input or {}
     if name in _PATCH_TOOL_NAMES:
-        for sub_name, sub_input in as_write_calls(name, ti):
-            d = classify_action(sub_name, sub_input)
+        for sub_name, sub_input in as_write_calls(name, ti, cwd):
+            d = classify_action(sub_name, sub_input, cwd)
             if d.blocked:
                 return d
         return FenceDecision(False, '')
@@ -1609,7 +1849,8 @@ def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
     if name in ('Write', 'Edit', 'MultiEdit', 'NotebookEdit'):
         path = str(ti.get('file_path', '') or ti.get('notebook_path', '') or '')
         low = path.replace('\\', '/').lower()
-        if '/.claude/' in low or low.endswith('/.claude'):
+        if ('/.claude/' in low or low.endswith('/.claude')) \
+                and not _is_own_memory_topic_file(path, cwd):
             return FenceDecision(True, "editing global ~/.claude config (out of project scope)",
                                  overridable=False)
         # Fence supply chain (MC-914, 2026-08-31): this hook script is re-read
@@ -1860,18 +2101,19 @@ _PASS_TRANSFER_HEADS = {
 }
 
 
-def _blocked_leaves(tool_name: str, tool_input: dict) -> list:
+def _blocked_leaves(tool_name: str, tool_input: dict,
+                    cwd: Optional[str] = None) -> list:
     """Every blocked operation inside one call: patch tools recurse into their
     writes, a chained shell command counts as more than one. Over-counting only
     ever refuses a pass, never grants one."""
     if tool_name in _PATCH_TOOL_NAMES:
         out = []
-        for sub_name, sub_input in as_write_calls(tool_name, tool_input or {}):
+        for sub_name, sub_input in as_write_calls(tool_name, tool_input or {}, cwd):
             if sub_name in _PATCH_TOOL_NAMES:
-                d = classify_action(sub_name, sub_input)
+                d = classify_action(sub_name, sub_input, cwd)
                 out.extend([d] if d.blocked else [])
             else:
-                out.extend(_blocked_leaves(sub_name, sub_input))
+                out.extend(_blocked_leaves(sub_name, sub_input, cwd))
         return out
     if tool_name in ('Bash', 'PowerShell'):
         cmd = (tool_input or {}).get('command', '') or ''
@@ -1886,15 +2128,15 @@ def _blocked_leaves(tool_name: str, tool_input: dict) -> list:
         if not _is_plain_single_invocation(cmd):
             return [whole, whole]
         return [whole]
-    d = classify_action(tool_name, tool_input)
+    d = classify_action(tool_name, tool_input, cwd)
     return [d] if d.blocked else []
 
 
-def _pass_can_cover(calls) -> bool:
+def _pass_can_cover(calls, cwd: Optional[str] = None) -> bool:
     try:
         leaves = []
         for call_name, call_input in calls:
-            leaves.extend(_blocked_leaves(call_name, call_input))
+            leaves.extend(_blocked_leaves(call_name, call_input, cwd))
     except Exception:
         return False
     return len(leaves) == 1 and leaves[0].overridable
@@ -2028,7 +2270,8 @@ def main(argv=None) -> int:
     decision = FenceDecision(False, '')
     for call_name, call_input in calls:
         try:
-            decision = classify_action(call_name, call_input)
+            decision = classify_action(call_name, call_input,
+                                       payload.get('cwd') or None)
         except Exception:
             return 0  # fail open
         if decision.blocked:
@@ -2040,7 +2283,7 @@ def main(argv=None) -> int:
     # Supply-chain and global-config edits are never passable, and a call that
     # bundles more than one blocked operation is refused whole: one click, one
     # operation. Those need a genuinely attended session.
-    passable = pass_eligible and _pass_can_cover(calls)
+    passable = pass_eligible and _pass_can_cover(calls, payload.get('cwd') or None)
     if passable and _consume_attend_once_pass():
         return 0
 
