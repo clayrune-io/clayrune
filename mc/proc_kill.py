@@ -50,7 +50,7 @@ def _ppid_map() -> Optional[Dict[int, int]]:
         _log(f"[proc_kill] psutil process walk failed: {e}")
     try:
         out = subprocess.run(['ps', '-A', '-o', 'pid=,ppid='], capture_output=True,
-                             text=True, timeout=10).stdout
+                             text=True, encoding='utf-8', errors='replace', timeout=10).stdout
         m: Dict[int, int] = {}
         for line in out.splitlines():
             parts = line.split()
