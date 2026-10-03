@@ -8701,12 +8701,26 @@ class CodexRuntime(AgentRuntime):
         """
         return [(role, text) for role, text, _ts in self.extract_chat_turns_with_ts(path)]
 
-    def extract_chat_turns_with_ts(self, path: Path) -> List[Tuple[str, str, Optional[str]]]:
+    def extract_chat_turns_with_ts(self, path: Path, tool_markers: bool = False
+                                   ) -> List[Tuple[str, str, Optional[str]]]:
         """Same rendering as `extract_chat_turns`, plus each record's own
         top-level `timestamp` (ISO string, live-verified present on every
         `session_meta`/`response_item` record — MC-954 per-message day
-        dividers for a reopened past Codex conversation)."""
+        dividers for a reopened past Codex conversation).
+
+        `tool_markers=True` (the read-only reconstruct view only) also yields
+        one ('tool', '[tool: N tool calls]', ts) row for each run of tool calls
+        between two assistant messages. The rollout holds the real sequence
+        commentary -> tool calls -> final_answer, but this reader drops every
+        non-message record, so the narration and the answer came back adjacent
+        and rendered as two near-identical replies. The marker restores the
+        signal the live stream already carries (a tool line after the
+        narration) that the chat uses to render the narration subordinate
+        (backlog 30e6a946). No other caller passes it: 'tool' is not a turn.
+        """
         turns: List[Tuple[str, str, Optional[str]]] = []
+        pending_tools = 0
+        pending_ts: Optional[str] = None
         try:
             with open(path, encoding='utf-8', errors='replace') as fh:
                 for raw in fh:
@@ -8720,7 +8734,15 @@ class CodexRuntime(AgentRuntime):
                     if not isinstance(rec, dict) or rec.get('type') != 'response_item':
                         continue
                     payload = rec.get('payload')
-                    if not isinstance(payload, dict) or payload.get('type') != 'message':
+                    if not isinstance(payload, dict):
+                        continue
+                    if tool_markers and payload.get('type') in (
+                            'custom_tool_call', 'function_call', 'local_shell_call'):
+                        if not pending_tools:
+                            pending_ts = rec.get('timestamp') or None
+                        pending_tools += 1
+                        continue
+                    if payload.get('type') != 'message':
                         continue
                     role = payload.get('role', '')
                     if role not in ('user', 'assistant'):
@@ -8741,6 +8763,11 @@ class CodexRuntime(AgentRuntime):
                         text = _strip_codex_system_prefix(text)
                         if not text:
                             continue
+                    if (pending_tools and role == 'assistant' and turns
+                            and turns[-1][0] == 'assistant'):
+                        turns.append(('tool', f"[tool: {pending_tools} tool call"
+                                      f"{'s' if pending_tools != 1 else ''}]", pending_ts))
+                    pending_tools = 0
                     turns.append((role, text, rec.get('timestamp') or None))
         except Exception:
             return []

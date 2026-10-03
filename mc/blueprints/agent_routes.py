@@ -15053,7 +15053,10 @@ def reconstruct_dead_session(project_id, session_id):
                 # (the two members of _COLD_RESUMABLE_PROVIDERS this branch is
                 # gated on) — duck-typed like the list_sessions() call below;
                 # pyright can't see the gate.
-                turns.extend(runtime.extract_chat_turns_with_ts(tpath))  # pyright: ignore[reportAttributeAccessIssue]
+                # Codex only: its narration/answer pair needs the tool line
+                # between them to read as two things (30e6a946).
+                turns.extend(runtime.extract_chat_turns_with_ts(  # pyright: ignore[reportAttributeAccessIssue]
+                    tpath, **({'tool_markers': True} if provider == 'codex' else {})))
         except Exception as e:
             _log(f"[reconstruct] {provider} transcript render failed for {psid[:12]}: {e}")
             turns = []
