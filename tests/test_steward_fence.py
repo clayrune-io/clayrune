@@ -1521,3 +1521,81 @@ def test_remove_item_aliases_classify_like_remove_item(tool, alias, target):
     via_alias = classify_action(tool, {'command': f'{alias} -Recurse -Force {target}'})
     via_cmdlet = classify_action(tool, {'command': f'Remove-Item -Recurse -Force {target}'})
     assert via_alias.blocked == via_cmdlet.blocked, (tool, alias, target)
+
+
+# ── `git reset --hard` with other options in front of it (Quill, 2026-10-03) ──
+# The rule was `git\s+reset\s+--hard`, so `-q` / `--quiet` (or a tree-ish)
+# between `reset` and `--hard` slipped past it. RED until the fence patch is
+# applied.
+GIT_RESET_HARD_BLOCK_CASES = [
+    'git reset --hard',                                  # existing, still blocked
+    'git reset --hard -q',                               # existing, still blocked
+    'git reset --hard HEAD~1',
+    'git reset -q --hard',
+    'git reset --quiet --hard HEAD~1',
+    'git reset -q --hard origin/main',
+    'git reset HEAD~1 --hard',
+    'git reset -q HEAD~1 --hard',
+    'GIT RESET -Q --HARD',
+    'git -C /c/x/proj reset -q --hard',
+    'git -C "C:\\x y" reset --quiet --hard',
+    'git -c core.autocrlf=false reset -q --hard',
+    'git --git-dir=/c/x/.git reset -q --hard',
+    'git --git-dir=/c/x/.git --work-tree=/c/x reset --quiet --hard',
+    'git --no-pager -C /c/x reset -q --hard HEAD~1',
+    'git.exe reset -q --hard',
+    "& 'C:/Program Files/Git/cmd/git.exe' reset -q --hard",
+    '& "C:\\Program Files\\Git\\cmd\\git.exe" -C C:\\x reset --quiet --hard HEAD~1',
+    "Start-Process git -ArgumentList 'reset','-q','--hard'",
+    "Start-Process -FilePath git.exe -ArgumentList '-C','C:\\x','reset','-q','--hard'",
+    'cd /c/x/proj && git reset -q --hard',
+    'git stash; git reset -q --hard',
+    'echo y | git reset -q --hard',
+    '(git reset -q --hard)',
+    'git reset -q --hard\n',
+    'git reset \\\n  -q --hard',
+]
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('cmd', GIT_RESET_HARD_BLOCK_CASES)
+def test_git_reset_hard_is_blocked_wherever_it_sits_among_the_options(tool, cmd):
+    assert classify_action(tool, {'command': cmd}).blocked, (tool, cmd)
+
+
+GIT_RESET_HARD_ALLOW_CASES = [
+    'git reset',
+    'git reset -q',
+    'git reset --soft HEAD~1',
+    'git reset --soft -q HEAD~1',
+    'git reset --mixed',
+    'git reset --mixed HEAD~1',
+    'git reset --keep HEAD~1',
+    'git reset --merge',
+    'git reset HEAD file.txt',
+    'git reset -q HEAD file.txt',
+    'git reset HEAD -- docs/hard.md',
+    'git reset -p',
+    'git -C /c/x/proj reset --soft HEAD~1',
+    'git -c core.autocrlf=false reset -q HEAD file.txt',
+    'git --git-dir=/c/x/.git reset HEAD file.txt',
+    'git.exe reset HEAD file.txt',
+    'git status',
+    'git log --hard',
+    'git reset HEAD file.txt; echo --hard',
+    'git reset --soft HEAD~1 && git log --hard',
+    # the same masked-prose handling the plain form already gets
+    'git commit -m "avoid git reset --hard"',
+    'git commit -m "avoid git reset -q --hard"',
+    'git commit -m "never git -C x reset --quiet --hard"',
+    'grep -rn "git reset -q --hard" docs/',
+    "python -c \"print('git reset -q --hard')\"",
+    "cat <<'EOF'\ngit reset -q --hard\nEOF",
+]
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('cmd', GIT_RESET_HARD_ALLOW_CASES)
+def test_git_reset_hard_rule_leaves_other_resets_and_prose_alone(tool, cmd):
+    d = classify_action(tool, {'command': cmd})
+    assert not d.blocked, (tool, cmd, d.reason)

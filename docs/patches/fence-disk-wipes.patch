@@ -1,8 +1,8 @@
 diff --git a/steward/fence.py b/steward/fence.py
-index cca5f82..df4b2a5 100644
+index cca5f82..6a21265 100644
 --- a/steward/fence.py
 +++ b/steward/fence.py
-@@ -63,6 +63,19 @@ _SCRATCH_MARKERS = ('_scratch', 'scratchpad', '/tmp/', '\\temp\\', 'appdata/loca
+@@ -63,13 +63,31 @@ _SCRATCH_MARKERS = ('_scratch', 'scratchpad', '/tmp/', '\\temp\\', 'appdata/loca
  # these and must pass the fence.
  _LOCAL_HOSTS = ('localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]')
  
@@ -22,7 +22,20 @@ index cca5f82..df4b2a5 100644
  # Irreversible command shapes → BLOCK. Each entry: (compiled regex, human reason).
  # Matched case-insensitively against the WHOLE command string (so chained
  # commands like `cd x && git push` are still caught).
-@@ -108,6 +121,69 @@ _BLOCK_PATTERNS = [
+ _BLOCK_PATTERNS = [
+     (re.compile(r'\bgit\s+push\b', re.I),
+      "git push writes to a shared remote (irreversible once others fetch)"),
+-    (re.compile(r'\bgit\s+reset\s+--hard\b', re.I),
++    # `--hard` anywhere among reset's operands (`git reset -q --hard`, `--quiet
++    # --hard HEAD~1`); a global option before `reset` is stripped by the
++    # normalised pass (`git -C x reset -q --hard`).
++    # A backslash-newline continuation counts as a separator.
++    (re.compile(r'\bgit\s+reset\b(?:(?:[ \t]*\\\r?\n[ \t]*|[ \t]+)[^\s;&|]+)*?'
++                r'(?:[ \t]*\\\r?\n[ \t]*|\s+)[\'"]?--hard\b', re.I),
+      "git reset --hard discards working-tree state destructively"),
+     (re.compile(r'\bgit\s+clean\b\s+-\w*f', re.I),
+      "git clean -f deletes untracked files irrecoverably"),
+@@ -108,6 +126,69 @@ _BLOCK_PATTERNS = [
      (re.compile(r'/api/system/restart\b', re.I), "server restart is human-gated"),
      # System-destructive.
      (re.compile(r'\bmkfs\b|\bdd\s+if=', re.I), "disk-destructive operation"),
@@ -92,7 +105,7 @@ index cca5f82..df4b2a5 100644
      (re.compile(r'\bshutdown\b|\breboot\b', re.I), "host power operation"),
  ]
  
-@@ -352,6 +428,11 @@ _DELETE_PATTERNS = [
+@@ -352,6 +433,11 @@ _DELETE_PATTERNS = [
      re.compile(r'\bRemove-Item\b', re.I),
      re.compile(r'(^|[\s&|;])del\s', re.I),
      re.compile(r'\brd\s+/s', re.I),
