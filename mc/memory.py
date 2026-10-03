@@ -42,6 +42,7 @@ import mc.agent_runtime as _agent_runtime  # multi-provider runtime (transcript 
 import mc.skills as _skills                # frontmatter parse for position notes
 import mc.distiller as _distiller          # Phase 4 learning observer (best-effort)
 import mc.allowance_state as _allowance_state  # live vendor exhaustion state (MC-964 Step D.1)
+import mc.memory_overlap_df as _overlap_df  # M4 corpus document-frequency stoplist (MC-964 fix A2)
 
 from mc import state
 from mc.core import _atomic_write_text, _log, now_iso, TimestampedLines
@@ -2939,7 +2940,11 @@ def _mint_overlap_terms(name, description, triggers):
         stop |= _mint_subject_template_terms(kind)
     toks = (name_toks | set(_mem_tokens(description))
             | set(_mem_tokens((triggers or '').replace(',', ' '))))
-    return {t for t in toks if t not in stop}
+    terms = {t for t in toks if t not in stop}
+    # A mint's description is a backlog item's text, full of dates ("STATE
+    # 2026-09-29"): `2026` alone put 797 of 861 residual mint-mint pairs over
+    # the floor. Hand-written notes keep their digits (hand-hand is unchanged).
+    return _overlap_df.drop_numeric(terms) if m else terms
 
 
 def detect_mint_overlap(project, name, description, triggers='', *,
@@ -2964,19 +2969,48 @@ def detect_mint_overlap(project, name, description, triggers='', *,
         mem_path = _get_memory_path(project)
         units = _mem_corpus(mem_path.parent, mem_path.name,
                              _get_archive_path(project).name)
+    cands = _mint_overlap_candidates(units)
+    stop = _overlap_df.df_stoplist(t for t, _m in cands.values())
+    query_is_mint = _is_mint_stem(name)
     scored = []
+    for fn, (cand_terms, cand_is_mint) in cands.items():
+        overlap = _mint_pair_overlap(query_terms, query_is_mint,
+                                     cand_terms, cand_is_mint, stop)
+        if overlap >= min_overlap:
+            scored.append((fn, overlap))
+    scored.sort(key=lambda pair: (-pair[1], pair[0]))
+    return scored[:top_n]
+
+
+def _is_mint_stem(stem):
+    return bool(_MINT_NAME_RE.match((stem or '').lower()))
+
+
+def _mint_overlap_candidates(units):
+    """{file: (overlap terms, is_mint)} for every topic note in `units`."""
+    out = {}
     for u in units:
         if u.get('cls') != 'topic':
             continue
         fm = _note_frontmatter(u.get('text') or '')
-        cand_terms = _mint_overlap_terms(
-            u['file'].rsplit('.', 1)[0], fm.get('description', ''),
-            fm.get('triggers', ''))
-        overlap = len(query_terms & cand_terms)
-        if overlap >= min_overlap:
-            scored.append((u['file'], overlap))
-    scored.sort(key=lambda pair: (-pair[1], pair[0]))
-    return scored[:top_n]
+        stem = u['file'].rsplit('.', 1)[0]
+        out[u['file']] = (_mint_overlap_terms(
+            stem, fm.get('description', ''), fm.get('triggers', '')),
+            _is_mint_stem(stem))
+    return out
+
+
+def _mint_pair_overlap(terms_a, a_is_mint, terms_b, b_is_mint, df_stop):
+    """Shared-term count for one pair. The corpus document-frequency stoplist
+    (`mc.memory_overlap_df`) applies to any pair with a mint on at least one
+    side; hand-hand pairs are left on the plain intersection — measured both
+    ways on the 2026-10-03 snapshot in the b2d85e51 journal, and Dave's call
+    was to leave them until the numbers clearly say otherwise.
+    """
+    shared = terms_a & terms_b
+    if a_is_mint or b_is_mint:
+        shared = shared - df_stop
+    return len(shared)
 
 
 def mint_overlap_report(project, *, min_overlap=_MINT_OVERLAP_MIN_TERMS):
@@ -2996,18 +3030,14 @@ def mint_overlap_report(project, *, min_overlap=_MINT_OVERLAP_MIN_TERMS):
                              _get_archive_path(project).name)
     except Exception:
         return []
-    topics = [u for u in units if u.get('cls') == 'topic']
-    fm_terms = {}
-    for u in topics:
-        fm = _note_frontmatter(u.get('text') or '')
-        fm_terms[u['file']] = _mint_overlap_terms(
-            u['file'].rsplit('.', 1)[0], fm.get('description', ''),
-            fm.get('triggers', ''))
+    cands = _mint_overlap_candidates(units)
+    stop = _overlap_df.df_stoplist(t for t, _m in cands.values())
     pairs = []
-    files = sorted(fm_terms.keys())
+    files = sorted(cands.keys())
     for i, a in enumerate(files):
         for b in files[i + 1:]:
-            overlap = len(fm_terms[a] & fm_terms[b])
+            overlap = _mint_pair_overlap(cands[a][0], cands[a][1],
+                                         cands[b][0], cands[b][1], stop)
             if overlap >= min_overlap:
                 pairs.append({'a': a, 'b': b, 'overlap': overlap})
     pairs.sort(key=lambda r: (-r['overlap'], r['a'], r['b']))
