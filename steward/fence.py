@@ -2577,16 +2577,30 @@ def _launcher_project_root() -> Optional[str]:
         return None
 
 
+# Set by mc/launch_marker.py on every Claude child the server launches for an
+# unattended trigger_type (backlog dc480ad3). Consulted ONLY when the trigger-type
+# lookup returns nothing (server down / restarting, or session unknown): the
+# lookup used to be the sole arming signal, so a dispatched child ran unfenced
+# for exactly as long as the server was unreachable. A successful lookup still
+# wins — a human "I am here" re-stamp to 'manual' must keep unfencing the chat.
+_LAUNCH_MARKER_ENV = 'CLAYRUNE_LAUNCHED_UNATTENDED'
+
+
+def _launched_unattended() -> bool:
+    return (os.environ.get(_LAUNCH_MARKER_ENV) or '').strip() == '1'
+
+
 def _should_arm_for_unattended_trigger() -> bool:
     """True only on a positive, confirmed match — see module comment above.
     Only ever ADDS enforcement on top of the existing steward-marker check,
-    never removes it."""
+    never removes it. When the server cannot answer, the per-launch marker
+    (`_LAUNCH_MARKER_ENV`) stands in for the lookup."""
     sid = _session_id_from_env()
     if not sid:
-        return False
+        return _launched_unattended()
     info = _lookup_trigger_type(sid)
     if not info:
-        return False
+        return _launched_unattended()
     if info['trigger_type'] not in _UNATTENDED_TRIGGER_TYPES:
         return False
     return info['fence_unattended_enabled']
