@@ -1646,6 +1646,29 @@ def _local_auth_data_root() -> Path:
     return _INSTALL_DIR
 
 
+def _addons_root() -> Path:
+    """Mirrors mc.addons.manifest.addons_root() WITHOUT importing it (stdlib-only,
+    same reasoning as `_vault_home()`); tests/test_addons_fence.py pins the two."""
+    override = os.environ.get('CLAYRUNE_ADDONS_DIR')
+    return Path(override) if override else _vault_home() / 'addons'
+
+
+def _path_resolves_into_addons(raw: str, cwd: Optional[Path] = None) -> bool:
+    """True if `raw` resolves inside the add-ons root. Fails toward BLOCK on an
+    unresolvable path, same bias as `_path_resolves_into_vault`."""
+    if not raw:
+        return False
+    try:
+        root = _addons_root().resolve()
+        target = Path(raw)
+        if not target.is_absolute():
+            target = (Path(cwd) if cwd else Path.cwd()) / target
+        target = target.resolve()
+    except Exception:
+        return True
+    return target == root or _is_within(target, root)
+
+
 def _is_vault_filename(raw: str) -> bool:
     return bool(raw) and os.path.basename(raw.replace('\\', '/')) in _VAULT_FILENAMES
 
@@ -1984,6 +2007,16 @@ def classify_action(tool_name: str, tool_input: dict,
             return FenceDecision(True, "editing learning-loop artifacts/telemetry "
                                        "(loadout supply chain — human-owned)",
                                  overridable=False)
+        # Add-on supply chain (MC-1022): the manifest and the installed
+        # binaries are what `mc.addons.resolve()` hands to every consumer, and
+        # `mc/addons/` holds the pinned catalogue hashes. Same posture as
+        # `data/skills/`: an agent that could write either could substitute
+        # the binary the app then runs.
+        if (low.startswith('mc/addons/') or '/mc/addons/' in low
+                or _path_resolves_into_addons(path, cwd)):
+            return FenceDecision(True, "editing the add-on catalogue, manifest or "
+                                       "installed binaries (executable supply "
+                                       "chain — human-owned)", overridable=False)
     # Autonomous web browsing is high blast-radius for an unattended agent: the
     # browser MCP is unrestricted (all sites) with in-page JS execution, so
     # prompt-injecting page content can steer a steward cycle. The steward does
