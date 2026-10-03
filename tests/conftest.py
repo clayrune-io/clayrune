@@ -164,6 +164,16 @@ def _desk_oauth_reads_no_real_vault(monkeypatch):
     monkeypatch.setattr(desk_oauth, '_meta', lambda service: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_inherited_unattended_launch_marker(monkeypatch):
+    """A dispatched agent runs with CLAYRUNE_LAUNCHED_UNATTENDED=1, and
+    steward/fence.py arms on it when the server lookup is unavailable. Inherited
+    into pytest, it armed the fence in every test expecting an attended session:
+    12 fence tests failed whenever the suite ran inside a dispatched agent and
+    passed in a manual chat. Tests that want it set it themselves."""
+    monkeypatch.delenv('CLAYRUNE_LAUNCHED_UNATTENDED', raising=False)
+
+
 def stub_codex_auth_state(monkeypatch, state=('not_logged_in', None)):
     """Stop a test from asking the operator's real Codex CLI who is signed in.
 
