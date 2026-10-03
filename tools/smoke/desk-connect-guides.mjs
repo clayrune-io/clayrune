@@ -169,9 +169,16 @@ async function newPage(browser, srv, viewport = { width: 1400, height: 1100 }) {
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
   await page.click('.desk-v1-home-connections-btn');
-  await page.waitForSelector('[data-connections] [data-conn-account]', { timeout: 6000 });
+  await page.waitForSelector('[data-connections] [data-conn-tile]', { timeout: 6000 });
   await page.waitForSelector('[data-conn-engine]', { timeout: 6000 });
   return { ctx, page, pageErrors, responses };
+}
+
+// Accounts are tiles (2026-10-03); an account's detail row exists only while its tile is selected.
+async function openTile(page, platform) {
+  const t = `[data-conn-tile][data-platform="${platform}"]`;
+  if ((await page.getAttribute(t, 'aria-pressed')) !== 'true') await page.click(t);
+  await page.waitForSelector(`[data-conn-account][data-platform="${platform}"]`, { timeout: 4000 });
 }
 
 const settle = (page, pred, arg) => page.waitForFunction(pred, arg, { timeout: 8000 });
@@ -290,6 +297,7 @@ async function xWizard(browser) {
   const { ctx, page, pageErrors, responses } = await newPage(browser, srv);
   const xrow = '[data-conn-account][data-platform="x"]';
   const guideBtn = `${xrow} [data-conn-x-guide]`;
+  await openTile(page, 'x');
   check((await txt(page, guideBtn)) === 'Connect X', 'the X account offers "Connect X"');
   check(!/Open Secrets/.test(await txt(page, '[data-connections]')), 'there is no "Open Secrets" dead end anywhere on Connections');
   await page.click(guideBtn);
@@ -330,20 +338,23 @@ async function xWizard(browser) {
   ok('the X account ends on "Connected"');
   check(/X is connected/.test(await txt(page, `${xrow} [data-guide="x"]`)) || /Manage/.test(await txt(page, guideBtn)), 'the wizard shows it is connected');
 
-  // LinkedIn
+  // LinkedIn (its tile replaces X's detail panel; the whole-screen copy checks below read both)
+  await openTile(page, 'linkedin');
+  const liScreen = await page.$eval('[data-connections]', (e) => e.innerText);
   const li = await txt(page, '[data-conn-account][data-platform="linkedin"] [data-guide="linkedin"]');
   check(/Community Management API/.test(li) && /Waiting for LinkedIn approval/.test(li), 'LinkedIn says in one line what to apply for');
   const lhref = await page.getAttribute('[data-conn-account][data-platform="linkedin"] [data-guide="linkedin"] a', 'href');
   check(/learn\.microsoft\.com\/en-us\/linkedin\/marketing\/community-management/.test(lhref || ''), 'and links where to apply');
 
   // Copy rules: open every guide, then read the whole screen.
+  await openTile(page, 'x');
   for (const id of ['google', 'openai', 'higgsfield']) {
     if (!(await page.$(`[data-guide="${id}"]`))) {
       if (id === 'higgsfield') { await page.waitForTimeout(200); await page.evaluate(() => { const d = document.querySelector('[data-conn-advanced]'); if (d) d.open = true; }); }
       await page.click(`[data-conn-engine="${id}"] [data-engine-guide]`);
     }
   }
-  const all = await page.$eval('[data-connections]', (e) => e.innerText);
+  const all = (await page.$eval('[data-connections]', (e) => e.innerText)) + '\n' + liScreen;
   check(!/\boauth\b|\bvault\b|\bDCR\b|\bPKCE\b/i.test(all), 'no jargon (OAuth, vault, DCR, PKCE) in the Connections text' + (/\boauth\b|\bvault\b|\bDCR\b|\bPKCE\b/i.exec(all) ? ': ' + /.{0,40}(\boauth\b|\bvault\b|\bDCR\b|\bPKCE\b).{0,40}/i.exec(all)[0] : ''));
   check(!/[—–]/.test(all), 'no em-dash in the Connections text' + (/.{0,30}[—–].{0,30}/.exec(all) ? ': ' + /.{0,30}[—–].{0,30}/.exec(all)[0] : ''));
   const html = await page.content();
@@ -361,6 +372,7 @@ async function xWizard(browser) {
 async function narrow(browser) {
   const srv = makeServer();
   const { ctx, page } = await newPage(browser, srv, { width: 344, height: 800 });
+  await openTile(page, 'x');
   await page.click('[data-conn-account][data-platform="x"] [data-conn-x-guide]');
   await page.waitForSelector('[data-guide="x"]');
   await page.click('[data-conn-engine="google"] [data-engine-guide]');

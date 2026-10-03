@@ -6,7 +6,14 @@
  * Social accounts: every workspace account with a status and a Connect /
  * Reconnect button; each X / LinkedIn account carries the "Read via" segmented
  * control (R1-E): Browser pane (free, the default) | X API (paid, ~$0.005 per
- * read). Generation engines is a placeholder heading only. Asserts:
+ * read). Generation engines is a placeholder heading only.
+ * 2026-10-03 (Ron, from phone: "too cluttered"): the accounts are a grid of
+ * compact TILES (one per account, status pill); selecting a tile opens that one
+ * account's detail (status, Connect / Reconnect, Read via, profile) in a single
+ * panel below the grid, one at a time, none selected = no panel. Asserts:
+ *   - the tiles: 3-4 per row at 1440, 2 per row at 390, a re-auth / not
+ *     connected tile is visibly flagged, nothing selected = no panel, selecting
+ *     a second tile replaces the first, clicking the open tile closes it;
  *   - every workspace account is listed with a status word, the not-connected
  *     Reddit account offers Connect, the lapsed LinkedIn page offers Reconnect;
  *   - Where's "Connect" and Studio's online "Connect Dropbox" route here;
@@ -19,7 +26,7 @@
  *   - the profile input PATCHes browser_profile;
  *   - a stored choice survives leaving the screen and coming back;
  *   - the screen fits at 344 wide (no horizontal overflow).
- * Screenshots: docs/desk_v1/screens/retire_presence/connections_{1440,344}.png
+ * Screenshots: docs/desk_v1/screens/connections_tiles_{1440,390}.png
  *
  * Hermetic: real index.html + static/, every /api route mocked, no real account.
  *
@@ -39,7 +46,7 @@ const CSS_DIR = resolve(REPO_ROOT, 'static', 'css');
 const ASSETS_DIR = resolve(REPO_ROOT, 'assets');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const ORIGIN = 'http://mc.smoke.test';
-const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens', 'retire_presence');
+const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
 mkdirSync(SHOT_DIR, { recursive: true });
 
 const MIME = { '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
@@ -107,8 +114,14 @@ async function openConnections(browser, viewport) {
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
   await page.click('.desk-v1-home-connections-btn');
-  await page.waitForSelector('[data-connections] [data-conn-account]', { timeout: 4000 });
+  await page.waitForSelector('[data-connections] [data-conn-tile]', { timeout: 4000 });
   return { ctx, page, pageErrors };
+}
+
+// Open one account's detail panel (a no-op when it is already the open one).
+async function selectTile(page, id) {
+  if ((await page.getAttribute(`[data-conn-tile="${id}"]`, 'aria-pressed')) !== 'true') await page.click(`[data-conn-tile="${id}"]`);
+  await page.waitForSelector(`[data-conn-detail="${id}"] [data-conn-account="${id}"]`, { timeout: 4000 });
 }
 
 const pressed = (page, ch) => page.$eval(
@@ -121,26 +134,57 @@ async function run(browser) {
   const { ctx, page, pageErrors } = await openConnections(browser, { width: 1440, height: 900 });
 
   // -- the screen itself: accounts, statuses, Connect, placeholder --------------
-  const listed = await page.$$eval('[data-conn-account]', (els) => els.map((e) => [e.dataset.connAccount, e.dataset.connState]));
-  const state = Object.fromEntries(listed);
-  check(listed.length === 7 && state['ch-x-ron'] === 'ok' && state['ch-li-page'] === 'reauth' && state['ch-reddit'] === 'off'
+  // The tile grid: layout, flags, one panel at a time.
+  const tiles = await page.$$eval('[data-conn-tile]', (els) => els.map((e) => [e.dataset.connTile, e.dataset.connState]));
+  const state = Object.fromEntries(tiles);
+  check(tiles.length === 7 && state['ch-x-ron'] === 'ok' && state['ch-li-page'] === 'reauth' && state['ch-reddit'] === 'off'
         && state['ch-yt-clayrune'] === 'preview',
-        `all ${listed.length} workspace accounts listed with a status (${JSON.stringify(state)})`, `accounts wrong: ${JSON.stringify(listed)}`);
-  const btns = await page.$$eval('[data-conn-action]', (els) => Object.fromEntries(els.map((e) => [e.dataset.connAction, e.textContent.trim()])));
+        `all ${tiles.length} workspace accounts are tiles with a status (${JSON.stringify(state)})`, `tiles wrong: ${JSON.stringify(tiles)}`);
+  check(!(await page.$('[data-conn-detail]')) && !(await page.$('[data-conn-account]')),
+        'nothing selected: no detail panel, no account row', 'a detail panel is open with nothing selected');
+  const perRow = await page.$$eval('[data-conn-tile]', (els) => {
+    const tops = els.map((e) => Math.round(e.getBoundingClientRect().top));
+    return tops.filter((t) => t === tops[0]).length;
+  });
+  check(perRow >= 3 && perRow <= 4, `1440px: ${perRow} tiles per row`, `1440px tiles per row wrong: ${perRow}`);
+  const flags = await page.$$eval('[data-conn-tile]', (els) => Object.fromEntries(els.map((e) => [e.dataset.connTile,
+    [getComputedStyle(e).borderLeftWidth, getComputedStyle(e.querySelector('[data-conn-tile-status]')).color]])));
+  check(flags['ch-li-page'][0] === '4px' && flags['ch-reddit'][0] === '4px' && flags['ch-x-ron'][0] !== '4px'
+        && flags['ch-li-page'][1] !== flags['ch-x-ron'][1],
+        'a re-auth / not connected tile is flagged (heavy left edge, amber pill) and a connected one is not', `flags wrong: ${JSON.stringify(flags)}`);
+
+  // Open each account in turn: the action it offers, and whether it carries Read via.
+  const btns = {}; const readPlatforms = [];
+  for (const [id] of tiles) {
+    await selectTile(page, id);
+    check((await page.$$('[data-conn-detail]')).length === 1 && (await page.$$('[data-conn-account]')).length === 1,
+          `selecting ${id}: exactly one detail panel is open`, `more than one detail panel open after selecting ${id}`);
+    const a = await page.$('[data-conn-detail] [data-conn-action]');
+    if (a) btns[id] = (await a.textContent()).trim();
+    const r = await page.$('[data-conn-detail] [data-readvia-row]');
+    if (r) readPlatforms.push(await r.getAttribute('data-platform'));
+  }
   check(btns['ch-reddit'] === 'Connect' && btns['ch-li-page'] === 'Reconnect' && btns['ch-x-ron'] === 'Reconnect' && !('ch-yt-clayrune' in btns),
         `Connect on the not-connected account, Reconnect on the others, none on a preview one (${JSON.stringify(btns)})`, `buttons wrong: ${JSON.stringify(btns)}`);
   const engines = await page.$eval('[data-conn-section="engines"]', (e) => e.textContent.trim());
   check(engines === 'Generation engines', 'Generation engines is a placeholder heading only', `engines section wrong: ${JSON.stringify(engines)}`);
-  await page.click('[data-conn-action="ch-reddit"]');
-  await page.waitForFunction(() => (document.querySelector('[data-conn-account="ch-reddit"]') || {}).dataset.connState === 'preview', null, { timeout: 4000 });
+  await selectTile(page, 'ch-reddit');
+  await page.click('[data-conn-account="ch-reddit"] [data-conn-action="ch-reddit"]');
+  await page.waitForFunction(() => (document.querySelector('[data-conn-tile="ch-reddit"]') || {}).dataset.connState === 'preview', null, { timeout: 4000 });
   ok('Connect takes Reddit out of Not connected (it stays Preview: nothing is authenticated in R0)');
+  await page.click('[data-conn-tile="ch-reddit"]');
+  check(!(await page.$('[data-conn-detail]')), 'clicking the open tile closes its detail', 'the detail stayed open after clicking its tile again');
+  await selectTile(page, 'ch-x-ron');
+  await page.click('[data-conn-detail-close]');
+  check(!(await page.$('[data-conn-detail]')) && (await page.getAttribute('[data-conn-tile="ch-x-ron"]', 'aria-pressed')) === 'false',
+        'the panel close button closes it and unpresses the tile', 'close button did nothing');
 
-  const rows = await page.$$eval('[data-readvia-row]', (els) => els.map((e) => e.dataset.platform));
   // Every X/LinkedIn account gets one (R2-10's fixture added a second X account);
   // no other platform does.
-  check(rows.includes('x') && rows.includes('linkedin') && rows.every((p) => p === 'x' || p === 'linkedin'),
+  check(readPlatforms.includes('x') && readPlatforms.includes('linkedin') && readPlatforms.every((p) => p === 'x' || p === 'linkedin'),
         'X and LinkedIn accounts carry the Read via control; the blog account does not',
-        `Read via rows wrong: ${JSON.stringify(rows)}`);
+        `Read via rows wrong: ${JSON.stringify(readPlatforms)}`);
+  await selectTile(page, 'ch-x-ron');
   check(await pressed(page, 'ch-x-ron') === 'pane',
         'default with no stored choice: Browser pane (no charge) is selected',
         `default not pane: ${await pressed(page, 'ch-x-ron')}`);
@@ -153,7 +197,7 @@ async function run(browser) {
   const gap = await page.$eval('[data-readvia-row="ch-x-ron"] [data-readvia-status]', (e) => e.textContent.trim());
   check(gap === 'Not connected (sign in to X in the browser pane)',
         `the server's coverage gap is shown verbatim: "${gap}"`, `gap text wrong: ${JSON.stringify(gap)}`);
-  await page.screenshot({ path: resolve(SHOT_DIR, 'connections_1440.png') });
+  await page.screenshot({ path: resolve(SHOT_DIR, 'connections_tiles_1440.png') });
 
   srv.coverage = [{ platform: 'x', state: 'not_connected', via: 'api', message: 'Not connected (no API token)' }];
   await page.click('[data-readvia-row="ch-x-ron"] [data-readvia="api"]');
@@ -197,9 +241,11 @@ async function run(browser) {
   await page.evaluate(() => window.deskV1Nav('home', {}));
   await page.waitForSelector('.desk-v1-home-connections-btn', { timeout: 4000 });
   await page.click('.desk-v1-home-connections-btn');
-  await page.waitForSelector('[data-readvia-row="ch-x-ron"]', { timeout: 4000 });
+  await page.waitForSelector('[data-conn-tile]', { timeout: 4000 });
+  await selectTile(page, 'ch-x-ron');
   check(await pressed(page, 'ch-x-ron') === 'api', 'the Read via choice persists across leaving and re-opening the screen', `choice lost: ${await pressed(page, 'ch-x-ron')}`);
 
+  await selectTile(page, 'ch-li-page');
   const li = await page.$eval('[data-readvia-row="ch-li-page"] [data-readvia="api"]', (b) => b.textContent.trim());
   check(li === 'LinkedIn API (paid)' && !(await page.$('[data-readvia-row="ch-li-page"] [data-readvia-profile]')),
         'LinkedIn: API option reads "LinkedIn API (paid)", no profile input (no pane reader yet)',
@@ -213,18 +259,32 @@ async function run(browser) {
   srv.coverage = [{ platform: 'x', state: 'not_connected', via: 'pane',
                     message: 'Not connected (sign in to X in the browser pane)' }];
   const m = await openConnections(browser, { width: 344, height: 760 });
-  await m.page.waitForSelector('[data-readvia-row="ch-x-ron"]', { timeout: 4000 });
+  await selectTile(m.page, 'ch-x-ron');
   await m.page.$eval('[data-readvia-row="ch-x-ron"]', (e) => e.scrollIntoView({ block: 'center' }));
   const over = await m.page.evaluate(() => {
     const seg = document.querySelector('[data-readvia-row="ch-x-ron"] .desk-v1-conn-readvia-seg');
     const r = seg.getBoundingClientRect();
-    return { right: r.right, vw: window.innerWidth, doc: document.documentElement.scrollWidth };
+    const tiles = [...document.querySelectorAll('[data-conn-tile]')].map((e) => e.getBoundingClientRect());
+    return { right: r.right, vw: window.innerWidth, doc: document.documentElement.scrollWidth, tileRight: Math.max(...tiles.map((t) => t.right)) };
   });
-  check(over.right <= over.vw && over.doc <= over.vw,
-        `344px: control fits (right ${Math.round(over.right)} <= ${over.vw}, scrollWidth ${over.doc})`,
+  check(over.right <= over.vw && over.tileRight <= over.vw && over.doc <= over.vw,
+        `344px: control and tiles fit (right ${Math.round(over.right)}, tiles ${Math.round(over.tileRight)} <= ${over.vw}, scrollWidth ${over.doc})`,
         `344px overflow: ${JSON.stringify(over)}`);
-  await m.page.screenshot({ path: resolve(SHOT_DIR, 'connections_344.png') });
   await m.ctx.close();
+
+  // -- 390 (a phone): two tiles per row, selecting one shows its panel, screenshot --
+  const p = await openConnections(browser, { width: 390, height: 844 });
+  const perRow390 = await p.page.$$eval('[data-conn-tile]', (els) => {
+    const tops = els.map((e) => Math.round(e.getBoundingClientRect().top));
+    return tops.filter((t) => t === tops[0]).length;
+  });
+  check(perRow390 === 2, `390px: ${perRow390} tiles per row`, `390px tiles per row wrong: ${perRow390}`);
+  await p.page.click('[data-conn-tile="ch-li-page"]');
+  await p.page.waitForSelector('[data-conn-detail="ch-li-page"] [data-conn-action]', { timeout: 4000 });
+  const vis = await p.page.$eval('[data-conn-detail]', (e) => { const r = e.getBoundingClientRect(); return r.top < window.innerHeight && r.bottom > 0; });
+  check(vis, '390px: tapping a tile brings its detail panel into view', '390px: the detail panel is off screen after tapping a tile');
+  await p.page.screenshot({ path: resolve(SHOT_DIR, 'connections_tiles_390.png') });
+  await p.ctx.close();
 }
 
 let browser, exitCode = 1;

@@ -137,7 +137,12 @@ const calls = (srv, method, pathRe) => srv.log.filter((r) => r.method === method
 const realErrors = (pageErrors) => pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
 const openConnections = async (page) => {
   await page.click('.desk-v1-home-connections-btn');
-  await page.waitForSelector('[data-connections] [data-conn-account]', { timeout: 6000 });
+  await page.waitForSelector('[data-connections] [data-conn-tile]', { timeout: 6000 });
+};
+// Accounts are tiles (2026-10-03); an account's detail row exists only while its tile is selected.
+const selectTile = async (page, id) => {
+  if ((await page.getAttribute(`[data-conn-tile="${id}"]`, 'aria-pressed')) !== 'true') await page.click(`[data-conn-tile="${id}"]`);
+  await page.waitForSelector(`[data-conn-detail="${id}"] [data-conn-account="${id}"]`, { timeout: 6000 });
 };
 const openWhere = async (page, campaignId = 'camp-1') => {
   await page.evaluate((id) => window.deskV1Nav('campaign', { campaignId: id, panel: 'where' }), campaignId);
@@ -156,11 +161,16 @@ async function connectionsRead(browser) {
   await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
   await openConnections(page);
 
-  const rows = await page.$$eval('[data-conn-account]', (els) => els.map((e) => ({
-    id: e.dataset.connAccount, state: e.dataset.connState,
-    publish: (e.querySelector('[data-conn-publish-text]') || {}).textContent || '',
-    secrets: !!e.querySelector('[data-conn-x-guide]'), action: !!e.querySelector('[data-conn-action]'),
-  })));
+  const tileIds = await page.$$eval('[data-conn-tile]', (els) => els.map((e) => e.dataset.connTile));
+  const rows = [];
+  for (const id of tileIds) {   // one detail panel at a time: open each account in turn
+    await selectTile(page, id);
+    rows.push(await page.$eval(`[data-conn-account="${id}"]`, (e) => ({
+      id: e.dataset.connAccount, state: e.dataset.connState,
+      publish: (e.querySelector('[data-conn-publish-text]') || {}).textContent || '',
+      secrets: !!e.querySelector('[data-conn-x-guide]'), action: !!e.querySelector('[data-conn-action]'),
+    })));
+  }
   const x = rows.find((r) => r.id === 'ch-x-ron');
   const li = rows.find((r) => r.id === 'ch-li-page');
   check(rows.length === srv.accounts.length, `the rows are the server's accounts (${rows.length})`, 'rows: ' + JSON.stringify(rows.map((r) => r.id)));
@@ -170,6 +180,7 @@ async function connectionsRead(browser) {
   check(rows.every((r) => !r.action), 'no fixture Connect / Reconnect button on any live row', 'a Connect button survived live');
   const typed = await page.$$('[data-connections] input[type="password"], [data-connections] input[name*="token" i], [data-connections] input[name*="secret" i]');
   check(typed.length === 0, 'no credential field exists on the screen until a guide is opened', 'a credential input is on Connections');
+  await selectTile(page, 'ch-x-ron');
   await page.click('[data-conn-account="ch-x-ron"] [data-conn-x-guide]');
   await page.waitForSelector('[data-conn-account="ch-x-ron"] [data-conn-x-wizard]', { timeout: 4000 });
   check(!(await page.evaluate(() => window.__vaultOpened)), '`Connect X` opens its own steps, not the Secrets panel', 'the Secrets panel was opened');
@@ -183,6 +194,7 @@ async function connectionsRead(browser) {
   srv.accounts.find((a) => a.id === 'ch-x-ron').publish = { ready: true, reason: null, secret: 'x.api', unattended_ok: false };
   srv.log.length = 0;
   await page.click('[data-conn-recheck]');
+  await selectTile(page, 'ch-x-ron');
   await settle(page, () => (document.querySelector('[data-conn-account="ch-x-ron"]') || {}).dataset.connState === 'ok');
   check(calls(srv, 'GET', /^\/api\/desk\/accounts$/).length === 1, 'Check again is one GET of M2 and the row repaints Connected', 'recheck calls: ' + JSON.stringify(srv.log));
   check(!!(await page.$('[data-conn-account="ch-x-ron"] [data-conn-unattended]')), 'a token that may not be used unattended says scheduled posts will be held', 'no unattended note');
@@ -202,8 +214,10 @@ async function addRemove(browser) {
   await page.selectOption('[data-conn-add-platform]', 'x');
   await page.fill('[data-conn-add-identity]', '@newhandle');
   await page.click('[data-conn-add-submit]');
-  await settle(page, () => [...document.querySelectorAll('[data-conn-account]')].some((e) => /newhandle/.test(e.textContent) && !/checking/.test(e.textContent)));
+  await settle(page, () => [...document.querySelectorAll('[data-conn-tile]')].some((e) => /newhandle/.test(e.textContent)));
   const post = calls(srv, 'POST', /^\/api\/desk\/accounts$/);
+  await selectTile(page, post[0].body.id);
+  await settle(page, () => [...document.querySelectorAll('[data-conn-account]')].some((e) => /newhandle/.test(e.textContent) && !/checking/.test(e.textContent)));
   check(post.length === 1 && post[0].body.platform === 'x' && post[0].body.identity === '@newhandle' && /^acct-/.test(post[0].body.id),
     'Add posts M3 with the client id, platform and identity', 'add POST: ' + JSON.stringify(post.map((r) => r.body)));
   check(Object.keys(post[0].body).every((k) => ['id', 'platform', 'identity', 'label', 'capability', 'voice'].includes(k)),
@@ -226,6 +240,7 @@ async function addRemove(browser) {
 
   // Read via: M4, filed under the project that uses the account.
   srv.log.length = 0;
+  await selectTile(page, 'ch-x-ron');
   await page.click('[data-conn-account="ch-x-ron"] [data-readvia="api"]');
   await settle(page, () => /ch-x-ron/.test('ch-x-ron') && document.querySelector('[data-conn-account="ch-x-ron"] [data-readvia="api"]').getAttribute('aria-pressed') === 'true');
   const rv = calls(srv, 'PATCH', /^\/api\/desk\/accounts\/ch-x-ron$/);
@@ -322,6 +337,8 @@ async function demoCallsNothing(browser) {
   await page.evaluate(() => window.deskV1Nav('home'));
   await page.waitForSelector('.desk-v1-home-connections-btn', { timeout: 6000 });
   await openConnections(page);
+  await page.click('[data-conn-tile]');   // an account's detail open: it must not offer the live controls either
+  await page.waitForSelector('[data-conn-detail] [data-conn-account]', { timeout: 4000 });
   const live = await page.$$('[data-conn-add], [data-conn-remove], [data-conn-publish]');
   check(live.length === 0, 'flag OFF: Connections shows no Add form, Remove or Publishing line', 'live controls leaked into demo mode');
   // The read-coverage line under Read via is a pre-existing GET (S8 owns engagement); it is not an account write.
