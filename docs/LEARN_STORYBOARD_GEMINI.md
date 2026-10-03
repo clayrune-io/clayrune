@@ -105,6 +105,12 @@ if a separate clip looks better.)
 - If a figure drifts off model, regenerate that shot rather than patching.
   The figures must read as the same characters users later meet on the Floor.
 
+## Shots received
+
+| Shot | File | Accepted | Notes |
+| --- | --- | --- | --- |
+| 1A | `data/uploads/learn_scenes/qa-1a.mp4` | Ron, 2026-10-03 | Gemini, 1280x720, 10 s with an audio track. The action ends at about 5 s and the rest is a still hold, so the builder trims it to the 6 s slot. |
+
 ## Mapping (for the builder, not shown to users)
 
 See the tables in `docs/LEARN_STORY_SCENES.md`. In short: HR's folders are the
