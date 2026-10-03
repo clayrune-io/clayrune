@@ -88,6 +88,11 @@ datas = [
     # claude/gemini/qwen guard file is ever generated in a frozen build
     # (MC-975 follow-up, 2026-09-25).
     (R('tools', 'guards', 'install_hooks.py'), 'tools/guards'),
+    # mc/addons/catalogue.json is read by FILE PATH next to catalogue.py
+    # (Path(__file__).with_name), not imported, so PyInstaller's Analysis does not
+    # see it. Leave it out and the frozen app's Settings > Add-ons page is empty
+    # and no add-on can ever be installed (MC-1022).
+    (R('mc', 'addons', 'catalogue.json'), 'mc/addons'),
 ]
 
 # SHARED_RULES.md is deliberately NOT bundled. It is user data — read verbatim

@@ -18,6 +18,7 @@ const SETTINGS_CATS = [
   { key:'memory',     group:1, label:'Memory',       sub:'Auto-condense & tuning',                     icon:_settingsIcon('<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/>') },
   { key:'appearance', group:2, label:'Appearance',   sub:'Theme, accent, density & writing style',     icon:_settingsIcon('<path d="M12 2.7l5.7 5.7a8 8 0 1 1-11.4 0z"/>') },
   { key:'connect',    group:2, label:'Connectivity', sub:'Remote access, push & mobile pairing',       icon:_settingsIcon('<path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8.5 16a5 5 0 0 1 7 0"/><path d="M2 9a15 15 0 0 1 20 0"/><path d="M12 19.5h.01"/>') },
+  { key:'addons',     group:2, label:'Add-ons',      sub:'Software agents ask for & you approve',      icon:_settingsIcon('<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/>') },
   { key:'system',     group:2, label:'System',       sub:'Paths, advanced features, server & help',    icon:_settingsIcon('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="2" y1="14" x2="6" y2="14"/><line x1="10" y1="8" x2="14" y2="8"/><line x1="18" y1="16" x2="22" y2="16"/>') },
 ];
 
@@ -803,6 +804,15 @@ async function _renderSettings() {
     ${mobilePairingSettingsHTML()}
       </div>
 
+      <div class="settings-detail-pane settings-hidden" data-cat="addons">
+      <div class="settings-cat-label">Add-ons</div>
+    <div class="settings-section">
+      <div class="settings-section-title">Add-ons</div>
+      <div class="settings-hint">An agent can ask for a tool such as ffmpeg. Nothing installs until you approve it here with your dashboard passcode.</div>
+      <div id="addons-host"><div class="settings-hint">Loading…</div></div>
+    </div>
+      </div>
+
       <div class="settings-detail-pane settings-hidden" data-cat="system">
       <div class="settings-cat-label">System</div>
     <div class="settings-section">
@@ -930,6 +940,7 @@ async function _renderSettings() {
   try { refreshMobilePairingSection(); } catch (_) {}
   try { refreshAgentFaceSection(); } catch (_) {}
   try { refreshBackupScheduleSection(); } catch (_) {}
+  try { if (window.refreshAddonsSection) window.refreshAddonsSection(); } catch (_) {}
 
   // Restore the master/detail/search view (persisted across re-renders so that
   // setTone/setAccent/etc. don't bounce you back to the list mid-edit).

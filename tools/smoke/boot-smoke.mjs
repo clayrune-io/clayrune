@@ -59,6 +59,7 @@ const MOBILE_PAIRING_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'mobil
 const WALKTHROUGH_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'walkthrough.js'), 'utf8');
 // Skills panel ES module (Phase 3 module 5) — same rule as claydo.js above.
 const SKILLS_PANEL_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'skills-panel.js'), 'utf8');
+const ADDONS_PANEL_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'addons-panel.js'), 'utf8');
 // Media gallery ES module — same rule as claydo.js above (an unlisted module is
 // ABORTED by the hermetic harness, so the SPA boots without it and any
 // assertion that depends on it lies).
@@ -166,6 +167,7 @@ const STATIC_MAP = {
   '/static/js/mobile-pairing.js': ['text/javascript; charset=utf-8', MOBILE_PAIRING_JS],
   '/static/js/walkthrough.js': ['text/javascript; charset=utf-8', WALKTHROUGH_JS],
   '/static/js/skills-panel.js': ['text/javascript; charset=utf-8', SKILLS_PANEL_JS],
+  '/static/js/addons-panel.js': ['text/javascript; charset=utf-8', ADDONS_PANEL_JS],
   '/static/js/media.js': ['text/javascript; charset=utf-8', MEDIA_JS],
   '/static/js/settings-drill.js': ['text/javascript; charset=utf-8', SETTINGS_DRILL_JS],
   '/static/js/settings-sections.js': ['text/javascript; charset=utf-8', SETTINGS_SECTIONS_JS],

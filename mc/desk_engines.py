@@ -72,6 +72,8 @@ from typing import Any, Callable
 from mc import desk as _desk
 from mc import desk_oauth as _oauth
 from mc import desk_pieces as _pieces
+from mc import desk_stitch as _stitch
+from mc.addons import hold as _addons_hold
 from mc import secrets_store
 from mc.core import _atomic_write_text, _log, now_iso
 
@@ -1798,81 +1800,26 @@ def _save_outputs(job: dict, req: GenerationRequest, blobs: list) -> list[dict]:
 
 RENDER_STATUSES = ('queued', 'rendering', 'ready', 'held', 'failed')
 _RATIO_NATIVE_FALLBACK = '16:9'          # what a model with no 1:1 is generated at, then cropped
-_FFMPEG_TIMEOUT = 600
 _finalizing: set[str] = set()
 
 
 def _ffmpeg() -> str | None:
-    """The ffmpeg on this host's PATH, or None. Never installed for the user."""
-    return shutil.which('ffmpeg')
+    """The approved ffmpeg's absolute path (mc.addons re-hashes it), or None.
+    Never a PATH lookup and never installed for the user without a tap."""
+    return _stitch.ffmpeg_path()
 
 
 def _ffprobe() -> str | None:
-    return shutil.which('ffprobe')
+    return _stitch.ffprobe_path()
 
 
-def _run_ffmpeg(cmd: list[str]) -> tuple[int, str]:
-    """Run one ffmpeg command -> (returncode, stderr tail). The one place the
-    join starts a subprocess, so tests replace it."""
-    try:
-        p = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace',
-                           timeout=_FFMPEG_TIMEOUT, check=False)
-    except subprocess.TimeoutExpired:
-        return 124, f'timed out after {_FFMPEG_TIMEOUT}s'
-    except OSError as e:
-        return 127, _safe(e)
-    return p.returncode, (p.stderr or '')[-600:]
-
-
-def stitch_command(ffmpeg: str, list_file: str, out_path: str, *, crop_square: bool, copy: bool) -> list[str]:
-    """The ffmpeg argv that joins the clips named in `list_file` (concat
-    demuxer) into `out_path`. Stream copy only when nothing changes the
-    pictures (`copy` and no crop); a 1:1 crop is a centre square, which has to
-    re-encode the video."""
-    cmd = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', list_file]
-    if copy and not crop_square:
-        cmd += ['-c', 'copy']
-    else:
-        if crop_square:
-            cmd += ['-vf', "crop='min(iw,ih)':'min(iw,ih)'"]
-        cmd += ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p', '-c:a', 'aac']
-    cmd += ['-movflags', '+faststart', out_path]
-    return cmd
-
-
-def _concat_list(paths: list[Path]) -> str:
-    def q(p: Path) -> str:
-        return str(p).replace('\\', '/').replace("'", "'\\''")
-    return ''.join(f"file '{q(p)}'\n" for p in paths)
+_run_ffmpeg = _stitch.run_ffmpeg
+stitch_command = _stitch.stitch_command
+_concat_list = _stitch.concat_list
 
 
 def _codecs_match(paths: list[Path]) -> bool:
-    """True only when ffprobe says every clip has the same video codec, size,
-    pixel format and audio codec, the condition under which the concat demuxer
-    can copy streams. No ffprobe, or any probe failure, is a mismatch: the
-    caller then re-encodes, which is always correct, only slower."""
-    probe = _ffprobe()
-    if probe is None:
-        return False
-    seen = None
-    for p in paths:
-        cmd = [probe, '-v', 'error', '-show_entries', 'stream=codec_type,codec_name,width,height,pix_fmt',
-               '-of', 'json', str(p)]
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace',
-                                 timeout=60, check=False)
-            streams = json.loads(res.stdout or '{}').get('streams') or []
-        except (OSError, subprocess.TimeoutExpired, ValueError):
-            return False
-        if res.returncode != 0 or not streams:
-            return False
-        sig = sorted((s.get('codec_type'), s.get('codec_name'), s.get('width'), s.get('height'), s.get('pix_fmt'))
-                     for s in streams)
-        if seen is None:
-            seen = sig
-        elif sig != seen:
-            return False
-    return True
+    return _stitch.codecs_match(paths, _ffprobe())
 
 
 def _scene_prompt(scene: dict) -> str:
@@ -2242,17 +2189,25 @@ def _join_clips(render_id: str, jobs: dict) -> dict | None:
         ffmpeg = _ffmpeg()
         if ffmpeg is None:
             what = 'cropped to 1:1' if len(clips) == 1 else ('joined' + (' and cropped to 1:1' if r['crop_square'] else ''))
+            camp = (_campaign(r.get('campaign_id')) or {}).get('name') if r.get('campaign_id') else None
+            cmd_for_user = _stitch.request_ffmpeg(
+                f'The Desk needs ffmpeg to join and crop the video render for {camp or "a piece"}.')
+            tail_msg = (f'Run `{cmd_for_user}` yourself, then open this render again. Nothing is installed for you.'
+                        if cmd_for_user else
+                        'Approve ffmpeg in Settings > Add-ons and this render finishes by itself. '
+                        'Nothing is installed without your approval.')
             return hold('ffmpeg_missing',
-                        f'ffmpeg is not installed on this machine, so the {len(clips)} clip{"s" if len(clips) != 1 else ""} '
+                        f'ffmpeg is not set up on this machine, so the {len(clips)} clip{"s" if len(clips) != 1 else ""} '
                         f'could not be {what}. They are saved in your Material library (video / {GENERATED_FOLDER}). '
-                        f'Install ffmpeg yourself, then open this render again. Nothing is installed for you.')
+                        + tail_msg)
         out_path = _library_folder('video') / f'{render_id}.mp4'
         list_file = out_path.with_suffix('.concat.txt')
         try:
             list_file.write_text(_concat_list(clip_paths), encoding='utf-8')
             cmd = stitch_command(ffmpeg, str(list_file), str(out_path), crop_square=bool(r['crop_square']),
                                  copy=_codecs_match(clip_paths))
-            code, tail = _run_ffmpeg(cmd)
+            with _addons_hold('ffmpeg', f'Desk render {render_id}'):
+                code, tail = _run_ffmpeg(cmd)
         finally:
             try:
                 list_file.unlink()
