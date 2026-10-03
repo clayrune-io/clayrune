@@ -24,7 +24,7 @@ backlog item, not part of this build.
 | 3 | Catalogue and manifest | **DECIDED (Dave):** catalogue ships as code, `mc/addons/catalogue.json`. Manifest `~/.clayrune/addons/installed.json`; the fence blocks agent writes there. |
 | 3b | Invocation | **DECIDED (Dave):** add-ons run by **absolute path** from the manifest. No PATH prepend anywhere. |
 | 4 | Human gate | **DECIDED (Dave):** passcode + tap via `_require_human_passcode`; catalogue entries only; never approval by email reply. Tap-only would loosen a human-only gate: Ron's call. |
-| 4c | Agent shell side door | **DECIDED (Dave):** guard against agent `winget/choco/scoop/brew/apt/npm -g` installs is a separate follow-up item. |
+| 4c | Agent shell side door | **DECIDED (Dave):** guard against agent `winget/choco/scoop/brew/apt/npm -g` installs is a separate follow-up item (MC-1042). **BUILT as a patch to `steward/fence.py`** (`_agent_shell_install`, called from `classify_bash`): armed sessions only; system-level installs refused with a pointer at `POST /api/addons/requests`; project-local installs (`npm install`, `pip install -r/-e .`, a venv, `--target` inside the project) stay allowed. Rule table and known gaps are in the comment above `_INSTALL_ADDON_POINTER`. Attended sessions are not blocked (the fence does not arm for them). |
 | 5 | Settings UI | Single "Add-ons" page: pending, installed, available (§5). |
 | 6 | ffmpeg already on the system | **DECIDED (Dave), reverses the 2026-10-02 first pick:** never used silently. Adopted through the same card (path, version, SHA-256), then pinned by absolute path + hash; re-carded if the hash changes. |
 | 7 | First consumer | Desk stitch + 1:1 crop, `mc/desk_stitch.py` (§7). |
