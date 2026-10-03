@@ -171,6 +171,12 @@ class EventType(str, Enum):
     TURN_END = 'turn_end'
     USAGE = 'usage'
     RATE_LIMIT = 'rate_limit'
+    # Claude Code's `system/api_retry`: the CLI is waiting to retry a failed API
+    # request (429/529/5xx/no response). With CLAUDE_CODE_RETRY_WATCHDOG=1 a 429
+    # keeps the process alive, emitting one of these every ~30 s until the
+    # limit resets. Not output from the model, but proof the process is alive
+    # and deliberately waiting: readers stamp last_output_time on it.
+    API_RETRY = 'api_retry'
     # A vendor's own signal that its usage allowance is exhausted (not merely
     # a soft rate-limit warning — RATE_LIMIT covers the ordinary "allowed" /
     # "allowed_warning" states too). VENDOR_AGNOSTIC_PROGRAM.md §4: normalized
@@ -2321,6 +2327,22 @@ class ClaudeRuntime(AgentRuntime):
                     'permission_mode': msg.get('permissionMode'),
                     'fast_mode_state': msg.get('fast_mode_state'),
                     'api_key_source': msg.get('apiKeySource'),
+                },
+                raw=msg,
+            )
+
+        if msg_type == 'system' and msg.get('subtype') == 'api_retry':
+            return AgentEvent(
+                type=EventType.API_RETRY, provider='claude',
+                session_id=session_id, mc_session_id=mc_session_id,
+                timestamp=_now_iso(),
+                payload={
+                    'attempt': msg.get('attempt'),
+                    'max_retries': msg.get('max_retries'),
+                    'retry_delay_ms': msg.get('retry_delay_ms'),
+                    'error_status': msg.get('error_status'),
+                    'error': msg.get('error'),
+                    'text': format_api_retry_line(msg),
                 },
                 raw=msg,
             )
@@ -5810,6 +5832,80 @@ def _find_claude_transcript(cwd, session_id):
     except OSError:
         pass
     return None
+
+
+# ── Claude retry watchdog (CLAUDE_CODE_RETRY_WATCHDOG) ───────────────────────
+# `claude -p` ends a run in ~1 s on a 429/529 ("API Error: Request rejected
+# (429)"). With CLAUDE_CODE_RETRY_WATCHDOG=1 it instead stays alive and waits
+# out the rate-limit reset (up to 300 retries), sending no extra requests and
+# emitting a `system/api_retry` stream-json event every ~30 s. That is what an
+# UNATTENDED run wants (nobody is there to re-send it) and what an attended chat
+# does not (the human wants the error now, not a silent multi-hour wait).
+# A status line is re-shown for the same wait at most this often (the CLI emits
+# an event every ~30 s; log_lines is append-only, so one line per event would
+# put 30 lines in the chat for a 15 min wait and 600 for a 5 h one).
+API_RETRY_NOTICE_EVERY_S = 300
+
+
+def _retry_wait_label(delay_ms):
+    """'under a minute' | 'N min' | 'H h M min' for a retry_delay_ms."""
+    try:
+        secs = max(0.0, float(delay_ms) / 1000.0)
+    except (TypeError, ValueError):
+        return 'a moment'
+    if secs < 60:
+        return 'under a minute'
+    mins = int(secs / 60 + 0.5)
+    if mins < 60:
+        return f'{mins} min'
+    h, m = divmod(mins, 60)
+    return f'{h} h {m} min' if m else f'{h} h'
+
+
+def format_api_retry_line(msg):
+    """The chat/log line for a Claude `system/api_retry` event (raw dict or
+    parsed payload). Bracketed, so the UI renders it as a status line."""
+    msg = msg if isinstance(msg, dict) else {}
+    status = msg.get('error_status')
+    attempt, cap = msg.get('attempt'), msg.get('max_retries')
+    when = _retry_wait_label(msg.get('retry_delay_ms'))
+    tries = f'attempt {attempt}/{cap}' if attempt is not None and cap is not None else ''
+    if status == 429 or msg.get('error') == 'rate_limit':
+        detail = ', '.join(x for x in (tries, 'HTTP 429') if x)
+        return f'[Waiting for usage limit reset, next try in {when} ({detail})]'
+    detail = ', '.join(x for x in (
+        tries, f'HTTP {status}' if status is not None else 'no response') if x)
+    return f'[API request failed, next try in {when} ({detail})]'
+
+
+def note_api_retry(session, ev, now=None):
+    """Handle one Claude API_RETRY event on a session (both Claude readers).
+
+    Always stamps last_output_time: the process is alive and waiting on
+    purpose, and Guardian State 2 kills a `running` proc that is silent for
+    GUARDIAN_HUNG_TIMEOUT (600 s) and CPU-idle -- which a rate-limit wait is.
+    Appends the status line to log_lines at the start of a wait (first event,
+    attempt changed, or the delay went UP, i.e. a new wait) and then at most
+    every API_RETRY_NOTICE_EVERY_S while the same wait counts down.
+    """
+    now = _time.time() if now is None else now
+    session['last_output_time'] = now
+    payload = ev.payload if isinstance(getattr(ev, 'payload', None), dict) else {}
+    delay = payload.get('retry_delay_ms')
+    attempt = payload.get('attempt')
+    prev = session.get('_api_retry_notice') or {}
+    try:
+        new_wait = (delay is not None and prev.get('delay') is not None
+                    and float(delay) > float(prev['delay']))
+    except (TypeError, ValueError):
+        new_wait = True
+    show = (not prev or new_wait or attempt != prev.get('attempt')
+            or now - prev.get('at', 0) >= API_RETRY_NOTICE_EVERY_S)
+    session['_api_retry_notice'] = {
+        'at': now if show else prev.get('at', now),
+        'delay': delay, 'attempt': attempt}
+    if show:
+        session['log_lines'].append(payload.get('text') or format_api_retry_line(payload))
 
 
 def note_cli_init(proc_cost, msg, find_transcript=None):

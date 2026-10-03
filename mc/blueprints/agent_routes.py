@@ -5782,6 +5782,23 @@ def _session_owned_by(session, my_proc):
     return session.get('proc') is my_proc
 
 
+def _note_api_retry(session, line):
+    """A Claude `system/api_retry` line: the CLI is alive and waiting to retry
+    (with CLAUDE_CODE_RETRY_WATCHDOG=1, out a 429 until the limit resets). Goes
+    through ClaudeRuntime.parse_event, then stamps last_output_time so Guardian
+    State 2 does not kill the wait as a hung process, and shows a status line.
+    Never raises: an exception here would end the whole reader loop."""
+    try:
+        ev = _agent_runtime.get_runtime('claude').parse_event(
+            line, session.get('session_id', ''))
+        if ev is not None and ev.type == _agent_runtime.EventType.API_RETRY:
+            _agent_runtime.note_api_retry(session, ev)
+            return
+    except Exception as e:
+        _log(f"[api-retry] could not render retry event: {e}")
+    session['last_output_time'] = _time.time()
+
+
 def _read_agent_stream(proc, session):
     """Reader thread: captures stdout lines into session log_lines."""
     # Snapshot the proc we were launched with so we can detect if a follow-up
@@ -5827,6 +5844,9 @@ def _read_agent_stream(proc, session):
                 # Live stop-hook boundary: stream-json never carries the hook's
                 # feedback turn, so confirm a resend against the transcript.
                 _track_stop_hook_boundary(session, msg)
+                if msg_type == 'system' and msg.get('subtype') == 'api_retry':
+                    _note_api_retry(session, line)
+                    continue
                 if msg_type == 'stream_event':
                     _note_activity_state(session, msg)
                     continue
@@ -6109,6 +6129,9 @@ def _read_agent_stream_b(proc, session):
                 _track_stop_hook_boundary(session, msg)
                 if msg_type == 'system':
                     _note_background_system_event(session, msg)
+                    if msg.get('subtype') == 'api_retry':
+                        _note_api_retry(session, line)
+                        continue
                 if msg_type == 'stream_event':
                     _note_activity_state(session, msg)
                     continue

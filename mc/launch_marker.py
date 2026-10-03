@@ -13,6 +13,11 @@ One helper, called at each spawn site. Respawn / follow-up / revive sites must
 pass the session's STORED trigger_type (the one the lookup would return), never
 recompute it from the caller's hints.
 
+The same env also carries CLAUDE_CODE_RETRY_WATCHDOG=1 for an unattended
+trigger_type, so a 429 makes the CLI wait out the usage limit (a
+`system/api_retry` event every ~30 s) instead of ending the run in ~1 s; see
+`launch_env`. One env per spawn site -- never a second `env=`.
+
 `UNATTENDED_TRIGGER_TYPES` mirrors `steward.fence._UNATTENDED_TRIGGER_TYPES`;
 tests/test_launch_marker.py pins the two together.
 """
@@ -24,6 +29,11 @@ from typing import Any, Dict, Optional
 # Read by steward/fence.py `_should_arm_for_unattended_trigger` (the hook runs in
 # the Claude child's environment, so this is the one channel that needs no server).
 LAUNCH_MARKER_ENV = 'CLAYRUNE_LAUNCHED_UNATTENDED'
+
+# Claude Code: on a 429/529 keep the process alive and retry (up to 300x, no
+# extra requests) instead of exiting. Wanted for unattended runs (nobody is
+# there to re-send); not for an attended chat, which wants the error now.
+RETRY_WATCHDOG_ENV = 'CLAUDE_CODE_RETRY_WATCHDOG'
 
 UNATTENDED_TRIGGER_TYPES = frozenset({
     'schedule', 'workflow', 'dispatch', 'hivemind_orchestrator', 'hivemind_worker',
@@ -50,8 +60,11 @@ def launch_env(trigger_type: Optional[str],
     sessions must stay unfenced.
     """
     env: Dict[str, Any] = dict(os.environ if base is None else base)
-    if (trigger_type or '') in UNATTENDED_TRIGGER_TYPES and _fence_enabled():
+    unattended = (trigger_type or '') in UNATTENDED_TRIGGER_TYPES
+    if unattended and _fence_enabled():
         env[LAUNCH_MARKER_ENV] = '1'
     else:
         env.pop(LAUNCH_MARKER_ENV, None)
+    if unattended and not (env.get(RETRY_WATCHDOG_ENV) or '').strip():
+        env[RETRY_WATCHDOG_ENV] = '1'
     return env
