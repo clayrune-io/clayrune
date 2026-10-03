@@ -18,6 +18,7 @@ reversible work (edits, reads, analysis, localhost API calls) flows unattended.
 Self-contained (stdlib only) so it runs as a standalone hook script from any cwd:
     python "<repo>/steward/fence.py"      # reads PreToolUse JSON on stdin
 """
+import base64
 import json
 import os
 import re
@@ -746,10 +747,12 @@ def _mask_curl_data_args(cmd: str) -> str:
         return cmd
 
 
-def _mask_inert_prose(cmd: str) -> str:
+def _mask_inert_prose(cmd: str, mask_python_c: bool = True) -> str:
     """Replace provably-inert data spans with a placeholder. Best-effort and
     conservative: any span we cannot PROVE inert is left untouched (fails
-    toward blocking, never toward allowing)."""
+    toward blocking, never toward allowing). `mask_python_c=False` keeps a
+    `python -c` body visible, for the one check (_mod_plant_guard) that must
+    read what such a body writes."""
     def _msg_repl(m):
         if m.group('q') == '"' and ('$(' in m.group('body') or '`' in m.group('body')):
             return m.group(0)          # substitution could execute — leave it
@@ -778,7 +781,8 @@ def _mask_inert_prose(cmd: str) -> str:
     out = _mask_curl_data_args(cmd)
     out = _MSG_ARG_RE.sub(_msg_repl, out)
     out = _GREP_PATTERN_RE.sub(_grep_repl, out)
-    out = _PY_C_ARG_RE.sub(_py_c_repl, out)
+    if mask_python_c:
+        out = _PY_C_ARG_RE.sub(_py_c_repl, out)
     out = _HEREDOC_RE.sub(_block_repl, out)
     out = _PS_HERESTRING_RE.sub(_block_repl, out)
     return out
@@ -1600,10 +1604,12 @@ _ACTIVATE_WORD_RE = re.compile(r'[\\/]activate(?:\.bat|\.ps1)?$', re.I)
 _WIN_DRIVE_RE = re.compile(r'^[A-Za-z]:[\\/]')
 
 
-def _install_split(cmd: str) -> list:
+def _install_split(cmd: str, parens: bool = True) -> list:
     """[[word, ...], ...]: shell segments of dequoted words. Splits on ; & |
-    newline ( ) and backtick outside quotes; a backslash is a literal (Windows
-    paths). Not a shell parser, only enough to find a command's first words."""
+    newline ( ) and backtick outside quotes (not on ( ) and backtick when
+    `parens` is False, so `Set-Content -Path (Join-Path $HOME .claude)` stays
+    one segment); a backslash is a literal (Windows paths). Not a shell
+    parser, only enough to find a command's first words."""
     segs: list = []
     words: list = []
     cur: list = []
@@ -1631,7 +1637,7 @@ def _install_split(cmd: str) -> list:
             quote, has_word = ch, True
         elif ch in ' \t\r':
             end_word()
-        elif ch in ';\n|&()`':
+        elif ch in (';\n|&()`' if parens else ';\n|&'):
             end_word()
             if words:
                 segs.append(words)
@@ -1908,6 +1914,332 @@ def _agent_shell_install(cmd: str, cwd: Optional[str] = None) -> FenceDecision:
                                f"{_INSTALL_ADDON_POINTER}")
 
 
+# ── Mod / plugin planting guard (2026-10-03) ────────────────────────────────
+# Claude Code 2.1.287+ auto-loads a folder under ~/.claude/skills/<name> (or a
+# project's .claude/skills/<name>) as a plugin when it holds
+# .claude-plugin/plugin.json and hooks/hooks.json, and `claude -p` always loads
+# fresh. A plugin's tool.call hook sits ABOVE settings PreToolUse, so it can
+# answer a call without next() and this fence never runs; $.process / $.fs act
+# outside tool calls entirely. classify_action already refuses Write/Edit
+# under /.claude/, but a SHELL write there was allowed, so an armed agent could
+# plant a mod that unfences every later run. For armed sessions this refuses,
+# never passably (a human-owned supply chain, like the Write rule):
+#   - a shell write, copy, move, mkdir, redirect, tee, in-place edit, download
+#     or extract whose target is a `.claude` path (home or project), whether
+#     spelled as a command, as `bash -c` / `pwsh -Command` / `-EncodedCommand`,
+#     as Start-Process, or as the code of python/node/perl/ruby -c, a
+#     heredoc to an interpreter, or a .NET call;
+#   - any CLAUDE_CODE_PLUGIN_*DIR* variable being SET (`CLAUDE_CODE_PLUGIN_DIRS`
+#     plugin folders, `_DIR_WATCH`, `_SEED_DIR`, `_CACHE_DIR`), and the
+#     `--plugin-dir` / `--plugin-url` flags;
+#   - `claude plugin install|i|enable|update|init|new` and
+#     `claude plugin marketplace add|update`.
+# Reading `.claude` and prose that merely mentions it stay allowed: a redirect
+# or write verb must AIM at the path, and -m messages, grep patterns and
+# quoted heredoc bodies are masked first (a `python -c` body is the one span
+# kept visible, see _mask_inert_prose).
+# Own-memory topic files: the Write-tool exception (_is_own_memory_topic_file)
+# does NOT extend to the shell. The shell has no project_root to judge it by
+# and tests/test_fence_memory_dir.py pins "Bash is untouched by the memory
+# allowance"; an agent writes its notes with the Write tool.
+# KNOWN GAPS, accepted (command text only): a script file that writes .claude
+# (`python _scratch/plant.py`), a path built from a variable or glob, a
+# relative write whose cwd the hook payload does not show to be inside
+# `.claude`, `git checkout`/`restore`/`apply` materialising a tracked
+# .claude file, and `claude plugin eval|test` running a plugin that is already
+# on disk. Living in fence.py rather than a new module on purpose: the hook is
+# a standalone stdlib script, and only these four basenames are protected
+# from agent edits (see the `_fence_names` check in classify_action).
+_MP_CLAUDE_RE = re.compile(r'(?<![\w-])\.claude(?![\w.-])', re.I)
+_MP_WORKTREE_RE = re.compile(r'^/worktrees(?:/|$)', re.I)
+_MP_ENV_NAME = r'CLAUDE_CODE_PLUGIN_\w*DIR\w*'
+_MP_ENV_RE = re.compile(
+    r'(?:\$env:|\benv:|\bsetx\s+|\bsetenv\s+|SetEnvironmentVariable\W{0,3}'
+    r'|environ\W{0,3}|process\.env\W{0,3}|putenv\W{0,3})\s*' + _MP_ENV_NAME
+    + r'|' + _MP_ENV_NAME + r'''['"\]]?\s*[:+]?=''', re.I)
+_MP_PLUGIN_FLAGS = ('--plugin-dir', '--plugin-url')
+_MP_PLUGIN_VERBS = frozenset({'install', 'i', 'enable', 'update', 'init', 'new'})
+_MP_PROSE_HEADS = frozenset({'echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg',
+                             'write-output', 'write-host', 'select-string'})
+_MP_CD = frozenset({'cd', 'chdir', 'pushd', 'set-location', 'sl', 'push-location'})
+# Target is the LAST operand (cp a b, ln -s t link) unless -t / -Destination.
+_MP_DEST_LAST = frozenset({
+    'cp', 'copy', 'mv', 'move', 'ln', 'install', 'rsync', 'scp', 'xcopy',
+    'robocopy', 'copy-item', 'cpi', 'move-item', 'mi'})
+# Any operand aimed at .claude counts.
+_MP_ANY_ARG = frozenset({
+    'mkdir', 'md', 'new-item', 'ni', 'touch', 'tee', 'tee-object', 'set-content',
+    'sc', 'add-content', 'ac', 'out-file', 'export-clixml', 'expand-archive',
+    'unzip', '7z', '7za', '7zr', 'tar', 'bsdtar', 'truncate', 'sed', 'gsed',
+    'perl', 'patch', 'rename-item', 'rni', 'ren', 'rename', 'mklink', 'dd'})
+_MP_INTERP_RE = re.compile(
+    r'^(?:python\d*(?:\.\d+)?|py|pypy\d*|node|nodejs|deno|bun|perl|ruby|php|lua|'
+    r'pwsh|powershell)$')
+_MP_NET_OUT = frozenset({'-o', '--output', '--output-dir', '-O', '--output-document',
+                         '-P', '--directory-prefix', '-outfile', '-destination'})
+_MP_PS_ENCODED_RE = re.compile(r'^-e(?:c|nc\w*)?$', re.I)
+_MP_HEREDOC_RE = re.compile(
+    r'''(?P<head>[^\n]*)<<-?[ \t]*(?P<q>['"]?)(?P<tag>\w+)(?P=q)[^\n]*\n'''
+    r'''(?P<body>.*?)\n[ \t]*(?P=tag)[ \t]*(?=\n|$)''', re.S)
+# What a program body does to a path: open for write, mkdir, copy, rename,
+# symlink, archive extract, shell-out; fs.*; Ruby/Perl file helpers; the
+# PowerShell cmdlets and .NET statics. Both this AND a `.claude` path must be
+# in the same string (a code word, a heredoc body) before it counts.
+_MP_WRITE_API_RE = re.compile(
+    r'''\bopen\s*\([^)]*,\s*(?:mode\s*=\s*)?['"]?[rwxabt+<]*[wxa+>][rwxabt+<>]*['"]?\s*[,)]'''
+    r'''|\.open\s*\(\s*['"]?[rwxabt+]*[wxa+][rwxabt+]*['"]?\s*[,)]'''
+    r'''|\.(?:write_text|write_bytes|mkdir|touch|symlink_to|hardlink_to|rename)\s*\('''
+    r'''|\bshutil\s*\.\s*(?:copy\w*|move|make_archive|unpack_archive)\b'''
+    r'''|\bos\s*\.\s*(?:makedirs|mkdir|rename|replace|symlink|link|system|popen)\b'''
+    r'''|\b(?:zipfile|tarfile|subprocess|child_process)\b'''
+    r'''|(?:\bfs(?:\.promises)?|\bfs['"]?\))\s*\.\s*(?:write\w*|append\w*|mkdir\w*|copy\w*|cp\w*'''
+    r'''|rename\w*|symlink\w*|link\w*|createWriteStream)\b'''
+    r'''|\bFile\s*\.\s*(?:write|binwrite|open|rename|symlink)\b|\bFileUtils\b'''
+    r'''|\bFile::(?:Path|Copy)\b|\b(?:make_path|mkpath)\b'''
+    r'''|\b(?:Set-Content|Add-Content|Out-File|New-Item|Copy-Item|Move-Item'''
+    r'''|Rename-Item|Expand-Archive)\b'''
+    r'''|\[(?:System\.)?IO\.(?:File|Directory)\]\s*::\s*'''
+    r'''(?:Write\w*|Append\w*|Copy|Move|Create\w*|Open\w*|Replace)''', re.I)
+
+
+def _mp_hit(text: str, skip_worktrees: bool = False) -> bool:
+    """True when `text` names a `.claude` path component. With skip_worktrees,
+    a component that only leads into `.claude/worktrees/` does not count (Claude
+    Code's own agent worktrees live there; used for the hook cwd only)."""
+    norm = (text or '').replace('\\', '/')
+    for m in _MP_CLAUDE_RE.finditer(norm):
+        if not (skip_worktrees and _MP_WORKTREE_RE.match(norm[m.end():])):
+            return True
+    return False
+
+
+def _mp_args_hit(args, in_claude: bool) -> bool:
+    """Any word names `.claude`, or (inside a `cd .claude`) is a relative path."""
+    for w in args:
+        if _mp_hit(w):
+            return True
+        if in_claude and w and not w.startswith('-') and w[0] not in '/~$%\\' \
+                and not _WIN_DRIVE_RE.match(w):
+            return True
+    return False
+
+
+def _mp_code_plants(code: str) -> bool:
+    return _mp_hit(code) and bool(_MP_WRITE_API_RE.search(code))
+
+
+def _mp_positional(args) -> list:
+    return [w for w in args if w and not w.startswith('-')
+            and not re.match(r'^\d*>', w)]
+
+
+def _mp_dest(prog: str, rest: list) -> Optional[str]:
+    for k, w in enumerate(rest):
+        if w in ('-t', '--target-directory') and k + 1 < len(rest):
+            return rest[k + 1]
+        if w.startswith('--target-directory='):
+            return w.split('=', 1)[1]
+        m = re.match(r'^-dest\w*[:=]?(.*)$', w, re.I)
+        if m and prog in ('copy-item', 'cpi', 'move-item', 'mi'):
+            return m.group(1) or (rest[k + 1] if k + 1 < len(rest) else None)
+    if prog in ('robocopy', 'xcopy'):
+        rest = [w for w in rest if not re.match(r'^/[A-Za-z?]+(?::.*)?$', w)]
+    pos = _mp_positional(rest)
+    return pos[-1] if pos else None
+
+
+def _mp_any_arg_applies(prog: str, rest: list) -> bool:
+    """tar only writes when it extracts, sed/perl only when they edit in place."""
+    if prog in ('tar', 'bsdtar'):
+        return any(re.match(r'^-[A-Za-z]*x', w) or re.match(r'^x[A-Za-z]*$', w)
+                   or w in ('--extract', '--get') for w in rest)
+    if prog in ('sed', 'gsed', 'perl'):
+        return any(w == '--in-place' or w.startswith('--in-place=')
+                   or re.match(r'^-[A-Za-z]*i', w) for w in rest)
+    return True
+
+
+def _mp_net_output_hit(rest: list) -> bool:
+    for k, w in enumerate(rest):
+        low = w.lower()
+        if low in _MP_NET_OUT and k + 1 < len(rest) and _mp_hit(rest[k + 1]):
+            return True
+        m = re.match(r'^(--?[a-z-]+)[:=](.+)$', low)
+        if m and m.group(1) in _MP_NET_OUT and _mp_hit(m.group(2)):
+            return True
+        if re.match(r'^-o.', w) and not w.startswith('--') and _mp_hit(w[2:]):
+            return True
+        if re.match(r'^-[A-Za-z]*[oO]$', w) and k + 1 < len(rest) and _mp_hit(rest[k + 1]):
+            return True                      # a flag cluster ending in -o: -sSfLo FILE
+    return False
+
+
+def _mp_segment(words: list, in_claude: bool, depth: int):
+    """(reason or None, in_claude) for one shell segment of dequoted words."""
+    words = list(words)
+    if words:
+        words[0] = re.sub(r'^(?:\$?\(+|\{+)', '', words[0])
+    for k, w in enumerate(words):
+        m = re.match(r'^(?:\d*|&)>>?(?![>&])(.*)$', w)
+        if m:
+            target = m.group(1) or (words[k + 1] if k + 1 < len(words) else '')
+            if target and _mp_args_hit([target], in_claude):
+                return "a shell redirect into a .claude directory", in_claude
+    k = 0
+    while k < len(words):
+        w = words[k]
+        head = _install_prog(w)
+        if (re.match(r'^\w+=', w) and not w.startswith('-')) \
+                or w in ('{', '}', '!', 'then', 'do', 'else', ''):
+            k += 1
+            continue
+        if head in _WRAPPER_VALUE_OPTS:
+            vals = _WRAPPER_VALUE_OPTS[head]
+            k += 1
+            while k < len(words):
+                nxt = words[k]
+                if head in ('start', 'call'):
+                    if re.match(r'^/[A-Za-z]+$', nxt):
+                        k += 1
+                        continue
+                    break
+                if nxt == '--':
+                    k += 1
+                    break
+                if nxt.startswith('-') and nxt != '-':
+                    k += 2 if nxt in vals else 1
+                    continue
+                if head == 'env' and re.match(r'^\w+=', nxt):
+                    k += 1
+                    continue
+                break
+            continue
+        break
+    else:
+        return None, in_claude
+    prog = _install_prog(words[k])
+    rest = words[k + 1:]
+    if depth < 4:
+        inner = None
+        if prog in _SHELL_DASH_C:
+            for j, a in enumerate(rest):
+                if re.match(r'^-[A-Za-z]*c[A-Za-z]*$', a) and j + 1 < len(rest):
+                    inner = rest[j + 1]
+                    break
+        elif prog in ('pwsh', 'powershell'):
+            for j, a in enumerate(rest):
+                if _PS_COMMAND_RE.match(a):
+                    inner = ' '.join(rest[j + 1:])
+                    break
+                if _MP_PS_ENCODED_RE.match(a) and j + 1 < len(rest):
+                    try:
+                        inner = base64.b64decode(rest[j + 1]).decode('utf-16-le')
+                    except Exception:
+                        inner = None
+                    break
+        elif prog == 'cmd':
+            for j, a in enumerate(rest):
+                if a.lower() in ('/c', '/k'):
+                    inner = ' '.join(rest[j + 1:])
+                    break
+        elif prog in ('eval', 'iex', 'invoke-expression'):
+            inner = ' '.join(rest)
+        if inner is not None:
+            why = _mp_scan(inner, depth + 1, in_claude)
+            if why:
+                return why, in_claude
+    if prog in _MP_CD:
+        target = next((a for a in rest if not a.startswith('-')), '')
+        if target and _mp_hit(target):
+            in_claude = True
+        return None, in_claude
+    if prog not in _MP_PROSE_HEADS:
+        if any(w == f or w.startswith(f + '=') for w in rest for f in _MP_PLUGIN_FLAGS):
+            return "the --plugin-dir / --plugin-url flags (load a plugin outside the install)", in_claude
+    for i, w in enumerate(words):
+        if _install_prog(w) != 'claude':
+            continue
+        sub = [a.lower() for a in words[i + 1:] if not a.startswith('-')]
+        for j, a in enumerate(sub):
+            if a in ('plugin', 'plugins') and j + 1 < len(sub):
+                verb = sub[j + 1]
+                if verb in _MP_PLUGIN_VERBS or (
+                        verb == 'marketplace' and sub[j + 2:j + 3] in (['add'], ['update'])):
+                    return f"`claude plugin {verb}` (installs or scaffolds a plugin)", in_claude
+                break
+    why = None
+    if prog in _MP_DEST_LAST:
+        dest = _mp_dest(prog, rest)
+        if dest and _mp_args_hit([dest], in_claude):
+            why = f"`{prog}` into a .claude directory"
+    elif prog == 'git':
+        sub = [a for a in rest if not a.startswith('-')]
+        if 'clone' in sub:
+            pos = _mp_positional(rest[rest.index('clone') + 1:]) if 'clone' in rest else []
+            if pos and _mp_args_hit([pos[-1]], in_claude):
+                why = "`git clone` into a .claude directory"
+        elif sub[:2] == ['worktree', 'add'] and len(sub) > 2 and _mp_args_hit([sub[2]], in_claude):
+            why = "`git worktree add` into a .claude directory"
+    elif prog in _MP_ANY_ARG and _mp_any_arg_applies(prog, rest):
+        if prog == 'dd':
+            if any(a.lower().startswith('of=') and _mp_hit(a[3:]) for a in rest):
+                why = "`dd of=` into a .claude directory"
+        elif _mp_args_hit(rest, in_claude):
+            why = f"`{prog}` aimed at a .claude directory"
+    elif prog in ('curl', 'wget', 'iwr', 'invoke-webrequest', 'irm', 'invoke-restmethod',
+                  'start-bitstransfer') and _mp_net_output_hit(rest):
+        why = f"`{prog}` saving a download into a .claude directory"
+    if why:
+        return why, in_claude
+    if _MP_INTERP_RE.match(prog):
+        for a in rest:
+            if _mp_code_plants(a):
+                return f"`{prog}` code that writes under .claude", in_claude
+    for a in rest:
+        if '::' in a and _mp_code_plants(a):
+            return "a .NET file call that writes under .claude", in_claude
+    return None, in_claude
+
+
+def _mp_scan(cmd: str, depth: int = 0, in_claude: bool = False) -> Optional[str]:
+    cmd = _unwrap_start_process(_join_line_continuations(cmd))
+    for words in _install_split(cmd, parens=False):
+        why, in_claude = _mp_segment(words, in_claude, depth)
+        if why:
+            return why
+    return None
+
+
+def _mod_plant_guard(command: str, cwd: Optional[str] = None) -> FenceDecision:
+    """Block an armed agent planting a Claude Code mod or plugin (see the
+    section comment). Never passable: a human owns what Claude loads."""
+    try:
+        scan = _mask_inert_prose(command.strip(), mask_python_c=False)
+    except Exception:
+        scan = command.strip()
+    why = None
+    try:
+        if _MP_ENV_RE.search(scan):
+            why = "setting a CLAUDE_CODE_PLUGIN_*DIR* variable (loads plugin folders)"
+        if not why:
+            for m in _MP_HEREDOC_RE.finditer(scan):
+                if _INTERPRETER_RE.search(m.group('head')) and (
+                        _mp_code_plants(m.group('body')) or _mp_scan(m.group('body'), 1)):
+                    why = "an interpreter script that writes under .claude"
+                    break
+        if not why:
+            why = _mp_scan(scan, 0, _mp_hit(cwd or '', skip_worktrees=True))
+    except Exception:
+        return FenceDecision(False, '')      # never wedge the agent on a parse bug
+    if not why:
+        return FenceDecision(False, '')
+    return FenceDecision(True, f"{why} — Claude Code auto-loads a plugin or mod "
+                               f"from .claude and its tool.call hook runs above "
+                               f"this fence, so what lives there and what plugin "
+                               f"folders load is human-owned (supply chain)",
+                         overridable=False)
+
+
 _HUMAN_GATE_ROUTE_RE = re.compile(r'local-auth/set|/attend-once(?!/consume)', re.IGNORECASE)
 
 
@@ -1928,6 +2260,12 @@ def classify_bash(command: str, cwd: Optional[str] = None) -> FenceDecision:
         return FenceDecision(True, "calls the dashboard-passcode or Allow-once "
                                    "grant route (the human-proof gate — "
                                    "human-owned)", overridable=False)
+    # Judged on the raw text, not the masked `cmd` below (a `python -c` body is
+    # masked there), and ahead of the pattern lists so a never-passable plant
+    # is not reported as an overridable disk or delete block.
+    mod_plant = _mod_plant_guard(command, cwd)
+    if mod_plant.blocked:
+        return mod_plant
     try:
         cmd = _mask_inert_prose(command.strip())
     except Exception:
