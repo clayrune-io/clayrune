@@ -157,6 +157,20 @@ try {
   }));
   check(echo.c && !echo.a, 'pane 2’s message appears in pane 2 (beta), not pane 1 (alpha)', `echo landed wrong (pane1=${echo.a}, pane2=${echo.c})`);
 
+  // The ✕ on the CROSS-PROJECT pane must close it. It used to call
+  // closeSplitPane with the pane's own project (beta), but split state is
+  // keyed by the host (alpha), so the button did nothing.
+  await page.click('.agent-split-pane[data-sid="mcC"] .agent-split-close');
+  await page.waitForFunction(() => !document.querySelector('.agent-split-pane[data-sid="mcC"]'), null, { timeout: 5000 }).catch(() => {});
+  const afterClose = await page.evaluate((pid) => ({
+    splitGone: !document.querySelector('.agent-split-pane'),
+    split: splitAgentTab[pid] || null,
+    active: activeAgentTab[pid] || null,
+  }), PID_A);
+  check(afterClose.splitGone && !afterClose.split && afterClose.active === 'mcA',
+    'cross-project pane ✕ closes it; alpha/mcA stays as the single chat',
+    `close did not work: ${JSON.stringify(afterClose)}`);
+
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   uncaught.length ? uncaught.forEach((e) => fail('uncaught page error: ' + e)) : ok('no uncaught page errors');
   if (SHOT) { await page.screenshot({ path: SHOT }); ok('screenshot: ' + SHOT); }

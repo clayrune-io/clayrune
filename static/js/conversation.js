@@ -1950,7 +1950,7 @@ function agentPanelHTML(p) {
       ? ((typeof allProjects !== 'undefined' ? allProjects : []).find(x => x.id === _splitPid) || p)
       : p;
     const _mainInner = _splitActive
-      ? `${splitPaneHTML(p, activeSessionId, true)}<div class="agent-split-divider"></div>${splitPaneHTML(_splitProject, _splitSid, false)}`
+      ? `${splitPaneHTML(p, activeSessionId, true)}<div class="agent-split-divider"></div>${splitPaneHTML(_splitProject, _splitSid, false, p.id)}`
       : `${tabContent}${dispatchRow}`;
     try { _ensureThreadsCss(); } catch (e) {}  // never let a board bug break the panel render
     return `<div class="agent-panel agent-3pane">
@@ -4257,7 +4257,7 @@ function switchAgentTab(projectId, sessionId) {
 // A compact, self-contained conversation pane. Output node renders EMPTY and is
 // filled after mount by refreshModalById's split hydrate (fresh) or preserved
 // live across refreshes — same discipline as the switch-back repaint.
-function splitPaneHTML(p, sid, isPrimary) {
+function splitPaneHTML(p, sid, isPrimary, hostPid) {
   const s = agentStatusCache[sid] || {};
   const st = s.status || 'completed';
   const isRunning = st === 'running';
@@ -4270,8 +4270,10 @@ function splitPaneHTML(p, sid, isPrimary) {
   const stopBtn = (isRunning || st === 'idle' || st === 'error')
     ? `<button class="btn-stop" onclick="stopAgent('${esc(p.id)}','${esc(sid)}')">Stop</button>` : '';
   const stopBtnSlot = `<span id="stop-btn-split-${esc(sid)}">${stopBtn}</span>`;
-  // ✕ closes THIS pane and keeps the other as the single view.
-  const closeBtn = `<button class="agent-split-close" onclick="closeSplitPane('${esc(p.id)}','${esc(sid)}')" title="Close this pane">&#10005;</button>`;
+  // ✕ closes THIS pane and keeps the other as the single view. Split state is
+  // keyed by the HOST project (the modal that owns the split), which for a
+  // cross-project pane is not p — keying the close off p.id left that ✕ dead.
+  const closeBtn = `<button class="agent-split-close" onclick="closeSplitPane('${esc(hostPid || p.id)}','${esc(sid)}')" title="Close this pane">&#10005;</button>`;
   const composeEnabled = (st === 'running' || st === 'completed' || st === 'stopped' || st === 'idle' || st === 'error');
   // Attachments. sendFollowup already uploads from the `fu_<sid>` key for ANY
   // pane, but this composer used to render none of the affordances that fill
