@@ -34,6 +34,8 @@ Ask Claydo gains an allowlisted lesson-launch action with a registered lesson ID
 
 Recommended under Q1: a lesson engine beside `walkthrough.js`, sharing extracted presentation utilities but no tour index, demo factories or completion flag. Keep the legacy tour and setup behavior during the pilot. The tour is a viewport-skipping orientation; lessons require action evidence, persistent state, sandbox routing and recoverable failures. Combining their state machines risks setup regressions.
 
+**Code layout (2026-10-03, Ron's one-unit-one-file rule).** `static/js/learn.js` is the generic engine (progress, cues, hand, bubble, hub, offer). Each lesson is its own module under `static/js/learn-lessons/` (`floor.js`, `workflows.js`) holding its descriptor and its behaviour (target resolution, evidence, surface opening, prepare, cleanup); `registry.js` imports them as data, and the hook contract is documented at its top. Adding a lesson is a new file plus one registry entry, with no change to `learn.js`. Any smoke harness that boots `learn.js` must also serve `static/js/learn-lessons/`.
+
 Each lesson declares stable lesson/version/step IDs, preparation, desktop and mobile target resolvers, Claydo copy, accepted user action, authoritative completion predicate, effects and cleanup. State sequence: preparing → active → verifying → acknowledged → next step or completed. Paused and target-unavailable are resumable states, never completion.
 
 Preparation may navigate and load fixtures. It may not perform the taught action. A step advances only after a user action made while that step is active and its predicate succeeds. Clicks, elapsed time, a Next control, optimistic DOM changes and automatic navigation do not prove mutations. Match evidence to practice project, session/type, run ID and step ID. Ignore stale, duplicate and unrelated events. Failed operations keep the current step and show the actual error with Retry; retries must be idempotent.
@@ -117,7 +119,7 @@ Ron, after using the pilot: the Floor lesson "should also guide on how to hire n
 - Practice only: `POST /api/characters` and the character mutation routes go to the in-tab practice store while a run is active. No real character is created. A human click still creates every practice character; the agent-creation position (2026-09-14) is unaffected.
 - The vendor step must work on a fresh install with no provider signed in: picking a vendor in practice does not require it to be signed in, and the copy says so.
 - Bump the lesson version. Completed v1 history stays completed; an unfinished v1 run gets the explained restart.
-- Sequenced after `learn-workflows` (Tobin, 2026-10-02) because both change `static/js/learn.js`.
+- Sequenced after `learn-workflows` (Tobin, 2026-10-02) because both changed `static/js/learn.js`. Since the 2026-10-03 split the Floor lesson lives in `static/js/learn-lessons/floor.js`, so it no longer collides with other lessons.
 
 ## LATER
 

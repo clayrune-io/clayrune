@@ -15,9 +15,8 @@
 // routed to an in-tab store, so nothing practice-related exists on the server.
 // Progress lives in localStorage under `learn.*`.
 
-const FLOOR_ID = 'floor-v1';
-const WORKFLOWS_ID = 'workflows-v1';
-const LESSON_ID = FLOOR_ID;     // the lesson the Floor's own offer and header link to
+import { LESSONS, LESSON_ORDER, DEFAULT_LESSON_ID } from './learn-lessons/registry.js';
+
 const FIXTURE_VERSION = 1;
 const LS_PROGRESS = 'learn.progress';
 const LS_EVENTS = 'learn.events';
@@ -36,88 +35,10 @@ const _esc = (s) => (typeof window.esc === 'function'
 const _isMobile = () => window.innerWidth <= MOBILE_MAX;
 
 // ── Lesson registry ──────────────────────────────────────────────────────────
-// Declared as data. Copy is verbatim from the spec; no em-dashes in any of it.
-// `resolve` returns the one element a step points at (or {error}); `verify`
-// returns {ok, evidence} from authoritative state; `prepare` may navigate but
-// never performs the taught action.
-// A lesson lives in one window (the Floor, or the practice project's Workflows
-// tab); the bubble offers `backLabel` when the user leaves it on a step marked
-// `needsSurface`. A step's `fallback` is the explicit control for a gesture that
-// needs a pointer (the Floor's hire has its own, `hire`): it makes the same real
-// call the gesture ends in.
-const LESSONS = {
-  [FLOOR_ID]: {
-    id: FLOOR_ID, version: 1,
-    title: 'The Floor',
-    subtitle: 'Find a figure, open a chat, hire a type.',
-    meta: '3 actions · Practice only',
-    chip: 'Start Floor practice',
-    offer: 'Meet the Floor in three actions. Want to try?',
-    done: 'You found a figure, opened its chat, and hired a type. Your real projects are untouched.',
-    backLabel: 'Back to Floor', returnLabel: 'Return to Floor', surfaceKey: 'floor',
-    leftMsg: 'You left the Floor. Your progress is saved.',
-    steps: [
-      {
-        id: 'open-chat', short: 'Open Pip’s chat',
-        copy: 'Find Pip in Learn practice. Open this chat to see what this figure is doing.',
-        ack: 'That’s Pip’s session. A figure opens a conversation.',
-        nudge: true,
-      },
-      {
-        id: 'open-type', short: 'Open the Guide card',
-        copy: 'Back on the Floor, find Guide on the Bench. Open its card. Types are who you can hire.',
-        ack: 'Guide is a type. Now give it a project.',
-        emphasis: true, needsSurface: true,
-      },
-      {
-        id: 'hire', short: 'Hire Guide',
-        copy: 'Give Guide a place to work. Drag it onto Learn practice, or use Hire to practice. Hiring adds the type. It does not start a task.',
-        ack: '',
-        nudge: true, hire: true, needsSurface: true,
-      },
-    ],
-  },
-  [WORKFLOWS_ID]: {
-    id: WORKFLOWS_ID, version: 1,
-    title: 'Workflows',
-    subtitle: 'Place a step, connect the trigger, save it.',
-    meta: '4 actions · Practice only',
-    chip: 'Start Workflows practice',
-    offer: 'Build a workflow in four actions. Want to try?',
-    done: 'You placed a step, connected the trigger to it, and saved the workflow. Saving did not run it or schedule it. Your real workflows are untouched.',
-    backLabel: 'Back to canvas', returnLabel: 'Return to canvas', surfaceKey: 'canvas',
-    leftMsg: 'You left the canvas. Your progress is saved.',
-    steps: [
-      {
-        id: 'open-canvas', short: 'Open the canvas',
-        copy: 'In the Workflows tab of Learn practice, press + New Workflow to open a blank canvas. A workflow is steps joined by lines.',
-        ack: 'That’s the canvas. Every workflow starts at a trigger.',
-        nudge: true, needsSurface: true,
-      },
-      {
-        id: 'place-node', short: 'Place a step',
-        copy: 'Drag Approval gate from the toolbar onto the canvas. It is a step where a person decides. A tap works too.',
-        ack: 'That’s a step. Each step does one job.',
-        nudge: true, needsSurface: true,
-        fallback: { label: 'Place it for me' },
-      },
-      {
-        id: 'connect', short: 'Connect the trigger',
-        copy: 'Drag the dot on the Trigger onto your step. The trigger starts the workflow, and this line says what runs first.',
-        ack: 'Connected. When the trigger fires, this step runs first.',
-        nudge: true, needsSurface: true,
-        fallback: { label: 'Connect it for me' },
-      },
-      {
-        id: 'save', short: 'Save it',
-        copy: 'Name your workflow, then press Create. Saving keeps it. It does not run it or put it on a schedule.',
-        ack: '',
-        nudge: true, needsSurface: true,
-      },
-    ],
-  },
-};
-const LESSON_ORDER = [FLOOR_ID, WORKFLOWS_ID];
+// The lessons live in learn-lessons/ (one file each, listed in registry.js):
+// their copy, step resolution, verification and surface opening. The engine
+// below reads them through the hooks documented in registry.js and holds no
+// lesson-specific branch of its own.
 
 // ── Progress (localStorage `learn.*`) ────────────────────────────────────────
 function _readProgress() {
@@ -150,7 +71,7 @@ function _quiet() {
 function _ev(event, detail) {
   try {
     const list = JSON.parse(localStorage.getItem(LS_EVENTS) || '[]');
-    list.push({ t: Date.now(), event, lesson: S ? S.lessonId : FLOOR_ID, ...(detail || {}) });
+    list.push({ t: Date.now(), event, lesson: S ? S.lessonId : DEFAULT_LESSON_ID, ...(detail || {}) });
     localStorage.setItem(LS_EVENTS, JSON.stringify(list.slice(-200)));
   } catch (e) { /* telemetry is best-effort */ }
 }
@@ -195,181 +116,20 @@ function _unobscured(el) {
   const hit = document.elementFromPoint(x, y);
   return !!hit && (el.contains(hit) || (hit.closest && hit.closest('.lrn-bubble') === null && hit.contains(el)));
 }
-// The part of `tile` that is actually on screen and not under another window:
-// sample it on an 8px grid and keep the cells that hit-test to the tile. Returns
-// the bounding box of those cells plus the hit cell nearest its centre (the
-// drop point), or null when less than EXPOSED_MIN x EXPOSED_MIN is exposed.
-const EXPOSED_MIN = 40, EXPOSED_STEP = 8;
-function _exposedOf(tile) {
-  if (!tile || !tile.isConnected) return null;
-  const r = tile.getBoundingClientRect();
-  const x0 = Math.max(0, r.left), y0 = Math.max(0, r.top);
-  const x1 = Math.min(window.innerWidth, r.right), y1 = Math.min(window.innerHeight, r.bottom);
-  if (x1 - x0 < EXPOSED_MIN || y1 - y0 < EXPOSED_MIN) return null;
-  const hits = [];
-  let L = Infinity, T = Infinity, R = -Infinity, B = -Infinity;
-  const h = EXPOSED_STEP / 2;
-  for (let y = y0 + h; y < y1; y += EXPOSED_STEP) {
-    for (let x = x0 + h; x < x1; x += EXPOSED_STEP) {
-      const hit = document.elementFromPoint(x, y);
-      if (!hit || !tile.contains(hit)) continue;
-      hits.push([x, y]);
-      L = Math.min(L, x - h); T = Math.min(T, y - h); R = Math.max(R, x + h); B = Math.max(B, y + h);
-    }
-  }
-  // Area as well as extent, so a thin L-shaped strip cannot pass for a drop zone.
-  if (R - L < EXPOSED_MIN || B - T < EXPOSED_MIN || hits.length * EXPOSED_STEP * EXPOSED_STEP < EXPOSED_MIN * EXPOSED_MIN) return null;
-  const cx = (L + R) / 2, cy = (T + B) / 2;
-  let best = hits[0], bd = Infinity;
-  for (const p of hits) { const d = Math.hypot(p[0] - cx, p[1] - cy); if (d < bd) { bd = d; best = p; } }
-  return { rect: { left: L, top: T, right: R, bottom: B, width: R - L, height: B - T }, x: best[0], y: best[1] };
-}
-// A stand-in element for the exposed part of a tile, so the arrow, the bubble
-// placement and the hand can treat it like any other destination. Re-sampled at
-// most every 250ms; the caller hands over a fresh one on every lesson tick.
-function _exposedTarget(tile, first) {
-  let snap = first, at = performance.now();
-  const get = () => {
-    const n = performance.now();
-    if (n - at > 250) { snap = _exposedOf(tile); at = n; }
-    return snap;
-  };
-  const none = { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
-  return {
-    virtual: true, tile,
-    get isConnected() { return tile.isConnected && !!get(); },
-    getBoundingClientRect() { const sn = get(); return sn ? sn.rect : none; },
-    get point() { const sn = get(); return sn ? { x: sn.x, y: sn.y } : null; },
-  };
-}
 function _modalFront(id) {
   const e = (typeof openModals !== 'undefined') ? openModals.get(id) : null;
   return !!(e && !e.minimized && e.element.classList.contains('focused'));
 }
-function _floorFront() { return _modalFront('__floor'); }
-// The window the active lesson lives in: the Floor, or the practice project's
-// modal (its Workflows tab) for the Workflows lesson.
-function _surfaceFront() {
-  return S && S.lessonId === WORKFLOWS_ID ? _modalFront(window.LearnPractice.PID) : _floorFront();
-}
+// The window the active lesson lives in (the Floor, or the practice project's
+// Workflows tab); each lesson says which.
+function _surfaceFront() { return !!S && _lesson().surfaceFront(_ctx()); }
 
-function _resolveStep() {
-  return S.lessonId === WORKFLOWS_ID ? _resolveWorkflowsStep() : _resolveFloorStep();
-}
+// What a lesson hook is handed: the live run, the active step, the practice
+// adapter and the generic DOM helpers, so a lesson module never imports the engine.
+const _dom = { q: _q, qa: _qa, only: _only, measurable: _measurable, unobscured: _unobscured, isMobile: _isMobile, modalFront: _modalFront };
+function _ctx() { return { S, step: _step(), P: window.LearnPractice, dom: _dom, tick: _tick, renderBubble: _renderBubble }; }
 
-function _resolveFloorStep() {
-  const P = window.LearnPractice;
-  const st = _step();
-  if (st.id === 'open-chat') {
-    const fig = _only('#floor-body .fl-room .fl-fig');
-    if (!fig) return { error: 'missing' };
-    if (fig.dup) return { error: 'duplicate' };
-    if (fig.dataset.flSession !== P.SID) return { error: 'missing' };
-    return { el: fig, cue: fig.querySelector('.fl-cta') || fig };
-  }
-  if (st.id === 'open-type') {
-    const main = _only(`#floor-body .fl-bench-card[data-fl-type="${P.GUIDE_REF}"] .fl-bench-main`);
-    if (!main) return { error: 'missing' };
-    if (main.dup) return { error: 'duplicate' };
-    return { el: main.closest('.fl-bench-card') || main, cue: main };
-  }
-  const card = _only(`#floor-body .fl-bench-card.fl-draggable[data-fl-type="${P.GUIDE_REF}"]`);
-  if (!card) return { error: 'missing' };
-  if (card.dup) return { error: 'duplicate' };
-  const destSel = _isMobile()
-    ? `#projects-col .mc-chat-row[data-id="${P.PID}"]`
-    : `#projects-col .card[data-id="${P.PID}"]`;
-  const tile = _q(destSel);
-  // Desktop: the tile is usually half under the Floor window; the drag lands on the
-  // part that is showing. Phone: the row is behind the full-screen Floor, so null.
-  const ex = tile && _measurable(tile) ? _exposedOf(tile) : null;
-  return { el: card, cue: card, dest: ex ? _exposedTarget(tile, ex) : null };
-}
-
-// ── Workflows lesson: what the canvas holds, and where its targets are ───────
-// The nodes and the trigger's wiring live in the builder's definition (`def`),
-// not in the DOM, so step 2 and 3 evidence is read from that model through
-// window._wfLearn. Only Save commits anything to the practice store.
-function _wfDef() {
-  const m = window._wfLearn && window._wfLearn.state();
-  return m && m.projectId === window.LearnPractice.PID && m.wf ? m.wf.def : null;
-}
-function _wfEntryNames(def) {
-  return (def && def.trigger && Array.isArray(def.trigger.entry)) ? def.trigger.entry : [];
-}
-// The step the Connect action wires up: placed, but nothing runs into it yet.
-function _wfLooseNode(def) {
-  const entry = _wfEntryNames(def), edges = def.edges || [];
-  return (def.nodes || []).find((n) => !entry.includes(n.name) && !edges.some((e) => e.to === n.name)) || null;
-}
-// The stand-in for the empty canvas area a dragged tool lands on: right of the
-// Trigger when there is room, else below it. Re-measured every call.
-function _canvasDropTarget(vp) {
-  const here = () => {
-    if (!vp.isConnected) return null;
-    const v = vp.getBoundingClientRect();
-    const trig = vp.querySelector('.wfb-trigger-box');
-    const t = trig ? trig.getBoundingClientRect() : null;
-    const w = 150, h = 90;
-    let x = t ? t.right + 70 : v.left + v.width / 2 - w / 2;
-    let y = t ? t.top : v.top + v.height / 2 - h / 2;
-    if (x + w > v.right - 8) { x = t ? t.left : v.left + 24; y = (t ? t.bottom : v.top) + 60; }
-    x = Math.max(v.left + 8, Math.min(x, v.right - w - 8));
-    y = Math.max(v.top + 8, Math.min(y, v.bottom - h - 8));
-    if (v.width < w + 16 || v.height < h + 16) return null;
-    return { left: x, top: y, right: x + w, bottom: y + h, width: w, height: h };
-  };
-  const none = { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
-  return {
-    virtual: true, vp,
-    get isConnected() { return !!here(); },
-    getBoundingClientRect() { return here() || none; },
-    get point() { const r = here(); return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null; },
-  };
-}
-
-function _resolveWorkflowsStep() {
-  const P = window.LearnPractice;
-  const st = _step();
-  const modal = typeof openModals !== 'undefined' ? openModals.get(P.PID) : null;
-  if (!modal) return { error: 'missing' };
-  const root = modal.element;
-  if (st.id === 'open-canvas') {
-    const btn = _only(`#wfb-clayrune-section-${P.PID} .wfb-tab-new`);
-    if (!btn) return { error: 'missing' };
-    if (btn.dup) return { error: 'duplicate' };
-    return { el: btn, cue: btn };
-  }
-  const vp = _only('#wfb-canvas-viewport');
-  if (!vp) return { error: 'missing' };
-  if (vp.dup) return { error: 'duplicate' };
-  if (!root.contains(vp)) return { error: 'missing' };
-  if (st.id === 'place-node') {
-    const tool = _only('.wfb-toolbar-tool[data-wf-tool="approval"]');
-    if (!tool) return { error: 'missing' };
-    if (tool.dup) return { error: 'duplicate' };
-    return { el: tool, cue: tool, dest: _canvasDropTarget(vp) };
-  }
-  if (st.id === 'connect') {
-    const port = _only('.wfb-trigger-box .wfb-port-out');
-    if (!port) return { error: 'missing' };
-    if (port.dup) return { error: 'duplicate' };
-    const def = _wfDef(), node = def && _wfLooseNode(def);
-    const card = node ? _only(`.wfb-node[data-name="${CSS.escape(node.name)}"]`) : null;
-    if (!card) return { error: 'missing' };
-    if (card.dup) return { error: 'duplicate' };
-    // The wire drops anywhere on the card; the cue lands on its in-port so the
-    // endpoint is plain.
-    return { el: port, cue: port, dest: card.querySelector('.wfb-port-in') || card, instant: true };
-  }
-  // save: the name first, then Create.
-  const name = _only('#wfb-name');
-  const btn = _only('.wfb-toolbar .btn-sched-save');
-  if (!name || !btn) return { error: 'missing' };
-  if (name.dup || btn.dup) return { error: 'duplicate' };
-  const target = name.value.trim() ? btn : name;
-  return { el: target, cue: target };
-}
+function _resolveStep() { return _lesson().resolveStep(_ctx()); }
 
 // ── Bubble, outline, arrow ───────────────────────────────────────────────────
 function _ensureRoot() {
@@ -851,13 +611,10 @@ async function _enterStep(idx, notice) {
   _renderBubble(true);
   try { await _prepare(); } catch (e) { console.warn('[learn] step preparation failed:', e); }
   if (!S || gen !== _gen) return;
-  const back = _prereqRewind();
-  if (back >= 0) { _ev('rewind', { step: _step().id }); return _enterStep(back, 'The canvas was reset, so this goes back a step. Only practice state resets.'); }
-  if (S.lessonId === WORKFLOWS_ID) {
-    const def = _wfDef();
-    S.baseNodes = def ? (def.nodes || []).length : 0;
-    S.baseEntry = def ? _wfEntryNames(def).length : 0;
-  }
+  const L = _lesson();
+  const back = L.prereqRewind ? L.prereqRewind(_ctx()) : -1;
+  if (back >= 0) { _ev('rewind', { step: _step().id }); return _enterStep(back, L.rewindMsg); }
+  if (L.stepReady) L.stepReady(_ctx());
   S.phase = 'active';
   _renderBubble(true);
   _tick();
@@ -865,98 +622,12 @@ async function _enterStep(idx, notice) {
 }
 
 // Preparation may navigate and load fixtures. It never performs the action.
-async function _prepare() {
-  const st = _step();
-  if (S.lessonId === WORKFLOWS_ID) return _prepareWorkflows(st);
-  if (st.id === 'open-chat') {
-    // The chat must be opened by the user DURING this step, so a leftover open
-    // practice chat from an earlier pass is closed first.
-    const P = window.LearnPractice;
-    if (typeof openModals !== 'undefined' && openModals.has(P.PID) && typeof closeModalById === 'function') closeModalById(P.PID);
-    await _openFloorSurface();
-  } else if (typeof window.floorClosePicker === 'function') {
-    window.floorClosePicker();
-  }
-  if (st.id === 'hire') {
-    if (!_floorFront()) await _openFloorSurface();
-    _exposeDestination();
-  }
-}
+async function _prepare() { return _lesson().prepare(_ctx()); }
 
-// Spec, step 3 desktop: put the real Floor and the dashboard where the practice
-// tile is visible BEFORE the user grabs anything (never while a pointer is
-// held, and only the Floor window moves). When the viewport cannot show both,
-// the window stays put and the "Hire to practice" control is the path.
-function _exposeDestination() {
-  if (_isMobile() || document.body.classList.contains('hire-active')) return;
-  const tile = _q(`#projects-col .card[data-id="${window.LearnPractice.PID}"]`);
-  const e = (typeof openModals !== 'undefined') ? openModals.get('__floor') : null;
-  if (!tile || !e || e.minimized) return;
-  const win = e.element, content = win.querySelector('.modal-content') || win;
-  const t = tile.getBoundingClientRect(), w = content.getBoundingClientRect();
-  if (t.right <= w.left || t.left >= w.right || t.bottom <= w.top || t.top >= w.bottom) return;  // already clear
-  const left = Math.round(t.right + 16);
-  if (left + w.width > window.innerWidth - 8) return;                                              // no room: fallback control
-  win.style.left = left + 'px';
-}
-
-async function _openFloorSurface() {
-  if (typeof window.openFloor === 'function') await window.openFloor();
-}
-
-// The Workflows lesson's window: the practice project's modal on its Workflows
-// tab. Opening it is navigation, never the taught action (that is pressing
-// "+ New Workflow").
-async function _openCanvasSurface() {
-  const P = window.LearnPractice;
-  modalActiveTab[P.PID] = 'workflows';
-  if (typeof window.openProjectModal === 'function') window.openProjectModal(P.PID);
-  if (!document.getElementById('wfb-clayrune-section-' + P.PID) && typeof window.switchModalTab === 'function') {
-    window.switchModalTab(P.PID, 'workflows');
-  }
-  // The section exists as soon as the tab renders, but its tabs row and canvas
-  // host are built when the tab's workflow list lands (`data-wf-built`). A canvas
-  // mounted before that is wiped by the build.
-  const built = () => { const s = document.getElementById('wfb-clayrune-section-' + P.PID); return !!s && s.dataset.wfBuilt === '1'; };
-  for (let i = 0; i < 30 && !built(); i++) await new Promise((r) => setTimeout(r, 100));
-}
-function _openSurface() {
-  return S && S.lessonId === WORKFLOWS_ID ? _openCanvasSurface() : _openFloorSurface();
-}
-
-async function _prepareWorkflows(st) {
-  const P = window.LearnPractice;
-  if (st.id === 'open-canvas') {
-    // The canvas must be opened by the user DURING this step, so a leftover
-    // practice modal or canvas from an earlier pass is cleared first.
-    if (typeof openModals !== 'undefined' && openModals.has(P.PID) && typeof closeModalById === 'function') closeModalById(P.PID);
-    if (window._wfLearn) window._wfLearn.discard(P.PID);
-  }
-  await _openCanvasSurface();
-  // Resuming after a reload: the canvas is gone with the page. An empty one is
-  // the correct start for the steps that follow, so restore it (the user has
-  // already done "open the canvas"; nothing here places or connects anything).
-  if (st.id !== 'open-canvas' && !_wfDef() && typeof window.openWorkflowBuilder === 'function') {
-    await window.openWorkflowBuilder(null, P.PID, 'a new workflow');
-  }
-}
-
-// Which earlier step a step needs finished, when the canvas it depends on is
-// gone (a reload empties it). -1 = nothing to redo.
-function _prereqRewind() {
-  if (!S || S.lessonId !== WORKFLOWS_ID) return -1;
-  const id = _step().id;
-  if (id === 'open-canvas') return -1;
-  const def = _wfDef();
-  if (!def) return 0;
-  if (id === 'place-node') return -1;
-  if (!(def.nodes || []).length) return 1;
-  if (id === 'save') {
-    const names = def.nodes.map((n) => n.name), edges = def.edges || [];
-    return _wfEntryNames(def).some((n) => names.includes(n) && !edges.some((e) => e.to === n)) ? -1 : 2;
-  }
-  return -1;
-}
+function _openSurface() { return S ? _lesson().openSurface(_ctx()) : undefined; }
+// 'back-<surfaceKey>' (mid-lesson) and 'return-<surfaceKey>' (after completion)
+// both reopen the lesson's window.
+function _isSurfaceAct(act) { const k = _lesson().surfaceKey; return act === 'back-' + k || act === 'return-' + k; }
 
 // Re-resolve, reposition, verify. Runs on a timer so it survives the Floor's
 // own poll replacing #floor-body: every pass reacquires the nodes by identity.
@@ -965,17 +636,17 @@ function _tick() {
   _applyQuietClass();
   const dragging = document.body.classList.contains('pd-drag-active') || document.body.classList.contains('hire-active');
   const st = _step();
-  const front = _surfaceFront();
+  const L = _lesson(), front = _surfaceFront();
   S.surfaceFrontNow = front;
   if (front) { S.surfaceWasFront = true; S.awaySince = null; }
 
   // Authoritative verification first: a step is earned by state, not by looks.
   // A save that failed waits for the Retry control instead of looping.
   if (S.retrySave) { _renderBubble(); return; }
-  const v = _verify(st);
+  const v = _verify();
   if (v) { _commit(v); return; }
 
-  if (st.hire) _watchHireFailure();
+  if (L.watchTick) L.watchTick(_ctx());
 
   if (dragging) {   // freeze highlights during a drag, and keep the hand off the user's own drag
     _handHoldUntil = Math.max(_handHoldUntil, Date.now() + HAND_RESUME_MS);
@@ -989,7 +660,7 @@ function _tick() {
     S.unresolvedSince = null;
     if (S.phase === 'unavailable') { S.phase = 'active'; }
     _scrollOnce(res.el);
-    _showOutline(_isMobile() && st.id === 'hire' ? res.el : res.el);
+    _showOutline(res.el);
     _showArrow(res.cue || res.el, res.dest || null, false);
     _renderBubble();
     _placeBubble([_rectOf(res.el), res.dest ? _rectOf(res.dest) : null, res.dest ? _pathRect(res.el, res.dest) : null]);
@@ -1030,71 +701,12 @@ function _scrollOnce(el) {
   try { el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) { /* older engines */ }
 }
 
-// Authoritative evidence for the active step, or null.
-function _verify(st) {
+// Authoritative evidence for the active step, or null. The lesson reads its own
+// authoritative state; the engine only checks that practice belongs to this run.
+function _verify() {
   const P = window.LearnPractice;
   if (!P || !P.active || P.runId !== S.runId) return null;
-  if (S.lessonId === WORKFLOWS_ID) return _verifyWorkflows(st);
-  const acted = (kind) => S.actions.some((a) => a.kind === kind && a.at >= S.stepStartedMs);
-  if (st.id === 'open-chat') {
-    if (!acted('open-figure')) return null;
-    const out = document.getElementById('agent-output-' + P.SID);
-    const win = typeof openModals !== 'undefined' ? openModals.get(P.PID) : null;
-    if (!out || !win || win.minimized || !_measurable(out)) return null;
-    if (!(out.textContent || '').includes(P.TRANSCRIPT)) return null;
-    return { ok: true, evidence: { project: P.PID, session: P.SID } };
-  }
-  if (st.id === 'open-type') {
-    if (!acted('toggle-type')) return null;
-    const card = _q(`#floor-body .fl-bench-card[data-fl-type="${P.GUIDE_REF}"]`);
-    if (!card || !card.classList.contains('fl-bench-open')) return null;
-    const row = card.querySelector('.fl-pick-row');
-    if (!row || !_measurable(row)) return null;
-    return { ok: true, evidence: { type: P.GUIDE_REF } };
-  }
-  if (st.id === 'hire') {
-    const hit = P.roster(S.runId).find((r) => r.character === P.GUIDE_REF && !r.removed_at
-      && r.run_id === S.runId && Date.parse(r.hired_at) >= S.stepStartedMs - 1
-      && (r.hired_by === 'drag' || r.hired_by === 'menu'));
-    return hit ? { ok: true, evidence: { type: P.GUIDE_REF, seq: hit.seq } } : null;
-  }
-  return null;
-}
-
-// Workflows evidence. Steps 1 to 3 read the builder's own model (what the canvas
-// holds), step 4 reads the practice store (what Save committed). Nothing here
-// looks at a click or at what is painted.
-function _verifyWorkflows(st) {
-  const P = window.LearnPractice;
-  const def = _wfDef();
-  if (st.id === 'open-canvas') {
-    const vp = _q(`#modal-layer [data-modal-id="${P.PID}"] #wfb-canvas-viewport`);
-    return def && vp && _measurable(vp) ? { ok: true, evidence: { project: P.PID } } : null;
-  }
-  if (st.id === 'place-node') {
-    return def && (def.nodes || []).length > S.baseNodes
-      ? { ok: true, evidence: { nodes: def.nodes.length } } : null;
-  }
-  if (st.id === 'connect') {
-    if (!def) return null;
-    const names = (def.nodes || []).map((n) => n.name), edges = def.edges || [];
-    const wired = _wfEntryNames(def).filter((n) => names.includes(n) && !edges.some((e) => e.to === n));
-    return wired.length > S.baseEntry ? { ok: true, evidence: { entry: wired } } : null;
-  }
-  const hit = P.workflows(S.runId).find((w) => w.run_id === S.runId && Date.parse(w.saved_at) >= S.stepStartedMs - 1
-    && (w.nodes || []).length > 0 && ((w.trigger && w.trigger.entry) || []).some((n) => (w.nodes || []).some((x) => x.name === n)));
-  return hit ? { ok: true, evidence: { workflow: hit.id, seq: hit.seq } } : null;
-}
-
-// A failed practice hire keeps the step and shows the real error with Retry.
-function _watchHireFailure() {
-  const at = window._floorLastHireErrorAt || 0;
-  if (at >= S.stepStartedMs && window._floorLastHireError && !S.hirePending) {
-    if (!S.hireFailed || S.error !== window._floorLastHireError) {
-      S.hireFailed = true; S.error = window._floorLastHireError;
-      _renderBubble(true);
-    }
-  }
+  return _lesson().verify(_ctx());
 }
 
 // Save the verified action BEFORE advancing. A failed save stays retryable and
@@ -1276,9 +888,9 @@ function leave(quiet) {
   if (_root) { _root.remove(); _root = null; }
   document.body.classList.remove('lrn-practicing');
   if (typeof openModals !== 'undefined' && openModals.has(P.PID) && typeof closeModalById === 'function') closeModalById(P.PID);
-  if (window._wfLearn) window._wfLearn.discard(P.PID);   // a practice canvas must not outlive its run
+  const ctx = _ctx();
+  for (const id of LESSON_ORDER) { if (LESSONS[id].cleanup) LESSONS[id].cleanup(ctx); }   // shared practice state: every lesson clears its own residue
   P.leave();
-  window._floorLastHireError = ''; window._floorLastHireErrorAt = 0;
   if (!quiet) {
     _refreshSurfaces(false);
     if (_priorFocus && _priorFocus.isConnected) { try { _priorFocus.focus(); } catch (e) { /* gone */ } }
@@ -1304,13 +916,12 @@ document.addEventListener('click', (e) => {
     try { localStorage.setItem(LS_QUIET, _quiet() ? '0' : '1'); } catch (err) { /* ignore */ }
     _applyQuietClass(); _renderBubble(true);
   } else if (act === 'collapse') { S.collapsed = !S.collapsed; _renderBubble(true); _tick(); }
-  else if (act === 'back-floor' || act === 'back-canvas') { _openSurface(); }
+  else if (_isSurfaceAct(act)) { _openSurface(); }
   else if (act === 'hire') _hirePressed();
   else if (act === 'fallback') _fallbackPressed();
   else if (act === 'retry-target') { _ev('retry'); _enterStep(S.idx); }
   else if (act === 'retry-save') { const v = S.pendingEvidence; S.retrySave = false; if (v) _commit(v); }
   else if (act === 'restart') _restartPractice();
-  else if (act === 'return-floor' || act === 'return-canvas') { _openSurface(); }
   else if (act === 'replay') startLesson(S.lessonId, 'replay', { fresh: true });
   else if (act === 'hub') openLearn();
 });
@@ -1356,36 +967,30 @@ function _hint() {
   if (res.el) _showArrow(res.cue || res.el, res.dest || null, true);
 }
 
-// The explicit control for step 3: the same real call the Bench's drag ends in,
-// reached without a pointer. It performs the hire; it does not mark the step.
+// The explicit control for a hire step: the same real call the Bench's drag ends
+// in, reached without a pointer. It performs the hire; it does not mark the step.
+// The lesson supplies the call; the engine owns the pending/failed state around it.
 async function _hirePressed() {
   if (!S || S.hirePending) return;
-  const P = window.LearnPractice;
+  const L = _lesson();
   S.hirePending = true; S.error = ''; S.hireFailed = false;
-  window._floorLastHireError = ''; window._floorLastHireErrorAt = 0;
   _renderBubble(true);
   try {
-    if (typeof window.floorHireMenu === 'function') await window.floorHireMenu(P.PID, 'project', 'guide', 'Guide');
+    if (L.hire) await L.hire(_ctx());
   } finally {
     if (S) { S.hirePending = false; _renderBubble(true); }
   }
 }
 
-// The explicit controls for the Workflows lesson's two pointer gestures: each
-// makes the same real builder call the gesture ends in (a toolbar tap places the
-// block at a free spot; dragging from the Trigger's dot onto a card calls
-// _wfMakeRoot). They act on the canvas; the step still advances only when the
-// verify tick reads the result from the model.
+// The explicit control for a step flagged `fallback`: the lesson makes the same
+// real call the pointer gesture ends in; the step still advances only when the
+// verify tick reads the result.
 function _fallbackPressed() {
-  if (!S || S.lessonId !== WORKFLOWS_ID) return;
-  const st = _step();
-  _ev('fallback', { step: st.id });
-  if (st.id === 'place-node' && typeof window._wfPlaceToolAtFreeSpot === 'function') {
-    window._wfPlaceToolAtFreeSpot('approval');
-  } else if (st.id === 'connect' && typeof window._wfMakeRoot === 'function') {
-    const def = _wfDef(), node = def && _wfLooseNode(def);
-    if (node) window._wfMakeRoot(node.name);
-  }
+  if (!S) return;
+  const L = _lesson();
+  if (!L.fallback) return;
+  _ev('fallback', { step: _step().id });
+  L.fallback(_ctx());
   _tick();
 }
 
@@ -1489,19 +1094,23 @@ function _blockedByUserState() {
 }
 
 // Called by openFloor() after a FRESH open (not a re-focus of an open window).
-// Offers once per progress owner, never over a dialog, drag or editor.
-function onFloorOpened() {
+function onFloorOpened() { _offerOn('floor-opened'); }
+
+// Offers the first lesson that declared `offerOn: event`, once per progress
+// owner, never over a dialog, drag or editor.
+function _offerOn(event) {
   if (S) return;
-  const rec = _rec(LESSON_ID);
+  const L = LESSON_ORDER.map((id) => LESSONS[id]).find((l) => l.offerOn === event);
+  if (!L) return;
+  const rec = _rec(L.id);
   if (rec && rec.offered) return;
   if (_blockedByUserState()) return;
-  _patch(LESSON_ID, (r) => { r.offered = true; });
-  _showOffer();
+  _patch(L.id, (r) => { r.offered = true; });
+  _showOffer(L);
 }
 
-function _showOffer() {
+function _showOffer(L) {
   _dismissOffer();
-  const L = LESSONS[LESSON_ID];
   const el = document.createElement('div');
   el.className = 'lrn-bubble lrn-offer';
   el.id = 'lrn-offer';
@@ -1520,8 +1129,8 @@ function _showOffer() {
   el.addEventListener('click', (e) => {
     const t = e.target.closest('[data-offer]');
     if (!t) return;
-    if (t.dataset.offer === 'go') startLesson(LESSON_ID, 'offer');
-    else { _patch(LESSON_ID, (r) => { r.dismissed = true; }); _dismissOffer(); }
+    if (t.dataset.offer === 'go') startLesson(L.id, 'offer');
+    else { _patch(L.id, (r) => { r.dismissed = true; }); _dismissOffer(); }
   });
   document.body.appendChild(el);
   _offerEl = el;
@@ -1538,13 +1147,13 @@ function _showOffer() {
 
 // ── Public surface ───────────────────────────────────────────────────────────
 window.LearnEngine = {
-  LESSON_ID,
+  LESSON_ID: DEFAULT_LESSON_ID,
   start: startLesson, leave, notify, onFloorOpened, startFromHub: hubStart,
   hand: { click: Hand.click, drag: Hand.drag, stop: Hand.stop },
   hasLesson: (id) => Object.prototype.hasOwnProperty.call(LESSONS, id),
   lessonChip: (id) => (LESSONS[id] ? LESSONS[id].chip : ''),
   get state() { return S ? { lesson: S.lessonId, phase: S.phase, step: S.idx, run: S.runId } : null; },
-  progress: (id) => _rec(id || (S ? S.lessonId : LESSON_ID)),
+  progress: (id) => _rec(id || (S ? S.lessonId : DEFAULT_LESSON_ID)),
 };
 window.openLearn = openLearn;
 window.closeHub = closeHub;

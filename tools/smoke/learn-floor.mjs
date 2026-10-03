@@ -44,6 +44,8 @@ if (SHOT_DIR) mkdirSync(SHOT_DIR, { recursive: true });
 
 const STATIC = {};
 for (const f of readdirSync(JS_DIR)) if (f.endsWith('.js')) STATIC[`/static/js/${f}`] = ['text/javascript; charset=utf-8', readFileSync(resolve(JS_DIR, f), 'utf8')];
+// learn.js imports its lessons from static/js/learn-lessons/ (one module each).
+for (const f of readdirSync(resolve(JS_DIR, 'learn-lessons'))) if (f.endsWith('.js')) STATIC[`/static/js/learn-lessons/${f}`] = ['text/javascript; charset=utf-8', readFileSync(resolve(JS_DIR, 'learn-lessons', f), 'utf8')];
 for (const f of readdirSync(CSS_DIR)) if (f.endsWith('.css')) STATIC[`/static/css/${f}`] = ['text/css; charset=utf-8', readFileSync(resolve(CSS_DIR, f), 'utf8')];
 
 function fixtureProject(id, name, extra = {}) {
