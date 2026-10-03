@@ -29,14 +29,21 @@
   function selected() { return _selected; }
   function select(key) { _selected = key || null; }
 
-  // item: { key, kind, mark, name, kindLabel, status: {key, word} }
+  // The mark's vendor colour comes from desk-v1-brand-colours.js (`it.brand` is the
+  // vendor id); no colour known = no attributes = the neutral mark.
+  function markAttrs(brand) {
+    const style = brand && window.DeskV1BrandColours ? window.DeskV1BrandColours.markStyle(brand) : '';
+    return style ? ` data-brand="${esc(brand)}" style="${esc(style)}"` : '';
+  }
+
+  // item: { key, kind, mark, brand?, name, kindLabel, status: {key, word} }
   function tileHTML(it) {
     const on = _selected === it.key;
     return `
         <button type="button" class="desk-v1-conn-tile" data-conn-tile="${esc(it.key)}" data-conn-kind="${esc(it.kind)}"${it.platform ? ` data-platform="${esc(it.platform)}"` : ''}
           data-conn-state="${esc(it.status.key)}" aria-pressed="${on}" aria-controls="desk-v1-conn-detail" title="${esc(it.name)}">
           <span class="desk-v1-conn-tile-top">
-            <span class="desk-v1-conn-tile-mark" aria-hidden="true">${esc(it.mark)}</span>
+            <span class="desk-v1-conn-tile-mark"${markAttrs(it.brand)} aria-hidden="true">${esc(it.mark)}</span>
             <span class="desk-v1-conn-tile-name">${esc(it.name)}</span>
           </span>
           <span class="desk-v1-conn-tile-kind">${esc(it.kindLabel)}</span>

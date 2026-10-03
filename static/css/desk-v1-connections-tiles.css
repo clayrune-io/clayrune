@@ -11,14 +11,17 @@
 /* Needs a human (re-auth / not connected): visible from the grid without opening anything. */
 .desk-v1-conn-tile[data-conn-state="reauth"], .desk-v1-conn-tile[data-conn-state="off"] { border-color: var(--amber-text); border-left-width: 4px; }
 .desk-v1-conn-tile-kind { font-size: 11px; color: var(--text-dim); line-height: 1.2; }
-.desk-v1-conn-tile-add { justify-content: center; border-style: dashed; color: var(--text-dim); }
-.desk-v1-conn-tile-add .desk-v1-conn-tile-mark { background: var(--surface2); color: var(--text); border: 1px solid var(--border2); font-size: 16px; }
+/* Add service reads as "add" from its + mark and muted fill, never a dashed border (Ron 2026-10-03: a dotted edge looked broken). The border stays solid in every state; hover/selected come from the rules above. */
+.desk-v1-conn-tile-add { justify-content: center; background: var(--surface2); color: var(--text-dim); }
+.desk-v1-conn-tile-add .desk-v1-conn-tile-mark { background: var(--surface); color: var(--text); border: 1px solid var(--border2); font-size: 16px; }
 .desk-v1-conn-tile-add:hover, .desk-v1-conn-tile-add[aria-pressed="true"] { color: var(--text); }
 .desk-v1-conn-tile-top { display: flex; align-items: center; gap: 8px; min-width: 0; width: 100%; }
 .desk-v1-conn-tile-mark {
   flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 7px;
   background: var(--text); color: var(--surface); font-size: 13px; font-weight: 700; line-height: 1;
 }
+/* A known vendor: its brand colour behind a contrasting glyph (desk-v1-brand-colours.js sets both). */
+.desk-v1-conn-tile-mark[data-brand] { background: var(--mark-bg); color: var(--mark-fg); }
 .desk-v1-conn-tile-name { min-width: 0; font-size: 13px; font-weight: 600; line-height: 1.25; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
 .desk-v1-conn-pill { display: inline-block; max-width: 100%; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; line-height: 1.4; background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border2); }
 .desk-v1-conn-pill[data-state="ok"] { background: var(--green-dim, var(--surface2)); color: var(--green-text, var(--text-dim)); border-color: transparent; }
