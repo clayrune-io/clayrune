@@ -1704,6 +1704,15 @@ def _startup_memory_maintenance():
         warn_if_degraded()
     except Exception as e:
         _log(f"[dispatch] attribution startup check failed: {e}")
+    try:
+        # The update that first ships pip-on-update runs the OLD in-memory
+        # system_update, so installs already behind never get their packages.
+        # A digest stamp makes boot the catch-up point. Background thread:
+        # pip must never delay startup.
+        from mc import update_requirements
+        update_requirements.start_background_sync(_APP_DIR, trigger='boot')
+    except Exception as e:
+        _log(f"[requirements] boot sync failed to start: {e}")
 
 
 # ── Revive-from-agent-log + transcript buffer renderers ── moved to

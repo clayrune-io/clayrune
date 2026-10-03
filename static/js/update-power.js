@@ -75,6 +75,25 @@ async function _showLastMacUpdateResult(hint) {
   } catch (_) { /* cosmetic */ }
 }
 
+// The last pip sync of requirements.txt (boot or update, run in the
+// background). Only a failure or an in-flight install is worth a line: the
+// packages being behind the code is silent otherwise (dispatch attribution
+// needs psutil and degrades without it).
+function _requirementsNote(req) {
+  if (!req) return '';
+  if (req.status === 'running') {
+    return `<div id="update-requirements-note" style="font-size:12px;margin-top:6px;color:var(--text-dim)">` +
+      `Installing Python packages in the background&hellip;</div>`;
+  }
+  if (req.status !== 'failed') return '';
+  const detail = String(req.detail || '').trim().split(/\r?\n/).slice(-6).join('\n');
+  return `<div id="update-requirements-note" style="font-size:12px;margin-top:6px;color:var(--red-text,#ef4444)">` +
+    `Python packages could not be updated, so some features may not work until this is fixed. ` +
+    `Clayrune will try again the next time it starts or updates.` +
+    (detail ? `<pre style="margin:4px 0 0;font-size:11px;white-space:pre-wrap;max-height:110px;overflow:auto;` +
+      `color:var(--text-dim)">${esc(detail)}</pre>` : '') + `</div>`;
+}
+
 async function refreshUpdateStatus() {
   const hint = document.getElementById('update-status-hint');
   const btn = document.getElementById('update-btn');
@@ -179,6 +198,7 @@ async function refreshUpdateStatus() {
       btn.disabled = true;
       btn.textContent = 'Up to date';
     }
+    hint.innerHTML += _requirementsNote(data.requirements);
   } catch (e) {
     hint.textContent = 'Could not check for updates: ' + (e.message || e);
     btn.disabled = true;
@@ -222,6 +242,7 @@ async function performClayruneUpdate() {
       return;
     }
     hint.innerHTML = `<strong style="color:var(--green-text,#22c55e)">Updated to ${esc(data.new_commit)}</strong>. ${data.restart_recommended ? 'Restart the server now to pick up the changes.' : ''}`;
+    hint.innerHTML += _requirementsNote(data.requirements);
     btn.textContent = data.restart_recommended ? 'Restart now' : 'Done';
     btn.disabled = false;
     if (data.restart_recommended) {
@@ -362,6 +383,7 @@ async function performClayruneUpdateWithStash() {
       : '';
     hint.innerHTML = `<strong style="color:var(--green-text,#22c55e)">Updated to ${esc(data.new_commit)}</strong>. ` +
       `${data.restart_recommended ? 'Restart the server now to pick up the changes.' : ''}${stashLine}`;
+    hint.innerHTML += _requirementsNote(data.requirements);
     btn.style.display = 'none';
     const updateBtn = document.getElementById('update-btn');
     if (updateBtn) {
