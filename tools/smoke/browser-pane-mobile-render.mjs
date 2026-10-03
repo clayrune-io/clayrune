@@ -159,6 +159,17 @@ try {
   // own screencast frame replaces the one just asserted above.
   await page.waitForTimeout(500);
   const newTabDims = await waitForFrameSize(page, 'new-tab frame size');
+  // waitForFrameSize returns on the ORIGINAL tab's already-landed 412x809
+  // frame while "+ New tab" is still being created (~250ms+ on this box), and
+  // the address bar reads "" immediately because the click blanks it
+  // optimistically — neither proves the new tab exists. Opening the switcher
+  // then lists only the original tab, the tap hits an already-active row, and
+  // the new tab takes focus afterwards for good (address bar stuck at "").
+  // The tabs-count badge on the bottom bar is set from the server's `tabs`
+  // event (_bpRenderTabs), which also carries active_target_id = the new tab.
+  await page.waitForFunction(
+    () => document.querySelector('#mc-browser-pane [data-bp="tabsbtn"]')?.textContent === '2',
+    null, { timeout: 15000 });
   if (origDims && newTabDims) {
     const dw = Math.abs(newTabDims.w - origDims.w);
     if (dw <= 8) ok(`new tab ("+ New tab") reports frame width ${newTabDims.w}, matching the original tab's ${origDims.w} (within ${dw}px) — mobile override reached it`);
