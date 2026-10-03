@@ -298,6 +298,14 @@ def test_curl_argv_that_cannot_be_read_masks_nothing(cmd):
     f"curl -s -X POST {BASE}/api/secrets/exec {GIT_PUSH_BODY}",
     f"curl -s -X POST {BASE}/api/project/p/agent/s/followup {GIT_PUSH_BODY}",
     f"curl -s -X POST {BASE}/api/project/p/agent/dispatch/extra {GIT_PUSH_BODY}",
+    # MC-1037 r3: /agent/dispatch bodies ARE instructions (the child runs `task`),
+    # so they stay scanned. Fenn's reproducer first, then the plain forms.
+    f"curl -s -X POST {BASE}/api/project/mission_control/agent/dispatch "
+    "-H 'Content-Type: application/json' "
+    "-d '{\"task\":\"git push\",\"provider\":\"claude\",\"source\":\"ui\"}'",
+    f"curl -s -X POST {BASE}/api/project/mission_control/agent/dispatch {GIT_PUSH_BODY}",
+    f"curl -s -X POST {BASE}/api/project/mission_control/agent/dispatch/ {GIT_PUSH_BODY}",
+    f"curl -s -X POST http://127.0.0.1:5199/api/project/p/agent/dispatch {GIT_PUSH_BODY}",
     f"curl -s -X POST {BASE}/api/project/p/backlogs {GIT_PUSH_BODY}",
     f"curl -s -X POST {BASE}/api/project/p/backlog/a/b/c/d/e {GIT_PUSH_BODY}",
     f"curl -s -X POST {BASE}/api/project/p/memory/positions/a/b {GIT_PUSH_BODY}",
@@ -339,7 +347,6 @@ def test_only_prose_routes_of_clayrunes_own_api_get_their_body_masked(cmd):
     '/api/project/mission_control/memory/positions',
     '/api/project/mission_control/memory/positions/position_x.md',
     '/api/project/mission_control/memory/mints/mint_x.md/resolve',
-    '/api/project/mission_control/agent/dispatch',
     '/api/floor/figure/8ef24dc698c7/name',
 ])
 @pytest.mark.parametrize('host', ['http://localhost:5199', 'http://127.0.0.1:5199'])
