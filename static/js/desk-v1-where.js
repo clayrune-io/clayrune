@@ -514,7 +514,9 @@
       btn.onclick = () => _removeColumn(camp, btn.dataset.channelId);
     });
     el.querySelectorAll('[data-where-connect]').forEach((btn) => {
-      btn.onclick = () => window.deskV1Nav('connections');
+      // Lands on that account's detail (Connections opens the account it is given).
+      const card = btn.closest('[data-channel-id]');
+      btn.onclick = () => window.deskV1Nav('connections', { account: card ? card.dataset.channelId : undefined });
     });
     el.querySelectorAll('[data-where-voice]').forEach((inp) => {
       inp.addEventListener('change', () => {

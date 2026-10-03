@@ -224,20 +224,35 @@ async function connections(browser) {
   const { ctx, page, pageErrors } = await newPage(browser, { live: true, srv });
   await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
   await page.evaluate(() => window.deskV1Nav('connections', {}));
-  await page.waitForSelector('[data-conn-engine="higgsfield"]', { timeout: 8000 });
+  const openEngine = async (id) => {   // a connected engine is a tile; an unconnected one is reached through Add service
+    const card = `[data-conn-engine="${id}"]`;
+    if (await page.$(card)) return;
+    if (await page.$('[data-add-back]')) await page.click('[data-add-back]');
+    else if (!(await page.$('[data-conn-detail="add"]'))) await page.click('[data-conn-add-tile]');
+    const tile = `[data-conn-tile="engine:${id}"]`;
+    await page.waitForSelector(`${tile}, [data-add-pick="engine:${id}"]`, { timeout: 8000 });
+    await page.click((await page.$(tile)) ? tile : `[data-add-pick="engine:${id}"]`);
+    await page.waitForSelector(card, { timeout: 8000 });
+  };
+  await page.waitForSelector('[data-conn-tile="engine:google"]', { timeout: 8000 });
+  const tiles = await page.$$eval('[data-conn-tile^="engine:"]', (els) => els.map((e) => e.dataset.connTile));
+  JSON.stringify(tiles) === '["engine:google","engine:openai"]' ? ok('Connections shows only the connected engines as tiles (Higgsfield is reached through Add service)') : fail('engine tiles: ' + JSON.stringify(tiles));
+  await openEngine('higgsfield');
   const rows = await page.$$eval('[data-conn-engine]', (els) => els.map((e) => e.dataset.connEngine));
-  JSON.stringify(rows) === '["higgsfield","google","openai"]' ? ok('Connections lists the 3 engines') : fail('engines: ' + JSON.stringify(rows));
+  JSON.stringify(rows) === '["higgsfield"]' ? ok('the opened engine is the one card on screen') : fail('engines: ' + JSON.stringify(rows));
   const hs = await txt(page, '[data-conn-engine="higgsfield"] [data-engine-status]');
   (/^Not connected$/.test(hs)) ? ok('an unconnected engine says so in plain words (no vault or Secrets jargon): "' + hs + '"') : fail('higgsfield status: ' + hs);
+  await openEngine('google');
   const gs = await txt(page, '[data-conn-engine="google"] [data-engine-status]');
   (/^Connected$/.test(gs)) ? ok('a connected engine says Connected: "' + gs + '"') : fail('google status: ' + gs);
   const gb = async (id) => txt(page, `[data-conn-engine="${id}"] [data-engine-guide]`);
-  (await gb('higgsfield')) === 'Connect' && (await gb('google')) === 'Replace key'
-    ? ok('an unconnected engine offers Connect (the guided steps), a connected one Replace key') : fail('Connect/Replace buttons: ' + (await gb('higgsfield')) + ' / ' + (await gb('google')));
-  (await page.$$('[data-conn-section="engines"] input[type="password"], [data-conn-section="engines"] input[type="text"]')).length === 0
-    ? ok('the engines section has no credential field') : fail('a text/password field is in the engines section');
+  (await gb('google')) === 'Replace key'
+    ? ok('a connected engine offers Replace key (an unconnected one offers Connect, the guided steps)') : fail('Replace button: ' + (await gb('google')));
+  (await page.$$('[data-conn-engine="google"] input[type="password"], [data-conn-engine="google"] input[type="text"]:not([data-engine-limit-input])')).length === 0
+    ? ok('the engine card has no credential field') : fail('a text/password field is in the engine card');
   (await page.inputValue('[data-conn-engine="google"] [data-engine-limit-input]')) === '2' ? ok("Google's saved per-job limit (2) is shown") : fail('google limit value');
 
+  await openEngine('higgsfield');
   await page.fill('[data-conn-engine="higgsfield"] [data-engine-limit-input]', '3');
   await page.click('[data-conn-engine="higgsfield"] [data-engine-limit-save]');
   await settle(page, () => /over \$3 /.test(document.querySelector('[data-conn-engine="higgsfield"] [data-engine-limit-note]').textContent));
@@ -247,6 +262,7 @@ async function connections(browser) {
     ? ok('saving a limit is one PUT through the passcode prompt (human-only)') : fail('limit save: ' + JSON.stringify({ put: put.map((r) => r.body), pf }));
   (await txt(page, '[data-conn-engine="higgsfield"] [data-engine-limit-note]')).includes('$3') ? ok('the row now says renders over $3 are refused') : fail('note after save');
 
+  await openEngine('openai');
   await page.fill('[data-conn-engine="openai"] [data-engine-limit-input]', '-4');
   await page.click('[data-conn-engine="openai"] [data-engine-limit-save]');
   const bad = await txt(page, '[data-conn-engine="openai"] [data-engine-limit-note]');
@@ -416,9 +432,9 @@ async function flagOff(browser) {
   await page.waitForSelector('.desk-v1-video-director', { timeout: 8000 });
   (await page.$('[data-eng-panel]')) ? fail('demo director grew an engine panel') : ok('demo director keeps its fixture render card');
   await page.evaluate(() => window.deskV1Nav('connections', {}));
-  await page.waitForSelector('[data-conn-section="engines"]', { timeout: 8000 });
+  await page.waitForSelector('[data-conn-tiles]', { timeout: 8000 });
   await page.waitForTimeout(400);
-  (await page.$('[data-conn-engine]')) ? fail('demo Connections lists engines') : ok('demo Connections has no engine rows (nothing there can spend)');
+  (await page.$('[data-conn-engine], [data-conn-tile^="engine:"]')) ? fail('demo Connections lists engines') : ok('demo Connections has no engine tiles or cards (nothing there can spend)');
   const n = srv.log.filter((r) => r.path.startsWith('/api/desk/') && !/engagement\/coverage/.test(r.path)).length;
   n === 0 ? ok('flag OFF: 0 /api/desk/* requests from the storyboard, director and Connections (the engagement coverage poll belongs to the shell)'): fail(`flag OFF made ${n} /api/desk requests: ` + JSON.stringify(srv.log.map((r) => r.method + ' ' + r.path)));
   realErrors(pageErrors).forEach((e) => fail('page error: ' + e));

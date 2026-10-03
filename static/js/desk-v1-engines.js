@@ -6,7 +6,9 @@
 // engine, whether it is connected (`connected.ready`); how to connect is the guided
 // flow in desk-v1-guides.js (sign in, or paste a key step by step).
 //
-//   connectionsHTML / bindConnections   Connections' "Generation engines": each
+//   tileState / rowHTML / bindConnections   Connections' engines: a connected engine
+//        (or one that needs signing in again) is a tile in the one grid, and the
+//        Add service panel offers every other engine. Both show rowHTML: the
 //        engine with its guided Connect, and the per-job limit the user sets for
 //        it, in dollars or (Higgsfield sign-in) plan credits (human-only + the
 //        retyped passcode: raising it loosens a spending gate).
@@ -89,7 +91,7 @@
   function _engineRowHTML(e) {
     const c = e.connected || {};
     const st = _stateWord(e);
-    const kinds = Array.from(new Set((e.models || []).map((m) => m.kind))).join(' + ');
+    const kinds = kindsOf(e);
     const oauth = e.auth && e.auth.kind === 'oauth';
     const guide = window.DeskV1Guides && window.DeskV1Guides.keyGuideFor(e.id);
     const open = _openGuides.has(e.id);
@@ -109,6 +111,7 @@
         </div>
         ${oauth ? `<div class="desk-v1-rules-hint">${c.ready ? 'Signed in. Renders use the credits in your Higgsfield plan.' : 'Uses the credits in your Higgsfield plan. Nothing is charged in dollars.'}</div>` : ''}
         <div class="desk-v1-guide-status" data-guide-status role="status"></div>
+        ${e.advanced && e.group === 'higgsfield' ? '<div class="desk-v1-rules-hint">An API key is billed in dollars on your Higgsfield developer account, not from your plan credits.</div>' : ''}
         ${_limitHTML(e)}
         ${guide && open ? window.DeskV1Guides.keyGuideHTML(e.id, !!c.ready) : ''}
       </div>
@@ -116,26 +119,18 @@
     </div>`;
   }
 
-  function connectionsHTML(engines) {
-    if (!engines) return '<div class="desk-v1-stub-empty" data-engines-loading>Loading engines…</div>';
-    if (!engines.length) return '<div class="desk-v1-stub-empty">No generation engines.</div>';
-    const out = [];
-    const done = new Set();
-    engines.forEach((e) => {
-      if (done.has(e.id)) return;
-      const mates = e.group ? engines.filter((x) => x.group === e.group) : [e];
-      mates.forEach((x) => done.add(x.id));
-      if (mates.length === 1) { out.push(_engineRowHTML(e)); return; }
-      const main = mates.filter((x) => !x.advanced);
-      const adv = mates.filter((x) => x.advanced);
-      out.push(`<div class="desk-v1-conn-group" data-conn-group="${esc(e.group)}">${main.map(_engineRowHTML).join('')}
-        ${adv.length ? `<details class="desk-v1-conn-advanced" data-conn-advanced${adv.some((x) => _openGuides.has(x.id)) ? ' open' : ''}>
-          <summary>Advanced: use an API key instead</summary>
-          <div class="desk-v1-rules-hint">An API key is billed in dollars on your Higgsfield developer account, not from your plan credits.</div>
-          ${adv.map(_engineRowHTML).join('')}</details>` : ''}</div>`);
-    });
-    return out.join('');
+  // The tile an engine gets, or null: only an engine that is connected, or that was
+  // connected and needs signing in again, is on the grid. Every other engine is
+  // offered by the Add service panel, not shown as an unconnected placeholder.
+  function tileState(e) {
+    const st = _stateWord(e);
+    return st.key === 'off' ? null : st;
   }
+
+  function kindsOf(e) { return Array.from(new Set((e.models || []).map((m) => m.kind))).join(' + '); }
+
+  // One engine's whole connect card: status, the guided Connect, the limit.
+  function rowHTML(e) { return _engineRowHTML(e); }
 
   function bindConnections(el, engines, repaint) {
     const G = window.DeskV1Guides;
@@ -498,5 +493,5 @@
     });
   }
 
-  window.DeskV1Engines = { list, connectionsHTML, bindConnections, mountVideoRender, mountImageGenerate };
+  window.DeskV1Engines = { list, tileState, kindsOf, rowHTML, bindConnections, mountVideoRender, mountImageGenerate };
 })();

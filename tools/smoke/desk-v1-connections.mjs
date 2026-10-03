@@ -26,7 +26,15 @@
  *   - the profile input PATCHes browser_profile;
  *   - a stored choice survives leaving the screen and coming back;
  *   - the screen fits at 344 wide (no horizontal overflow).
- * Screenshots: docs/desk_v1/screens/connections_tiles_{1440,390}.png
+ * 2026-10-03 round 2 (Ron: "still too cluttered ... a mix of tiles and rows"): ONE
+ * grid for everything connected (accounts, content sources, engines, saved services);
+ * what is not connected is NOT shown (no Reddit / YouTube preview, no Dropbox, no
+ * engine placeholder); the last tile is always "Add service", one searchable list +
+ * "Something else" (saved for agents, never "Connected"). Asserts: the exact tile
+ * set, no placeholders, Add service present and last, no per-kind sections or rows
+ * outside the panel, Connect via a newly added account, Something else saves and
+ * renders, and the tile name does not repeat the platform glyph.
+ * Screenshots: docs/desk_v1/screens/connections_v2_{1440,390}.png
  *
  * Hermetic: real index.html + static/, every /api route mocked, no real account.
  *
@@ -137,25 +145,42 @@ async function run(browser) {
   // The tile grid: layout, flags, one panel at a time.
   const tiles = await page.$$eval('[data-conn-tile]', (els) => els.map((e) => [e.dataset.connTile, e.dataset.connState]));
   const state = Object.fromEntries(tiles);
-  check(tiles.length === 7 && state['ch-x-ron'] === 'ok' && state['ch-li-page'] === 'reauth' && state['ch-reddit'] === 'off'
-        && state['ch-yt-clayrune'] === 'preview',
-        `all ${tiles.length} workspace accounts are tiles with a status (${JSON.stringify(state)})`, `tiles wrong: ${JSON.stringify(tiles)}`);
-  check(!(await page.$('[data-conn-detail]')) && !(await page.$('[data-conn-account]')),
-        'nothing selected: no detail panel, no account row', 'a detail panel is open with nothing selected');
+  const ids = tiles.map((t) => t[0]);
+  check(JSON.stringify(ids) === JSON.stringify(['ch-x-ron', 'ch-li-page', 'ch-blog', 'ch-x-clayrune', 'source:yt', 'source:gdrive', 'source:gphotos'])
+        && state['ch-x-ron'] === 'ok' && state['ch-li-page'] === 'reauth' && Object.values(state).every((v) => v === 'ok' || v === 'reauth'),
+        `the grid is only what is connected or needs attention: ${ids.length} tiles (${JSON.stringify(state)})`, `tiles wrong: ${JSON.stringify(tiles)}`);
+  const hidden = await page.evaluate(() => ['[data-conn-tile="ch-reddit"]', '[data-conn-tile="ch-yt-clayrune"]', '[data-conn-tile="source:dropbox"]', '[data-conn-tile^="engine:"]']
+    .filter((sel) => document.querySelector(sel)));
+  check(hidden.length === 0, 'no unconnected placeholder is rendered (Reddit, YouTube, Dropbox, engines)', `placeholders rendered: ${JSON.stringify(hidden)}`);
+  const addPos = await page.$$eval('[data-conn-tiles] > *', (els) => els.map((e) => e.hasAttribute('data-conn-add-tile')));
+  check(addPos.length === ids.length + 1 && addPos[addPos.length - 1] && addPos.filter(Boolean).length === 1
+        && (await page.textContent('[data-conn-add-tile]')).includes('Add service'),
+        'one "Add service" tile, and it is the last tile', `Add service tile missing or not last: ${JSON.stringify(addPos)}`);
+  const kinds = await page.$$eval('[data-conn-tile]', (els) => els.map((e) => [e.dataset.connKind, e.querySelector('.desk-v1-conn-tile-kind').textContent.trim()]));
+  check(kinds.every((k) => k[0] && k[1]) && kinds[0][1] === 'Social account' && kinds[4][1] === 'Content source',
+        'every tile carries a small kind label (Social account / Content source)', `kind labels wrong: ${JSON.stringify(kinds)}`);
+  const structure = await page.evaluate(() => ({
+    sections: document.querySelectorAll('[data-conn-section], .desk-v1-conn-section').length,
+    rowsOutsidePanel: [...document.querySelectorAll('[data-conn-account], [data-conn-source], [data-conn-engine]')].filter((e) => !e.closest('[data-conn-detail]')).length,
+  }));
+  check(structure.sections === 0 && structure.rowsOutsidePanel === 0, 'no per-kind sections and no rows: tiles only, until one is opened',
+        `mixed layout still there: ${JSON.stringify(structure)}`);
+  const names = await page.$$eval('[data-conn-tile] .desk-v1-conn-tile-name', (els) => els.map((e) => e.textContent.trim()));
+  check(names.every((n) => !/^(?:\u{1D54F}|X|in)\s*[·•]/u.test(n)) && names.includes('@ron'),
+        `the tile name does not repeat the platform mark (${names.slice(0, 3).join(' | ')})`, `a tile name repeats the mark: ${JSON.stringify(names)}`);
   const perRow = await page.$$eval('[data-conn-tile]', (els) => {
     const tops = els.map((e) => Math.round(e.getBoundingClientRect().top));
     return tops.filter((t) => t === tops[0]).length;
   });
-  check(perRow >= 3 && perRow <= 4, `1440px: ${perRow} tiles per row`, `1440px tiles per row wrong: ${perRow}`);
+  check(perRow >= 3 && perRow <= 6, `1440px: ${perRow} tiles per row`, `1440px tiles per row wrong: ${perRow}`);
   const flags = await page.$$eval('[data-conn-tile]', (els) => Object.fromEntries(els.map((e) => [e.dataset.connTile,
     [getComputedStyle(e).borderLeftWidth, getComputedStyle(e.querySelector('[data-conn-tile-status]')).color]])));
-  check(flags['ch-li-page'][0] === '4px' && flags['ch-reddit'][0] === '4px' && flags['ch-x-ron'][0] !== '4px'
-        && flags['ch-li-page'][1] !== flags['ch-x-ron'][1],
-        'a re-auth / not connected tile is flagged (heavy left edge, amber pill) and a connected one is not', `flags wrong: ${JSON.stringify(flags)}`);
+  check(flags['ch-li-page'][0] === '4px' && flags['ch-x-ron'][0] !== '4px' && flags['ch-li-page'][1] !== flags['ch-x-ron'][1],
+        'a re-auth tile is flagged (heavy left edge, amber pill) and a connected one is not', `flags wrong: ${JSON.stringify(flags)}`);
 
   // Open each account in turn: the action it offers, and whether it carries Read via.
   const btns = {}; const readPlatforms = [];
-  for (const [id] of tiles) {
+  for (const [id] of tiles.filter((t) => !t[0].startsWith('source:'))) {
     await selectTile(page, id);
     check((await page.$$('[data-conn-detail]')).length === 1 && (await page.$$('[data-conn-account]')).length === 1,
           `selecting ${id}: exactly one detail panel is open`, `more than one detail panel open after selecting ${id}`);
@@ -164,20 +189,73 @@ async function run(browser) {
     const r = await page.$('[data-conn-detail] [data-readvia-row]');
     if (r) readPlatforms.push(await r.getAttribute('data-platform'));
   }
-  check(btns['ch-reddit'] === 'Connect' && btns['ch-li-page'] === 'Reconnect' && btns['ch-x-ron'] === 'Reconnect' && !('ch-yt-clayrune' in btns),
-        `Connect on the not-connected account, Reconnect on the others, none on a preview one (${JSON.stringify(btns)})`, `buttons wrong: ${JSON.stringify(btns)}`);
-  const engines = await page.$eval('[data-conn-section="engines"]', (e) => e.textContent.trim());
-  check(engines === 'Generation engines', 'Generation engines is a placeholder heading only', `engines section wrong: ${JSON.stringify(engines)}`);
-  await selectTile(page, 'ch-reddit');
-  await page.click('[data-conn-account="ch-reddit"] [data-conn-action="ch-reddit"]');
-  await page.waitForFunction(() => (document.querySelector('[data-conn-tile="ch-reddit"]') || {}).dataset.connState === 'preview', null, { timeout: 4000 });
-  ok('Connect takes Reddit out of Not connected (it stays Preview: nothing is authenticated in R0)');
-  await page.click('[data-conn-tile="ch-reddit"]');
-  check(!(await page.$('[data-conn-detail]')), 'clicking the open tile closes its detail', 'the detail stayed open after clicking its tile again');
+  check(btns['ch-li-page'] === 'Reconnect' && btns['ch-x-ron'] === 'Reconnect',
+        `Reconnect on the connected / lapsed accounts (${JSON.stringify(btns)})`, `buttons wrong: ${JSON.stringify(btns)}`);
+  await page.click('[data-conn-tile="source:gdrive"]');
+  await page.waitForSelector('[data-conn-detail="source:gdrive"] [data-conn-source="gdrive"]', { timeout: 4000 });
+  ok('a content source tile opens its own detail below the grid');
+
+  // Add service -> a social account (demo: nothing is saved): it appears flagged as
+  // needing a connection, and Connect flips it (with nothing authenticated).
+  await page.click('[data-conn-add-tile]');
+  await page.waitForSelector('[data-conn-detail="add"] [data-add-service] [data-add-list]', { timeout: 4000 });
+  const pickList = await page.$$eval('[data-add-pick]', (els) => els.map((e) => e.dataset.addPick));
+  check(pickList.includes('account:x') && pickList.includes('account:linkedin') && pickList.includes('account:blog') && pickList[pickList.length - 1] === 'other'
+        && !pickList.some((k) => /dropbox|gdrive|reddit|youtube/i.test(k)),
+        `Add service lists what Clayrune can connect, then "Something else" last (${pickList.join(', ')})`, `pick list wrong: ${JSON.stringify(pickList)}`);
+  await page.fill('[data-add-search]', 'link');
+  const shown = await page.$$eval('[data-add-pick]', (els) => els.filter((e) => !e.parentElement.hidden).map((e) => e.dataset.addPick));
+  check(shown.join() === 'account:linkedin,other', 'the search narrows the one list (Something else is always offered)', `search wrong: ${JSON.stringify(shown)}`);
+  await page.fill('[data-add-search]', 'zzzz');
+  check(await page.$eval('[data-add-nomatch]', (e) => !e.hidden), 'nothing matches: it says to pick Something else', 'no-match line missing');
+  await page.fill('[data-add-search]', '');
+  await page.click('[data-add-pick="account:x"]');
+  await page.waitForSelector('[data-conn-add]', { timeout: 4000 });
+  await page.fill('[data-conn-add-identity]', '@newbie');
+  await page.click('[data-conn-add-submit]');
+  await page.waitForSelector('[data-conn-tile][data-conn-state="off"]', { timeout: 4000 });
+  const newId = await page.$eval('[data-conn-tile][data-conn-state="off"]', (e) => e.dataset.connTile);
+  check((await page.getAttribute(`[data-conn-tile="${newId}"]`, 'aria-pressed')) === 'true'
+        && (await page.$$eval('[data-conn-tiles] > *', (e) => e[e.length - 1].hasAttribute('data-conn-add-tile'))),
+        'an added account is a flagged (not connected) tile, selected, and Add service is still last', 'added account not shown as expected');
+  await page.waitForSelector(`[data-conn-detail="${newId}"] [data-conn-action="${newId}"]`, { timeout: 4000 });
+  btns[newId] = (await page.textContent(`[data-conn-action="${newId}"]`)).trim();
+  check(btns[newId] === 'Connect', 'a not-connected account offers Connect', `new account button: ${btns[newId]}`);
+  await page.click(`[data-conn-action="${newId}"]`);
+  await page.waitForFunction((id) => (document.querySelector(`[data-conn-tile="${id}"]`) || {}).dataset.connState === 'ok', newId, { timeout: 4000 });
+  ok('Connect makes the tile Connected (preview: nothing is authenticated)');
+
+  // Add service -> Something else: a name, a link, a credential NAME. Honest status, no value asked.
+  await page.click('[data-conn-add-tile]');
+  await page.waitForSelector('[data-add-pick="other"]', { timeout: 4000 });
+  await page.click('[data-add-pick="other"]');
+  await page.waitForSelector('[data-svc-add]', { timeout: 4000 });
+  check(!(await page.$('[data-svc-add] input[type="password"]')), 'Something else never asks for a secret value (a vault entry NAME only)', 'a password field is on the Something else form');
+  await page.fill('[data-svc-add-name]', 'Plausible analytics');
+  await page.fill('[data-svc-add-link]', 'https://plausible.io');
+  await page.fill('[data-svc-add-cred]', 'plausible.key');
+  await page.click('[data-svc-add-submit]');
+  await page.waitForSelector('[data-conn-tile^="service:"]', { timeout: 4000 });
+  const svc = await page.$eval('[data-conn-tile^="service:"]', (e) => ({ name: e.querySelector('.desk-v1-conn-tile-name').textContent.trim(),
+    pill: e.querySelector('[data-conn-tile-status]').textContent.trim(), state: e.dataset.connState, kind: e.querySelector('.desk-v1-conn-tile-kind').textContent.trim() }));
+  check(svc.name === 'Plausible analytics' && svc.pill === 'Saved for agents' && svc.state === 'saved',
+        `Something else renders a tile that says "${svc.pill}", never Connected`, `service tile wrong: ${JSON.stringify(svc)}`);
+  const honest = await page.$eval('[data-conn-detail] [data-svc-honest]', (e) => e.textContent);
+  check(/does not connect to this service or post to it/.test(honest) && !(await page.$('[data-conn-detail] [data-conn-action]')),
+        'its detail says Clayrune does not connect to it or post to it, and offers no Connect', `service detail wrong: ${honest}`);
+  check((await page.$$eval('[data-conn-tiles] > *', (e) => e[e.length - 1].hasAttribute('data-conn-add-tile'))), 'Add service is still the last tile', 'Add service not last after saving a service');
+  await page.screenshot({ path: resolve(SHOT_DIR, 'connections_v2_service_1440.png') });
+  await page.click('[data-svc-remove]');
+  await page.waitForFunction(() => !document.querySelector('[data-conn-tile^="service:"]'), null, { timeout: 4000 });
+  ok('Remove takes the saved service off the grid');
+
   await selectTile(page, 'ch-x-ron');
   await page.click('[data-conn-detail-close]');
   check(!(await page.$('[data-conn-detail]')) && (await page.getAttribute('[data-conn-tile="ch-x-ron"]', 'aria-pressed')) === 'false',
         'the panel close button closes it and unpresses the tile', 'close button did nothing');
+  await selectTile(page, 'ch-x-ron');
+  await page.click('[data-conn-tile="ch-x-ron"]');
+  check(!(await page.$('[data-conn-detail]')), 'clicking the open tile closes its detail', 'the detail stayed open after clicking its tile again');
 
   // Every X/LinkedIn account gets one (R2-10's fixture added a second X account);
   // no other platform does.
@@ -197,7 +275,7 @@ async function run(browser) {
   const gap = await page.$eval('[data-readvia-row="ch-x-ron"] [data-readvia-status]', (e) => e.textContent.trim());
   check(gap === 'Not connected (sign in to X in the browser pane)',
         `the server's coverage gap is shown verbatim: "${gap}"`, `gap text wrong: ${JSON.stringify(gap)}`);
-  await page.screenshot({ path: resolve(SHOT_DIR, 'connections_tiles_1440.png') });
+  await page.screenshot({ path: resolve(SHOT_DIR, 'connections_v2_1440.png') });
 
   srv.coverage = [{ platform: 'x', state: 'not_connected', via: 'api', message: 'Not connected (no API token)' }];
   await page.click('[data-readvia-row="ch-x-ron"] [data-readvia="api"]');
@@ -283,7 +361,7 @@ async function run(browser) {
   await p.page.waitForSelector('[data-conn-detail="ch-li-page"] [data-conn-action]', { timeout: 4000 });
   const vis = await p.page.$eval('[data-conn-detail]', (e) => { const r = e.getBoundingClientRect(); return r.top < window.innerHeight && r.bottom > 0; });
   check(vis, '390px: tapping a tile brings its detail panel into view', '390px: the detail panel is off screen after tapping a tile');
-  await p.page.screenshot({ path: resolve(SHOT_DIR, 'connections_tiles_390.png') });
+  await p.page.screenshot({ path: resolve(SHOT_DIR, 'connections_v2_390.png') });
   await p.ctx.close();
 }
 

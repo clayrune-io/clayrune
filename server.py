@@ -2206,6 +2206,11 @@ _bp_desk.wire(
 )
 app.register_blueprint(_bp_desk.bp)
 
+# Desk "Something else" services (Connections' Add service): a plain blueprint
+# over mc.desk_services, which shares the Desk store wired just above.
+from mc.blueprints import desk_services_routes as _bp_desk_services  # noqa: E402
+app.register_blueprint(_bp_desk_services.bp)
+
 # mc.desk_publish (simplification plan §5 step 2) is a plain module, not a
 # blueprint: callers are the human-gated reply route and mc.desk_tick (R1-W
 # S7, behind the passcode approve route), so this only gives it a durable
