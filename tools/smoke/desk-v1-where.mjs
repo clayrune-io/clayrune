@@ -447,7 +447,7 @@ async function runNewCampaign(browser) {
 
   // Connect › → the Connections screen (the one place accounts are connected).
   await page.click('[data-where-connect]');
-  await page.waitForSelector('[data-connections] [data-conn-account="ch-reddit"]', { timeout: 4000 });
+  await page.waitForSelector('[data-connections] [data-conn-tile="ch-reddit"]', { timeout: 4000 });
   ok('Connect › on the not-connected card lands on the Connections screen');
   reportUncaught(pageErrors, '[new-campaign]');
   await ctx.close();

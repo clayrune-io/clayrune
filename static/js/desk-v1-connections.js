@@ -4,9 +4,12 @@
 // Studio's online sources route here instead of running their own connect flow.
 // Window-bridged module, no `import` (ground rule 1).
 //
-//   Social accounts  every workspace account: status, Connect / Reconnect, and
-//                    for X + LinkedIn how the Desk READS it (Browser pane, free,
-//                    or the platform API, paid) + the signed-in browser profile.
+//   Social accounts  a grid of one tile per account (status pill; the tile grid and
+//                    its single selection are static/js/desk-v1-connections-tiles.js).
+//                    Selecting a tile opens that account's detail below the grid:
+//                    status, Connect / Reconnect, and for X + LinkedIn how the Desk
+//                    READS it (Browser pane, free, or the platform API, paid) + the
+//                    signed-in browser profile.
 //                    Voice is NOT here: a campaign sets it on its Where board.
 //   Content sources  the cloud drives Studio's online sources read from.
 //   Generation engines  live: each engine, connected or not by vault name, and the per-job USD
@@ -141,15 +144,6 @@
   const PLACEHOLDER_SOURCES = [
     { id: 'gdrive', label: 'Google Drive', connected: false }, { id: 'dropbox', label: 'Dropbox', connected: false },
   ];
-  function _placeholderHTML(p) {
-    return `
-      <div class="desk-v1-conn-row" data-conn-placeholder="${esc(p.id)}">
-        <div class="desk-v1-conn-head">
-          <span class="desk-v1-channel-badge">${esc(p.label)}</span>
-          <span class="desk-v1-conn-status" data-state="off">Not available yet</span>
-        </div>
-      </div>`;
-  }
 
   // Live only: M3. Which platform, whose handle, an optional label. A credential
   // is never asked for here: the account will name the vault entry it needs.
@@ -341,13 +335,20 @@
     const live = window.DeskV1Store.live();
     const sources = _contentSources();
     const sourceRows = sources.length ? sources : (live ? PLACEHOLDER_SOURCES : []);
+    // One account's detail at a time, below the tile grid (desk-v1-connections-tiles.js).
+    // A selection whose account is gone shows no panel, but the id is kept: a refused
+    // Remove (or its Undo) puts the account back and its panel comes back with it.
+    const Tiles = window.DeskV1ConnTiles;
+    const pick = channels.find((c) => c.id === Tiles.selected()) || null;
+    const prevScroll = (el.querySelector('[data-connections]') || {}).scrollTop || 0;
     el.innerHTML = `
       <div class="desk-v1-connections" data-connections>
         <p class="desk-v1-conn-lede">Everything external is connected here and nowhere else. A campaign only picks from what is connected.</p>
         <section class="desk-v1-rules-group" data-conn-section="social">
           <div class="desk-v1-rules-group-title">Social accounts${live ? ' <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-conn-recheck>Check again</button>' : ''}</div>
-          ${channels.length ? channels.map(_accountHTML).join('') : '<div class="desk-v1-stub-empty">No accounts yet.</div>'}
-          ${live ? PLACEHOLDER_CHANNELS.map(_placeholderHTML).join('') + _addFormHTML() : ''}
+          ${channels.length || live ? Tiles.gridHTML({ accounts: channels, statusOf: _status, placeholders: live ? PLACEHOLDER_CHANNELS : [] }) : '<div class="desk-v1-stub-empty">No accounts yet.</div>'}
+          ${Tiles.detailHTML(pick, pick ? _accountHTML(pick) : '')}
+          ${live ? _addFormHTML() : ''}
         </section>
         <section class="desk-v1-rules-group" data-conn-section="sources">
           <div class="desk-v1-rules-group-title">Content sources</div>
@@ -358,6 +359,9 @@
           ${live ? window.DeskV1Engines.connectionsHTML(_enginesCache) : ''}
         </section>
       </div>`;
+    const scroller = el.querySelector('[data-connections]');
+    if (scroller && prevScroll) scroller.scrollTop = prevScroll;
+    Tiles.bind(el, repaint);
     channels.forEach((ch) => {
       const row = el.querySelector(`[data-conn-account="${CSS.escape(ch.id)}"]`);
       if (!row) return;
