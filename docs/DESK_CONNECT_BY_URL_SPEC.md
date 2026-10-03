@@ -65,3 +65,11 @@ MC-1022 currently catalogues ffmpeg, not arbitrary MCP packages. MCP activation 
 - **MCP rollout:** recommend curated packages first; arbitrary packages require substantially broader installer hardening. Remote endpoints still need approval.
 - **Multiple accounts:** recommend per-account vault/profile references; current singleton OAuth names need migration. One-account-only is cheaper but cannot fulfill arbitrary account URLs.
 - **Partial provisioning:** recommend the explicit durable-failure boundary above; strict external all-or-nothing would exclude installs and sign-ins from this feature.
+
+## Decisions (Dave, 2026-10-03)
+
+- **Unknown services:** information plus the "Saved for agents" fallback until a reviewed adapter exists. Accepted.
+- **MCP rollout:** curated packages first; arbitrary packages wait for installer hardening. Accepted.
+- **Multiple accounts:** per-account vault and profile references; migrate the singleton OAuth names in slice 2. Accepted.
+- **Partial provisioning:** the durable-failure boundary above. Accepted.
+- **Overruled — local atomicity:** no transaction coordinator or encrypted recovery journal in slice 1. The commit route writes the vault entry first, then the Desk record; if the record write fails it deletes the vault entry it just created (compensating rollback, same request). A crash between the two leaves at most one orphan vault entry, visible and removable in Secrets, with no plaintext anywhere. Revisit only if a slice adds a third local write that cannot be compensated.
