@@ -441,7 +441,8 @@ function renderAgentImagePreviews(key) {
   if (list.length === 0) return '';
   return `<div class="agent-image-previews">${list.map((img, i) => `
     <div class="agent-image-preview">
-      ${img.isDocument
+      ${img.pick && window.bpPickChipHTML ? window.bpPickChipHTML(img)
+        : img.isDocument
         ? `<div class="agent-file-preview" title="${esc(img.fileName || 'file')}">&#128196; ${esc((img.fileName || 'file').length > 18 ? (img.fileName || 'file').slice(0,15) + '...' : (img.fileName || 'file'))}</div>`
         : `<img src="${img.objectUrl}" alt="paste">`}
       <button class="create-preview-remove" onclick="removeAgentImage('${esc(key)}',${i})">&#10005;</button>
