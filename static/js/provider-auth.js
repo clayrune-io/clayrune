@@ -189,11 +189,13 @@ function _renderAuthBanner(state) {
     const provLabel = prov === 'claude' ? 'Claude'
       : ((_agentProviders || []).find(p => p.name === prov) || {}).display_name || prov;
     signin.textContent = `Authenticate ${provLabel}`;
-    if (prov === 'claude') {
-      signin.onclick = () => claudeAuthenticate();
-    } else {
-      signin.onclick = () => settingsProviderTerminalLogin(prov, signin);
-    }
+    // Every provider, Claude included, takes the Settings sign-in path. The
+    // server owns claude_signin_channel (agent_routes auth-login-remote ->
+    // _claude_terminal_signin, MC-928) and the browser cannot read it, so a
+    // Claude-only branch to the legacy host-OS-terminal launcher
+    // (claudeAuthenticate) ignored channel=terminal and opened a window on the
+    // host that a hosted/tunnel user never sees (backlog 7041d789).
+    signin.onclick = () => settingsProviderTerminalLogin(prov, signin);
   }
   banner.classList.remove('hidden');
 }
