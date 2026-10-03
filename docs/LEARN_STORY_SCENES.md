@@ -30,7 +30,11 @@ who hires that someone".
 Draft beats (about 15 s, skippable, plays once per lesson version, Replay in
 the hub):
 
-1. Claydo (manager) at a project desk with a teammate. Bubble: "This project
+(Ron, 2026-10-03: the manager is the one SITTING at the project desk, the
+smith figure; Claydo is the teammate standing beside it. Supersedes "Claydo as
+manager" below.)
+
+1. The manager at a project desk with a teammate. Bubble: "This project
    keeps shipping bugs. We need a QA engineer."
 2. Claydo walks down the hall to the HR department (an office with its own
    clay HR figure and a filing cabinet of staff folders).
@@ -44,7 +48,7 @@ Mapping to the product, so the story never teaches something false:
 
 | Story | Product |
 | --- | --- |
-| Manager | Claydo, the narrator |
+| Manager | The seated figure at the project desk (smith) |
 | HR department and its staff folders | The Bench (agent types you can hire) |
 | HR recruits a QA engineer | Create agent in the character editor (Floor v2) |
 | Which agency, how senior | Provider and model fields |

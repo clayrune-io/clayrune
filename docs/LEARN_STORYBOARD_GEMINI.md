@@ -42,8 +42,8 @@ Ron has the reference drawings; the same figures are in the repo under
 
 | Role | Reference | Look |
 | --- | --- | --- |
-| Manager | `claydo.webp` | Terracotta figure, long hair, holding a gear with a small sparkle |
-| Teammate (developer) | `smith.webp` | Dark red-brown figure, leather apron, hammer, frowning |
+| Manager (sits at the project desk) | `smith.webp` | Dark red-brown figure, leather apron, frowning |
+| Teammate | `claydo.webp` | Terracotta figure, long hair, holding a gear with a small sparkle |
 | HR officer | `librarian.webp` | Sage-green figure, curly hair, round glasses, pushes a wooden cart of folders |
 | New QA engineer | `scholar.webp` | Slate-grey figure, headband, round glasses, holds an open book, focused look |
 
@@ -62,17 +62,18 @@ Ron has the reference drawings; the same figures are in the repo under
 | 5 | 2 s | Caption: "Now you do it." |
 
 **1A.** Wide shot of a small office, one project desk with a few
-papers. The teammate (smith) sits at the desk, holding up a cracked
-gadget that sparks and falls apart in his hands; he frowns. The manager
-(claydo) walks in from the left, stops beside the desk, looks at the broken
-gadget and sighs. Static camera. Bubble space above the manager's head.
+papers. The manager (smith) sits at the desk, holding up a cracked
+gadget that sparks and crumbles in his hands; he frowns and sighs. The
+teammate (claydo) stands beside the desk holding her gear and tilts her head
+at the broken gadget. Static camera. Bubble space above the manager's head.
+(Ron's reference still: `data/uploads/agent_b73f6499cc.png`.)
 
-**1B.** Medium shot of the manager turning toward the camera and raising one
-finger, as if deciding something. The teammate nods behind her. Slow push in.
-Bubble space upper left.
+**1B.** Medium shot of the manager, still seated, putting the broken gadget
+down and raising one finger, as if deciding something. The teammate nods.
+Slow push in. Bubble space above the manager.
 
-**2.** The manager walks out of the office into a corridor and along it,
-camera tracking alongside. She stops at a door with a small emblem of a
+**2.** The manager gets up from the desk, walks out of the office into a
+corridor and along it, camera tracking alongside. He stops at a door with a small emblem of a
 folder on it (no letters) and knocks. Ends as the door opens.
 
 **3A.** Inside the HR office: shelves and a filing cabinet. The HR officer
@@ -87,7 +88,7 @@ folder. Caption space along the bottom.
 
 **4.** Back in the project office. The new QA engineer (scholar) walks in
 through the door, opens the book, walks to an empty chair at the project desk
-next to the teammate, sits down, and looks up at the camera expectantly with
+next to the manager, sits down, and looks up at the camera expectantly with
 the book open on the desk. The teammate gives a small wave. Bubble space above
 the new hire.
 
