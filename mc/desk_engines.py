@@ -1815,7 +1815,8 @@ def _run_ffmpeg(cmd: list[str]) -> tuple[int, str]:
     """Run one ffmpeg command -> (returncode, stderr tail). The one place the
     join starts a subprocess, so tests replace it."""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=_FFMPEG_TIMEOUT, check=False)
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace',
+                           timeout=_FFMPEG_TIMEOUT, check=False)
     except subprocess.TimeoutExpired:
         return 124, f'timed out after {_FFMPEG_TIMEOUT}s'
     except OSError as e:
@@ -1858,7 +1859,8 @@ def _codecs_match(paths: list[Path]) -> bool:
         cmd = [probe, '-v', 'error', '-show_entries', 'stream=codec_type,codec_name,width,height,pix_fmt',
                '-of', 'json', str(p)]
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
+            res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace',
+                                 timeout=60, check=False)
             streams = json.loads(res.stdout or '{}').get('streams') or []
         except (OSError, subprocess.TimeoutExpired, ValueError):
             return False

@@ -25,6 +25,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+# The function drops any reading whose `resets_at` has already passed (the
+# freshness gate, 34fae6b9), so a dated epoch here turns green tests red the
+# day it elapses (1791000000 did on 2026-10-03). Fixed far-future constant.
+_FUTURE_EPOCH = 4102444800  # 2100-01-01T00:00:00Z
+
+
 @pytest.fixture()
 def sr():
     import server  # noqa: F401  (registers blueprints)
@@ -58,7 +64,7 @@ def test_weekly_window_as_primary(sr, tmp_path, monkeypatch):
     """`prolite`-plan shape: the weekly (10080min) window is `primary`."""
     f = tmp_path / "rollout-1.jsonl"
     f.write_text(
-        _rollout_line(primary={"used_percent": 41.0, "window_minutes": 10080, "resets_at": 1791055226}) + "\n",
+        _rollout_line(primary={"used_percent": 41.0, "window_minutes": 10080, "resets_at": _FUTURE_EPOCH}) + "\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(sr._agent_runtime, "_codex_rollout_files", lambda: [f])
@@ -67,7 +73,7 @@ def test_weekly_window_as_primary(sr, tmp_path, monkeypatch):
 
     assert result is not None
     assert result["utilization"] == 41.0
-    assert result["resets_at"] == "2026-10-03T19:20:26+00:00"
+    assert result["resets_at"] == "2100-01-01T00:00:00+00:00"
 
 
 def test_weekly_window_as_secondary(sr, tmp_path, monkeypatch):
@@ -75,8 +81,8 @@ def test_weekly_window_as_secondary(sr, tmp_path, monkeypatch):
     f = tmp_path / "rollout-2.jsonl"
     f.write_text(
         _rollout_line(
-            primary={"used_percent": 12.0, "window_minutes": 300, "resets_at": 1791000000},
-            secondary={"used_percent": 77.0, "window_minutes": 10080, "resets_at": 1791999999},
+            primary={"used_percent": 12.0, "window_minutes": 300, "resets_at": _FUTURE_EPOCH},
+            secondary={"used_percent": 77.0, "window_minutes": 10080, "resets_at": _FUTURE_EPOCH},
         ) + "\n",
         encoding="utf-8",
     )
@@ -97,7 +103,7 @@ def test_secondary_null_is_skipped(sr, tmp_path, monkeypatch):
     """`secondary: null` (real prolite shape) must not raise or be treated as a match."""
     f = tmp_path / "rollout-3.jsonl"
     f.write_text(
-        _rollout_line(primary={"used_percent": 5.0, "window_minutes": 10080, "resets_at": 1791000000}, secondary=None) + "\n",
+        _rollout_line(primary={"used_percent": 5.0, "window_minutes": 10080, "resets_at": _FUTURE_EPOCH}, secondary=None) + "\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(sr._agent_runtime, "_codex_rollout_files", lambda: [f])
@@ -113,8 +119,8 @@ def test_no_weekly_window_present_returns_none(sr, tmp_path, monkeypatch):
     f = tmp_path / "rollout-4.jsonl"
     f.write_text(
         _rollout_line(
-            primary={"used_percent": 12.0, "window_minutes": 300, "resets_at": 1791000000},
-            secondary={"used_percent": 3.0, "window_minutes": 60, "resets_at": 1791000000},
+            primary={"used_percent": 12.0, "window_minutes": 300, "resets_at": _FUTURE_EPOCH},
+            secondary={"used_percent": 3.0, "window_minutes": 60, "resets_at": _FUTURE_EPOCH},
         ) + "\n",
         encoding="utf-8",
     )
@@ -130,12 +136,12 @@ def test_uses_latest_mtime_file(sr, tmp_path, monkeypatch):
 
     old = tmp_path / "rollout-old.jsonl"
     old.write_text(
-        _rollout_line(primary={"used_percent": 10.0, "window_minutes": 10080, "resets_at": 1791000000}) + "\n",
+        _rollout_line(primary={"used_percent": 10.0, "window_minutes": 10080, "resets_at": _FUTURE_EPOCH}) + "\n",
         encoding="utf-8",
     )
     new = tmp_path / "rollout-new.jsonl"
     new.write_text(
-        _rollout_line(primary={"used_percent": 90.0, "window_minutes": 10080, "resets_at": 1791000000}) + "\n",
+        _rollout_line(primary={"used_percent": 90.0, "window_minutes": 10080, "resets_at": _FUTURE_EPOCH}) + "\n",
         encoding="utf-8",
     )
     now = time.time()
@@ -152,7 +158,7 @@ def test_uses_latest_mtime_file(sr, tmp_path, monkeypatch):
 def test_cache_ttl_avoids_rereading_file(sr, tmp_path, monkeypatch):
     f = tmp_path / "rollout-5.jsonl"
     f.write_text(
-        _rollout_line(primary={"used_percent": 25.0, "window_minutes": 10080, "resets_at": 1791000000}) + "\n",
+        _rollout_line(primary={"used_percent": 25.0, "window_minutes": 10080, "resets_at": _FUTURE_EPOCH}) + "\n",
         encoding="utf-8",
     )
     calls = {"n": 0}
