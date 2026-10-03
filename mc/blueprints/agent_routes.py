@@ -6503,6 +6503,14 @@ def _load_agent_log(project_id):
         return []
 
 
+def _registered_project_path(project_id):
+    """The registered project_path for `project_id`, '' when unknown. Never raises."""
+    try:
+        return str((load_project(project_id) or {}).get('project_path') or '') if project_id else ''
+    except Exception:
+        return ''
+
+
 @bp.route('/api/session/trigger-type')
 def get_session_trigger_type():
     """Look up the trigger_type MC recorded for a Claude session at dispatch
@@ -6530,6 +6538,12 @@ def get_session_trigger_type():
     config flag, and it runs as a stateless subprocess on every single
     PreToolUse hook call — piggybacking here halves its per-tool-call HTTP
     overhead instead of adding a second `/api/config` round trip.
+
+    `project_path` (MC-1037, 2026-10-03) rides along for a LIVE session only: the
+    project's REGISTERED path, which is where the fence derives the session's
+    memory dir. It is the session's project as the server recorded it, not the
+    shell's cwd, which moves. Absent when the session or its project is unknown;
+    the fence reads absent as "no memory-dir exception".
     """
     csid = (request.args.get('claude_session_id') or '').strip()
     if not csid:
@@ -6537,8 +6551,12 @@ def get_session_trigger_type():
     fue = bool(state.CONFIG.get('fence_unattended_enabled', True))
     for s in agent_sessions.values():
         if s.get('claude_session_id') == csid:
-            return jsonify({'found': True, 'trigger_type': s.get('trigger_type') or 'manual',
-                            'fence_unattended_enabled': fue})
+            body = {'found': True, 'trigger_type': s.get('trigger_type') or 'manual',
+                    'fence_unattended_enabled': fue}
+            pp = _registered_project_path(s.get('project_id'))
+            if pp:
+                body['project_path'] = pp
+            return jsonify(body)
     for log_file in DATA_DIR.glob('*_agent_log.json'):
         try:
             entries = json.loads(log_file.read_text(encoding='utf-8'))

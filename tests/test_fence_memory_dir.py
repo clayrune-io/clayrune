@@ -9,8 +9,9 @@ notes without an "Allow once" click. These tests pin the narrow hole:
            subdirectories, any other project's memory, everything else under
            .claude, and every path trick that resolves outside the own dir.
 
-"Own project" must come from the session (the hook payload's cwd), never from
-the path being written or from anything else in tool_input.
+"Own project" is the project root the SERVER recorded for the session
+(`project_root`), never the hook's cwd (a session's cwd moves), the path being
+written, or anything else in tool_input. No root: the exception is off.
 """
 import io
 import json
@@ -57,10 +58,11 @@ def env(tmp_path, monkeypatch):
     (e.other_mem / 'theirs.md').write_text('x', encoding='utf-8')
     monkeypatch.setattr(server_memory, 'CLAUDE_HOME', e.projects, raising=False)
 
-    def call(tool, path, cwd=None, extra=None):
+    def call(tool, path, cwd=None, extra=None, root='own'):
         key = 'notebook_path' if tool == 'NotebookEdit' else 'file_path'
         ti = {key: str(path), **(extra or {})}
-        return fence.classify_action(tool, ti, str(cwd or e.proj))
+        return fence.classify_action(tool, ti, str(cwd or e.proj),
+                                     str(e.proj) if root == 'own' else root)
     e.call = call
     return e
 
@@ -103,16 +105,10 @@ def test_no_memory_dir_yet_defaults_to_the_servers_primary_spelling(tmp_path, mo
     assert fence._own_memory_dir(str(proj)) == server_memory._native_memory_path(str(proj)).parent
 
 
-def test_project_root_strips_an_agent_worktree(tmp_path):
-    proj = tmp_path / 'p'
-    wt = proj / '.clayrune' / 'agents' / 'abc123'
-    (wt / 'sub').mkdir(parents=True)
-    assert fence._session_project_root(str(proj)) == proj.resolve()
-    assert fence._session_project_root(str(wt)) == proj.resolve()
-    assert fence._session_project_root(str(wt / 'sub')) == proj.resolve()
-    # No agent id after `agents`: not a worktree, so nothing is stripped.
-    bare = proj / '.clayrune' / 'agents'
-    assert fence._session_project_root(str(bare)) == bare.resolve()
+def test_no_project_root_means_no_memory_dir(tmp_path):
+    assert fence._own_memory_dir(None) is None
+    assert fence._own_memory_dir('') is None
+    assert fence._own_memory_dir('relative/path') is None      # not anchored to anything
 
 
 # ── allowed ─────────────────────────────────────────────────────────────────
@@ -217,31 +213,67 @@ def test_windows_path_spellings(env):
 
 # ── the project comes from the session, nothing else ────────────────────────
 
-def test_project_is_taken_from_cwd_not_from_the_path_or_tool_input(env):
-    # Same two files, judged from the OTHER project's session: roles swap.
-    assert env.call('Write', env.mem / 'topic_x.md', cwd=env.other_proj).blocked
-    assert not env.call('Write', env.other_mem / 'theirs.md', cwd=env.other_proj).blocked
+def test_ownership_comes_from_the_project_root_not_from_cwd(env):
+    """Fenn 2026-10-03: ownership used to follow the hook's cwd, and a session's
+    cwd moves. Whatever the cwd, the project root decides."""
+    for cwd in (env.proj, env.other_proj, env.other_proj / 'sub'):
+        assert not env.call('Write', env.mem / 'topic_x.md', cwd=cwd).blocked
+        assert env.call('Write', env.other_mem / 'theirs.md', cwd=cwd).blocked
+    # Same two files, root = the OTHER project: roles swap, cwd is irrelevant.
+    assert env.call('Write', env.mem / 'topic_x.md', root=str(env.other_proj)).blocked
+    assert not env.call('Write', env.other_mem / 'theirs.md', root=str(env.other_proj)).blocked
     # Fields a model could add to tool_input name the wrong project; ignored.
     lie = {'cwd': str(env.other_proj), 'project_path': str(env.other_proj),
-           'project_id': 'other_proj', 'memory_dir': str(env.other_mem)}
-    assert env.call('Write', env.other_mem / 'theirs.md', cwd=env.proj, extra=lie).blocked
-    assert not env.call('Write', env.mem / 'topic_x.md', cwd=env.proj, extra=lie).blocked
+           'project_root': str(env.other_proj), 'project_id': 'other_proj',
+           'memory_dir': str(env.other_mem)}
+    assert env.call('Write', env.other_mem / 'theirs.md', extra=lie).blocked
+    assert not env.call('Write', env.mem / 'topic_x.md', extra=lie).blocked
 
 
-def test_a_made_up_project_root_gets_no_extra_reach(env):
-    """`cd` into <proj>/<anything>/.clayrune/agents/x moves the derived root to
-    <proj>/<anything>, which has no memory dir of any real project."""
+def test_no_project_root_blocks_everything(env):
+    """Absent, empty or relative root: the exception is off, `.claude` blocks."""
+    for root in (None, '', 'my_proj', os.path.relpath(env.proj)):
+        for target in (env.mem / 'topic_x.md', env.mem / 'brand_new.md',
+                       env.other_mem / 'theirs.md'):
+            d = env.call('Write', target, root=root)
+            assert d.blocked and not d.overridable, (root, target)
+    assert fence.classify_action(
+        'Write', {'file_path': str(env.mem / 'topic_x.md')}, str(env.proj)).blocked
+
+
+def test_nested_project_cwd_does_not_swap_ownership(env):
+    """Fenn's P1: project A contains a nested project B with its own memory dir.
+    A session of A that cd's into B (cwd = B) must not gain B's memory."""
+    nested = env.proj / 'nested_b'
+    nested.mkdir()
+    nested_mem = env.projects / _enc(nested).replace('_', '-') / 'memory'
+    nested_mem.mkdir(parents=True)
+    (nested_mem / 'b_topic.md').write_text('x', encoding='utf-8')
+    for cwd in (env.proj, nested):
+        d = env.call('Write', nested_mem / 'b_topic.md', cwd=cwd)
+        assert d.blocked and not d.overridable, cwd
+        assert env.call('Write', nested_mem / 'new.md', cwd=cwd).blocked
+        assert not env.call('Write', env.mem / 'topic_x.md', cwd=cwd).blocked
+
+
+def test_a_made_up_worktree_cwd_gets_no_extra_reach(env):
+    """`<dir>/.clayrune/agents/fake` as cwd used to move the derived root to
+    <dir>. The cwd no longer derives anything."""
     fake = env.proj / 'fake' / '.clayrune' / 'agents' / 'x'
     fake.mkdir(parents=True)
-    assert env.call('Write', env.mem / 'topic_x.md', cwd=fake).blocked
+    fake_mem = env.projects / _enc(env.proj / 'fake').replace('_', '-') / 'memory'
+    fake_mem.mkdir(parents=True)
+    assert env.call('Write', fake_mem / 'n.md', cwd=fake).blocked
     assert env.call('Write', env.other_mem / 'theirs.md', cwd=fake).blocked
+    assert not env.call('Write', env.mem / 'topic_x.md', cwd=fake).blocked
 
 
 def test_unresolvable_input_fails_closed(env):
     assert env.call('Write', '').blocked is False        # no path at all: nothing to fence
-    assert not fence._is_own_memory_topic_file('', str(env.proj))
-    assert not fence._is_own_memory_topic_file('a\x00b.md', str(env.proj))
-    assert not fence._is_own_memory_topic_file(str(env.mem / 'topic_x.md'), '\x00')
+    assert not fence._is_own_memory_topic_file('', str(env.proj), str(env.proj))
+    assert not fence._is_own_memory_topic_file('a\x00b.md', str(env.proj), str(env.proj))
+    assert not fence._is_own_memory_topic_file(str(env.mem / 'topic_x.md'), str(env.proj), '\x00')
+    assert fence._is_own_memory_topic_file(str(env.mem / 'topic_x.md'), str(env.proj), str(env.proj))
 
 
 # ── links: a path that RESOLVES outside the own dir is blocked ──────────────
@@ -316,7 +348,8 @@ def test_the_projects_root_may_be_a_link(tmp_path, monkeypatch):
         proj.mkdir()
         mem = home / '.claude' / 'projects' / _enc(proj) / 'memory'
         mem.mkdir(parents=True)
-        d = fence.classify_action('Write', {'file_path': str(mem / 'n.md')}, str(proj))
+        d = fence.classify_action('Write', {'file_path': str(mem / 'n.md')},
+                                  str(proj), str(proj))
         assert not d.blocked
     finally:
         _unlink_dir(home / '.claude' / 'projects')
@@ -327,10 +360,10 @@ def test_the_projects_root_may_be_a_link(tmp_path, monkeypatch):
 def test_bash_classification_ignores_the_memory_allowance(env):
     for cmd in (f'echo x > "{env.mem / "topic_x.md"}"', f'cp a "{env.mem}"',
                 f'Set-Content "{env.mem / "MEMORY.md"}" x'):
-        assert fence.classify_action('Bash', {'command': cmd}, str(env.proj)) == \
-            fence.classify_bash(cmd)
-        assert fence.classify_action('PowerShell', {'command': cmd}, str(env.proj)) == \
-            fence.classify_bash(cmd)
+        assert fence.classify_action('Bash', {'command': cmd}, str(env.proj),
+                                     str(env.proj)) == fence.classify_bash(cmd)
+        assert fence.classify_action('PowerShell', {'command': cmd}, str(env.proj),
+                                     str(env.proj)) == fence.classify_bash(cmd)
 
 
 # ── Codex apply_patch gets the same rule ────────────────────────────────────
@@ -340,10 +373,10 @@ def _patch(*lines):
 
 
 def test_apply_patch_follows_the_same_rule(env):
-    cwd = str(env.proj)
+    cwd = root = str(env.proj)
     ok = _patch(f'*** Add File: {env.mem / "new_note.md"}', '+x',
                 f'*** Update File: {env.mem / "topic_x.md"}', '@@', '-x', '+y')
-    assert not fence.classify_action('apply_patch', ok, cwd).blocked
+    assert not fence.classify_action('apply_patch', ok, cwd, root).blocked
     for bad in (
         _patch(f'*** Update File: {env.mem / "MEMORY.md"}'),
         _patch(f'*** Add File: {env.mem / "SESSION_LOG.md"}', '+x'),
@@ -356,17 +389,20 @@ def test_apply_patch_follows_the_same_rule(env):
         _patch(f'*** Add File: {env.mem / "new_note.md"}', '+x',
                f'*** Add File: {env.home / ".claude" / "settings.json"}', '+x'),
     ):
-        d = fence.classify_action('apply_patch', bad, cwd)
+        d = fence.classify_action('apply_patch', bad, cwd, root)
         assert d.blocked and not d.overridable, bad
+        assert fence.classify_action('apply_patch', bad, cwd, None).blocked
 
 
 def test_apply_patch_relative_paths_resolve_against_the_payload_cwd(env):
     rel = os.path.relpath(env.mem / 'new_note.md', env.proj).replace('\\', '/')
     assert not fence.classify_action(
-        'apply_patch', _patch(f'*** Add File: {rel}', '+x'), str(env.proj)).blocked
+        'apply_patch', _patch(f'*** Add File: {rel}', '+x'), str(env.proj),
+        str(env.proj)).blocked
     rel = os.path.relpath(env.mem / 'MEMORY.md', env.proj).replace('\\', '/')
     assert fence.classify_action(
-        'apply_patch', _patch(f'*** Add File: {rel}', '+x'), str(env.proj)).blocked
+        'apply_patch', _patch(f'*** Add File: {rel}', '+x'), str(env.proj),
+        str(env.proj)).blocked
 
 
 def _main(monkeypatch, payload, argv):
@@ -374,30 +410,109 @@ def _main(monkeypatch, payload, argv):
     return fence.main(argv)
 
 
+def _server_says(monkeypatch, project_path, trigger_type='dispatch'):
+    monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'csid-1')
+    info = {'trigger_type': trigger_type, 'fence_unattended_enabled': True}
+    if project_path is not None:
+        info['project_path'] = str(project_path)
+    monkeypatch.setattr(fence, '_lookup_trigger_type', lambda sid: info)
+
+
 def test_armed_main_applies_the_rule_to_write_and_apply_patch(env, monkeypatch, capsys):
-    """The Codex path end to end: `--armed`, payload cwd, absolute patch paths."""
-    def w(path):
-        return {'tool_name': 'Write', 'cwd': str(env.proj),
+    """End to end through main(): the root is the server's, payload cwd is only
+    an anchor, and `--armed` (the Codex flag) does not change the rule."""
+    _server_says(monkeypatch, env.proj)
+
+    def w(path, cwd=None):
+        return {'tool_name': 'Write', 'cwd': str(cwd or env.proj),
                 'tool_input': {'file_path': str(path), 'content': 'x'}}
 
     def ap(*lines):
         return {'tool_name': 'apply_patch', 'cwd': str(env.proj), 'tool_input': _patch(*lines)}
     assert _main(monkeypatch, w(env.mem / 'topic_x.md'), ['--armed']) == 0
+    assert _main(monkeypatch, w(env.mem / 'topic_x.md', cwd=env.other_proj), ['--armed']) == 0
     assert _main(monkeypatch, ap(f'*** Add File: {env.mem / "n.md"}', '+x'), ['--armed']) == 0
     capsys.readouterr()
     for bad in (w(env.mem / 'MEMORY.md'), w(env.other_mem / 'theirs.md'),
+                w(env.other_mem / 'theirs.md', cwd=env.other_proj),
                 w(env.home / '.claude' / 'settings.json'),
                 ap(f'*** Update File: {env.mem / "MEMORY_ARCHIVE.md"}')):
         assert _main(monkeypatch, bad, ['--armed']) == 2
         assert 'STEWARD FENCE blocked' in capsys.readouterr().err
 
 
+def test_main_without_a_server_recorded_root_blocks_even_own_topic_files(env, monkeypatch, capsys):
+    """Codex's hook carries no session id; an unreachable server, an unknown
+    session or an answer with no project_path is the same: exception off."""
+    own = {'tool_name': 'Write', 'cwd': str(env.proj),
+           'tool_input': {'file_path': str(env.mem / 'topic_x.md'), 'content': 'x'}}
+    monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
+    assert _main(monkeypatch, own, ['--armed']) == 2
+    assert 'STEWARD FENCE blocked' in capsys.readouterr().err
+    for answer in (None, {'trigger_type': 'dispatch', 'fence_unattended_enabled': True},
+                   {'trigger_type': 'dispatch', 'fence_unattended_enabled': True,
+                    'project_path': ''}):
+        monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'csid-1')
+        monkeypatch.setattr(fence, '_lookup_trigger_type', lambda sid, a=answer: a)
+        assert _main(monkeypatch, own, ['--armed']) == 2
+        capsys.readouterr()
+
+    def boom(sid):
+        raise OSError('server down')
+    monkeypatch.setattr(fence, '_lookup_trigger_type', boom)
+    assert _main(monkeypatch, own, ['--armed']) == 2
+
+
+def test_main_nested_project_and_fake_worktree_cwd_stay_blocked(env, monkeypatch, capsys):
+    """Fenn's reproducers through the full hook payload: root = A, cwd = nested B
+    or B/.clayrune/agents/fake, target = B's memory."""
+    nested = env.proj / 'nested_b'
+    fake = nested / '.clayrune' / 'agents' / 'fake'
+    fake.mkdir(parents=True)
+    nested_mem = env.projects / _enc(nested).replace('_', '-') / 'memory'
+    nested_mem.mkdir(parents=True)
+    _server_says(monkeypatch, env.proj)
+    for cwd in (env.proj, nested, fake):
+        payload = {'tool_name': 'Write', 'cwd': str(cwd),
+                   'tool_input': {'file_path': str(nested_mem / 'b_topic.md'), 'content': 'x'}}
+        assert _main(monkeypatch, payload, ['--armed']) == 2, cwd
+        assert 'STEWARD FENCE blocked' in capsys.readouterr().err
+
+
+def test_launcher_project_root_reads_only_the_servers_answer(env, monkeypatch):
+    monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
+    assert fence._launcher_project_root() is None
+    _server_says(monkeypatch, env.proj)
+    assert fence._launcher_project_root() == str(env.proj)
+    _server_says(monkeypatch, None)
+    assert fence._launcher_project_root() is None
+
+
+def test_lookup_passes_the_servers_project_path_through(monkeypatch):
+    class _Resp:
+        def __init__(self, body):
+            self._b = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(self._b).encode()
+    for body, want in (
+        ({'found': True, 'trigger_type': 'dispatch', 'project_path': 'C:\\p'}, 'C:\\p'),
+        ({'found': True, 'trigger_type': 'dispatch'}, None),
+    ):
+        monkeypatch.setattr(fence.urllib.request, 'urlopen', lambda *a, _b=body, **k: _Resp(_b))
+        assert fence._lookup_trigger_type('csid')['project_path'] == want
+
+
 def test_unattended_trigger_session_uses_the_same_rule(env, monkeypatch, capsys):
     """Dispatched/scheduled/workflow/hivemind sessions arm through the server's
     trigger_type; a blocked memory write there is never passable by 'Allow once'."""
-    monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'csid-1')
-    monkeypatch.setattr(fence, '_lookup_trigger_type', lambda sid: {
-        'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    _server_says(monkeypatch, env.proj)
     monkeypatch.setattr(fence, '_consume_attend_once_pass', lambda: pytest.fail('spent a pass'))
     ok = {'tool_name': 'Write', 'cwd': str(env.proj),
           'tool_input': {'file_path': str(env.mem / 'topic_x.md')}}
@@ -408,12 +523,13 @@ def test_unattended_trigger_session_uses_the_same_rule(env, monkeypatch, capsys)
     assert 'Do NOT retry it. Instead post' in capsys.readouterr().err
 
 
-def test_pass_helpers_use_the_same_cwd(env):
+def test_pass_helpers_use_the_same_project_root(env):
     ok = [('Write', {'file_path': str(env.mem / 'topic_x.md')})]
-    assert fence._blocked_leaves('Write', ok[0][1], str(env.proj)) == []
-    assert fence._blocked_leaves('Write', ok[0][1], str(env.other_proj)) != []
+    assert fence._blocked_leaves('Write', ok[0][1], str(env.proj), str(env.proj)) == []
+    assert fence._blocked_leaves('Write', ok[0][1], str(env.proj), str(env.other_proj)) != []
+    assert fence._blocked_leaves('Write', ok[0][1], str(env.proj), None) != []
     bad = [('Write', {'file_path': str(env.mem / 'MEMORY.md')})]
-    assert fence._pass_can_cover(bad, str(env.proj)) is False
+    assert fence._pass_can_cover(bad, str(env.proj), str(env.proj)) is False
 
 
 def test_install_dir_and_supply_chain_rules_still_win(env):

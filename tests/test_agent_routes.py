@@ -1051,6 +1051,30 @@ def test_trigger_type_found_in_live_session(client):
         mc_state.agent_sessions.pop('s1', None)
 
 
+def test_trigger_type_live_session_carries_the_registered_project_path(client, monkeypatch):
+    """MC-1037: the fence's memory-dir exception takes the session's project
+    from here (the REGISTERED path), never from the shell's cwd. Live sessions
+    only; an unknown project, or a session only found in the persisted log,
+    carries none."""
+    from mc import state as mc_state
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar, 'load_project', lambda pid: (
+        {'id': pid, 'project_path': 'C:\\work\\proj-a'} if pid == 'proj-a' else None))
+    mc_state.agent_sessions['s1'] = {
+        'project_id': 'proj-a', 'claude_session_id': 'live-csid-pp', 'trigger_type': 'dispatch',
+        '_agent_cwd': 'C:\\work\\proj-a\\.clayrune\\agents\\abc'}
+    mc_state.agent_sessions['s2'] = {
+        'project_id': 'proj-gone', 'claude_session_id': 'live-csid-nopp', 'trigger_type': 'dispatch'}
+    try:
+        got = client.get('/api/session/trigger-type?claude_session_id=live-csid-pp').get_json()
+        assert got['project_path'] == 'C:\\work\\proj-a' and got['trigger_type'] == 'dispatch'
+        got = client.get('/api/session/trigger-type?claude_session_id=live-csid-nopp').get_json()
+        assert got['found'] is True and 'project_path' not in got
+    finally:
+        mc_state.agent_sessions.pop('s1', None)
+        mc_state.agent_sessions.pop('s2', None)
+
+
 def test_trigger_type_falls_back_to_persisted_agent_log(client):
     """A session that already completed and dropped out of agent_sessions is
     still findable in its project's persisted log."""
