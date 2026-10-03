@@ -2920,9 +2920,25 @@ def _mint_overlap_terms(name, description, triggers):
     never triggers a popularity-gated check and stays cold forever, so this
     detector must never accept one.
     """
-    toks = set(_mem_tokens(name)) | set(_mem_tokens(description)) | \
-        set(_mem_tokens((triggers or '').replace(',', ' ')))
-    return {t for t in toks if t not in _TRIGGER_STOPWORDS}
+    stop = set(_TRIGGER_STOPWORDS)
+    name_toks = set(_mem_tokens(name))
+    m = _MINT_NAME_RE.match((name or '').lower())
+    if m:
+        # A mint's name and description are minted from templates, so every
+        # mint of one kind shares the same words ("Backlog item closed",
+        # `mint_backlog_done_<hash>`). Those say nothing about the subject:
+        # M4 flagged 494 of 552 mint-mint pairs on them alone (step-9 measure,
+        # 2026-09-29). Hand-written notes never match `_MINT_NAME_RE`.
+        # The slug and label words go from the NAME and the label PREFIX only;
+        # only the caller's subject-template words go from the whole
+        # description, so a backlog item genuinely about the backlog keeps it.
+        kind = m.group('kind').replace('-', '_')
+        template = _mint_template_terms(kind)
+        name_toks -= template
+        description = _mint_strip_label(kind, description)
+        stop |= _mint_subject_template_terms(kind)
+    toks = name_toks | set(_mem_tokens(description)) |         set(_mem_tokens((triggers or '').replace(',', ' ')))
+    return {t for t in toks if t not in stop}
 
 
 def detect_mint_overlap(project, name, description, triggers='', *,
@@ -3013,6 +3029,44 @@ _MINT_TRIGGER_LABELS = {
     'backlog_done': 'Backlog item closed',
     'docs_artifact': 'Docs artifact minted',
 }
+
+# Words each trigger's CALLER bakes into every subject of its kind, on top of
+# the label above. Pinned to the real call sites by tests/test_mint_overlap_template.py:
+#   docs_artifact  -> scan_docs_artifacts_for_mint: f'{rel} ({size} bytes)', rel under docs/
+#   hivemind_close -> hivemind_routes: f'{title} ({outcome})', outcome completed|failed
+#   backlog_done   -> project_routes: the item text verbatim, no template
+_MINT_SUBJECT_TEMPLATE_WORDS = {
+    'docs_artifact': ('docs', 'bytes'),
+    'hivemind_close': ('completed', 'failed'),
+}
+
+# `_mint_slug`'s shape: mint_<kind>_<10 hex>. Matches the stem with `_` or `-`
+# separators (detect_mint_overlap passes the slug kebab-cased).
+_MINT_NAME_RE = re.compile(r'^mint[_-](?P<kind>.+)[_-][0-9a-f]{10}$')
+
+
+def _mint_subject_template_terms(kind):
+    """Tokens the CALLER of `kind` bakes into every subject (not the label)."""
+    return {t for w in _MINT_SUBJECT_TEMPLATE_WORDS.get(kind, ())
+            for t in _mem_tokens(w)}
+
+
+def _mint_template_terms(kind):
+    """Tokens every mint of `kind` shares by construction: the `mint` prefix,
+    the kind's own slug words, its label, and its caller's subject template."""
+    words = ['mint', kind, _MINT_TRIGGER_LABELS.get(kind, kind)]
+    return ({t for w in words for t in _mem_tokens(w)}
+            | _mint_subject_template_terms(kind))
+
+
+def _mint_strip_label(kind, description):
+    """Drop the leading `<label>:` `mint_topic_node` prepends, and nothing else
+    — a backlog item that is genuinely ABOUT the backlog keeps that word."""
+    label = _MINT_TRIGGER_LABELS.get(kind, kind or 'Mint') + ':'
+    description = description or ''
+    if description.lower().startswith(label.lower()):
+        return description[len(label):]
+    return description
 
 
 def mint_topic_node(project, *, trigger_kind, subject, artifact_path='',
