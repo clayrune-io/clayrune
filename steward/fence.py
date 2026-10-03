@@ -1427,10 +1427,405 @@ def _enabling_construct(cmd: str) -> FenceDecision:
     return FenceDecision(False, '')
 
 
+# ── Agent shell-install guard (MC-1042, split from MC-1022, 2026-10-03) ─────
+# Add-on installs go through a passcode + tap card (`POST /api/addons/requests`,
+# approved by the human). An armed agent with Bash could still run `winget
+# install`, `apt install`, `npm i -g`, `pip install requests` itself and never
+# raise a card. This refuses those for ARMED sessions only (the fence does not
+# arm for an attended chat; accepted in docs/ADDON_INSTALLS_SPEC.md row 4c).
+#
+# ALLOW / DENY RULE. Global or system installs are refused; installs that land
+# inside the project stay allowed so builders and test runs keep working.
+#   DENIED always: winget/choco/scoop/brew/apt/apt-get/aptitude/dnf/yum/
+#     microdnf/pacman (install and upgrade verbs; `apt update`, `winget list`,
+#     `brew search`, `pacman -Ss` are not installs), pipx install, uv tool
+#     install, cargo install (unless --root is a local dir), go install,
+#     PowerShell Install-Module/-Script/-Package/-PSResource.
+#   npm/pnpm/yarn: `-g`/`--global`/`--location=global` and `yarn global add`
+#     are denied; `npm install`/`npm ci`/`pnpm add` (node_modules in the
+#     project) stay allowed, as does `--prefix <local dir>`.
+#   pip (pip, pip3, python -m pip, py -m pip, uv pip): `--user` and
+#     `--break-system-packages` are denied. Otherwise ALLOWED when the install
+#     is project-bound: `--target <local dir>`; a venv-shaped executable path
+#     inside the project (`.venv/bin/pip`, `.venv\Scripts\python -m pip`); an
+#     earlier `source .venv/bin/activate` in the same command; or an install
+#     that names only things the project declares (`-r requirements.txt`,
+#     `-e .`, `pip install .[dev]`, no package names, no URLs). A named
+#     index package outside a venv (`pip install requests`) is DENIED.
+# "Local" = a relative path that does not climb out with `..`, or an absolute
+# path inside the hook's cwd.
+# KNOWN GAPS, accepted: command text only. `pip install -r req.txt` is allowed
+# even though an agent can write req.txt first; a plain `npm install` is not
+# checked for which directory it runs in; `cd` is not tracked; installers that
+# are not package managers (msiexec, `curl | sh`, setup.exe) and `powershell
+# -EncodedCommand` are out of scope here. Wrappers peeled: sudo/doas/env/
+# nohup/time/xargs/wsl/start, bash/sh/zsh/su/pwsh/powershell/cmd -c/-Command/
+# /c, eval/iex, Start-Process, and `&&` `;` `|` `$( )` chains. No full shell
+# parsing, so a hidden-in-a-variable verb is still _enabling_construct's job.
+_INSTALL_ADDON_POINTER = (
+    "Installs go through the add-on card, which the human approves with their "
+    "passcode: POST http://127.0.0.1:5199/api/addons/requests with "
+    '{"addon_id": "<catalogue id>", "reason": "<why>"} (it installs nothing '
+    "itself). Something outside the catalogue is a request to the human in "
+    "your final message. Project-local installs stay allowed: npm install, "
+    "pip install -r/-e ., a venv in the worktree.")
+
+_INSTALL_VERBS = {
+    'winget': {'install', 'add', 'upgrade', 'update'},
+    'choco': {'install', 'upgrade'},
+    'chocolatey': {'install', 'upgrade'},
+    'scoop': {'install', 'update'},
+    'brew': {'install', 'reinstall', 'upgrade'},
+    'apt': {'install', 'reinstall', 'upgrade', 'dist-upgrade', 'full-upgrade'},
+    'apt-get': {'install', 'reinstall', 'upgrade', 'dist-upgrade', 'full-upgrade'},
+    'aptitude': {'install', 'reinstall', 'upgrade', 'safe-upgrade', 'full-upgrade'},
+    'dnf': {'install', 'reinstall', 'upgrade', 'update', 'localinstall', 'groupinstall'},
+    'yum': {'install', 'reinstall', 'upgrade', 'update', 'localinstall', 'groupinstall'},
+    'microdnf': {'install', 'reinstall', 'upgrade', 'update'},
+    'pipx': {'install', 'upgrade', 'upgrade-all', 'reinstall', 'reinstall-all'},
+    'go': {'install'},
+}
+_INSTALL_ALWAYS = frozenset({'cinst', 'cup', 'install-module', 'install-script',
+                             'install-package', 'install-psresource'})
+_NODE_INSTALL_VERBS = frozenset({'install', 'i', 'in', 'add', 'update', 'up', 'upgrade'})
+_INSTALL_PIP_RE = re.compile(r'^pip\d*(?:\.\d+)?$')
+_INSTALL_PY_RE = re.compile(r'^(?:python\d*(?:\.\d+)?|py|pypy\d*)$')
+# Value-taking pip options, so their values are not read as package names.
+_PIP_VALUE_OPTS = frozenset({
+    '-r', '--requirement', '-e', '--editable', '-c', '--constraint', '-t',
+    '--target', '--prefix', '--root', '-i', '--index-url', '--extra-index-url',
+    '-f', '--find-links', '--python', '--platform', '--python-version',
+    '--implementation', '--abi', '--cache-dir', '--src', '--upgrade-strategy',
+    '--log', '--proxy', '--retries', '--timeout', '--cert', '--client-cert',
+    '--trusted-host', '--progress-bar', '--only-binary', '--no-binary',
+    '--config-settings', '-C', '--global-option', '--install-option', '-b',
+    '--report', '--root-user-action', '--keyring-provider', '--exists-action'})
+_WRAPPER_VALUE_OPTS = {
+    'sudo': {'-u', '-g', '-h', '-p', '-C', '-D', '-R', '-r', '-t', '-T', '-U'},
+    'doas': {'-u', '-C'}, 'env': {'-u', '-C', '-S'}, 'nice': {'-n'},
+    'xargs': {'-n', '-I', '-L', '-P', '-s', '-d', '-E', '-a'},
+    'wsl': {'-d', '--distribution', '-u', '--user', '--cd'},
+    'nohup': set(), 'time': set(), 'command': set(), 'exec': set(),
+    'stdbuf': {'-i', '-o', '-e'}, 'builtin': set(), 'call': set(), 'start': set(),
+}
+_SHELL_DASH_C = frozenset({'bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'su'})
+_PS_COMMAND_RE = re.compile(r'^-c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?$', re.I)
+_ACTIVATE_WORD_RE = re.compile(r'[\\/]activate(?:\.bat|\.ps1)?$', re.I)
+_WIN_DRIVE_RE = re.compile(r'^[A-Za-z]:[\\/]')
+
+
+def _install_split(cmd: str) -> list:
+    """[[word, ...], ...]: shell segments of dequoted words. Splits on ; & |
+    newline ( ) and backtick outside quotes; a backslash is a literal (Windows
+    paths). Not a shell parser, only enough to find a command's first words."""
+    segs: list = []
+    words: list = []
+    cur: list = []
+    has_word = False
+    quote = ''
+
+    def end_word():
+        nonlocal cur, has_word
+        if has_word:
+            words.append(''.join(cur))
+        cur, has_word = [], False
+
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if quote:
+            if ch == quote:
+                quote = ''
+            elif ch == '\\' and quote == '"' and cmd[i + 1:i + 2] == '"':
+                cur.append('"')
+                i += 1
+            else:
+                cur.append(ch)
+        elif ch in '"\'':
+            quote, has_word = ch, True
+        elif ch in ' \t\r':
+            end_word()
+        elif ch in ';\n|&()`':
+            end_word()
+            if words:
+                segs.append(words)
+            words = []
+        else:
+            cur.append(ch)
+            has_word = True
+        i += 1
+    end_word()
+    if words:
+        segs.append(words)
+    return segs
+
+
+def _install_prog(word: str) -> str:
+    base = re.split(r'[\\/]', word)[-1].lower()
+    return _PROG_EXT_RE.sub('', base)
+
+
+def _install_path_is_local(raw: str, cwd: Optional[str]) -> bool:
+    """A relative path that stays under the cwd, or an absolute path inside it."""
+    raw = (raw or '').strip()
+    if not raw or raw[0] in '~$%' or '$' in raw or '%' in raw:
+        return False
+    if raw.startswith('\\\\') or raw.startswith('//') or raw.startswith('-'):
+        return False
+    if re.match(r'^[A-Za-z][\w+.-]+:', raw):
+        return False                                 # a URL (https:, git+ssh:), not a path
+    try:
+        base = Path(cwd or os.getcwd()).resolve()
+        absolute = raw.startswith('/') or bool(_WIN_DRIVE_RE.match(raw))
+        if absolute:
+            return _is_within(Path(raw).resolve(), base)
+        parts = raw.replace('\\', '/').split('/')
+        depth = 0
+        for part in parts:
+            if part in ('', '.'):
+                continue
+            depth += -1 if part == '..' else 1
+            if depth < 0:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _install_opt_value(args: list, *names: str) -> Optional[str]:
+    """Value of `--opt value` / `--opt=value` for any of `names`, else None."""
+    for k, w in enumerate(args):
+        for name in names:
+            if w == name and k + 1 < len(args):
+                return args[k + 1]
+            if w.startswith(name + '=') and name.startswith('--'):
+                return w[len(name) + 1:]
+    return None
+
+
+def _install_is_global_flag(args: list) -> bool:
+    for k, w in enumerate(args):
+        if w in ('--global', '-g') or re.match(r'^-[A-Za-z]*g[A-Za-z]*$', w):
+            return True
+        if w == '--location=global' or (w == '--location' and args[k + 1:k + 2] == ['global']):
+            return True
+    return False
+
+
+def _install_pip_label(args: list, cwd: Optional[str], venv: bool,
+                       exe_local_venv: bool) -> Optional[str]:
+    """Label when this `pip ... install ...` is refused, else None. `args` are
+    the words after the program (and after `-m pip` / `uv pip`)."""
+    if 'install' not in args:
+        return None
+    if '--user' in args or '--break-system-packages' in args:
+        return "pip install --user / --break-system-packages"
+    for opt in ('--prefix', '--root'):
+        val = _install_opt_value(args, opt)
+        if val is not None and not _install_path_is_local(val, cwd):
+            return f"pip install {opt} outside the project"
+    target = _install_opt_value(args, '--target', '-t')
+    if target is not None and _install_path_is_local(target, cwd):
+        return None
+    if venv or exe_local_venv:
+        return None
+    # Outside a venv pip writes to the shared interpreter: only what the
+    # project itself declares may go in.
+    declared = ('-r', '--requirement', '-e', '--editable', '-c', '--constraint')
+    positional: list = []
+    skip = False
+    for k, w in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        glued = re.match(r'^-([rec])(.+)$', w)
+        if w.startswith('--') and '=' in w:
+            name, _, val = w.partition('=')
+            if name in declared and not _install_path_is_local(val, cwd):
+                return "pip install from a non-local requirement file or URL"
+            continue
+        if glued and not w.startswith('--'):
+            if not _install_path_is_local(glued.group(2), cwd):
+                return "pip install from a non-local requirement file or URL"
+            continue
+        if w in declared:
+            val = args[k + 1] if k + 1 < len(args) else ''
+            if not _install_path_is_local(val, cwd):
+                return "pip install from a non-local requirement file or URL"
+            skip = True
+            continue
+        if w in _PIP_VALUE_OPTS:
+            skip = True
+            continue
+        if w.startswith('-') or w == 'install' or re.match(r'^\d*[<>]', w):
+            continue
+        positional.append(w)
+    for w in positional:
+        path = re.sub(r'\[[^\]]*\]$', '', w)
+        if path and (re.match(r'^\.{1,2}(?:[\\/].*)?$', path)
+                     and _install_path_is_local(path, cwd)):
+            continue
+        return "pip install of a package by name outside a venv"
+    return None
+
+
+def _install_exe_is_local_venv(word: str, cwd: Optional[str]) -> bool:
+    """`.venv/bin/pip`, `.\\venv\\Scripts\\python.exe`, or an absolute one
+    inside the cwd: `<local dir>/(bin|Scripts)/<exe>`."""
+    parts = word.replace('\\', '/').split('/')
+    if len(parts) < 3 or parts[-2] not in ('bin', 'Scripts', 'scripts'):
+        return False
+    return _install_path_is_local('/'.join(parts[:-2]) or '/', cwd)
+
+
+def _install_segment_label(words: list, cwd: Optional[str], venv: bool,
+                           depth: int) -> Optional[str]:
+    """Label if one segment's command is a refused install. Peels wrappers."""
+    k = 0
+    while k < len(words):
+        w = words[k]
+        head = _install_prog(w)
+        if (re.match(r'^\w+=', w) and not w.startswith('-')) \
+                or w in ('{', '}', '!', 'then', 'do', 'else'):
+            k += 1                                        # FOO=bar prog; { prog; }; then prog
+            continue
+        if head in _WRAPPER_VALUE_OPTS:
+            vals = _WRAPPER_VALUE_OPTS[head]
+            k += 1
+            while k < len(words):
+                nxt = words[k]
+                if head == 'start' or head == 'call':
+                    if re.match(r'^/[A-Za-z]+$', nxt):
+                        k += 1
+                        continue
+                    break
+                if nxt == '--':
+                    k += 1
+                    break
+                if nxt.startswith('-') and nxt != '-':
+                    k += 2 if nxt in vals else 1
+                    continue
+                if head == 'env' and re.match(r'^\w+=', nxt):
+                    k += 1
+                    continue
+                break
+            continue
+        break
+    else:
+        return None
+    word = words[k]
+    prog = _install_prog(word)
+    rest = words[k + 1:]
+    if depth < 4:
+        # A shell or eval that carries a command string: judge that string.
+        inner = None
+        if prog in _SHELL_DASH_C:
+            for j, a in enumerate(rest):
+                if re.match(r'^-[A-Za-z]*c[A-Za-z]*$', a) and j + 1 < len(rest):
+                    inner = rest[j + 1]
+                    break
+        elif prog in ('pwsh', 'powershell'):
+            for j, a in enumerate(rest):
+                if _PS_COMMAND_RE.match(a):
+                    inner = ' '.join(rest[j + 1:])
+                    break
+        elif prog == 'cmd':
+            for j, a in enumerate(rest):
+                if a.lower() in ('/c', '/k'):
+                    inner = ' '.join(rest[j + 1:])
+                    break
+        elif prog in ('eval', 'iex', 'invoke-expression'):
+            inner = ' '.join(rest)
+        if inner is not None:
+            return _install_label(inner, cwd, depth + 1, venv)
+    if prog in _INSTALL_ALWAYS:
+        return prog
+    verbs = _INSTALL_VERBS.get(prog)
+    if verbs is not None:
+        hit = next((a for a in rest if a.lower() in verbs), None)
+        if hit:
+            return f"{prog} {hit.lower()}"
+        return None
+    if prog == 'pacman':
+        for a in rest:
+            if a == '--sync' or re.match(r'^-[A-Za-z]*S[A-Za-z]*$', a):
+                if not re.search(r'[silgcp]', a.replace('S', '', 1)):
+                    return "pacman -S"   # -Ss/-Si/-Sl/-Sg/-Sc/-Sp read or clean, the rest install
+            if a == '--upgrade' or re.match(r'^-[A-Za-z]*U[A-Za-z]*$', a):
+                return "pacman -U"
+        return None
+    if prog == 'cargo':
+        first = next((a for a in rest if not a.startswith('-') and not a.startswith('+')), '')
+        if first != 'install':
+            return None
+        root = _install_opt_value(rest, '--root')
+        return None if root is not None and _install_path_is_local(root, cwd) \
+            else "cargo install"
+    if prog in ('npm', 'pnpm', 'yarn'):
+        if prog == 'yarn':
+            if 'global' in rest and any(a in ('add', 'upgrade') for a in rest):
+                return "yarn global add"
+            return None
+        verb = next((a.lower() for a in rest if a.lower() in _NODE_INSTALL_VERBS), None)
+        if verb is None:
+            return None
+        if _install_is_global_flag(rest):
+            return f"{prog} {verb} -g"
+        pre = _install_opt_value(rest, '--prefix')
+        if pre is not None and not _install_path_is_local(pre, cwd):
+            return f"{prog} {verb} --prefix outside the project"
+        return None
+    if prog == 'uv':
+        first = next((a for a in rest if not a.startswith('-')), '')
+        if first == 'tool' and 'install' in rest:
+            return "uv tool install"
+        if first == 'pip' and 'install' in rest:
+            # uv refuses to install outside a venv unless told --system.
+            if '--system' in rest or '--break-system-packages' in rest:
+                return "uv pip install --system"
+        return None
+    if _INSTALL_PIP_RE.match(prog):
+        return _install_pip_label(rest, cwd, venv, _install_exe_is_local_venv(word, cwd))
+    if _INSTALL_PY_RE.match(prog):
+        for j in range(len(rest) - 1):
+            if rest[j] == '-m' and rest[j + 1] == 'pip':
+                return _install_pip_label(rest[j + 2:], cwd, venv,
+                                          _install_exe_is_local_venv(word, cwd))
+    return None
+
+
+def _install_label(cmd: str, cwd: Optional[str], depth: int = 0,
+                   venv: bool = False) -> Optional[str]:
+    """First refused install in `cmd` (a whole command line), or None."""
+    cmd = _unwrap_start_process(_join_line_continuations(cmd))
+    for words in _install_split(cmd):
+        if any(_ACTIVATE_WORD_RE.search(w) and _install_path_is_local(w, cwd)
+               for w in words):
+            venv = True                  # `source .venv/bin/activate && pip ...`
+            continue
+        label = _install_segment_label(words, cwd, venv, depth)
+        if label:
+            return label
+    return None
+
+
+def _agent_shell_install(cmd: str, cwd: Optional[str] = None) -> FenceDecision:
+    """Block an armed agent's own system-level install (see the section
+    comment). Overridable: a human's "Allow once" may still cover one."""
+    try:
+        label = _install_label(cmd, cwd)
+    except Exception:
+        return FenceDecision(False, '')      # never wedge the agent on a parse bug
+    if not label:
+        return FenceDecision(False, '')
+    return FenceDecision(True, f"{label} is an agent-run system-level install. "
+                               f"{_INSTALL_ADDON_POINTER}")
+
+
 _HUMAN_GATE_ROUTE_RE = re.compile(r'local-auth/set|/attend-once(?!/consume)', re.IGNORECASE)
 
 
-def classify_bash(command: str) -> FenceDecision:
+def classify_bash(command: str, cwd: Optional[str] = None) -> FenceDecision:
     """Classify a Bash command string. Returns (blocked, reason).
 
     Classification runs on the inert-prose-MASKED command: commit-message /
@@ -1489,6 +1884,10 @@ def classify_bash(command: str) -> FenceDecision:
     enabling = _enabling_construct(cmd)
     if enabling.blocked:
         return enabling
+
+    installs = _agent_shell_install(cmd, cwd)
+    if installs.blocked:
+        return installs
 
     return FenceDecision(False, '')
 
@@ -1973,7 +2372,7 @@ def classify_action(tool_name: str, tool_input: dict,
         # patterns — a live `git push` via the PowerShell tool exited 0
         # before this branch existed (Quill, 2026-09-27) because this
         # function only ever routed 'Bash'.
-        return classify_bash(ti.get('command', '') or '')
+        return classify_bash(ti.get('command', '') or '', cwd)
     # Writing to global config outside the project is out-of-scope for a
     # project steward — block edits/writes targeting ~/.claude or a home dotfile.
     if name in ('Write', 'Edit', 'MultiEdit', 'NotebookEdit'):
@@ -2274,7 +2673,7 @@ def _blocked_leaves(tool_name: str, tool_input: dict,
         return out
     if tool_name in ('Bash', 'PowerShell'):
         cmd = (tool_input or {}).get('command', '') or ''
-        whole = classify_bash(cmd)
+        whole = classify_bash(cmd, cwd)
         if not whole.blocked:
             return []
         # Only a plain single invocation is passable (Fenn's re-review N4):
