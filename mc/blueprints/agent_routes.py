@@ -51,6 +51,7 @@ _get_mem_write_lock or writes MEMORY.md.
 import concurrent.futures
 import contextlib
 from mc import engine_selection
+from mc import launch_marker as _launch_marker  # per-launch unattended marker (fence fail-open, MC-1040)
 from mc import proc_kill as _proc_kill
 from mc.proc_kill import POPEN_NEW_SESSION
 from mc.runtime_attempt_owner import DispatchFacts
@@ -6394,6 +6395,7 @@ def _auto_recover_failed_resume(session):
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, cwd=pp,
                 text=True, encoding='utf-8', errors='replace',
+                env=_launch_marker.launch_env(session.get('trigger_type')),
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
             )
             _sysprompt_cleanup(_sp_path, proc)
@@ -6435,6 +6437,7 @@ def _auto_recover_failed_resume(session):
                 cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, cwd=pp,
                 text=True, encoding='utf-8', errors='replace',
+                env=_launch_marker.launch_env(session.get('trigger_type')),
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
             )
             _sysprompt_cleanup(_sp_path, proc)
@@ -7490,6 +7493,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, cwd=_revive_cwd,
                 text=True, encoding='utf-8', errors='replace',
+                env=_launch_marker.launch_env(entry.get('trigger_type')),
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
             )
         except Exception as e:
@@ -7605,6 +7609,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, cwd=_revive_cwd,
             text=True, encoding='utf-8', errors='replace',
+            env=_launch_marker.launch_env(entry.get('trigger_type')),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
     except Exception as e:
@@ -9643,6 +9648,7 @@ def _auto_dispatch_followup(session, message):
             encoding='utf-8',
             errors='replace',
             creationflags=_POPEN_FLAGS,
+            env=_launch_marker.launch_env(session.get('trigger_type')),
             startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
     except Exception as e:
@@ -11820,6 +11826,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 encoding='utf-8',
                 errors='replace',
                 creationflags=_POPEN_FLAGS,
+                env=_launch_marker.launch_env(trigger_type),
                 startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
             )
             _sysprompt_cleanup(_sp_path, proc)
@@ -11979,6 +11986,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 encoding='utf-8',
                 errors='replace',
                 creationflags=_POPEN_FLAGS,
+                env=_launch_marker.launch_env(trigger_type),
                 startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
             )
             _sysprompt_cleanup(_sp_path, proc)
@@ -13446,6 +13454,7 @@ def agent_followup(project_id):
                     rb['cmd'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, cwd=_session_cwd(rb['existing'], rb['pp']),
                     text=True, encoding='utf-8', errors='replace',
+                    env=_launch_marker.launch_env(rb['existing'].get('trigger_type')),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
                 )
                 _sysprompt_cleanup(rb.get('sysprompt_path'), proc)
@@ -13577,6 +13586,7 @@ def agent_followup(project_id):
                 encoding='utf-8',
                 errors='replace',
                 creationflags=_POPEN_FLAGS,
+                env=_launch_marker.launch_env(existing.get('trigger_type')),
                 startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
             )
             _sysprompt_cleanup(_sp_path, proc)
@@ -14103,6 +14113,7 @@ def agent_interrupt(project_id, *, _internal=None):
                     cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, cwd=_session_cwd(session, pp),
                     text=True, encoding='utf-8', errors='replace',
+                    env=_launch_marker.launch_env(session.get('trigger_type')),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
                 )
                 _sysprompt_cleanup(_sp_path, proc)
@@ -14175,6 +14186,7 @@ def agent_interrupt(project_id, *, _internal=None):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, cwd=_session_cwd(session, pp),
                     text=True, encoding='utf-8', errors='replace',
+                    env=_launch_marker.launch_env(session.get('trigger_type')),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
                 )
                 _sysprompt_cleanup(_sp_path, proc)
