@@ -459,7 +459,10 @@ _PY_C_HAS_EXPANSION_RE = re.compile(r'\$\{?\w+|\$\(|`')
 #     (http://localhost:5199 or 127.0.0.1:5199) at a route in
 #     _CURL_PROSE_ROUTE_RE, the routes whose body is prose. A POSITIVE list:
 #     /api/project/<id>/agent/<sid>/job runs its body as a shell command, and
-#     the next such route is added the day someone writes it, so everything not
+#     /api/project/<id>/agent/dispatch hands its `task` to a child agent as an
+#     instruction (Fenn, MC-1037 r3: `"source":"ui"` in the body even lifts the
+#     child's fence), so neither is prose. The next such route is added the
+#     day someone writes it, so everything not
 #     named (other hosts, terminal, secrets/exec, jobs, schedules, any unknown
 #     route) is not masked;
 #   • the value is nothing but quoted pieces ('..', "..", or a mix like
@@ -486,8 +489,7 @@ _CURL_PROSE_URL_RE = re.compile(
 _CURL_PROSE_ROUTE_RE = re.compile(
     r'^/api/(?:'
     rf'project/{_CURL_SEG}/(?:backlog(?:/{_CURL_SEG}){{0,3}}'
-    rf'|memory/positions(?:/{_CURL_SEG})?|memory/mints(?:/{_CURL_SEG})+'
-    r'|agent/dispatch)'
+    rf'|memory/positions(?:/{_CURL_SEG})?|memory/mints(?:/{_CURL_SEG})+)'
     rf'|floor/figure/{_CURL_SEG}/name'
     r')/?$')
 
