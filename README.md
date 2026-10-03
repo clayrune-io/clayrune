@@ -36,7 +36,7 @@ It runs on your machine against your own Claude CLI.
 
 - ⏰ Scheduler: once, daily, interval or cron.
 - Standing briefs — hand an agent a charter and it sets its own next task.
-- 🛡️ A hard-coded trust mechanism keeps agents from going rogue: 21 irreversible commands (`git push`, `DROP TABLE`, `npm publish`, `terraform destroy`, cloud spend verbs) stay blocked even when permissions are skipped.
+- 🛡️ In unattended Claude Code and Codex runs, a PreToolUse hook refuses a named list of irreversible shell commands and edits to protected files. It is a list, not a wall: commands it does not name, and MCP tool calls, are not checked.
 - Blocked commands and open questions are emailed to you; your reply resumes the same run.
 - Starts with the machine, so a 3am reboot doesn't take it offline.
 
