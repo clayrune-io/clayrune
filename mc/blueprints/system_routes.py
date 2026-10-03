@@ -35,6 +35,7 @@ from mc.usage_breakdown_aggregate import _same_reset as _ub_same_reset  # MC-998
 from mc.usage_breakdown_aggregate import reset_drop_starts as _ub_reset_drop_starts
 from mc import slash_commands as slash_cmds
 from mc.atomic_json import write_json_atomic
+from mc.update_requirements import sync_requirements
 from mc.core import _atomic_write_text, _log, now_iso, path_is_within, time_ago
 from mc.state import (
     _UPDATE_CHECK_BOOT_DELAY_S,
@@ -2613,6 +2614,13 @@ def system_update():
             }), 500
         resynced = True
 
+    # The pull changes code only. A release that adds a dependency (psutil,
+    # for dispatch caller attribution) must also reach the venv, or the new
+    # code runs without it. Reported in the response; never undoes the pull.
+    requirements = sync_requirements(_git, repo_root, previous_commit,
+                                     run_kwargs={'creationflags': _POPEN_FLAGS,
+                                                 'startupinfo': _STARTUPINFO})
+
     rc, new_sha = _git(['rev-parse', '--short', 'HEAD'], repo_root)
     rc2, log_out = _git(['log', '-5', '--pretty=format:%h %s'], repo_root)
     return jsonify({
@@ -2629,6 +2637,9 @@ def system_update():
         # The UI shows this verbatim so the user knows how to get the work
         # back: `git stash list` to find it, `git stash apply` to restore.
         'stashed': stash_ref,
+        # {'ran','ok','reason','rc','detail'}: ok False = pip failed and the
+        # installed packages are behind the code (the pull itself is kept).
+        'requirements': requirements,
     })
 
 

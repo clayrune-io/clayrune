@@ -56,6 +56,10 @@ hidden += collect_submodules('google')
 # inside an `if`; naming them here keeps a missing module a build-time fact,
 # not a fence that silently cannot start (tests/test_frozen_hook_entry.py).
 hidden += ['mc.hook_entry', 'steward.fence', 'mc.process_guard']
+# psutil is imported lazily inside mc/caller_attribution.py (dispatch caller
+# attribution, backlog 40260b57); without it the frozen app degrades to trusting
+# the Origin header, so name it here rather than rely on static analysis.
+hidden += ['psutil']
 
 # Bundle templates / static / data scaffolding next to app.py so the frozen
 # binary sees the same layout as `python app.py`.
