@@ -1352,3 +1352,172 @@ def test_disk_wipe_named_in_unmasked_echo_blocks_like_git_push_does():
     assert classify_bash('echo "git push"').blocked
     assert classify_bash('echo "diskpart"').blocked
     assert classify_bash('echo "vssadmin delete shadows"').blocked
+
+
+# ── Follow-up to the disk-wipe patch (Quill d4, 2026-10-03) ──────────────────
+# Four gaps the first patch left open: `dd of=` before `if=`, `ri` on a
+# registry path, `reg restore` / `reg copy` (they overwrite keys), and the
+# Remove-Item aliases `ri` / `erase` / `rd` (no `/s`) on a filesystem path
+# outside scratch. Like the block above, RED until the fence patch is applied.
+DISK_WIPE_FOLLOWUP_BLOCK_CASES = [
+    # dd, operands in either order
+    'dd of=/dev/sda if=/dev/zero bs=1M',
+    'dd bs=1M of=/dev/sda',
+    'dd of=/dev/sda',
+    'dd bs=4M status=progress of="/dev/sda" if=img.iso',
+    'DD OF=/dev/sda IF=/dev/zero',
+    'dd.exe of=\\\\.\\PhysicalDrive0 if=disk.img',
+    'sudo dd bs=4M of=/dev/disk2 if=img',
+    'echo y | dd of=/dev/sda',
+    'git status && dd of=/dev/sda if=/dev/zero',
+    'dd if=/dev/zero of=/dev/sda',                      # existing rule, still blocked
+    # ri / erase / rd on a registry path
+    'ri HKCU:\\Software\\Foo -Recurse -Force',
+    'ri -Path HKLM:\\SOFTWARE\\Foo -Recurse',
+    'ri -LiteralPath Registry::HKEY_CURRENT_USER\\Software\\Foo -Recurse -Force',
+    'erase HKCU:\\Software\\Foo -Recurse -Force',
+    'Get-ChildItem HKCU:\\Software\\Foo | ri -Recurse -Force',
+    'Remove-Item -Recurse -Force HKCU:\\Software\\Foo',  # already refused
+    # reg restore / reg copy
+    'reg restore HKCU\\Software\\Foo C:\\x\\foo.hiv',
+    'reg copy HKCU\\Software\\A HKCU\\Software\\B /s /f',
+    'REG.EXE COPY HKCU\\Software\\A HKCU\\Software\\B /s',
+    'reg.exe Restore HKLM\\Software\\Foo C:\\x\\foo.hiv',
+    '& reg restore HKCU\\Software\\Foo C:\\x\\foo.hiv',
+    '& "C:\\Windows\\System32\\reg.exe" copy HKCU\\Software\\A HKCU\\Software\\B /f',
+    'C:\\Windows\\System32\\reg.exe restore HKCU\\Software\\Foo C:\\x\\foo.hiv',
+    "Start-Process reg.exe -ArgumentList 'copy HKCU\\Software\\A HKCU\\Software\\B /s /f'",
+    "Start-Process -FilePath reg -ArgumentList 'restore','HKCU\\Software\\Foo','C:\\x\\foo.hiv'",
+    'cmd /c reg copy HKCU\\Software\\A HKCU\\Software\\B /s /f',
+    'cmd //c "reg restore HKCU\\Software\\Foo C:\\x\\foo.hiv"',
+    'powershell -Command "reg copy HKCU\\Software\\A HKCU\\Software\\B /f"',
+    'echo y | reg copy HKCU\\Software\\A HKCU\\Software\\B /s',
+    'git status && reg restore HKCU\\Software\\Foo C:\\x\\foo.hiv',
+    # Remove-Item aliases on a filesystem path outside scratch (Quill test_alias)
+    'ri -Recurse -Force C:\\Users\\x\\proj',
+    'ri C:\\Users\\x\\proj -Recurse -Force',
+    'erase -Recurse -Force C:\\Users\\x\\proj',
+    'rd -Recurse -Force C:\\Users\\x\\proj',
+    'ri C:\\Users\\x\\proj',
+    'erase C:\\Users\\x\\proj\\file.txt',
+    'rd C:\\Users\\x\\proj',
+    'RI -Recurse -Force C:\\Users\\x\\proj',
+    'ri -r -fo .\\proj',
+    # the pipe form, and every other command position
+    'Get-ChildItem C:\\Users\\x\\proj | ri -Recurse -Force',
+    'Get-ChildItem C:\\Users\\x\\proj -Recurse | ri',
+    'Get-ChildItem C:\\Users\\x\\proj | erase',
+    'Get-ChildItem C:\\Users\\x\\proj | rd -Recurse -Force',
+    'Get-ChildItem C:\\Users\\x\\proj | ForEach-Object { ri $_.FullName -Force }',
+    'gci C:\\Users\\x\\proj | % { ri $_ }',
+    'cd C:\\Users\\x; ri -Recurse -Force .\\proj',
+    'echo hi && ri C:\\Users\\x\\proj',
+    '& ri C:\\Users\\x\\proj -Recurse',
+    '(ri C:\\Users\\x\\proj -Recurse)',
+    'powershell -Command "ri -Recurse -Force C:\\Users\\x\\proj"',
+    'pwsh -c ri C:\\Users\\x\\proj -r',
+    'cmd /c rd C:\\Users\\x\\proj',
+    'Get-Date\nri -Recurse -Force C:\\Users\\x\\proj',
+]
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('cmd', DISK_WIPE_FOLLOWUP_BLOCK_CASES)
+def test_disk_wipe_followup_forms_are_blocked(tool, cmd):
+    assert classify_action(tool, {'command': cmd}).blocked, (tool, cmd)
+
+
+DISK_WIPE_FOLLOWUP_ALLOW_CASES = [
+    # dd with no operand, and the letters in other words
+    'dd --help',
+    'dd --version',
+    'dd --help | head -5',
+    'git add office.txt',
+    'cat dd.txt',
+    'ls dd',
+    'Get-Content dd.log',
+    'echo hello of=1',
+    # reg: read-only / export / config forms, and the words in prose
+    'reg query HKCU\\Software\\Foo',
+    'reg.exe query HKCU\\Software\\Foo /v Bar',
+    'reg export HKCU\\Software\\Foo out.reg',
+    'reg add HKCU\\Software\\Foo /v Bar /d 1 /f',
+    'echo "use reg copy to duplicate"',
+    'echo "reg restore needs a hive file"',
+    'git commit -m "reg copy and reg restore are blocked"',
+    'git commit -am "use reg copy to duplicate"',
+    'grep -rn "reg copy" docs/',
+    'rg "reg restore" docs',
+    'cat docs/reg-copy-notes.md',
+    'ls docs/reg.copy.md',
+    # ri / erase / rd: prose, read-only forms, lookalike words
+    'git commit -m "ri and erase aliases"',
+    'git commit -am "ri and erase aliases"',
+    'git commit -am "erase old rows, rd cleanup"',
+    'echo "ri and erase are PowerShell aliases"',
+    'echo use ri to delete',
+    'Get-ChildItem C:\\Users\\x\\proj',
+    'Get-ChildItem C:\\Users\\x\\proj -Recurse | Select-Object Name',
+    'Get-ChildItem HKCU:\\Software\\Foo',
+    'git rebase -i HEAD~3',
+    'git rebase -i origin/main',
+    'print',
+    'Write-Host print',
+    'echo $uri',
+    'uri',
+    'curl http://localhost:5199/uri',
+    'cat ri.txt',
+    'ls erase_all.py',
+    'python erase_all.py',
+    'cat erase.txt',
+    'grep -rn erase src/',
+    'my_ri x',
+    'x-ri y',
+    'foo.erase(1)',
+    'unerase file.txt',
+    'Get-Process | Where-Object { $_.Name -eq "ri" }',
+]
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('cmd', DISK_WIPE_FOLLOWUP_ALLOW_CASES)
+def test_disk_wipe_followup_leaves_read_only_and_prose_alone(tool, cmd):
+    d = classify_action(tool, {'command': cmd})
+    assert not d.blocked, (tool, cmd, d.reason)
+
+
+# `ri` / `erase` / `rd` run through the same scratch exemption Remove-Item
+# gets: a scratch-scoped delete stays allowed, an escape out of it does not.
+ALIAS_SCRATCH_ALLOW_CASES = [
+    'ri -Recurse -Force C:\\Users\\x\\proj\\_scratch\\tmp',
+    'erase -Recurse -Force _scratch/tmpdir',
+    'rd -Recurse -Force C:\\Users\\x\\AppData\\Local\\Temp\\foo',
+    'ri -Recurse -Force /tmp/foo',
+    'Get-ChildItem _scratch\\x | ri -Recurse -Force',
+    'Get-ChildItem _scratch\\x | erase',
+    'Get-ChildItem _scratch\\x | % { ri $_ }',
+]
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('cmd', ALIAS_SCRATCH_ALLOW_CASES)
+def test_remove_item_aliases_on_scratch_paths_stay_allowed(tool, cmd):
+    d = classify_action(tool, {'command': cmd})
+    assert not d.blocked, (tool, cmd, d.reason)
+
+
+@pytest.mark.parametrize('tool', _SHELL_TOOLS)
+@pytest.mark.parametrize('alias', ['ri', 'erase', 'rd'])
+@pytest.mark.parametrize('target', [
+    'C:\\Users\\x\\proj',
+    '_scratch\\tmp',
+    'C:\\Users\\x\\proj\\_scratch\\tmp',
+    'C:\\Users\\x\\AppData\\Local\\Temp\\foo',
+    '_scratch\\..\\secrets',
+    'HKCU:\\Software\\Foo',
+])
+def test_remove_item_aliases_classify_like_remove_item(tool, alias, target):
+    # The alias and the cmdlet get the same verdict on the same target.
+    via_alias = classify_action(tool, {'command': f'{alias} -Recurse -Force {target}'})
+    via_cmdlet = classify_action(tool, {'command': f'Remove-Item -Recurse -Force {target}'})
+    assert via_alias.blocked == via_cmdlet.blocked, (tool, alias, target)

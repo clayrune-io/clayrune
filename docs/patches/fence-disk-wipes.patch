@@ -1,8 +1,8 @@
 diff --git a/steward/fence.py b/steward/fence.py
-index 5fc5a7d..7dd207d 100644
+index cca5f82..df4b2a5 100644
 --- a/steward/fence.py
 +++ b/steward/fence.py
-@@ -63,6 +63,11 @@ _SCRATCH_MARKERS = ('_scratch', 'scratchpad', '/tmp/', '\\temp\\', 'appdata/loca
+@@ -63,6 +63,19 @@ _SCRATCH_MARKERS = ('_scratch', 'scratchpad', '/tmp/', '\\temp\\', 'appdata/loca
  # these and must pass the fence.
  _LOCAL_HOSTS = ('localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]')
  
@@ -10,14 +10,27 @@ index 5fc5a7d..7dd207d 100644
 +_PROG_PRE = r'(?<![\w.\-])'
 +_PROG_END = r'''(?:\.exe)?['"]?'''
 +_ARG_SEP = r'''['"]?\s+['"]?'''
++# Command position: start of string, after `; & | ( {` or a backtick or a
++# newline, after `-c` / `-Command` / `/c` / `/k` (a shell inside a shell), or
++# after sudo/doas/nohup/xargs; then an optional opening quote. Used where the
++# bare word is also ordinary prose or an ordinary argument (`reg copy`, `ri`,
++# `erase`, `rd`), so `echo "use reg copy"` and `git commit -am "erase old rows"`
++# stay allowed while `x; ri y`, `gci | ri` and `powershell -c "ri y"` do not.
++_CMD_POS = (r'''(?:^|[;&|({`\n\r]|\s-c(?:ommand)?\s|\s/{1,2}[ck]\s'''
++            r'''|(?<![\w.\-])(?:sudo|doas|nohup|xargs)\s)\s*['"]?''')
 +
  # Irreversible command shapes → BLOCK. Each entry: (compiled regex, human reason).
  # Matched case-insensitively against the WHOLE command string (so chained
  # commands like `cd x && git push` are still caught).
-@@ -108,6 +113,59 @@ _BLOCK_PATTERNS = [
+@@ -108,6 +121,69 @@ _BLOCK_PATTERNS = [
      (re.compile(r'/api/system/restart\b', re.I), "server restart is human-gated"),
      # System-destructive.
      (re.compile(r'\bmkfs\b|\bdd\s+if=', re.I), "disk-destructive operation"),
++    # dd with an `if=` or `of=` operand in EITHER order (`dd of=/dev/sda
++    # if=/dev/zero`, `dd bs=1M of=/dev/sda`): the line above only saw `if=`
++    # first. `dd --help` / `dd --version` carry no operand and stay allowed.
++    (re.compile(rf'{_PROG_PRE}dd{_PROG_END}(?:[ \t]+[^\s;&|]+)*?[ \t]+[\'"]?(?:if|of)=', re.I),
++     "disk-destructive operation (dd)"),
 +    # Windows / macOS disk, volume and backup destruction (2026-10-03, Quill):
 +    # the line above is Unix-only, so Format-Volume, diskpart, `format D:`,
 +    # diskutil eraseDisk, vssadmin delete shadows and `reg delete` were all
@@ -65,12 +78,29 @@ index 5fc5a7d..7dd207d 100644
 +     "Time Machine backup deletion (irreversible)"),
 +    # Registry deletion: reg delete, and Remove-/Clear-ItemProperty plus the
 +    # `rp`/`clp` aliases when aimed at a registry path. `reg add`/`reg import`
-+    # are config writes, deliberately not here.
++    # are config writes, deliberately not here. `reg restore` (overwrites a
++    # key from a hive file) and `reg copy` (overwrites the destination key) are
++    # irreversible the same way; they are matched in command position only,
++    # because "reg copy" is also an everyday phrase.
 +    (re.compile(rf'{_PROG_PRE}reg{_PROG_END}{_ARG_SEP}delete\b', re.I),
 +     "registry deletion (irreversible)"),
++    (re.compile(rf'{_CMD_POS}(?:[^\s\'";&|]*[\\/])?reg{_PROG_END}{_ARG_SEP}(?:restore|copy)\b', re.I),
++     "registry overwrite (reg restore / reg copy replaces keys, irreversible)"),
 +    (re.compile(r'\b(?:Remove-ItemProperty|Clear-ItemProperty)\b|'
 +                rf'{_PROG_PRE}(?:rp|clp)\s[^;&|\n]*?\b(?:HK[A-Z]{{1,3}}:|Registry::)', re.I),
 +     "registry value deletion (irreversible)"),
      (re.compile(r'\bshutdown\b|\breboot\b', re.I), "host power operation"),
  ]
+ 
+@@ -352,6 +428,11 @@ _DELETE_PATTERNS = [
+     re.compile(r'\bRemove-Item\b', re.I),
+     re.compile(r'(^|[\s&|;])del\s', re.I),
+     re.compile(r'\brd\s+/s', re.I),
++    # PowerShell's other Remove-Item aliases: `ri`, `erase`, and `rd` without
++    # /s (`rd -Recurse -Force`). Command position only (see _CMD_POS), bare or
++    # with arguments, so the pipe form (`gci x | ri -Recurse`) is covered and
++    # `git rebase -i`, `print`, `uri`, `erase_all(` and prose are not.
++    re.compile(_CMD_POS + r'''(?:ri|erase|rd)(?=[\s;&|)}'"]|$)''', re.I),
+ ]
+ 
  
