@@ -30,6 +30,7 @@ import { readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { loadStaticJsCss } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -42,10 +43,7 @@ const SHOT_DIR = process.env.MC_SMOKE_SHOT_DIR || '';
 if (SHOT_DIR) mkdirSync(SHOT_DIR, { recursive: true });
 
 const STATIC = {};
-for (const f of readdirSync(JS_DIR)) if (f.endsWith('.js')) STATIC[`/static/js/${f}`] = ['text/javascript; charset=utf-8', readFileSync(resolve(JS_DIR, f), 'utf8')];
-// learn.js imports its lessons from static/js/learn-lessons/ (one module each).
-for (const f of readdirSync(resolve(JS_DIR, 'learn-lessons'))) if (f.endsWith('.js')) STATIC[`/static/js/learn-lessons/${f}`] = ['text/javascript; charset=utf-8', readFileSync(resolve(JS_DIR, 'learn-lessons', f), 'utf8')];
-for (const f of readdirSync(CSS_DIR)) if (f.endsWith('.css')) STATIC[`/static/css/${f}`] = ['text/css; charset=utf-8', readFileSync(resolve(CSS_DIR, f), 'utf8')];
+Object.assign(STATIC, loadStaticJsCss(REPO_ROOT));
 
 function fixtureProject(id, name, extra = {}) {
   return {

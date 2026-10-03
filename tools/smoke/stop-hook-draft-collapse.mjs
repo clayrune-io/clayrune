@@ -33,6 +33,7 @@ import { chromium } from 'playwright';
 import { existsSync, readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadStaticJsCss } from './_static.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ok = (m) => console.log('  ✓ ' + m);
@@ -233,8 +234,7 @@ try {
   const ORIGIN = 'http://mc.smoke.test';
   const PID = 'smoke_stop_hook';
   const STATIC = {};
-  for (const f of readdirSync(JS_DIR)) if (f.endsWith('.js')) STATIC[`/static/js/${f}`] = ['text/javascript; charset=utf-8', readFileSync(join(JS_DIR, f), 'utf8')];
-  for (const f of readdirSync(CSS_DIR)) if (f.endsWith('.css')) STATIC[`/static/css/${f}`] = ['text/css; charset=utf-8', readFileSync(join(CSS_DIR, f), 'utf8')];
+  Object.assign(STATIC, loadStaticJsCss(ROOT));
   const project = {
     id: PID, name: 'Stop Hook Smoke', status: 'active', domain: 'general', emoji: '\u{1f4c5}',
     description: '', summary: '', current_task: 'Idle', next_action: '',
