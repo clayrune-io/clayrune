@@ -120,6 +120,10 @@ async function openConnections(page) {
   await page.evaluate(() => window.deskV1Nav('connections', {}));
   await page.waitForSelector('[data-conn-engine="higgsfield"]', { timeout: 8000 });
 }
+// The engine rows no longer open the Secrets form: Connect is a guided flow with its
+// own passcode-gated save (e0549996). So open the editor the way the old Connect/Edit
+// buttons did, by vault name with the engine's `credential` spec as the preset.
+const openEngineEditor = (page, id, create) => page.evaluate(([spec, c]) => window.openSecretEditor(spec.vault_entry, { ...spec, create: c }), [CRED[id], create]);
 const settle = (page, pred, arg) => page.waitForFunction(pred, arg, { timeout: 8000 });
 
 async function higgsfield(browser) {
@@ -127,8 +131,8 @@ async function higgsfield(browser) {
   const { ctx, page, pageErrors } = await newPage(browser, srv, { width: 1440, height: 900 });
   await openConnections(page);
   const hs = await txt(page, '[data-conn-engine="higgsfield"] [data-engine-status]');
-  check((await page.$('[data-conn-engine="higgsfield"] [data-engine-connect]')) !== null, 'a not-connected engine row has a Connect button', 'no Connect on higgsfield');
-  await page.click('[data-conn-engine="higgsfield"] [data-engine-connect]');
+  check((await page.$('[data-conn-engine="higgsfield"] [data-engine-guide]')) !== null, 'a not-connected engine row has a Connect button (the guided flow)', 'no Connect on higgsfield');
+  await openEngineEditor(page, 'higgsfield', true);
   await page.waitForSelector(form, { timeout: 8000 });
   await settle(page, () => document.getElementById('sec-user-name') && document.getElementById('sec-user-name').textContent === 'API key ID');
 
@@ -158,7 +162,7 @@ async function higgsfield(browser) {
   if (SHOTS) {
     const m = await newPage(browser, srv, { width: 390, height: 844 });
     await openConnections(m.page);
-    await m.page.click('[data-conn-engine="higgsfield"] [data-engine-connect]');
+    await openEngineEditor(m.page, 'higgsfield', true);
     await m.page.waitForSelector(form, { timeout: 8000 });
     await settle(m.page, () => document.getElementById('sec-user-name').textContent === 'API key ID');
     await m.page.screenshot({ path: resolve(SHOTS, 'higgsfield-390.png') });
@@ -170,7 +174,7 @@ async function gemini(browser) {
   const srv = { secrets: [], writes: [], googleReady: false };
   const { ctx, page, pageErrors } = await newPage(browser, srv, { width: 1440, height: 900 });
   await openConnections(page);
-  await page.click('[data-conn-engine="google"] [data-engine-connect]');
+  await openEngineEditor(page, 'google', true);
   await page.waitForSelector(form, { timeout: 8000 });
   await settle(page, () => document.getElementById('sec-value-name').textContent === 'Gemini API key');
   check(await hidden(page, '#sec-user-block'), 'the Gemini form has no username field', 'username block visible');
@@ -191,9 +195,9 @@ async function edit(browser) {
   const srv = { secrets: [{ name: 'gemini-api', username: '', scope: 'global', allow_unattended: true, description: '' }], writes: [], googleReady: true };
   const { ctx, page, pageErrors } = await newPage(browser, srv, { width: 1440, height: 900 });
   await openConnections(page);
-  check((await page.$('[data-conn-engine="google"] [data-engine-connect]')) === null && (await page.$('[data-conn-engine="google"] [data-engine-edit]')) !== null,
-    'a connected engine shows Edit, not Connect', 'google buttons');
-  await page.click('[data-conn-engine="google"] [data-engine-edit]');
+  check((await page.$eval('[data-conn-engine="google"] [data-engine-guide]', (b) => b.textContent.trim())) === 'Replace key',
+    'a connected engine offers Replace key, not Connect', 'google buttons');
+  await openEngineEditor(page, 'google', false);
   await page.waitForSelector(form, { timeout: 8000 });
   await settle(page, () => document.getElementById('sec-value-name').textContent === 'Gemini API key');
   check((await page.$eval('#sec-name', (e) => e.readOnly)) && (await page.getAttribute('#sec-value', 'placeholder')) === 'unchanged', 'Edit opens an edit of the existing entry (name locked, value unchanged)', 'edit form');

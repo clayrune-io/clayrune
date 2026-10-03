@@ -1046,7 +1046,11 @@ try {
   // check while still exercising the same real :hover CSS state.
   const c7PathBox = await (await page.$(`${c7GroupSel} path.wfb-edge-path`)).boundingBox();
   await page.mouse.move(c7PathBox.x + c7PathBox.width / 2, c7PathBox.y + c7PathBox.height / 2);
-  await page.waitForTimeout(80);
+  // :hover applies on the next frame after the move and the × then fades in over
+  // 0.1s (app.css .wfb-edge-del), so a fixed 80ms read raced on a loaded machine
+  // (opacity "0" with the pointer already on the edge). Poll for the reveal.
+  await page.waitForFunction((sel) => parseFloat(getComputedStyle(document.querySelector(sel)).opacity) > 0,
+    `${c7GroupSel} .wfb-edge-del`, { timeout: 3000 }).catch(() => {});
   const c7XOpacity = await page.$eval(`${c7GroupSel} .wfb-edge-del`, el => getComputedStyle(el).opacity);
   parseFloat(c7XOpacity) > 0 ? ok('hovering an edge reveals its delete ×')
                              : fail(`expected the × to be visible on hover, opacity was "${c7XOpacity}"`);

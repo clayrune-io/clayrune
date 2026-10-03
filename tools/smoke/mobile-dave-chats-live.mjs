@@ -37,12 +37,15 @@ async function countMobileDaveChats(sourceJs) {
 
 // Ground truth: how many Dave sessions actually exist right now, per the live
 // agent log (the source the fix merges in). Manual-trigger only — the
-// schedule-trigger head is filtered by design (noise regex), on both sides.
+// schedule-trigger head is filtered by design (noise regex), on both sides,
+// unless a human joined it.
 const agentLogRaw = await (await fetch('http://localhost:5199/api/project/mission_control/agent/log')).json();
 const agentLog = Array.isArray(agentLogRaw) ? agentLogRaw : (agentLogRaw.entries || []);
 const liveDaveManualCount = new Set(
   agentLog
-    .filter(e => e.character && e.character.agent_name === 'Dave' && e.trigger_type !== 'schedule')
+    // 613bf5c6 (2026-10-01): a scheduled thread a human typed into (`human_joined`)
+    // is their chat now and stays in Chats, so it counts here too.
+    .filter(e => e.character && e.character.agent_name === 'Dave' && (e.trigger_type !== 'schedule' || e.human_joined))
     .map(e => e.mc_session_id || e.session_id)
 ).size;
 assert.ok(liveDaveManualCount >= 2, `expected >=2 live manual Dave sessions to make this test meaningful, found ${liveDaveManualCount}`);
