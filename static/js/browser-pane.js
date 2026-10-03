@@ -40,6 +40,12 @@ const _BP_COPY_ICON_SVG =
   '<rect x="9" y="9" width="13" height="13" rx="2"></rect>' +
   '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
 
+// Crosshair for "pick an element" (the picker itself is static/js/browser-pick.js).
+const _BP_PICK_ICON_SVG =
+  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+  'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+  '<circle cx="12" cy="12" r="7"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg>';
+
 const BP_VIEW_W = 1280, BP_VIEW_H = 800;
 // The page coordinate space clicks are mapped into. NOT a constant: CDP's
 // Emulation.setDeviceMetricsOverride does not take effect, so a 1280x800
@@ -417,6 +423,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       <div data-bp="mobmenu" style="display:none;flex-direction:column;position:absolute;right:6px;bottom:calc(100% + 6px);min-width:200px;background:#2a2a2a;border:1px solid #444;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.5);overflow:hidden;z-index:6;font-size:13px;color:#eee">
         <button data-bp="mm-paste" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px">&#128203; Paste clipboard</button>
         <button data-bp="mm-copy" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px">${_BP_COPY_ICON_SVG} Copy selection</button>
+        <button data-bp="mm-pick" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px">${_BP_PICK_ICON_SVG} Pick element</button>
         <button data-bp="mm-desktop" role="menuitemcheckbox" aria-checked="false" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px;border-top:1px solid #3a3a3a"><span data-bp="mm-desktop-box" style="display:inline-block;width:16px;height:16px;border:2px solid #888;border-radius:3px;box-sizing:border-box;text-align:center;line-height:12px;font-size:12px;color:#111"></span> Desktop site</button>
         <button data-bp="mm-profile" style="background:none;border:none;color:#eee;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;border-top:1px solid #3a3a3a">Profile: <span data-bp="profile" style="color:#9ecb9e"></span></button>
         <button data-bp="close" style="background:none;border:none;color:#ff8a80;text-align:left;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px;border-top:1px solid #3a3a3a">&#10005; Close browser</button>
@@ -438,6 +445,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       <button data-bp="reload" title="Reload"  style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px">&#8635;</button>
       <button data-bp="paste"  title="Paste clipboard into the page" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px">&#128203;</button>
       <button data-bp="copy"   title="Copy page selection to clipboard" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px;display:flex;align-items:center">${_BP_COPY_ICON_SVG}</button>
+      <button data-bp="pick"   title="Pick an element and attach it to the chat" aria-label="Pick an element" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px;display:flex;align-items:center">${_BP_PICK_ICON_SVG}</button>
       <button data-bp="sessions" title="Browser sessions" style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px;position:relative">&#9776;<span data-bp="sesscount" style="position:absolute;top:-3px;right:-3px;background:#4caf50;color:#000;font-size:9px;font-weight:700;border-radius:8px;padding:0 4px;line-height:14px;display:none"></span></button>
       <form data-bp="urlform" style="display:contents">
       <input data-bp="url" type="text" inputmode="url" enterkeyhint="go" spellcheck="false" autocapitalize="off"
@@ -600,6 +608,14 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     $('copy').onclick = async () => { imeShadow.focus(); await _bpCopySelection(false); };
     $('sessions').onclick = (e) => { e.stopPropagation(); _bpToggleSessionMenu(win, pid); };
   }
+
+  // Element picker (own module): wires the pick / mm-pick buttons above.
+  if (window.bpPickInit) window.bpPickInit({
+    win, img, mobile,
+    getSession: () => _bpSession,
+    getProject: () => pid,
+    geometry: () => ({ ..._bpContentRect(img), viewW: _bpViewW, viewH: _bpViewH }),
+  });
 
   // ── move (drag the toolbar) + resize (corner grip) — pointer events cover
   //    mouse and touch alike; setPointerCapture keeps the gesture even off-element.

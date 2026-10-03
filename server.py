@@ -2965,6 +2965,9 @@ _bp_browser.wire(
     pid_alive_fn=_bp_agent._pid_is_alive,
 )
 app.register_blueprint(_bp_browser.bp)
+# Element picker for the pane (human-only; own module, reads via the same envelope).
+from mc.blueprints import browser_pick_routes as _bp_browser_pick  # noqa: E402
+app.register_blueprint(_bp_browser_pick.bp)
 # Only the server process may sweep orphaned Chromium profile dirs: it is the
 # only one whose browser_sessions actually says what is live. Deliberately NOT
 # inside wire() — test harnesses call that too. See browser_routes.SWEEP_ENABLED.

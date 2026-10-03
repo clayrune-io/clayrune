@@ -6,6 +6,24 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-03] — Browser pane: pick an element, attach it to the chat
+
+- New crosshair button in the pane toolbar (and "Pick element" in the phone's ⋮
+  menu). Aim at something on the page, click/lift to pick; the click is swallowed
+  and never reaches the page. ONE chip lands in the chat composer: the element's
+  trimmed outerHTML, key computed styles, CSS selector path and a clipped
+  screenshot. Esc or the banner's Cancel leaves pick mode.
+- Human-initiated only: `POST /api/browser/pick` refuses agent callers the same way
+  the other human-only browser actions do; there is no agent-facing pick route.
+- The picked HTML is third-party data: it reaches the agent only inside the
+  `/api/browser/read` untrusted-content envelope, with the same hidden-content
+  stripping (the in-page hidden test is now one shared definition,
+  `_HIDDEN_REASON_JS`, spliced into both readers). Size caps on HTML and screenshot
+  are constants in `mc/browser_pick.py`.
+- New files: `mc/browser_pick.py`, `mc/blueprints/browser_pick_routes.py`,
+  `static/js/browser-pick.js`. Tests: `tests/test_browser_pick.py`,
+  `tests/test_browser_pick_live.py` (real Chromium), `tools/smoke/browser-pick.mjs`.
+
 ## [2026-10-02] — Desk: one agent picker, showing the figures
 
 - The campaign's agent is chosen in ONE place, the Campaign card on Brief. The
