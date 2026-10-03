@@ -6,6 +6,21 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-03] — Desk Studio: delete from Recent, with Undo
+
+- Every Recent row (video, image, article) has a bin at its right end, a sibling
+  of the row's open button (hover/focus on desktop, always visible on a phone).
+  No confirm: the delete is a destructive Desk command, so the header Undo and
+  Ctrl/Cmd+Z bring it back.
+- Blocked rows keep a dimmed bin with the reason: `Rendering, wait for it to
+  finish`; `Attached to <campaign>, detach it there first`; a picture a draft's
+  storyboard still uses names that draft.
+- Live: `mc/desk_studio_items.py` + `desk_studio_items_routes.py` move a draft
+  (and the Storyboards pictures only it uses) or one library file into a trash
+  entry and answer a restore token; Undo restores everything. Demo mode never
+  calls the server. Front end: `static/js/desk-v1-studio-delete.js`.
+- Tests: `tests/test_desk_studio_items.py`, `tools/smoke/desk-v1-studio-delete.mjs`.
+
 ## [2026-10-03] — Memory G1: the note-write gate (report-only, unwired)
 
 - `POST` / `PATCH /api/project/<id>/memory/note` validate a topic-note write per

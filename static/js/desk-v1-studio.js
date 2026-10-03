@@ -105,12 +105,12 @@
     const rows = [];
     _items().forEach((it) => {
       const m = _itemMeta(it);
-      rows.push({ id: it.id, icon: m.state === 'rendering' ? RECENT_ICON.rendering : (RECENT_ICON[it.kind] || '•'), title: it.title, kind: it.kind, campaignId: null, meta: m.meta, state: m.state });
+      rows.push({ src: 'item', path: it.path || null, id: it.id, icon: m.state === 'rendering' ? RECENT_ICON.rendering : (RECENT_ICON[it.kind] || '•'), title: it.title, kind: it.kind, campaignId: null, meta: m.meta, state: m.state });
     });
     (_fx().families || []).forEach((f) => {
       if (!(f.render && f.render.status === 'rendering')) return;
       const camp = _campaign(f.campaignId);
-      rows.push({ id: f.id, icon: RECENT_ICON.rendering, title: f.title, kind: f.kind, campaignId: f.campaignId,
+      rows.push({ src: 'family', id: f.id, icon: RECENT_ICON.rendering, title: f.title, kind: f.kind, campaignId: f.campaignId,
         meta: `Rendering ${f.render.progress != null ? f.render.progress : 0}%${camp ? ' · ' + _campTitle(camp) : ''}`, state: 'rendering' });
     });
     (_studio().recent || []).forEach((r) => {
@@ -118,16 +118,16 @@
       const meta = r.status === 'draft'
         ? `Draft saved ${r.savedAgo || 'just now'}${camp ? ' · ' + _campTitle(camp) : ''}`
         : `Rendered · ${camp ? 'for ' + _campTitle(camp) : 'not attached'}`;
-      rows.push({ id: r.id, icon: RECENT_ICON[r.kind] || '•', title: r.title, kind: r.kind, campaignId: r.campaignId, meta, state: r.status });
+      rows.push({ src: 'fixture', id: r.id, icon: RECENT_ICON[r.kind] || '•', title: r.title, kind: r.kind, campaignId: r.campaignId, meta, state: r.status });
     });
     if (_isLive()) {
       const mine = new Set(_items().map((it) => it.id));
       _lib.boards.filter((b) => !mine.has(b.id)).forEach((b) => rows.push({
-        id: b.id, icon: RECENT_ICON.video || '•', title: b.title || 'New video', kind: 'video', campaignId: null,
+        src: 'board', id: b.id, icon: RECENT_ICON.video || '•', title: b.title || 'New video', kind: 'video', campaignId: null,
         meta: `Draft · ${b.scenes} scene${b.scenes === 1 ? '' : 's'} · not attached`, state: 'draft' }));
       const seen = new Set(_items().map((it) => it.path).filter(Boolean));
       _lib.recent.filter((r) => !seen.has(r.path)).forEach((r) => rows.push({
-        id: r.path, icon: RECENT_ICON[r.kind] || '•', title: r.title, kind: r.kind, campaignId: null,
+        src: 'file', path: r.path, id: r.path, icon: RECENT_ICON[r.kind] || '•', title: r.title, kind: r.kind, campaignId: null,
         meta: 'Saved to the Material library · not attached', state: 'saved' }));
     }
     return rows;
@@ -177,8 +177,21 @@
         </button>`).join('');
   }
 
+  // The accessors Recent's delete (desk-v1-studio-delete.js) works through.
+  const _recentCtx = {
+    isLive: _isLive,
+    items: _items,
+    lib: () => _lib,
+    fixtureRecent: () => _studio().recent || [],
+    campaignTitle: (id) => { const c = _campaign(id); return c ? _campTitle(c) : 'a campaign'; },
+    el: () => _studioEl,
+    repaint: () => { if (_studioEl && _studioEl.isConnected) { _studioEl.innerHTML = _studioHTML(); _wireStudio(_studioEl); } },
+    reload: () => _loadLibrary().then(() => _recentCtx.repaint()),
+  };
+  let _rows = [];
+
   function _studioHTML() {
-    const rows = _recentRows();
+    const rows = _rows = _recentRows();
     return `<div class="desk-v1-studio" data-studio>
       <h2 class="desk-v1-studio-title">Studio</h2>
       <div class="desk-v1-studio-tiles" role="group" aria-label="Start something new">${NEW_TILES.map((t) => `
@@ -189,13 +202,16 @@
         </button>`).join('')}</div>
       <h3 class="desk-v1-studio-sub">Recent</h3>
       <div class="desk-v1-studio-recent" data-studio-recent>${rows.length ? rows.map((r) => `
-        <button type="button" class="desk-v1-studio-recent-row" data-studio-recent-row="${esc(r.id)}" data-state="${esc(r.state)}"${r.campaignId ? ` data-campaign-id="${esc(r.campaignId)}"` : ''}>
-          <span class="desk-v1-studio-recent-icon" aria-hidden="true">${esc(r.icon)}</span>
-          <span class="desk-v1-studio-recent-main">
-            <span class="desk-v1-studio-recent-title">${esc(r.title)} · ${esc(r.kind)}</span>
-            <span class="desk-v1-studio-recent-meta">${esc(r.meta)}</span>
-          </span>
-        </button>`).join('') : '<div class="desk-v1-camp-empty">Nothing made yet.</div>'}</div>
+        <div class="desk-v1-studio-recent-item" data-studio-recent-item="${esc(r.id)}">
+          <button type="button" class="desk-v1-studio-recent-row" data-studio-recent-row="${esc(r.id)}" data-state="${esc(r.state)}"${r.campaignId ? ` data-campaign-id="${esc(r.campaignId)}"` : ''}>
+            <span class="desk-v1-studio-recent-icon" aria-hidden="true">${esc(r.icon)}</span>
+            <span class="desk-v1-studio-recent-main">
+              <span class="desk-v1-studio-recent-title">${esc(r.title)} · ${esc(r.kind)}</span>
+              <span class="desk-v1-studio-recent-meta">${esc(r.meta)}</span>
+            </span>
+          </button>
+          ${window.DeskV1StudioDelete ? window.DeskV1StudioDelete.buttonHTML(r, _recentCtx) : ''}
+        </div>`).join('') : '<div class="desk-v1-camp-empty">Nothing made yet.</div>'}</div>
       <h3 class="desk-v1-studio-sub">Material library</h3>
       <div class="desk-v1-studio-lib" data-studio-lib>${_libHTML()}</div>
     </div>`;
@@ -256,6 +272,7 @@
         else window.deskV1Nav('studio-create', { itemId: row.dataset.studioRecentRow });
       };
     });
+    if (window.DeskV1StudioDelete) window.DeskV1StudioDelete.wire(el, _rows, _recentCtx);
   }
 
   function _campaignsToUse() {
@@ -283,7 +300,8 @@
       _lib.recent = ((m && m.recent) || []).map((r) => { const hit = all.find((i) => i.path === r.id); return { kind: r.kind, title: r.title, path: r.id, src: hit ? hit.src : null }; });
       _lib.error = null;
       // Live Studio drafts the server holds a storyboard for (they outlive the page).
-      return window.DeskV1Store.api('GET', '/api/desk/studio/storyboards').then((b) => { _lib.boards = (b && b.storyboards) || []; });
+      return window.DeskV1Store.api('GET', '/api/desk/studio/storyboards').then((b) => { _lib.boards = (b && b.storyboards) || []; })
+        .then(() => window.DeskV1StudioDelete && window.DeskV1StudioDelete.loadUsage());
     }).catch((e) => { _lib.error = e && e.message ? e.message : String(e); });
   }
 

@@ -2211,6 +2211,10 @@ app.register_blueprint(_bp_desk.bp)
 from mc.blueprints import desk_services_routes as _bp_desk_services  # noqa: E402
 app.register_blueprint(_bp_desk_services.bp)
 
+# Desk Studio's delete + Undo for Recent rows, over the same Desk store and uploads.
+from mc.blueprints import desk_studio_items_routes as _bp_desk_studio_items  # noqa: E402
+app.register_blueprint(_bp_desk_studio_items.bp)
+
 # mc.desk_publish (simplification plan §5 step 2) is a plain module, not a
 # blueprint: callers are the human-gated reply route and mc.desk_tick (R1-W
 # S7, behind the passcode approve route), so this only gives it a durable

@@ -21,11 +21,14 @@
 .desk-v1-studio-tile-name { font-size: 14px; font-weight: 700; }
 .desk-v1-studio-tile-hint { font-size: 11.5px; color: var(--text-faint); }
 .desk-v1-studio-recent { display: flex; flex-direction: column; border: 1px solid var(--border2); border-radius: 10px; background: var(--surface); overflow: hidden; }
+/* A Recent row is a wrapper holding two sibling controls (open + delete, see
+   desk-v1-studio-delete.css): the wrapper carries the divider, the open button the rest. */
+.desk-v1-studio-recent-item { display: flex; align-items: stretch; border-bottom: 1px solid var(--border2); }
+.desk-v1-studio-recent-item:last-child { border-bottom: none; }
 .desk-v1-studio-recent-row {
-  display: flex; align-items: center; gap: 14px; text-align: left; cursor: pointer; padding: 12px 14px;
-  background: none; border: none; border-bottom: 1px solid var(--border2); font-family: inherit; color: var(--text);
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 14px; text-align: left; cursor: pointer; padding: 12px 14px;
+  background: none; border: none; font-family: inherit; color: var(--text);
 }
-.desk-v1-studio-recent-row:last-child { border-bottom: none; }
 .desk-v1-studio-recent-row:hover, .desk-v1-studio-recent-row:focus-visible { background: var(--surface2); }
 .desk-v1-studio-recent-icon {
   flex: 0 0 auto; width: 54px; height: 34px; display: inline-flex; align-items: center; justify-content: center;
