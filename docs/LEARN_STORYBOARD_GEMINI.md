@@ -109,7 +109,7 @@ if a separate clip looks better.)
 
 | Shot | File | Accepted | Notes |
 | --- | --- | --- | --- |
-| 1A | `data/uploads/learn_scenes/qa-1a.mp4` | Ron, 2026-10-03 | Gemini, 1280x720, 10 s with an audio track. The action ends at about 5 s and the rest is a still hold, so the builder trims it to the 6 s slot. |
+| 1A | `data/uploads/learn_scenes/qa-1a.mp4` | Ron, 2026-10-03 | Gemini, 1280x720 with an audio track. Trimmed to 5.5 s (Ron's cut); the untrimmed 10 s original is `qa-1a.full-10s.mp4`. |
 
 ## Mapping (for the builder, not shown to users)
 
