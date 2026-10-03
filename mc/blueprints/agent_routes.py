@@ -142,6 +142,7 @@ from mc.blueprints.terminal_routes import launch_pty_session, launch_pipe_sessio
 from mc.blueprints.secrets_routes import _require_human_passcode  # MC-994 follow-up: Fenn finding 1
 from mc.blueprints.local_auth import _local_auth_passcode_set_at  # MC-994 follow-up: Fenn finding N2(b)
 from mc import pty_backend
+from mc import claude_signin_channel as _signin_channel    # backlog 1d940d0f
 
 bp = Blueprint('agent_routes', __name__)
 
@@ -2281,6 +2282,8 @@ def agent_providers():
         # provider row shows "Sign in remotely" only where this is true.
         try:
             remote_login = bool(rt.auth_login_argv(str(h.binary_path or rt.name)))                 or bool(pty_backend.pty_available())
+            if rt.name == 'claude' and _signin_channel.terminal_only():
+                remote_login = bool(pty_backend.pty_available())
         except Exception:
             remote_login = False
         out.append({
@@ -3496,6 +3499,34 @@ def _captured_login_status_payload(session: dict) -> dict:
         }
 
 
+def _claude_terminal_signin(rt, bin_path):
+    """claude_signin_channel=terminal: Claude sign-in goes ONLY through the
+    MC-928 real-PTY session running `claude auth login`, so the one-time code
+    is typed into the CLI's own prompt and never passes through a Clayrune
+    form. No PTY backend (or a failed launch) is an error, never a fall-back
+    to the piped URL-capture / code-relay path below. The 503 body carries
+    `signin_channel` so the frontend can show the error instead of falling
+    through to its host-terminal last resort."""
+    session_id, err = None, None
+    if not pty_backend.pty_available():
+        err = _signin_channel.NO_PTY_ERROR
+    else:
+        _, pty_env_extra = rt.auth_login_pty_extra(str(bin_path))
+        session_id, err = launch_pty_session(
+            '_auth_probe', str(bin_path), cwd=_auth_probe_cwd(),
+            argv_extra=['auth', 'login'], env_extra=pty_env_extra)
+    if err:
+        return jsonify({'ok': False, 'remote_capable': False,
+                        'signin_channel': 'terminal', 'error': err}), 503
+    return jsonify({
+        'ok': True,
+        'remote_capable': True,
+        'pty': True,
+        'session_id': session_id,
+        'command': f'{bin_path} auth login',
+    }), 200
+
+
 @bp.route('/api/agent/<provider>/auth-login-remote', methods=['POST'])
 def agent_auth_login_remote(provider):
     """Remote-friendly login: capture the OAuth URL from a piped subprocess
@@ -3514,6 +3545,8 @@ def agent_auth_login_remote(provider):
     bin_path = rt.resolve_binary()
     if not bin_path:
         return jsonify({'error': f'{provider} CLI is not installed'}), 400
+    if provider == 'claude' and _signin_channel.terminal_only():
+        return _claude_terminal_signin(rt, bin_path)
     argv = rt.auth_login_argv(str(bin_path))
     if not argv:
         if pty_backend.pty_available():
@@ -3597,6 +3630,8 @@ def agent_auth_login_remote_code(provider):
     stdin. A wrong code leaves the CLI re-prompting rather than exiting
     (verified 2026-08-31 for claude), so callers may retry against the same
     session."""
+    if provider == 'claude' and _signin_channel.terminal_only():
+        return jsonify({'error': _signin_channel.CODE_RELAY_REFUSAL}), 403
     data = request.get_json() or {}
     code = (data.get('code') or '').strip()
     if not code:
