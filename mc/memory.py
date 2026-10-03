@@ -1678,22 +1678,53 @@ def _cont_owner_stamps(body):
     return out
 
 
+# trigger_type values that mean a person started this session and is in it.
+# Everything else ('dispatch', 'schedule', 'workflow', 'hivemind_orchestrator',
+# 'steward', ...) is a session nobody typed into — and a trigger type added
+# later must default to "not direct", the side 8700805a erred toward.
+_CONT_DIRECT_TRIGGERS = ('', 'manual')
+
+
+def _session_is_direct(session):
+    """True when a person started this session and is conversing in it.
+
+    False for anything another agent dispatched (a spawner to call back —
+    `_notify_session` / `_notify_workflow`) and for anything a trigger started
+    (`trigger_type` other than manual). A human who lifts the fence on an
+    unattended chat re-stamps its `trigger_type` to 'manual' (attend_session),
+    so that handoff becomes direct — unless a spawner callback is still armed.
+    """
+    s = session or {}
+    if (s.get('_notify_session') or '').strip() or s.get('_notify_workflow'):
+        return False
+    return (s.get('trigger_type') or '') in _CONT_DIRECT_TRIGGERS
+
+
 def _session_owner(session):
     """The continuity owner for a live session, or None when it owns no state.
 
     Must resolve to the SAME string the prompt builder uses for "Your name is
     …" (`character_name or CONFIG['agent_name']`), or the write side files a
     bucket the read side never asks for and every agent silently gets an empty
-    record.
+    record. `_build_agent_context` calls THIS function for the read side too,
+    so the two cannot diverge.
 
-    **A GLOBAL character owns nothing — it returns None.** A global type is
-    ephemeral by construction: it works on any project precisely because it
-    keeps nothing between calls, which is also why it can be global without
-    being a cross-project leak channel (`AGENT_TYPES_DESIGN` §5). Giving one a
-    bucket was destructive in two directions — its half-finished thought became
-    durable project working state injected into every later prompt, and with
+    **Ownership is by SESSION SHAPE, not by character scope.** A GLOBAL
+    character that was DISPATCHED by another agent, or started by a trigger,
+    owns nothing — it returns None. That is the 8700805a rule and it still
+    holds: a dispatched helper is ephemeral by construction (it works on any
+    project precisely because it keeps nothing between calls —
+    `AGENT_TYPES_DESIGN` §5), its half-finished thought must not become durable
+    project working state injected into every later prompt, and with
     `_CONT_MAX_OWNERS` at 4 on least-recently-written eviction, three helpers
     passing through would push the project's OWN agent out of its own record.
+
+    But a global character a human is TALKING TO is not a helper; it is that
+    human's main chat (Dave, on this project). Keying on scope alone meant such
+    a chat could never keep a record: the write side returned None while the
+    read side asked for its name, so it was shown whatever the ownerless bucket
+    held and wrote nothing back (backlog 3db65948). A DIRECT global chat owns a
+    bucket under its agent name.
 
     A session with no character at all still owns a bucket under the configured
     default name: that is the project's own agent, which is the continuous one.
@@ -1701,7 +1732,8 @@ def _session_owner(session):
     try:
         ch = (session or {}).get('character') or {}
         if isinstance(ch, dict) and ch:
-            if (ch.get('scope') or '') == 'global':
+            if ((ch.get('scope') or '') == 'global'
+                    and not _session_is_direct(session)):
                 return None
             return _cont_owner_key(ch.get('agent_name') or ch.get('name'))
         return _cont_owner_key(state.CONFIG.get('agent_name', ''))
@@ -1713,8 +1745,13 @@ def _cont_empty_slots():
     return {'threads': [], 'commitments': [], 'understanding': '', 'updated': ''}
 
 
-def read_continuity(project, owner=None):
+def read_continuity(project, owner=None, reader_owns=True):
     """The continuity record. `owner=None` merges every agent's slots.
+
+    `reader_owns=False` is for a named reader that keeps no bucket of its own
+    (a dispatched global helper — see `_session_owner`): none of the named
+    bucket's slots are returned as ITS state, whatever an earlier life left in
+    a same-named bucket.
 
     The merged view is what the human surface and the older callers want; ONE
     agent's own working state is what belongs at the top of ITS prompt.
@@ -1751,20 +1788,28 @@ def read_continuity(project, owner=None):
 
     key = _cont_owner_key(owner)
     if owner is not None:
-        mine = dict(by_owner.get(key) or _cont_empty_slots())
-        # The ownerless bucket reads as YOURS, not as another agent's. It holds
-        # two things: a record written before owners existed, and whatever a
-        # human typed into the Memory modal. Neither belongs to a rival agent,
-        # and exiling them to the capped "another agent" block would have made
-        # every existing install lose its continuity the day this shipped.
+        mine = (dict(by_owner.get(key) or _cont_empty_slots())
+                if reader_owns else _cont_empty_slots())
+        # The ownerless bucket's THREADS and COMMITMENTS read as yours, not as
+        # another agent's. It holds two things: a record written before owners
+        # existed, and whatever a human typed into the Memory modal. Neither
+        # belongs to a rival agent, and exiling them to the capped "another
+        # agent" block would have made every existing install lose its
+        # continuity the day this shipped.
+        #
+        # Its UNDERSTANDING is not merged. "Where things stand" is one agent's
+        # status of its own work, and an undated backfill line presented as a
+        # persona's own status is the 3db65948 misdirection. It is returned
+        # apart, with its stamp, for `render_continuity` to label.
         shared = by_owner.get('') or _cont_empty_slots()
         if key:
             for slot, cap in (('threads', _CONT_MAX_THREADS),
                               ('commitments', _CONT_MAX_COMMITMENTS)):
                 mine[slot] = _cont_clean(list(mine[slot]) + list(shared[slot]), cap)
-            mine['understanding'] = mine['understanding'] or shared['understanding']
         return {**mine, 'updated': str(meta.get('updated') or ''),
-                'body': body, 'by_owner': by_owner, 'owner': key}
+                'body': body, 'by_owner': by_owner, 'owner': key,
+                'shared_understanding': shared['understanding'] if key else '',
+                'shared_updated': shared['updated'] if key else ''}
 
     # Merged: every owner's slots as one set, newest-written owner first so a
     # stale bucket cannot crowd out live work.
@@ -1886,7 +1931,7 @@ def _cont_heading(owner, updated):
     return f'### {owner or _CONT_SHARED_LABEL} — {updated}'
 
 
-def render_continuity(project, owner=None):
+def render_continuity(project, owner=None, reader_owns=True):
     """The continuity block for the system prompt, or '' when there is nothing.
 
     Injected DIRECTLY rather than retrieved: "what am I part-way through" is
@@ -1897,9 +1942,11 @@ def render_continuity(project, owner=None):
     named and capped. Hiding them would be the wrong call — two agents about to
     edit the same file is precisely what you want to know before you start —
     but presenting them as yours is what made the record actively misleading.
+    The ownerless bucket's "where things stand" gets the same treatment: shown
+    as a labelled, dated project-wide line, never as the reader's own status.
     """
     try:
-        rec = read_continuity(project, owner=owner)
+        rec = read_continuity(project, owner=owner, reader_owns=reader_owns)
     except Exception:
         return ''
     by_owner = rec.get('by_owner') or {}
@@ -1914,20 +1961,30 @@ def render_continuity(project, owner=None):
 
     others = []
     if owner is not None:
-        for k in sorted((k for k in by_owner if k and k != key),
+        for k in sorted((k for k in by_owner
+                         if k and (k != key or not reader_owns)),
                         key=lambda k: by_owner[k]['updated'], reverse=True):
             for t in by_owner[k]['threads']:
                 others.append(f"  • {k or _CONT_SHARED_LABEL} — {t}")
             if len(others) >= _CONT_MAX_OTHER_LINES:
                 break
         others = others[:_CONT_MAX_OTHER_LINES]
-    if not lines and not others:
+    shared_line = ''
+    if owner is not None and rec.get('shared_understanding'):
+        stamp = (rec.get('shared_updated') or '')[:10] or 'undated'
+        shared_line = (f"  Project-wide (unowned), {stamp}: "
+                       f"{rec['shared_understanding']}")
+    if not lines and not others and not shared_line:
         return ''
     out = ''
     if lines:
         out = ("--- CONTINUITY (what you were part-way through, and what you "
                "promised; if you finish or drop one, say so) ---\n"
                + "\n".join(lines))
+    if shared_line:
+        out += (("\n" if out else "")
+                + "--- PROJECT-WIDE NOTE (no agent owns it; not your status, "
+                  "and it may be stale) ---\n" + shared_line)
     if others:
         out += (("\n" if out else "")
                 + "--- ANOTHER AGENT ON THIS PROJECT IS PART-WAY THROUGH (not "
@@ -5105,8 +5162,9 @@ def _checkpoint_worker(snap):
         # extra transcript read, no second debounce, one cheap model call at a
         # boundary that has already earned one. Best-effort: the checkpoint has
         # already been committed above, so a failure here loses nothing.
-        # `owner is None` = an ephemeral (global) type: it writes no working
-        # state at all. Note this is NOT the same as `owner == ''`, which is the
+        # `owner is None` = a dispatched/triggered global helper (see
+        # `_session_owner`): it writes no working state at all. Note this is
+        # NOT the same as `owner == ''`, which is the
         # shared bucket every agent reads — falling through to that would be the
         # worst of the three outcomes rather than a safe default.
         if state.CONFIG.get('continuity_enabled', True) and snap.get('owner') is not None:

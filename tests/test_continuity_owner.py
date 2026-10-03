@@ -77,7 +77,9 @@ def test_a_pre_owner_record_still_reaches_every_agent(env):
                          understanding='where things stood')  # no owner
     rec = mem.read_continuity(P, owner='Dave')
     assert rec['threads'] == ['legacy thread']
-    assert rec['understanding'] == 'where things stood'
+    # ...but its "where things stand" is NOT Dave's own status (3db65948).
+    assert rec['understanding'] == ''
+    assert rec['shared_understanding'] == 'where things stood'
     assert 'CONTINUITY' in mem.render_continuity(P, owner='Dave')
 
 
@@ -189,19 +191,51 @@ def test_the_prompt_builder_asks_for_the_same_bucket(env):
         state.CONFIG.pop('agent_name', None)
 
 
-# ── an ephemeral owns nothing ───────────────────────────────────────────────
+# ── a dispatched helper owns nothing; a direct global chat owns a bucket ────
 
-def test_a_global_type_owns_no_bucket(env):
-    """A global character is ephemeral by construction — it can work on any
+GLOBAL_DAVE = {'name': 'dave', 'agent_name': 'Dave', 'scope': 'global'}
+
+
+def test_a_dispatched_global_type_owns_no_bucket(env):
+    """A dispatched helper is ephemeral by construction — it can work on any
     project precisely because it keeps nothing between calls. Giving it a
     bucket made its half-finished thought durable project working state."""
     mem, _ = env
+    fenn = {'name': 'code-reviewer', 'agent_name': 'Fenn', 'scope': 'global'}
+    # spawner callback armed (notify_session) / workflow step / any trigger
+    assert mem._session_owner({'character': fenn, 'trigger_type': 'dispatch',
+                               '_notify_session': 'abc123'}) is None
+    assert mem._session_owner({'character': fenn, 'trigger_type': 'manual',
+                               '_notify_session': 'abc123'}) is None
+    assert mem._session_owner({'character': fenn, 'trigger_type': 'manual',
+                               '_notify_workflow': {'run_id': 'r', 'step': 's'}}
+                              ) is None
+    for trig in ('dispatch', 'schedule', 'workflow', 'hivemind_orchestrator',
+                 'steward'):
+        assert mem._session_owner({'character': fenn, 'trigger_type': trig}) is None, trig
     assert mem._session_owner(
-        {'character': {'name': 'code-reviewer', 'agent_name': 'Fenn',
-                       'scope': 'global'}}) is None
-    assert mem._session_owner(
-        {'character': {'name': 'dave', 'agent_name': 'Dave',
-                       'scope': 'project'}}) == 'Dave'
+        {'character': {'name': 'dave', 'agent_name': 'Dave', 'scope': 'project'},
+         'trigger_type': 'dispatch'}) == 'Dave'
+
+
+def test_a_direct_global_chat_owns_a_bucket_and_reads_it_back(env):
+    """3db65948: Dave is a GLOBAL persona used as the project's main chat. The
+    write side returned None for every global, so his continuity was never
+    written while the read side asked for 'Dave' anyway."""
+    mem, _ = env
+    for sess in ({'character': GLOBAL_DAVE},
+                 {'character': GLOBAL_DAVE, 'trigger_type': 'manual',
+                  '_notify_session': '', '_notify_workflow': None}):
+        assert mem._session_owner(sess) == 'Dave', sess
+    owner = mem._session_owner({'character': GLOBAL_DAVE, 'trigger_type': 'manual'})
+    mem.write_continuity(P, threads=['dave is mid-refactor'],
+                         understanding='phase 2 landed', owner=owner)
+    rec = mem.read_continuity(P, owner='Dave')
+    assert rec['threads'] == ['dave is mid-refactor']
+    assert rec['understanding'] == 'phase 2 landed'
+    out = mem.render_continuity(P, owner='Dave')
+    assert 'IN FLIGHT — dave is mid-refactor' in out
+    assert 'Where things stand: phase 2 landed' in out
 
 
 def test_none_is_not_the_shared_bucket(env):
@@ -224,7 +258,9 @@ def test_helpers_passing_through_cannot_evict_the_projects_own_agent(env):
     for who in ('Fenn', 'Quill', 'Marlow', 'Scout'):
         owner = mem._session_owner({'character': {'name': who.lower(),
                                                   'agent_name': who,
-                                                  'scope': 'global'}})
+                                                  'scope': 'global'},
+                                    'trigger_type': 'dispatch',
+                                    '_notify_session': 'abc123'})
         assert owner is None, f'{who} claimed a bucket'
     assert mem.read_continuity(P, owner='Dave')['threads'] == ['dave is mid-refactor']
 
@@ -236,3 +272,96 @@ def test_an_ephemeral_still_READS_the_record(env):
     mem.write_continuity(P, threads=['dave is mid-refactor'], owner='Dave')
     out = mem.render_continuity(P, owner='Fenn')
     assert 'dave is mid-refactor' in out
+
+
+# ── the ownerless bucket's understanding is not a persona's own status ──────
+
+def test_ownerless_understanding_is_not_shown_as_the_personas_status(env):
+    """3db65948: Dave was shown a stale August `(project)` backfill line as HIS
+    "Where things stand". It is returned apart and rendered as a labelled,
+    dated project-wide line."""
+    mem, _ = env
+    mem.write_continuity(P, understanding='August backfill: phase 1 underway')
+    mem.write_continuity(P, threads=['dave thread'], owner='Dave')
+    rec = mem.read_continuity(P, owner='Dave')
+    assert rec['understanding'] == ''
+    assert rec['shared_understanding'] == 'August backfill: phase 1 underway'
+    out = mem.render_continuity(P, owner='Dave')
+    assert 'Where things stand: August' not in out
+    assert 'August backfill: phase 1 underway' in out
+    # dated by its heading stamp, not left blank
+    stamp = rec['shared_updated'][:10]
+    assert stamp and f'Project-wide (unowned), {stamp}: ' in out
+
+
+def test_undated_ownerless_understanding_says_so(env):
+    mem, tmp = env
+    (tmp / 'continuity.md').write_text(
+        '---\nname: continuity\n---\n\n## Where things stand\nold line\n',
+        encoding='utf-8')
+    out = mem.render_continuity(P, owner='Dave')
+    assert 'Project-wide (unowned), undated: old line' in out
+
+
+def test_ownerless_understanding_alone_still_renders_for_a_named_reader(env):
+    mem, _ = env
+    mem.write_continuity(P, understanding='only a project note')
+    assert 'only a project note' in mem.render_continuity(P, owner='Dave')
+
+
+def test_a_personas_own_understanding_wins_and_both_are_shown_apart(env):
+    mem, _ = env
+    mem.write_continuity(P, understanding='project note')
+    mem.write_continuity(P, understanding='dave status', owner='Dave')
+    out = mem.render_continuity(P, owner='Dave')
+    assert 'Where things stand: dave status' in out
+    assert 'Project-wide (unowned)' in out and 'project note' in out
+
+
+def test_the_merged_view_is_unchanged(env):
+    """The human surface (owner=None) still shows the ownerless understanding
+    in the ordinary slot — only a NAMED reader stops being handed it as its own."""
+    mem, _ = env
+    mem.write_continuity(P, understanding='project note')
+    assert mem.read_continuity(P)['understanding'] == 'project note'
+
+
+# ── a bucketless reader (dispatched helper) is an outsider ──────────────────
+
+def test_a_bucketless_reader_is_not_shown_a_same_named_bucket_as_its_own(env):
+    mem, _ = env
+    mem.write_continuity(P, threads=['fenn old august thread'], owner='Fenn')
+    own = mem.render_continuity(P, owner='Fenn')
+    assert 'IN FLIGHT — fenn old august thread' in own
+    out = mem.render_continuity(P, owner='Fenn', reader_owns=False)
+    assert 'IN FLIGHT' not in out
+    assert 'ANOTHER AGENT' in out and 'Fenn — fenn old august thread' in out
+
+
+def test_the_prompt_builder_resolves_the_owner_through_the_session(env):
+    """Read side = write side: a registered DIRECT global session reads its own
+    bucket; a registered DISPATCHED one reads as an outsider."""
+    from mc.blueprints import agent_routes as ar
+    from mc import state
+    mem, tmp = env
+    mem.write_continuity(P, threads=['dave is mid-refactor'], owner='Dave')
+    proj = {'id': 'p1', 'name': 'P1', 'project_path': str(tmp)}
+    state.CONFIG['agent_name'] = 'Vector'
+    ar.agent_sessions['sid-direct'] = {
+        'session_id': 'sid-direct', 'character': GLOBAL_DAVE,
+        'trigger_type': 'manual'}
+    ar.agent_sessions['sid-helper'] = {
+        'session_id': 'sid-helper', 'character': GLOBAL_DAVE,
+        'trigger_type': 'dispatch', '_notify_session': 'abc123'}
+    try:
+        direct = ar._build_agent_context(proj, task='x', character_name='Dave',
+                                         session_id='sid-direct')
+        assert 'IN FLIGHT — dave is mid-refactor' in direct
+        helper = ar._build_agent_context(proj, task='x', character_name='Dave',
+                                         session_id='sid-helper')
+        assert 'IN FLIGHT — dave is mid-refactor' not in helper
+        assert 'Dave — dave is mid-refactor' in helper
+    finally:
+        ar.agent_sessions.pop('sid-direct', None)
+        ar.agent_sessions.pop('sid-helper', None)
+        state.CONFIG.pop('agent_name', None)
