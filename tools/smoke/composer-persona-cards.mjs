@@ -170,8 +170,12 @@ try {
       : fail(`phone: getPendingCharacter(pid) === "${afterTap.pending}", want "global:vector"`);
     (afterTap.heading === 'What should Vector work on?') ? ok(`phone: headline follows the selection ("${afterTap.heading}")`)
       : fail(`phone: headline is "${afterTap.heading}", want "What should Vector work on?"`);
-    (afterTap.placeholder.includes('Vector')) ? ok(`phone: composer placeholder names Vector ("${afterTap.placeholder}")`)
-      : fail(`phone: composer placeholder is "${afterTap.placeholder}", expected it to include "Vector"`);
+    // 82b38155 (2026-10-02): the phone placeholder is deliberately ONE short line
+    // ("Describe a task…") — the pill is ~180px wide and a wrapped placeholder
+    // clips. The persona is named by the headline/selected card asserted above,
+    // so the placeholder is checked for the intended phone string instead.
+    (afterTap.placeholder === 'Describe a task…') ? ok(`phone: composer placeholder is the one-line phone string ("${afterTap.placeholder}")`)
+      : fail(`phone: composer placeholder is "${afterTap.placeholder}", expected "Describe a task…"`);
 
     // Dispatch and confirm the character rides the real POST body.
     await page.evaluate(({ pid }) => {
