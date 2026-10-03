@@ -20,7 +20,7 @@
  *
  * WHAT IT CHECKS
  * --------------
- * For every inline `on*="..."` handler in static/js/*.js, it extracts the
+ * For every inline `on*="..."` handler in static/js (any depth), it extracts the
  * identifiers the handler references (ignoring `${...}` interpolations, which
  * are evaluated at template-build time in module scope and are fine), and flags
  * any identifier that IS a top-level declaration in some module but is NOT
@@ -32,12 +32,12 @@
  *   cd tools/smoke && node inline-handler-scope-check.mjs
  * Exit 0 = clean; 1 = at least one unbridged inline-handler reference.
  */
-import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve, join } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { loadStaticJsCss } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const JS_DIR = resolve(__dirname, '..', '..', 'static', 'js');
+const REPO_ROOT = resolve(__dirname, '..', '..');
 
 // Identifiers that are legitimately global at click time — never flag these.
 const BUILTINS = new Set([
@@ -51,15 +51,22 @@ const BUILTINS = new Set([
   'let', 'const', 'var', 'await', 'async', 'try', 'catch', 'throw',
 ]);
 
-const files = readdirSync(JS_DIR).filter((f) => f.endsWith('.js'));
+// Recursive: loadStaticJsCss walks static/js to any depth, so modules in a
+// subfolder (static/js/learn-lessons/) are scanned too. A flat readdirSync
+// here skipped them entirely (backlog f5a7758b). Names are relative to
+// static/js, e.g. 'learn-lessons/floor.js'.
+const JS_PREFIX = '/static/js/';
+const sources = {};
+for (const [url, [, body]] of Object.entries(loadStaticJsCss(REPO_ROOT))) {
+  if (url.startsWith(JS_PREFIX)) sources[url.slice(JS_PREFIX.length)] = body;
+}
+const files = Object.keys(sources).sort();
 
 // Pass 1 — collect, across ALL modules: top-level declarations + window exposures.
 const topLevelDecls = new Map();   // name -> declaring file (first seen)
 const windowExposed = new Set();
-const sources = {};
 for (const f of files) {
-  const src = readFileSync(join(JS_DIR, f), 'utf8');
-  sources[f] = src;
+  const src = sources[f];
   // Top-level decls: keyword at column 0 (indented = nested = not module scope).
   const declRe = /^(?:export\s+)?(?:async\s+)?(?:function\*?|let|const|var)\s+([A-Za-z_$][\w$]*)/gm;
   let m;
