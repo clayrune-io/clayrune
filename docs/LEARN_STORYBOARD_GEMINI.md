@@ -108,6 +108,4 @@ if a separate clip looks better.)
 
 See the tables in `docs/LEARN_STORY_SCENES.md`. In short: HR's folders are the
 Bench, the two agency cards are the vendor choice, the three-notch slider is
-the model choice, sitting down without a task is hiring. The folder passed
-down the row is a workflow's steps, the seal is the human approval gate, the
-pinned sheet is saving the workflow.
+the model choice, sitting down without a task is hiring.
