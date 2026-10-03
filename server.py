@@ -478,6 +478,19 @@ def _load_config():
         # make the 🌐 Browser button reuse one persistent, signed-in profile.
         # Per-launch opt-out: POST /api/browser/launch {"ephemeral": true}.
         'browser_default_profile': '',
+        # Hosted sign-in / usage seams (backlog 1d940d0f). config.json only,
+        # deliberately NOT in _CONFIG_EDITABLE_KEYS: a hosted pod pins these,
+        # and the Settings panel is not where that posture gets flipped.
+        # claude_signin_channel: 'auto' (default; today's piped URL-capture +
+        # pasted-code relay) | 'terminal' (Claude sign-in only through a real
+        # PTY terminal, one-time code typed into the CLI's own prompt; the
+        # /code relay route refuses). claude_usage_source: 'local' (default;
+        # reads ~/.claude/.credentials.json) | 'runner' (reads the numbers-only
+        # document at claude_usage_runner_doc — a path or http(s) URL — that
+        # tools/pod-usage-runner/ publishes; never opens .credentials.json).
+        'claude_signin_channel': 'auto',
+        'claude_usage_source': 'local',
+        'claude_usage_runner_doc': '',
         # Leaked pane-Chromium sweep (MC-997). A server restart os._exit()s
         # past the atexit browser cleanup, so a throwaway pane Chromium that
         # is never relaunched on the same profile stays running forever with

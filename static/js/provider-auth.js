@@ -385,6 +385,13 @@ async function settingsProviderTerminalLogin(provider, btnEl) {
       return;
     }
 
+    // claude_signin_channel=terminal and no usable PTY: the server refuses
+    // rather than relay the code or open a host window nobody can see.
+    if (data.signin_channel === 'terminal') {
+      alert(data.error || 'Sign-in is only available through a terminal on this install.');
+      return;
+    }
+
     if (data.remote_capable !== false) {
       // claude et al: the CLI pipes its OAuth URL over plain stdout.
       let tries = 0;
