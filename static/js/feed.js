@@ -56,6 +56,8 @@ function _buildAttentionList() {
       kind, action,
       sessionId: live.sessionId || null });  // §1: deep-link target (may be null)
   });
+  // Add-on approval requests (MC-1022) are blocking events that belong to no project.
+  if (typeof window.addonAttentionItems === 'function') items.push(...window.addonAttentionItems());
   return items;
 }
 
@@ -188,6 +190,7 @@ function renderFeed() {
       // waiting chat (plan/question state), skipping the project list. Recent
       // rows (and any attention row with no live session) fall back to the
       // project modal as before.
+      if (el.dataset.projectId === '__addons__') { window.openAddonsSettings(); return; }
       const sid = el.dataset.sessionId;
       if (sid) openProjectAtSession(el.dataset.projectId, sid);
       else openProjectModal(el.dataset.projectId);

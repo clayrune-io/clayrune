@@ -642,6 +642,7 @@ function _wireWaitingOnYou(col) {
   col.querySelectorAll('.woy-row').forEach(row => {
     row.addEventListener('click', () => {
       const pid = row.dataset.projectId, sid = row.dataset.sessionId;
+      if (pid === '__addons__' && window.openAddonsSettings) { window.openAddonsSettings(); return; }
       if (sid && typeof openProjectAtSession === 'function') openProjectAtSession(pid, sid);
       else if (typeof openProjectModal === 'function') openProjectModal(pid);
     });

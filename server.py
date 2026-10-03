@@ -2053,6 +2053,12 @@ from mc.blueprints import secrets_routes as _bp_secrets  # noqa: E402
 from mc import secrets_store as _secrets_store_boot  # noqa: E402
 
 app.register_blueprint(_bp_secrets.bp)
+
+# ── Add-ons (docs/ADDON_INSTALLS_SPEC.md, MC-1022). Agents file requests; every
+# route that installs, adopts or removes is behind _require_human_passcode.
+# No wire(): mc/addons resolves ~/.clayrune/addons itself.
+from mc.blueprints import addon_routes as _bp_addons  # noqa: E402
+app.register_blueprint(_bp_addons.bp)
 # MC-979: the per-boot /api/secrets/exec token is minted in `boot()` below,
 # not here — this module-level stanza runs on ANY `import server` (including
 # a bare `import server` from a non-pytest script, or pytest collecting this
@@ -3414,6 +3420,11 @@ def boot(check_port=True):
     # the Agent Log tab. Runs once, in the background, so app.run() isn't blocked.
     # Roll back: set agent_log_backfill_enabled = false in data/config.json.
     threading.Thread(target=_startup_memory_maintenance, daemon=True).start()
+    # Add-ons: clear install staging, re-hash installed binaries (off the boot
+    # path: hashing a ~200 MB ffmpeg is not free), fail orphaned installs.
+    from mc.addons import service as _addons_service
+    threading.Thread(target=lambda: _boot_phase('add-on startup sweep', _addons_service.startup),
+                     daemon=True, name='addons-startup').start()
     # One-shot: transition orphaned 'active' hiveminds to 'stale'. Cheap, runs
     # synchronously before app.run().
     _boot_phase('hivemind stale reconcile', _hm_reconcile_stale_on_startup)
