@@ -136,6 +136,9 @@ from mc.blueprints.project_routes import (
     _log_agent_activity,
     _upload_limit,
 )
+from mc.blueprints.agent_router_stats_routes import (
+    register_routes as _register_router_stats_routes,
+)
 from mc.blueprints.push_mobile import _handle_push_signal      # re-homed 1.2 shim
 from mc.blueprints.push_mobile import _notify_push  # MC-961 loud engine-fallback swap
 from mc.blueprints.system_routes import _capture_system_init   # re-homed 1.6 shim
@@ -1813,48 +1816,11 @@ def agent_job_status(project_id, session_id, job_id):
     return jsonify(job)
 
 
-@bp.route('/api/router/stats', methods=['GET'])
-def get_router_stats_aggregate():
-    """Cross-project auto-router counters. Sums totals and by_pair across
-    every project's _router_stats.json. Surfaces last_fallback as the most
-    recent across projects. Read-only; never mutates state.
-
-    Response shape:
-      {
-        "totals": {"manual": N, "auto": N, "fallback": N},
-        "by_pair": {"opus->haiku": N, ...},
-        "last_fallback": {"ts": "...Z", "reason": "...", "project_id": "..."},
-        "projects": N            # how many had a stats file
-      }
-    """
-    agg_totals = {}
-    agg_by_pair = {}
-    last_fb = None
-    project_count = 0
-    for f in DATA_DIR.glob('*_router_stats.json'):
-        try:
-            data = json.loads(f.read_text(encoding='utf-8') or '{}')
-        except Exception:
-            continue
-        if not isinstance(data, dict):
-            continue
-        project_count += 1
-        for k, v in (data.get('totals') or {}).items():
-            agg_totals[k] = int(agg_totals.get(k, 0)) + int(v or 0)
-        for k, v in (data.get('by_pair') or {}).items():
-            agg_by_pair[k] = int(agg_by_pair.get(k, 0)) + int(v or 0)
-        fb = data.get('last_fallback')
-        if isinstance(fb, dict) and fb.get('ts'):
-            if last_fb is None or fb['ts'] > last_fb.get('ts', ''):
-                # Derive project_id from the filename suffix-strip.
-                pid = f.name[:-len('_router_stats.json')]
-                last_fb = {**fb, 'project_id': pid}
-    return jsonify({
-        'totals': agg_totals,
-        'by_pair': agg_by_pair,
-        'last_fallback': last_fb,
-        'projects': project_count,
-    })
+# /api/router/stats lives in agent_router_stats_routes.py (carved out of this
+# file); registered on this Blueprint so the endpoint stays agent_routes.*.
+# DATA_DIR is bound late by wire(), hence the per-request lookup.
+get_router_stats_aggregate = _register_router_stats_routes(
+    bp, data_dir_fn=lambda: DATA_DIR)
 
 # ── Agent image upload ────────────────────────────────────────────────────────
 
