@@ -45,3 +45,11 @@ websocket-client>=1.9.0
 # callers fall back to the existing pipe+shim path or an explicit error —
 # never a silent failure.
 pywinpty>=3.0.5; sys_platform == "win32"
+
+# ── Caller attribution (backlog 40260b57) ───────────────────────────────────────
+# mc/caller_attribution.py maps a loopback request's peer port to its PID and
+# walks the parent chain to see whether the caller is an agent session. Without
+# it every lookup reports 'unavailable' and POST .../agent/dispatch degrades to
+# trusting the request's own Origin header (no crash). Also used, optionally, by
+# the guardian and the PID-reuse guard.
+psutil>=5.9.0

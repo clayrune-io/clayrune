@@ -114,6 +114,7 @@ import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
 import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (Mode B)
 import mc.agent_jobs as _agent_jobs  # MC-958 follow-up: engine-agnostic background command jobs
+import mc.caller_attribution as _caller_attribution  # backlog 40260b57: who is really calling dispatch
 import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
 import mc.artifact_coverage as _artifact_coverage  # substitution check: did the turn run what was asked
 import mc.vendor_context_sync as _vendor_context_sync  # mirrors CLAUDE.md into AGENTS.md/GEMINI.md/QWEN.md
@@ -12113,6 +12114,11 @@ def agent_dispatch(project_id):
     # steward/fence.py's generalized arming) to tell attended from unattended.
     # A UI-originated dispatch (source == 'ui' or '') stays 'manual'.
     trigger_type = 'dispatch' if source == 'agent' else 'manual'
+    # Backlog 40260b57: source/client/Origin are caller-written hints. A caller
+    # that descends from a managed session process IS that session and is never
+    # attended, whatever it claims (mc/caller_attribution.py).
+    trigger_type, source = _caller_attribution.resolve_dispatch(
+        request, trigger_type, source, agent_sessions, tracked_processes)
     try:
         session_id = _dispatch_agent_internal(project_id, claude_task, resume_id,
                                               incognito=incognito,

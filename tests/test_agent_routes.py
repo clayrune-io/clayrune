@@ -1721,6 +1721,11 @@ def test_dispatch_route_keeps_manual_trigger_type_for_explicit_ui_client(client,
     captured = {}
     monkeypatch.setattr(ar, '_dispatch_agent_internal',
                         lambda *a, **kw: captured.update(kw) or 'sid-x')
+    # Backlog 40260b57: with no Origin and no attributable peer, a dispatch fails
+    # closed to 'dispatch' whenever a managed session process exists. Pin the
+    # unattributed precondition (tracked_processes leaks between tests) so this
+    # still tests the hinted-source path, not the attribution fallback.
+    monkeypatch.setattr(ar._caller_attribution, 'managed_roots', lambda *a: {})
     resp = client.post('/api/project/p1/agent/dispatch',
                        json={'task': 'do a thing', 'source': 'ui'})
     assert resp.status_code == 200
