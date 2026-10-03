@@ -5172,10 +5172,22 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # a dispatched worker's mid-way state IS its own brief, already in `task`.
     if not incognito and not _task_shape and state.CONFIG.get('continuity_enabled', True):
         try:
-            from mc.memory import render_continuity as _render_cont
-            # Scoped to THIS agent (same string as "Your name is …", which is
-            # what keeps read and write asking for the same bucket).
-            _cont = _render_cont(project, owner=agent_name)
+            from mc.memory import (render_continuity as _render_cont,
+                                    _session_owner as _cont_session_owner)
+            # Scoped to THIS agent, resolved by the SAME function the write
+            # side files under (`_session_owner`), so the two cannot diverge
+            # (3db65948). That needs the live session's shape; a session that
+            # is not registered yet (first turn, planned id) falls back to the
+            # name this prompt just announced. None = a dispatched global
+            # helper: it keeps no bucket, so it reads as an outsider.
+            _cont_sess = agent_sessions.get(session_id) if session_id else None
+            _cont_owner = agent_name
+            if _cont_sess and _cont_sess.get('character'):
+                _cont_owner = _cont_session_owner(_cont_sess)
+            if _cont_owner is None:
+                _cont = _render_cont(project, owner=agent_name, reader_owns=False)
+            else:
+                _cont = _render_cont(project, owner=_cont_owner)
             if _cont:
                 parts.append(_cont)
         except Exception as e:
