@@ -49,7 +49,7 @@ async function openSecretsVault() {
         <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
       </div>
     </div>
-    <div style="padding:4px 24px 20px 28px">
+    <div class="modal-scroll-body" style="padding:4px 24px 20px 28px">
       <div style="font-size:12px;color:var(--text-faint);line-height:1.55;margin-bottom:12px">
         Passwords and tokens agents can <em>use</em> without ever seeing them.
         Type credentials here — never in the chat, where they'd be saved to the
@@ -323,7 +323,7 @@ function openVaultLockNow() {
         <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
       </div>
     </div>
-    <div style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
+    <div class="modal-scroll-body" style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
       <div style="font-size:11px;color:var(--text-faint);line-height:1.55">
         Re-enter your dashboard passcode to lock the vault now.
       </div>
@@ -388,7 +388,7 @@ function openVaultRetireLegacy() {
         <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
       </div>
     </div>
-    <div style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
+    <div class="modal-scroll-body" style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
       <div style="font-size:11px;color:var(--text-faint);line-height:1.55">
         Moves the legacy master-key copy (DPAPI mirror / OS keyring entry)
         into a quarantine directory outside the passphrase lock's reach. It
@@ -480,7 +480,7 @@ function openVaultSetPassphrase() {
         <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
       </div>
     </div>
-    <div style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
+    <div class="modal-scroll-body" style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
       <div style="font-size:11px;color:var(--text-faint);line-height:1.55">
         The server will start locked after every restart until a human unlocks
         it from this dashboard. You'll also get a one-time recovery key —
@@ -556,7 +556,7 @@ function _showVaultRecoveryKey(recoveryKey) {
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
       <span style="font-size:16px;font-weight:700;color:var(--text)">Save your recovery key</span>
     </div>
-    <div style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
+    <div class="modal-scroll-body" style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
       <div style="font-size:11px;color:var(--text-faint);line-height:1.55">
         This is shown <strong>once</strong>. It unlocks the vault if you ever
         forget the passphrase — there is no other way in.
@@ -595,7 +595,7 @@ function openVaultChangePassphrase() {
         <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
       </div>
     </div>
-    <div style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
+    <div class="modal-scroll-body" style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
       <div style="font-size:11px;color:var(--text-faint);line-height:1.55">
         Your recovery key from setup still works after this — only the
         passphrase leg changes.
@@ -920,7 +920,7 @@ async function openSecretEditor(name, preset) {
         <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
       </div>
     </div>
-    <div style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
+    <div class="modal-scroll-body" style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
 
       <div style="font-size:11px;color:var(--text-faint);line-height:1.55;
                   padding:8px 12px;border:1px solid var(--border);border-radius:4px">
@@ -945,10 +945,13 @@ async function openSecretEditor(name, preset) {
           style="width:100%;padding:6px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);
                  font-family:var(--mono);${lockName ? 'opacity:0.6' : ''}">
-        <div style="font-size:10px;color:var(--text-faint);margin-top:3px">
-          Lowercase, dot-namespaced. Referenced in tasks as
-          <code>{{secret:reddit.password}}</code>.
+        <div id="sec-name-help" style="font-size:10px;color:var(--text-faint);margin-top:3px">
+          Lowercase letters, digits, <code>.</code> <code>-</code> <code>_</code> only
+          &mdash; no spaces or capitals, up to 64 characters, starting with a letter or digit.
+          Referenced in tasks as <code>{{secret:reddit.password}}</code>.
         </div>
+        <div id="sec-name-fix" hidden style="font-size:11px;margin-top:5px;line-height:1.5;
+             color:var(--danger,#c0553f)"></div>
       </div>
 
       <div id="sec-user-block">
@@ -1039,7 +1042,15 @@ async function openSecretEditor(name, preset) {
         </label>
       </div>
 
-      <div id="sec-status" style="font-size:11px;color:var(--text-faint);min-height:14px"></div>
+    </div>
+    <!-- Pinned OUTSIDE the scroll body: the outcome line and the Save button
+         stay on screen however long the form is (a status line at the foot of
+         the scrolled form sat below the fold, so a failed save looked like
+         nothing happening). -->
+    <div style="flex-shrink:0;padding:10px 24px 14px 28px;border-top:1px solid var(--border);
+                display:flex;flex-direction:column;gap:8px">
+      <div id="sec-status" role="alert" aria-live="polite" style="font-size:12px;line-height:1.45;
+           color:var(--text-faint);min-height:16px;overflow-wrap:anywhere"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn-secondary" onclick="closeModalById('${modalId}')">Cancel</button>
         <button class="btn-add" id="sec-save" onclick="saveSecret('${modalId}', ${isNew})">
@@ -1064,6 +1075,7 @@ async function openSecretEditor(name, preset) {
       if (found !== _secPreset) _secApplyPreset(found); else _secRender();   // re-render: {{user:NAME}} help follows the name
     };
     nameEl.addEventListener('input', retarget);
+    nameEl.addEventListener('input', _secCheckName);
     _secLoadPresets();
   }
   const first = document.getElementById(isNew && !lockName ? 'sec-name' : 'sec-value');
@@ -1085,6 +1097,64 @@ function _secScopeChanged() {
   if (sel) sel.style.display = isProject ? '' : 'none';
 }
 
+// Same rule as mc/secrets_store.py _NAME_RE. The server stays the authority; this
+// only catches the common slip (capitals, spaces) before the passcode prompt.
+const _SEC_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+// 'IIElevenlabs key' -> 'iielevenlabs-key'. '' when nothing usable survives.
+function _secSlug(raw) {
+  return String(raw || '').trim().toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^[^a-z0-9]+/, '')
+    .slice(0, 64)
+    .replace(/[-._]+$/, '');
+}
+
+function _secNameProblem(name) {
+  if (_SEC_NAME_RE.test(name)) return '';
+  const bits = [];
+  if (/[A-Z]/.test(name)) bits.push('capital letters');
+  if (/\s/.test(name)) bits.push('spaces');
+  if (/[^A-Za-z0-9._\-\s]/.test(name)) bits.push('other symbols');
+  if (name.length > 64) bits.push('more than 64 characters');
+  if (/^[^A-Za-z0-9]/.test(name)) bits.push('a leading symbol');
+  return 'A secret name cannot contain ' + (bits.join(', ') || 'those characters')
+    + '. Use lowercase letters, digits, "." "-" "_".';
+}
+
+function _secUseSlug(slug) {
+  const el = document.getElementById('sec-name');
+  if (!el) return;
+  el.value = slug;
+  el.dispatchEvent(new Event('input', { bubbles: true }));   // re-run preset lookup + live check
+  el.focus();
+}
+
+// Shows the rule violation (and the lowercase suggestion) under the field. Returns
+// the problem text, '' when the name is fine or the field is not editable.
+function _secCheckName() {
+  const el = document.getElementById('sec-name');
+  const fix = document.getElementById('sec-name-fix');
+  if (!el || !fix) return '';
+  const name = el.value.trim();
+  const problem = (el.readOnly || !name) ? '' : _secNameProblem(name);
+  el.style.borderColor = problem ? 'var(--danger,#c0553f)' : '';
+  if (!problem) { fix.hidden = true; fix.textContent = ''; return ''; }
+  const slug = _secSlug(name);
+  fix.hidden = false;
+  fix.textContent = problem + ' ';
+  if (slug && slug !== name && _SEC_NAME_RE.test(slug)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn-header-action';
+    b.style.cssText = 'padding:2px 8px;font-size:11px;margin-left:2px;font-family:var(--mono)';
+    b.textContent = 'Use ' + slug;
+    b.onclick = () => _secUseSlug(slug);
+    fix.appendChild(b);
+  }
+  return problem;
+}
+
 async function saveSecret(modalId, isNew) {
   const status = document.getElementById('sec-status');
   const btn = document.getElementById('sec-save');
@@ -1095,11 +1165,26 @@ async function saveSecret(modalId, isNew) {
   const scopeIsProject = document.querySelector('input[name="sec-scope"]:checked')?.value === 'project';
   const scope = scopeIsProject ? (document.getElementById('sec-project')?.value || '') : 'global';
 
-  const fail = (msg) => { if (status) { status.textContent = msg; status.style.color = 'var(--danger,#c0553f)'; } };
+  // A failure has to land where the eye already is: the pinned footer beside Save,
+  // boxed and scrolled into view, plus a toast that outlives a closed modal.
+  const fail = (msg) => {
+    if (status) {
+      status.textContent = msg;
+      status.style.cssText += ';color:var(--danger,#c0553f);padding:6px 10px;border:1px solid var(--danger,#c0553f);border-radius:4px';
+      status.scrollIntoView({ block: 'nearest' });
+    }
+    showToast('Not saved: ' + msg, 8000);
+  };
   // A Google Authenticator export names its own accounts, so the name field is
   // not required (and would be meaningless) for that path. Only a Login has 2FA.
   const isBulkImport = _secType === 'login' && /^otpauth-migration:\/\//i.test(value.trim());
   if (!name && !isBulkImport) return fail('Give it a name.');
+  // Checked BEFORE the passcode prompt: a bad name used to cost a passcode entry
+  // and a server 400 that nobody saw.
+  if (!isBulkImport && !nameEl?.readOnly) {
+    const problem = _secCheckName();
+    if (problem) { nameEl.focus(); return fail(problem); }
+  }
   if (isNew && !value) return fail(_secPreset ? `Paste the ${_secPreset.secret_label}.` : 'Paste the value you want stored.');
   if (scopeIsProject && !scope) return fail('Pick a project, or choose “Every project”.');
   // A type with no username slot (API key, Token, and so the Gemini/OpenAI
@@ -1122,7 +1207,7 @@ async function saveSecret(modalId, isNew) {
   if (value) body.value = value;
 
   if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
-  if (status) { status.textContent = ''; status.style.color = 'var(--text-faint)'; }
+  if (status) { status.textContent = ''; status.style.cssText += ';color:var(--text-faint);padding:0;border:0'; }
   try {
     // A Google Authenticator export carries MANY accounts, so it can't go
     // through the single-secret path — route it to the importer instead of
