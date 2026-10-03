@@ -63,7 +63,7 @@ const providers = [
     remote_login: false, install_hint: 'npm install -g @qwen-code/qwen-code', capabilities: {}, default: false, in_use: false },
 ];
 let config = { default_provider: 'claude' };
-const calls = { install: [], batch: [], probe: [], put: [], refreshList: 0, login: [], remoteLogin: [] };
+const calls = { passcodes: [], install: [], batch: [], probe: [], put: [], refreshList: 0, login: [], remoteLogin: [] };
 
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1000, height: 900 } });
@@ -107,10 +107,11 @@ await page.route('**/*', (route) => {
   }
   if (path === '/api/agent/providers/install-launch') {
     calls.batch.push(JSON.parse(req.postData() || '{}').names);
+    calls.passcodes.push(JSON.parse(req.postData() || '{}').passcode);
     return json({ ok: true, installed: JSON.parse(req.postData() || '{}').names });
   }
   let m = path.match(/^\/api\/agent\/provider\/([^/]+)\/install-launch$/);
-  if (m) { calls.install.push(m[1]); return json({ ok: true }); }
+  if (m) { calls.install.push(m[1]); calls.passcodes.push(JSON.parse(req.postData() || '{}').passcode); return json({ ok: true }); }
   m = path.match(/^\/api\/agent\/([^/]+)\/auth-probe$/);
   if (m) {
     calls.probe.push(m[1]);
@@ -225,17 +226,33 @@ try {
   if (process.env.MC_SMOKE_SHOT) await page.screenshot({ path: process.env.MC_SMOKE_SHOT.replace(/(\.\w+)?$/, '-desktop$1') });
 
   // ── wiring ─────────────────────────────────────────────────────────────
+  // MC-1030: install-launch is human-only, so each Install click raises the
+  // dashboard-passcode prompt; nothing is sent until it is answered.
+  const answerPasscode = async (pc) => {
+    await page.waitForSelector('input[id^="hp-passcode-"]', { timeout: 10000 });
+    await page.fill('input[id^="hp-passcode-"]', pc);
+    await page.click('.modal-layer button.btn-add:has-text("Confirm")');
+  };
   await page.click('#settings-providers-section .prov-row[data-provider="qwen"] .prov-install');
+  await page.waitForSelector('input[id^="hp-passcode-"]', { timeout: 10000 });
+  check(calls.install.length === 0, 'Install raises the passcode prompt first (nothing sent yet)',
+    `install calls before the prompt was answered: ${calls.install}`);
+  await answerPasscode('smoke-pass-1');
   await page.waitForFunction(() => document.getElementById('prov-install-msg-qwen')?.textContent.includes('terminal opened'));
   check(calls.install.join() === 'qwen', 'Install -> POST provider/qwen/install-launch',
     `install calls: ${calls.install}`);
+  check(calls.passcodes[0] === 'smoke-pass-1', 'Install request carries the retyped passcode',
+    `passcodes: ${calls.passcodes}`);
 
   await page.check('#settings-providers-section .prov-row[data-provider="qwen"] .settings-prov-install-sel');
   await page.click('#settings-prov-install-selected');
+  await answerPasscode('smoke-pass-2');
   await page.waitForFunction(() => document.getElementById('prov-install-msg-qwen')?.textContent.includes('terminal opened'));
   check(calls.batch.length === 1 && calls.batch[0].join() === 'qwen',
     'Install selected -> ONE batch request naming the ticked vendor',
     `batch calls: ${JSON.stringify(calls.batch)}`);
+  check(calls.passcodes[1] === 'smoke-pass-2', 'Install selected request carries the retyped passcode',
+    `passcodes: ${calls.passcodes}`);
 
   await page.click('#settings-providers-section .prov-row[data-provider="gemini"] .prov-sign-in');
   await page.waitForFunction(() => true);

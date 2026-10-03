@@ -2971,6 +2971,13 @@ def agent_provider_install_launch(name):
     available — callers should show `command` as copy-paste text and let the
     user continue instead of blocking on an install this server can't do.
     """
+    # MC-1030: running a software install/update is human-only. The body
+    # carries the retyped dashboard passcode, same gate as the secrets and
+    # attend-once routes -- an agent's own curl cannot produce it.
+    body = request.get_json(silent=True) or {}
+    refusal = _require_human_passcode(body)
+    if refusal is not None:
+        return refusal
     try:
         rt = _agent_runtime.get_runtime(name)
     except KeyError:
@@ -2980,7 +2987,7 @@ def agent_provider_install_launch(name):
     # so the user updates from the button and never types a command into a
     # shell that may have no npm (nvm is sourced only inside the install
     # terminal).
-    want_update = bool((request.get_json(silent=True) or {}).get('update'))
+    want_update = bool(body.get('update')) if isinstance(body, dict) else False
     try:
         h = rt.health_check()
         hint = (h.update_hint if want_update else h.install_hint) or ''
@@ -3052,6 +3059,10 @@ def agent_providers_install_launch_batch():
     without failing the whole batch.
     """
     body = request.get_json(silent=True) or {}
+    # MC-1030: human-only, same gate as the single-provider route above.
+    refusal = _require_human_passcode(body)
+    if refusal is not None:
+        return refusal
     names = [str(n).strip().lower() for n in (body.get('names') or []) if str(n).strip()]
     if not names:
         return jsonify({'ok': False, 'error': 'no providers given', 'command': ''}), 200

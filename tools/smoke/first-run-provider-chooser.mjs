@@ -259,6 +259,17 @@ try {
       const btn = label && label.querySelector('button[onclick*="providerInstall"]');
       if (btn) btn.click();
     });
+    // MC-1030: install-launch is human-only. This fixture reports no passcode
+    // configured, so the prompt is the set-one form, then Confirm; nothing is
+    // sent to the server before it is answered.
+    const installNewInput = page.locator('input[id^="hp-new-"]');
+    await installNewInput.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    if (installLaunchCalls !== 0) fail(`Install must not reach the server before the passcode prompt is answered, got ${installLaunchCalls} call(s)`);
+    else ok('Install raises the passcode prompt first (nothing sent to /install-launch yet)');
+    await installNewInput.fill('smoke-pass-0');
+    await page.click('button:has-text("Set passcode & continue")');
+    await page.waitForTimeout(150);
+    await page.click('button:has-text("Confirm")');
     await page.waitForTimeout(300);
     if (installLaunchCalls !== 1) fail(`Install button should call /install-launch once, got ${installLaunchCalls}`);
     else ok('Install button calls POST /api/agent/provider/gemini/install-launch');

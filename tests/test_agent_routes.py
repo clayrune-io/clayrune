@@ -173,6 +173,24 @@ def client(tmp_path, monkeypatch):
         mc_state.agent_sessions.update(sess_snapshot)
 
 
+@pytest.fixture(autouse=True)
+def _install_launch_gate_open(monkeypatch):
+    """MC-1030: the install-launch routes now need the retyped dashboard
+    passcode. This file's install tests are about WHAT gets launched, so the
+    gate is opened for those two paths only (every other route keeps the real
+    `_require_human_passcode`, e.g. attend-once below). The gate itself is
+    tested in tests/test_install_launch_gate.py."""
+    from flask import request
+    from mc.blueprints import agent_routes as ar
+    real = ar._require_human_passcode
+
+    def _gate(data):
+        if request.path.endswith('/install-launch'):
+            return None
+        return real(data)
+    monkeypatch.setattr(ar, '_require_human_passcode', _gate)
+
+
 # ── registration parity — the move's load-bearing guard ───────────────────────
 
 def test_blueprint_registered(client):

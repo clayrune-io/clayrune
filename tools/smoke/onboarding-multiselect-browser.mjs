@@ -42,6 +42,15 @@ const advancedFlags={}, ADV_FEATURES=[]; function esc(s){return String(s??'').re
 function showToast(){} function showDesktop(){} function refreshSilent(){} function refreshAuthStatus(){}
 async function saveSetting(k,v){_globalConfig[k]=v;}
 async function _ensureAgentProviders(){const r=await fetch('/api/agent/providers'); _agentProviders=await r.json();}
+// MC-1030: install-launch is human-only. Stand-in for human-proof-modal.js's
+// humanProofFetch: same contract (merges the retyped passcode into the JSON
+// body, resolves {ok,status,body}), minus the modal. The mock server below
+// 403s any install-launch request that arrives without the passcode.
+async function humanProofFetch(url, init, proof){
+  const body=Object.assign({}, JSON.parse((init&&init.body)||'{}'), {passcode:'smoke-pass'});
+  const r=await fetch(url, Object.assign({}, init, {headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}));
+  return {ok:r.ok, status:r.status, body:await r.json().catch(()=>({}))};
+}
 const browserLoginCalls=[]; function stubTerminalLogin(name){browserLoginCalls.push(name);} window.browserLoginCalls=browserLoginCalls;
 // Stand-in for terminal.js's real openTerminalPopout: this smoke targets the
 // NEW stacking/docking code first-run.js and app.css added around a live
@@ -81,6 +90,10 @@ try {
     // FAILED-vendor, batch-finished status feed.
     if (path === '/api/agent/providers/install-launch' && req.method === 'POST') {
       let raw = ''; req.on('data', c => { raw += c; }); req.on('end', () => {
+        if (JSON.parse(raw || '{}').passcode !== 'smoke-pass') {
+          res.writeHead(403, {'content-type': 'application/json'});
+          return res.end(JSON.stringify({error: 'bad_passcode'}));
+        }
         const names = JSON.parse(raw || '{}').names || [];
         installCalls.push(...names);
         installLaunchCalls += 1;
