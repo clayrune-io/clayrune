@@ -35,7 +35,7 @@ from mc.usage_breakdown_aggregate import _same_reset as _ub_same_reset  # MC-998
 from mc.usage_breakdown_aggregate import reset_drop_starts as _ub_reset_drop_starts
 from mc import slash_commands as slash_cmds
 from mc.atomic_json import write_json_atomic
-from mc.update_requirements import sync_requirements
+from mc import update_requirements
 from mc.core import _atomic_write_text, _log, now_iso, path_is_within, time_ago
 from mc.state import (
     _UPDATE_CHECK_BOOT_DELAY_S,
@@ -2280,6 +2280,9 @@ def system_update_status():
         # from before that guard existed can already have one on disk — this
         # is what tells the human, rather than leaving it silent.
         'projects_in_install_dir': _projects_pointing_at_install_dir(repo_root),
+        # Last pip sync of requirements.txt (boot or update): the Settings row
+        # shows it when it failed.
+        'requirements': update_requirements.get_state(),
     })
 
 
@@ -2616,10 +2619,12 @@ def system_update():
 
     # The pull changes code only. A release that adds a dependency (psutil,
     # for dispatch caller attribution) must also reach the venv, or the new
-    # code runs without it. Reported in the response; never undoes the pull.
-    requirements = sync_requirements(_git, repo_root, previous_commit,
-                                     run_kwargs={'creationflags': _POPEN_FLAGS,
-                                                 'startupinfo': _STARTUPINFO})
+    # code runs without it. Kicked in the background (pip can take minutes);
+    # its state rides on the response and on /api/system/update/status.
+    # Never undoes the pull.
+    requirements = update_requirements.start_background_sync(
+        repo_root, trigger='update',
+        run_kwargs={'creationflags': _POPEN_FLAGS, 'startupinfo': _STARTUPINFO})
 
     rc, new_sha = _git(['rev-parse', '--short', 'HEAD'], repo_root)
     rc2, log_out = _git(['log', '-5', '--pretty=format:%h %s'], repo_root)
@@ -2637,8 +2642,8 @@ def system_update():
         # The UI shows this verbatim so the user knows how to get the work
         # back: `git stash list` to find it, `git stash apply` to restore.
         'stashed': stash_ref,
-        # {'ran','ok','reason','rc','detail'}: ok False = pip failed and the
-        # installed packages are behind the code (the pull itself is kept).
+        # update_requirements.get_state(): status running|ok|failed|skipped.
+        # `failed` = installed packages are behind the code (pull is kept).
         'requirements': requirements,
     })
 

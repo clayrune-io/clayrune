@@ -200,6 +200,63 @@ try {
     ? ok('stash button hides itself after a successful update')
     : fail('stash button still showing after update succeeded');
 
+  // ── 5. Last requirements sync (pip, run in the background) ──────────────
+  // Boot/update install the venv's packages. A failure used to be invisible
+  // while dispatch attribution quietly lost psutil; the row now says so,
+  // in plain words, with the tail of pip's output.
+  const noteText = () => page.evaluate(
+    () => document.getElementById('update-requirements-note')?.textContent || '');
+  statusBody = CLEAN_STATUS;
+  await openServerSettings();
+  await page.waitForFunction(
+    () => (document.getElementById('update-status-hint')?.textContent || '').includes('Up to date'),
+    { timeout: 5000 });
+  (await noteText()) === ''
+    ? ok('no requirements field: no packages note')
+    : fail('packages note shown with no sync state');
+
+  statusBody = { ...CLEAN_STATUS, requirements: { status: 'ok', detail: 'Successfully installed psutil' } };
+  await openServerSettings();
+  await page.waitForFunction(
+    () => (document.getElementById('update-status-hint')?.textContent || '').includes('Up to date'),
+    { timeout: 5000 });
+  (await noteText()) === ''
+    ? ok('successful sync: nothing shown')
+    : fail('packages note shown after a successful sync');
+
+  statusBody = { ...CLEAN_STATUS, requirements: { status: 'running', detail: '' } };
+  await openServerSettings();
+  await page.waitForFunction(() => !!document.getElementById('update-requirements-note'), { timeout: 5000 });
+  /Installing Python packages/.test(await noteText())
+    ? ok('sync in flight: "Installing Python packages in the background"')
+    : fail(`running note wrong: "${await noteText()}"`);
+
+  statusBody = { ...CLEAN_STATUS, requirements: { status: 'failed', rc: 1,
+    detail: ['Collecting psutil',
+      'ERROR: No matching distribution found for psutil<script>x</script>'].join(String.fromCharCode(10)) } };
+  await openServerSettings();
+  await page.waitForFunction(() => !!document.getElementById('update-requirements-note'), { timeout: 5000 });
+  const failedNote = await noteText();
+  /Python packages could not be updated/.test(failedNote)
+    && /No matching distribution found for psutil/.test(failedNote)
+    && /try again the next time/.test(failedNote)
+    ? ok('failed sync: plain-words note with pip detail and retry promise')
+    : fail(`failed note wrong: "${failedNote}"`);
+  const injected = await page.evaluate(
+    () => document.querySelector('#update-requirements-note script') !== null);
+  !injected
+    ? ok('pip output is escaped (no markup injected into the row)')
+    : fail('pip output rendered as HTML');
+  const hintStillOk = await page.evaluate(
+    () => (document.getElementById('update-status-hint')?.textContent || '').includes('Up to date'));
+  hintStillOk
+    ? ok('the update status itself is still shown above the note')
+    : fail('failed-sync note replaced the update status');
+  if (process.env.MC_SMOKE_SHOT_REQ) {
+    await page.screenshot({ path: process.env.MC_SMOKE_SHOT_REQ });
+    ok('screenshot of the failed-sync state written to ' + process.env.MC_SMOKE_SHOT_REQ);
+  }
+
   pageErrors.length === 0 ? ok('no uncaught page errors throughout')
     : pageErrors.forEach(e => fail('uncaught: ' + e));
 } finally {
