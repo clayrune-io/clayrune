@@ -9,7 +9,7 @@
  * Backlog 321d8efc, Ron: "Split view should be allowed between different
  * agents and not just single agent." dd80266 (2026-09-14) already let the
  * 2nd pane be any conversation of the CURRENT project. The gap this pins:
- * the "Split with another project…" picker (rail header, desktop only)
+ * the "View another project's chat beside this…" picker (rail header, desktop only)
  * must open a conversation OWNED by a different project, and every action
  * in that pane — render, Send — must target that project, not the primary's.
  * A regression here would either fail to render pane 2's own history, or
@@ -118,7 +118,7 @@ try {
     const b = document.querySelector('.agent-rail-crossproj-btn');
     return b ? parseFloat(getComputedStyle(b).opacity) > 0 : false;
   });
-  check(btnVisible, '"Split with another project…" button visible', 'cross-project split button missing or hidden');
+  check(btnVisible, `"View another project's chat beside this…" button visible`, 'cross-project split button missing or hidden');
 
   await page.click('.agent-rail-crossproj-btn');
   await page.waitForSelector('.agent-rail-crossproj-row', { timeout: 5000 });

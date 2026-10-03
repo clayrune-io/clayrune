@@ -1956,7 +1956,7 @@ function agentPanelHTML(p) {
     return `<div class="agent-panel agent-3pane">
       <div class="agent-rail"${_railStyle}>
         <button class="conv-newbtn agent-rail-new" onclick="newAgentTab('${esc(p.id)}')">&#43; New conversation</button>
-        ${activeSessionId ? `<button class="agent-rail-crossproj-btn" onclick="toggleCrossProjectPicker('${esc(p.id)}')" title="Open a conversation from another project beside this one">&#8646; Split with another project&hellip;</button>` : ''}
+        ${activeSessionId ? `<button class="agent-rail-crossproj-btn" onclick="toggleCrossProjectPicker('${esc(p.id)}')" title="Open a conversation from another project beside this one">&#8646; View another project's chat beside this&hellip;</button>` : ''}
         ${_crossProjectPickerOpen[p.id] ? `<div class="agent-rail-crossproj-panel">${_crossProjectPickerHTML(p)}</div>` : ''}
         <div class="rail-mode" role="tablist">
           <button class="rail-mode-btn${_mode === 'chats' ? ' on' : ''}" role="tab"
@@ -4486,7 +4486,7 @@ window.splitPaneHTML = splitPaneHTML;
 window.openInSplit = openInSplit;
 window.closeSplitPane = closeSplitPane;
 
-// "Split with another project" — desktop-only picker that lists OTHER
+// "View another project's chat beside this" — desktop-only picker that lists OTHER
 // projects' recent conversations, so the 2nd pane isn't limited to this
 // project's own rail. agentHistory already spans every project the client
 // has loaded status for, so no extra fetch is needed to seed the list.
