@@ -3,6 +3,7 @@
 # (python server.py) and is also imported by app.py's Flask thread; either path
 # rejects a too-old interpreter before the 3.10+ import chain loads.
 from mc import preflight  # noqa: F401
+from mc import launch_marker as _launch_marker  # per-launch unattended marker (MC-1040)
 from mc.proc_kill import POPEN_NEW_SESSION
 
 import hashlib
@@ -3151,6 +3152,7 @@ def _claude_followup_hook(handle, message, attachments=None):
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, cwd=pp,
             text=True, encoding='utf-8', errors='replace',
+            env=_launch_marker.launch_env(existing.get('trigger_type')),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
         existing['proc'] = proc
