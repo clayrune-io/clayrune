@@ -178,6 +178,44 @@ async function run(browser) {
   check(flags['ch-li-page'][0] === '4px' && flags['ch-x-ron'][0] !== '4px' && flags['ch-li-page'][1] !== flags['ch-x-ron'][1],
         'a re-auth tile is flagged (heavy left edge, amber pill) and a connected one is not', `flags wrong: ${JSON.stringify(flags)}`);
 
+  // Marks wear the vendor's brand colour behind a readable glyph (Ron 2026-10-03);
+  // blog / unknown stay the neutral mark. Contrast is WCAG on the painted colours.
+  const marks = await page.$$eval('[data-conn-tile]', (els) => {
+    const lin = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    const lum = (rgb) => 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2]);
+    const parse = (s) => s.match(/\d+/g).slice(0, 3).map(Number);
+    return Object.fromEntries(els.map((e) => {
+      const m = e.querySelector('.desk-v1-conn-tile-mark'); const cs = getComputedStyle(m);
+      const a = lum(parse(cs.backgroundColor)), b = lum(parse(cs.color));
+      return [e.dataset.connTile, { bg: cs.backgroundColor, brand: m.dataset.brand || null, ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) }];
+    }));
+  });
+  check(marks['ch-x-ron'].bg === 'rgb(0, 0, 0)' && marks['ch-x-ron'].brand === 'x'
+        && marks['ch-li-page'].bg === 'rgb(10, 102, 194)' && marks['ch-li-page'].brand === 'linkedin',
+        'the X mark is #000000 and the LinkedIn mark is #0A66C2', `brand backgrounds wrong: ${JSON.stringify([marks['ch-x-ron'], marks['ch-li-page']])}`);
+  check(marks['source:yt'].bg === 'rgb(255, 0, 0)' && marks['source:gdrive'].bg === 'rgb(26, 115, 232)' && marks['source:gphotos'].bg === 'rgb(234, 67, 53)',
+        'YouTube source, Google Drive and Google Photos marks carry their brand colours', `source marks wrong: ${JSON.stringify([marks['source:yt'], marks['source:gdrive'], marks['source:gphotos']])}`);
+  check(marks['ch-blog'].brand === null,
+        'the blog mark stays the neutral mark (no brand colour)', `blog mark not neutral: ${JSON.stringify(marks['ch-blog'])}`);
+  const weak = Object.entries(marks).filter(([, m]) => m.ratio < 4.5);
+  check(weak.length === 0, `every mark's glyph reads at WCAG AA (min ${Math.min(...Object.values(marks).map((m) => m.ratio)).toFixed(2)}:1)`, `marks under 4.5:1: ${JSON.stringify(weak)}`);
+
+  // Add service: the border is solid in every state (a dotted edge read as broken).
+  const addBorder = () => page.$eval('[data-conn-add-tile]', (e) => { const s = getComputedStyle(e); return [s.borderTopStyle, s.borderRightStyle, s.borderBottomStyle, s.borderLeftStyle, s.outlineStyle].join('/'); });
+  const solid = (s) => s.split('/').slice(0, 4).every((v) => v === 'solid');
+  const states = { rest: await addBorder() };
+  await page.hover('[data-conn-add-tile]'); states.hover = await addBorder();
+  await page.mouse.move(0, 0);
+  await page.keyboard.press('Tab'); await page.focus('[data-conn-add-tile]'); states.focus = await addBorder();
+  await page.click('[data-conn-add-tile]'); await page.waitForSelector('[data-conn-detail="add"]', { timeout: 4000 });
+  states.selected = await addBorder();
+  await page.hover('[data-conn-add-tile]'); states.selectedHover = await addBorder();
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: resolve(SHOT_DIR, 'connections_v3_add_selected_1440.png') });
+  check(Object.values(states).every(solid), 'the Add service border is solid at rest, hover, focus, selected', `Add service border not solid: ${JSON.stringify(states)}`);
+  await page.click('[data-conn-add-tile]');
+  await page.waitForFunction(() => !document.querySelector('[data-conn-detail]'), null, { timeout: 4000 });
+
   // Open each account in turn: the action it offers, and whether it carries Read via.
   const btns = {}; const readPlatforms = [];
   for (const [id] of tiles.filter((t) => !t[0].startsWith('source:'))) {
@@ -244,7 +282,7 @@ async function run(browser) {
   check(/does not connect to this service or post to it/.test(honest) && !(await page.$('[data-conn-detail] [data-conn-action]')),
         'its detail says Clayrune does not connect to it or post to it, and offers no Connect', `service detail wrong: ${honest}`);
   check((await page.$$eval('[data-conn-tiles] > *', (e) => e[e.length - 1].hasAttribute('data-conn-add-tile'))), 'Add service is still the last tile', 'Add service not last after saving a service');
-  await page.screenshot({ path: resolve(SHOT_DIR, 'connections_v2_service_1440.png') });
+  await page.screenshot({ path: resolve(SHOT_DIR, 'connections_v3_service_1440.png') });
   await page.click('[data-svc-remove]');
   await page.waitForFunction(() => !document.querySelector('[data-conn-tile^="service:"]'), null, { timeout: 4000 });
   ok('Remove takes the saved service off the grid');
@@ -275,7 +313,7 @@ async function run(browser) {
   const gap = await page.$eval('[data-readvia-row="ch-x-ron"] [data-readvia-status]', (e) => e.textContent.trim());
   check(gap === 'Not connected (sign in to X in the browser pane)',
         `the server's coverage gap is shown verbatim: "${gap}"`, `gap text wrong: ${JSON.stringify(gap)}`);
-  await page.screenshot({ path: resolve(SHOT_DIR, 'connections_v2_1440.png') });
+  await page.screenshot({ path: resolve(SHOT_DIR, 'connections_v3_1440.png') });
 
   srv.coverage = [{ platform: 'x', state: 'not_connected', via: 'api', message: 'Not connected (no API token)' }];
   await page.click('[data-readvia-row="ch-x-ron"] [data-readvia="api"]');
@@ -361,7 +399,7 @@ async function run(browser) {
   await p.page.waitForSelector('[data-conn-detail="ch-li-page"] [data-conn-action]', { timeout: 4000 });
   const vis = await p.page.$eval('[data-conn-detail]', (e) => { const r = e.getBoundingClientRect(); return r.top < window.innerHeight && r.bottom > 0; });
   check(vis, '390px: tapping a tile brings its detail panel into view', '390px: the detail panel is off screen after tapping a tile');
-  await p.page.screenshot({ path: resolve(SHOT_DIR, 'connections_v2_390.png') });
+  await p.page.screenshot({ path: resolve(SHOT_DIR, 'connections_v3_390.png') });
   await p.ctx.close();
 }
 

@@ -301,16 +301,16 @@
     const Tiles = window.DeskV1ConnTiles;
     const items = [];
     _channels().filter((ch) => _showAccount(ch, live, sel)).forEach((ch) => items.push({
-      key: ch.id, kind: 'account', platform: ch.platform, mark: Tiles.mark(ch.platform),
+      key: ch.id, kind: 'account', platform: ch.platform, brand: ch.platform, mark: Tiles.mark(ch.platform),
       name: Tiles.plainName(ch.label) || ch.identity || ch.id, kindLabel: 'Social account', status: _status(ch),
     }));
     _contentSources().filter((a) => a.connected).forEach((a) => items.push({
-      key: `source:${a.id}`, kind: 'source', mark: a.glyph || String(a.label || '?').charAt(0).toUpperCase(),
+      key: `source:${a.id}`, kind: 'source', brand: a.id, mark: a.glyph || String(a.label || '?').charAt(0).toUpperCase(),
       name: a.label, kindLabel: 'Content source', status: { key: 'ok', word: 'Connected' },
     }));
     if (live) (_enginesCache || []).forEach((e) => {
       const st = window.DeskV1Engines.tileState(e);
-      if (st) items.push({ key: `engine:${e.id}`, kind: 'engine', mark: String(e.label || '?').charAt(0).toUpperCase(),
+      if (st) items.push({ key: `engine:${e.id}`, kind: 'engine', brand: e.id, mark: String(e.label || '?').charAt(0).toUpperCase(),
         name: e.label, kindLabel: 'Generation engine', status: st });
     });
     (window.DeskV1Services.rows() || []).forEach((s) => items.push({
