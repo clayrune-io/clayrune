@@ -654,12 +654,24 @@ async function providerInstallSelected(button, only) {
     document.querySelectorAll('.prov-install-policy-note').forEach((el) => { el.textContent = text; });
   };
   try {
-    const res = await fetch(API_BASE + '/api/agent/providers/install-launch', {
+    // MC-1030: running an install is human-only; the dashboard passcode is
+    // retyped for each launch (human-proof-modal.js).
+    const res = await humanProofFetch(API_BASE + '/api/agent/providers/install-launch', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ names }),
+    }, {
+      title: 'Install providers',
+      description: `Re-enter your dashboard passcode to install ${names.join(', ')}. This runs the vendor's install command in a terminal on this computer.`,
     });
-    const data = await res.json().catch(() => ({}));
+    if (res === null) {
+      // Passcode prompt cancelled: nothing was sent, so drop the 'queued' rows.
+      for (const name of names) {
+        delete _providerInstallProgress[name];
+        setMsg(name, 'Install not started: the dashboard passcode was not entered.');
+      }
+      return;
+    }
+    const data = res.body || {};
     if (data.ok) {
       // The install runs in Clayrune's own terminal pop-out (not an OS
       // window) so progress is visible in the dashboard and over the
@@ -692,7 +704,7 @@ async function providerInstallSelected(button, only) {
       }
     } else {
       for (const name of names) {
-        setMsg(name, data.error || 'Could not start the install.');
+        setMsg(name, data.message || data.error || 'Could not start the install.');
       }
     }
   } catch (e) {
@@ -970,11 +982,22 @@ async function providerInstall(name, btnEl, update) {
   const idleLabel = update ? 'Update' : 'Install';
   if (btnEl) { btnEl.disabled = true; btnEl.textContent = update ? 'Updating...' : 'Installing...'; }
   try {
-    const res = await fetch(API_BASE + `/api/agent/provider/${name}/install-launch`,
-                            update ? { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                       body: JSON.stringify({ update: true }) }
-                                   : { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
+    // MC-1030: running an install/update is human-only; the dashboard
+    // passcode is retyped for each launch (human-proof-modal.js).
+    const verb = update ? 'update' : 'install';
+    const res = await humanProofFetch(API_BASE + `/api/agent/provider/${name}/install-launch`, {
+      method: 'POST',
+      body: JSON.stringify(update ? { update: true } : {}),
+    }, {
+      title: update ? 'Update provider' : 'Install provider',
+      description: `Re-enter your dashboard passcode to ${verb} ${name}. This runs the vendor's ${verb} command in a terminal on this computer.`,
+    });
+    if (res === null) {
+      if (msgEl) msgEl.textContent = `The ${verb} was not started: the dashboard passcode was not entered.`;
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = idleLabel; }
+      return;
+    }
+    const data = res.body || {};
     if (data.ok) {
       if (data.session_id) {
         openTerminalPopout(window.currentProjectId, data.session_id, data.command || name, data.pty);
@@ -992,7 +1015,7 @@ async function providerInstall(name, btnEl, update) {
     } else {
       // An update never prints the raw npm line: on a Mac with an nvm-only
       // Node a plain shell has no npm, so typing it there fails.
-      if (msgEl) msgEl.textContent = data.error || (update ? 'Could not start the update.' : 'Could not start the install.');
+      if (msgEl) msgEl.textContent = data.message || data.error || (update ? 'Could not start the update.' : 'Could not start the install.');
       if (btnEl) { btnEl.disabled = false; btnEl.textContent = idleLabel; }
     }
   } catch (e) {
