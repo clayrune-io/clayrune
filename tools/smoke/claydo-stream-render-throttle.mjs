@@ -45,6 +45,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { loadStaticJsCss } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -52,10 +53,7 @@ const JS_DIR = resolve(REPO_ROOT, 'static', 'js');
 const CSS_DIR = resolve(REPO_ROOT, 'static', 'css');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 
-const JS = {};
-for (const f of readdirSync(JS_DIR)) if (f.endsWith('.js')) JS['/static/js/' + f] = readFileSync(resolve(JS_DIR, f));
-const CSS = {};
-for (const f of readdirSync(CSS_DIR)) if (f.endsWith('.css')) CSS['/static/css/' + f] = readFileSync(resolve(CSS_DIR, f));
+const STATIC = loadStaticJsCss(REPO_ROOT);
 
 const N_CHUNKS = 250;        // simulated tokens in the reply
 const BURST_SIZE = 15;       // chunks written back-to-back, no yield between them —
@@ -73,8 +71,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     return res.end(INDEX_HTML);
   }
-  if (JS[path]) { res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' }); return res.end(JS[path]); }
-  if (CSS[path]) { res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' }); return res.end(CSS[path]); }
+  if (STATIC[path]) { res.writeHead(200, { 'content-type': STATIC[path][0] }); return res.end(STATIC[path][1]); }
   if (path === '/api/projects') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('[]'); }
   if (path === '/api/config') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{}'); }
   if (path === '/api/characters') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('[]'); }

@@ -30,6 +30,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { loadStaticJsCss } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -39,8 +40,7 @@ const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf
 const ORIGIN = 'http://mc.smoke.test';
 
 const STATIC = {};
-for (const f of readdirSync(JS_DIR)) if (f.endsWith('.js')) STATIC[`/static/js/${f}`] = ['text/javascript; charset=utf-8', readFileSync(resolve(JS_DIR, f), 'utf8')];
-for (const f of readdirSync(CSS_DIR)) if (f.endsWith('.css')) STATIC[`/static/css/${f}`] = ['text/css; charset=utf-8', readFileSync(resolve(CSS_DIR, f), 'utf8')];
+Object.assign(STATIC, loadStaticJsCss(REPO_ROOT));
 
 // Shaped exactly like mc/blueprints/system_routes.py's `provider_weekly_usage`:
 // claude green (41%), codex red via `used_percent` alone (92%) — gemini is

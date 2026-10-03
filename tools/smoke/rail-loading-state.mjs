@@ -44,6 +44,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { loadStaticJsCss } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -57,8 +58,7 @@ const PID = 'smoke_rail_loading';
 // module can never silently fall through to route.abort() the way a
 // hand-maintained map would (same reasoning as channel-mode-roster.mjs).
 const STATIC = {};
-for (const f of readdirSync(JS_DIR)) if (f.endsWith('.js')) STATIC[`/static/js/${f}`] = ['text/javascript; charset=utf-8', readFileSync(resolve(JS_DIR, f), 'utf8')];
-for (const f of readdirSync(CSS_DIR)) if (f.endsWith('.css')) STATIC[`/static/css/${f}`] = ['text/css; charset=utf-8', readFileSync(resolve(CSS_DIR, f), 'utf8')];
+Object.assign(STATIC, loadStaticJsCss(REPO_ROOT));
 
 const DAVE = { name: 'dave', scope: 'global', display_name: 'dave', agent_name: 'Dave', avatar: 'fig:guard' };
 const CHARACTERS_JSON = JSON.stringify([DAVE]);

@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { seedDeskV1Fixtures } from './desk-v1-fixture-api.mjs';
+import { loadStaticJsCss } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -36,8 +37,7 @@ mkdirSync(SHOT_DIR, { recursive: true });
 const MIME = { '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
 
 const STATIC = {};
-for (const f of readdirSync(JS_DIR)) if (f.endsWith('.js')) STATIC[`/static/js/${f}`] = ['text/javascript; charset=utf-8', readFileSync(resolve(JS_DIR, f), 'utf8')];
-for (const f of readdirSync(CSS_DIR)) if (f.endsWith('.css')) STATIC[`/static/css/${f}`] = ['text/css; charset=utf-8', readFileSync(resolve(CSS_DIR, f), 'utf8')];
+Object.assign(STATIC, loadStaticJsCss(REPO_ROOT));
 // See desk-v1-review.mjs's identical stub: the Claydo FAB requests
 // /assets/claydo-*.webp; without this the network stub aborts it and every
 // screenshot near the FAB shows a broken-image glyph.
