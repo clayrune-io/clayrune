@@ -3154,6 +3154,7 @@ def _claude_followup_hook(handle, message, attachments=None):
             text=True, encoding='utf-8', errors='replace',
             env=_launch_marker.launch_env(existing.get('trigger_type')),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
+            env=_agent_runtime.claude_retry_watchdog_env(existing.get('trigger_type')),
         )
         existing['proc'] = proc
         existing['status'] = 'running'
