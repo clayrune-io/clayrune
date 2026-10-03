@@ -429,7 +429,7 @@ _PY_EXEC_OR_SEND_RE = re.compile(
 _PY_C_HAS_EXPANSION_RE = re.compile(r'\$\{?\w+|\$\(|`')
 
 
-# ── curl data-argument masking (MC-1037, 2026-10-02) ─────────────────────────
+# ── curl data-argument masking (MC-1037, 2026-10-02; reworked 2026-10-03) ────
 # A backlog POST whose JSON text merely MENTIONED pushing was blocked in
 # clayrune_cloud: `curl -s -X POST .../backlog -d '{"text":"... git push ..."}'`
 # (the apostrophe spelt '"'"'). curl never executes its arguments, so the value
@@ -447,15 +447,49 @@ _PY_C_HAS_EXPANSION_RE = re.compile(r'\$\{?\w+|\$\(|`')
 #     both reach this function, so it has to be right for both;
 #   • curl is the FIRST word of its own shell segment. `bash -c "curl ..."`,
 #     `eval curl ...`, `sudo curl ...`, `$(curl ...)` keep being scanned whole;
+#   • curl's argv is WALKED with an option-arity table, never searched: a known
+#     no-argument flag is skipped, a known value option consumes the next word,
+#     and anything else (an unknown option, `--`, -K/--config, --next/-:, a
+#     glued short value like -XPOST, any --opt=value, an option value that
+#     starts with `-`) leaves the command unchanged. A search for "-d" cannot
+#     tell the option from an operand: in `curl -o -d '--request=POST' URL`
+#     -d is -o's file name and `--request=POST` is a live option (Fenn,
+#     2026-10-03), and masking it hid a real POST from the network check;
+#   • every URL in that curl segment is Clayrune's own API
+#     (http://localhost:5199 or 127.0.0.1:5199) at a route in
+#     _CURL_PROSE_ROUTE_RE, the routes whose body is prose. A POSITIVE list:
+#     /api/project/<id>/agent/<sid>/job runs its body as a shell command, and
+#     the next such route is added the day someone writes it, so everything not
+#     named (other hosts, terminal, secrets/exec, jobs, schedules, any unknown
+#     route) is not masked;
 #   • the value is nothing but quoted pieces ('..', "..", or a mix like
-#     '..'"'"'..'), so no unquoted text or expansion can ride along;
-#   • the command does not address a route that runs shell text
-#     (/api/terminal/*, /api/secrets/exec): there the body IS a command.
+#     '..'"'"'..'), so no unquoted text or expansion can ride along.
 _CURL_DATA_OPTS = frozenset({'-d', '--data', '--data-raw', '--data-binary',
                              '--data-ascii', '--data-urlencode', '--json'})
+_CURL_NOARG_SHORT = frozenset('sSLivfkgI46N')
+_CURL_VALUE_SHORT = frozenset('XHouAebcwm')
+_CURL_NOARG_LONG = frozenset({
+    '--silent', '--show-error', '--location', '--include', '--verbose', '--fail',
+    '--fail-with-body', '--insecure', '--globoff', '--head', '--no-buffer',
+    '--compressed', '--http1.1', '--ipv4', '--ipv6'})
+_CURL_VALUE_LONG = frozenset({
+    '--request', '--header', '--output', '--user', '--user-agent', '--referer',
+    '--cookie', '--cookie-jar', '--write-out', '--max-time', '--connect-timeout',
+    '--retry', '--retry-delay', '--retry-max-time', '--url'})
 _CURL_HEADS = frozenset({'curl', 'curl.exe'})
 _CURLY_QUOTES = '‘’‚‛“”„'
-_SHELL_EXEC_ROUTE_RE = re.compile(r'/api/(?:terminal|secrets/exec)\b', re.I)
+# One path segment: never `.`/`..` (curl collapses them before sending) and
+# never a `%` (an encoded dot is still a different route to a later reader).
+_CURL_SEG = r'[A-Za-z0-9_][A-Za-z0-9_.-]*'
+_CURL_PROSE_URL_RE = re.compile(
+    r'^(?i:https?://(?:localhost|127\.0\.0\.1)):5199(?P<path>/[^?#]*)?(?:\?[\w=&.,%-]*)?$')
+_CURL_PROSE_ROUTE_RE = re.compile(
+    r'^/api/(?:'
+    rf'project/{_CURL_SEG}/(?:backlog(?:/{_CURL_SEG}){{0,3}}'
+    rf'|memory/positions(?:/{_CURL_SEG})?|memory/mints(?:/{_CURL_SEG})+'
+    r'|agent/dispatch)'
+    rf'|floor/figure/{_CURL_SEG}/name'
+    r')/?$')
 
 
 def _lex_shell_segments(cmd: str):
@@ -529,12 +563,81 @@ def _lex_shell_segments(cmd: str):
     return segments
 
 
+def _curl_prose_data_words(words):
+    """The data-value words of ONE curl segment (`words[0]` is curl) that may be
+    masked, or None when the segment cannot be PROVEN to talk only to a prose
+    route of Clayrune's own API. Walks the argv; see the section comment."""
+    def literal(word):
+        # What the word spells, or None when part of it could expand: an
+        # unquoted piece with a $, ~ or glob character is not a fixed string.
+        for quote, text in word[2]:
+            if not quote and any(c in text for c in '$~*?[]{}!'):
+                return None
+        return ''.join(text for _, text in word[2])
+
+    def value_of(k):
+        # The word after an option, as text; None when it is missing, could
+        # expand, or starts with `-` (curl would take it as the value, but a
+        # reader cannot tell it from the next option).
+        if k >= len(words):
+            return None
+        text = literal(words[k])
+        return None if text is None or text.startswith('-') else text
+
+    urls, data = [], []
+    k = 1
+    while k < len(words):
+        text = literal(words[k])
+        if text is None:
+            return None
+        if not any(q for q, _ in words[k][2]) and re.match(r'\d*[<>]', text):
+            k += 1                            # a redirection: `2>&1`, `>/dev/null`
+            continue
+        if not text.startswith('-') or text == '-':
+            urls.append(text)
+            k += 1
+            continue
+        if any(q for q, _ in words[k][2]):
+            return None                       # a quoted option: not read
+        if text.startswith('--'):
+            name, is_data = text, text in _CURL_DATA_OPTS
+            takes_value = name in _CURL_VALUE_LONG or is_data
+            skip = name in _CURL_NOARG_LONG
+        else:
+            flags = text[1:]
+            name, is_data = text, text == '-d'
+            takes_value = len(flags) == 1 and (flags in _CURL_VALUE_SHORT or is_data)
+            skip = all(c in _CURL_NOARG_SHORT for c in flags)
+        if skip:
+            k += 1
+        elif takes_value:
+            value = value_of(k + 1)
+            if value is None:
+                return None
+            if is_data:
+                if not all(q for q, _ in words[k + 1][2]):
+                    return None               # unquoted text rides along
+                data.append(words[k + 1])
+            elif name == '--url':
+                urls.append(value)
+            k += 2
+        else:
+            return None
+    if not urls or not data:
+        return None
+    for url in urls:
+        m = _CURL_PROSE_URL_RE.match(url)
+        if not m or not _CURL_PROSE_ROUTE_RE.match(m.group('path') or ''):
+            return None
+    return data
+
+
 def _mask_curl_data_args(cmd: str) -> str:
     """Replace the quoted value of a top-level curl's -d/--data*/--json with the
     inert placeholder. Returns `cmd` unchanged unless every condition in the
     section comment above holds. Never raises."""
     try:
-        if 'curl' not in cmd.lower() or _SHELL_EXEC_ROUTE_RE.search(cmd):
+        if 'curl' not in cmd.lower():
             return cmd
         segments = _lex_shell_segments(cmd)
         if not segments:
@@ -545,11 +648,8 @@ def _mask_curl_data_args(cmd: str) -> str:
             if len(head) != 1 or head[0][0] != '' or \
                     head[0][1].lower().rsplit('/', 1)[-1] not in _CURL_HEADS:
                 continue
-            for k in range(1, len(words) - 1):
-                opt, val = words[k][2], words[k + 1]
-                if len(opt) == 1 and opt[0][0] == '' and opt[0][1] in _CURL_DATA_OPTS \
-                        and all(q for q, _ in val[2]):
-                    spans.append((val[0], val[1]))
+            for val in _curl_prose_data_words(words) or ():
+                spans.append((val[0], val[1]))
         out = cmd
         for start, end in sorted(spans, reverse=True):
             out = f"{out[:start]}'{_MASK_TOKEN}'{out[end:]}"
@@ -1723,12 +1823,19 @@ def check_vault_file_access(tool_name: str, tool_input: dict,
 # Edit / MultiEdit / apply_patch `*.md` files directly inside ITS OWN project's
 # memory dir, and nothing else under `.claude`.
 #
-# "Its own project" comes from the session's cwd (the hook payload's `cwd`;
-# check_install_dir_write rests on the same fact: Clayrune launches `claude`
-# in the project, an agent worktree being <project>/.clayrune/agents/<id>),
-# NEVER from the path being written or anything else in tool_input. The dir
-# is then derived the way the server does (mc.memory._native_memory_path,
-# pinned against the real one by tests/test_fence_memory_dir.py).
+# "Its own project" is the project root the SERVER recorded for the session at
+# launch, handed in as `project_root` (main() asks GET /api/session/trigger-type,
+# keyed by the CLAUDE_CODE_SESSION_ID the CLI puts in the hook's environment, the
+# same ground-truth channel that arms the fence). It is NEVER the hook's cwd
+# or anything in tool_input: a session's cwd moves (`cd` into a nested project,
+# an added directory, a made-up `<dir>/.clayrune/agents/x`), and ownership that
+# followed it would hand the agent another project's memory (Fenn, 2026-10-03).
+# No project_root (no session id, an unreachable server, a launch that does not
+# supply one, such as the Codex hook, which carries no session id) means the
+# exception is OFF and the `.claude` rule blocks as before. The dir is then
+# derived the way the server does (mc.memory._native_memory_path, pinned
+# against the real one by tests/test_fence_memory_dir.py), including its
+# underscore-to-dash alternate, which maps from that same root.
 #
 # Allowed: <memory dir>/<name>.md, where the RESOLVED target (symlinks and
 # junctions followed, `..` collapsed, 8.3 names expanded) sits directly in
@@ -1737,7 +1844,6 @@ def check_vault_file_access(tool_name: str, tool_input: dict,
 # stream, an 8.3-looking alias, or anything we cannot resolve stays blocked.
 _MEMORY_SERVER_FILES = ('memory.md', 'memory_archive.md', 'session_log.md')
 _SHORT_NAME_ALIAS_RE = re.compile(r'~\d')
-_AGENT_WORKTREE_PARTS = ('.clayrune', 'agents')
 
 
 def _claude_projects_root() -> Path:
@@ -1748,26 +1854,19 @@ def _claude_projects_root() -> Path:
     return Path(home) / '.claude' / 'projects'
 
 
-def _session_project_root(cwd: Optional[str] = None) -> Optional[Path]:
-    """The session's project root: its cwd, or for an agent worktree
-    (<project>/.clayrune/agents/<id>[/...]) the project that owns it."""
-    try:
-        resolved = (Path(cwd) if cwd else Path.cwd()).resolve()
-    except Exception:
+def _own_memory_dir(project_root: Optional[str] = None) -> Optional[Path]:
+    """The memory dir of the project rooted at `project_root` (the server's
+    registered path), picked the way mc.memory._native_memory_path picks it
+    (including its underscore→dash alternate, which is the real one for a path
+    like `...\\_claude\\...`). None for no root or a relative one."""
+    if not project_root or not isinstance(project_root, str):
         return None
-    parts = resolved.parts
-    for i in range(1, len(parts) - 2):
-        if tuple(p.lower() for p in parts[i:i + 2]) == _AGENT_WORKTREE_PARTS:
-            return Path(*parts[:i])
-    return resolved
-
-
-def _own_memory_dir(cwd: Optional[str] = None) -> Optional[Path]:
-    """This session's project memory dir, picked the way
-    mc.memory._native_memory_path picks it (including its underscore→dash
-    alternate, which is the real one for a path like `...\\_claude\\...`)."""
-    root = _session_project_root(cwd)
-    if root is None:
+    try:
+        raw_root = Path(project_root)
+        if not raw_root.is_absolute():
+            return None
+        root = raw_root.resolve()
+    except Exception:
         return None
     encoded = str(root).replace(':', '-').replace('\\', '-').replace('/', '-')
     if not encoded:
@@ -1785,16 +1884,19 @@ def _own_memory_dir(cwd: Optional[str] = None) -> Optional[Path]:
     return mem.parent
 
 
-def _is_own_memory_topic_file(raw: str, cwd: Optional[str] = None) -> bool:
-    """True only for <this session's memory dir>/<name>.md. Fails closed: any
-    doubt, any error, is False and the `.claude` rule blocks as before."""
+def _is_own_memory_topic_file(raw: str, cwd: Optional[str] = None,
+                              project_root: Optional[str] = None) -> bool:
+    """True only for <the session's project memory dir>/<name>.md. `cwd` only
+    anchors a RELATIVE `raw`; ownership comes from `project_root` alone. Fails
+    closed: any doubt, any error, is False and the `.claude` rule blocks as
+    before."""
     try:
         if not raw or '\x00' in raw:
             return False
         stripped = raw.strip()
         if stripped.startswith(('\\\\?\\', '\\\\.\\', '//?/', '//./')):
             return False
-        mem = _own_memory_dir(cwd)
+        mem = _own_memory_dir(project_root)
         if mem is None:
             return False
         target = Path(stripped)
@@ -1820,18 +1922,21 @@ def _is_own_memory_topic_file(raw: str, cwd: Optional[str] = None) -> bool:
 
 
 def classify_action(tool_name: str, tool_input: dict,
-                    cwd: Optional[str] = None) -> FenceDecision:
+                    cwd: Optional[str] = None,
+                    project_root: Optional[str] = None) -> FenceDecision:
     """Classify any tool call. Bash is where terminal danger lives; other tools
     default to allow (edits/writes are working-tree-reversible). Extend here if a
     non-Bash irreversible surface appears (e.g. an MCP tool that sends email).
 
-    `cwd` is the hook payload's cwd (None = this process's). It is read only to
-    find the session's OWN project memory dir, never to widen anything else."""
+    `cwd` is the hook payload's cwd (None = this process's); it anchors relative
+    paths and nothing else. `project_root` is the session's project as the SERVER
+    recorded it (see "Own-project memory topic files"); None switches the
+    memory-dir exception off."""
     name = (tool_name or '')
     ti = tool_input or {}
     if name in _PATCH_TOOL_NAMES:
         for sub_name, sub_input in as_write_calls(name, ti, cwd):
-            d = classify_action(sub_name, sub_input, cwd)
+            d = classify_action(sub_name, sub_input, cwd, project_root)
             if d.blocked:
                 return d
         return FenceDecision(False, '')
@@ -1850,7 +1955,7 @@ def classify_action(tool_name: str, tool_input: dict,
         path = str(ti.get('file_path', '') or ti.get('notebook_path', '') or '')
         low = path.replace('\\', '/').lower()
         if ('/.claude/' in low or low.endswith('/.claude')) \
-                and not _is_own_memory_topic_file(path, cwd):
+                and not _is_own_memory_topic_file(path, cwd, project_root):
             return FenceDecision(True, "editing global ~/.claude config (out of project scope)",
                                  overridable=False)
         # Fence supply chain (MC-914, 2026-08-31): this hook script is re-read
@@ -2019,7 +2124,23 @@ def _lookup_trigger_type(claude_session_id: str) -> Optional[dict]:
     return {
         'trigger_type': str(data.get('trigger_type') or 'manual'),
         'fence_unattended_enabled': bool(data.get('fence_unattended_enabled', True)),
+        # The registered project path of a LIVE session; absent otherwise.
+        'project_path': data.get('project_path'),
     }
+
+
+def _launcher_project_root() -> Optional[str]:
+    """The project root the server recorded for THIS session, or None. The
+    only input to the memory-dir exception (see "Own-project memory topic
+    files"): None means the exception is off. Never raises."""
+    try:
+        sid = _session_id_from_env()
+        if not sid:
+            return None
+        root = (_lookup_trigger_type(sid) or {}).get('project_path')
+        return root if isinstance(root, str) and root.strip() else None
+    except Exception:
+        return None
 
 
 def _should_arm_for_unattended_trigger() -> bool:
@@ -2102,7 +2223,8 @@ _PASS_TRANSFER_HEADS = {
 
 
 def _blocked_leaves(tool_name: str, tool_input: dict,
-                    cwd: Optional[str] = None) -> list:
+                    cwd: Optional[str] = None,
+                    project_root: Optional[str] = None) -> list:
     """Every blocked operation inside one call: patch tools recurse into their
     writes, a chained shell command counts as more than one. Over-counting only
     ever refuses a pass, never grants one."""
@@ -2110,10 +2232,10 @@ def _blocked_leaves(tool_name: str, tool_input: dict,
         out = []
         for sub_name, sub_input in as_write_calls(tool_name, tool_input or {}, cwd):
             if sub_name in _PATCH_TOOL_NAMES:
-                d = classify_action(sub_name, sub_input, cwd)
+                d = classify_action(sub_name, sub_input, cwd, project_root)
                 out.extend([d] if d.blocked else [])
             else:
-                out.extend(_blocked_leaves(sub_name, sub_input, cwd))
+                out.extend(_blocked_leaves(sub_name, sub_input, cwd, project_root))
         return out
     if tool_name in ('Bash', 'PowerShell'):
         cmd = (tool_input or {}).get('command', '') or ''
@@ -2128,15 +2250,16 @@ def _blocked_leaves(tool_name: str, tool_input: dict,
         if not _is_plain_single_invocation(cmd):
             return [whole, whole]
         return [whole]
-    d = classify_action(tool_name, tool_input, cwd)
+    d = classify_action(tool_name, tool_input, cwd, project_root)
     return [d] if d.blocked else []
 
 
-def _pass_can_cover(calls, cwd: Optional[str] = None) -> bool:
+def _pass_can_cover(calls, cwd: Optional[str] = None,
+                    project_root: Optional[str] = None) -> bool:
     try:
         leaves = []
         for call_name, call_input in calls:
-            leaves.extend(_blocked_leaves(call_name, call_input, cwd))
+            leaves.extend(_blocked_leaves(call_name, call_input, cwd, project_root))
     except Exception:
         return False
     return len(leaves) == 1 and leaves[0].overridable
@@ -2216,6 +2339,9 @@ def main(argv=None) -> int:
 
     tool_name = payload.get('tool_name') or payload.get('toolName') or ''
     tool_input = payload.get('tool_input') or payload.get('toolInput') or {}
+    # Only a call that names something under `.claude` can use the memory-dir
+    # exception, so only that call pays for the server lookup.
+    project_root = _launcher_project_root() if '.claude' in raw.lower() else None
 
     # Project-boundary guard runs UNCONDITIONALLY, ahead of the steward/
     # unattended gate below — see check_install_dir_write's docstring for why
@@ -2271,7 +2397,7 @@ def main(argv=None) -> int:
     for call_name, call_input in calls:
         try:
             decision = classify_action(call_name, call_input,
-                                       payload.get('cwd') or None)
+                                       payload.get('cwd') or None, project_root)
         except Exception:
             return 0  # fail open
         if decision.blocked:
@@ -2283,7 +2409,8 @@ def main(argv=None) -> int:
     # Supply-chain and global-config edits are never passable, and a call that
     # bundles more than one blocked operation is refused whole: one click, one
     # operation. Those need a genuinely attended session.
-    passable = pass_eligible and _pass_can_cover(calls, payload.get('cwd') or None)
+    passable = pass_eligible and _pass_can_cover(
+        calls, payload.get('cwd') or None, project_root)
     if passable and _consume_attend_once_pass():
         return 0
 
