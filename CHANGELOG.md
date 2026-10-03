@@ -6,6 +6,23 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-03] — Memory G1: the note-write gate (report-only, unwired)
+
+- `POST` / `PATCH /api/project/<id>/memory/note` validate a topic-note write per
+  MEMORY_DESIGN_V2_SPEC §10.2: missing/unparseable frontmatter, missing
+  `name`/`description` (422 names the field), class A `.md` in a wikilink
+  (repaired at resolution, never refused), class B rename without `aka:`, class C
+  cross-vault link, class D unresolved link (near-miss candidates), link-key
+  collision. `origin`/`generated` are server-stamped; author-written `verified`
+  is discarded.
+- `memory_gate_mode` (default `report`) is now read: `report` writes anyway and
+  records the would-be rejection; `enforce` returns 422 and leaves disk untouched.
+  Rejections are counted in `data/memory_gate_log/<project>.jsonl`;
+  `mc.memory_note_gate.gate_counts(project_id)` aggregates them for the step-9
+  measurement. No existing writer goes through the route yet.
+- New files: `mc/memory_note_gate.py`, `mc/blueprints/memory_note_routes.py`,
+  `tests/test_memory_note_gate.py`.
+
 ## [2026-10-03] — Browser pane: pick an element, attach it to the chat
 
 - New crosshair button in the pane toolbar (and "Pick element" in the phone's ⋮

@@ -1142,6 +1142,15 @@ from mc.blueprints import distiller_routes as _bp_distiller  # noqa: E402
 _bp_distiller.wire(load_project_fn=_bp_projects.load_project, data_dir=DATA_DIR)
 app.register_blueprint(_bp_distiller.bp)
 
+# ── G1 note-write gate (MEMORY_DESIGN_V2_SPEC.md §10) ── POST/PATCH
+# /api/project/<id>/memory/note. Logic + counter in mc/memory_note_gate.py;
+# nothing is wired through it yet. Counter lives at data/memory_gate_log/, a
+# sibling of DATA_DIR (the DATA_DIR-pollution rule).
+from mc.blueprints import memory_note_routes as _bp_memory_note  # noqa: E402
+
+_bp_memory_note.wire(load_project_fn=_bp_projects.load_project)
+app.register_blueprint(_bp_memory_note.bp)
+
 
 # ── Beacon: cross-project situational digest ── framework-agnostic beacon/
 # package + this thin blueprint. Heartbeats persist at data/beacon/<id>.json —
