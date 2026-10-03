@@ -136,47 +136,15 @@
       </div>`;
   }
 
-  // Live only: the channels that are not here yet. Placeholder tiles, nothing to
-  // connect (each real connector is its own backlog item).
-  const PLACEHOLDER_CHANNELS = [
-    { id: 'youtube', label: 'YouTube' }, { id: 'discord', label: 'Discord' }, { id: 'reddit', label: 'Reddit' },
-  ];
-  const PLACEHOLDER_SOURCES = [
-    { id: 'gdrive', label: 'Google Drive', connected: false }, { id: 'dropbox', label: 'Dropbox', connected: false },
-  ];
-
-  // Live only: M3. Which platform, whose handle, an optional label. A credential
-  // is never asked for here: the account will name the vault entry it needs.
-  function _addFormHTML() {
-    return `
-        <form class="desk-v1-conn-add" data-conn-add autocomplete="off">
-          <div class="desk-v1-rules-group-title">Add an account</div>
-          <label class="desk-v1-conn-add-field">Platform
-            <select data-conn-add-platform class="desk-v1-rules-textinput">
-              <option value="x">X (Ron voice)</option>
-              <option value="linkedin">LinkedIn Company Page (Clayrune voice)</option>
-              <option value="blog">Blog (you publish it)</option>
-            </select></label>
-          <label class="desk-v1-conn-add-field">Handle or name
-            <input type="text" class="desk-v1-rules-textinput" data-conn-add-identity maxlength="80" placeholder="@handle, or the page name"></label>
-          <label class="desk-v1-conn-add-field">Label (optional)
-            <input type="text" class="desk-v1-rules-textinput" data-conn-add-label maxlength="80"></label>
-          <div class="desk-v1-conn-add-actions">
-            <button type="submit" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-conn-add-submit>Add account</button>
-            <span class="desk-v1-rules-hint" data-conn-add-status role="status"></span>
-          </div>
-        </form>`;
-  }
-
+  // A connected cloud drive's detail. (One that is not connected is not on this
+  // screen at all, and Clayrune cannot connect one today: see desk-v1-add-service.js.)
   function _sourceHTML(a) {
     return `
       <div class="desk-v1-conn-row" data-conn-source="${esc(a.id)}">
         <div class="desk-v1-conn-head">
           <span class="desk-v1-channel-badge">${esc(a.label)}</span>
-          <span class="desk-v1-conn-status" data-state="${a.connected ? 'ok' : 'off'}">${a.connected ? `Connected · ${esc(a.account || '')}` : 'Not connected'}</span>
-          ${a.connected ? '' : `<button type="button" class="desk-v1-conn-btn" data-conn-source-connect="${esc(a.id)}" disabled aria-disabled="true">Connect</button>`}
+          <span class="desk-v1-conn-status" data-state="ok">Connected${a.account ? ` · ${esc(a.account)}` : ''}</span>
         </div>
-        ${a.connected ? '' : '<div class="desk-v1-rules-hint">Connecting is not available yet: each real connector is its own backlog item.</div>'}
       </div>`;
   }
 
@@ -297,71 +265,107 @@
     });
   }
 
-  // M3. The account appears with a provisional `publish` and takes the server's
-  // answer (its real derived state) when it arrives.
-  function _bindAddForm(el, repaint) {
-    const form = el.querySelector('[data-conn-add]');
-    if (!form) return;
-    const status = form.querySelector('[data-conn-add-status]');
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const platform = form.querySelector('[data-conn-add-platform]').value;
-      const identity = form.querySelector('[data-conn-add-identity]').value.trim();
-      const label = form.querySelector('[data-conn-add-label]').value.trim();
-      if (!identity) { status.textContent = 'Enter the handle or page name.'; return; }
-      status.textContent = '';
-      const id = 'acct-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-      const body = { id, platform, identity, capability: platform === 'blog' ? 'manual' : 'direct' };
-      if (label) body.label = label;
-      const acc = Object.assign({ label: label || identity, voice: '', connected: false,
-        publish: { ready: false, reason: 'checking…', secret: null, unattended_ok: null } }, body);
-      const list = _channels();
-      window.DeskV1Store.write({
-        label: `Added ${acc.label}`,
-        apply: () => { list.push(acc); repaint(); },
-        unapply: () => { const i = list.indexOf(acc); if (i >= 0) list.splice(i, 1); },
-        repaint,
-        request: () => _api('POST', '/api/desk/accounts', body).then((saved) => { Object.assign(acc, saved); repaint(); return saved; }),
-        undoRequest: () => _api('DELETE', `/api/desk/accounts/${encodeURIComponent(id)}`),
-      });
-    });
+  let _enginesCache = null;   // live: GET /api/desk/engines, refetched when a limit or a key changes
+  let _enginesError = null;
+
+  // Refetch the engines after one changed (a limit, a key, a sign-in). The list on
+  // screen stays until the answer arrives, so the grid and the open panel do not blink.
+  // An engine picked on the Add service panel that is now connected moves to its own
+  // tile: it is something the user has, not something being added any more.
+  function _reloadEngines(repaint) {
+    return window.DeskV1Engines.list(null, { force: true }).then((e) => {
+      _enginesCache = e; _enginesError = null;
+      const picked = window.DeskV1AddService.pickedEngine();
+      const hit = picked && e.find((x) => x.id === picked);
+      if (hit && window.DeskV1Engines.tileState(hit) && window.DeskV1ConnTiles.selected() === 'add') {
+        window.DeskV1AddService.reset();
+        window.DeskV1ConnTiles.select(`engine:${hit.id}`);
+      }
+      repaint();
+    }).catch((err) => { _enginesError = err && err.message ? err.message : String(err); repaint(); });
   }
 
-  let _enginesCache = null;   // live: GET /api/desk/engines, cleared when a limit changes
+  // What is on the grid: the user's connected things, and anything that needs them
+  // (re-auth). An account that is only a preview, a fixture that was never connected,
+  // an engine that is not connected: none of those is shown. Live, an account the
+  // user added but has not connected yet IS shown, amber, because it needs them.
+  function _showAccount(ch, live, sel) {
+    if (ch.id === sel) return true;          // routed here from Where's "Connect ›"
+    const st = _status(ch).key;
+    if (st === 'preview') return false;
+    if (st === 'off') return live || !!ch.userAdded;
+    return true;
+  }
 
-  function deskV1RenderConnections(el) {
+  function _items(live, sel) {
+    const Tiles = window.DeskV1ConnTiles;
+    const items = [];
+    _channels().filter((ch) => _showAccount(ch, live, sel)).forEach((ch) => items.push({
+      key: ch.id, kind: 'account', platform: ch.platform, mark: Tiles.mark(ch.platform),
+      name: Tiles.plainName(ch.label) || ch.identity || ch.id, kindLabel: 'Social account', status: _status(ch),
+    }));
+    _contentSources().filter((a) => a.connected).forEach((a) => items.push({
+      key: `source:${a.id}`, kind: 'source', mark: a.glyph || String(a.label || '?').charAt(0).toUpperCase(),
+      name: a.label, kindLabel: 'Content source', status: { key: 'ok', word: 'Connected' },
+    }));
+    if (live) (_enginesCache || []).forEach((e) => {
+      const st = window.DeskV1Engines.tileState(e);
+      if (st) items.push({ key: `engine:${e.id}`, kind: 'engine', mark: String(e.label || '?').charAt(0).toUpperCase(),
+        name: e.label, kindLabel: 'Generation engine', status: st });
+    });
+    (window.DeskV1Services.rows() || []).forEach((s) => items.push({
+      key: `service:${s.id}`, kind: 'service', mark: String(s.name || '?').charAt(0).toUpperCase(),
+      name: s.name, kindLabel: 'Saved service', status: window.DeskV1Services.STATUS,
+    }));
+    return items;
+  }
+
+  // The panel for the selected key, or null when the key matches nothing (an item
+  // that is gone keeps its key: a refused Remove, or its Undo, brings it back).
+  function _detail(sel) {
+    const Tiles = window.DeskV1ConnTiles;
+    if (!sel) return null;
+    if (sel === 'add') {
+      return Tiles.detailHTML('add', 'Add service', window.DeskV1AddService.panelHTML({ engines: _enginesCache, engineError: _enginesError }));
+    }
+    if (sel.indexOf('engine:') === 0) {
+      const e = (_enginesCache || []).find((x) => `engine:${x.id}` === sel);
+      return e ? Tiles.detailHTML(sel, e.label, window.DeskV1Engines.rowHTML(e)) : null;
+    }
+    if (sel.indexOf('source:') === 0) {
+      const a = _contentSources().find((x) => `source:${x.id}` === sel);
+      return a ? Tiles.detailHTML(sel, a.label, _sourceHTML(a)) : null;
+    }
+    if (sel.indexOf('service:') === 0) {
+      const sv = window.DeskV1Services.byId(sel.slice(8));
+      return sv ? Tiles.detailHTML(sel, sv.name, window.DeskV1Services.detailHTML(sv)) : null;
+    }
+    const ch = _channels().find((c) => c.id === sel);
+    return ch ? Tiles.detailHTML(ch.id, ch.label || ch.identity, _accountHTML(ch)) : null;
+  }
+
+  function deskV1RenderConnections(el, params) {
     const repaint = () => { if (el.isConnected) deskV1RenderConnections(el); };
     const channels = _channels();
     const live = window.DeskV1Store.live();
-    const sources = _contentSources();
-    const sourceRows = sources.length ? sources : (live ? PLACEHOLDER_SOURCES : []);
-    // One account's detail at a time, below the tile grid (desk-v1-connections-tiles.js).
-    // A selection whose account is gone shows no panel, but the id is kept: a refused
-    // Remove (or its Undo) puts the account back and its panel comes back with it.
     const Tiles = window.DeskV1ConnTiles;
-    const pick = channels.find((c) => c.id === Tiles.selected()) || null;
+    // Routed here for one account (Where's "Connect ›"): open it.
+    if (params && params.account) Tiles.select(params.account);
+    const sel = Tiles.selected();
     const prevScroll = (el.querySelector('[data-connections]') || {}).scrollTop || 0;
     el.innerHTML = `
       <div class="desk-v1-connections" data-connections>
-        <p class="desk-v1-conn-lede">Everything external is connected here and nowhere else. A campaign only picks from what is connected.</p>
-        <section class="desk-v1-rules-group" data-conn-section="social">
-          <div class="desk-v1-rules-group-title">Social accounts${live ? ' <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-conn-recheck>Check again</button>' : ''}</div>
-          ${channels.length || live ? Tiles.gridHTML({ accounts: channels, statusOf: _status, placeholders: live ? PLACEHOLDER_CHANNELS : [] }) : '<div class="desk-v1-stub-empty">No accounts yet.</div>'}
-          ${Tiles.detailHTML(pick, pick ? _accountHTML(pick) : '')}
-          ${live ? _addFormHTML() : ''}
-        </section>
-        <section class="desk-v1-rules-group" data-conn-section="sources">
-          <div class="desk-v1-rules-group-title">Content sources</div>
-          ${sourceRows.length ? sourceRows.map(_sourceHTML).join('') : '<div class="desk-v1-stub-empty">No sources.</div>'}
-        </section>
-        <section class="desk-v1-rules-group" data-conn-section="engines">
-          <div class="desk-v1-rules-group-title">Generation engines</div>
-          ${live ? window.DeskV1Engines.connectionsHTML(_enginesCache) : ''}
-        </section>
+        <div class="desk-v1-conn-top">
+          <p class="desk-v1-conn-lede">Everything external is connected here and nowhere else. A campaign only picks from what is connected.</p>
+          ${live ? '<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-conn-recheck>Check again</button>' : ''}
+        </div>
+        ${Tiles.gridHTML({ items: _items(live, sel) })}
+        ${_detail(sel) || ''}
       </div>`;
     const scroller = el.querySelector('[data-connections]');
     if (scroller && prevScroll) scroller.scrollTop = prevScroll;
-    Tiles.bind(el, repaint);
+    // Every change of selection starts the Add service panel over at its list.
+    Tiles.bind(el, repaint, () => window.DeskV1AddService.reset());
     channels.forEach((ch) => {
       const row = el.querySelector(`[data-conn-account="${CSS.escape(ch.id)}"]`);
       if (!row) return;
@@ -386,13 +390,27 @@
     });
     const recheck = el.querySelector('[data-conn-recheck]');
     if (recheck) recheck.onclick = () => _recheck(el, repaint);
-    _bindAddForm(el, repaint);
-    if (live) {
-      if (_enginesCache) window.DeskV1Engines.bindConnections(el, _enginesCache, () => { _enginesCache = null; repaint(); });
-      else window.DeskV1Engines.list(null, { force: true }).then((e) => { _enginesCache = e; repaint(); }).catch((err) => {
-        const box = el.querySelector('[data-conn-section="engines"]');
-        if (box) box.insertAdjacentHTML('beforeend', `<div class="desk-v1-stub-empty">Could not load the engines: ${esc(err && err.message ? err.message : err)}</div>`);
+    if (sel === 'add') {
+      window.DeskV1AddService.bind(el, {
+        repaint, channels: _channels, api: _api, engines: _enginesCache,
+        onEnginesChanged: () => _reloadEngines(repaint),
       });
+    } else if (sel && sel.indexOf('engine:') === 0 && _enginesCache) {
+      const e = _enginesCache.find((x) => `engine:${x.id}` === sel);
+      if (e) window.DeskV1Engines.bindConnections(el, [e], () => _reloadEngines(repaint));
+    } else if (sel && sel.indexOf('service:') === 0) {
+      const sv = window.DeskV1Services.byId(sel.slice(8));
+      if (sv) window.DeskV1Services.bindDetail(el, sv, repaint);
+    }
+    // Live only: engines and saved services are the server's, fetched once and kept
+    // until something changes them. A failed load leaves an empty list (and the
+    // reason, on the Add service panel) rather than asking again on every repaint.
+    if (live) {
+      if (!_enginesCache) {
+        window.DeskV1Engines.list(null, { force: true }).then((e) => { _enginesCache = e; _enginesError = null; repaint(); })
+          .catch((err) => { _enginesCache = []; _enginesError = err && err.message ? err.message : String(err); repaint(); });
+      }
+      if (window.DeskV1Services.rows() === null) window.DeskV1Services.load().then(repaint);
     }
   }
 

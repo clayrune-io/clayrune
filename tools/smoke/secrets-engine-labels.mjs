@@ -114,11 +114,19 @@ const txt = (page, sel) => page.textContent(sel).then((t) => (t || '').replace(/
 const form = '.modal-window[data-modal-id="__secret-edit"]';
 const hidden = (page, sel) => page.$eval(sel, (el) => el.hidden || el.offsetParent === null).catch(() => true);
 const steps = (page) => page.$$eval(`${form} .sec-step`, (els) => els.filter((e) => e.offsetParent !== null).map((e) => e.textContent.trim()).join(' '));
-async function openConnections(page) {
+async function openConnections(page, engineId) {
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
   await page.evaluate(() => window.deskV1Nav('connections', {}));
-  await page.waitForSelector('[data-conn-engine="higgsfield"]', { timeout: 8000 });
+  // One grid (2026-10-03): an engine is a tile once connected, an Add service entry until then.
+  // Open the Add service panel (it lists the engines once they load), then the one asked for.
+  await page.waitForSelector('[data-conn-add-tile]', { timeout: 8000 });
+  await page.click('[data-conn-add-tile]');
+  await page.waitForSelector('[data-add-pick^="engine:"], [data-conn-tile^="engine:"]', { timeout: 8000 });
+  if (!engineId) return;
+  const tile = `[data-conn-tile="engine:${engineId}"]`;
+  await page.click((await page.$(tile)) ? tile : `[data-add-pick="engine:${engineId}"]`);
+  await page.waitForSelector(`[data-conn-engine="${engineId}"]`, { timeout: 8000 });
 }
 // The engine rows no longer open the Secrets form: Connect is a guided flow with its
 // own passcode-gated save (e0549996). So open the editor the way the old Connect/Edit
@@ -129,7 +137,7 @@ const settle = (page, pred, arg) => page.waitForFunction(pred, arg, { timeout: 8
 async function higgsfield(browser) {
   const srv = { secrets: [], writes: [], googleReady: false };
   const { ctx, page, pageErrors } = await newPage(browser, srv, { width: 1440, height: 900 });
-  await openConnections(page);
+  await openConnections(page, 'higgsfield');
   const hs = await txt(page, '[data-conn-engine="higgsfield"] [data-engine-status]');
   check((await page.$('[data-conn-engine="higgsfield"] [data-engine-guide]')) !== null, 'a not-connected engine row has a Connect button (the guided flow)', 'no Connect on higgsfield');
   await openEngineEditor(page, 'higgsfield', true);
@@ -194,7 +202,7 @@ async function gemini(browser) {
 async function edit(browser) {
   const srv = { secrets: [{ name: 'gemini-api', username: '', scope: 'global', allow_unattended: true, description: '' }], writes: [], googleReady: true };
   const { ctx, page, pageErrors } = await newPage(browser, srv, { width: 1440, height: 900 });
-  await openConnections(page);
+  await openConnections(page, 'google');
   check((await page.$eval('[data-conn-engine="google"] [data-engine-guide]', (b) => b.textContent.trim())) === 'Replace key',
     'a connected engine offers Replace key, not Connect', 'google buttons');
   await openEngineEditor(page, 'google', false);

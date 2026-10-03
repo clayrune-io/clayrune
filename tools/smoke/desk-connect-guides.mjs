@@ -170,7 +170,7 @@ async function newPage(browser, srv, viewport = { width: 1400, height: 1100 }) {
   await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
   await page.click('.desk-v1-home-connections-btn');
   await page.waitForSelector('[data-connections] [data-conn-tile]', { timeout: 6000 });
-  await page.waitForSelector('[data-conn-engine]', { timeout: 6000 });
+  await page.waitForSelector('[data-conn-add-tile]', { timeout: 6000 });
   return { ctx, page, pageErrors, responses };
 }
 
@@ -179,6 +179,20 @@ async function openTile(page, platform) {
   const t = `[data-conn-tile][data-platform="${platform}"]`;
   if ((await page.getAttribute(t, 'aria-pressed')) !== 'true') await page.click(t);
   await page.waitForSelector(`[data-conn-account][data-platform="${platform}"]`, { timeout: 4000 });
+}
+
+// One grid (2026-10-03): an engine is a tile once it is connected (or needs signing in again)
+// and an Add service entry until then. Either way its connect card is the same; open it.
+async function openEngine(page, id) {
+  const card = `[data-conn-engine="${id}"]`;
+  if (await page.$(card)) return;
+  if (!(await page.$('[data-conn-detail="add"]'))) await page.click('[data-conn-add-tile]');
+  if (await page.$('[data-add-back]')) await page.click('[data-add-back]');   // back to the list from another engine's card
+  await page.waitForSelector('[data-add-pick^="engine:"], [data-conn-tile^="engine:"]', { timeout: 6000 });   // engines load after the first paint
+  const tile = `[data-conn-tile="engine:${id}"]`;
+  if (await page.$(tile)) await page.click(tile);
+  else await page.click(`[data-add-pick="engine:${id}"]`);
+  await page.waitForSelector(card, { timeout: 6000 });
 }
 
 const settle = (page, pred, arg) => page.waitForFunction(pred, arg, { timeout: 8000 });
@@ -193,14 +207,15 @@ async function higgsfield(browser) {
   const srv = makeServer();
   const { ctx, page, pageErrors } = await newPage(browser, srv);
   const row = '[data-conn-engine="higgsfield_mcp"]';
+  await openEngine(page, 'higgsfield_mcp');
   check(/^Not connected/.test(await txt(page, `${row} [data-engine-status]`)), 'Higgsfield starts as Not connected, in plain words');
   check((await txt(page, `${row} [data-engine-signin]`)) === 'Sign in with Higgsfield', 'the default route is "Sign in with Higgsfield"');
   check(/credits in your Higgsfield plan/.test(await txt(page, row)), 'it says renders use the plan credits');
-  const adv = await page.$('[data-conn-advanced]');
-  check(adv && !(await adv.evaluate((d) => d.open)) && /Advanced: use an API key instead/.test(await txt(page, '[data-conn-advanced] summary')),
-    'the API key route is collapsed under "Advanced: use an API key instead"');
+  // The API key route is not a second row on the grid: it is its own "Higgsfield (API key)"
+  // entry in Add service until a key is saved (it replaced the collapsed "Advanced" block).
+  check(!(await page.$('[data-conn-advanced]')) && !(await page.$('[data-conn-tile="engine:higgsfield"]')),
+    'the API key route is not shown on the grid while it is not connected');
   check((await txt(page, '[data-conn-engine="higgsfield_mcp"] .desk-v1-engine-limit')).includes('credits'), 'the per-job limit is labelled in credits for the sign-in route');
-  check((await txt(page, '[data-conn-engine="higgsfield"] .desk-v1-engine-limit')).includes('USD'), 'the API key route keeps a USD limit');
 
   // A cancelled passcode sends nothing.
   await page.evaluate(() => { window.__cancelProof = true; });
@@ -236,7 +251,10 @@ async function higgsfield(browser) {
   check(calls(srv, 'POST', /\/connect\/higgsfield\/disconnect$/).length === 1 && /Disconnect Higgsfield/.test(pf2[pf2.length - 1].title), 'Disconnect is one POST through the passcode prompt');
 
   // The API key route (Advanced) is a guided key paste with a key ID and a secret.
-  await page.click('[data-conn-advanced] summary');
+  await openEngine(page, 'higgsfield');
+  check(/Higgsfield \(API key\)/.test(await txt(page, '[data-conn-engine="higgsfield"]')) && /billed in dollars/.test(await txt(page, '[data-conn-engine="higgsfield"]')),
+    'the API key route is its own "Higgsfield (API key)" entry and says it is billed in dollars, not plan credits');
+  check((await txt(page, '[data-conn-engine="higgsfield"] .desk-v1-engine-limit')).includes('USD'), 'the API key route keeps a USD limit');
   await page.click('[data-conn-engine="higgsfield"] [data-engine-guide]');
   await page.waitForSelector('[data-guide="higgsfield"] [data-guide-user]');
   check((await page.$$('[data-guide="higgsfield"] [data-guide-test]')).length === 0, 'the Higgsfield API key guide has no Test connection (it has no free read call)');
@@ -249,6 +267,7 @@ async function keyPaste(browser) {
   const srv = makeServer();
   const { ctx, page, pageErrors, responses } = await newPage(browser, srv);
   const row = '[data-conn-engine="google"]';
+  await openEngine(page, 'google');
   check((await txt(page, `${row} [data-engine-guide]`)) === 'Connect', 'Gemini offers Connect');
   await page.click(`${row} [data-engine-guide]`);
   await page.waitForSelector('[data-guide="google"]');
@@ -277,6 +296,7 @@ async function keyPaste(browser) {
   srv.testOk = true;
 
   const orow = '[data-conn-engine="openai"]';
+  await openEngine(page, 'openai');
   await page.click(`${orow} [data-engine-guide]`);
   await page.waitForSelector('[data-guide="openai"]');
   check((await page.getAttribute('[data-guide="openai"] [data-guide-link]', 'href')) === 'https://platform.openai.com/api-keys', 'OpenAI links platform.openai.com/api-keys');
@@ -346,15 +366,18 @@ async function xWizard(browser) {
   const lhref = await page.getAttribute('[data-conn-account][data-platform="linkedin"] [data-guide="linkedin"] a', 'href');
   check(/learn\.microsoft\.com\/en-us\/linkedin\/marketing\/community-management/.test(lhref || ''), 'and links where to apply');
 
-  // Copy rules: open every guide, then read the whole screen.
+  // Copy rules: one detail panel is open at a time, so open every guide in turn and read the
+  // whole screen each time (the X wizard first, then each engine's).
   await openTile(page, 'x');
+  let all = (await page.$eval('[data-connections]', (e) => e.innerText)) + '\n' + liScreen;
   for (const id of ['google', 'openai', 'higgsfield']) {
-    if (!(await page.$(`[data-guide="${id}"]`))) {
-      if (id === 'higgsfield') { await page.waitForTimeout(200); await page.evaluate(() => { const d = document.querySelector('[data-conn-advanced]'); if (d) d.open = true; }); }
-      await page.click(`[data-conn-engine="${id}"] [data-engine-guide]`);
-    }
+    await openEngine(page, id);
+    if (!(await page.$(`[data-guide="${id}"]`))) await page.click(`[data-conn-engine="${id}"] [data-engine-guide]`);
+    await page.waitForSelector(`[data-guide="${id}"]`, { timeout: 4000 });
+    all += '\n' + (await page.$eval('[data-connections]', (e) => e.innerText));
   }
-  const all = (await page.$eval('[data-connections]', (e) => e.innerText)) + '\n' + liScreen;
+  await openTile(page, 'x');
+  await page.waitForSelector('[data-conn-account][data-platform="x"] [data-guide="x"]', { timeout: 4000 });
   check(!/\boauth\b|\bvault\b|\bDCR\b|\bPKCE\b/i.test(all), 'no jargon (OAuth, vault, DCR, PKCE) in the Connections text' + (/\boauth\b|\bvault\b|\bDCR\b|\bPKCE\b/i.exec(all) ? ': ' + /.{0,40}(\boauth\b|\bvault\b|\bDCR\b|\bPKCE\b).{0,40}/i.exec(all)[0] : ''));
   check(!/[—–]/.test(all), 'no em-dash in the Connections text' + (/.{0,30}[—–].{0,30}/.exec(all) ? ': ' + /.{0,30}[—–].{0,30}/.exec(all)[0] : ''));
   const html = await page.content();
@@ -375,6 +398,7 @@ async function narrow(browser) {
   await openTile(page, 'x');
   await page.click('[data-conn-account][data-platform="x"] [data-conn-x-guide]');
   await page.waitForSelector('[data-guide="x"]');
+  await openEngine(page, 'google');
   await page.click('[data-conn-engine="google"] [data-engine-guide]');
   await page.waitForSelector('[data-guide="google"]');
   const over = await page.$eval('[data-connections]', (e) => e.scrollWidth - e.clientWidth);

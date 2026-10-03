@@ -8,12 +8,16 @@
  *   1. Connections -> a row paints the SERVER's derived `publish` ("Publishing: not
  *                     connected (reason)"), a step-by-step `Connect X` on X only (a reason that
  *                     names the vault is not shown; the steps say it in plain words), no fixture Connect button, the extra channels as placeholders.
- *   2. Add / remove-> the form POSTs M3 with no credential field; the server's answer is
+ *      2026-10-03 round 2: ONE grid (no placeholders: YouTube / Discord / Reddit / Drive / Dropbox and
+ *      engines that are not connected are not rendered), Add service last, a connected engine is a tile.
+ *   2. Add / remove-> Add service -> the account form POSTs M3 with no credential field; the server's answer is
  *                     adopted; Undo DELETEs; ✕ DELETEs M5; a refused remove is rolled back.
  *   3. Read via    -> PATCHes M4 `/api/desk/accounts/<id>`, filed under the project that uses it.
  *   4. Where       -> adding a column PATCHes the campaign's plan, a version add is M17,
  *                     a move is M18 `account_id`, removing a column archives its pending
  *                     versions; an off source names the server's reason; no card has a time.
+ *   4b. Something else -> Add service -> a name, link and vault credential NAME POST /api/desk/services; the
+ *                     tile reads "Saved for agents", never Connected; a refusal is rolled back; Remove DELETEs.
  *   5. Flag OFF    -> the same gestures make 0 /api/desk/* requests.
  *
  * RUN   cd tools/smoke && node desk-v1-live-accounts.mjs
@@ -48,7 +52,13 @@ const PUBLISH = {
 function makeServer() {
   const fx = loadFixtures();
   const projects = fx.projects.map((p) => ({ id: p.id, name: p.name, state: 'active', roster: [], presence: { replies: 'drafts', desk_agent: null, state: 'active' } }));
-  const srv = { log: [], next: {}, fx, accounts: [], pieces: fx.families.map((f) => JSON.parse(JSON.stringify(f))) };
+  const srv = { log: [], next: {}, fx, accounts: [], services: [], pieces: fx.families.map((f) => JSON.parse(JSON.stringify(f))),
+    engines: [
+      { id: 'eng-ok', label: 'Smoke Engine', auth: { kind: 'api_key', vault_entry: 'smoke-ok' }, job_limit_usd: null,
+        connected: { ready: true, vault_entry: 'smoke-ok', reason: null }, models: [{ model_id: 'm1', kind: 'video', label: 'M1', status: 'stable', aspect_ratios: ['16:9'] }] },
+      { id: 'eng-off', label: 'Idle Engine', auth: { kind: 'api_key', vault_entry: 'smoke-off' }, job_limit_usd: null,
+        connected: { ready: false, vault_entry: 'smoke-off', reason: 'no vault entry' }, models: [{ model_id: 'm2', kind: 'image', label: 'M2', status: 'stable', aspect_ratios: ['1:1'] }] },
+    ] };
   srv.accounts = fx.channels.filter((c) => c.platform === 'x' || c.platform === 'linkedin' || c.platform === 'blog')
     .map((c) => ({ ...JSON.parse(JSON.stringify(c)), publish: PUBLISH[c.platform] || { ready: true, reason: null, secret: null, unattended_ok: null } }));
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects, accounts: srv.accounts, pieces: srv.pieces });
@@ -84,10 +94,26 @@ async function newPage(browser, { live, srv }) {
     let body = null;
     try { body = req.postDataJSON(); } catch (_) { /* none */ }
     srv.log.push({ method, path, search: url.search, body });
+    let m0;
     const key = `${method} ${path}`;
     const refuse = Object.keys(srv.next).find((k) => key === k || key.startsWith(k));
     if (refuse) { const msg = srv.next[refuse]; delete srv.next[refuse]; return J({ error: msg }, 409); }
     if (path === '/api/desk/workspace') return J(srv.workspace());
+    if (path === '/api/desk/engines' && method === 'GET') return J({ engines: srv.engines });
+    if (path === '/api/desk/services' && method === 'GET') return J(srv.services);
+    if (path === '/api/desk/services' && method === 'POST') {
+      const sv = { id: body.id, name: body.name, link: body.link || '', kind: 'saved_for_agents', publish: false,
+        credential: { name: body.credential || '', in_vault: body.credential ? false : null } };
+      srv.services.push(sv);
+      return J(sv, 201);
+    }
+    m0 = path.match(/^\/api\/desk\/services\/([^/]+)$/);
+    if (m0 && method === 'DELETE') {
+      const i = srv.services.findIndex((x) => x.id === m0[1]);
+      if (i < 0) return J({ error: 'service not found' }, 404);
+      srv.services.splice(i, 1);
+      return J({ ok: true });
+    }
     if (path === '/api/desk/accounts' && method === 'GET') return J(srv.accounts);
     if (path === '/api/desk/accounts' && method === 'POST') {
       const a = { id: body.id, platform: body.platform, identity: body.identity, label: body.label || body.identity, capability: body.capability, voice: '',
@@ -161,7 +187,11 @@ async function connectionsRead(browser) {
   await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
   await openConnections(page);
 
-  const tileIds = await page.$$eval('[data-conn-tile]', (els) => els.map((e) => e.dataset.connTile));
+  await page.waitForSelector('[data-conn-tile="engine:eng-ok"]', { timeout: 6000 });   // engines load after the first paint
+  const allTiles = await page.$$eval('[data-conn-tile]', (els) => els.map((e) => [e.dataset.connTile, e.dataset.connKind, e.dataset.connState]));
+  const tileIds = allTiles.filter((t) => t[1] === 'account').map((t) => t[0]);
+  check(allTiles.some((t) => t[0] === 'engine:eng-ok' && t[2] === 'ok') && !allTiles.some((t) => t[0] === 'engine:eng-off'),
+    'a connected engine is a tile in the same grid and an engine that is not connected is not', 'engine tiles: ' + JSON.stringify(allTiles));
   const rows = [];
   for (const id of tileIds) {   // one detail panel at a time: open each account in turn
     await selectTile(page, id);
@@ -185,10 +215,17 @@ async function connectionsRead(browser) {
   await page.waitForSelector('[data-conn-account="ch-x-ron"] [data-conn-x-wizard]', { timeout: 4000 });
   check(!(await page.evaluate(() => window.__vaultOpened)), '`Connect X` opens its own steps, not the Secrets panel', 'the Secrets panel was opened');
 
-  const ph = await page.$$eval('[data-conn-placeholder]', (els) => els.map((e) => e.dataset.connPlaceholder));
-  check(JSON.stringify(ph) === JSON.stringify(['youtube', 'discord', 'reddit']), `YouTube / Discord / Reddit stay placeholder tiles (${ph})`, 'placeholders: ' + JSON.stringify(ph));
-  const srcs = await page.$$eval('[data-conn-source]', (els) => els.map((e) => e.dataset.connSource));
-  check(srcs.includes('gdrive') && srcs.includes('dropbox'), 'Google Drive and Dropbox stay placeholder source tiles', 'sources: ' + JSON.stringify(srcs));
+  const ph = await page.$$eval('[data-conn-placeholder], [data-conn-tile][data-conn-state="preview"]', (els) => els.length);
+  const srcs = await page.$$eval('[data-conn-source], [data-conn-tile^="source:"]', (els) => els.length);
+  check(ph === 0 && srcs === 0, 'no unconnected placeholder is rendered: no YouTube / Discord / Reddit, no Google Drive / Dropbox', `placeholders: ${ph}, sources: ${srcs}`);
+  const lastTile = await page.$$eval('[data-conn-tiles] > *', (els) => els.map((e) => e.hasAttribute('data-conn-add-tile')));
+  check(lastTile[lastTile.length - 1] && lastTile.filter(Boolean).length === 1, 'the Add service tile is present and is the last tile', 'Add service tile: ' + JSON.stringify(lastTile));
+  await page.click('[data-conn-add-tile]');
+  await page.waitForSelector('[data-add-list]', { timeout: 4000 });
+  const picks = await page.$$eval('[data-add-pick]', (els) => els.map((e) => e.dataset.addPick));
+  check(picks.includes('engine:eng-off') && !picks.includes('engine:eng-ok') && picks[picks.length - 1] === 'other',
+    `Add service offers the engine that is not connected (not the connected one), Something else last (${picks.join(', ')})`, 'add picks: ' + JSON.stringify(picks));
+  await page.click('[data-conn-add-tile]');   // close it again
 
   // Check again re-reads M2 and repaints with the new derived state.
   srv.accounts.find((a) => a.id === 'ch-x-ron').publish = { ready: true, reason: null, secret: 'x.api', unattended_ok: false };
@@ -211,7 +248,8 @@ async function addRemove(browser) {
   const before = srv.accounts.length;
 
   srv.log.length = 0;
-  await page.selectOption('[data-conn-add-platform]', 'x');
+  await page.click('[data-conn-add-tile]');
+  await page.click('[data-add-pick="account:x"]');
   await page.fill('[data-conn-add-identity]', '@newhandle');
   await page.click('[data-conn-add-submit]');
   await settle(page, () => [...document.querySelectorAll('[data-conn-tile]')].some((e) => /newhandle/.test(e.textContent)));
@@ -247,6 +285,50 @@ async function addRemove(browser) {
   check(rv.length === 1 && rv[0].body.read_via === 'api' && typeof rv[0].body.project_id === 'string',
     'Read via PATCHes M4 with read_via and the project that uses the account', 'read via: ' + JSON.stringify(rv.map((r) => r.body)));
   check(calls(srv, 'PATCH', /^\/api\/desk\/presence\//).length === 0, 'it does not call the retired presence route live', 'presence route called');
+  realErrors(pageErrors).length ? realErrors(pageErrors).forEach((e) => fail('page error: ' + e)) : ok('no uncaught page errors');
+  await ctx.close();
+}
+
+// ── 2b: Something else, live ───────────────────────────────────────────────
+async function somethingElse(browser) {
+  const srv = makeServer();
+  const { ctx, page, pageErrors } = await newPage(browser, { live: true, srv });
+  await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
+  await openConnections(page);
+  await page.click('[data-conn-add-tile]');
+  await page.click('[data-add-pick="other"]');
+  await page.waitForSelector('[data-svc-add]', { timeout: 4000 });
+  srv.log.length = 0;
+  await page.fill('[data-svc-add-name]', 'Plausible analytics');
+  await page.fill('[data-svc-add-link]', 'https://plausible.io');
+  await page.fill('[data-svc-add-cred]', 'plausible.key');
+  await page.click('[data-svc-add-submit]');
+  await page.waitForSelector('[data-conn-tile^="service:"]', { timeout: 4000 });
+  const post = calls(srv, 'POST', /^\/api\/desk\/services$/);
+  check(post.length === 1 && post[0].body.name === 'Plausible analytics' && post[0].body.link === 'https://plausible.io' && post[0].body.credential === 'plausible.key'
+    && Object.keys(post[0].body).every((k) => ['id', 'name', 'link', 'credential'].includes(k)),
+    'Something else POSTs /api/desk/services with a name, a link and a credential NAME only', 'service POST: ' + JSON.stringify(post.map((r) => r.body)));
+  const svc = await page.$eval('[data-conn-tile^="service:"]', (e) => ({ pill: e.querySelector('[data-conn-tile-status]').textContent.trim(), state: e.dataset.connState }));
+  check(svc.pill === 'Saved for agents' && svc.state === 'saved', `the tile says "${svc.pill}", not Connected`, 'service tile: ' + JSON.stringify(svc));
+  await page.waitForSelector('[data-conn-detail^="service:"] [data-svc-cred-state]', { timeout: 4000 });
+  const cred = await page.$eval('[data-svc-cred-state]', (e) => e.dataset.svcCredState);
+  check(cred === 'missing' && !(await page.$('[data-conn-detail] [data-conn-publish], [data-conn-detail] [data-conn-action]')),
+    'the detail says the named vault entry is missing (Secrets) and offers no Connect or Publishing', 'service detail: ' + cred);
+  // A refused save is rolled back with the server's reason.
+  await page.click('[data-conn-add-tile]');
+  await page.click('[data-add-pick="other"]');
+  srv.next['POST /api/desk/services'] = 'a service with that name is already saved';
+  await page.fill('[data-svc-add-name]', 'Plausible analytics');
+  await page.click('[data-svc-add-submit]');
+  await page.waitForFunction(() => /a service with that name is already saved/.test(document.body.innerText), null, { timeout: 8000 });
+  check((await page.$$('[data-conn-tile^="service:"]')).length === 1, 'a refused save leaves no second tile and shows the server reason', 'refused save left a tile');
+  const svcId = srv.services[0].id;
+  await page.click(`[data-conn-tile="service:${svcId}"]`);
+  await page.waitForSelector('[data-svc-remove]', { timeout: 4000 });
+  srv.log.length = 0;
+  await page.click('[data-svc-remove]');
+  await settle(page, () => !document.querySelector('[data-conn-tile^="service:"]'));
+  check(calls(srv, 'DELETE', /^\/api\/desk\/services\//).length === 1 && srv.services.length === 0, 'Remove DELETEs the service', 'remove calls: ' + JSON.stringify(srv.log));
   realErrors(pageErrors).length ? realErrors(pageErrors).forEach((e) => fail('page error: ' + e)) : ok('no uncaught page errors');
   await ctx.close();
 }
@@ -351,6 +433,7 @@ const browser = await chromium.launch();
 try {
   console.log('live ON: Connections reads the derived state'); await connectionsRead(browser);
   console.log('live ON: add / remove / read via'); await addRemove(browser);
+  console.log('live ON: Something else'); await somethingElse(browser);
   console.log('live ON: Where'); await whereLive(browser);
   console.log('live OFF: demo'); await demoCallsNothing(browser);
 } catch (e) { fail('harness error: ' + (e && e.stack || e)); }
