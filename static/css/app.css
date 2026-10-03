@@ -7801,8 +7801,13 @@
   .terminal-header .terminal-status-dot.completed { background:#34d399; }
   .terminal-header .terminal-status-dot.error { background:#f87171; }
   .terminal-header .terminal-status-dot.stopped { background:var(--text-faint); }
-  .terminal-container { flex:1; min-height:200px; overflow:hidden; padding:8px 12px; box-sizing:border-box; }
-  .terminal-container .xterm { padding-left:8px; }
+  /* The gutter lives on .xterm, NOT on the container: FitAddon sizes the grid from
+     the container's border-box width/height and subtracts only .xterm's own
+     padding. Padding here made it count ~24px of width and ~16px of height that
+     were not there, so the rightmost columns and last rows ran under the
+     scrollbar / past the clip edge. */
+  .terminal-container { flex:1; min-height:200px; overflow:hidden; padding:0; box-sizing:border-box; }
+  .terminal-container .xterm { padding:8px 12px 8px 20px; }
   .terminal-stdin-row {
     display:flex; gap:8px; padding:8px 12px; background:var(--surface);
     border-top:1px solid var(--border); flex-shrink:0;

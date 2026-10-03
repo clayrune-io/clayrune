@@ -896,8 +896,10 @@ function connectAgentStream(projectId, sessionId) {
             fetch(API_BASE + `/api/project/${projectId}/terminal/status`)
               .then(r => r.json())
               .then(data => {
-                const exists = (data.sessions || []).some(s => s.session_id === termSessionId);
-                if (exists) openTerminalPopout(projectId, termSessionId, termCommand);
+                // is_pty comes from the server's record of the session: opening a
+                // real-PTY session as a pipe terminal leaves xterm read-only.
+                const sess = (data.sessions || []).find(s => s.session_id === termSessionId);
+                if (sess) openTerminalPopout(projectId, termSessionId, termCommand, !!sess.is_pty);
                 else terminalDismissed.add(termSessionId);
               }).catch(() => terminalDismissed.add(termSessionId));
           }

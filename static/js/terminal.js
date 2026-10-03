@@ -16,15 +16,16 @@ window.terminalIsPty = window.terminalIsPty || {};               // session_id �
 
 function openTerminalPopout(projectId, sessionId, command, isPty) {
   const modalId = `__terminal_${sessionId}`;
-  terminalIsPty[sessionId] = !!isPty;
 
-  // If already open, focus it
+  // If already open, focus it (and leave the recorded mode alone — a second
+  // caller that doesn't know is_pty must not flip a live PTY pop-out to pipe)
   if (openModals.has(modalId)) {
     const entry = openModals.get(modalId);
     if (entry.minimized) restoreModal(modalId);
     focusModal(modalId);
     return;
   }
+  terminalIsPty[sessionId] = !!isPty;
 
   const cmdLabel = (command || 'Terminal').substring(0, 60);
   const win = document.createElement('div');
@@ -32,7 +33,7 @@ function openTerminalPopout(projectId, sessionId, command, isPty) {
   win.dataset.modalId = modalId;
   const content = document.createElement('div');
   content.className = 'modal-content';
-  content.style.cssText = 'padding:0;display:flex;flex-direction:column;height:100%';
+  content.style.cssText = 'padding:0;display:flex;flex-direction:column';
   content.innerHTML = `
     <div class="terminal-header modal-header">
       <span class="terminal-status-dot running" id="term-dot-${esc(sessionId)}"></span>
@@ -59,8 +60,13 @@ function openTerminalPopout(projectId, sessionId, command, isPty) {
   win.appendChild(content);
   document.getElementById('modal-layer').appendChild(win);
 
-  // Size and position
-  _clampModalSize(win, 900, 600);
+  // Size and position. The size goes on the .modal-content (like every other
+  // modal), NOT the .modal-window wrapper: the resize handles hang off the
+  // wrapper and drag the content, so a wrapper wider than the content left the
+  // east handle in dead space 200px right of the visible edge, and the
+  // sheet could not be widened by grabbing the border you can see. On mobile
+  // (≤960px) the stylesheet's full-width sheet rule applies, so no inline size.
+  if (!(_isMobileDevice || window.innerWidth <= 960)) _clampModalSize(content, 900, 600);
   const z = nextModalZ++;
   win.style.zIndex = z;
   openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z, terminalSessionId: sessionId });
@@ -139,10 +145,33 @@ function initTerminalXterm(sessionId, isPty) {
   const fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
   term.open(container);
-  fitAddon.fit();
+
+  // Fit to the container and, for a real PTY, tell the server so the child's
+  // ioctl window size (and anything that queries it, e.g. an Ink TUI's layout)
+  // matches what is on screen. The PTY is spawned at 120x30 and the first fit
+  // is narrower, so the first call MUST post — without it a TUI lays out for
+  // 120 columns and wraps in a narrower xterm. Deduped on cols x rows.
+  let lastSent = '';
+  const fitAndSync = () => {
+    try {
+      fitAddon.fit();
+      if (isPty && term.cols && term.rows) {
+        const dims = term.cols + 'x' + term.rows;
+        if (dims === lastSent) return;
+        lastSent = dims;
+        fetch(API_BASE + '/api/terminal/resize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId, cols: term.cols, rows: term.rows }),
+        }).catch(() => {});
+      }
+    } catch {}
+  };
+  fitAndSync();
 
   terminalInstances[sessionId] = term;
   terminalInstances[sessionId]._fitAddon = fitAddon;
+  terminalInstances[sessionId]._fitAndSync = fitAndSync;
   const sizeLabel = document.getElementById('term-fontsize-' + sessionId);
   if (sizeLabel) sizeLabel.textContent = term.options.fontSize;
 
@@ -156,21 +185,23 @@ function initTerminalXterm(sessionId, isPty) {
     });
   }
 
-  // Re-fit on container resize; for a real PTY, also tell the server so the
-  // child's ioctl window size (and anything that queries it, e.g. an Ink
-  // TUI's layout) matches what's actually on screen.
-  new ResizeObserver(() => {
-    try {
-      fitAddon.fit();
-      if (isPty && term.cols && term.rows) {
-        fetch(API_BASE + '/api/terminal/resize', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sessionId, cols: term.cols, rows: term.rows }),
-        }).catch(() => {});
-      }
-    } catch {}
-  }).observe(container);
+  // Re-fit whenever the container is resized (window widened, mobile rotate).
+  new ResizeObserver(fitAndSync).observe(container);
+
+  // FitAddon subtracts the viewport's scrollbar width, but xterm only measures
+  // that width after its first render — the fit above ran with it still 0, so
+  // the grid came out ~15px too wide and the right-hand columns sat under the
+  // classic scrollbar (box-drawing, long lines and TUI borders clipped). The
+  // container size does not change when the measurement lands, so the
+  // ResizeObserver never fires; re-fit when the viewport's client width does.
+  let lastClientW = -1;
+  term.onRender(() => {
+    const vp = term.element && term.element.querySelector('.xterm-viewport');
+    if (vp && vp.clientWidth !== lastClientW) {
+      lastClientW = vp.clientWidth;
+      fitAndSync();
+    }
+  });
 
   // Write any buffered output
   const buf = terminalOutputBuffers[sessionId] || [];
@@ -186,8 +217,10 @@ function termZoom(sessionId, delta) {
   term.options.fontSize = newSize;
   const label = document.getElementById('term-fontsize-' + sessionId);
   if (label) label.textContent = newSize;
-  try { term._fitAddon.fit(); } catch {}
+  // A new font size changes the column count — a PTY must hear about it too.
+  if (term._fitAndSync) term._fitAndSync(); else { try { term._fitAddon.fit(); } catch {} }
 }
+
 
 function connectTerminalStream(projectId, sessionId) {
   if (terminalEventSources[sessionId]) {
@@ -256,14 +289,19 @@ async function sendTerminalInput(sessionId) {
   const text = input.value;
   input.value = '';
 
-  // Echo the input in cyan
-  const term = terminalInstances[sessionId];
-  if (term) term.writeln(`\x1b[36m${text}\x1b[0m`);
+  // A real PTY echoes what it receives and submits on Enter (CR); a bare LF
+  // does not submit in a TUI. A pipe has no echo and wants a newline.
+  const pty = !!terminalIsPty[sessionId];
+  if (!pty) {
+    // Echo the input in cyan
+    const term = terminalInstances[sessionId];
+    if (term) term.writeln(`\x1b[36m${text}\x1b[0m`);
+  }
 
   await fetch(API_BASE + `/api/terminal/stdin`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ session_id: sessionId, text: text + '\n' })
+    body: JSON.stringify({ session_id: sessionId, text: text + (pty ? '\r' : '\n') })
   }).catch(() => {});
 }
 
