@@ -621,7 +621,7 @@ def test_veo_end_to_end_download_carries_the_key_only_to_google(client, vendor, 
     jid = _veo_submit(client, vendor)
     body = json.loads(vendor.to(':predictLongRunning', 'POST')[0]['body'])
     assert body == {'instances': [{'prompt': 'A calm product shot'}],
-                    'parameters': {'aspectRatio': '16:9', 'resolution': '720p', 'durationSeconds': '8'}}
+                    'parameters': {'aspectRatio': '16:9', 'resolution': '720p', 'durationSeconds': 8}}
     assert vendor.to(':predictLongRunning', 'POST')[0]['headers']['x-goog-api-key'] == GEMINI_KEY
 
     op = '/v1beta/models/veo-3.1-generate-preview/operations/op1'
@@ -672,14 +672,17 @@ def test_veo_download_failure_is_retried_then_expires_after_48h(client, vendor, 
     assert j['status'] == 'failed' and j['failure']['kind'] == 'expired'
 
 
-def test_veo_references_and_first_frame_are_inline_base64(client, vendor, uploads):
+def test_veo_references_and_first_frame_use_bytes_base64_not_inline_data(client, vendor, uploads):
     _campaign(_own(10))
     img = uploads / 'r.png'
     img.write_bytes(_png())
     _veo_submit(client, vendor, reference_images=[{'path': str(img)}], first_frame={'path': str(img)})
-    inst = json.loads(vendor.to(':predictLongRunning', 'POST')[0]['body'])['instances'][0]
-    want = {'inlineData': {'mimeType': 'image/png', 'data': base64.b64encode(_png()).decode()}}
+    body = json.loads(vendor.to(':predictLongRunning', 'POST')[0]['body'])
+    inst = body['instances'][0]
+    want = {'mimeType': 'image/png', 'bytesBase64Encoded': base64.b64encode(_png()).decode()}
     assert inst['image'] == want and inst['referenceImages'] == [{'image': want, 'referenceType': 'asset'}]
+    assert 'inlineData' not in json.dumps(body)         # Gemini API 400s on it (live, 2026-10-03)
+    assert type(body['parameters']['durationSeconds']) is int      # a string 400s too
 
 
 # ── Gemini image (sync) ──────────────────────────────────────────────────────

@@ -984,19 +984,23 @@ class VeoAdapter:
         return Estimate(usd=usd, basis='table', read=model.price['read'], approximate=approx, note=note)
 
     def submit(self, model, req, creds) -> dict:
+        # Request shape measured against the live Gemini API 2026-10-03: images
+        # are {mimeType, bytesBase64Encoded} (`inlineData` -> HTTP 400 "isn't
+        # supported by this model") and durationSeconds is a number (a string ->
+        # HTTP 400). The google-genai SDK's Gemini-API path builds the same.
         inst: dict = {'prompt': req.prompt}
         if req.first_frame:
             data, mime = _read_asset(req.first_frame)
-            inst['image'] = {'inlineData': {'mimeType': mime, 'data': _b64(data)}}
+            inst['image'] = {'mimeType': mime, 'bytesBase64Encoded': _b64(data)}
         if req.reference_images:
             refs = []
             for r in req.reference_images:
                 data, mime = _read_asset(r)
-                refs.append({'image': {'inlineData': {'mimeType': mime, 'data': _b64(data)}},
+                refs.append({'image': {'mimeType': mime, 'bytesBase64Encoded': _b64(data)},
                              'referenceType': 'asset'})
             inst['referenceImages'] = refs
         params: dict = {'aspectRatio': req.aspect_ratio, 'resolution': req.resolution,
-                        'durationSeconds': str(req.duration_sec)}
+                        'durationSeconds': int(req.duration_sec)}
         if req.negative_prompt:
             params['negativePrompt'] = req.negative_prompt
         if req.seed is not None:
