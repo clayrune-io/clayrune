@@ -2912,7 +2912,16 @@ def _session_is_steward(payload: dict):
     text = _first_user_text(tp)
     if not text:
         return None
-    return STEWARD_MARKER in text
+    # The marker must OPEN a line (the scheduler may prepend a time header, so
+    # not only the first). A bare substring test armed any chat whose first
+    # message merely QUOTED the marker: a handed-off conversation carrying a
+    # standing position about this very file was fenced as a steward cycle,
+    # and steward sessions are never offered Allow once (2026-10-03). Measured
+    # then: all 8 recent transcripts containing the marker were quotes.
+    return _STEWARD_MARKER_LINE.search(text) is not None
+
+
+_STEWARD_MARKER_LINE = re.compile(r'(?m)^[ 	]*' + re.escape(STEWARD_MARKER))
 
 
 # ── Generalized unattended arming (2026-09-14, UNATTENDED_AGENT_PERMISSIONS_AUDIT) ──
