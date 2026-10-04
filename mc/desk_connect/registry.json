@@ -1,0 +1,139 @@
+{
+  "version": 1,
+  "blocked_domains": ["clayrune.com", "clayrune.dev", "clayrune.io", "clayrune.ai"],
+  "common_options": [
+    {
+      "method": "mcp",
+      "support": "info_only",
+      "title": "MCP server",
+      "evidence": "Clayrune's built-in list",
+      "guidance": "Connecting a service through an MCP server is not available yet."
+    }
+  ],
+  "services": [
+    {
+      "id": "x",
+      "label": "X",
+      "hosts": ["x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"],
+      "options": [
+        {
+          "method": "oauth",
+          "support": "available",
+          "title": "Sign in with your X developer app",
+          "evidence": "Clayrune's built-in list",
+          "guidance": "Add an X account, then follow its Connect steps: you create an X app, paste its Client ID and sign in.",
+          "open": "account:x"
+        }
+      ]
+    },
+    {
+      "id": "higgsfield",
+      "label": "Higgsfield",
+      "hosts": ["higgsfield.ai", "www.higgsfield.ai", "mcp.higgsfield.ai", "console.higgsfield.ai"],
+      "options": [
+        {
+          "method": "oauth",
+          "support": "available",
+          "title": "Sign in with Higgsfield",
+          "evidence": "Clayrune's built-in list",
+          "guidance": "Image and video generation on your Higgsfield plan. You sign in once in the browser.",
+          "open": "engine:higgsfield_mcp"
+        },
+        {
+          "method": "api_key",
+          "support": "available",
+          "title": "Higgsfield API key",
+          "evidence": "Clayrune's built-in list",
+          "guidance": "Advanced: a developer API key with its own key ID, billed in dollars.",
+          "open": "engine:higgsfield"
+        }
+      ]
+    },
+    {
+      "id": "google_ai",
+      "label": "Google AI Studio",
+      "hosts": ["aistudio.google.com", "ai.google.dev"],
+      "options": [
+        {
+          "method": "api_key",
+          "support": "available",
+          "title": "Gemini API key",
+          "evidence": "Clayrune's built-in list",
+          "guidance": "Veo video and Gemini images. Create the key in Google AI Studio; billing must be on.",
+          "open": "engine:google"
+        }
+      ]
+    },
+    {
+      "id": "openai",
+      "label": "OpenAI",
+      "hosts": ["openai.com", "www.openai.com", "platform.openai.com"],
+      "options": [
+        {
+          "method": "api_key",
+          "support": "available",
+          "title": "OpenAI API key",
+          "evidence": "Clayrune's built-in list",
+          "guidance": "Image generation. A ChatGPT or Codex plan does not include API use.",
+          "open": "engine:openai"
+        }
+      ]
+    },
+    {
+      "id": "linkedin",
+      "label": "LinkedIn",
+      "hosts": ["linkedin.com", "www.linkedin.com"],
+      "options": [
+        {
+          "method": "oauth",
+          "support": "restricted",
+          "title": "LinkedIn Company Page posting",
+          "evidence": "Clayrune's built-in list",
+          "guidance": "Information only: LinkedIn lets only approved apps post to a Company Page. You apply for its Community Management API; Clayrune cannot connect until that is granted."
+        }
+      ]
+    },
+    {
+      "id": "youtube",
+      "label": "YouTube",
+      "hosts": ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"],
+      "options": [
+        {
+          "method": "oauth",
+          "support": "info_only",
+          "title": "YouTube channel",
+          "evidence": "Clayrune's built-in list",
+          "guidance": "Information only: Clayrune has no YouTube connector yet."
+        }
+      ]
+    },
+    {
+      "id": "google_drive",
+      "label": "Google Drive",
+      "hosts": ["drive.google.com"],
+      "options": [
+        {
+          "method": "oauth",
+          "support": "info_only",
+          "title": "Google Drive",
+          "evidence": "Clayrune's built-in list",
+          "guidance": "Information only: Clayrune cannot read a Google Drive yet."
+        }
+      ]
+    },
+    {
+      "id": "google_photos",
+      "label": "Google Photos",
+      "hosts": ["photos.google.com", "photos.app.goo.gl"],
+      "options": [
+        {
+          "method": "oauth",
+          "support": "info_only",
+          "title": "Google Photos",
+          "evidence": "Clayrune's built-in list",
+          "guidance": "Information only: Clayrune cannot read Google Photos yet."
+        }
+      ]
+    }
+  ]
+}
