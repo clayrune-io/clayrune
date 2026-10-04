@@ -27,7 +27,7 @@
 
   let _pick = null;          // null = the list; 'account:<platform>' | 'engine:<id>' | 'other'
   let _query = '';
-  function reset() { _pick = null; _query = ''; }
+  function reset() { _pick = null; _query = ''; if (window.DeskV1ConnectFlow) window.DeskV1ConnectFlow.reset(); }
   // The engine id the panel is showing the connect card of, or null.
   function pickedEngine() { return _pick && _pick.indexOf('engine:') === 0 ? _pick.slice(7) : null; }
 
@@ -97,8 +97,12 @@
   // ctx: { engines: [] | null, engineError: string | null }
   function panelHTML(ctx) {
     let body;
-    if (!_pick) {
-      body = _listHTML(ctx);
+    const flow = window.DeskV1ConnectFlow;
+    const flowHTML = flow ? flow.html({ live: window.DeskV1Store.live(), engines: ctx.engines }) : '';
+    if (flow && flow.active()) {
+      body = flowHTML;                     // a connect-by-address flow past its first step owns the panel
+    } else if (!_pick) {
+      body = flowHTML + (flowHTML ? '<div class="desk-v1-cf-or">Or pick from the list</div>' : '') + _listHTML(ctx);
     } else {
       let form = '';
       if (_pick === 'other') form = _otherFormHTML();
@@ -177,6 +181,27 @@
   function bind(el, ctx) {
     const root = el.querySelector('[data-add-service]');
     if (!root) return;
+    if (window.DeskV1ConnectFlow) window.DeskV1ConnectFlow.bind(root, {
+      live: window.DeskV1Store.live(), api: ctx.api, engines: ctx.engines, repaint: ctx.repaint,
+      // "Open the guide" on a method row: hand over to the flow Connections already has.
+      openPick: (key) => {
+        window.DeskV1ConnectFlow.reset();
+        const id = key.indexOf('engine:') === 0 ? key.slice(7) : null;
+        const eng = id && (ctx.engines || []).find((x) => x.id === id);
+        if (eng && window.DeskV1Engines.tileState(eng)) window.DeskV1ConnTiles.select(key);   // already connected: its own tile
+        else _pick = key;
+        ctx.repaint();
+      },
+      // Saved: the new record is the server's; show it as its own tile.
+      onSaved: (svc, info) => {
+        reset();
+        window.DeskV1Services.load(true).then(() => {
+          if (svc && svc.id) window.DeskV1ConnTiles.select(`service:${svc.id}`);
+          window.DeskV1Kit.toast(`Saved ${svc && svc.name ? svc.name : 'the service'} for agents${info && info.credentialStored ? ' and stored its credential (not verified)' : ''}.`);
+          ctx.repaint();
+        });
+      },
+    });
     root.querySelectorAll('[data-add-pick]').forEach((b) => b.addEventListener('click', () => { _pick = b.dataset.addPick; ctx.repaint(); }));
     const back = root.querySelector('[data-add-back]');
     if (back) back.addEventListener('click', () => { _pick = null; ctx.repaint(); });

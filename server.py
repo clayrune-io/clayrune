@@ -2210,6 +2210,9 @@ app.register_blueprint(_bp_desk.bp)
 # over mc.desk_services, which shares the Desk store wired just above.
 from mc.blueprints import desk_services_routes as _bp_desk_services  # noqa: E402
 app.register_blueprint(_bp_desk_services.bp)
+# Connect by URL: inspect an address, one Save (vault entry then Desk record). Own module.
+from mc.blueprints import desk_connect_routes as _bp_desk_connect  # noqa: E402
+app.register_blueprint(_bp_desk_connect.bp)
 
 # Desk Studio's delete + Undo for Recent rows, over the same Desk store and uploads.
 from mc.blueprints import desk_studio_items_routes as _bp_desk_studio_items  # noqa: E402

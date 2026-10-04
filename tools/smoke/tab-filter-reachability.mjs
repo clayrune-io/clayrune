@@ -46,7 +46,7 @@ const JS_MODULES = [
   'claydo.js', 'mobile-pairing.js', 'walkthrough.js', 'skills-panel.js', 'media.js',
   'settings-drill.js', 'settings-sections.js', 'terminal.js', 'mermaid.js',
   'search-chats.js', 'backlog-actions.js', 'cross-backlog.js', 'scheduler.js',
-  'schedule-calendar.js', 'automation-suggestions.js', 'mcp.js', 'secrets-panel.js',
+  'schedule-calendar.js', 'automation-suggestions.js', 'mcp.js', 'secret-form.js', 'secrets-panel.js',
   'system-status.js', 'update-power.js', 'provider-auth.js', 'schedule-banner.js',
   'provider-settings.js', 'process-manager.js', 'cross-hivemind.js', 'feed.js',
   'beacon.js', 'mobile.js', 'project-actions.js', 'composer-extras.js',

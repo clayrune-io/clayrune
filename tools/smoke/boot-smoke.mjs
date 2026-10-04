@@ -86,6 +86,7 @@ const AUTOMATION_SUGGESTIONS_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js'
 // MCP servers ES module (Phase 3 module 14) — same rule as claydo.js above.
 const MCP_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'mcp.js'), 'utf8');
 // Secrets vault ES module — same rule as claydo.js above.
+const SECRET_FORM_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'secret-form.js'), 'utf8');
 const SECRETS_PANEL_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'secrets-panel.js'), 'utf8');
 // System status ES module (Phase 3 module 15) — same rule as claydo.js above.
 const SYSTEM_STATUS_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'system-status.js'), 'utf8');
@@ -180,6 +181,7 @@ const STATIC_MAP = {
   '/static/js/schedule-calendar.js': ['text/javascript; charset=utf-8', SCHEDULE_CALENDAR_JS],
   '/static/js/automation-suggestions.js': ['text/javascript; charset=utf-8', AUTOMATION_SUGGESTIONS_JS],
   '/static/js/mcp.js': ['text/javascript; charset=utf-8', MCP_JS],
+  '/static/js/secret-form.js': ['text/javascript; charset=utf-8', SECRET_FORM_JS],
   '/static/js/secrets-panel.js': ['text/javascript; charset=utf-8', SECRETS_PANEL_JS],
   '/static/js/system-status.js': ['text/javascript; charset=utf-8', SYSTEM_STATUS_JS],
   '/static/js/update-power.js': ['text/javascript; charset=utf-8', UPDATE_POWER_JS],
