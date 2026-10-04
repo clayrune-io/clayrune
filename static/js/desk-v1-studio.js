@@ -357,8 +357,37 @@
   // scene change below goes through _sceneCmd: demo keeps the plain commandBus
   // command; live applies it, PUTs the whole list (guarded by the rev the page
   // last read), and puts the page back on the server's list if that is refused.
+  // Saves what is typed in the open scene editor (title + instructions) through
+  // _editScene, so it is one undoable change like any other. False when the
+  // instructions are over the limit: the editor stays open with the text in it.
+  // `quiet` (a blur) shows no error and does not steal the focus.
+  let _savingEditor = false;
+  let _quietSave = false;
+  function _saveOpenEditor(quiet) {
+    if (!_sb || !_sb.editing || _savingEditor || !_sb.el.isConnected) return true;
+    const id = _sb.editing;
+    const li = Array.from(_sb.el.querySelectorAll('.desk-v1-sb-scene')).find((x) => x.dataset.sceneId === id);
+    const labelEl = li && li.querySelector('[data-scene-edit-label]');
+    const lineEl = li && li.querySelector('[data-scene-edit-line]');
+    if (!labelEl || !lineEl) return true;
+    if (lineEl.value.trim().length > window.DeskV1Story.MAX_LINE) {
+      if (!quiet) window.DeskV1Story.lineOver(li, true);
+      return false;
+    }
+    const ctx = _sbCtx();
+    const s = ctx && ctx.detail.scenes.find((x) => x.id === id);
+    if (!s) return true;
+    _savingEditor = true;
+    _quietSave = !!quiet;
+    try { _editScene(id, { label: labelEl.value.trim() || s.label, line: lineEl.value.trim() }); } finally { _savingEditor = false; _quietSave = false; }
+    return true;
+  }
+
   function _sbOwner() { return { kind: _sb.standalone ? 'studio' : 'piece', id: _sb.familyId }; }
   function _sceneCmd(ctx, spec) {
+    // Whatever is typed in the open scene editor is saved before any other scene
+    // change repaints the list; over the limit, the change waits and the editor stays.
+    if (!_saveOpenEditor()) return Promise.resolve({ ok: false, error: 'the scene you are editing is over the instruction limit: shorten it first' });
     if (!_isLive()) return DeskV1Kit.commandBus.run(spec);
     return window.DeskV1Store.storyboard.command(Object.assign({
       owner: _sbOwner(), detail: ctx.detail, repaint: () => _paintScenes(),
@@ -370,9 +399,15 @@
   function _loadBoard(mine) {
     const ctx = _sbCtx();
     if (!ctx) return;
+    // The story box stays disabled until the saved board has landed, so typing
+    // cannot be overwritten by the read.
+    mine.loading = true;
+    if (mine.el.isConnected) _repaintSb();
     window.DeskV1Store.storyboard.load(_sbOwner(), ctx.detail).then(() => {
+      mine.loading = false;
       if (_sb === mine && mine.el.isConnected) _repaintSb();
     }).catch((e) => {
+      mine.loading = false;
       if (_sb !== mine) return;
       mine.loadError = e && e.message ? e.message : String(e);
       if (mine.el.isConnected) _repaintSb();
@@ -387,7 +422,7 @@
     const title = editing
       ? `<div class="desk-v1-sb-edit">
           <input type="text" class="desk-v1-sb-edit-input" data-scene-edit-label value="${esc(s.label)}" aria-label="${name} title">
-          <input type="text" class="desk-v1-sb-edit-input" data-scene-edit-line value="${esc(s.line || '')}" aria-label="${name} line">
+          ${window.DeskV1Story.lineEditorHTML(s.line, name)}
         </div>`
       : `<div class="desk-v1-sb-scenetitle" data-scene-title>${ph ? '<span class="desk-v1-sb-example-chip" data-scene-example>Example</span> ' : `Scene ${n} · `}${esc(s.label)}</div>
          <div class="desk-v1-sb-line">${esc(s.line || '')}</div>`;
@@ -464,6 +499,7 @@
       ${_renderStatusHTML(fam)}
       <div class="desk-v1-sb-layout">
         <div class="desk-v1-sb-main">
+          ${_isLive() && !_sb.loadError ? window.DeskV1Story.html(!_sb.loading) : ''}
           ${_sb.standalone ? `<div class="desk-v1-sb-timeline-wrap" data-sb-timeline-wrap>${_timelineHTML(detail)}</div>` : ''}
           <div class="desk-v1-sb-listrow">
             <ol class="desk-v1-sb-scenes" data-scenes aria-label="Scenes">${detail.scenes.map((s) => _sceneHTML(s, detail.scenes, _sb.editing === s.id)).join('')}</ol>
@@ -496,7 +532,8 @@
           </select>` : '';
     return `<div class="desk-v1-sb-agent-head" data-sb-agent-head>${avatar}<strong>${esc(agentName)}</strong></div>${picker}
           <p class="desk-v1-sb-agent-text">Scenes are pulled from real product captures. Pick a scene and tell me what to change.</p>
-          <input type="text" class="desk-v1-sb-agent-input" data-sb-ask placeholder="Ask ${esc(agentName)} to change a scene…" aria-label="Ask ${esc(agentName)} to change a scene">`;
+          <textarea class="desk-v1-sb-agent-input desk-v1-sb-agent-ask" data-sb-ask data-autogrow="0.4" rows="2"${_isLive() ? '' : ' disabled title="Needs the live Desk: the sample storyboard has no agent behind it"'} placeholder="Ask ${esc(agentName)} to change a scene…" aria-label="Ask ${esc(agentName)} to change a scene"></textarea>
+          <div class="desk-v1-story-ask-status" data-sb-ask-status role="status"></div>`;
   }
 
   // A standalone item carries its REAL scenes (the examples are not part of
@@ -505,14 +542,19 @@
     if (_sb && _sb.standalone) ctx.fam.scenes = _scenePayload(ctx.detail);
   }
 
+  // A save on blur (`_quietSave`) leaves the rows as they are: rebuilding them would
+  // replace the button the user is in the middle of clicking. Everything around
+  // the list still refreshes.
   function _paintScenes(focusSel) {
     if (!_sb || !_sb.el.isConnected) return;
     const ctx = _sbCtx();
     const ol = _sb.el.querySelector('[data-scenes]');
     if (!ctx || !ol) return;
     _syncItemScenes(ctx);
-    ol.innerHTML = ctx.detail.scenes.map((s) => _sceneHTML(s, ctx.detail.scenes, _sb.editing === s.id)).join('');
-    _wireScenes(ol);
+    if (!_quietSave) {
+      ol.innerHTML = ctx.detail.scenes.map((s) => _sceneHTML(s, ctx.detail.scenes, _sb.editing === s.id)).join('');
+      _wireScenes(ol);
+    }
     if (_sb.standalone) {
       const wrap = _sb.el.querySelector('[data-sb-timeline-wrap]');
       if (wrap) { wrap.innerHTML = _timelineHTML(ctx.detail); _wireTimeline(); }
@@ -522,6 +564,7 @@
       if (render) render.disabled = !_realScenes(ctx.detail).length || !!(ctx.fam.render && ctx.fam.render.status === 'rendering');
     }
     _markSelected();
+    window.DeskV1Story.grow(ol);
     if (focusSel) { const f = _sb.el.querySelector(focusSel); if (f) f.focus({ preventScroll: true }); }
     // The scenes changed, so the price shown for the render is out of date.
     const eng = _isLive() && _sb.el.querySelector('[data-sb-engine]');
@@ -737,6 +780,7 @@
       n.classList.toggle('desk-v1-sb-selected', on);
       if (n.classList.contains('desk-v1-sb-scene')) { if (on) n.setAttribute('aria-current', 'true'); else n.removeAttribute('aria-current'); }
     });
+    window.DeskV1Story.onSelect();
   }
   function _selectScene(sceneId, keep) {
     if (!_sb) return;
@@ -821,14 +865,27 @@
     const pick = box.querySelector('[data-sb-agent-pick]');
     if (pick) pick.onchange = () => _pickAgent(pick.value);
     const ask = box.querySelector('[data-sb-ask]');
-    ask.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter') return;
-      const text = ask.value.trim();
-      if (!text) return;
-      e.preventDefault();
-      DeskV1Kit.toast(`Sent to ${_sbAgent(ctx).name || 'your agent'}: “${text}”`);
-      ask.value = '';
-    });
+    if (_isLive()) window.DeskV1Story.wireAsk(ask, _storyBridge());
+  }
+
+  // What desk-v1-story.js is handed: the page's scene list and commands, never the
+  // module's own state. `token` is null once the storyboard is left or reopened.
+  function _storyBridge() {
+    const mine = _sb;
+    return {
+      token: () => (_sb === mine ? mine : null),
+      ctx: () => (_sb === mine ? _sbCtx() : null),
+      owner: () => _sbOwner(),
+      extra: () => (mine.standalone ? { title: _sbCtx().fam.title } : undefined),
+      registerItem: () => { const c = _sbCtx(); if (c) _registerItem(c.fam); },
+      projectId: () => { const c = _sbCtx(); return (c && c.camp.projectId) || ''; },
+      agentRef: () => { const c = _sbCtx(); const a = c && _sbAgent(c); return a && a.name ? a.ref : null; },
+      agentName: () => { const c = _sbCtx(); return (c && _sbAgent(c).name) || 'your agent'; },
+      selected: () => (_sb === mine ? mine.selected : null),
+      stopEditing: () => { if (_sb === mine) mine.editing = null; },
+      repaint: () => _paintScenes(),
+      command: (spec) => { const c = _sbCtx(); _registerItem(c.fam); return _sceneCmd(c, spec); },
+    };
   }
 
   function _sceneIdAt(x, y) {
@@ -909,18 +966,19 @@
       });
       const edit = li.querySelector('[data-scene-edit]');
       edit.onclick = () => {
+        // Whatever is open is saved first: this scene's own editor (Done) or another's.
+        if (!_saveOpenEditor()) return;
         if (_sb.editing === id) {
-          const label = li.querySelector('[data-scene-edit-label]').value.trim();
-          const line = li.querySelector('[data-scene-edit-line]').value.trim();
-          const s = ctx.detail.scenes.find((x) => x.id === id);
           _sb.editing = null;
-          _editScene(id, { label: label || s.label, line });
           _paintScenes(`[data-scene-id="${id}"] [data-scene-edit]`);
         } else {
           _sb.editing = id;
           _paintScenes(`[data-scene-id="${id}"] [data-scene-edit-label]`);
         }
       };
+      // Leaving the instructions box saves it, so nothing typed waits on Done.
+      const lineEl = li.querySelector('[data-scene-edit-line]');
+      if (lineEl) lineEl.addEventListener('blur', () => { _saveOpenEditor(true); });
     });
   }
 
@@ -936,6 +994,7 @@
     const add = el.querySelector('[data-scene-add]');
     if (add) add.onclick = _addScene;
     _wireScenes(el.querySelector('[data-scenes]'));
+    window.DeskV1Story.mount(el.querySelector('[data-sb-story-panel]'), _storyBridge());
     if (_sb.standalone) { _wireTimeline(); _hookSbUndo(el); }
     _markSelected();
     _wireAgentBox(el.querySelector('[data-sb-agent]'), ctx);

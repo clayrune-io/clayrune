@@ -46,6 +46,7 @@ from mc import desk_harvest as _harvest
 from mc import desk_pieces as _pieces
 from mc import desk_publish as _publish
 from mc import desk_retro as _retro
+from mc import desk_story as _story
 from mc import desk_storyboard as _storyboard
 from mc import desk_tick as _tick
 from mc import desk_voice_seed as _seed
@@ -908,6 +909,10 @@ def put_studio_storyboard(item_id):
 @bp.route('/api/desk/studio/<item_id>/storyboard/pictures', methods=['POST'])
 def upload_studio_storyboard_picture(item_id):
     return _storyboard_picture('studio', item_id)
+
+
+# Make a storyboard (or one scene) from the story: its own module, its own route.
+_story.register(bp, lambda pid: load_project(pid) if load_project else None)
 
 
 # ── Workspace accounts (R1-W S5; plan M2-M5, §2.C) ────────────────────────────
