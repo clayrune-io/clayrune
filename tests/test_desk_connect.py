@@ -110,7 +110,7 @@ def _services():
     'https://127.1/x', 'https://0x7f.1/x', 'https://2130706433/x',
     'https://clayrune.io/x', 'https://app.clayrune.com/x',
     'https://plausible.io/' + 'a' * 300,     # too long
-    'https://plausible io/x', '', '   ', 'plausible.io',
+    'https://plausible io/x', '', '   ',
 ])
 def test_refused_addresses(env, url):
     client, _, _ = env

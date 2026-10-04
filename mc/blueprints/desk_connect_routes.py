@@ -1,7 +1,10 @@
 """Desk connect-by-URL routes (`mc/desk_connect/`, docs/DESK_CONNECT_BY_URL_SPEC.md).
 
-    POST /api/desk/connect/inspect   read-only: validate an address, return its
-                                     connection options. Takes no credential.
+    GET  /api/desk/connect/suggest   read-only: ?q=<typed so far> -> the registry's
+                                     services whose name starts with it.
+    POST /api/desk/connect/inspect   read-only: {input} a service NAME or an address
+                                     (`url` is accepted too); returns its connection
+                                     options. Takes no credential, makes no lookup.
     POST /api/desk/connect/commit    the one Save: {request_id, draft, passcode}.
 
 Commit is human-passcode-gated and for humans only. Agents never write secrets
@@ -19,6 +22,8 @@ from mc.blueprints.secrets_routes import _require_human_passcode
 from mc.core import _log
 from mc.desk_connect import commit as _commit
 from mc.desk_connect import methods as _methods
+from mc.desk_connect import registry as _registry
+from mc.desk_connect import resolve as _resolve
 from mc.desk_connect.url_check import UrlError
 from mc.unattended import is_unattended_caller
 
@@ -30,12 +35,20 @@ def _own_hosts() -> tuple:
     return (host,) if host else ()
 
 
+@bp.route('/api/desk/connect/suggest', methods=['GET'])
+def suggest_services():
+    q = request.args.get('q', '')[:_resolve.MAX_NAME]
+    return jsonify({'q': q, 'suggestions': _registry.suggest(q)})
+
+
 @bp.route('/api/desk/connect/inspect', methods=['POST'])
 def inspect_address():
     d = request.get_json(silent=True)
     d = d if isinstance(d, dict) else {}
     try:
-        return jsonify(_methods.inspect(d.get('url'), own_hosts=_own_hosts()))
+        return jsonify(_methods.inspect(d['input'] if 'input' in d else d.get('url'), own_hosts=_own_hosts()))
+    except _resolve.UnknownNameError as e:
+        return jsonify({'error': str(e), 'hint': e.hint, 'code': e.code, 'suggestions': e.suggestions}), 400
     except UrlError as e:
         return jsonify({'error': str(e), 'hint': e.hint}), 400
 

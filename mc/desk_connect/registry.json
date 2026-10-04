@@ -14,6 +14,8 @@
     {
       "id": "x",
       "label": "X",
+      "aliases": ["X", "Twitter", "X Twitter"],
+      "url": "https://x.com",
       "hosts": ["x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"],
       "options": [
         {
@@ -29,6 +31,8 @@
     {
       "id": "higgsfield",
       "label": "Higgsfield",
+      "aliases": ["Higgsfield", "Higgsfield AI"],
+      "url": "https://higgsfield.ai",
       "hosts": ["higgsfield.ai", "www.higgsfield.ai", "mcp.higgsfield.ai", "console.higgsfield.ai"],
       "options": [
         {
@@ -52,6 +56,8 @@
     {
       "id": "google_ai",
       "label": "Google AI Studio",
+      "aliases": ["Google AI Studio", "AI Studio", "Gemini", "Google Gemini", "Gemini API"],
+      "url": "https://aistudio.google.com",
       "hosts": ["aistudio.google.com", "ai.google.dev"],
       "options": [
         {
@@ -67,6 +73,8 @@
     {
       "id": "openai",
       "label": "OpenAI",
+      "aliases": ["OpenAI", "OpenAI API", "GPT"],
+      "url": "https://platform.openai.com",
       "hosts": ["openai.com", "www.openai.com", "platform.openai.com"],
       "options": [
         {
@@ -82,6 +90,8 @@
     {
       "id": "linkedin",
       "label": "LinkedIn",
+      "aliases": ["LinkedIn", "Linked In"],
+      "url": "https://www.linkedin.com",
       "hosts": ["linkedin.com", "www.linkedin.com"],
       "options": [
         {
@@ -96,6 +106,8 @@
     {
       "id": "youtube",
       "label": "YouTube",
+      "aliases": ["YouTube", "You Tube"],
+      "url": "https://www.youtube.com",
       "hosts": ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"],
       "options": [
         {
@@ -110,6 +122,8 @@
     {
       "id": "google_drive",
       "label": "Google Drive",
+      "aliases": ["Google Drive", "Drive", "GDrive"],
+      "url": "https://drive.google.com",
       "hosts": ["drive.google.com"],
       "options": [
         {
@@ -124,6 +138,8 @@
     {
       "id": "google_photos",
       "label": "Google Photos",
+      "aliases": ["Google Photos", "Photos"],
+      "url": "https://photos.google.com",
       "hosts": ["photos.google.com", "photos.app.goo.gl"],
       "options": [
         {
