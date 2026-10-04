@@ -6,6 +6,10 @@
                                      (`url` is accepted too); returns its connection
                                      options. Takes no credential, makes no lookup.
     POST /api/desk/connect/commit    the one Save: {request_id, draft, passcode}.
+    POST /api/desk/connect/verify    {service, method, account_id?}: ONE free read-only
+                                     check with the stored credential; human-only, no
+                                     passcode (it writes nothing). Answers the derived
+                                     status, "verified" only when the check passed.
 
 Commit is human-passcode-gated and for humans only. Agents never write secrets
 (CLAUDE.md vault rule 3): an unattended caller gets 403 before anything is read, and
@@ -16,7 +20,11 @@ exactly once, then write.
 """
 from __future__ import annotations
 
+import re
+
 from flask import Blueprint, jsonify, request
+
+from mc import secrets_store as _vault
 
 from mc.blueprints.secrets_routes import _require_human_passcode
 from mc.core import _log
@@ -24,10 +32,13 @@ from mc.desk_connect import commit as _commit
 from mc.desk_connect import methods as _methods
 from mc.desk_connect import registry as _registry
 from mc.desk_connect import resolve as _resolve
+from mc.desk_connect import verification as _verification
 from mc.desk_connect.url_check import UrlError
 from mc.unattended import is_unattended_caller
 
 bp = Blueprint('desk_connect_routes', __name__)
+
+_ACCOUNT_ID = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
 
 
 def _own_hosts() -> tuple:
@@ -53,6 +64,16 @@ def inspect_address():
         return jsonify({'error': str(e), 'hint': e.hint}), 400
 
 
+def _vault_names():
+    """Names of what is stored (metadata only), so a known-host draft that would
+    collide with a stored entry is refused before the passcode is asked. None when
+    the vault cannot be listed: `commit` checks again."""
+    try:
+        return {s['name'] for s in _vault.list_secrets()}
+    except _vault.SecretsError:
+        return None
+
+
 @bp.route('/api/desk/connect/commit', methods=['POST'])
 def commit_connection():
     if is_unattended_caller():
@@ -62,7 +83,8 @@ def commit_connection():
     d = d if isinstance(d, dict) else {}
     try:
         request_id = _commit.clean_request_id(d.get('request_id'))
-        clean = _commit.clean_draft(d.get('draft'), own_hosts=_own_hosts())
+        names = None if _commit.is_known_request(request_id) else _vault_names()
+        clean = _commit.clean_draft(d.get('draft'), own_hosts=_own_hosts(), vault_names=names)
     except _commit.CommitError as e:
         return jsonify({'error': str(e), 'code': e.code}), e.status
     refusal = _require_human_passcode(d)
@@ -76,3 +98,19 @@ def commit_connection():
         _log(f'[desk_connect] commit failed unexpectedly: {type(e).__name__}', flush=True)
         return jsonify({'error': 'could not save; see the server log', 'code': 'failed'}), 500
     return jsonify({'ok': True, 'duplicate': duplicate, **result}), (200 if duplicate else 201)
+
+
+@bp.route('/api/desk/connect/verify', methods=['POST'])
+def verify_connection():
+    if is_unattended_caller():
+        return jsonify({'error': 'this action needs a human: an unattended agent session '
+                                 'cannot check a stored credential'}), 403
+    d = request.get_json(silent=True)
+    d = d if isinstance(d, dict) else {}
+    account_id = d.get('account_id')
+    if account_id is not None and not (isinstance(account_id, str) and _ACCOUNT_ID.match(account_id)):
+        return jsonify({'error': 'that account id is not valid', 'code': 'bad_account'}), 400
+    try:
+        return jsonify(_verification.verify(d.get('service'), d.get('method'), account_id))
+    except _verification.VerifyError as e:
+        return jsonify({'error': str(e), 'code': e.code}), e.status

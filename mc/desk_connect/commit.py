@@ -25,6 +25,12 @@ FAILED commit is not remembered, so the form can retry it. The hash is keyed wit
 a per-process random key and kept only in memory, so it is not a way to test a
 guess at the value.
 
+A known-host method (slice 2: X sign-in, Higgsfield sign-in or key, a Gemini or
+OpenAI key) goes through `provider_commit` instead: the adapter's own writes, undone
+newest-first if a later one fails, then the sign-in (which cannot be undone, and is
+reported as "setup failed" rather than rolled back). The service is taken from the
+address's HOST via the registry, never from anything the browser names.
+
 The caller (the route) has already checked the human and the passcode; this
 module trusts nothing else it is given and validates the draft again.
 """
@@ -41,7 +47,9 @@ from collections import OrderedDict
 from mc import desk_services as _services
 from mc import secrets_store as _vault
 from mc.core import _log
-from mc.desk_connect import url_check
+from mc.desk_connect import methods as _methods
+from mc.desk_connect import provider_commit, providers, registry, url_check
+from mc.desk_connect.providers.base import ProviderError
 from mc.desk_connect.url_check import UrlError
 
 MAX_VALUE = 8192
@@ -82,12 +90,34 @@ def clean_request_id(raw) -> str:
     return raw
 
 
-def clean_draft(draft, own_hosts=()) -> dict:
+def _clean_provider_draft(draft: dict, checked: dict, vault_names) -> dict:
+    """The draft of a known-host method: the service from the address's host, the
+    method one the registry offers as available AND the service's provider supports,
+    the typed fields as the provider validates them. No generic credential, no name."""
+    svc = registry.lookup(checked['host'])
+    method = draft.get('method')
+    prov = providers.for_service(svc['id']) if svc else None
+    if svc is None or prov is None or not isinstance(method, str) or not _methods.is_connectable(svc, method):
+        raise CommitError('that method cannot be set up from here: it is information only for this service',
+                          400, 'method_not_available')
+    unknown = sorted(set(draft) - {'url', 'method', 'fields'})
+    if unknown:
+        raise CommitError(f'unknown draft field(s) for this method: {", ".join(unknown)}')
+    try:
+        fields = prov.clean(method, draft.get('fields'), vault_names)
+    except ProviderError as e:
+        raise CommitError(str(e), e.status, e.code) from e
+    return {'url': checked['url'], 'method': method, 'service': svc['id'], 'label': svc['label'], 'fields': fields}
+
+
+def clean_draft(draft, own_hosts=(), vault_names=None) -> dict:
     """Validate a draft into the exact shape that is saved. Raises CommitError.
-    Pure: touches neither the vault nor the Desk store."""
+    Pure: touches neither the vault nor the Desk store. `vault_names` (names only,
+    from the route) lets a known-host method refuse an already-stored entry before
+    the passcode is asked; None skips that, `commit` checks again."""
     if not isinstance(draft, dict):
         raise CommitError('draft must be an object')
-    unknown = sorted(set(draft) - {'url', 'method', 'name', 'credential'})
+    unknown = sorted(set(draft) - {'url', 'method', 'name', 'credential', 'fields'})
     if unknown:
         raise CommitError(f'unknown draft field(s): {", ".join(unknown)}')
     try:
@@ -95,8 +125,9 @@ def clean_draft(draft, own_hosts=()) -> dict:
     except UrlError as e:
         raise CommitError(f'{e} {e.hint}'.strip(), 400, 'bad_url') from e
     if draft.get('method') != 'save_for_agents':
-        raise CommitError('only "Save for agents" can be saved yet; the other methods are information only',
-                          400, 'method_not_available')
+        return _clean_provider_draft(draft, checked, vault_names)
+    if 'fields' in draft:
+        raise CommitError('"Save for agents" takes a credential, not fields')
     try:
         name = _services._clean_name(draft.get('name'))
     except _services.ServiceError as e:
@@ -144,6 +175,15 @@ def _fingerprint(clean: dict) -> str:
     return hmac.new(_key, blob, hashlib.sha256).hexdigest()
 
 
+def is_known_request(request_id: str) -> bool:
+    """True when this request id has already been saved. The route then skips its
+    "that entry already exists" pre-check, which would otherwise see the entries the
+    first request itself wrote and refuse the replay of a lost response; `commit`
+    compares the draft and answers with the remembered result."""
+    with _lock:
+        return request_id in _done
+
+
 def _forget_all_for_tests() -> None:
     with _lock:
         _done.clear()
@@ -159,53 +199,67 @@ def commit(request_id: str, clean: dict) -> tuple[dict, bool]:
             if hmac.compare_digest(seen[0], fp):
                 return seen[1], True
             raise CommitError('that request_id was already used for a different draft', 409, 'request_id_reused')
-
-        cred = clean['credential']
-        try:
-            existing = {s['name'] for s in _vault.list_secrets()}
-        except _vault.SecretsError as e:
-            raise CommitError(f'the vault could not be read: {e}', 503, 'vault_unavailable') from e
-        if cred:
-            if _vault.is_locked():
-                raise CommitError('the vault is locked: unlock it in Secrets, then save again', 409, 'vault_locked')
-            if cred['name'] in existing:
-                raise CommitError(f'a secret named "{cred["name"]}" already exists; pick another name '
-                                  f'(Clayrune does not replace a stored credential from here)', 409, 'secret_exists')
-        wanted = clean['name'].lower()
-        if any((s.get('name') or '').lower() == wanted for s in _services.list_services()):
-            raise CommitError(f'{clean["name"]} is already saved', 409, 'service_exists')
-
-        wrote_secret = False
-        if cred:
+        if clean['method'] == 'save_for_agents':
+            result = _save_for_agents(clean)
+            applied = None
+        else:
             try:
-                _vault.set_secret(cred['name'], cred['value'], username=cred['username'],
-                                  description=cred['description'], scope='global',
-                                  allow_unattended=cred['allow_unattended'], entry_type=cred['entry_type'])
-            except _vault.SecretsError as e:
-                raise CommitError(f'the credential could not be stored: {e}', 400, 'vault_refused') from e
-            wrote_secret = True
-        try:
-            svc = _services.create_service(clean['name'], link=clean['url'],
-                                           credential=cred['name'] if cred else None)
-        except Exception as e:
-            _log(f'[desk_connect] record write failed ({type(e).__name__}); undoing the vault entry', flush=True)
-            orphan = False
-            if wrote_secret:
-                try:
-                    orphan = not _vault.delete_secret(cred['name'])
-                except Exception as e2:
-                    orphan = True
-                    _log(f'[desk_connect] compensating delete of {cred["name"]!r} failed: {type(e2).__name__}', flush=True)
-            if isinstance(e, _services.ServiceError):
-                msg, status, code = str(e), e.status, 'service_refused'
-            else:
-                msg, status, code = 'the service record could not be written', 500, 'record_failed'
-            if orphan:
-                msg += f'; the credential "{cred["name"]}" was stored and could not be removed: delete it in Secrets'
-            raise CommitError(msg, status, code) from e
-
-        result = {'service': svc, 'credential': {'name': cred['name'], 'stored': True} if cred else None}
+                applied, result = provider_commit.apply(clean)
+            except ProviderError as e:
+                raise CommitError(str(e), e.status, e.code) from e
         _done[request_id] = (fp, result)
         while len(_done) > _REMEMBER:
             _done.popitem(last=False)
+    if applied is None:
         return result, False
+    # Outside the lock: starting a sign-in is network. The remembered result above
+    # has no sign-in in it: a replayed request must not reopen a stale one.
+    return {**result, **provider_commit.follow(clean, applied)}, False
+
+
+def _save_for_agents(clean: dict) -> dict:
+    cred = clean['credential']
+    try:
+        existing = {s['name'] for s in _vault.list_secrets()}
+    except _vault.SecretsError as e:
+        raise CommitError(f'the vault could not be read: {e}', 503, 'vault_unavailable') from e
+    if cred:
+        if _vault.is_locked():
+            raise CommitError('the vault is locked: unlock it in Secrets, then save again', 409, 'vault_locked')
+        if cred['name'] in existing:
+            raise CommitError(f'a secret named "{cred["name"]}" already exists; pick another name '
+                              f'(Clayrune does not replace a stored credential from here)', 409, 'secret_exists')
+    wanted = clean['name'].lower()
+    if any((s.get('name') or '').lower() == wanted for s in _services.list_services()):
+        raise CommitError(f'{clean["name"]} is already saved', 409, 'service_exists')
+
+    wrote_secret = False
+    if cred:
+        try:
+            _vault.set_secret(cred['name'], cred['value'], username=cred['username'],
+                              description=cred['description'], scope='global',
+                              allow_unattended=cred['allow_unattended'], entry_type=cred['entry_type'])
+        except _vault.SecretsError as e:
+            raise CommitError(f'the credential could not be stored: {e}', 400, 'vault_refused') from e
+        wrote_secret = True
+    try:
+        svc = _services.create_service(clean['name'], link=clean['url'],
+                                       credential=cred['name'] if cred else None)
+    except Exception as e:
+        _log(f'[desk_connect] record write failed ({type(e).__name__}); undoing the vault entry', flush=True)
+        orphan = False
+        if wrote_secret:
+            try:
+                orphan = not _vault.delete_secret(cred['name'])
+            except Exception as e2:
+                orphan = True
+                _log(f'[desk_connect] compensating delete of {cred["name"]!r} failed: {type(e2).__name__}', flush=True)
+        if isinstance(e, _services.ServiceError):
+            msg, status, code = str(e), e.status, 'service_refused'
+        else:
+            msg, status, code = 'the service record could not be written', 500, 'record_failed'
+        if orphan:
+            msg += f'; the credential "{cred["name"]}" was stored and could not be removed: delete it in Secrets'
+        raise CommitError(msg, status, code) from e
+
+    return {'service': svc, 'credential': {'name': cred['name'], 'stored': True} if cred else None}
