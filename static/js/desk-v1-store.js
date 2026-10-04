@@ -238,6 +238,7 @@
     _sbRev[_sbKey(owner)] = board.rev || 0;
     detail.scenes = (board.scenes || []).map(_sceneIn);
     detail.pendingEdits = (board.pending_edits || []).map((p) => ({ id: p.id, label: p.label }));
+    detail.story = board.story || '';
     return board;
   }
   async function sbLoad(owner, detail) {
@@ -253,7 +254,7 @@
         rev: _sbRev[key] || 0,
         scenes: (detail.scenes || []).filter((s) => !s.placeholder).map(_sceneOut),
         pending_edits: (detail.pendingEdits || []).map((p) => ({ id: p.id, label: p.label })),
-      }, extra || {});
+      }, typeof detail.story === 'string' ? { story: detail.story } : {}, extra || {});
       const board = await api('PUT', _sbBase(owner), body);
       _sbRev[key] = board.rev;
       return board;

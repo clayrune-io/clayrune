@@ -12,8 +12,10 @@ own, keyed by the id the page minted for the draft. They live in
 `piece:<id>` / `studio:<id>`: the same file as every other Desk store, outside
 DATA_DIR (the LOAD-BEARING rule in CLAUDE.md), so it is not a project record.
 
-SHAPE. `{rev, scenes: [Scene], pending_edits: [{id, label}], updated_at}`, and a
-Scene is `{id, label, line, duration_sec, picture: AssetRef|null, edited}`. ORDER
+SHAPE. `{rev, scenes: [Scene], pending_edits: [{id, label}], story, updated_at}`,
+where `story` is the free text the scenes were (or are to be) made from (optional:
+a board stored before it existed reads as '', and a PUT that omits it keeps the
+stored one), and a Scene is `{id, label, line, duration_sec, picture: AssetRef|null, edited}`. ORDER
 IS THE ARRAY INDEX: there is no sort key, so an insert, a remove or a reorder is
 just a different list. `pending_edits` is stored (a reload must not lose the
 queued edits). An AssetRef is `{path, kind: 'image', title}` with `path` relative
@@ -55,6 +57,7 @@ MAX_SCENES = 200
 MAX_PENDING = 500
 MAX_LABEL = 200
 MAX_LINE = 2000
+MAX_STORY = 20000
 MAX_PENDING_LABEL = 300
 MAX_DURATION_SEC = 3600
 
@@ -137,6 +140,7 @@ def _board_out(board: dict | None, owner_kind: str, owner_id: str) -> dict:
         'owner': {'kind': owner_kind, 'id': owner_id},
         'rev': int(board.get('rev') or 0),
         'title': board.get('title') or '',
+        'story': board.get('story') or '',
         'scenes': [{'id': s['id'], 'label': s.get('label') or '', 'line': s.get('line') or '',
                     'duration_sec': s.get('duration_sec'), 'picture': _picture_out(s.get('picture')),
                     'edited': bool(s.get('edited'))}
@@ -281,7 +285,7 @@ def list_studio_storyboards() -> list[dict]:
 
 
 def put_storyboard(owner_kind: str, owner_id: str, body) -> dict:
-    """Replace the whole list. `body` = `{rev, scenes, pending_edits?, title?}`.
+    """Replace the whole list. `body` = `{rev, scenes, pending_edits?, title?, story?}`.
     A `rev` that is not the stored one is a 409 whose `problems` names the current
     rev; a successful write is `rev + 1`. Returns the stored storyboard."""
     if not isinstance(body, dict):
@@ -300,6 +304,9 @@ def put_storyboard(owner_kind: str, owner_id: str, body) -> dict:
         elif owner_kind != 'studio':
             problems.append('only a Studio item keeps a title here: a piece has its own')
             title = None
+    story = body.get('story')
+    if story is not None and (not isinstance(story, str) or len(story) > MAX_STORY):
+        problems.append(f'story must be text of at most {MAX_STORY} characters')
     if problems:
         raise PieceError('the storyboard is not valid', 400, problems)
     with _desk._store_lock:
@@ -313,7 +320,8 @@ def put_storyboard(owner_kind: str, owner_id: str, body) -> dict:
             raise PieceError(f'this storyboard changed since you loaded it (it is at revision {current}, '
                              f'you had {rev}): reload it, then make the change again', 409,
                              [f'current_rev={current}'])
-        new = {'rev': current + 1, 'scenes': scenes, 'pending_edits': pending, 'updated_at': now_iso()}
+        new = {'rev': current + 1, 'scenes': scenes, 'pending_edits': pending, 'updated_at': now_iso(),
+               'story': story if isinstance(story, str) else (board.get('story') or '')}
         if owner_kind == 'studio':
             new['title'] = (title.strip() if isinstance(title, str) else board.get('title')) or ''
         boards[key] = new

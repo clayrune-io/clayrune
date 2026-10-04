@@ -90,7 +90,7 @@ def test_empty_board_is_rev_zero_and_owner_must_be_a_video_piece(env):
     pid = _piece(client)
     r = client.get(f'/api/desk/pieces/{pid}/storyboard')
     assert r.status_code == 200
-    assert r.get_json() == {'owner': {'kind': 'piece', 'id': pid}, 'rev': 0, 'title': '',
+    assert r.get_json() == {'owner': {'kind': 'piece', 'id': pid}, 'rev': 0, 'title': '', 'story': '',
                             'scenes': [], 'pending_edits': [], 'updated_at': None}
     assert client.get('/api/desk/pieces/nope/storyboard').status_code == 404
     post = _piece(client, kind='post')
