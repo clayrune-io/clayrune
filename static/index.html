@@ -3790,14 +3790,16 @@ setInterval(async () => {
   const restarted = await _checkServerRestart();
   if (restarted) return; // we're about to reload; don't bother with the rest
   const running = agentHistory.filter(h => h.status === 'running' || h.status === 'idle');
-  if (running.length === 0) return;
-  const checked = new Set();
-  for (const h of running) {
-    if (checked.has(h.projectId)) continue;
-    checked.add(h.projectId);
+  // Open project windows are read too, and a session the client has never
+  // seen is handed to fetchAgentStatus: static/js/session-discovery.js says why.
+  const pollIds = window.statusPollProjectIds
+    ? window.statusPollProjectIds(running) : [...new Set(running.map(h => h.projectId))];
+  for (const pid of pollIds) {
+    const h = { projectId: pid };
     try {
       const res = await fetch(API_BASE + `/api/project/${h.projectId}/agent/status`);
       const data = await res.json();
+      if (window.discoverNewSessions?.(pid, data.sessions)) continue;
       const serverMap = {};
       for (const s of (data.sessions || [])) serverMap[s.session_id] = s;
       for (const rh of running.filter(x => x.projectId === h.projectId)) {
@@ -4170,6 +4172,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/rich-text.js"></script>
 <script type="module" src="/static/js/chat-search.js"></script>
 <script type="module" src="/static/js/conversation.js"></script>
+<script type="module" src="/static/js/session-discovery.js"></script>
 <script type="module" src="/static/js/resume-preview.js"></script>
 <script type="module" src="/static/js/agent-log.js"></script>
 <script type="module" src="/static/js/hivemind.js"></script>
