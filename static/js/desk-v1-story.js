@@ -346,5 +346,5 @@
     });
   }
 
-  window.DeskV1Story = { html, mount, wireAsk, onSelect, lineEditorHTML, lineOver, grow };
+  window.DeskV1Story = { html, mount, wireAsk, onSelect, lineEditorHTML, lineOver, grow, MAX_LINE };
 })();

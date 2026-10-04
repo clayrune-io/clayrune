@@ -339,8 +339,37 @@
   // scene change below goes through _sceneCmd: demo keeps the plain commandBus
   // command; live applies it, PUTs the whole list (guarded by the rev the page
   // last read), and puts the page back on the server's list if that is refused.
+  // Saves what is typed in the open scene editor (title + instructions) through
+  // _editScene, so it is one undoable change like any other. False when the
+  // instructions are over the limit: the editor stays open with the text in it.
+  // `quiet` (a blur) shows no error and does not steal the focus.
+  let _savingEditor = false;
+  let _quietSave = false;
+  function _saveOpenEditor(quiet) {
+    if (!_sb || !_sb.editing || _savingEditor || !_sb.el.isConnected) return true;
+    const id = _sb.editing;
+    const li = Array.from(_sb.el.querySelectorAll('.desk-v1-sb-scene')).find((x) => x.dataset.sceneId === id);
+    const labelEl = li && li.querySelector('[data-scene-edit-label]');
+    const lineEl = li && li.querySelector('[data-scene-edit-line]');
+    if (!labelEl || !lineEl) return true;
+    if (lineEl.value.trim().length > window.DeskV1Story.MAX_LINE) {
+      if (!quiet) window.DeskV1Story.lineOver(li, true);
+      return false;
+    }
+    const ctx = _sbCtx();
+    const s = ctx && ctx.detail.scenes.find((x) => x.id === id);
+    if (!s) return true;
+    _savingEditor = true;
+    _quietSave = !!quiet;
+    try { _editScene(id, { label: labelEl.value.trim() || s.label, line: lineEl.value.trim() }); } finally { _savingEditor = false; _quietSave = false; }
+    return true;
+  }
+
   function _sbOwner() { return { kind: _sb.standalone ? 'studio' : 'piece', id: _sb.familyId }; }
   function _sceneCmd(ctx, spec) {
+    // Whatever is typed in the open scene editor is saved before any other scene
+    // change repaints the list; over the limit, the change waits and the editor stays.
+    if (!_saveOpenEditor()) return Promise.resolve({ ok: false, error: 'the scene you are editing is over the instruction limit: shorten it first' });
     if (!_isLive()) return DeskV1Kit.commandBus.run(spec);
     return window.DeskV1Store.storyboard.command(Object.assign({
       owner: _sbOwner(), detail: ctx.detail, repaint: () => _paintScenes(),
@@ -495,14 +524,19 @@
     if (_sb && _sb.standalone) ctx.fam.scenes = _scenePayload(ctx.detail);
   }
 
+  // A save on blur (`_quietSave`) leaves the rows as they are: rebuilding them would
+  // replace the button the user is in the middle of clicking. Everything around
+  // the list still refreshes.
   function _paintScenes(focusSel) {
     if (!_sb || !_sb.el.isConnected) return;
     const ctx = _sbCtx();
     const ol = _sb.el.querySelector('[data-scenes]');
     if (!ctx || !ol) return;
     _syncItemScenes(ctx);
-    ol.innerHTML = ctx.detail.scenes.map((s) => _sceneHTML(s, ctx.detail.scenes, _sb.editing === s.id)).join('');
-    _wireScenes(ol);
+    if (!_quietSave) {
+      ol.innerHTML = ctx.detail.scenes.map((s) => _sceneHTML(s, ctx.detail.scenes, _sb.editing === s.id)).join('');
+      _wireScenes(ol);
+    }
     if (_sb.standalone) {
       const wrap = _sb.el.querySelector('[data-sb-timeline-wrap]');
       if (wrap) { wrap.innerHTML = _timelineHTML(ctx.detail); _wireTimeline(); }
@@ -914,19 +948,19 @@
       });
       const edit = li.querySelector('[data-scene-edit]');
       edit.onclick = () => {
+        // Whatever is open is saved first: this scene's own editor (Done) or another's.
+        if (!_saveOpenEditor()) return;
         if (_sb.editing === id) {
-          if (window.DeskV1Story.lineOver(li, true)) return;
-          const label = li.querySelector('[data-scene-edit-label]').value.trim();
-          const line = li.querySelector('[data-scene-edit-line]').value.trim();
-          const s = ctx.detail.scenes.find((x) => x.id === id);
           _sb.editing = null;
-          _editScene(id, { label: label || s.label, line });
           _paintScenes(`[data-scene-id="${id}"] [data-scene-edit]`);
         } else {
           _sb.editing = id;
           _paintScenes(`[data-scene-id="${id}"] [data-scene-edit-label]`);
         }
       };
+      // Leaving the instructions box saves it, so nothing typed waits on Done.
+      const lineEl = li.querySelector('[data-scene-edit-line]');
+      if (lineEl) lineEl.addEventListener('blur', () => { _saveOpenEditor(true); });
     });
   }
 

@@ -339,6 +339,98 @@ async function main(browser) {
   realErrors(fresh.pageErrors).forEach((e) => fail('page error (reload): ' + e));
   await fresh.ctx.close();
 
+  // 7. Nothing typed in an open scene is lost: every way out of the editor saves it first.
+  console.log('Typing is saved before leaving the editor');
+  const oneEditor = (label) => page.evaluate((l) => {
+    const open = [...document.querySelectorAll('.desk-v1-sb-scene')].filter((li) => li.querySelector('[data-scene-edit-line]'));
+    return open.length === 1 && open[0].dataset.sceneLabel === l;
+  }, label);
+  await page.click('.desk-v1-sb-scene[data-scene-label="The click"] [data-scene-edit]');
+  await page.fill('.desk-v1-sb-scene[data-scene-label="The click"] [data-scene-edit-line]', 'Scene two: typed, and Done was never clicked.');
+  srv.log.length = 0;
+  await page.click('.desk-v1-sb-scene[data-scene-label="Done"] [data-scene-edit]');
+  await settle(page, () => !!document.querySelector('.desk-v1-sb-scene[data-scene-label="Done"] [data-scene-edit-line]'));
+  await page.waitForTimeout(400);
+  (puts(srv, /storyboard$/).length >= 1 && srv.boards[key()].scenes[1].line === 'Scene two: typed, and Done was never clicked.')
+    ? ok(`Edit on scene 3 without Done: scene 2's line was saved (${puts(srv, /storyboard$/).length} PUT) and is on the server`) : fail('scene 2 line: ' + srv.boards[key()].scenes[1].line);
+  (await oneEditor('Done')) ? ok('scene 3 is open, and it is the only editor open') : fail('editor state after switching scenes');
+
+  // Over the limit: the text stays, the editor stays, no PUT; the click that was refused does nothing.
+  await page.fill('.desk-v1-sb-scene[data-scene-label="Done"] [data-scene-edit-line]', 'y'.repeat(2100));
+  srv.log.length = 0;
+  await page.evaluate(() => document.querySelector('.desk-v1-sb-scene[data-scene-label="Cold open"] [data-scene-edit]').click());
+  const err2 = (await page.textContent('.desk-v1-sb-scene[data-scene-label="Done"] [data-scene-edit-error]')) || '';
+  (puts(srv, /storyboard$/).length === 0 && (await oneEditor('Done')) && /100 characters over/.test(err2) &&
+    (await page.inputValue('.desk-v1-sb-scene[data-scene-label="Done"] [data-scene-edit-line]')).length === 2100)
+    ? ok('over the limit: Edit on another scene is refused, the editor stays open with all 2,100 characters') : fail('over-limit switch: ' + err2);
+  await page.evaluate(() => document.querySelector('[data-scene-add]').click());
+  (puts(srv, /storyboard$/).length === 0 && (await oneEditor('Done')) && (await labels(page)).length === 3)
+    ? ok('over the limit: Add scene is refused too, nothing was added or saved') : fail('Add scene went through over the limit');
+
+  // Under the limit: Add scene (a click that does not blur the box) saves it, then opens the new one.
+  await page.fill('.desk-v1-sb-scene[data-scene-label="Done"] [data-scene-edit-line]', 'Scene three: typed before Add scene.');
+  srv.log.length = 0;
+  await page.evaluate(() => document.querySelector('[data-scene-add]').click());
+  await settle(page, () => !!document.querySelector('.desk-v1-sb-scene[data-scene-label="New scene"] [data-scene-edit-line]'));
+  await page.waitForTimeout(400);
+  (srv.boards[key()].scenes[2].line === 'Scene three: typed before Add scene.' && srv.boards[key()].scenes.length === 4 && (await oneEditor('New scene')))
+    ? ok('Add scene saved scene 3 first, then opened the new scene (4 scenes stored)') : fail('Add scene: ' + JSON.stringify(srv.boards[key()].scenes.map((s) => [s.label, s.line.slice(0, 20)])));
+
+  // Deleting a different scene while one is open saves the open one.
+  await page.fill('.desk-v1-sb-scene[data-scene-label="New scene"] [data-scene-edit-line]', 'Scene four: typed before a delete.');
+  await page.evaluate(() => document.querySelector('.desk-v1-sb-scene[data-scene-label="Cold open"] [data-scene-delete]').click());
+  await settle(page, () => document.querySelectorAll('[data-storyboard] .desk-v1-sb-scene').length === 3);
+  await page.waitForTimeout(400);
+  const afterDel = srv.boards[key()].scenes;
+  (afterDel.length === 3 && afterDel[2].line === 'Scene four: typed before a delete.')
+    ? ok('deleting another scene saved the open one first') : fail('delete: ' + JSON.stringify(afterDel.map((s) => [s.label, s.line.slice(0, 20)])));
+  await page.click('.desk-v1-sb-scene:has([data-scene-edit-line]) [data-scene-edit]');
+  await settle(page, () => !document.querySelector('[data-scene-edit-line]'));
+
+  // Leaving the box (blur) saves without waiting for a click on anything.
+  await page.click('.desk-v1-sb-scene[data-scene-label="The click"] [data-scene-edit]');
+  await page.fill('.desk-v1-sb-scene[data-scene-label="The click"] [data-scene-edit-line]', 'Typed, then focus moved away.');
+  srv.log.length = 0;
+  await page.click('[data-sb-story]');
+  await page.waitForTimeout(500);
+  (srv.boards[key()].scenes[0].line === 'Typed, then focus moved away.' && puts(srv, /storyboard$/).length >= 1 && (await oneEditor('The click')))
+    ? ok('blur saved the instructions (PUT) and left the editor open') : fail('blur save: ' + srv.boards[key()].scenes[0].line);
+  await page.click('.desk-v1-sb-scene:has([data-scene-edit-line]) [data-scene-edit]');
+  await settle(page, () => !document.querySelector('[data-scene-edit-line]'));
+
+  // 8. The real story (docs/LEARN_STORYBOARD_GEMINI.md) fits, and long answers keep every line whole.
+  console.log('The real story');
+  const REAL = readFileSync(resolve(REPO_ROOT, 'docs', 'LEARN_STORYBOARD_GEMINI.md'), 'utf8').replace(/\r\n/g, '\n');
+  await page.fill('[data-sb-story]', REAL);
+  await page.waitForTimeout(1000);
+  (REAL.length < 20000 && srv.boards[key()].story === REAL)
+    ? ok(`the whole file (${REAL.length.toLocaleString('en-US')} characters) is saved under the 20,000 limit, byte for byte`) : fail(`story saved ${(srv.boards[key()].story || '').length} of ${REAL.length}`);
+  const realCount = await page.textContent('[data-story-count]');
+  realCount.startsWith(REAL.length.toLocaleString('en-US')) ? ok(`the count reads ${realCount}`) : fail('real story count: ' + realCount);
+  const LONG = [0, 1, 2, 3].map((i) => (REAL.slice(i * 1300, i * 1300 + 1800).trim() + ` «END ${i + 1}»`));
+  srv.gen = (body, J) => J({ agent: null, provider: 'claude', model: 'sonnet', mode: 'board', scenes: LONG.map((line, i) => ({ label: `Long ${i + 1}`, line, duration_sec: 4, id: 'g' + (++GID), picture: null, edited: false })) });
+  srv.log.length = 0;
+  await page.click('[data-story-make]');
+  await page.click('[data-story-replace]');
+  await settle(page, () => !!document.querySelector('.desk-v1-sb-scene[data-scene-label="Long 4"]'));
+  await page.waitForTimeout(500);
+  const g2 = gens(srv);
+  (g2.length === 1 && g2[0].body.story === REAL) ? ok('the model call carried the whole story') : fail('generate story length ' + (g2[0] && g2[0].body.story.length));
+  const storedLong = srv.boards[key()].scenes.map((s) => s.line);
+  (JSON.stringify(storedLong) === JSON.stringify(LONG))
+    ? ok(`all 4 long lines are saved whole (${LONG.map((l) => l.length).join(', ')} characters)`) : fail('stored lines differ: ' + storedLong.map((l) => l.length).join(','));
+  const shown = await page.$$eval('[data-storyboard] .desk-v1-sb-line', (els) => els.map((e) => e.textContent));
+  (JSON.stringify(shown) === JSON.stringify(LONG)) ? ok('each scene paints its whole line, to the «END n» marker') : fail('painted lines differ: ' + shown.map((l) => l.length).join(','));
+  await page.click('.desk-v1-sb-scene[data-scene-label="Long 2"] [data-scene-edit]');
+  (await page.inputValue('.desk-v1-sb-scene[data-scene-label="Long 2"] [data-scene-edit-line]')) === LONG[1]
+    ? ok('the scene editor opens on the whole line') : fail('editor value differs from the line');
+  srv.log.length = 0;
+  await page.click('.desk-v1-sb-scene[data-scene-label="Long 2"] [data-scene-edit]');
+  await settle(page, () => !document.querySelector('[data-scene-edit-line]'));
+  await page.waitForTimeout(300);
+  (JSON.stringify(srv.boards[key()].scenes.map((s) => s.line)) === JSON.stringify(LONG))
+    ? ok('opening and closing the editor on a long line changes nothing') : fail('long line altered by the editor');
+
   realErrors(pageErrors).forEach((e) => fail('page error: ' + e));
   await ctx.close();
   return srv;
