@@ -71,6 +71,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from mc import desk as _desk
+from mc import desk_account_refs as _refs
 from mc import desk_oauth as _oauth
 from mc import secrets_store
 from mc.core import _log
@@ -186,9 +187,11 @@ class XReader(Reader):
     unit_cost = X_READ_UNIT_COST
 
     def __init__(self, *, transport: Callable[[str, dict, str], dict] | None = None,
-                 token: str | None = None, include_nonpublic: bool = False):
+                 token: str | None = None, include_nonpublic: bool = False,
+                 account_id: str | None = None):
         self._transport = transport or _urllib_transport
         self._token = token            # tests inject; production resolves lazily
+        self._account_id = account_id  # the Desk account read as: picks its own X sign-in
         # `non_public_metrics` (url_link_clicks) is author-token-only per X's
         # model and NOT exercised against the live API here; off until a human
         # confirms it on a real post. When on, a missing key writes nothing.
@@ -202,11 +205,15 @@ class XReader(Reader):
         except Exception as e:
             return {'connected': False, 'short': 'no API token',
                     'reason': f'vault unreadable: {e}'}
-        if _oauth.SERVICES['x']['vault'] in names:      # signed in from Connections
-            st = _oauth.status('x')
+        own = _refs.oauth_arg_for(self._account_id)
+        if _oauth.vault_name('x', own) in names:        # signed in from Connections
+            st = _oauth.status('x', own)
             if st['state'] == 'connected':
                 return {'connected': True, 'reason': None, 'short': None}
             return {'connected': False, 'short': 'sign in again', 'reason': st['reason']}
+        if own is not None:                             # its own sign-in, never the singleton's token
+            return {'connected': False, 'short': 'sign in',
+                    'reason': 'this X account has not signed in yet'}
         if X_READ_SECRET not in names:
             return {'connected': False, 'short': 'no API token',
                     'reason': f'no X read credential (vault entry {X_READ_SECRET!r} is not set)'}
@@ -216,7 +223,8 @@ class XReader(Reader):
         if self._token:
             return self._token
         try:
-            return _oauth.x_token(consumer='desk_engagement')
+            return _oauth.x_token(consumer='desk_engagement',
+                                  account_id=_refs.oauth_arg_for(self._account_id))
         except (secrets_store.SecretsError, _oauth.OAuthError) as e:
             raise ReadError(f'credential unavailable: {e}') from e
 
@@ -505,7 +513,7 @@ def readers_for_project(project_id: str) -> dict[str, Reader]:
         acc = platform_account(project_id, platform)
         via = _desk.account_read_via(acc)
         if platform == 'x':
-            out['x'] = (XReader() if via == 'api'
+            out['x'] = (XReader(account_id=acc.get('channel_id') if isinstance(acc, dict) else acc) if via == 'api'
                         else PaneXReader(project_id, (acc or {}).get('browser_profile')))
         elif platform == 'linkedin':
             out['linkedin'] = LinkedInReader(via=via)

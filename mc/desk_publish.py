@@ -111,6 +111,7 @@ from typing import Any
 
 from mc.core import _atomic_write_text, _log, now_iso
 from mc import desk as _desk
+from mc import desk_account_refs as _refs
 from mc import desk_oauth as _oauth
 from mc import secrets_store
 
@@ -322,7 +323,8 @@ def _get_tweet(token: str, post_id: str) -> dict[str, Any]:
 
 
 def verify_post(platform: str, post_id: str, *, consumer: str = 'desk_publish',
-                project_id: str | None = None, unattended: bool = False) -> bool | None:
+                project_id: str | None = None, unattended: bool = False,
+                account_id: str | None = None) -> bool | None:
     """Does the platform itself say this post exists? True = it does. False =
     the platform answered and the post is not there. None = this module has no
     way to ask (LinkedIn: reading a post back needs `r_organization_social`,
@@ -338,7 +340,8 @@ def verify_post(platform: str, post_id: str, *, consumer: str = 'desk_publish',
     if platform != 'x':
         return None
     try:
-        token = _oauth.x_token(consumer=consumer, project_id=project_id, unattended=unattended)
+        token = _oauth.x_token(consumer=consumer, project_id=project_id, unattended=unattended,
+                               account_id=_refs.oauth_arg_for(account_id))
     except (secrets_store.SecretsError, _oauth.OAuthError) as e:
         raise PublishError(f'credential unavailable: {e}') from e
     try:
@@ -400,6 +403,10 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
                 'the LinkedIn account has no organization id (digits only, from the '
                 'Company Page admin URL): set it on the account before publishing')
 
+    # The Desk account this post is for picks WHICH X sign-in posts it (resolved
+    # before `_lock`: it reads the Desk store). No account = the legacy singleton.
+    x_account = _refs.oauth_arg_for(item.get('account_id')) if platform == 'x' else None
+
     with _lock:
         existing = _read_store(strict=True)['receipts'].get(item_id)
         if existing is not None:
@@ -429,7 +436,8 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
             if platform == 'x':
                 # A sign-in from Connections (refreshed here, never a ~2 hour static
                 # token), else the hand-pasted `x.oauth-token`.
-                token = _oauth.x_token(consumer=consumer, project_id=project_id, unattended=unattended)
+                token = _oauth.x_token(consumer=consumer, project_id=project_id, unattended=unattended,
+                                       account_id=x_account)
             else:
                 token = secrets_store.get_secret_value(
                     LINKEDIN_TOKEN_SECRET, consumer=consumer, project_id=project_id, unattended=unattended)

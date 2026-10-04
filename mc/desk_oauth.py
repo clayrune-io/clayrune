@@ -61,6 +61,7 @@ import hashlib
 import hmac
 import html
 import json
+import re
 import secrets as pysecrets
 import threading
 import time
@@ -95,9 +96,15 @@ SERVICES: dict[str, dict[str, Any]] = {
     },
 }
 
+# Services whose sign-in belongs to ONE Desk account (several X accounts, one sign-in
+# each). Higgsfield is the workspace's single engine sign-in and stays a singleton.
+PER_ACCOUNT = frozenset({'x'})
+_ACCOUNT_ID = re.compile(r'^[A-Za-z0-9_-]{1,40}$')
+
 _lock = threading.RLock()
 _flows: dict[str, dict[str, Any]] = {}          # state -> flow
-_refresh_locks: dict[str, threading.Lock] = {s: threading.Lock() for s in SERVICES}
+_refresh_locks: dict[str, threading.Lock] = {}  # vault entry name -> lock (see _refresh_lock)
+_refresh_locks_guard = threading.Lock()
 
 
 class OAuthError(Exception):
@@ -168,6 +175,39 @@ def _def(service: str) -> dict[str, Any]:
     return d
 
 
+def _account(service: str, account_id: str | None) -> str | None:
+    """The account a call is about: None = the service's legacy singleton sign-in
+    (`oauth.x`, profile `desk-x`), the name every sign-in made before per-account
+    names existed lives under. Only `PER_ACCOUNT` services take one."""
+    if account_id is None:
+        return None
+    if service not in PER_ACCOUNT:
+        raise OAuthError('not_per_account', f"{_def(service)['label']} has one sign-in for the whole workspace", 400)
+    if not isinstance(account_id, str) or not _ACCOUNT_ID.match(account_id):
+        raise OAuthError('bad_account', 'that account id is not valid', 400)
+    return account_id
+
+
+def vault_name(service: str, account_id: str | None = None) -> str:
+    """The vault entry holding this sign-in: `oauth.x` for the legacy singleton,
+    `oauth.x.<account id>` for an account (lower-cased: vault names are)."""
+    base = _def(service)['vault']
+    acc = _account(service, account_id)
+    return base if acc is None else f'{base}.{acc.lower()}'
+
+
+def profile_name(service: str, account_id: str | None = None) -> str:
+    """The named browser profile the sign-in is made in (one login per account)."""
+    base = _def(service)['profile']
+    acc = _account(service, account_id)
+    return base if acc is None else f'{base}-{acc.lower()}'
+
+
+def _refresh_lock(name: str) -> threading.Lock:
+    with _refresh_locks_guard:
+        return _refresh_locks.setdefault(name, threading.Lock())
+
+
 def redirect_uri(port: int) -> str:
     return f'http://127.0.0.1:{int(port)}{CALLBACK_PATH}'
 
@@ -184,37 +224,39 @@ def _hint(rec: dict) -> str:
             f"exp={int(rec.get('expires_at') or 0)} refresh={'yes' if rec.get('refresh_token') else 'no'}")
 
 
-def _meta(service: str) -> dict | None:
-    name = _def(service)['vault']
+def _meta(service: str, account_id: str | None = None) -> dict | None:
+    name = vault_name(service, account_id)
     try:
         return next((s for s in secrets_store.list_secrets() if s['name'] == name), None)
     except secrets_store.SecretsError:
         return None
 
 
-def _store_record(service: str, rec: dict[str, Any]) -> None:
+def _store_record(service: str, rec: dict[str, Any], account_id: str | None = None) -> None:
     """THE ONLY place a token enters the vault. `rec` is the full record; the
     entry's policy (`allow_unattended`, `scope`) is kept from an existing entry
     and defaults to the vault's own default (unattended allowed, global) on the
     first sign-in."""
     d = _def(service)
-    old = _meta(service) or {}
+    name = vault_name(service, account_id)
+    old = _meta(service, account_id) or {}
     secrets_store.set_secret(
-        d['vault'], json.dumps(rec, separators=(',', ':')),
+        name, json.dumps(rec, separators=(',', ':')),
         description=f"{d['label']} sign-in made from Connections. Clayrune keeps it fresh.",
         hint=_hint(rec), scope=old.get('scope') or 'global',
         allow_unattended=bool(old.get('allow_unattended', True)),
         entry_type=secrets_store.ENTRY_TOKEN)
     for key in ('access_token', 'refresh_token'):
         if rec.get(key):
-            secrets_store.register_dispensed(d['vault'], rec[key])
+            secrets_store.register_dispensed(name, rec[key])
 
 
 def _read_record(service: str, *, consumer: str, project_id: str | None = None,
-                 unattended: bool = False) -> dict[str, Any]:
+                 unattended: bool = False, account_id: str | None = None) -> dict[str, Any]:
     d = _def(service)
+    name = vault_name(service, account_id)
     try:
-        raw = secrets_store.get_secret_value(d['vault'], consumer=consumer, project_id=project_id,
+        raw = secrets_store.get_secret_value(name, consumer=consumer, project_id=project_id,
                                              unattended=unattended, internal=True)
     except secrets_store.SecretNotFound as e:
         raise OAuthError('not_connected', f"{d['label']} is not signed in yet") from e
@@ -228,20 +270,20 @@ def _read_record(service: str, *, consumer: str, project_id: str | None = None,
         raise OAuthError('needs_signin', f"the saved {d['label']} sign-in is incomplete; sign in again")
     for key in ('access_token', 'refresh_token'):
         if rec.get(key):
-            secrets_store.register_dispensed(d['vault'], rec[key])
+            secrets_store.register_dispensed(name, rec[key])
     return rec
 
 
 # -- status ---------------------------------------------------------------------
 
-def status(service: str) -> dict[str, Any]:
+def status(service: str, account_id: str | None = None) -> dict[str, Any]:
     """`{state: connected|needs_signin|not_connected, reason}` from the vault's
     metadata only (no token is decrypted or audited)."""
     d = _def(service)
-    meta = _meta(service)
+    meta = _meta(service, account_id)
     if meta is None:
         return {'state': 'not_connected', 'reason': None}
-    if not secrets_store.is_readable(d['vault']):
+    if not secrets_store.is_readable(vault_name(service, account_id)):
         return {'state': 'needs_signin', 'reason': 'the saved sign-in can no longer be opened; sign in again'}
     parts = {k: v for k, _, v in (p.partition('=') for p in (meta.get('hint') or '').split()) if v}
     if parts.get('state') == 'needs_signin':
@@ -393,12 +435,14 @@ def _expire(state: str) -> None:
     _close_listener(srv)
 
 
-def start(service: str) -> dict[str, Any]:
+def start(service: str, account_id: str | None = None) -> dict[str, Any]:
     """Open a sign-in flow -> `{flow_id, auth_url, redirect_uri, profile}`. The
     caller opens `auth_url` in the browser pane on `profile`. Human-gated by the
     route; this function only builds the request and remembers the secrets of the
-    flow (verifier, client) in memory."""
+    flow (verifier, client) in memory. `account_id` names the Desk account the
+    sign-in is for (its own vault entry and profile); None is the legacy one."""
     d = _def(service)
+    account_id = _account(service, account_id)
     if service == 'x' and not _vault_plain(d['client_id_secret']):     # fail before a port is opened
         raise OAuthError('app_missing', 'Save your X Client ID first (step 2), then sign in', 409)
     if service == 'higgsfield':
@@ -406,7 +450,7 @@ def start(service: str) -> dict[str, Any]:
     _drop_pending(service)
     srv = _open_listener(X_CALLBACK_PORT if service == 'x' else 0)
     try:
-        return _start_flow(service, d, srv, disc if service == 'higgsfield' else None)
+        return _start_flow(service, d, srv, disc if service == 'higgsfield' else None, account_id)
     except BaseException:
         _close_listener(srv)
         raise
@@ -424,13 +468,14 @@ def _drop_pending(service: str) -> None:
         _close_listener(s)
 
 
-def _start_flow(service: str, d: dict, srv: _CallbackServer, disc: dict | None) -> dict[str, Any]:
+def _start_flow(service: str, d: dict, srv: _CallbackServer, disc: dict | None,
+                account_id: str | None = None) -> dict[str, Any]:
     redirect = redirect_uri(srv.server_address[1])
     verifier, challenge = _pkce()
     state = pysecrets.token_urlsafe(24)
     flow: dict[str, Any] = {'service': service, 'verifier': verifier, 'redirect': redirect,
                             'flow_id': pysecrets.token_urlsafe(12), 'created': time.time(),
-                            'status': 'pending', 'message': '', 'listener': srv}
+                            'status': 'pending', 'message': '', 'listener': srv, 'account_id': account_id}
     if service == 'higgsfield':
         assert disc is not None
         meta, scopes = disc['meta'], disc['scopes']
@@ -469,7 +514,7 @@ def _start_flow(service: str, d: dict, srv: _CallbackServer, disc: dict | None) 
     timer.start()
     _log(f"[desk_oauth] sign-in started for {service}", flush=True)
     return {'flow_id': flow['flow_id'], 'auth_url': base + '?' + urllib.parse.urlencode(params),
-            'redirect_uri': redirect, 'profile': d['profile']}
+            'redirect_uri': redirect, 'profile': profile_name(service, account_id)}
 
 
 def flow_status(flow_id: str) -> dict[str, Any]:
@@ -532,7 +577,9 @@ def complete(params: dict[str, str]) -> tuple[bool, str]:
             return False, 'This sign-in link is not valid any more. Go back to Clayrune and start again.'
         flow['status'] = 'working'
     service = flow['service']
+    account_id = flow.get('account_id')
     label = SERVICES[service]['label']
+    vault = vault_name(service, account_id)
 
     def fail(msg: str) -> tuple[bool, str]:
         with _lock:
@@ -567,11 +614,11 @@ def complete(params: dict[str, str]) -> tuple[bool, str]:
                'token_endpoint': flow['token_endpoint'], 'revocation_endpoint': flow.get('revocation_endpoint'),
                'resource': flow.get('resource'), 'scope': tok.get('scope') or flow.get('scope'),
                'needs_signin': False}
-        secrets_store.register_dispensed(SERVICES[service]['vault'], rec['access_token'])
+        secrets_store.register_dispensed(vault, rec['access_token'])
         if rec['refresh_token']:
-            secrets_store.register_dispensed(SERVICES[service]['vault'], rec['refresh_token'])
-        with _refresh_locks[service]:       # a refresh in flight must not land after (or over) this sign-in
-            _store_record(service, rec)
+            secrets_store.register_dispensed(vault, rec['refresh_token'])
+        with _refresh_lock(vault):          # a refresh in flight must not land after (or over) this sign-in
+            _store_record(service, rec, account_id)
     except OAuthError as e:
         return fail(str(e))
     except secrets_store.SecretsError as e:
@@ -591,10 +638,10 @@ def complete(params: dict[str, str]) -> tuple[bool, str]:
 # -- use + refresh --------------------------------------------------------------
 
 def _refresh(service: str, rec: dict[str, Any], *, project_id: str | None = None,
-             unattended: bool = False) -> dict[str, Any]:
+             unattended: bool = False, account_id: str | None = None) -> dict[str, Any]:
     label = SERVICES[service]['label']
     if not rec.get('refresh_token'):
-        _store_record(service, {**rec, 'needs_signin': True})
+        _store_record(service, {**rec, 'needs_signin': True}, account_id)
         raise OAuthError('needs_signin', f'The {label} sign-in ran out; sign in again')
     form = {'grant_type': 'refresh_token', 'refresh_token': rec['refresh_token'],
             'client_id': rec.get('client_id') or ''}
@@ -607,7 +654,7 @@ def _refresh(service: str, rec: dict[str, Any], *, project_id: str | None = None
         tok = _token_response(service, st, body, 'refresh')
     except OAuthError as e:
         if e.code == 'needs_signin':
-            _store_record(service, {**rec, 'needs_signin': True})
+            _store_record(service, {**rec, 'needs_signin': True}, account_id)
         raise
     life = tok.get('expires_in')
     life = int(life) if isinstance(life, (int, float)) and life > 0 else (
@@ -615,33 +662,43 @@ def _refresh(service: str, rec: dict[str, Any], *, project_id: str | None = None
     new = {**rec, 'access_token': tok['access_token'],
            'refresh_token': tok.get('refresh_token') or rec['refresh_token'],
            'expires_at': int(time.time()) + life, 'needs_signin': False}
-    _store_record(service, new)
+    _store_record(service, new, account_id)
     return new
 
 
 def access_token(service: str, *, consumer: str, project_id: str | None = None,
-                 unattended: bool = False) -> str:
+                 unattended: bool = False, account_id: str | None = None) -> str:
     """A bearer token good for the next `REFRESH_SKEW_S` seconds, refreshing it
     first when it is about to lapse. Raises OAuthError: `not_connected`,
     `needs_signin` (the human must sign in again) or `refresh_failed` /
     `unreachable` (try again later)."""
-    rec = _read_record(service, consumer=consumer, project_id=project_id, unattended=unattended)
+    rec = _read_record(service, consumer=consumer, project_id=project_id, unattended=unattended,
+                       account_id=account_id)
     if rec.get('needs_signin'):
         raise OAuthError('needs_signin', f"{SERVICES[service]['label']} needs you to sign in again")
     if rec.get('expires_at', 0) - time.time() > REFRESH_SKEW_S:
         return rec['access_token']
-    with _refresh_locks[service]:
-        rec = _read_record(service, consumer=consumer, project_id=project_id, unattended=unattended)
+    with _refresh_lock(vault_name(service, account_id)):
+        rec = _read_record(service, consumer=consumer, project_id=project_id, unattended=unattended,
+                           account_id=account_id)
         if rec.get('expires_at', 0) - time.time() > REFRESH_SKEW_S:
             return rec['access_token']
-        return _refresh(service, rec, project_id=project_id, unattended=unattended)['access_token']
+        return _refresh(service, rec, project_id=project_id, unattended=unattended,
+                        account_id=account_id)['access_token']
 
 
-def x_token(*, consumer: str, project_id: str | None = None, unattended: bool = False) -> str:
+def x_token(*, consumer: str, project_id: str | None = None, unattended: bool = False,
+            account_id: str | None = None) -> str:
     """The X bearer token the Desk posts and reads with. A sign-in made from
     Connections wins (kept fresh here); a vault entry `x.oauth-token` pasted by a
-    human before sign-in existed still works until one is made. Raises
-    OAuthError (sign-in route) or secrets_store.SecretsError (pasted token)."""
+    human before sign-in existed still works until one is made. `account_id`
+    selects that Desk account's own sign-in; None is the legacy singleton. An
+    account with its own name never falls back to the singleton's token or to the
+    pasted one: that would post as another account. Raises OAuthError (sign-in
+    route) or secrets_store.SecretsError (pasted token)."""
+    if account_id is not None:
+        return access_token('x', consumer=consumer, project_id=project_id, unattended=unattended,
+                            account_id=account_id)
     if status('x')['state'] != 'not_connected':
         return access_token('x', consumer=consumer, project_id=project_id, unattended=unattended)
     return secrets_store.get_secret_value(LEGACY_X_TOKEN, consumer=consumer, project_id=project_id,
@@ -650,15 +707,15 @@ def x_token(*, consumer: str, project_id: str | None = None, unattended: bool = 
 
 # -- disconnect -----------------------------------------------------------------
 
-def disconnect(service: str) -> dict[str, Any]:
+def disconnect(service: str, account_id: str | None = None) -> dict[str, Any]:
     """Revoke both tokens at the provider (best effort) and delete the vault
     entry. `revoked` is True only when the provider answered 2xx for every token
     sent; the local sign-in is removed either way."""
-    d = _def(service)
-    with _refresh_locks[service]:   # an in-flight refresh must finish first, or it re-creates the entry we delete
+    name = vault_name(service, account_id)
+    with _refresh_lock(name):       # an in-flight refresh must finish first, or it re-creates the entry we delete
         revoked: bool | None = None
         try:
-            rec = _read_record(service, consumer='desk_oauth:disconnect')
+            rec = _read_record(service, consumer='desk_oauth:disconnect', account_id=account_id)
         except OAuthError:
             rec = None
         if rec and rec.get('revocation_endpoint'):
@@ -676,7 +733,7 @@ def disconnect(service: str) -> dict[str, Any]:
                     results.append(False)
             revoked = bool(results) and all(results)
         try:
-            deleted = secrets_store.delete_secret(d['vault'])
+            deleted = secrets_store.delete_secret(name)
         except secrets_store.SecretsError as e:
             raise OAuthError('unavailable', _safe(e)) from e
     _log(f'[desk_oauth] {service} disconnected (revoked={revoked})', flush=True)

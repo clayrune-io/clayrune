@@ -269,6 +269,8 @@ def _migrate_store(data: dict) -> dict:
     for pid, rec in list(presences.items()):
         presences[pid] = _migrate_presence_record(rec)
     _lift_presence_accounts(data)
+    from mc import desk_account_refs  # lazy: it imports desk_oauth
+    desk_account_refs.bind(data)
     campaigns: dict = data.get('campaigns') or {}
     for cid, camp in list(campaigns.items()):
         campaigns[cid] = _migrate_campaign_record(camp)

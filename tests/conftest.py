@@ -161,7 +161,7 @@ def _desk_oauth_reads_no_real_vault(monkeypatch):
         from mc import desk_oauth
     except Exception:
         return
-    monkeypatch.setattr(desk_oauth, '_meta', lambda service: None)
+    monkeypatch.setattr(desk_oauth, '_meta', lambda service, account_id=None: None)
 
 
 @pytest.fixture(autouse=True)
