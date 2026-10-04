@@ -195,6 +195,12 @@
       // Saved: the new record is the server's; show it as its own tile.
       onSaved: (svc, info) => {
         reset();
+        if (info && info.provider) {        // a known-host method: its own tile, status as the server derived it
+          if (ctx.onEnginesChanged) ctx.onEnginesChanged();
+          window.DeskV1Kit.toast(`${svc && svc.label ? svc.label : 'The service'} is connected${info.status && info.status.label ? ` (${info.status.label.toLowerCase()})` : ''}.`);
+          ctx.repaint();
+          return;
+        }
         window.DeskV1Services.load(true).then(() => {
           if (svc && svc.id) window.DeskV1ConnTiles.select(`service:${svc.id}`);
           window.DeskV1Kit.toast(`Saved ${svc && svc.name ? svc.name : 'the service'} for agents${info && info.credentialStored ? ' and stored its credential (not verified)' : ''}.`);

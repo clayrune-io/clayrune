@@ -134,8 +134,8 @@ def vault(monkeypatch):
     monkeypatch.setattr(secrets_store, 'get_secret_value', get_secret_value)
     monkeypatch.setattr(secrets_store, 'delete_secret', delete_secret)
     monkeypatch.setattr(secrets_store, 'is_readable', lambda n: n in state['entries'] and n not in state['unreadable'])
-    monkeypatch.setattr(oauth, '_meta', lambda service: next(
-        (s for s in list_secrets() if s['name'] == oauth.SERVICES[service]['vault']), None))
+    monkeypatch.setattr(oauth, '_meta', lambda service, account_id=None: next(
+        (s for s in list_secrets() if s['name'] == oauth.vault_name(service, account_id)), None))
     return state
 
 

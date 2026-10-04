@@ -272,7 +272,8 @@ def _verify(piece, ver, camp, acc, *, attended: bool, now: datetime) -> str:
         return cur.get('state') or ''
     try:
         ok = _publish.verify_post(acc.get('platform'), receipt.get('post_id'), consumer='desk_tick',
-                                  project_id=camp.get('project_id'), unattended=not attended)
+                                  project_id=camp.get('project_id'), unattended=not attended,
+                                  account_id=acc.get('id'))
     except _publish.PublishError as e:
         receipt['verify_attempts'] = int(receipt.get('verify_attempts') or 0) + 1
         receipt['verify_error'] = str(e)[:300]
@@ -343,7 +344,7 @@ def _process(piece_id: str, version_id: str, *, attended: bool, now: datetime) -
                                   failure=None) is None:
         return None
     item = {'id': version_id, 'platform': acc.get('platform'), 'body': body, 'campaign_id': camp['id'],
-            'organization_id': acc.get('organization_id') or ''}
+            'organization_id': acc.get('organization_id') or '', 'account_id': acc.get('id')}
     try:
         receipt = _publish.publish(item, consumer='desk_tick' if not attended else 'desk_approve',
                                    project_id=camp.get('project_id'), unattended=not attended)

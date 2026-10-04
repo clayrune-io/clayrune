@@ -37,6 +37,7 @@ from __future__ import annotations
 import re
 
 from mc import desk as _desk
+from mc import desk_account_refs as _refs
 from mc import desk_oauth as _oauth
 from mc import secrets_store
 from mc.core import _log, now_iso
@@ -96,14 +97,21 @@ def publish_state(acc: dict, vault: dict | None = None) -> dict:
                 'secret': None, 'unattended_ok': None}
     if plat == 'x':
         # A sign-in made from Connections wins over a hand-pasted `x.oauth-token`.
-        st = _oauth.status('x')
+        # An account with a sign-in of its own (`desk_account_refs`) has no such
+        # fallback: the singleton's token would post as a different account.
+        own = _refs.oauth_arg(acc)
+        entry = _oauth.vault_name('x', own)
+        st = _oauth.status('x', own)
         if st['state'] == 'connected':
             vault = _vault_meta() if vault is None else vault
-            meta = vault.get(_oauth.SERVICES['x']['vault']) or {}
-            return {'ready': True, 'reason': None, 'secret': _oauth.SERVICES['x']['vault'],
+            meta = vault.get(entry) or {}
+            return {'ready': True, 'reason': None, 'secret': entry,
                     'unattended_ok': bool(meta.get('allow_unattended', True))}
         if st['state'] == 'needs_signin':
             return {'ready': False, 'reason': st['reason'], 'secret': None, 'unattended_ok': None}
+        if own is not None:
+            return {'ready': False, 'reason': 'not signed in to X for this account yet',
+                    'secret': None, 'unattended_ok': None}
     if plat in _TOKEN_SECRET:
         secret = _TOKEN_SECRET[plat]
         what = 'X' if plat == 'x' else 'LinkedIn'
@@ -140,6 +148,8 @@ def v1_account(acc: dict, vault: dict | None = None) -> dict:
     for k in ('read_via', 'browser_profile', 'organization_id'):
         if acc.get(k):
             out[k] = acc[k]
+    if acc.get('credentials'):          # names of the account's own sign-in, never a value
+        out['credentials'] = dict(acc['credentials'])
     if acc.get('preview'):
         out['preview'] = True
     return out
@@ -208,6 +218,7 @@ def create_account(platform, identity, *, label=None, capability=None, voice=Non
         rec = {'id': account_id or _desk._new_id('acct'), 'platform': platform, 'identity': identity,
                'label': label, 'capability': capability, 'voice': voice, 'created_at': now_iso()}
         accounts[rec['id']] = rec
+        _refs.bind(store)
         _desk._write_store(store)
     return v1_account(rec)
 

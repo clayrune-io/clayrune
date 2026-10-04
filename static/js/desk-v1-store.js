@@ -106,6 +106,7 @@
     if (!res.ok) {
       const err = new Error((json && (json.error || json.message)) || `HTTP ${res.status}`);
       err.status = res.status;
+      err.body = json;                 // the server's hint / suggestions travel with the message
       throw err;
     }
     return json;

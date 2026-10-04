@@ -111,7 +111,7 @@ async function newPage(browser, { live, srv, width, height }) {
     if (path === '/api/desk/services' && method === 'GET') return J(srv.services);
     if (path === '/api/desk/accounts' && method === 'GET') return J(srv.accounts);
     if (path === '/api/desk/connect/inspect' && method === 'POST') {
-      const r = inspectFake((body || {}).url);
+      const r = inspectFake((body || {}).input);
       return J(r.body, r.status);
     }
     if (path === '/api/desk/connect/commit' && method === 'POST') {

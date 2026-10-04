@@ -41,6 +41,7 @@ from mc import desk_accounts as _accounts
 from mc import desk_brief as _brief
 from mc import desk_engines as _engines
 from mc import desk_oauth as _oauth
+from mc import desk_account_refs as _account_refs
 from mc import desk_engagement as _engagement
 from mc import desk_harvest as _harvest
 from mc import desk_pieces as _pieces
@@ -1078,6 +1079,13 @@ def _connect_error(e: '_oauth.OAuthError'):
     return jsonify({'error': str(e), 'code': e.code}), e.status
 
 
+def _connect_account(d: dict):
+    """The `account_id` argument for `desk_oauth` from a start/disconnect body: an
+    optional Desk account id (its own sign-in); absent = the legacy singleton."""
+    aid = d.get('account_id')
+    return None if aid is None else _account_refs.require_oauth_arg(aid)
+
+
 @bp.route('/api/desk/connect/status', methods=['GET'])
 def connect_status():
     return jsonify(_oauth.overview())
@@ -1090,7 +1098,9 @@ def connect_start(service):
     if refused:
         return refused
     try:
-        return jsonify(_oauth.start(service)), 201
+        return jsonify(_oauth.start(service, _connect_account(d))), 201
+    except LookupError as e:
+        return jsonify({'error': str(e), 'code': 'unknown_account'}), 404
     except _oauth.OAuthError as e:
         return _connect_error(e)
 
@@ -1107,7 +1117,9 @@ def connect_disconnect(service):
     if refused:
         return refused
     try:
-        return jsonify(_oauth.disconnect(service))
+        return jsonify(_oauth.disconnect(service, _connect_account(d)))
+    except LookupError as e:
+        return jsonify({'error': str(e), 'code': 'unknown_account'}), 404
     except _oauth.OAuthError as e:
         return _connect_error(e)
 
@@ -1344,11 +1356,15 @@ def send_engagement_reply(item_id):
     text = text.strip()
     if len(text) > _desk._ENGAGEMENT_DRAFT_MAX:
         return jsonify({'error': f'a reply is at most {_desk._ENGAGEMENT_DRAFT_MAX} characters'}), 400
+    reply = {'id': f'reply-{item_id}', 'platform': item['platform'], 'body': text,
+             'in_reply_to': item.get('external_id')}
+    acct = _engagement.platform_account(item.get('project_id') or '', item['platform'])
+    acct_id = acct.get('channel_id') if isinstance(acct, dict) else acct
+    if acct_id:                         # the project's account on that platform picks which sign-in replies
+        reply['account_id'] = acct_id
     try:
-        receipt = _publish.publish(
-            {'id': f'reply-{item_id}', 'platform': item['platform'], 'body': text,
-             'in_reply_to': item.get('external_id')},
-            consumer='desk_reply', project_id=item.get('project_id'), unattended=False)
+        receipt = _publish.publish(reply, consumer='desk_reply', project_id=item.get('project_id'),
+                                   unattended=False)
     except _publish.PublishError as e:
         return jsonify({'error': str(e)}), 502
     row = _desk.record_engagement_reply(item_id, receipt, text)

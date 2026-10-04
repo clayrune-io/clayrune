@@ -224,7 +224,8 @@ def test_no_route_takes_or_returns_a_credential(env):
     with _desk._store_lock:
         stored = _desk._read_store()['accounts']['ch-x']
     assert 'hunter2' not in str(stored) and set(stored) == {
-        'id', 'platform', 'identity', 'label', 'capability', 'voice', 'created_at'}
+        'id', 'platform', 'identity', 'label', 'capability', 'voice', 'created_at', 'credentials'}
+    assert stored['credentials'] == {'oauth_vault': 'oauth.x', 'oauth_profile': 'desk-x'}      # the first X account: legacy names
     assert set(_by_id(client)['ch-x']['publish']) == {'ready', 'reason', 'secret', 'unattended_ok'}
     # a secret is reachable only by NAME in `publish.secret`; no field carries a value
     assert _by_id(client)['ch-x']['publish']['secret'] == 'x.oauth-token'
