@@ -10,6 +10,7 @@
                                      check with the stored credential; human-only, no
                                      passcode (it writes nothing). Answers the derived
                                      status, "verified" only when the check passed.
+                                     `check: false` answers the status without checking.
 
 Commit is human-passcode-gated and for humans only. Agents never write secrets
 (CLAUDE.md vault rule 3): an unattended caller gets 403 before anything is read, and
@@ -111,6 +112,8 @@ def verify_connection():
     if account_id is not None and not (isinstance(account_id, str) and _ACCOUNT_ID.match(account_id)):
         return jsonify({'error': 'that account id is not valid', 'code': 'bad_account'}), 400
     try:
+        if d.get('check') is False:        # the derived status only: no outside call
+            return jsonify(_verification.status(d.get('service'), d.get('method'), account_id))
         return jsonify(_verification.verify(d.get('service'), d.get('method'), account_id))
     except _verification.VerifyError as e:
         return jsonify({'error': str(e), 'code': e.code}), e.status

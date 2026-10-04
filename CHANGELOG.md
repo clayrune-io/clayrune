@@ -6,6 +6,24 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-03] — Desk: connect a service by name; Higgsfield and X set up in the flow
+
+- The Add service flow's first step takes a service **name** as well as an address:
+  `Higgsfield`, `linkedin`, `X` (any case) resolve through the registry's names
+  and aliases, suggestions appear as you type, a bare domain counts as an address,
+  and a name Clayrune does not know asks for the web address (no lookup).
+- Higgsfield (sign-in or API key) and X (sign-in, one entry per account) can now be
+  set up inside the flow: provider fields, one Save with the passcode, then a Result
+  step that follows the browser-pane sign-in. Saving a key or finishing a sign-in
+  reads "not verified"; only "Check it now" (one free read-only call) can mark it
+  Verified, and changing the credential clears that.
+- A second X account gets its own vault and profile names; the first keeps the old ones.
+- Server: `mc/desk_connect/{resolve,verification,undo,provider_commit}.py`,
+  `providers/`, `/api/desk/connect/{suggest,verify}`. Front end:
+  `static/js/desk-v1-connect-{suggest,adapter,result}.js`.
+- Tests: `tests/test_desk_connect_names.py`, `tests/test_desk_connect_providers.py`,
+  `tools/smoke/desk-v1-connect-slice2.mjs`.
+
 ## [2026-10-03] — Desk Studio: delete from Recent, with Undo
 
 - Every Recent row (video, image, article) has a bin at its right end, a sibling

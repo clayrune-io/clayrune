@@ -180,6 +180,13 @@ def test_verify_is_human_only_and_needs_no_passcode(env, net):
     assert _verify(client, 'google_ai', 'api_key').status_code == 403
 
 
+def test_check_false_reads_the_status_without_calling_out(env, net):
+    client, _, _ = env
+    _post(client, _key_draft())
+    v = _verify(client, 'google_ai', 'api_key', check=False).get_json()
+    assert v['state'] == 'key_stored' and net['tests'] == []
+
+
 def test_verify_refuses_an_unknown_service_and_a_bad_account(env):
     client, _, _ = env
     assert _verify(client, 'linkedin', 'oauth').status_code == 404
