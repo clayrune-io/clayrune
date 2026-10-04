@@ -43,10 +43,15 @@ def apply(clean: dict) -> tuple[Applied, dict]:
         left = undo.unwind()
         raise ProviderError(_with_left('could not save; see the server log', left), 500, 'record_failed') from e
     undo.commit()
+    try:
+        status = verification.status(clean['service'], method, applied.account_id)
+    except Exception as e:                  # the save has landed: a status that cannot be read must not undo that
+        _log(f'[desk_connect] {clean["service"]}/{method} saved; its status could not be read ({type(e).__name__})', flush=True)
+        status = {'state': 'unknown', 'label': 'Saved; its status could not be read', 'entry': None}
     result = {'service': {'id': clean['service'], 'label': clean['label']}, 'method': method,
               'credential': None, 'stored': list(applied.extra.get('stored') or []),
               'account': applied.extra.get('account'),
-              'status': verification.status(clean['service'], method, applied.account_id),
+              'status': status,
               'account_id': applied.account_id}
     return applied, result
 

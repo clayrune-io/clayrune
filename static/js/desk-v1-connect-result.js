@@ -92,7 +92,7 @@
     const si = _ui.signin;
     const signin = si ? `<div class="desk-v1-cf-msg" data-cf-msg="${si.state === 'failed' ? 'error' : 'ok'}" data-cf-signin="${esc(si.state)}" role="${si.state === 'failed' ? 'alert' : 'status'}">${esc(si.message)}</div>` : '';
     const msg = _ui.message ? `<div class="desk-v1-cf-msg" data-cf-msg="${_ui.messageKind || 'ok'}" data-cf-result-message role="status">${esc(_ui.message)}</div>` : '';
-    const canCheck = ['key_stored', 'signed_in', 'verified', 'check_failed'].indexOf(st.state) >= 0;
+    const canCheck = ['key_stored', 'signed_in', 'verified', 'check_failed', 'unknown'].indexOf(st.state) >= 0;
     const buttons = [
       si && si.state !== 'done' && r.signin ? '<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cfr-signin>Open the sign-in again</button>' : '',
       canCheck ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cfr-check ${_ui.busy ? 'disabled' : ''}>${_ui.busy ? 'Checking…' : 'Check it now'}</button>` : '',

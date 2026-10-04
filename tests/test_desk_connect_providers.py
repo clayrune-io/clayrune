@@ -347,3 +347,20 @@ def test_status_of_an_unknown_method_is_a_404_error():
     with pytest.raises(verification.VerifyError) as e:
         verification.status('google_ai', 'oauth')
     assert e.value.status == 404
+
+
+def test_a_status_that_cannot_be_read_does_not_turn_a_landed_save_into_a_failure(env, net, monkeypatch):
+    """The status is read after the writes are committed (review 2026-10-03): if it raised the
+    route answered 500 'could not save' for a save that had in fact landed."""
+    from mc.desk_connect import provider_commit, verification
+    client, _, _ = env
+
+    def boom(*a, **k):
+        raise RuntimeError('vault index unreadable')
+    monkeypatch.setattr(verification, 'status', boom)
+    r = _post(client, _key_draft())
+    assert r.status_code == 201, r.get_json()
+    body = r.get_json()
+    assert body['status']['state'] == 'unknown' and 'could not be read' in body['status']['label']
+    assert _vault_names() != []                    # the write stayed
+    assert SECRET not in json.dumps(body)

@@ -64,7 +64,7 @@ def test_bind_gives_the_oldest_x_account_the_legacy_names():
     assert data['accounts']['a']['credentials'] == LEGACY
     assert data['accounts']['b']['credentials'] == {'oauth_vault': 'oauth.x.b', 'oauth_profile': 'desk-x-b'}
     assert data['accounts']['c']['credentials'] == {'oauth_vault': 'oauth.x.c', 'oauth_profile': 'desk-x-c'}
-    assert data[refs.LEGACY_FLAG] is True
+    assert data[refs.LEGACY_FLAG] == 'a'            # the flag names the account that holds the legacy names
 
 
 def test_bind_is_idempotent_and_never_rewrites_a_bound_account():
@@ -126,12 +126,12 @@ def test_oauth_arg(store, vault):
 
 def test_names_derive_from_the_account_id():
     assert oauth.vault_name('x') == 'oauth.x' and oauth.profile_name('x') == 'desk-x'
-    assert oauth.vault_name('x', 'Acct-7') == 'oauth.x.acct-7' and oauth.profile_name('x', 'Acct-7') == 'desk-x-acct-7'
+    assert oauth.vault_name('x', 'acct-7') == 'oauth.x.acct-7' and oauth.profile_name('x', 'acct-7') == 'desk-x-acct-7'
     from mc import secrets_store
     assert secrets_store.valid_name(oauth.vault_name('x', 'Acct_7-b')) if hasattr(secrets_store, 'valid_name') else True
 
 
-@pytest.mark.parametrize('bad', ['', 'a b', 'a/b', '../x', 'a' * 41, 'é'])
+@pytest.mark.parametrize('bad', ['', 'a b', 'a/b', '../x', 'a' * 81, 'é'])
 def test_a_bad_account_id_is_refused(bad):
     with pytest.raises(oauth.OAuthError) as e:
         oauth.vault_name('x', bad)
@@ -250,3 +250,58 @@ def test_the_start_route_refuses_an_account_that_is_not_there(store, provider, v
     assert r.status_code == 201 and r.get_json()['profile'] == 'desk-x'
     r = c.post('/api/desk/connect/x/start', json={})                           # no account: the singleton, as before
     assert r.status_code == 201 and r.get_json()['profile'] == 'desk-x'
+
+
+# -- review 2026-10-03 (Dave): three faults found in the first cut ----------------------
+
+def test_bind_never_raises_for_an_id_the_desk_can_hold(store):
+    """x-main then x.second broke every Desk read: the ids the Desk accepts (a '.',
+    up to 80 characters) must all get a name, and a name nobody can make must be skipped."""
+    ids = ['x-main', 'x.second', 'a' * 80, 'b' * 41]
+    data = {'accounts': {i: _x(i, f'2026-01-0{n + 1}') for n, i in enumerate(ids)}}
+    refs.bind(data)
+    from mc import secrets_store
+    for i in ids:
+        cred = data['accounts'][i]['credentials']
+        assert secrets_store.valid_name(cred['oauth_vault']) and len(cred['oauth_profile']) <= 64
+    # and it survives a store read, which is where it raised
+    store.write_text(json.dumps({'version': 2, 'accounts': {i: _x(i, f'2026-01-0{n + 1}') for n, i in enumerate(ids)}}), encoding='utf-8')
+    assert set(_desk._read_store()['accounts']) == set(ids)
+
+
+def test_bind_skips_and_logs_an_id_it_cannot_name(monkeypatch):
+    logged = []
+    monkeypatch.setattr(refs, '_log', lambda m, **k: logged.append(m))
+    data = {'accounts': {'ok': _x('ok', '2026-01-01'), 'bad id': _x('bad id', '2026-02-01'), 'next': _x('next', '2026-03-01')}}
+    refs.bind(data)                              # does not raise
+    assert 'credentials' not in data['accounts']['bad id'] and logged
+    assert data['accounts']['ok']['credentials'] == LEGACY
+    assert data['accounts']['next']['credentials']['oauth_vault'] == 'oauth.x.next'    # one bad id does not stop the rest
+
+
+def test_two_account_ids_never_share_a_vault_or_profile_name():
+    ids = ['Acct-B', 'acct-b', 'ACCT-B', 'x.second', 'x-second', 'x_second', 'a' * 41, 'a' * 40, 'A' * 40]
+    vaults = [oauth.vault_name('x', i) for i in ids]
+    profiles = [oauth.profile_name('x', i) for i in ids]
+    assert len(set(vaults)) == len(ids) and len(set(profiles)) == len(ids)
+    from mc import secrets_store
+    assert all(secrets_store.valid_name(v) for v in vaults)
+    assert oauth.vault_name('x', 'acct-b') == 'oauth.x.acct-b'    # a plain lowercase id keeps its readable name
+
+
+def test_restoring_the_legacy_holder_with_undo_gives_it_the_legacy_names_back(store, vault):
+    a = accounts.create_account('x', '@first', account_id='first')
+    assert a['credentials'] == LEGACY
+    assert accounts.delete_account('first') is True
+    b = accounts.create_account('x', '@second', account_id='second')
+    assert b['credentials']['oauth_vault'] == 'oauth.x.second'     # a stranger does not inherit it
+    again = accounts.create_account('x', '@first', account_id='first')      # Undo re-posts the same id
+    assert again['credentials'] == LEGACY
+    assert refs.oauth_arg_for('first') is None and refs.oauth_arg_for('second') == 'second'
+    assert _desk._read_store()['accounts']['second']['credentials']['oauth_vault'] == 'oauth.x.second'
+
+
+def test_an_old_true_flag_is_resolved_to_the_account_that_holds_the_legacy_names():
+    data = {refs.LEGACY_FLAG: True, 'accounts': {'a': _x('a', '2026-01-01', credentials=dict(LEGACY)), 'b': _x('b', '2026-02-01')}}
+    refs.bind(data)
+    assert data[refs.LEGACY_FLAG] == 'a' and data['accounts']['b']['credentials']['oauth_vault'] == 'oauth.x.b'

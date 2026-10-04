@@ -99,7 +99,11 @@ SERVICES: dict[str, dict[str, Any]] = {
 # Services whose sign-in belongs to ONE Desk account (several X accounts, one sign-in
 # each). Higgsfield is the workspace's single engine sign-in and stays a singleton.
 PER_ACCOUNT = frozenset({'x'})
-_ACCOUNT_ID = re.compile(r'^[A-Za-z0-9_-]{1,40}$')
+# Any id the Desk can hold: `desk_accounts` takes 1-80 of [A-Za-z0-9_-] and a channel id lifted
+# from a presence may carry a '.', so the one limit here is the widest of them (review 2026-10-03:
+# a 40-char cap made `desk_account_refs.bind` raise inside every store read).
+_ACCOUNT_ID = re.compile(r'^[A-Za-z0-9_.-]{1,80}$')
+_PLAIN_ID = re.compile(r'^[a-z0-9_-]{1,40}$')
 
 _lock = threading.RLock()
 _flows: dict[str, dict[str, Any]] = {}          # state -> flow
@@ -188,19 +192,31 @@ def _account(service: str, account_id: str | None) -> str | None:
     return account_id
 
 
+def _suffix(acc: str) -> str:
+    """The part of a vault / profile name that stands for an account. Vault and
+    profile names are lowercase but account ids are case-sensitive, so folding case
+    would let `Acct-B` and `acct-b` share one sign-in. An id that is already a plain
+    lowercase slug is used as it is; any other id becomes a slug of itself plus a hash
+    of the EXACT id, behind a '.' no plain id can contain, so no two ids collide."""
+    if _PLAIN_ID.match(acc):
+        return acc
+    slug = re.sub(r'[^a-z0-9_-]', '-', acc.lower())[:24].strip('.')
+    return f'{slug}.{hashlib.sha256(acc.encode("utf-8")).hexdigest()[:12]}'
+
+
 def vault_name(service: str, account_id: str | None = None) -> str:
     """The vault entry holding this sign-in: `oauth.x` for the legacy singleton,
-    `oauth.x.<account id>` for an account (lower-cased: vault names are)."""
+    `oauth.x.<suffix>` for an account (see `_suffix`)."""
     base = _def(service)['vault']
     acc = _account(service, account_id)
-    return base if acc is None else f'{base}.{acc.lower()}'
+    return base if acc is None else f'{base}.{_suffix(acc)}'
 
 
 def profile_name(service: str, account_id: str | None = None) -> str:
     """The named browser profile the sign-in is made in (one login per account)."""
     base = _def(service)['profile']
     acc = _account(service, account_id)
-    return base if acc is None else f'{base}-{acc.lower()}'
+    return base if acc is None else f'{base}-{_suffix(acc)}'
 
 
 def _refresh_lock(name: str) -> threading.Lock:

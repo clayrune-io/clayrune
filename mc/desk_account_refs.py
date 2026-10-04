@@ -12,9 +12,11 @@ The FIRST X account keeps the legacy names, so a sign-in made before this existe
 keeps working and nothing is signed out. Every later account gets names of its
 own and starts "not signed in": it never reads the singleton's token, which would
 post as the wrong account. `data['oauth_legacy_bound']` records that the legacy
-names have been handed out, once; deleting the account that holds them does not
-free them for a stranger (the next account would inherit the previous person's
-sign-in), the singleton stays in the vault until a human disconnects it.
+names have been handed out, once, and holds the id of the account that has them:
+deleting that account does not free them for a stranger (the next account would
+inherit the previous person's sign-in), but restoring it with Undo (the same id
+again) gives them back to it. The singleton stays in the vault until a human
+disconnects it.
 
 `bind` is deterministic and idempotent: it runs on every store read
 (`mc.desk._migrate_store`) and when an account is created, binding unbound
@@ -24,6 +26,7 @@ Only a direct, non-preview X account has a sign-in to refer to.
 from __future__ import annotations
 
 from mc import desk_oauth as _oauth
+from mc.core import _log
 
 LEGACY_FLAG = 'oauth_legacy_bound'
 
@@ -38,17 +41,35 @@ def _credentials(account_id: str, legacy: bool) -> dict:
     return {'oauth_vault': _oauth.vault_name('x', arg), 'oauth_profile': _oauth.profile_name('x', arg)}
 
 
+def _legacy_holder(data: dict, accounts: dict):
+    """The id holding the legacy names, or None. A flag written as `True` (before it
+    named the holder) is resolved from the account that carries those names."""
+    flag = data.get(LEGACY_FLAG)
+    if flag is True:
+        legacy = _oauth.vault_name('x')
+        flag = next((a.get('id') for a in accounts.values()
+                     if isinstance(a, dict) and (a.get('credentials') or {}).get('oauth_vault') == legacy), True)
+        data[LEGACY_FLAG] = flag
+    return flag or None
+
+
 def bind(data: dict) -> None:
-    """Give every unbound X account its reference (see module doc). Mutates `data`."""
+    """Give every unbound X account its reference (see module doc). Mutates `data`.
+    Never raises: this runs inside every Desk store read, so an account whose id
+    cannot be named is left unbound and logged, not allowed to take the Desk down."""
     accounts = data.get('accounts') or {}
     todo = sorted((a for a in accounts.values()
                    if isinstance(a, dict) and needs_oauth(a) and not a.get('credentials')),
-                  key=lambda a: (a.get('created_at') or '', a.get('id') or ''))
+                  key=lambda a: (str(a.get('created_at') or ''), str(a.get('id') or '')))
     for acc in todo:
-        legacy = not data.get(LEGACY_FLAG)
-        acc['credentials'] = _credentials(acc['id'], legacy)
-        if legacy:
-            data[LEGACY_FLAG] = True
+        try:
+            holder = _legacy_holder(data, accounts)
+            legacy = holder is None or holder == acc.get('id')
+            acc['credentials'] = _credentials(acc['id'], legacy)
+            if legacy:
+                data[LEGACY_FLAG] = acc['id']
+        except Exception as e:
+            _log(f'[desk_account_refs] could not give account {str(acc.get("id"))[:40]!r} a sign-in name: {e}', flush=True)
 
 
 def oauth_arg(acc: dict | None) -> str | None:

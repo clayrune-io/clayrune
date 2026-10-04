@@ -39,7 +39,7 @@ from mc.unattended import is_unattended_caller
 
 bp = Blueprint('desk_connect_routes', __name__)
 
-_ACCOUNT_ID = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
+_ACCOUNT_ID = re.compile(r'^[A-Za-z0-9_.-]{1,80}$')
 
 
 def _own_hosts() -> tuple:
