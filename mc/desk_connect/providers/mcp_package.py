@@ -46,7 +46,13 @@ class McpPackage:
         return KeyPaste(vault=c['vault'], secret_label=c['label'], hint=c['hint'], entry_type=_vault.ENTRY_TOKEN)
 
     def card(self) -> dict:
-        return mcp_catalogue.card(self.entry())
+        """The reviewed catalogue card, plus `notice` when this machine cannot run the server
+        today (a passphrase-backed vault, MC-1047). The notice is a plain line, not a block: the
+        human may still approve and Save. It is not part of the pins."""
+        card = mcp_catalogue.card(self.entry())
+        if mcp_activation.passphrase_backed():
+            card['notice'] = mcp_activation.PASSPHRASE_NOTICE
+        return card
 
     def fields(self, vault_names) -> list[dict]:
         return self._key(self.entry()).fields(vault_names)
@@ -107,4 +113,6 @@ class McpPackage:
         key = self._key(entry).state()
         if key['state'] != 'key_stored':
             return key
+        if mcp_activation.passphrase_backed():
+            return {'state': 'waiting_mc1047', 'entry': key['entry']}
         return {'state': 'registered' if mcp_activation.is_registered(entry) else 'setup_failed', 'entry': key['entry']}

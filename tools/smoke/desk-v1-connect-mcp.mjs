@@ -50,17 +50,22 @@ const TOKEN = 'ntn_smoke_secret_5c1d90aa7be3';
 const RECORD = `
 import json, sys
 sys.path.insert(0, ${JSON.stringify(REPO_ROOT)})
-from mc.desk_connect import methods
+from mc.desk_connect import methods, mcp_activation
 methods._vault_names = lambda: set()
-print(json.dumps({'notion': methods.inspect('Notion'), 'x': methods.inspect('X')}))
+mcp_activation.passphrase_backed = lambda: False          # never this machine's vault: the recording must not depend on it
+out = {'notion': methods.inspect('Notion'), 'x': methods.inspect('X')}
+mcp_activation.passphrase_backed = lambda: True
+out['notion_pass'] = methods.inspect('Notion')
+print(json.dumps(out))
 `;
 const REAL = JSON.parse(execFileSync(process.env.MC_PYTHON || 'python', ['-c', RECORD], { encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } }));
 const CARD = REAL.notion.options.find((o) => o.method === 'mcp').connector.install;
-const LABELS = { registered: 'Registered with agents, not verified', setup_failed: 'Saved; setup failed' };
+const NOTICE = REAL.notion_pass.options.find((o) => o.method === 'mcp').connector.install.notice;
+const LABELS = { registered: 'Registered with agents, not verified', setup_failed: 'Saved; setup failed', waiting_mc1047: 'Saved; waiting for MC-1047' };
 
 function makeServer() {
   const fx = loadFixtures();
-  const srv = { log: [], fx, commitMode: 'ok', approved: false };
+  const srv = { log: [], fx, commitMode: 'ok', approved: false, passphrase: false };
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects: fx.projects.map((p) => ({ id: p.id, name: p.name, state: 'active', roster: [], presence: { replies: 'drafts', desk_agent: null, state: 'active' } })), accounts: [], pieces: [] });
   return srv;
 }
@@ -102,6 +107,7 @@ async function newPage(browser, { srv, width, height }) {
     if (path === '/api/desk/connect/suggest') return J({ q: '', suggestions: [] });
     if (path === '/api/desk/connect/inspect' && method === 'POST') {
       const key = String((body || {}).input || '').trim().toLowerCase();
+      if (key === 'notion' && srv.passphrase) return J(REAL.notion_pass);
       if (REAL[key]) return J(REAL[key]);
       return J({ error: 'not recorded: ' + key }, 400);
     }
@@ -113,6 +119,10 @@ async function newPage(browser, { srv, width, height }) {
       if (srv.commitMode === 'setup_failed') {
         return J({ ...base, status: { state: 'setup_failed', label: LABELS.setup_failed, entry: 'notion.token' },
           setup: { state: 'failed', code: 'pin_mismatch', message: 'the file the registry served for @notionhq/notion-mcp-server@2.5.2 does not match the checksum that was reviewed, so it was NOT registered. Nothing from it was run.' } }, 201);
+      }
+      if (srv.commitMode === 'waiting') {
+        return J({ ...base, status: { state: 'waiting_mc1047', label: LABELS.waiting_mc1047, entry: 'notion.token' },
+          setup: { state: 'waiting', code: 'vault_passphrase', message: 'Your Secrets vault is protected by a passphrase, and an MCP server cannot read a passphrase-protected vault yet (MC-1047). The token is saved. Nothing was downloaded or registered; save again once that is supported.' } }, 201);
       }
       srv.approved = !!(inst && inst.approved === true && inst.package === CARD.pins.package && inst.version === CARD.pins.version && inst.integrity === CARD.pins.integrity);
       return J({ ...base, status: { state: 'registered', label: LABELS.registered, entry: 'notion.token' },
@@ -305,6 +315,42 @@ async function setupFailed(browser, width, height) {
   await ctx.close();
 }
 
+async function passphraseVault(browser, width, height) {
+  console.log(`live ON: a passphrase-locked vault states the limit and does not block, at ${width}`);
+  const srv = makeServer();
+  srv.passphrase = true;
+  srv.commitMode = 'waiting';
+  const { ctx, page, pageErrors } = await newPage(browser, { srv, width, height });
+  await toMethod(page, 'Notion');
+  const mcp = await page.$$eval('[data-cf-option="mcp"]', (els) => els.map((e) => [e.dataset.support, !!e.querySelector('input')]));
+  check(mcp.length === 1 && mcp[0][0] === 'available' && mcp[0][1] === true, 'the MCP row is still selectable (not blocked)', 'mcp row: ' + JSON.stringify(mcp));
+  await page.check('[data-cf-method][value="mcp"]');
+  await page.click('[data-cf-next]');
+  await page.fill('[data-cfa-field="secret"]', TOKEN);
+  await page.click('[data-cf-next]');
+  await page.waitForSelector('[data-cf][data-cf-step="review"]', { timeout: 4000 });
+  const note = (await page.textContent('[data-cf-i-notice]')) || '';
+  check(note === NOTICE && /MC-1047/.test(note) && /passphrase/.test(note) && /can still approve and save/.test(note),
+    'Review shows one plain line that the server cannot start on a passphrase lock (MC-1047) and that the user may still approve', 'notice: ' + note);
+  check((await page.$$('[data-cf-i-notice]')).length === 1, 'exactly one such line', 'notice count');
+  check(await page.$eval('[data-cf-save]', (e) => e.disabled), 'Save still needs the approval box', 'Save enabled before approval');
+  await page.check('[data-cf-install-approve]');
+  check(!(await page.$eval('[data-cf-save]', (e) => e.disabled)), 'ticking the approval enables Save: the user is not blocked', 'Save stayed disabled');
+  await shot(page, 'review_passphrase', width);
+  await fits(page, 'passphrase review');
+  await save(page);
+  await page.waitForSelector('[data-cf][data-cf-step="result"]', { timeout: 6000 });
+  check((await page.getAttribute('[data-cf-result-status]', 'data-cf-result-status')) === 'waiting_mc1047' && /waiting for MC-1047/.test(await page.textContent('[data-cf-result-status]')),
+    'the Result reads "Saved; waiting for MC-1047"', 'status: ' + (await page.textContent('[data-cf-result-status]')));
+  check(/passphrase/.test((await page.textContent('[data-cf-setup="waiting"]')) || '') && !(await page.$('[data-cf-signin="failed"]')), 'it explains the wait, and is not shown as a failure', 'no waiting explanation, or shown as failed');
+  check(!(await page.$('[data-cfr-check]')), 'no "Check it now"', 'a check button is showing');
+  await shot(page, 'result_waiting', width);
+  await fits(page, 'waiting result');
+  check(!(await leaked(page)), 'the token is nowhere in the page', 'the token leaked');
+  check(realErrors(pageErrors).length === 0, 'no page errors', 'page errors: ' + realErrors(pageErrors).join(' | '));
+  await ctx.close();
+}
+
 const browser = await chromium.launch();
 try {
   await methodStep(browser, 1440, 900);
@@ -314,6 +360,8 @@ try {
   await changedPins(browser);
   await setupFailed(browser, 1440, 900);
   await setupFailed(browser, 390, 844);
+  await passphraseVault(browser, 1440, 900);
+  await passphraseVault(browser, 390, 844);
 } catch (e) {
   fail('harness error: ' + (e && e.stack ? e.stack : e));
 } finally {

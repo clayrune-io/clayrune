@@ -32,6 +32,7 @@
           </dl>
           <ul class="desk-v1-cf-perms" data-cf-i-perms>${card.permissions.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>
           <div class="desk-v1-rules-hint">When you save, Clayrune itself downloads this one file from the public npm registry (registry.npmjs.org), checks it against the checksum above and unpacks it into its own folder. npm is not used, and nothing from the package runs until an agent session starts the server.</div>
+          ${card.notice ? `<div class="desk-v1-cf-msg" data-cf-msg="warn" data-cf-i-notice role="status">${esc(card.notice)}</div>` : ''}
           <label class="desk-v1-cf-check"><input type="checkbox" data-cf-install-approve ${ok ? 'checked' : ''}>
             <span>I have read this and approve installing it.</span></label>
         </section>`;

@@ -26,12 +26,20 @@
   a project or user `.npmrc` could redirect that fetch while the token was in the child's
   environment, and its dependencies were not pinned.)
 - A failed setup reads "Saved; setup failed" with the reason; the token stays stored and a
-  retry does not ask for it again. With a passphrase-protected Secrets vault the setup
-  always ends this way for now (an MCP server cannot read that vault yet, MC-1047): the
-  token is kept, nothing is downloaded or registered. An agent session gets 403 on every
-  one of these routes.
+  retry does not ask for it again. With a passphrase-protected Secrets vault the review
+  card says so in one line (an MCP server cannot read that vault yet, MC-1047) and you can
+  still approve and save: the token is kept, nothing is downloaded or registered, and the
+  result reads "Saved; waiting for MC-1047" (not a failure); saving again once that is
+  supported finishes the setup without asking for the token. An agent session gets 403 on
+  every one of these routes.
 - An existing MCP server named `notion` is treated as Clayrune's only when its whole launch
   line matches, including the program it runs; otherwise it is left alone.
+- "Registered" now also needs the package file to be on disk and a vault a child process can
+  read; a config entry alone no longer counts. The server is launched with `NODE_OPTIONS` and
+  `NODE_PATH` removed from its environment (new opt-in `--unset VAR` on `tools/with-secret.py`;
+  no other caller changes), so a variable inherited from whatever started the session cannot make
+  Node load code the reviewed bundle does not carry. Two Saves of the same package at once no
+  longer race, and the download has one total deadline instead of one per read.
 
 ## [2026-10-04] — Desk: look up a service Clayrune does not know
 

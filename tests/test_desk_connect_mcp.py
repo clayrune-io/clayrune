@@ -17,7 +17,7 @@ Pinned:
     changed package, version or checksum is refused BEFORE the passcode;
   * Save downloads the ONE catalogue tarball itself (no npm, no npx, no subprocess),
     checks its sha512 against the catalogue, safe-extracts it into Clayrune's own directory
-    and registers `with-secret.py --raw ... -- <node> <dir>/package/<entry>`; the config
+    and registers `with-secret.py --raw --unset NODE_OPTIONS --unset NODE_PATH ... -- <node> <dir>/package/<entry>`; the config
     names the vault entry and holds no value and no `env`;
   * a wrong checksum, a traversal / link / duplicate member, a network failure or timeout,
     a missing Node.js, a passphrase-backed vault or a failed config write leave the
@@ -344,7 +344,8 @@ def test_a_good_save_stores_the_token_installs_the_verified_package_and_register
                                         'notion/2.5.2/package/bin/cli.mjs', 'notion/2.5.2/package/package.json']
     srv = _servers(cfg)['notion']
     assert set(srv) == {'command', 'args'}                            # no env, no headers, no url
-    assert srv['args'][1:] == ['--raw', '--env', 'NOTION_TOKEN=notion.token', '--', 'C:/fake/node',
+    assert srv['args'][1:] == ['--raw', '--unset', 'NODE_OPTIONS', '--unset', 'NODE_PATH',
+                               '--env', 'NOTION_TOKEN=notion.token', '--', 'C:/fake/node',
                                str(where / 'package' / 'bin' / 'cli.mjs')]
     assert srv['args'][0].replace('\\', '/').endswith('tools/with-secret.py')
     assert 'npx' not in json.dumps(srv) and '-y' not in srv['args']
@@ -377,7 +378,8 @@ def test_no_credential_value_reaches_the_log(env, capsys):
 def test_the_launch_line_comes_from_the_catalogue_only(env):
     cfg = mcp_activation.launch_config(_notion())
     assert cfg['command'] == sys.executable
-    assert cfg['args'][1:] == ['--raw', '--env', 'NOTION_TOKEN=notion.token', '--', 'C:/fake/node',
+    assert cfg['args'][1:] == ['--raw', '--unset', 'NODE_OPTIONS', '--unset', 'NODE_PATH',
+                               '--env', 'NOTION_TOKEN=notion.token', '--', 'C:/fake/node',
                                str(mcp_package_store.entry_path(_notion()))]
 
 
@@ -552,25 +554,22 @@ def test_the_vault_check_is_the_wrapped_key_file_the_vault_itself_uses(env):
     assert secrets_store.lock_state() == 'locked'                      # the same signal, not a second definition
 
 
-def test_a_passphrase_backed_vault_saves_the_token_and_reports_setup_failed(env, tmp_path, monkeypatch):
+def test_a_passphrase_backed_vault_saves_the_token_and_waits_for_mc1047(env, tmp_path, monkeypatch):
     from mc import secrets_store
     client, calls, rec, cfg = env
-    rec['error'] = OSError('offline')                                  # first Save: the token is stored, setup fails
-    assert _commit_req(client, _draft()).status_code == 201
-    rec['error'] = None
-    rec['fetched'].clear()
     key = secrets_store.load_master_key()[0]
-    _wrap_vault()                                                      # the vault becomes passphrase-backed ...
+    _wrap_vault()                                                      # the vault is passphrase-backed ...
     monkeypatch.setattr(secrets_store, '_unlocked_key', key)           # ... and the human has unlocked it in the server
-    r = _commit_req(client, _draft(secret=''), rid='req-0002-abcdef')
+    r = _commit_req(client, _draft())                                  # not blocked: the human may still approve and Save
     body = r.get_json()
     assert r.status_code == 201, body
-    assert body['setup']['state'] == 'failed' and body['setup']['code'] == 'vault_passphrase'
+    assert calls['n'] == 1 and body['stored'] == ['notion.token']
+    assert body['setup']['state'] == 'waiting' and body['setup']['code'] == 'vault_passphrase'
     assert 'passphrase' in body['setup']['message'] and 'MC-1047' in body['setup']['message']
     assert 'cannot read' in body['setup']['message'] and 'token is saved' in body['setup']['message']
-    assert body['status']['state'] == 'setup_failed' and body['status']['label'] == 'Saved; setup failed'
+    assert body['status']['state'] == 'waiting_mc1047' and body['status']['label'] == 'Saved; waiting for MC-1047'
     assert 'notion' not in _servers(cfg)
-    assert rec['fetched'] == [] and _package_files(tmp_path) == []     # refused before anything was downloaded
+    assert rec['fetched'] == [] and _package_files(tmp_path) == []     # nothing downloaded or registered
 
 
 def test_the_vault_check_runs_even_when_the_vault_is_unlocked_in_this_process(env, monkeypatch):
@@ -581,7 +580,7 @@ def test_the_vault_check_runs_even_when_the_vault_is_unlocked_in_this_process(en
     monkeypatch.setattr(secrets_store, '_unlocked_key', b'k' * 32)
     assert secrets_store.lock_state() == 'unlocked'
     out = mcp_activation.provision(_notion())
-    assert out['setup']['state'] == 'failed' and out['setup']['code'] == 'vault_passphrase'
+    assert out['setup']['state'] == 'waiting' and out['setup']['code'] == 'vault_passphrase'
 
 
 # -- a server that is not ours -----------------------------------------------------
@@ -612,10 +611,10 @@ def _ours() -> dict:
     lambda c: c.update(type='http'),
     lambda c: c['args'].append('--extra'),
     lambda c: c['args'].insert(0, '--evil'),
-    lambda c: c['args'].__setitem__(5, 'C:/fake/not-node'),             # a different program in the node slot
-    lambda c: c['args'].__setitem__(6, 'C:/elsewhere/package/bin/cli.mjs'),
-    lambda c: c['args'].__setitem__(6, c['args'][6].replace('2.5.2', '2.5.1')),   # another version
-    lambda c: c['args'].__setitem__(3, 'NOTION_TOKEN=some.other-secret'),
+    lambda c: c['args'].__setitem__(-2, 'C:/fake/not-node'),            # a different program in the node slot
+    lambda c: c['args'].__setitem__(-1, 'C:/elsewhere/package/bin/cli.mjs'),
+    lambda c: c['args'].__setitem__(-1, c['args'][-1].replace('2.5.2', '2.5.1')),   # another version
+    lambda c: c['args'].__setitem__(6, 'NOTION_TOKEN=some.other-secret'),
     lambda c: c['args'].__setitem__(1, '--no-such-flag'),
 ])
 def test_is_ours_checks_the_whole_launch_line_including_command(mutate):
@@ -629,8 +628,8 @@ def test_is_ours_accepts_the_same_line_written_with_other_absolute_paths():
     cfg = _ours()
     cfg['command'] = 'C:\\Python311\\python.exe'
     cfg['args'][0] = 'D:\\clones\\mc\\tools\\with-secret.py'
-    cfg['args'][5] = 'C:\\Program Files\\nodejs\\node.exe'
-    cfg['args'][6] = 'D:\\home\\.clayrune\\mcp_packages\\notion\\2.5.2\\package\\bin\\cli.mjs'
+    cfg['args'][-2] = 'C:\\Program Files\\nodejs\\node.exe'
+    cfg['args'][-1] = 'D:\\home\\.clayrune\\mcp_packages\\notion\\2.5.2\\package\\bin\\cli.mjs'
     assert mcp_activation.is_ours(cfg, _notion()) is True
     assert mcp_activation.is_ours(None, _notion()) is False and mcp_activation.is_ours('x', _notion()) is False
 

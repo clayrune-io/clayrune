@@ -40,6 +40,13 @@ Child output is scrubbed of any dispensed value before it is echoed, so a
 chatty tool that prints its own password can't leak it into the transcript.
 Pass --raw to stream through unmodified (needed for interactive commands).
 
+`--unset VAR` (repeatable, opt-in) removes an inherited environment variable
+from the child before the secrets are injected, e.g. `--unset NODE_OPTIONS`
+for a Node process that must not load code the caller's environment names. It
+does nothing unless given, so no other caller's behaviour changes. It cannot
+be honoured by the server-exec fallback (that runs in the server's own
+environment), so a locked-vault fallback with --unset is refused.
+
 Every read is written to ~/.clayrune/secrets_audit.jsonl.
 
 Exit codes: the child's, or 2 if a secret could not be resolved (in which case
@@ -146,6 +153,14 @@ def _pair(text: str) -> tuple[str, str]:
     return var, name
 
 
+def _environ_without(names: list[str]) -> dict:
+    """This process's environment minus `names` (case-insensitive on Windows, where
+    variable names are)."""
+    nt = os.name == 'nt'
+    drop = {n.upper() for n in names} if nt else set(names)
+    return {k: v for k, v in os.environ.items() if (k.upper() if nt else k) not in drop}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog='with-secret',
@@ -174,6 +189,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument('--raw', action='store_true',
                     help='stream child output unmodified (no redaction); use '
                          'for interactive commands')
+    ap.add_argument('--unset', action='append', default=[], metavar='VAR',
+                    help="remove an inherited environment variable from the "
+                         "child's environment (repeatable)")
     ap.add_argument('command', nargs=argparse.REMAINDER,
                     help='-- followed by the command to run')
     args = ap.parse_args(argv)
@@ -195,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
     unattended, _reason = vault.detect_effective_unattended(bool(args.unattended))
 
     try:
-        env = dict(os.environ)
+        env = _environ_without(args.unset)
         env.update(vault.env_for(args.env, consumer='with-secret',
                                  project_id=project, unattended=unattended))
         for var, sec in args.user:
@@ -235,6 +253,12 @@ def main(argv: list[str] | None = None) -> int:
             print("with-secret: --raw cannot use the server-exec fallback "
                  "(it needs live streaming) — unlock the vault, or drop "
                  "--raw to let this run through the server.", file=sys.stderr)
+            return 2
+        if args.unset:
+            print(f"with-secret: {e}", file=sys.stderr)
+            print("with-secret: --unset cannot be applied through the server-exec "
+                 "fallback (it runs in the server's own environment) — unlock "
+                 "the vault for this process, or drop --unset.", file=sys.stderr)
             return 2
         return _run_via_server_exec(args, cmd, project, unattended, str(e))
     except vault.SecretsError as e:
