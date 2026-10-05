@@ -2213,6 +2213,9 @@ app.register_blueprint(_bp_desk_services.bp)
 # Connect by URL: inspect an address, one Save (vault entry then Desk record). Own module.
 from mc.blueprints import desk_connect_routes as _bp_desk_connect  # noqa: E402
 app.register_blueprint(_bp_desk_connect.bp)
+# Connect by URL, unknown services: page + MCP-registry lookup through the isolated transform. Own module.
+from mc.blueprints import desk_connect_discover_routes as _bp_desk_connect_discover  # noqa: E402
+app.register_blueprint(_bp_desk_connect_discover.bp)
 
 # Desk Studio's delete + Undo for Recent rows, over the same Desk store and uploads.
 from mc.blueprints import desk_studio_items_routes as _bp_desk_studio_items  # noqa: E402

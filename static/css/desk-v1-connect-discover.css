@@ -1,0 +1,6 @@
+/* Desk v1 — Connections: the "Look it up" area of the Method step (desk-v1-connect-discover.js). Rows reuse the .desk-v1-cf-option look from desk-v1-connect-flow.css. */
+.desk-v1-cfd { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.desk-v1-cfd-answer { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.desk-v1-cfd-head { font-size: 13px; font-weight: 600; }
+.desk-v1-cfd-row { border-style: dashed; }
+.desk-v1-cfd-url { font-family: var(--mono, ui-monospace, monospace); overflow-wrap: anywhere; }
