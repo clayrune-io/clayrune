@@ -28,9 +28,14 @@ What broke the promise was Clayrune, in three places:
 
 This module is the pure half: it keeps `session['_bg_tasks']` in step with
 the CLI's own `system` events and answers the questions the reader and the
-guardian ask. The CLI's lists are authoritative; tool_use inputs are not
-parsed, because the timeout-moved-to-background case never carries
-`run_in_background` in its input.
+guardian ask. The CLI's lists are authoritative for WHAT is running. Whether the agent
+chose to wait on it is read from the tool_use input (MC-946): a Bash call the
+CLI moved to the background after its 120s timeout carries no
+`run_in_background`, the agent has moved on (measured 2026-10-05, a stray
+`python -` held the child's final answer for 11 min and the spawner got the
+reply to the later kill-wake instead), so such a task neither holds the
+spawner callback nor re-arms it when it ends. Only tasks the agent started
+deliberately, and tasks whose origin is unknown, hold it.
 """
 from __future__ import annotations
 
@@ -42,8 +47,16 @@ TASKS_KEY = '_bg_tasks'                     # task_id -> {description, task_type
 DEFERRED_KEY = '_notify_deferred_bg_since'  # epoch: spawner callback held since
 INTERIM_KEY = '_bg_notify_interim_sent'     # callback already fired by the wait cap
 RESUME_PENDING_KEY = '_bg_resume_pending'   # a notification arrived while idle
+TOOL_USES_KEY = '_bg_tool_uses'             # tool_use id -> {name, bg} (bounded)
+AUTO_IDS_KEY = '_bg_auto_task_ids'          # task ids the CLI moved on timeout
+LAST_END_AUTO_KEY = '_bg_last_end_auto'     # the last task_notification was one
+AUTO_WAKE_KEY = '_bg_auto_wake_pending'     # an auto-moved task ended while idle
 
 DEFAULT_WAIT_MAX_MINUTES = 120
+
+# Tools whose foreground call the CLI can move to the background on timeout.
+_SHELL_TOOLS = frozenset({'Bash', 'PowerShell'})
+_TOOL_USE_BOUND = 64
 
 
 def _tasks(session: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -52,6 +65,41 @@ def _tasks(session: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         t = {}
         session[TASKS_KEY] = t
     return t
+
+
+def note_tool_use(session: Dict[str, Any], block: Dict[str, Any]) -> None:
+    """Remember whether a tool_use asked for `run_in_background`, keyed by its
+    id, so a later `task_started` can be told apart: deliberate, or moved to
+    the background by the CLI's timeout."""
+    if not isinstance(block, dict) or not block.get('id'):
+        return
+    inp = block.get('input')
+    uses = session.get(TOOL_USES_KEY)
+    if not isinstance(uses, dict):
+        uses = {}
+        session[TOOL_USES_KEY] = uses
+    uses[str(block['id'])] = {
+        'name': str(block.get('name') or ''),
+        'bg': bool(isinstance(inp, dict) and inp.get('run_in_background')),
+    }
+    for k in list(uses)[:-_TOOL_USE_BOUND]:
+        uses.pop(k, None)
+
+
+def _moved_on_timeout(session: Dict[str, Any], tool_use_id: Any) -> bool:
+    """True only for a shell call we SAW without `run_in_background`. An
+    unknown id, or a non-shell tool (Monitor, a background subagent), is not
+    classified: it keeps holding the callback, as before MC-946."""
+    use = (session.get(TOOL_USES_KEY) or {}).get(str(tool_use_id or ''))
+    return bool(use) and use['name'] in _SHELL_TOOLS and not use['bg']
+
+
+def _auto_ids(session: Dict[str, Any]) -> Dict[str, bool]:
+    ids = session.get(AUTO_IDS_KEY)
+    if not isinstance(ids, dict):
+        ids = {}
+        session[AUTO_IDS_KEY] = ids
+    return ids
 
 
 def note_system_event(session: Dict[str, Any], msg: Dict[str, Any],
@@ -82,6 +130,9 @@ def note_system_event(session: Dict[str, Any], msg: Dict[str, Any],
                     'task_type': str(t.get('task_type') or prev.get('task_type') or ''),
                     'since': prev.get('since') or now,
                 }
+                for k in ('tool_use_id', 'auto'):
+                    if k in prev:
+                        fresh[tid][k] = prev[k]
         session[TASKS_KEY] = fresh
         return 'changed'
     if sub == 'task_started':
@@ -89,11 +140,19 @@ def note_system_event(session: Dict[str, Any], msg: Dict[str, Any],
         # measured) — those end inside the turn and must not be tracked.
         if not msg.get('is_backgrounded') or not msg.get('task_id'):
             return ''
-        tasks.setdefault(str(msg['task_id']), {
+        tid = str(msg['task_id'])
+        entry = tasks.setdefault(tid, {
             'description': str(msg.get('description') or ''),
             'task_type': str(msg.get('task_type') or ''),
             'since': now,
         })
+        # background_tasks_changed usually lands first and carries no
+        # tool_use_id; this event is where the task learns where it came from.
+        if msg.get('tool_use_id'):
+            entry['tool_use_id'] = str(msg['tool_use_id'])
+            entry['auto'] = _moved_on_timeout(session, msg['tool_use_id'])
+            if entry['auto']:
+                _auto_ids(session)[tid] = True
         return 'changed'
     if sub == 'task_updated':
         patch = msg.get('patch') or {}
@@ -102,7 +161,13 @@ def note_system_event(session: Dict[str, Any], msg: Dict[str, Any],
             return 'changed'
         return ''
     if sub == 'task_notification':
-        tasks.pop(str(msg.get('task_id') or ''), None)
+        tid = str(msg.get('task_id') or '')
+        tasks.pop(tid, None)
+        # task_updated already popped the task, so the ids set is what
+        # remembers it was a timeout move.
+        ids = _auto_ids(session)
+        session[LAST_END_AUTO_KEY] = tid in ids
+        ids.pop(tid, None)
         return 'notification'
     return ''
 
@@ -112,9 +177,29 @@ def open_tasks(session: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return t if isinstance(t, dict) else {}
 
 
-def describe(session: Dict[str, Any], limit: int = 3) -> str:
+def held_tasks(session: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """The open tasks the spawner callback waits for: everything except a
+    shell call the CLI moved to the background on timeout (MC-946)."""
+    return {k: v for k, v in open_tasks(session).items() if not v.get('auto')}
+
+
+def waiting_label(session: Dict[str, Any]) -> str:
+    """'waiting on background task: ...' while a callback is held on a genuine
+    background job and the session sits between turns, else ''. Shown on the
+    Floor figure and in the chat header, where an idle child with a held
+    callback otherwise looks like nothing is running."""
+    if session.get('status') != 'idle' or not session.get(DEFERRED_KEY):
+        return ''
+    held = held_tasks(session)
+    if not held:
+        return ''
+    return f"waiting on background task: {describe(session, tasks=held)}"
+
+
+def describe(session: Dict[str, Any], limit: int = 3,
+             tasks: Dict[str, Dict[str, Any]] | None = None) -> str:
     """Short human label for the open tasks, for chat status lines."""
-    items = list(open_tasks(session).items())
+    items = list((open_tasks(session) if tasks is None else tasks).items())
     parts = [(v.get('description') or k)[:80] for k, v in items[:limit]]
     if len(items) > limit:
         parts.append(f'+{len(items) - limit} more')
@@ -128,6 +213,8 @@ def drain(session: Dict[str, Any]) -> List[str]:
     session[TASKS_KEY] = {}
     session.pop(DEFERRED_KEY, None)
     session.pop(RESUME_PENDING_KEY, None)
+    session.pop(AUTO_WAKE_KEY, None)
+    session.pop(AUTO_IDS_KEY, None)
     return [(v.get('description') or k)[:80] for k, v in items]
 
 

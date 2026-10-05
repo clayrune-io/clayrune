@@ -17,6 +17,18 @@
   from its own guidance and says that adding your own MCP server or API for it is not available
   yet. Words only; no button, no new option. No route or behaviour change.
 
+## [2026-10-05] — A command the CLI moved to the background no longer holds a dispatched agent's answer (MC-946 / MC-958)
+
+- Fixed: a dispatched agent's final answer reached its spawner 11 minutes late, carrying the
+  reply to a later turn instead. A shell command the agent never backgrounded had hit the CLI's
+  120 s timeout and been moved to the background; the callback was held for it, and when that
+  command was finally killed the CLI started a turn of its own whose reply was sent instead.
+- Now only a task the agent started with `run_in_background` (or one whose origin is unknown)
+  holds the callback. A timeout-moved shell command neither holds it nor re-arms it when it
+  ends, so the spawner gets the real answer at the real end of the turn, once.
+- New: while a callback is held on a genuine background task the Floor figure and the chat
+  header read "waiting on background task: ..." instead of an idle child with nothing running.
+
 ## [2026-10-05] — Desk: detect connection details for any MCP server or API you choose
 
 - New `POST /api/desk/connect/detect` (people only, not agent sessions) reads an npm or PyPI

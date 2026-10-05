@@ -27,6 +27,7 @@ from typing import Any, Callable
 from flask import Blueprint, jsonify, request
 
 from mc import allowance_state as _allowance_state
+from mc import background_tasks as _bg_tasks
 from mc import identity as _identity
 from mc import state
 from mc.characters import MAX_EMOJI_LEN, clean_avatar
@@ -333,6 +334,9 @@ def _figure(s, proj_default='', labels=None, projects=None):
         # 'thinking' | 'writing' | 'tool' | '' — only present while a turn is
         # actually streaming, and only when activity_states_enabled is on.
         'activity': s.get('activity_state', '') if st == 'working' else '',
+        # MC-946: between turns with the spawner callback held on a genuine
+        # background task — "idle" alone reads as nothing running.
+        'bg_wait': _bg_tasks.waiting_label(s) if st == 'idle' else '',
         'task': _clip(s.get('task'), _TASK_CHARS),
         'character': ch,
         # Who this figure IS, always populated. `name_from` is 'user' | 'self' |
