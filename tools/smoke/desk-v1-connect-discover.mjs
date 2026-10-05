@@ -160,7 +160,7 @@ async function newPage(browser, { srv, width, height }) {
 const realErrors = (pageErrors) => pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
 const shot = (page, name, w) => page.screenshot({ path: resolve(SHOT_DIR, `connect_s3_${name}_${w}.png`) });
 const discoverPosts = (srv) => srv.log.filter((r) => r.path === '/api/desk/connect/discover' && r.method === 'POST');
-const writes = (srv) => srv.log.filter((r) => r.method !== 'GET' && !/connect\/(inspect|discover|discover\/cancel)$/.test(r.path));
+const writes = (srv) => srv.log.filter((r) => r.method !== 'GET' && !/connect\/(inspect|purposes|discover|discover\/cancel)$/.test(r.path));
 
 async function toMethod(page, text) {
   await page.click('[data-conn-add-tile]');

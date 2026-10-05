@@ -1,0 +1,43 @@
+/* Desk v1 — Connections: a known service's routes by purpose (desk-v1-connect-purpose.js). A section of the Connect flow's Method step. Load order is in static/index.html. */
+.desk-v1-cp { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 12px; border: 1px solid var(--border2); border-radius: 10px; background: var(--surface2); }
+.desk-v1-cp .desk-v1-rules-group-title { margin: 0; }
+.desk-v1-cp-account { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.desk-v1-cp-account select, .desk-v1-cp-account input[type="text"], .desk-v1-cp-pickers select, .desk-v1-cp-pickers input[type="text"] { max-width: 100%; box-sizing: border-box; width: 100%; }
+.desk-v1-cp-purpose { margin: 0; padding: 10px 12px; border: 1px solid var(--border2); border-radius: 10px; background: var(--surface); min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.desk-v1-cp-purpose > legend { padding: 0 6px; font-size: 13px; font-weight: 700; }
+.desk-v1-cp-routes { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.desk-v1-cp-route { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--border2); border-radius: 8px; background: var(--surface2); min-width: 0; }
+.desk-v1-cp-route[data-cp-used="true"] { border-color: var(--text); box-shadow: 0 0 0 1px var(--text); }
+.desk-v1-cp-route[data-cp-bindable="false"] { opacity: 0.85; }
+.desk-v1-cp-route-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.desk-v1-cp-route-title { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.desk-v1-cp-cost { font-size: 11.5px; color: var(--text-dim); overflow-wrap: anywhere; }
+.desk-v1-cp-guidance { font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.desk-v1-cp-why { font-size: 12px; line-height: 1.45; color: var(--amber-text, var(--text-dim)); overflow-wrap: anywhere; }
+.desk-v1-cp-caps { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.desk-v1-cp-cap { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; min-width: 0; }
+.desk-v1-cp-cap-off { color: var(--text-dim); cursor: default; }
+.desk-v1-cp-covword { font-size: 11px; color: var(--text-dim); }
+.desk-v1-cp-pickers { display: flex; flex-direction: column; gap: 10px; padding: 10px; border: 1px dashed var(--border2); border-radius: 8px; min-width: 0; }
+.desk-v1-cp-more summary { font-size: 12px; color: var(--text-dim); cursor: pointer; }
+.desk-v1-cp-more[open] summary { margin-bottom: 6px; }
+.desk-v1-cp-more a { overflow-wrap: anywhere; }
+.desk-v1-cp-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.desk-v1-cp-limits, .desk-v1-cp-evidence { font-size: 12px; color: var(--text-dim); line-height: 1.45; overflow-wrap: anywhere; }
+.desk-v1-cp-state { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.desk-v1-cp-verify { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.desk-v1-cp-checkmsg { font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.desk-v1-cp-summary { padding: 10px; border: 1px solid var(--border2); border-radius: 8px; background: var(--surface); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.desk-v1-cp-summary-title { font-size: 12px; font-weight: 700; color: var(--text-dim); }
+.desk-v1-cp-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.desk-v1-cp-actions .desk-v1-conn-btn { margin-left: 0; }
+.desk-v1-cp [data-cp-verify="verified"], .desk-v1-cp [data-cp-setup="ready"], .desk-v1-cp [data-cp-word="runs"] { background: var(--green-dim, var(--surface2)); color: var(--green-text, var(--text-dim)); border-color: transparent; }
+.desk-v1-cp [data-cp-verify="partial"], .desk-v1-cp [data-cp-setup="needs_signin"], .desk-v1-cp [data-cp-setup="pending_runtime"] { background: var(--amber-dim, var(--surface2)); color: var(--amber-text, var(--text-dim)); border-color: transparent; }
+
+@media (max-width: 640px) {
+  .desk-v1-cp { padding: 10px; }
+  .desk-v1-cp-actions .desk-v1-conn-btn, .desk-v1-cp-verify .desk-v1-conn-btn { min-height: 44px; }
+  .desk-v1-cp-actions .desk-v1-conn-btn { flex: 1 1 auto; }
+  .desk-v1-cp-cap { min-height: 44px; }
+  .desk-v1-cp-more summary { min-height: 44px; display: flex; align-items: center; }
+}

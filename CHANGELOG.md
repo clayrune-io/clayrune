@@ -6,6 +6,13 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-05] — Desk: a service's routes by purpose, one account bound per purpose (slice P2)
+
+- Connecting a known service (LinkedIn, X) now lists every route grouped by what it is for (publish, read your own posts and replies), with what it needs, what it costs, the evidence behind it and whether Clayrune can run it. One account can use a different route per purpose, for example the API to publish and the browser pane to read its own posts. Nothing is ticked for you, and nothing is written until you press Save and give your passcode.
+- Saved routes show their setup state and a separate verification state: "Check now" runs the free read-only checks and says "Partly verified: 1 of 4" when only some capabilities were proved. Changing a stored credential clears only the checks that rested on it. A saved route is never called verified.
+- LinkedIn member and Company Page, and two X accounts, stay separate. No LinkedIn publish route can be chosen yet.
+- "MCP server: not available yet" now reads "Adding your own MCP server: coming", and is hidden for a service that already has an MCP route (Higgsfield's sign-in is labelled as running over its MCP server).
+
 ## [2026-10-05] — Desk: service profiles, one file per service (slice P1)
 
 - `mc/desk_connect/registry.json` is now an index; each known service has its own

@@ -156,6 +156,18 @@ def suggest(text: object, limit: int = MAX_SUGGESTIONS) -> list[dict]:
     return [brief(r[2]) for r in ranked[:limit]]
 
 
+# How the common rows read on the Method step. The version 1 row itself is data and stays as it was.
+COMMON_WORDING = {'mcp': {'title': 'Adding your own MCP server',
+                          'guidance': 'Coming: adding an MCP server of your own for this service. Clayrune cannot connect one yet.'}}
+
+
+def _is_mcp_route(profile: dict, method: str) -> bool:
+    try:
+        return _compat.route_for_method(profile, method)['transport'] == 'mcp'
+    except (KeyError, _compat.AmbiguousMethod):
+        return False
+
+
 def options_for(service: dict | None) -> list[dict]:
     """The Method step's rows for a host: its own options, the common ones (MCP is
     information only unless the service has its own MCP option), then the fallback. Each carries `selectable`:
@@ -164,12 +176,18 @@ def options_for(service: dict | None) -> list[dict]:
     guidance."""
     reg = registry()
     own = service['options'] if service else []
-    # The common "MCP is information only" row is for services with no MCP option of their own.
-    common = [o for o in reg['common_options'] if not any(x['method'] == o['method'] for x in own)]
+    # The common "MCP is information only" row is for services with no MCP option of their own,
+    # and none of their routes that IS an available MCP server (Higgsfield's sign-in is its MCP).
+    prof = reg['snapshot']['by_id'].get(service['id']) if service else None
+    has_mcp = any(r['transport'] == 'mcp' and r['support'] == 'available' for r in (prof or {}).get('routes', ()))
+    common = [dict(o, **COMMON_WORDING.get(o['method'], {})) for o in reg['common_options']
+              if not has_mcp and not any(x['method'] == o['method'] for x in own)]
     rows = own + common + [FALLBACK_OPTION]
     out = []
     for o in rows:
         row = dict(o)
+        if o in own and prof and 'mcp' not in o['title'].lower() and _is_mcp_route(prof, o['method']):
+            row['title'] = f'{o["title"]} (runs over its MCP server)'
         row['selectable'] = o['method'] == 'save_for_agents'
         out.append(row)
     return out

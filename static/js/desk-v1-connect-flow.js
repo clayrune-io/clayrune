@@ -59,6 +59,7 @@
     if (window.DeskV1ConnectResult) window.DeskV1ConnectResult.reset();
     if (window.DeskV1ConnectDiscover) window.DeskV1ConnectDiscover.reset();
     if (window.DeskV1ConnectInstall) window.DeskV1ConnectInstall.clear();
+    if (window.DeskV1ConnectPurpose) window.DeskV1ConnectPurpose.reset();
     if (_formHost) { _formHost.querySelectorAll('input').forEach((i) => { if (i.type !== 'radio' && i.type !== 'checkbox') i.value = ''; }); _formHost = null; }
     _formState.type = 'api_key';
     S = _fresh();
@@ -166,6 +167,7 @@
         <div class="desk-v1-cf-host" data-cf-host>${esc(info.host)}${info.path && info.path !== '/' ? `<span class="desk-v1-cf-path">${esc(info.path)}</span>` : ''}</div>
         ${known}
         ${_missingRouteHTML(info)}
+        ${window.DeskV1ConnectPurpose ? window.DeskV1ConnectPurpose.html(info) : ''}
         ${window.DeskV1ConnectDiscover ? window.DeskV1ConnectDiscover.html(info) : ''}
         <div class="desk-v1-cf-options" data-cf-options role="radiogroup" aria-label="Connection method">${info.options.map((o) => _optionHTML(o, ctx)).join('')}</div>
         <div class="desk-v1-rules-hint">Recognising a service is not support: a method marked “Information only” or “Restricted” cannot be set up from here.</div>
@@ -416,6 +418,7 @@
     root.querySelectorAll('[data-cf-open]').forEach((b) => b.addEventListener('click', () => ctx.openPick(b.dataset.cfOpen)));
     if (S.step === 'method') {
       if (window.DeskV1ConnectDiscover) window.DeskV1ConnectDiscover.bind(root, S.info, ctx);
+      if (window.DeskV1ConnectPurpose) window.DeskV1ConnectPurpose.bind(root, S.info, ctx);
       const next = root.querySelector('[data-cf-next]');
       if (next) next.addEventListener('click', () => { if (S.method) _go('details', ctx); });
     }

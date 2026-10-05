@@ -223,6 +223,35 @@ def create_account(platform, identity, *, label=None, capability=None, voice=Non
     return v1_account(rec)
 
 
+def apply_read_to_store(store: dict, rec: dict, read_via: str | None, profile: str | None,
+                        project_id: str | None = None) -> None:
+    """Set a read setting on the workspace record `rec` and mirror it onto every
+    presence copy (engagement reads the copy). `project_id` files the account under
+    that project's presence when no copy exists yet. Mutates `store`; the caller
+    holds `_store_lock` and writes. Validation is the caller's."""
+    _desk.apply_read_settings(rec, read_via, profile)
+    presences = store['presences']
+    account_id = rec['id']
+    filed = False
+    for pres in presences.values():
+        for i, a in enumerate(pres.get('accounts') or []):
+            if a == account_id:      # bare-id form: promote to a record
+                pres['accounts'][i] = a = {'channel_id': account_id}
+            if isinstance(a, dict) and a.get('channel_id') == account_id:
+                if not a.get('platform'):
+                    a['platform'] = rec['platform']
+                _desk.apply_read_settings(a, read_via, profile)
+                filed = filed or pres.get('project_id') == project_id
+    if project_id and not filed:
+        pres = presences.get(project_id) or _desk._empty_presence(project_id)
+        copy = {'channel_id': account_id, 'platform': rec['platform']}
+        _desk.apply_read_settings(copy, rec.get('read_via'), rec.get('browser_profile'))
+        pres.setdefault('accounts', []).append(copy)
+        pres['project_id'] = project_id
+        pres['updated_at'] = now_iso()
+        presences[project_id] = pres
+
+
 _PATCHABLE = ('label', 'voice', 'read_via', 'browser_profile', 'project_id', 'organization_id')
 _ORG_ID = re.compile(r'^\d{1,20}$')
 
@@ -268,26 +297,7 @@ def update_account(account_id: str, patch: dict) -> dict:
             raise AccountError('read settings apply to X and LinkedIn accounts only')
         rec.update(clean)
         if read_via is not None or profile is not None:
-            _desk.apply_read_settings(rec, read_via, profile)
-            presences = store['presences']
-            filed = False
-            for pres in presences.values():
-                for i, a in enumerate(pres.get('accounts') or []):
-                    if a == account_id:      # bare-id form: promote to a record
-                        pres['accounts'][i] = a = {'channel_id': account_id}
-                    if isinstance(a, dict) and a.get('channel_id') == account_id:
-                        if not a.get('platform'):
-                            a['platform'] = rec['platform']
-                        _desk.apply_read_settings(a, read_via, profile)
-                        filed = filed or pres.get('project_id') == project_id
-            if project_id and not filed:
-                pres = presences.get(project_id) or _desk._empty_presence(project_id)
-                copy = {'channel_id': account_id, 'platform': rec['platform']}
-                _desk.apply_read_settings(copy, rec.get('read_via'), rec.get('browser_profile'))
-                pres.setdefault('accounts', []).append(copy)
-                pres['project_id'] = project_id
-                pres['updated_at'] = now_iso()
-                presences[project_id] = pres
+            apply_read_to_store(store, rec, read_via, profile, project_id)
         _desk._write_store(store)
     return v1_account(rec)
 

@@ -182,7 +182,7 @@
     const root = el.querySelector('[data-add-service]');
     if (!root) return;
     if (window.DeskV1ConnectFlow) window.DeskV1ConnectFlow.bind(root, {
-      live: window.DeskV1Store.live(), api: ctx.api, engines: ctx.engines, repaint: ctx.repaint,
+      live: window.DeskV1Store.live(), api: ctx.api, engines: ctx.engines, repaint: ctx.repaint, channels: ctx.channels,
       // "Open the guide" on a method row: hand over to the flow Connections already has.
       openPick: (key) => {
         window.DeskV1ConnectFlow.reset();
