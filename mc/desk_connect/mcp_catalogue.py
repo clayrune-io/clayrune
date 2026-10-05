@@ -10,11 +10,16 @@ package author supplied.
 
 The file ships in the app and changes by commit and review. It is read from next to
 this module, never from `data/` or `~/.clayrune`, so a user, an agent or a page cannot
-add a package to it. An entry can only be a pinned npm package launched by `npx`
-(`kind: npx`): there is no field for a command, an argument, a URL or an environment
-value, so no entry can carry executable configuration of its own. A remote endpoint
-needs its own reviewed kind and capability approval; none exists yet, and a file
-that names one is refused.
+add a package to it. An entry can only be a pinned npm package (`kind: npx` is the name of the ecosystem;
+no `npx` runs). It carries the address of its ONE tarball on the public registry, the
+sha512 of that tarball, the entry file inside it, and a reviewed `bundled: true`: the
+package was read and is a single self-contained file that imports only Node's own
+modules. Clayrune downloads and checks the tarball itself (`mcp_package_store`); an
+entry without all three of `tarball`, `entry` and `bundled` is refused, because its
+launch could need npm. There is no field for a command, an argument, any other URL or
+an environment value, so no entry can carry executable configuration of its own. A
+remote endpoint needs its own reviewed kind and capability approval; none exists yet,
+and a file that names one is refused.
 """
 from __future__ import annotations
 
@@ -35,8 +40,10 @@ _PACKAGE_RE = re.compile(r'^(@[a-z0-9][a-z0-9._-]{0,60}/)?[a-z0-9][a-z0-9._-]{0,
 _VERSION_RE = re.compile(r'^\d{1,4}\.\d{1,4}\.\d{1,4}$')           # exact: no range, tag or prerelease
 _INTEGRITY_RE = re.compile(r'^sha512-[A-Za-z0-9+/]{86}==$')          # npm's `dist.integrity`
 _ENV_RE = re.compile(r'^[A-Z][A-Z0-9_]{0,63}$')
+_ENTRY_RE = re.compile(r'^[A-Za-z0-9_-][A-Za-z0-9._-]{0,60}(/[A-Za-z0-9_-][A-Za-z0-9._-]{0,60}){0,4}\.(mjs|cjs|js)$')
+REGISTRY_HOST = 'https://registry.npmjs.org/'
 _FIELDS = {'id', 'service', 'server_name', 'kind', 'package', 'version', 'integrity', 'licence',
-           'unpacked_bytes', 'source', 'purpose', 'permissions', 'credential'}
+           'unpacked_bytes', 'source', 'purpose', 'permissions', 'credential', 'tarball', 'entry', 'bundled'}
 _CRED_FIELDS = {'env', 'vault', 'label', 'hint'}
 MAX_TEXT = 400
 
@@ -55,6 +62,11 @@ def _text(v: Any, where: str, what: str) -> str:
     return v.strip()
 
 
+def tarball_url(package: str, version: str) -> str:
+    """Where npm publishes `package@version`: the only address an entry may name."""
+    return f'{REGISTRY_HOST}{package}/-/{package.rsplit("/", 1)[-1]}-{version}.tgz'
+
+
 def _check(raw: Any, i: int) -> dict:
     where = f'packages[{i}]'
     _need(isinstance(raw, dict), where, 'a package must be an object')
@@ -70,6 +82,11 @@ def _check(raw: Any, i: int) -> dict:
           'version must be one exact x.y.z: no range, tag or prerelease')
     _need(isinstance(raw.get('integrity'), str) and _INTEGRITY_RE.match(raw['integrity']), where,
           "integrity must be the package's sha512 `dist.integrity`")
+    _need(raw.get('bundled') is True, where, 'bundled must be true: only a reviewed self-contained package can be launched')
+    _need(raw.get('tarball') == tarball_url(raw['package'], raw['version']), where,
+          f'tarball must be exactly {REGISTRY_HOST}<package>/-/<name>-<version>.tgz')
+    _need(isinstance(raw.get('entry'), str) and _ENTRY_RE.match(raw['entry']) and '..' not in raw['entry'].split('/'), where,
+          'entry must be a relative .js/.cjs/.mjs path inside the package')
     _need(raw.get('licence') in OSI_LICENCES, where, 'licence must be an OSI-approved SPDX id (the add-on catalogue rule)')
     size = raw.get('unpacked_bytes')
     _need(isinstance(size, int) and not isinstance(size, bool) and 0 < size < 2 ** 31, where, 'unpacked_bytes must be a positive integer')
@@ -86,6 +103,7 @@ def _check(raw: Any, i: int) -> dict:
     return {
         'id': raw['id'], 'service': raw['service'], 'server_name': name, 'kind': raw['kind'],
         'package': raw['package'], 'version': raw['version'], 'integrity': raw['integrity'],
+        'tarball': raw['tarball'], 'entry': raw['entry'], 'bundled': True,
         'licence': raw['licence'], 'unpacked_bytes': size, 'source': src,
         'purpose': _text(raw.get('purpose'), where, 'purpose'),
         'permissions': [_text(p, where, 'a permission') for p in perms],

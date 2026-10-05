@@ -18,8 +18,9 @@ from mc.desk_connect.providers.mcp_package import McpPackage
 class NotionProvider(base.Provider):
     service_id = 'notion'
     summaries = {'mcp': 'Stores your Notion integration token in Secrets as "notion.token", then registers the '
-                        'reviewed Notion MCP server at a pinned version so agents can use Notion. The server starts '
-                        'the first time an agent session uses it. Nothing is verified.'}
+                        'reviewed Notion MCP server at a pinned version so agents can use Notion. Clayrune downloads '
+                        'the one package file itself and checks its checksum at Save; the server starts the first time '
+                        'an agent session uses it. Nothing is verified.'}
 
     def __init__(self) -> None:
         self._mcp = McpPackage('notion')

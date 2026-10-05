@@ -112,7 +112,7 @@ async function newPage(browser, { srv, width, height }) {
       const base = { ok: true, duplicate: false, service: { id: 'notion', label: 'Notion' }, method: 'mcp', credential: null, stored: ['notion.token'], account: null, account_id: null, approval: CARD.pins };
       if (srv.commitMode === 'setup_failed') {
         return J({ ...base, status: { state: 'setup_failed', label: LABELS.setup_failed, entry: 'notion.token' },
-          setup: { state: 'failed', code: 'pin_mismatch', message: 'the registry now serves @notionhq/notion-mcp-server@2.5.2 with a different checksum than the one that was reviewed, so it was NOT registered. Nothing from it was run.' } }, 201);
+          setup: { state: 'failed', code: 'pin_mismatch', message: 'the file the registry served for @notionhq/notion-mcp-server@2.5.2 does not match the checksum that was reviewed, so it was NOT registered. Nothing from it was run.' } }, 201);
       }
       srv.approved = !!(inst && inst.approved === true && inst.package === CARD.pins.package && inst.version === CARD.pins.version && inst.integrity === CARD.pins.integrity);
       return J({ ...base, status: { state: 'registered', label: LABELS.registered, entry: 'notion.token' },
@@ -223,7 +223,10 @@ async function approveFlow(browser, width, height) {
   check(facts.every((f) => card.includes(f)), 'the install card shows the package, pinned version, checksum, source, licence, server name and where the token lives', 'card is missing: ' + facts.filter((f) => !card.includes(f)).join(' | '));
   check(card.includes(CARD.purpose) && CARD.permissions.every((p) => card.includes(p)), 'it shows the purpose and every permission sentence', 'purpose or permissions missing');
   check(/never written into the MCP configuration/.test(card), 'it says the token is never written into the MCP configuration', 'no vault-placeholder statement');
-  check(/Nothing is downloaded or run when you save/.test(card), 'it says nothing runs at Save (the launch is deferred)', 'no deferral statement');
+  check(/Clayrune itself downloads this one file from the public npm registry/.test(card) && /checks it against the checksum above/.test(card) && /npm is not used/.test(card) && /nothing from the package runs until an agent session starts the server/.test(card),
+        'it says Clayrune downloads and checks the file at Save, uses no npm, and runs nothing until a session starts the server', 'the download/checksum/deferral statement is missing or wrong');
+  check(!/Node\.js fetches/.test(card) && !/Nothing is downloaded/.test(card), 'it no longer claims Node fetches or checks the package, or that nothing is downloaded', 'the old Node-checks-it claim is back');
+  check(/will reach your agents, which have tools, in every project/.test(card), 'it says Notion page text will reach agents with tools in every project', 'no prompt-injection reach line');
   check(await page.$eval('[data-cf-save]', (e) => e.disabled), 'Save is disabled until the install is approved', 'Save is enabled before approval');
   await shot(page, 'review_unapproved', width);
   await fits(page, 'install card');

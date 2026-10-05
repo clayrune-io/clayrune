@@ -31,7 +31,7 @@
             <div><dt>Credential</dt><dd data-cf-i-cred>${esc(card.credential.label)}, kept in Secrets as <code>${esc(card.credential.vault)}</code> and passed to the server as <code>${esc(card.credential.env)}</code> when it starts. It is never written into the MCP configuration.</dd></div>
           </dl>
           <ul class="desk-v1-cf-perms" data-cf-i-perms>${card.permissions.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>
-          <div class="desk-v1-rules-hint">Nothing is downloaded or run when you save. The first time an agent session uses the server, Node.js fetches exactly this version and checks it against the checksum above.</div>
+          <div class="desk-v1-rules-hint">When you save, Clayrune itself downloads this one file from the public npm registry (registry.npmjs.org), checks it against the checksum above and unpacks it into its own folder. npm is not used, and nothing from the package runs until an agent session starts the server.</div>
           <label class="desk-v1-cf-check"><input type="checkbox" data-cf-install-approve ${ok ? 'checked' : ''}>
             <span>I have read this and approve installing it.</span></label>
         </section>`;

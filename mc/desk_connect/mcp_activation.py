@@ -3,64 +3,60 @@ DESK_CONNECT_BY_URL_SPEC.md, slice 4).
 
 Runs only after the one Save has been accepted: the human check and the passcode
 are in the route, the pins were revalidated by the provider, and the credential
-(if one was typed) is already in the vault. Three things happen here, in order, and
-the first two can refuse:
+(if one was typed) is already in the vault. Four things happen here, in order, and
+the first three can refuse:
 
-    1. the pin check   `npm view <package>@<version> dist.integrity` against the
-                       PUBLIC registry (never the machine's configured one) must
-                       equal the hash the catalogue pins. It reads metadata and
-                       runs no package code. A package the registry now serves
-                       differently from what was reviewed is not registered.
-    2. the launch line built from the catalogue entry alone (never from a request):
-                       python tools/with-secret.py --raw --env VAR=<vault name> --
-                       <npx> -y <package>@<exact version>
-                       so the config carries a vault NAME, never a value: the
-                       wrapper resolves it into the child's environment when the
-                       server starts. `--raw` because an MCP stdio server needs live
-                       stdin and stdout.
-    3. registration    `mc.mcp.write_server` (global scope, never overwriting).
+    1. the vault      a passphrase-backed vault (`secrets.key.wrapped` on disk, the
+                      same test `mc/secrets_store.py` uses) cannot be read by an MCP
+                      server Clayrune does not parent (MC-1047), so nothing is
+                      registered and the Save reads "setup failed" with that reason.
+                      The token stays stored.
+    2. the package    `mcp_package_store.install`: Clayrune downloads the ONE reviewed
+                      tarball itself, checks its sha512 against the catalogue and
+                      unpacks it into its own directory. No npm, no npx, no `.npmrc`.
+    3. the launch     line built from the catalogue entry alone (never from a request):
+                      python tools/with-secret.py --raw --env VAR=<vault name> --
+                      <node> <package dir>/package/<entry>
+                      so the config carries a vault NAME, never a value: the wrapper
+                      resolves it into the child's environment when the server starts.
+                      `--raw` because an MCP stdio server needs live stdin and stdout.
+    4. registration   `mc.mcp.write_server` (global scope, never overwriting).
 
-Nothing here launches the package. `npx` runs later, when an agent session starts
-the server, so the first launch is DEFERRED to a session and gated by what this
-module wrote: a pinned version, a vault name, and nothing else. A session that
-cannot unlock the vault (a passphrase-locked vault is only unlocked in the server's
-own memory) makes the wrapper exit 2 and the server fail to start, which is the
-safe direction.
+Nothing here runs the package. Node runs it later, when an agent session starts the
+server, so the first launch is DEFERRED to a session and gated by what this module
+wrote: an entry file whose bytes were checked, a vault name, and nothing else.
 
 The failures are not rolled back as a transaction (spec, "Explicit partial-success
 boundary"): the caller reports "Saved; setup failed" and keeps the credential.
 """
 from __future__ import annotations
 
-import json
-import os
 import re
 import shutil
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from mc import mcp as _mcp
+from mc import secrets_store as _vault
 from mc.core import _log
+from mc.desk_connect import mcp_package_store as _store
+from mc.desk_connect.mcp_errors import ActivationError
 
-PUBLIC_REGISTRY = 'https://registry.npmjs.org/'
-PIN_CHECK_TIMEOUT = 60           # seconds: a metadata read, not an install (the five-minute install ceiling is not needed)
-_SECRETISH_ENV = re.compile(r'(TOKEN|SECRET|PASSWORD|PASSPHRASE|API_?KEY|CREDENTIAL)', re.I)
-
-
-class ActivationError(ValueError):
-    """A refusal with a short machine `code` and the HTTP status the route would use."""
-
-    def __init__(self, message: str, code: str = 'activation_failed', status: int = 400):
-        super().__init__(message)
-        self.code = code
-        self.status = status
+_PYTHON_RE = re.compile(r'^(python[0-9.]*w?|py)(\.exe)?$', re.I)
+_NODE_RE = re.compile(r'^node(\.exe)?$', re.I)
 
 
 def _which(name: str) -> str | None:
     """Indirection so tests can supply a tool that is not on this machine."""
     return shutil.which(name)
+
+
+def passphrase_backed() -> bool:
+    """True when the vault is passphrase-backed: the wrapped-key file is on disk, which
+    is what `mc.secrets_store.lock_state()` keys on. Not `lock_state() == 'locked'`: after
+    a human unlocks it the key is only in the SERVER's memory, so a server started in an
+    agent session still cannot read the vault."""
+    return _vault.wrapped_key_path().is_file()
 
 
 def wrapper_path() -> Path:
@@ -77,30 +73,45 @@ def wrapper_path() -> Path:
     return p
 
 
+def _node() -> str:
+    node = _which('node')
+    if not node:
+        raise ActivationError('Node.js was not found on this computer, so the server could not be set up. '
+                              'Install Node.js, then save again.', 'node_missing', 409)
+    return node
+
+
 def launch_config(entry: dict) -> dict:
     """The config written for `entry`. Built from the reviewed catalogue entry only."""
-    npx = _which('npx')
-    if not npx:
-        raise ActivationError('Node.js (npx) was not found on this computer. Install Node.js, then save again.',
-                              'node_missing', 409)
+    node = _node()
     cred = entry['credential']
     return {'command': sys.executable,
             'args': [str(wrapper_path()), '--raw', '--env', f'{cred["env"]}={cred["vault"]}', '--',
-                     npx, '-y', f'{entry["package"]}@{entry["version"]}']}
+                     node, str(_store.entry_path(entry))]}
+
+
+def _norm(p) -> str:
+    return str(p).replace('\\', '/')
 
 
 def is_ours(cfg, entry: dict) -> bool:
-    """True when an existing server config is this entry's launch line (the same
-    pinned package behind the same wrapper), whatever absolute paths it was written
-    with: the case of a retry after a partial save."""
-    if not isinstance(cfg, dict):
+    """True when an existing server config is exactly this entry's launch line (Python,
+    the wrapper, the vault name, Node and the pinned package's entry file), whatever
+    absolute paths it was written with: the case of a retry after a partial save. The
+    shape is checked whole, so an `env` block (NODE_OPTIONS), an extra argument or a
+    different program fails it."""
+    if not isinstance(cfg, dict) or not set(cfg) <= {'command', 'args', 'type'} or cfg.get('type') not in (None, 'stdio'):
         return False
-    args = cfg.get('args')
+    cmd, args = cfg.get('command'), cfg.get('args')
     cred = entry['credential']
-    return (isinstance(args, list) and 'env' not in cfg and 'headers' not in cfg
-            and f'{entry["package"]}@{entry["version"]}' in args
-            and f'{cred["env"]}={cred["vault"]}' in args
-            and any(str(a).replace('\\', '/').endswith('tools/with-secret.py') for a in args))
+    if not isinstance(cmd, str) or not isinstance(args, list) or len(args) != 7 or not all(isinstance(a, str) for a in args):
+        return False
+    tail = f'/mcp_packages/{entry["id"]}/{entry["version"]}/package/{entry["entry"]}'
+    return (cmd == sys.executable or bool(_PYTHON_RE.match(_norm(cmd).rsplit('/', 1)[-1]))) \
+        and _norm(args[0]).endswith('tools/with-secret.py') \
+        and args[1:5] == ['--raw', '--env', f'{cred["env"]}={cred["vault"]}', '--'] \
+        and bool(_NODE_RE.match(_norm(args[5]).rsplit('/', 1)[-1])) \
+        and _norm(args[6]).endswith(tail)
 
 
 def existing(entry: dict) -> dict | None:
@@ -122,41 +133,6 @@ def conflict(entry: dict) -> ActivationError | None:
 
 def is_registered(entry: dict) -> bool:
     return is_ours(existing(entry), entry)
-
-
-def _clean_env() -> dict:
-    return {k: v for k, v in os.environ.items() if not _SECRETISH_ENV.search(k)}
-
-
-def check_pin(entry: dict) -> None:
-    """The public registry still serves exactly the reviewed build. Raises
-    ActivationError. Reads metadata only: no package code runs."""
-    npm = _which('npm')
-    if not npm:
-        raise ActivationError('Node.js (npm) was not found on this computer, so the package could not be checked. '
-                              'Install Node.js, then save again.', 'node_missing', 409)
-    spec = f'{entry["package"]}@{entry["version"]}'
-    with tempfile.TemporaryDirectory(prefix='clayrune-pin-') as cwd:       # no project .npmrc is read
-        try:
-            proc = subprocess.run([npm, 'view', spec, 'dist.integrity', '--json', '--registry', PUBLIC_REGISTRY],
-                                  cwd=cwd, env=_clean_env(), capture_output=True, text=True, encoding='utf-8',
-                                  errors='replace', timeout=PIN_CHECK_TIMEOUT)
-        except subprocess.TimeoutExpired as e:
-            raise ActivationError(f'the package registry did not answer within {PIN_CHECK_TIMEOUT} seconds, so '
-                                  f'{spec} could not be checked. Save again later.', 'pin_check_timeout', 504) from e
-        except OSError as e:
-            raise ActivationError('the package check could not be started (npm failed to run)', 'pin_check_failed', 502) from e
-    if proc.returncode != 0:
-        _log(f'[desk_connect] npm view {spec} exited {proc.returncode}', flush=True)
-        raise ActivationError(f'the package registry could not confirm {spec} (npm exited with {proc.returncode}). '
-                              f'Save again later.', 'pin_check_failed', 502)
-    try:
-        got = json.loads(proc.stdout.strip() or 'null')
-    except ValueError:
-        got = None
-    if got != entry['integrity']:
-        raise ActivationError(f'the registry now serves {spec} with a different checksum than the one that was '
-                              f'reviewed, so it was NOT registered. Nothing from it was run.', 'pin_mismatch', 409)
 
 
 def register(entry: dict) -> dict:
@@ -181,10 +157,15 @@ def register(entry: dict) -> dict:
 
 
 def provision(entry: dict) -> dict:
-    """The post-commit provisioning: pin check, then registration. Never raises:
-    the outcome is `{'setup': {'state': 'done'|'failed', 'message', 'server'?, 'code'?}}`."""
+    """The post-commit provisioning: vault check, verified package, registration. Never
+    raises: the outcome is `{'setup': {'state': 'done'|'failed', 'message', 'server'?, 'code'?}}`."""
     try:
-        check_pin(entry)
+        if passphrase_backed():
+            raise ActivationError('your Secrets vault is protected by a passphrase, and an MCP server cannot read a '
+                                  'passphrase-protected vault yet (MC-1047). The token is saved. Nothing was '
+                                  'downloaded or registered.', 'vault_passphrase', 409)
+        _node()
+        _store.install(entry)
         done = register(entry)
     except ActivationError as e:
         _log(f'[desk_connect] MCP {entry["id"]} setup failed: {e.code}', flush=True)

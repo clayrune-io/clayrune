@@ -13,13 +13,25 @@
   show MCP as information only; arbitrary packages and remote endpoints are not offered.
 - The review card shows only reviewed facts (package, version, checksum, source, licence,
   size, purpose, permissions, where the token lives); no package or README text is read.
-  Save stays disabled until you tick the approval, then asks for the passcode once.
-- Save stores the token in the vault and registers the server with agents. The MCP config
-  holds a vault name, never the token, and nothing is run at Save: the package starts the
-  first time an agent session uses it. Before registering, the pinned checksum is compared
-  with the public npm registry; a mismatch is not registered.
+  It says plainly that text on the Notion pages the server reads will reach your agents,
+  which have tools, in every project. Save stays disabled until you tick the approval, then
+  asks for the passcode once.
+- Save stores the token in the vault, then Clayrune itself downloads the one reviewed
+  package file from the public npm registry (no npm, no npx, no `.npmrc`), checks its
+  checksum against the reviewed one before anything is written, unpacks it into its own
+  folder under `~/.clayrune/mcp_packages/`, and registers the server with agents. A
+  checksum mismatch or an unsafe archive is not registered. The MCP config holds a vault
+  name, never the token; nothing from the package runs until an agent session starts it.
+  (Replaces the first build, which launched `npx -y` and checked the pin through `npm view`:
+  a project or user `.npmrc` could redirect that fetch while the token was in the child's
+  environment, and its dependencies were not pinned.)
 - A failed setup reads "Saved; setup failed" with the reason; the token stays stored and a
-  retry does not ask for it again. An agent session gets 403 on every one of these routes.
+  retry does not ask for it again. With a passphrase-protected Secrets vault the setup
+  always ends this way for now (an MCP server cannot read that vault yet, MC-1047): the
+  token is kept, nothing is downloaded or registered. An agent session gets 403 on every
+  one of these routes.
+- An existing MCP server named `notion` is treated as Clayrune's only when its whole launch
+  line matches, including the program it runs; otherwise it is left alone.
 
 ## [2026-10-04] — Desk: look up a service Clayrune does not know
 
