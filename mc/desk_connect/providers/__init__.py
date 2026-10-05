@@ -19,6 +19,7 @@ _MODULES = {
     'higgsfield': ('mc.desk_connect.providers.higgsfield', 'HiggsfieldProvider'),
     'google_ai': ('mc.desk_connect.providers.google_ai', 'GoogleAiProvider'),
     'openai': ('mc.desk_connect.providers.openai_api', 'OpenAiProvider'),
+    'notion': ('mc.desk_connect.providers.notion', 'NotionProvider'),
 }
 _cache: dict[str, Provider] = {}
 

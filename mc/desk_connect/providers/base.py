@@ -66,6 +66,12 @@ class Provider:
         """Short setup steps to show above the fields (no values)."""
         return []
 
+    def install(self, method: str) -> dict | None:
+        """The review card of software this method installs (a curated MCP package:
+        source, pinned version and hash, licence, size, purpose), or None when it
+        installs nothing. Reviewed data only; never anything a request or a page said."""
+        return None
+
     def fields(self, method: str, vault_names=None) -> list[dict]:
         raise NotImplementedError
 

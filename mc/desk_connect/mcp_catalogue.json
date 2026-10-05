@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "packages": [
+    {
+      "id": "notion",
+      "service": "notion",
+      "server_name": "notion",
+      "kind": "npx",
+      "package": "@notionhq/notion-mcp-server",
+      "version": "2.5.2",
+      "integrity": "sha512-5nPSwHMnugSGAhSJS5vVIlMao+iTJO9HoWGpCnT8lJNrPy3rZMqs1V/CPiN4MuxF+5EBgRE/f/Tirl6Wfi75Mg==",
+      "tarball": "https://registry.npmjs.org/@notionhq/notion-mcp-server/-/notion-mcp-server-2.5.2.tgz",
+      "entry": "bin/cli.mjs",
+      "bundled": true,
+      "licence": "MIT",
+      "unpacked_bytes": 3040694,
+      "source": "https://github.com/makenotion/notion-mcp-server",
+      "purpose": "Lets agents read and edit the Notion pages and databases that you share with an integration of your own.",
+      "permissions": [
+        "Reads and edits the pages and databases you have shared with the integration.",
+        "What it may do is also limited by the capabilities you give the integration in Notion (for example, read-only).",
+        "Nothing outside what you share with the integration.",
+        "Text on the Notion pages it reads will reach your agents, which have tools, in every project."
+      ],
+      "credential": {
+        "env": "NOTION_TOKEN",
+        "vault": "notion.token",
+        "label": "Notion integration token",
+        "hint": "In Notion, open Settings, Connections, Develop or manage integrations, create an internal integration and copy its token (it starts with ntn_)."
+      }
+    }
+  ]
+}

@@ -50,7 +50,7 @@ def _with_connectors(svc: dict | None, rows: list[dict]) -> list[dict]:
         row['selectable'] = True
         row['connector'] = {'service': svc['id'], 'summary': prov.summaries[row['method']],
                             'guide': prov.guide(row['method']), 'fields': prov.fields(row['method'], names),
-                            'signs_in': row['method'] in prov.signs_in}
+                            'signs_in': row['method'] in prov.signs_in, 'install': prov.install(row['method'])}
     return rows
 
 

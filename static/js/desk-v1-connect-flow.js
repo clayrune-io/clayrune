@@ -58,6 +58,7 @@
     if (window.DeskV1ConnectSuggest) window.DeskV1ConnectSuggest.reset();
     if (window.DeskV1ConnectResult) window.DeskV1ConnectResult.reset();
     if (window.DeskV1ConnectDiscover) window.DeskV1ConnectDiscover.reset();
+    if (window.DeskV1ConnectInstall) window.DeskV1ConnectInstall.clear();
     if (_formHost) { _formHost.querySelectorAll('input').forEach((i) => { if (i.type !== 'radio' && i.type !== 'checkbox') i.value = ''; }); _formHost = null; }
     _formState.type = 'api_key';
     S = _fresh();
@@ -211,10 +212,11 @@
         </dl>
         <div class="desk-v1-rules-hint" data-cf-r-does>${esc(c.summary)}</div>
         <div data-cf-r-credbox>${window.DeskV1ConnectAdapter.summaryHTML()}</div>
+        ${c.install ? window.DeskV1ConnectInstall.html(c.install) : ''}
         <div class="desk-v1-rules-hint" data-cf-r-honest>Saving asks for your dashboard passcode once; nothing has been written yet. Saving does not verify anything: you can check it afterwards.</div>
         <div data-cfa-slot hidden></div>
         ${S.status ? `<div class="desk-v1-cf-msg" data-cf-msg="${S.statusKind || 'error'}" role="${S.statusKind === 'ok' ? 'status' : 'alert'}">${esc(S.status)}</div>` : ''}
-        ${_actions(true, `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-cf-save ${S.saving ? 'disabled' : ''}>${S.saving ? 'Saving…' : (c.signs_in ? 'Save and sign in' : 'Save')}</button>`)}`;
+        ${_actions(true, `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-cf-save ${S.saving || (c.install && !window.DeskV1ConnectInstall.approved(c.install)) ? 'disabled' : ''}>${S.saving ? 'Saving…' : (c.signs_in ? 'Save and sign in' : (c.install ? 'Approve and save' : 'Save'))}</button>`)}`;
   }
 
   function _reviewHTML() {
@@ -247,7 +249,10 @@
   }
 
   // ── wiring ──────────────────────────────────────────────────────────────
-  function _go(step, ctx) { S.step = step; S.error = ''; S.status = ''; ctx.repaint(); }
+  function _go(step, ctx) {
+    if (step !== 'review' && window.DeskV1ConnectInstall) window.DeskV1ConnectInstall.clear();   // an approval is for the card as it was read
+    S.step = step; S.error = ''; S.status = ''; ctx.repaint();
+  }
 
   async function _inspect(ctx) {
     const text = S.urlText.trim();
@@ -303,7 +308,14 @@
   function _draft() {
     if (_isProvider()) {
       const r = window.DeskV1ConnectAdapter.read();
-      return r.error ? { error: r.error } : { draft: { url: S.info.url, method: S.method, fields: r.fields } };
+      if (r.error) return { error: r.error };
+      const c = _connector();
+      if (c && c.install) {
+        const consent = window.DeskV1ConnectInstall.read(c.install);
+        if (!consent) return { error: 'Approve the install on the Review step first.', step: 'review' };
+        r.fields.install = consent;
+      }
+      return { draft: { url: S.info.url, method: S.method, fields: r.fields } };
     }
     const draft = { url: S.info.url, method: S.method, name: S.name.trim() };
     if (S.useCred) {
@@ -318,7 +330,7 @@
   async function _save(root, ctx) {
     if (S.saving) return;
     const built = _draft();
-    if (built.error) { S.step = 'details'; S.error = built.error; ctx.repaint(); return; }
+    if (built.error) { S.step = built.step || 'details'; S.error = built.error; ctx.repaint(); return; }
     S.saving = true; S.status = ''; ctx.repaint();
     let result;
     try {
@@ -431,6 +443,8 @@
       if (box && !_isProvider()) box.innerHTML = _credSummaryHTML();
       const save = root.querySelector('[data-cf-save]');
       if (save) save.addEventListener('click', () => _save(root, ctx));
+      const card = _isProvider() && _connector() ? _connector().install : null;
+      if (card) window.DeskV1ConnectInstall.bind(root, card, () => { if (save) save.disabled = S.saving || !window.DeskV1ConnectInstall.approved(card); });
     }
     // Focus stays where the human put it; a fresh step puts it on its first field.
     const focus = root.querySelector('[data-cf-focus]');

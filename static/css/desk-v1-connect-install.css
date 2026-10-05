@@ -1,0 +1,5 @@
+/* Desk v1 — Connections: the install card of a curated MCP package (desk-v1-connect-install.js). Loads after desk-v1-connect-adapter.css. */
+.desk-v1-cf-install { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--border2); border-radius: 10px; background: var(--surface); }
+.desk-v1-cf-install .desk-v1-cf-facts dd { overflow-wrap: anywhere; }
+.desk-v1-cf-wrap { word-break: break-all; font-size: 11.5px; }
+.desk-v1-cf-perms { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; line-height: 1.45; }

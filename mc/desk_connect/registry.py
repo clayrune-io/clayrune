@@ -71,7 +71,8 @@ def _check_option(o: Any, where: str) -> dict:
         _need(o['support'] == 'available', where, 'only an available option can open a flow')
         _need(isinstance(o['open'], str) and _OPEN_RE.match(o['open']), where, 'open must be account:<platform> or engine:<id>')
     else:
-        _need(o['support'] != 'available', where, 'an available option must say which flow it opens')
+        # A reviewed MCP package is set up by Connect by address itself, so it opens no other flow.
+        _need(o['support'] != 'available' or o['method'] == 'mcp', where, 'an available option must say which flow it opens')
     return dict(o)
 
 
@@ -191,12 +192,15 @@ def suggest(text: object, limit: int = MAX_SUGGESTIONS) -> list[dict]:
 
 def options_for(service: dict | None) -> list[dict]:
     """The Method step's rows for a host: its own options, the common ones (MCP is
-    information only everywhere), then the fallback. Each carries `selectable`:
+    information only unless the service has its own MCP option), then the fallback. Each carries `selectable`:
     only the fallback can be chosen and saved in this version. An `available`
     row with `open` leads into a flow Connections already has; the rest are
     guidance."""
     reg = registry()
-    rows = (service['options'] if service else []) + reg['common_options'] + [FALLBACK_OPTION]
+    own = service['options'] if service else []
+    # The common "MCP is information only" row is for services with no MCP option of their own.
+    common = [o for o in reg['common_options'] if not any(x['method'] == o['method'] for x in own)]
+    rows = own + common + [FALLBACK_OPTION]
     out = []
     for o in rows:
         row = dict(o)
