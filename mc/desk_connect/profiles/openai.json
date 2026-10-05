@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "service_id": "openai",
+  "revision": 1,
+  "label": "OpenAI",
+  "aliases": [
+    "OpenAI",
+    "OpenAI API",
+    "GPT"
+  ],
+  "home_url": "https://platform.openai.com",
+  "hosts": [
+    "openai.com",
+    "www.openai.com",
+    "platform.openai.com"
+  ],
+  "account_kinds": [
+    {
+      "id": "account",
+      "label": "Account"
+    }
+  ],
+  "purposes": [
+    {
+      "id": "generate_image",
+      "capabilities": [
+        "generate"
+      ],
+      "account_kinds": [
+        "account"
+      ],
+      "routes": [
+        "openai-api-key"
+      ],
+      "standing_policy": []
+    }
+  ],
+  "routes": [
+    {
+      "id": "openai-api-key",
+      "title": "OpenAI API key",
+      "guidance": "Image generation. A ChatGPT or Codex plan does not include API use.",
+      "transport": "api",
+      "support": "available",
+      "connect_method": "api_key",
+      "auth": [
+        {
+          "type": "api_key",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "generate_image",
+          "account_kind": "account",
+          "capability": "generate",
+          "status": "claimed",
+          "claim": "legacy.openai-api-key.generate_image"
+        }
+      ],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "adapter_id": "engine:openai",
+      "evidence": [
+        "legacy-v1-1"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "legacy-v1-1",
+      "label": "Clayrune's built-in list",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [
+        "legacy.openai-api-key.generate_image"
+      ],
+      "digest": null,
+      "result": "unverified"
+    }
+  ],
+  "change_summary": "P1: converted from the version 1 registry; nothing in it was re-verified.",
+  "supersedes": null
+}

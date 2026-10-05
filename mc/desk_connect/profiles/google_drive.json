@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "service_id": "google_drive",
+  "revision": 1,
+  "label": "Google Drive",
+  "aliases": [
+    "Google Drive",
+    "Drive",
+    "GDrive"
+  ],
+  "home_url": "https://drive.google.com",
+  "hosts": [
+    "drive.google.com"
+  ],
+  "account_kinds": [],
+  "purposes": [],
+  "routes": [
+    {
+      "id": "google-drive-oauth",
+      "title": "Google Drive",
+      "guidance": "Information only: Clayrune cannot read a Google Drive yet.",
+      "transport": "api",
+      "support": "info_only",
+      "connect_method": "oauth",
+      "auth": [
+        {
+          "type": "oauth",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "legacy-v1-1"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "legacy-v1-1",
+      "label": "Clayrune's built-in list",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [],
+      "digest": null,
+      "result": "unverified"
+    }
+  ],
+  "change_summary": "P1: converted from the version 1 registry; nothing in it was re-verified.",
+  "supersedes": null
+}

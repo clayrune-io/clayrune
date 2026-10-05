@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "service_id": "higgsfield",
+  "revision": 1,
+  "label": "Higgsfield",
+  "aliases": [
+    "Higgsfield",
+    "Higgsfield AI"
+  ],
+  "home_url": "https://higgsfield.ai",
+  "hosts": [
+    "higgsfield.ai",
+    "www.higgsfield.ai",
+    "mcp.higgsfield.ai",
+    "console.higgsfield.ai"
+  ],
+  "account_kinds": [
+    {
+      "id": "account",
+      "label": "Account"
+    }
+  ],
+  "purposes": [
+    {
+      "id": "generate_image",
+      "capabilities": [
+        "generate"
+      ],
+      "account_kinds": [
+        "account"
+      ],
+      "routes": [
+        "higgsfield-oauth",
+        "higgsfield-api-key"
+      ],
+      "standing_policy": []
+    },
+    {
+      "id": "generate_video",
+      "capabilities": [
+        "generate"
+      ],
+      "account_kinds": [
+        "account"
+      ],
+      "routes": [
+        "higgsfield-oauth",
+        "higgsfield-api-key"
+      ],
+      "standing_policy": []
+    }
+  ],
+  "routes": [
+    {
+      "id": "higgsfield-oauth",
+      "title": "Sign in with Higgsfield",
+      "guidance": "Image and video generation on your Higgsfield plan. You sign in once in the browser.",
+      "transport": "mcp",
+      "support": "available",
+      "connect_method": "oauth",
+      "auth": [
+        {
+          "type": "oauth",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "generate_image",
+          "account_kind": "account",
+          "capability": "generate",
+          "status": "claimed",
+          "claim": "legacy.higgsfield-oauth.generate_image"
+        },
+        {
+          "purpose": "generate_video",
+          "account_kind": "account",
+          "capability": "generate",
+          "status": "claimed",
+          "claim": "legacy.higgsfield-oauth.generate_video"
+        }
+      ],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "adapter_id": "engine:higgsfield_mcp",
+      "evidence": [
+        "legacy-v1-1"
+      ],
+      "mcp_protocol": "unknown"
+    },
+    {
+      "id": "higgsfield-api-key",
+      "title": "Higgsfield API key",
+      "guidance": "Advanced: a developer API key with its own key ID, billed in dollars.",
+      "transport": "api",
+      "support": "available",
+      "connect_method": "api_key",
+      "auth": [
+        {
+          "type": "api_key",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "generate_image",
+          "account_kind": "account",
+          "capability": "generate",
+          "status": "claimed",
+          "claim": "legacy.higgsfield-api-key.generate_image"
+        },
+        {
+          "purpose": "generate_video",
+          "account_kind": "account",
+          "capability": "generate",
+          "status": "claimed",
+          "claim": "legacy.higgsfield-api-key.generate_video"
+        }
+      ],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "adapter_id": "engine:higgsfield",
+      "evidence": [
+        "legacy-v1-1"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "legacy-v1-1",
+      "label": "Clayrune's built-in list",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [
+        "legacy.higgsfield-oauth.generate_image",
+        "legacy.higgsfield-oauth.generate_video",
+        "legacy.higgsfield-api-key.generate_image",
+        "legacy.higgsfield-api-key.generate_video"
+      ],
+      "digest": null,
+      "result": "unverified"
+    }
+  ],
+  "change_summary": "P1: converted from the version 1 registry; nothing in it was re-verified.",
+  "supersedes": null
+}

@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "service_id": "youtube",
+  "revision": 1,
+  "label": "YouTube",
+  "aliases": [
+    "YouTube",
+    "You Tube"
+  ],
+  "home_url": "https://www.youtube.com",
+  "hosts": [
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "youtu.be"
+  ],
+  "account_kinds": [],
+  "purposes": [],
+  "routes": [
+    {
+      "id": "youtube-oauth",
+      "title": "YouTube channel",
+      "guidance": "Information only: Clayrune has no YouTube connector yet.",
+      "transport": "api",
+      "support": "info_only",
+      "connect_method": "oauth",
+      "auth": [
+        {
+          "type": "oauth",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "legacy-v1-1"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "legacy-v1-1",
+      "label": "Clayrune's built-in list",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [],
+      "digest": null,
+      "result": "unverified"
+    }
+  ],
+  "change_summary": "P1: converted from the version 1 registry; nothing in it was re-verified.",
+  "supersedes": null
+}

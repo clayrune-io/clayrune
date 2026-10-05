@@ -1,0 +1,682 @@
+{
+  "schema_version": 1,
+  "service_id": "linkedin",
+  "revision": 1,
+  "label": "LinkedIn",
+  "aliases": [
+    "LinkedIn",
+    "Linked In"
+  ],
+  "home_url": "https://www.linkedin.com",
+  "hosts": [
+    "linkedin.com",
+    "www.linkedin.com"
+  ],
+  "account_kinds": [
+    {
+      "id": "member",
+      "label": "Personal member profile"
+    },
+    {
+      "id": "organization",
+      "label": "Company Page"
+    }
+  ],
+  "purposes": [
+    {
+      "id": "publish",
+      "capabilities": [
+        "post",
+        "reply",
+        "media",
+        "article"
+      ],
+      "account_kinds": [
+        "member",
+        "organization"
+      ],
+      "routes": [
+        "linkedin-oauth",
+        "linkedin-member-api",
+        "linkedin-manual",
+        "linkedin-mcp-candidate"
+      ],
+      "standing_policy": [
+        "Company Page publishing is off in Clayrune until its approval is recorded; posting from a personal profile is not a Desk destination unless its owner chooses it."
+      ]
+    },
+    {
+      "id": "read_own",
+      "capabilities": [
+        "own_posts",
+        "mentions",
+        "replies",
+        "post_metrics"
+      ],
+      "account_kinds": [
+        "member",
+        "organization"
+      ],
+      "routes": [
+        "linkedin-oauth",
+        "linkedin-member-community-api",
+        "linkedin-browser"
+      ],
+      "standing_policy": [
+        "Own reads default to the browser pane; an API read is the user's choice."
+      ]
+    },
+    {
+      "id": "listen_broad",
+      "capabilities": [
+        "search"
+      ],
+      "account_kinds": [
+        "member",
+        "organization"
+      ],
+      "routes": [
+        "linkedin-browser"
+      ],
+      "standing_policy": [
+        "Broad listening stays in the browser pane; no LinkedIn search API is claimed."
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "id": "linkedin-oauth",
+      "title": "LinkedIn Company Page posting",
+      "guidance": "Information only: LinkedIn lets only approved apps post to a Company Page. You apply for its Community Management API; Clayrune cannot connect until that is granted.",
+      "transport": "api",
+      "support": "restricted",
+      "auth": [
+        {
+          "type": "oauth",
+          "params": [],
+          "placement": "header",
+          "scopes": [
+            "w_organization_social"
+          ],
+          "issuer": "LinkedIn",
+          "registration": "Community Management API access for a developer app: Development tier, then Standard tier, each reviewed by LinkedIn.",
+          "claim": "li.org.write-auth"
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "publish",
+          "account_kind": "organization",
+          "capability": "post",
+          "status": "documented",
+          "claim": "li.org.posts"
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "organization",
+          "capability": "media",
+          "status": "documented",
+          "claim": "li.org.posts"
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "organization",
+          "capability": "article",
+          "status": "documented",
+          "claim": "li.org.posts"
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "organization",
+          "capability": "reply",
+          "status": "unknown",
+          "claim": null
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "organization",
+          "capability": "own_posts",
+          "status": "documented",
+          "claim": "li.org.read-auth"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "organization",
+          "capability": "post_metrics",
+          "status": "documented",
+          "claim": "li.org.analytics"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "organization",
+          "capability": "mentions",
+          "status": "unknown",
+          "claim": null
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "organization",
+          "capability": "replies",
+          "status": "unknown",
+          "claim": null
+        }
+      ],
+      "requirements": [
+        {
+          "kind": "provider_review",
+          "text": "LinkedIn reviews each app for Community Management API access, first the Development tier, then the Standard tier (a screen recording of the app is part of the Standard review).",
+          "claim": "li.cm.tiers"
+        },
+        {
+          "kind": "permitted_use",
+          "text": "Available only to registered legal organizations for commercial use cases, with a verified business email, organization and website.",
+          "claim": "li.cm.review"
+        },
+        {
+          "kind": "developer_app",
+          "text": "The developer app must be verified by a super admin of the LinkedIn Page for the same organization.",
+          "claim": "li.cm.review"
+        },
+        {
+          "kind": "account_role",
+          "text": "The member who authorizes must hold the ADMINISTRATOR, DIRECT_SPONSORED_CONTENT_POSTER or CONTENT_ADMIN role on the Company Page.",
+          "claim": "li.org.write-auth"
+        },
+        {
+          "kind": "adapter_prerequisite",
+          "text": "Clayrune's Company Page publisher stays switched off until the approval above is recorded in Clayrune; choosing this route does not switch it on.",
+          "claim": null
+        }
+      ],
+      "limits": [
+        {
+          "name": "Development tier requests per app",
+          "source": "provider",
+          "value": "500",
+          "unit": "requests",
+          "reset": null,
+          "claim": "li.cm.limits"
+        },
+        {
+          "name": "Development tier requests per member",
+          "source": "provider",
+          "value": "100",
+          "unit": "requests",
+          "reset": null,
+          "claim": "li.cm.limits"
+        },
+        {
+          "name": "Version 202510 sunset",
+          "source": "provider",
+          "value": "2026-10-15",
+          "unit": "date",
+          "reset": null,
+          "claim": "li.version-sunset"
+        }
+      ],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "legacy-v1-1",
+        "li-posts-api",
+        "li-cm-overview",
+        "li-app-review",
+        "li-recent-changes"
+      ],
+      "connect_method": "oauth"
+    },
+    {
+      "id": "linkedin-member-api",
+      "title": "Post as a member (w_member_social)",
+      "guidance": "A member can authorize an app you own to post as themselves. Clayrune has no personal-profile publisher, so this describes the route only.",
+      "transport": "api",
+      "support": "info_only",
+      "auth": [
+        {
+          "type": "oauth",
+          "params": [],
+          "placement": "header",
+          "scopes": [
+            "w_member_social"
+          ],
+          "issuer": "LinkedIn",
+          "registration": "Add the Share on LinkedIn product to a LinkedIn developer app (self-serve).",
+          "claim": "li.member.write-auth"
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "publish",
+          "account_kind": "member",
+          "capability": "post",
+          "status": "documented",
+          "claim": "li.member.posts"
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "member",
+          "capability": "media",
+          "status": "documented",
+          "claim": "li.member.posts"
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "member",
+          "capability": "article",
+          "status": "documented",
+          "claim": "li.member.posts"
+        }
+      ],
+      "requirements": [
+        {
+          "kind": "developer_app",
+          "text": "A LinkedIn developer app you own with the Share on LinkedIn product added.",
+          "claim": "li.member.write-auth"
+        },
+        {
+          "kind": "adapter_prerequisite",
+          "text": "A personal LinkedIn profile is not a Desk destination unless its owner chooses it; no personal publisher is implemented.",
+          "claim": null
+        }
+      ],
+      "limits": [
+        {
+          "name": "Share on LinkedIn requests per member",
+          "source": "provider",
+          "value": "150",
+          "unit": "requests",
+          "reset": "daily (UTC)",
+          "claim": "li.member.limits"
+        },
+        {
+          "name": "Share on LinkedIn requests per application",
+          "source": "provider",
+          "value": "100000",
+          "unit": "requests",
+          "reset": "daily (UTC)",
+          "claim": "li.member.limits"
+        }
+      ],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "li-share",
+        "li-posts-api"
+      ]
+    },
+    {
+      "id": "linkedin-member-community-api",
+      "title": "Read your own posts and analytics (restricted API)",
+      "guidance": "Member post analytics sit under the reviewed Community Management API. Reading a member's own posts needs r_member_social, which LinkedIn has closed to new requests.",
+      "transport": "api",
+      "support": "info_only",
+      "auth": [
+        {
+          "type": "oauth",
+          "params": [],
+          "placement": "header",
+          "scopes": [],
+          "issuer": "LinkedIn",
+          "registration": "Community Management API access for a developer app, reviewed by LinkedIn.",
+          "claim": "li.member.analytics"
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "read_own",
+          "account_kind": "member",
+          "capability": "own_posts",
+          "status": "not_supported",
+          "claim": "li.member.read-closed"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "member",
+          "capability": "post_metrics",
+          "status": "documented",
+          "claim": "li.member.analytics"
+        }
+      ],
+      "requirements": [
+        {
+          "kind": "provider_review",
+          "text": "Same Community Management API review as the Company Page route.",
+          "claim": "li.cm.review"
+        }
+      ],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "li-posts-api",
+        "li-cm-overview",
+        "li-app-review"
+      ]
+    },
+    {
+      "id": "linkedin-browser",
+      "title": "Read what you can see signed in (browser profile)",
+      "guidance": "Clayrune reads your own LinkedIn activity from a browser pane signed in to a named profile, chosen in the account settings. It never stores your password and never clicks Post. This row only describes the route.",
+      "transport": "browser",
+      "support": "info_only",
+      "auth": [
+        {
+          "type": "browser_signin",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "read_own",
+          "account_kind": "member",
+          "capability": "own_posts",
+          "status": "claimed",
+          "claim": "li.browser.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "organization",
+          "capability": "own_posts",
+          "status": "claimed",
+          "claim": "li.browser.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "organization",
+          "capability": "post_metrics",
+          "status": "claimed",
+          "claim": "li.browser.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "organization",
+          "capability": "mentions",
+          "status": "claimed",
+          "claim": "li.browser.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "organization",
+          "capability": "replies",
+          "status": "claimed",
+          "claim": "li.browser.cov"
+        },
+        {
+          "purpose": "listen_broad",
+          "account_kind": "member",
+          "capability": "search",
+          "status": "claimed",
+          "claim": "li.browser.cov"
+        },
+        {
+          "purpose": "listen_broad",
+          "account_kind": "organization",
+          "capability": "search",
+          "status": "claimed",
+          "claim": "li.browser.cov"
+        }
+      ],
+      "requirements": [
+        {
+          "kind": "account_role",
+          "text": "For the Company Page the pane must be signed in as a member who administers it and be viewing the Page; the member and the Page are different identities.",
+          "claim": null
+        }
+      ],
+      "limits": [
+        {
+          "name": "What the page shows",
+          "source": "clayrune",
+          "value": null,
+          "unit": null,
+          "reset": null,
+          "claim": null
+        }
+      ],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "clayrune-desk-pane"
+      ]
+    },
+    {
+      "id": "linkedin-manual",
+      "title": "Open the post box in your own browser",
+      "guidance": "Clayrune opens LinkedIn's composer in your browser with the text filled in and you click Post. The address is not documented by LinkedIn and may stop working; it opens the personal feed composer, not a Company Page.",
+      "transport": "browser",
+      "support": "manual",
+      "auth": [
+        {
+          "type": "browser_signin",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "publish",
+          "account_kind": "member",
+          "capability": "post",
+          "status": "claimed",
+          "claim": "li.manual"
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "organization",
+          "capability": "post",
+          "status": "unknown",
+          "claim": null
+        }
+      ],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "clayrune-linkedin-intent"
+      ]
+    },
+    {
+      "id": "linkedin-mcp-candidate",
+      "title": "MCP server you choose yourself",
+      "guidance": "No official LinkedIn action MCP server was found on 2026-10-01. That is a search result, not proof that none exists. A server you add yourself still needs LinkedIn's own authorization for what it does.",
+      "transport": "mcp",
+      "support": "info_only",
+      "auth": [
+        {
+          "type": "unknown",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "publish",
+          "account_kind": "member",
+          "capability": "post",
+          "status": "none_verified",
+          "claim": "li.mcp-scan"
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "organization",
+          "capability": "post",
+          "status": "none_verified",
+          "claim": "li.mcp-scan"
+        }
+      ],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "li-mcp-scan"
+      ],
+      "mcp_protocol": "unknown"
+    }
+  ],
+  "evidence": [
+    {
+      "id": "legacy-v1-1",
+      "label": "Clayrune's built-in list",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [],
+      "digest": null,
+      "result": "unverified"
+    },
+    {
+      "id": "li-share",
+      "label": "Share on LinkedIn (Microsoft Learn)",
+      "url": "https://learn.microsoft.com/en-us/linkedin/consumer/integrations/self-serve/share-on-linkedin",
+      "publisher_class": "official_docs",
+      "published": "2021-02-05",
+      "retrieved": "2026-10-05",
+      "attempted": null,
+      "claim_ids": [
+        "li.member.write-auth",
+        "li.member.posts",
+        "li.member.limits"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "li-posts-api",
+      "label": "Posts API (Microsoft Learn)",
+      "url": "https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api",
+      "publisher_class": "official_docs",
+      "published": "2026-05-07",
+      "retrieved": "2026-10-05",
+      "attempted": null,
+      "claim_ids": [
+        "li.org.write-auth",
+        "li.org.read-auth",
+        "li.org.posts",
+        "li.member.write-auth",
+        "li.member.read-closed",
+        "li.version-sunset"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "li-cm-overview",
+      "label": "Community Management overview (Microsoft Learn)",
+      "url": "https://learn.microsoft.com/en-us/linkedin/marketing/community-management/community-management-overview",
+      "publisher_class": "official_docs",
+      "published": "2026-03-31",
+      "retrieved": "2026-10-05",
+      "attempted": null,
+      "claim_ids": [
+        "li.cm.tiers",
+        "li.cm.limits",
+        "li.org.analytics",
+        "li.member.analytics",
+        "li.member.read-closed"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "li-app-review",
+      "label": "Community Management app review (Microsoft Learn)",
+      "url": "https://learn.microsoft.com/en-us/linkedin/marketing/community-management-app-review",
+      "publisher_class": "official_docs",
+      "published": "2023-01-10",
+      "retrieved": "2026-10-05",
+      "attempted": null,
+      "claim_ids": [
+        "li.cm.review"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "li-recent-changes",
+      "label": "LinkedIn Marketing recent changes (Microsoft Learn)",
+      "url": "https://learn.microsoft.com/en-us/linkedin/marketing/integrations/recent-changes",
+      "publisher_class": "official_docs",
+      "published": null,
+      "retrieved": "2026-10-05",
+      "attempted": null,
+      "claim_ids": [
+        "li.version-sunset"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "li-mcp-scan",
+      "label": "Clayrune MCP route scan, 2026-10-01 (no applicable official LinkedIn action MCP found; a search miss, not proof of absence)",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": "2026-10-01",
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [
+        "li.mcp-scan"
+      ],
+      "digest": null,
+      "result": "incomplete"
+    },
+    {
+      "id": "clayrune-desk-pane",
+      "label": "Clayrune Desk: own-account reads default to the signed-in browser pane (standing product rule)",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [
+        "li.browser.cov"
+      ],
+      "digest": null,
+      "result": "unverified"
+    },
+    {
+      "id": "clayrune-linkedin-intent",
+      "label": "Clayrune Desk manual post: LinkedIn's feed share address, undocumented, checked 2026-09-23",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [
+        "li.manual"
+      ],
+      "digest": null,
+      "result": "unverified"
+    }
+  ],
+  "change_summary": "P1: the version 1 Company Page row kept as is; member, restricted-read, browser, manual and MCP-candidate routes added from the primary pages read on 2026-10-05.",
+  "supersedes": null
+}

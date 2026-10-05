@@ -131,7 +131,7 @@ def test_suggestions_as_you_type(client):
 
 def test_registry_names_and_urls_are_validated(tmp_path):
     from mc.desk_connect import registry
-    base = json.loads(registry.REGISTRY_PATH.read_text(encoding='utf-8'))
+    base = registry.v1_projection()     # the shipped profiles in the version 1 file shape, which still loads
 
     def load_with(mutate):
         d = json.loads(json.dumps(base))

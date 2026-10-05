@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "service_id": "notion",
+  "revision": 1,
+  "label": "Notion",
+  "aliases": [
+    "Notion",
+    "Notion MCP"
+  ],
+  "home_url": "https://www.notion.so",
+  "hosts": [
+    "notion.so",
+    "www.notion.so",
+    "notion.com",
+    "www.notion.com",
+    "developers.notion.com"
+  ],
+  "account_kinds": [],
+  "purposes": [],
+  "routes": [
+    {
+      "id": "notion-mcp",
+      "title": "Notion MCP server (reviewed package)",
+      "guidance": "Installs the Notion MCP server at a pinned version so agents can read and edit the pages you share with your own Notion integration. You approve the package details before anything is installed.",
+      "transport": "mcp",
+      "support": "available",
+      "connect_method": "mcp",
+      "auth": [
+        {
+          "type": "api_key",
+          "params": [
+            "NOTION_TOKEN"
+          ],
+          "placement": "env",
+          "scopes": [],
+          "issuer": "Notion",
+          "registration": "An internal Notion integration of your own; share the pages with it.",
+          "claim": null
+        }
+      ],
+      "coverage": [],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "mcp_protocol": "stdio",
+      "catalogue_id": "notion",
+      "evidence": [
+        "legacy-v1-1"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "legacy-v1-1",
+      "label": "Clayrune's reviewed MCP packages",
+      "url": null,
+      "publisher_class": "clayrune_catalogue",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [],
+      "digest": null,
+      "result": "unverified"
+    }
+  ],
+  "change_summary": "P1: converted from the version 1 registry; nothing in it was re-verified.",
+  "supersedes": null
+}
