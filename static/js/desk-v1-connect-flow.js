@@ -144,6 +144,19 @@
         </div>`;
   }
 
+  // A recognised service whose only real rows are guidance (LinkedIn today): say
+  // which route is missing, from that row's own guidance, and that bringing your
+  // own MCP server or API is not available yet. A sentence, never a button.
+  function _missingRouteHTML(info) {
+    if (!info.service) return '';
+    const real = info.options.filter((o) => o.method !== 'save_for_agents');
+    if (real.some((o) => o.support === 'available')) return '';
+    const row = real.find((o) => o.support === 'restricted') || real.find((o) => o.method !== 'mcp') || real[0];
+    if (!row) return '';
+    const why = String(row.guidance || '').replace(/^Information only:\s*/i, '');
+    return `<div class="desk-v1-cf-missing" data-cf-missing>No way to connect ${esc(info.service.label)} is open yet. The route that is missing: ${esc(row.title)}. ${esc(why)} Adding your own MCP server or API for it is not available yet; it is coming.</div>`;
+  }
+
   function _methodHTML(ctx) {
     const info = S.info;
     const known = info.service
@@ -152,6 +165,7 @@
     return `
         <div class="desk-v1-cf-host" data-cf-host>${esc(info.host)}${info.path && info.path !== '/' ? `<span class="desk-v1-cf-path">${esc(info.path)}</span>` : ''}</div>
         ${known}
+        ${_missingRouteHTML(info)}
         ${window.DeskV1ConnectDiscover ? window.DeskV1ConnectDiscover.html(info) : ''}
         <div class="desk-v1-cf-options" data-cf-options role="radiogroup" aria-label="Connection method">${info.options.map((o) => _optionHTML(o, ctx)).join('')}</div>
         <div class="desk-v1-rules-hint">Recognising a service is not support: a method marked “Information only” or “Restricted” cannot be set up from here.</div>
@@ -176,9 +190,10 @@
         <form class="desk-v1-cf-form" data-cf-details-form autocomplete="off" novalidate>
           <label class="desk-v1-conn-add-field">Name
             <input type="text" class="desk-v1-rules-textinput" data-cf-name data-cf-focus maxlength="80" value="${esc(S.name)}" placeholder="e.g. Plausible analytics"></label>
+          <div class="desk-v1-cf-note" data-cf-d-note>This saves a note for agents: the name and address, plus a login if you add one. Clayrune does not connect to it.</div>
           <label class="desk-v1-cf-check"><input type="checkbox" data-cf-usecred ${S.useCred ? 'checked' : ''}>
-            <span>Store a credential for it now<span class="desk-v1-rules-hint">Optional. It goes into Secrets when you press Save on the next step, and nowhere before.</span></span></label>
-          <div class="desk-v1-cf-cred" data-cf-cred-fields ${S.useCred ? '' : 'hidden'}><div data-cf-form-slot></div></div>
+            <span>Store a credential for it now<span class="desk-v1-rules-hint">Optional. A login that agents may use, for example in the browser pane. It goes into Secrets when you press Save on the next step, and nowhere before.</span></span></label>
+          <div class="desk-v1-cf-cred" data-cf-cred-fields ${S.useCred ? '' : 'hidden'}><div class="desk-v1-rules-hint" data-cf-d-typehint>The types below are the kind of secret being stored. They are not ways to connect.</div><div data-cf-form-slot></div></div>
           ${S.error ? _msg('error', S.error) : ''}
           ${_actions(true, '<button type="submit" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-cf-next>Review</button>')}
         </form>`;
@@ -226,6 +241,7 @@
           <div><dt>Service</dt><dd data-cf-r-name>${esc(S.name)}</dd></div>
           <div><dt>Address</dt><dd data-cf-r-url>${esc(S.info.url)}</dd></div>
           <div><dt>Method</dt><dd data-cf-r-method>Save for agents</dd></div>
+          <div><dt>Connects</dt><dd data-cf-r-connects>No. Agents see this record only.</dd></div>
         </dl>
         <div data-cf-r-credbox></div>
         <div class="desk-v1-rules-hint" data-cf-r-honest>Save keeps the service where agents can see it. Clayrune does not connect to it or post to it. Saving asks for your dashboard passcode once; nothing has been written yet.</div>

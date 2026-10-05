@@ -6,6 +6,17 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-05] — Desk connect: "Save for agents" now says it connects to nothing
+
+- Details step: a plain line above the credential box says this saves a note for agents (name,
+  address, and a login if you add one) and that Clayrune does not connect to it. The credential
+  hint says the login is for agents to use, for example in the browser pane, and the type list is
+  labelled as the kind of secret, not a way to connect.
+- Review step: a "Connects" row reads "No. Agents see this record only."
+- Method step: a recognised service with no usable route (LinkedIn today) names the missing route
+  from its own guidance and says that adding your own MCP server or API for it is not available
+  yet. Words only; no button, no new option. No route or behaviour change.
+
 ## [2026-10-05] — Desk: detect connection details for any MCP server or API you choose
 
 - New `POST /api/desk/connect/detect` (people only, not agent sessions) reads an npm or PyPI

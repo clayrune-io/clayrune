@@ -18,7 +18,7 @@
  *   + phone     no horizontal scroll, Back and the action are inside the viewport at every step.
  *   + demo      desk_v1_live OFF: the flow is not offered (the preview has no server to ask).
  *
- * Screenshots: docs/desk_v1/screens/connect_flow_{url,method,details,review}_{1440,390}.png
+ * Screenshots: docs/desk_v1/screens/connect_flow_{url,method,details,review,method_linkedin,details_nocred,review_nocred}_{1440,390}.png
  *
  * RUN   cd tools/smoke && node desk-v1-connect-flow.mjs
  */
@@ -56,7 +56,7 @@ function inspectFake(raw) {
   const svc = REGISTRY.services.find((s) => s.hosts.includes(host)) || null;
   const rows = (svc ? svc.options : []).concat(REGISTRY.common_options, [{
     method: 'save_for_agents', support: 'available', title: 'Save for agents', evidence: 'Always available',
-    guidance: 'Clayrune remembers the service and, if you give one, where its credential is kept, so agents can see it. Clayrune does not connect to it or post to it.',
+    guidance: 'Saves a note for agents: the name and address, plus the name of a login if you add one. Clayrune does not connect to it, sign in to it or post to it.',
   }]).map((o) => ({ ...o, selectable: o.method === 'save_for_agents' }));
   return { status: 200, body: { url: `https://${host}${u.pathname === '/' ? '' : u.pathname}`, host, path: u.pathname,
     service: svc ? { id: svc.id, label: svc.label } : null, options: rows } };
@@ -219,6 +219,11 @@ async function flow(browser, width, height) {
   check((await page.$$('#cf-2fa-help:not([hidden])')).length === 0, 'the 2FA-seed help is not offered (the flow cannot import one)', '2FA help is visible');
   await page.fill('#cf-value', SECRET);
   await page.fill('#cf-desc', 'Plausible stats key');
+  const dNote = await page.$eval('[data-cf-d-note]', (e) => e.textContent.trim());
+  check(dNote === 'This saves a note for agents: the name and address, plus a login if you add one. Clayrune does not connect to it.', 'Details says plainly that it saves a note and does not connect', 'details note: ' + dNote);
+  check(await page.evaluate(() => { const n = document.querySelector('[data-cf-d-note]'), c = document.querySelector('[data-cf-usecred]'); return !!(n.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING); }), 'the note sits above the credential checkbox', 'the note is not above the checkbox');
+  check(/agents may use, for example in the browser pane/.test(await page.textContent('.desk-v1-cf-check')), 'the checkbox hint says the credential is a login agents may use', 'checkbox hint: ' + (await page.textContent('.desk-v1-cf-check')));
+  check(/not ways to connect/.test(await page.textContent('[data-cf-d-typehint]')), 'the type list is labelled as kinds of secret, not ways to connect', 'type hint missing');
   await shot(page, 'details', width);
   await fits(page, 'details step');
   const before = srv.log.filter((r) => r.method !== 'GET' && !/connect\/inspect/.test(r.path));
@@ -242,6 +247,7 @@ async function flow(browser, width, height) {
   await page.waitForSelector('[data-cf][data-cf-step="review"]', { timeout: 4000 });
   const facts = await page.$eval('[data-cf-review]', (e) => e.innerText);
   check(/Plausible analytics/.test(facts) && /plausible\.io/.test(facts) && /Save for agents/.test(facts), 'Review shows the name, the address and the method', 'review: ' + facts);
+  check(/Connects\s*No\. Agents see this record only\./.test(facts), 'Review has a Connects row: "No. Agents see this record only."', 'review: ' + facts);
   const credFacts = await page.$eval('[data-cf-r-credbox]', (e) => e.innerText);
   check(/plausible\.api-key/.test(credFacts) && /API key/.test(credFacts) && /hidden/.test(credFacts), 'Review shows the credential\'s name and type, the value hidden', 'credential facts: ' + credFacts);
   check(!(await page.evaluate((s) => document.body.innerText.includes(s) || document.body.innerHTML.includes(s), SECRET)), 'the password appears nowhere in the page text or markup', 'the password is in the DOM text');
@@ -276,6 +282,41 @@ async function flow(browser, width, height) {
   check(srv.services.length === 1 && (await page.$eval('[data-conn-detail] [data-conn-status]', (e) => e.textContent)).includes('Saved for agents'), 'the saved service is selected and reads "Saved for agents"', 'service state wrong');
   check(!(await page.$('#cf-value')) && !(await page.$('[data-cf]')), 'the credential form is gone once the save is accepted', 'the form is still in the page');
   check(!srv.log.some((r) => r.path.startsWith('/api/secrets')), 'the credential went through the one commit, not through the Secrets routes', 'a /api/secrets request was made');
+  check(realErrors(pageErrors).length === 0, 'no page errors', 'page errors: ' + realErrors(pageErrors).join(' | '));
+  await ctx.close();
+}
+
+// A recognised service with no usable route (LinkedIn): the Method step names the missing route and says
+// bringing your own MCP server or API is not available yet; with no credential, Review still says Connects: No.
+async function missingRoute(browser, width, height) {
+  console.log(`live ON, LinkedIn at ${width}px: the missing route is named`);
+  const srv = makeServer();
+  const { ctx, page, pageErrors } = await newPage(browser, { live: true, srv, width, height });
+  await page.click('[data-conn-add-tile]');
+  await page.fill('[data-cf-url]', 'https://www.linkedin.com/company/clayrune');
+  await page.click('[data-cf-continue]');
+  await page.waitForSelector('[data-cf][data-cf-step="method"]', { timeout: 4000 });
+  const miss = await page.$eval('[data-cf-missing]', (e) => e.textContent.trim());
+  check(/No way to connect LinkedIn is open yet/.test(miss) && /LinkedIn Company Page posting/.test(miss) && /approved apps/.test(miss) && /own MCP server or API for it is not available yet; it is coming\./.test(miss),
+    'LinkedIn names the missing route from its guidance and says your own MCP/API is not available yet', 'missing text: ' + miss);
+  check(!/^Information only:/.test(miss.split('Company Page posting. ')[1] || ''), 'the "Information only:" prefix is not repeated in the sentence', 'prefix repeated: ' + miss);
+  check((await page.$$('[data-cf-missing] button, [data-cf-missing] a, [data-cf-missing] input')).length === 0, 'the note has no button or option', 'the note has a control');
+  check((await page.$$eval('[data-cf-method]', (els) => els.map((e) => e.value))).join() === 'save_for_agents', 'Save for agents is still the only choosable row', 'rows choosable: other');
+  await shot(page, 'method_linkedin', width);
+  await fits(page, 'LinkedIn method step');
+  await page.check('[data-cf-method]');
+  await page.click('[data-cf-next]');
+  await page.waitForSelector('[data-cf][data-cf-step="details"]', { timeout: 4000 });
+  check(!(await page.$eval('[data-cf-usecred]', (e) => e.checked)), 'the credential box is unticked', 'ticked');
+  await shot(page, 'details_nocred', width);
+  await fits(page, 'LinkedIn details step');
+  await page.click('[data-cf-next]');
+  await page.waitForSelector('[data-cf][data-cf-step="review"]', { timeout: 4000 });
+  const facts = await page.$eval('[data-cf-review]', (e) => e.innerText);
+  check(/Connects\s*No\. Agents see this record only\./.test(facts), 'Review says Connects: No', 'review: ' + facts);
+  check(/No credential: agents see the service, with nothing to sign in with\./.test(await page.$eval('[data-cf-r-credbox]', (e) => e.innerText)), 'the no-credential line is kept', 'no-credential line gone');
+  await shot(page, 'review_nocred', width);
+  await fits(page, 'LinkedIn review step');
   check(realErrors(pageErrors).length === 0, 'no page errors', 'page errors: ' + realErrors(pageErrors).join(' | '));
   await ctx.close();
 }
@@ -323,6 +364,8 @@ const browser = await chromium.launch();
 try {
   await flow(browser, 1440, 900);
   await flow(browser, 390, 844);
+  await missingRoute(browser, 1440, 900);
+  await missingRoute(browser, 390, 844);
   await closeClears(browser);
   await demoOff(browser);
 } catch (e) {
