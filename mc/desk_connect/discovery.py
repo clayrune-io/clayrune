@@ -36,7 +36,7 @@ import time
 from typing import Any
 
 from mc.core import _log
-from mc.desk_connect import classifier, guard_proxy, net_guard, pane_reader, registry_lookup, usage_keys
+from mc.desk_connect import classifier, display_text, guard_proxy, net_guard, pane_reader, registry_lookup, usage_keys
 
 TOTAL_S = 60.0
 PAGE_S = pane_reader.PAGE_S
@@ -126,10 +126,10 @@ def _row(opt: dict, ev: dict) -> dict:
     if ev['kind'] == 'page':
         shown = f"Read from the service's page ({ev['host']})"
     else:
-        shown = f"MCP registry listing “{ev['name']}”: {usage_keys.RELATION_WORDS[ev['relation']]}"
+        shown = f"MCP registry listing “{display_text.clean(ev['name'], 200)}”: {usage_keys.RELATION_WORDS[ev['relation']]}"
     return {'method': method, 'support': 'info_only', 'title': usage_keys.METHOD_TITLES[method],
             'evidence': shown, 'guidance': usage_keys.METHOD_GUIDANCE[method], 'usage': sentence,
-            'evidence_id': ev['id'], 'evidence_url': ev['url'], 'selectable': False, 'discovered': True,
+            'evidence_id': ev['id'], 'evidence_url': display_text.clean_url(ev['url']), 'selectable': False, 'discovered': True,
             'relation': ev.get('relation')}
 
 
@@ -245,7 +245,7 @@ def discover(info: dict, own_hosts=(), cancel_ev: threading.Event | None = None,
         return {'ok': True, 'tier': 2, 'url': url, 'host': host, 'outcome': outcome, 'incomplete': incomplete,
                 'options': options, 'problems': problems, 'notes': notes, 'warning': WARNING,
                 'seconds': round(clock() - t0, 1),
-                'evidence': [{'id': e['id'], 'kind': e['kind'], 'url': e['url']} for e in evidence]}
+                'evidence': [{'id': e['id'], 'kind': e['kind'], 'url': display_text.clean_url(e['url'])} for e in evidence]}
     finally:
         for pane in list(holder):
             try:

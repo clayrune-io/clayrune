@@ -1651,6 +1651,8 @@ def _run_cdp(session):
                  session.get('screencast_params', _SCREENCAST_PARAMS), session_id=session_id)
 
         send('Page.enable')
+        if session.get('init_script'):
+            send('Page.addScriptToEvaluateOnNewDocument', {'source': session['init_script']})
         send('DOM.enable')
         # Intercept <input type=file> instead of letting Chromium open its own
         # native OS picker — that picker opens on the SERVER's desktop, not the
@@ -1959,6 +1961,9 @@ def _run_cdp(session):
                     session['tabs_seq'] = session.get('tabs_seq', 0) + 1
                     try:
                         send('Page.enable', {}, session_id=sid)
+                        if session.get('init_script'):
+                            send('Page.addScriptToEvaluateOnNewDocument',
+                                 {'source': session['init_script']}, session_id=sid)
                         # Same UA as the root tab. A popup without it said
                         # HeadlessChrome and Google's sign-in popup went to
                         # /signin/rejected (MC-976). MC-980: if the session is
@@ -2073,7 +2078,7 @@ def _default_profile():
 
 
 def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, view=None,
-                    mobile=False, extra_args=None):
+                    mobile=False, extra_args=None, narrow_remote_origins=False, init_script=None):
     """Start a headless Chromium and its CDP reader.
 
     ``profile`` names a persistent user-data-dir that survives teardown; None
@@ -2134,7 +2139,11 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
     view = (_clamp_view(*view) if view else None) or (VIEW_W, VIEW_H)
     args = [
         chromium, '--headless=new', f'--remote-debugging-port={port}',
-        '--remote-allow-origins=*', f'--user-data-dir={udd}',
+        # `narrow_remote_origins` (in-process callers only, the Desk's discovery pane): only
+        # the one origin websocket-client sends for this port may open a devtools websocket,
+        # so a page cannot reach the debugging port the proxy bypass leaves open.
+        f'--remote-allow-origins={f"http://127.0.0.1:{port}" if narrow_remote_origins else "*"}',
+        f'--user-data-dir={udd}',
         '--no-first-run', '--no-default-browser-check', '--disable-gpu',
         f'--window-size={view[0] + WINDOW_CHROME_W},{view[1] + WINDOW_CHROME_H}',
     ]
@@ -2163,6 +2172,9 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
         # Remembered so teardown can delete this throwaway profile. Without it
         # the dirs accumulated forever (56 dirs / 922 MB observed 2026-07-31).
         'user_data_dir': udd,
+        # JS run in every new document of every tab before page scripts (CDP
+        # Page.addScriptToEvaluateOnNewDocument); None for an ordinary pane.
+        'init_script': init_script,
         # A named profile is kept; teardown deletes only throwaway dirs.
         'profile': profile,
         # Screencast + downloads state (see _run_cdp / browser_input /

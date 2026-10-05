@@ -33,10 +33,20 @@ PAGE_S = 15.0
 # Clayrune (or anything else on this machine or its network) by name, by 127.0.0.1 or by
 # a link-local address: all of it arrives at the proxy and is refused there. The ONE
 # loopback exception is this pane's own debugging port, which the pane harness itself opens
-# in a throwaway tab to read the browser's client hints; a page cannot use it (the
-# endpoint answers without CORS headers and its websocket needs an unguessable id).
-# The resolver rule makes any lookup that bypasses the proxy fail instead of leaking;
-# WebRTC and QUIC are the UDP routes that would otherwise skip an HTTP proxy.
+# in a throwaway tab to read the browser's client hints. A page cannot use it: the launch
+# narrows `--remote-allow-origins` to that port's own origin (`narrow_remote_origins`), so
+# a devtools websocket opened from page script is refused, and the plain HTTP endpoints
+# answer without CORS headers.
+# The resolver rule makes any lookup that bypasses the proxy fail instead of leaking.
+#
+# UDP is the route an HTTP proxy cannot see. QUIC is switched off. WebRTC is confined by
+# `--webrtc-ip-handling-policy=disable_non_proxied_udp`, MEASURED (real Chromium, a page
+# with RTCPeerConnection iceServers stun:/turn: at 127.0.0.1, the LAN address and 0.0.0.0:
+# 3478): 0 datagrams with this flag. `--force-webrtc-ip-handling-policy` is NOT a Chromium
+# switch and does nothing (24 datagrams reached the listeners while it was in this list);
+# `--disable-webrtc` does nothing either. `tests/test_desk_connect_real_chromium.py` is the
+# committed proof. Belt and braces: `WEBRTC_OFF_JS` removes the WebRTC constructors from
+# every new document before page script runs.
 def chromium_args(proxy_port: int, cdp_port: int | None = None) -> list[str]:
     bypass = '<-loopback>' + (f';127.0.0.1:{int(cdp_port)}' if cdp_port else '')
     return [
@@ -44,12 +54,19 @@ def chromium_args(proxy_port: int, cdp_port: int | None = None) -> list[str]:
         f'--proxy-bypass-list={bypass}',
         '--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1',
         '--disable-quic',
-        '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+        '--webrtc-ip-handling-policy=disable_non_proxied_udp',
         '--disable-background-networking',
         '--disable-component-update',
         '--disable-sync',
         '--no-pings',
     ]
+
+
+WEBRTC_OFF_JS = (
+    "for (const n of ['RTCPeerConnection','webkitRTCPeerConnection','RTCDataChannel','RTCSessionDescription',"
+    "'RTCIceCandidate','mozRTCPeerConnection']) { try { Object.defineProperty(window, n, "
+    "{value: undefined, configurable: false, writable: false}); } catch (e) {} }"
+)
 
 
 class DiscoveryPane(browser_routes.ProfilePageReader):
@@ -65,7 +82,8 @@ class DiscoveryPane(browser_routes.ProfilePageReader):
     def _open(self, url):
         session, err = browser_routes._launch_browser(
             self.project_id, url, ephemeral=True,
-            extra_args=lambda cdp_port: chromium_args(self._proxy_port, cdp_port))
+            extra_args=lambda cdp_port: chromium_args(self._proxy_port, cdp_port),
+            narrow_remote_origins=True, init_script=WEBRTC_OFF_JS)
         if err or session is None:
             return self._fail('launch_failed', err or 'browser failed to start')
         self._session = session

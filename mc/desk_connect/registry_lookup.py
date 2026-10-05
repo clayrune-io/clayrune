@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from typing import Callable
 
-from mc.desk_connect import net_guard
+from mc.desk_connect import display_text, net_guard
 
 REGISTRY_HOST = 'registry.modelcontextprotocol.io'
 BASE_URL = f'https://{REGISTRY_HOST}/v0.1/servers'
@@ -86,8 +86,9 @@ def _entry(item, domain: str) -> dict | None:
     else:
         relation = 'name_match'
     shown = next((u for u in [site, *remotes, repo] if _https_host(u)), '')
-    return {'name': name, 'title': str(srv.get('title') or '')[:120], 'description': str(srv.get('description') or '')[:300],
-            'relation': relation, 'url': shown[:300],
+    return {'name': display_text.clean(name, 200), 'title': display_text.clean(str(srv.get('title') or ''), 120),
+            'description': display_text.clean(str(srv.get('description') or ''), 300),
+            'relation': relation, 'url': display_text.clean_url(shown),
             'remote_hosts': sorted({_https_host(u) for u in remotes if _https_host(u)})[:3]}
 
 
