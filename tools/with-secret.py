@@ -39,13 +39,17 @@ More injection shapes for tools that don't read env vars:
 Child output is scrubbed of any dispensed value before it is echoed, so a
 chatty tool that prints its own password can't leak it into the transcript.
 Pass --raw to stream through unmodified (needed for interactive commands).
+When the vault is passphrase-locked in this process, --raw and --unset run the
+child in the SERVER instead and relay its stdin/stdout/stderr here (MC-1047,
+mc/secrets_exec_stream.py); that output is still scrubbed of dispensed values,
+and the child inherits the server's environment rather than this process's.
 
 `--unset VAR` (repeatable, opt-in) removes an inherited environment variable
 from the child before the secrets are injected, e.g. `--unset NODE_OPTIONS`
 for a Node process that must not load code the caller's environment names. It
-does nothing unless given, so no other caller's behaviour changes. It cannot
-be honoured by the server-exec fallback (that runs in the server's own
-environment), so a locked-vault fallback with --unset is refused.
+does nothing unless given, so no other caller's behaviour changes. On the
+locked-vault fallback it is applied to the server's environment, which is the
+one the child inherits there.
 
 Every read is written to ~/.clayrune/secrets_audit.jsonl.
 
@@ -243,23 +247,15 @@ def main(argv: list[str] | None = None) -> int:
     except vault.VaultLocked as e:
         # MC-979: the vault may be unlocked in the SERVER's memory even
         # though it's locked in THIS freshly-spawned process (the unwrapped
-        # key never crosses processes). --raw exists for interactive
-        # commands that need to stream live, which the exec-fallback route
-        # can't do, so it stays in-process only and surfaces the plain
-        # locked message rather than silently degrading to a non-interactive
-        # run.
-        if args.raw:
-            print(f"with-secret: {e}", file=sys.stderr)
-            print("with-secret: --raw cannot use the server-exec fallback "
-                 "(it needs live streaming) — unlock the vault, or drop "
-                 "--raw to let this run through the server.", file=sys.stderr)
-            return 2
-        if args.unset:
-            print(f"with-secret: {e}", file=sys.stderr)
-            print("with-secret: --unset cannot be applied through the server-exec "
-                 "fallback (it runs in the server's own environment) — unlock "
-                 "the vault for this process, or drop --unset.", file=sys.stderr)
-            return 2
+        # key never crosses processes). A buffered one-shot run goes through
+        # /api/secrets/exec. MC-1047: a child that needs live stdin/stdout
+        # (--raw, an MCP stdio server above all) or an environment edit
+        # (--unset, which the one-shot route cannot apply) goes through the
+        # streaming route instead, which parents the child in the server and
+        # relays its pipes — the secret still never leaves the server.
+        if args.raw or args.unset:
+            from mc import secrets_exec_stream_client
+            return secrets_exec_stream_client.run(args, cmd, project, unattended, str(e))
         return _run_via_server_exec(args, cmd, project, unattended, str(e))
     except vault.SecretsError as e:
         print(f"with-secret: {e}", file=sys.stderr)

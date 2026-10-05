@@ -285,9 +285,16 @@ def test_notify_vault_locked_requires_the_same_gates(client):
 
 def test_notify_vault_locked_succeeds_with_good_token(client, monkeypatch):
     calls = []
+    from mc import secrets_store
     from mc.blueprints import push_mobile as _bp_push_mobile
     monkeypatch.setattr(_bp_push_mobile, '_notify_push',
                         lambda title, body: calls.append((title, body)))
+    # MC-1047: the push is only true while THIS (server) vault is locked.
+    secrets_store.set_secret('demo.token', 'x')
+    secrets_store.set_passphrase('a real passphrase')
+    secrets_store.lock_now()
+    assert secrets_store.lock_state() == 'locked'
+    calls.clear()                                  # setting the passphrase pushed its own tamper notice
     res = client.post('/api/secrets/notify-vault-locked', json={},
                       headers={'X-Clayrune-Exec-Token': _token()})
     assert res.status_code == 200

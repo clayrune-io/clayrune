@@ -69,9 +69,6 @@
       _ui.signin = { state: 'failed', message: res.setup.message || 'The sign-in could not be started.' };
     } else if (res.setup && res.setup.state === 'done' && res.setup.message) {
       _ui.setup = res.setup.message;      // slice 4: a curated MCP package was registered; there is no sign-in to follow
-    } else if (res.setup && res.setup.state === 'waiting' && res.setup.message) {
-      _ui.setup = res.setup.message;      // slice 4: saved, but the server cannot start yet (passphrase vault, MC-1047)
-      _ui.setupState = 'waiting';
     }
   }
 
@@ -96,7 +93,7 @@
       ? `<div><dt>Verified by</dt><dd data-cf-result-proof>${esc(st.capability || '')}${st.identity ? ` as <code>${esc(st.identity)}</code>` : ''}${st.at ? `, ${esc(String(st.at).replace('T', ' ').slice(0, 16))} UTC` : ''}</dd></div>` : '';
     const si = _ui.signin;
     const signin = si ? `<div class="desk-v1-cf-msg" data-cf-msg="${si.state === 'failed' ? 'error' : 'ok'}" data-cf-signin="${esc(si.state)}" role="${si.state === 'failed' ? 'alert' : 'status'}">${esc(si.message)}</div>` : '';
-    const setup = _ui.setup ? `<div class="desk-v1-cf-msg" data-cf-msg="${_ui.setupState === 'waiting' ? 'warn' : 'ok'}" data-cf-setup="${_ui.setupState || 'done'}" role="status">${esc(_ui.setup)}</div>` : '';
+    const setup = _ui.setup ? `<div class="desk-v1-cf-msg" data-cf-msg="ok" data-cf-setup="done" role="status">${esc(_ui.setup)}</div>` : '';
     const msg = _ui.message ? `<div class="desk-v1-cf-msg" data-cf-msg="${_ui.messageKind || 'ok'}" data-cf-result-message role="status">${esc(_ui.message)}</div>` : '';
     const canCheck = ['key_stored', 'signed_in', 'verified', 'check_failed', 'unknown'].indexOf(st.state) >= 0;
     const buttons = [

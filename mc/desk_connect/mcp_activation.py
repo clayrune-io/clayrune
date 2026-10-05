@@ -3,22 +3,13 @@ DESK_CONNECT_BY_URL_SPEC.md, slice 4).
 
 Runs only after the one Save has been accepted: the human check and the passcode
 are in the route, the pins were revalidated by the provider, and the credential
-(if one was typed) is already in the vault. Four things happen here, in order, and
-the first three can refuse:
+(if one was typed) is already in the vault. Three things happen here, in order, and
+the first two can refuse:
 
-    1. the vault      a passphrase-backed vault (`secrets.key.wrapped` on disk, the
-                      same test `mc/secrets_store.py` uses) cannot be read by an MCP
-                      server Clayrune does not parent (MC-1047). The method is NOT blocked
-                      (Ron, 2026-10-05: a user is never stopped from connecting a service
-                      they chose): the Review card states the limit (`PASSPHRASE_NOTICE`)
-                      and the human may still approve and Save. Then nothing is downloaded
-                      or registered, the token stays stored, and the Save ends in the
-                      non-success state `waiting_mc1047`; saving again once MC-1047 lands
-                      completes the setup without asking for the token again.
-    2. the package    `mcp_package_store.install`: Clayrune downloads the ONE reviewed
+    1. the package    `mcp_package_store.install`: Clayrune downloads the ONE reviewed
                       tarball itself, checks its sha512 against the catalogue and
                       unpacks it into its own directory. No npm, no npx, no `.npmrc`.
-    3. the launch     line built from the catalogue entry alone (never from a request):
+    2. the launch     line built from the catalogue entry alone (never from a request):
                       python tools/with-secret.py --raw --unset NODE_OPTIONS
                       --unset NODE_PATH --env VAR=<vault name> -- <node> <dir>/package/<entry>
                       so the config carries a vault NAME, never a value: the wrapper
@@ -26,8 +17,13 @@ the first three can refuse:
                       `--raw` because an MCP stdio server needs live stdin and stdout;
                       `--unset` so a NODE_OPTIONS / NODE_PATH inherited from whatever
                       started the session cannot make Node load code the reviewed
-                      bundle does not carry.
-    4. registration   `mc.mcp.write_server` (global scope, never overwriting).
+                      bundle does not carry. On a passphrase-backed vault the wrapper
+                      cannot read the vault itself and relays the launch to the running
+                      server's streaming exec (MC-1047), which parents the child and can
+                      read the unlocked vault: the server starts while Clayrune is
+                      unlocked and is refused, with a "Vault locked" push, while it is not
+                      (`PASSPHRASE_NOTICE` says so on the Review card).
+    3. registration   `mc.mcp.write_server` (global scope, never overwriting).
 
 Nothing here runs the package. Node runs it later, when an agent session starts the
 server, so the first launch is DEFERRED to a session and gated by what this module
@@ -55,10 +51,8 @@ _NODE_RE = re.compile(r'^node(\.exe)?$', re.I)
 # Inherited variables Node reads that can load code from outside the reviewed bundle.
 _NODE_ENV_STRIPPED = ('NODE_OPTIONS', 'NODE_PATH')
 
-PASSPHRASE_NOTICE = ('Secrets is using a passphrase lock, and an MCP server cannot read a passphrase-protected '
-                     'vault yet (MC-1047), so this server cannot start. You can still approve and save: your '
-                     'token is kept in Secrets, nothing is downloaded or registered, and saving again once '
-                     'that is supported finishes the setup.')
+PASSPHRASE_NOTICE = ('Secrets is using a passphrase lock. This server reads its token through Clayrune, so it starts '
+                     'only while Clayrune is unlocked: after a restart, unlock Secrets before an agent session uses it.')
 
 
 def _which(name: str) -> str | None:
@@ -68,9 +62,9 @@ def _which(name: str) -> str | None:
 
 def passphrase_backed() -> bool:
     """True when the vault is passphrase-backed: the wrapped-key file is on disk, which
-    is what `mc.secrets_store.lock_state()` keys on. Not `lock_state() == 'locked'`: after
-    a human unlocks it the key is only in the SERVER's memory, so a server started in an
-    agent session still cannot read the vault."""
+    is what `mc.secrets_store.lock_state()` keys on. Not `lock_state() == 'locked'`: the
+    notice applies after a human unlocks it too, since the key is then only in the SERVER's
+    memory and the server must be the one to start the child."""
     return _vault.wrapped_key_path().is_file()
 
 
@@ -155,10 +149,9 @@ def conflict(entry: dict) -> ActivationError | None:
 
 def is_registered(entry: dict) -> bool:
     """True only when an agent session could start the server today: our launch line is in
-    the config, the file it runs is on disk, and the vault is one a child process can read.
-    A config entry alone is not "registered" (it was written once; the vault may have become
-    passphrase-backed since, or the package directory removed)."""
-    return not passphrase_backed() and _store.entry_path(entry).is_file() and is_ours(existing(entry), entry)
+    the config and the file it runs is on disk. A config entry alone is not "registered"
+    (it was written once; the package directory may have been removed since)."""
+    return _store.entry_path(entry).is_file() and is_ours(existing(entry), entry)
 
 
 def register(entry: dict) -> dict:
@@ -183,16 +176,9 @@ def register(entry: dict) -> dict:
 
 
 def provision(entry: dict) -> dict:
-    """The post-commit provisioning: vault check, verified package, registration. Never
-    raises: the outcome is `{'setup': {'state': 'done'|'failed'|'waiting', 'message', 'server'?, 'code'?}}`;
-    `waiting` is a passphrase-backed vault (MC-1047): not a failure, not done."""
+    """The post-commit provisioning: verified package, registration. Never raises: the
+    outcome is `{'setup': {'state': 'done'|'failed', 'message', 'server'?, 'code'?}}`."""
     try:
-        if passphrase_backed():
-            _log(f'[desk_connect] MCP {entry["id"]} waiting: passphrase-backed vault (MC-1047)', flush=True)
-            return {'setup': {'state': 'waiting', 'code': 'vault_passphrase',
-                              'message': 'Your Secrets vault is protected by a passphrase, and an MCP server cannot '
-                                         'read a passphrase-protected vault yet (MC-1047). The token is saved. '
-                                         'Nothing was downloaded or registered; save again once that is supported.'}}
         _node()
         _store.install(entry)
         done = register(entry)

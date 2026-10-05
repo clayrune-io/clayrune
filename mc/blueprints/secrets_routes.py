@@ -920,6 +920,11 @@ def api_secrets_notify_vault_locked():
     refusal = _exec_gate_refusal()
     if refusal is not None:
         return refusal
+    # MC-1047: a CLI whose own vault is locked relays here on every start, including
+    # when THIS vault is unlocked and the launch succeeds through the streaming route —
+    # a push then would be false and constant. Push only while locked, once per period.
+    if not vault.claim_lock_notification():
+        return jsonify({'ok': True, 'pushed': False})
     try:
         from mc.blueprints import push_mobile as _bp_push_mobile
         _bp_push_mobile._notify_push(

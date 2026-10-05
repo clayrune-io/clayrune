@@ -2072,6 +2072,10 @@ from mc.blueprints import secrets_routes as _bp_secrets  # noqa: E402
 from mc import secrets_store as _secrets_store_boot  # noqa: E402
 
 app.register_blueprint(_bp_secrets.bp)
+# MC-1047: streaming server-parented exec for a --raw child on a locked vault.
+from mc.blueprints import secrets_exec_stream_routes as _bp_secrets_stream  # noqa: E402
+
+app.register_blueprint(_bp_secrets_stream.bp)
 
 # ── Add-ons (docs/ADDON_INSTALLS_SPEC.md, MC-1022). Agents file requests; every
 # route that installs, adopts or removes is behind _require_human_passcode.

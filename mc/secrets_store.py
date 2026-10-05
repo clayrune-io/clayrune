@@ -1089,6 +1089,21 @@ def _notify_vault_locked() -> None:
         _log(f"[secrets] vault-locked notification (out-of-process relay) failed: {e}")
 
 
+def claim_lock_notification() -> bool:
+    """True exactly once per lock period, and only while this process's vault IS locked.
+    For the server's loopback relay (``/api/secrets/notify-vault-locked``): every
+    ``with-secret.py`` is a fresh process whose own per-process flag never throttles, and
+    a CLI whose own vault is locked can be talking to a server whose vault is unlocked
+    (the server-exec fallback, MC-979/MC-1047), where "Vault locked" would be false. Shares
+    ``_lock_notified`` with ``_notify_vault_locked``, so an unlock or relock resets both."""
+    global _lock_notified
+    with _lock:
+        if lock_state() != 'locked' or _lock_notified:
+            return False
+        _lock_notified = True
+        return True
+
+
 def _notify_vault_tamper(action: str, caller_addr: str) -> None:
     """Fires on every ``set``/``change``/recovery-key ``unlock`` — never on a
     routine passphrase unlock, which is normal daily use and would just
@@ -1989,6 +2004,13 @@ def _audit(event: str, **fields: Any) -> None:
         _log(f"[secrets] audit append failed ({event}): {e}")
 
 
+def audit_event(event: str, **fields: Any) -> None:
+    """Public form of `_audit` for a server-side consumer that records something
+    beyond a read (the streaming exec route's session start/end). Same rule: the
+    fields must never carry a secret value."""
+    _audit(event, **fields)
+
+
 def audit_tail(limit: int = 100) -> list[dict[str, Any]]:
     """Most-recent-first audit records."""
     p = audit_path()
@@ -2044,6 +2066,14 @@ def redact(text: str) -> str:
         if value in text:
             text = text.replace(value, f'[redacted:{name}]')
     return text
+
+
+def dispensed_values() -> list[tuple[str, str]]:
+    """``(value, name)`` for every value this process has dispensed, longest first —
+    what `redact` scans for, for a caller that must redact a byte stream
+    incrementally (mc/secrets_exec_stream.py) rather than one string at a time."""
+    with _dispensed_lock:
+        return sorted(_dispensed.items(), key=lambda kv: len(kv[0]), reverse=True)
 
 
 def _forget_dispensed(value: str) -> None:

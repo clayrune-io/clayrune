@@ -187,23 +187,27 @@ def test_no_token_file_gives_the_clear_message_without_any_network_call(vault, w
     assert 'vault is locked' in capsys.readouterr().err
 
 
-def test_raw_flag_does_not_fall_back_and_says_why(vault, with_secret, monkeypatch, capsys,
-                                                   exec_server):
+def test_raw_flag_skips_the_one_shot_route_and_uses_the_streaming_client(
+        vault, with_secret, monkeypatch, exec_server):
+    """MC-1047: --raw on a locked vault used to be refused. It must not use the
+    buffering one-shot route (it cannot stream), but go to the streaming client."""
     server, handler = exec_server
     _lock_the_vault(vault)
     vault.ensure_exec_token()
     _point_at_server(with_secret, monkeypatch, server)
+    from mc import secrets_exec_stream_client
+    seen = []
+    monkeypatch.setattr(secrets_exec_stream_client, 'run',
+                        lambda args, cmd, *a, **k: seen.append((args.raw, cmd)) or 7)
 
     rc = with_secret.main([
         '--raw', '--env', 'X=demo.token', '--',
         sys.executable, '-c', 'print("SHOULD NOT RUN")',
     ])
 
-    assert rc == 2
-    assert not handler.seen, "--raw must never use the server-exec fallback"
-    err = capsys.readouterr().err
-    assert 'vault is locked' in err
-    assert '--raw' in err
+    assert rc == 7
+    assert not handler.seen, "--raw must not use the buffering one-shot route"
+    assert seen and seen[0][0] is True
 
 
 def test_unattended_and_allow_unattended_false_never_reaches_the_server(
