@@ -7,9 +7,10 @@
 //                         vault entry. It is typed here and sent only with the passcode-gated Save of the
 //                         owning screen (`new_login` rides the routes Save; the Result step has its own
 //                         Save to /api/desk/connect/signin/store-login). Nothing is written before that.
-//   Sign in with it       POST /api/desk/connect/signin/fill: the SERVER types the stored login into the
-//                         sign-in page open in the browser pane. This module sends a login NAME, never a
-//                         value, and gets a state word back (submitted, handed to you, no form, refused).
+//   Sign in with it       POST /api/desk/connect/signin/fill (through the passcode prompt, every click): the
+//                         SERVER types the stored login into the sign-in page open in the browser pane. This
+//                         module sends a login NAME, never a value, and gets a state word back (submitted,
+//                         handed to you, no form, refused).
 //
 // A password lives only in the form's own input: nothing here copies it into a variable, a draft, a
 // summary, storage or a log (`read` hands it to the one caller that sends it; `clear` empties the input).
@@ -123,9 +124,18 @@
       const st = (fills[key] = { busy: true, kind: 'ok', text: '' });
       ctx.repaint();
       try {
-        const out = await ctx.api('POST', '/api/desk/connect/signin/fill', body());
-        st.kind = out.state === 'handoff' ? 'ok' : out.state === 'no_form' ? 'error' : 'ok';
-        st.text = out.message || 'Done. Check the browser pane.';
+        // Typing a stored login into a page needs the dashboard passcode on every click: the one proof an agent cannot forge.
+        const res = await window.humanProofFetch('/api/desk/connect/signin/fill', { method: 'POST', body: JSON.stringify(body()) },
+          { title: 'Sign in', description: 'Re-enter your dashboard passcode to have Clayrune type the saved login into the sign-in page.' });
+        if (res === null) { st.busy = false; st.text = ''; ctx.repaint(); return; }          // cancelled at the passcode: nothing was sent
+        const out = res.body || {};
+        if (!res.ok) {
+          st.kind = 'error';
+          st.text = out.error || 'Could not sign in (HTTP ' + res.status + ').';
+        } else {
+          st.kind = out.state === 'no_form' ? 'error' : 'ok';
+          st.text = out.message || 'Done. Check the browser pane.';
+        }
       } catch (e) {
         st.kind = 'error';
         st.text = e && e.message ? e.message : 'Could not sign in.';

@@ -84,8 +84,13 @@ def write(login: dict) -> None:
     """Store it (global scope, as the connect flow's credential is). Raises LoginError."""
     check_free(login)
     try:
+        # create_only: the check above is a courtesy message; this is the guard (it holds the vault lock).
         _vault.set_secret(login['name'], login['value'], username=login['username'], description=login['description'],
-                          scope='global', allow_unattended=login['allow_unattended'], entry_type=_vault.ENTRY_LOGIN)
+                          scope='global', allow_unattended=login['allow_unattended'], entry_type=_vault.ENTRY_LOGIN,
+                          create_only=True)
+    except _vault.SecretExists as e:
+        raise LoginError(f'a secret named "{login["name"]}" already exists; pick it from the list or choose another name '
+                         f'(Clayrune does not replace a stored login from here)', 409, 'secret_exists') from e
     except _vault.SecretsError as e:
         raise LoginError(f'the login could not be stored: {e}', 400, 'vault_refused') from e
 

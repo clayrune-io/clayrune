@@ -33,24 +33,41 @@ USER = 'ron.levy@example.test'
 PW = 'S3cretPW-ZZTOP-98765'
 
 
+DECLARED = {'url': 'https://www.linkedin.com/login', 'origin': 'https://www.linkedin.com', 'frame_id': 'F1', 'unreachable': False}
+EVIL = {'url': 'https://evil.example/', 'origin': 'https://evil.example', 'frame_id': 'F1', 'unreachable': False}
+
+
 class ScriptPane:
     """Stands in for the browser pane: answers each page evaluation from a script and keeps every
-    expression it was given, so a test can see exactly what reached the page."""
+    expression it was given, so a test can see exactly what reached the page. `tops` is what the
+    BROWSER says the top frame is, one per look (the last one repeats): it is independent of what
+    the page's own script answers, which is the point of reading it from the browser."""
 
-    def __init__(self, probes, fills=None, running=True):
+    def __init__(self, probes, fills=None, running=True, tops=None):
         self.probes = list(probes)
         self.fills = list(fills or [])
         self.running = running
+        self.tops = list(tops or [DECLARED])
         self.exprs: list = []
+        self.closed = False
 
     def find(self, profile):
         return {'status': 'running', 'profile': profile} if self.running else None
 
-    def evaluate(self, session, expression):
+    def open(self, session):
+        return self
+
+    def top(self):
+        return dict(self.tops.pop(0) if len(self.tops) > 1 else self.tops[0])
+
+    def evaluate(self, expression):
         self.exprs.append(expression)
         cfg = json.loads(expression.strip()[expression.strip().rindex('})(') + 3:-1])
         queue = self.fills if cfg['fill'] else self.probes
         return True, (queue.pop(0) if queue else {'state': 'other'})
+
+    def close(self):
+        self.closed = True
 
     def typed(self):
         return [e for e in self.exprs if PW in e or USER in e]
@@ -144,20 +161,16 @@ def test_a_fill_returns_a_state_word_and_no_value_reaches_a_response_or_log(env)
     assert len(pane.exprs) == 3 and len(pane.typed()) == 1          # probe, the one fill, a look at the result: only the fill carries the login
     probe = json.loads(pane.exprs[0].strip()[pane.exprs[0].strip().rindex('})(') + 3:-1])
     assert probe['fill'] is False and 'user' not in probe and 'password' not in probe
-    # and through the route, including the failure path
-    from mc.blueprints import desk_connect_signin_routes as routes
-    monkey_pane = ScriptPane([FORM], [FILLED])
-    signin_fill_pane = monkey_pane
+    # and through the route
     orig = signin_fill.Pane
-    signin_fill.Pane = lambda: signin_fill_pane
+    signin_fill.Pane = lambda: ScriptPane([FORM], [FILLED])
     try:
         r = client.post('/api/desk/connect/signin/fill', json={'service': 'linkedin', 'route_id': 'linkedin-browser',
-                                                                'login': 'linkedin.login', 'profile': 'li-ron'})
+                                                                'login': 'linkedin.login', 'profile': 'li-ron', 'passcode': PASSCODE})
     finally:
         signin_fill.Pane = orig
     assert r.status_code == 200 and r.get_json()['state'] == 'submitted'
     _no_leak(r.get_data(as_text=True), logs)
-    assert routes is not None
 
 
 def test_a_result_that_holds_a_typed_value_is_withheld(env):
@@ -172,7 +185,7 @@ def test_the_error_of_a_failed_pane_call_carries_no_value(env):
     _login()
 
     class Broken(ScriptPane):
-        def evaluate(self, session, expression):
+        def evaluate(self, expression):
             self.exprs.append(expression)
             return False, f'eval_exception:{PW}'
     pane = Broken([])
@@ -201,8 +214,138 @@ def test_a_redirect_between_the_probe_and_the_typing_types_nothing(env):
     # the typing expression itself re-checks the origin inside the same evaluation (nothing can move between check and type)
     from mc.desk_connect import signin_fill_js
     script = signin_fill_js.build(['https://www.linkedin.com'], fill=True, user='u', password='p')
-    assert script.index("C.origins.indexOf(location.origin)") < script.index('put(pw, C.password)')
-    assert "window.top !== window" in script
+    assert script.index("C.origins.indexOf(here)") < script.index('put(pw, C.password)')
+    assert "W.top !== W" in script
+
+
+def test_the_browser_not_the_page_decides_the_origin_and_the_vault_is_not_asked(env, monkeypatch):
+    """Wren 2026-10-05, finding 1: a page that overrides its own `Array.prototype.indexOf` made the in-page
+    origin check answer 'fine', and the password was typed into it. The page here says FORM (a lying
+    page); the browser says the top frame is evil.example. Nothing may be typed and the vault not asked."""
+    from mc import secrets_store
+    _login()
+    asked = []
+    real = secrets_store.get_secret_value
+    monkeypatch.setattr(secrets_store, 'get_secret_value', lambda *a, **k: asked.append(a) or real(*a, **k))
+    pane = ScriptPane([FORM, FORM], [FILLED], tops=[EVIL])
+    err = _refused(pane, 'origin_mismatch')
+    assert 'evil.example' in str(err) and asked == [] and pane.exprs == [] and pane.closed
+
+
+def test_the_browser_is_asked_again_immediately_before_the_typing(env):
+    """The page was a declared host at the probe and the vault read; the browser now says it moved. The
+    typing evaluation is never sent."""
+    _login()
+    pane = ScriptPane([FORM], [FILLED], tops=[DECLARED, EVIL])
+    _refused(pane, 'origin_mismatch')
+    assert pane.typed() == [] and len(pane.exprs) == 1               # only the (secret-free) probe went to the page
+
+
+@pytest.mark.parametrize('top', [
+    {'url': 'http://www.linkedin.com/login', 'origin': 'http://www.linkedin.com'},
+    {'url': 'https://www.linkedin.com.evil.example/login', 'origin': 'https://www.linkedin.com.evil.example'},
+    {'url': 'https://evil.example/www.linkedin.com', 'origin': 'https://evil.example'},
+    {'url': 'https://www.linkedin.com:8443/login', 'origin': 'https://www.linkedin.com:8443'},
+    {'url': 'https://www.linkedin.com@evil.example/login', 'origin': 'https://evil.example'},
+    {'url': 'https://user:pw@www.linkedin.com/login', 'origin': 'https://www.linkedin.com'},
+    {'url': 'https://www.linkedin.com./login', 'origin': 'https://www.linkedin.com.'},
+    {'url': 'https://linkedin.com/login', 'origin': 'https://linkedin.com'},
+    {'url': 'data:text/html,<input type=password>', 'origin': 'null'},
+    {'url': 'about:blank', 'origin': 'null'},
+    {'url': 'https://www.linkedin.com/login', 'origin': 'https://evil.example'},           # the browser's own origin disagrees
+    {'url': 'chrome-error://chromewebdata/', 'origin': 'null', 'unreachable': True},
+    {'url': 'https://www.linkedin.com/login', 'origin': 'https://www.linkedin.com', 'unreachable': True},
+    {},
+])
+def test_only_the_exact_declared_https_origin_is_accepted_from_the_browser(top):
+    from mc.desk_connect import signin_fill
+    origins = ['https://www.linkedin.com']
+    assert signin_fill._declared(top, origins) is False
+    assert signin_fill._declared({'url': 'https://www.linkedin.com/feed/?a=b#c', 'origin': 'https://www.linkedin.com'}, origins) is True
+
+
+def test_the_link_reads_the_url_from_the_browser_and_runs_only_in_an_isolated_world(env):
+    """`PageLink` is the only code that talks to the browser. Its `evaluate` must create an isolated world and
+    run the expression in THAT context; a `Runtime.evaluate` with no `contextId` runs in the page's own world,
+    where its prototypes, listeners and getters are the page's to override."""
+    from mc.desk_connect import signin_fill_cdp
+
+    class WS:
+        def __init__(self):
+            self.sent, self.queue = [], []
+
+        def send(self, raw):
+            m = json.loads(raw)
+            self.sent.append(m)
+            res = {'Page.getFrameTree': {'frameTree': {'frame': {'id': 'F9', 'url': 'https://www.linkedin.com/login',
+                                                                  'securityOrigin': 'https://www.linkedin.com'}}},
+                   'Page.createIsolatedWorld': {'executionContextId': 41},
+                   'Runtime.evaluate': {'result': {'type': 'object', 'value': {'state': 'other'}}}}[m['method']]
+            self.queue.append({'id': m['id'], 'result': res})
+
+        def recv(self):
+            return json.dumps(self.queue.pop(0))
+
+        def close(self):
+            pass
+
+    ws = WS()
+    link = signin_fill_cdp.PageLink(ws, type('M', (), {}))
+    assert link.top() == {'url': 'https://www.linkedin.com/login', 'origin': 'https://www.linkedin.com', 'frame_id': 'F9', 'unreachable': False}
+    assert link.evaluate('1+1') == (True, {'state': 'other'})
+    methods = [m['method'] for m in ws.sent]
+    assert methods[-2:] == ['Page.createIsolatedWorld', 'Runtime.evaluate']
+    world, ev = ws.sent[-2]['params'], ws.sent[-1]['params']
+    assert world['frameId'] == 'F9' and world['grantUniveralAccess'] is False
+    assert ev['contextId'] == 41 and ev['expression'] == '1+1'
+
+
+def test_a_failed_browser_call_carries_no_expression(env):
+    from mc.desk_connect import signin_fill_cdp
+
+    class WS:
+        def send(self, raw):
+            self.id = json.loads(raw)['id']
+
+        def recv(self):
+            return json.dumps({'id': self.id, 'error': {'code': -32000, 'message': f'could not run {PW}'}})
+
+        def close(self):
+            pass
+
+    link = signin_fill_cdp.PageLink(WS(), type('M', (), {}))
+    ok, reason = link.evaluate(f'type("{PW}")')
+    assert ok is False and PW not in reason
+
+
+@pytest.mark.parametrize('where', ['probe', 'fill'])
+def test_a_form_that_posts_to_another_origin_is_refused_and_nothing_is_typed(env, where):
+    _login()
+    bad = _p('action_mismatch')
+    pane = ScriptPane([bad] if where == 'probe' else [FORM], [bad] if where == 'fill' else [])
+    err = _refused(pane, 'action_mismatch')
+    assert err.status == 409
+    assert pane.typed() == [] or where == 'fill'      # at the fill step the (refused) typing expression was sent, and typed nothing
+
+
+def test_a_form_whose_destination_changes_while_typing_is_not_submitted(env):
+    _login()
+    pane = ScriptPane([FORM], [_p('filled', filled=['username', 'password'], submitted=False, action_blocked=True)])
+    out = _fill(pane)
+    assert out['state'] == 'filled' and out['action_blocked'] is True and 'not submitted' in out['message']
+    _no_leak(out)
+
+
+def test_the_script_checks_where_the_form_posts_before_it_types_and_again_before_it_submits():
+    from mc.desk_connect import signin_fill_js
+    script = signin_fill_js.build(['https://www.linkedin.com'], fill=True, user='u', password='p')
+    first = script.index("if ((pw && !postsOnlyHere(pw))")
+    assert first < script.index('put(user, C.user)') < script.index('put(pw, C.password)')
+    assert script.index("if (!postsOnlyHere(from)) return null;") > script.index('function submit(from)')
+    # it reads form facts through the unmodified prototypes (DOM clobbering: <input name=action> shadows form.action)
+    assert "getAttr.call(f, 'action')" in script and 'form.action' not in script and 'from.form' not in script
+    # no call to anything the page can replace: its own value setter or `Event` are not used
+    assert 'P(HTMLInputElement, \'value\').set' in script
 
 
 def test_a_page_that_moves_on_after_the_sign_in_is_not_typed_into_again(env):
@@ -304,7 +447,7 @@ def test_a_locked_vault_reports_locked_and_nothing_is_typed(env, monkeypatch):
     from mc.desk_connect import signin_fill
     monkeypatch.setattr(signin_fill.Pane, 'find', lambda self, p: pane.find(p))
     r = client.post('/api/desk/connect/signin/fill', json={'service': 'linkedin', 'route_id': 'linkedin-browser',
-                                                            'login': 'linkedin.login', 'profile': 'li-ron'})
+                                                            'login': 'linkedin.login', 'profile': 'li-ron', 'passcode': PASSCODE})
     assert r.status_code == 423 and r.get_json()['code'] == 'vault_locked'
     _no_leak(r.get_data(as_text=True))
 
@@ -524,10 +667,10 @@ def test_a_login_can_be_filled_from_an_account_binding_and_only_the_bound_one(en
     pane = ScriptPane([FORM], [FILLED])
     signin_fill.Pane = lambda: pane
     try:
-        r = client.post('/api/desk/connect/signin/fill', json={'service': 'linkedin', 'route_id': 'linkedin-browser', 'account_id': acc['id']})
+        r = client.post('/api/desk/connect/signin/fill', json={'service': 'linkedin', 'route_id': 'linkedin-browser', 'account_id': acc['id'], 'passcode': PASSCODE})
         assert r.status_code == 200 and r.get_json()['state'] == 'submitted'
         r = client.post('/api/desk/connect/signin/fill', json={'service': 'linkedin', 'route_id': 'linkedin-browser',
-                                                                'account_id': acc['id'], 'login': 'someone.else'})
+                                                                'account_id': acc['id'], 'login': 'someone.else', 'passcode': PASSCODE})
         assert r.status_code == 409 and r.get_json()['code'] == 'login_not_bound'
     finally:
         signin_fill.Pane = orig
@@ -545,3 +688,103 @@ def test_the_options_route_lists_names_only(env):
     assert [x['route_id'] for x in out['routes']] == ['linkedin-browser']
     _no_leak(r.get_data(as_text=True))
     assert client.post('/api/desk/connect/signin/options', json={'service': 'nope'}).status_code == 404
+
+
+# -- Wren 2026-10-05, findings 2, 3, 6, 7 -----------------------------------------------------
+
+def _fill_post(client, **body):
+    return client.post('/api/desk/connect/signin/fill', json={'service': 'linkedin', 'route_id': 'linkedin-browser',
+                                                               'login': 'linkedin.login', 'profile': 'li-ron', **body})
+
+
+def test_the_fill_route_needs_the_dashboard_passcode_and_asks_for_nothing_before_it(env, monkeypatch):
+    """Finding 2: an agent can send an Origin header and sit in a manual session, so the unattended heuristic
+    is not proof of a human. Without the passcode nothing is looked up, opened, read or typed."""
+    from mc import secrets_store
+    from mc.desk_connect import signin_fill
+    client, _, _ = env
+    _login()
+    touched = []
+    monkeypatch.setattr(signin_fill.Pane, 'find', lambda self, p: touched.append('pane'))
+    monkeypatch.setattr(secrets_store, 'get_secret_value', lambda *a, **k: touched.append('vault'))
+    for extra in ({}, {'passcode': 'wrong'}, {'passcode': ''}):
+        r = _fill_post(client, **extra)
+        assert r.status_code in (401, 403), (extra, r.status_code)
+    assert touched == []
+
+
+def test_the_fill_route_hands_the_vault_the_real_caller_answer(env, monkeypatch):
+    """Finding 2: `unattended=False` was a literal. The vault gets what `is_unattended_caller()` said, so a login
+    stored allow_unattended=false is enforced by the vault itself, not by this route alone."""
+    from mc import secrets_store
+    from mc.desk_connect import signin_fill
+    client, _, _ = env
+    _login(allow_unattended=False)
+    seen = []
+    real = secrets_store.get_secret_value
+    monkeypatch.setattr(secrets_store, 'get_secret_value', lambda *a, **k: seen.append(k.get('unattended')) or real(*a, **k))
+    pane = ScriptPane([FORM], [FILLED])
+    monkeypatch.setattr(signin_fill, 'Pane', lambda: pane)
+    r = _fill_post(client, passcode=PASSCODE)
+    assert r.status_code == 200 and seen == [False]
+    from mc.blueprints import desk_connect_signin_routes as routes
+    monkeypatch.setattr(routes, 'is_unattended_caller', lambda: True)
+    assert _fill_post(client, passcode=PASSCODE).status_code == 403 and seen == [False]       # refused before the vault
+    # and the vault itself refuses an unattended read of that login
+    with pytest.raises(secrets_store.SecretDenied):
+        real('linkedin.login', consumer='test', unattended=True)
+
+
+@pytest.mark.parametrize('name', ['bank.login', 'x.login', 'linkedin', 'LINKEDIN.login2', ''])
+def test_a_fill_without_an_account_takes_only_a_login_in_the_services_own_namespace(env, monkeypatch, name):
+    """Finding 3: any vault login could be named, so another service's (a bank's) was typed into this page."""
+    from mc.desk_connect import signin_fill
+    client, _, _ = env
+    _login()
+    _login('bank.login')
+    _login('x.login')
+    pane = ScriptPane([FORM], [FILLED])
+    monkeypatch.setattr(signin_fill, 'Pane', lambda: pane)
+    r = _fill_post(client, login=name, passcode=PASSCODE)
+    assert r.status_code in (400, 409) and r.get_json()['code'] in ('login_not_for_service', 'bad_login')
+    assert pane.exprs == []
+
+
+def test_the_scope_is_not_taken_from_the_request(env, monkeypatch):
+    """Finding 7: naming a project in the body was all it took to use that project's login."""
+    from mc.desk_connect import signin_fill
+    client, _, _ = env
+    _login(scope='some-project')
+    pane = ScriptPane([FORM], [FILLED])
+    monkeypatch.setattr(signin_fill, 'Pane', lambda: pane)
+    r = _fill_post(client, project_id='some-project', passcode=PASSCODE)
+    assert r.status_code == 403 and r.get_json()['code'] == 'login_denied' and pane.typed() == []
+    r = client.post('/api/desk/connect/signin/options', json={'service': 'linkedin', 'project_id': 'some-project'})
+    assert r.get_json()['logins'] == []
+
+
+def test_set_secret_create_only_refuses_an_existing_entry_and_keeps_it(env):
+    from mc import secrets_store
+    _login()
+    with pytest.raises(secrets_store.SecretExists):
+        secrets_store.set_secret('linkedin.login', 'other-pw', username='other', entry_type=secrets_store.ENTRY_LOGIN, create_only=True)
+    assert secrets_store.get_secret_value('linkedin.login', consumer='test') == PW
+    secrets_store.set_secret('linkedin.second', 'v', username='u', entry_type=secrets_store.ENTRY_LOGIN, create_only=True)
+
+
+def test_a_login_that_appears_between_the_check_and_the_write_is_not_overwritten_or_rolled_back(env, monkeypatch):
+    """Finding 6: `check_free` then `set_secret` was not atomic. The entry that appeared in between must survive
+    the Save, including the rollback that follows a failure."""
+    from mc import secrets_store
+    from mc.desk_connect import signin_login_store as logins
+    _login()
+    monkeypatch.setattr(logins, 'check_free', lambda login: None)         # the check passed; then the entry appeared
+    new = logins.clean(_new_login())
+    with pytest.raises(logins.LoginError) as e:
+        logins.write(new)
+    assert e.value.status == 409 and e.value.code == 'secret_exists'
+    assert secrets_store.get_secret_value('linkedin.login', consumer='test') == PW
+    from mc.desk_connect import purpose_bindings
+    wrote: list = []
+    # the bindings code only records names this request wrote, so its rollback cannot reach that entry
+    assert purpose_bindings._unwrite(wrote) == [] and 'linkedin.login' in _vault_names()
