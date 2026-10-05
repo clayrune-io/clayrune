@@ -2216,6 +2216,9 @@ app.register_blueprint(_bp_desk_connect.bp)
 # Connect by URL, unknown services: page + MCP-registry lookup through the isolated transform. Own module.
 from mc.blueprints import desk_connect_discover_routes as _bp_desk_connect_discover  # noqa: E402
 app.register_blueprint(_bp_desk_connect_discover.bp)
+# Connect by URL, user-chosen MCP/API: editable parameter drafts from registry/README/OpenAPI. Own module.
+from mc.blueprints import desk_connect_detect_routes as _bp_desk_connect_detect  # noqa: E402
+app.register_blueprint(_bp_desk_connect_detect.bp)
 
 # Passkeys (docs/PASSKEYS_SPEC.md slice 1): host-only enrollment, list, revoke. Own
 # module; authorizes nothing yet. wire() hands it the configured port, from which it

@@ -6,6 +6,19 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-05] — Desk: detect connection details for any MCP server or API you choose
+
+- New `POST /api/desk/connect/detect` (people only, not agent sessions) reads an npm or PyPI
+  package listing, a pasted MCP configuration, an OpenAPI document or a documentation page and
+  returns EDITABLE draft connection details: transport, command and arguments or address,
+  credential names (never values), sign-in method and scopes. Every value says where it came
+  from; anything the source does not state is marked missing instead of guessed. Nothing is
+  installed, saved or connected, and a typed server or API address is never contacted.
+- README, page and pasted text is read only by Clayrune's isolated reader (no tools). If it is
+  unavailable the details found by plain parsing are kept and the draft says what is missing.
+- Fixed: installing an MCP server from a repository URL used to hand its README to a `claude`
+  call that had your tools. That fallback now uses the isolated reader or does nothing.
+
 ## [2026-10-05] — Desk: connect a curated MCP package (Notion), human-approved
 
 - Add service > Notion now offers an **MCP server** method for a package Clayrune has
