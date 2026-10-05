@@ -5,7 +5,7 @@ pythonnet>=3.0.0
 # ── Remote access (proprietary mc_remote module) ─────────────────────────────
 # These are required only when mc_remote is bundled. The open-source MC
 # build runs fine without them. Listed here so dev installs get them.
-cryptography>=49.0.0
+cryptography>=46.0.6
 keyring>=25.0
 requests>=2.33.0
 rfc8785>=0.1.4
@@ -53,16 +53,3 @@ pywinpty>=3.0.5; sys_platform == "win32"
 # trusting the request's own Origin header (no crash). Also used, optionally, by
 # the guardian and the PID-reuse guard.
 psutil>=5.9.0
-
-# -- Passkeys (mc/passkeys/, docs/PASSKEYS_SPEC.md) ---------------------------
-# Duo Labs py_webauthn (BSD-3-Clause) verifies registration (and, in a later
-# slice, assertion) ceremonies. Pinned to the reviewed 3.0.1 release and the
-# dependency set it was reviewed with; licence text in THIRD_PARTY_NOTICES.md.
-# webauthn 3.0.1 requires cryptography>=49.0.0, which is why the floor above
-# moved from 46.0.6. Optional at runtime: without it /api/passkeys reports
-# available: false and enrollment answers 503, nothing else changes.
-webauthn==3.0.1
-cbor2==6.1.5
-pyasn1==0.6.4
-pyasn1-modules==0.4.2
-pyOpenSSL==26.4.0

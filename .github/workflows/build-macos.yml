@@ -51,6 +51,10 @@ jobs:
           # imports behind `if sys.platform == 'win32'`.
           grep -v '^pythonnet' requirements.txt > /tmp/requirements-macos.txt
           pip install -r /tmp/requirements-macos.txt
+          # Optional passkey support (requirements-passkeys.txt): best-effort so
+          # a package without a wheel here cannot fail the release build; the
+          # app reports passkeys unavailable if it is absent.
+          pip install -r requirements-passkeys.txt || echo "::warning::passkey requirements not installed; this build ships without passkeys"
           # pywebview on macOS needs pyobjc-core + pyobjc-framework-Cocoa /
           # WebKit. The pywebview wheel doesn't declare them as hard deps,
           # so we install them explicitly here.

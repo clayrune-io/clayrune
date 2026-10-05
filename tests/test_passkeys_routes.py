@@ -199,12 +199,13 @@ def test_finish_and_revoke_refuse_non_host_callers_without_touching_state(
     assert local_auth._LOCAL_AUTH_FAILS == {}
 
 
-def test_status_get_reports_why_this_browser_cannot_enroll(app):
+def test_status_get_reports_why_this_browser_cannot_enroll(app, monkeypatch):
     lan = call(browser(app, '192.168.1.20'), 'get', '/api/passkeys', headers={}).get_json()
     assert lan['can_enroll_here'] is False and lan['enroll_blocked_reason'] == 'not_loopback'
     tunnel = call(browser(app), 'get', '/api/passkeys',
                   headers={'Cf-Access-Jwt-Assertion': 'a.b.c'}).get_json()
     assert tunnel['enroll_blocked_reason'] == 'proxied'
+    monkeypatch.setattr(ceremony, 'library_available', lambda: True)   # this test is about the door
     host = call(browser(app), 'get', '/api/passkeys', headers={}).get_json()
     assert host['can_enroll_here'] is True and host['origin'] == ORIGIN
 
@@ -546,6 +547,37 @@ def test_without_the_library_the_routes_report_it_and_the_list_still_works(app, 
     r = start(c)
     assert r.status_code == 503 and r.get_json()['error'] == 'passkeys_unavailable'
     assert local_auth._LOCAL_AUTH_FAILS == {}
+
+
+def test_with_the_import_itself_blocked_list_is_200_and_enrol_is_503(app, monkeypatch):
+    # Not a patched helper: `import webauthn` really raises, as on a machine where
+    # the optional requirements-passkeys.txt install failed (no cbor2 wheel).
+    # Runs the same whether or not the library is installed on this box.
+    for name in [m for m in sys.modules if m == 'webauthn' or m.startswith('webauthn.')]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setitem(sys.modules, 'webauthn', None)
+    with pytest.raises(ImportError):
+        __import__('webauthn')
+    c = browser(app)
+    r = call(c, 'get', '/api/passkeys')
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j['available'] is False and j['credentials'] == []
+    assert j['can_enroll_here'] is False, 'host-only caller must not be told it can enrol'
+    for method, path, body in (('post', OPTIONS, {'passcode': PASSCODE}),
+                               ('post', FINISH, {'ceremony_id': 'x', 'credential': {}})):
+        resp = call(c, method, path, body)
+        assert resp.status_code == 503 and resp.get_json()['error'] == 'passkeys_unavailable', path
+    assert local_auth._LOCAL_AUTH_FAILS == {}, 'a 503 must not spend a passcode guess'
+    assert passkey_ids() == []
+
+
+def test_can_enroll_here_is_false_from_a_lan_peer_too_and_true_only_with_library_and_host(app, monkeypatch):
+    monkeypatch.setattr(ceremony, 'library_available', lambda: True)
+    c = browser(app)
+    assert call(c, 'get', '/api/passkeys').get_json()['can_enroll_here'] is True
+    lan = browser(app, addr='192.168.1.50')
+    assert call(lan, 'get', '/api/passkeys').get_json()['can_enroll_here'] is False
 
 
 def test_audit_records_outcomes_without_bodies_or_secrets(app, authn):

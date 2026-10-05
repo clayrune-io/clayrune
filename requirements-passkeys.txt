@@ -1,0 +1,20 @@
+# Passkeys (mc/passkeys/, docs/PASSKEYS_SPEC.md) -- OPTIONAL dependencies.
+#
+# Kept out of requirements.txt on purpose. cbor2 is a Rust extension with no
+# wheel for every platform we install on (Intel macOS, 32-bit Linux, Python
+# 3.9), and `pip install -r` is all-or-nothing: one unbuildable package here
+# would abort a fresh install or fail the update sync and block every other new
+# dependency. Installers and mc/update_requirements.py install this file as a
+# separate, best-effort step: a failure is logged and the app runs without
+# passkeys (GET /api/passkeys reports available: false, enrollment answers 503).
+#
+# Duo Labs py_webauthn (BSD-3-Clause), pinned to the reviewed 3.0.1 release and
+# the dependency set it was reviewed with. Licence text: THIRD_PARTY_NOTICES.md.
+# webauthn 3.0.1 requires cryptography>=49.0.0; requirements.txt keeps its own,
+# lower floor for the rest of the app, so the higher one lives only here.
+webauthn==3.0.1
+cbor2==6.1.5
+pyasn1==0.6.4
+pyasn1-modules==0.4.2
+pyOpenSSL==26.4.0
+cryptography>=49.0.0

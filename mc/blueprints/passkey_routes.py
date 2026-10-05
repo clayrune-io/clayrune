@@ -97,11 +97,14 @@ def _body() -> dict:
 def list_passkeys():
     blocked = host_check.refusal_code(request.remote_addr, request.headers, _PORT,
                                       require_origin=False)
+    available = ceremony.library_available()
     out = {
-        'available': ceremony.library_available(),
+        'available': available,
         'rp_id': host_check.RP_ID,
         'origin': host_check.expected_origin(_PORT),
-        'can_enroll_here': blocked is None,
+        # Enrollment needs the library as well as the right door: never say yes
+        # to a caller whose POST would answer 503.
+        'can_enroll_here': available and blocked is None,
         'enroll_blocked_reason': blocked,
         'enroll_blocked_message': host_check.refusal_message(blocked, _PORT) if blocked else '',
     }

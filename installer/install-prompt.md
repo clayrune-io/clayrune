@@ -127,6 +127,9 @@ Then create `<INSTALL_DIR>/install.log` (or append if it exists) with a header:
 4. Install Python dependencies into the venv:
    - macOS / Linux: `<INSTALL_DIR>/.venv/bin/pip install -r <INSTALL_DIR>/requirements.txt`
    - Windows: `<INSTALL_DIR>\.venv\Scripts\pip.exe install -r <INSTALL_DIR>\requirements.txt`
+   - Then, separately and OPTIONAL, the same command with `requirements-passkeys.txt`.
+     If it fails (no wheel for this platform), carry on: do not stop the install
+     and do not retry; passkeys just stay unavailable.
 
 ### [STEP 4/6] Set up Node.js
 

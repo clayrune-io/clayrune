@@ -17,9 +17,12 @@
   nothing reads the registry to authorize anything.
 - Registry in `~/.clayrune/passkeys/` (never the repo or `data/projects/`): locked
   atomic writes, a corrupt registry refuses rather than reading as empty.
-- New dependency: `webauthn==3.0.1` (BSD-3-Clause) and its pinned set, which raises
-  the `cryptography` floor to 49. Optional at runtime: without it enrolment says so.
-  Licence text in `THIRD_PARTY_NOTICES.md`.
+- New optional dependency set in `requirements-passkeys.txt` (`webauthn==3.0.1`,
+  BSD-3-Clause, and its pins; `cryptography>=49` lives only there). It is kept out of
+  `requirements.txt` because `cbor2` has no wheel on every platform and `pip install -r`
+  is all-or-nothing. The installers and the update sync install it as a separate
+  best-effort step: if it fails, that is logged, everything else installs, and passkeys
+  report unavailable (enrolment answers 503). Licence text in `THIRD_PARTY_NOTICES.md`.
 - Server: `mc/passkeys/`, `mc/blueprints/passkey_routes.py`. Front end:
   `static/js/passkeys-panel.js`. Tests: `tests/test_passkeys_{host_check,store,routes}.py`
   (software authenticator), `tools/smoke/passkeys-settings.mjs` (Chrome virtual authenticator).

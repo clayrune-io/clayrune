@@ -110,6 +110,7 @@ Requires Python 3.9+ and the [Claude CLI](https://docs.anthropic.com/en/docs/cla
 git clone https://github.com/clayrune-io/clayrune.git
 cd mission-control
 pip install -r requirements.txt
+pip install -r requirements-passkeys.txt   # optional: passkey support; skip if it fails
 python app.py        # native desktop window
 # or: python server.py   → http://localhost:5199
 ```
