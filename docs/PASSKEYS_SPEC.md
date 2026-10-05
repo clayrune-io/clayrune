@@ -114,3 +114,14 @@ Publishing tests use fake transports; assert one side effect, unchanged vault re
 4. **Assurance:** broad UV compatibility with managers/synced credentials or attested hardware-only policy. Recommend compatibility with the stated limited threat claim; hardware-only contradicts requested manager coverage and adds attestation operations. Neither protects a writable verifier.
 5. **Intentional exceptions:** include picker hover/pick and setup completion literally (frequent prompts/bootstrap friction), or classify them as interaction filters outside authorization proof. Recommend documented exceptions, pending explicit scope approval; no silent omission.
 6. **Delivery choices:** adopt `py_webauthn` versus evaluate Yubico `python-fido2`; integrate native shells initially versus browser-first. Recommend py_webauthn and browser-first, followed by separately tested shells. Alternative costs: broader dependency review and native signing/domain-association work before initial release.
+
+## Decisions (Dave, 2026-10-04; Ron may overrule any of them)
+
+1. **Fallback scope:** protection is installation-wide. Legacy-origin exceptions are explicit, human-only to enable, and disclosed as the security ceiling. Accepted.
+2. **First tunnel credential:** the host approves a pending enrollment, bound to the new credential's key hash, target RP and browser session. A bearer link alone never activates one. Accepted.
+3. **Lost-all recovery:** host passcode re-entry plus explicit revocation and re-enrollment. No remote automatic reset. Accepted.
+4. **Assurance:** broad compatibility (UV, synced credentials, password managers), with the limited threat claim above. Accepted.
+5. **Exceptions:** picker hover/pick and setup completion are documented interaction filters, outside authorization proof, and listed by name. Accepted.
+6. **Delivery:** `py_webauthn`, pinned, browser-first. Native shells come later as their own slice. Accepted.
+
+Build order: slice 1 (core, disabled for actions) may build now. Slice 2 changes every human-only gate, so it waits until Ron has read this spec.
