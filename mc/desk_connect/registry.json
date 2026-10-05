@@ -88,6 +88,22 @@
       ]
     },
     {
+      "id": "notion",
+      "label": "Notion",
+      "aliases": ["Notion", "Notion MCP"],
+      "url": "https://www.notion.so",
+      "hosts": ["notion.so", "www.notion.so", "notion.com", "www.notion.com", "developers.notion.com"],
+      "options": [
+        {
+          "method": "mcp",
+          "support": "available",
+          "title": "Notion MCP server (reviewed package)",
+          "evidence": "Clayrune's reviewed MCP packages",
+          "guidance": "Installs the Notion MCP server at a pinned version so agents can read and edit the pages you share with your own Notion integration. You approve the package details before anything is installed."
+        }
+      ]
+    },
+    {
       "id": "linkedin",
       "label": "LinkedIn",
       "aliases": ["LinkedIn", "Linked In"],

@@ -67,6 +67,8 @@
       _poll(res, _token);
     } else if (res.setup && res.setup.state === 'failed') {
       _ui.signin = { state: 'failed', message: res.setup.message || 'The sign-in could not be started.' };
+    } else if (res.setup && res.setup.state === 'done' && res.setup.message) {
+      _ui.setup = res.setup.message;      // slice 4: a curated MCP package was registered; there is no sign-in to follow
     }
   }
 
@@ -91,6 +93,7 @@
       ? `<div><dt>Verified by</dt><dd data-cf-result-proof>${esc(st.capability || '')}${st.identity ? ` as <code>${esc(st.identity)}</code>` : ''}${st.at ? `, ${esc(String(st.at).replace('T', ' ').slice(0, 16))} UTC` : ''}</dd></div>` : '';
     const si = _ui.signin;
     const signin = si ? `<div class="desk-v1-cf-msg" data-cf-msg="${si.state === 'failed' ? 'error' : 'ok'}" data-cf-signin="${esc(si.state)}" role="${si.state === 'failed' ? 'alert' : 'status'}">${esc(si.message)}</div>` : '';
+    const setup = _ui.setup ? `<div class="desk-v1-cf-msg" data-cf-msg="ok" data-cf-setup="done" role="status">${esc(_ui.setup)}</div>` : '';
     const msg = _ui.message ? `<div class="desk-v1-cf-msg" data-cf-msg="${_ui.messageKind || 'ok'}" data-cf-result-message role="status">${esc(_ui.message)}</div>` : '';
     const canCheck = ['key_stored', 'signed_in', 'verified', 'check_failed', 'unknown'].indexOf(st.state) >= 0;
     const buttons = [
@@ -106,7 +109,7 @@
           <div><dt>Stored in Secrets</dt><dd data-cf-result-stored>${stored}</dd></div>
           ${proof}
         </dl>
-        ${signin}${msg}
+        ${signin}${setup}${msg}
         <div class="desk-v1-rules-hint">Saving a key or signing in does not prove it works. Only “Check it now” can mark it Verified, and changing the credential clears that.</div>
         <div class="desk-v1-cf-actions" data-cf-actions>${buttons}</div>`;
   }

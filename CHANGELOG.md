@@ -6,6 +6,21 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-05] — Desk: connect a curated MCP package (Notion), human-approved
+
+- Add service > Notion now offers an **MCP server** method for a package Clayrune has
+  reviewed (`@notionhq/notion-mcp-server`, pinned version and checksum). Other services still
+  show MCP as information only; arbitrary packages and remote endpoints are not offered.
+- The review card shows only reviewed facts (package, version, checksum, source, licence,
+  size, purpose, permissions, where the token lives); no package or README text is read.
+  Save stays disabled until you tick the approval, then asks for the passcode once.
+- Save stores the token in the vault and registers the server with agents. The MCP config
+  holds a vault name, never the token, and nothing is run at Save: the package starts the
+  first time an agent session uses it. Before registering, the pinned checksum is compared
+  with the public npm registry; a mismatch is not registered.
+- A failed setup reads "Saved; setup failed" with the reason; the token stays stored and a
+  retry does not ask for it again. An agent session gets 403 on every one of these routes.
+
 ## [2026-10-04] — Desk: look up a service Clayrune does not know
 
 - An address the Add service flow does not recognise now offers **Look it up**: Clayrune

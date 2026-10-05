@@ -34,6 +34,8 @@ LABELS = {
     'sign_in_required': 'Sign-in required',
     'key_unreadable': 'Stored key cannot be read',
     'check_failed': 'Check failed',
+    'registered': 'Registered with agents, not verified',
+    'setup_failed': 'Saved; setup failed',
     'not_connected': 'Not connected',
 }
 _REMEMBER = 200
