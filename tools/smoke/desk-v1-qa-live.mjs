@@ -128,6 +128,31 @@ CASES.push({
   },
 });
 
+// ── QA-3 ─────────────────────────────────────────────────────────────────────
+// A Studio Recent row whose title is one long unbroken name (an uploaded "Gemini_Generated_Image_..."
+// file) ran past the row at 390: the name was cut off at the right edge and slid under the trash
+// button. The text must wrap inside its column.
+CASES.push({
+  id: 'QA-3', name: 'Studio Recent row wraps a long unbroken file name', run: async (browser) => {
+    for (const [tag, vp] of [['1440', DESKTOP], ['390', PHONE]]) {
+      const { ctx, page } = await boot(browser, vp);
+      const name = 'Gemini_Generated_Image_kcgfiwkcgfiwkcgf-4f2725c8.jpeg';
+      await mount(page, `<div class="desk-v1-studio-recent"><div class="desk-v1-studio-recent-item">
+        <button type="button" class="desk-v1-studio-recent-row"><span class="desk-v1-studio-recent-icon">🖼</span>
+          <span class="desk-v1-studio-recent-main"><span class="desk-v1-studio-recent-title">${name} · image</span><span class="desk-v1-studio-recent-meta">Saved to the Material library · not attached</span></span></button>
+        <button type="button" class="desk-v1-studio-recent-del" aria-label="Delete">🗑</button></div></div>`);
+      const g = await page.evaluate(() => {
+        const t = document.querySelector('[data-qa-scratch] .desk-v1-studio-recent-title'), del = document.querySelector('[data-qa-scratch] .desk-v1-studio-recent-del');
+        const tr = t.getBoundingClientRect(), dr = del.getBoundingClientRect(), main = t.parentElement;
+        return { titleRight: tr.right, delLeft: dr.left, overflow: main.scrollWidth - main.clientWidth };
+      });
+      check(g.overflow <= 1 && g.titleRight <= g.delLeft + 1, `[${tag}] the long name stays in its column (ends ${Math.round(g.titleRight)}, trash starts ${Math.round(g.delLeft)})`,
+        `[${tag}] the long name runs ${Math.round(g.overflow)}px past its column and ends at ${Math.round(g.titleRight)}, under the trash button at ${Math.round(g.delLeft)}`);
+      await ctx.close();
+    }
+  },
+});
+
 // ── runner ───────────────────────────────────────────────────────────────────
 const only = process.argv[2];
 const browser = await chromium.launch();

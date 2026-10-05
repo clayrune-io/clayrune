@@ -35,8 +35,8 @@
   background: var(--surface2); border-radius: 7px; font-size: 14px; color: var(--text-dim);
 }
 .desk-v1-studio-recent-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.desk-v1-studio-recent-title { font-size: 13.5px; font-weight: 700; }
-.desk-v1-studio-recent-meta { font-size: 11.5px; color: var(--text-faint); }
+.desk-v1-studio-recent-title { font-size: 13.5px; font-weight: 700; overflow-wrap: anywhere; }
+.desk-v1-studio-recent-meta { font-size: 11.5px; color: var(--text-faint); overflow-wrap: anywhere; }
 .desk-v1-studio-lib { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
 .desk-v1-studio-folder {
   display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 16px 8px;
