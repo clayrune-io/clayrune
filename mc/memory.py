@@ -5587,13 +5587,11 @@ def _scribe_call(model, instruction, body):
     """One blocking `claude -p` call (prompt via stdin to dodge arg limits).
 
     Returns the model's text output, or raises on failure/timeout.
-    Delegates to ClaudeRuntime.oneshot() — single source of truth. This is
-    the ONE choke point for Scribe, condense AND the Distiller (which calls
-    in via the wired _scribe_call hook, mc/distiller.py) — all three
-    summarize through Claude specifically regardless of the session's own
-    provider (parity note at _scribe_extract above), because it's the only
-    runtime with a verified toolless oneshot (see
-    agent_runtime.claude_oneshot_available's docstring).
+    Delegates to ClaudeRuntime.oneshot(). This is now only the LEGACY
+    FALLBACK: Scribe, condense and the Distiller go through `_model_call`,
+    which runs on the session's or project's own provider via
+    `_provider_transform` whenever a provider context is set, and reaches
+    this Claude path only when no provider is known.
     Callers that catch subprocess.TimeoutExpired should also catch RuntimeError
     since oneshot() normalises all failures to a None return which we raise here.
     """
