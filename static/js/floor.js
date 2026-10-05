@@ -111,7 +111,11 @@ function _floorLine(f, helperActive) {
   // happening on the project's floor". It IS between its own turns — that
   // part of `idle` is true — but the room is not quiet, so the second line
   // has to say what actually is: the helper, not the parent, is running.
-  if (f.state === 'idle') return helperActive ? 'its helper is working' : 'idle — between turns';
+  if (f.state === 'idle') {
+    // MC-946: the turn ended but the spawner callback is held on a background job.
+    if (f.bg_wait) return f.bg_wait;
+    return helperActive ? 'its helper is working' : 'idle — between turns';
+  }
   // `activity` is only non-empty when the server streams partial messages.
   // Falling back to the plain word keeps the row from going blank when the
   // flag is off, rather than implying the session stalled.

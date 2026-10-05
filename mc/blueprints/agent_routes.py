@@ -6164,6 +6164,7 @@ def _read_agent_stream_b(proc, session):
                             _observe_negation_interrupt(session, tool_name, tool_input)
                             _observe_memory_push_input(session, tool_name, tool_input)
                             _note_tool_use_id(session, tool_name, block.get('id'))
+                            _bg_tasks.note_tool_use(session, block)
                             _midturn.note_tool_use(session, block)
                             _coverage_note_tool(session, tool_name, tool_input)
                             if tool_name in ('Write', 'Edit'):
@@ -8439,7 +8440,11 @@ def _note_background_system_event(session, msg):
         return
     if (evt == 'notification' and session.get('status') == 'idle'
             and not session.get('waiting_for_question')):
-        session[_bg_tasks.RESUME_PENDING_KEY] = True
+        # MC-946: a shell call the CLI moved to the background on timeout also
+        # wakes the CLI, but the agent never waited on it — that wake must not
+        # re-arm the spawner callback (see `_note_self_started_turn`).
+        session[_bg_tasks.AUTO_WAKE_KEY if session.pop(_bg_tasks.LAST_END_AUTO_KEY, None)
+                else _bg_tasks.RESUME_PENDING_KEY] = True
         status = msg.get('status') or 'finished'
         summary = (msg.get('summary') or msg.get('task_id') or '')[:120]
         session['log_lines'].append(
@@ -8519,6 +8524,12 @@ def _note_self_started_turn(session):
     _record_usage_breakdown_turn_started(session)
     interim = session.pop(_bg_tasks.INTERIM_KEY, None)
     background_wake = background_wake or bool(interim)
+    # MC-946: woken by a task the agent never waited on (timeout-moved) and by
+    # nothing else. The spawner already has the real answer; keep the owner,
+    # leave the latch, send nothing for this turn.
+    if session.pop(_bg_tasks.AUTO_WAKE_KEY, None) and not background_wake:
+        session.setdefault(_TURN_OWNER_KEY, _OWNER_SPAWNER)
+        return
     owner = (session.get(_TURN_OWNER_KEY) or _OWNER_SPAWNER) if background_wake else _OWNER_SPAWNER
     session[_TURN_OWNER_KEY] = owner
     if owner == _OWNER_SPAWNER and (interim or session.get('_notify_session_sent')):
@@ -8541,7 +8552,9 @@ def _hold_notify_for_background(session):
     """MC-958: True when this turn ended with background tasks still open, in
     which case the spawner callback is held for the CLI's own follow-up turn.
     False (callback may fire now) otherwise."""
-    tasks = _bg_tasks.open_tasks(session)
+    # MC-946: only tasks the agent started on purpose hold it; a timeout-moved
+    # shell call is one it already moved on from.
+    tasks = _bg_tasks.held_tasks(session)
     if not tasks:
         session.pop(_bg_tasks.DEFERRED_KEY, None)
         return False
@@ -8549,7 +8562,7 @@ def _hold_notify_for_background(session):
         session[_bg_tasks.DEFERRED_KEY] = _time.time()
         session['log_lines'].append(
             f"[turn ended with {len(tasks)} background task(s) still running "
-            f"({_bg_tasks.describe(session)}) — the session resumes on its own "
+            f"({_bg_tasks.describe(session, tasks=tasks)}) — the session resumes on its own "
             f"when they finish]")
     return True
 
@@ -14750,6 +14763,9 @@ def agent_status(project_id):
                 'live_copies': [o for o in _live_by_csid.get(s.get('claude_session_id') or '', [])
                                 if o != sid],
                 'cwd_moved_from': s.get('_cwd_moved_from', ''),
+                # MC-946: set while a spawner callback is held on a genuine
+                # background task and the turn has ended.
+                'bg_wait': _bg_tasks.waiting_label(s),
             })
     # Sort: running first, then newest first (ISO timestamps sort lexically)
     sessions.sort(key=lambda s: (
