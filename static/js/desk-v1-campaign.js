@@ -562,7 +562,13 @@
     const camp = _campaign(params.campaignId);
     if (!camp || camp.state !== 'draft') { el.innerHTML = ''; return; }
     const map = _campMap(camp);
-    const idx = DeskV1Kit.MAP_STOPS.indexOf(map.stop);
+    // Follows the stop ON SCREEN (`params.panel`, the same source the stepper's
+    // "here" reads), not `map.stop`: the Calendar/Results/Content aliases open a
+    // stop without writing the cursor, and a footer read off the stale cursor
+    // offered Back/Next relative to a stop the user is not looking at. Only a
+    // panel that is not a stop falls back to the cursor.
+    const here = DeskV1Kit.MAP_STOPS.indexOf(params.panel) >= 0 ? params.panel : map.stop;
+    const idx = DeskV1Kit.MAP_STOPS.indexOf(here);
     const backStop = idx > 0 ? DeskV1Kit.MAP_STOPS[idx - 1] : null;
     const nextStop = (idx >= 0 && idx < DeskV1Kit.MAP_STOPS.length - 1) ? DeskV1Kit.MAP_STOPS[idx + 1] : null;
     if (!backStop && !nextStop) { el.innerHTML = ''; return; }
@@ -576,7 +582,7 @@
     const nextBtn = el.querySelector('[data-map-next]');
     if (nextBtn) nextBtn.onclick = () => {
       const doneArr = map.done || (map.done = []);
-      if (!doneArr.includes(map.stop)) doneArr.push(map.stop);
+      if (!doneArr.includes(here)) doneArr.push(here);
       _gotoMapStop(camp, nextStop);
     };
   }
