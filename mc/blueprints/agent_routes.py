@@ -124,8 +124,8 @@ from mc.usage_breakdown_store import UsageBreakdownStore as _UsageBreakdownStore
 import mc.project_sync as _project_sync  # MC-998 phase 3: LOC attribution git numstat
 from mc.delegation_delivery import (DeliveryStore, callback_payload,
                                     DeliveryBlocked, DeliveryDeferred,
-                                    DeliveryUncertain, drain_once,
-                                    event_id_for_turn)
+                                    DeliveryNotHandedOff, DeliveryUncertain,
+                                    drain_once, event_id_for_turn)
 
 # Cross-blueprint imports (the 1.4/1.5/1.11 precedent — defs, not wire
 # placeholders; called at request/stream time only, long after server.py has
@@ -8413,9 +8413,16 @@ def _maybe_notify_spawner(session, summary):
         # a crash in that window used to lose the only notification forever.
         if _notify_agent_spawner(session.get('project_id', ''), notify_sid, session, summary) is not False:
             session['_notify_session_sent'] = True
+    elif has_spawner:
+        _log(f"[notify-spawner] callback suppressed for {session.get('session_id', '')}: "
+             f"spawner latch _notify_session_sent already set for turn "
+             f"{session.get('_delegation_turn', 1)}", flush=True)
     if has_workflow and not session.get('_notify_workflow_sent'):
         session['_notify_workflow_sent'] = True
         _notify_workflow_step(wf_wait, session, summary)
+    elif has_workflow:
+        _log(f"[notify-spawner] workflow callback suppressed for {session.get('session_id', '')}: "
+             f"_notify_workflow_sent already set (a workflow step completes once)", flush=True)
 
 
 def _note_background_system_event(session, msg):
@@ -8471,8 +8478,18 @@ def _note_self_started_turn(session):
     """MC-958: main-thread assistant output while the session is `idle` means
     the CLI started a turn nobody in Clayrune sent — the wake-up after a
     background job. Mark it `running` so the UI, the guardian and a sender
-    see the truth, and re-arm the spawner callback if the wait cap already
-    spent it on an interim report."""
+    see the truth, and re-arm the spawner callback if the last turn already
+    spent it (the wait cap's interim report, or the previous turn's own
+    callback).
+
+    Any self-started turn re-arms, not only the interim one: a Claude Code
+    SendMessage peer message, or a background-task wake after the final
+    callback, starts a turn no Clayrune send announced, so `_notify_session_sent`
+    was still set from the turn before and `_maybe_notify_spawner` swallowed
+    the new turn's end. At least 6 callbacks lost 2026-09-29..10-05 (children
+    1a168d102572 and 8d17c1c423d8 on 2026-10-04). Only the spawner latch
+    re-arms; `_notify_workflow_sent` stays permanent (a workflow step
+    completes once)."""
     if session.get('status') != 'idle' or session.get('waiting_for_question'):
         return
     session['status'] = 'running'
@@ -8484,7 +8501,16 @@ def _note_self_started_turn(session):
     # the INTERIM-latched one below, reopens it. Same exclusions as that
     # writer, same best-effort write.
     _record_usage_breakdown_turn_started(session)
-    if session.pop(_bg_tasks.INTERIM_KEY, None):
+    interim = session.pop(_bg_tasks.INTERIM_KEY, None)
+    if interim or session.get('_notify_session_sent'):
+        # `_last_reply_text` joins every trailing non-bracket line, so a peer
+        # wake with nothing between it and the previous answer would hand the
+        # spawner BOTH turns as this turn's reply. A background wake already
+        # left its own "[... resuming]" line; a peer message leaves none.
+        lines = session.get('log_lines')
+        last = next((l.strip() for l in reversed(lines or []) if (l or '').strip()), '')
+        if lines is not None and not last.startswith('['):
+            lines.append('[agent started a new turn on its own — not sent from Clayrune]')
         try:
             _rearm_notify_for_new_turn(session)
         except Exception as e:
@@ -8757,13 +8783,13 @@ def _process_inbox(row):
     payload = raw['payload']
     token = row.get('fence_token') or ''
     if not _delivery_store or not token or not _delivery_store.revalidate_claim('inbox', row['event_id'], token):
-        raise DeliveryUncertain('inbox claim expired or was fenced before action')
+        raise DeliveryNotHandedOff('inbox claim expired or was fenced before action')
     # Revalidate before and after waiting for the manager lock. The second
     # fenced check closes the expired-lease/stale-sender window.
     manager = get_manager(row['project_id'])
     with manager.lock:
         if not _delivery_store.revalidate_claim('inbox', row['event_id'], token):
-            raise DeliveryUncertain('inbox claim expired while waiting for parent lock')
+            raise DeliveryNotHandedOff('inbox claim expired while waiting for parent lock')
         # Shutdown admission is separate from loop ownership. A timed-out
         # stop may leave this caller waiting on the manager lock; once the
         # process crosses cleanup admission, it must not begin a new parent

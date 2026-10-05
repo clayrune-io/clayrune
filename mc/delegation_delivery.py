@@ -34,6 +34,15 @@ class DeliveryUncertain(RuntimeError):
     """A provider submission may have happened; never replay automatically."""
 
 
+class DeliveryNotHandedOff(DeliveryUncertain):
+    """Failed before the parent could have been handed the message.
+
+    Still an ``uncertain`` subclass so any caller that only knows
+    DeliveryUncertain keeps failing closed; `mc.delegation_retry` is what
+    tells the two apart and retries this one.
+    """
+
+
 class DeliveryStore:
     """SQLite-backed child outbox and parent inbox.
 
@@ -654,6 +663,7 @@ def drain_once(store: DeliveryStore, *, send_outbox: Callable[[dict[str, Any]], 
             store.submit_inbox(row['event_id'], row['fence_token'], evidence)
             done += 1
         except Exception as exc:
-            state = 'blocked' if isinstance(exc, DeliveryBlocked) else ('pending' if isinstance(exc, DeliveryDeferred) else 'uncertain')
+            from mc.delegation_retry import classify_inbox_failure  # imports this module
+            state = classify_inbox_failure(row, exc)
             store.finish_inbox(row['event_id'], row['fence_token'], str(exc), state=state)
     return done
