@@ -42,6 +42,7 @@
 .desk-v1-cf-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; flex: 1 1 160px; }
 .desk-v1-cf-msg { font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; }
 .desk-v1-cf-msg[data-cf-msg="error"] { color: var(--amber-text); }
+.desk-v1-cf-msg[data-cf-msg="warn"] { color: var(--amber-text); }
 .desk-v1-cf-msg[data-cf-msg="ok"] { color: var(--green-text, var(--text-dim)); }
 .desk-v1-cf-hint { color: var(--text-dim); }
 .desk-v1-cf-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 4px; }

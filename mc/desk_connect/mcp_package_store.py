@@ -23,6 +23,11 @@ fetching anything, which is the safe direction. (Node resolves a bare import by 
 the parent directories for a `node_modules`; a package that did import one would find only
 what the account owner put there. The reviewed bundle imports none.)
 
+The download has ONE deadline for the whole transfer (`DOWNLOAD_TIMEOUT`), not one per read: a
+server that sends a byte a minute never reaches a per-read timeout. Two Saves of the same package
+at once are serialised where the directory is replaced (a per-package lock): provisioning runs
+outside the commit lock, and an unserialised pair raced `rmtree` against `os.replace`.
+
 Every refusal is an `ActivationError` with a plain message; none carries package text or a
 network error's body. The directory is replaced as a whole on each run, so what a launch
 line points at is always what was just verified. The files are as trustworthy as the
@@ -37,6 +42,8 @@ import io
 import os
 import shutil
 import tarfile
+import threading
+import time
 import urllib.request
 import uuid
 from pathlib import PurePosixPath
@@ -48,6 +55,16 @@ from mc.desk_connect.mcp_errors import ActivationError
 DOWNLOAD_TIMEOUT = 60                    # seconds, for the whole download
 MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024    # a guard against an endless response; the real file is a few MB
 _CHUNK = 1 << 16
+
+_locks_guard = threading.Lock()
+_locks: dict[tuple, threading.Lock] = {}
+
+
+def _package_lock(entry: dict) -> threading.Lock:
+    """One lock per (package id, version): the directory that is replaced as a whole."""
+    key = (entry['id'], entry['version'])
+    with _locks_guard:
+        return _locks.setdefault(key, threading.Lock())
 
 
 def packages_root():
@@ -68,14 +85,18 @@ def entry_path(entry: dict):
 
 
 def _fetch(url: str, limit: int, timeout: float) -> bytes:
-    """The one network call. Indirection so tests supply bytes (or a failure) and the
-    real registry is never touched by the suite."""
+    """The one network call, finished within `timeout` seconds in total (TimeoutError
+    otherwise). Indirection so tests supply bytes (or a failure) and the real registry is
+    never touched by the suite."""
     if not url.startswith('https://'):
         raise ValueError('not an https address')
+    deadline = time.monotonic() + timeout
     req = urllib.request.Request(url, headers={'User-Agent': 'Clayrune', 'Accept': 'application/octet-stream'})
     buf = bytearray()
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         while True:
+            if time.monotonic() > deadline:
+                raise TimeoutError('the download did not finish in time')
             chunk = resp.read(_CHUNK)
             if not chunk:
                 break
@@ -89,11 +110,33 @@ def integrity_of(data: bytes) -> str:
     return 'sha512-' + base64.b64encode(hashlib.sha512(data).digest()).decode('ascii')
 
 
+def _fetch_within(url: str, limit: int, timeout: float) -> bytes:
+    """`_fetch`, abandoned after `timeout` seconds even if one read is blocked on the socket
+    (the deadline inside `_fetch` is only checked between reads). The worker is a daemon and
+    stops at its own next deadline check; its result is discarded."""
+    out: dict = {}
+
+    def run():
+        try:
+            out['data'] = _fetch(url, limit, timeout)
+        except BaseException as e:                              # re-raised in the caller
+            out['err'] = e
+
+    t = threading.Thread(target=run, name='mcp-package-download', daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError('the download did not finish in time')
+    if 'err' in out:
+        raise out['err']
+    return out['data']
+
+
 def download(entry: dict) -> bytes:
     """The tarball's bytes, checked against the reviewed checksum. Raises ActivationError."""
     spec = f'{entry["package"]}@{entry["version"]}'
     try:
-        data = _fetch(entry['tarball'], MAX_DOWNLOAD_BYTES, DOWNLOAD_TIMEOUT)
+        data = _fetch_within(entry['tarball'], MAX_DOWNLOAD_BYTES, DOWNLOAD_TIMEOUT)
     except TimeoutError as e:                                   # socket.timeout is TimeoutError
         raise ActivationError(f'the package registry did not answer within {DOWNLOAD_TIMEOUT} seconds, so '
                               f'{spec} could not be downloaded. Save again later.', 'download_timeout', 504) from e
@@ -160,25 +203,26 @@ def install(entry: dict) -> str:
     data = download(entry)
     final = package_dir(entry)
     tmp = final.parent / f'.{entry["version"]}.{uuid.uuid4().hex[:8]}.tmp'
-    try:
-        tmp.mkdir(parents=True)
-        _extract(data, tmp, max(entry['unpacked_bytes'], len(data)) * 2)
-        if not (tmp / 'package' / PurePosixPath(entry['entry'])).is_file():
-            raise ActivationError('the downloaded package does not contain the file Clayrune would run, so it was '
-                                  'NOT registered', 'package_invalid', 502)
-        if final.exists():
-            shutil.rmtree(final)
-        os.replace(tmp, final)
-    except ActivationError:
-        raise
-    except OSError as e:
-        _log(f'[desk_connect] MCP package could not be placed: {type(e).__name__}', flush=True)
-        raise ActivationError('the downloaded package could not be written to Clayrune\'s own folder; see the '
-                              'server log', 'package_write_failed', 500) from e
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    with _package_lock(entry):                      # a second Save of this package waits for the first
         try:
-            final.parent.rmdir()                # the per-package folder this call created, if nothing was installed in it
-        except OSError:
-            pass
+            tmp.mkdir(parents=True)
+            _extract(data, tmp, max(entry['unpacked_bytes'], len(data)) * 2)
+            if not (tmp / 'package' / PurePosixPath(entry['entry'])).is_file():
+                raise ActivationError('the downloaded package does not contain the file Clayrune would run, so it was '
+                                      'NOT registered', 'package_invalid', 502)
+            if final.exists():
+                shutil.rmtree(final)
+            os.replace(tmp, final)
+        except ActivationError:
+            raise
+        except OSError as e:
+            _log(f'[desk_connect] MCP package could not be placed: {type(e).__name__}', flush=True)
+            raise ActivationError('the downloaded package could not be written to Clayrune\'s own folder; see the '
+                                  'server log', 'package_write_failed', 500) from e
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+            try:
+                final.parent.rmdir()                # the per-package folder this call created, if nothing was installed in it
+            except OSError:
+                pass
     return str(entry_path(entry))
