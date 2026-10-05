@@ -109,6 +109,25 @@ CASES.push({
   },
 });
 
+// ── QA-2 ─────────────────────────────────────────────────────────────────────
+// Engagement's "Check now" was an unstyled <button>: the browser's grey default, 19px high, beside
+// Desk buttons that are 28-44px with the Desk surface and border. It must read as a Desk button
+// (own background and radius) and be a phone-sized target at 390.
+CASES.push({
+  id: 'QA-2', name: 'Engagement Check now is a styled Desk button', run: async (browser) => {
+    for (const [tag, vp, minH] of [['1440', DESKTOP, 26], ['390', PHONE, 26]]) {
+      const { ctx, page } = await boot(browser, vp);
+      await mount(page, `<div class="desk-v1-eng-check"><button type="button" data-eng-check>Check now</button><span class="desk-v1-eng-check-line" data-eng-check-line></span></div>`);
+      const g = await page.evaluate(() => {
+        const b = document.querySelector('[data-qa-scratch] [data-eng-check]'); const cs = getComputedStyle(b);
+        return { h: b.getBoundingClientRect().height, radius: parseFloat(cs.borderTopLeftRadius), bw: cs.borderTopStyle, font: cs.fontFamily };
+      });
+      check(g.radius >= 6 && g.h >= minH, `[${tag}] Check now is ${Math.round(g.h)}px high with a ${g.radius}px radius`, `[${tag}] Check now is the browser default: ${Math.round(g.h)}px high, radius ${g.radius}`);
+      await ctx.close();
+    }
+  },
+});
+
 // ── runner ───────────────────────────────────────────────────────────────────
 const only = process.argv[2];
 const browser = await chromium.launch();
