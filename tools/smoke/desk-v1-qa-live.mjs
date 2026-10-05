@@ -11,6 +11,7 @@
  * Exit 0 = every case holds; 1 = a case regressed / harness error.
  */
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
@@ -22,6 +23,17 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const ORIGIN = 'http://mc.smoke.test';
 const STATIC = loadStaticJsCss(REPO_ROOT);
+// QA_BASE_REF=<git ref> serves the stylesheets (and scripts) as they were at that ref, to show a case
+// failing on the code before its fix:  QA_BASE_REF=befe5924~1 node desk-v1-qa-live.mjs QA-1
+if (process.env.QA_BASE_REF) {
+  const ref = process.env.QA_BASE_REF;
+  for (const url of Object.keys(STATIC)) {
+    try {
+      const body = execFileSync('git', ['show', ref + ':' + url.slice(1)], { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      STATIC[url] = [STATIC[url][0], body];
+    } catch (_) { /* file did not exist at that ref: keep the current one */ }
+  }
+}
 
 const PROJECTS = [{
   id: 'smoke_deskv1', name: 'Desk v1 smoke', status: 'active', domain: 'general', emoji: '🧪',
@@ -150,6 +162,32 @@ CASES.push({
         `[${tag}] the long name runs ${Math.round(g.overflow)}px past its column and ends at ${Math.round(g.titleRight)}, under the trash button at ${Math.round(g.delLeft)}`);
       await ctx.close();
     }
+  },
+});
+
+// ── QA-4 ─────────────────────────────────────────────────────────────────────
+// Home's six columns must line up from the header through every row. Only Draft rows reserved room
+// for their ⋯ button (52px of right padding), so a Draft row's columns sat up to 26px left of an
+// Active row's and of the header above them.
+CASES.push({
+  id: 'QA-4', name: 'Home columns line up between Draft and Active rows', run: async (browser) => {
+    const cell = (c, t) => '<div class="desk-v1-home-row-' + c + '">' + t + '</div>';
+    const more = '<div class="desk-v1-camp-card-more desk-v1-home-row-more"><button type="button" class="desk-v1-camp-card-morebtn">⋯</button></div>';
+    const row = (state, withMore) => '<div class="desk-v1-home-row" data-state="' + state + '">'
+      + cell('campaign', 'Name') + cell('stage', 'Stage') + cell('goal', 'goal') + cell('pace', '—') + cell('next', '—') + cell('needsyou', '—')
+      + (withMore ? more : '') + '</div>';
+    const { ctx, page } = await boot(browser, DESKTOP);
+    await mount(page, '<div class="desk-v1-home-board-head"><span>Campaign</span><span>Stage</span><span>Goal progress</span><span>Pace</span><span>Next post</span><span>Needs you</span></div>'
+      + '<div class="desk-v1-home-block"><div class="desk-v1-home-block-rows">' + row('draft', true) + row('active', false) + '</div></div>');
+    const g = await page.evaluate(() => {
+      const lefts = (el) => [...el.children].slice(0, 6).map((k) => Math.round(k.getBoundingClientRect().left));
+      const s = document.querySelector('[data-qa-scratch]');
+      return { head: lefts(s.querySelector('.desk-v1-home-board-head')), draft: lefts(s.querySelector('[data-state="draft"]')), active: lefts(s.querySelector('[data-state="active"]')) };
+    });
+    const maxDelta = Math.max(...g.draft.map((l, i) => Math.abs(l - g.active[i])), ...g.head.map((l, i) => Math.abs(l - g.active[i])));
+    check(maxDelta <= 1, `header, Draft and Active rows share their column starts (max offset ${maxDelta}px)`,
+      `columns drift: head ${g.head} / draft ${g.draft} / active ${g.active} (max offset ${maxDelta}px)`);
+    await ctx.close();
   },
 });
 
