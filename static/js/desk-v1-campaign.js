@@ -551,6 +551,8 @@
       const sr = stopsEl.getBoundingClientRect(); const br = hereBtn.getBoundingClientRect();
       stopsEl.scrollLeft += (br.left - sr.left) - (sr.width - br.width) / 2;
     }
+    // The agent box stays mounted across stops: its unresolved line follows where the picker is.
+    DeskV1Kit.setAgentPickerHere(params.panel === 'how');
   }
 
   // Movement (§3 table: "`Next: <stop> ›` / `‹ Back` at the foot of each
@@ -1296,7 +1298,7 @@
       return;
     }
     el.innerHTML = `<div class="desk-v1-camp-posy">${DeskV1Kit.posyBoxHTML({
-      inputId: 'desk-v1-camp-posy-input', scopeLabel, suggestion: sugg.suggestion, chips: sugg.chips, agentRef, pickAgent: true,
+      inputId: 'desk-v1-camp-posy-input', scopeLabel, suggestion: sugg.suggestion, chips: sugg.chips, agentRef, pickAgent: true, pickerHere: params.panel === 'how',
     })}</div>`;
     // The box only SHOWS the agent. With none chosen its name is a link to the
     // Campaign card on Brief (the one picker): open Brief if another stop is up,
