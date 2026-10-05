@@ -68,6 +68,7 @@ def _route_row(profile: dict, route: dict, purpose: dict) -> dict:
             'limits': [{'name': x['name'], 'source': x['source']} for x in route['limits']],
             'auth': [{'type': a['type'], 'issuer': a['issuer'], 'scopes': a['scopes'], 'registration': a['registration']}
                      for a in route['auth']],
+            'signin': ({'url': route['signin']['url'], 'hosts': route['signin']['hosts']} if route.get('signin') else None),
             'evidence': _evidence(profile, route), '_rank': _rank(route, st)}
 
 

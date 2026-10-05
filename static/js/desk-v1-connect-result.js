@@ -13,7 +13,7 @@
   let _ui = null;
   let _ctx = null;
 
-  function reset() { _token++; _ui = null; _ctx = null; }
+  function reset() { _token++; _ui = null; _ctx = null; if (window.DeskV1ConnectSignin) window.DeskV1ConnectSignin.resultReset(); }
   function active() { return !!_ui; }
 
   async function _openPane(signin) {
@@ -64,6 +64,7 @@
     if (res.signin) {
       _ui.signin = { state: 'waiting', message: 'The sign-in page is opening in its own browser pane. Finish signing in there; this page updates by itself.' };
       _openPane(res.signin);
+      if (window.DeskV1ConnectSignin) window.DeskV1ConnectSignin.resultStart(res, ctx);     // slice P2b: sign in with a saved login
       _poll(res, _token);
     } else if (res.setup && res.setup.state === 'failed') {
       _ui.signin = { state: 'failed', message: res.setup.message || 'The sign-in could not be started.' };
@@ -109,7 +110,7 @@
           <div><dt>Stored in Secrets</dt><dd data-cf-result-stored>${stored}</dd></div>
           ${proof}
         </dl>
-        ${signin}${setup}${msg}
+        ${signin}${setup}${msg}${window.DeskV1ConnectSignin ? window.DeskV1ConnectSignin.resultHTML() : ''}
         <div class="desk-v1-rules-hint">Saving a key or signing in does not prove it works. Only “Check it now” can mark it Verified, and changing the credential clears that.</div>
         <div class="desk-v1-cf-actions" data-cf-actions>${buttons}</div>`;
   }
@@ -134,6 +135,7 @@
     });
     const again = root.querySelector('[data-cfr-signin]');
     if (again) again.addEventListener('click', () => { if (r.signin) _openPane(r.signin); });
+    if (window.DeskV1ConnectSignin) window.DeskV1ConnectSignin.resultBind(root);
     const done = root.querySelector('[data-cfr-done]');
     if (done) done.addEventListener('click', () => { const ctx = _ctx; reset(); ctx.done(r); });
   }
