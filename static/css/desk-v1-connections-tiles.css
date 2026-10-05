@@ -35,6 +35,9 @@
   background: var(--surface2); border: 1px solid var(--border2); color: var(--text); font-size: 13px; font-family: inherit;
 }
 .desk-v1-conn-add { margin-top: 16px; }
+/* One field of an Add service form: its label over a full-width input (the pair used to sit inline as a short box, the search field clipping its own placeholder). Shared by the Add service flow, the connect-by-name flow and the provider Details fields. */
+.desk-v1-conn-add-field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-dim); min-width: 0; }
+.desk-v1-conn-add-field input[type="text"], .desk-v1-conn-add-field input[type="password"], .desk-v1-conn-add-field input:not([type]), .desk-v1-conn-add-field select { width: 100%; box-sizing: border-box; }
 
 /* Add service: one searchable list, then the chosen form. */
 .desk-v1-add-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 340px; overflow-y: auto; }

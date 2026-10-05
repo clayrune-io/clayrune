@@ -58,8 +58,10 @@
   grid-template-columns: 1.9fr 1.2fr 1.5fr 0.8fr 1.1fr 1.7fr;
   align-items: center; gap: 12px;
 }
+/* Every row and the header reserve the same right-hand room for a Draft row's ⋯ button, so the six columns line up
+   row to row (only Draft rows used to reserve it, which shifted their columns up to 26px left of an Active row's). */
 .desk-v1-home-board-head {
-  padding: 0 14px; font-size: 11px; font-weight: 700; color: var(--text-faint);
+  padding: 0 52px 0 14px; font-size: 11px; font-weight: 700; color: var(--text-faint);
   text-transform: uppercase; letter-spacing: 0.03em;
 }
 .desk-v1-home-board-blocks { display: flex; flex-direction: column; gap: 14px; }
@@ -113,12 +115,12 @@
 .desk-v1-home-ended-blocks { display: flex; flex-direction: column; gap: 14px; margin-top: 8px; }
 
 .desk-v1-home-row {
-  padding: 12px 14px; border-top: 1px solid var(--border2); cursor: pointer;
+  padding: 12px 52px 12px 14px; border-top: 1px solid var(--border2); cursor: pointer;
 }
 .desk-v1-home-block-rows .desk-v1-home-row:first-child { border-top: none; }
 /* R2-3b: Draft rows only — trash at the row's right edge, out of the column
    grid so the shared header still lines up; the row reserves room for it. */
-.desk-v1-home-row[data-state="draft"] { position: relative; padding-right: 52px; }
+.desk-v1-home-row[data-state="draft"] { position: relative; }
 /* No `transform` here: it makes the wrapper the containing block of the
    position:fixed ⋯ menu (placePopover), so the menu was positioned against
    the wrapper and then clipped by .desk-v1-home-block's overflow:hidden. */
@@ -240,6 +242,8 @@
    6-column status table fits in 832px, so Home keeps its desktop shape there:
    shared column header, one table row per campaign, tool row in the crumb. */
 @media (max-width: 699px) {
+  /* Stacked rows need the room only where the ⋯ button sits (Draft rows). */
+  .desk-v1-home-row:not([data-state="draft"]) { padding-right: 14px; }
   /* R2-2: the 6-column board grid has no room at phone width -- no frame
      names a phone status-board layout (§11.1's `10-goal-mobile` is the map
      stepper, not Home), so each row stacks to a single column instead; the
