@@ -248,7 +248,12 @@ async function runA1AndA12Sweep(browser) {
       await s.nav(page);
       await page.waitForSelector(s.wait, { timeout: 8000 }).catch(() => fail(`[${tone.name}] surface "${s.label}" never rendered ${s.wait} (a sweep over a blank page proves nothing)`));
 
-      const svgPaths = await page.$$eval('.modal-window[data-modal-id="__desk"] svg path', (els) => els.length);
+      // A1 is about connector graphs, not icons: a glyph-sized SVG (the Studio
+      // Recent bin, 18px, 6ccc58e1) is exempt; any SVG bigger than 32px is not.
+      const svgPaths = await page.$$eval('.modal-window[data-modal-id="__desk"] svg path', (els) => els.filter((p) => {
+        const r = p.ownerSVGElement.getBoundingClientRect();
+        return r.width > 32 || r.height > 32;
+      }).length);
       if (svgPaths === 0) ok(`[${tone.name}] A1: "${s.label}" has no SVG connector paths`);
       else fail(`[${tone.name}] A1 violated on "${s.label}": ${svgPaths} svg path element(s)`);
 
