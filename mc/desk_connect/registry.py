@@ -45,8 +45,8 @@ FALLBACK_OPTION: dict[str, Any] = {
     'support': 'available',
     'title': 'Save for agents',
     'evidence': 'Always available',
-    'guidance': ('Clayrune remembers the service and, if you give one, where its credential is kept, '
-                 'so agents can see it. Clayrune does not connect to it or post to it.'),
+    'guidance': ('Saves a note for agents: the name and address, plus the name of a login if you add one. '
+                 'Clayrune does not connect to it, sign in to it or post to it.'),
 }
 
 
