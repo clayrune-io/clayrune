@@ -32,15 +32,24 @@ class _Body:
     """The response body. A bare generator is not enough: if the client goes away
     before the first frame is pulled, the server calls ``close()`` on a generator
     that never started, which runs none of its ``finally`` — and the child would
-    live until the attach deadline. ``close()`` here always ends the session."""
+    live until the attach deadline. ``close()`` here always ends the session.
+
+    ``close()`` is not guaranteed either: werkzeug 3.x drains the request socket in a
+    ``finally`` BEFORE it closes the app iterable, and a client that reset the connection
+    makes that drain raise, so ``close()`` is skipped. The ``finally`` in ``__iter__``
+    covers it (the abandoned generator is finalised when the handler unwinds), and the
+    session's stalled-write timer is the last resort."""
 
     def __init__(self, session: stream.StreamSession) -> None:
         self._session = session
         self._frames = session.frames()
 
     def __iter__(self):
-        yield wire.pack(wire.CH_SESSION, self._session.id.encode('ascii'))
-        yield from self._frames
+        try:
+            yield from self._session.first_frame()
+            yield from self._frames
+        finally:
+            self.close()
 
     def close(self) -> None:
         self._frames.close()
@@ -69,7 +78,11 @@ def api_secrets_exec_stream():
         return jsonify({'error': 'too_many_sessions',
                         'message': 'too many streaming children are already running'}), 429
     except OSError as e:
-        return jsonify({'error': f'failed to start command: {e}'}), 400
+        # Never `str(e)`: a missing argv[0] carries the RESOLVED filename, which a
+        # `{{secret:…}}` placeholder may have made a value (Wren P1-2).
+        return jsonify({'error': f'failed to start {launch.program}: '
+                                 f'{e.strerror or type(e).__name__}'}), 400
+    session.client_socket = request.environ.get('werkzeug.socket')
     session.attach()
     resp = Response(_Body(session), mimetype='application/octet-stream')
     resp.headers['Cache-Control'] = 'no-store'
@@ -80,6 +93,21 @@ def api_secrets_exec_stream():
 _NO_SESSION = ({'error': 'no_such_session'}, 404)
 
 
+def _read_bounded(limit: int) -> bytes | None:
+    """The request body, or None once it is longer than ``limit`` (reads at most
+    ``limit + 1`` bytes). A raw ``read(n)`` on the WSGI stream may return fewer than
+    ``n`` bytes, so loop to the end of the body."""
+    chunks: list[bytes] = []
+    total = 0
+    while total <= limit:
+        piece = request.stream.read(min(65536, limit + 1 - total))
+        if not piece:
+            return b''.join(chunks)
+        chunks.append(piece)
+        total += len(piece)
+    return None
+
+
 @bp.route(wire.PATH + '/<session_id>/stdin', methods=['POST'])
 def api_secrets_exec_stream_stdin(session_id: str):
     refusal = _exec_gate_refusal()
@@ -88,9 +116,13 @@ def api_secrets_exec_stream_stdin(session_id: str):
     session = stream.get(session_id)
     if session is None:
         return _NO_SESSION
+    # Bound the READ, not the header: a chunked POST has no Content-Length and Flask's
+    # own cap is 50 MB, which `get_data` would buffer whole.
     if request.content_length is not None and request.content_length > stream.MAX_STDIN_POST:
         return jsonify({'error': 'body too large'}), 413
-    body = request.get_data(cache=False)
+    body = _read_bounded(stream.MAX_STDIN_POST)
+    if body is None:
+        return jsonify({'error': 'body too large'}), 413
     try:
         if body:
             session.write_stdin(body)

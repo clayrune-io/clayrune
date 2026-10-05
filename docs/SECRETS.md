@@ -439,12 +439,61 @@ How the streaming route behaves (`mc/secrets_exec_stream.py`; the frames are in
   closing it, however the server exits, kills the tree. The command shown is what the caller
   typed, with `{{secret:...}}` placeholders unresolved.
 - **At most 16 children** at once (HTTP 429 beyond that).
-- **The child inherits the server's environment**, not the CLI's. That is the same as the
-  one-shot route and the reason `--unset` is applied to the server's environment: it is the
-  one the child gets. A variable set only in the agent's own shell does not reach a
-  server-parented child.
-- The server's own log and the audit file never carry a value: the start and end of a stream
-  are audited with the pid, program name and exit reason, nothing else.
+- **The child's environment is the caller's.** The CLI sends its own `os.environ` with the
+  request and that is the child's base; then `--unset` names are dropped; then the injected
+  secrets are added (so a secret under an unset name still arrives). The server's own
+  environment, which carries every provider key it has hydrated, never reaches a child, and a
+  request with no `environ` is a 400 rather than a fall-back to the server's. (The one-shot
+  `/api/secrets/exec` route still inherits the server's environment.) The environment is
+  caller-supplied, so it is as trusted as the caller, which already holds the per-boot token.
+- **A locked vault is refused outright**, even when the command references no secret: the
+  route runs an arbitrary command, which a human-held lock should gate.
+- **A session has a bounded life.** It is ended after `exec_stream_max_age_hours` (a
+  `config.json` key, read live, default 24, `0` = no cap; a junk value falls back to 24), with
+  an error frame explaining why. It is also ended if the attached reader stops taking output
+  for 60 s while a frame is waiting (werkzeug has no send timeout, and a reader that never
+  reads would otherwise pin one of the 16 slots forever); that teardown also shuts the
+  response socket so the blocked server thread is released. The max age is the backstop for
+  a live-but-idle child whose wrapper is still attached.
+- **Teardown kills the child first.** Closing the child's stdin waits on the lock a blocked
+  stdin write holds, so the kill comes before it and the close is bounded (2 s), never
+  required. A stalled stdin write cannot keep a child alive or hang the server's shutdown.
+  The write of a `--stdin-secret` value is started last, with the attach deadline already
+  running, for the same reason.
+- **The server's own log and the audit file never carry a value, and never the resolved
+  command line.** Start and end are audited with the pid, the program name AS TYPED
+  (placeholders unresolved, so `{{secret:x}}` as argv[0] logs as that, not its value) and the
+  exit reason. A failure to start reports the typed program and the OS reason, never the
+  resolved path the OS echoes.
+- **Redaction limits, stated precisely.** Matches the raw UTF-8 bytes of every value the
+  server has dispensed since boot (not only this child's: the table is process-wide) and the
+  value as it would appear inside a JSON string (escaped quotes, backslashes, control
+  characters, `\uXXXX`), which is how an MCP reply carries a token containing one. Not
+  recognised: base64, hex, URL-encoding, UTF-16, or a child that splits the value on purpose.
+  The caller chooses argv, so it can always read its own secret through the child: this is
+  an accident guard, not a barrier. Values under 6 characters are not tracked at all.
+  The replacement `[redacted:<name>]` is a bare token, so a purely numeric secret that
+  also appears as a JSON number (`"id":123456`) would corrupt that message; vanishingly
+  rare, noted rather than handled. A partial line that ends in a value's first byte waits
+  for the next write or the exit (latency only).
+- **Stdin POST body cap (1 MiB)** is enforced on what is read, not on `Content-Length`: a
+  chunked body has no length header and used to fall through to Flask's 50 MB limit and be
+  buffered whole.
+- **On POSIX, a daemonised grandchild that closed its pipes outlives a normal exit** (there is
+  no job object off Windows); a stalled-reader or max-age teardown kills the tree, a normal
+  exit does not. Same as the one-shot route.
+- **The "Vault locked" push** (`/api/secrets/notify-vault-locked`, called by a CLI whose own
+  vault is locked) fires only while the SERVER's vault is locked, and once per lock period
+  (shared with the in-process notice; an unlock or relock resets it). Without that, every
+  credentialed MCP start on an unlocked server would push a false "Vault locked", since the
+  CLI always tries its own vault first and relays before falling back to the stream.
+
+### What an MCP server on a passphrase vault needs
+
+The Desk's curated MCP packages (Notion) register `with-secret.py --raw --env VAR=<name> --`.
+On a passphrase-backed vault that launch works through this route, so it needs Clayrune
+running and the vault unlocked when the agent session starts the server; after a restart,
+the server is refused ("Vault locked", with a push) until a human unlocks it.
 
 ## HTTP surface
 

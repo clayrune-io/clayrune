@@ -23,9 +23,21 @@
   child's whole tree within seconds; a stream nobody attaches to is killed after 20 s; at most 16
   at once. Each child is listed in the Process Manager, is reaped by the next boot if the server
   dies, and on Windows is also killed by the OS when the server exits.
-- The child inherits the server's environment, not the wrapper's; `--unset` is applied to that.
-- The Desk's Notion setup still reports "waiting for MC-1047" on a passphrase-protected vault;
-  lifting that is a separate change.
+- The child's environment is the wrapper's own (sent with the request), then `--unset`, then
+  the secrets. The server's environment, which holds every provider key it has hydrated, never
+  reaches the child.
+- After the security audit: ending a session kills the child before it touches stdin (a stuck
+  stdin write could keep the child alive and hang the server's shutdown); the resolved command
+  line is never logged, audited or echoed in an error (a `{{secret:x}}` as the program name
+  used to be); a session ends after `exec_stream_max_age_hours` (default 24, `0` = no cap) and
+  when its reader stops reading for 60 s; a locked vault is refused even when the command
+  names no secret; a token a JSON reply would escape is now scrubbed too; the stdin POST cap is
+  enforced on the bytes read, not just the header. Limits that remain are in `docs/SECRETS.md`.
+- The "Vault locked" push no longer fires when the server's vault is unlocked (every
+  credentialed MCP start used to send it), and fires once per lock period.
+- The Desk's Notion setup on a passphrase-protected vault now installs and registers like any
+  other: no more "Saved; waiting for MC-1047". The review card says the server starts only
+  while Clayrune is unlocked.
 
 ## [2026-10-05] — Desk: connect a curated MCP package (Notion), human-approved
 
@@ -47,12 +59,10 @@
   a project or user `.npmrc` could redirect that fetch while the token was in the child's
   environment, and its dependencies were not pinned.)
 - A failed setup reads "Saved; setup failed" with the reason; the token stays stored and a
-  retry does not ask for it again. With a passphrase-protected Secrets vault the review
-  card says so in one line (an MCP server cannot read that vault yet, MC-1047) and you can
-  still approve and save: the token is kept, nothing is downloaded or registered, and the
-  result reads "Saved; waiting for MC-1047" (not a failure); saving again once that is
-  supported finishes the setup without asking for the token. An agent session gets 403 on
-  every one of these routes.
+  retry does not ask for it again. (First build: with a passphrase-protected Secrets vault the
+  card said the server could not start yet and the result read "Saved; waiting for MC-1047".
+  Superseded by the MC-1047 entry above: that vault is now registered like any other.) An
+  agent session gets 403 on every one of these routes.
 - An existing MCP server named `notion` is treated as Clayrune's only when its whole launch
   line matches, including the program it runs; otherwise it is left alone.
 - "Registered" now also needs the package file to be on disk and a vault a child process can

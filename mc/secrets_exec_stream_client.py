@@ -106,6 +106,9 @@ def run(args, cmd: list[str], project: str | None, unattended: bool,
         'unattended': unattended,
         'command': cmd,
         'cwd': os.getcwd(),
+        # The child's base environment is the CALLER's, as it would be in-process; the
+        # server's own environment (every provider key it hydrated) never reaches a child.
+        'environ': dict(os.environ),
         'claude_session_id': os.environ.get('CLAUDE_CODE_SESSION_ID', ''),
     }).encode('utf-8')
     port = vault.exec_route_port()

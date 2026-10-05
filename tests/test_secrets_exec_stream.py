@@ -103,11 +103,20 @@ def _wait(pred, timeout=15.0, what='condition'):
     raise AssertionError(f'timed out waiting for {what}')
 
 
+def _body(body):
+    """A request body as the CLI sends it: it carries its own environment."""
+    return {'environ': dict(os.environ), **body}
+
+
+def _launch(srv, body):
+    return srv.stream.resolve_launch(_body(body))
+
+
 def _post_json(srv, body, headers=None):
     conn = http.client.HTTPConnection('127.0.0.1', srv.port, timeout=15)
     h = {'Content-Type': 'application/json', 'X-Clayrune-Exec-Token': srv.token}
     h.update(headers or {})
-    conn.request('POST', '/api/secrets/exec-stream', body=json.dumps(body), headers=h)
+    conn.request('POST', '/api/secrets/exec-stream', body=json.dumps(_body(body)), headers=h)
     return conn, conn.getresponse()
 
 
@@ -166,7 +175,7 @@ def test_the_value_never_appears_in_any_output_log_or_audit_record(srv, capfd):
 def test_a_secret_in_a_command_argument_is_resolved_and_the_preview_keeps_the_placeholder(srv):
     code = "import sys, time; print('arg-ok', sys.argv[1] == %r, flush=True); time.sleep(120)" % SECRET
     cli = _cli(srv, '--raw', '--', sys.executable, '-u', '-c', code, '{{secret:demo.token}}')
-    launch = srv.stream.resolve_launch({'command': ['x', '{{secret:demo.token}}']})
+    launch = _launch(srv, {'command': ['x', '{{secret:demo.token}}']})
     assert launch.preview == 'x {{secret:demo.token}}' and launch.command == ['x', SECRET]
     out = _lines(cli.stdout)
     assert out.get(timeout=20) == 'arg-ok True'
@@ -183,25 +192,24 @@ def test_a_secret_in_a_command_argument_is_resolved_and_the_preview_keeps_the_pl
 
 def test_unset_is_applied_to_the_childs_environment_and_a_secret_under_that_name_still_arrives(
         srv, monkeypatch):
-    monkeypatch.setenv('NODE_OPTIONS', '--require /evil.js')   # the server's environment
-    monkeypatch.setenv('KEEP_ME', 'yes')
+    cli_vars = {'NODE_OPTIONS': '--require /evil.js', 'KEEP_ME': 'yes'}   # the CLI's environment
     probe = ("import os; print(os.environ.get('NODE_OPTIONS', 'ABSENT'), "
              "os.environ.get('KEEP_ME'), os.environ.get('TOKEN') == %r)" % SECRET)
-    kept = _cli(srv, '--raw', '--env', 'TOKEN=demo.token', '--', sys.executable, '-c', probe)
+    kept = _cli(srv, '--raw', '--env', 'TOKEN=demo.token', '--', sys.executable, '-c', probe,
+                env_extra=cli_vars)
     assert kept.communicate(timeout=30)[0].decode().strip() == '--require /evil.js yes True'
     dropped = _cli(srv, '--raw', '--unset', 'NODE_OPTIONS', '--env', 'TOKEN=demo.token', '--',
-                   sys.executable, '-c', probe)
+                   sys.executable, '-c', probe, env_extra=cli_vars)
     assert dropped.communicate(timeout=30)[0].decode().strip() == 'ABSENT yes True'
     same_name = _cli(srv, '--raw', '--unset', 'TOKEN', '--env', 'TOKEN=demo.token', '--',
-                     sys.executable, '-c', probe)
+                     sys.executable, '-c', probe, env_extra=cli_vars)
     assert same_name.communicate(timeout=30)[0].decode().strip().endswith('True')
 
 
-def test_unset_without_raw_also_goes_through_the_streaming_route(srv, monkeypatch):
-    monkeypatch.setenv('NODE_OPTIONS', '--require /evil.js')
+def test_unset_without_raw_also_goes_through_the_streaming_route(srv):
     probe = "import os; print(os.environ.get('NODE_OPTIONS', 'ABSENT'))"
     cli = _cli(srv, '--unset', 'NODE_OPTIONS', '--env', 'TOKEN=demo.token', '--',
-               sys.executable, '-c', probe)
+               sys.executable, '-c', probe, env_extra={'NODE_OPTIONS': '--require /evil.js'})
     assert cli.communicate(timeout=30)[0].decode().strip() == 'ABSENT'
 
 
@@ -335,7 +343,7 @@ def test_the_end_route_kills_the_child(srv):
 
 def test_a_session_nobody_attaches_to_is_killed_at_the_deadline(srv, monkeypatch):
     monkeypatch.setattr(srv.stream, 'ATTACH_GRACE_S', 0.3)
-    launch = srv.stream.resolve_launch({'command': [sys.executable, '-c', SLEEP_CHILD]})
+    launch = _launch(srv, {'command': [sys.executable, '-c', SLEEP_CHILD]})
     session = srv.stream.start(launch)
     _wait(lambda: session.proc.poll() is not None, what='the unattached child to be killed')
 
@@ -352,7 +360,7 @@ def test_a_stdin_post_to_a_dead_session_is_410_or_404(srv):
 
 
 def test_server_exit_ends_every_session(srv):
-    launch = srv.stream.resolve_launch({'command': [sys.executable, '-c', SLEEP_CHILD]})
+    launch = _launch(srv, {'command': [sys.executable, '-c', SLEEP_CHILD]})
     session = srv.stream.start(launch)
     session.attach()
     srv.stream.shutdown_all()

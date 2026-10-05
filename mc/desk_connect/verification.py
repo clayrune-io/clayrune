@@ -36,7 +36,6 @@ LABELS = {
     'check_failed': 'Check failed',
     'registered': 'Registered with agents, not verified',
     'setup_failed': 'Saved; setup failed',
-    'waiting_mc1047': 'Saved; waiting for MC-1047',
     'not_connected': 'Not connected',
 }
 _REMEMBER = 200

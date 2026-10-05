@@ -3,12 +3,12 @@ Fixtures and helpers come from tests/test_desk_connect_mcp.py.
 
 Pinned:
 
-  * a passphrase-backed vault does NOT block the MCP method (Ron, 2026-10-05): the Review
-    card carries one plain notice (MC-1047), the human may still approve and Save, the token
-    is kept, nothing is downloaded or registered, and the Save ends in the non-success state
-    `waiting_mc1047`; saving again after MC-1047 completes the setup without the token;
-  * the MCP status reads `registered` only when the vault is not passphrase-backed AND the
-    entry file is on disk AND the config is exactly our line;
+  * a passphrase-backed vault does not block the MCP method and no longer parks the Save
+    (MC-1047 shipped the server-side streaming exec the launch line relays to): the Review
+    card carries one plain notice that the server starts only while Clayrune is unlocked,
+    and the Save installs and registers exactly as on a plain vault;
+  * the MCP status reads `registered` only when the entry file is on disk AND the config is
+    exactly our line, whatever the vault mode;
   * two Saves of one package at once are serialised where the directory is replaced;
   * the download has one TOTAL deadline, not one per read;
   * the launch line strips NODE_OPTIONS and NODE_PATH (`with-secret.py --unset`), and
@@ -41,7 +41,7 @@ def _unlocked_passphrase_vault(monkeypatch):
     monkeypatch.setattr(secrets_store, '_unlocked_key', key)
 
 
-# -- 1. a passphrase-backed vault: state the limit, do not block ---------------------
+# -- 1. a passphrase-backed vault: state the limit, do not block, register ------------
 
 def test_the_review_card_states_the_limit_on_a_passphrase_vault_and_only_then(env):
     plain = methods.inspect('Notion')
@@ -52,33 +52,20 @@ def test_the_review_card_states_the_limit_on_a_passphrase_vault_and_only_then(en
     row = next(o for o in got['options'] if o['method'] == 'mcp')
     assert row['selectable'] is True                                    # not blocked
     install = row['connector']['install']
-    assert 'MC-1047' in install['notice'] and 'passphrase' in install['notice']
-    assert 'can still approve and save' in install['notice']
+    assert 'passphrase' in install['notice'] and 'only while Clayrune is unlocked' in install['notice']
+    assert 'MC-1047' not in install['notice'] and 'cannot' not in install['notice']   # nothing is "waiting" any more
     assert install['pins'] == mcp_catalogue.pins(_notion())             # the notice is not part of what is approved
 
 
-def test_a_passphrase_vault_does_not_stop_the_save_before_the_passcode(env, tmp_path, monkeypatch):
+def test_a_passphrase_vault_saves_installs_and_registers(env, tmp_path, monkeypatch):
     client, calls, rec, cfg = env
     _unlocked_passphrase_vault(monkeypatch)
     r = _commit_req(client, _draft())
     body = r.get_json()
-    assert r.status_code == 201, body                                   # accepted, not refused
+    assert r.status_code == 201, body
     assert calls['n'] == 1 and _vault_names() == ['notion.token']       # passcode asked once, token kept
-    assert body['setup']['state'] == 'waiting' and body['setup']['code'] == 'vault_passphrase'
-    assert body['status']['state'] == 'waiting_mc1047' and body['status']['label'] == 'Saved; waiting for MC-1047'
-    assert rec['fetched'] == [] and _package_files(tmp_path) == [] and 'notion' not in _servers(cfg)
-
-
-def test_saving_again_after_mc1047_completes_the_setup_without_the_token(env, tmp_path, monkeypatch):
-    client, calls, rec, cfg = env
-    from mc import secrets_store
-    _unlocked_passphrase_vault(monkeypatch)
-    assert _commit_req(client, _draft()).get_json()['setup']['state'] == 'waiting'
-    secrets_store.wrapped_key_path().unlink()                           # the vault is no longer passphrase-backed
-    r = _commit_req(client, _draft(secret=''), rid='req-0002-abcdef')
-    assert r.status_code == 201, r.get_json()
-    assert r.get_json()['setup']['state'] == 'done' and r.get_json()['status']['state'] == 'registered'
-    assert 'notion' in _servers(cfg) and len(rec['fetched']) == 1
+    assert body['setup']['state'] == 'done' and body['status']['state'] == 'registered'
+    assert len(rec['fetched']) == 1 and _package_files(tmp_path) != [] and 'notion' in _servers(cfg)
 
 
 # -- 2. `registered` means an agent session could start it -----------------------------
@@ -87,17 +74,13 @@ def _state():
     return notion_provider.NotionProvider().credential_state('mcp')['state']
 
 
-def test_registered_needs_the_file_the_config_runs_and_a_vault_a_child_can_read(env, monkeypatch):
+def test_registered_needs_the_file_the_config_runs_and_the_exact_line_whatever_the_vault_mode(env, monkeypatch):
     client, calls, rec, cfg = env
-    from mc import secrets_store
     assert _commit_req(client, _draft()).get_json()['status']['state'] == 'registered'
     assert _state() == 'registered' and mcp_activation.is_registered(_notion()) is True
-    # the vault becomes passphrase-backed afterwards: the config entry is still there, the status is not "registered"
-    _unlocked_passphrase_vault(monkeypatch)
+    _unlocked_passphrase_vault(monkeypatch)                             # the vault becomes passphrase-backed afterwards
     assert 'notion' in _servers(cfg)
-    assert mcp_activation.is_registered(_notion()) is False and _state() == 'waiting_mc1047'
-    secrets_store.wrapped_key_path().unlink()
-    assert _state() == 'registered'
+    assert mcp_activation.is_registered(_notion()) is True and _state() == 'registered'
     # the package directory is removed: the config line points at nothing
     mcp_package_store.entry_path(_notion()).unlink()
     assert mcp_activation.is_registered(_notion()) is False

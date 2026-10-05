@@ -20,9 +20,10 @@ Pinned:
     and registers `with-secret.py --raw --unset NODE_OPTIONS --unset NODE_PATH ... -- <node> <dir>/package/<entry>`; the config
     names the vault entry and holds no value and no `env`;
   * a wrong checksum, a traversal / link / duplicate member, a network failure or timeout,
-    a missing Node.js, a passphrase-backed vault or a failed config write leave the
-    committed token in place and read "Saved; setup failed", never registered; a retry does
-    not ask for the token again;
+    a missing Node.js or a failed config write leave the committed token in place and read
+    "Saved; setup failed", never registered; a retry does not ask for the token again;
+  * a passphrase-backed vault is registered like any other (MC-1047: the wrapper relays the
+    launch to the server's streaming exec);
   * a server of the same name that is not ours (including one that differs only in
     `command`) is never replaced.
 """
@@ -536,7 +537,7 @@ def test_saving_again_when_already_registered_changes_nothing_in_the_config(env)
     assert cfg.read_text(encoding='utf-8') == before
 
 
-# -- a passphrase-backed vault: the token is saved, nothing is registered ------------
+# -- a passphrase-backed vault: registered like any other (MC-1047) -------------------
 
 def _wrap_vault():
     """Put the vault in passphrase mode the way `secrets_store.lock_state()` sees it."""
@@ -554,33 +555,32 @@ def test_the_vault_check_is_the_wrapped_key_file_the_vault_itself_uses(env):
     assert secrets_store.lock_state() == 'locked'                      # the same signal, not a second definition
 
 
-def test_a_passphrase_backed_vault_saves_the_token_and_waits_for_mc1047(env, tmp_path, monkeypatch):
+def test_a_passphrase_backed_vault_registers_the_server_like_any_other(env, tmp_path, monkeypatch):
+    """MC-1047 shipped the server-side streaming exec, so a passphrase-backed vault no longer
+    parks the Save in a waiting state: the package is installed and the launch line registered
+    exactly as on a plain vault (the wrapper relays to the server at start time)."""
     from mc import secrets_store
     client, calls, rec, cfg = env
     key = secrets_store.load_master_key()[0]
     _wrap_vault()                                                      # the vault is passphrase-backed ...
     monkeypatch.setattr(secrets_store, '_unlocked_key', key)           # ... and the human has unlocked it in the server
-    r = _commit_req(client, _draft())                                  # not blocked: the human may still approve and Save
+    r = _commit_req(client, _draft())
     body = r.get_json()
     assert r.status_code == 201, body
     assert calls['n'] == 1 and body['stored'] == ['notion.token']
-    assert body['setup']['state'] == 'waiting' and body['setup']['code'] == 'vault_passphrase'
-    assert 'passphrase' in body['setup']['message'] and 'MC-1047' in body['setup']['message']
-    assert 'cannot read' in body['setup']['message'] and 'token is saved' in body['setup']['message']
-    assert body['status']['state'] == 'waiting_mc1047' and body['status']['label'] == 'Saved; waiting for MC-1047'
-    assert 'notion' not in _servers(cfg)
-    assert rec['fetched'] == [] and _package_files(tmp_path) == []     # nothing downloaded or registered
+    assert body['setup']['state'] == 'done' and body['setup']['server'] == 'notion'
+    assert body['status']['state'] == 'registered'
+    assert 'notion' in _servers(cfg) and len(rec['fetched']) == 1
+    assert mcp_package_store.entry_path(_notion()).is_file()
 
 
-def test_the_vault_check_runs_even_when_the_vault_is_unlocked_in_this_process(env, monkeypatch):
-    """An unlocked key lives only in the server's memory; a server an agent session starts
-    cannot read the vault, so `lock_state() == 'unlocked'` must not let registration through."""
+def test_provision_does_not_look_at_the_vault_mode(env, monkeypatch):
     from mc import secrets_store
     _wrap_vault()
     monkeypatch.setattr(secrets_store, '_unlocked_key', b'k' * 32)
     assert secrets_store.lock_state() == 'unlocked'
     out = mcp_activation.provision(_notion())
-    assert out['setup']['state'] == 'waiting' and out['setup']['code'] == 'vault_passphrase'
+    assert out['setup']['state'] == 'done' and out['setup']['code'] == ''
 
 
 # -- a server that is not ours -----------------------------------------------------
