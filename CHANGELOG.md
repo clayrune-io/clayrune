@@ -6,6 +6,18 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-04] — Desk: look up a service Clayrune does not know
+
+- An address the Add service flow does not recognise now offers **Look it up**: Clayrune
+  reads the public page in a temporary, signed-out browser and asks the official MCP
+  registry, then lists what it found as "Information only" rows. It saves nothing, uses
+  no credential, and "Save for agents" stays the way to go on.
+- The browser's network is confined: private, local and Clayrune addresses are refused
+  for the page, its redirects and everything it loads, including DNS-rebinding tricks.
+  Page text reaches only a no-tools model call, and its answer must match a fixed schema.
+- Every failure (page unreachable, sign-in page, registry down, model timeout, bad
+  output) has its own message; a partial result says "Discovery incomplete".
+
 ## [2026-10-03] — Desk: connect a service by name; Higgsfield and X set up in the flow
 
 - The Add service flow's first step takes a service **name** as well as an address:

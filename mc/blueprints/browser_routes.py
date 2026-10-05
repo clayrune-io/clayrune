@@ -2073,7 +2073,7 @@ def _default_profile():
 
 
 def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, view=None,
-                    mobile=False):
+                    mobile=False, extra_args=None):
     """Start a headless Chromium and its CDP reader.
 
     ``profile`` names a persistent user-data-dir that survives teardown; None
@@ -2140,6 +2140,11 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
     ]
     if dpr != 1:
         args.append(f'--force-device-scale-factor={dpr}')
+    # Extra Chromium flags a server-side caller needs (the Desk's discovery pane
+    # confines the network with --proxy-server, mc/desk_connect/guard_proxy.py): a
+    # list, or a callable given this launch's debugging port. Never fed from a
+    # request: only in-process callers can pass it.
+    args.extend(extra_args(port) if callable(extra_args) else (extra_args or ()))
     args.append('about:blank')
     try:
         # stdin too: a host with no valid stdin handle (pytest capture, a

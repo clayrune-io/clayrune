@@ -9,6 +9,8 @@
 //                address (a bare domain counts). POST /api/desk/connect/inspect. A name the
 //                registry does not know asks for the web address; nothing is looked up.
 //                Editing the box throws away what was detected.
+//                (slice 3: for an address it does not know, the Method step offers "Look it up",
+//                static/js/desk-v1-connect-discover.js, which reads the page in a signed-out pane.)
 //   2. Method    the rows the registry (mc/desk_connect/registry.json) lists for the
 //                host. A row can be chosen when it is "Save for agents" or when a provider
 //                (mc/desk_connect/providers/) can really set it up (`connector`); the rest
@@ -55,6 +57,7 @@
     if (window.DeskV1ConnectAdapter) window.DeskV1ConnectAdapter.clear();
     if (window.DeskV1ConnectSuggest) window.DeskV1ConnectSuggest.reset();
     if (window.DeskV1ConnectResult) window.DeskV1ConnectResult.reset();
+    if (window.DeskV1ConnectDiscover) window.DeskV1ConnectDiscover.reset();
     if (_formHost) { _formHost.querySelectorAll('input').forEach((i) => { if (i.type !== 'radio' && i.type !== 'checkbox') i.value = ''; }); _formHost = null; }
     _formState.type = 'api_key';
     S = _fresh();
@@ -99,7 +102,7 @@
             <input type="text" inputmode="text" class="desk-v1-rules-textinput" data-cf-url data-cf-focus maxlength="400"
               placeholder="Higgsfield, or https://plausible.io" value="${esc(S.urlText)}" autocapitalize="off" spellcheck="false"></label>
           ${sug}
-          <div class="desk-v1-rules-hint">Type the name of a service, or paste its web address (or your account's). Clayrune shows how it can be connected; it does not open the page.</div>
+          <div class="desk-v1-rules-hint">Type the name of a service, or paste its web address (or your account's). Clayrune shows how it can be connected. It opens the page only if you ask it to look an unknown service up.</div>
           ${err}
           <div class="desk-v1-cf-actions desk-v1-cf-actions-flat">
             <button type="submit" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-cf-continue ${S.busy ? 'disabled' : ''}>${S.busy ? 'Checking…' : 'Continue'}</button>
@@ -148,6 +151,7 @@
     return `
         <div class="desk-v1-cf-host" data-cf-host>${esc(info.host)}${info.path && info.path !== '/' ? `<span class="desk-v1-cf-path">${esc(info.path)}</span>` : ''}</div>
         ${known}
+        ${window.DeskV1ConnectDiscover ? window.DeskV1ConnectDiscover.html(info) : ''}
         <div class="desk-v1-cf-options" data-cf-options role="radiogroup" aria-label="Connection method">${info.options.map((o) => _optionHTML(o, ctx)).join('')}</div>
         <div class="desk-v1-rules-hint">Recognising a service is not support: a method marked “Information only” or “Restricted” cannot be set up from here.</div>
         ${_actions(true, `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-cf-next ${S.method ? '' : 'disabled'}>Continue</button>`)}`;
@@ -383,6 +387,7 @@
     }));
     root.querySelectorAll('[data-cf-open]').forEach((b) => b.addEventListener('click', () => ctx.openPick(b.dataset.cfOpen)));
     if (S.step === 'method') {
+      if (window.DeskV1ConnectDiscover) window.DeskV1ConnectDiscover.bind(root, S.info, ctx);
       const next = root.querySelector('[data-cf-next]');
       if (next) next.addEventListener('click', () => { if (S.method) _go('details', ctx); });
     }
