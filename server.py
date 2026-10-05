@@ -2214,6 +2214,13 @@ app.register_blueprint(_bp_desk_services.bp)
 from mc.blueprints import desk_connect_routes as _bp_desk_connect  # noqa: E402
 app.register_blueprint(_bp_desk_connect.bp)
 
+# Passkeys (docs/PASSKEYS_SPEC.md slice 1): host-only enrollment, list, revoke. Own
+# module; authorizes nothing yet. wire() hands it the configured port, from which it
+# derives the one Host/Origin it will accept.
+from mc.blueprints import passkey_routes as _bp_passkeys  # noqa: E402
+_bp_passkeys.wire(port=PORT)
+app.register_blueprint(_bp_passkeys.bp)
+
 # Desk Studio's delete + Undo for Recent rows, over the same Desk store and uploads.
 from mc.blueprints import desk_studio_items_routes as _bp_desk_studio_items  # noqa: E402
 app.register_blueprint(_bp_desk_studio_items.bp)
