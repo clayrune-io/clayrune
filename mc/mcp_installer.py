@@ -411,9 +411,11 @@ def _resolve_claude_bin() -> str:
 
 
 def _extract_via_claude(install_dir: Path) -> dict[str, Any] | None:
-    """Tier 3: ask Claude to read the README and return the mcpServers
-    object. Costs a few thousand tokens; only invoked when tiers 1 and 2
-    miss."""
+    """Tier 3: read the README for a config, ONLY through the isolated toolless
+    transform (`desk_connect.readme_servers`). The old `claude -p` call here ran with
+    the user's full tool set on text a stranger wrote and was removed (spec §6.5,
+    UNTRUSTED_INPUT_SURFACE finding #1). If the isolated path is unavailable this
+    returns None: no other model call, process or fetch takes its place."""
     readme = None
     for name in _README_NAMES:
         p = install_dir / name
@@ -421,42 +423,13 @@ def _extract_via_claude(install_dir: Path) -> dict[str, Any] | None:
             try:
                 readme = p.read_text(encoding='utf-8', errors='replace')[:30000]
                 break
-            except Exception:
-                pass
+            except Exception as e:
+                from mc.core import _log
+                _log(f'[mcp_installer] README read failed: {type(e).__name__}', flush=True)
     if not readme:
         return None
-
-    prompt = (
-        "Extract the MCP server configuration from the README below. Return "
-        "ONLY a JSON object of the form "
-        "{\"mcpServers\": {\"<name>\": {\"command\": \"...\", \"args\": [...], "
-        "\"env\": {...}}}} — no prose, no markdown fences. If the server is "
-        "http/sse instead of stdio, use {\"type\":\"http\"|\"sse\",\"url\":...,"
-        "\"headers\":{...}}. If the README doesn't contain a usable config, "
-        "return {\"mcpServers\": {}}.\n\nREADME:\n\n" + readme
-    )
-    rc, out, err = _run(
-        [_resolve_claude_bin(), '-p', prompt, '--max-turns', '1',
-         '--output-format', 'json'],
-        timeout=60,
-    )
-    if rc != 0 or not out.strip():
-        return None
-    try:
-        envelope = json.loads(out)
-        # Output-format json wraps the model's reply under `result` (or a
-        # similar key depending on CC version) — try a few.
-        text = (envelope.get('result') or envelope.get('response')
-                or envelope.get('text') or '').strip()
-        if not text:
-            return None
-        # Strip code fences if the model added them despite instructions.
-        text = re.sub(r'^```(?:json)?\s*|\s*```$', '', text.strip(), flags=re.M)
-        data = json.loads(text)
-    except Exception:
-        return None
-    servers = _find_mcp_servers_in_obj(data)
-    return servers or None
+    from mc.desk_connect import readme_servers
+    return readme_servers.servers_from_readme(readme, label=install_dir.name)['servers'] or None
 
 
 def _absolutize_paths(servers: dict[str, Any], install_dir: Path) -> dict[str, Any]:

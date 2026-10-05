@@ -42,6 +42,8 @@ is the template the rest of this document points back to.
 ## Ranked inventory (blast radius first)
 
 ### 1. MCP-server-from-URL install — untrusted README text writes a persistent execution primitive
+
+> **Status 2026-10-05 (slice U1):** the `claude -p` call described below is gone. `_extract_via_claude` now sends the README only through the certified toolless `run_text_transform` (`mc/desk_connect/readme_servers.py`) and returns nothing when that cannot be proved. `mc/mcp_installer.py` `security_scan` still passes cloned source to `claude -p` with tools and is not yet migrated.
 **`mc/mcp_installer.py:413-459`** (`_extract_via_claude`)
 
 - **Entry**: Tier 3 of the URL-install pipeline reads a cloned repo's
