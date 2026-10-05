@@ -707,7 +707,7 @@ def test_n1_interrupting_is_raised_before_the_rearm_runs(env, monkeypatch):
     ar = env['ar']
     seen = []
     monkeypatch.setattr(ar, '_advance_delegation_turn',
-                        lambda s: seen.append(s.get('_interrupting')))
+                        lambda s, **k: seen.append(s.get('_interrupting')))
     old = _Proc(pid=1)
     session = _session(old, _mt_main_tokens=250_000)
     env['sessions']['worker-1'] = session

@@ -8474,27 +8474,43 @@ def _record_usage_breakdown_turn_started(session):
         _write_usage_breakdown_turn_start_checkpoint(session)
 
 
+# Who started the turn chain the session is in. `_notify_session_sent` is
+# delivery state (was the callback already sent); this says whether the work
+# it would report is the spawner's. A session with a `_notify_session` and no
+# owner key is spawner-owned: that field is only ever set by dispatch, an
+# explicit `notify_session`, or a carry_notify revive, all agent-authorized.
+_TURN_OWNER_KEY = '_turn_owner'
+_OWNER_SPAWNER = 'spawner'
+_OWNER_HUMAN = 'human'
+
+
 def _note_self_started_turn(session):
     """MC-958: main-thread assistant output while the session is `idle` means
     the CLI started a turn nobody in Clayrune sent — the wake-up after a
-    background job. Mark it `running` so the UI, the guardian and a sender
-    see the truth, and re-arm the spawner callback if the last turn already
-    spent it (the wait cap's interim report, or the previous turn's own
-    callback).
+    background job, or a Claude Code SendMessage peer message. Mark it
+    `running` so the UI, the guardian and a sender see the truth, and re-arm
+    the spawner callback if the last turn already spent it (the wait cap's
+    interim report, or the previous turn's own callback) AND the work is the
+    spawner's.
 
-    Any self-started turn re-arms, not only the interim one: a Claude Code
-    SendMessage peer message, or a background-task wake after the final
-    callback, starts a turn no Clayrune send announced, so `_notify_session_sent`
-    was still set from the turn before and `_maybe_notify_spawner` swallowed
-    the new turn's end. At least 6 callbacks lost 2026-09-29..10-05 (children
-    1a168d102572 and 8d17c1c423d8 on 2026-10-04). Only the spawner latch
-    re-arms; `_notify_workflow_sent` stays permanent (a workflow step
+    The turn owner decides the re-arm, not the latch. A self-started turn
+    inherits the owner of the chain it continues:
+      - background-task wake: keeps the previous owner. After a spawner turn
+        it re-arms; after a HUMAN follow-up it stays human and sends nothing,
+        so Ron's work is not announced to the spawner as '[dispatched agent
+        finished]' (MC-970).
+      - peer SendMessage wake: re-arms and becomes spawner-owned even after a
+        human turn. Peers are agents, and the sender (usually the spawner) is
+        waiting on the answer. Ron's decision, 2026-10-05.
+    At least 6 callbacks lost 2026-09-29..10-05 (children 1a168d102572 and
+    8d17c1c423d8 on 2026-10-04) when neither wake re-armed. Only the spawner
+    latch re-arms; `_notify_workflow_sent` stays permanent (a workflow step
     completes once)."""
     if session.get('status') != 'idle' or session.get('waiting_for_question'):
         return
     session['status'] = 'running'
     session['last_status_change_time'] = _time.time()
-    session.pop(_bg_tasks.RESUME_PENDING_KEY, None)
+    background_wake = bool(session.pop(_bg_tasks.RESUME_PENDING_KEY, None))
     # MC-998 round 4: this turn never passes the dispatch-pending writer, so
     # the usage store still held the previous turn's 'completed' fact (or a
     # reconcile-closed one) while it ran -- every automatic wake, not only
@@ -8502,7 +8518,10 @@ def _note_self_started_turn(session):
     # writer, same best-effort write.
     _record_usage_breakdown_turn_started(session)
     interim = session.pop(_bg_tasks.INTERIM_KEY, None)
-    if interim or session.get('_notify_session_sent'):
+    background_wake = background_wake or bool(interim)
+    owner = (session.get(_TURN_OWNER_KEY) or _OWNER_SPAWNER) if background_wake else _OWNER_SPAWNER
+    session[_TURN_OWNER_KEY] = owner
+    if owner == _OWNER_SPAWNER and (interim or session.get('_notify_session_sent')):
         # `_last_reply_text` joins every trailing non-bracket line, so a peer
         # wake with nothing between it and the previous answer would hand the
         # spawner BOTH turns as this turn's reply. A background wake already
@@ -8651,9 +8670,15 @@ def _release_held_job_notify_if_expired(session, now):
     return True
 
 
-def _advance_delegation_turn(session):
+def _advance_delegation_turn(session, owner: "str | None" = _OWNER_HUMAN):
     """Turn-bookkeeping for a new turn on an existing session, WITHOUT
     touching the `_notify_session_sent` latch.
+
+    `owner` records who owns the chain this turn starts (`_TURN_OWNER_KEY`):
+    human by default, since callers here are human continuations. `None`
+    leaves the owner alone, for a Clayrune-internal continuation (a mid-turn
+    rollover, the guardian replaying a queued message whose sender the queue
+    does not record) that is the same chain, not a new one.
 
     Call this from a HUMAN-initiated continuation (agent_followup,
     agent_interrupt, the guardian's replay of a queued human message) so the
@@ -8669,6 +8694,8 @@ def _advance_delegation_turn(session):
     ... Continue the work' twice for a task already merged, and Ron read it
     as Clayrune having a cross-chat memory bug.
     """
+    if owner:
+        session[_TURN_OWNER_KEY] = owner
     _allocate_delegation_turn(session)
     # Turn identity must be durable before provider execution begins; a cold
     # revive can then reconstruct the same child/session turn without collision.
@@ -8699,7 +8726,7 @@ def _rearm_notify_for_new_turn(session):
     permanent.
     """
     session.pop('_notify_session_sent', None)
-    _advance_delegation_turn(session)
+    _advance_delegation_turn(session, owner=_OWNER_SPAWNER)
 
 
 def _notify_workflow_step(wf_wait, session, summary):
@@ -9694,8 +9721,9 @@ def _auto_dispatch_followup(session, message):
         _unregister_process(old_proc.pid)
     session['proc'] = proc
     # Guardian/queue replay of an already-received message, not a fresh
-    # caller decision -- never re-arms (see _advance_delegation_turn).
-    _advance_delegation_turn(session)
+    # caller decision -- never re-arms (see _advance_delegation_turn). The
+    # queue does not record who sent the message, so the owner is kept.
+    _advance_delegation_turn(session, owner=None)
     # Backlog 4668eafc calibration fix, defect 2 (WAKE TURNS WITH NO
     # turn_start): this dispatches a fresh turn exactly like agent_followup's
     # own `_start_new_turn` does, but historically skipped the matching
@@ -13917,7 +13945,9 @@ def agent_interrupt(project_id, *, _internal=None):
             sess['_notify_session'] = _explicit_notify_session
             _rearm_notify_for_new_turn(sess)
         else:
-            _advance_delegation_turn(sess)
+            # A mid-turn rollover is the same chain continuing, not a human
+            # taking it over -- leave the owner alone.
+            _advance_delegation_turn(sess, owner=None if is_midturn else _OWNER_HUMAN)
         _write_usage_breakdown_turn_start_checkpoint(sess)
 
     with get_manager(project_id).lock:

@@ -273,7 +273,7 @@ def test_eviction_unchanged_without_background_jobs(ar):
 def test_wait_cap_sends_interim_then_rearms_for_the_real_answer(ar, monkeypatch):
     sent = _capture_notify(ar, monkeypatch)
     rearmed = []
-    monkeypatch.setattr(ar, '_advance_delegation_turn', lambda s: rearmed.append(1))
+    monkeypatch.setattr(ar, '_advance_delegation_turn', lambda s, **k: rearmed.append(1))
     monkeypatch.setitem(ar.state.CONFIG, 'background_wait_max_minutes', 120)
     session = _child()
     _run(ar, session, TURN_1[:-1])      # up to (not incl.) the first result
