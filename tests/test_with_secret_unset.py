@@ -1,7 +1,8 @@
 """`tools/with-secret.py --unset VAR`: an opt-in removal of inherited environment variables from
 the child, used by the curated MCP launch (mc/desk_connect/mcp_activation.py) for NODE_OPTIONS and
-NODE_PATH. Without the flag nothing changes for any other caller. The server-exec fallback runs in
-the server's own environment, so it cannot honour --unset and refuses instead.
+NODE_PATH. Without the flag nothing changes for any other caller. On a locked vault the one-shot
+server-exec route cannot apply --unset, so the fallback goes through the streaming route instead
+(MC-1047, tests/test_secrets_exec_stream.py).
 """
 from __future__ import annotations
 
@@ -68,16 +69,19 @@ def test_unset_does_not_remove_a_secret_injected_under_the_same_name(ws, monkeyp
     assert env['TOKEN'] == 'tok-value-123'                     # inherited removed first, then the secret injected
 
 
-def test_the_server_exec_fallback_refuses_unset(ws, monkeypatch):
+def test_a_locked_vault_with_unset_goes_to_the_streaming_route_not_the_one_shot_route(ws, monkeypatch):
     mod, _ = ws
-    called = []
-    monkeypatch.setattr(mod, '_run_via_server_exec', lambda *a, **k: called.append(a) or 0)
+    one_shot, streamed = [], []
+    monkeypatch.setattr(mod, '_run_via_server_exec', lambda *a, **k: one_shot.append(a) or 0)
+    from mc import secrets_exec_stream_client
+    monkeypatch.setattr(secrets_exec_stream_client, 'run',
+                        lambda args, *a, **k: streamed.append(list(args.unset)) or 0)
 
     def locked(*a, **k):
         raise mod.vault.VaultLocked('the vault is locked')
 
     monkeypatch.setattr(mod.vault, 'env_for', locked)
     rc = mod.main(['--unset', 'NODE_OPTIONS', '--env', 'TOKEN=svc.token', '--', sys.executable, '-c', 'pass'])
-    assert rc == 2 and called == []
+    assert rc == 0 and one_shot == [] and streamed == [['NODE_OPTIONS']]
     rc = mod.main(['--env', 'TOKEN=svc.token', '--', sys.executable, '-c', 'pass'])
-    assert rc == 0 and len(called) == 1                         # without --unset the fallback is used as before
+    assert rc == 0 and len(one_shot) == 1                       # without --unset the one-shot route is used as before

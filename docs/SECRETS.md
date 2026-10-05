@@ -392,6 +392,60 @@ deploy, before anything else touches the box, is what closes it. The
 tamper-evidence notification above exists specifically so a hijack of that
 window is visible to him even if he didn't do the setting himself.
 
+## Using a secret when the vault is locked in the caller (MC-979, MC-1047)
+
+After a human unlocks the passphrase-locked vault from the dashboard, the unwrapped key
+lives only in the **server's** memory. A `tools/with-secret.py` process an agent starts
+cannot read it, so on `VaultLocked` the CLI asks the server to run the child instead,
+over loopback with the per-boot token in `~/.clayrune/` (the `X-Clayrune-Exec-Token`
+header). The server resolves the secrets and puts them in the child's environment; the
+value never comes back over HTTP, only the child's own output, scrubbed of every value the
+vault has dispensed.
+
+| with-secret flags | route the CLI uses on a locked vault |
+|---|---|
+| none of the below | `POST /api/secrets/exec`: one shot, buffered, 600 s default timeout |
+| `--raw` and/or `--unset VAR` | `POST /api/secrets/exec-stream` (MC-1047): the server parents the child and relays its stdin/stdout/stderr, for children that need live pipes (an MCP stdio server above all) |
+
+Both routes pass the same gates, in this order: loopback only, no `Cf-*` header (tunnel
+traffic also looks like loopback), the per-boot token. The vault's own policy then applies
+exactly as it does in-process: the vault must be human-unlocked, per-secret `scope` and
+`allow_unattended` are enforced (unattended detection fails closed when the caller sends no
+session id). Every read is audited as before, under the consumer `server-exec` or
+`server-exec-stream`.
+
+How the streaming route behaves (`mc/secrets_exec_stream.py`; the frames are in
+`mc/secrets_exec_stream_wire.py`, the CLI half in `mc/secrets_exec_stream_client.py`):
+
+- **Output** comes back on one long response as `channel, length, payload` frames; stdin goes
+  the other way as `POST /api/secrets/exec-stream/<session>/stdin` (`?eof=1` closes it) so
+  neither direction waits on the other. The session id is a random capability that exists for
+  one child; it sits behind the same three gates.
+- **Redaction is stream-aware.** A dispensed value split across two reads is still replaced
+  with `[redacted:<name>]`; a chunk that ends in something that could begin a value is held
+  back until the next read or the end of the stream. This is an accident guard, not a
+  sandbox: a child that deliberately prints a transformed value (base64, a split with a
+  pause) is not caught, here or on the one-shot route. `--raw` in-process does not redact;
+  through the server it does, so a locked vault never gets a weaker scrub than an unlocked one.
+- **The child lives and dies with its relay.** If the CLI exits or is killed, the connection
+  drops and the server kills the child's whole tree: an idle stream sends a heartbeat frame
+  every 5 s so a dead client is noticed without the child speaking, and a session nobody
+  attaches to within 20 s is killed too. If the CLI is stopped (Ctrl-C, SIGTERM) it ends the
+  session first. When the CLI's own stdin reaches EOF the child's stdin is closed, which is
+  how an MCP client says "shut down".
+- **Registered with the Process Manager** (`tracked_processes` + the PID ledger) as
+  "with-secret child (server-parented)": visible, killable, and reaped by the next boot if the
+  server died. On Windows the child also joins a job object whose handle is the server's, so
+  closing it, however the server exits, kills the tree. The command shown is what the caller
+  typed, with `{{secret:...}}` placeholders unresolved.
+- **At most 16 children** at once (HTTP 429 beyond that).
+- **The child inherits the server's environment**, not the CLI's. That is the same as the
+  one-shot route and the reason `--unset` is applied to the server's environment: it is the
+  one the child gets. A variable set only in the agent's own shell does not reach a
+  server-parented child.
+- The server's own log and the audit file never carry a value: the start and end of a stream
+  are audited with the pid, program name and exit reason, nothing else.
+
 ## HTTP surface
 
 | Verb | Path | Purpose |
@@ -407,8 +461,12 @@ window is visible to him even if he didn't do the setting himself.
 | POST | `/api/secrets/vault-lock/change` | rotate the passphrase — human-only |
 | POST | `/api/secrets/vault-lock/unlock` | unlock with passphrase or recovery key — human-only |
 | POST | `/api/secrets/vault-lock/lock` | lock now, immediately (idle auto-lock also does this in the background) — human-only |
+| POST | `/api/secrets/exec` | run a command with secrets injected, server-side, buffered — loopback + per-boot token only |
+| POST | `/api/secrets/exec-stream` | the same, streamed: `--raw` / `--unset` on a locked vault (MC-1047) — loopback + per-boot token only |
+| POST | `/api/secrets/exec-stream/<session>/stdin`, `/end` | feed or end one streaming child — same gates |
 
-**There is deliberately no route that returns a plaintext value.** A value only
+**There is deliberately no route that returns a plaintext value.** (`exec` and `exec-stream`
+return a child's own scrubbed output, never a secret.) A value only
 ever leaves the process into a child process's environment or a resolved
 command — never back over HTTP into a browser tab. That removes the whole class
 of "the vault page was left open / screenshotted / proxied" exposure, and it is

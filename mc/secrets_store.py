@@ -1989,6 +1989,13 @@ def _audit(event: str, **fields: Any) -> None:
         _log(f"[secrets] audit append failed ({event}): {e}")
 
 
+def audit_event(event: str, **fields: Any) -> None:
+    """Public form of `_audit` for a server-side consumer that records something
+    beyond a read (the streaming exec route's session start/end). Same rule: the
+    fields must never carry a secret value."""
+    _audit(event, **fields)
+
+
 def audit_tail(limit: int = 100) -> list[dict[str, Any]]:
     """Most-recent-first audit records."""
     p = audit_path()
@@ -2044,6 +2051,14 @@ def redact(text: str) -> str:
         if value in text:
             text = text.replace(value, f'[redacted:{name}]')
     return text
+
+
+def dispensed_values() -> list[tuple[str, str]]:
+    """``(value, name)`` for every value this process has dispensed, longest first —
+    what `redact` scans for, for a caller that must redact a byte stream
+    incrementally (mc/secrets_exec_stream.py) rather than one string at a time."""
+    with _dispensed_lock:
+        return sorted(_dispensed.items(), key=lambda kv: len(kv[0]), reverse=True)
 
 
 def _forget_dispensed(value: str) -> None:

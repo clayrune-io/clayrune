@@ -6,6 +6,27 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-05] — Secrets: a `--raw` child can use the vault while it is passphrase-locked (MC-1047)
+
+- `tools/with-secret.py --raw` and `--unset` used to refuse when the vault was locked in the
+  calling process (the normal state after a restart plus a dashboard unlock), so no credentialed
+  MCP server could start. They now run through a new loopback route,
+  `POST /api/secrets/exec-stream`: the server starts the child with the resolved environment and
+  relays its stdin, stdout and stderr to the wrapper, so the token goes from the vault into the
+  child's environment and nowhere else. No route returns a value.
+- Same gates as `/api/secrets/exec` (loopback, no Cloudflare header, per-boot token), and the
+  vault's own rules apply unchanged: it must be human-unlocked, secret scope and
+  `allow_unattended` are enforced, every read is audited. Output is scrubbed of dispensed values
+  even when one is split across reads (so `--raw` through the server is scrubbed, unlike `--raw`
+  in-process).
+- The child's life follows the wrapper's: kill or close the wrapper and the server kills the
+  child's whole tree within seconds; a stream nobody attaches to is killed after 20 s; at most 16
+  at once. Each child is listed in the Process Manager, is reaped by the next boot if the server
+  dies, and on Windows is also killed by the OS when the server exits.
+- The child inherits the server's environment, not the wrapper's; `--unset` is applied to that.
+- The Desk's Notion setup still reports "waiting for MC-1047" on a passphrase-protected vault;
+  lifting that is a separate change.
+
 ## [2026-10-05] — Desk: connect a curated MCP package (Notion), human-approved
 
 - Add service > Notion now offers an **MCP server** method for a package Clayrune has
