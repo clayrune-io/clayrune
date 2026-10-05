@@ -1,41 +1,43 @@
-"""The known-service registry for connect-by-URL: DATA, not code (`registry.json`).
+"""The known-service registry for connect-by-URL: DATA, not code.
 
-It says what Clayrune can really do for a host TODAY, nothing else. Recognising a
-host is not support: every option carries a `support` word, and only `available`
-ones lead anywhere (into a flow that already exists in Connections, named by
-`open`). `restricted` and `info_only` are guidance the screen shows and cannot be
-acted on. Matching is by exact host alias, never a substring: `notx.com` and
-`x.com.evil.example` are not X.
+The data is one service profile per file (`profiles/<id>.json`, schema in `profile_schema`)
+listed by the index `registry.json` (version 2, `profile_loader`). This module is the thin
+reader the Connect screens and `commit` already use: it loads the snapshot, projects each
+profile into the version 1 record they read (`profile_compat`), and answers by exact host or
+by name. A version 1 `registry.json` is still accepted and converted in memory, so a file in
+the old shape loads the same way.
 
-A service is also found by NAME: its label and `aliases`, compared
-case-insensitively on letters and digits only ("Higgsfield", "Google AI Studio",
-"linkedin"); `suggest` ranks them for the as-you-type list and `url` is the address
-a name resolves to. Names are never matched against hosts, and an unknown name
-never causes a lookup (that is a later slice).
+It says what Clayrune can really do for a host TODAY, nothing else. Recognising a host is not
+support: every option carries a `support` word, and only `available` ones lead anywhere (into
+a flow that already exists in Connections, named by `open`). `restricted` and `info_only` are
+guidance the screen shows and cannot be acted on. Matching is by exact host alias, never a
+substring: `notx.com` and `x.com.evil.example` are not X.
 
-The file ships in the app and changes by commit and review. It is read from next
-to this module, never from `data/` or `~/.clayrune`, so a user, an agent or a
-page cannot add a host to it.
+A service is also found by NAME: its label and `aliases`, compared case-insensitively on
+letters and digits only ("Higgsfield", "Google AI Studio", "linkedin"); `suggest` ranks them
+for the as-you-type list and `url` is the address a name resolves to. Names are never matched
+against hosts, and an unknown name never causes a lookup (that is a later slice).
+
+The files ship in the app and change by commit and review. They are read from next to this
+module, never from `data/` or `~/.clayrune`, so a user, an agent or a page cannot add a host.
 """
 from __future__ import annotations
 
 import json
-import re
-import unicodedata
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from mc.desk_connect import profile_compat as _compat
+from mc.desk_connect import profile_loader as _loader
+from mc.desk_connect import profile_schema as _schema
+from mc.desk_connect.profile_schema import ProfileError, normalize  # noqa: F401  (normalize: part of this module's API)
+
 REGISTRY_PATH = Path(__file__).with_name('registry.json')
 
-METHODS = ('mcp', 'api_key', 'oauth', 'browser_signin')
+METHODS = _schema.CONNECT_METHODS
 SUPPORT = ('available', 'restricted', 'info_only')
-_ID_RE = re.compile(r'^[a-z0-9_]{1,40}$')
-_HOST_RE = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$')
-# The Add service panel's own pick keys (desk-v1-add-service.js): an `open` may only
-# name a flow the panel already has.
-_OPEN_RE = re.compile(r'^(account|engine):[a-z0-9_]{1,40}$')
-MAX_ALIAS = 60
+MAX_ALIAS = _schema.MAX_ALIAS
 MAX_SUGGESTIONS = 6
 
 # Offered for every address, recognised or not. The one thing the commit route can
@@ -54,84 +56,35 @@ class RegistryError(ValueError):
     """The registry file is unreadable or breaks a rule."""
 
 
-def _need(cond: object, where: str, msg: str) -> None:
-    if not cond:
-        raise RegistryError(f'{where}: {msg}')
-
-
-def _check_option(o: Any, where: str) -> dict:
-    _need(isinstance(o, dict), where, 'an option must be an object')
-    unknown = sorted(set(o) - {'method', 'support', 'title', 'evidence', 'guidance', 'open'})
-    _need(not unknown, where, f'unknown field(s): {", ".join(unknown)}')
-    _need(o.get('method') in METHODS, where, f'method must be one of {METHODS}')
-    _need(o.get('support') in SUPPORT, where, f'support must be one of {SUPPORT}')
-    for k in ('title', 'evidence', 'guidance'):
-        _need(isinstance(o.get(k), str) and o[k].strip(), where, f'{k} is required text')
-    if 'open' in o:
-        _need(o['support'] == 'available', where, 'only an available option can open a flow')
-        _need(isinstance(o['open'], str) and _OPEN_RE.match(o['open']), where, 'open must be account:<platform> or engine:<id>')
-    else:
-        # A reviewed MCP package is set up by Connect by address itself, so it opens no other flow.
-        _need(o['support'] != 'available' or o['method'] == 'mcp', where, 'an available option must say which flow it opens')
-    return dict(o)
-
-
-def normalize(text: object) -> str:
-    """A name as compared: NFKC, case-folded, every run of non letters/digits one
-    space. "Google  AI-Studio" and "google ai studio" are the same name."""
-    if not isinstance(text, str):
-        return ''
-    return re.sub(r'[\W_]+', ' ', unicodedata.normalize('NFKC', text).casefold()).strip()
-
-
 def load(path: Path | None = None) -> dict:
-    """Parse and validate the registry. Raises RegistryError; never returns a
-    half-valid one."""
+    """Parse and validate the registry (an index and every profile it lists, or a version 1
+    file). Raises RegistryError; never returns a half-valid one."""
     p = path or REGISTRY_PATH
     try:
         raw = json.loads(p.read_text(encoding='utf-8'))
     except (OSError, ValueError) as e:
         raise RegistryError(f'cannot read {p.name}: {e}') from e
-    _need(isinstance(raw, dict) and raw.get('version') == 1, 'registry', 'version must be 1')
-    blocked = raw.get('blocked_domains')
-    _need(isinstance(blocked, list) and all(isinstance(d, str) and _HOST_RE.match(d) for d in blocked),
-          'blocked_domains', 'a list of domains')
-    common = [_check_option(o, f'common_options[{i}]') for i, o in enumerate(raw.get('common_options') or [])]
-    services, by_host, by_name = [], {}, {}
-    for i, s in enumerate(raw.get('services') or []):
-        where = f'services[{i}]'
-        _need(isinstance(s, dict), where, 'a service must be an object')
-        _need(isinstance(s.get('id'), str) and _ID_RE.match(s['id']), where, 'id must be a short slug')
-        _need(isinstance(s.get('label'), str) and s['label'].strip(), where, 'label is required')
-        hosts = s.get('hosts')
-        _need(isinstance(hosts, list) and hosts and all(isinstance(h, str) and _HOST_RE.match(h) for h in hosts),
-              where, 'hosts must be a non-empty list of lowercase host names')
-        opts = [_check_option(o, f'{where}.options[{j}]') for j, o in enumerate(s.get('options') or [])]
-        _need(opts, where, 'a service needs at least one option')
-        aliases = s.get('aliases') or []
-        _need(isinstance(aliases, list) and all(isinstance(a, str) and 0 < len(a.strip()) <= MAX_ALIAS and '.' not in a
-                                       for a in aliases),
-              where, f'aliases must be a list of dot-free names of at most {MAX_ALIAS} characters')
-        home = s.get('url')
-        _need(isinstance(home, str), where, 'url is required: the address a name resolves to')
-        try:
-            parts = urlsplit(home)
-            home_ok = parts.scheme == 'https' and parts.hostname in hosts and not parts.path.strip('/')
-        except ValueError:
-            home_ok = False
-        _need(home_ok, where, 'url must be https://<one of the hosts> with no path')
-        rec = {'id': s['id'], 'label': s['label'].strip(), 'aliases': [a.strip() for a in aliases],
-               'url': home, 'hosts': list(hosts or []), 'options': opts}
-        for h in hosts or []:
-            _need(h not in by_host, where, f'host {h} is claimed by two services')
-            by_host[h] = rec
-        for n in {normalize(x) for x in [rec['label'], *rec['aliases']]}:
-            _need(n, where, 'a name must contain a letter or a digit')
-            _need(n not in by_name, where, f'the name "{n}" is claimed by two services')
-            by_name[n] = rec
+    try:
+        version = raw.get('version') if isinstance(raw, dict) else None
+        if version == 1:
+            snap = _compat.snapshot_from_v1(raw)
+        elif version == _loader.INDEX_VERSION:
+            snap = _loader.snapshot_from_index(raw, p.parent)
+            snap['common_options'] = [dict(o) for o in _compat.LEGACY_COMMON_OPTIONS]
+        else:
+            raise ProfileError(f'registry: version must be 1 or {_loader.INDEX_VERSION}')
+    except ProfileError as e:
+        raise RegistryError(str(e)) from e
+    services, by_id = [], {}
+    for prof in snap['profiles']:
+        rec = _compat.project_service(prof)
+        rec['profile'] = prof
+        by_id[rec['id']] = rec
         services.append(rec)
-    return {'version': 1, 'blocked_domains': list(blocked), 'common_options': common,
-            'services': services, 'by_host': by_host, 'by_name': by_name}
+    return {'version': snap['version'], 'blocked_domains': snap['blocked_domains'], 'common_options': snap['common_options'],
+            'services': services, 'snapshot': snap,
+            'by_host': {h: by_id[p['service_id']] for h, p in snap['by_host'].items()},
+            'by_name': {n: by_id[p['service_id']] for n, p in snap['by_name'].items()}}
 
 
 _cache: dict | None = None
@@ -156,6 +109,19 @@ def lookup(host: str) -> dict | None:
 def lookup_name(text: object) -> dict | None:
     """The service whose label or alias is exactly this name (see `normalize`)."""
     return registry()['by_name'].get(normalize(text))
+
+
+def profile(service_id: object) -> dict | None:
+    """The full profile (routes, purposes, evidence) of a service id, else None."""
+    return registry()['snapshot']['by_id'].get(service_id) if isinstance(service_id, str) else None
+
+
+def v1_projection() -> dict:
+    """The loaded registry in the version 1 file shape, for tools that read the screens' data."""
+    reg = registry()
+    view = _compat.v1_view(reg['snapshot'])
+    view['common_options'] = [dict(o) for o in reg['common_options']]
+    return view
 
 
 def brief(service: dict) -> dict:

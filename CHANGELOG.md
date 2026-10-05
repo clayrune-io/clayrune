@@ -6,6 +6,18 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-05] — Desk: service profiles, one file per service (slice P1)
+
+- `mc/desk_connect/registry.json` is now an index; each known service has its own
+  `profiles/<id>.json` with its routes (API, browser sign-in, manual share link, MCP candidates),
+  what each needs, costs and limits, what Clayrune can actually run, and the pages that say so.
+  LinkedIn and X carry every route with evidence read on 2026-10-05; the other seven services are
+  converted from the old rows and marked unverified.
+- A bad profile anywhere stops the whole set loading; hosts match exactly and names match by
+  letters and digits only. The screens read the same records as before, so nothing visible changes
+  and no LinkedIn route became available.
+- The macOS app now bundles the registry and profiles (they were missing from the frozen build).
+
 ## [2026-10-05] — Desk connect: "Save for agents" now says it connects to nothing
 
 - Details step: a plain line above the credential box says this saves a note for agents (name,

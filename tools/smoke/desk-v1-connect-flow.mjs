@@ -25,6 +25,7 @@
 import { readFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright';
 import { loadFixtures, workspaceFromFixtures, installDemoFixtures } from './desk-v1-fixture-api.mjs';
 import { loadStaticJsCss } from './_static.mjs';
@@ -32,7 +33,10 @@ import { loadStaticJsCss } from './_static.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
-const REGISTRY = JSON.parse(readFileSync(resolve(REPO_ROOT, 'mc', 'desk_connect', 'registry.json'), 'utf8'));
+// registry.json is an index since P1; the screens' rows come from the loaded profiles, in the version 1 shape.
+const REGISTRY = JSON.parse(execFileSync(process.env.MC_PYTHON || 'python', ['-c',
+  `import json, sys; sys.path.insert(0, ${JSON.stringify(REPO_ROOT)}); from mc.desk_connect import registry; print(json.dumps(registry.v1_projection()))`],
+  { encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } }));
 const ORIGIN = 'http://mc.smoke.test';
 const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
 mkdirSync(SHOT_DIR, { recursive: true });

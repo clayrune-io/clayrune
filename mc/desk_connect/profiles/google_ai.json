@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "service_id": "google_ai",
+  "revision": 1,
+  "label": "Google AI Studio",
+  "aliases": [
+    "Google AI Studio",
+    "AI Studio",
+    "Gemini",
+    "Google Gemini",
+    "Gemini API"
+  ],
+  "home_url": "https://aistudio.google.com",
+  "hosts": [
+    "aistudio.google.com",
+    "ai.google.dev"
+  ],
+  "account_kinds": [
+    {
+      "id": "account",
+      "label": "Account"
+    }
+  ],
+  "purposes": [
+    {
+      "id": "generate_image",
+      "capabilities": [
+        "generate"
+      ],
+      "account_kinds": [
+        "account"
+      ],
+      "routes": [
+        "google-ai-api-key"
+      ],
+      "standing_policy": []
+    },
+    {
+      "id": "generate_video",
+      "capabilities": [
+        "generate"
+      ],
+      "account_kinds": [
+        "account"
+      ],
+      "routes": [
+        "google-ai-api-key"
+      ],
+      "standing_policy": []
+    }
+  ],
+  "routes": [
+    {
+      "id": "google-ai-api-key",
+      "title": "Gemini API key",
+      "guidance": "Veo video and Gemini images. Create the key in Google AI Studio; billing must be on.",
+      "transport": "api",
+      "support": "available",
+      "connect_method": "api_key",
+      "auth": [
+        {
+          "type": "api_key",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "generate_image",
+          "account_kind": "account",
+          "capability": "generate",
+          "status": "claimed",
+          "claim": "legacy.google-ai-api-key.generate_image"
+        },
+        {
+          "purpose": "generate_video",
+          "account_kind": "account",
+          "capability": "generate",
+          "status": "claimed",
+          "claim": "legacy.google-ai-api-key.generate_video"
+        }
+      ],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "adapter_id": "engine:google",
+      "evidence": [
+        "legacy-v1-1"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "legacy-v1-1",
+      "label": "Clayrune's built-in list",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [
+        "legacy.google-ai-api-key.generate_image",
+        "legacy.google-ai-api-key.generate_video"
+      ],
+      "digest": null,
+      "result": "unverified"
+    }
+  ],
+  "change_summary": "P1: converted from the version 1 registry; nothing in it was re-verified.",
+  "supersedes": null
+}

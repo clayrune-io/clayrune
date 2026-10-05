@@ -1,0 +1,546 @@
+{
+  "schema_version": 1,
+  "service_id": "x",
+  "revision": 1,
+  "label": "X",
+  "aliases": [
+    "X",
+    "Twitter",
+    "X Twitter"
+  ],
+  "home_url": "https://x.com",
+  "hosts": [
+    "x.com",
+    "www.x.com",
+    "twitter.com",
+    "www.twitter.com",
+    "mobile.twitter.com"
+  ],
+  "account_kinds": [
+    {
+      "id": "account",
+      "label": "X account"
+    }
+  ],
+  "purposes": [
+    {
+      "id": "publish",
+      "capabilities": [
+        "post",
+        "reply",
+        "media",
+        "article"
+      ],
+      "account_kinds": [
+        "account"
+      ],
+      "routes": [
+        "x-oauth",
+        "x-mcp-action",
+        "x-manual"
+      ],
+      "standing_policy": [
+        "Automated publishing uses the platform API and the campaign approval; a person may always post by hand."
+      ]
+    },
+    {
+      "id": "read_own",
+      "capabilities": [
+        "own_posts",
+        "mentions",
+        "replies",
+        "post_metrics"
+      ],
+      "account_kinds": [
+        "account"
+      ],
+      "routes": [
+        "x-oauth",
+        "x-mcp-action",
+        "x-browser"
+      ],
+      "standing_policy": [
+        "Own reads default to the browser pane; an API read is paid and is the user's choice."
+      ]
+    },
+    {
+      "id": "listen_broad",
+      "capabilities": [
+        "search"
+      ],
+      "account_kinds": [
+        "account"
+      ],
+      "routes": [
+        "x-oauth",
+        "x-mcp-action",
+        "x-browser"
+      ],
+      "standing_policy": [
+        "Broad listening uses the browser pane; metered API search is never selected silently."
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "id": "x-oauth",
+      "title": "Sign in with your X developer app",
+      "guidance": "Add an X account, then follow its Connect steps: you create an X app, paste its Client ID and sign in.",
+      "transport": "api",
+      "support": "available",
+      "auth": [
+        {
+          "type": "oauth",
+          "params": [],
+          "placement": "header",
+          "scopes": [],
+          "issuer": "X",
+          "registration": "Create an X developer app you own and paste its Client ID into Clayrune.",
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "publish",
+          "account_kind": "account",
+          "capability": "post",
+          "status": "documented",
+          "claim": "x.price.create"
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "account",
+          "capability": "media",
+          "status": "unknown",
+          "claim": null
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "account",
+          "capability": "reply",
+          "status": "unknown",
+          "claim": null
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "own_posts",
+          "status": "documented",
+          "claim": "x.price.owned-reads"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "post_metrics",
+          "status": "unknown",
+          "claim": null
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "mentions",
+          "status": "unknown",
+          "claim": null
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "replies",
+          "status": "unknown",
+          "claim": null
+        },
+        {
+          "purpose": "listen_broad",
+          "account_kind": "account",
+          "capability": "search",
+          "status": "unknown",
+          "claim": null
+        }
+      ],
+      "requirements": [
+        {
+          "kind": "developer_app",
+          "text": "An X developer app you own. The owned-reads price applies only when the signed-in user owns the app and the endpoint qualifies.",
+          "claim": "x.price.owned-reads"
+        }
+      ],
+      "limits": [
+        {
+          "name": "Rate limits, pagination and metric availability per endpoint",
+          "source": "provider",
+          "value": null,
+          "unit": null,
+          "reset": null,
+          "claim": null
+        }
+      ],
+      "cost": {
+        "basis": "published",
+        "items": [
+          {
+            "currency": "USD",
+            "unit": "post created",
+            "amount": "0.015",
+            "endpoint": "Post: Create",
+            "payer": "account_owner",
+            "condition": null,
+            "claim": "x.price.create"
+          },
+          {
+            "currency": "USD",
+            "unit": "post created with a URL",
+            "amount": "0.200",
+            "endpoint": "Post: Create (with URL)",
+            "payer": "account_owner",
+            "condition": null,
+            "claim": "x.price.create-url"
+          },
+          {
+            "currency": "USD",
+            "unit": "post resource read",
+            "amount": "0.005",
+            "endpoint": "Posts: Read",
+            "payer": "account_owner",
+            "condition": "general reads",
+            "claim": "x.price.read"
+          },
+          {
+            "currency": "USD",
+            "unit": "owned resource read",
+            "amount": "0.001",
+            "endpoint": "Owned reads",
+            "payer": "account_owner",
+            "condition": "the signed-in user owns the developer app and the endpoint qualifies",
+            "claim": "x.price.owned-reads"
+          }
+        ]
+      },
+      "evidence": [
+        "legacy-v1-1",
+        "x-pricing"
+      ],
+      "connect_method": "oauth",
+      "adapter_id": "account:x"
+    },
+    {
+      "id": "x-mcp-action",
+      "title": "X MCP server (api.x.com/mcp)",
+      "guidance": "X publishes a hosted MCP server for its API. It needs an X app you own and a local sign-in bridge; it does not support dynamic client registration. Clayrune cannot run it yet.",
+      "transport": "mcp",
+      "support": "info_only",
+      "auth": [
+        {
+          "type": "oauth",
+          "params": [],
+          "placement": "header",
+          "scopes": [],
+          "issuer": "X",
+          "registration": "An X app you own; sign in through X's local xurl bridge (PKCE). No dynamic client registration and no native MCP OAuth discovery.",
+          "claim": "x.mcp.auth"
+        },
+        {
+          "type": "bearer",
+          "params": [],
+          "placement": "header",
+          "scopes": [],
+          "issuer": null,
+          "registration": "App-only bearer token: read endpoints only.",
+          "claim": "x.mcp.bearer"
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "publish",
+          "account_kind": "account",
+          "capability": "article",
+          "status": "documented",
+          "claim": "x.mcp.cov"
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "account",
+          "capability": "post",
+          "status": "unknown",
+          "claim": null
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "account",
+          "capability": "media",
+          "status": "unknown",
+          "claim": null
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "account",
+          "capability": "reply",
+          "status": "unknown",
+          "claim": null
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "own_posts",
+          "status": "claimed",
+          "claim": "x.mcp.cov"
+        },
+        {
+          "purpose": "listen_broad",
+          "account_kind": "account",
+          "capability": "search",
+          "status": "claimed",
+          "claim": "x.mcp.cov"
+        }
+      ],
+      "requirements": [
+        {
+          "kind": "developer_app",
+          "text": "An X developer app you own.",
+          "claim": "x.mcp.auth"
+        },
+        {
+          "kind": "adapter_prerequisite",
+          "text": "X's bridge keeps its own token store; before Clayrune can run this route that must be adapted to Clayrune's vault references.",
+          "claim": null
+        }
+      ],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "x-mcp-guide",
+        "x-mcp-scan"
+      ],
+      "mcp_protocol": "unknown"
+    },
+    {
+      "id": "x-docs-mcp",
+      "title": "X documentation MCP server (docs.x.com/mcp)",
+      "guidance": "Searches the X documentation. It gives an agent no way to post to or read an X account.",
+      "transport": "mcp",
+      "support": "info_only",
+      "auth": [
+        {
+          "type": "unknown",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "x-mcp-guide"
+      ],
+      "mcp_protocol": "unknown"
+    },
+    {
+      "id": "x-browser",
+      "title": "Read what you can see signed in (browser profile)",
+      "guidance": "Clayrune reads your own X activity and searches from a browser pane signed in to a named profile, chosen in the account settings. It never stores your password and never clicks Post. This row only describes the route.",
+      "transport": "browser",
+      "support": "info_only",
+      "auth": [
+        {
+          "type": "browser_signin",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "own_posts",
+          "status": "claimed",
+          "claim": "x.browser.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "mentions",
+          "status": "claimed",
+          "claim": "x.browser.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "replies",
+          "status": "claimed",
+          "claim": "x.browser.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "post_metrics",
+          "status": "claimed",
+          "claim": "x.browser.cov"
+        },
+        {
+          "purpose": "listen_broad",
+          "account_kind": "account",
+          "capability": "search",
+          "status": "claimed",
+          "claim": "x.browser.cov"
+        }
+      ],
+      "requirements": [],
+      "limits": [
+        {
+          "name": "What the page shows",
+          "source": "clayrune",
+          "value": null,
+          "unit": null,
+          "reset": null,
+          "claim": null
+        }
+      ],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "clayrune-desk-pane"
+      ]
+    },
+    {
+      "id": "x-manual",
+      "title": "Open the post box in your own browser",
+      "guidance": "Clayrune opens X's own post composer in your browser with the text filled in and you click Post.",
+      "transport": "browser",
+      "support": "manual",
+      "auth": [
+        {
+          "type": "browser_signin",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "publish",
+          "account_kind": "account",
+          "capability": "post",
+          "status": "claimed",
+          "claim": "x.manual"
+        }
+      ],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "x-web-intents"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "legacy-v1-1",
+      "label": "Clayrune's built-in list",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [],
+      "digest": null,
+      "result": "unverified"
+    },
+    {
+      "id": "x-pricing",
+      "label": "X API pricing",
+      "url": "https://docs.x.com/x-api/getting-started/pricing",
+      "publisher_class": "official_docs",
+      "published": null,
+      "retrieved": "2026-10-05",
+      "attempted": null,
+      "claim_ids": [
+        "x.price.create",
+        "x.price.create-url",
+        "x.price.read",
+        "x.price.owned-reads"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "x-mcp-guide",
+      "label": "X MCP servers guide",
+      "url": "https://docs.x.com/tools/mcp",
+      "publisher_class": "official_docs",
+      "published": null,
+      "retrieved": "2026-10-05",
+      "attempted": null,
+      "claim_ids": [
+        "x.mcp.auth",
+        "x.mcp.bearer",
+        "x.mcp.cov"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "x-mcp-scan",
+      "label": "Clayrune MCP route scan, 2026-10-01 (X MCP tariff and ordinary post/media parity unverified)",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": "2026-10-01",
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [],
+      "digest": null,
+      "result": "incomplete"
+    },
+    {
+      "id": "clayrune-desk-pane",
+      "label": "Clayrune Desk: own-account reads default to the signed-in browser pane (standing product rule)",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [
+        "x.browser.cov"
+      ],
+      "digest": null,
+      "result": "unverified"
+    },
+    {
+      "id": "x-web-intents",
+      "label": "X web intents",
+      "url": "https://docs.x.com/x-for-websites/web-intents",
+      "publisher_class": "official_docs",
+      "published": null,
+      "retrieved": null,
+      "attempted": "2026-10-05",
+      "claim_ids": [
+        "x.manual"
+      ],
+      "digest": null,
+      "result": "unavailable"
+    }
+  ],
+  "change_summary": "P1: the version 1 API row kept as is; MCP, documentation MCP, browser and manual routes added from the pages read on 2026-10-05 (web intents page unavailable that day).",
+  "supersedes": null
+}

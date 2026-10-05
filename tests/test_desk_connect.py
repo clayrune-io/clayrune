@@ -183,7 +183,7 @@ def test_host_match_is_exact_not_a_substring(env, url):
 
 def test_registry_rejects_bad_data(tmp_path):
     from mc.desk_connect import registry
-    base = json.loads(registry.REGISTRY_PATH.read_text(encoding='utf-8'))
+    base = registry.v1_projection()     # the shipped profiles in the version 1 file shape, which still loads
 
     def load_with(mutate):
         d = json.loads(json.dumps(base))

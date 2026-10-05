@@ -101,6 +101,12 @@ datas = [
     # see it. Leave it out and the frozen app's Settings > Add-ons page is empty
     # and no add-on can ever be installed (MC-1022).
     (R('mc', 'addons', 'catalogue.json'), 'mc/addons'),
+    # mc/desk_connect/registry.py reads the index and every profile by FILE PATH next to
+    # itself (Path(__file__)), so Analysis does not see them. Leave them out and the frozen
+    # app's Connect-by-address recognises no service (the loader fails closed). Neither was
+    # listed before slice P1 (docs/DESK_SERVICE_PROFILES_SPEC.md).
+    (R('mc', 'desk_connect', 'registry.json'), 'mc/desk_connect'),
+    (R('mc', 'desk_connect', 'profiles'), 'mc/desk_connect/profiles'),
 ]
 
 # SHARED_RULES.md is deliberately NOT bundled. It is user data — read verbatim
