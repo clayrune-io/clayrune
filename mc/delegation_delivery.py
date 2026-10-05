@@ -16,6 +16,35 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from mc.core import _log
+
+
+RESTART_UNCERTAIN_ERROR = 'provider submission status unknown after restart'
+
+# What `last_error` of an 'uncertain' inbox row means, as a closed set so the
+# status list can say why without echoing free text. Prefix match, first hit
+# wins; the second field says whether the parent was provably never handed the
+# completion (safe to retry) or may have been (a retry can duplicate it).
+_UNCERTAIN_CAUSES = (
+    (RESTART_UNCERTAIN_ERROR, 'restart_during_handoff', False),
+    ('inbox claim expired', 'claim_expired_before_handoff', True),
+    ('parent stdin write acknowledgment is unknown', 'parent_stdin_ack_unknown', False),
+    ('parent durable outcome is ambiguous', 'parent_state_ambiguous', False),
+    ('parent revival outcome unknown', 'parent_revival_unknown', False),
+    ('guarded parent submission outcome unknown', 'parent_submission_unknown', False),
+    ('guarded parent submission returned HTTP', 'parent_submission_http_error', False),
+    ('parent submission switched session identity', 'parent_session_switched', False),
+    ('parent submission entered an in-memory queue', 'parent_queued_in_memory', False),
+)
+
+
+def uncertain_cause(last_error: str) -> tuple[str, bool]:
+    """(cause_code, never_handed_off) for an uncertain row's `last_error`."""
+    for prefix, code, never_handed in _UNCERTAIN_CAUSES:
+        if (last_error or '').startswith(prefix):
+            return code, never_handed
+    return 'unrecorded', False
+
 
 MAX_ATTEMPTS = 8
 LEASE_SECONDS = 30.0
@@ -32,6 +61,15 @@ class DeliveryBlocked(RuntimeError):
 
 class DeliveryUncertain(RuntimeError):
     """A provider submission may have happened; never replay automatically."""
+
+
+class DeliveryNotHandedOff(DeliveryUncertain):
+    """Failed before the parent could have been handed the message.
+
+    Still an ``uncertain`` subclass so any caller that only knows
+    DeliveryUncertain keeps failing closed; `mc.delegation_retry` is what
+    tells the two apart and retries this one.
+    """
 
 
 class DeliveryStore:
@@ -483,11 +521,22 @@ class DeliveryStore:
         now = self.clock()
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
+            marked = [dict(r) for r in db.execute(
+                "SELECT event_id,project_id,parent_session_id,attempts FROM inbox "
+                "WHERE state='dispatch_intent' AND lease_until<?", (now,)).fetchall()]
             cur = db.execute("UPDATE inbox SET state='uncertain',recovery_required=1,lease_until=0,last_error=? "
                              "WHERE state='dispatch_intent' AND lease_until<?",
-                             ('provider submission status unknown after restart', now))
+                             (RESTART_UNCERTAIN_ERROR, now))
             db.execute('COMMIT')
-            return cur.rowcount
+        # Nothing re-delivers these on its own, so each one says so, once.
+        for r in marked:
+            _log(f"[delegation-delivery] inbox {r['event_id']} -> parent "
+                 f"{r['parent_session_id']} (project {r['project_id']}): marked uncertain, "
+                 f"the handoff was in flight when the server stopped; not retried "
+                 f"without review, listed by "
+                 f"GET /api/project/{r['project_id']}/agent/delegation/status-list",
+                 flush=True)
+        return cur.rowcount
 
     def status(self, table: str, event_id: str, project_id: str) -> Optional[dict[str, Any]]:
         if table not in ('outbox', 'inbox'):
@@ -570,10 +619,27 @@ class DeliveryStore:
             if raw:
                 return 'delivery_failed', 'Delivery attempt failed; explicit recovery may be required.'
             return 'awaiting_delivery', 'Awaiting delivery.'
+        def acting_on(table: str, event_id: str, state: str, raw: str) -> dict[str, Any]:
+            # An uncertain row is never retried by the drain loop, so the list
+            # has to carry what a person needs to settle it: why, and how.
+            if state != 'uncertain':
+                return {'cause_code': '', 'action': ''}
+            code, never_handed = uncertain_cause(raw)
+            check = ('Nothing was handed to the parent, so a retry cannot duplicate it.'
+                     if never_handed else
+                     'Open the parent session and check whether the completion arrived; '
+                     'a retry can duplicate it.')
+            return {'cause_code': code,
+                    'action': f"{check} To retry: POST /api/project/{project_id}/agent/"
+                              f"delegation/retry with {{\"event_id\": \"{event_id}\", "
+                              f"\"table\": \"{table}\", \"reviewed_resolution\": true}}. "
+                              "It is never retried automatically."}
         return {
             'items': [{
                 'table': row['table_name'],
                 'event_id': row['event_id'],
+                'child_session_id': row['event_id'].rsplit(':turn:', 1)[0]
+                                    if ':turn:' in row['event_id'] else '',
                 'parent_session_id': row['parent_session_id'],
                 'state': row['state'],
                 'attempts': int(row['attempts']),
@@ -582,6 +648,8 @@ class DeliveryStore:
                 'reason': safe_reason(row['state'], row['last_error'])[1],
                 'recovery_required': bool(row['recovery_required']),
                 'created_at': row['created_at'],
+                **acting_on(row['table_name'], row['event_id'], row['state'],
+                            row['last_error']),
             } for row in rows],
             'total': int(total), 'limit': limit, 'offset': offset,
         }
@@ -654,6 +722,7 @@ def drain_once(store: DeliveryStore, *, send_outbox: Callable[[dict[str, Any]], 
             store.submit_inbox(row['event_id'], row['fence_token'], evidence)
             done += 1
         except Exception as exc:
-            state = 'blocked' if isinstance(exc, DeliveryBlocked) else ('pending' if isinstance(exc, DeliveryDeferred) else 'uncertain')
+            from mc.delegation_retry import classify_inbox_failure  # imports this module
+            state = classify_inbox_failure(row, exc)
             store.finish_inbox(row['event_id'], row['fence_token'], str(exc), state=state)
     return done
