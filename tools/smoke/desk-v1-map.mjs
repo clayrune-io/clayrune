@@ -309,6 +309,42 @@ async function runOldDeepLinksLandOnStops(browser) {
   await ctx.close();
 }
 
+// ── Q-1 (Dave, Desk live QA 2026-10-04): the foot follows the stop ON SCREEN. A Draft whose
+// cursor (`map.stop`) is at ① Brief, opened on ⑤ When through the Calendar alias, must read
+// `‹ Back` = Where and `Next: Launch`, and opening it that way must not rewrite the cursor. ──
+async function runFootFollowsScreenStop(browser) {
+  const { ctx, page, pageErrors } = await newBootedPage(browser);
+  const campaignId = await newCampaign(page, 'engulfing_scanner');
+  const cursor = () => page.evaluate((id) => window.DeskV1Fixtures.campaigns.find((c) => c.id === id).map.stop, campaignId);
+  (await cursor()) === 'how' ? ok('the new Draft starts with its cursor at Brief') : fail(`cursor is ${await cursor()}, not how`);
+
+  await page.evaluate((id) => window.deskV1Nav('calendar', { campaignId: id }), campaignId);
+  await page.waitForTimeout(60);
+  (await stopState(page, 'when')) === 'here' ? ok('the Calendar alias shows ⑤ When') : fail('the Calendar alias did not land on When');
+  (await cursor()) === 'how'
+    ? ok('opening When through the Calendar alias leaves the saved cursor at Brief')
+    : fail(`the alias rewrote the saved cursor to ${await cursor()}`);
+  const next = (await page.textContent('[data-map-next]').catch(() => '')) || '';
+  /Launch/.test(next) ? ok(`on When the foot reads "${next.trim()}"`) : fail(`on When the foot reads ${JSON.stringify(next)}, not Next: Launch`);
+  (await page.$('[data-map-back]')) ? ok('on When the foot has ‹ Back') : fail('on When the foot has no Back');
+
+  await page.click('[data-map-back]');
+  await page.waitForTimeout(60);
+  (await stopState(page, 'where')) === 'here' ? ok('Back from When (via the alias) lands on Where') : fail('Back from When did not land on Where');
+  (await cursor()) === 'where' ? ok('Back then moves the saved cursor to Where') : fail(`cursor after Back is ${await cursor()}`);
+
+  await page.evaluate((id) => window.deskV1Nav('calendar', { campaignId: id }), campaignId);
+  await page.waitForTimeout(60);
+  await page.click('[data-map-next]');
+  await page.waitForTimeout(60);
+  (await stopState(page, 'launch')) === 'here' ? ok('Next from When (via the alias) lands on Launch') : fail('Next from When did not land on Launch');
+  const done = await page.evaluate((id) => window.DeskV1Fixtures.campaigns.find((c) => c.id === id).map.done, campaignId);
+  (done.includes('when') && !done.includes('where')) ? ok('Next marks the stop it left (When) done, not the stale cursor') : fail(`done list is ${JSON.stringify(done)}`);
+
+  reportUncaught(pageErrors, '[foot-follows-screen]');
+  await ctx.close();
+}
+
 // ── R2-3b: what the retirements left behind ─────────────────────────────
 async function runR23bRetirements(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
@@ -1055,6 +1091,8 @@ async function main() {
     await runLaunchMissingLinks(browser);
     console.log('desk-v1-map: old results/content/calendar deep links');
     await runOldDeepLinksLandOnStops(browser);
+    console.log('desk-v1-map: the foot follows the stop on screen (Q-1)');
+    await runFootFollowsScreenStop(browser);
     console.log('desk-v1-map: R2-3b retirements (setup steps, rules popover, Conversations tab)');
     await runR23bRetirements(browser);
     console.log('desk-v1-map: old conversations deep link -> Engagement');

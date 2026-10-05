@@ -12,7 +12,8 @@
  *     Brief is the only place to choose; it shows each agent's FIGURE + name +
  *     role (never a `fig:` ref as text), keyboard + bottom sheet at 390. The
  *     right-hand box only SHOWS the agent (figure + name, not a control); with
- *     none it reads "No agent yet, pick one in Campaign" and links to the card.
+ *     none it reads "No agent yet, pick one in the Agent field" on Brief (the field is on
+ *     that page) and "No agent yet, pick one on Brief" on every other stop; both link to it.
  *  3. The "Tell your agent what to change" box was one line tall, so the
  *     wrapped placeholder was cut off. Pin: >= 2 lines tall and it grows.
  *  4. Only already-hired agents were offered, which read as broken. Pin:
@@ -187,8 +188,24 @@ async function run(browser, width, height) {
   // ── 3 + 2 + 4 on a campaign whose project has no agent (Engulfing) ──────
   await openCampaign(page, 'camp-3', 'how');
   const label = await page.$eval('.desk-v1-camp-posy [data-goto-campaign-agent]', (b) => b.textContent.trim());
-  check(label === 'No agent yet, pick one in Campaign',
-    `${tag} 2 unset agent reads "${label}" (a link, not a picker)`, `${tag} 2 label wrong: ${label}`);
+  check(label === 'No agent yet, pick one in the Agent field',
+    `${tag} 2 unset agent on Brief reads "${label}" (the picker is on this page; a link, not a picker)`, `${tag} 2 label wrong on Brief: ${label}`);
+  // Q-2 (Dave, Desk live QA 2026-10-04): off Brief the picker is a stop away, so the same box (same node)
+  // says where it is, and its link still lands on the picker.
+  await page.evaluate(() => { window.__agentBox = document.querySelector('.desk-v1-camp-posy .desk-v1-posy-box'); });
+  for (const stop of ['what', 'launch']) {
+    await page.evaluate((s) => window.deskV1GotoCampaignPanel(s, { campaignId: 'camp-3' }), stop);
+    await page.waitForTimeout(100);
+    const off = await page.evaluate(() => ({ label: (document.querySelector('.desk-v1-camp-posy [data-goto-campaign-agent]') || {}).textContent || '', same: document.querySelector('.desk-v1-camp-posy .desk-v1-posy-box') === window.__agentBox }));
+    check(off.label === 'No agent yet, pick one on Brief' && off.same,
+      `${tag} 2 on ${stop} the box reads "${off.label}" and is the same node`, `${tag} 2 on ${stop}: ${JSON.stringify(off)}`);
+  }
+  await page.click('.desk-v1-camp-posy [data-goto-campaign-agent]');
+  await page.waitForSelector('.desk-v1-how', { timeout: 4000 });
+  await page.waitForTimeout(200);
+  const back = await page.evaluate(() => ({ label: (document.querySelector('.desk-v1-camp-posy [data-goto-campaign-agent]') || {}).textContent || '', focus: !!(document.activeElement && document.activeElement.hasAttribute('data-how-agent')) }));
+  check(back.label === 'No agent yet, pick one in the Agent field' && back.focus,
+    `${tag} 2 the off-Brief link opens Brief with the picker focused, and the line reads "${back.label}" again`, `${tag} 2 link from another stop: ${JSON.stringify(back)}`);
 
   // 3: the Tell-your-agent box
   const ta0 = await page.$eval('.desk-v1-posy-input', (t) => { const cs = getComputedStyle(t); return { h: t.getBoundingClientRect().height, line: parseFloat(cs.lineHeight), padT: parseFloat(cs.paddingTop), padB: parseFloat(cs.paddingBottom), clipped: t.scrollHeight > t.clientHeight + 1, ph: t.placeholder }; });

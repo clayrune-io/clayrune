@@ -48,7 +48,15 @@
   // page's box says so. Project-level surfaces keep UNRESOLVED_AGENT_LABEL.
   // Ron 2026-10-02: the campaign page's box only SHOWS the agent; the one
   // place to choose is the Campaign card on Brief, and this label links there.
-  const UNRESOLVED_CAMPAIGN_AGENT_LABEL = 'No agent yet, pick one in Campaign';
+  //
+  // Where the line sits matters (Ron/Dave, Desk live QA 2026-10-04, Q-2): on Brief
+  // the Agent field is on the same page, so the line must not send the user to
+  // "Campaign"; on every other stop the picker is a stop away, so it names Brief and
+  // stays a link. Not "pick one below": the field is to the LEFT of the box at 1440
+  // and ABOVE it at 390, never below it.
+  const UNRESOLVED_CAMPAIGN_AGENT_LABEL = 'No agent yet, pick one on Brief';
+  const UNRESOLVED_CAMPAIGN_AGENT_HERE_LABEL = 'No agent yet, pick one in the Agent field';
+  const _campaignAgentLabel = (pickerHere) => (pickerHere ? UNRESOLVED_CAMPAIGN_AGENT_HERE_LABEL : UNRESOLVED_CAMPAIGN_AGENT_LABEL);
 
   // opts: {project, campaign}. R2-18 (Ron 2026-09-30, reversing the same-day
   // "agents per project only" ruling): the agent belongs to the CAMPAIGN —
@@ -122,7 +130,7 @@
       const resolved = resolveDeskAgent(box.getAttribute('data-agent-ref') || null);
       const nameEl = box.querySelector('.desk-thread-name');
       const showOnly = box.hasAttribute('data-pick-agent');
-      const unresolvedLabel = showOnly ? UNRESOLVED_CAMPAIGN_AGENT_LABEL : UNRESOLVED_AGENT_LABEL;
+      const unresolvedLabel = showOnly ? _campaignAgentLabel(box.hasAttribute('data-picker-here')) : UNRESOLVED_AGENT_LABEL;
       // The campaign box's name is a link to the Campaign card only while no
       // agent is chosen; once one resolves it is plain text, not a control.
       if (nameEl && showOnly && (nameEl.tagName === 'BUTTON') === !!resolved.name) nameEl.outerHTML = _agentNameHTML(resolved.name, true, unresolvedLabel);
@@ -131,6 +139,16 @@
       if (head && head.firstElementChild && resolved.name && typeof window.avatarHTML === 'function') {
         head.firstElementChild.outerHTML = window.avatarHTML(resolved.avatar, 24);
       }
+    });
+  }
+
+  // The campaign page keeps ONE agent box across in-place stop switches, so when the
+  // stop changes its unresolved line is re-worded in place (the node stays).
+  function setAgentPickerHere(here) {
+    document.querySelectorAll('.desk-v1-posy-box[data-pick-agent]').forEach((box) => {
+      box.toggleAttribute('data-picker-here', !!here);
+      const nameEl = box.querySelector('.desk-thread-name');
+      if (nameEl && nameEl.hasAttribute('data-goto-campaign-agent')) nameEl.textContent = _campaignAgentLabel(!!here);
     });
   }
 
@@ -708,7 +726,7 @@
     // opts.pickAgent (campaign page): the box only SHOWS the campaign's agent
     // (figure + name, not a control). With none chosen the name is a link to
     // the Campaign card on Brief, where the one picker lives.
-    const unresolvedLabel = opts.pickAgent ? UNRESOLVED_CAMPAIGN_AGENT_LABEL : UNRESOLVED_AGENT_LABEL;
+    const unresolvedLabel = opts.pickAgent ? _campaignAgentLabel(!!opts.pickerHere) : UNRESOLVED_AGENT_LABEL;
     const nameHTML = compact ? '' : _agentNameHTML(resolved.name, !!opts.pickAgent, unresolvedLabel);
     const scope = opts.scopeLabel
       ? `<button type="button" class="desk-v1-posy-scope" data-scope-trigger="1">About: ${esc(opts.scopeLabel)} &#9662;</button>`
@@ -726,7 +744,7 @@
       ? `<button type="button" class="desk-v1-posy-send-arrow" data-posy-send="${esc(inputId)}" aria-label="Send">&#10148;</button>`
       : `<button class="btn-dispatch" data-posy-send="${esc(inputId)}">Send</button>`;
     return `
-      <div class="desk-v1-posy-box${compact ? ' desk-v1-posy-box-compact' : ''}" data-agent-ref="${esc(ref || '')}"${opts.pickAgent ? ' data-pick-agent' : ''}>
+      <div class="desk-v1-posy-box${compact ? ' desk-v1-posy-box-compact' : ''}" data-agent-ref="${esc(ref || '')}"${opts.pickAgent ? ' data-pick-agent' : ''}${opts.pickAgent && opts.pickerHere ? ' data-picker-here' : ''}>
         <div class="desk-thread-head">${avatar}${nameHTML}${scope}</div>
         <div class="agent-output desk-v1-posy-output">${suggestionHTML}</div>
         ${chipsHTML}
@@ -1426,7 +1444,7 @@
     addToMenu, bindAddToTrigger, placePopover, agentListPopover, agentRole, agentFaceHTML,
     infoIconHTML, bindInfoIcons,
     posyBoxHTML, bindPosyBox,
-    deskAgentRef, accountVoice, projectAgentChoices, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL, UNRESOLVED_CAMPAIGN_AGENT_LABEL, onAgentsReady,
+    deskAgentRef, accountVoice, projectAgentChoices, resolveDeskAgent, deskAgentName, UNRESOLVED_AGENT_LABEL, UNRESOLVED_CAMPAIGN_AGENT_LABEL, UNRESOLVED_CAMPAIGN_AGENT_HERE_LABEL, setAgentPickerHere, onAgentsReady,
     anyPosyWorking, deskAgentWorkingLabel, paintPosyReadyNoDiff, paintPosyNotConnected,
     openConfirmSheet,
     validatePlan, MAX_TERM_DAYS: _MAX_TERM_DAYS,
