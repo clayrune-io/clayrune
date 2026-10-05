@@ -101,6 +101,10 @@ class SecretNotFound(SecretsError):
     """No secret by that name."""
 
 
+class SecretExists(SecretsError):
+    """`set_secret(create_only=True)` found an entry by that name and wrote nothing."""
+
+
 class SecretDenied(SecretsError):
     """The secret exists but this caller may not read it."""
 
@@ -2171,9 +2175,15 @@ def set_secret(name: str,
                scope: str = 'global',
                allow_unattended: bool = True,
                kind: str = KIND_PASSWORD,
-               entry_type: str | None = None) -> dict[str, Any]:
+               entry_type: str | None = None,
+               create_only: bool = False) -> dict[str, Any]:
     """Create or replace a secret. Human-initiated only — no agent path calls
     this (see the module docstring's authority note).
+
+    ``create_only=True`` makes it a create: an entry by that name, seen under the
+    same lock as the write, raises `SecretExists` and writes nothing, so a caller
+    that checked the name earlier cannot overwrite an entry that appeared since,
+    and a rollback of "the entry this call made" can only ever remove that.
 
     An ``otpauth://totp/...`` URI pasted as the value is detected and unpacked
     into a TOTP entry automatically — that string is what the enrolment QR code
@@ -2215,6 +2225,8 @@ def set_secret(name: str,
     with _lock:
         store = _load_store()
         existing = store['secrets'].get(name) or {}
+        if create_only and name in store['secrets']:
+            raise SecretExists(f"a secret named '{name}' already exists")
         # None = "not said": keep what the entry already carries, so a metadata
         # edit from a client that predates the field cannot erase the choice.
         if entry_type is None and existing.get('entry_type') in ENTRY_TYPES:

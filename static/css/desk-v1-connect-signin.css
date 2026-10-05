@@ -1,0 +1,12 @@
+/* Desk v1 — Connections: store a new login / sign in with the saved login (desk-v1-connect-signin.js). Load order is in static/index.html. */
+.desk-v1-cs-new { display: flex; flex-direction: column; gap: 8px; min-width: 0; align-items: flex-start; }
+.desk-v1-cs-form { display: flex; flex-direction: column; gap: 10px; min-width: 0; width: 100%; padding: 10px; border: 1px solid var(--border2); border-radius: 8px; background: var(--surface); box-sizing: border-box; }
+.desk-v1-cs-form[hidden] { display: none; }
+.desk-v1-cs-fill { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; min-width: 0; }
+.desk-v1-cs-fill-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.desk-v1-cs-pick { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 10px; border: 1px dashed var(--border2); border-radius: 8px; }
+.desk-v1-cs-pick select { max-width: 100%; box-sizing: border-box; width: 100%; }
+
+@media (max-width: 640px) {
+  .desk-v1-cs-fill-row .desk-v1-conn-btn, .desk-v1-cs-new .desk-v1-conn-btn { min-height: 44px; }
+}

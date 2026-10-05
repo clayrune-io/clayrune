@@ -16,8 +16,9 @@ The one write (`commit`) is the human-passcode Save of the route (`desk_connect_
     2. ONE desk.json write under the store lock: the bindings, and the legacy read setting
        (`read_via`, `browser_profile`) when every own-read binding agrees on one way to read.
 
-It creates no vault entry, no browser profile, starts no sign-in, installs nothing and never
-touches `credentials`, `organization_id`, `voice` or an existing read setting that the draft
+It creates no browser profile, starts no sign-in, installs nothing, and the only vault entry it ever
+writes is a login the person typed on a sign-in route's own form (`new_login`, slice P2b; made first,
+removed again if the binding write fails, never replacing an existing entry). It never touches `credentials`, `organization_id`, `voice` or an existing read setting that the draft
 does not change. When own reads are split across the API and the pane, the legacy single
 `read_via` is left alone and the split is reported as a gap: engagement reads one account one
 way today, and a binding cannot make it do more.
@@ -40,6 +41,7 @@ from mc.core import _log, now_iso
 from mc.desk_connect import commit as _commit
 from mc.desk_connect import registry as _registry
 from mc.desk_connect import route_readiness as _ready
+from mc.desk_connect import signin_login_store as _logins
 
 MAX_BINDINGS = 8
 _PROFILE_NAME = re.compile(r'^[a-z0-9][a-z0-9_-]{0,40}$')
@@ -141,6 +143,15 @@ def _clean_account(raw, service: str) -> dict:
     return {'new': {'identity': identity, 'label': label}}
 
 
+def _roles_for(route: dict) -> set:
+    """The credential roles a route takes: by its auth kind, plus a login wherever the route
+    declares the page one is typed on (`signin`, slice P2b)."""
+    roles = {_ROLE_FOR_AUTH[a['type']] for a in route['auth'] if a['type'] in _ROLE_FOR_AUTH}
+    if route.get('signin'):
+        roles.add('login')
+    return roles
+
+
 def _vault_names() -> set:
     try:
         return {s['name'] for s in _vault.list_secrets()}
@@ -151,7 +162,7 @@ def _vault_names() -> set:
 def _clean_binding(b, i: int, profile: dict, kind: str, seen: set, names_cache: list) -> dict:
     where = f'bindings[{i}]'
     _need(isinstance(b, dict), f'{where} must be an object')
-    unknown = sorted(set(b) - {'purpose', 'route_id', 'capabilities', 'browser_profile', 'credentials'})
+    unknown = sorted(set(b) - {'purpose', 'route_id', 'capabilities', 'browser_profile', 'credentials', 'new_login'})
     _need(not unknown, f'{where}: unknown field(s): {", ".join(unknown)}')
     purpose = b.get('purpose')
     _need(isinstance(purpose, str) and purpose in _ready.BINDABLE_PURPOSES, f'{where}: purpose must be one of {_ready.BINDABLE_PURPOSES}')
@@ -168,7 +179,8 @@ def _clean_binding(b, i: int, profile: dict, kind: str, seen: set, names_cache: 
         seen.add((purpose, c))
     route_id = b.get('route_id')
     if route_id is None:                     # unbind
-        _need('browser_profile' not in b and 'credentials' not in b, f'{where}: removing a binding takes no profile or credential')
+        _need('browser_profile' not in b and 'credentials' not in b and 'new_login' not in b,
+              f'{where}: removing a binding takes no profile or credential')
         return {'purpose': purpose, 'route_id': None, 'capabilities': sorted(caps)}
     _need(isinstance(route_id, str) and route_id in pur['routes'], f'{where}: that route is not offered for {purpose}', 400, 'route_not_offered')
     route = next(r for r in profile['routes'] if r['id'] == route_id)
@@ -189,7 +201,7 @@ def _clean_binding(b, i: int, profile: dict, kind: str, seen: set, names_cache: 
     creds = b.get('credentials')
     if creds is not None:
         _need(isinstance(creds, dict) and len(creds) <= 3, f'{where}: credentials must be an object of role to vault name')
-        roles = {_ROLE_FOR_AUTH[a['type']] for a in route['auth'] if a['type'] in _ROLE_FOR_AUTH}
+        roles = _roles_for(route)
         for role, name in creds.items():
             _need(role in roles, f'{where}: this route takes no "{role}" credential')
             _need(isinstance(name, str) and _vault.valid_name(name.strip()), f'{where}: {role} must name a vault entry')
@@ -200,6 +212,19 @@ def _clean_binding(b, i: int, profile: dict, kind: str, seen: set, names_cache: 
             _need(name in names_cache[0], f'{where}: there is no vault entry named {name}. Create it in Secrets, or pick one that exists',
                   400, 'vault_entry_missing')
             out['credentials'][role] = name
+    if b.get('new_login') is not None:
+        _need('login' in _roles_for(route), f'{where}: {route["title"]} takes no stored login')
+        _need('login' not in out['credentials'], f'{where}: pick a stored login or type a new one, not both')
+        try:
+            new = _logins.clean(b['new_login'])
+            if not names_cache:
+                names_cache.append(_vault_names())
+            _need(new['name'] not in names_cache[0], f'{where}: a vault entry named {new["name"]} already exists. Pick it from the list, '
+                  f'or choose another name', 409, 'secret_exists')
+        except _logins.LoginError as e:
+            raise BindError(f'{where}: {e}', e.status, e.code) from e
+        out['new_login'] = new
+        out['credentials']['login'] = new['name']
     return out
 
 
@@ -232,7 +257,9 @@ def clean_draft(draft) -> dict:
 
 
 def _draft_fingerprint(clean: dict) -> str:
-    return hashlib.sha256(json.dumps(clean, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+    """Over the draft WITHOUT any typed password: a typed login counts by its name and type only."""
+    view = dict(clean, bindings=[{k: (_logins.public(v) if k == 'new_login' else v) for k, v in b.items()} for b in clean['bindings']])
+    return hashlib.sha256(json.dumps(view, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
 # -- the write --------------------------------------------------------------------
@@ -315,6 +342,59 @@ def _result(account_id: str, created: bool, legacy: dict) -> dict:
     return {'account_id': account_id, 'account_created': created, 'legacy_read': legacy}
 
 
+def _write_logins(clean: dict) -> list:
+    """Store the logins typed in this draft (each a new vault entry). A failure removes the ones
+    already stored by this call and raises BindError, so the caller never sees a half-written set."""
+    wrote: list = []
+    try:
+        for b in clean['bindings']:
+            if b.get('new_login'):
+                _logins.write(b['new_login'])
+                wrote.append(b['new_login']['name'])
+    except _logins.LoginError as e:
+        _unwrite(wrote)
+        raise BindError(str(e), e.status, e.code) from e
+    return wrote
+
+
+def _unwrite(names: list) -> list:
+    """Remove logins this request stored. Returns the names that could not be removed."""
+    return [n for n in names if not _logins.remove(n)]
+
+
+def _write_binding(clean: dict) -> dict:
+    created = None
+    account_id = clean['account'].get('id')
+    if account_id is None:
+        new = clean['account']['new']
+        try:
+            created = _accounts.create_account(clean['service'], new['identity'], label=new['label'] or None)
+        except _accounts.AccountError as e:
+            raise BindError(str(e), e.status, 'account_refused') from e
+        account_id = created['id']
+    try:
+        with _desk._store_lock:
+            store = _desk._read_store()
+            legacy = _apply(store, account_id, clean)
+            _desk._write_store(store)
+    except Exception as e:
+        orphan = False
+        if created is not None:
+            try:
+                orphan = not _accounts.delete_account(account_id)
+            except Exception as e2:
+                orphan = True
+                _log(f'[desk_connect] could not remove the account made for a failed binding: {type(e2).__name__}', flush=True)
+        if isinstance(e, BindError) and not orphan:
+            raise
+        _log(f'[desk_connect] binding write failed ({type(e).__name__})', flush=True)
+        msg = str(e) if isinstance(e, BindError) else 'the routes could not be saved; see the server log'
+        if orphan:
+            msg += f'; the new account {account_id} was made and could not be removed: delete it in Connections'
+        raise BindError(msg, e.status if isinstance(e, BindError) else 500, 'record_failed') from e
+    return _result(account_id, created is not None, legacy)
+
+
 def commit(request_id: str, clean: dict) -> tuple[dict, bool]:
     """Write the draft. Returns `(result, duplicate)`. Raises BindError."""
     fp = _draft_fingerprint(clean)
@@ -324,36 +404,15 @@ def commit(request_id: str, clean: dict) -> tuple[dict, bool]:
             if seen[0] == fp:
                 return seen[1], True
             raise BindError('that request_id was already used for a different draft', 409, 'request_id_reused')
-        created = None
-        account_id = clean['account'].get('id')
-        if account_id is None:
-            new = clean['account']['new']
-            try:
-                created = _accounts.create_account(clean['service'], new['identity'], label=new['label'] or None)
-            except _accounts.AccountError as e:
-                raise BindError(str(e), e.status, 'account_refused') from e
-            account_id = created['id']
+        wrote = _write_logins(clean)
         try:
-            with _desk._store_lock:
-                store = _desk._read_store()
-                legacy = _apply(store, account_id, clean)
-                _desk._write_store(store)
+            result = _write_binding(clean)
         except Exception as e:
-            orphan = False
-            if created is not None:
-                try:
-                    orphan = not _accounts.delete_account(account_id)
-                except Exception as e2:
-                    orphan = True
-                    _log(f'[desk_connect] could not remove the account made for a failed binding: {type(e2).__name__}', flush=True)
-            if isinstance(e, BindError) and not orphan:
-                raise
-            _log(f'[desk_connect] binding write failed ({type(e).__name__})', flush=True)
-            msg = str(e) if isinstance(e, BindError) else 'the routes could not be saved; see the server log'
-            if orphan:
-                msg += f'; the new account {account_id} was made and could not be removed: delete it in Connections'
-            raise BindError(msg, e.status if isinstance(e, BindError) else 500, 'record_failed') from e
-        result = _result(account_id, created is not None, legacy)
+            left = _unwrite(wrote)
+            if left and isinstance(e, BindError):
+                raise BindError(f'{e}; the login "{left[0]}" was stored and could not be removed: delete it in Secrets',
+                                e.status, e.code) from e
+            raise
         _done[request_id] = (fp, result)
         while len(_done) > _REMEMBER:
             _done.popitem(last=False)

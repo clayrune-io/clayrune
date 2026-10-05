@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "service_id": "linkedin",
-  "revision": 1,
+  "revision": 2,
   "label": "LinkedIn",
   "aliases": [
     "LinkedIn",
@@ -450,7 +450,13 @@
       },
       "evidence": [
         "clayrune-desk-pane"
-      ]
+      ],
+      "signin": {
+        "url": "https://www.linkedin.com/login",
+        "hosts": [
+          "www.linkedin.com"
+        ]
+      }
     },
     {
       "id": "linkedin-manual",
@@ -677,6 +683,6 @@
       "result": "unverified"
     }
   ],
-  "change_summary": "P1: the version 1 Company Page row kept as is; member, restricted-read, browser, manual and MCP-candidate routes added from the primary pages read on 2026-10-05.",
-  "supersedes": null
+  "change_summary": "P1: the version 1 Company Page row kept as is; member, restricted-read, browser, manual and MCP-candidate routes added from the primary pages read on 2026-10-05. Revision 2 (slice P2b): sign-in routes declare the one page a stored login may be typed on (`signin`); nothing else in the profile changed.",
+  "supersedes": 1
 }

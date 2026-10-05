@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "service_id": "x",
-  "revision": 1,
+  "revision": 2,
   "label": "X",
   "aliases": [
     "X",
@@ -220,7 +220,13 @@
         "x-pricing"
       ],
       "connect_method": "oauth",
-      "adapter_id": "account:x"
+      "adapter_id": "account:x",
+      "signin": {
+        "url": null,
+        "hosts": [
+          "x.com"
+        ]
+      }
     },
     {
       "id": "x-mcp-action",
@@ -415,7 +421,13 @@
       },
       "evidence": [
         "clayrune-desk-pane"
-      ]
+      ],
+      "signin": {
+        "url": "https://x.com/i/flow/login",
+        "hosts": [
+          "x.com"
+        ]
+      }
     },
     {
       "id": "x-manual",
@@ -541,6 +553,6 @@
       "result": "unavailable"
     }
   ],
-  "change_summary": "P1: the version 1 API row kept as is; MCP, documentation MCP, browser and manual routes added from the pages read on 2026-10-05 (web intents page unavailable that day).",
-  "supersedes": null
+  "change_summary": "P1: the version 1 API row kept as is; MCP, documentation MCP, browser and manual routes added from the pages read on 2026-10-05 (web intents page unavailable that day). Revision 2 (slice P2b): sign-in routes declare the one page a stored login may be typed on (`signin`); nothing else in the profile changed.",
+  "supersedes": 1
 }

@@ -163,7 +163,7 @@ def _check_route(r: Any, i: int) -> dict:
     where = f'routes[{i}]'
     _fields(r, where, {'id', 'title', 'guidance', 'transport', 'support', 'auth', 'coverage', 'requirements',
                        'limits', 'cost', 'evidence'},
-            {'mcp_protocol', 'connect_method', 'adapter_id', 'catalogue_id'})
+            {'mcp_protocol', 'connect_method', 'adapter_id', 'catalogue_id', 'signin'})
     need(isinstance(r['id'], str) and _LOCAL_ID_RE.match(r['id']), where, 'id must be a short slug')
     where = f'routes[{i}] ({r["id"]})'
     transport = _enum(r['transport'], TRANSPORTS, where, 'transport')
@@ -241,7 +241,33 @@ def _check_route(r: Any, i: int) -> dict:
     for k in ('mcp_protocol', 'connect_method', 'adapter_id', 'catalogue_id'):
         if r.get(k) is not None:
             out[k] = r[k]
+    if 'signin' in r:
+        out['signin'] = _check_signin(r['signin'], where, auths)
     return out
+
+
+def _check_signin(s: Any, where: str, auths: list[dict]) -> dict:
+    """A route's declared sign-in page: the ONE place a stored login may be typed for it
+    (`signin_fill`). `hosts` are exact host names (https, default port, no wildcard); `url` is
+    where the pane opens, or null when the provider's own flow supplies the address (OAuth)."""
+    where = f'{where}.signin'
+    _fields(s, where, {'url', 'hosts'})
+    need(any(a['type'] in ('browser_signin', 'oauth') for a in auths), where,
+         'only a route that signs in (browser sign-in or OAuth) declares a sign-in page')
+    hosts = _list(s['hosts'], where, 'hosts', 6)
+    need(hosts and all(is_host(h) for h in hosts) and len(set(hosts)) == len(hosts), where,
+         'hosts must be a non-empty list of distinct lowercase host names')
+    url = s['url']
+    if url is not None:
+        try:
+            parts = urlsplit(url) if isinstance(url, str) else None
+            ok = bool(parts) and parts.scheme == 'https' and parts.hostname in hosts and parts.port is None \
+                and not parts.username and not parts.fragment and len(url) <= 300 \
+                and not any(unicodedata.category(c) in _DROP or c.isspace() for c in url)
+        except ValueError:
+            ok = False
+        need(ok, where, 'url must be a plain https address on one of the declared hosts, or null')
+    return {'url': url, 'hosts': list(hosts)}
 
 
 def _check_evidence(e: Any, i: int) -> dict:
@@ -365,6 +391,9 @@ def check_profile(raw: Any, where: str = 'profile') -> dict:
     used_claims: set[str] = set()
     for r in routes:
         w = f'{where} route {r["id"]}'
+        for h in (r.get('signin') or {}).get('hosts', []):
+            need(any(h == own or h.endswith('.' + own) for own in hosts), w,
+                 f'sign-in host {h} is not one of the service\'s own hosts or under one')
         for ev_id in r['evidence']:
             need(ev_id in by_ev, w, f'evidence "{ev_id}" does not exist')
         have = {c for ev_id in r['evidence'] for c in by_ev[ev_id]['claim_ids']}

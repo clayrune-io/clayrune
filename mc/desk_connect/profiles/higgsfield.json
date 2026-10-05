@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "service_id": "higgsfield",
-  "revision": 1,
+  "revision": 2,
   "label": "Higgsfield",
   "aliases": [
     "Higgsfield",
@@ -95,7 +95,13 @@
       "evidence": [
         "legacy-v1-1"
       ],
-      "mcp_protocol": "unknown"
+      "mcp_protocol": "unknown",
+      "signin": {
+        "url": null,
+        "hosts": [
+          "higgsfield.ai"
+        ]
+      }
     },
     {
       "id": "higgsfield-api-key",
@@ -162,6 +168,6 @@
       "result": "unverified"
     }
   ],
-  "change_summary": "P1: converted from the version 1 registry; nothing in it was re-verified.",
-  "supersedes": null
+  "change_summary": "P1: converted from the version 1 registry; nothing in it was re-verified. Revision 2 (slice P2b): sign-in routes declare the one page a stored login may be typed on (`signin`); nothing else in the profile changed. Higgsfield: its Clerk environment names https://higgsfield.ai/auth/sign-in as the sign-in page (read 2026-10-05).",
+  "supersedes": 1
 }

@@ -2227,6 +2227,10 @@ app.register_blueprint(_bp_desk_connect_detect.bp)
 from mc.blueprints import desk_connect_purpose_routes as _bp_desk_connect_purpose  # noqa: E402
 app.register_blueprint(_bp_desk_connect_purpose.bp)
 
+# Sign in with a saved login (slice P2b): type a vault login into the pane's declared sign-in page. Own module.
+from mc.blueprints import desk_connect_signin_routes as _bp_desk_connect_signin  # noqa: E402
+app.register_blueprint(_bp_desk_connect_signin.bp)
+
 # Passkeys (docs/PASSKEYS_SPEC.md slice 1): host-only enrollment, list, revoke. Own
 # module; authorizes nothing yet. wire() hands it the configured port, from which it
 # derives the one Host/Origin it will accept.

@@ -10,9 +10,11 @@
 //   POST /api/desk/connect/purpose/verify  one free read-only check per bound route that has one
 //
 // What this screen does not do: choose for the person (a capability is bound only when its box is
-// ticked, and nothing is ticked for a route that costs money), start a sign-in, create a vault entry
-// or a browser profile, or call a route "verified" because it was saved. A credential is picked from
-// the vault BY NAME; no value is ever read or shown here. Nothing is written before Save.
+// ticked, and nothing is ticked for a route that costs money), start a sign-in, create a browser
+// profile, or call a route "verified" because it was saved. A credential is picked from the vault BY
+// NAME; no value is ever read or shown here. Nothing is written before Save. A sign-in route can also
+// store a NEW login (slice P2b: the shared form, in static/js/desk-v1-connect-signin.js, which also
+// owns "Sign in with the saved login"); it rides this Save and creates the vault entry only then.
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -26,11 +28,11 @@
 
   function _fresh() {
     return { service: '', view: null, loading: false, accountId: '', kind: '', newIdentity: '', newLabel: '',
-      sel: {}, prof: {}, creds: {}, dirty: false, requestId: '', status: '', statusKind: 'ok', saving: false, checking: '', checks: {} };
+      sel: {}, prof: {}, creds: {}, dirty: false, requestId: '', status: '', statusKind: 'ok', saving: false, checking: '', checks: {}, formShown: {} };
   }
   let P = _fresh();
 
-  function reset() { P = _fresh(); }
+  function reset() { P = _fresh(); if (window.DeskV1ConnectSignin) window.DeskV1ConnectSignin.reset(); }
 
   // ── reading the view ────────────────────────────────────────────────────
   function _account() { return P.view && P.accountId !== NEW ? P.view.accounts.find((a) => a.id === P.accountId) || null : null; }
@@ -73,6 +75,8 @@
         if (r && r.transport === 'browser' && (P.prof[rid] || '').trim()) b.browser_profile = P.prof[rid].trim();
         const cr = P.creds[rid] || {};
         const named = Object.keys(cr).filter((k) => cr[k]);
+        const typed = r && r.signin && window.DeskV1ConnectSignin ? window.DeskV1ConnectSignin.read(rid) : null;
+        if (typed && typed.new_login) { b.new_login = typed.new_login; const at = named.indexOf('login'); if (at >= 0) named.splice(at, 1); }   // typed or picked, never both
         if (named.length) { b.credentials = {}; named.forEach((k) => { b.credentials[k] = cr[k]; }); }
         out.push(b);
       });
@@ -91,7 +95,10 @@
     if (!P.accountId) return 'Pick the account these routes are for.';
     if (P.accountId === NEW && !P.newIdentity.trim()) return 'Name the new account (its handle, profile name or page name).';
     if (!P.kind) return 'Say what kind of account this is.';
-    if (!_draftBindings().length) return 'Tick at least one capability on a route.';
+    const bound = _draftBindings();
+    if (!bound.length) return 'Tick at least one capability on a route.';
+    const SI = window.DeskV1ConnectSignin;
+    for (const b of bound) { const t = SI && b.route_id ? SI.read(b.route_id) : null; if (t && t.error) return t.error; }
     if (!P.dirty && P.accountId !== NEW) return 'Nothing has changed.';
     return '';
   }
@@ -104,7 +111,8 @@
       const caps = b.capabilities.join(', ');
       if (!b.route_id) { lines.push(`Remove ${label}: ${caps}`); return; }
       const r = _route(b.purpose, b.route_id);
-      const extra = [b.browser_profile ? `browser profile ${b.browser_profile}` : '', ...Object.keys(b.credentials || {}).map((k) => `${ROLE_LABEL[k] || k}: ${b.credentials[k]}`)].filter(Boolean);
+      const extra = [b.browser_profile ? `browser profile ${b.browser_profile}` : '', ...Object.keys(b.credentials || {}).map((k) => `${ROLE_LABEL[k] || k}: ${b.credentials[k]}`),
+        b.new_login ? `New stored login: ${b.new_login.name}, stored when you press Save` : ''].filter(Boolean);
       lines.push(`${label}: ${caps} via ${r ? r.title : b.route_id}${extra.length ? ` (${extra.join('; ')})` : ''}`);
     });
     return lines;
@@ -152,7 +160,7 @@
   }
 
   function _credPickers(r, purpose) {
-    const roles = [...new Set(r.auth.map((a) => ROLE_FOR_AUTH[a.type]).filter(Boolean))];
+    const roles = [...new Set(r.auth.map((a) => ROLE_FOR_AUTH[a.type]).filter(Boolean).concat(r.signin ? ['login'] : []))];
     const rows = [];
     if (r.transport === 'browser') {
       rows.push(`<label class="desk-v1-conn-add-field">Browser profile (a saved sign-in in the pane)
@@ -166,8 +174,12 @@
       if (cur && !vault.some((v) => v.name === cur)) opts.push(`<option value="${esc(cur)}" selected>${esc(cur)} (not in the vault now)</option>`);
       rows.push(`<label class="desk-v1-conn-add-field">${esc(ROLE_LABEL[role])}
         <select class="desk-v1-rules-textinput" data-cp-cred="${esc(r.id)}" data-cp-role="${esc(role)}">${opts.join('')}</select></label>`);
+      if (role === 'login' && r.signin && window.DeskV1ConnectSignin && !P.formShown[r.id]) {   // one typing form per route, even when two purposes use it
+        P.formShown[r.id] = true;
+        rows.push(window.DeskV1ConnectSignin.newLoginHTML(r.id));
+      }
     });
-    if (roles.length && !P.view.vault.length) rows.push('<div class="desk-v1-rules-hint">The vault has no entries yet. Create one in Secrets, then pick it here.</div>');
+    if (roles.length && !P.view.vault.length && !r.signin) rows.push('<div class="desk-v1-rules-hint">The vault has no entries yet. Create one in Secrets, then pick it here.</div>');
     return rows.length ? `<div class="desk-v1-cp-pickers" data-cp-pickers="${esc(r.id)}">${rows.join('')}</div>` : '';
   }
 
@@ -201,8 +213,14 @@
     const mine = a.bound.filter((b) => b.purpose === p.id);
     if (!mine.length) return `<div class="desk-v1-cp-state desk-v1-rules-hint" data-cp-state="${esc(p.id)}">Nothing is chosen for this purpose yet.</div>`;
     const ver = a.verification[p.id];
-    const rows = mine.map((b) => `<li data-cp-bound="${esc(b.route_id)}"><strong>${esc(b.route_title)}</strong>: ${esc(b.capabilities.join(', '))}
-        <span class="desk-v1-cf-badge" data-cp-setup="${esc(b.setup)}">${esc(SETUP_WORD[b.setup] || b.setup)}</span>${b.reason ? ` <span class="desk-v1-cp-why">${esc(b.reason)}</span>` : ''}</li>`);
+    const rows = mine.map((b) => {
+      const sr = _route(p.id, b.route_id);
+      const refs = b.refs || {};
+      const fill = sr && sr.signin && refs.login && window.DeskV1ConnectSignin
+        ? window.DeskV1ConnectSignin.fillHTML(`${p.id}:${b.route_id}`, { url: sr.signin.url, login: refs.login, profile: refs.browser_profile || refs.oauth_profile }) : '';
+      return `<li data-cp-bound="${esc(b.route_id)}"><strong>${esc(b.route_title)}</strong>: ${esc(b.capabilities.join(', '))}
+        <span class="desk-v1-cf-badge" data-cp-setup="${esc(b.setup)}">${esc(SETUP_WORD[b.setup] || b.setup)}</span>${b.reason ? ` <span class="desk-v1-cp-why">${esc(b.reason)}</span>` : ''}${fill}</li>`;
+    });
     const checked = P.checks[`${a.id}:${p.id}`];
     const msg = checked ? `<div class="desk-v1-cp-checkmsg" data-cp-checkmsg role="status">${checked.map((x) => esc(`${x.title}: ${x.message}`)).join(' ')}</div>` : '';
     return `<div class="desk-v1-cp-state" data-cp-state="${esc(p.id)}"><ul class="desk-v1-cp-list">${rows.join('')}</ul>
@@ -225,6 +243,7 @@
     if (!info || !info.service || P.service !== info.service.id) return '';
     if (!P.view || !eligible(P.view)) return '';          // an optional section: when it cannot load, the Method step is as it was
     const v = P.view;
+    P.formShown = {};
     const problem = _problem();
     const lines = P.accountId && P.kind ? _summary() : [];
     return `<section class="desk-v1-cp" data-cp data-cp-service="${esc(v.service.id)}" aria-label="Routes by purpose">
@@ -233,7 +252,7 @@
         ${_accountHTML()}
         ${P.accountId && P.kind ? _purposesFor(P.kind).map(_purposeHTML).join('') : ''}
         ${lines.length ? `<div class="desk-v1-cp-summary" data-cp-summary><div class="desk-v1-cp-summary-title">Save will record</div><ul class="desk-v1-cp-list">${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>
-          <div class="desk-v1-rules-hint">It creates no sign-in, browser profile or vault entry, and changes none. Saving asks for your dashboard passcode once.</div></div>` : ''}
+          <div class="desk-v1-rules-hint">${lines.some((l) => l.indexOf("New stored login") >= 0) ? "It stores the new login in Secrets (username and password on one entry), and creates no sign-in or browser profile." : "It creates no sign-in, browser profile or vault entry, and changes none."} Saving asks for your dashboard passcode once.</div></div>` : ''}
         ${P.status ? `<div class="desk-v1-cf-msg" data-cp-status data-cf-msg="${P.statusKind}" role="${P.statusKind === 'ok' ? 'status' : 'alert'}">${esc(P.status)}</div>` : ''}
         <div class="desk-v1-cp-actions" data-cp-actions>
           <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-cp-save ${problem || P.saving ? 'disabled' : ''} ${problem ? `title="${esc(problem)}"` : ''}>${P.saving ? 'Saving…' : 'Save routes'}</button>
@@ -291,6 +310,7 @@
       return;
     }
     const saved = result.body || {};
+    if (window.DeskV1ConnectSignin) window.DeskV1ConnectSignin.reset();    // a typed login is stored now: no password stays in the page
     const split = saved.legacy_read && saved.legacy_read.split;
     await _syncAccounts(ctx);
     P.accountId = saved.account_id || P.accountId;
@@ -357,6 +377,23 @@
     el.querySelectorAll('[data-cp-cred]').forEach((sel) => sel.addEventListener('change', () => {
       (P.creds[sel.dataset.cpCred] = P.creds[sel.dataset.cpCred] || {})[sel.dataset.cpRole] = sel.value; _touch(); again();
     }));
+    const SI = window.DeskV1ConnectSignin;
+    if (SI) {
+      el.querySelectorAll('[data-cs-new]').forEach((box) => {
+        const key = box.dataset.csNew;
+        SI.mount(box, key, `${P.view.service.id}.login`, again);
+        box.addEventListener('input', () => { _touch(); sync(); });
+        box.addEventListener('change', again);
+      });
+      el.querySelectorAll('[data-cs-fill]').forEach((box) => {
+        const [purpose, rid] = box.dataset.csFill.split(':');
+        const a = _account(), b = a && a.bound.find((x) => x.purpose === purpose && x.route_id === rid), route = _route(purpose, rid);
+        if (!b || !route || !route.signin) return;
+        const refs = b.refs || {};
+        SI.bindFill(box, box.dataset.csFill, { url: route.signin.url, login: refs.login, profile: refs.browser_profile || refs.oauth_profile },
+          ctx, () => ({ service: P.view.service.id, route_id: rid, account_id: a.id }));
+      });
+    }
     el.querySelectorAll('[data-cp-check]').forEach((b) => b.addEventListener('click', () => _check(b.dataset.cpCheck, ctx)));
     const save = el.querySelector('[data-cp-save]');
     if (save) save.addEventListener('click', () => _save(ctx));
