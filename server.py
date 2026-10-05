@@ -2224,6 +2224,9 @@ app.register_blueprint(_bp_desk_connect_discover.bp)
 from mc.blueprints import desk_connect_detect_routes as _bp_desk_connect_detect  # noqa: E402
 app.register_blueprint(_bp_desk_connect_detect.bp)
 
+from mc.blueprints import desk_connect_purpose_routes as _bp_desk_connect_purpose  # noqa: E402
+app.register_blueprint(_bp_desk_connect_purpose.bp)
+
 # Passkeys (docs/PASSKEYS_SPEC.md slice 1): host-only enrollment, list, revoke. Own
 # module; authorizes nothing yet. wire() hands it the configured port, from which it
 # derives the one Host/Origin it will accept.

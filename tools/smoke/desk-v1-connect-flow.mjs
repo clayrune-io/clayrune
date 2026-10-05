@@ -230,7 +230,7 @@ async function flow(browser, width, height) {
   check(/not ways to connect/.test(await page.textContent('[data-cf-d-typehint]')), 'the type list is labelled as kinds of secret, not ways to connect', 'type hint missing');
   await shot(page, 'details', width);
   await fits(page, 'details step');
-  const before = srv.log.filter((r) => r.method !== 'GET' && !/connect\/inspect/.test(r.path));
+  const before = srv.log.filter((r) => r.method !== 'GET' && !/connect\/(inspect|purposes)/.test(r.path));
   check(before.length === 0, 'nothing has been written or posted yet (only inspect was called)', 'writes before Save: ' + JSON.stringify(before.map((r) => r.path)));
 
   // Back keeps the form.

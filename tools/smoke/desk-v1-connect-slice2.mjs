@@ -158,7 +158,7 @@ const realErrors = (pageErrors) => pageErrors.filter((e) => !/aborted|net::ERR|F
 const step = (page) => page.$eval('[data-cf]', (e) => e.dataset.cfStep).catch(() => null);
 const shot = (page, name, w) => page.screenshot({ path: resolve(SHOT_DIR, `connect_s2_${name}_${w}.png`) });
 const posts = (srv, p) => srv.log.filter((r) => r.method === 'POST' && r.path === p);
-const writes = (srv) => srv.log.filter((r) => r.method !== 'GET' && !/connect\/(inspect|verify)/.test(r.path) && !/connect\/suggest/.test(r.path));
+const writes = (srv) => srv.log.filter((r) => r.method !== 'GET' && !/connect\/(inspect|verify|purposes)/.test(r.path) && !/connect\/suggest/.test(r.path));
 
 async function fits(page, label) {
   const m = await page.evaluate(() => {
@@ -228,7 +228,7 @@ async function nameInput(browser, width, height) {
   const msg = await page.textContent('[data-cf-msg="error"]');
   check(/web address/i.test(msg) && (await step(page)) === 'url', `an unknown name stays on step 1 and asks for the web address ("${msg.trim().slice(0, 80)}")`, 'message: ' + msg);
   const after = srv.log.slice(before).map((r) => r.path);
-  check(after.every((p) => p === '/api/desk/connect/inspect' || p === '/api/desk/connect/suggest'), `it asked the server only to inspect (${[...new Set(after)].join()}), no lookup`, 'requests: ' + after.join());
+  check(after.every((p) => p === '/api/desk/connect/inspect' || p === '/api/desk/connect/purposes' || p === '/api/desk/connect/suggest'), `it asked the server only to inspect (${[...new Set(after)].join()}), no lookup`, 'requests: ' + after.join());
   await shot(page, 'unknown_name', width);
   await fits(page, 'unknown name');
   await inView(page, '[data-cf-continue]', 'Continue');

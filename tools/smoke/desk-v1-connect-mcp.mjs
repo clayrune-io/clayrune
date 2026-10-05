@@ -142,7 +142,7 @@ const realErrors = (pageErrors) => pageErrors.filter((e) => !/aborted|net::ERR|F
 const step = (page) => page.$eval('[data-cf]', (e) => e.dataset.cfStep).catch(() => null);
 const shot = (page, name, w) => page.screenshot({ path: resolve(SHOT_DIR, `connect_s4_${name}_${w}.png`) });
 const posts = (srv, p) => srv.log.filter((r) => r.method === 'POST' && r.path === p);
-const writes = (srv) => srv.log.filter((r) => r.method !== 'GET' && !/connect\/(inspect|verify)/.test(r.path) && !/connect\/suggest/.test(r.path));
+const writes = (srv) => srv.log.filter((r) => r.method !== 'GET' && !/connect\/(inspect|verify|purposes)/.test(r.path) && !/connect\/suggest/.test(r.path));
 
 async function fits(page, label) {
   const m = await page.evaluate(() => {
