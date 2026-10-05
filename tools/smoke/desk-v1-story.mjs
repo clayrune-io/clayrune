@@ -100,7 +100,10 @@ async function newPage(browser, srv, viewport) {
     try { body = req.postDataJSON(); } catch (_) { /* multipart or none */ }
     srv.log.push({ method, path, body, raw });
     if (path === '/api/desk/workspace') return J(srv.workspace());
-    if (path === '/api/desk/materials') return J({ library: { video: [], image: [] }, articles: [], online: { video: [], image: [] }, recent: [] });
+    if (path === '/api/desk/materials') {
+      if (srv.materialsGate) await srv.materialsGate;
+      return J({ library: { video: [], image: [] }, articles: [], online: { video: [], image: [] }, recent: [] });
+    }
     if (path === '/api/desk/studio/storyboards') {
       return J({ storyboards: Object.entries(srv.boards).filter(([k]) => k.startsWith('studio:')).map(([k, b]) => ({ id: k.slice(7), title: b.title, scenes: b.scenes.length, updated_at: '2026-10-01T10:00:00Z' })) });
     }
@@ -436,6 +439,32 @@ async function main(browser) {
   return srv;
 }
 
+// A library read that lands after the user already opened New video used to repaint the
+// Studio home over the create page (both paint into the one route container), so the
+// storyboard vanished a moment after it appeared. Gate the read, open New video, release it.
+async function lateLibraryRead(browser) {
+  console.log('A late library read');
+  const srv = makeServer();
+  let release;
+  srv.materialsGate = new Promise((r) => { release = r; });
+  const ctx0 = await newPage(browser, srv, { width: 1440, height: 950 });
+  const { ctx, page } = ctx0;
+  await page.evaluate(() => window.deskV1Nav('studio', {}));
+  await page.waitForSelector('[data-studio-new="video"]', { timeout: 8000 });
+  await page.evaluate(() => window.deskV1Nav('studio-create', { kind: 'video' }));
+  await page.waitForSelector('[data-studio-create][data-kind="video"] [data-storyboard]', { timeout: 8000 });
+  release();
+  await page.waitForTimeout(600);
+  const state = await page.evaluate(() => ({
+    create: !!document.querySelector('[data-studio-create][data-kind="video"] [data-storyboard]'),
+    home: !!document.querySelector('[data-studio] [data-studio-new]'),
+  }));
+  (state.create && !state.home)
+    ? ok('New video stays on screen after the Studio library read lands') : fail(`the late read repainted Studio home over New video (storyboard=${state.create}, home=${state.home})`);
+  realErrors(ctx0.pageErrors).forEach((e) => fail('page error: ' + e));
+  await ctx.close();
+}
+
 async function shots(browser) {
   mkdirSync(SHOTS, { recursive: true });
   for (const [w, vp] of [['1440', { width: 1440, height: 1100 }], ['390', { width: 390, height: 900 }]]) {
@@ -462,6 +491,7 @@ async function shots(browser) {
 const browser = await chromium.launch();
 try {
   await main(browser);
+  await lateLibraryRead(browser);
   console.log('Screenshots');
   await shots(browser);
 } catch (e) {

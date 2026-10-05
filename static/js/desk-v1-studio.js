@@ -185,7 +185,7 @@
     fixtureRecent: () => _studio().recent || [],
     campaignTitle: (id) => { const c = _campaign(id); return c ? _campTitle(c) : 'a campaign'; },
     el: () => _studioEl,
-    repaint: () => { if (_studioEl && _studioEl.isConnected) { _studioEl.innerHTML = _studioHTML(); _wireStudio(_studioEl); } },
+    repaint: () => { if (_studioHomeOnScreen(_studioEl)) { _studioEl.innerHTML = _studioHTML(); _wireStudio(_studioEl); } },
     reload: () => _loadLibrary().then(() => _recentCtx.repaint()),
   };
   let _rows = [];
@@ -286,8 +286,16 @@
     el.innerHTML = _studioHTML();
     _wireStudio(el);
     if (_isLive()) _loadLibrary().then(() => {
-      if (_studioEl === el && el.isConnected) { el.innerHTML = _studioHTML(); _wireStudio(el); }
+      if (_studioEl === el && _studioHomeOnScreen(el)) { el.innerHTML = _studioHTML(); _wireStudio(el); }
     });
+  }
+
+  // The route container is shared: `studio-create` (or any other route) paints into
+  // the SAME element the Studio home used. A library read that lands after the user
+  // has already opened New video must not paint the home back over it, so a late
+  // repaint only happens while the Studio home is still what the element shows.
+  function _studioHomeOnScreen(el) {
+    return !!el && el.isConnected && !!el.querySelector(':scope > [data-studio]');
   }
 
   // M22, read when Studio home opens live. The same read hands What its library,
