@@ -125,3 +125,16 @@ Publishing tests use fake transports; assert one side effect, unchanged vault re
 6. **Delivery:** `py_webauthn`, pinned, browser-first. Native shells come later as their own slice. Accepted.
 
 Build order: slice 1 (core, disabled for actions) may build now. Slice 2 changes every human-only gate, so it waits until Ron has read this spec.
+
+## Slice 2 prerequisites (from the slice 1 audit, 2026-10-04)
+
+Slice 1 stores a passkey registry that nothing consults. Before slice 2 makes any gate read it, these must be settled:
+
+1. **Registry integrity against a same-user shell.** The registry is a plain file in `~/.clayrune/passkeys/`; a process running as the same OS user can rewrite it, so a passkey enrolled by an attacker would verify. Either MAC the registry (and the enrollment marker) with a key derived from the unlocked vault, or state plainly in the Settings UI that passkeys add no protection against a shell running as the same user. Do not ship slice 2 with the claim unstated.
+2. **Add-credential and revoke move behind passkey proof once one exists.** Slice 1 gates both on the retyped passcode only. After the first passkey is enrolled, adding or revoking one must require a passkey assertion, with the passcode path kept only as the documented lost-all recovery (decision 3).
+3. **A documented host reset for the registry-without-marker crash state** (`store._write_state` writes the registry, then the marker; a crash between them leaves a registry holding credentials with no marker, which `load()` refuses rather than reading as empty). The reset is a host-only, passcode-gated action that also clears pending challenges, and is written up where an operator will find it.
+4. **Stale-lock double-unlink race in `store._write_lock`.** Two waiters can both judge the lock stale; one unlinks it and takes a fresh lock, then the other unlinks that fresh lock. Fix before concurrent assertion writes (counter updates) make it reachable.
+
+## Slice 1 delivery note
+
+`webauthn` and its pins live in `requirements-passkeys.txt`, not `requirements.txt`: `cbor2` is a Rust extension with no wheel on every platform we install on, and `pip install -r` is all-or-nothing. The installers and `mc/update_requirements.py` install that file as a separate best-effort step; without it passkeys report unavailable and nothing else changes.

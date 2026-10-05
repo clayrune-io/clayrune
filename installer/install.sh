@@ -670,6 +670,17 @@ if [ -f "$REQ_PATH" ]; then
     exit 2
   fi
 fi
+
+# Optional passkey support. Its own pip run, never fatal: cbor2 is a Rust
+# extension with no wheel on every platform (Intel macOS, 32-bit Linux), and one
+# unbuildable package must not abort an install that otherwise works. The server
+# reports passkeys as unavailable when this is missing.
+PASSKEYS_REQ_PATH="$INSTALL_DIR/requirements-passkeys.txt"
+if [ -f "$PASSKEYS_REQ_PATH" ]; then
+  if ! "$VENV_DIR/bin/pip" install --quiet --disable-pip-version-check -r "$PASSKEYS_REQ_PATH"; then
+    printf "[STEP 2/5] NOTE optional passkey support was not installed (no wheel for this platform, or no network). Everything else is installed; passkeys stay unavailable.\n"
+  fi
+fi
 printf "%s[STEP 2/5] OK%s\n\n" "$G" "$R"
 
 # ── Write the provider choice into config.json (before first launch) ──────

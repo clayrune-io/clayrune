@@ -17,6 +17,7 @@ on:
   pull_request:
     paths:
       - 'requirements.txt'
+      - 'requirements-passkeys.txt'
       - 'control_plane/requirements.txt'
       - 'mc_tunnel/Cargo.lock'
       - 'mc_tunnel/Cargo.toml'
@@ -34,6 +35,8 @@ jobs:
       - run: pip install pip-audit
       - name: Audit main app deps
         run: pip-audit -r requirements.txt
+      - name: Audit optional passkey deps
+        run: pip-audit -r requirements-passkeys.txt
       - name: Audit control-plane deps
         run: pip-audit -r control_plane/requirements.txt
 

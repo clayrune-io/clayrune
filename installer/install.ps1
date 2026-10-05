@@ -1141,6 +1141,24 @@ if (Test-Path $reqPath) {
         Exit-WithContact 2
     }
 }
+
+# Optional passkey support. Its own pip run, never fatal: cbor2 is a Rust
+# extension with no wheel on every platform, and one unbuildable package must
+# not abort an install that otherwise works. The server reports passkeys as
+# unavailable when this is missing.
+$passkeysReqPath = Join-Path $installDir 'requirements-passkeys.txt'
+if (Test-Path $passkeysReqPath) {
+    $passkeysOk = $false
+    try {
+        & $venvPip install --quiet -r $passkeysReqPath
+        $passkeysOk = ($LASTEXITCODE -eq 0)
+    } catch {
+        $passkeysOk = $false
+    }
+    if (-not $passkeysOk) {
+        Write-Host '[STEP 2/5] NOTE optional passkey support was not installed (no wheel for this platform, or no network). Everything else is installed; passkeys stay unavailable.' -ForegroundColor Yellow
+    }
+}
 Write-Host '[STEP 2/5] OK' -ForegroundColor Green
 Write-Host ''
 

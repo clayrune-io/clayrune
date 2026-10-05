@@ -802,6 +802,8 @@ async function _renderSettings() {
     ${pushNotificationsSettingsHTML()}
 
     ${mobilePairingSettingsHTML()}
+
+    ${window.passkeysSettingsHTML ? window.passkeysSettingsHTML() : ''}
       </div>
 
       <div class="settings-detail-pane settings-hidden" data-cat="addons">
@@ -941,6 +943,7 @@ async function _renderSettings() {
   try { refreshAgentFaceSection(); } catch (_) {}
   try { refreshBackupScheduleSection(); } catch (_) {}
   try { if (window.refreshAddonsSection) window.refreshAddonsSection(); } catch (_) {}
+  try { if (window.refreshPasskeysSection) window.refreshPasskeysSection(); } catch (_) {}
 
   // Restore the master/detail/search view (persisted across re-renders so that
   // setTone/setAccent/etc. don't bounce you back to the list mid-edit).

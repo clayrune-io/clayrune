@@ -60,6 +60,10 @@ hidden += ['mc.hook_entry', 'steward.fence', 'mc.process_guard']
 # attribution, backlog 40260b57); without it the frozen app degrades to trusting
 # the Origin header, so name it here rather than rely on static analysis.
 hidden += ['psutil']
+# py_webauthn (mc/passkeys/ceremony.py) is imported lazily so a build without it
+# degrades to "passkeys unavailable"; name its package so a build that has it
+# bundles every submodule (docs/PASSKEYS_SPEC.md: verify frozen builds).
+hidden += collect_submodules('webauthn')
 
 # Bundle templates / static / data scaffolding next to app.py so the frozen
 # binary sees the same layout as `python app.py`.
