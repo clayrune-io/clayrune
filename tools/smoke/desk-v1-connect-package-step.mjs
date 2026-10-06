@@ -131,6 +131,7 @@ async function newPage(browser, { srv, width, height }) {
     const method = req.method();
     const J = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
     if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    if (path === '/static/js/desk-v1-connect-api-step.js') return route.fulfill({ status: 200, contentType: 'text/javascript', body: '' });   // its own Setup screen would shadow this smoke's fixture
     if (STATIC[path]) return route.fulfill({ status: 200, contentType: STATIC[path][0], body: STATIC[path][1] });
     if (path === '/api/projects') return J(srv.fx.projects.map((p) => ({
       id: p.id, name: p.name, status: 'active', domain: 'general', emoji: '🧪', description: '', summary: '', current_task: 'Idle',
