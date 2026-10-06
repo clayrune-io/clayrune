@@ -129,6 +129,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
     from mc.desk_connect import custom_npm_gate
     monkeypatch.setattr(custom_npm_gate, '_STOP_AFTER', tmp_path)       # a stray node_modules on this machine must not decide a test
+    from mc.desk_connect import custom_npm_node_paths
+    monkeypatch.setattr(custom_npm_node_paths, 'run_probe', lambda node, env: [])   # no Node is started; a clean box
     from mc import mcp, secrets_store
     from mc.blueprints import desk_connect_custom_routes as routes
     from mc.blueprints import local_auth, mcp_routes, project_routes, skills_routes

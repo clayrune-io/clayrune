@@ -27,8 +27,10 @@ exits non-zero: the server is "returned to Review" and the card says what to do 
 self-contained package's own files stay detect-only (`custom_package_manifest.check`); only the
 `node_modules` search path is refused for it.
 
-Limit: Node also searches the folders `~/.node_modules` and `~/.node_libraries` and the folder of the
-Node installation; this gate does not look there.
+It also asks Node for its own global search list (`custom_npm_node_paths`: `~/.node_modules`,
+`~/.node_libraries`, `<node folder>/lib/node`, any `NODE_PATH`), with the environment the server will get, and
+refuses when a listed folder exists or the question cannot be answered in 2 seconds. This runs at start, not
+in the connection's status (`problem`), which stays a file-system check.
 """
 from __future__ import annotations
 
@@ -43,6 +45,7 @@ from mc.desk_connect import custom_connection_operation as _op
 from mc.desk_connect import custom_connection_store as _store
 from mc.desk_connect import custom_npm_artifact as _artifact
 from mc.desk_connect import custom_npm_install as _install
+from mc.desk_connect import custom_npm_node_paths as _node_paths
 from mc.desk_connect import custom_package_manifest as _manifest
 from mc.desk_connect.mcp_errors import ActivationError
 
@@ -191,7 +194,7 @@ def main(argv: list[str], *, run=None) -> int:
         intact = False
     if not intact:
         return _refuse('the approval record was changed after it was saved.')
-    found = problem(op)
+    found = problem(op) or _node_paths.problem(op, rest)
     if found is not None:
         _log(f'[desk_connect] custom MCP {name} not started: {found["code"]}', flush=True)
         return _refuse(found['message'])

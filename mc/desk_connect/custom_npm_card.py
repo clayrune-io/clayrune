@@ -19,8 +19,9 @@ STEPS_NOTE = ('Clayrune resolved and pinned the archives listed here, each to it
               'folder. The install scripts you ticked run NOW, at Save, before anything is moved into place: they may '
               'download or write other files, and those files are not pinned by any digest on this card. They are '
               'recorded as they are after the scripts ran. No npm, npx, .npmrc, lockfile or version range is used.')
-LAUNCH_CHECK_NOTE = ('Before every start Clayrune checks that no node_modules folder sits above the package folder (Node '
-                     'would search it and run what it finds, with this server\'s secrets) and, for a package with '
+LAUNCH_CHECK_NOTE = ('Before every start Clayrune checks that no node_modules folder sits above the package folder, nor in '
+                     'the folders Node itself searches (~/.node_modules, ~/.node_libraries, NODE_PATH; Node would run '
+                     'what it finds there, with this server\'s secrets) and, for a package with '
                      'dependencies or scripts, that every file is the one recorded at Save. If a check fails nothing '
                      'starts and the server returns to Review.')
 SCRIPTS_NOTE = ('An install script runs the system shell with that package\'s folder as the working directory, a fixed '
