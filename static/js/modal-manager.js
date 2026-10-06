@@ -470,6 +470,7 @@ function toggleModalMenu(e, projectId) {
   document.querySelectorAll('.modal-menu-sub.open').forEach(d => d.classList.remove('open'));
   if (!isOpen) {
     dd.classList.add('open');
+    _fitModalMenu(dd);
     const close = (ev) => {
       if (!dd.contains(ev.target) && !ev.target.closest('.modal-menu-btn')) {
         dd.classList.remove('open');
@@ -480,6 +481,33 @@ function toggleModalMenu(e, projectId) {
     setTimeout(() => document.addEventListener('mousedown', close), 0);
   }
 }
+
+// Cap the ⋮ menu to the room its OWN window has below the button, not to the
+// viewport. `.modal-content` is `overflow: hidden`, so a windowed (restored)
+// modal shorter than the viewport clips the menu at the window edge while the
+// CSS `100vh - 96px` cap never bites — the bottom rows (Export, MCP, …) were
+// cut off and there was nothing to scroll (Ron 2026-10-06, regression of
+// df0ba75a, which only covered the full-screen case). Measured when the menu
+// opens and again whenever the window or modal is resized; the inline value
+// beats the stylesheet caps (desktop and the ≤960px one) in every mode.
+function _fitModalMenu(dd) {
+  if (!dd || !dd.classList.contains('open')) return;
+  const box = dd.closest('.modal-content');
+  const ddTop = dd.getBoundingClientRect().top;
+  const bottom = Math.min(
+    box ? box.getBoundingClientRect().bottom : Infinity,
+    window.innerHeight
+  );
+  // 8px of air above the window edge; never collapse below ~3 rows.
+  dd.style.maxHeight = Math.max(120, Math.floor(bottom - ddTop - 8)) + 'px';
+  if (box && !dd._fitRO && typeof ResizeObserver === 'function') {
+    dd._fitRO = new ResizeObserver(() => _fitModalMenu(dd));
+    dd._fitRO.observe(box);
+  }
+}
+window.addEventListener('resize', () => {
+  document.querySelectorAll('.modal-menu-dropdown.open').forEach(_fitModalMenu);
+});
 
 function toggleModalMenuSub(e, subId) {
   e.stopPropagation();
