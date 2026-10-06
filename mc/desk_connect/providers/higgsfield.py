@@ -6,7 +6,8 @@ only connects and checks them.
            same human-started flow Connections uses); the token reaches the vault
            only through that flow's callback. Checked by `tools/list` on the MCP
            server with the access token: read-only, free, proves the server accepts
-           the sign-in.
+           the sign-in. Keeps a filtered diagnostic schema snapshot in data/desk/;
+           vendor text stays untrusted and grants no generation capability.
   api_key  the key ID and secret, stored as `higgsfield` (username = key ID).
            Checked by the engine's own price-quote endpoint, which is free and spends
            nothing.
@@ -16,6 +17,7 @@ from __future__ import annotations
 from mc import desk_engines as _engines
 from mc import desk_oauth as _oauth
 from mc import secrets_store as _vault
+from mc.desk_connect import higgsfield_mcp_snapshot as _snapshot
 from mc.desk_connect.providers import base
 from mc.desk_connect.providers.key_paste import KeyPaste
 
@@ -80,7 +82,26 @@ class HiggsfieldProvider(base.Provider):
                 'protocolVersion': _engines._MCP_PROTOCOL, 'capabilities': {},
                 'clientInfo': {'name': 'Clayrune', 'version': '1'}}}, expect_id=1)
             _engines._mcp_post(token, {'jsonrpc': '2.0', 'method': 'notifications/initialized'}, expect_id=None)
-            _engines._mcp_post(token, {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'}, expect_id=2)
+            tools: list[dict] = []
+            cursor = None
+            seen: set[str] = set()
+            for rid in range(2, 52):
+                body: dict = {'jsonrpc': '2.0', 'id': rid, 'method': 'tools/list'}
+                if cursor:
+                    body['params'] = {'cursor': cursor}
+                page = _engines._mcp_post(token, body, expect_id=rid)
+                if not isinstance(page, dict) or not isinstance(page.get('tools'), list):
+                    raise _engines.EngineError('engine', 'Higgsfield returned a malformed tool list')
+                tools.extend(t for t in page['tools'] if isinstance(t, dict))
+                cursor = page.get('nextCursor')
+                if cursor is None or cursor == '':
+                    break
+                if not isinstance(cursor, str) or cursor in seen:
+                    raise _engines.EngineError('engine', 'Higgsfield returned an invalid or repeated tool-list cursor')
+                seen.add(cursor)
+            else:
+                raise _engines.EngineError('engine', 'Higgsfield tool listing exceeded 50 pages')
+            _snapshot.capture(tools)
         except _oauth.OAuthError as e:
             kind = 'rejected' if e.code in ('needs_signin', 'not_connected') else 'unreachable'
             return base.Probe(False, str(e), kind=kind)

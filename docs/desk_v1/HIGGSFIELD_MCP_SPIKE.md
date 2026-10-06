@@ -456,3 +456,42 @@ is needed because no product behavior was changed.
 [hf-model-catalog]: https://github.com/higgsfield-ai/skills/blob/main/higgsfield-generate/references/model-catalog.md
 [hf-api-uploads]: https://docs.higgsfield.ai/docs/concepts/file-uploads
 [hf-js-client]: https://github.com/higgsfield-ai/higgsfield-js/blob/main/src/client.ts
+
+## 10. Server-side schema capture, 2026-10-06 (Sol_Tobin; Dave's decision)
+
+The existing human-started `POST /api/desk/connect/verify` for
+`{"service":"higgsfield","method":"oauth"}` now retains the `tools/list`
+response it already obtains. The server follows `nextCursor` pages with distinct
+request IDs; malformed pages/cursors, repeated cursors, a provider failure, or
+more than 50 pages fail the probe without replacing an older complete snapshot.
+No generation, upload, credential endpoint, or new network destination is added.
+
+`mc/desk_connect/higgsfield_mcp_snapshot.py` owns the atomic runtime write to
+`data/desk/higgsfield_mcp_tools.json`, derived from the server-wired Desk data
+directory. `.gitignore` excludes `data/desk/`; it is outside `data/projects/`
+and must never be committed or bundled as product source. The record contains
+`captured_at`, `untrusted_vendor_text: true`, an explicit warning, and `tools`:
+
+- Always include `generate_video`, `generate_image`, and `job_status` if present.
+- Also include any name/description mentioning upload, media, image, file, or
+  reference, case-insensitively (filter before description truncation).
+- Retain only name, full `inputSchema`, and description capped at 2000 characters.
+  Transport credentials, headers, and unrelated response fields are not supplied
+  to the writer. It has no network or vault access.
+
+A snapshot write failure logs its exception type, never arbitrary exception
+text, and does not invalidate an otherwise successful sign-in probe. This is
+diagnostic evidence, not an executable registry or authorization to adopt tools.
+The picture adapter/catalogue remain unchanged and still refuse pictures.
+
+Tests fake `_mcp_post` and the access token; they cover pagination, every filter
+keyword, truncation, credential/header omission, empty-list replacement,
+incomplete-list preservation, the page bound, and a logged write failure that
+leaves the probe successful. The main snapshot test failed before implementation
+with `FileNotFoundError` (the old probe discarded the list).
+
+After merge and Ron's restart, Dave runs the existing free verify operation and
+hands the snapshot back for schema-driven implementation. No live verification
+or capture has been run by this worker, and no provider schema is yet claimed
+live-verified. A successful schema capture does not authorize uploads or paid
+generation.
