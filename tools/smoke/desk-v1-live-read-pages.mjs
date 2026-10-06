@@ -216,6 +216,23 @@ async function run(browser, viewport, label) {
   const rm = patches(srv, 'ch-yt').pop();
   check(Array.isArray(rm.body.read_pages) && rm.body.read_pages.length === 0, 'Remove PATCHes the list without it', `remove PATCH: ${JSON.stringify(rm.body)}`);
 
+  // 6: Where lists a read-only account as "Read only": no Connect, no drag/place card, still on screen
+  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1', panel: 'where' }));
+  await page.waitForSelector('.desk-v1-where[data-where]', { timeout: 6000 });
+  const RO = '[data-where-source-readonly]';
+  const ro = await page.$$eval(RO, (els) => els.map((e) => ({
+    id: e.dataset.channelId, text: e.innerText.replace(/\s+/g, ' '), connect: !!e.querySelector('[data-where-connect]'),
+    placeable: e.hasAttribute('data-where-source') || e.draggable || e.tabIndex >= 0,
+    r: e.getBoundingClientRect().right, vw: window.innerWidth })));
+  check(ro.map((x) => x.id).sort().join() === 'ch-ig,ch-yt' && ro.every((x) => /Read only/.test(x.text) && !/Not connected/.test(x.text)),
+        'Where lists YouTube and Instagram as "Read only", not "Not connected"', `Where read-only tiles: ${JSON.stringify(ro)}`);
+  check(ro.every((x) => !x.connect && !x.placeable) && !(await page.$('[data-where-source-off][data-channel-id="ch-yt"], [data-where-source][data-channel-id="ch-yt"]')),
+        'a read-only tile has no Connect button and cannot be placed (no source card, no focus, no drag)', `Where read-only affordances: ${JSON.stringify(ro)}`);
+  check(!!(await page.$('[data-where-source-off][data-channel-id="ch-x-clayrune"], [data-where-source][data-channel-id="ch-x-clayrune"]')),
+        'a publishing account keeps its source card', 'the X source card is gone');
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+        `Where does not scroll sideways at ${viewport.width}px`, 'Where overflows the page');
+
   realErrors(pageErrors).length ? realErrors(pageErrors).forEach((e) => fail('page error: ' + e)) : ok('no uncaught page errors');
   await ctx.close();
 }

@@ -119,10 +119,15 @@
 
   // The tray: every connected workspace account (accounts are the workspace's,
   // connected on the Connections screen — not a per-project list), plus every
-  // not-connected one, whose card routes there.
+  // not-connected one, whose card routes there. A read-only account (capability `none`: YouTube,
+  // Instagram, TikTok) is neither: the Desk reads it and never publishes there, so it has
+  // nothing to connect and can never be placed. It is listed apart, with no action.
   function _sources() {
     const all = _fx().channels || [];
-    return { bound: all.filter((c) => c.connected !== false), off: all.filter((c) => c.connected === false) };
+    const ro = (c) => c.capability === 'none';
+    return { bound: all.filter((c) => c.connected !== false && !ro(c)),
+             off: all.filter((c) => c.connected === false && !ro(c)),
+             readOnly: all.filter(ro) };
   }
 
   // ── state ────────────────────────────────────────────────────────────────
@@ -429,6 +434,18 @@
     </div>`;
   }
 
+  // A read-only account: same card shape as an off source, worded as Connections words it
+  // ("Read only"), with no Connect button and no drag handle: it is not a place to post.
+  function _readOnlySourceHTML(ch) {
+    const plat = _platform(ch);
+    return `<div class="desk-v1-where-source desk-v1-where-source-off" data-where-source-readonly data-channel-id="${esc(ch.id)}" data-platform="${esc(ch.platform)}" title="The Desk reads this account and does not publish there">
+      <span class="desk-v1-where-avatar desk-v1-where-avatar-off" aria-hidden="true"><span class="desk-v1-where-avatar-letter">?</span><span class="desk-v1-where-avatar-badge" data-platform="${esc(ch.platform)}">${esc(plat.glyph)}</span></span>
+      <div class="desk-v1-where-source-handle">${esc(ch.identity)}</div>
+      <div class="desk-v1-where-source-plat">${esc(plat.word)}</div>
+      <div class="desk-v1-where-source-reason" data-where-readonly>Read only</div>
+    </div>`;
+  }
+
   // R2-6's Suggest task can leave `how.suggested.where = {channelId, label}`:
   // shown here as a `? suggested` strip (the agent proposes, the user accepts —
   // nothing is placed until Accept).
@@ -470,7 +487,7 @@
       <p class="desk-v1-where-rule" data-where-rule>Dragging from Messages always ADDS a version (the message stays listed) · dragging a version between columns MOVES it.</p>
       <section class="desk-v1-where-sources" data-where-sources aria-label="Sources">
         <div class="desk-v1-where-sources-title">Sources — drag a channel up into the campaign</div>
-        <div class="desk-v1-where-sources-row">${src.bound.map((ch) => _sourceHTML(camp, ch)).join('')}${src.off.map(_offSourceHTML).join('')}</div>
+        <div class="desk-v1-where-sources-row">${src.bound.map((ch) => _sourceHTML(camp, ch)).join('')}${src.off.map(_offSourceHTML).join('')}${src.readOnly.map(_readOnlySourceHTML).join('')}</div>
       </section>
     </div>`;
     _wire(el, camp);
