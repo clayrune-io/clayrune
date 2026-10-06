@@ -118,6 +118,7 @@ import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
 import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (Mode B)
 import mc.delegation_waiting as _delegation_waiting  # MC-1063: queued child reports shown on the parent
+import mc.delegation_wake as _delegation_wake  # MC-1063: a parent's turn-end wakes its queued reports
 import mc.desk_connect.custom_package_manifest as _custom_package_manifest  # MC-1054: detect-only file drift of approved npm MCPs
 import mc.agent_jobs as _agent_jobs  # MC-958 follow-up: engine-agnostic background command jobs
 import mc.caller_attribution as _caller_attribution  # backlog 40260b57: who is really calling dispatch
@@ -8897,7 +8898,7 @@ def _process_inbox(row):
         if parent.get('status') == 'running':
             raise DeliveryDeferred('parent is busy; completion remains pending')
         if parent.get('status') not in ('idle', 'completed'):
-            raise DeliveryBlocked(f"parent status {parent.get('status', 'unknown')} cannot accept a delegated completion")
+            raise DeliveryBlocked(_delegation_wake.parent_status_block_message(parent.get('status', 'unknown')))
         # Preserve the parent's existing provider/model/effort by addressing its
         # live session. Never call the fresh-dispatch branch and never substitute a
         # provider when the parent is unavailable.
@@ -8985,8 +8986,9 @@ def start_delegation_delivery(interval_s: float = 5.0):
                 except Exception as exc:
                     _log(f'[delegation-delivery] log recovery failed for {log_file.name}: {exc}')
             stop_event = threading.Event()
+            waker = _delegation_wake.ParentWaker()
 
-            def _loop(local_store=store, local_stop=stop_event):
+            def _loop(local_store=store, local_stop=stop_event, local_waker=waker):
                 while True:
                     # The iteration gate closes the stop-before-new-drain race:
                     # stop() sets the Event without taking this gate; a loop
@@ -8999,6 +9001,7 @@ def start_delegation_delivery(interval_s: float = 5.0):
                         try:
                             drain_once(local_store, send_outbox=_deliver_outbox,
                                        process_inbox=_process_inbox)
+                            local_waker.tick(local_store, agent_sessions)
                         except Exception as exc:
                             _log(f'[delegation-delivery] drain failed: {exc}')
                     if local_stop.wait(max(0.0, float(interval_s))):
