@@ -32,6 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from mc.desk_connect import custom_connection_guard as _desk_guard
+
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
@@ -319,6 +321,7 @@ def write_server(
     err = validate_name(name)
     if err:
         raise ValueError(err)
+    _desk_guard.check_write(scope, name, project_id=project_id, project_path=project_path)
 
     normalized = normalize_config(transport, config or {})
 
@@ -363,6 +366,7 @@ def delete_server(
             servers.pop(name, None)
 
         _write_global_servers(_mutate)
+        _desk_guard.released('global', name)
         return {'ok': True, 'scope': 'global', 'name': name}
 
     if scope == 'project':
@@ -376,6 +380,7 @@ def delete_server(
             servers.pop(name, None)
 
         _write_project_servers(project_path, _mutate)
+        _desk_guard.released('project', name, project_path=project_path)
         return {'ok': True, 'scope': 'project', 'name': name}
 
     raise ValueError(f'unknown scope: {scope}')

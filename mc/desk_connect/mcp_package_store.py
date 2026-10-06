@@ -150,14 +150,24 @@ def download(entry: dict) -> bytes:
     return data
 
 
-def _safe_target(root, name: str):
-    """Where member `name` goes under `root`, or None when the name is not safe."""
+def safe_member_parts(name: str) -> tuple[str, ...] | None:
+    """The path parts of archive member `name` when it is safe (relative, under `package/`,
+    no `..`, backslash, drive letter or NUL), else None. Pure: no file system is touched, so
+    one rule judges a member read in memory and a member being extracted."""
     if not name or '\\' in name or ':' in name or '\x00' in name:
         return None
     p = PurePosixPath(name)
     if p.is_absolute() or '..' in p.parts or not p.parts or p.parts[0] != 'package':
         return None
-    target = root.joinpath(*p.parts)
+    return p.parts
+
+
+def _safe_target(root, name: str):
+    """Where member `name` goes under `root`, or None when the name is not safe."""
+    parts = safe_member_parts(name)
+    if parts is None:
+        return None
+    target = root.joinpath(*parts)
     try:
         target.resolve().relative_to(root.resolve())
     except ValueError:
@@ -165,8 +175,10 @@ def _safe_target(root, name: str):
     return target
 
 
-def _extract(data: bytes, dest, max_bytes: int) -> None:
-    """Unpack the verified tarball into the empty directory `dest`. Raises ActivationError."""
+def _extract(data: bytes, dest, max_bytes: int, max_members: int | None = None) -> None:
+    """Unpack the verified tarball into the empty directory `dest`. Raises ActivationError.
+    `max_members` (default none: the reviewed catalogue's behaviour) refuses an archive with
+    more members than that, files and directories together."""
     bad = ActivationError('the downloaded package has an unexpected layout, so it was NOT registered',
                           'package_invalid', 502)
     total = 0
@@ -178,6 +190,8 @@ def _extract(data: bytes, dest, max_bytes: int) -> None:
                 if target is None or m.name in seen or not (m.isfile() or m.isdir()):
                     raise bad
                 seen.add(m.name)
+                if max_members is not None and len(seen) > max_members:
+                    raise bad
                 if m.isdir():
                     target.mkdir(parents=True, exist_ok=True)
                     continue
