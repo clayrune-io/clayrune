@@ -3051,6 +3051,8 @@ app.register_blueprint(_bp_browser_pick.bp)
 # Agent reads of a saved profile: the human-only policy route + the laundered read-digest.
 from mc.blueprints import browser_agent_read_routes as _bp_browser_agent_read  # noqa: E402
 app.register_blueprint(_bp_browser_agent_read.bp)
+from mc.blueprints import browser_agent_read_request_routes as _bp_browser_agent_read_req  # noqa: E402
+app.register_blueprint(_bp_browser_agent_read_req.bp)
 # Only the server process may sweep orphaned Chromium profile dirs: it is the
 # only one whose browser_sessions actually says what is live. Deliberately NOT
 # inside wire() — test harnesses call that too. See browser_routes.SWEEP_ENABLED.

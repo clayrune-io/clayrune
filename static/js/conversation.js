@@ -1544,6 +1544,16 @@ function agentPanelHTML(p) {
           explBriefChars = 0;
           continue;
         }
+        // Agent-read request card (MC-1059, static/js/agent-read-card.js): a single terminal
+        // line like the exploration marker above; the card asks the server for its words.
+        const _arcId = typeof window.agentReadMarkerId === 'function' ? window.agentReadMarkerId(line) : null;
+        if (_arcId) {
+          flushTable();
+          result += planBlock;
+          planBlock = ''; planRawLines = [];
+          result += window.agentReadCardPlaceholderHTML(_arcId);
+          continue;
+        }
         // Stop-hook block/resend boundary (see agent_runtime.stop_hook_marker):
         // collapse the draft accumulated since the last tool/prompt line into
         // a native <details> toggle ONLY when the follow-up (the narration up
@@ -5032,6 +5042,11 @@ function appendAgentLine(sessionId, text, dateHint) {
     return;
   }
   if (typeof window._handleExplorationLine === 'function' && window._handleExplorationLine(sessionId, text, el)) {
+    if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
+    return;
+  }
+  // Agent-read request card (MC-1059): the server's `[agent-read-request:<id>]` line.
+  if (typeof window._handleAgentReadLine === 'function' && window._handleAgentReadLine(sessionId, text, el)) {
     if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
     return;
   }

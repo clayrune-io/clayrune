@@ -1,0 +1,7 @@
+/* Agent-read sites of a browser-pane connection (MC-1059 piece B, static/js/desk-v1-connect-agent-read.js). */
+.desk-v1-agentread { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 8px 0 4px; width: min(420px, 100%); }
+.desk-v1-agentread-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.desk-v1-agentread-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
+.desk-v1-agentread-add { display: flex; gap: 6px; width: 100%; }
+.desk-v1-agentread-add input { flex: 1; min-width: 0; }
+.desk-v1-agentread [data-agentread-status]:empty { display: none; }

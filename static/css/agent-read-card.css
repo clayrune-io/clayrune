@@ -1,0 +1,20 @@
+/* Agent-read request card ([agent-read-request:<id>], MC-1059, static/js/agent-read-card.js). */
+.agent-read-card {
+  background: var(--surface3); border: 1px solid var(--accent); border-radius: 8px;
+  padding: 12px 14px; margin: 8px 4px; display: flex; flex-direction: column; gap: 8px;
+}
+.agent-read-card[data-state="ignored"], .agent-read-card[data-state="expired"] { border-color: var(--border); }
+.agent-read-card-kicker {
+  font-size: 10px; color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;
+}
+.agent-read-card-title { font-size: 13px; color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
+.agent-read-card-hint { font-size: 12px; color: var(--text-dim); line-height: 1.4; }
+.agent-read-card-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.agent-read-card-msg { font-size: 12px; color: var(--text-dim); flex: 1; min-width: 120px; }
+.agent-read-card-btn {
+  background: transparent; border: 1px solid var(--border); color: var(--text);
+  border-radius: 5px; font-size: 12px; padding: 4px 10px; cursor: pointer;
+}
+.agent-read-card-btn.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.agent-read-card-btn.quiet { color: var(--text-dim); }
+.agent-read-card-btn:disabled { opacity: 0.6; cursor: default; }

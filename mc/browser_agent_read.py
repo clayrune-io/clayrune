@@ -135,6 +135,30 @@ def set_policy(profile: Any, enabled: Any, domains: Any) -> dict[str, Any]:
     return {'enabled': enabled, 'domains': clean}
 
 
+def allow_domain(profile: Any, domain: Any) -> dict[str, Any]:
+    """Add ONE domain to a profile's list ("Always allow" on a request card); ValueError on a
+    bad name, or when the list is full. Same caller rule as `set_policy`: only the
+    passcode-gated human route. A profile that is off is switched on with just this domain:
+    entries left from before it was switched off are not revived by an unrelated approval."""
+    name = (profile or '').strip().lower() if isinstance(profile, str) else ''
+    if not _PROFILE_RE.match(name):
+        raise ValueError(f"invalid profile name '{profile}'")
+    d = normalize_domain(domain)
+    if d is None:
+        raise ValueError(f'not a hostname: {domain!r}')
+    with _lock:
+        profiles = _load()
+        cur = get_policy(name)
+        domains = list(cur['domains']) if cur['enabled'] else []
+        if d not in domains:
+            if len(domains) >= MAX_DOMAINS:
+                raise ValueError(f'domains must be a list of at most {MAX_DOMAINS} hostnames')
+            domains.append(d)
+        profiles[name] = {'enabled': True, 'domains': domains}
+        _save(profiles)
+    return {'enabled': True, 'domains': domains}
+
+
 def clear_policy(profile: str) -> None:
     """Forget a profile's policy. Called when the profile itself is forgotten, so a new
     login saved under the same name does not inherit the old one's permission."""

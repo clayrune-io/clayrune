@@ -756,10 +756,25 @@ def _cdp_targets(session, timeout=2):
     truthy ``webSocketDebuggerUrl`` marker (`_cdp_page_conn` takes the dict)."""
     t = _cdp_transport(session)
     if t is not None:
-        return t.targets()
-    import urllib.request
-    return json.load(urllib.request.urlopen(
-        f"http://127.0.0.1:{session.get('port')}/json/list", timeout=timeout))
+        targets = t.targets()
+    else:
+        import urllib.request
+        targets = json.load(urllib.request.urlopen(
+            f"http://127.0.0.1:{session.get('port')}/json/list", timeout=timeout))
+    return _without_hidden_reads(session, targets)
+
+
+def _without_hidden_reads(session, targets):
+    """Drop the background tabs an agent read opened (mc/browser_hidden_read.py). Every
+    caller of `_cdp_targets` means "the user's tabs": once a hidden tab has navigated to a
+    real page, `_pick_page_target` would prefer it over the pane's own, and a read, a click
+    or a pick would land in it."""
+    hidden_urls = session.get('hidden_read_urls') or ()
+    hidden_ids = {t for t, d in (session.get('page_disposition') or {}).items() if d == 'hidden'}
+    if not hidden_urls and not hidden_ids:
+        return targets
+    return [t for t in targets
+            if t.get('id') not in hidden_ids and (t.get('url') or '') not in hidden_urls]
 
 
 def _cdp_version(session, timeout=2):
@@ -1547,6 +1562,10 @@ def _page_disposition(session, target_info):
     the devtools endpoint opens, so a snapshot at connect time misses some.
     They hold nothing of the user's (cookies live in the profile, not the
     tab), so they are closed rather than kept to pile up.
+
+    'hidden' (MC-1059): a background tab an agent read opened itself, recognised by
+    the one-off URL it was created with (`session['hidden_read_urls']`). It is left
+    alone: not attached, not switched to, not listed, and not closed by the sweep above.
     """
     if target_info.get('type') != 'page':
         return None
@@ -1555,7 +1574,13 @@ def _page_disposition(session, target_info):
         return None
     known = session.setdefault('page_disposition', {})
     if tid not in known:
-        if target_info.get('openerId'):
+        if (target_info.get('url') or '') in session.get('hidden_read_urls', ()):
+            # A background tab an agent read opened in this Chromium (mc/browser_hidden_read.py):
+            # not the user's, so never shown in the strip, never closed from under the read.
+            known[tid] = 'hidden'
+        elif known.get(target_info.get('openerId')) == 'hidden':
+            known[tid] = 'close'      # a popup the hidden page opened must not reach the pane
+        elif target_info.get('openerId'):
             known[tid] = 'focus'
         elif session.get('requested_tabs', 0) > 0:
             session['requested_tabs'] -= 1
@@ -3661,6 +3686,21 @@ class ProfilePageReader:
         refuse the page that actually loaded (checked before any text is read), else None."""
         return None
 
+    # The three seams a reader that works in another tab overrides (mc/browser_hidden_read.py):
+    # how a page is navigated, how script is run in it, and whether the browser is still there.
+    def _navigate(self, url):
+        self._session['url'] = url
+        self._session['cmd_queue'].put(('Page.navigate', {'url': url}))
+
+    def _evaluate(self, expression, timeout, recv_rounds):
+        return _cdp_evaluate(self._session, expression, timeout=timeout, recv_rounds=recv_rounds)
+
+    def _ended(self):
+        """A sentence when the browser this reader drives has gone away, else None."""
+        if self._session.get('status') != 'running':
+            return f"pane session ended: {self._session.get('error')}"
+        return None
+
     def _open(self, url):
         if not named_profile_exists(self.profile):
             return self._fail('no_profile', f"no saved browser profile '{self.profile}'")
@@ -3685,8 +3725,7 @@ class ProfilePageReader:
             if failed:
                 return failed
         else:
-            self._session['url'] = url
-            self._session['cmd_queue'].put(('Page.navigate', {'url': url}))
+            self._navigate(url)
         session = self._session
         if session is None:
             return self._fail('launch_failed', 'browser session missing after launch')
@@ -3696,11 +3735,11 @@ class ProfilePageReader:
         href = ''
         # 1. wait for the navigation itself: a new href with the document complete.
         while _time.time() < deadline:
-            if session.get('status') != 'running':
-                return self._fail('cdp_error', f"pane session ended: {session.get('error')}")
-            ok, val = _cdp_evaluate(
-                session, '({href: location.href, ready: document.readyState})',
-                timeout=5, recv_rounds=15)
+            ended = self._ended()
+            if ended:
+                return self._fail('cdp_error', ended)
+            ok, val = self._evaluate(
+                '({href: location.href, ready: document.readyState})', 5, 15)
             if ok and isinstance(val, dict):
                 href = val.get('href') or ''
                 moved = href and href != 'about:blank' and href != prev
@@ -3725,7 +3764,7 @@ class ProfilePageReader:
                       .replace('__CAP__', json.dumps(_JS_SAFETY_CHAR_CAP)))
         body, last_len, stable = None, -1, 0
         while _time.time() < deadline:
-            ok, val = _cdp_evaluate(session, expression, timeout=8, recv_rounds=15)
+            ok, val = self._evaluate(expression, 8, 15)
             if not ok:
                 kind = 'cdp_timeout' if val == 'timeout' else 'cdp_error'
                 return self._fail(kind, f'browser read failed: {val}')
