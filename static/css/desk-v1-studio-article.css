@@ -1,0 +1,14 @@
+/* Desk v1 — Studio's standalone article page (desk-v1-studio-article.js). */
+.desk-v1-sa-form { display: flex; flex-direction: column; gap: 16px; max-width: 560px; }
+.desk-v1-sa-field { display: flex; flex-direction: column; gap: 5px; }
+.desk-v1-sa-field .desk-v1-sb-edit-input,
+.desk-v1-sa-field .desk-v1-cap-select { width: 100%; box-sizing: border-box; min-height: 36px; }
+.desk-v1-sa-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.desk-v1-sa-status { font-size: 12px; color: var(--text-faint); align-self: center; }
+.desk-v1-sa .desk-v1-writer-actions { flex-wrap: wrap; align-items: center; }
+@media (max-width: 600px) {
+  .desk-v1-sa-form { max-width: none; }
+  .desk-v1-sa .desk-v1-writer-actions .btn-add,
+  .desk-v1-sa .desk-v1-writer-actions .btn-secondary,
+  .desk-v1-sa-form .btn-add { min-height: 44px; }
+}

@@ -113,6 +113,7 @@
       rows.push({ src: 'family', id: f.id, icon: RECENT_ICON.rendering, title: f.title, kind: f.kind, campaignId: f.campaignId,
         meta: `Rendering ${f.render.progress != null ? f.render.progress : 0}%${camp ? ' · ' + _campTitle(camp) : ''}`, state: 'rendering' });
     });
+    if (window.DeskV1StudioArticle) window.DeskV1StudioArticle.rows().forEach((r) => rows.push(r));
     (_studio().recent || []).forEach((r) => {
       const camp = _campaign(r.campaignId);
       const meta = r.status === 'draft'
@@ -183,6 +184,7 @@
     items: _items,
     lib: () => _lib,
     fixtureRecent: () => _studio().recent || [],
+    articles: () => (window.DeskV1StudioArticle ? window.DeskV1StudioArticle.list() : []),
     campaignTitle: (id) => { const c = _campaign(id); return c ? _campTitle(c) : 'a campaign'; },
     el: () => _studioEl,
     repaint: () => { if (_studioHomeOnScreen(_studioEl)) { _studioEl.innerHTML = _studioHTML(); _wireStudio(_studioEl); } },
@@ -195,7 +197,7 @@
     return `<div class="desk-v1-studio" data-studio>
       <h2 class="desk-v1-studio-title">Studio</h2>
       <div class="desk-v1-studio-tiles" role="group" aria-label="Start something new">${NEW_TILES.map((t) => `
-        <button type="button" class="desk-v1-studio-tile" data-studio-new="${esc(t.id)}"${t.id === 'article' ? ' aria-haspopup="menu"' : ''}>
+        <button type="button" class="desk-v1-studio-tile" data-studio-new="${esc(t.id)}">
           <span class="desk-v1-studio-tile-glyph" aria-hidden="true">${esc(t.glyph)}</span>
           <span class="desk-v1-studio-tile-name">${esc(t.label)}</span>
           <span class="desk-v1-studio-tile-hint">${esc(t.hint)}</span>
@@ -217,11 +219,10 @@
     </div>`;
   }
 
-  // Studio is a standalone workshop (Ron 2026-10-01, MC-1024): the Video and
-  // Image tiles open their creation page directly, with no campaign. What they
-  // make is saved to the Material library and used on a campaign later. The
-  // Article tile still makes a piece INSIDE a campaign (the writer reads that
-  // campaign's How), so it alone asks which one.
+  // Studio is a standalone workshop (Ron 2026-10-01, MC-1024): the Video, Image
+  // and Article tiles open their creation page directly, with no campaign. What
+  // they make is kept in Studio (Recent, the Material library) and used on a
+  // campaign later. The article page is desk-v1-studio-article.js (2026-10-06).
   function _paintLib(el) {
     const box = el.querySelector('[data-studio-lib]');
     if (!box) return;
@@ -254,14 +255,7 @@
     _wireLib(el);
     el.querySelectorAll('[data-studio-new]').forEach((btn) => {
       btn.onclick = () => {
-        const typeId = btn.dataset.studioNew;
-        if (typeId === 'video' || typeId === 'image') { window.deskV1Nav('studio-create', { kind: typeId }); return; }
-        const camps = _campaignsToUse();
-        if (!camps.length) { DeskV1Kit.toast('Start a campaign first, then make pieces for it here.'); return; }
-        DeskV1Kit.addToMenu(btn, camps.map((c) => ({ id: c.id, label: _campTitle(c) })), (campId) => {
-          if (typeof window.deskV1WhatStartCreate === 'function') window.deskV1WhatStartCreate(campId, typeId);
-          window.deskV1GotoCampaignPanel('what', { campaignId: campId });
-        }, { noAppendNew: true });
+        window.deskV1Nav('studio-create', { kind: btn.dataset.studioNew });
       };
     });
     // A row with a campaign goes to that campaign's What; one with none is a
@@ -309,6 +303,7 @@
       _lib.error = null;
       // Live Studio drafts the server holds a storyboard for (they outlive the page).
       return window.DeskV1Store.api('GET', '/api/desk/studio/storyboards').then((b) => { _lib.boards = (b && b.storyboards) || []; })
+        .then(() => window.DeskV1StudioArticle && window.DeskV1StudioArticle.load())
         .then(() => window.DeskV1StudioDelete && window.DeskV1StudioDelete.loadUsage());
     }).catch((e) => { _lib.error = e && e.message ? e.message : String(e); });
   }
@@ -1186,12 +1181,14 @@
       .map((v) => ({ id: v.id, platform: (_channel(v.channelId) || {}).platform, label: _tabLabel(_channel(v.channelId)) }));
     if (!targets.length) {
       const seen = new Set();
-      targets = ((camp.plan && camp.plan.accounts) || []).map((a) => _channel(typeof a === 'string' ? a : (a && a.channel_id)))
+      targets = ((camp && camp.plan && camp.plan.accounts) || []).map((a) => _channel(typeof a === 'string' ? a : (a && a.channel_id)))
         .filter((ch) => ch && TAB_LABEL[ch.platform] && !seen.has(ch.platform) && seen.add(ch.platform))
         .slice(0, 2).map((ch) => ({ id: 'tab-' + ch.id, platform: ch.platform, label: _tabLabel(ch) }));
     }
     if (!targets.length) targets = [{ id: 'tab-draft', platform: 'default', label: 'Draft' }];
-    fam.draft = { status: 'drafting', tabs: targets.map((t) => ({ id: t.id, label: t.label, body: (DRAFT_BODY[t.platform] || DRAFT_BODY.default)(fam.title) })) };
+    // A piece that already carries text (a Studio article added to the campaign)
+    // opens with that text in its first tab, not the canned sample.
+    fam.draft = { status: 'drafting', tabs: targets.map((t, n) => ({ id: t.id, label: t.label, body: (n === 0 && fam.body) || (DRAFT_BODY[t.platform] || DRAFT_BODY.default)(fam.title) })) };
     return fam.draft;
   }
 
@@ -1249,13 +1246,17 @@
     }).join('') : '<div class="desk-v1-camp-empty">No factual claims in this draft.</div>');
   }
 
-  function writerHTML(fam, camp, tabIdx) {
+  // `camp` is null for a Studio article (no campaign behind it); `opts` then
+  // carries what the campaign wording would have said: {provenance, saveLabel,
+  // backLabel, extraHTML} (desk-v1-studio-article.js).
+  function writerHTML(fam, camp, tabIdx, opts) {
+    opts = opts || {};
     const draft = ensureDraft(fam, camp);
     const i = Math.min(Math.max(tabIdx || 0, 0), draft.tabs.length - 1);
     const tab = draft.tabs[i];
     const agent = _agentName(camp);
-    const how = (camp.how && (camp.how.angle || camp.how.strategy)) || '';
-    const prov = `Drafted${agent ? ' by ' + esc(agent) : ''} from this campaign's How${how ? ` (positioning: “${esc(how)}”)` : ''}.`;
+    const how = (camp && camp.how && (camp.how.angle || camp.how.strategy)) || '';
+    const prov = opts.provenance != null ? esc(opts.provenance) : `Drafted${agent ? ' by ' + esc(agent) : ''} from this campaign's How${how ? ` (positioning: “${esc(how)}”)` : ''}.`;
     return `<div class="desk-v1-writer" data-writer data-family-id="${esc(fam.id)}">
       <div class="desk-v1-writer-main">
         <div class="desk-v1-writer-tabs" role="tablist" aria-label="Destination versions">${draft.tabs.map((t, n) =>
@@ -1266,8 +1267,8 @@
           <div class="desk-v1-writer-body" data-writer-body contenteditable="true" role="textbox" aria-multiline="true" aria-label="${esc(tab.label)} draft">${_bodyHTML(tab.body)}</div>
         </div>
         <div class="desk-v1-writer-actions">
-          <button type="button" class="btn-add" data-writer-save>Save to What</button>
-          <button type="button" class="btn-secondary" data-writer-back>Back to What</button>
+          <button type="button" class="btn-add" data-writer-save>${esc(opts.saveLabel || 'Save to What')}</button>
+          <button type="button" class="btn-secondary" data-writer-back>${esc(opts.backLabel || 'Back to What')}</button>${opts.extraHTML || ''}
         </div>
       </div>
       <aside class="desk-v1-writer-claims" data-writer-claims aria-label="Claims and sources">${_claimsPanelHTML(tab.body)}</aside>
@@ -1369,6 +1370,7 @@
   }
 
   function studioCreateLabel(params) {
+    if (window.DeskV1StudioArticle && window.DeskV1StudioArticle.handles(params)) return window.DeskV1StudioArticle.label(params);
     const it = params && params.itemId ? _itemById(params.itemId) : null;
     if (it) return it.title;
     return params && params.kind === 'video' ? 'New video' : 'New image';
@@ -1571,6 +1573,7 @@
 
   function deskV1RenderStudioCreate(el, params) {
     params = params || {};
+    if (window.DeskV1StudioArticle && window.DeskV1StudioArticle.handles(params)) { _sc = null; window.DeskV1StudioArticle.render(el, params); return; }
     const item = params.itemId ? _itemById(params.itemId) : null;
     const kind = item ? item.kind : (params.kind === 'video' ? 'video' : 'image');
     _sc = { el, kind, item, productId: _defaultProduct(), source: null, card: { id: 'studio-create', ui: {} }, needsLoad: !!item && kind === 'video' };
@@ -1587,5 +1590,6 @@
   window.DeskV1Studio = {
     captureAvailable, sourceBodyHTML, wireSourceBody,
     ensureStoryboard, ensureDraft, writerHTML, wireWriter, markInReview, persistInReview,
+    campaignsToUse: _campaignsToUse, campaignTitle: _campTitle, campaign: _campaign, project: _project,
   };
 })();

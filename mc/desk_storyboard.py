@@ -52,7 +52,7 @@ from mc.core import _log, now_iso
 
 PieceError = _pieces.PieceError
 
-STORYBOARD_FOLDER = 'Storyboards'        # <library>/image/Storyboards/
+STORYBOARD_FOLDER = _pieces.STORYBOARD_FOLDER  # <library>/image/Storyboards/
 MAX_SCENES = 200
 MAX_PENDING = 500
 MAX_LABEL = 200

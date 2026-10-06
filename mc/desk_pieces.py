@@ -72,6 +72,10 @@ MAX_UPLOAD_BYTES = {'image': 25 * 1024 * 1024, 'video': 500 * 1024 * 1024}
 LIBRARY_ROOT = ('desk', 'library')       # under UPLOADS_ROOT: <kind>/<folder>/<file>
 UPLOAD_FOLDER = 'Uploads'               # where a file picked from the computer lands
 STUDIO_FOLDER = 'Studio'                # where a file Studio made lands (no campaign)
+STORYBOARD_FOLDER = 'Storyboards'       # image/: pictures uploaded as storyboard scene material
+# Library folders whose files are source material, not something the user MADE in
+# Studio: they are listed in the library but never in `recent` (Studio's Recent row).
+NOT_RECENT_FOLDERS = (STORYBOARD_FOLDER,)
 
 MAX_TITLE = 200
 MAX_BODY = 100_000
@@ -823,7 +827,10 @@ def materials(campaign_id: str | None = None) -> dict:
     just the folder). `articles`: article pieces in the Desk, other than the
     campaign being worked on, as something an article piece can point at. `online`
     stays empty: no drive connector exists, and an empty list is the honest
-    answer, not a stand-in. `recent`: the newest library files, for Home's shelf."""
+    answer, not a stand-in. `recent`: the newest library files, for Studio's Recent
+    list, minus the folders in NOT_RECENT_FOLDERS (scene pictures uploaded into a
+    storyboard are material, not something made). The exclusion happens before the
+    newest-8 cut, so material cannot crowd out what was made."""
     root = _uploads_root() if UPLOADS_ROOT is not None else None
     library: dict = {'video': [], 'image': []}
     recent: list[tuple[float, dict]] = []
@@ -841,6 +848,8 @@ def materials(campaign_id: str | None = None) -> dict:
                 library[kind].append({
                     'id': f'{kind}:{d.name}', 'title': d.name, 'files': len(items),
                     'thumb': next((i['src'] for i in items if i['src']), None), 'items': items})
+                if d.name in NOT_RECENT_FOLDERS:
+                    continue
                 for i in items:
                     try:
                         recent.append(((root / i['path']).stat().st_mtime,
