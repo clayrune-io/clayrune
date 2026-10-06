@@ -39,12 +39,18 @@ in the 06a file granted Post only and asserted `verified_published`; it now
 also grants `read_own/own_posts` via `x-oauth`. Ticket 08's wizard must grant
 Read alongside Post for an account that should reach `verified_published`.
 
+## Denied is not an attempt (Dave's decision, 2026-10-06)
+
+`verify_post` raises `desk_publish.ReadConsentDenied` (a `PublishError`
+subclass) on the consent refusal. `desk_tick._verify` catches it before the
+generic `PublishError`: `verify_attempts` is not incremented, `verify` is never
+set to `unconfirmed`, `verify_error` carries the denial text, and the version
+stays `submitted`. A later Read grant verifies on the next tick. Any other
+`PublishError` counts as before. The same class covers a missing or
+wrong-service account id (also a `PermissionDenied`); those stay `submitted`
+with no network use until the post leaves `VERIFY_WINDOW`.
+
 ## Not done
 
-- A denied readback consumes one of the five verify attempts per tick pass,
-  so a long-denied post ends `unconfirmed`, and granting Read afterwards does
-  not reopen it (the loop skips `unconfirmed` receipts). Distinguishing
-  "denied" from "could not reach X" would need a `desk_tick` change; left for
-  Dave's decision.
 - Verification spend is outside the engagement budget/ledger; unchanged
   (MC-1064).

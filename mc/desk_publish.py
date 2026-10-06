@@ -154,6 +154,12 @@ class PublishError(Exception):
         self.maybe_posted = maybe_posted
 
 
+class ReadConsentDenied(PublishError):
+    """`verify_post` was refused by the account's Read consent before any token
+    or network use. Not a platform answer about the post, so the caller must not
+    count it as a failed attempt: a later Read grant makes the same call work."""
+
+
 # -- receipt store --------------------------------------------------------------
 
 def _empty_store() -> dict[str, Any]:
@@ -348,7 +354,7 @@ def verify_post(platform: str, post_id: str, *, consumer: str = 'desk_publish',
                                         capability='own_posts', route_id='x-oauth',
                                         account_kind='account')
     except _permissions.PermissionDenied as e:
-        raise PublishError(str(e)) from e
+        raise ReadConsentDenied(str(e)) from e
     try:
         token = _oauth.x_token(consumer=consumer, project_id=project_id, unattended=unattended,
                                account_id=_refs.oauth_arg_for(account_id))
