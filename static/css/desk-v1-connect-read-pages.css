@@ -1,0 +1,10 @@
+/* Activity page of a browser-pane account, typed only when discovery needs it (static/js/desk-v1-connect-read-pages.js). */
+.desk-v1-readpages { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 8px 0 4px; width: min(420px, 100%); }
+.desk-v1-readpages[hidden] { display: none; }
+.desk-v1-readpages-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.desk-v1-readpages-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
+.desk-v1-readpages-list li button { flex: none; white-space: nowrap; }
+.desk-v1-readpages-add { display: flex; gap: 6px; width: 100%; }
+.desk-v1-readpages-add input { flex: 1; min-width: 0; }
+.desk-v1-readpages-add button { flex: none; white-space: nowrap; }
+.desk-v1-readpages [data-readpages-status]:empty { display: none; }

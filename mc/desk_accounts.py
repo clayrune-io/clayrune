@@ -39,6 +39,7 @@ import re
 from mc import desk as _desk
 from mc import desk_account_refs as _refs
 from mc import desk_oauth as _oauth
+from mc import desk_read_pages as _read_pages
 from mc import desk_vault_lock as _vault_lock
 from mc import secrets_store
 from mc.core import _log, now_iso
@@ -48,7 +49,8 @@ from mc.desk_publish import LINKEDIN_TOKEN_SECRET, X_OAUTH_TOKEN_SECRET
 # a blog the human publishes. YouTube / Discord / Reddit / Drive / Dropbox are
 # placeholder tiles in the UI and cannot be created here.
 ACCOUNT_PLATFORMS = ('x', 'linkedin', 'blog')
-READ_PLATFORMS = ('x', 'linkedin')          # the ones a read route exists for
+API_READ_PLATFORMS = ('x', 'linkedin')      # the ones with a paid API read route; every other site reads through the pane
+NO_READ_PLATFORMS = ('blog',)               # a blog is published by hand: no signed-in inbox of its own to read
 CAPABILITIES = ('direct', 'manual')
 
 LINKEDIN_ORG_POSTING_APPROVED = False
@@ -153,7 +155,7 @@ def v1_account(acc: dict, vault: dict | None = None) -> dict:
         'created_at': acc.get('created_at'),
         'connected': pub['ready'], 'publish': pub,
     }
-    for k in ('read_via', 'browser_profile', 'organization_id'):
+    for k in ('read_via', 'browser_profile', 'organization_id', 'read_pages'):
         if acc.get(k):
             out[k] = acc[k]
     if acc.get('credentials'):          # names of the account's own sign-in, never a value
@@ -231,13 +233,24 @@ def create_account(platform, identity, *, label=None, capability=None, voice=Non
     return v1_account(rec)
 
 
+def _apply_pages(acc: dict, pages: list | None) -> None:
+    """`None` leaves `read_pages` alone, `[]` clears it, a list replaces it."""
+    if pages is None:
+        return
+    if pages:
+        acc['read_pages'] = [dict(p) for p in pages]
+    else:
+        acc.pop('read_pages', None)
+
+
 def apply_read_to_store(store: dict, rec: dict, read_via: str | None, profile: str | None,
-                        project_id: str | None = None) -> None:
+                        project_id: str | None = None, pages: list | None = None) -> None:
     """Set a read setting on the workspace record `rec` and mirror it onto every
     presence copy (engagement reads the copy). `project_id` files the account under
     that project's presence when no copy exists yet. Mutates `store`; the caller
     holds `_store_lock` and writes. Validation is the caller's."""
     _desk.apply_read_settings(rec, read_via, profile)
+    _apply_pages(rec, pages)
     presences = store['presences']
     account_id = rec['id']
     filed = False
@@ -249,18 +262,20 @@ def apply_read_to_store(store: dict, rec: dict, read_via: str | None, profile: s
                 if not a.get('platform'):
                     a['platform'] = rec['platform']
                 _desk.apply_read_settings(a, read_via, profile)
+                _apply_pages(a, pages)
                 filed = filed or pres.get('project_id') == project_id
     if project_id and not filed:
         pres = presences.get(project_id) or _desk._empty_presence(project_id)
         copy = {'channel_id': account_id, 'platform': rec['platform']}
         _desk.apply_read_settings(copy, rec.get('read_via'), rec.get('browser_profile'))
+        _apply_pages(copy, rec.get('read_pages'))
         pres.setdefault('accounts', []).append(copy)
         pres['project_id'] = project_id
         pres['updated_at'] = now_iso()
         presences[project_id] = pres
 
 
-_PATCHABLE = ('label', 'voice', 'read_via', 'browser_profile', 'project_id', 'organization_id')
+_PATCHABLE = ('label', 'voice', 'read_via', 'browser_profile', 'read_pages', 'project_id', 'organization_id')
 _ORG_ID = re.compile(r'^\d{1,20}$')
 
 
@@ -277,6 +292,12 @@ def update_account(account_id: str, patch: dict) -> dict:
         raise AccountError(f'cannot change: {", ".join(unknown)}')
     read_via = patch.get('read_via')
     profile = patch.get('browser_profile')
+    pages = None
+    if 'read_pages' in patch:
+        try:
+            pages = _read_pages.validate(patch['read_pages'])
+        except ValueError as e:
+            raise AccountError(str(e)) from e
     if read_via is not None and read_via not in _desk.READ_VIA:
         raise AccountError(f'read_via must be one of {_desk.READ_VIA}')
     if profile is not None and not isinstance(profile, str):
@@ -301,11 +322,15 @@ def update_account(account_id: str, patch: dict) -> dict:
             raise AccountError('account not found', 404)
         if org is not None and rec.get('platform') != 'linkedin':
             raise AccountError('organization_id applies to LinkedIn accounts only')
-        if (read_via is not None or profile is not None) and rec.get('platform') not in READ_PLATFORMS:
-            raise AccountError('read settings apply to X and LinkedIn accounts only')
+        reading = read_via is not None or profile is not None or pages is not None
+        if reading and (rec.get('platform') or '') in ('', *NO_READ_PLATFORMS):
+            raise AccountError('a blog has nothing to read through the browser pane')
+        if read_via == 'api' and rec.get('platform') not in API_READ_PLATFORMS:
+            raise AccountError('only X and LinkedIn accounts can be read through an API; '
+                               'this one is read through the browser pane')
         rec.update(clean)
-        if read_via is not None or profile is not None:
-            apply_read_to_store(store, rec, read_via, profile, project_id)
+        if reading:
+            apply_read_to_store(store, rec, read_via, profile, project_id, pages)
         _desk._write_store(store)
     return v1_account(rec)
 
