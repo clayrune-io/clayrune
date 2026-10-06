@@ -61,7 +61,7 @@ const CONNECTIONS = () => [
 function accountsFor(fx) {
   const base = (id, over) => {
     const c = JSON.parse(JSON.stringify(fx.channels.find((x) => x.id === id)));
-    return { ...c, publish: { ready: false, reason: 'not signed in', secret: null, unattended_ok: null }, credentials: null, ...over };
+    return { ...c, publish: { ready: false, reason: 'not signed in', secret: null, unattended_ok: null }, credentials: null, preview: false, ...over };
   };
   return [
     // X, browser profile reads fine, API not signed in: NOT "Not connected".
@@ -155,8 +155,8 @@ async function newPage(browser, { srv, width, height, wizard = false }) {
 const realErrors = (e) => e.filter((m) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(m));
 const shot = (page, name, w) => page.screenshot({ path: resolve(SHOT_DIR, `connection_status_${name}_${w}.png`) });
 const word = (page, key) => page.$eval(`[data-conn-tile="${key}"] [data-conn-tile-status]`, (e) => e.textContent.trim());
-// Anything that is not a plain read: a browser launch, a verify, a write, or an MCP check nobody pressed.
-const unwanted = (srv) => srv.log.filter((r) => r.other || /\/api\/browser\//.test(r.path) || /connect\/verify$/.test(r.path) || /remote\/(check|adopt)$/.test(r.path)
+// Anything that is not a plain read: a browser launch or input, a verify, a write, or an MCP check nobody pressed.
+const unwanted = (srv) => srv.log.filter((r) => /connect\/verify$/.test(r.path) || /remote\/(check|adopt)$/.test(r.path) || (/\/api\/browser\//.test(r.path) && r.method !== 'GET')
   || (r.method !== 'GET' && !/connect\/custom\/connections$/.test(r.path)));
 
 async function fits(page, label) {

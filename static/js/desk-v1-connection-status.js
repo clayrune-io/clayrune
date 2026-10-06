@@ -205,7 +205,7 @@
           <span class="desk-v1-channel-badge">${esc(r.server_name)}</span>
           <span class="desk-v1-conn-status" data-conn-status data-state="${esc(st.key)}">${esc(st.word)}</span>
         </div>
-        <div class="desk-v1-cf-msg" data-cf-msg="${r.state === 'registered' ? 'ok' : 'warn'}" data-cs-message role="status">${esc(r.message || '')}</div>
+        <div class="desk-v1-cf-msg" data-cf-msg="${st.key === 'ok' ? 'ok' : 'warn'}" data-cs-message role="status">${esc(r.message || '')}</div>
         ${missing}${drift}${note}
         <dl class="desk-v1-cf-facts" data-cs-facts>${facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join('')}</dl>
         ${remote ? _observedHTML(r, key) : ''}
