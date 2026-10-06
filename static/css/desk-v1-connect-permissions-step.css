@@ -1,0 +1,15 @@
+/* Desk v1 — Connections: the Connect wizard's Permissions screen (desk-v1-connect-permissions-step.js; MC-1062 ticket 08). rem sizes so 200% text scales every control; nothing has a fixed height. The frame's own look is desk-v1-connect-wizard.css. */
+.desk-v1-cfp-option input[type="checkbox"] { flex: none; align-self: flex-start; margin-top: 0.2rem; }
+.desk-v1-cfp-text { display: flex; flex-direction: column; gap: 0.125rem; min-width: 0; flex: 1 1 12rem; }
+.desk-v1-cfp-owner { font-size: 0.75rem; font-weight: 600; color: var(--text-dim); overflow-wrap: anywhere; }
+[data-cfp-notes] { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
+[data-cfp-notes]:empty { margin-top: 0; }
+.desk-v1-cfp-fact { display: flex; flex-direction: column; gap: 0.125rem; min-width: 0; margin-top: 0.5rem; }
+.desk-v1-cfp-notice { padding: 0.5rem 0.75rem; border: 1px solid var(--amber-text, var(--border2)); border-radius: 10px; color: var(--amber-text, inherit); }
+.desk-v1-cfp-state { color: var(--text-dim); }
+.desk-v1-cfp-reach { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.desk-v1-cfp-reach legend { padding: 0; margin-bottom: 0.5rem; }
+.desk-v1-cfp-reach .desk-v1-cfw-option input[type="radio"] { flex: none; }
+.desk-v1-cfw-body .desk-v1-cfp-reach .desk-v1-conn-add-field { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; font-size: 0.8rem; }
+.desk-v1-cfw-body .desk-v1-cfp-reach select.desk-v1-rules-textinput { max-width: 100%; box-sizing: border-box; min-height: 2.25rem; }
+.desk-v1-cfw-body .desk-v1-cf-link { background: none; border: 0; padding: 0; font: inherit; text-decoration: underline; cursor: pointer; color: inherit; }
