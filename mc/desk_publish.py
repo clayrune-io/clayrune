@@ -339,6 +339,16 @@ def verify_post(platform: str, post_id: str, *, consumer: str = 'desk_publish',
     status URL."""
     if platform != 'x':
         return None
+    # Read consent, on the original workspace id before OAuth's legacy-name
+    # mapping. Post Allow is not Read; a denial is "could not check", never a
+    # verdict on the post, and happens before any token refresh or GET.
+    from mc.desk_connect import permission_check as _permissions
+    try:
+        _permissions.require_permission(account_id, 'x', 'read', purpose='read_own',
+                                        capability='own_posts', route_id='x-oauth',
+                                        account_kind='account')
+    except _permissions.PermissionDenied as e:
+        raise PublishError(str(e)) from e
     try:
         token = _oauth.x_token(consumer=consumer, project_id=project_id, unattended=unattended,
                                account_id=_refs.oauth_arg_for(account_id))
