@@ -11,7 +11,9 @@ Rules (CLAUDE.md vault rules; Wren audits this file):
 
   * **One write path.** `_store_record` is the only function in this module that
     puts a token into the vault, and it is only reached from `complete()` (the
-    result of a human sign-in) and `_refresh()` (rotating a token a human
+    result of a human sign-in), `commit_held()` (the same record, written at the
+    human's passcode-gated Save when the Connect flow signed in first and held it
+    in memory: `mc/desk_oauth_hold.py`) and `_refresh()` (rotating a token a human
     already granted). No route returns a token value, nothing here logs one,
     and every vendor string goes through `_safe` (the vault's redactor) first.
   * **Starting and ending a sign-in is human-only.** The routes that reach
@@ -69,10 +71,12 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from mc import desk_oauth_hold as _hold
 from mc import secrets_store
 from mc.core import _log
 
 FLOW_TTL_S = 600
+HOLD_TTL_S = min(FLOW_TTL_S, 15 * 60)     # a held sign-in waits for the Save no longer than a flow may wait for the vendor
 MAX_FLOWS = 16
 REFRESH_SKEW_S = 120
 DEFAULT_X_LIFETIME_S = 7200
@@ -403,10 +407,12 @@ class _CallbackHandler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         params = {k: v[0] for k, v in urllib.parse.parse_qs(parts.query).items()}
-        ok, msg = complete(params)
-        body = _PAGE.format(
-            head='You are signed in' if ok else 'Sign in did not finish', msg=html.escape(msg),
-            tail='You can close this tab and go back to Clayrune.' if ok else 'Go back to Clayrune and try again.').encode()
+        ok, msg, held = _complete(params)
+        tail = ('Go back to Clayrune and press Save. Nothing is saved until you do.' if ok and held
+                else 'You can close this tab and go back to Clayrune.' if ok
+                else 'Go back to Clayrune and try again.')
+        body = _PAGE.format(head='You are signed in' if ok else 'Sign in did not finish',
+                            msg=html.escape(msg), tail=tail).encode()
         self.send_response(200 if ok else 400)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
@@ -451,50 +457,70 @@ def _expire(state: str) -> None:
     _close_listener(srv)
 
 
-def start(service: str, account_id: str | None = None) -> dict[str, Any]:
+def start(service: str, account_id: str | None = None, *, hold: dict | None = None) -> dict[str, Any]:
     """Open a sign-in flow -> `{flow_id, auth_url, redirect_uri, profile}`. The
     caller opens `auth_url` in the browser pane on `profile`. Human-gated by the
     route; this function only builds the request and remembers the secrets of the
     flow (verifier, client) in memory. `account_id` names the Desk account the
-    sign-in is for (its own vault entry and profile); None is the legacy one."""
+    sign-in is for (its own vault entry and profile); None is the legacy one.
+
+    `hold` (the Connect flow's Details step): the token is NOT stored when the
+    callback arrives, it is held in memory (`desk_oauth_hold`) for the Save to claim.
+    `{'account_id': the Desk account the Save will create, 'client_id' /
+    'client_secret': X's app as typed and not stored yet}`. The answer then also
+    carries `claim`, the secret that binds the held sign-in to this caller, and
+    `hold_ttl_s`."""
     d = _def(service)
     account_id = _account(service, account_id)
+    app = dict(hold) if hold is not None else None
     if secrets_store.is_locked():        # the token is written to the vault only after the human finishes at the
         # vendor: a locked vault is reported now, before discovery, a port or the sign-in page, never after.
         raise OAuthError('vault_locked', 'Unlock the vault first, then sign in', 409)
-    if service == 'x' and not _vault_plain(d['client_id_secret']):     # fail before a port is opened
+    if service == 'x' and not ((app or {}).get('client_id') or _vault_plain(d['client_id_secret'])):     # fail before a port is opened
         raise OAuthError('app_missing', 'Save your X Client ID first (step 2), then sign in', 409)
     if service == 'higgsfield':
         disc = _discover_higgsfield()        # network first: a failure here opens nothing
-    _drop_pending(service)
+    _drop_pending(service, supersede_held=app is not None)
     srv = _open_listener(X_CALLBACK_PORT if service == 'x' else 0)
     try:
-        return _start_flow(service, d, srv, disc if service == 'higgsfield' else None, account_id)
+        return _start_flow(service, d, srv, disc if service == 'higgsfield' else None, account_id, app)
     except BaseException:
         _close_listener(srv)
         raise
 
 
-def _drop_pending(service: str) -> None:
+def _drop_pending(service: str, *, supersede_held: bool = False) -> None:
     """Ending an earlier unfinished sign-in of this service (its port may be the
-    one the next flow needs)."""
+    one the next flow needs). A HELD sign-in waits on its own timer (`desk_oauth_hold`),
+    not the flow's age; a new held sign-in of the same service replaces it."""
     with _lock:
         now = time.time()
-        gone = [k for k, f in _flows.items() if now - f['created'] > FLOW_TTL_S
-                or (f['service'] == service and f['status'] == 'pending')]
+        gone, dropped_held = [], []
+        for k, f in _flows.items():
+            if f['status'] == 'held':
+                if not _hold.alive(f['flow_id']) or (supersede_held and f['service'] == service):
+                    gone.append(k)
+                    dropped_held.append(f['flow_id'])
+            elif now - f['created'] > FLOW_TTL_S or (f['service'] == service and f['status'] == 'pending'):
+                gone.append(k)
         servers = [_flows.pop(k).get('listener') for k in gone]
+    for fid in dropped_held:
+        _hold.discard(fid)          # revokes at the vendor, best effort; a no-op for one that already expired
     for s in servers:
         _close_listener(s)
 
 
 def _start_flow(service: str, d: dict, srv: _CallbackServer, disc: dict | None,
-                account_id: str | None = None) -> dict[str, Any]:
+                account_id: str | None = None, hold: dict | None = None) -> dict[str, Any]:
     redirect = redirect_uri(srv.server_address[1])
     verifier, challenge = _pkce()
     state = pysecrets.token_urlsafe(24)
     flow: dict[str, Any] = {'service': service, 'verifier': verifier, 'redirect': redirect,
                             'flow_id': pysecrets.token_urlsafe(12), 'created': time.time(),
                             'status': 'pending', 'message': '', 'listener': srv, 'account_id': account_id}
+    if hold is not None:
+        flow['hold'] = {'claim': pysecrets.token_urlsafe(24), 'account_id': hold.get('account_id'),
+                        'app': {k: hold[k] for k in ('client_id', 'client_secret') if hold.get(k)}}
     if service == 'higgsfield':
         assert disc is not None
         meta, scopes = disc['meta'], disc['scopes']
@@ -517,7 +543,7 @@ def _start_flow(service: str, d: dict, srv: _CallbackServer, disc: dict | None,
                   'code_challenge_method': 'S256', 'resource': disc['resource']}
         base = meta['authorization_endpoint']
     else:
-        client_id = _vault_plain(d['client_id_secret'])
+        client_id = ((flow.get('hold') or {}).get('app') or {}).get('client_id') or _vault_plain(d['client_id_secret'])
         if not client_id:
             raise OAuthError('app_missing', 'Save your X Client ID first (step 2), then sign in', 409)
         scope = ' '.join(d['scopes'])
@@ -536,36 +562,130 @@ def _start_flow(service: str, d: dict, srv: _CallbackServer, disc: dict | None,
     timer.daemon = True
     timer.start()
     _log(f"[desk_oauth] sign-in started for {service}", flush=True)
-    return {'flow_id': flow['flow_id'], 'auth_url': base + '?' + urllib.parse.urlencode(params),
-            'redirect_uri': redirect, 'profile': profile_name(service, account_id)}
+    out = {'flow_id': flow['flow_id'], 'auth_url': base + '?' + urllib.parse.urlencode(params),
+           'redirect_uri': redirect, 'profile': profile_name(service, account_id)}
+    if flow.get('hold'):
+        out.update(claim=flow['hold']['claim'], hold_ttl_s=HOLD_TTL_S)
+    return out
 
 
 def flow_status(flow_id: str) -> dict[str, Any]:
-    """`{status: pending|done|error|unknown, message}` for the page's poll. Never
-    carries the state, the verifier or a token."""
+    """`{status: pending|done|held|error|unknown, message}` for the page's poll. Never
+    carries the state, the verifier, the claim or a token. `held` = signed in and
+    waiting in memory for the Save (`held_ttl_s` seconds left)."""
     with _lock:
         for f in _flows.values():
             if f['flow_id'] == flow_id:
                 if f['status'] == 'pending' and time.time() - f['created'] > FLOW_TTL_S:
                     return {'status': 'error', 'message': 'The sign-in took too long. Start again.'}
+                if f['status'] == 'held':
+                    left = _hold.alive(flow_id)
+                    if not left:
+                        return {'status': 'unknown', 'message': _hold.GONE, 'service': f['service']}
+                    return {'status': 'held', 'message': f['message'], 'service': f['service'], 'held_ttl_s': left}
                 return {'status': f['status'], 'message': f['message'], 'service': f['service']}
-    return {'status': 'unknown', 'message': 'No sign-in is waiting.'}
+    return {'status': 'unknown', 'message': 'No sign-in is waiting. If the server restarted, a sign-in that was not saved is gone: sign in again.'}
+
+
+def cancel_flow(flow_id: str, claim: str) -> dict[str, Any]:
+    """The person backed out of a held sign-in (or left the flow): close its listener if the
+    vendor page is still open, drop and revoke what was held. Needs the `claim` the start
+    answered with, so a flow id read off the poll cannot end someone else's sign-in. A wrong
+    claim changes nothing and answers the same as a flow that is not there."""
+    drop_state = None
+    with _lock:
+        for k, f in _flows.items():
+            h = f.get('hold')
+            if f['flow_id'] == flow_id and h and isinstance(claim, str) and hmac.compare_digest(
+                    h['claim'].encode(), claim.encode()):
+                drop_state = k
+                break
+        if drop_state is None:
+            return {'ok': False}
+        f = _flows.pop(drop_state)
+        srv = f.pop('listener', None)
+    _close_listener(srv)
+    _hold.discard(flow_id, claim)
+    _log(f"[desk_oauth] held sign-in for {f['service']} cancelled", flush=True)
+    return {'ok': True}
+
+
+def commit_held(service: str, flow_id: str, claim: str, account_id: str | None, undo) -> dict[str, Any]:
+    """The Save claims a held sign-in: write it to the vault under the account's own entry and
+    push the undo that removes it. `account_id` is the `account_id` ARGUMENT of this module
+    (None = the legacy singleton). Raises OAuthError; never returns a token."""
+    try:
+        e = _hold.peek(flow_id, claim, service)
+    except _hold.HoldError as ex:
+        raise OAuthError(ex.code, str(ex), ex.status) from ex
+    rec = e['rec']
+    name = vault_name(service, account_id)
+    if _meta(service, account_id) is not None:
+        raise OAuthError('already_signed_in', f"{SERVICES[service]['label']} is already signed in under that name. "
+                                              'Disconnect it in Connections first to sign in again.', 409)
+    try:
+        with _refresh_lock(name):
+            _store_record(service, rec, account_id)
+    except secrets_store.SecretsError as ex:
+        raise OAuthError('vault_refused', f'the sign-in could not be saved: {_safe(ex)}', 400) from ex
+    undo.push(f'vault entry {name}', lambda: secrets_store.delete_secret(name))
+    return {'vault': name}
+
+
+def consume_held(flow_id: str) -> None:
+    """The Save is durable: the held sign-in is now the saved one. Forget it, no revoke."""
+    _hold.consume(flow_id)
+    with _lock:
+        for k, f in list(_flows.items()):
+            if f['flow_id'] == flow_id:
+                _flows.pop(k, None)
+
+
+def held_account(service: str, flow_id: str, claim: str) -> str | None:
+    """The Desk account id the held sign-in was started for (None for a service with no account)."""
+    try:
+        return _hold.peek(flow_id, claim, service)['account_id']
+    except _hold.HoldError as ex:
+        raise OAuthError(ex.code, str(ex), ex.status) from ex
+
+
+def revoke_record(service: str, rec: dict | None, *, app: dict | None = None) -> bool | None:
+    """Revoke both tokens of a sign-in record at the vendor (best effort). True only when
+    every token sent was answered 2xx; None when the vendor offers no revocation."""
+    if not rec or not rec.get('revocation_endpoint'):
+        return None
+    results = []
+    for key in ('refresh_token', 'access_token'):
+        if not rec.get(key):
+            continue
+        form = {'token': rec[key], 'token_type_hint': key, 'client_id': rec.get('client_id') or ''}
+        headers: dict[str, str] = {}
+        try:
+            _client_auth(service, form, headers, app=app)
+            st, _b = _call('POST', rec['revocation_endpoint'], headers=headers, form=form)
+            results.append(200 <= st < 300)
+        except OAuthError:
+            results.append(False)
+    return bool(results) and all(results)
 
 
 # -- exchange / callback --------------------------------------------------------
 
 def _client_auth(service: str, form: dict, headers: dict, *, project_id: str | None = None,
-                 unattended: bool = False) -> None:
+                 unattended: bool = False, app: dict | None = None) -> None:
     """Add the client's own authentication to a token-endpoint call. X: a
     confidential app sends Basic client_id:secret and no body client_id; a
     public one (no saved secret) sends client_id in the body. Higgsfield is a
-    public client."""
+    public client. `app` = the app's credentials as typed in the Connect flow and
+    not stored yet (a held sign-in): they win over the vault's."""
     if service != 'x':
         return
     d = SERVICES['x']
-    secret = _vault_plain(d['client_secret_secret'], project_id=project_id, unattended=unattended)
-    cid = form.get('client_id') or _vault_plain(d['client_id_secret'], project_id=project_id,
-                                                unattended=unattended) or ''
+    app = app or {}
+    secret = app.get('client_secret') or _vault_plain(d['client_secret_secret'], project_id=project_id,
+                                                      unattended=unattended)
+    cid = form.get('client_id') or app.get('client_id') or _vault_plain(d['client_id_secret'], project_id=project_id,
+                                                                        unattended=unattended) or ''
     if secret:
         headers['Authorization'] = 'Basic ' + base64.b64encode(f'{cid}:{secret}'.encode()).decode()
         form.pop('client_id', None)
@@ -589,6 +709,12 @@ def _token_response(service: str, st: int, body: Any, what: str) -> dict[str, An
 def complete(params: dict[str, str]) -> tuple[bool, str]:
     """The callback. `params` is the redirect's query. Returns `(ok, message)`
     for the page the user sees; the flow's own status is updated for the poll."""
+    ok, msg, _held = _complete(params)
+    return ok, msg
+
+
+def _complete(params: dict[str, str]) -> tuple[bool, str, bool]:
+    """`complete` plus whether the sign-in was HELD for the Save (not stored yet)."""
     state = params.get('state') or ''
     with _lock:
         flow = None
@@ -597,21 +723,22 @@ def complete(params: dict[str, str]) -> tuple[bool, str]:
                 flow = f
                 break
         if flow is None or time.time() - flow['created'] > FLOW_TTL_S or flow['status'] != 'pending':
-            return False, 'This sign-in link is not valid any more. Go back to Clayrune and start again.'
+            return False, 'This sign-in link is not valid any more. Go back to Clayrune and start again.', False
         flow['status'] = 'working'
     service = flow['service']
     account_id = flow.get('account_id')
     label = SERVICES[service]['label']
     vault = vault_name(service, account_id)
 
-    def fail(msg: str) -> tuple[bool, str]:
+    def fail(msg: str) -> tuple[bool, str, bool]:
         with _lock:
             flow['status'], flow['message'] = 'error', msg
             flow.pop('verifier', None)
+            (flow.get('hold') or {}).pop('app', None)
             srv = flow.pop('listener', None)
         _close_listener(srv)
         _log(f'[desk_oauth] sign-in for {service} failed', flush=True)
-        return False, msg
+        return False, msg, False
 
     if params.get('error'):
         return fail(f'{label} did not finish signing you in ({_safe(params.get("error"), 80)}).')
@@ -625,8 +752,9 @@ def complete(params: dict[str, str]) -> tuple[bool, str]:
     if flow.get('resource'):
         form['resource'] = flow['resource']
     headers: dict[str, str] = {}
+    hold = flow.get('hold')
     try:
-        _client_auth(service, form, headers)
+        _client_auth(service, form, headers, app=(hold or {}).get('app'))
         st, body = _call('POST', flow['token_endpoint'], headers=headers, form=form)
         tok = _token_response(service, st, body, 'sign-in')
         life = tok.get('expires_in')
@@ -640,8 +768,12 @@ def complete(params: dict[str, str]) -> tuple[bool, str]:
         secrets_store.register_dispensed(vault, rec['access_token'])
         if rec['refresh_token']:
             secrets_store.register_dispensed(vault, rec['refresh_token'])
-        with _refresh_lock(vault):          # a refresh in flight must not land after (or over) this sign-in
-            _store_record(service, rec, account_id)
+        if hold:        # the Connect flow's Details step: the Save writes it (commit_held), a back-out never does
+            _hold.put(flow['flow_id'], hold['claim'], service, hold.get('account_id'), rec,
+                      hold.get('app'), HOLD_TTL_S)
+        else:
+            with _refresh_lock(vault):      # a refresh in flight must not land after (or over) this sign-in
+                _store_record(service, rec, account_id)
     except OAuthError as e:
         return fail(str(e))
     except secrets_store.SecretsError as e:
@@ -649,13 +781,16 @@ def complete(params: dict[str, str]) -> tuple[bool, str]:
     except Exception as e:      # e.g. a vault OSError: end the flow and free the port, never leave it 'working'
         _log(f'[desk_oauth] saving the {service} sign-in failed: {type(e).__name__}', flush=True)
         return fail(f'Signed in, but the sign-in could not be saved ({type(e).__name__}). Try again.')
+    held = bool(hold)
+    msg = f'{label} is signed in. Go back to Clayrune and press Save.' if held else f'{label} is connected.'
     with _lock:
-        flow['status'], flow['message'] = 'done', f'{label} is connected.'
+        flow['status'], flow['message'] = ('held' if held else 'done'), msg
         flow.pop('verifier', None)
+        (flow.get('hold') or {}).pop('app', None)       # the held record keeps its own copy for the Save
         srv = flow.pop('listener', None)
     _close_listener(srv)
-    _log(f'[desk_oauth] {service} connected', flush=True)
-    return True, f'{label} is connected.'
+    _log(f'[desk_oauth] {service} {"signed in, held for the Save" if held else "connected"}', flush=True)
+    return True, msg, held
 
 
 # -- use + refresh --------------------------------------------------------------
@@ -741,20 +876,7 @@ def disconnect(service: str, account_id: str | None = None) -> dict[str, Any]:
             rec = _read_record(service, consumer='desk_oauth:disconnect', account_id=account_id)
         except OAuthError:
             rec = None
-        if rec and rec.get('revocation_endpoint'):
-            results = []
-            for hint, key in (('refresh_token', 'refresh_token'), ('access_token', 'access_token')):
-                if not rec.get(key):
-                    continue
-                form = {'token': rec[key], 'token_type_hint': hint, 'client_id': rec.get('client_id') or ''}
-                headers: dict[str, str] = {}
-                try:
-                    _client_auth(service, form, headers)
-                    st, _b = _call('POST', rec['revocation_endpoint'], headers=headers, form=form)
-                    results.append(200 <= st < 300)
-                except OAuthError:
-                    results.append(False)
-            revoked = bool(results) and all(results)
+        revoked = revoke_record(service, rec)
         try:
             deleted = secrets_store.delete_secret(name)
         except secrets_store.SecretsError as e:

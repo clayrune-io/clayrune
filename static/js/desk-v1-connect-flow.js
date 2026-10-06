@@ -60,6 +60,7 @@
     if (window.DeskV1ConnectDiscover) window.DeskV1ConnectDiscover.reset();
     if (window.DeskV1ConnectInstall) window.DeskV1ConnectInstall.clear();
     if (window.DeskV1ConnectPurpose) window.DeskV1ConnectPurpose.reset();
+    if (window.DeskV1ConnectHeld) window.DeskV1ConnectHeld.cancel();      // a sign-in made on Details and not saved: dropped and revoked
     if (_formHost) { _formHost.querySelectorAll('input').forEach((i) => { if (i.type !== 'radio' && i.type !== 'checkbox') i.value = ''; }); _formHost = null; }
     _formState.type = 'api_key';
     S = _fresh();
@@ -238,7 +239,7 @@
         <div class="desk-v1-rules-hint" data-cf-r-honest>Saving asks for your dashboard passcode once; nothing has been written yet. Saving does not verify anything: you can check it afterwards.</div>
         <div data-cfa-slot hidden></div>
         ${S.status ? `<div class="desk-v1-cf-msg" data-cf-msg="${S.statusKind || 'error'}" role="${S.statusKind === 'ok' ? 'status' : 'alert'}">${esc(S.status)}</div>` : ''}
-        ${_actions(true, `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-cf-save ${S.saving || (c.install && !window.DeskV1ConnectInstall.approved(c.install)) ? 'disabled' : ''}>${S.saving ? 'Saving…' : (c.signs_in ? 'Save and sign in' : (c.install ? 'Approve and save' : 'Save'))}</button>`)}`;
+        ${_actions(true, `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-cf-save ${S.saving || (c.install && !window.DeskV1ConnectInstall.approved(c.install)) ? 'disabled' : ''}>${S.saving ? 'Saving…' : (c.signs_in ? (window.DeskV1ConnectHeld && window.DeskV1ConnectHeld.held() ? 'Save' : 'Save and sign in') : (c.install ? 'Approve and save' : 'Save'))}</button>`)}`;
   }
 
   function _reviewHTML() {
@@ -338,7 +339,10 @@
         if (!consent) return { error: 'Approve the install on the Review step first.', step: 'review' };
         r.fields.install = consent;
       }
-      return { draft: { url: S.info.url, method: S.method, fields: r.fields } };
+      const draft = { url: S.info.url, method: S.method, fields: r.fields };
+      const held = c && c.signs_in && window.DeskV1ConnectHeld ? window.DeskV1ConnectHeld.draft() : null;
+      if (held) draft.held = held;          // the sign-in made on Details: Save claims it, so nothing opens after
+      return { draft };
     }
     const draft = { url: S.info.url, method: S.method, name: S.name.trim() };
     if (S.useCred) {
@@ -378,6 +382,7 @@
     if (_isProvider()) {
       // A provider method ends on its Result step: what was stored, the sign-in, an explicit check.
       window.DeskV1ConnectAdapter.clear();
+      if (window.DeskV1ConnectHeld) window.DeskV1ConnectHeld.consumed();   // the Save stored it
       S.step = 'result'; S.status = '';
       window.DeskV1ConnectResult.start(saved, {
         api: ctx.api, repaint: ctx.repaint,
@@ -412,6 +417,7 @@
     if (back) back.addEventListener('click', () => {
       _readName(root);
       const prev = { method: 'url', details: 'method', review: 'details' }[S.step];
+      if (prev === 'url' && window.DeskV1ConnectHeld) window.DeskV1ConnectHeld.cancel();
       _go(prev, ctx);
     });
     root.querySelectorAll('[data-cf-method]').forEach((r) => r.addEventListener('change', () => {
@@ -431,7 +437,7 @@
     if (dform && _isProvider()) {
       window.DeskV1ConnectAdapter.mount(dform.querySelector('[data-cfa-slot]'), _connector(), _adapterKey());
       if (_connector().signs_in && window.DeskV1ConnectSignin) {
-        window.DeskV1ConnectSignin.detailsStart(S.info.service.id, S.method, ctx);
+        window.DeskV1ConnectSignin.detailsStart(S.info.service.id, S.method, ctx, S.info.service.label);
         window.DeskV1ConnectSignin.detailsBind(root);
       }
       dform.addEventListener('submit', (e) => {

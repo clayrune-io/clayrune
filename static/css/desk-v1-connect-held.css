@@ -1,0 +1,12 @@
+/* Desk v1 — Connections, Details step of a sign-in method: every way to sign in side by side
+   (desk-v1-connect-signin.js draws the cards, desk-v1-connect-held.js the browser one). Load order is in static/index.html. */
+.desk-v1-cs-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; min-width: 0; align-items: start; }
+.desk-v1-cs-option { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 10px; border: 1px solid var(--border2); border-radius: 8px; background: var(--surface); box-sizing: border-box; }
+.desk-v1-cs-opt-title { font-weight: 600; font-size: 0.95em; }
+.desk-v1-cs-opt-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.desk-v1-cs-option .desk-v1-conn-btn { max-width: 100%; white-space: normal; }
+
+@media (max-width: 640px) {
+  .desk-v1-cs-options { grid-template-columns: minmax(0, 1fr); }
+  .desk-v1-cs-option .desk-v1-conn-btn { min-height: 44px; }
+}

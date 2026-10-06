@@ -32,9 +32,9 @@ _CLIENT_SECRET = 'x.client-secret'
 
 class XProvider(base.Provider):
     service_id = 'x'
-    summaries = {'oauth': 'Stores your X app\'s Client ID in Secrets (if it is not there already), adds the X account, '
-                          'then opens the X sign-in in its own browser profile. The sign-in is kept in Secrets only '
-                          'once you finish it.'}
+    summaries = {'oauth': 'Sign in to X in its own browser profile on the next step, with your X app\'s Client ID. Nothing is '
+                          'saved until you press Save on the Review step, which stores the Client ID in Secrets (if it is '
+                          'not there already), adds the X account and keeps the sign-in.'}
     signs_in = frozenset({'oauth'})
 
     def guide(self, method):
@@ -95,9 +95,11 @@ class XProvider(base.Provider):
                 raise base.ProviderError(f'the credential could not be stored: {e}', 400, 'vault_refused') from e
             undo.push(f'vault entry {vault}', lambda v=vault: _vault.delete_secret(v))
         try:
-            acc = _accounts.create_account('x', clean['identity'], label=clean['label'] or None)
+            acc = _accounts.create_account('x', clean['identity'], label=clean['label'] or None,
+                                           account_id=clean.get('_account_id'))
         except _accounts.AccountError as e:
             raise base.ProviderError(str(e), e.status, 'account_refused') from e
+        undo.push(f'Desk account {acc["id"]}', lambda: _undo_account(acc['id']))
         stored = [v for k, v in (('client_id', _CLIENT_ID), ('client_secret', _CLIENT_SECRET)) if clean[k]]
         return base.Applied(extra={'stored': stored,
                                    'account': {'id': acc['id'], 'label': acc['label'], 'identity': acc['identity']}},
@@ -119,6 +121,14 @@ class XProvider(base.Provider):
         return base.Probe(None, 'X has no free check. Clayrune does not spend a billed read to prove the sign-in: '
                                 'it stays "Signed in, not verified" until the first post or read goes through.',
                           kind='unavailable')
+
+
+def _undo_account(account_id: str) -> bool:
+    """Take back the account this Save created (the sign-in claim failed after it), and the legacy
+    sign-in names it may have been handed."""
+    removed = _accounts.delete_account(account_id)
+    _refs.release_legacy(account_id)
+    return removed
 
 
 def _exists(vault: str) -> base.ProviderError:

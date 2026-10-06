@@ -11,11 +11,18 @@ cannot be undone.
             fails the committed credential and account stay, reported as
             `setup.state == 'failed'`, never Verified.
 
+A sign-in made earlier on the Details step is HELD in server memory (desk_oauth_hold);
+clean['held'] names it. Then apply writes it to the vault as its last local write, in the
+same undo stack, so a failure anywhere leaves no vault entry and no account, and follow
+starts nothing (the person already signed in).
+
 Neither returns a credential value. `commit.py` turns ProviderError into its own
 CommitError (this module must not import it: commit imports this one).
 """
 from __future__ import annotations
 
+from mc import desk_account_refs as _refs
+from mc import desk_oauth as _oauth
 from mc import secrets_store as _vault
 from mc.core import _log
 from mc.desk_connect import providers, verification
@@ -34,10 +41,27 @@ def apply(clean: dict) -> tuple[Applied, dict]:
     # now, not after the person has finished signing in at the vendor.
     if _vault.is_locked() and (method in prov.signs_in or _writes_secrets(prov, method, clean['fields'])):
         raise ProviderError('the vault is locked: unlock it in Secrets, then save again', 409, 'vault_locked')
+    held = clean.get('held')
+    fields = clean['fields']
+    if held:
+        if method not in prov.signs_in:
+            raise ProviderError('that method has no sign-in to claim', 400, 'method_not_available')
+        try:
+            account = _oauth.held_account(clean['service'], held['flow_id'], held['claim'])
+        except _oauth.OAuthError as e:
+            raise ProviderError(str(e), e.status, e.code) from e
+        if account:                 # the Desk account the sign-in was started for: the Save creates it under that id
+            fields = {**fields, '_account_id': account}
     undo = UndoStack()
     try:
-        applied = prov.apply(method, clean['fields'], undo)
+        applied = prov.apply(method, fields, undo)
+        if held:
+            _oauth.commit_held(clean['service'], held['flow_id'], held['claim'],
+                               _refs.oauth_arg_for(applied.account_id), undo)
     except ProviderError as e:
+        left = undo.unwind()
+        raise ProviderError(_with_left(str(e), left), e.status, e.code) from e
+    except _oauth.OAuthError as e:
         left = undo.unwind()
         raise ProviderError(_with_left(str(e), left), e.status, e.code) from e
     except Exception as e:
@@ -45,6 +69,8 @@ def apply(clean: dict) -> tuple[Applied, dict]:
         left = undo.unwind()
         raise ProviderError(_with_left('could not save; see the server log', left), 500, 'record_failed') from e
     undo.commit()
+    if held:
+        _oauth.consume_held(held['flow_id'])        # the saved one now: forget the held copy, no revoke
     try:
         status = verification.status(clean['service'], method, applied.account_id)
     except Exception as e:                  # the save has landed: a status that cannot be read must not undo that
@@ -59,7 +85,10 @@ def apply(clean: dict) -> tuple[Applied, dict]:
 
 
 def follow(clean: dict, applied: Applied) -> dict:
-    """What happens after the durable commit: the sign-in. Never raises."""
+    """What happens after the durable commit: the sign-in. Never raises. Nothing starts for a
+    Save that claimed a held sign-in: the person already signed in."""
+    if clean.get('held'):
+        return {}
     prov = providers.for_service(clean['service'])
     try:
         return prov.after_commit(clean['method'], clean['fields'], applied) if prov else {}

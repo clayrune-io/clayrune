@@ -27,8 +27,8 @@ _QUOTE_BODY = {'prompt': 'connection check', 'num_images': 1, 'resolution': '2K'
 class HiggsfieldProvider(base.Provider):
     service_id = 'higgsfield'
     summaries = {
-        'oauth': 'Opens the Higgsfield sign-in in the browser pane. Nothing is stored until you finish signing in; '
-                 'Clayrune then keeps the sign-in in Secrets as "oauth.higgsfield".',
+        'oauth': 'Sign in to Higgsfield in the browser pane on the next step. Nothing is saved until you press Save on the '
+                 'Review step, which keeps the sign-in in Secrets as "oauth.higgsfield".',
         'api_key': 'Stores your Higgsfield key ID and secret in Secrets as "higgsfield" and checks them with one '
                    'free price-quote call. Billed in dollars.',
     }
