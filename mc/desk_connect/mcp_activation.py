@@ -42,6 +42,7 @@ from pathlib import Path
 from mc import mcp as _mcp
 from mc import secrets_store as _vault
 from mc.core import _log
+from mc.desk_connect import custom_connection_store as _store_of_custom
 from mc.desk_connect import mcp_package_store as _store
 from mc.desk_connect.mcp_errors import ActivationError
 
@@ -140,7 +141,9 @@ def conflict(entry: dict) -> ActivationError | None:
     """A server with this name that is not ours: never overwritten. Checked before the
     passcode is asked (route) and again when registering."""
     cfg = existing(entry)
-    if cfg is None or is_ours(cfg, entry):
+    if cfg is None and _store_of_custom.find('global', entry['server_name']) is None:
+        return None
+    if cfg is not None and is_ours(cfg, entry):
         return None
     return ActivationError(f'an MCP server named "{entry["server_name"]}" is already set up and is not the reviewed '
                            f'{entry["package"]} package. Clayrune does not replace it: rename or remove it in the MCP '
