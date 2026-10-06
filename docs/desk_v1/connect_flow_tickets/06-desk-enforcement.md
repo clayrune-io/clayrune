@@ -1,6 +1,12 @@
 # MC-1062 / 06: Enforce Desk permission before read or publish
 
-Status: proposed, not dispatched. [Parent design](../CONNECT_FLOW_SIMPLIFY.md).
+Status: dispatched; stopped at the consumer-inventory boundary (2026-10-06).
+[Parent design](../CONNECT_FLOW_SIMPLIFY.md).
+
+The separately committed browser-account default-deny pre-step is complete.
+Execution enforcement is **not implemented**. See the
+[consumer inventory and proposed owner split](06-consumer-inventory.md) for
+the independent read paths that bypass engagement polling and publishing.
 
 ## Depends on
 

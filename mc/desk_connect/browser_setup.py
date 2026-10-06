@@ -51,6 +51,7 @@ from mc import desk_accounts as _accounts
 from mc.core import _log, now_iso
 from mc.desk_connect import browser_setup_record as _record
 from mc.desk_connect import commit as _commit
+from mc.desk_connect import permission_policy as _permissions
 from mc.desk_connect import purpose_bindings as _bindings
 from mc.desk_connect import registry as _registry
 from mc.desk_connect import signin_fill as _fill
@@ -351,6 +352,8 @@ def _write_setup(clean: dict, login_created: bool) -> dict:
         with _desk._store_lock:
             store = _desk._read_store()
             shared, unchanged = _apply(store, account_id, clean, org_id)
+            if created is not None:
+                _permissions.initialize_new_account(store['accounts'][account_id], clean['account_kind'])
             if not unchanged:
                 _desk._write_store(store)
     except Exception as e:
