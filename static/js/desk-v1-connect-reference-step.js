@@ -32,8 +32,9 @@ export function registerReferenceStep(W) {
   }
   function useAlternative(alt) {
     const values = alt.fields || {};
+    const origin = values.auth_type || values.url || values.command || field('unknown', 'classifier', 'uncertain');
     ['auth_type', 'transport'].forEach((k) => {
-      const f = k === 'transport' ? field(alt.transport || 'unknown', 'classifier', 'inferred') : values[k];
+      const f = k === 'transport' ? values.transport || field(alt.transport || 'unknown', origin.provenance, 'inferred') : values[k];
       if (f && ['unknown', 'http', 'stdio', 'streamable_http', 'sse', 'none', 'basic', 'bearer', 'oauth', 'api_key'].includes(f.value)) {
         P[k] = f.value; P.labels[k] = field(f.value, f.provenance, f.confidence);
       }
@@ -48,7 +49,11 @@ export function registerReferenceStep(W) {
     P.credential_names = creds.map((c) => c.name).filter(Boolean).join(' ');
     P.placements = creds.map((c) => c.placement).filter(Boolean).join(' ');
     P.scopes = (alt.scopes || []).slice(0, 20).join(' ');
-    ['credential_names', 'placements', 'scopes'].forEach((k) => { P.labels[k] = field(P[k].split(' ').filter(Boolean), 'classifier', 'inferred'); });
+    const credentialOrigin = creds.length && creds.every((c) => c.provenance === creds[0].provenance) && creds[0].provenance ? creds[0] : origin;
+    ['credential_names', 'placements', 'scopes'].forEach((k) => {
+      const source = k === 'scopes' ? origin : credentialOrigin;
+      P.labels[k] = field(P[k].split(' ').filter(Boolean), source.provenance, source.confidence || 'uncertain');
+    });
     P.rid = ''; P.view = 'parameters';
   }
   async function detect(api) {

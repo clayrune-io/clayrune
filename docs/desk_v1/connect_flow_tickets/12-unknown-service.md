@@ -98,3 +98,55 @@ cleanup additions the new smoke was exercised again at both widths. The full
 23-script selection is repeated against frozen frontend files before handoff.
 Boot checkpoint: `PASS` for seven boot scenarios plus all listed guards.
 Backend basic pyright: `0 errors, 0 warnings, 0 informations`.
+
+Final frozen-file verification: **23/23 required smokes, all exit 0**. Exact
+summary lines (full logs are local test scratch, not committed):
+
+```text
+desk-v1-connect-api-step: rc=0; All connect-api-step checks passed
+desk-v1-connect-browser-permission: rc=0; ✅ PASS — browser Read permission editor.
+desk-v1-connect-custom: rc=0; all checks passed
+desk-v1-connect-discover: rc=0; all checks passed
+desk-v1-connect-flow: rc=0; all checks passed
+desk-v1-connect-held: rc=0; all checks passed
+desk-v1-connect-login-step: rc=0; All connect-login-step checks passed
+desk-v1-connect-mcp: rc=0; all checks passed
+desk-v1-connect-package-step: rc=0; all checks passed
+desk-v1-connect-permissions-step: rc=0; all passed
+desk-v1-connect-purpose: rc=0; all checks passed
+desk-v1-connect-remote-step: rc=0; all checks passed
+desk-v1-connect-remote: rc=0; all checks passed
+desk-v1-connect-signin-details: rc=0; all checks passed
+desk-v1-connect-signin-fill: rc=0; all checks passed
+desk-v1-connect-slice2: rc=0; all checks passed
+desk-v1-connect-summary-step: rc=0; All checks passed
+desk-v1-connect-unknown-step: rc=0; All connect-unknown-step checks passed
+desk-v1-connect-wizard: rc=0; All connect-wizard checks passed
+desk-v1-connections: rc=0; All checks passed.
+human-proof-guard: rc=0; ALL PASS
+boot-smoke: rc=0; ✅ PASS — 7 boot scenarios + dispatch, first-run-migration, model-picker, identity-prefill, backlog, backlog-links, memory-panel, calendar, scheduler-layout, question-repaint, floor & agent-face guards all green.
+inline-handler-scope-check: rc=0; ✅ inline-handler scope check: 134 modules clean — no inline handler references an unbridged module binding.
+```
+
+Python: **1343 passed in 311.33s (0:05:11)**, exit 0, all 28 expanded
+Connect/service paths, `-o addopts=''`, no filters. Basic pyright on all four
+touched Python modules: **0 errors, 0 warnings, 0 informations**, exit 0.
+New-module/bridge JS syntax and three document links pass. Eight screenshots
+were captured and visually inspected; layouts wrap, mobile actions stay pinned,
+and controls remain reachable at 200% text. Fixture servers provide discovery,
+detection and Save answers; no live vendor run is claimed. Final whitespace
+cleanup removes only an extra blank line in the smoke file.
+
+Branch checkpoints: 12b `6ddc49cf`, 12 UI `adef20fd`. No open product choice.
+The final reference-only correction preserves U1's supplied transport,
+credential-parameter and scope provenance instead of flattening it to
+classifier. The Save smoke asserts OpenAPI provenance at both widths. The
+final full selection ran in three disjoint groups (8 + 8 + 7), covering all
+23 paths exactly once; each group exited 0. No production/test change
+followed that run.
+Ticket 14 can wire this branch without enabling an API/PyPI executor; keep the
+new entry after wizard/pick/permissions/package/remote/summary scripts. The
+reference branch owns its own Review/Result and uses 12b's existing Connect Save.
+The shared MCP chooser sets `mcp/custom-npm` or `mcp/custom-remote`; known
+service account selection remains ticket 14's responsibility. No merge, push,
+restart, wizard activation or live integration was performed.
