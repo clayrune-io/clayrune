@@ -1,0 +1,32 @@
+diff --git a/steward/fence.py b/steward/fence.py
+--- a/steward/fence.py
++++ b/steward/fence.py
+@@ -1248,6 +1248,19 @@ def _join_line_continuations(cmd: str) -> str:
+     return ''.join(out)
+ 
+ 
++# MC-1056: ONE browser route is open to unattended callers, the digest route (read-digest,
++# under the browser API prefix). It reads a page only for a profile a human switched on,
++# on a domain the human listed, and answers through a toolless model call; the caller never
++# receives page text (mc/blueprints/browser_agent_read_routes.py). Everything else the
++# check below names (launch, read, input, navigate) stays blocked, and `read` still
++# matches the plain read route itself. The exemption is EXACT: after `read-digest` the next
++# character must end the path (end of segment, quote, space, `?`, `#`), so
++# `read-digest/../launch` (curl squashes dot segments before it sends), `read-digestX`
++# and `read-digest.json` are all still blocked.
++_BROWSER_API_RE = re.compile(
++    r'/api/browser/(?:launch|input|navigate|read(?!-digest(?:$|[\s?#"\'`)])))', re.I)
++
++
+ def _touches_nonlocal_network(cmd: str) -> FenceDecision:
+     """Block external network SENDS (mutating HTTP verbs / uploads to a non-local
+     host). Reads (plain GET) and anything targeting localhost are allowed.
+@@ -1268,7 +1281,7 @@ def _touches_nonlocal_network(cmd: str) -> FenceDecision:
+     for seg in _net_segments(_join_line_continuations(cmd)):
+         if not _NET_TOOL_RE.search(seg):
+             continue
+-        if re.search(r'/api/browser/(launch|read|input|navigate)', seg, re.I):
++        if _BROWSER_API_RE.search(seg):
+             return FenceDecision(True, "autonomous web browsing is out of steward scope - "
+                                        "the browser HTTP API is the same capability as the "
+                                        "browser MCP tools, which are blocked")

@@ -1674,6 +1674,7 @@ async function forgetBrowserProfile(name, menu, pid) {
 async function _bpRenderSessionMenu(menu, pid) {
   const [sessions, profiles] = await Promise.all([
     _bpFetchSessions(pid), _bpFetchProfiles(),
+    window.bpAgentReadLoad ? window.bpAgentReadLoad() : null,   // browser-agent-read.js
   ]);
   if (!menu.isConnected) return;
   const rows = sessions.map(s => {
@@ -1701,6 +1702,7 @@ async function _bpRenderSessionMenu(menu, pid) {
     <div data-prof="${_bpEsc(p.name)}" style="display:flex;align-items:center;gap:6px;padding:6px;border-radius:6px;cursor:pointer">
       <span style="width:8px;height:8px;border-radius:50%;background:#8ab4f8;flex:0 0 auto"></span>
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_bpEsc(p.name)}</span>
+      ${window.bpAgentReadChip ? window.bpAgentReadChip(p.name) : ''}
       <span style="color:#777;font-size:10px;flex:0 0 auto">${_bpEsc(p.size_mb)} MB</span>
       <span data-forget="${_bpEsc(p.name)}" title="Forget it — signs this profile out" style="color:#e57373;cursor:pointer;padding:0 4px;flex:0 0 auto">&#10005;</span>
     </div>`).join('') : '';
@@ -1726,6 +1728,14 @@ async function _bpRenderSessionMenu(menu, pid) {
       if (e.target.closest('[data-forget]')) return;
       menu.remove();
       openBrowserPane('about:blank', pid, null, row.dataset.prof);
+    });
+  });
+  menu.querySelectorAll('[data-agentread]').forEach(x => {
+    x.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (window.bpAgentReadEdit) {
+        window.bpAgentReadEdit(x.dataset.agentread, () => { if (menu.isConnected) _bpRenderSessionMenu(menu, pid); });
+      }
     });
   });
   menu.querySelectorAll('[data-forget]').forEach(x => {

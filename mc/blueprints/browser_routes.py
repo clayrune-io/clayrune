@@ -3656,6 +3656,11 @@ class ProfilePageReader:
     def _fail(kind, detail):
         return _read_error(kind, detail, 502)[0]
 
+    def _refuse_href(self, href):
+        """Seam for a subclass that limits where the page may end up: an error body to
+        refuse the page that actually loaded (checked before any text is read), else None."""
+        return None
+
     def _open(self, url):
         if not named_profile_exists(self.profile):
             return self._fail('no_profile', f"no saved browser profile '{self.profile}'")
@@ -3711,6 +3716,9 @@ class ProfilePageReader:
         if _is_clayrune_own_origin(href):
             return _read_error('own_origin_blocked',
                                "the browser pane may not read Clayrune's own origin", 403)[0]
+        refused = self._refuse_href(href)
+        if refused:
+            return refused
         # 2. let a client-rendered page fill in: read until the text stops growing.
         expression = (_READ_JS_TEMPLATE
                       .replace('__SEL__', json.dumps(None))
@@ -3812,6 +3820,8 @@ def browser_profile_delete(name):
                         'session_id': live.get('session_id')}), 409
     freed = _dir_size(path)
     shutil.rmtree(path, ignore_errors=True)
+    from mc import browser_agent_read
+    browser_agent_read.clear_policy(name)
     print(f"[browser] forgot profile '{name}' "
           f"({freed // (1024 * 1024)} MB, signed out)", flush=True)
     return jsonify({'ok': True, 'forgotten': name})
