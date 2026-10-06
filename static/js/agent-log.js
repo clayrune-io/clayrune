@@ -400,15 +400,38 @@ function _lastUserFromBuffer(sessionId) {
 
 let docSelections = {};  // projectId → Set of paths (mixed plan + doc)
 
-async function loadProjectDocuments(projectId) {
-  try {
-    const res = await fetch(API_BASE + `/api/project/${projectId}/documents`);
-    documentsCache[projectId] = await res.json();
-  } catch(e) {
-    documentsCache[projectId] = [];
-  }
-  refreshModal();
-  renderDocumentsTab(projectId);
+// Open/refresh the tab. Three things matter for how fast it feels:
+//  1. The tab is made visible BEFORE the fetch (the list endpoint takes
+//     0.2-0.6 s warm, ~9 s on a cold server), so a click shows the panel at
+//     once — with the cached list if there is one, else "Loading...".
+//  2. One fetch in flight per project: a second call while one is pending
+//     joins it instead of re-hitting the endpoint.
+//  3. The result is painted by renderDocumentsTab alone. It used to run
+//     refreshModal() (full rebuild, which itself re-renders the list from the
+//     cache) and then renderDocumentsTab again — the 351-row list twice, plus
+//     a whole-modal rebuild, after the wait.
+const documentsInflight = {};   // projectId → pending fetch promise
+
+function loadProjectDocuments(projectId) {
+  // Only rebuild the modal when the tab's panel is not in the DOM yet; the
+  // rebuild paints the cached list (index.html refreshModalById) or Loading...
+  if (!document.getElementById(`documents-list-${projectId}`)) refreshModal();
+  if (documentsInflight[projectId]) return documentsInflight[projectId];
+  const req = (async () => {
+    try {
+      const res = await fetch(API_BASE + `/api/project/${projectId}/documents`);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      documentsCache[projectId] = await res.json();
+    } catch(e) {
+      // Keep a list we already have rather than blanking it to "No documents".
+      if (!documentsCache[projectId]) documentsCache[projectId] = [];
+    } finally {
+      delete documentsInflight[projectId];
+    }
+    renderDocumentsTab(projectId);
+  })();
+  documentsInflight[projectId] = req;
+  return req;
 }
 
 function renderDocumentsTab(projectId) {

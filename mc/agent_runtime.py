@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Callable, cast, Dict, Iterator, List, Literal, Optional, Tuple
 
 from mc.core import TimestampedLines
+from mc import doc_write_cache_store as _doc_cache_store
 from mc.unix_path import nvm_bin_dirs as _nvm_bin_dirs
 
 # Reused, not re-derived (UNATTENDED_AGENT_PERMISSIONS_AUDIT §4/§3c): the exact
@@ -2731,8 +2732,12 @@ class ClaudeRuntime(AgentRuntime):
         for d in candidates:
             files.extend(iter_transcript_files_in_dir(d, seen_names))
 
+        # Warm from ~/.clayrune once per process: a restart otherwise pays the
+        # whole-history cold scan (8.7 s on mission_control) on the first open.
+        _doc_cache_store.load_into(_DOC_WRITE_CACHE)
         by_path: Dict[str, Dict[str, Any]] = {}
         touched: set = set()
+        reparsed = False
         for f in files:
             try:
                 st = f.stat()
@@ -2745,6 +2750,7 @@ class ClaudeRuntime(AgentRuntime):
             if cached and cached[0] == mtime and cached[1] == fsize:
                 hits = cached[2]
             else:
+                reparsed = True
                 hits = []
                 try:
                     with open(f, 'r', encoding='utf-8', errors='replace') as fh:
@@ -2781,6 +2787,8 @@ class ClaudeRuntime(AgentRuntime):
                 if not prev or (h.get('ts') or '') >= (prev.get('ts') or ''):
                     by_path[h['path']] = h
         _trim_scan_cache(_DOC_WRITE_CACHE, _DOC_WRITE_CACHE_MAX, touched)
+        if reparsed:
+            _doc_cache_store.mark_dirty(_DOC_WRITE_CACHE)  # debounced, off this thread
         return list(by_path.values())
 
     def list_running_subagents(self, project_path: str,
