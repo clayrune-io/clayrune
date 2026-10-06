@@ -43,7 +43,7 @@ const SHOT_DIR = resolve(REPO_ROOT, '_scratch', 'connect_wizard');
 mkdirSync(SHOT_DIR, { recursive: true });
 const STATIC = {};
 Object.assign(STATIC, loadStaticJsCss(REPO_ROOT));
-const REAL_SCREENS = new Set(['/static/js/desk-v1-connect-login-step.js', '/static/js/desk-v1-connect-api-step.js']);
+const REAL_SCREENS = new Set(['/static/js/desk-v1-connect-login-step.js', '/static/js/desk-v1-connect-api-step.js', '/static/js/desk-v1-connect-unknown-step.js']); // unknown/ref screens would shadow this frame smoke's fixtures
 
 let bad = 0;
 const ok = (m) => console.log('  ✓ ' + m);

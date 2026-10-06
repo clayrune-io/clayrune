@@ -303,7 +303,7 @@
 
   W.registerScreen({
     id: 'permissions-step', step: 'permissions',
-    match: (sel) => sel.type === 'mcp' || sel.type === 'reference' || ((sel.type === 'signin' || sel.type === 'api') && !!_target),
+    match: (sel) => sel.type === 'mcp' || (sel.type === 'reference' && !window.DeskV1ConnectReferenceStep) || ((sel.type === 'signin' || sel.type === 'api') && !!_target),
     title: (api) => { const m = _mode(api.sel, api.info); return m === 'account' ? `Permissions for ${_label(api.info)}` : 'Permissions'; },
     copy: (api) => {
       const m = _mode(api.sel, api.info);

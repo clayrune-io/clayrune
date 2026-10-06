@@ -20,7 +20,7 @@
 
   // Forget the lookup; a run still going is told to stop (it would otherwise hold the one slot).
   function reset() {
-    if (D.busy && _api) { try { Promise.resolve(_api('POST', '/api/desk/connect/discover/cancel', { request_id: D.requestId })).catch(() => {}); } catch (_) { /* ends on its own limit */ } }
+    if (D.busy && _api) { try { Promise.resolve(_api('POST', '/api/desk/connect/discover/cancel', { request_id: D.requestId })).catch((e) => console.warn('[connect-discover] cancellation failed: ' + e)); } catch (e) { console.warn('[connect-discover] cancellation failed: ' + e); } }
     D = _fresh();
   }
   function _for(info) { if (D.url !== info.url) { reset(); D.url = info.url; } return D; }
@@ -86,6 +86,7 @@
   }
 
   async function _run(info, ctx) {
+    _api = ctx.api;
     const d = _for(info);
     if (d.busy) return;
     d.busy = true; d.error = ''; d.answer = null; d.requestId = _newRequestId();
@@ -110,8 +111,9 @@
     const d = _for(info);
     if (!d.busy) return;
     const id = d.requestId;
-    try { await ctx.api('POST', '/api/desk/connect/discover/cancel', { request_id: id }); } catch (_) { /* the run ends on its own limit */ }
-    if (D.requestId === id) { D.busy = false; D.requestId = ''; D.error = 'The lookup was cancelled.'; ctx.repaint(); }
+    D.busy = false; D.requestId = ''; D.answer = null; D.error = 'The lookup was cancelled.'; ctx.repaint();
+    try { await ctx.api('POST', '/api/desk/connect/discover/cancel', { request_id: id }); }
+    catch (e) { console.warn('[connect-discover] cancellation failed: ' + e); }
   }
 
   // ctx: { api(method, url, body), repaint() }
@@ -127,5 +129,6 @@
   // The rows a finished lookup adds under the registry's own, for the flow to count.
   function rows() { return D.answer ? D.answer.options || [] : []; }
 
-  window.DeskV1ConnectDiscover = { html, bind, reset, offered, rows };
+  window.DeskV1ConnectDiscover = { html, bind, reset, offered, rows, run: _run, cancel: _cancel,
+    state: () => ({ busy: D.busy, answer: D.answer, error: D.error }) };
 })();

@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — Unknown services have an explicit setup path (MC-1062/12)
+
+- The disabled Connect wizard offers unknown addresses four paths: public lookup, MCP, API details and a reference. Lookup is explicit and cancellable, distinguishes failed/empty/incomplete results, escapes evidence and leads only to editable setup. API/PyPI information saves through 12b as reference-only, with optional existing/new vault credentials and the existing human/passcode gate.
+- Setup, Permissions, Review and Result keep credential values in held DOM until Save and state exactly what was retained; no executor, probe, domain guess, automatic fallback or permission grant is added. Contract and screenshots: `docs/desk_v1/connect_flow_tickets/12-unknown-service.md`. Ticket 14 still owns activation.
+
 ## [2026-10-06] — API/PyPI reference drafts retain their metadata (MC-1062/12b)
 
 - Connect's existing human/passcode Save accepts bounded, provenance-labelled API/PyPI metadata and existing vault-name references on reference-only records. Stored details remain unapproved, non-executable and publish false; no executor, probe or permission is added. Create-only, replay and new-credential rollback behavior remain intact.
