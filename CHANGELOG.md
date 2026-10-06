@@ -11,6 +11,16 @@
 - The existing OAuth verification follows tool-list pagination (50-page bound) and atomically saves selected generation, polling and media-related definitions under gitignored `data/desk/higgsfield_mcp_tools.json`. Snapshots mark vendor text untrusted, omit transport credentials/headers, and cap descriptions at 2000 characters; a write failure is logged without failing a successful probe. Incomplete or cyclic listings preserve the previous snapshot.
 - This diagnostic adds no uploads or generation calls and does not enable picture inputs. Live capture waits for merge/restart and a human-started connection check. Contract and limits: `docs/desk_v1/HIGGSFIELD_MCP_SPIKE.md` section 10.
 
+## [2026-10-06] — Unknown services have an explicit setup path (MC-1062/12)
+
+- The disabled Connect wizard offers unknown addresses four paths: public lookup, MCP, API details and a reference. Lookup is explicit and cancellable, distinguishes failed/empty/incomplete results, escapes evidence and leads only to editable setup. API/PyPI information saves through 12b as reference-only, with optional existing/new vault credentials and the existing human/passcode gate.
+- Setup, Permissions, Review and Result keep credential values in held DOM until Save and state exactly what was retained; no executor, probe, domain guess, automatic fallback or permission grant is added. Contract and screenshots: `docs/desk_v1/connect_flow_tickets/12-unknown-service.md`. Ticket 14 still owns activation.
+
+## [2026-10-06] — API/PyPI reference drafts retain their metadata (MC-1062/12b)
+
+- Connect's existing human/passcode Save accepts bounded, provenance-labelled API/PyPI metadata and existing vault-name references on reference-only records. Stored details remain unapproved, non-executable and publish false; no executor, probe or permission is added. Create-only, replay and new-credential rollback behavior remain intact.
+- Validation and local reference Save have separate modules; old records/responses keep their shape. Contract: `docs/desk_v1/connect_flow_tickets/12b-reference-draft.md`. The new wizard remains disabled until ticket 14.
+
 ## [2026-10-06] — X API setup attaches to a saved account (MC-1062/03b)
 
 - X held sign-in and provider Save accept an existing account id validated through the browser-account attachment contract. They use that account's own OAuth references, never create a duplicate account, and leave its browser setup, read settings, connections and permissions unchanged. Calls without an id keep the original create path.

@@ -1,0 +1,10 @@
+/* MC-1062/12: reuse Desk typography, surfaces and pinned wizard actions. */
+.desk-v1-cfw [data-ref-field], .desk-v1-cfw [data-ref-select],
+.desk-v1-cfw [data-ref-secret], .desk-v1-cfw [data-ref-user],
+.desk-v1-cfw [data-ref-spec-slot] textarea { width: 100%; max-width: 100%; box-sizing: border-box; min-height: 2.75rem; }
+.desk-v1-cfw [data-ref-secret-slot] > div { display: flex; flex-direction: column; gap: 0.75rem; }
+.desk-v1-cfw [data-ref-user-label][hidden] { display: none; }
+.desk-v1-cfw [data-ref-detect], .desk-v1-cfw [data-ref-stop-detect],
+.desk-v1-cfw [data-unknown-found], .desk-v1-cfw [data-unknown-reference],
+.desk-v1-cfw [data-unknown-api-details], .desk-v1-cfw [data-ref-alt] { min-height: 2.75rem; white-space: normal; overflow-wrap: anywhere; }
+.desk-v1-cfw select:focus-visible, .desk-v1-cfw textarea:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }

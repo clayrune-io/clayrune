@@ -65,6 +65,9 @@ def v1_service(rec: dict, vault: set | None = None) -> dict:
         'credential': {'name': cred, 'in_vault': None},
         'kind': KIND, 'publish': False, 'created_at': rec.get('created_at'),
     }
+    if 'reference_draft' in rec:
+        from mc.desk_connect.reference_draft import stored
+        out['reference_draft'] = stored(rec['reference_draft'])
     if cred:
         out['credential']['in_vault'] = cred in (_vault_names() if vault is None else vault)
     return out
@@ -123,10 +126,13 @@ def list_services() -> list[dict]:
     return [v1_service(r, vault) for r in rows]
 
 
-def create_service(name, *, link=None, credential=None, service_id: str | None = None) -> dict:
+def create_service(name, *, link=None, credential=None, service_id: str | None = None, reference_draft=None) -> dict:
     name = _clean_name(name)
     link = _clean_link(link)
     credential = _clean_credential(credential)
+    if reference_draft is not None:
+        from mc.desk_connect.reference_draft import stored
+        reference_draft = stored(reference_draft)
     if service_id is not None and not (isinstance(service_id, str) and _ID.match(service_id)):
         raise ServiceError('service id must be 1-80 letters, digits, - or _')
     with _desk._store_lock:
@@ -138,8 +144,10 @@ def create_service(name, *, link=None, credential=None, service_id: str | None =
             raise ServiceError('a service with that id already exists', 409)
         if any((r.get('name') or '').lower() == name.lower() for r in services.values()):
             raise ServiceError(f'{name} is already saved', 409)
-        rec = {'id': service_id or _desk._new_id('svc'), 'name': name, 'link': link,
+        rec: dict = {'id': service_id or _desk._new_id('svc'), 'name': name, 'link': link,
                'credential': credential, 'created_at': now_iso()}
+        if reference_draft is not None:
+            rec['reference_draft'] = reference_draft
         services[rec['id']] = rec
         _desk._write_store(store)
     return v1_service(rec)

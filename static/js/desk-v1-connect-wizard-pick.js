@@ -70,7 +70,12 @@
     bind: (root, api) => {
       const input = root.querySelector('[data-cfw-input]');
       const form = root.querySelector('[data-cfw-form]');
-      input.addEventListener('input', () => { T.text = input.value; });
+      input.addEventListener('input', () => {
+        T.text = input.value; T.seq++; T.busy = false; T.didYouMean = [];
+        if (api.info && api.info.input !== T.text.trim()) api.setInfo(null);
+        const primary = root.querySelector('[data-cfw-primary]');
+        if (primary) { primary.disabled = false; primary.textContent = 'Continue'; }
+      });
       const choose = (label) => { T.text = label; input.value = label; form.requestSubmit(); };
       if (window.DeskV1ConnectSuggest) window.DeskV1ConnectSuggest.bind(root, { input, api: _cappedApi(api), onPick: (item) => choose(item.label) });
       root.querySelectorAll('[data-cfw-pick-name]').forEach((b) => b.addEventListener('click', () => choose(b.dataset.cfwPickName)));
@@ -97,11 +102,12 @@
     const ref = info.reference
       ? `<div class="desk-v1-cfw-dgroup" data-cfw-reference-group><div class="desk-v1-cfw-dtitle">${esc(info.reference.title)}</div><div class="desk-v1-cfw-fact-text">${esc(info.reference.text)}</div>
           <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cfw-reference>Save a reference instead</button></div>` : '';
-    return list + ref;
+    return list + ref + (window.DeskV1ConnectUnknownStep ? window.DeskV1ConnectUnknownStep.details(info) : '');
   }
 
   W.registerScreen({
     id: 'connection', step: 'connection',
+    match: (_sel, info) => !window.DeskV1ConnectUnknownStep || !window.DeskV1ConnectUnknownStep.unknown(info),
     title: (api) => `Connect ${_label(api.info)}`,
     copy: () => 'Choose a connection type.',
     body: (api) => {
@@ -120,6 +126,7 @@
     },
     bind: (root, api) => {
       const picker = (api.info && api.info.picker) || [];
+      if (window.DeskV1ConnectUnknownStep) window.DeskV1ConnectUnknownStep.bindDetails(root, api);
       const primary = root.querySelector('[data-cfw-primary]');
       root.querySelectorAll('[data-cfw-type]').forEach((r) => r.addEventListener('change', () => {
         const t = picker.find((x) => x.id === r.value);

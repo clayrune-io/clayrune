@@ -14,9 +14,13 @@ and removable in Secrets, and no plaintext anywhere: the value goes into the vau
 and nowhere else, never into a log line, a record, an exception message or the
 duplicate-request memory below.
 
-An existing vault name is refused, never replaced: the compensating delete is only
+An existing vault name for a typed credential is refused, never replaced: the compensating delete is only
 safe for an entry this call created, and replacing someone's credential is the
 explicit-consent step the spec reserves for a later slice.
+
+MC-1062/12b adds existing-name references and bounded, labelled reference-only
+API/PyPI metadata. reference_draft validates them; reference_save owns the local
+writes. Referenced entries are never resolved, changed or rolled back.
 
 Duplicate protection is per process and in memory: `request_id` plus a keyed hash
 of the validated draft. The same id with the same draft answers the first
@@ -46,11 +50,10 @@ from collections import OrderedDict
 
 from mc import desk_services as _services
 from mc import secrets_store as _vault
-from mc.core import _log
 from mc.desk_connect import methods as _methods
 from mc.desk_connect import provider_commit, providers, registry, url_check
 from mc.desk_connect import signin_login_store as _logins
-from mc.desk_connect import account_attach, x_account_attach
+from mc.desk_connect import account_attach, x_account_attach, reference_draft
 from mc.desk_connect.providers.base import ProviderError
 from mc.desk_connect.url_check import UrlError
 
@@ -163,7 +166,7 @@ def clean_draft(draft, own_hosts=(), vault_names=None) -> dict:
     the passcode is asked; None skips that, `commit` checks again."""
     if not isinstance(draft, dict):
         raise CommitError('draft must be an object')
-    unknown = sorted(set(draft) - {'url', 'method', 'name', 'credential', 'fields', 'held', 'new_login', 'account_id'})
+    unknown = sorted(set(draft) - {'url', 'method', 'name', 'credential', 'fields', 'held', 'new_login', 'account_id', 'reference_draft'})
     if unknown:
         raise CommitError(f'unknown draft field(s): {", ".join(unknown)}')
     try:
@@ -184,11 +187,23 @@ def clean_draft(draft, own_hosts=(), vault_names=None) -> dict:
         raise CommitError(str(e)) from e
     out = {'url': checked['url'], 'method': 'save_for_agents', 'name': name, 'credential': None}
 
+    if 'reference_draft' in draft:
+        try:
+            out['reference_draft'] = reference_draft.clean(draft['reference_draft'], own_hosts=own_hosts)
+        except reference_draft.ReferenceError as e:
+            raise CommitError(str(e)) from e
+
     cred = draft.get('credential')
     if cred is None:
         return out
     if not isinstance(cred, dict):
         raise CommitError('credential must be an object')
+    if 'existing' in cred:
+        try:
+            out['credential'] = reference_draft.credential_reference(cred, vault_names)
+        except reference_draft.ReferenceError as e:
+            raise CommitError(str(e)) from e
+        return out
     unknown = sorted(set(cred) - {'name', 'entry_type', 'username', 'value', 'description', 'allow_unattended'})
     if unknown:
         raise CommitError(f'unknown credential field(s): {", ".join(unknown)}')
@@ -270,48 +285,5 @@ def commit(request_id: str, clean: dict) -> tuple[dict, bool]:
 
 
 def _save_for_agents(clean: dict) -> dict:
-    cred = clean['credential']
-    try:
-        existing = {s['name'] for s in _vault.list_secrets()}
-    except _vault.SecretsError as e:
-        raise CommitError(f'the vault could not be read: {e}', 503, 'vault_unavailable') from e
-    if cred:
-        if _vault.is_locked():
-            raise CommitError('the vault is locked: unlock it in Secrets, then save again', 409, 'vault_locked')
-        if cred['name'] in existing:
-            raise CommitError(f'a secret named "{cred["name"]}" already exists; pick another name '
-                              f'(Clayrune does not replace a stored credential from here)', 409, 'secret_exists')
-    wanted = clean['name'].lower()
-    if any((s.get('name') or '').lower() == wanted for s in _services.list_services()):
-        raise CommitError(f'{clean["name"]} is already saved', 409, 'service_exists')
-
-    wrote_secret = False
-    if cred:
-        try:
-            _vault.set_secret(cred['name'], cred['value'], username=cred['username'],
-                              description=cred['description'], scope='global',
-                              allow_unattended=cred['allow_unattended'], entry_type=cred['entry_type'])
-        except _vault.SecretsError as e:
-            raise CommitError(f'the credential could not be stored: {e}', 400, 'vault_refused') from e
-        wrote_secret = True
-    try:
-        svc = _services.create_service(clean['name'], link=clean['url'],
-                                       credential=cred['name'] if cred else None)
-    except Exception as e:
-        _log(f'[desk_connect] record write failed ({type(e).__name__}); undoing the vault entry', flush=True)
-        orphan = False
-        if wrote_secret:
-            try:
-                orphan = not _vault.delete_secret(cred['name'])
-            except Exception as e2:
-                orphan = True
-                _log(f'[desk_connect] compensating delete of {cred["name"]!r} failed: {type(e2).__name__}', flush=True)
-        if isinstance(e, _services.ServiceError):
-            msg, status, code = str(e), e.status, 'service_refused'
-        else:
-            msg, status, code = 'the service record could not be written', 500, 'record_failed'
-        if orphan:
-            msg += f'; the credential "{cred["name"]}" was stored and could not be removed: delete it in Secrets'
-        raise CommitError(msg, status, code) from e
-
-    return {'service': svc, 'credential': {'name': cred['name'], 'stored': True} if cred else None}
+    from mc.desk_connect.reference_save import save
+    return save(clean)
