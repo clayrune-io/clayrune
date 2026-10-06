@@ -35,6 +35,7 @@ import uuid
 from pathlib import Path
 
 from mc import desk as _desk
+from mc.atomic_json import write_json_atomic
 from mc import desk_engines as _engines
 from mc import desk_pieces as _pieces
 from mc import desk_storyboard as _storyboard
@@ -188,7 +189,7 @@ def _stash(token: str, manifest: dict, rels: list[str]) -> Path:
             shutil.move(str(src), str(dst))
             moved.append((src, dst))
         manifest['files'] = [{'rel': rel, 'slot': str(i)} for i, rel in enumerate(rels)]
-        (entry / 'manifest.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
+        write_json_atomic(entry / 'manifest.json', manifest, indent=2, ensure_ascii=False)
     except BaseException:
         for src, dst in reversed(moved):
             try:
