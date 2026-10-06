@@ -174,7 +174,10 @@ def prepare(body, resolve_project) -> dict:
     clash = _activation.conflict(op, path)
     if clash:
         raise clash
-    previous = _store.get(op['scope']['kind'], op['scope']['project_id'], op['server_name'])
+    try:
+        previous = _store.get(op['scope']['kind'], op['scope']['project_id'], op['server_name'])
+    except _store.StoreUnreadable:                      # a Save will set the damaged file aside; the card shows no earlier approval
+        previous = None
     request_id = secrets.token_urlsafe(24)
     _remember(request_id, {'op': op, 'fingerprint': fp, 'project': project, 'expires': time.monotonic() + PREPARED_TTL_S})
     return _card(request_id, fp, op, artifact, project, previous)
@@ -194,6 +197,30 @@ def clean_submission(body) -> tuple[str, str]:
     return rid, fp
 
 
+def _remembered(request_id: str) -> tuple[str, dict] | None:
+    """The result of a finished Save, for a replay of it, only while it is still true: the approval
+    is on record with that fingerprint and its state now is `registered`. Otherwise (the server was
+    removed, changed or lost its package since) the memory is dropped together with the Review it
+    answered, and the replay is a fresh request: it needs a new Review and the passcode."""
+    with _guard:
+        done = _done.get(request_id)
+    if done is None:
+        return None
+    result = done[1]
+    try:
+        rec = _store.get(result['scope'], result['project_id'], result['server_name'])
+        live = bool(rec) and rec['fingerprint'] == done[0]             and _activation.derive_state(rec, rec.get('project_path'))['state'] == 'registered'
+    except Exception as e:                              # cannot tell: do not report a success it cannot vouch for
+        _log(f'[desk_connect] custom save replay could not be checked: {type(e).__name__}', flush=True)
+        live = False
+    if not live:
+        with _guard:
+            _done.pop(request_id, None)
+            _prepared.pop(request_id, None)
+        return None
+    return done
+
+
 def check_submission(request_id: str, fingerprint: str) -> dict:
     """The stored Review this Save approves, or ActivationError. Called BEFORE the passcode, so a stale
     or wrong approval costs no guess: `review_expired` (404; nothing stored under that id) or
@@ -203,10 +230,11 @@ def check_submission(request_id: str, fingerprint: str) -> dict:
     if done is not None and done[0] != fingerprint:
         raise ActivationError('that approval was already used for a different configuration. Review it again.',
                               'changed_since_review', 409)
+    remembered = _remembered(request_id) if done is not None else None
     rec = _lookup(request_id)
     if rec is None:
-        if done is not None:
-            return {'done': done[1]}
+        if remembered is not None:
+            return {'done': remembered[1]}
         raise ActivationError('that review expired or was never made. Review the server again.', 'review_expired', 404)
     if rec['fingerprint'] != fingerprint or _op.fingerprint(rec['op']) != fingerprint:
         raise ActivationError('the configuration changed since you reviewed it. Review it again.',
@@ -230,8 +258,7 @@ def commit(request_id: str, fingerprint: str) -> tuple[dict, bool]:
     path = project['path'] if project else None
     key = _store.key(op['scope']['kind'], op['scope']['project_id'], op['server_name'])
     with _name_lock(key):
-        with _guard:
-            done = _done.get(request_id)
+        done = _remembered(request_id)
         if done is not None:
             return done[1], True
         clash = _activation.conflict(op, path)

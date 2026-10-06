@@ -30,6 +30,7 @@ an `ActivationError` from the package step leaves the approval SAVED with an hon
 """
 from __future__ import annotations
 
+import os
 import sys
 
 from mc import mcp as _mcp
@@ -97,11 +98,21 @@ def _norm(p) -> str:
     return str(p).replace('\\', '/')
 
 
-def matches(cfg, op: dict) -> bool:
+def _same_path(a, b) -> bool:
+    return os.path.normcase(os.path.normpath(str(a))) == os.path.normcase(os.path.normpath(str(b)))
+
+
+def matches(cfg, op: dict, strict: bool = True) -> bool:
     """True when an existing server config is exactly `op`'s launch line (Python, the wrapper, the
-    flags, Node, the digest directory's entry file and the arguments), whatever absolute paths it
-    was written with. The shape is checked whole: an `env` block (NODE_OPTIONS), an extra argument
-    or a different program fails it."""
+    flags, Node, the digest directory's entry file and the arguments). The shape is checked whole:
+    an `env` block (NODE_OPTIONS), an extra argument or a different program fails it.
+
+    `strict` (the default, used for "is registered" and for the write guard) also requires every
+    path to be the one this install would write now: this interpreter, THIS `tools/with-secret.py`,
+    the `node` on PATH and the entry file in this install's digest directory. A line that only
+    ends in the same file names (any `evil/tools/with-secret.py`, any program called `node`) is
+    not the approved line. `strict=False` keeps that looser shape test for ONE use: recognising an
+    earlier approval whose paths moved with the install, so a new passcode Save may replace it."""
     if not isinstance(op, dict) or not isinstance(cfg, dict) or not set(cfg) <= {'command', 'args', 'type'} \
             or cfg.get('type') not in (None, 'stdio'):
         return False
@@ -111,13 +122,20 @@ def matches(cfg, op: dict) -> bool:
     if not isinstance(cmd, str) or not isinstance(args, list) or len(args) != want \
             or not all(isinstance(a, str) for a in args):
         return False
+    if args[1:1 + len(flags)] != flags or args[3 + len(flags):] != op['args']:
+        return False
+    node, entry = args[1 + len(flags)], args[2 + len(flags)]
+    if strict:
+        try:
+            return cmd == sys.executable and _same_path(args[0], _base.wrapper_path()) \
+                and _same_path(node, _base._node()) and _same_path(entry, _artifact.entry_path(op))
+        except ActivationError:                         # no wrapper / no Node here: nothing on disk can be the line
+            return False
     tail = f'/mcp_custom_packages/{_artifact.digest_id(op["integrity"])}/package/{op["entry"]}'
     return (cmd == sys.executable or bool(_base._PYTHON_RE.match(_norm(cmd).rsplit('/', 1)[-1]))) \
         and _norm(args[0]).endswith('tools/with-secret.py') \
-        and args[1:1 + len(flags)] == flags \
-        and bool(_base._NODE_RE.match(_norm(args[1 + len(flags)]).rsplit('/', 1)[-1])) \
-        and _norm(args[2 + len(flags)]).endswith(tail) \
-        and args[3 + len(flags):] == op['args']
+        and bool(_base._NODE_RE.match(_norm(node).rsplit('/', 1)[-1])) \
+        and _norm(entry).endswith(tail)
 
 
 def _read(scope: str, project_id: str | None, name: str, project_path: str | None) -> dict | None:
@@ -128,12 +146,15 @@ def _read(scope: str, project_id: str | None, name: str, project_path: str | Non
 def _approved_ops(op: dict) -> list[dict]:
     """The operations Desk approved for this server name: the recorded one and, while a change is
     unfinished, the one it replaces."""
-    rec = _store.get(op['scope']['kind'], op['scope']['project_id'], op['server_name'])
+    try:
+        rec = _store.get(op['scope']['kind'], op['scope']['project_id'], op['server_name'])
+    except _store.StoreUnreadable:                      # nothing is known to be approved: an existing server is a clash
+        return []
     return [o for o in (rec.get('operation'), rec.get('replaces')) if isinstance(o, dict)] if rec else []
 
 
 def _was_approved(cur, op: dict) -> bool:
-    return any(matches(cur, p) for p in _approved_ops(op))
+    return any(matches(cur, p, strict=False) for p in _approved_ops(op))
 
 
 def _clash(op: dict) -> ActivationError:
@@ -164,7 +185,7 @@ def register(op: dict, project_path: str | None) -> dict:
             if matches(cur, op):
                 state['already'] = True
                 return
-            if not any(matches(cur, p) for p in approved):
+            if not any(matches(cur, p, strict=False) for p in approved):
                 raise _clash(op)
         servers[name] = cfg
 

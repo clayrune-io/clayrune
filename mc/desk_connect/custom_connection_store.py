@@ -19,8 +19,11 @@ changed approval is being saved: it lets a failed Save of the change be retried 
 holds the earlier line) and is dropped when the new line is registered.
 
 The key is `<scope>:<project_id>:<server_name>`. Writes are read-modify-write under one lock
-and an atomic replace; a corrupt file reads as empty and is left in place, so a later write
-cannot be mistaken for the first one without the log line saying so.
+and an atomic replace. Only a MISSING file reads as empty. A corrupt or unreadable one raises
+`StoreUnreadable`, so the MCP write guard (`custom_connection_guard.check_write`) refuses instead
+of letting an approved server be overwritten. The next approval (`put`) moves the damaged file
+aside as `<name>.corrupt-<UTC time>` before it writes, so the records in it are never
+overwritten and can be recovered by hand.
 """
 from __future__ import annotations
 
@@ -45,6 +48,10 @@ def key(scope: str, project_id: str | None, server_name: str) -> str:
     return f'{scope}:{project_id or ""}:{server_name}'
 
 
+class StoreUnreadable(RuntimeError):
+    """The record file exists but cannot be read as a record of approvals. Never read as empty."""
+
+
 def _read() -> dict:
     try:
         doc = json.loads(path().read_text(encoding='utf-8'))
@@ -52,9 +59,30 @@ def _read() -> dict:
         return {}
     except (OSError, ValueError) as e:
         _log(f'[desk_connect] custom connection record unreadable: {type(e).__name__}', flush=True)
-        return {}
+        raise StoreUnreadable('the record of approved MCP servers could not be read') from e
     conns = doc.get('connections') if isinstance(doc, dict) else None
-    return conns if isinstance(conns, dict) else {}
+    if not isinstance(conns, dict):
+        _log('[desk_connect] custom connection record has no connections object', flush=True)
+        raise StoreUnreadable('the record of approved MCP servers is not in the expected shape')
+    return conns
+
+
+def _read_for_write() -> dict:
+    """`_read`, except that a damaged file is first moved aside (timestamped, never overwritten) and
+    the write starts from an empty record. Only `put` uses it: an approval is a human decision that
+    must be able to land; every other write acts on an existing record and refuses instead."""
+    try:
+        return _read()
+    except StoreUnreadable:
+        p = path()
+        aside = p.with_name(f'{p.name}.corrupt-{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")}')
+        try:
+            os.replace(p, aside)
+        except OSError as e:
+            _log(f'[desk_connect] damaged custom connection record could not be set aside: {type(e).__name__}', flush=True)
+            raise
+        _log(f'[desk_connect] damaged custom connection record set aside as {aside.name}; starting a new one', flush=True)
+        return {}
 
 
 def _write(conns: dict) -> None:
@@ -110,7 +138,7 @@ def put(op: dict, fingerprint: str, state: str, code: str = '', project_path: st
     scope, project_id = op['scope']['kind'], op['scope']['project_id']
     k = key(scope, project_id, op['server_name'])
     with _lock:
-        conns = _read()
+        conns = _read_for_write()
         old = conns.get(k) if isinstance(conns.get(k), dict) else None
         same = bool(old) and old.get('fingerprint') == fingerprint
         replaces = None
