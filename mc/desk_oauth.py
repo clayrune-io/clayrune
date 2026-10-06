@@ -73,6 +73,7 @@ from typing import Any
 
 from mc import desk_oauth_hold as _hold
 from mc import desk_oauth_profile as _profile
+from mc import desk_vault_lock as _vault_lock
 from mc import secrets_store
 from mc.core import _log
 
@@ -281,6 +282,8 @@ def _read_record(service: str, *, consumer: str, project_id: str | None = None,
                                              unattended=unattended, internal=True)
     except secrets_store.SecretNotFound as e:
         raise OAuthError('not_connected', f"{d['label']} is not signed in yet") from e
+    except secrets_store.VaultLocked as e:      # not a dead sign-in: nothing is marked, nothing is lost
+        raise OAuthError(_vault_lock.VAULT_LOCKED, _vault_lock.SIGNIN_REASON, 409) from e
     except secrets_store.SecretsError as e:
         raise OAuthError('unavailable', _safe(e)) from e
     try:
@@ -298,14 +301,16 @@ def _read_record(service: str, *, consumer: str, project_id: str | None = None,
 # -- status ---------------------------------------------------------------------
 
 def status(service: str, account_id: str | None = None) -> dict[str, Any]:
-    """`{state: connected|needs_signin|not_connected, reason}` from the vault's
-    metadata only (no token is decrypted or audited)."""
+    """`{state: connected|needs_signin|vault_locked|not_connected, reason}` from the
+    vault's metadata only (no token is decrypted or audited). `vault_locked` is not a
+    dead sign-in: nothing needs signing in again, the vault needs unlocking."""
     d = _def(service)
     meta = _meta(service, account_id)
     if meta is None:
         return {'state': 'not_connected', 'reason': None}
-    if not secrets_store.is_readable(vault_name(service, account_id)):
-        return {'state': 'needs_signin', 'reason': 'the saved sign-in can no longer be opened; sign in again'}
+    # The hint is metadata, readable while the vault is locked, so a sign-in the vendor
+    # really rejected still says so; only then is a locked vault told apart from an
+    # unreadable entry (`desk_vault_lock`: a locked vault loses no sign-in).
     parts = {k: v for k, _, v in (p.partition('=') for p in (meta.get('hint') or '').split()) if v}
     if parts.get('state') == 'needs_signin':
         return {'state': 'needs_signin', 'reason': f"{d['label']} no longer accepts the saved sign-in; sign in again"}
@@ -315,6 +320,11 @@ def status(service: str, account_id: str | None = None) -> dict[str, Any]:
         exp = 0
     if exp and exp < time.time() and parts.get('refresh') != 'yes':
         return {'state': 'needs_signin', 'reason': 'the sign-in ran out; sign in again'}
+    opened = _vault_lock.probe(vault_name(service, account_id))
+    if opened == _vault_lock.LOCKED:
+        return {'state': _vault_lock.VAULT_LOCKED, 'reason': _vault_lock.SIGNIN_REASON}
+    if opened == _vault_lock.UNREADABLE:
+        return {'state': 'needs_signin', 'reason': 'the saved sign-in can no longer be opened; sign in again'}
     return {'state': 'connected', 'reason': None}
 
 

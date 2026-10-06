@@ -105,8 +105,9 @@
     const open = isX && _xOpen.has(ch.id);
     // A reason that names the vault is for the server log; the page says it in plain words.
     const reason = pub.reason && !/vault/i.test(pub.reason) ? pub.reason : '';
+    const locked = !!pub.vault_locked;      // the sign-in is saved; the vault needs unlocking, not a new sign-in
     const fix = isX
-      ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-conn-x-guide="${esc(ch.id)}" aria-expanded="${open}">${open ? 'Hide steps' : (pub.ready ? 'Manage' : 'Connect X')}</button>`
+      ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-conn-x-guide="${esc(ch.id)}" aria-expanded="${open}">${open ? 'Hide steps' : (pub.ready ? 'Manage' : (locked ? 'Unlock the vault' : 'Connect X'))}</button>`
       : '';
     const note = pub.ready && pub.unattended_ok === false
       ? '<div class="desk-v1-rules-hint" data-conn-unattended>Scheduled posts will be held: the saved sign-in is not allowed for unattended use. “Approve now” still posts.</div>' : '';
@@ -114,7 +115,7 @@
     return `
         <div class="desk-v1-conn-publish" data-conn-publish data-ready="${pub.ready ? 'true' : 'false'}">
           <span class="desk-v1-how-field-label">Publishing</span>
-          <span data-conn-publish-text>${pub.ready ? 'connected' : `not connected${reason ? ` (${esc(reason)})` : ''}`}</span>
+          <span data-conn-publish-text>${pub.ready ? 'connected' : locked ? 'not connected (your vault is locked; your sign-in is still saved)' : `not connected${reason ? ` (${esc(reason)})` : ''}`}</span>
           ${fix}
         </div>${note}${li}${open ? `<div data-conn-x-wizard="${esc(ch.id)}">${_connOv ? window.DeskV1Guides.xWizardHTML(_connOv) : '<div class="desk-v1-stub-empty">Loading…</div>'}</div>` : ''}`;
   }

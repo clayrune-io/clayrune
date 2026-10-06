@@ -15,8 +15,9 @@ is, and `test_desk_purposes.py` pins each entry to the thing it names.
   * Readiness is derived from metadata only (vault names and states, whether a named
     browser profile exists). It opens nothing, signs in to nothing and costs nothing.
 
-Setup states (spec 3.3): `ready`, `needs_signin`, `pending_runtime`. Verification is a
-different dimension and lives in `purpose_verification`.
+Setup states (spec 3.3): `ready`, `needs_signin`, `vault_locked`, `pending_runtime`.
+`vault_locked` is a saved sign-in the locked vault cannot open yet: unlock, do not sign in
+again. Verification is a different dimension and lives in `purpose_verification`.
 """
 from __future__ import annotations
 
@@ -76,12 +77,14 @@ def _api_publish(acc: dict) -> dict:
     st = _accounts.publish_state(acc)
     if st['ready']:
         return {'setup': 'ready', 'reason': None}
-    return {'setup': 'needs_signin', 'reason': st['reason']}
+    return {'setup': 'vault_locked' if st.get('vault_locked') else 'needs_signin', 'reason': st['reason']}
 
 
 def _api_read(acc: dict) -> dict:
     cap = _engagement.XReader(account_id=acc.get('id')).capability()
-    return {'setup': 'ready' if cap.get('connected') else 'needs_signin', 'reason': cap.get('reason')}
+    if cap.get('connected'):
+        return {'setup': 'ready', 'reason': cap.get('reason')}
+    return {'setup': 'vault_locked' if cap.get('vault_locked') else 'needs_signin', 'reason': cap.get('reason')}
 
 
 def _pane_read(profile: str | None) -> dict:

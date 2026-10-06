@@ -210,6 +210,8 @@ class XReader(Reader):
             st = _oauth.status('x', own)
             if st['state'] == 'connected':
                 return {'connected': True, 'reason': None, 'short': None}
+            if st['state'] == 'vault_locked':           # the sign-in is saved; only the vault needs unlocking
+                return {'connected': False, 'short': 'vault locked', 'reason': st['reason'], 'vault_locked': True}
             return {'connected': False, 'short': 'sign in again', 'reason': st['reason']}
         if own is not None:                             # its own sign-in, never the singleton's token
             return {'connected': False, 'short': 'sign in',

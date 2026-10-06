@@ -21,7 +21,7 @@
   const NEW = '__new';
   const COVERED = ['documented', 'claimed'];
   const COVERAGE_WORD = { documented: 'documented', claimed: 'claimed', unknown: 'not stated', unavailable: 'not offered', not_offered: 'not offered' };
-  const SETUP_WORD = { ready: 'Ready', needs_signin: 'Needs sign-in', pending_runtime: 'Saved; cannot run yet' };
+  const SETUP_WORD = { ready: 'Ready', needs_signin: 'Needs sign-in', vault_locked: 'Vault locked', pending_runtime: 'Saved; cannot run yet' };
   const VERIFY_WORD = { verified: 'Verified', partial: 'Partly verified', not_checked: 'Not checked' };
   const ROLE_FOR_AUTH = { browser_signin: 'login', api_key: 'api_key', bearer: 'api_key' };
   const ROLE_LABEL = { login: 'Stored login', api_key: 'Stored API key' };
