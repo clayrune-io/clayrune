@@ -342,6 +342,9 @@
       const draft = { url: S.info.url, method: S.method, fields: r.fields };
       const held = c && c.signs_in && window.DeskV1ConnectHeld ? window.DeskV1ConnectHeld.draft() : null;
       if (held) draft.held = held;          // the sign-in made on Details: Save claims it, so nothing opens after
+      const typed = c && c.signs_in && window.DeskV1ConnectSignin ? window.DeskV1ConnectSignin.detailsDraft() : null;
+      if (typed && typed.error) return { error: typed.error };
+      if (typed) draft.new_login = typed.new_login;       // a login typed on Details: this one passcode stores it with the connection
       return { draft };
     }
     const draft = { url: S.info.url, method: S.method, name: S.name.trim() };
@@ -383,6 +386,7 @@
       // A provider method ends on its Result step: what was stored, the sign-in, an explicit check.
       window.DeskV1ConnectAdapter.clear();
       if (window.DeskV1ConnectHeld) window.DeskV1ConnectHeld.consumed();   // the Save stored it
+      if (_connector().signs_in && window.DeskV1ConnectSignin) window.DeskV1ConnectSignin.detailsSaved(saved.login);   // a typed login is stored now: its password leaves the page
       S.step = 'result'; S.status = '';
       window.DeskV1ConnectResult.start(saved, {
         api: ctx.api, repaint: ctx.repaint,

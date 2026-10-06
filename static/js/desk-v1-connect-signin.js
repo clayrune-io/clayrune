@@ -5,8 +5,10 @@
 //   Use a saved login     a vault login picked BY NAME (the owner's picker does that).
 //   Store a new login     the shared secret form (static/js/secret-form.js): username and password on ONE
 //                         vault entry. It is typed here and sent only with the passcode-gated Save of the
-//                         owning screen (`new_login` rides the routes Save; the Result step has its own
-//                         Save to /api/desk/connect/signin/store-login). Nothing is written before that.
+//                         owning screen (`new_login` rides the routes Save and the Details step's provider
+//                         Save, so one passcode covers it and the connection; the Result step, where the
+//                         connection is already saved, has its own Save to /api/desk/connect/signin/store-login).
+//                         Nothing is written before that.
 //   Sign in with it       POST /api/desk/connect/signin/fill (through the passcode prompt, every click): the
 //                         SERVER types the stored login into the sign-in page open in the browser pane. This
 //                         module sends a login NAME, never a value, and gets a state word back (submitted,
@@ -179,7 +181,8 @@
   }
 
   // Type a new login and press "Save this login": stored with its own passcode, then selected. Used by
-  // the Details step and by the Result step's fallback; `st` is that step's state.
+  // the Result step only, where the connection is already saved. On the Details step the typed login
+  // rides the connection's own Save (`detailsDraft`), so the passcode is asked once.
   async function _storeTyped(st, serviceId, label, again) {
     const typed = read(KEY);
     if (!typed || typed.error) { st.kind = 'error'; st.msg = (typed && typed.error) || 'Type the login first.'; again(); return; }
@@ -225,8 +228,8 @@
       saved = `<div class="desk-v1-rules-hint">A login already in Secrets. Clayrune types it into the sign-in page once it is open; you never see the password.</div>
         ${D.logins.length ? `<label class="desk-v1-conn-add-field">Use a saved login
           <select class="desk-v1-rules-textinput" data-cs-pick>${_loginOptions(D.logins, D.pick)}</select></label>` : '<div class="desk-v1-rules-hint" data-cs-nologins>There is no saved login for this service yet.</div>'}`;
-      fresh = `<div class="desk-v1-rules-hint">Type a username and password and store it in Secrets (it asks your passcode). It is then selected.</div>
-        ${newLoginHTML(KEY)}${_saveBtn(D)}`;
+      fresh = `<div class="desk-v1-rules-hint">Type a username and password to keep in Secrets. It is stored when you press Save on step 4, together with the connection: one passcode. Nothing is written before that.</div>
+        ${newLoginHTML(KEY)}`;
     }
     return `<section class="desk-v1-cs-pick" data-cs-details aria-label="Ways to sign in">
         <div class="desk-v1-rules-group-title">Ways to sign in</div>
@@ -252,8 +255,6 @@
     const pick = box.querySelector('[data-cs-pick]');
     if (pick) pick.addEventListener('change', () => { mine.pick = pick.value; mine.msg = ''; again(); });
     mount(box, KEY, `${mine.service}.login`, again);
-    const save = box.querySelector('[data-cs-savelogin]');
-    if (save) save.addEventListener('click', () => _storeTyped(mine, mine.service, mine.label, again));
     const profile = () => (window.DeskV1ConnectHeld ? window.DeskV1ConnectHeld.profile() : '');
     bindFill(box, KEY, { url: null, profile: profile() }, mine.ctx,
       () => ({ service: mine.service, route_id: mine.route.route_id, login: mine.pick, profile: profile() }));
@@ -276,11 +277,30 @@
     const typed = slot ? meta(KEY) : null;
     let row = window.DeskV1ConnectHeld ? window.DeskV1ConnectHeld.reviewRowHTML() : '';
     if (typed) {
-      row += `<div><dt>Sign-in login</dt><dd data-cs-r-login>New: <code>${esc(typed.name)}</code>${typed.username ? `, username ${esc(typed.username)}` : ''}; password ${typed.hasValue ? 'entered, hidden: shown nowhere' : 'not entered'}. Not stored yet: press “Save this login” on step 3 to keep it.</dd></div>`;
+      row += `<div><dt>Sign-in login</dt><dd data-cs-r-login>New: <code>${esc(typed.name)}</code>${typed.username ? `, username ${esc(typed.username)}` : ''}; password ${typed.hasValue ? 'entered, hidden: shown nowhere' : 'not entered'}. Stored when you press Save, with the connection.</dd></div>`;
     } else if (D.pick) {
       row += `<div><dt>Sign-in login</dt><dd data-cs-r-login><code>${esc(D.pick)}</code>, typed into the sign-in page when you ask</dd></div>`;
     }
     box.innerHTML = row ? `<dl class="desk-v1-cf-facts">${row}</dl>` : '';
+  }
+
+  // The typed login for the connection's Save: `null` when none is being typed, `{ error }` when what is
+  // typed will not do, else `{ new_login }`. The one place the Details form's password is read; the caller
+  // puts it in the passcode-gated commit draft and nowhere else.
+  function detailsDraft() {
+    return D && D.route ? read(KEY) : null;
+  }
+
+  // The Save went through: the password is in the vault, so it leaves the page, and the stored login becomes
+  // the pick the Result step carries (it is what "Sign in with the saved login" types). `login` is the server's
+  // value-free `{ name, ... }`, absent when nothing was typed.
+  function detailsSaved(login) {
+    if (!D) return;
+    if (login && login.name) {
+      if (!D.logins.some((l) => l.name === login.name)) D.logins.unshift({ name: login.name, matches: true });
+      D.pick = login.name;
+    }
+    if (forms[KEY]) { clear(KEY); forms[KEY].open = false; }
   }
 
   function resultStart(res, ctx) {
@@ -330,5 +350,5 @@
   function resultReset() { R = null; D = null; reset(); }
 
   window.DeskV1ConnectSignin = { newLoginHTML, mount, read, meta, clear, reset, fillHTML, bindFill, resultStart, resultHTML, resultBind, resultReset,
-    detailsStart, detailsHTML, detailsBind, detailsReviewHTML, detailsReviewBind };
+    detailsStart, detailsHTML, detailsBind, detailsReviewHTML, detailsReviewBind, detailsDraft, detailsSaved };
 })();
