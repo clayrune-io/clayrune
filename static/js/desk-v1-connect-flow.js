@@ -44,7 +44,10 @@
   let _formHost = null;                    // the credential form's DOM node: the one place a value lives
   const _formState = { type: 'api_key', preset: null, isNew: true, noTwoFa: true };
 
-  function active() { return S.step !== 'url'; }
+  // The single-view wizard (desk-v1-connect-wizard.js, MC-1062) takes the panel over only once ticket 14 enables it.
+  function _wizard() { const w = window.DeskV1ConnectWizard; return w && w.enabled() ? w : null; }
+
+  function active() { return _wizard() ? true : S.step !== 'url'; }
 
   // A provider method's row (it carries the `connector` the server built), or null for "Save for agents".
   function _row() { return S.info && S.method ? S.info.options.find((o) => o.method === S.method) || null : null; }
@@ -54,6 +57,7 @@
 
   // Leave the flow: forget the draft and empty the credential forms.
   function reset() {
+    if (window.DeskV1ConnectWizard) window.DeskV1ConnectWizard.close();
     if (window.DeskV1ConnectAdapter) window.DeskV1ConnectAdapter.clear();
     if (window.DeskV1ConnectSuggest) window.DeskV1ConnectSuggest.reset();
     if (window.DeskV1ConnectResult) window.DeskV1ConnectResult.reset();
@@ -266,6 +270,7 @@
   // flow talks to the server, and the preview has none.
   function html(ctx) {
     if (!ctx.live) return '';
+    if (_wizard()) return _wizard().html(ctx);
     let body;
     if (S.step === 'url') body = _urlHTML();
     else if (S.step === 'method') body = _methodHTML(ctx);
@@ -407,6 +412,7 @@
 
   // ctx: { live, api, engines, repaint, openPick(key), onSaved(service, {credentialStored}) }
   function bind(el, ctx) {
+    if (_wizard()) { _wizard().bind(el, ctx); return; }
     const root = el.querySelector('[data-cf]');
     if (!root) return;
     const urlForm = root.querySelector('[data-cf-url-form]');

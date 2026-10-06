@@ -1,0 +1,58 @@
+/* Desk v1 — Connections: the single-view Connect wizard (desk-v1-connect-wizard.js, desk-v1-connect-wizard-pick.js; MC-1062 ticket 02). One screen at a time. Sizes are rem so 200% text scales every control; nothing has a fixed height, so a larger font wraps instead of clipping. Load order is in static/index.html. */
+.desk-v1-cfw { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
+.desk-v1-cfw-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.375rem 0.875rem; font-size: 0.78rem; color: var(--text-dim); }
+.desk-v1-cfw-steps li { display: inline-flex; align-items: center; gap: 0.375rem; }
+.desk-v1-cfw-stepnum { display: inline-flex; align-items: center; justify-content: center; min-width: 1.25rem; height: 1.25rem; border-radius: 50%; background: var(--surface2); border: 1px solid var(--border2); font-size: 0.7rem; font-weight: 700; }
+.desk-v1-cfw-steps li[aria-current="step"] { color: var(--text); font-weight: 600; }
+.desk-v1-cfw-steps li[aria-current="step"] .desk-v1-cfw-stepnum { background: var(--text); color: var(--surface); border-color: var(--text); }
+.desk-v1-cfw-steps li[data-done="true"] .desk-v1-cfw-stepnum { color: var(--green-text, var(--text)); }
+.desk-v1-cfw-stepof { display: none; font-size: 0.78rem; font-weight: 600; color: var(--text-dim); }
+.desk-v1-cfw-form { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
+.desk-v1-cfw-title { margin: 0; font-size: 1.05rem; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
+.desk-v1-cfw-title:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 4px; }
+.desk-v1-cfw-copy { margin: 0; font-size: 0.85rem; line-height: 1.45; color: var(--text-dim); overflow-wrap: anywhere; }
+.desk-v1-cfw-body { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
+.desk-v1-cfw-body .desk-v1-conn-add-field input[type="text"] { max-width: 100%; box-sizing: border-box; }
+.desk-v1-cfw-empty { margin: 0; font-size: 0.85rem; overflow-wrap: anywhere; }
+.desk-v1-cfw-didyou { font-size: 0.8rem; color: var(--text-dim); overflow-wrap: anywhere; }
+.desk-v1-cfw-options { display: flex; flex-direction: column; gap: 0.5rem; }
+.desk-v1-cfw-option { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.625rem; padding: 0.625rem 0.75rem; min-height: 2.75rem; box-sizing: border-box; border: 1px solid var(--border2); border-radius: 10px; background: var(--surface); cursor: pointer; min-width: 0; }
+.desk-v1-cfw-option:has(input:checked) { border-color: var(--text); box-shadow: 0 0 0 1px var(--text); background: var(--surface2); }
+.desk-v1-cfw-option:has(input:focus-visible) { outline: 2px solid var(--text); outline-offset: 2px; }
+.desk-v1-cfw-option input[type="radio"] { flex: none; }
+.desk-v1-cfw-option-label { font-size: 0.85rem; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.desk-v1-cfw-tag { display: inline-block; padding: 1px 0.5rem; border-radius: 999px; font-size: 0.7rem; font-weight: 600; background: var(--amber-dim, var(--surface2)); color: var(--amber-text, var(--text-dim)); }
+.desk-v1-cfw-msg { font-size: 0.8rem; line-height: 1.45; overflow-wrap: anywhere; }
+.desk-v1-cfw-msg[data-cfw-msg="error"] { color: var(--amber-text); }
+.desk-v1-cfw-hint { color: var(--text-dim); }
+/* The one Details disclosure. */
+.desk-v1-cfw-details { border: 1px solid var(--border2); border-radius: 10px; background: var(--surface2); min-width: 0; }
+.desk-v1-cfw-details > summary { cursor: pointer; padding: 0.625rem 0.75rem; min-height: 1.25rem; font-size: 0.85rem; font-weight: 600; }
+.desk-v1-cfw-details > summary:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 10px; }
+.desk-v1-cfw-details-body { display: flex; flex-direction: column; gap: 0.75rem; padding: 0 0.75rem 0.75rem; min-width: 0; }
+.desk-v1-cfw-dgroup { display: flex; flex-direction: column; gap: 0.5rem; align-items: flex-start; min-width: 0; max-width: 100%; }
+.desk-v1-cfw-dtitle { font-size: 0.75rem; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+.desk-v1-cfw-fact { display: flex; flex-direction: column; gap: 0.125rem; min-width: 0; }
+.desk-v1-cfw-fact-head { font-size: 0.8rem; font-weight: 600; overflow-wrap: anywhere; }
+.desk-v1-cfw-fact-text { font-size: 0.8rem; line-height: 1.45; color: var(--text-dim); overflow-wrap: anywhere; }
+.desk-v1-cfw-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.desk-v1-cfw-pageof { font-size: 0.78rem; color: var(--text-dim); }
+.desk-v1-cfw-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 0.5rem; margin-top: 0.25rem; }
+.desk-v1-cfw-actions .desk-v1-conn-btn { margin-left: 0; min-height: 2.25rem; }
+.desk-v1-cfw-back { margin-right: auto; }
+.desk-v1-cfw-primary { background: var(--text); color: var(--surface); border-color: var(--text); }
+.desk-v1-cfw-primary:disabled { opacity: 0.45; }
+.desk-v1-cfw .desk-v1-conn-btn:focus-visible, .desk-v1-cfw input:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+
+/* Phone: one full-width screen. The six-item strip becomes "Step · n of N", and Back + the one primary action stay pinned at the
+   bottom of the scrolling pane, above the keyboard and the home-indicator inset, each at least 44px tall. */
+@media (max-width: 640px) {
+  .desk-v1-cfw-steps { display: none; }
+  .desk-v1-cfw-stepof { display: block; }
+  .desk-v1-cfw-actions { position: sticky; bottom: 0; z-index: 2; flex-wrap: nowrap; margin: 0.5rem -14px -12px; padding: 0.625rem 14px calc(0.625rem + env(safe-area-inset-bottom, 0px)); background: var(--surface); border-top: 1px solid var(--border2); }
+  .desk-v1-cfw-actions .desk-v1-conn-btn { flex: 1 1 0; min-height: 2.75rem; min-width: 0; }
+  .desk-v1-cfw-back { margin-right: 0; }
+  .desk-v1-cfw-option { min-height: 2.75rem; }
+  .desk-v1-cfw-details > summary { min-height: 2.75rem; display: flex; align-items: center; box-sizing: border-box; }
+  .desk-v1-cfw-pager .desk-v1-conn-btn { min-height: 2.75rem; }
+}
