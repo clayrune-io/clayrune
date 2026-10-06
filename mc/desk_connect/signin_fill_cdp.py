@@ -98,18 +98,20 @@ class PageLink:
 
 
 def connect(session: Any, timeout: float = 8) -> PageLink:
-    """A `PageLink` to the page target the pane is showing. Raises LinkError."""
-    import urllib.request
+    """A `PageLink` to the page target the pane is showing. Raises LinkError.
+
+    Goes through the pane's transport-neutral helpers, so it works on a pipe session (no TCP port)
+    and on a port session alike."""
     from mc.blueprints import browser_routes as _b
     websocket = _b._import_ws()
     if websocket is None:
         raise LinkError('no_websocket_client')
     try:
-        targets = json.load(urllib.request.urlopen(f'http://127.0.0.1:{session.get("port")}/json/list', timeout=2))
+        targets = _b._cdp_targets(session, timeout=2)
         page = _b._pick_page_target(targets, session.get('live_url') or session.get('url') or '')
         if not page or not page.get('webSocketDebuggerUrl'):
             raise LinkError('no_page_target')
-        ws = websocket.create_connection(page['webSocketDebuggerUrl'], max_size=None, timeout=timeout)
+        ws = _b._cdp_page_conn(session, page, timeout=timeout)
     except LinkError:
         raise
     except Exception as e:

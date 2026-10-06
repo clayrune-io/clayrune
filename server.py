@@ -479,6 +479,10 @@ def _load_config():
         # make the 🌐 Browser button reuse one persistent, signed-in profile.
         # Per-launch opt-out: POST /api/browser/launch {"ephemeral": true}.
         'browser_default_profile': '',
+        # Browser pane transport: True (default) speaks CDP over a pipe, so no
+        # debugging port exists for another local process to attach to
+        # (backlog 6b313cb6). False returns every launch to the TCP port.
+        'browser_cdp_pipe': True,
         # Hosted sign-in / usage seams (backlog 1d940d0f). config.json only,
         # deliberately NOT in _CONFIG_EDITABLE_KEYS: a hosted pod pins these,
         # and the Settings panel is not where that posture gets flipped.

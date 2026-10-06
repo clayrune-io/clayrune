@@ -246,9 +246,24 @@ def pipe_cfg(monkeypatch):
     monkeypatch.setitem(state.CONFIG, 'browser_cdp_pipe', True)
 
 
-def test_the_pipe_is_off_unless_configured(monkeypatch):
+def test_the_pipe_is_on_unless_configured_off(monkeypatch):
     monkeypatch.delitem(state.CONFIG, 'browser_cdp_pipe', raising=False)
+    assert br._cdp_transport_wanted(None, False) is True
+    monkeypatch.setitem(state.CONFIG, 'browser_cdp_pipe', False)
     assert br._cdp_transport_wanted(None, False) is False
+
+
+def test_the_shipped_default_is_the_pipe():
+    """server.py's `_load_config` defaults dict, read with `ast` so a config.json on disk cannot mask it."""
+    import ast
+    import pathlib
+    tree = ast.parse((pathlib.Path(__file__).resolve().parents[1] / 'server.py').read_text(encoding='utf-8'))
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == '_load_config')
+    d = next(s.value for s in ast.walk(fn) if isinstance(s, ast.Assign) and isinstance(s.value, ast.Dict)
+             and any(getattr(t, 'id', '') == 'defaults' for t in s.targets))
+    got = {k.value: v.value for k, v in zip(d.keys, d.values)
+           if isinstance(k, ast.Constant) and isinstance(v, ast.Constant)}
+    assert got['browser_cdp_pipe'] is True
 
 
 def test_the_pipe_is_chosen_when_configured_but_not_for_the_port_aware_desk_pane(pipe_cfg):
@@ -308,7 +323,7 @@ def test_a_pipe_launch_has_no_debugging_port_anywhere(pipe_cfg, monkeypatch, tmp
 
 
 def test_a_port_launch_is_unchanged(monkeypatch, tmp_path):
-    monkeypatch.delitem(state.CONFIG, 'browser_cdp_pipe', raising=False)
+    monkeypatch.setitem(state.CONFIG, 'browser_cdp_pipe', False)
     got = _stub_launch(monkeypatch, tmp_path)
     session, err = br._launch_browser('proj', 'https://example.com', ephemeral=True)
     assert err is None and 'spawn' not in got

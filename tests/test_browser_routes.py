@@ -1480,6 +1480,9 @@ class _FakeThread:
 
 
 def _stub_launch_deps(monkeypatch, profiles):
+    # These assert on the plain Popen args of a PORT launch; the pipe launch (the default)
+    # has its own tests in test_browser_cdp_pipe.py.
+    monkeypatch.setitem(state.CONFIG, 'browser_cdp_pipe', False)
     monkeypatch.setattr(br, '_find_chromium', lambda: 'C:/fake/chrome.exe')
     monkeypatch.setattr(br, '_import_ws', lambda: object())
     monkeypatch.setattr(br.threading, 'Thread', _FakeThread)
