@@ -19,9 +19,9 @@
       <div class="desk-v1-rules-hint">Signing in and saving a login store a secret, and a locked vault refuses that. Unlock it here, then carry on: nothing you have done in this panel is lost.</div>
       <div class="desk-v1-vg-fields">
         <label class="desk-v1-conn-add-field">Vault passphrase
-          <input type="password" class="desk-v1-rules-textinput" data-vg-pass autocomplete="off" spellcheck="false"></label>
+          <input ${window.MaskedInput.attrs()} class="desk-v1-rules-textinput" data-vg-pass></label>
         <label class="desk-v1-conn-add-field">Dashboard passcode
-          <input type="password" class="desk-v1-rules-textinput" data-vg-passcode autocomplete="off" spellcheck="false"></label>
+          <input ${window.MaskedInput.attrs()} class="desk-v1-rules-textinput" data-vg-passcode></label>
       </div>
       <div class="desk-v1-conn-add-actions">
         <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-vg-unlock>Unlock</button>

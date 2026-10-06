@@ -830,7 +830,7 @@ function _backupImportReportHTML(st) {
     ${dr.contains_secrets ? `
       <div style="margin-bottom:12px">
         <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px">This archive contains the secrets vault</div>
-        <input type="password" value="${esc(st.vaultPassphrase)}" oninput="_backupImportSetField('vaultPassphrase',this.value)"
+        <input ${window.MaskedInput.attrs()} value="${esc(st.vaultPassphrase)}" oninput="_backupImportSetField('vaultPassphrase',this.value)"
           placeholder="Passphrase used at export time"
           style="width:100%;padding:6px 10px;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text)">
       </div>` : ''}
@@ -1003,7 +1003,7 @@ function _exportBodyHTML(state, projectId) {
       </div>
       ${state.vault === null ? '<div style="font-size:11px;color:var(--amber);margin-top:6px">Unanswered — export refuses to proceed until you pick one.</div>' : ''}
       ${state.vault === true ? `
-        <input type="password" value="${esc(state.vaultPassphrase)}" oninput="_exportSetVaultPassphrase('${esc(projectId)}',this.value)"
+        <input ${window.MaskedInput.attrs()} value="${esc(state.vaultPassphrase)}" oninput="_exportSetVaultPassphrase('${esc(projectId)}',this.value)"
           placeholder="Passphrase to re-encrypt the vault under"
           style="width:100%;margin-top:8px;padding:6px 10px;font-size:13px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)">
         <div style="font-size:10px;color:var(--text-faint);margin-top:4px">A leaked archive is a credential bundle — this passphrase is the only lock.</div>` : ''}

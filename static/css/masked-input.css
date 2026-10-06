@@ -1,0 +1,8 @@
+/* Masked secret prompts (static/js/masked-input.js). Characters render as dots
+   without being a type=password field, so the browser offers no "Save password?".
+   Where the property is unsupported the helper emits type=password instead, and
+   this rule is simply never reached. */
+input[data-mc-masked] {
+  -webkit-text-security: disc;
+  text-security: disc;
+}

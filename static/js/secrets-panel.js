@@ -251,13 +251,13 @@ function _renderVaultLockbar(state, legacyPresent) {
           visible below; values are not.
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <input type="password" id="vault-unlock-input" autocomplete="off"
+          <input ${window.MaskedInput.attrs()} id="vault-unlock-input"
             placeholder="${_secUseRecoveryKey ? 'recovery key' : 'passphrase'}"
             style="flex:1;min-width:160px;padding:7px 10px;font-size:13px;
                    background:var(--surface2);border:1px solid var(--border);
                    border-radius:4px;color:var(--text);font-family:var(--mono)"
             onkeydown="if(event.key==='Enter')submitVaultUnlock()">
-          <input type="password" id="vault-unlock-passcode" autocomplete="off"
+          <input ${window.MaskedInput.attrs()} id="vault-unlock-passcode"
             placeholder="dashboard passcode"
             style="flex:1;min-width:160px;padding:7px 10px;font-size:13px;
                    background:var(--surface2);border:1px solid var(--border);
@@ -329,7 +329,7 @@ function openVaultLockNow() {
       </div>
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">Dashboard passcode</label>
-        <input type="password" id="vln-passcode" autocomplete="current-password"
+        <input ${window.MaskedInput.attrs()} id="vln-passcode"
           style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)"
           onkeydown="if(event.key==='Enter')submitVaultLockNow('${modalId}')">
@@ -396,7 +396,7 @@ function openVaultRetireLegacy() {
       </div>
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">Dashboard passcode</label>
-        <input type="password" id="vrl-passcode" autocomplete="current-password"
+        <input ${window.MaskedInput.attrs()} id="vrl-passcode"
           style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)"
           onkeydown="if(event.key==='Enter')submitVaultRetireLegacy('${modalId}')">
@@ -484,19 +484,19 @@ function openVaultSetPassphrase() {
       </div>
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">1. Passphrase</label>
-        <input type="password" id="vsp-pass" autocomplete="new-password"
+        <input ${window.MaskedInput.attrs()} id="vsp-pass"
           style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
       </div>
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">2. Confirm</label>
-        <input type="password" id="vsp-pass2" autocomplete="new-password"
+        <input ${window.MaskedInput.attrs()} id="vsp-pass2"
           style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
       </div>
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">3. Dashboard passcode</label>
-        <input type="password" id="vsp-passcode" autocomplete="off"
+        <input ${window.MaskedInput.attrs()} id="vsp-passcode"
           style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
       </div>
@@ -598,19 +598,19 @@ function openVaultChangePassphrase() {
       </div>
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">1. Current passphrase</label>
-        <input type="password" id="vcp-old" autocomplete="current-password"
+        <input ${window.MaskedInput.attrs()} id="vcp-old"
           style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
       </div>
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">2. New passphrase</label>
-        <input type="password" id="vcp-new" autocomplete="new-password"
+        <input ${window.MaskedInput.attrs()} id="vcp-new"
           style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
       </div>
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">3. Dashboard passcode</label>
-        <input type="password" id="vcp-passcode" autocomplete="off"
+        <input ${window.MaskedInput.attrs()} id="vcp-passcode"
           style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
       </div>

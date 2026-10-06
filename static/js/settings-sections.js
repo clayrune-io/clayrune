@@ -93,9 +93,9 @@ function showLocalAuthForm(mode) {
   const needCurrent = (mode === 'change') && st.configured;
   const btnCls = _localAccessInSetup() ? 'setup-btn-utility' : 'btn-dispatch';
   row.innerHTML = `
-    ${needCurrent ? `<input class="settings-input" id="la-cur" type="password" placeholder="Current passcode" autocomplete="current-password" style="margin-bottom:8px">` : ''}
-    <input class="settings-input" id="la-p1" type="password" placeholder="New passcode (at least 4 characters)" autocomplete="new-password" style="margin-bottom:8px">
-    <input class="settings-input" id="la-p2" type="password" placeholder="Confirm passcode" autocomplete="new-password" style="margin-bottom:8px">
+    ${needCurrent ? `<input class="settings-input" ${window.MaskedInput.attrs()} id="la-cur" placeholder="Current passcode" style="margin-bottom:8px">` : ''}
+    <input class="settings-input" ${window.MaskedInput.attrs()} id="la-p1" placeholder="New passcode (at least 4 characters)" style="margin-bottom:8px">
+    <input class="settings-input" ${window.MaskedInput.attrs()} id="la-p2" placeholder="Confirm passcode" style="margin-bottom:8px">
     <div style="display:flex;gap:8px">
       <button class="${btnCls}" onclick="submitLocalAuth('${mode}')">Save passcode</button>
       <button class="${btnCls}" style="${btnCls === 'btn-dispatch' ? 'background:var(--surface3);border-color:var(--border2);color:var(--text)' : ''}" onclick="refreshLocalAccessSection()">Cancel</button>

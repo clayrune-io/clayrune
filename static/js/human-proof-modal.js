@@ -64,7 +64,7 @@ function _hpRenderBody(modalId, mode, description, errorText) {
       </div>
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">New dashboard passcode</label>
-        <input type="password" id="hp-new-${modalId}" autocomplete="new-password"
+        <input ${window.MaskedInput.attrs()} id="hp-new-${modalId}"
           style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)"
           onkeydown="if(event.key==='Enter')_hpSubmit('${modalId}')">
@@ -79,7 +79,7 @@ function _hpRenderBody(modalId, mode, description, errorText) {
     <div style="font-size:11px;color:var(--text-faint);line-height:1.55">${esc(description)}</div>
     <div>
       <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">Dashboard passcode</label>
-      <input type="password" id="hp-passcode-${modalId}" autocomplete="current-password"
+      <input ${window.MaskedInput.attrs()} id="hp-passcode-${modalId}"
         style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
                border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)"
         onkeydown="if(event.key==='Enter')_hpSubmit('${modalId}')">
