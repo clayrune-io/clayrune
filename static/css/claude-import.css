@@ -1,0 +1,39 @@
+/* Bring in your Claude Code projects (static/js/claude-import.js, backlog ba3b73f9).
+   One list, two hosts: the first-run setup card (.ci-setup) and a modal (.ci-modal). */
+.ci-modal-body { padding: 20px 28px 24px; width: min(640px, calc(100vw - 48px)); box-sizing: border-box; }
+.ci-lead { font-size: 13px; color: var(--text-dim); line-height: 1.5; margin-bottom: 12px; }
+.ci-root { text-align: left; }
+.ci-status { font-size: 13px; color: var(--text-dim); padding: 14px 0; }
+.ci-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; font-size: 12px; color: var(--text-faint); }
+.ci-bar-links { display: flex; gap: 12px; }
+.ci-link { background: none; border: none; padding: 2px 0; font: inherit; font-size: 12px; color: var(--text-dim); cursor: pointer; text-decoration: underline; }
+.ci-link:hover:not(:disabled) { color: var(--text); }
+.ci-link:disabled { opacity: .5; cursor: default; }
+.ci-list { max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--surface2); }
+.ci-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.ci-row:last-child { border-bottom: none; }
+.ci-row:hover { background: var(--surface); }
+.ci-row input[type="checkbox"] { margin-top: 3px; width: 15px; height: 15px; flex: none; accent-color: var(--accent); }
+.ci-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ci-name { font-size: 13px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ci-path { font-family: var(--mono); font-size: 11px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ci-meta { flex: none; font-size: 11px; color: var(--text-faint); white-space: nowrap; padding-top: 2px; }
+.ci-skipped { margin-top: 8px; font-size: 11px; color: var(--text-faint); }
+.ci-actions { margin-top: 12px; display: flex; justify-content: flex-start; }
+.ci-btn { background: transparent; border: 1px solid var(--border); color: var(--text-dim); font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 600; padding: 7px 14px; border-radius: 6px; cursor: pointer; transition: all 0.15s; }
+.ci-btn:hover:not(:disabled) { color: var(--text); border-color: var(--text-faint); }
+.ci-btn:disabled, .ci-add:disabled { opacity: .5; cursor: default; }
+.ci-add { padding: 8px 18px; font-size: 13px; }
+.ci-results { margin-bottom: 10px; font-size: 12px; line-height: 1.5; }
+.ci-result-ok { color: #22c55e; }
+.ci-result-bad { color: var(--red-text); }
+.ci-note { margin-top: 12px; font-size: 11px; color: var(--text-faint); }
+.ci-note code { font-family: var(--mono); }
+@media (max-width: 600px) {
+  .ci-modal-body { padding: 16px 16px 20px; width: auto; }
+  .ci-list { max-height: 46vh; }
+  /* Narrow screens: meta drops under the name instead of squeezing the path. */
+  .ci-row { flex-wrap: wrap; }
+  .ci-main { flex-basis: calc(100% - 30px); }
+  .ci-meta { flex-basis: 100%; padding-left: 25px; padding-top: 0; }
+}

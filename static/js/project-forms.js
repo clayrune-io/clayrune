@@ -543,6 +543,7 @@ function openNewProjectForm() {
       <h2 style="margin:0;font-size:18px;font-weight:700;color:var(--text)">Create New Project</h2>
     </div>
     <div class="new-project-form">
+      <div class="hint" style="margin:0 0 14px">Already use Claude Code? <a href="#" style="color:var(--accent)" onclick="event.preventDefault();closeModalById('__new_project');openClaudeImport()">Bring in your existing projects</a></div>
       <div class="form-group">
         <label>Name</label>
         <input type="text" id="new-proj-name" placeholder="My Project" oninput="autoSlug()">

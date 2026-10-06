@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — First run: bring in the projects you already have in Claude Code
+
+- A new install no longer starts with an empty grid when you already use Claude Code. Setup has a new step after "Protect your work", "Bring in your Claude Code projects", and Create Project has a "Bring in your existing projects" link, so it is not first-run-only. It lists the folders you have used, newest first, with session count and last activity; the 5 most recent are ticked, nothing else is. One button adds the ticked ones through the same endpoint as Create Project (folder-in-use and install-folder checks apply); a project that is refused is named with the reason and stays in the list.
+- The list leaves out folders that no longer exist, projects already in Clayrune, Clayrune agent worktrees, the Clayrune install itself and your home folder, and says how many of each it left out. The step is skipped when there is nothing to offer or the scan fails (a forced re-run from Settings always shows it). Clayrune only reads `~/.claude`; nothing there is changed.
+- `GET /api/claude-import/scan` (`mc/blueprints/claude_import_routes.py`, scanner in `mc/claude_projects_scan.py`, UI in `static/js/claude-import.js`). The folder comes from the `cwd` in the newest transcript, not from decoding the directory name.
+
 ## [2026-10-06] — Browser pane: no debugging port by default; the Desk sign-in fill works on it
 
 - The pane's Chromium now talks to Clayrune over a pipe instead of a local TCP debugging port, so no other process on the machine can attach to it and read a login being typed into a page. `browser_cdp_pipe` (config.json, default `true`) turns it off, which returns every launch to the port. The Desk's discovery pane still uses a port (it is a throwaway profile with no login).

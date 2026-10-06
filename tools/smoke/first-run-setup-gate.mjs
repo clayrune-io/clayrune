@@ -514,8 +514,9 @@ try {
     await page.waitForSelector('#setup-overlay', { timeout: 5000 });
     st = await overlayState(page);
     if (st.title !== 'Welcome to Clayrune') { fail(`"Run setup again" should start at Welcome, got: ${st.title}`); return; }
-    if (st.progress !== 'Step 1 of 7') fail(`forced re-run should show all 7 steps (none skipped), got progress "${st.progress}"`);
-    else ok('forced re-run shows all 7 steps (progress "Step 1 of 7") despite an already-configured install');
+    // 8 since the 'import' step (backlog ba3b73f9): never skipped on a forced re-run.
+    if (st.progress !== 'Step 1 of 8') fail(`forced re-run should show all 8 steps (none skipped), got progress "${st.progress}"`);
+    else ok('forced re-run shows all 8 steps (progress "Step 1 of 8") despite an already-configured install');
     if (!st.isMarkedAsSetup) fail('forced re-run card does not carry the wt-card-setup marker');
     else ok('forced re-run card also carries the wt-card-setup marker');
 
@@ -546,6 +547,11 @@ try {
     await page.waitForTimeout(150);
     st = await overlayState(page);
     if (st.title !== 'Protect your work') { fail(`expected the protect step (MC-982), got: ${st.title}`); return; }
+
+    await page.click('#setup-overlay .wt-btn-primary'); // Next -> import (never skipped on a forced re-run, even when the scan failed)
+    await page.waitForTimeout(150);
+    st = await overlayState(page);
+    if (st.title !== 'Bring in your Claude Code projects') { fail(`expected the import step on a forced re-run, got: ${st.title}`); return; }
 
     await page.click('#setup-overlay .wt-btn-primary'); // Next
     await page.waitForTimeout(150);
