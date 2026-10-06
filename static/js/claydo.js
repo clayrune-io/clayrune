@@ -44,6 +44,15 @@ function _announceCharacterChange(scope, name, action) {
   } catch (e) {}
 }
 
+// One plain line for a name/face/voice pick that ran on a different engine than
+// the character's own (the server sends picked_by + fallback_reason only then).
+function _pickedByLine(data) {
+  if (!data || !data.picked_by) return '';
+  const who = String(data.picked_by);
+  return `Picked by ${who.charAt(0).toUpperCase()}${who.slice(1)}: `
+    + (data.fallback_reason || 'the pinned engine could not run it') + '.';
+}
+
 // Pulse the floating button until the user opens the modal once.
 (function _initClaydoPulse() {
   if (localStorage.getItem('claydo_opened')) return;
@@ -1297,7 +1306,8 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
       }
       if (!result.ok) throw new Error((result.body && result.body.error) || `voice generation failed (${result.status})`);
       voiceTa.value = result.body.voice || '';
-      setVoiceStatus('Generated — edit freely before saving.', false);
+      setVoiceStatus('Generated — edit freely before saving.'
+        + (_pickedByLine(result.body) ? ' ' + _pickedByLine(result.body) : ''), false);
     } catch (e) {
       // Fail gracefully: an honest message, an empty/editable field, and a
       // hire that still completes — never a silent generic block, never a
@@ -1374,7 +1384,8 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
       if (!result.ok) throw new Error((result.body && result.body.error) || `identity suggestion failed (${result.status})`);
       agentNameInput.value = result.body.agent_name || '';
       if (result.body.avatar) setChosenFace(result.body.avatar);
-      identityStatusEl.textContent = 'Chosen — edit freely before saving.';
+      identityStatusEl.textContent = 'Chosen — edit freely before saving.'
+        + (_pickedByLine(result.body) ? ' ' + _pickedByLine(result.body) : '');
     } catch (e) {
       // Same non-blocking failure discipline as Voice: an honest message, two
       // empty/editable fields, and a hire that still completes.
@@ -1600,6 +1611,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
         <span id="pe-size"></span>
       </div>
       </div>
+      <div class="claydo-save-voice-status" id="pe-picked-note" style="display:none"></div>
       <div class="claydo-save-err" id="pe-err" style="display:none"></div>
       <div class="claydo-save-actions">
         <button class="claydo-ready-btn danger" id="pe-delete">Delete</button>
@@ -1613,6 +1625,13 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
 
   const errEl = panel.querySelector('#pe-err');
   const showErr = (msg) => { errEl.textContent = msg; errEl.style.display = 'block'; };
+  // A pick that ran on another engine says so, in one plain line.
+  const pickedNoteEl = panel.querySelector('#pe-picked-note');
+  const showPickedNote = (data) => {
+    const line = _pickedByLine(data);
+    pickedNoteEl.textContent = line;
+    pickedNoteEl.style.display = line ? 'block' : 'none';
+  };
   const bodyEl = panel.querySelector('#pe-body');
   const sizeEl = panel.querySelector('#pe-size');
   const close = () => panel.remove();
@@ -1929,6 +1948,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       // The endpoint already persisted it; reflect that in the field so a
       // subsequent Save does not send a stale value back over it.
       nameEl.value = data.agent_name || '';
+      showPickedNote(data);
       if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
       _announceCharacterChange(scope, name, 'rename');
       if (typeof onDone === 'function') onDone();
@@ -1962,6 +1982,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       // Already persisted server-side; mirror it into the field so a later
       // Save does not push a stale value back over it.
       setFace(data.avatar || '');
+      showPickedNote(data);
       if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
       _announceCharacterChange(scope, name, 'avatar');
       if (typeof onDone === 'function') onDone();

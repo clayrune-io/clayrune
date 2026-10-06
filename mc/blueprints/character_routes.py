@@ -46,12 +46,63 @@ def wire(*, load_project_fn, app_dir=None, load_projects_fn=None):
         _APP_DIR = app_dir
 
 
-def _character_model_call(engine, project, prompt, payload):
-    """Generate a character artifact with its selected engine.
+class NoCertifiedEngine(RuntimeError):
+    """The pinned engine cannot run a tool-free call and no other engine can."""
+
+
+# Order tried when neither the project nor the global default can stand in.
+_FALLBACK_PROVIDERS = ('claude', 'gemini', 'qwen')
+
+
+def _can_stand_in(provider):
+    """True when `provider` is registered, certified tool-free, and installed."""
+    try:
+        runtime = _agent_runtime.get_runtime(provider)
+    except KeyError:
+        return False
+    if not getattr(runtime, 'tool_free_transform_enforced', False):
+        return False
+    probe = getattr(runtime, 'resolve_binary', None)
+    if callable(probe):
+        try:
+            return bool(probe())
+        except Exception as e:
+            _log(f"[characters] could not probe {provider} for fallback: {e}")
+            return False
+    return True
+
+
+def _certified_stand_in(project, exclude):
+    """The engine a character call runs on when its pinned one cannot.
+
+    The project/global default if certified, else the first certified,
+    installed provider in `_FALLBACK_PROVIDERS` order. Never `exclude`.
+    """
+    try:
+        default = engine_selection.resolve_provider(
+            state.CONFIG, project, legacy_default='claude')[0]
+    except engine_selection.EngineSelectionError:
+        default = ''
+    for provider in (default,) + _FALLBACK_PROVIDERS:
+        if provider and provider != exclude and _can_stand_in(provider):
+            return provider
+    return ''
+
+
+def _character_model_call_ex(engine, project, prompt, payload):
+    """Generate a character artifact; return (text, disclosure).
 
     Every provider, including Claude, uses the same toolless runtime transform
     seam. An omitted model means the selected provider's native default; no
     foreign tier or feature-owned CLI command is manufactured here.
+
+    A pinned provider that is not certified for tool-free transforms
+    (`tool_free_transform_enforced` False, e.g. Codex) is NOT refused here: the
+    payload is the user's own persona text, so the call runs on a certified
+    engine instead and `disclosure` says which one answered and why
+    (`{'picked_by', 'fallback_reason'}`; `{}` when the pinned engine answered).
+    This is not a precedent for untrusted input -- workflows and mail_launder
+    keep refusing. Raises NoCertifiedEngine when nothing can stand in.
     """
     raw = engine if isinstance(engine, dict) else {}
     model_override = raw.get('model') if 'model' in raw else None
@@ -63,14 +114,44 @@ def _character_model_call(engine, project, prompt, payload):
         legacy_default='claude',
     )
     effort = str(raw.get('effort') or '').strip()
-    return _agent_runtime.run_text_transform(
-        resolved.provider,
+    pinned = _agent_runtime.get_runtime(resolved.provider)
+    if getattr(pinned, 'tool_free_transform_enforced', False):
+        text = _agent_runtime.run_text_transform(
+            resolved.provider,
+            prompt=prompt,
+            model=resolved.model,
+            effort=effort,
+            stdin_text=payload,
+            cwd=str(Path.home()),
+        )
+        return text, {}
+    stand_in = _certified_stand_in(project, resolved.provider)
+    if not stand_in:
+        raise NoCertifiedEngine(resolved.provider)
+    label = getattr(pinned, 'display_name', '') or resolved.provider.capitalize()
+    # The pinned model/effort belong to the pinned vendor; the stand-in runs on
+    # its own inherited model and native effort.
+    text = _agent_runtime.run_text_transform(
+        stand_in,
         prompt=prompt,
-        model=resolved.model,
-        effort=effort,
+        model=engine_selection.resolve_model_full(stand_in, state.CONFIG, project).model,
+        effort='',
         stdin_text=payload,
         cwd=str(Path.home()),
     )
+    return text, {'picked_by': stand_in,
+                  'fallback_reason': f"{label} can't run a tool-free call yet"}
+
+
+def _character_model_call(engine, project, prompt, payload):
+    """Text-only form of `_character_model_call_ex` for callers that do not
+    surface the disclosure."""
+    return _character_model_call_ex(engine, project, prompt, payload)[0]
+
+
+def _no_engine_error(what):
+    return jsonify({'error': f'No engine on this machine can {what}; '
+                             'type one instead'}), 502
 
 
 def _install_builtin_characters():
@@ -544,7 +625,9 @@ def generate_voice_route():
     project = load_project(project_id) if project_id else None
     payload = (f"Role: {description}\n\n{body}")[:6000]
     try:
-        raw = _character_model_call(engine, project, _VOICE_PROMPT, payload)
+        raw, disclosure = _character_model_call_ex(engine, project, _VOICE_PROMPT, payload)
+    except NoCertifiedEngine:
+        return _no_engine_error('write a voice')
     except Exception as e:
         _log(f"[characters] voice generation failed: {e}")
         return jsonify({'error': f'could not reach the model to write a voice: {e}'}), 502
@@ -553,7 +636,7 @@ def generate_voice_route():
     if not voice:
         return jsonify({'error': 'the model did not return a usable voice section — '
                                  'edit one by hand, or try again'}), 502
-    return jsonify({'voice': voice})
+    return jsonify({'voice': voice, **disclosure})
 
 
 # ── Identity suggestion — a new hire arrives already named and faced ────────
@@ -639,8 +722,9 @@ def suggest_identity_route():
             "machine: " + ", ".join(taken_names) + ". Do not reuse any of "
             "them, and do not pick anything that differs from one by only a "
             "letter or two — the roster has to be readable at a glance.")
+    disclosure = {}
     try:
-        raw_name = _character_model_call(engine, project, name_prompt, payload)
+        raw_name, disclosure = _character_model_call_ex(engine, project, name_prompt, payload)
         agent_name = _chars.clean_agent_name(raw_name)
     except Exception as e:
         _log(f"[characters] identity suggestion (name) failed, falling back: {e}")
@@ -659,7 +743,9 @@ def suggest_identity_route():
             face_prompt += ("\n\nAlready worn by other agents on this machine "
                             "— do NOT reuse any of these: " + ", ".join(taken_figs))
         try:
-            raw_face = _character_model_call(engine, project, face_prompt, payload)
+            raw_face, face_disclosure = _character_model_call_ex(
+                engine, project, face_prompt, payload)
+            disclosure = disclosure or face_disclosure
             avatar = _resolve_face(raw_face, figures)
         except Exception as e:
             _log(f"[characters] identity suggestion (face) failed, falling back: {e}")
@@ -668,7 +754,7 @@ def suggest_identity_route():
         if not avatar or (chosen_fig and chosen_fig.casefold() in {t.casefold() for t in taken_figs}):
             avatar = _fallback_avatar(figures, taken_figs)
 
-    return jsonify({'agent_name': agent_name, 'avatar': avatar})
+    return jsonify({'agent_name': agent_name, 'avatar': avatar, **disclosure})
 
 
 @bp.route('/api/characters/<scope>/<name>')
@@ -838,6 +924,7 @@ def name_character_route(scope, name):
     if not rec:
         return jsonify({'error': 'character not found'}), 404
 
+    disclosure = {}
     if 'agent_name' in data:
         chosen = _chars.clean_agent_name(data.get('agent_name'))
         if data.get('agent_name') and not chosen:
@@ -859,7 +946,10 @@ def name_character_route(scope, name):
                 "and do not pick anything that differs from one by only a "
                 "letter or two — the roster has to be readable at a glance.")
         try:
-            raw = _character_model_call(rec.get('engine') or {}, project, prompt, payload)
+            raw, disclosure = _character_model_call_ex(
+                rec.get('engine') or {}, project, prompt, payload)
+        except NoCertifiedEngine:
+            return _no_engine_error('pick a name')
         except Exception as e:
             _log(f"[characters] self-naming failed for {scope}:{name}: {e}")
             return jsonify({'error': f'could not reach the model to pick a name: {e}'}), 502
@@ -885,8 +975,9 @@ def name_character_route(scope, name):
                                skills=rec.get('skills'))
     except (ValueError, OSError) as e:
         return jsonify({'error': str(e)}), 400
-    return jsonify(_chars.read_character(scope, name, project_path=project_path,
-                                         include_body=False))
+    saved = _chars.read_character(scope, name, project_path=project_path,
+                                  include_body=False)
+    return jsonify({**(saved or {}), **disclosure})
 
 
 _FACE_PROMPT = (
@@ -968,6 +1059,7 @@ def avatar_character_route(scope, name):
     if not rec:
         return jsonify({'error': 'character not found'}), 404
 
+    disclosure = {}
     if 'avatar' in data:
         chosen = _chars.clean_avatar(data.get('avatar'))
         if data.get('avatar') and not chosen:
@@ -989,7 +1081,10 @@ def avatar_character_route(scope, name):
             prompt += ("\n\nAlready worn by other agents on this machine — do "
                        "NOT reuse any of these: " + ", ".join(taken))
         try:
-            raw = _character_model_call(rec.get('engine') or {}, project, prompt, payload)
+            raw, disclosure = _character_model_call_ex(
+                rec.get('engine') or {}, project, prompt, payload)
+        except NoCertifiedEngine:
+            return _no_engine_error('pick a face')
         except Exception as e:
             _log(f"[characters] self-facing failed for {scope}:{name}: {e}")
             return jsonify({'error': f'could not reach the model to pick a '
@@ -1014,8 +1109,9 @@ def avatar_character_route(scope, name):
                                skills=rec.get('skills'))
     except (ValueError, OSError) as e:
         return jsonify({'error': str(e)}), 400
-    return jsonify(_chars.read_character(scope, name, project_path=project_path,
-                                         include_body=False))
+    saved = _chars.read_character(scope, name, project_path=project_path,
+                                  include_body=False)
+    return jsonify({**(saved or {}), **disclosure})
 
 
 @bp.route('/api/characters/<scope>/<name>/move', methods=['POST'])
