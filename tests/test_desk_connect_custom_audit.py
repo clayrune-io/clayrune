@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+from mc.desk_connect import custom_npm_gate as gate
 from tests.test_desk_connect_custom import (PASSCODE, PID, PKG, activation, approved, env, review,  # noqa: F401
                                             save, servers, service, store)
 
@@ -88,7 +89,7 @@ def test_a_review_still_works_over_a_damaged_record_and_shows_no_earlier_approva
 def test_a_damaged_record_does_not_let_a_save_replace_a_server_it_cannot_prove_it_approved(env):
     approved(env)
     cfg = json.loads(env.proj_cfg.read_text(encoding='utf-8'))
-    cfg['mcpServers'][PKG]['args'][0] = '/old/install/tools/with-secret.py'      # not this install's line
+    cfg['mcpServers'][PKG]['args'][_head_len(_op(env))] = '/old/install/tools/with-secret.py'      # not this install's line
     env.proj_cfg.write_text(json.dumps(cfg), encoding='utf-8')
     _corrupt(env)
     r = review(env)
@@ -143,6 +144,11 @@ def _op(env):
     return store.all_records()[0]['operation']
 
 
+def _head_len(op):
+    """Where the credential wrapper starts in the written args: after the launch gate, its flags and its interpreter."""
+    return 1 + len(gate.gate_flags(op)) + 1
+
+
 def test_the_written_line_matches_strictly(env):
     approved(env)
     assert activation.matches(_line(env), _op(env)) is True
@@ -152,9 +158,10 @@ def test_the_written_line_matches_strictly(env):
 def test_a_look_alike_path_is_not_the_approved_line(env, what):
     approved(env)
     cfg, op = _line(env), _op(env)
-    i = 1 + len(activation.wrapper_flags(op))
+    h = _head_len(op)
+    i = h + 1 + len(activation.wrapper_flags(op))
     if what == 'wrapper':
-        cfg['args'][0] = '/tmp/evil/tools/with-secret.py'
+        cfg['args'][h] = '/tmp/evil/tools/with-secret.py'
     elif what == 'node':
         cfg['args'][i] = '/tmp/evil/node'
     elif what == 'entry':
@@ -169,7 +176,7 @@ def test_a_look_alike_path_is_not_the_approved_line(env, what):
 def test_a_look_alike_line_in_the_config_reads_as_changed_not_registered(env):
     approved(env)
     cfg = json.loads(env.proj_cfg.read_text(encoding='utf-8'))
-    cfg['mcpServers'][PKG]['args'][0] = '/tmp/evil/tools/with-secret.py'
+    cfg['mcpServers'][PKG]['args'][_head_len(_op(env))] = '/tmp/evil/tools/with-secret.py'
     env.proj_cfg.write_text(json.dumps(cfg), encoding='utf-8')
     state = service.connections(lambda pid: str(env.proj_dir))[0]
     assert state['state'] == 'changed'
@@ -178,7 +185,7 @@ def test_a_look_alike_line_in_the_config_reads_as_changed_not_registered(env):
 def test_a_moved_install_can_be_reapproved_and_the_old_line_is_replaced(env):
     approved(env)
     cfg = json.loads(env.proj_cfg.read_text(encoding='utf-8'))
-    cfg['mcpServers'][PKG]['args'][0] = '/old/install/tools/with-secret.py'
+    cfg['mcpServers'][PKG]['args'][_head_len(_op(env))] = '/old/install/tools/with-secret.py'
     env.proj_cfg.write_text(json.dumps(cfg), encoding='utf-8')
     out = save(env, review(env).get_json())
     assert out.status_code in (200, 201) and out.get_json()['state'] == 'registered'

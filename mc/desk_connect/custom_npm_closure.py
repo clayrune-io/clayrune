@@ -41,7 +41,6 @@ from mc.desk_connect import custom_npm_artifact as _artifact
 from mc.desk_connect import custom_npm_edges as _edges
 from mc.desk_connect import custom_npm_registry as _registry
 from mc.desk_connect import custom_npm_semver as _semver
-from mc.desk_connect import parameter_schema as _ps
 from mc.desk_connect.mcp_errors import ActivationError
 
 MAX_PACKAGES = 200
@@ -263,11 +262,7 @@ def _scripts_of(path: str, name: str, version: str, bodies: dict) -> list[dict]:
         body = bodies.get(script)
         if body is None:
             continue
-        reason = None
-        if len(body) > _edges.MAX_SCRIPT:
-            reason = 'longer than Clayrune shows in full'
-        elif _ps.has_hidden_chars(body):
-            reason = 'contains control or hidden characters, so it cannot be shown exactly'
+        reason = _edges.cannot_be_shown(body)
         out.append({'id': f'{path or "."}#{script}', 'path': path, 'package': name, 'version': version,
                     'script': script, 'body': body if reason is None else None,
                     'body_escaped': None if reason is None else body.encode('unicode_escape').decode('ascii')[:300],

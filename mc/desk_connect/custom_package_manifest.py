@@ -231,8 +231,11 @@ def _differs(mine: dict, theirs: dict) -> bool:
     return mine != theirs
 
 
-def verify(rec: dict) -> dict:
-    """Compare the directory with the manifest recorded for `rec`. Never raises."""
+def verify(rec: dict, rehash: bool = False) -> dict:
+    """Compare the directory with the manifest recorded for `rec`. Never raises. `rehash` reads and
+    hashes EVERY file, ignoring the size and time shortcut (the launch gate's check: a byte flipped with
+    its modification time put back is not seen otherwise). The walk's bound still holds, so a tree over
+    `MAX_BYTES` is `changed`, never half read."""
     op = rec.get('operation') if isinstance(rec, dict) else None
     if not isinstance(op, dict) or op.get('ecosystem') != 'npm':
         return _result('not_applicable')
@@ -263,9 +266,9 @@ def verify(rec: dict) -> dict:
             continue
         sig = (meta['size'], meta['mtime_ns'])
         known = seen.get(rel)
-        if known and known[:2] == sig:
+        if not rehash and known and known[:2] == sig:
             sha = known[2]
-        elif 'sha256' in base and (base['size'], base['mtime_ns']) == sig:
+        elif not rehash and 'sha256' in base and (base['size'], base['mtime_ns']) == sig:
             sha = base['sha256']
         else:
             try:

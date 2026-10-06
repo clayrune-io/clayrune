@@ -65,9 +65,10 @@ def wrapper_flags(op: dict) -> list[str]:
 
 
 def gated(op: dict) -> bool:
-    """True for a package with a dependency closure or approved install steps (slice U2b): its launch line
-    starts with the closure gate (`custom_npm_gate`), which checks the approved tree before any secret is read."""
-    return _install.needs_closure(op)
+    """True for every approved npm package: its launch line starts with the launch gate (`custom_npm_gate`),
+    which checks what Node could load before any secret is read (a `node_modules` above the package; for a
+    package with a closure or approved install steps, also the approved tree, slice U2b)."""
+    return op.get('ecosystem') == 'npm'
 
 
 def _head(op: dict) -> list[str]:
@@ -141,10 +142,15 @@ def matches(cfg, op: dict, strict: bool = True) -> bool:
     cmd, args = cfg.get('command'), cfg.get('args')
     if not isinstance(cmd, str) or not isinstance(args, list) or not all(isinstance(a, str) for a in args):
         return False
-    if gated(op):                                       # the closure gate and its interpreter come first (slice U2b)
+    headed, gflags = False, []
+    if gated(op):                                       # the launch gate and its interpreter come first (slice U2b)
         gflags = _gate.gate_flags(op)
-        if len(args) < 2 + len(gflags) or args[1:1 + len(gflags)] != gflags:
+        headed = len(args) >= 2 + len(gflags) and args[1:1 + len(gflags)] == gflags
+        if not headed and strict:
             return False
+        # not strict and no gate head: a line written before the gate covered a self-contained package. It is
+        # still recognised as the earlier approval, so a new passcode Save can replace it with the gated line.
+    if headed:
         gate, inner_cmd = args[0], args[1 + len(gflags)]
         if strict:
             try:
@@ -255,9 +261,14 @@ def provision(op: dict, project_path: str | None) -> dict:
         _log(f'[desk_connect] custom MCP {op["server_name"]} package step raised {type(e).__name__}', flush=True)
         return {'state': 'setup_failed', 'code': 'setup_failed', 'message': 'setup could not finish; see the server log'}
     try:
-        _manifest.record(op)                            # what the human approved, file by file (detect-only drift check)
-    except Exception as e:                              # never blocks the approval: the card then reads `not_recorded`
+        _manifest.record(op)                            # what the human approved, file by file
+    except Exception as e:
         _log(f'[desk_connect] custom MCP {op["server_name"]} package manifest not recorded: {type(e).__name__}', flush=True)
+        if _install.needs_closure(op):                  # the launch gate refuses a closure with no manifest: never register one
+            return {'state': 'setup_failed', 'code': 'manifest_not_recorded',
+                    'message': 'The package was installed but its files could not be recorded, so Clayrune cannot check '
+                               'them at start and did not register it. Save again to retry.'}
+        # a self-contained package keeps the detect-only check: the card then reads `not_recorded`
     try:
         done = register(op, project_path)
     except ActivationError as e:

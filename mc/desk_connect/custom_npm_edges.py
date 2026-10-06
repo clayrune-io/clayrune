@@ -28,7 +28,20 @@ MAX_RANGE = 200
 MAX_EDGES = 500
 RUN_SCRIPTS = ('preinstall', 'install', 'postinstall')
 OTHER_SCRIPTS = ('prepublish', 'preprepare', 'prepare', 'postprepare', 'prepublishOnly')
-MAX_SCRIPT = 4000
+MAX_SCRIPT = 1000
+BLANK_RUN = re.compile(r'\s{20,}')              # a body is shown in a short scrolling box: a long blank run could push text out of sight
+
+
+def cannot_be_shown(body: str) -> str | None:
+    """Why a script body cannot be approved (it is still listed, off), or None. One rule for Review and for
+    the install that re-checks the record."""
+    if len(body) > MAX_SCRIPT:
+        return 'longer than Clayrune shows in full'
+    if _ps.has_hidden_chars(body):
+        return 'contains control or hidden characters, so it cannot be shown exactly'
+    if BLANK_RUN.search(body):
+        return 'contains a long run of blank space that could hide text from the card, so it cannot be shown exactly'
+    return None
 
 
 class EdgeError(ValueError):
@@ -104,7 +117,8 @@ def edges_of(manifest: dict, files: dict) -> dict:
         optional_peer = isinstance(meta.get(n), dict) and meta[n].get('optional') is True
         if n not in deps and n not in optional and not optional_peer:
             required[n] = r
-    raw = manifest.get('scripts') if isinstance(manifest.get('scripts'), dict) else {}
+    declared_scripts = manifest.get('scripts')
+    raw = declared_scripts if isinstance(declared_scripts, dict) else {}
     scripts = {s: raw[s] for s in RUN_SCRIPTS if isinstance(raw.get(s), str) and raw[s].strip()}
     return {'required': dict(sorted(required.items())), 'optional': sorted(optional), 'bundled': carried,
             'scripts': scripts,

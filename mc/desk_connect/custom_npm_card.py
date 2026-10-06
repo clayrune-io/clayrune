@@ -15,6 +15,14 @@ CLOSURE_NOTE = ('Clayrune resolved every dependency itself, to an exact version,
                 'digest and unpacks them into a staging folder, moved into place only when all of them verified. No '
                 'npm, npx, .npmrc, lockfile or version range is used, and an install script runs only if you tick it '
                 'on this card. Nothing a package contains runs until an agent session starts the server.')
+STEPS_NOTE = ('Clayrune resolved and pinned the archives listed here, each to its sha512, and unpacks them into a staging '
+              'folder. The install scripts you ticked run NOW, at Save, before anything is moved into place: they may '
+              'download or write other files, and those files are not pinned by any digest on this card. They are '
+              'recorded as they are after the scripts ran. No npm, npx, .npmrc, lockfile or version range is used.')
+LAUNCH_CHECK_NOTE = ('Before every start Clayrune checks that no node_modules folder sits above the package folder (Node '
+                     'would search it and run what it finds, with this server\'s secrets) and, for a package with '
+                     'dependencies or scripts, that every file is the one recorded at Save. If a check fails nothing '
+                     'starts and the server returns to Review.')
 SCRIPTS_NOTE = ('An install script runs the system shell with that package\'s folder as the working directory, a fixed '
                 'environment with no Clayrune secrets, and the file and network access of this account. It is not a '
                 'sandbox. A script you do not tick is not run.')
@@ -24,8 +32,8 @@ def install_section(op: dict, artifact: dict, closure: dict | None) -> dict:
     """The card keys for the install: `install_note`, `install_steps` (the approved scripts, exact),
     and for a package with dependencies or scripts `dependencies`, `dependency_totals`, `scripts`, ..."""
     steps = op['install_steps']
-    out = {'install_steps': [dict(s) for s in steps],
-           'install_note': CLOSURE_NOTE if op.get('dependencies') else NO_DEPENDENCIES_NOTE}
+    note = STEPS_NOTE if steps else CLOSURE_NOTE if op.get('dependencies') else NO_DEPENDENCIES_NOTE
+    out = {'install_steps': [dict(s) for s in steps], 'install_note': f'{note} {LAUNCH_CHECK_NOTE}'}
     if not closure or not (closure['dependencies'] or closure['scripts'] or closure['skipped'] or closure['native_build']):
         return out
     approved = {f'{s["path"] or "."}#{s["script"]}' for s in steps}

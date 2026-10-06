@@ -234,11 +234,11 @@ def test_a_package_with_a_closure_starts_through_the_gate_and_one_without_does_n
     assert service.connections(lambda pid: str(env.proj_dir))[0]['state'] == 'registered'
 
 
-def test_a_self_contained_package_keeps_the_u2a_line(env):
+def test_a_self_contained_package_starts_through_the_gate_too(env):
     review_card = card_of(env)
     saved(env, review_card)
     cfg = servers(env.proj_cfg)[PKG]
-    assert cfg['args'][0].endswith('with-secret.py')
+    assert cfg['args'][0] == str(gate.gate_path()) and cfg['args'][9].endswith('with-secret.py')
 
 
 def test_a_config_that_drops_the_gate_is_not_the_approved_line(env):
@@ -325,12 +325,17 @@ def test_the_gate_refuses_a_line_it_did_not_write(env, argv):
     assert gate.main(argv, run=started.append) == gate.EXIT_REFUSED and started == []
 
 
-def test_the_gate_refuses_a_server_with_no_approval_or_no_closure(env):
+def test_the_gate_refuses_a_server_with_no_approval(env):
     started = []
     assert gate.main(['--scope', 'project', '--project', PID, '--name', 'nobody', '--', 'x'], run=started.append) == gate.EXIT_REFUSED
-    saved(env, card_of(env))                                    # a self-contained package has no closure to gate
-    assert gate.main(['--scope', 'project', '--project', PID, '--name', PKG, '--', 'x'], run=started.append) == gate.EXIT_REFUSED
     assert started == []
+
+
+def test_the_gate_starts_a_self_contained_package_whose_search_path_is_clean(env):
+    saved(env, card_of(env))
+    started = []
+    assert gate.main(['--scope', 'project', '--project', PID, '--name', PKG, '--', 'x'], run=lambda c: started.append(c) or 0) == 0
+    assert started == [['x']]
 
 
 def test_the_gate_program_hands_its_arguments_to_the_gate():

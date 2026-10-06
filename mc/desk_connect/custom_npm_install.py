@@ -36,7 +36,6 @@ from mc.desk_connect import custom_npm_scripts as _scripts
 from mc.desk_connect import mcp_activation as _base
 from mc.desk_connect import mcp_package_store as _store
 from mc.desk_connect import parameter_parsers as _pp
-from mc.desk_connect import parameter_schema as _ps
 from mc.desk_connect.mcp_errors import ActivationError
 
 WORKERS = 6
@@ -75,7 +74,7 @@ def validate(op: dict) -> None:
     for s in steps:
         if not isinstance(s, dict) or set(s) != {'path', 'package', 'version', 'script', 'body'} \
                 or not all(isinstance(s[k], str) for k in s) or s['script'] not in _edges.RUN_SCRIPTS \
-                or not s['body'].strip() or len(s['body']) > _edges.MAX_SCRIPT or _ps.has_hidden_chars(s['body']):
+                or not s['body'].strip() or _edges.cannot_be_shown(s['body']) is not None:
             raise _bad()
         owner = places.get(s['path'])
         if (owner is None and not (s['path'] == '' and s['package'] == op['package'] and s['version'] == op['version'])) \

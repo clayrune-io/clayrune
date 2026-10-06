@@ -1,35 +1,34 @@
 """The launch gate of an approved npm package that carries a dependency closure (docs/
 DESK_SERVICE_PROFILES_SPEC.md, section 6.2, slice U2b).
 
-A self-contained package is started by `tools/with-secret.py ... node <entry>`. Node finds a missing
-`require`d package by walking UP the directory tree, so a dependency that was deleted from the approved
-tree would be answered by whatever sits further up: an unpinned launch, with the service's secrets already
-in its environment. A package with a closure is therefore started through this gate, BEFORE the credential
-wrapper:
+A package is started by `tools/with-secret.py ... node <entry>`. Node finds a `require`d package it
+cannot find in the package's own tree by walking UP the directory tree, so a dependency that was deleted
+from the approved tree, or an optional one that was never installed, would be answered by whatever sits
+further up: an unpinned launch, with the service's secrets already in its environment. Every approved npm
+package (a self-contained one as well as one with a closure) is therefore started through this gate,
+BEFORE the credential wrapper:
 
     python tools/custom-mcp-gate.py --scope S --project P --name N -- python tools/with-secret.py ... -- node <entry>
 
 The gate loads the approval Desk recorded for that server (never anything from the command line), and
 starts the rest only when what is on disk is what that approval covers:
 
-    * the record is intact (its operation still has the fingerprint stored with it) and names a closure;
-    * the directory carries our marker for exactly this closure, and the entry file is there;
-    * every approved dependency is on disk at its place with the approved name and version;
-    * no `node_modules` folder sits in Clayrune's own package area above the package (a place Node
-      would look when an approved dependency is missing);
-    * the files of the whole tree are the ones recorded at Save (`custom_package_manifest.verify`): for a
-      package with a closure, a changed file of a dependency is refused here, where a self-contained
-      package's drift is only reported.
+    * the record is intact (its operation still has the fingerprint stored with it);
+    * no folder from the package's own up to the drive root has a `node_modules` in it (`ancestor_problem`):
+      Node would search it for anything the approved tree does not hold, and run what it finds;
+    * for a package with a closure: the directory carries our marker for exactly this closure, the entry
+      file is there, every approved dependency is on disk at its place with the approved name and
+      version, and every file of the whole tree is the one recorded at Save, each file read and hashed
+      again (`custom_package_manifest.verify(rehash=True)`, not the size and time shortcut). A package
+      whose files were never recorded is refused.
 
 Otherwise it prints why on stderr, starts NOTHING (no wrapper, so no secret is read, and no Node), and
-exits non-zero: the server is "returned to Review" and the card says what to do (save it again). This is
-the structural check, cheap enough for every start. What the files CONTAIN is the drift manifest's job
-(`custom_package_manifest`), which covers the whole dependency tree too; the gate refuses on its
-`changed` verdict, and lets an approval with no manifest recorded start (the card says `not_recorded`).
+exits non-zero: the server is "returned to Review" and the card says what to do (save it again). A
+self-contained package's own files stay detect-only (`custom_package_manifest.check`); only the
+`node_modules` search path is refused for it.
 
-Limit, stated on the card: Node also looks in `node_modules` folders above Clayrune's folder (the home
-folder, the drive root). A package that requires something it never declared could be answered there;
-every package the approval lists is found first, in its own place.
+Limit: Node also searches the folders `~/.node_modules` and `~/.node_libraries` and the folder of the
+Node installation; this gate does not look there.
 """
 from __future__ import annotations
 
@@ -48,6 +47,7 @@ from mc.desk_connect import custom_package_manifest as _manifest
 from mc.desk_connect.mcp_errors import ActivationError
 
 EXIT_REFUSED = 78
+_STOP_AFTER: Path | None = None                 # test seam: the folder after which the `node_modules` walk up stops
 _MAX_MANIFEST = 1024 * 1024
 _SHOWN = 4
 
@@ -83,12 +83,46 @@ def _shown(paths: list[str]) -> str:
     return text + (f' and {len(paths) - _SHOWN} more' if len(paths) > _SHOWN else '')
 
 
-def problem(op: dict) -> dict | None:
-    """None when the closure on disk is the approved one, else `{code, message, paths}`:
-    `dependency_missing` (the folder, a package or the entry is not there) or `dependency_changed`
-    (a package is there but is not the approved name and version, or an unapproved `node_modules`
-    would be searched). Never raises."""
+def _ancestors(base: Path) -> list[Path]:
+    """`base` and every folder above it, up to the root (stopping after `_STOP_AFTER` when a test sets one)."""
+    start = Path(os.path.abspath(base))
+    out = []
+    for d in (start, *start.parents):
+        out.append(d)
+        if _STOP_AFTER is not None and d == _STOP_AFTER:
+            break
+    return out
+
+
+def ancestor_problem(op: dict) -> dict | None:
+    """None when no folder from the package's directory up to the root holds a `node_modules`, else
+    `{code, message, paths}`. Node resolves a `require` by walking up from the file asking for each
+    `<folder>/node_modules`, so one anywhere above (the package area, `~/.clayrune`, the home folder, the
+    drive root) can answer for a package the approved tree does not hold, and that code runs with the
+    server's secrets in its environment. Never raises."""
     try:
+        found = [str(d / 'node_modules') for d in _ancestors(_artifact.package_dir(op))
+                 if (d / 'node_modules').exists() or (d / 'node_modules').is_symlink()]
+    except Exception as e:                                  # noqa: BLE001 - a check that cannot tell must refuse
+        _log(f'[desk_connect] custom MCP node_modules check could not read the folders: {type(e).__name__}', flush=True)
+        return {'code': 'dependency_changed', 'message': 'The folders above the package could not be read.', 'paths': []}
+    if not found:
+        return None
+    return {'code': 'dependency_changed', 'paths': found,
+            'message': f'A node_modules folder sits above the package ({_shown(found)}). Node searches it for anything '
+                       f'the approved package does not hold and runs what it finds with this server\'s secrets, so the '
+                       f'server will not start until it is removed.'}
+
+
+def problem(op: dict) -> dict | None:
+    """None when what is on disk is what the approval covers, else `{code, message, paths}`:
+    `dependency_missing` (the folder, a package or the entry is not there) or `dependency_changed`
+    (a package is there but is not the approved name and version, or a `node_modules` above the package
+    would be searched). A package with no closure is checked for the `node_modules` search path only.
+    Never raises."""
+    try:
+        if not _install.needs_closure(op):
+            return ancestor_problem(op)
         _install.validate(op)
         base = _artifact.package_dir(op)
         marker = _read_manifest(base / _artifact.VERIFIED_MARKER)
@@ -106,16 +140,13 @@ def problem(op: dict) -> dict | None:
                 missing.append(rel or name)
             elif doc.get('name') != name or doc.get('version') != version:
                 changed.append(rel or name)
-        for ambient in (base / 'node_modules', _artifact.packages_root() / 'node_modules'):
-            if ambient.exists() or ambient.is_symlink():
-                changed.append(str(ambient.name) + ' (above the package)')
         if missing:
             return {'code': 'dependency_missing', 'paths': missing,
                     'message': f'An approved package is missing from disk: {_shown(missing)}.'}
         if changed:
             return {'code': 'dependency_changed', 'paths': changed,
                     'message': f'A package on disk is not the one that was approved: {_shown(changed)}.'}
-        return None
+        return ancestor_problem(op)
     except ActivationError:
         return {'code': 'dependency_changed', 'message': 'The approval record for its dependencies is not valid.', 'paths': []}
     except Exception as e:                                  # noqa: BLE001 - a check that cannot tell must refuse
@@ -152,8 +183,8 @@ def main(argv: list[str], *, run=None) -> int:
     except _store.StoreUnreadable:
         return _refuse('the record of what was approved cannot be read.')
     op = rec.get('operation') if rec else None
-    if rec is None or not isinstance(op, dict) or op.get('ecosystem') != 'npm' or not _install.needs_closure(op):
-        return _refuse('there is no approval on record for a package with dependencies under this name.')
+    if rec is None or not isinstance(op, dict) or op.get('ecosystem') != 'npm':
+        return _refuse('there is no approval on record for a package under this name.')
     try:
         intact = _op.fingerprint(op) == rec['fingerprint']
     except (TypeError, ValueError, KeyError):
@@ -164,12 +195,16 @@ def main(argv: list[str], *, run=None) -> int:
     if found is not None:
         _log(f'[desk_connect] custom MCP {name} not started: {found["code"]}', flush=True)
         return _refuse(found['message'])
-    files = _manifest.verify(rec)
-    if files['status'] == 'changed':
-        listed = files['changed'] + files['added'] + files['removed']
-        _log(f'[desk_connect] custom MCP {name} not started: package files changed ({files["reason"]})', flush=True)
-        return _refuse('a file of the package or of its dependencies is not the one recorded when you approved it'
-                       + (f' ({_shown(listed)})' if listed else '') + '.')
+    if _install.needs_closure(op):                          # a closure is held to its recorded files, every file read again
+        files = _manifest.verify(rec, rehash=True)
+        if files['status'] != 'unchanged':
+            listed = files['changed'] + files['added'] + files['removed']
+            _log(f'[desk_connect] custom MCP {name} not started: package files {files["status"]} ({files["reason"]})',
+                 flush=True)
+            if files['status'] == 'not_recorded':
+                return _refuse('the files of this package were never recorded, so they cannot be checked.')
+            return _refuse('a file of the package or of its dependencies is not the one recorded when you approved it'
+                           + (f' ({_shown(listed)})' if listed else '') + '.')
     if run is not None:
         return run(rest)
     if os.name != 'nt':
