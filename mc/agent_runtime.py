@@ -52,6 +52,7 @@ import hashlib
 import tempfile
 from datetime import timedelta
 from mc import allowance_state as _allowance_state
+from mc import empty_turn as _empty_turn
 from mc.execution_policy import (
     Blocker, Capability, CapabilityClaim, Certification, ExecutionIdentity,
     Profile, Readiness, RequestedEngine, Support, authorize_execution,
@@ -4852,6 +4853,10 @@ class GeminiRuntime(AgentRuntime):
         # chat — it streams faster than a turn-end cleanup could remove it.
         turn_text_parts: List[str] = []
         _mc_suppressing = False
+        # Empty-turn detection (mc/empty_turn.py) — same rule as _mode_a_reader.
+        tool_calls = 0
+        turn_error_seen = False
+        _empty_turn.begin_turn(session)
         # The CURRENT contiguous text run (deltas since the last non-text
         # event). Written to `log_lines` as ONE element when the run ends,
         # never one element per delta. Every consumer of `log_lines` treats
@@ -4924,6 +4929,7 @@ class GeminiRuntime(AgentRuntime):
                         session['last_output_time'] = _time.time()
                         _cb('on_assistant_text', ev)
                 elif ev and ev.type == EventType.WARN:
+                    turn_error_seen = True  # the CLI's own stated reason is on screen
                     # `{"type":"error","severity":...}` stream events: safety
                     # blocks, loop detection, "Agent execution blocked" (a
                     # hook denial), max turns. parse_event returned None for
@@ -4933,6 +4939,7 @@ class GeminiRuntime(AgentRuntime):
                         f"{ev.payload.get('text', '')}")
                     session['last_output_time'] = _time.time()
                 elif ev and ev.type == EventType.TOOL_USE:
+                    tool_calls += 1
                     blocks = ev.payload.get('blocks', [])
                     name = blocks[0].get('name', '') if blocks else ''
                     tid = blocks[0].get('tool_use_id') if blocks else None
@@ -5004,7 +5011,9 @@ class GeminiRuntime(AgentRuntime):
                         f"[gemini] {_allowance_state.refusal_message('gemini')}")
                     session['last_output_time'] = _time.time()
                     session['_allowance_exhausted'] = True
+                    turn_error_seen = True
                 elif ev and ev.type == EventType.ERROR:
+                    turn_error_seen = True
                     # The CLI's own reason (quota, auth, network — see
                     # parse_event's 'result'+status=='error' branch) surfaced
                     # into the visible transcript AND the tail explain_exit_error
@@ -5076,6 +5085,13 @@ class GeminiRuntime(AgentRuntime):
                         session['status'] = 'idle'
                     else:
                         session['status'] = 'completed' if rc == 0 else 'error'
+                        if rc == 0 and not turn_error_seen:
+                            # See _mode_a_reader: backlog d37d0183.
+                            _empty_turn.mark(session, _empty_turn.empty_reason(
+                                visible_text=strip_mc_tool_blocks(''.join(turn_text_parts)),
+                                tool_calls=tool_calls, paused=False,
+                                had_control_blocks=mc_res['blocks_found']),
+                                set_error=True)
                     session['last_status_change_time'] = _time.time()
                     if not mc_res['paused'] and rc != 0:
                         session['log_lines'].append(f"[gemini exited with code {rc}]")
@@ -6136,6 +6152,13 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
     _mc_suppressing = False
     proc_cost: Dict[str, float] = {}  # this proc's running total_cost_usd
     proc_turns: Dict[str, int] = {}   # turns this proc produced
+    # Empty-turn detection (mc/empty_turn.py): this process is one turn, so a
+    # local count is enough. `turn_error_seen` keeps a turn that already
+    # surfaced its own error line from being flagged a second time.
+    tool_calls = 0
+    turn_error_seen = False
+    other_output = False
+    _empty_turn.begin_turn(session)
 
     def _cb(name: str, ev: AgentEvent) -> None:
         fn = cbs.get(name)
@@ -6191,6 +6214,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 # A line that is NOT JSON is genuine stray output (a warning,
                 # a stack trace) and must still be kept.
                 if not _is_protocol_json(line):
+                    other_output = True
                     session['log_lines'].append(line)
                     session['last_output_time'] = _time.time()
             elif ev.type == EventType.ASSISTANT_TEXT:
@@ -6203,6 +6227,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                     session['last_output_time'] = _time.time()
                     _cb('on_assistant_text', ev)
             elif ev.type == EventType.TOOL_USE:
+                tool_calls += 1
                 blocks = ev.payload.get('blocks', [])
                 tname = blocks[0].get('name', '') if blocks else ''
                 tinput = blocks[0].get('input', {}) if blocks else {}
@@ -6298,6 +6323,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 # Floor/chat read this flag to render "Out of allowance"
                 # instead of a red Blocked/Error pill.
                 session['_allowance_exhausted'] = True
+                turn_error_seen = True
             elif ev.type == EventType.WARN:
                 # Advisory, not a failure: the run continues past it, so it
                 # must not carry the word "error" (a healthy codex turn read
@@ -6323,6 +6349,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                     session['log_lines'].append(_label + _flatten_error_text(_wtext))
                     session['last_output_time'] = _time.time()
             elif ev.type in (EventType.ERROR, EventType.AUTH_ERROR):
+                turn_error_seen = True
                 session['log_lines'].append(
                     f"[{runtime.name} error] "
                     f"{_flatten_error_text(ev.payload.get('text', line))}")
@@ -6332,9 +6359,12 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                     # retry without -m (CodexRuntime.retry_without_model).
                     session['_codex_model_refused'] = ev.payload['model_rejected']
             else:
+                if ev.type == EventType.TOOL_RESULT:
+                    tool_calls += 1
                 raw_text = (ev.payload.get('text') or
                             (json.dumps(ev.payload) if ev.payload else line))
                 if raw_text:
+                    other_output = True
                     session['log_lines'].append(raw_text)
                     session['last_output_time'] = _time.time()
     except Exception as e:
@@ -6396,6 +6426,15 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                     session['status'] = 'idle'
                 else:
                     session['status'] = 'completed' if rc == 0 else 'error'
+                    if rc == 0 and not turn_error_seen:
+                        # A clean exit that said nothing and did nothing is a
+                        # failure, not a completion (backlog d37d0183).
+                        _empty_turn.mark(session, _empty_turn.empty_reason(
+                            visible_text=strip_mc_tool_blocks(''.join(turn_text_parts)),
+                            tool_calls=tool_calls, paused=False,
+                            had_control_blocks=mc_res['blocks_found'],
+                            other_output=other_output),
+                            set_error=True)
                 session['last_status_change_time'] = _time.time()
                 if not mc_res['paused'] and rc != 0:
                     session['log_lines'].append(

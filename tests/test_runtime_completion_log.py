@@ -500,7 +500,11 @@ def test_mc_question_malformed_block_is_reported_not_silently_dropped(env):
     env['runtime'].run_turn(handle, lines, rc=0)
     session = env['sessions'][sid]
     assert session.get('waiting_for_question') is not True
-    assert session['status'] == 'completed'  # rc=0, no valid question to pause on
+    # rc=0 but nothing usable came back: no valid question to pause on, no
+    # reply text, no tool call. Was 'completed' before backlog d37d0183 made
+    # an empty turn an error (mc/empty_turn.py); the malformed block is still
+    # reported in the chat, which is what this test is about.
+    assert session['status'] == 'error'
     assert any('malformed block' in ln for ln in session['log_lines'])
 
 
