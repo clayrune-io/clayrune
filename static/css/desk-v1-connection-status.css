@@ -1,0 +1,10 @@
+/* Desk v1 — Connections: the routes block of an account and the detail of an approved MCP server (desk-v1-connection-status.js). */
+.desk-v1-cs { display: flex; flex-direction: column; gap: 8px; min-width: 0; margin: 6px 0; }
+.desk-v1-cs-row { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 6px 0; border-top: 1px solid var(--border, transparent); }
+.desk-v1-cs-row:first-child { border-top: 0; }
+.desk-v1-cs-word { font-weight: 600; }
+.desk-v1-cs-row[data-state="ok"] .desk-v1-cs-word { color: var(--green-text, var(--text-dim)); }
+.desk-v1-cs-row[data-state="reauth"] .desk-v1-cs-word, .desk-v1-cs-row[data-state="off"] .desk-v1-cs-word { color: var(--amber-text); }
+.desk-v1-cs-line { font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+.desk-v1-cs-obs { font-size: 13px; }
+[data-conn-mcp] .desk-v1-conn-status[data-state="saved"] { color: var(--text-dim); }

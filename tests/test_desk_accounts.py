@@ -187,6 +187,23 @@ def test_blog_is_manual_and_ready_preview_is_not(env):
     assert prev['publish']['ready'] is False and prev['preview'] is True
 
 
+def test_v1_account_carries_the_saved_browser_setup_names_only():
+    """MC-1062/13b: Connections shows an account's saved browser sign-in, so the row carries the setup's NAMES
+    (profile, login, route). Nothing else from the record, and a malformed or absent setup adds no key."""
+    setup = {'service': 'x', 'route_id': 'x-browser', 'account_kind': 'account',
+             'refs': {'browser_profile': 'x-ron', 'login': 'x.ron'}, 'saved_at': '2026-10-06T12:00:00',
+             'password': 'must-not-travel'}
+    row = _accounts.v1_account({'id': 'a', 'platform': 'x', 'identity': '@a', 'capability': 'direct', 'browser_setup': setup}, {})
+    assert row['browser_setup'] == {'service': 'x', 'route_id': 'x-browser', 'account_kind': 'account',
+                                    'refs': {'browser_profile': 'x-ron', 'login': 'x.ron'}, 'saved_at': '2026-10-06T12:00:00'}
+    assert 'password' not in row['browser_setup']
+    for bad in (None, 'text', {'route_id': 7, 'refs': {}}, {'route_id': 'x-browser'}):
+        rec = {'id': 'a', 'platform': 'x', 'identity': '@a', 'capability': 'direct'}
+        if bad is not None:
+            rec['browser_setup'] = bad
+        assert 'browser_setup' not in _accounts.v1_account(rec, {})
+
+
 # -- M3 create ---------------------------------------------------------------------
 
 def test_create_refuses_other_platforms_and_bad_input(env):

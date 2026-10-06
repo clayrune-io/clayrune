@@ -69,6 +69,9 @@
   // with no Connect / Reconnect: nothing on this screen can connect it.
   function _status(ch) {
     if (_isLiveRow(ch)) {
+      // MC-1062/13b: a live account's word comes from its routes (desk-v1-connection-status.js), not from publishing alone.
+      const CS = window.DeskV1ConnectionStatus;
+      if (CS) return CS.accountStatus(ch, CS.coverageRow(_homeProjectId(ch), ch.platform));
       if (ch.preview) return { key: 'preview', word: 'Preview · not connected', action: null };
       // A read-only site (YouTube, Instagram, TikTok) has no publishing to connect: it is read.
       if (ch.capability === 'none') return { key: 'ok', word: 'Read only', action: null };
@@ -158,8 +161,9 @@
           ${st.action ? `<button type="button" class="desk-v1-conn-btn" data-conn-action="${esc(ch.id)}">${st.action}</button>` : ''}
           ${live ? `<button type="button" class="desk-v1-conn-btn${st.action ? ' desk-v1-conn-btn-inline' : ''}" data-conn-remove="${esc(ch.id)}" aria-label="${esc(`Remove ${ch.label}`)}">Remove</button>` : ''}
         </div>
+        ${live && window.DeskV1ConnectionStatus ? window.DeskV1ConnectionStatus.accountHTML(ch, window.DeskV1ConnectionStatus.coverageRow(_homeProjectId(ch), ch.platform)) : ''}
         ${live ? _publishHTML(ch) : ''}
-        ${readable ? _readViaHTML(ch) : ''}
+        ${readable && !(live && window.DeskV1ConnectionStatus && window.DeskV1ConnectionStatus.replacesReadVia()) ? _readViaHTML(ch) : ''}
       </div>`;
   }
 
@@ -344,6 +348,7 @@
       if (st) items.push({ key: `engine:${e.id}`, kind: 'engine', brand: e.id, mark: String(e.label || '?').charAt(0).toUpperCase(),
         name: e.label, kindLabel: 'Generation engine', status: st });
     });
+    if (live && window.DeskV1ConnectionStatus) window.DeskV1ConnectionStatus.mcpItems().forEach((m) => items.push(m));
     (window.DeskV1Services.rows() || []).forEach((s) => items.push({
       key: `service:${s.id}`, kind: 'service', mark: String(s.name || '?').charAt(0).toUpperCase(),
       name: s.name, kindLabel: 'Saved service', status: window.DeskV1Services.STATUS,
@@ -370,6 +375,10 @@
     if (sel.indexOf('service:') === 0) {
       const sv = window.DeskV1Services.byId(sel.slice(8));
       return sv ? Tiles.detailHTML(sel, sv.name, window.DeskV1Services.detailHTML(sv)) : null;
+    }
+    if (sel.indexOf('mcp:') === 0 && window.DeskV1ConnectionStatus) {
+      const m = window.DeskV1ConnectionStatus.mcpByKey(sel);
+      return m ? Tiles.detailHTML(sel, m.server_name, window.DeskV1ConnectionStatus.mcpDetailHTML(m)) : null;
     }
     const ch = _channels().find((c) => c.id === sel);
     return ch ? Tiles.detailHTML(ch.id, ch.label || ch.identity, _accountHTML(ch)) : null;
@@ -418,9 +427,10 @@
         });
       }
       _bindReadVia(row, ch, repaint);
+      if (window.DeskV1ConnectionStatus) window.DeskV1ConnectionStatus.bindAccount(row, ch, repaint);
     });
     const recheck = el.querySelector('[data-conn-recheck]');
-    if (recheck) recheck.onclick = () => _recheck(el, repaint);
+    if (recheck) recheck.onclick = () => { if (window.DeskV1ConnectionStatus) window.DeskV1ConnectionStatus.invalidate(); _recheck(el, repaint); };
     if (sel === 'add') {
       window.DeskV1AddService.bind(el, {
         repaint, channels: _channels, api: _api, engines: _enginesCache,
@@ -432,6 +442,9 @@
     } else if (sel && sel.indexOf('service:') === 0) {
       const sv = window.DeskV1Services.byId(sel.slice(8));
       if (sv) window.DeskV1Services.bindDetail(el, sv, repaint);
+    } else if (sel && sel.indexOf('mcp:') === 0 && window.DeskV1ConnectionStatus) {
+      const m = window.DeskV1ConnectionStatus.mcpByKey(sel);
+      if (m) window.DeskV1ConnectionStatus.bindMcp(el, m, repaint);
     }
     // Live only: engines and saved services are the server's, fetched once and kept
     // until something changes them. A failed load leaves an empty list (and the
@@ -442,6 +455,11 @@
           .catch((err) => { _enginesCache = []; _enginesError = err && err.message ? err.message : String(err); repaint(); });
       }
       if (window.DeskV1Services.rows() === null) window.DeskV1Services.load().then(repaint);
+      const CS = window.DeskV1ConnectionStatus;      // local reads only: saved approvals and the no-network coverage route
+      if (CS) {
+        if (CS.mcpRows() === null) CS.loadMcp().then(repaint);
+        CS.loadCoverage(channels.map(_homeProjectId), repaint);
+      }
     }
   }
 
