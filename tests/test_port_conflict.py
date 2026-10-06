@@ -384,6 +384,8 @@ def bound(srv, monkeypatch):
                         lambda host, port, app, **kw: seen['make_server'].append(host) or _FakeServer(host))
     monkeypatch.setattr(srv.app, 'run', lambda **kw: seen['run'].append(kw['host']))
     return seen
+# `run` stays empty on every path now: the v4 side is also served through
+# make_server(fd=...) so its socket comes from mc.listen_socket (exclusive).
 
 
 def test_default_bind_is_unchanged_all_interfaces(srv, bound, monkeypatch):
@@ -403,9 +405,10 @@ def test_bind_loopback_serves_both_loopbacks_and_never_wildcard(srv, bound, monk
     monkeypatch.setenv('MC_BIND_LOOPBACK', '1')
     assert srv._bind_host_v4() == '127.0.0.1'
     srv._serve_dual_stack(0)
-    assert bound['run'] == ['127.0.0.1']
-    assert bound['make_server'] in (['::1'], []), 'v6 side may only be ::1 (or absent when IPv6 is off)'
-    assert '::' not in bound['make_server'] and '0.0.0.0' not in bound['run']
+    assert bound['run'] == []
+    assert bound['make_server'] in (['::1', '127.0.0.1'], ['127.0.0.1']), \
+        'v6 side may only be ::1 (or absent when IPv6 is off)'
+    assert '::' not in bound['make_server'] and '0.0.0.0' not in bound['make_server']
 
 
 def test_bind_loopback_probe_uses_loopback_and_is_not_blocked_by_wildcard_free_port(srv, monkeypatch):

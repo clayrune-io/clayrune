@@ -3288,6 +3288,38 @@ def _bind_host_v4():
     return '127.0.0.1' if _loopback_only() else '0.0.0.0'
 
 
+def _shared_bind():
+    """MC_ALLOW_PORT_CONFLICT=1 also restores the shared (SO_REUSEADDR) bind on
+    Windows. Without it the listener is exclusive, so a second instance cannot
+    bind and exits through the "already in use" banner. Both instances need the
+    flag to coexist -- an exclusive first one refuses the second regardless."""
+    return os.environ.get('MC_ALLOW_PORT_CONFLICT') == '1'
+
+
+def _exit_port_in_use(err):
+    """The listening bind was refused: the port belongs to someone else. The
+    check-then-bind guards in front of this (autostart probe, start.bat,
+    `_check_port_conflict`) cannot see an instance that bound after they ran, so
+    this is the guard that cannot be raced. Name the holder with the same banner
+    the startup check prints, then exit 2."""
+    _log(f"[serve] {err}", flush=True)
+    _check_port_conflict()
+    sys.exit(2)
+
+
+def _serve_v4(host, port):
+    """Serve on one IPv4 address from an exclusive socket (mc/listen_socket.py)."""
+    import socket as _socket
+    from mc import listen_socket
+    from werkzeug.serving import make_server
+    try:
+        sock = listen_socket.bind_listener(_socket.AF_INET, host, port, shared=_shared_bind())
+    except listen_socket.PortInUse as e:
+        _exit_port_in_use(e)
+    srv = make_server(host, port, app, threaded=True, fd=sock.fileno())
+    srv.serve_forever()
+
+
 def _serve_loopback(port):
     """Loopback-only twin of _serve_dual_stack: `localhost` resolves to ::1
     first, so keep BOTH loopback addresses listening (the ~200ms/request
@@ -3296,18 +3328,18 @@ def _serve_loopback(port):
     the host has no IPv6, 127.0.0.1 alone is served."""
     import socket as _socket
     import threading as _threading
+    from mc import listen_socket
     from werkzeug.serving import make_server
     try:
-        s6 = _socket.socket(_socket.AF_INET6, _socket.SOCK_STREAM)
-        s6.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-        s6.setsockopt(_socket.IPPROTO_IPV6, _socket.IPV6_V6ONLY, 1)
-        s6.bind(('::1', port))
-        s6.listen(128)
+        s6 = listen_socket.bind_listener(_socket.AF_INET6, '::1', port, v6only=True,
+                                         shared=_shared_bind())
         srv6 = make_server('::1', port, app, threaded=True, fd=s6.fileno())
         _threading.Thread(target=srv6.serve_forever, daemon=True, name='serve-loopback-v6').start()
+    except listen_socket.PortInUse as e:
+        _exit_port_in_use(e)
     except OSError as e:
         _log(f"[serve] ::1 bind unavailable ({e}); serving 127.0.0.1 only.")
-    app.run(host='127.0.0.1', port=port, debug=False, threaded=True)
+    _serve_v4('127.0.0.1', port)
 
 
 def _serve_dual_stack(port):
@@ -3335,17 +3367,17 @@ def _serve_dual_stack(port):
     if _loopback_only():
         return _serve_loopback(port)
     import socket as _socket
+    from mc import listen_socket
     try:
-        sock = _socket.socket(_socket.AF_INET6, _socket.SOCK_STREAM)
-        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-        sock.setsockopt(_socket.IPPROTO_IPV6, _socket.IPV6_V6ONLY, 0)
-        sock.bind(('::', port))
-        sock.listen(128)
+        sock = listen_socket.bind_listener(_socket.AF_INET6, '::', port, v6only=False,
+                                           shared=_shared_bind())
+    except listen_socket.PortInUse as e:
+        _exit_port_in_use(e)
     except OSError as e:
         _log(f"[serve] dual-stack bind unavailable ({e}); falling back to IPv4-only. "
              f"http://localhost:{port} will be ~200ms/request slower than "
              f"http://127.0.0.1:{port}.")
-        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+        _serve_v4('0.0.0.0', port)
         return
 
     from werkzeug.serving import make_server
