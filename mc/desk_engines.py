@@ -390,6 +390,13 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
+# Sent on every vendor call that does not set its own. urllib's default
+# `Python-urllib/3.x` is refused by Cloudflare's browser-signature rule (HTTP 403,
+# "error code: 1010") in front of clerk.higgsfield.ai's /oauth/* endpoints, while
+# its /.well-known documents still answer 200 (measured 2026-10-05): discovery
+# passed, registration, token and revoke all failed.
+USER_AGENT = 'Clayrune (+https://clayrune.io)'
+
 
 def _http_request(method: str, url: str, *, headers: dict | None = None,
                   body: bytes | None = None, timeout: float = _HTTP_TIMEOUT,
@@ -400,7 +407,10 @@ def _http_request(method: str, url: str, *, headers: dict | None = None,
     and never raises for an HTTP error status: the caller classifies it.
     Raises only for a transport failure (`URLError`, `TimeoutError`, `OSError`).
     A body past `max_bytes` raises `ValueError` rather than filling memory."""
-    req = urllib.request.Request(url, data=body, method=method, headers=headers or {})
+    h = dict(headers or {})
+    if not any(k.lower() == 'user-agent' for k in h):
+        h['User-Agent'] = USER_AGENT
+    req = urllib.request.Request(url, data=body, method=method, headers=h)
     try:
         resp = _OPENER.open(req, timeout=timeout)
     except urllib.error.HTTPError as e:
@@ -820,7 +830,8 @@ def _mcp_post(token: str, body: dict, *, expect_id: int | None, timeout: float =
     the MCP tests replace. Transport failures raise a NON-definitive EngineError:
     a call that timed out may still have been acted on."""
     headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/json, text/event-stream',
-               'Content-Type': 'application/json', 'MCP-Protocol-Version': _MCP_PROTOCOL}
+               'Content-Type': 'application/json', 'MCP-Protocol-Version': _MCP_PROTOCOL,
+               'User-Agent': USER_AGENT}
     req = urllib.request.Request(_HIGGS_MCP_URL, data=json.dumps(body).encode('utf-8'),
                                  method='POST', headers=headers)
     try:

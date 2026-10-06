@@ -501,7 +501,11 @@ def _start_flow(service: str, d: dict, srv: _CallbackServer, disc: dict | None,
             'grant_types': ['authorization_code', 'refresh_token'],
             'response_types': ['code'], 'scope': ' '.join(scopes)})
         if st >= 300 or not isinstance(dcr, dict) or not dcr.get('client_id'):
-            raise OAuthError('register_failed', 'Higgsfield did not accept this app\'s sign-in request', 502)
+            # A refused registration body carries no secret; log it so the refusal is visible.
+            _log(f'[desk_oauth] higgsfield client registration refused: HTTP {st} '
+                 f'{_safe(json.dumps(dcr) if isinstance(dcr, dict) else dcr, 200)}', flush=True)
+            raise OAuthError('register_failed', f'Higgsfield did not accept this app\'s sign-in request '
+                                                f'(HTTP {st})', 502)
         flow.update(client_id=dcr['client_id'], token_endpoint=meta['token_endpoint'],
                     revocation_endpoint=meta.get('revocation_endpoint'), resource=disc['resource'],
                     issuer=meta.get('issuer'), scope=' '.join(scopes))
