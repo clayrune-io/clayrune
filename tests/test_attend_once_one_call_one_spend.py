@@ -96,7 +96,12 @@ def _patched_fence(tmp_path):
     src = (REPO / 'steward' / 'fence.py').read_text(encoding='utf-8').replace('\r\n', '\n')
     (work / 'steward' / 'fence.py').write_text(src, encoding='utf-8', newline='\n')
     subprocess.run(['git', 'init', '-q'], cwd=work, check=True)
-    subprocess.run(['git', 'apply', '--whitespace=nowarn', str(PATCH)], cwd=work, check=True)
+    # A CRLF checkout (core.autocrlf, text=auto) turns the patch into CRLF;
+    # the copy above is LF, so normalise the patch the same way.
+    patch = tmp_path / 'fence-attend-once-per-call.lf.patch'
+    patch.write_text(PATCH.read_text(encoding='utf-8').replace('\r\n', '\n'),
+                     encoding='utf-8', newline='\n')
+    subprocess.run(['git', 'apply', '--whitespace=nowarn', str(patch)], cwd=work, check=True)
     spec = importlib.util.spec_from_file_location('fence_patched_mc1055',
                                                   work / 'steward' / 'fence.py')
     mod = importlib.util.module_from_spec(spec)
