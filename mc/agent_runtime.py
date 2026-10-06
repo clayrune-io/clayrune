@@ -2424,6 +2424,23 @@ class ClaudeRuntime(AgentRuntime):
                 out.append(v)
         return out
 
+    @classmethod
+    def _transform_dirs(cls) -> List[Path]:
+        """Transcript dirs (under the CLI's projects home) where Claude
+        transform transcripts land.
+
+        `oneshot`/`stream_text`/`describe_image` run in
+        `transform_sandbox.neutral_cwd()` (8d7f4a5a), and the CLI keys its
+        transcript directory on the CWD, so their transcripts are filed under
+        THAT path's encoding, not any project's. Derived the same way as a
+        project dir (`_encoded_dir_candidates`), so it follows this machine's
+        home and the CLI's `_`/`.` flattening. Used only to FIND a transcript
+        by id: never scanned or listed, so they stay hidden from conversation
+        lists (standing position, 2026-09-26).
+        """
+        return [_CLAUDE_HOME / e for e in
+                cls._encoded_dir_candidates(_transform_sandbox.neutral_cwd())]
+
     def transcript_path(self, project_path: str, session_id: str) -> Optional[Path]:
         """Locate the Claude Code transcript JSONL for a given session, or None.
 
@@ -2467,6 +2484,16 @@ class ClaudeRuntime(AgentRuntime):
                     f = d / f'{session_id}.jsonl'
                     if f.exists():
                         return f
+            except OSError:
+                continue
+        # Last: a transform's own transcript (see _transform_dirs). Before
+        # 8d7f4a5a these lived in the project dir and the first lookup found
+        # them; asking for one by id must still work.
+        for d in self._transform_dirs():
+            f = d / f'{session_id}.jsonl'
+            try:
+                if f.exists():
+                    return f
             except OSError:
                 continue
         return None
@@ -2555,6 +2582,20 @@ class ClaudeRuntime(AgentRuntime):
                         continue
             except OSError:
                 continue
+
+        # A transform transcript is listed ONLY when its id was asked for
+        # (`must_include_csids`: /conversations?include=<csid>). Looked up by
+        # file name, never globbed: the transform dir is shared by every
+        # project and holds one file per oneshot.
+        wanted = set(must_include_csids or ()) - {f.stem for f, _ in files}
+        for d in (self._transform_dirs() if wanted else ()):
+            for csid in sorted(wanted):
+                f = d / f'{csid}.jsonl'
+                try:
+                    if f.is_file():
+                        files.append((f, f.stat().st_mtime))
+                except OSError:
+                    continue
 
         # F7: never surface an incognito transcript through this scan — it
         # feeds both the agent_log backfill and the "Recent conversations"
@@ -5239,7 +5280,13 @@ class GeminiRuntime(AgentRuntime):
         comment for the live proof. `--skip-trust`/`-e none`/`--policy` and
         the isolated `GEMINI_CLI_HOME` are load-bearing: dropping any of them
         re-exposes this box's real `~/.gemini/settings.json` mcpServers and
-        the model's own filesystem tools to untrusted transform input."""
+        the model's own filesystem tools to untrusted transform input.
+
+        `cwd` is accepted for interface parity and IGNORED: with no tools the
+        process has nothing to read there, and a project cwd only put that
+        project's workspace context in the prompt (8,735 vs 5,821 prompt
+        tokens on a trivial prompt, measured 2026-10-06). It runs in
+        transform_sandbox.neutral_cwd()."""
         if not self.resolve_binary():
             return None
         full = (system_prompt + '\n\n' + prompt) if system_prompt else prompt
@@ -5249,7 +5296,7 @@ class GeminiRuntime(AgentRuntime):
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
                                input=full,
-                               cwd=cwd, timeout=180,
+                               cwd=_transform_sandbox.neutral_cwd(), timeout=180,
                                encoding='utf-8', errors='replace',
                                env=self._transform_env(),
                                creationflags=_POPEN_FLAGS,
@@ -7593,7 +7640,12 @@ class QwenRuntime(AgentRuntime):
         comment for the live proof. Runs the isolated `_transform_argv`, NOT
         `build_command()` (that one is the dispatch/interactive shape:
         `--yolo` auto-accepts tool calls and `--chat-recording` persists a
-        session neither of which a bounded, ephemeral transform wants)."""
+        session neither of which a bounded, ephemeral transform wants).
+
+        `cwd` is accepted for interface parity and IGNORED (runs in
+        transform_sandbox.neutral_cwd()): no tools, so nothing to read there,
+        and a project cwd cost 10,121 vs 9,133 prompt tokens (measured
+        2026-10-06, trivial prompt)."""
         if not self.resolve_binary():
             return None
         full = (system_prompt + '\n\n' + prompt).strip() if system_prompt else prompt
@@ -7610,7 +7662,7 @@ class QwenRuntime(AgentRuntime):
             r = subprocess.run(
                 cmd, input=full,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                cwd=cwd or str(Path.home()),
+                cwd=_transform_sandbox.neutral_cwd(),
                 text=True, encoding='utf-8', errors='replace',
                 timeout=180, env=env,
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
@@ -9533,6 +9585,11 @@ class CodexRuntime(AgentRuntime):
                 model: str = '', max_turns: int = 1,
                 stdin_text: Optional[str] = None,
                 cwd: Optional[str] = None) -> Optional[OneshotResult]:
+        """`cwd` is accepted for interface parity and IGNORED: the transform
+        always runs in `_transform_cwd_dir()` (an empty dir outside any repo).
+        A caller-supplied project cwd cost 19,934 vs 17,216 input tokens on a
+        trivial prompt (measured 2026-10-06; both runs signed in, the second
+        had 7,296 cached tokens, so the gap is indicative, not exact)."""
         if not self.resolve_binary() and not self._npx_fallback:
             return None
         full = (system_prompt + '\n\n' + prompt).strip() if system_prompt else prompt
@@ -9544,7 +9601,7 @@ class CodexRuntime(AgentRuntime):
             r = subprocess.run(
                 cmd, input=full,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                cwd=cwd or self._transform_cwd_dir(),
+                cwd=self._transform_cwd_dir(),
                 text=True, encoding='utf-8', errors='replace',
                 timeout=180,
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,

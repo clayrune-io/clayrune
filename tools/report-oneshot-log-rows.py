@@ -13,6 +13,9 @@ The backfill now skips them (server.py `_backfill_agent_log_from_transcripts`,
 one-shots, per project, i.e. what an exclusion would cover. READ-ONLY: it has no
 write mode, and nothing in any log is deleted.
 
+Claude one-shots now run in transform_sandbox.neutral_cwd(), so newer ones
+live in that dir's transcript folder; `_find_transcript_file` looks there too.
+
 A row counts when it is `synthesized`, its transcript is found, and that
 transcript is a transform (one user turn containing TRANSFORM_DATA_FENCE --
 the same test `list_sessions` uses). `no-transcript` rows are counted
