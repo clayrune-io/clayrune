@@ -12,10 +12,14 @@
  * earlier draft into a closed "Show earlier draft" <details> -- but ONLY when
  * the follow-up actually replaces it:
  *
- *   - 'other' (permission-ask / turn guard: "continue the work") NEVER folds;
  *   - 'length' (re-send shorter) folds only if the follow-up carries the
  *     draft's content (rich-text.js stopHookDraftReplaced: >= 20 words and
- *     >= 40% content-word overlap).
+ *     >= 40% content-word overlap);
+ *   - 'other' (permission-ask / turn guard: "continue the work") folds under
+ *     the same rule at >= 60% overlap (MC-1061, 2026-10-06: the agent did the
+ *     work it announced, then re-sent the answer, and the chat showed it twice);
+ *   - the follow-up is the text after the LAST tool line, so a fold may span
+ *     tool calls; the tool lines stay visible, only the draft folds.
  *
  * 2026-10-01 incident: Dave's full 4-bullet answer was folded away because a
  * length hook fired and his follow-up was a one-line "nothing to resend", so
@@ -62,6 +66,11 @@ const RESEND_HEAD = RESEND[0];
 // overlap rule is exercised on its own, not just the word floor.
 const META_SHORT = "Nothing was left undone: the answer to your Settings question was complete, so there's nothing to resend.";
 const META_LONG = 'Nothing was left undone here, because the earlier answer was complete and nothing is waiting on you or needs to be sent again, so I am simply confirming that nothing further remains outstanding at this point.';
+// >= 20 words each, for the MC-1061 'other' cases: a new result that shares
+// nothing with the draft (0%), and a follow-up that shares 45% of its content
+// words (folds under the 40% length rule, must NOT fold under the 60% other rule).
+const NEW_RESULT = 'I rebuilt the poller cache, added a regression test for the hourly timer, fixed the dismissal bug in config handling, and verified every smoke passes across both the live render and the history render paths.';
+const PARTIAL_45 = 'Settings shows the Update button after a release, the manual route works through Server, and Clayrune restarts once they confirm; however the hourly poller also writes a cache file under the config folder with timestamps.';
 const LENGTH_FEEDBACK = 'BREVITY RULE VIOLATED: that reply was 211 prose words against a 160-word hard ceiling.';
 const PERMISSION_FEEDBACK = 'You ended your turn ASKING PERMISSION to do something reversible.';
 
@@ -161,10 +170,14 @@ try {
     check(b.visible.indexOf(ANSWER_HEAD) < b.visible.indexOf(meta.slice(0, 30)), `(b) length + ${label}: answer first, follow-up after`);
   }
 
-  // (c) permission-ask / turn-guard hook -> NEVER collapsed, even when the follow-up repeats the content.
+  // (c) permission-ask / turn-guard hook: folds only when the follow-up restates the draft (>= 60%).
   const c = await runLive('shC', ['> Ron: Fix it.', ...ANSWER, '[stop-hook-redo:other]', ...RESEND], ANSWER_HEAD);
-  check(c.detailCount === 0, '(c) other-kind hook + a follow-up that restates the draft: nothing collapsed');
-  check(c.draftVisible && c.visible.includes(RESEND_HEAD), '(c) other-kind hook: draft AND follow-up both visible');
+  check(c.detailCount === 1, '(c) other-kind hook + a follow-up that restates the draft: collapsed');
+  check(!c.draftVisible && c.draftInDetails && c.visible.includes(RESEND_HEAD), '(c) other-kind hook: draft inside the toggle, re-send visible');
+  const c3 = await runLive('shC3', ['> Ron: Fix it.', ...ANSWER, '[stop-hook-redo:other]', PARTIAL_45], ANSWER_HEAD);
+  check(c3.detailCount === 0 && c3.draftVisible, '(c) other-kind hook + 45% overlap: NOT collapsed (needs 60%)');
+  const c4 = await runLive('shC4', ['> Ron: Fix it.', ...ANSWER, '[stop-hook-redo:length]', PARTIAL_45], ANSWER_HEAD);
+  check(c4.detailCount === 1, '(c) length hook + the same 45% follow-up: collapsed (40% rule kept)');
   const c2 = await runLive('shC2', ['> Ron: Fix it.', ...ANSWER, '[stop-hook-redo:other]',
     'I made the change in static/js/rich-text.js and ran the smoke; all checks passed on the first run.'], ANSWER_HEAD);
   check(c2.detailCount === 0 && c2.draftVisible, '(c) other-kind hook + continued work: draft stays visible');
@@ -175,9 +188,27 @@ try {
   const u2 = await runLive('shU2', ['> Ron: q', ...ANSWER, '[stop-hook-redo]', META_LONG], ANSWER_HEAD);
   check(u2.detailCount === 0 && u2.draftVisible, 'untagged marker + meta reply: NOT collapsed');
 
-  // A follow-up that is a tool call is new work, not a re-send.
+  // A fold may span tool calls (MC-1061): the draft folds, the tool lines stay visible.
+  const toolsVisible = (r) => r.visible.includes('[tool: Bash]') && r.visible.includes('[tool: Read]');
   const t = await runLive('shT', ['> Ron: q', ...ANSWER, '[stop-hook-redo:length]', '[tool: Bash]', ...RESEND], ANSWER_HEAD);
-  check(t.detailCount === 0 && t.draftVisible, 'length hook followed by a tool call: draft stays visible');
+  check(t.detailCount === 1 && !t.draftVisible && t.visible.includes(RESEND_HEAD) && t.visible.includes('[tool: Bash]'),
+    'length hook + tool call + restating re-send: draft folds, tool line and re-send visible');
+  const t2 = await runLive('shT2', ['> Ron: Fix it.', ...ANSWER, '[stop-hook-redo:other]', '[tool: Bash]', '[tool: Read]', ...RESEND], ANSWER_HEAD);
+  check(t2.detailCount === 1 && !t2.draftVisible && t2.visible.includes(RESEND_HEAD) && toolsVisible(t2),
+    'other hook + tool calls + restating re-send: only the draft folds, both tool lines stay visible');
+  check(t2.detailsText.includes('Mac exception') && !t2.detailsText.includes('[tool:'), 'other hook + tool calls: the toggle holds the draft and no tool line');
+  const t3 = await runLive('shT3', ['> Ron: Fix it.', ...ANSWER, '[stop-hook-redo:other]', '[tool: Bash]', '[tool: Read]', NEW_RESULT], ANSWER_HEAD);
+  check(t3.detailCount === 0 && t3.draftVisible && t3.visible.includes(NEW_RESULT.slice(0, 30)) && toolsVisible(t3),
+    'other hook + tool calls + a NEW result: nothing folds, draft, tools and result all visible');
+  const t4 = await runLive('shT4', ['> Ron: Fix it.', ...ANSWER, '[stop-hook-redo:other]', '[tool: Bash]', '[tool: Read]', PARTIAL_45], ANSWER_HEAD);
+  check(t4.detailCount === 0 && t4.draftVisible, 'other hook + tool calls + 45% overlap: nothing folds');
+  // Text BEFORE the last tool line is narration, not the final answer: a short
+  // restating line there does not fold the draft once the final text is new work.
+  const t5 = await runLive('shT5', ['> Ron: Fix it.', ...ANSWER, '[stop-hook-redo:other]', ...RESEND.slice(0, 1), '[tool: Bash]', NEW_RESULT], ANSWER_HEAD);
+  check(t5.detailCount === 0 && t5.draftVisible, 'other hook: a short restating line before a tool call, then a new result: draft stays');
+  // A new prompt ends the pending decision.
+  const t6 = await runLive('shT6', ['> Ron: Fix it.', ...ANSWER, '[stop-hook-redo:other]', '\n> Ron: next question\n', ...RESEND], ANSWER_HEAD);
+  check(t6.detailCount === 0 && t6.draftVisible, 'other hook then a new prompt: a later restating text does not fold the old draft');
 
   // Legacy buffers: the hook feedback sits in memory as a fake Ron prompt.
   const l1 = await runLive('shL1', ['\n> Ron: What is the status?\n', ...ANSWER,
@@ -188,8 +219,8 @@ try {
     'legacy length feedback + restating re-send: collapses, re-send visible');
   const l2 = await runLive('shL2', ['\n> Ron: What is the status?\n', ...ANSWER,
     '\n> Ron: Stop hook feedback:\n' + PERMISSION_FEEDBACK + '\n', ...RESEND], ANSWER_HEAD);
-  check(l2.detailCount === 0 && l2.draftVisible && !/Stop hook feedback/.test(l2.visible),
-    'legacy permission feedback: draft stays visible, no hook text shown');
+  check(l2.detailCount === 1 && !l2.draftVisible && l2.visible.includes(RESEND_HEAD) && !/Stop hook feedback/.test(l2.visible),
+    'legacy permission feedback + restating re-send: folds, no hook text shown');
   const l3 = await runLive('shL3', ['\n> Ron: What is the status?\n', ...ANSWER,
     '\n> Ron: Stop hook feedback:\n' + LENGTH_FEEDBACK + '\n', META_SHORT], ANSWER_HEAD);
   check(l3.detailCount === 0 && l3.draftVisible, 'legacy length feedback + meta one-liner: draft stays visible');
@@ -305,17 +336,36 @@ try {
       `history (b): length + ${label}: full answer AND the follow-up visible, nothing collapsed`);
   }
   const hc = await runHistory('hC', [ASK, ...joined, '[stop-hook-redo:other]', ...RESEND]);
-  check(hc.detailCount === 0 && hc.visible.includes(ANSWER_HEAD) && hc.visible.includes(RESEND_HEAD),
-    'history (c): other-kind hook never collapses, draft and follow-up both visible');
+  check(hc.detailCount === 1 && hc.detailsText.includes('Mac exception') && !hc.visible.includes(ANSWER_HEAD) && hc.visible.includes(RESEND_HEAD),
+    'history (c): other-kind hook + restating re-send folds the draft, re-send visible');
+  const hc3 = await runHistory('hC3', [ASK, ...joined, '[stop-hook-redo:other]', PARTIAL_45]);
+  check(hc3.detailCount === 0 && hc3.visible.includes(ANSWER_HEAD), 'history: other hook + 45% overlap does not fold');
   const hu1 = await runHistory('hU1', [ASK, ...joined, '[stop-hook-redo]', ...RESEND]);
   check(hu1.detailCount === 1 && !hu1.visible.includes(ANSWER_HEAD), 'history: untagged marker + restating re-send collapses');
   const hu2 = await runHistory('hU2', [ASK, ...joined, '[stop-hook-redo]', META_LONG]);
   check(hu2.detailCount === 0 && hu2.visible.includes(ANSWER_HEAD), 'history: untagged marker + meta reply does not collapse');
   const hd = await runHistory('hD', [ASK, ...joined, '[stop-hook-redo:length]', '[tool: Bash]', ...RESEND]);
-  check(hd.detailCount === 0 && hd.visible.includes(ANSWER_HEAD), 'history: length hook then a tool call: draft stays visible');
-  // Double block on one draft (real fixture shape): length, then permission.
+  check(hd.detailCount === 1 && !hd.visible.includes(ANSWER_HEAD) && hd.visible.includes(RESEND_HEAD) && hd.visible.includes('[tool: Bash]'),
+    'history: length hook + tool call + restating re-send folds the draft, tool line stays');
+  const ht2 = await runHistory('hT2', [ASK, ...joined, '[stop-hook-redo:other]', '[tool: Bash]', '[tool: Read]', ...RESEND]);
+  check(ht2.detailCount === 1 && ht2.detailsText.includes('Mac exception') && !ht2.detailsText.includes('[tool:') &&
+    !ht2.visible.includes(ANSWER_HEAD) && ht2.visible.includes(RESEND_HEAD) && ht2.visible.includes('[tool: Bash]') && ht2.visible.includes('[tool: Read]'),
+    'history: other hook + tool calls + restating re-send: only the draft folds, tools and re-send visible');
+  const ht3 = await runHistory('hT3', [ASK, ...joined, '[stop-hook-redo:other]', '[tool: Bash]', '[tool: Read]', NEW_RESULT]);
+  check(ht3.detailCount === 0 && ht3.visible.includes(ANSWER_HEAD) && ht3.visible.includes(NEW_RESULT.slice(0, 30)),
+    'history: other hook + tool calls + a NEW result: nothing folds');
+  const ht4 = await runHistory('hT4', [ASK, ...joined, '[stop-hook-redo:other]', '[tool: Bash]', PARTIAL_45]);
+  check(ht4.detailCount === 0 && ht4.visible.includes(ANSWER_HEAD), 'history: other hook + tool call + 45% overlap: nothing folds');
+  const ht5 = await runHistory('hT5', [ASK, ...joined, '[stop-hook-redo:other]', META_LONG]);
+  check(ht5.detailCount === 0 && ht5.visible.includes(ANSWER_HEAD), 'history: other hook + >=20-word meta reply: nothing folds');
+  // Double block on one draft (real fixture shape): length, then permission. The
+  // length marker finds no follow-up before the next marker; the 'other' marker
+  // then sees the restating re-send and folds the whole draft.
   const he = await runHistory('hE', [ASK, ...joined, '[stop-hook-redo:length]', '[stop-hook-redo:other]', ...RESEND]);
-  check(he.detailCount === 0 && he.visible.includes(ANSWER_HEAD), 'history: length then other on the same draft: nothing collapsed');
+  check(he.detailCount === 1 && !he.visible.includes(ANSWER_HEAD) && he.visible.includes(RESEND_HEAD),
+    'history: length then other on the same draft + restating re-send: folded once');
+  const he2 = await runHistory('hE2', [ASK, ...joined, '[stop-hook-redo:length]', '[stop-hook-redo:other]', NEW_RESULT]);
+  check(he2.detailCount === 0 && he2.visible.includes(ANSWER_HEAD), 'history: length then other + a new result: nothing collapsed');
   // The mocked app aborts every non-local request, so the lazy mermaid CDN
   // import fails by design -- that is not a render error.
   const realHistErrors = histErrors.filter((e) => !/dynamically imported module/.test(e));
@@ -329,5 +379,5 @@ if (bad > 0) {
   console.error(`FAIL — ${bad} check(s) failed`);
   process.exit(1);
 } else {
-  console.log('PASS — a draft collapses only when a length-hook follow-up replaces it; every other answer stays visible.');
+  console.log('PASS — a draft collapses only when the follow-up after the hook restates it; meta replies, new results and partial overlaps stay visible.');
 }

@@ -393,15 +393,20 @@ function isStopHookRedoLine(text) {
 // it (2026-10-01: a one-line meta reply, "nothing to resend", used to swallow
 // the full answer into "Show earlier draft"). One rule for the live and the
 // history renderer:
-//   - kind 'other' never collapses (the follow-up continues the work);
 //   - the follow-up needs >= 20 words, and
-//   - >= 40% of the SMALLER distinct content-word set (words of 4+ letters,
-//     minus stopwords) must appear in the other. Smaller, not the draft's: a
-//     compressed re-send is shorter than the draft by design, so measuring
-//     against the draft's size would reject the very re-send the length hook
-//     asks for, while an unrelated one-liner shares almost nothing.
+//   - >= 40% ('length'/'untagged') or >= 60% ('other') of the SMALLER distinct
+//     content-word set (words of 4+ letters, minus stopwords) must appear in
+//     the other. Smaller, not the draft's: a compressed re-send is shorter than
+//     the draft by design, so measuring against the draft's size would reject
+//     the very re-send the length hook asks for, while an unrelated one-liner
+//     shares almost nothing. 'other' (permission-ask / turn guard) is stricter
+//     because its follow-up is usually continued work with new results; only a
+//     follow-up that mostly restates the draft (MC-1061, 2026-10-06: the answer
+//     showed twice) folds it. The follow-up is the text after the LAST tool
+//     line, so a fold may span tool calls (only the draft folds, never them).
 const STOP_HOOK_MIN_FOLLOW_WORDS = 20;
 const STOP_HOOK_MIN_OVERLAP = 0.4;
+const STOP_HOOK_MIN_OVERLAP_OTHER = 0.6;
 const _STOP_HOOK_STOPWORDS = new Set((
   'about above after again also been before being between both could does done down during each ' +
   'from have having here into just like made make many more most much must only other over same ' +
@@ -417,14 +422,14 @@ function _stopHookContentWords(text) {
 }
 
 function stopHookDraftReplaced(kind, draftText, followText) {
-  if (kind !== 'length' && kind !== 'untagged') return false;
   if ((String(followText || '').match(/\S+/g) || []).length < STOP_HOOK_MIN_FOLLOW_WORDS) return false;
   const d = _stopHookContentWords(draftText);
   const f = _stopHookContentWords(followText);
   if (!d.size || !f.size) return false;
   let shared = 0;
   for (const w of f) if (d.has(w)) shared++;
-  return shared / Math.min(d.size, f.size) >= STOP_HOOK_MIN_OVERLAP;
+  const need = kind === 'other' ? STOP_HOOK_MIN_OVERLAP_OTHER : STOP_HOOK_MIN_OVERLAP;
+  return shared / Math.min(d.size, f.size) >= need;
 }
 
 function agentLineCls(text) {
@@ -529,7 +534,6 @@ function _trailingDraftElements(container) {
 // Marker arrived: remember the draft, decide when the follow-up text shows up.
 function armDraftCollapse(sessionId, container, kind) {
   _draftPending.delete(sessionId);
-  if (kind === 'other') return;
   const els = _trailingDraftElements(container);
   if (els.length === 0) return; // nothing to collapse — never hide a bare marker
   _draftPending.set(sessionId, {
@@ -543,8 +547,12 @@ function noteDraftFollowup(sessionId, line) {
   const p = _draftPending.get(sessionId);
   if (!p) return;
   const cls = agentLineCls(line);
-  if (cls.includes('agent-line-tool') || cls.includes('agent-line-prompt')) {
-    _draftPending.delete(sessionId); // the follow-up moved on to other work
+  if (cls.includes('agent-line-prompt')) {
+    _draftPending.delete(sessionId); // a new turn: the draft stays
+    return;
+  }
+  if (cls.includes('agent-line-tool')) {
+    p.follow = ''; // work between draft and re-send: only the text after it is the final answer
     return;
   }
   if (cls !== 'agent-line' || !line.trim()) return;
