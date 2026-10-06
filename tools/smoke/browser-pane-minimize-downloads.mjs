@@ -36,6 +36,8 @@ async function newPage({ launchProfile = 'main', sseBody } = {}) {
     const url = route.request().url();
     if (url.endsWith('/browser-pane.js'))
       return route.fulfill({ contentType: 'application/javascript', body: JS });
+    if (url.endsWith('/browser-pane-stream.js'))   // browser-pane.js imports it; this stub serves files by hand
+      return route.fulfill({ contentType: 'application/javascript', body: readFileSync(new URL('../../static/js/browser-pane-stream.js', import.meta.url), 'utf8') });
     if (url.includes('/api/browser/launch')) {
       const body = JSON.parse(route.request().postData() || '{}');
       posts.push({ kind: 'launch', body });

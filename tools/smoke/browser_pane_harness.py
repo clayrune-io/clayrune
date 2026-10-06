@@ -35,6 +35,11 @@ from flask import Flask  # noqa: E402
 from mc.blueprints import browser_routes as br  # noqa: E402
 from mc.state import browser_sessions  # noqa: E402
 
+# Bench knob: MC_BENCH_CONFIG='{"browser_stream_max_fps": 60}' overlays config.json keys.
+import json  # noqa: E402
+from mc import state  # noqa: E402
+state.CONFIG.update(json.loads(os.environ.get('MC_BENCH_CONFIG') or '{}'))
+
 br._profiles_root = lambda: str(tmp / 'profiles')
 br._named_profiles_root = lambda: str(tmp / 'profiles_named')
 br._downloads_root = lambda: str(tmp / 'downloads')
@@ -83,7 +88,8 @@ def _session_state(sid):
             'desktop_site': s.get('desktop_site'), 'device_mode': s.get('device_mode'),
             'mobile': s.get('mobile'), 'ua': (s.get('ua_override') or {}).get('userAgent'),
             'window_chrome': {str(k): v for k, v in (s.get('window_chrome') or {}).items()},
-            'error': s.get('error'), 'dpr': s.get('dpr')}
+            'error': s.get('error'), 'dpr': s.get('dpr'),
+            'frame_seq': s.get('frame_seq', 0), 'frame_b64_len': len(s.get('frame') or '')}
 
 
 @app.route('/_harness/registered')
@@ -127,6 +133,20 @@ PAGES = {
         outline:0;background:transparent;color:#fff;font:24px sans-serif;resize:none"
         oninput="var n=this.value.length;document.body.style.background=
           'rgb('+(n*37)%256+','+(n*91)%256+','+(n*53)%256+')'"></textarea></body>""",
+    # Dense, constantly-repainting page for bench-browser-pane-fps.mjs: ~700 colour-varied
+    # text rows (seeded, so every run draws the same pixels) scrolled 9px per animation
+    # frame, so the screencast has something new to send on every vsync -- the worst
+    # case the transport has to carry.
+    '/dense.html': b"""<!doctype html><title>Dense</title>
+      <body style="margin:0;background:#fff;font:16px monospace"><div id="r"></div><script>
+      var s=12345;function rnd(){s=(s*1103515245+12345)&0x7fffffff;return s/0x7fffffff}
+      var h='';for(var i=0;i<700;i++){h+='<div style="white-space:nowrap">';
+        for(var j=0;j<4;j++){h+='<span style="color:hsl('+Math.floor(rnd()*360)+',70%,35%);background:hsl('+
+          Math.floor(rnd()*360)+',60%,'+(80+Math.floor(rnd()*18))+'%)">'+Math.floor(rnd()*1e9).toString(36)+'&nbsp;abcdef </span>'}
+        h+='</div>'}
+      document.getElementById('r').innerHTML=h;
+      (function f(){window.scrollBy(0,9);if(scrollY+innerHeight>=document.body.scrollHeight-20)scrollTo(0,0);
+        requestAnimationFrame(f)})()</script></body>""",
     '/popup.html': b"""<!doctype html><title>Opener</title>
       <body style="margin:0;background:#2e7d32;color:#fff;font:40px sans-serif">
       <button id="b" style="font-size:40px"
