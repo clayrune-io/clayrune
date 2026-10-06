@@ -798,10 +798,20 @@ def test_the_browser_launch_hook_is_not_reachable_from_a_request():
     """`extra_args` is an in-process parameter; no route passes request data into it."""
     src = (REPO / 'mc' / 'blueprints' / 'browser_routes.py').read_text(encoding='utf-8')
     tree = ast.parse(src)
-    # the one call that feeds it is the pane reader's; the parameter is read once, by args.extend
-    reads = [n for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == 'extra_args'
-             and isinstance(n.ctx, ast.Load)]
-    assert len({n.lineno for n in reads}) == 1
+    # Inside _launch_browser the parameter is read only by args.extend and by the
+    # transport check (_cdp_transport_wanted keeps a hooked launch on the port, 6b313cb6).
+    launch = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == '_launch_browser')
+    allowed = set()
+    for node in ast.walk(launch):
+        if isinstance(node, ast.Call) and getattr(node.func, 'id', '') == '_cdp_transport_wanted':
+            allowed |= {a.lineno for a in node.args}
+        if (isinstance(node, ast.Call) and getattr(node.func, 'attr', '') == 'extend'
+                and getattr(node.func.value, 'id', '') == 'args'):
+            allowed.add(node.lineno)
+    reads = {n.lineno for n in ast.walk(launch) if isinstance(n, ast.Name)
+             and n.id == 'extra_args' and isinstance(n.ctx, ast.Load)}
+    assert reads and reads <= allowed, reads - allowed
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and getattr(node.func, 'id', '') == '_launch_browser':
             assert not any(k.arg == 'extra_args' for k in node.keywords)
