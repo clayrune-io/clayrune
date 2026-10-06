@@ -124,7 +124,9 @@ Publishing tests use fake transports; assert one side effect, unchanged vault re
 5. **Exceptions:** picker hover/pick and setup completion are documented interaction filters, outside authorization proof, and listed by name. Accepted.
 6. **Delivery:** `py_webauthn`, pinned, browser-first. Native shells come later as their own slice. Accepted.
 
-Build order: slice 1 (core, disabled for actions) may build now. Slice 2 changes every human-only gate, so it waits until Ron has read this spec.
+7. **Proof at provisioning, not at use (Ron, 2026-10-06: "reduce friction as much as possible ... when it comes to agents launching actions which were originally provisioned by the user").** A human proves presence once, when they CREATE or WIDEN a grant: connect an account, approve a campaign and its bounds, approve a version, set an engine spend limit, enable a workflow, mark a secret usable unattended. An agent acting INSIDE that grant (a render under the set limit, a post of an approved version on its schedule, a run of an enabled workflow) needs no further prompt. Per-operation proof stays for: creating or widening any grant, credentials and the vault, settings that expand what agents may do, installs/updates/restore/rollback, deleting user data, add-ons, character edits, and publishing anything no approved version covers. Every grant is bounded (scope, spend or count, expiry where the thing has one), visible and revocable in one place, and an agent can never create or widen one. Gates that exist today only because nothing recorded the provisioning (for example a per-job passcode on storyboard render) become grant checks in slice 2.
+
+Build order: slice 1 shipped (655d6746). Ron read the spec and accepted decisions 1-7 on 2026-10-06. Slice 2a (the four prerequisites below, `mc/passkeys/` only) builds now. Slice 2b (gates read passkeys, decision 7 grants) builds after the Desk Connections and Studio work lands, since it touches the same route files.
 
 ## Slice 2 prerequisites (from the slice 1 audit, 2026-10-04)
 
