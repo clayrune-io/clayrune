@@ -105,25 +105,21 @@ def deadband(m, project):
     """Publish which condense trigger can actually fire. Do not assume — this
     item's history has two contradictory accounts of it, and BOTH are half right.
 
-    Structured mode (live) fires on `lines > index_line_budget` OR
-    `bytes > _index_byte_cap()`. The mechanical floor evicts managed entries at
-    `lines > index_line_hard_floor` OR `bytes > _index_byte_cap() - 1024`.
+    Structured mode fires on `lines > index_line_budget` OR
+    `bytes > _index_byte_trigger()`. The mechanical floor evicts managed entries
+    at `lines > index_line_hard_floor` OR `bytes > _index_byte_floor()`.
 
-    So the two halves behave OPPOSITELY, which is why one reviewer said condense
-    can never fire and another said it can:
-
-      BYTE  floor 23552 < trigger 24576  -> the floor evicts first, so the byte
-                                            trigger is unreachable. Suppressed.
-      LINE  trigger 160 < floor 185      -> the trigger fires first. Live.
-
-    Any fix to this deadband must therefore cover the LINE trigger too; a
-    byte-only fix leaves the working half alone and the broken half broken.
+    Until 2026-10-06 the byte trigger was keyed on the cap (24576), ABOVE the
+    floor (23552), so the floor always evicted first and the byte trigger could
+    never fire. It now sits one step below the floor (22528 by default), the
+    order the line half always had (trigger 160 < floor 185). Each half is
+    reported separately so a regression in either shows up here.
     """
     from mc import state
     mem_path = m._get_memory_path(project)
     text = mem_path.read_text(encoding='utf-8', errors='replace')
     mode = (state.CONFIG.get('condense_mode', 'agent') or 'agent')
-    byte_cap = m._index_byte_cap()
+    byte_trigger = m._index_byte_trigger()
     byte_floor = m._index_byte_floor()
     line_budget = int(state.CONFIG.get('index_line_budget', 160) or 160)
     line_floor = int(state.CONFIG.get('index_line_hard_floor', 185) or 185)
@@ -132,8 +128,8 @@ def deadband(m, project):
         'lines': len(text.splitlines()),
         'bytes': len(text.encode('utf-8')),
         'line_trigger': line_budget, 'line_floor': line_floor,
-        'byte_trigger': byte_cap, 'byte_floor': byte_floor,
-        'byte_half_suppressed': byte_floor < byte_cap,
+        'byte_trigger': byte_trigger, 'byte_floor': byte_floor,
+        'byte_half_suppressed': byte_floor <= byte_trigger,
         'line_half_live': line_budget < line_floor,
     }
 
