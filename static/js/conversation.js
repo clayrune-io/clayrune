@@ -1603,7 +1603,7 @@ function agentPanelHTML(p) {
           // Tool / error / status / queued lines stay on plain esc — we don't
           // want path-like substrings in tool traces to render images.
           const html = cls.includes('agent-line-prompt')
-            ? escPromptWithImages(line)
+            ? escPromptWithImages(line, bufTs[_i] || false)
             : (cls.includes('agent-line-tool') || cls.includes('agent-line-error') || cls.includes('agent-line-followup') || cls.includes('agent-line-queued')
                 ? esc(line) : formatAgentText(line));
           // MC-957 Entry B: a per-message "Brainstorm this" action on the
@@ -1614,7 +1614,7 @@ function agentPanelHTML(p) {
           // single-quoted inline handler (discovery_esc_no_apostrophe_inline_
           // handler.md); esc() DOES escape the double quotes these attributes
           // use, so this is safe.
-          const _brainstormBtn = (cls.includes('agent-line-prompt') && !cls.includes('agent-line-cmd'))
+          const _brainstormBtn = (cls.includes('agent-line-prompt') && !cls.includes('agent-line-cmd') && !cls.includes('agent-line-triggered'))
             ? `<button type="button" class="msg-brainstorm-btn" title="Brainstorm this"
                 data-raw-text="${esc(line.replace(/^\s*>\s?/, ''))}"
                 data-source-label="${esc(_activeSessionPersonName(activeSession, p))}"
@@ -5099,7 +5099,7 @@ function appendAgentLine(sessionId, text, dateHint) {
   // escaper so an attached image path renders as a thumbnail. Other special
   // lines (tool / error / status / queued) stay on plain textContent.
   if (cls.includes('agent-line-prompt')) {
-    div.innerHTML = escPromptWithImages(text);
+    div.innerHTML = escPromptWithImages(text, dateHint);
   } else if (cls.includes('agent-line-tool') || cls.includes('agent-line-error') || cls.includes('agent-line-followup') || cls.includes('agent-line-queued')) {
     div.textContent = text;
   } else {

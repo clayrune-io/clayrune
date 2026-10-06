@@ -434,6 +434,12 @@ function agentLineCls(text) {
   // as prose the agent should answer. Keeps agent-line-prompt so every
   // existing prompt-bubble rule/selector still applies.
   if (t.startsWith('> ')) {
+    // Turns a human did not type (dispatch callbacks, timers, notifications,
+    // handoffs) stay prompt boundaries but render as a one-line expandable
+    // row — static/js/triggered-collapse.js.
+    if (window.isTriggeredLine && window.isTriggeredLine(t)) {
+      return 'agent-line agent-line-prompt agent-line-triggered';
+    }
     return isSlashCommandLine(t)
       ? 'agent-line agent-line-prompt agent-line-cmd'
       : 'agent-line agent-line-prompt';

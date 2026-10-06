@@ -51,6 +51,7 @@ _get_mem_write_lock or writes MEMORY.md.
 import concurrent.futures
 import contextlib
 from mc import empty_turn as _empty_turn
+from mc import triggered_turns as _triggered_turns  # seed-line label for non-human turns
 from mc import engine_selection
 from mc import launch_marker as _launch_marker  # per-launch unattended marker (fence fail-open, MC-1040)
 from mc import proc_kill as _proc_kill
@@ -10211,7 +10212,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
         session = {
             'status': 'running',
             'task': task,
-            'log_lines': TimestampedLines([f"> {user_label}: {_seed_task}"]),
+            'log_lines': TimestampedLines([f"> {_triggered_turns.seed_label(user_label, trigger_type)}: {_seed_task}"]),
             'started_at': now_iso(),
             'session_id': session_id,
             'project_id': project_id,
@@ -11701,7 +11702,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         try:
             _seed_log_lines, _seed_log_ts = _transcript_buffer_lines_and_ts(
                 pp, resume_id, user_label, max_messages=300)
-            _seed_log_lines.append(f"\n> {user_label}: {_seed_task}\n")
+            _seed_log_lines.append(f"\n> {_triggered_turns.seed_label(user_label, trigger_type)}: {_seed_task}\n")
             _seed_log_ts.append(now_iso())  # this continuation prompt is happening now
         except Exception as e:
             _log(f"[dispatch] transcript preload failed for {resume_id[:12]}: {e}")
@@ -11710,7 +11711,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # it even after /agent/status overwrites the buffer with server log_lines.
         # Without this, the locally-seeded `> {task}` prefix gets wiped on the
         # first poll and the user only sees the agent's reply (no question).
-        _seed_log_lines.append(f"> {user_label}: {_seed_task}")
+        _seed_log_lines.append(f"> {_triggered_turns.seed_label(user_label, trigger_type)}: {_seed_task}")
         _seed_log_ts.append(now_iso())
 
     # ── Auto-router + context build, OUTSIDE mgr.lock ───────────────────────
