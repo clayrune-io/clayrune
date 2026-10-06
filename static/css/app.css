@@ -1069,6 +1069,13 @@
      making the prompt's own Confirm/Cancel unclickable (Fenn R1, MC-995
      follow-up). Raise the whole layer past everything while the prompt is up. */
   body.human-proof-active .modal-layer { z-index: 200000; }
+  /* The passcode prompt is a two-line form: size it to its content instead of
+     the generic 80vh window (Ron 2026-10-06: a tall empty box under Confirm).
+     Beats the touch-sheet .modal-content rule on specificity, so phones get the
+     short card too. */
+  .modal-window[data-modal-id^="__human-proof-"] .modal-content {
+    height: auto; min-height: 0; max-height: 90vh; overflow: auto;
+  }
   .modal-window.is-maximized { filter: none; }
   .modal-window.is-maximized .modal-content {
     border-radius: 0;

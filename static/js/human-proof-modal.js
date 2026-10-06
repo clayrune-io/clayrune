@@ -107,6 +107,7 @@ function _hpShow(modalId) {
   if (!p) return;
   _hpSyncBodyClass();
   let win = document.querySelector(`[data-modal-id="${modalId}"]`);
+  const created = !win;
   if (!win) {
     win = document.createElement('div');
     win.className = 'modal-window';
@@ -119,7 +120,6 @@ function _hpShow(modalId) {
     const z = nextModalZ++;
     win.style.zIndex = z;
     openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
-    centerModalElement(win);
   }
   const content = win.querySelector('.modal-content');
   content.innerHTML = `
@@ -132,6 +132,9 @@ function _hpShow(modalId) {
     <div id="hp-body-${modalId}" style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
       ${_hpRenderBody(modalId, p.mode, p.description, p.errorText)}
     </div>`;
+  // Center once the form is in: the window sizes to its content, so an empty
+  // shell would center at zero height and then grow downward off-center.
+  if (created) centerModalElement(win);
   focusModal(modalId);
   const focusEl = document.getElementById(p.mode === 'set' ? `hp-new-${modalId}` : `hp-passcode-${modalId}`);
   if (focusEl) focusEl.focus();
