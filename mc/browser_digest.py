@@ -100,6 +100,37 @@ def _echoes_page(answer: str, page_text: str) -> bool:
     return any(a[i:i + _ECHO_RUN] in p for i in range(0, len(a) - _ECHO_RUN + 1, step))
 
 
+def run_laundering_call(instruction: str, stdin_text: str, *, model: str = 'haiku',
+                        timeout: int = 60, runtime: Any = None) -> tuple[str | None, dict[str, Any] | None]:
+    """The toolless model call itself: `(raw_text, None)`, or `(None, error envelope)`.
+
+    Split out of `launder_page` so a caller that needs a different answer shape (the
+    Desk's generic pane reader asks for fixed-schema JSON, `mc/desk_engagement_pane_digest.py`)
+    runs through the same seam and the same failure envelopes. Never raises."""
+    if runtime is None:
+        import mc.agent_runtime as _agent_runtime
+        if not _agent_runtime.claude_oneshot_available():
+            return None, _error('claude_unavailable',
+                                'claude is not installed or not signed in on this machine')
+        try:
+            return _agent_runtime.run_text_transform(
+                'claude', prompt=instruction, model=model,
+                stdin_text=stdin_text, timeout=timeout), None
+        except (RuntimeError, TimeoutError) as e:
+            return None, _error('launder_call_failed', str(e))
+        except Exception as e:
+            return None, _error('launder_call_raised', repr(e))
+    try:
+        result = runtime.oneshot(prompt=instruction, model=model,
+                                 stdin_text=stdin_text, timeout=timeout)
+    except Exception as e:
+        return None, _error('launder_call_raised', repr(e))
+    if result is None:
+        return None, _error('launder_call_failed',
+                            getattr(runtime, 'last_error', '') or 'non-zero exit or timeout')
+    return result.text, None
+
+
 def launder_page(question: str, page_text: str, *, origin_url: str, hidden_content: dict | None = None,
                  model: str = 'haiku', timeout: int = 60, runtime: Any = None) -> dict[str, Any]:
     """Answer `question` from `page_text` through a toolless model call.
@@ -115,29 +146,10 @@ def launder_page(question: str, page_text: str, *, origin_url: str, hidden_conte
     page = page_text[:MAX_PAGE_CHARS]
     stdin_text = f"QUESTION: {question}\n\n--- PAGE TEXT (untrusted) from {origin_url} ---\n{page}"
 
-    if runtime is None:
-        import mc.agent_runtime as _agent_runtime
-        if not _agent_runtime.claude_oneshot_available():
-            return _error('claude_unavailable',
-                          'claude is not installed or not signed in on this machine')
-        try:
-            text = _agent_runtime.run_text_transform(
-                'claude', prompt=_LAUNDER_INSTRUCTION, model=model,
-                stdin_text=stdin_text, timeout=timeout)
-        except (RuntimeError, TimeoutError) as e:
-            return _error('launder_call_failed', str(e))
-        except Exception as e:
-            return _error('launder_call_raised', repr(e))
-    else:
-        try:
-            result = runtime.oneshot(prompt=_LAUNDER_INSTRUCTION, model=model,
-                                     stdin_text=stdin_text, timeout=timeout)
-        except Exception as e:
-            return _error('launder_call_raised', repr(e))
-        if result is None:
-            return _error('launder_call_failed',
-                          getattr(runtime, 'last_error', '') or 'non-zero exit or timeout')
-        text = result.text
+    text, failed = run_laundering_call(_LAUNDER_INSTRUCTION, stdin_text, model=model,
+                                       timeout=timeout, runtime=runtime)
+    if failed:
+        return failed
 
     data = _parse_json(text)
     if data is None:

@@ -142,9 +142,21 @@ class Reader:
     via = 'api'
     unit_cost = 0.0
     sign_in_short = ''
+    # Worst-case resources one `fetch_mentions` can return; costed before the read.
+    mentions_units = MENTIONS_MAX_RESULTS + 1
 
     def capability(self) -> dict:
         raise NotImplementedError
+
+    def pages_state(self) -> dict | None:
+        """Where this reader reads and whether it needs the user's help finding the
+        pages (`status: 'pages_needed'`); None for a reader with fixed pages."""
+        return None
+
+    def post_external_id(self, row: dict) -> str | None:
+        """The platform's own id for one of our published ledger rows, the key
+        `fetch_metrics` is asked about; None = this reader cannot read its numbers."""
+        return _x_post_id(row) if self.platform == 'x' else None
 
     def fetch_mentions(self, *, since_id: str | None, known_posts: dict[str, str]) -> dict:
         """-> {items: [normalized], resources: int, cursor: str|None, account: str|None}.
@@ -517,6 +529,11 @@ def readers_for_project(project_id: str) -> dict[str, Reader]:
         if platform == 'x':
             out['x'] = (XReader(account_id=acc.get('channel_id') if isinstance(acc, dict) else acc) if via == 'api'
                         else PaneXReader(project_id, (acc or {}).get('browser_profile')))
+        elif via == 'pane':
+            # No dedicated reader: any other site is read generically (page addresses
+            # are data, mc/desk_pane_pages.py + the account's `read_pages`).
+            from mc.desk_engagement_pane_digest import PaneDigestReader
+            out[platform] = PaneDigestReader(project_id, platform, acc)
         elif platform == 'linkedin':
             out['linkedin'] = LinkedInReader(via=via)
     return out
@@ -615,7 +632,8 @@ def platform_coverage(project_id: str, platform: str, reader: Reader | None = No
                                               'reason': f'no reader for {platform}'}
     via = reader.via if reader else None
     same_route = reader is not None and (rec.get('via') or 'api') == reader.via
-    base = {'platform': platform, 'label': label, 'via': via}
+    base = {'platform': platform, 'label': label, 'via': via,
+            'pages': reader.pages_state() if reader else None}
     if not cap['connected']:
         return {**base, 'state': 'not_connected', 'reason': cap.get('reason'),
                 'last_ok_at': rec.get('last_ok_at') if same_route else None,
@@ -679,13 +697,13 @@ def _poll_platform(project_id: str, platform: str, reader: Reader,
     rows = [r for r in _desk.list_ledger(limit=100000, platform=platform, project_id=project_id)]
     known = {}
     for r in rows:
-        ext = _x_post_id(r) if platform == 'x' else None
+        ext = reader.post_external_id(r)
         if ext:
             known[ext] = r['id']
 
     # 1. replies + mentions
     cursor = (_desk.get_read_coverage(project_id).get(platform) or {}).get('cursor')
-    if not _afford(project_id, reader, MENTIONS_MAX_RESULTS + 1, now_dt):
+    if not _afford(project_id, reader, reader.mentions_units, now_dt):
         msg = 'read budget spent: replies not read this period'
         entry['budget_blocked'] = True
         _desk.set_read_coverage(project_id, platform, ok=False, error=msg, via=reader.via)
@@ -724,7 +742,7 @@ def _poll_platform(project_id: str, platform: str, reader: Reader,
     today = _iso(now_dt)[:10]
     todo = []
     for r in rows:
-        ext = _x_post_id(r) if platform == 'x' else None
+        ext = reader.post_external_id(r)
         if not ext or (r.get('published_at') or '') < cutoff:
             continue
         if any(o.get('source') == 'feed' and (o.get('at') or '')[:10] == today
