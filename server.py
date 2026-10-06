@@ -1038,6 +1038,9 @@ _bp_projects.wire(
     runtime_lifecycle_service=_runtime_lifecycle_service,
 )
 app.register_blueprint(_bp_projects.bp)
+# Import existing Claude Code projects (dry-run scan of ~/.claude/projects). Own module.
+from mc.blueprints import claude_import_routes as _bp_claude_import  # noqa: E402
+app.register_blueprint(_bp_claude_import.bp)
 # Inbound shims — dispatch/scheduler/scribe/condense and the github/project
 # sync register() calls below keep their bare names; tests read
 # server.EXCLUDED_SIDECAR_SUFFIXES and server._upload_limit & co.

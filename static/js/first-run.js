@@ -169,6 +169,20 @@ const SETUP_STEPS = [
     },
   },
   {
+    // Backlog ba3b73f9. The scan is started in startFirstRun and has long
+    // finished by the time the user gets here; the importer itself (state,
+    // list, Add) lives in claude-import.js and is shared with the standalone
+    // modal. Left out when there is nothing to offer, unless re-run from Settings.
+    id: 'import',
+    title: 'Bring in your Claude Code projects',
+    wide: true,
+    body: () => `<div class="setup-lead">These are folders you have already used with Claude Code. Tick the ones you want on your dashboard; you can add more any time from Create Project.</div><div id="claude-import-root" style="margin-top:12px"></div>`,
+    onEnter: () => {
+      if (typeof window.claudeImportMount === 'function') window.claudeImportMount(document.getElementById('claude-import-root'), { variant: 'setup' });
+    },
+    skip: () => !setupForced && typeof window.claudeImportKnownEmpty === 'function' && window.claudeImportKnownEmpty(),
+  },
+  {
     id: 'tour',
     title: 'Take the tour?',
     body: () => 'You’re set up. Want a quick walkthrough of the dashboard: the sidebar, project tiles, the Floor, the Desk, Hivemind and Automation? About 10 steps, 2 minutes. You can also take it any time from Settings, the Command Palette (Ctrl+K), or the <strong>?</strong> button in the header.',
@@ -827,6 +841,8 @@ function startFirstRun(opts) {
   _setupBackupJob = null;
   _setupBackupResult = null;
   _setupBackupError = null;
+  // Scan Claude Code's history now so the 'import' step has its answer ready.
+  if (typeof window.claudeImportPrefetch === 'function') window.claudeImportPrefetch({ force: true });
   showDesktop();
   setupShow(0);
 }
