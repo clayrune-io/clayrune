@@ -115,20 +115,17 @@ class _PageConn:
         self._ws, self._ids = None, iter(range(1, 1_000_000))
 
     def __enter__(self):
-        import urllib.request
         websocket = br._import_ws()
         if websocket is None:
             raise PickError('cdp_error', 'websocket-client not installed', 502)
         self._websocket = websocket
         s = self._session
         try:
-            targets = json.load(urllib.request.urlopen(
-                f"http://127.0.0.1:{s.get('port')}/json/list", timeout=2))
+            targets = br._cdp_targets(s, timeout=2)
             page = br._pick_page_target(targets, s.get('live_url') or s.get('url') or '')
             if not page or not page.get('webSocketDebuggerUrl'):
                 raise PickError('cdp_error', 'no page target', 502)
-            self._ws = websocket.create_connection(
-                page['webSocketDebuggerUrl'], max_size=None, timeout=self._timeout)
+            self._ws = br._cdp_page_conn(s, page, timeout=self._timeout)
         except PickError:
             raise
         except Exception as e:

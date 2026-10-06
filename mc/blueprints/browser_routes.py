@@ -721,6 +721,72 @@ def _import_ws():
         return None
 
 
+def _require_ws():
+    ws = _import_ws()
+    if ws is None:
+        raise RuntimeError('websocket-client not installed')
+    return ws
+
+
+def _cdp_transport_wanted(extra_args, narrow_remote_origins):
+    """True when this launch should speak CDP over a pipe, not a TCP port.
+
+    Backlog 6b313cb6 (Wren's P2b re-audit R1): the open debugging port lets any
+    local process attach and read a filled sign-in credential. The pipe removes
+    the port (see mc/browser_cdp_pipe.py). Gated on `browser_cdp_pipe` because
+    the Desk's sign-in fill (`signin_fill_cdp.connect`) still dials the port
+    itself; a pipe session has none. Launches that hand Chromium a port-aware
+    proxy bypass (`extra_args` callable, `narrow_remote_origins`) stay on the
+    port: that is the Desk's discovery pane, a throwaway profile with no login."""
+    if extra_args is not None or narrow_remote_origins:
+        return False
+    return bool(state.CONFIG.get('browser_cdp_pipe', False))
+
+
+def _cdp_transport(session):
+    """The session's ``PipeTransport``, or None when it was launched on a port."""
+    return session.get('cdp') if session else None
+
+
+def _cdp_targets(session, timeout=2):
+    """``/json/list`` for either transport: dicts with id/type/url/title and a
+    truthy ``webSocketDebuggerUrl`` marker (`_cdp_page_conn` takes the dict)."""
+    t = _cdp_transport(session)
+    if t is not None:
+        return t.targets()
+    import urllib.request
+    return json.load(urllib.request.urlopen(
+        f"http://127.0.0.1:{session.get('port')}/json/list", timeout=timeout))
+
+
+def _cdp_version(session, timeout=2):
+    """``/json/version`` for either transport (``User-Agent`` etc.)."""
+    t = _cdp_transport(session)
+    if t is not None:
+        return t.version()
+    import urllib.request
+    return json.load(urllib.request.urlopen(
+        f"http://127.0.0.1:{session.get('port')}/json/version", timeout=timeout))
+
+
+def _cdp_page_conn(session, page, timeout=5):
+    """A websocket-shaped connection to one page target from `_cdp_targets`."""
+    t = _cdp_transport(session)
+    if t is not None:
+        return t.page_conn(page['id'], timeout=timeout)
+    return _require_ws().create_connection(page['webSocketDebuggerUrl'],
+                                           max_size=None, timeout=timeout)
+
+
+def _cdp_browser_conn(session, ver, timeout=3):
+    """A websocket-shaped browser-level connection; ``ver`` is `_cdp_version`'s."""
+    t = _cdp_transport(session)
+    if t is not None:
+        return t.browser_conn(timeout=timeout)
+    return _require_ws().create_connection(ver['webSocketDebuggerUrl'],
+                                           max_size=None, timeout=timeout)
+
+
 def _pick_page_target(targets, want_url=''):
     """Choose which tab to attach to.
 
@@ -949,14 +1015,12 @@ def _start_ua_guard(session, port):
     not, and has no navigator.userAgentData). Runs on the reader thread
     BEFORE target discovery is on, so the reader never sees that tab.
     Best-effort: on failure the reader falls back to a bare string override."""
-    import urllib.request
     websocket = _import_ws()
     if websocket is None:
         return
     try:
-        ver = json.load(urllib.request.urlopen(
-            f'http://127.0.0.1:{port}/json/version', timeout=2))
-        ws = websocket.create_connection(ver['webSocketDebuggerUrl'], max_size=None, timeout=3)
+        ver = _cdp_version(session, timeout=2)
+        ws = _cdp_browser_conn(session, ver, timeout=3)
     except Exception as e:
         session['error'] = f'UA guard connect failed: {e}'
         return
@@ -984,8 +1048,14 @@ def _start_ua_guard(session, port):
         override = {'userAgent': ua}
         tid = None
         try:
-            tid = call('Target.createTarget', {'url': f'http://127.0.0.1:{port}/json/version',
-                                               'background': True})['targetId']
+            # A secure context is needed for navigator.userAgentData. A port
+            # session reads it off Chromium's own devtools page; a pipe session
+            # has no HTTP endpoint, and chrome://version is a secure context
+            # too (measured: isSecureContext true, userAgentData present).
+            tid = call('Target.createTarget', {
+                'url': 'chrome://version/' if _cdp_transport(session) is not None
+                else f'http://127.0.0.1:{port}/json/version',
+                'background': True})['targetId']
             sid = call('Target.attachToTarget', {'targetId': tid, 'flatten': True})['sessionId']
             lo, t_end = None, _time.time() + 3
             while not lo and _time.time() < t_end:
@@ -1278,7 +1348,6 @@ def _fit_windows(session, target_ids=None):
     replies. Serialised per session; each call sizes to the CURRENT view, so a
     burst of pane resizes converges on the last one. Best-effort: a failure is
     recorded on the session and the tab keeps its old size."""
-    import urllib.request
     websocket = _import_ws()
     lock = session.get('fit_lock')
     if websocket is None or lock is None:
@@ -1289,10 +1358,8 @@ def _fit_windows(session, target_ids=None):
         if not ids or session.get('status') != 'running':
             return
         try:
-            ver = json.load(urllib.request.urlopen(
-                f"http://127.0.0.1:{session['port']}/json/version", timeout=2))
-            ws = websocket.create_connection(ver['webSocketDebuggerUrl'],
-                                             max_size=None, timeout=3)
+            ver = _cdp_version(session, timeout=2)
+            ws = _cdp_browser_conn(session, ver, timeout=3)
         except Exception as e:
             session['error'] = f'viewport fit connect failed: {e}'
             return
@@ -1556,13 +1623,12 @@ def _run_cdp(session):
     itself (an OAuth callback's `window.close()`), focus returns to its
     opener — see the `Target.targetDestroyed`/`detachedFromTarget` handling.
     """
-    import urllib.request
     websocket = _import_ws()
     if websocket is None:
         session['status'] = 'error'
         session['error'] = 'websocket-client not installed'
         return
-    port = session['port']
+    port = session['port']       # None for a pipe session (no TCP endpoint at all)
     _id = [100]
 
     def _next_id():
@@ -1586,8 +1652,7 @@ def _run_cdp(session):
                                     + (' - the profile dir is held by another Chromium' if rc == 21 else ''))
                 return
             try:
-                targets = json.load(urllib.request.urlopen(
-                    f'http://127.0.0.1:{port}/json/list', timeout=1))
+                targets = _cdp_targets(session, timeout=1)
                 page = _pick_page_target(targets, session.get('url') or '')
                 if page and page.get('webSocketDebuggerUrl'):
                     break
@@ -1600,8 +1665,7 @@ def _run_cdp(session):
             return
 
         # connect timeout is generous; the per-recv poll timeout is set below.
-        ws = websocket.create_connection(page['webSocketDebuggerUrl'],
-                                         max_size=None, timeout=5)
+        ws = _cdp_page_conn(session, page, timeout=5)
         # 0.1s recv poll: the loop drains queued input at the TOP of each
         # iteration, so this timeout bounds click/scroll/key dispatch latency —
         # 0.5s felt sluggish, 0.1s is snappy. The old black-pane risk (a short
@@ -2131,18 +2195,25 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
         _swept_orphans = True
         sweep_orphan_profiles()
     sid = uuid.uuid4().hex[:12]
-    port = _free_port()
+    use_pipe = _cdp_transport_wanted(extra_args, narrow_remote_origins)
+    port = None if use_pipe else _free_port()
     if profile is None:
         udd = os.path.join(_profiles_root(), sid)
     os.makedirs(udd, exist_ok=True)
     dpr = _clamp_dpr(dpr)
     view = (_clamp_view(*view) if view else None) or (VIEW_W, VIEW_H)
-    args = [
-        chromium, '--headless=new', f'--remote-debugging-port={port}',
-        # `narrow_remote_origins` (in-process callers only, the Desk's discovery pane): only
-        # the one origin websocket-client sends for this port may open a devtools websocket,
-        # so a page cannot reach the debugging port the proxy bypass leaves open.
-        f'--remote-allow-origins={f"http://127.0.0.1:{port}" if narrow_remote_origins else "*"}',
+    args = [chromium, '--headless=new']
+    if not use_pipe:
+        # A pipe launch has no debugging port and no origin check to narrow: the
+        # transport adds `--remote-debugging-pipe` (mc/browser_cdp_pipe.py).
+        args += [
+            f'--remote-debugging-port={port}',
+            # `narrow_remote_origins` (in-process callers only, the Desk's discovery pane): only
+            # the one origin websocket-client sends for this port may open a devtools websocket,
+            # so a page cannot reach the debugging port the proxy bypass leaves open.
+            f'--remote-allow-origins={f"http://127.0.0.1:{port}" if narrow_remote_origins else "*"}',
+        ]
+    args += [
         f'--user-data-dir={udd}',
         '--no-first-run', '--no-default-browser-check', '--disable-gpu',
         f'--window-size={view[0] + WINDOW_CHROME_W},{view[1] + WINDOW_CHROME_H}',
@@ -2155,17 +2226,24 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
     # request: only in-process callers can pass it.
     args.extend(extra_args(port) if callable(extra_args) else (extra_args or ()))
     args.append('about:blank')
+    cdp = None
     try:
         # stdin too: a host with no valid stdin handle (pytest capture, a
         # service) otherwise fails the inherit with WinError 6.
-        proc = subprocess.Popen(args, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+        popen_kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+        if use_pipe:
+            from mc import browser_cdp_pipe
+            proc, cdp = browser_cdp_pipe.spawn(args, popen_kw)
+        else:
+            proc = subprocess.Popen(args, **popen_kw)
     except Exception as e:
         return None, f'failed to launch Chromium: {e}'
     session = {
         'session_id': sid, 'project_id': project_id, 'proc': proc, 'port': port,
+        # CDP over a pipe (browser_cdp_pipe): no port at all, None otherwise.
+        'cdp': cdp,
         'url': url or 'about:blank', 'status': 'running', 'frame': None,
         'frame_seq': 0, 'cmd_queue': queue.Queue(), 'ws': None, 'error': None,
         'started_at': datetime.now(timezone.utc).isoformat(),
@@ -2223,7 +2301,8 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
         try:
             _register_process(proc, name=f'browser pane ({url or "about:blank"})',
                               proc_type='browser', session_id=sid, project_id=project_id,
-                              command_preview=f'chromium --headless (browser pane) :{port}')
+                              command_preview=('chromium --headless (browser pane) pipe' if use_pipe
+                                               else f'chromium --headless (browser pane) :{port}'))
         except Exception as e:
             print(f'[browser] process registration failed for {sid}: {e}', flush=True)
     t = threading.Thread(target=_run_cdp, args=(session,), daemon=True)
@@ -2398,6 +2477,36 @@ def _cdp_browser_close(port, timeout=3):
         return False, str(e)
 
 
+def _cdp_pipe_close(session, timeout=3):
+    """`_cdp_browser_close` for a pipe session: ``Browser.close`` down the pipe.
+    Same ``(ok, error)`` contract. The graceful-close invariant (a named profile
+    is saved by Chromium closing itself, never by a kill) holds unchanged."""
+    t = _cdp_transport(session)
+    if t is None or t.closed:
+        return False, 'no CDP pipe'
+    try:
+        ws = t.browser_conn(timeout=timeout)
+        try:
+            ws.send(json.dumps({'id': 1, 'method': 'Browser.close', 'params': {}}))
+        finally:
+            ws.close()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def _close_cdp_transport(session):
+    """Release a pipe session's transport once its Chromium is gone (or being
+    killed). Closing our write end is also what makes a Chromium that has not
+    exited yet shut itself down."""
+    t = session.get('cdp')
+    if t is not None:
+        try:
+            t.close()
+        except Exception as e:
+            print(f'[browser] closing CDP pipe failed for {session.get("session_id")}: {e}', flush=True)
+
+
 def _graceful_close(session, timeout=10):
     """Ask Chromium to shut itself down so it FLUSHES the profile to disk.
 
@@ -2423,7 +2532,10 @@ def _graceful_close(session, timeout=10):
     proc = session.get('proc')
     if proc is None:
         return False
-    ok, err = _cdp_browser_close(session.get('port'))
+    if _cdp_transport(session) is not None:
+        ok, err = _cdp_pipe_close(session)
+    else:
+        ok, err = _cdp_browser_close(session.get('port'))
     if not ok:
         print(f'[browser] graceful close failed for '
               f'{session.get("session_id")}: {err}', flush=True)
@@ -2486,6 +2598,7 @@ def _kill_browser_session(session):
             proc.wait(timeout=5)
         except Exception:
             pass
+    _close_cdp_transport(session)
     # Drop the throwaway Chromium profile. Must happen AFTER the process is
     # dead, or Chromium rewrites the dir as we delete it (and Windows holds
     # locks on the open files).
@@ -3194,14 +3307,11 @@ def _cdp_evaluate(session, expression, timeout=3, recv_rounds=20):
     'cdp_error:<e>' or 'eval_exception:<detail>' — callers turn this into a
     structured HTTP error rather than guessing.
     """
-    import urllib.request
     websocket = _import_ws()
     if websocket is None:
         return False, 'no_websocket_client'
-    port = session.get('port')
     try:
-        targets = json.load(urllib.request.urlopen(
-            f'http://127.0.0.1:{port}/json/list', timeout=2))
+        targets = _cdp_targets(session, timeout=2)
         # Same picker as the reader thread: attaching to an arbitrary tab is why
         # this used to return '' on any site that opened a second tab.
         page = _pick_page_target(targets, session.get('live_url') or session.get('url') or '')
@@ -3210,8 +3320,7 @@ def _cdp_evaluate(session, expression, timeout=3, recv_rounds=20):
     except Exception as e:
         return False, f'connect_failed:{e}'
     try:
-        ws = websocket.create_connection(page['webSocketDebuggerUrl'],
-                                         max_size=None, timeout=timeout)
+        ws = _cdp_page_conn(session, page, timeout=timeout)
     except Exception as e:
         return False, f'connect_failed:{e}'
     try:
