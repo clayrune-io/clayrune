@@ -28,7 +28,11 @@
 // Window-bridged module, no `import`.
 (function () {
   // Prefixed in every engine that has it; the bare name is future-proofing.
-  const CAN_MASK = !!(window.CSS && CSS.supports
+  // Touch devices keep type=password: an on-screen keyboard (Gboard, iOS) only
+  // stops learning and suggesting what is typed when the field is a password
+  // field, and a passcode in the keyboard's dictionary is worse than a save offer.
+  const TOUCH = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+  const CAN_MASK = !TOUCH && !!(window.CSS && CSS.supports
     && (CSS.supports('-webkit-text-security', 'disc') || CSS.supports('text-security', 'disc')));
 
   // The attribute is the CSS hook (masked-input.css), so a call site's own
