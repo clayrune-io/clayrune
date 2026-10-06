@@ -70,6 +70,7 @@
     const c = e.connected || {};
     if (c.ready) return { key: 'ok', word: 'Connected' };
     if (c.state === 'needs_signin') return { key: 'reauth', word: 'Needs sign-in' };
+    if (c.state === 'vault_locked') return { key: 'locked', word: 'Vault locked' };   // the sign-in is saved; unlock, do not sign in again
     return { key: 'off', word: 'Not connected' };
   }
 
@@ -96,7 +97,9 @@
     const guide = window.DeskV1Guides && window.DeskV1Guides.keyGuideFor(e.id);
     const open = _openGuides.has(e.id);
     let action = '';
-    if (oauth) {
+    if (st.key === 'locked') {
+      action = '<button type="button" class="desk-v1-conn-btn" data-engine-unlock>Unlock the vault</button>';
+    } else if (oauth) {
       action = c.ready
         ? '<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-engine-signin>Sign in again</button><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-engine-disconnect>Disconnect</button>'
         : `<button type="button" class="desk-v1-conn-btn" data-engine-signin>${st.key === 'reauth' ? 'Sign in again' : 'Sign in with Higgsfield'}</button>`;
@@ -107,9 +110,9 @@
       <div class="desk-v1-conn-main">
         <strong>${esc(e.label)}</strong> <span class="desk-v1-conn-kind">${esc(kinds)}</span>
         <div class="desk-v1-conn-status" data-engine-status data-ready="${c.ready ? 'true' : 'false'}" data-state="${st.key}">
-          ${esc(st.word)}${c.ready || !c.reason || !oauth ? '' : ` · ${esc(c.reason)}`}
+          ${esc(st.word)}${c.ready || !c.reason || !oauth || st.key === 'locked' ? '' : ` · ${esc(c.reason)}`}
         </div>
-        ${oauth ? `<div class="desk-v1-rules-hint">${c.ready ? 'Signed in. Renders use the credits in your Higgsfield plan.' : 'Uses the credits in your Higgsfield plan. Nothing is charged in dollars.'}</div>` : ''}
+        ${st.key === 'locked' ? `<div class="desk-v1-rules-hint" data-engine-locked-note>${esc(c.reason || '')}</div>` : oauth ? `<div class="desk-v1-rules-hint">${c.ready ? 'Signed in. Renders use the credits in your Higgsfield plan.' : 'Uses the credits in your Higgsfield plan. Nothing is charged in dollars.'}</div>` : ''}
         <div class="desk-v1-guide-status" data-guide-status role="status"></div>
         ${e.advanced && e.group === 'higgsfield' ? '<div class="desk-v1-rules-hint">An API key is billed in dollars on your Higgsfield developer account, not from your plan credits.</div>' : ''}
         ${_limitHTML(e)}
@@ -141,7 +144,13 @@
       const status = row.querySelector('[data-guide-status]');
       const reload = () => list(null, { force: true }).then(() => repaint()).catch(() => repaint());
       const gateAt = row.querySelector('.desk-v1-conn-main');
-      if (gateAt && window.DeskV1VaultGate && (e.auth && e.auth.kind === 'oauth' || (G && G.keyGuideFor(e.id)))) window.DeskV1VaultGate.attach(gateAt);   // a sign-in or a pasted key ends in a vault write
+      if (gateAt && window.DeskV1VaultGate && (e.auth && e.auth.kind === 'oauth' || (G && G.keyGuideFor(e.id)) || _stateWord(e).key === 'locked')) window.DeskV1VaultGate.attach(gateAt, _stateWord(e).key === 'locked' ? { onUnlocked: reload } : undefined);   // a sign-in or a pasted key ends in a vault write; after an unlock the card re-reads and is Connected, no new sign-in
+      const unlock = row.querySelector('[data-engine-unlock]');
+      if (unlock) unlock.onclick = async () => {
+        const gate = gateAt && window.DeskV1VaultGate ? await window.DeskV1VaultGate.attach(gateAt, { onUnlocked: reload }) : null;
+        const pass = gate && gate.querySelector('[data-vg-pass]');
+        if (pass && !gate.hidden) pass.focus(); else reload();       // already unlocked elsewhere: just re-read
+      };
       const signin = row.querySelector('[data-engine-signin]');
       if (signin) signin.onclick = async () => {
         signin.disabled = true;

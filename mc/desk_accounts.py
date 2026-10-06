@@ -39,6 +39,7 @@ import re
 from mc import desk as _desk
 from mc import desk_account_refs as _refs
 from mc import desk_oauth as _oauth
+from mc import desk_vault_lock as _vault_lock
 from mc import secrets_store
 from mc.core import _log, now_iso
 from mc.desk_publish import LINKEDIN_TOKEN_SECRET, X_OAUTH_TOKEN_SECRET
@@ -109,6 +110,9 @@ def publish_state(acc: dict, vault: dict | None = None) -> dict:
                     'unattended_ok': bool(meta.get('allow_unattended', True))}
         if st['state'] == 'needs_signin':
             return {'ready': False, 'reason': st['reason'], 'secret': None, 'unattended_ok': None}
+        if st['state'] == _vault_lock.VAULT_LOCKED:     # the sign-in is saved; the card offers Unlock, not Sign in
+            return {'ready': False, 'reason': st['reason'], 'secret': None, 'unattended_ok': None,
+                    'vault_locked': True}
         if own is not None:
             return {'ready': False, 'reason': 'not signed in to X for this account yet',
                     'secret': None, 'unattended_ok': None}
@@ -123,9 +127,13 @@ def publish_state(acc: dict, vault: dict | None = None) -> dict:
         if plat == 'linkedin' and not acc.get('organization_id'):
             return {'ready': False, 'reason': 'no LinkedIn organization id on the account (Company Page admin URL)',
                     'secret': secret, 'unattended_ok': None}
-        if not secrets_store.is_readable(secret):
+        opened = _vault_lock.probe(secret)
+        if opened == _vault_lock.LOCKED:
+            return {'ready': False, 'reason': _vault_lock.TOKEN_REASON, 'secret': secret,
+                    'unattended_ok': None, 'vault_locked': True}
+        if opened == _vault_lock.UNREADABLE:
             return {'ready': False,
-                    'reason': f'the {what} API token in the vault cannot be read (vault locked, or its key changed)',
+                    'reason': f'the {what} API token in the vault cannot be read (its key changed)',
                     'secret': secret, 'unattended_ok': None}
         return {'ready': True, 'reason': None, 'secret': secret,
                 'unattended_ok': bool(meta.get('allow_unattended', True))}

@@ -218,6 +218,7 @@
     const x = (ov && ov.x) || { state: 'not_connected', app: {}, callback_url: '', scopes: [] };
     const app = x.app || {};
     const connected = x.state === 'connected';
+    const locked = x.state === 'vault_locked';      // the sign-in is saved: unlock, do not sign in again
     const cb = x.callback_url || '';
     const scopes = (x.scopes || []).join(' ');
     return `<div class="desk-v1-guide desk-v1-xwizard" data-guide="x" data-x-state="${esc(x.state)}">
@@ -253,9 +254,10 @@
       <section class="desk-v1-guide-step" data-x-step="3">
         <div class="desk-v1-guide-step-head"><span class="desk-v1-guide-num">3</span> Sign in with X <span class="desk-v1-guide-done" data-x-done="3"${connected ? '' : ' hidden'}>connected</span></div>
         <p class="desk-v1-guide-lede">${connected ? 'X is connected. Posts go out from your signed-in account.'
+          : locked ? esc(x.reason || 'Your vault is locked. Unlock it; your sign-in is still saved.')
           : x.state === 'needs_signin' ? esc(x.reason || 'The saved sign-in ran out. Sign in again.')
           : 'Press the button, then approve Clayrune on the X page that opens.'}</p>
-        <button type="button" class="desk-v1-conn-btn" data-x-signin${app.client_id ? '' : ' disabled'}>${connected ? 'Sign in again' : 'Sign in with X'}</button>
+        <button type="button" class="desk-v1-conn-btn" data-x-signin${app.client_id && !locked ? '' : ' disabled'}>${connected ? 'Sign in again' : 'Sign in with X'}</button>
         ${connected ? '<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-x-disconnect>Disconnect</button>' : ''}
       </section>
       <div class="desk-v1-guide-result" data-guide-result role="status"></div>
@@ -267,7 +269,7 @@
     if (!w) return;
     const say = (t, s) => _result(w, t, s);
     const done = () => { _overview = null; if (hooks && hooks.onChange) hooks.onChange(); };
-    if (window.DeskV1VaultGate) window.DeskV1VaultGate.attach(w);    // saving the app and signing in both write to the vault
+    if (window.DeskV1VaultGate) window.DeskV1VaultGate.attach(w, w.dataset.xState === 'vault_locked' ? { onUnlocked: done } : undefined);    // saving the app and signing in both write to the vault; an unlock re-reads the card
     const portal = w.querySelector('[data-x-portal]');
     portal.onclick = () => {
       if (typeof window.openBrowserPane === 'function') window.openBrowserPane(X_PORTAL, null, null, 'desk-x');

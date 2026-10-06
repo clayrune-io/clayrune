@@ -32,7 +32,7 @@
 .desk-v1-cp-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .desk-v1-cp-actions .desk-v1-conn-btn { margin-left: 0; }
 .desk-v1-cp [data-cp-verify="verified"], .desk-v1-cp [data-cp-setup="ready"], .desk-v1-cp [data-cp-word="runs"] { background: var(--green-dim, var(--surface2)); color: var(--green-text, var(--text-dim)); border-color: transparent; }
-.desk-v1-cp [data-cp-verify="partial"], .desk-v1-cp [data-cp-setup="needs_signin"], .desk-v1-cp [data-cp-setup="pending_runtime"] { background: var(--amber-dim, var(--surface2)); color: var(--amber-text, var(--text-dim)); border-color: transparent; }
+.desk-v1-cp [data-cp-verify="partial"], .desk-v1-cp [data-cp-setup="needs_signin"], .desk-v1-cp [data-cp-setup="vault_locked"], .desk-v1-cp [data-cp-setup="pending_runtime"] { background: var(--amber-dim, var(--surface2)); color: var(--amber-text, var(--text-dim)); border-color: transparent; }
 
 @media (max-width: 640px) {
   .desk-v1-cp { padding: 10px; }

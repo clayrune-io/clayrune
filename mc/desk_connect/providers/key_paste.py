@@ -9,6 +9,7 @@ undo of a write is only safe for an entry this call created.
 """
 from __future__ import annotations
 
+from mc import desk_vault_lock as _vault_lock
 from mc import secrets_store as _vault
 from mc.desk_connect.providers import base
 
@@ -72,4 +73,7 @@ class KeyPaste:
             return {'state': 'not_connected', 'entry': None}
         if self.vault not in have:
             return {'state': 'not_connected', 'entry': None}
-        return {'state': 'key_stored' if _vault.is_readable(self.vault) else 'key_unreadable', 'entry': self.vault}
+        opened = _vault_lock.probe(self.vault)
+        if opened == _vault_lock.LOCKED:         # the key is saved; the vault needs unlocking, not the key replacing
+            return {'state': _vault_lock.VAULT_LOCKED, 'entry': self.vault}
+        return {'state': 'key_stored' if opened == _vault_lock.OK else 'key_unreadable', 'entry': self.vault}

@@ -33,6 +33,7 @@ LABELS = {
     'signed_in': 'Signed in, not verified',
     'sign_in_required': 'Sign-in required',
     'key_unreadable': 'Stored key cannot be read',
+    'vault_locked': 'Vault locked',
     'check_failed': 'Check failed',
     'registered': 'Registered with agents, not verified',
     'setup_failed': 'Saved; setup failed',
@@ -99,8 +100,9 @@ def verify(service_id, method, account_id=None) -> dict:
         out = status(service_id, method, account_id)
         out['message'] = {'not_connected': 'Nothing is stored for this yet, so there is nothing to check.',
                           'needs_signin': 'Sign in again, then check.',
-                          'key_unreadable': 'The stored key cannot be opened (the vault is locked, or its key '
-                                            'changed). Unlock the vault, then check.'}.get(cs['state'], '')
+                          'key_unreadable': 'The stored key cannot be opened (its key changed). Replace it, then check.',
+                          'vault_locked': 'Your vault is locked. Unlock it, then check. What you saved is still there.'
+                          }.get(cs['state'], '')
         return out
     key = (service_id, method, account_id or '')
     stamp = _stamp(cs.get('entry'))        # taken BEFORE the probe: a change during it is not covered by it

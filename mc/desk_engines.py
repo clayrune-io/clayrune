@@ -73,6 +73,7 @@ from mc import desk as _desk
 from mc import desk_oauth as _oauth
 from mc import desk_pieces as _pieces
 from mc import desk_stitch as _stitch
+from mc import desk_vault_lock as _vault_lock
 from mc.addons import hold as _addons_hold
 from mc import secrets_store
 from mc.core import _atomic_write_text, _log, now_iso
@@ -538,9 +539,13 @@ def connection(engine_id: str, project_id: str | None = None) -> dict:
             return {'ready': False, 'vault_entry': name, 'exists': False,
                     'reason': f"no vault entry named '{name}' (add it in Secrets)"}
         exists = True
-        if not secrets_store.is_readable(name):
+        opened = _vault_lock.probe(name)
+        if opened == _vault_lock.LOCKED:
+            return {'ready': False, 'vault_entry': name, 'exists': True, 'state': _vault_lock.VAULT_LOCKED,
+                    'reason': _vault_lock.KEY_REASON}
+        if opened == _vault_lock.UNREADABLE:
             return {'ready': False, 'vault_entry': name, 'exists': True,
-                    'reason': f"vault entry '{name}' cannot be read (vault locked or key mismatch)"}
+                    'reason': f"vault entry '{name}' cannot be read (key mismatch)"}
         if eng.auth['kind'] == 'key_id_secret' and not rec.get('username'):
             label = eng.credential.get('username_label') or 'username'
             return {'ready': False, 'vault_entry': name, 'exists': True,
