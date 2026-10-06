@@ -315,6 +315,11 @@ def test_actual_manual_approval_and_scheduled_tick_consume_permission(world, mon
     campaign(world)
     piece, vid = version(world)
     consent('ch-x', mode)
+    if mode == 'allow':  # 06d: Post Allow is not Read, so the readback needs its own consent
+        policy.commit('policy-ch-x-read', {'account_id': 'ch-x', 'service': 'x', 'account_kind': 'account',
+                                           'read': True, 'post': True, 'scopes': [
+                                               POST, {'purpose': 'read_own', 'capability': 'own_posts',
+                                                      'route_id': 'x-oauth'}]})
     token = Mock(wraps=desk_oauth.x_token)
     monkeypatch.setattr(desk_oauth, 'x_token', token)
     if scheduled:
