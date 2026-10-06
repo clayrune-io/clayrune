@@ -113,7 +113,7 @@ function _hpShow(modalId) {
     win.className = 'modal-window';
     win.dataset.modalId = modalId;
     const content = document.createElement('div');
-    content.className = 'modal-content';
+    content.className = 'modal-content modal-compact';
     _clampModalSize(content, 420);
     win.appendChild(content);
     document.getElementById('modal-layer').appendChild(win);

@@ -650,7 +650,7 @@ function attendOnceSession(event, sid) {
   win.className = 'modal-window';
   win.dataset.modalId = modalId;
   const content = document.createElement('div');
-  content.className = 'modal-content';
+  content.className = 'modal-content modal-compact';
   _clampModalSize(content, 420);
   content.innerHTML = `
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">

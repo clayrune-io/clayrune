@@ -314,7 +314,7 @@ function openVaultLockNow() {
   win.className = 'modal-window';
   win.dataset.modalId = modalId;
   const content = document.createElement('div');
-  content.className = 'modal-content';
+  content.className = 'modal-content modal-compact';
   _clampModalSize(content, 420);
   content.innerHTML = `
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
@@ -379,7 +379,7 @@ function openVaultRetireLegacy() {
   win.className = 'modal-window';
   win.dataset.modalId = modalId;
   const content = document.createElement('div');
-  content.className = 'modal-content';
+  content.className = 'modal-content modal-compact';
   _clampModalSize(content, 420);
   content.innerHTML = `
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
@@ -467,7 +467,7 @@ function openVaultSetPassphrase() {
   win.className = 'modal-window';
   win.dataset.modalId = modalId;
   const content = document.createElement('div');
-  content.className = 'modal-content';
+  content.className = 'modal-content modal-compact';
   _clampModalSize(content, 480);
   content.innerHTML = `
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
@@ -546,7 +546,7 @@ function _showVaultRecoveryKey(recoveryKey) {
   win.className = 'modal-window';
   win.dataset.modalId = modalId;
   const content = document.createElement('div');
-  content.className = 'modal-content';
+  content.className = 'modal-content modal-compact';
   _clampModalSize(content, 480);
   content.innerHTML = `
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
@@ -582,7 +582,7 @@ function openVaultChangePassphrase() {
   win.className = 'modal-window';
   win.dataset.modalId = modalId;
   const content = document.createElement('div');
-  content.className = 'modal-content';
+  content.className = 'modal-content modal-compact';
   _clampModalSize(content, 480);
   content.innerHTML = `
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
