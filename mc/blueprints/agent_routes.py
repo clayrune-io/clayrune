@@ -115,6 +115,7 @@ import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
 import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (Mode B)
+import mc.desk_connect.custom_package_manifest as _custom_package_manifest  # MC-1054: detect-only file drift of approved npm MCPs
 import mc.agent_jobs as _agent_jobs  # MC-958 follow-up: engine-agnostic background command jobs
 import mc.caller_attribution as _caller_attribution  # backlog 40260b57: who is really calling dispatch
 import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
@@ -684,6 +685,7 @@ def _resolve_project_mcp_config(project):
 
     Best-effort: any failure returns None (fail-open to the full fleet) — MCP
     trimming must never break a dispatch."""
+    _custom_package_manifest.check_for_launch(project)  # detect only, never raises
     try:
         sel = (project or {}).get('enabled_mcp_servers')
         if not isinstance(sel, list):
