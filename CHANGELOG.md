@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — API/PyPI reference drafts retain their metadata (MC-1062/12b)
+
+- Connect's existing human/passcode Save accepts bounded, provenance-labelled API/PyPI metadata and existing vault-name references on reference-only records. Stored details remain unapproved, non-executable and publish false; no executor, probe or permission is added. Create-only, replay and new-credential rollback behavior remain intact.
+- Validation and local reference Save have separate modules; old records/responses keep their shape. Contract: `docs/desk_v1/connect_flow_tickets/12b-reference-draft.md`. The new wizard remains disabled until ticket 14.
+
 ## [2026-10-06] — X API setup attaches to a saved account (MC-1062/03b)
 
 - X held sign-in and provider Save accept an existing account id validated through the browser-account attachment contract. They use that account's own OAuth references, never create a duplicate account, and leave its browser setup, read settings, connections and permissions unchanged. Calls without an id keep the original create path.
