@@ -65,6 +65,8 @@ const WALKTHROUGH_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'walkthro
 const SKILLS_PANEL_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'skills-panel.js'), 'utf8');
 const ADDONS_PANEL_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'addons-panel.js'), 'utf8');
 const PASSKEYS_PANEL_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'passkeys-panel.js'), 'utf8');
+const PASSKEYS_WEBAUTHN_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'passkeys-webauthn.js'), 'utf8');
+const PASSKEYS_RECOVERY_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'passkeys-recovery.js'), 'utf8');
 // Media gallery ES module — same rule as claydo.js above (an unlisted module is
 // ABORTED by the hermetic harness, so the SPA boots without it and any
 // assertion that depends on it lies).
@@ -178,6 +180,8 @@ const STATIC_MAP = {
   '/static/js/skills-panel.js': ['text/javascript; charset=utf-8', SKILLS_PANEL_JS],
   '/static/js/addons-panel.js': ['text/javascript; charset=utf-8', ADDONS_PANEL_JS],
   '/static/js/passkeys-panel.js': ['text/javascript; charset=utf-8', PASSKEYS_PANEL_JS],
+  '/static/js/passkeys-webauthn.js': ['text/javascript; charset=utf-8', PASSKEYS_WEBAUTHN_JS],
+  '/static/js/passkeys-recovery.js': ['text/javascript; charset=utf-8', PASSKEYS_RECOVERY_JS],
   '/static/js/media.js': ['text/javascript; charset=utf-8', MEDIA_JS],
   '/static/js/settings-drill.js': ['text/javascript; charset=utf-8', SETTINGS_DRILL_JS],
   '/static/js/settings-sections.js': ['text/javascript; charset=utf-8', SETTINGS_SECTIONS_JS],
