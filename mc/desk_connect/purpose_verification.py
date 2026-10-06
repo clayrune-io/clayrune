@@ -16,8 +16,10 @@ Status is DERIVED each time it is asked, like `verification.status`:
 
 So changing one credential, one browser profile or one route un-verifies exactly the
 capabilities that rested on it, with no code that has to remember to; the others keep
-theirs. Records are in memory, bounded and not persisted: after a restart everything reads
-`not_checked`, the safe direction. `status` never touches the network or decrypts anything.
+theirs. Records are bounded and survive a restart (`purpose_verification_store`: the identity
+the check proved, and when). A loaded record is only a claim, held to the same two tests on
+every read, so a file that no longer matches reads `not_checked`, the safe direction.
+`status` never touches the network or decrypts anything.
 """
 from __future__ import annotations
 
@@ -30,12 +32,15 @@ from mc import desk_engagement as _engagement
 from mc import secrets_store as _vault
 from mc.core import _log, now_iso
 from mc.desk_connect import purpose_bindings as _bindings
+from mc.desk_connect import purpose_verification_store as _store
 from mc.desk_connect import route_readiness as _ready
 
 VAULT_REF_KEYS = ('oauth_vault', 'login', 'api_key')   # the refs that name a vault entry
 _REMEMBER = 400
 _lock = threading.Lock()
 _records: 'OrderedDict[tuple, dict]' = OrderedDict()
+_NOT_LOADED = object()
+_loaded_from: object = _NOT_LOADED     # the sidecar path `_records` was read from (None = unwired)
 
 
 class CheckError(ValueError):
@@ -45,9 +50,31 @@ class CheckError(ValueError):
         self.code = code
 
 
+def _ensure_loaded() -> None:
+    """Read the sidecar once per path. Caller holds `_lock`."""
+    global _loaded_from
+    here = _store.path()
+    if _loaded_from is not _NOT_LOADED and _loaded_from == here:
+        return
+    _records.clear()
+    _records.update(_store.load(_REMEMBER))
+    _loaded_from = here
+
+
 def _forget_all_for_tests() -> None:
+    """Empty memory and treat the sidecar as already read, so nothing on disk comes back."""
+    global _loaded_from
     with _lock:
         _records.clear()
+        _loaded_from = _store.path()
+
+
+def _restart_for_tests() -> None:
+    """What a server restart does: memory is gone, the sidecar is untouched."""
+    global _loaded_from
+    with _lock:
+        _records.clear()
+        _loaded_from = _NOT_LOADED
 
 
 # -- the checkers -------------------------------------------------------------------
@@ -99,6 +126,7 @@ def capability_state(rec: dict, purpose: str, cap: str) -> dict:
     if b is None:
         return {'state': 'not_checked'}
     with _lock:
+        _ensure_loaded()
         got = _records.get((rec['id'], purpose, cap))
     if got and got['fingerprint'] == b.get('fingerprint') and got['stamps'] == _stamps(b.get('refs')):
         return {'state': 'verified', 'at': got['at'], 'identity': got['identity']}
@@ -145,6 +173,7 @@ def check(account_id: str, purpose: str) -> dict:
             routes.append({'route_id': g['route_id'], 'result': 'failed', 'message': str(e)[:300] or type(e).__name__})
             continue
         with _lock:
+            _ensure_loaded()
             for cap in g['capabilities']:
                 _records.pop((rec['id'], purpose, cap), None)
             for cap, identity in (proved or {}).items():
@@ -155,6 +184,7 @@ def check(account_id: str, purpose: str) -> dict:
                                                        'at': now_iso(), 'identity': identity}
                 while len(_records) > _REMEMBER:
                     _records.popitem(last=False)
+            _store.save(_records)
         routes.append({'route_id': g['route_id'], 'result': 'passed', 'proved': sorted(proved or {}),
                        'not_proved': sorted(set(g['capabilities']) - set(proved or {}))})
     with _desk._store_lock:
