@@ -40,6 +40,7 @@ import mc.skills as _skills
 import mc.agent_runtime as _agent_runtime
 from mc import characters as _chars_mod
 from mc import engine_selection
+from mc import doc_search as _doc_search
 from mc import memory_fts as _mem_fts
 from mc import state
 from mc.core import now_iso, _log
@@ -1274,3 +1275,27 @@ def brainstorm_transfer(project_id):
             except Exception as e2:
                 _log(f'[brainstorm-transfer] rollback folder cleanup failed: {e2}', flush=True)
             return jsonify({'error': f'transfer failed: {e}'}), 500
+
+
+@bp.route('/api/project/<project_id>/docs/search', methods=['GET'])
+def docs_search(project_id):
+    """Ranked BM25 search over the project's `docs/` tree (MC-950).
+
+    Reads the project's own `project_path` (resolved to the main checkout when
+    that is a worktree), so gitignored design docs and `_journal/` entries are
+    found even by an agent whose worktree cannot see them. `_journal/` hits
+    carry `tier: 'journal'` and rank lower. `score` is positive,
+    higher-is-better, and NOT a relevance probability: a query with no answer
+    still returns scored hits, so read the snippet. See mc/doc_search.py.
+    """
+    p = load_project(project_id)
+    if p is None:
+        return jsonify({'error': 'not found'}), 404
+    q = (request.args.get('q') or '').strip()
+    if not q:
+        return jsonify({'error': 'missing q'}), 400
+    try:
+        limit = int(request.args.get('limit', 5))
+    except (TypeError, ValueError):
+        limit = 5
+    return jsonify(_doc_search.search(p, q, limit))

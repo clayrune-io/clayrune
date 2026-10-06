@@ -4037,6 +4037,8 @@ Base: http://localhost:{port}  ·  project_id: {pid}
 - Agent dispatch: POST /api/project/{pid}/agent/dispatch {{"task":"..."}}
 - Browser pane: POST /api/browser/launch {{"project_id":"{pid}","url":"..."}}
   · POST /api/browser/read {{"session_id":...}}
+- Find a doc (incl. gitignored docs + _journal, invisible from a worktree):
+  GET /api/project/{pid}/docs/search?q=<question>&limit=5
 - Schedules: GET /api/schedules · POST /api/schedules {{"project_id":"{pid}","task":"...",...}}
 
 This is NOT the full API. Guessing an endpoint name instead of checking is
