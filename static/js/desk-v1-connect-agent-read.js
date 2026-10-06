@@ -56,17 +56,26 @@
         <div class="desk-v1-rules-hint" data-agentread-status></div>`;
   }
 
-  async function _save(st, domains) {
+  // The one write: the profile's whole policy, behind the passcode prompt. `description` lets a
+  // caller that knows more (the Connect wizard's browser Read step) say it in the prompt.
+  async function put(profile, domains, description) {
     if (typeof window.humanProofFetch !== 'function') throw new Error('the passcode prompt is not available');
     const res = await window.humanProofFetch(
-      API() + '/api/browser/profiles/' + encodeURIComponent(st.profile) + '/agent-read',
+      API() + '/api/browser/profiles/' + encodeURIComponent(profile) + '/agent-read',
       { method: 'PUT', body: JSON.stringify({ enabled: domains.length > 0, domains }) },
-      { title: 'Agent reads', description: domains.length
-        ? `Re-enter your dashboard passcode to let agents read ${domains.join(', ')} through "${st.profile}".`
-        : `Re-enter your dashboard passcode to stop agents reading through "${st.profile}".` });
+      { title: 'Agent reads', description: description || (domains.length
+        ? `Re-enter your dashboard passcode to let agents read ${domains.join(', ')} through "${profile}".`
+        : `Re-enter your dashboard passcode to stop agents reading through "${profile}".`) });
     if (res === null) return null;                              // cancelled: nothing was sent
     if (!res.ok) throw new Error((res.body && (res.body.error || res.body.message)) || ('HTTP ' + res.status));
     return (res.body && res.body.domains) || domains;
+  }
+  const _save = (st, domains) => put(st.profile, domains);
+
+  // Every profile's policy and the saved profile names, as the Browser pane's own menu reads them.
+  async function loadPolicies() {
+    const [pol, prof] = await Promise.all([_json('/api/browser/agent-read'), _json('/api/browser/profiles')]);
+    return { policies: (pol && pol.profiles) || {}, saved: ((prof && prof.profiles) || []).map((p) => p.name) };
   }
 
   function _paint(mount, st) {
@@ -105,9 +114,7 @@
     const mount = host && host.querySelector('[data-agentread-body]');
     if (!mount) return;
     try {
-      const [pol, prof] = await Promise.all([_json('/api/browser/agent-read'), _json('/api/browser/profiles')]);
-      const policies = (pol && pol.profiles) || {};
-      const saved = ((prof && prof.profiles) || []).map((p) => p.name);
+      const { policies, saved } = await loadPolicies();
       const fixed = (ch.browser_profile || '').trim().toLowerCase();
       const profile = fixed || (saved.includes('main') ? 'main' : (saved[0] || ''));
       if (!host.isConnected) return;                     // the screen repainted while this loaded
@@ -118,5 +125,5 @@
     }
   }
 
-  window.DeskV1ConnectAgentRead = { html, bind };
+  window.DeskV1ConnectAgentRead = { html, bind, put, loadPolicies };
 })();
