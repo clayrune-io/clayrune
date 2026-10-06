@@ -6,7 +6,7 @@
  * tests/test_desk_story.py); what is under test is what the browser sends and what
  * it paints from the answer.
  *
- *   1. Story    -> a pasted story grows the box, is saved with the board (PUT carries
+ *   1. Story    -> a pasted story keeps the box one height and scrolls, is saved with the board (PUT carries
  *                  `story`), and a reload brings it back.
  *   2. Make     -> empty board: no prompt, POST generate {mode:'board', story}; the scenes
  *                  appear, are saved, and ONE Undo takes them away again.
@@ -169,7 +169,8 @@ async function main(browser) {
   const h0 = await page.$eval('[data-sb-story]', (t) => t.offsetHeight);
   await page.fill('[data-sb-story]', STORY);
   const h1 = await page.$eval('[data-sb-story]', (t) => t.offsetHeight);
-  h1 > h0 ? ok(`the box grows with the text (${h0}px -> ${h1}px)`) : fail(`the box did not grow: ${h0} -> ${h1}`);
+  const sc = await page.$eval('[data-sb-story]', (t) => ({ sh: t.scrollHeight, ch: t.clientHeight }));
+  (h1 === h0 && h1 <= 322 && sc.sh > sc.ch) ? ok(`a long story keeps the box at ${h1}px and scrolls inside it`) : fail(`the story box changed height or does not scroll: ${h0} -> ${h1}, scroll ${sc.sh}/${sc.ch}`);
   const cnt = await page.textContent('[data-story-count]');
   cnt.startsWith(STORY.length.toLocaleString('en-US')) ? ok(`the count reads ${cnt}`) : fail('count: ' + cnt);
   await page.waitForTimeout(1000);

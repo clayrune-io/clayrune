@@ -148,7 +148,7 @@
         <label class="desk-v1-story-title" for="sb-story">The story</label>
         <span class="desk-v1-story-count" data-story-count></span>
       </div>
-      <textarea class="desk-v1-story-input" id="sb-story" data-sb-story data-autogrow="0.6" rows="5"${ready ? '' : ' disabled'} placeholder="${ready ? 'Paste or write the story this video should tell: every shot, who is in it, what happens, any lines or captions. The scenes are made from it.' : 'Loading…'}"></textarea>
+      <textarea class="desk-v1-story-input" id="sb-story" data-sb-story rows="5"${ready ? '' : ' disabled'} placeholder="${ready ? 'Paste or write the story this video should tell: every shot, who is in it, what happens, any lines or captions. The scenes are made from it.' : 'Loading…'}"></textarea>
       <div class="desk-v1-story-actions">
         <button type="button" class="btn-add" data-story-make${ready ? '' : ' disabled'}>Make storyboard from story</button>
         <span class="desk-v1-story-note" data-story-cost>One model call by your agent: about 2¢ for a typical story.</span>
@@ -185,8 +185,7 @@
       count.textContent = `${_fmt(n)} / ${_fmt(MAX_STORY)}`;
       count.classList.toggle('desk-v1-story-over', n > MAX_STORY);
     };
-    paintCount();
-    _fit(ta);
+    paintCount();   // the story box keeps one height and scrolls (CSS); it does not grow
 
     let timer = null;
     let dirty = false;
