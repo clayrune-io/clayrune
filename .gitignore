@@ -90,6 +90,8 @@ data/desk.json
 data/desk_signals.jsonl
 data/desk_receipts.json
 data/desk_engine_jobs.json
+data/desk_purpose_verification.json
+data/desk_purpose_verification.json.corrupt
 data/agent_labels.json
 data/remote_enrollment_liveness.json
 data/coordination/

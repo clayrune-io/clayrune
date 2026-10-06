@@ -647,15 +647,52 @@ def test_adding_a_capability_to_a_route_leaves_the_others_verified(env, pane):
     assert st['verified'] == ['mentions'] and st['state'] == 'partial'
 
 
-def test_verification_is_not_persisted_and_never_survives_a_forgotten_process(env, pane):
+def test_verification_survives_a_restart_but_is_not_stored_on_the_account(env, pane):
+    from mc.desk_connect import purpose_verification as pv
+    client, _, tmp = env
+    acc = _x()
+    _save(client, _draft('x', {'id': acc['id']}, 'account', [_b('read_own', 'x-browser', ['mentions'], browser_profile='x-ron')]))
+    client.post('/api/desk/connect/purpose/verify', json={'account_id': acc['id'], 'purpose': 'read_own'})
+    before = pv.purpose_state(_rec(acc['id']), 'read_own')
+    assert before['state'] == 'verified'
+    assert 'verified' not in json.dumps(_rec(acc['id']))                # the account record carries no verdict
+    assert (tmp / 'desk_purpose_verification.json').exists()
+    pv._restart_for_tests()                                              # a restart: memory gone, file stays
+    after = pv.purpose_state(_rec(acc['id']), 'read_own')
+    assert after['state'] == 'verified'
+    assert after['capabilities']['mentions']['at'] == before['capabilities']['mentions']['at']
+    assert 'identity' in after['capabilities']['mentions']
+
+
+def test_a_restored_record_still_loses_to_a_changed_binding(env, pane):
     from mc.desk_connect import purpose_verification as pv
     client, _, _ = env
     acc = _x()
     _save(client, _draft('x', {'id': acc['id']}, 'account', [_b('read_own', 'x-browser', ['mentions'], browser_profile='x-ron')]))
     client.post('/api/desk/connect/purpose/verify', json={'account_id': acc['id'], 'purpose': 'read_own'})
-    assert pv.purpose_state(_rec(acc['id']), 'read_own')['state'] == 'verified'
-    assert 'verified' not in json.dumps(_rec(acc['id']))
-    pv._forget_all_for_tests()
+    pv._restart_for_tests()
+    _save(client, _draft('x', {'id': acc['id']}, 'account', [_b('read_own', 'x-browser', ['mentions'], browser_profile='x-other')]), rid='req-rebind-0003')
+    assert pv.purpose_state(_rec(acc['id']), 'read_own')['state'] == 'not_checked'
+
+
+def test_a_restored_record_still_loses_to_a_rotated_credential(env, pane, monkeypatch):
+    from mc import secrets_store
+    from mc.desk_connect import purpose_verification as pv
+    client, _, _ = env
+    secrets_store.set_secret('oauth.x.test', 'v1', entry_type='token')
+    acc = _x()
+    monkeypatch.setitem(pv.CHECKERS, ('x', 'x-oauth', 'read_own'), lambda rec, g: {'own_posts': '@ron'})
+    _save(client, _draft('x', {'id': acc['id']}, 'account', [_b('read_own', 'x-oauth', ['own_posts'])]))
+    from mc import desk
+    with desk._store_lock:
+        st = desk._read_store()
+        st['accounts'][acc['id']]['connections']['read_own']['own_posts']['refs']['oauth_vault'] = 'oauth.x.test'
+        desk._write_store(st)
+    out = client.post('/api/desk/connect/purpose/verify', json={'account_id': acc['id'], 'purpose': 'read_own'}).get_json()
+    assert out['verified'] == ['own_posts']
+    pv._restart_for_tests()
+    assert pv.purpose_state(_rec(acc['id']), 'read_own')['state'] == 'verified'      # stamps survived the JSON round trip
+    secrets_store.set_secret('oauth.x.test', 'v2-rotated', entry_type='token')
     assert pv.purpose_state(_rec(acc['id']), 'read_own')['state'] == 'not_checked'
 
 
