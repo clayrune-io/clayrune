@@ -43,6 +43,7 @@ const SHOT_DIR = resolve(REPO_ROOT, '_scratch', 'connect_wizard');
 mkdirSync(SHOT_DIR, { recursive: true });
 const STATIC = {};
 Object.assign(STATIC, loadStaticJsCss(REPO_ROOT));
+const REAL_SCREENS = new Set(['/static/js/desk-v1-connect-login-step.js']);
 
 let bad = 0;
 const ok = (m) => console.log('  ✓ ' + m);
@@ -86,6 +87,8 @@ async function newPage(browser, { srv, width, height }) {
     const method = req.method();
     const J = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
     if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    // The real step screens (tickets 04+) register first and would win the first-match; this smoke drives the frame with its own fixtures.
+    if (REAL_SCREENS.has(path)) return route.fulfill({ status: 200, contentType: 'text/javascript', body: '' });
     if (STATIC[path]) return route.fulfill({ status: 200, contentType: STATIC[path][0], body: STATIC[path][1] });
     if (path === '/api/projects') return J(srv.fx.projects.map((p) => ({
       id: p.id, name: p.name, status: 'active', domain: 'general', emoji: '🧪', description: '', summary: '', current_task: 'Idle',
