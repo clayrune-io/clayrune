@@ -61,7 +61,10 @@ def clayrune_listener_pids() -> set[str]:
     try:
         result = subprocess.run(
             ["netstat", "-ano"], capture_output=True, text=True, encoding='utf-8', errors='replace',
-            timeout=5, check=False)
+            timeout=5, check=False,
+            # The hook runs under pythonw.exe (no console); without this
+            # netstat gets a fresh visible console window on every tool call.
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     except Exception:
         return set()
     found: set[str] = set()

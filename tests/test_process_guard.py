@@ -39,3 +39,19 @@ def test_hook_covers_gemini_and_qwen_shell_tool_name(capsys):
     assert hook_main(payload) == 2
     assert 'image-name termination' in capsys.readouterr().err
 
+
+
+def test_listener_scan_spawns_netstat_without_a_console_window(monkeypatch):
+    import subprocess
+    from mc import process_guard
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen.update(argv=argv, **kwargs)
+        return subprocess.CompletedProcess(
+            argv, 0, stdout='  TCP    0.0.0.0:5199    0.0.0.0:0    LISTENING    4242\n')
+
+    monkeypatch.setattr(process_guard.subprocess, 'run', fake_run)
+    assert process_guard.clayrune_listener_pids() == {'4242'}
+    assert seen['argv'] == ['netstat', '-ano']
+    assert seen['creationflags'] == getattr(subprocess, 'CREATE_NO_WINDOW', 0)
