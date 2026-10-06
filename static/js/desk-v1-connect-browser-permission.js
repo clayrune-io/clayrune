@@ -195,5 +195,5 @@
     return { state: () => ({ ...st, wish }) };
   }
 
-  window.DeskV1ConnectBrowserPermission = { siteOf, covering, plan, sharing, load, apply, outcome, html: _html, bind };
+  window.DeskV1ConnectBrowserPermission = { siteOf, covering, plan, sharing, load, apply, outcome, facts: _facts, html: _html, bind };
 })();
