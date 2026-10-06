@@ -27,6 +27,7 @@ from __future__ import annotations
 import errno
 import socket
 import sys
+import threading
 import time
 
 # Windows reports "port taken" as WSAEADDRINUSE (10048) — or WSAEACCES (10013)
@@ -80,6 +81,7 @@ def _new_socket(family: int, *, v6only: bool | None, shared: bool) -> socket.soc
 def bind_listener(family: int, host: str, port: int, *, v6only: bool | None = None,
                   shared: bool = False, backlog: int = 128,
                   retry_window_s: float = RETRY_WINDOW_S,
+                  wait_for_holder: bool = False,
                   _clock=time) -> socket.socket:
     """Return a bound, listening socket; raise PortInUse if the port stays taken.
 
@@ -88,6 +90,12 @@ def bind_listener(family: int, host: str, port: int, *, v6only: bool | None = No
     second or two. The moment a connect succeeds a live server holds the port,
     so we fail at once instead of waiting out the window (the loser of a boot
     race must exit promptly, not hang for 15s).
+
+    `wait_for_holder=True` is for a server restart (MC_RESTART_FROM_PID): the
+    holder IS expected to still answer — it is the parent we just replaced and
+    it is on its way out — so keep retrying for the whole window instead of
+    failing on the first answer. Still bounded: a parent that never leaves is a
+    conflict.
 
     `shared=True` restores the old Windows semantics (MC_ALLOW_PORT_CONFLICT=1).
     """
@@ -102,6 +110,91 @@ def bind_listener(family: int, host: str, port: int, *, v6only: bool | None = No
             sock.close()
             if e.errno not in _IN_USE and getattr(e, 'winerror', None) not in _IN_USE:
                 raise
-            if port_answers(port) or _clock.time() >= deadline:
+            if (not wait_for_holder and port_answers(port)) or _clock.time() >= deadline:
                 raise PortInUse(e.errno, f"port {port} is already in use: {e.strerror}") from e
         _clock.sleep(_RETRY_STEP_S)
+
+
+class Reserved:
+    """Listening sockets reserved for the server, not yet serving.
+
+    The point of reserving them before `boot()` (MC-1060): the bind is the only
+    single-instance check that cannot be raced, so it has to be the FIRST thing
+    a starting server does. Done after boot, the loser of a boot race had
+    already reconciled the agent log, adopted or marked stale the winner's
+    runs, delivered callbacks and rewritten guardrail hooks before its bind
+    failed. The sockets are already listening (clients that connect during boot
+    queue in the backlog and are answered once `serve` starts).
+    """
+
+    def __init__(self, port: int, listeners: list[tuple[str, socket.socket]]):
+        self.port = port
+        # (host, socket); the LAST one is served on the calling thread.
+        self.listeners = listeners
+
+    def close(self) -> None:
+        for _host, sock in self.listeners:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def serve(self, app, *, log=print) -> None:
+        """Serve `app` from the reserved sockets; blocks on the last one."""
+        from werkzeug.serving import make_server
+        *rest, (host, sock) = self.listeners
+        for h, s in rest:
+            try:
+                srv = make_server(h, self.port, app, threaded=True, fd=s.fileno())
+                threading.Thread(target=srv.serve_forever, daemon=True,
+                                 name='serve-loopback-v6').start()
+            except OSError as e:
+                log(f"[serve] {h} bind unavailable ({e}); serving {host} only.")
+        make_server(host, self.port, app, threaded=True, fd=sock.fileno()).serve_forever()
+
+
+def reserve(port: int, *, loopback_only: bool = False, shared: bool = False,
+            wait_for_holder: bool = False, retry_window_s: float = RETRY_WINDOW_S,
+            log=print) -> Reserved:
+    """Bind the server's listening socket(s) now; raise PortInUse if refused.
+
+    Same three modes the server always had:
+
+    - default: ONE dual-stack AF_INET6 socket on `::` (IPV6_V6ONLY=0), so
+      `localhost` -> ::1 and 127.0.0.1 are both served without the ~200ms
+      Happy-Eyeballs fallback per connection. If the host has no IPv6 at all,
+      fall back to IPv4-only on 0.0.0.0.
+    - `loopback_only` (MC_BIND_LOOPBACK=1): ::1 and 127.0.0.1 each get a socket;
+      if ::1 is unavailable, 127.0.0.1 alone.
+    - `shared` (MC_ALLOW_PORT_CONFLICT=1): the old shared bind on Windows.
+
+    A PortInUse is never swallowed by the fallbacks: a taken port is a taken
+    port on every address family.
+    """
+    def bind(family: int, host: str, *, v6only: bool | None = None) -> socket.socket:
+        return bind_listener(family, host, port, v6only=v6only, shared=shared,
+                             wait_for_holder=wait_for_holder, retry_window_s=retry_window_s)
+
+    if loopback_only:
+        listeners: list[tuple[str, socket.socket]] = []
+        try:
+            listeners.append(('::1', bind(socket.AF_INET6, '::1', v6only=True)))
+        except PortInUse:
+            raise
+        except OSError as e:
+            log(f"[serve] ::1 bind unavailable ({e}); serving 127.0.0.1 only.")
+        try:
+            listeners.append(('127.0.0.1', bind(socket.AF_INET, '127.0.0.1')))
+        except BaseException:
+            Reserved(port, listeners).close()
+            raise
+        return Reserved(port, listeners)
+    try:
+        return Reserved(port, [('::', bind(socket.AF_INET6, '::', v6only=False))])
+    except PortInUse:
+        raise
+    except OSError as e:
+        log(f"[serve] dual-stack bind unavailable ({e}); falling back to IPv4-only. "
+            f"http://localhost:{port} will be ~200ms/request slower than "
+            f"http://127.0.0.1:{port}.")
+    return Reserved(port, [('0.0.0.0', bind(socket.AF_INET, '0.0.0.0'))])

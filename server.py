@@ -2496,7 +2496,7 @@ def _check_port_conflict():
 
     def _who_answers():
         # Windows: the bind() probe above PASSES when the live listener is the
-        # dual-stack AF_INET6 socket _serve_dual_stack() opens with SO_REUSEADDR
+        # dual-stack AF_INET6 socket the server used to open with SO_REUSEADDR
         # (on Windows SO_REUSEADDR means "another socket may bind this port too").
         # Seen 2026-08-29: the ClayruneAutostart task held 5199 and start.bat
         # started a second server on the same port anyway; the pair then split
@@ -3307,88 +3307,44 @@ def _exit_port_in_use(err):
     sys.exit(2)
 
 
-def _serve_v4(host, port):
-    """Serve on one IPv4 address from an exclusive socket (mc/listen_socket.py)."""
-    import socket as _socket
-    from mc import listen_socket
-    from werkzeug.serving import make_server
-    try:
-        sock = listen_socket.bind_listener(_socket.AF_INET, host, port, shared=_shared_bind())
-    except listen_socket.PortInUse as e:
-        _exit_port_in_use(e)
-    srv = make_server(host, port, app, threaded=True, fd=sock.fileno())
-    srv.serve_forever()
+def _reserve_listeners(port):
+    """Bind the exclusive listening socket(s) NOW, before boot() (MC-1060).
 
+    The bind is the one single-instance check that cannot be raced, so it runs
+    first. Run after boot, the loser of a boot race had already reconciled the
+    agent log, adopted or marked stale the winner's runs, delivered callbacks
+    and rewritten guardrail hooks before its own bind failed. A PortInUse exits
+    here, before any boot phase has started. Modes (dual-stack, loopback-only,
+    shared) and the bounded restart retry live in mc/listen_socket.py.
 
-def _serve_loopback(port):
-    """Loopback-only twin of _serve_dual_stack: `localhost` resolves to ::1
-    first, so keep BOTH loopback addresses listening (the ~200ms/request
-    Happy-Eyeballs tax that function's docstring describes applies here too).
-    ::1 gets its own socket + thread; 127.0.0.1 serves on the main thread. If
-    the host has no IPv6, 127.0.0.1 alone is served."""
-    import socket as _socket
-    import threading as _threading
-    from mc import listen_socket
-    from werkzeug.serving import make_server
-    try:
-        s6 = listen_socket.bind_listener(_socket.AF_INET6, '::1', port, v6only=True,
-                                         shared=_shared_bind())
-        srv6 = make_server('::1', port, app, threaded=True, fd=s6.fileno())
-        _threading.Thread(target=srv6.serve_forever, daemon=True, name='serve-loopback-v6').start()
-    except listen_socket.PortInUse as e:
-        _exit_port_in_use(e)
-    except OSError as e:
-        _log(f"[serve] ::1 bind unavailable ({e}); serving 127.0.0.1 only.")
-    _serve_v4('127.0.0.1', port)
-
-
-def _serve_dual_stack(port):
-    """Serve on IPv4 *and* IPv6, from a single dual-stack socket.
-
-    Why this is not just `app.run(host='0.0.0.0')`:
-
-    `0.0.0.0` is IPv4-only. But `localhost` resolves to the AAAA record `::1`
-    BEFORE the A record `127.0.0.1` — so every browser/curl hit to
-    http://localhost:PORT first opens a connection to ::1, finds nothing
-    listening, and only falls back to IPv4 after the Happy-Eyeballs timeout
-    (~200ms in Chrome and curl). That tax is paid PER CONNECTION — every JS
-    file, every CSS file, every API call — which is what made a page refresh
-    take seconds instead of milliseconds. Measured here: 210ms/req via
-    `localhost` vs 2ms via `127.0.0.1`, on an otherwise idle server.
-
-    The naive fix (`host='::'`) is WRONG on Windows: IPV6_V6ONLY defaults to 1
-    there, so an AF_INET6 socket would refuse 127.0.0.1 outright and break LAN,
-    mobile-pairing, and tunnel clients (all of which reach us over IPv4).
-
-    So bind AF_INET6 with IPV6_V6ONLY=0 — one socket that accepts both families
-    (IPv4 peers arrive as ::ffff:a.b.c.d) — and hand the fd to werkzeug. If the
-    host has IPv6 disabled entirely, fall back to the old IPv4-only bind.
+    Consumes MC_RESTART_FROM_PID (the marker `_check_port_conflict` used to pop
+    -- boot() skips that check now): a restart waits for the parent to release
+    the port instead of failing on the first answer, and the marker must not
+    leak into agents and test runs this server spawns.
     """
-    if _loopback_only():
-        return _serve_loopback(port)
-    import socket as _socket
     from mc import listen_socket
+    restart_parent = os.environ.pop('MC_RESTART_FROM_PID', '')
+    if restart_parent:
+        _log(f"[serve] restart from PID {restart_parent}: waiting up to "
+             f"{listen_socket.RETRY_WINDOW_S:.0f}s for it to release port {port}.", flush=True)
     try:
-        sock = listen_socket.bind_listener(_socket.AF_INET6, '::', port, v6only=False,
-                                           shared=_shared_bind())
+        return listen_socket.reserve(port, loopback_only=_loopback_only(), shared=_shared_bind(),
+                                     wait_for_holder=bool(restart_parent), log=_log)
     except listen_socket.PortInUse as e:
+        _log(f"[serve] port {port} is held by another process ({e.strerror}); exiting "
+             f"before any startup phase has run.", flush=True)
         _exit_port_in_use(e)
-    except OSError as e:
-        _log(f"[serve] dual-stack bind unavailable ({e}); falling back to IPv4-only. "
-             f"http://localhost:{port} will be ~200ms/request slower than "
-             f"http://127.0.0.1:{port}.")
-        _serve_v4('0.0.0.0', port)
-        return
 
-    from werkzeug.serving import make_server
-    srv = make_server('::', port, app, threaded=True, fd=sock.fileno())
-    srv.serve_forever()
+
+def _serve_reserved(reserved):
+    """Serve the app from sockets `_reserve_listeners` already bound."""
+    reserved.serve(app, log=_log)
 
 
 def _boot_phase(label, fn):
     """Run one startup phase, logging how long it took.
 
-    Everything between process start and `_serve_dual_stack` is dead air for the
+    Everything between process start and `_serve_reserved` is dead air for the
     user — the browser is sitting on the "Restarting…" overlay. Without per-phase
     timings a slow boot is indistinguishable from a slow page, so a "the app took
     two minutes to come back" report has nowhere to land. Exceptions are logged
@@ -3427,10 +3383,11 @@ def boot(check_port=True):
     Anything added here is automatically shared by both entry points. Keep it
     that way: do not add startup work directly to `__main__`.
 
-    check_port: app.py binds the port itself via app.run/_serve_dual_stack in
-    its own thread, and does its own single-instance handling before it gets
-    here, so it opts out of the connect-probe guard (MC-908) rather than
-    racing itself for its own port.
+    check_port: the connect-probe guard (MC-908). `__main__` passes False
+    because it has already bound the port (`_reserve_listeners`) and the probe
+    would see its own listening socket as a rival. app.py also passes False
+    but for a different reason: it binds through app.run and has no
+    single-instance guard of its own.
     """
     global _BOOT_T0
     _BOOT_T0 = _time.time()
@@ -3709,6 +3666,9 @@ def _install_guardrail_hooks_on_boot(clayrune_home: Optional[Path] = None) -> No
 
 
 if __name__ == '__main__':
-    boot()
+    # Bind first (MC-1060): a second instance must exit before boot() touches
+    # shared state. The bind replaces boot()'s connect-probe port check.
+    _listeners = _reserve_listeners(PORT)
+    boot(check_port=False)
     _log(f"Clayrune running at http://localhost:{PORT}")
-    _serve_dual_stack(PORT)
+    _serve_reserved(_listeners)

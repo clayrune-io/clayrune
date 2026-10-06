@@ -165,10 +165,11 @@ def srv(tmp_data_dir):
     return server
 
 
-def test_serve_dual_stack_exits_2_with_the_banner_when_port_is_held(srv, monkeypatch):
+def test_reserve_listeners_exits_2_with_the_banner_when_port_is_held(srv, monkeypatch):
     """The end-to-end shape of the 2026-10-06 bug: a live server owns the port,
-    a second server reaches the bind. It must die through the 'already in use'
-    banner (exit 2), not silently share the port and split traffic."""
+    a second server reaches the bind (now the first thing it does). It must
+    die through the 'already in use' banner (exit 2), not silently share the
+    port and split traffic."""
     lines: list[str] = []
     monkeypatch.setattr(srv, '_log', lambda *a, **k: lines.append(str(a[0]) if a else ''))
     monkeypatch.delenv('MC_ALLOW_PORT_CONFLICT', raising=False)
@@ -181,7 +182,7 @@ def test_serve_dual_stack_exits_2_with_the_banner_when_port_is_held(srv, monkeyp
     monkeypatch.setattr(werkzeug.serving, 'make_server', lambda *a, **k: served.append(a) or None)
     try:
         with pytest.raises(SystemExit) as exc:
-            srv._serve_dual_stack(port)
+            srv._reserve_listeners(port)
     finally:
         holder.close()
     assert exc.value.code == 2

@@ -59,14 +59,14 @@ def test_app_py_calls_boot():
 def test_main_block_delegates_to_boot_and_adds_no_startup_work():
     """Startup work added to __main__ instead of boot() silently skips the
     desktop app — exactly how the two paths drifted apart in the first place.
-    __main__ may only boot, log, and serve."""
+    __main__ may only reserve the port, boot, log, and serve."""
     tree = ast.parse((REPO / "server.py").read_text(encoding="utf-8"))
     main = [n for n in tree.body
             if isinstance(n, ast.If) and ast.unparse(n.test) == "__name__ == '__main__'"]
     assert len(main) == 1
     called = [ast.unparse(n.func) for n in ast.walk(main[0])
               if isinstance(n, ast.Call)]
-    allowed = {"boot", "_log", "_serve_dual_stack", "f-string"}
+    allowed = {"_reserve_listeners", "boot", "_log", "_serve_reserved", "f-string"}
     stray = [c for c in called if c.split("(")[0] not in allowed
              and not c.startswith("_time.")]
     assert stray == [], f"__main__ does startup work outside boot(): {stray}"
