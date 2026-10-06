@@ -1342,7 +1342,9 @@ function stripSysPreamble(s) {
 }
 window.stripSysPreamble = stripSysPreamble;
 
-function escPromptWithImages(raw) {
+// `ts` (optional) is the line's own timestamp for a triggered row's time (same
+// contract as appendAgentLine's dateHint: undefined = now, falsy/other = unknown).
+function escPromptWithImages(raw, ts) {
   raw = stripSysPreamble(raw);   // hide the resume/compaction system preamble
   // Strip the `[Screenshot: <path>]` / `[Attachment: <path>]` wrapper that
   // `buildTaskWithImages` adds when the user attaches an image — once we
@@ -1423,7 +1425,9 @@ function escPromptWithImages(raw) {
   for (let i = 0; i < _imgTokens.length; i++) {
     html = html.replace('@@CLImg' + i + '@@', _imgTokens[i]);
   }
-  return html;
+  // A turn Ron did not type collapses to a one-line row; a typed one is
+  // returned unchanged (static/js/triggered-collapse.js).
+  return window.wrapTriggeredPrompt ? window.wrapTriggeredPrompt(raw, html, ts) : html;
 }
 
 
