@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — MCP panel: adding or changing a server needs your dashboard passcode
+
+- An agent could register any command as an MCP server by calling `POST /api/mcp` directly, which made the Desk approval card a courtesy rather than a boundary. `POST /api/mcp`, `PUT /api/mcp/<scope>/<name>` and `POST /api/mcp/url/install` now refuse an unattended agent session (403) and require the retyped dashboard passcode before anything is written or installed. `DELETE /api/mcp/<scope>/<name>` and `PUT /api/project/<id>/mcp-enabled` refuse an unattended session.
+- The MCP panel's New / Edit / Install buttons ask for the passcode in the usual prompt; a wrong one shows the error and writes nothing, Cancel sends nothing. The gate is `mc/blueprints/mcp_write_gate.py`, reusing the checks Desk Connect's Save uses.
+
 ## [2026-10-06] — Browser pane: frames travel as raw JPEG, and a frame goes out the moment it exists
 
 - The pane now takes its frames from `GET /api/browser/frames`: length-prefixed binary messages over an ordinary chunked HTTP response, the JPEG as raw bytes instead of base64 inside JSON. Measured on one dense, constantly-scrolling page: 92 KB per frame on the wire vs 123 KB (-25%). Through a link throttled to 1 MB/s (the rate the 2026-08-26 live measurement saw) that is 10.6 delivered fps vs 8.0.

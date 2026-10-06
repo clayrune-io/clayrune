@@ -23,6 +23,7 @@ from mc.core import _log, now_iso
 
 import mc.mcp as _mcp
 import mc.mcp_installer as _mcpinst
+from mc.blueprints.mcp_write_gate import refuse_unattended, require_passcode
 
 # Shared request helper — lives with the skills blueprint until a better home.
 from mc.blueprints.skills_routes import _resolve_project_path_or_400
@@ -119,6 +120,9 @@ def read_mcp_route(scope, name):
 
 @bp.route('/api/mcp', methods=['POST'])
 def create_mcp_route():
+    refusal = refuse_unattended('register an MCP server')
+    if refusal is not None:
+        return refusal
     data = request.get_json() or {}
     name = (data.get('name') or '').strip()
     transport = (data.get('transport') or '').strip()
@@ -132,6 +136,9 @@ def create_mcp_route():
     project_path, err = _resolve_project_path_or_400(scope, project_id)
     if err:
         return err
+    refusal = require_passcode(data)
+    if refusal is not None:
+        return refusal
 
     try:
         rec = _mcp.write_server(
@@ -152,6 +159,9 @@ def create_mcp_route():
 
 @bp.route('/api/mcp/<scope>/<name>', methods=['PUT'])
 def update_mcp_route(scope, name):
+    refusal = refuse_unattended('change an MCP server')
+    if refusal is not None:
+        return refusal
     if scope not in ('global', 'project'):
         return jsonify({'error': 'scope must be global or project'}), 400
     data = request.get_json() or {}
@@ -162,6 +172,9 @@ def update_mcp_route(scope, name):
     project_path, err = _resolve_project_path_or_400(scope, project_id)
     if err:
         return err
+    refusal = require_passcode(data)
+    if refusal is not None:
+        return refusal
 
     try:
         rec = _mcp.write_server(
@@ -180,6 +193,9 @@ def update_mcp_route(scope, name):
 
 @bp.route('/api/mcp/<scope>/<name>', methods=['DELETE'])
 def delete_mcp_route(scope, name):
+    refusal = refuse_unattended('remove an MCP server')
+    if refusal is not None:
+        return refusal
     if scope not in ('global', 'project'):
         return jsonify({'error': 'scope must be global or project'}), 400
     project_id = request.args.get('project_id')
@@ -232,6 +248,9 @@ def set_project_mcp_enabled(project_id):
     Body: {"enabled": [names]}  → trim to these (engram force-kept).
           {"enabled": null}     → clear the opt-in (back to full fleet).
     """
+    refusal = refuse_unattended("change a project's MCP loadout")
+    if refusal is not None:
+        return refusal
     filepath = DATA_DIR / f'{project_id}.json'
     if not filepath.exists():
         return jsonify({'error': 'project not found'}), 404
@@ -400,6 +419,9 @@ def mcp_url_staged_cleanup():
 @bp.route('/api/mcp/url/install', methods=['POST'])
 def mcp_url_install():
     """SSE stream: runs the install commands, writes the MCP config on success."""
+    refusal = refuse_unattended('install an MCP server')
+    if refusal is not None:
+        return refusal
     data = request.get_json(silent=True) or {}
     install_dir = (data.get('install_dir') or '').strip()
     name = (data.get('name') or '').strip()
@@ -428,6 +450,11 @@ def mcp_url_install():
             return jsonify({'error': 'project has no project_path'}), 400
     elif scope != 'global':
         return jsonify({'error': 'scope must be global or project'}), 400
+    # Before the first byte of the stream: a refusal is a plain 403 JSON body, and nothing is
+    # installed or written without it.
+    refusal = require_passcode(data)
+    if refusal is not None:
+        return refusal
 
     # Apply secrets to the env block before writing.
     servers_with_secrets = _mcpinst.apply_secrets_to_config(

@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from tests.test_desk_connect_custom import (PID, PKG, activation, approved, env, review,  # noqa: F401
+from tests.test_desk_connect_custom import (PASSCODE, PID, PKG, activation, approved, env, review,  # noqa: F401
                                             save, servers, service, store)
 
 
@@ -28,7 +28,7 @@ def test_a_damaged_record_refuses_every_mcp_panel_write_to_any_name(env, damage)
     approved(env)
     before = servers(env.proj_cfg)
     _corrupt(env, damage)
-    evil = {'transport': 'stdio', 'config': {'command': 'curl', 'args': ['evil.example']}}
+    evil = {'transport': 'stdio', 'config': {'command': 'curl', 'args': ['evil.example']}, 'passcode': PASSCODE}
     for name in (PKG, 'a-name-desk-never-approved'):
         for method, url, body in (
                 ('put', f'/api/mcp/project/{name}', {**evil, 'project_id': PID}),
@@ -45,7 +45,7 @@ def test_a_damaged_record_refuses_every_mcp_panel_write_to_any_name(env, damage)
 def test_a_missing_record_file_is_empty_and_does_not_block_the_panel(env):
     assert not store.path().exists()
     r = env.client.post('/api/mcp', json={'name': 'plain', 'transport': 'stdio', 'scope': 'global',
-                                          'config': {'command': 'node', 'args': ['x.js']}})
+                                          'config': {'command': 'node', 'args': ['x.js']}, 'passcode': PASSCODE})
     assert r.status_code == 201
 
 

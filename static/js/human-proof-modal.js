@@ -28,6 +28,11 @@
 //   if (!result.ok) { /* result.status, result.body.error */ }
 //   else { /* result.body is the parsed JSON the route returned */ }
 //
+// A route that answers with a stream (the MCP URL installer's SSE) passes
+// `stream: true` in the third argument: once the passcode is accepted the
+// still-unread Response comes back as `result.response` to read itself. The
+// guard's own refusals are plain JSON on every route, so they still re-prompt.
+//
 // The passcode never leaves this function's local scope: it is read from the
 // DOM once per submit, merged into the outgoing body, and the input is
 // cleared immediately after — never written to localStorage, sessionStorage,
@@ -162,7 +167,7 @@ async function humanProofFetch(url, fetchOptions, opts) {
   return new Promise((resolve) => {
     _hpPending.set(modalId, {
       url, fetchOptions: fetchOptions || {}, title, description, mode,
-      errorText: '', resolve,
+      stream: !!(opts && opts.stream), errorText: '', resolve,
     });
     _hpShow(modalId);
   });
@@ -257,6 +262,10 @@ async function _hpSubmit(modalId) {
   } catch (e) {
     p.errorText = 'Could not reach the server: ' + e.message;
     _hpShow(modalId);
+    return;
+  }
+  if (p.stream && resp.ok) {
+    _hpCleanup(modalId, { ok: true, status: resp.status, body: {}, response: resp });
     return;
   }
   const body = await resp.json().catch(() => ({}));
