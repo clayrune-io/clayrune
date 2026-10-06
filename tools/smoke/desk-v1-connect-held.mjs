@@ -15,8 +15,8 @@
  *   - Review has NO sign-in button, says the sign-in is done, and Save sends draft.held = {flow_id, claim};
  *     the Result step then has no sign-in to open or fill;
  *   - backing out of the flow sends POST .../flows/<id>/cancel with the claim and never a commit;
- *   - a saved login picked on Details is typed into the open pane (signin/fill) and a new login is stored from
- *     Details with its own passcode;
+ *   - a saved login picked on Details is typed into the open pane (signin/fill) and a new login typed there rides
+ *     the Save with the held sign-in: one commit, one passcode (backlog caf2d45c);
  *   - X: the Client ID is required before a sign-in starts, the typed app rides start-held, and editing the
  *     Client ID afterwards discards the held sign-in (cancel with the claim);
  *   - a locked vault answers vault_locked: the message and the inline unlock show, no pane opens.
@@ -142,7 +142,9 @@ async function newPage(browser, { srv, width, height }) {
     if (path === '/api/desk/connect/commit' && method === 'POST') {
       if (body.passcode !== PASSCODE) return J({ error: 'bad_passcode' }, 403);
       const held = !!(body.draft && body.draft.held);
+      const nl = body.draft && body.draft.new_login;          // the real server stores it in this same commit and answers with its value-free view
       return J({ ok: true, duplicate: false, service: { id: svc, label: LABEL[svc] }, method: 'oauth', credential: null,
+        ...(nl ? { login: { name: nl.name, entry_type: 'login', allow_unattended: true } } : {}),
         stored: held ? [`oauth.${svc}`] : [], account: svc === 'x' ? { id: 'acct-new', label: '@ron', identity: '@ron' } : null,
         account_id: svc === 'x' ? 'acct-new' : null,
         status: held ? { state: 'signed_in', label: 'Signed in', entry: `oauth.${svc}` } : { state: 'sign_in_required', label: 'Sign-in required', entry: null },
@@ -322,7 +324,7 @@ async function logins(browser, width, height) {
   const fills = posts(srv, '/api/desk/connect/signin/fill');
   check(fills.length === 1 && fills[0].body.login === 'higgsfield.login' && fills[0].body.profile === 'desk-higgsfield' && fills[0].body.route_id === 'higgsfield-oauth',
     'the fill sends a login NAME, the route and the pane profile', 'fill posts: ' + JSON.stringify(fills.map((f) => f.body)));
-  // a new login typed on Details is stored from Details
+  // a new login typed on Details rides the Save with the held sign-in: one commit, one passcode (backlog caf2d45c)
   await page.click('[data-cs-toggle]');
   const userId = '[data-cs-slot] input[id$="-user"]';
   const pwId = '[data-cs-slot] input[type="password"]';
@@ -330,14 +332,19 @@ async function logins(browser, width, height) {
   await page.fill(userId, 'ron@example.com');
   await page.fill(pwId, NEW_PASSWORD);
   await fits(page, 'Details with a new login open');
-  await inView(page, '[data-cs-savelogin]', '"Save this login"');
-  check(posts(srv, '/api/desk/connect/signin/store-login').length === 0, 'the typed login is not sent until "Save this login"', 'the typed login was sent early');
-  await page.click('[data-cs-savelogin]');
-  await passcode(page);
-  await page.waitForSelector('[data-cs-msg="ok"]', { timeout: 4000 });
-  const stores = posts(srv, '/api/desk/connect/signin/store-login');
-  check(stores.length === 1 && stores[0].body.new_login.value === NEW_PASSWORD && stores[0].body.route_id === 'higgsfield-oauth', 'Save this login stores the typed login once, with the passcode, from Details', 'store posts: ' + JSON.stringify(stores.length));
-  check((await page.$eval('[data-cs-pick]', (s) => s.value)) === stores[0].body.new_login.name, 'the stored login is selected', 'the stored login is not selected');
+  check(!(await page.$('[data-cs-savelogin]')), 'there is no "Save this login" button on Details: the Save stores the typed login', 'Details still has its own Save this login button');
+  check(posts(srv, '/api/desk/connect/signin/store-login').length === 0 && posts(srv, '/api/desk/connect/commit').length === 0, 'the typed login is not sent before Save', 'the typed login was sent early');
+  await page.click('[data-cf-next]');
+  await page.waitForSelector('[data-cf][data-cf-step="review"]', { timeout: 4000 });
+  await page.click('[data-cf-save]');
+  await passcode(page);                    // the ONE passcode: a second prompt would leave the flow on Review and fail the wait below
+  await page.waitForSelector('[data-cf][data-cf-step="result"]', { timeout: 6000 });
+  const commits = posts(srv, '/api/desk/connect/commit');
+  check(commits.length === 1 && commits[0].body.draft.held && commits[0].body.draft.held.flow_id === 'flow-held'
+    && commits[0].body.draft.new_login && commits[0].body.draft.new_login.value === NEW_PASSWORD && commits[0].body.draft.new_login.username === 'ron@example.com',
+    'one commit carries the held sign-in AND the typed login, with the one passcode', 'commit drafts: ' + JSON.stringify(commits.map((c) => ({ ...c.body.draft, new_login: '…' }))));
+  check(posts(srv, '/api/desk/connect/signin/store-login').length === 0, 'the login has no passcode prompt of its own', 'store-login was posted');
+  check(!(await page.$('[data-cs-slot] input[type="password"]')), 'no password box is left on the page after the Save', 'a password box is still on the page');
   check(realErrors(pageErrors).length === 0, 'no page errors', 'page errors: ' + realErrors(pageErrors).join(' | '));
   await ctx.close();
 }

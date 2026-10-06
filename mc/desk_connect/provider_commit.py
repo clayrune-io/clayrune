@@ -16,6 +16,11 @@ clean['held'] names it. Then apply writes it to the vault as its last local writ
 same undo stack, so a failure anywhere leaves no vault entry and no account, and follow
 starts nothing (the person already signed in).
 
+A login typed on the Details step (clean['new_login']) is one more local write in that same
+stack: the one passcode that authorised the Save authorised it, and if the connection fails the
+login is removed again, so neither is kept. Its password goes to the vault and nowhere else;
+the result names it (`login`, value-free).
+
 Neither returns a credential value. `commit.py` turns ProviderError into its own
 CommitError (this module must not import it: commit imports this one).
 """
@@ -26,6 +31,7 @@ from mc import desk_oauth as _oauth
 from mc import secrets_store as _vault
 from mc.core import _log
 from mc.desk_connect import providers, verification
+from mc.desk_connect import signin_login_store as _logins
 from mc.desk_connect.providers.base import Applied, ProviderError
 from mc.desk_connect.undo import UndoStack
 
@@ -39,7 +45,8 @@ def apply(clean: dict) -> tuple[Applied, dict]:
     method = clean['method']
     # A sign-in method stores nothing here, but its sign-in ends by writing the token to the vault: refuse
     # now, not after the person has finished signing in at the vendor.
-    if _vault.is_locked() and (method in prov.signs_in or _writes_secrets(prov, method, clean['fields'])):
+    new_login = clean.get('new_login')
+    if _vault.is_locked() and (method in prov.signs_in or new_login or _writes_secrets(prov, method, clean['fields'])):
         raise ProviderError('the vault is locked: unlock it in Secrets, then save again', 409, 'vault_locked')
     held = clean.get('held')
     fields = clean['fields']
@@ -56,13 +63,15 @@ def apply(clean: dict) -> tuple[Applied, dict]:
     undo = UndoStack()
     try:
         applied = prov.apply(method, fields, undo)
+        if new_login:
+            _logins.write_with_undo(new_login, undo)
         if held:
             _oauth.commit_held(clean['service'], held['flow_id'], held['claim'],
                                _refs.oauth_arg_for(applied.account_id), undo, client_id=save_app)
     except ProviderError as e:
         left = undo.unwind()
         raise ProviderError(_with_left(str(e), left), e.status, e.code) from e
-    except _oauth.OAuthError as e:
+    except (_oauth.OAuthError, _logins.LoginError) as e:
         left = undo.unwind()
         raise ProviderError(_with_left(str(e), left), e.status, e.code) from e
     except Exception as e:
@@ -82,6 +91,8 @@ def apply(clean: dict) -> tuple[Applied, dict]:
               'account': applied.extra.get('account'),
               'status': status,
               'account_id': applied.account_id}
+    if new_login:
+        result['login'] = _logins.public(new_login)
     return applied, result
 
 

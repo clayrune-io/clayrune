@@ -6,8 +6,11 @@ entry and writes it; WHEN it is written is the caller's passcode-gated Save, nev
 
     purposes Save   `purpose_bindings.commit` writes the entry first and removes it again if
                     the binding write that follows fails (compensating rollback)
-    sign-in Save    `POST /api/desk/connect/signin/store-login`, for a route with no purposes
-                    screen (Higgsfield's sign-in)
+    provider Save   `provider_commit.apply` writes it inside the connection's own undo stack
+                    (`clean_for_save`, `write_with_undo`): one passcode authorises the login and
+                    the connection together, and if either write fails neither is kept
+    sign-in Save    `POST /api/desk/connect/signin/store-login`, for the Result step of a
+                    sign-in that is already saved (the Details step no longer uses it)
 
 The value is held only in the request that carries it. It is never put in a draft
 fingerprint, a remembered result, a log line or an error message (`public` is the
@@ -18,6 +21,7 @@ from __future__ import annotations
 from mc import secrets_store as _vault
 from mc.core import _log
 from mc.desk_connect import commit as _commit
+from mc.desk_connect import registry as _registry
 
 
 class LoginError(ValueError):
@@ -93,6 +97,26 @@ def write(login: dict) -> None:
                          f'(Clayrune does not replace a stored login from here)', 409, 'secret_exists') from e
     except _vault.SecretsError as e:
         raise LoginError(f'the login could not be stored: {e}', 400, 'vault_refused') from e
+
+
+def clean_for_save(raw, service: str, method: str, vault_names=None) -> dict:
+    """The typed login of a provider draft: `clean`, for a service whose `method` has a sign-in page to
+    type it into. `vault_names` (names only) refuses a taken name before the passcode is asked; None
+    skips that (`write` checks again). Raises LoginError."""
+    profile = _registry.profile(service)
+    if not any(r.get('signin') and r.get('connect_method') == method for r in (profile or {}).get('routes', [])):
+        raise LoginError('that sign-in declares no page Clayrune can type a login into', 400, 'no_signin_declared')
+    login = clean(raw)
+    if vault_names is not None and login['name'] in vault_names:
+        raise LoginError(f'a secret named "{login["name"]}" already exists; pick it from the list or choose another name '
+                         f'(Clayrune does not replace a stored login from here)', 409, 'secret_exists')
+    return login
+
+
+def write_with_undo(login: dict, undo) -> None:
+    """`write`, and push its removal onto the caller's undo stack, so a later failure in the same Save takes it out."""
+    write(login)
+    undo.push(f'vault entry {login["name"]}', lambda: remove(login['name']))
 
 
 def remove(name: str) -> bool:

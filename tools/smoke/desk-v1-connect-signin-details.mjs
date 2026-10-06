@@ -11,8 +11,9 @@
  *     /signin/options) and "Store a new login…", and NO empty bordered box;
  *   - a picked login is carried to Review (a row) and to the Result step (preselected, the sign-in button on);
  *   - a new login typed on Details: nothing is sent before Save (no store-login, no secrets), Review shows its name
- *     and username with the password hidden, the form survives Back, and on Result it is still typed there with
- *     "Save this login" (its own passcode) — the password is in its own <input> and nowhere else;
+ *     and username with the password hidden, the form survives Back, and Save sends it in the ONE commit with the
+ *     ONE passcode (backlog caf2d45c): no "Save this login" button, no store-login post, the stored login is
+ *     selected on Result and no password box is left there — the password is in its own <input> until then;
  *   - nothing overflows sideways and Back / Review are inside the window.
  *
  * Screenshots: docs/desk_v1/screens/connect_signin_details_{pick,new,review}_{1440,390}.png
@@ -111,7 +112,10 @@ async function newPage(browser, { srv, width, height }) {
     }
     if (path === '/api/desk/connect/commit' && method === 'POST') {
       if (body.passcode !== PASSCODE) return J({ error: 'bad_passcode' }, 403);
+      const nl = body.draft && body.draft.new_login;          // the real server stores it in this same commit and answers with its value-free view
+      if (nl) srv.logins.unshift({ name: nl.name, matches: true });
       return J({ ok: true, duplicate: false, service: { id: 'higgsfield', label: 'Higgsfield' }, method: 'oauth', credential: null, stored: [],
+        ...(nl ? { login: { name: nl.name, entry_type: 'login', allow_unattended: true } } : {}),
         account: null, account_id: null, status: { state: 'sign_in_required', label: 'Sign-in required', entry: null },
         signin: { flow_id: 'flow-hf', auth_url: 'https://higgsfield.ai/oauth/authorize?state=abc', redirect_uri: 'http://127.0.0.1:53682/callback', profile: 'desk-higgsfield' } }, 201);
     }
@@ -221,6 +225,7 @@ async function newLoginFlow(browser, width, height) {
   await page.waitForSelector(userId, { timeout: 3000 }).catch(() => {});
   const pwId = '[data-cs-slot] input[type="password"]';
   check(!!(await page.$(userId)) && !!(await page.$(pwId)), 'the new-login form has a username and a password box on Details', 'new-login form is missing a box');
+  check(!(await page.$('[data-cs-savelogin]')), 'Details has no "Save this login" button: the typed login is stored by the Save', 'Details still has its own Save this login button');
   await page.fill(userId, 'ron@example.com');
   await page.fill(pwId, NEW_PASSWORD);
   await shot(page, 'new', width);
@@ -237,19 +242,17 @@ async function newLoginFlow(browser, width, height) {
   await page.click('[data-cf-next]');
   await page.waitForSelector('[data-cf][data-cf-step="review"]', { timeout: 4000 });
   await page.click('[data-cf-save]');
-  await passcode(page);
+  await passcode(page);                    // the ONE passcode: a second prompt would leave the flow on Review and fail the wait below
   await page.waitForSelector('[data-cf][data-cf-step="result"]', { timeout: 6000 });
-  await page.waitForSelector('[data-cs-savelogin]', { timeout: 3000 }).catch(() => {});
-  check(!!(await page.$('[data-cs-savelogin]')), 'Result still has the typed login with "Save this login"', 'the typed login did not reach Result');
-  if (await page.$('[data-cs-savelogin]')) {
-    await page.click('[data-cs-savelogin]');
-    await passcode(page);
-    await page.waitForSelector('[data-cs-msg="ok"]', { timeout: 4000 }).catch(() => {});
-    const stores = posts(srv, '/api/desk/connect/signin/store-login');
-    check(stores.length === 1 && stores[0].body.new_login.value === NEW_PASSWORD && stores[0].body.service === 'higgsfield' && stores[0].body.route_id === 'higgsfield-oauth',
-      'Save this login sends the typed login once, with the passcode', 'store-login posts: ' + JSON.stringify(stores.map((s) => ({ ...s.body, new_login: '…' }))));
-    check((await page.$eval('[data-cs-pick]', (s) => s.value)) === stores[0].body.new_login.name, 'the stored login is selected', 'the stored login is not selected');
-  }
+  const commits = posts(srv, '/api/desk/connect/commit');
+  check(commits.length === 1 && commits[0].body.draft.new_login && commits[0].body.draft.new_login.value === NEW_PASSWORD
+    && commits[0].body.draft.new_login.username === 'ron@example.com' && commits[0].body.draft.method === 'oauth',
+    'Save sends the typed login in the one commit, with the one passcode', 'commit drafts: ' + JSON.stringify(commits.map((c) => ({ ...c.body.draft, new_login: '…' }))));
+  check(posts(srv, '/api/desk/connect/signin/store-login').length === 0, 'the login has no passcode prompt of its own', 'store-login was posted');
+  await page.waitForSelector('[data-cs-pick]', { timeout: 3000 });
+  check((await page.$eval('[data-cs-pick]', (s) => s.value)) === commits[0].body.draft.new_login.name, 'the stored login is selected on Result', 'the stored login is not selected on Result');
+  check(!(await page.$('[data-cs-savelogin]')) && !(await page.$('[data-cs-slot] input[type="password"]')), 'no "Save this login" button and no password box is left on Result', 'a typed-login form is still on Result');
+  check(!(await page.$eval('[data-cs-fillbtn]', (b) => b.disabled)), 'Sign in with the saved login is ready on Result', 'the sign-in button is off on Result');
   check(realErrors(pageErrors).length === 0, 'no page errors', 'page errors: ' + realErrors(pageErrors).join(' | '));
   await ctx.close();
 }

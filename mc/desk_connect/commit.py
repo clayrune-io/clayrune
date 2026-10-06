@@ -49,6 +49,7 @@ from mc import secrets_store as _vault
 from mc.core import _log
 from mc.desk_connect import methods as _methods
 from mc.desk_connect import provider_commit, providers, registry, url_check
+from mc.desk_connect import signin_login_store as _logins
 from mc.desk_connect.providers.base import ProviderError
 from mc.desk_connect.url_check import UrlError
 
@@ -100,7 +101,7 @@ def _clean_provider_draft(draft: dict, checked: dict, vault_names) -> dict:
     if svc is None or prov is None or not isinstance(method, str) or not _methods.is_connectable(svc, method):
         raise CommitError('that method cannot be set up from here: it is information only for this service',
                           400, 'method_not_available')
-    unknown = sorted(set(draft) - {'url', 'method', 'fields', 'held'})
+    unknown = sorted(set(draft) - {'url', 'method', 'fields', 'held', 'new_login'})
     if unknown:
         raise CommitError(f'unknown draft field(s) for this method: {", ".join(unknown)}')
     try:
@@ -110,7 +111,20 @@ def _clean_provider_draft(draft: dict, checked: dict, vault_names) -> dict:
     out = {'url': checked['url'], 'method': method, 'service': svc['id'], 'label': svc['label'], 'fields': fields}
     if draft.get('held') is not None:
         out['held'] = _clean_held(draft['held'], prov, method)
+    if draft.get('new_login') is not None:
+        out['new_login'] = _clean_new_login(draft['new_login'], prov, svc['id'], method, vault_names)
     return out
+
+
+def _clean_new_login(raw, prov, service: str, method: str, vault_names) -> dict:
+    """A login typed on the Details step of a sign-in method, stored by this same Save (one passcode).
+    The result carries the password: it reaches `provider_commit.apply` and nothing else."""
+    if method not in prov.signs_in:
+        raise CommitError('that method has no sign-in to type a login into', 400, 'method_not_available')
+    try:
+        return _logins.clean_for_save(raw, service, method, vault_names)
+    except _logins.LoginError as e:
+        raise CommitError(str(e), e.status, e.code) from e
 
 
 def _clean_held(raw, prov, method: str) -> dict:
@@ -133,7 +147,7 @@ def clean_draft(draft, own_hosts=(), vault_names=None) -> dict:
     the passcode is asked; None skips that, `commit` checks again."""
     if not isinstance(draft, dict):
         raise CommitError('draft must be an object')
-    unknown = sorted(set(draft) - {'url', 'method', 'name', 'credential', 'fields', 'held'})
+    unknown = sorted(set(draft) - {'url', 'method', 'name', 'credential', 'fields', 'held', 'new_login'})
     if unknown:
         raise CommitError(f'unknown draft field(s): {", ".join(unknown)}')
     try:
@@ -144,6 +158,8 @@ def clean_draft(draft, own_hosts=(), vault_names=None) -> dict:
         return _clean_provider_draft(draft, checked, vault_names)
     if 'fields' in draft:
         raise CommitError('"Save for agents" takes a credential, not fields')
+    if 'new_login' in draft:
+        raise CommitError('"Save for agents" takes a credential, not a sign-in login')
     try:
         name = _services._clean_name(draft.get('name'))
     except _services.ServiceError as e:
@@ -187,6 +203,8 @@ def clean_draft(draft, own_hosts=(), vault_names=None) -> dict:
 
 
 def _fingerprint(clean: dict) -> str:
+    if clean.get('new_login'):             # a typed login counts by its name and type only: its password is never hashed
+        clean = {**clean, 'new_login': _logins.public(clean['new_login'])}
     blob = json.dumps(clean, sort_keys=True, separators=(',', ':')).encode('utf-8')
     return hmac.new(_key, blob, hashlib.sha256).hexdigest()
 
