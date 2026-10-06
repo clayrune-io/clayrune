@@ -311,6 +311,21 @@ def test_higgsfield_sign_in_takes_no_value_and_starts_the_flow(env, net):
     assert _vault_names() == []
 
 
+@pytest.mark.parametrize('draft', [
+    {'url': 'https://higgsfield.ai', 'method': 'oauth', 'fields': {}},
+    {'url': 'https://x.com/first', 'method': 'oauth', 'fields': {'identity': '@first', 'client_id': 'cid'}},
+])
+def test_a_locked_vault_refuses_a_sign_in_save_before_it_writes_or_starts(env, net, monkeypatch, draft):
+    """A sign-in method stores no pasted value, but its sign-in ends in a vault write: refuse at Save,
+    not after the person has signed in at the vendor, and leave no account or entry behind."""
+    from mc import secrets_store
+    client, _, _ = env
+    monkeypatch.setattr(secrets_store, 'is_locked', lambda: True)
+    r = _post(client, draft)
+    assert r.status_code == 409 and r.get_json()['code'] == 'vault_locked', r.get_json()
+    assert net['starts'] == [] and _vault_names() == []
+
+
 def test_higgsfield_key_is_stored_as_a_pair_and_not_verified(env, net):
     from mc import secrets_store
     client, _, _ = env

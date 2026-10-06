@@ -446,13 +446,9 @@ async function submitVaultUnlock() {
   if (!passcode) { if (statusEl) statusEl.textContent = 'Dashboard passcode required.'; return; }
   const body = _secUseRecoveryKey ? { recovery_key: value, passcode } : { passphrase: value, passcode };
   try {
-    const res = await fetch(API_BASE + '/api/secrets/vault-lock/unlock', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const out = await res.json();
-    if (!res.ok) {
-      if (statusEl) statusEl.textContent = _vaultLockErrorText(out);
+    const r = await window.VaultUnlock.unlock(body);   // vault-unlock.js: the one unlock request
+    if (!r.ok) {
+      if (statusEl) statusEl.textContent = _vaultLockErrorText(r.body);
       if (input) { input.value = ''; input.focus(); }
       if (passcodeInput) passcodeInput.value = '';
       return;

@@ -60,7 +60,7 @@
         description: `Re-enter your dashboard passcode to start signing in to ${label}. The sign-in page opens next to this one.`,
       });
     } catch (e) {
-      return { ok: false, cancelled: !!e.cancelled, message: e && e.message ? e.message : String(e) };
+      return { ok: false, cancelled: !!e.cancelled, code: e && e.body ? e.body.code : undefined, message: e && e.message ? e.message : String(e) };
     }
     say(`The ${label} sign-in page is opening. Finish signing in there; this page updates by itself.`);
     try {
@@ -267,6 +267,7 @@
     if (!w) return;
     const say = (t, s) => _result(w, t, s);
     const done = () => { _overview = null; if (hooks && hooks.onChange) hooks.onChange(); };
+    if (window.DeskV1VaultGate) window.DeskV1VaultGate.attach(w);    // saving the app and signing in both write to the vault
     const portal = w.querySelector('[data-x-portal]');
     portal.onclick = () => {
       if (typeof window.openBrowserPane === 'function') window.openBrowserPane(X_PORTAL, null, null, 'desk-x');
@@ -305,6 +306,7 @@
       if (!w.isConnected) return;
       if (out.ok) { _toast('X is connected'); done(); return; }
       if (out.message) say(out.message, 'bad');
+      if (out.code === 'vault_locked' && window.DeskV1VaultGate) window.DeskV1VaultGate.attach(w);
       signin.disabled = false;
     };
     const off = w.querySelector('[data-x-disconnect]');

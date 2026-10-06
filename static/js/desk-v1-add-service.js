@@ -181,6 +181,8 @@
   function bind(el, ctx) {
     const root = el.querySelector('[data-add-service]');
     if (!root) return;
+    // The flows in this panel store a secret (a sign-in, a login, a key): a locked vault is shown, with its unlock, first.
+    if (window.DeskV1VaultGate) window.DeskV1VaultGate.attach(root);
     if (window.DeskV1ConnectFlow) window.DeskV1ConnectFlow.bind(root, {
       live: window.DeskV1Store.live(), api: ctx.api, engines: ctx.engines, repaint: ctx.repaint, channels: ctx.channels,
       // "Open the guide" on a method row: hand over to the flow Connections already has.

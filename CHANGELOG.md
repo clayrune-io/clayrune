@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-05] — Desk: a locked vault is reported before you sign in, with an unlock right there
+
+- Add service > Higgsfield > Sign in used to let you finish the whole sign-in at the vendor and then say "Signed in, but the sign-in could not be saved: vault is locked". The server now refuses at the start (409 `vault_locked`, "Unlock the vault first, then sign in") before it contacts the vendor or opens a port, and Save refuses a sign-in method the same way before it writes anything.
+- Add service, the Higgsfield / key cards and the X wizard show an inline unlock (vault passphrase + dashboard passcode) when the vault is locked. Unlocking leaves the flow where it was. Unlock is still human-only and nothing is remembered; the Secrets panel and this form share one unlock request (`static/js/vault-unlock.js`).
+
 ## [2026-10-05] — Desk: the saved-login choice is on the Details step of a sign-in
 
 - Add service > Higgsfield > Sign in with Higgsfield used to show one empty box on the Details step. It now says what the method does and offers "Use a saved login" (your stored logins by name) and "Store a new login", at phone and desktop width. Review shows which login will be used (the password is never shown) and the Result step carries the choice on to "Sign in with the saved login". A login typed here is stored on the Result step, with the passcode.

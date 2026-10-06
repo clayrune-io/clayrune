@@ -90,6 +90,7 @@ async function newPage(browser, { srv, width, height }) {
     if (path === '/api/config' && method === 'GET') return J({ desk_v1: true, desk_v1_live: true, user_timezone: '' });
     if (path === '/api/characters') return J([]);
     if (path === '/api/local-auth/status') return J({ configured: true });
+    if (path === '/api/secrets/vault-lock' && method === 'GET') return J({ state: 'unlocked', configured: true });     // the inline unlock reads it (desk-v1-vault-gate.js); not a write, not logged
     if (path.startsWith('/api/secrets')) { srv.log.push({ method, path, body: null }); return J({ error: 'not expected' }, 500); }
     if (!path.startsWith('/api/desk/')) return route.abort();
     let body = null;

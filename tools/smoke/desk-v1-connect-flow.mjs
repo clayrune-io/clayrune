@@ -105,6 +105,7 @@ async function newPage(browser, { live, srv, width, height }) {
     if (path === '/api/characters') return J([]);
     if (path === '/api/local-auth/status') return J({ configured: true });
     // Any request that could write a secret outside the one Save is recorded and refused.
+    if (path === '/api/secrets/vault-lock' && method === 'GET') return J({ state: 'unlocked', configured: true });     // the inline unlock reads it (desk-v1-vault-gate.js); not a write, not logged
     if (path.startsWith('/api/secrets')) { srv.log.push({ method, path, body: null }); return J({ error: 'not expected' }, 500); }
     if (!path.startsWith('/api/desk/')) return route.abort();
     let body = null;
