@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — Passcode and passphrase prompts no longer trigger the browser's "Save password?"
+
+- Typing the dashboard passcode made Chrome offer to save it, and pair it with whatever text field sat nearest as the username. Browsers decide a field is a credential from `type="password"`, and `autocomplete="current-password"` / `"new-password"` invited the manager on purpose.
+- Every passcode and vault-passphrase prompt (the shared confirm modal, Allow-once, the vault unlock / set / change / lock-now / retire forms, the Desk vault gate, the Settings passcode form, the backup vault passphrase) now renders through `static/js/masked-input.js`: `type=text` shown as dots with `-webkit-text-security: disc`, autocomplete off, the LastPass / 1Password / Bitwarden opt-out attributes, copy and cut refused, no `<form>`. An engine that cannot mask text inputs keeps `type=password` (feature-detected), so the passcode is never shown in clear.
+- Checked in real Chrome 154: the old modal raises the bubble, the new one does not. Masking checked in Chromium, Firefox and WebKit by `node tools/smoke/masked-secret-prompts.mjs` (`SMOKE_BROWSER=firefox|webkit`). Secret VALUE fields (API keys, tokens, vault entries) are unchanged. No server route or passcode check changed.
+
 ## [2026-10-06] — MCP panel: adding or changing a server needs your dashboard passcode
 
 - An agent could register any command as an MCP server by calling `POST /api/mcp` directly, which made the Desk approval card a courtesy rather than a boundary. `POST /api/mcp`, `PUT /api/mcp/<scope>/<name>` and `POST /api/mcp/url/install` now refuse an unattended agent session (403) and require the retyped dashboard passcode before anything is written or installed. `DELETE /api/mcp/<scope>/<name>` and `PUT /api/project/<id>/mcp-enabled` refuse an unattended session.

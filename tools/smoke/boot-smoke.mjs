@@ -53,6 +53,10 @@ const CLAYDO_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'claydo.js'), 
 // window.humanProofFetch existing, so an unregistered module here doesn't
 // just skip its own feature, it breaks every gated Save button.
 const HUMAN_PROOF_MODAL_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'human-proof-modal.js'), 'utf8');
+// Masked passcode/passphrase inputs — human-proof-modal.js and the vault forms render through
+// window.MaskedInput, so an unregistered module here breaks every passcode prompt.
+const MASKED_INPUT_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'masked-input.js'), 'utf8');
+const MASKED_INPUT_CSS = readFileSync(resolve(REPO_ROOT, 'static', 'css', 'masked-input.css'), 'utf8');
 // Mobile pairing ES module (Phase 3 module 3) — same rule as claydo.js above.
 const MOBILE_PAIRING_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'mobile-pairing.js'), 'utf8');
 // Walkthrough / tour ES module (Phase 3 module 4) — same rule as claydo.js above.
@@ -167,6 +171,8 @@ const STATIC_MAP = {
   '/static/css/beacon.css': ['text/css; charset=utf-8', BEACON_CSS],
   '/static/js/claydo.js': ['text/javascript; charset=utf-8', CLAYDO_JS],
   '/static/js/human-proof-modal.js': ['text/javascript; charset=utf-8', HUMAN_PROOF_MODAL_JS],
+  '/static/js/masked-input.js': ['text/javascript; charset=utf-8', MASKED_INPUT_JS],
+  '/static/css/masked-input.css': ['text/css; charset=utf-8', MASKED_INPUT_CSS],
   '/static/js/mobile-pairing.js': ['text/javascript; charset=utf-8', MOBILE_PAIRING_JS],
   '/static/js/walkthrough.js': ['text/javascript; charset=utf-8', WALKTHROUGH_JS],
   '/static/js/skills-panel.js': ['text/javascript; charset=utf-8', SKILLS_PANEL_JS],

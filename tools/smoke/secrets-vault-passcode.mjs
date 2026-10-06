@@ -211,10 +211,14 @@ try {
   await page.waitForSelector('#secrets-lockbar button:has-text("Lock now")', { timeout: 5000 });
   await page.click('#secrets-lockbar button:has-text("Lock now")');
   await page.waitForSelector('#vln-passcode', { timeout: 5000 });
-  const lockFieldType = await page.getAttribute('#vln-passcode', 'type');
-  lockFieldType === 'password'
-    ? ok('Lock-now passcode field is type=password (masked, not a native prompt())')
-    : fail(`Lock-now passcode field type is "${lockFieldType}", expected "password"`);
+  // Masked, but via the shared MaskedInput helper (type=text + text-security),
+  // not type=password, so the browser never offers to save the passcode
+  // (masked-secret-prompts.mjs pins the whole contract).
+  const lockMask = await page.$eval('#vln-passcode', (e) => ({
+    type: e.type, masked: e.hasAttribute('data-mc-masked'), css: getComputedStyle(e).webkitTextSecurity }));
+  (lockMask.masked && ((lockMask.type === 'text' && lockMask.css === 'disc') || lockMask.type === 'password'))
+    ? ok('Lock-now passcode field is masked by MaskedInput (not a native prompt())')
+    : fail(`Lock-now passcode field is not masked: ${JSON.stringify(lockMask)}`);
   await page.fill('#vln-passcode', 'my-dash-pass');
   await page.click('#vln-status ~ div button.btn-add');
   calls.lock.length === 1 && calls.lock[0].passcode === 'my-dash-pass'

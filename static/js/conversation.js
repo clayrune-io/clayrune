@@ -666,7 +666,7 @@ function attendOnceSession(event, sid) {
       </div>
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">Dashboard passcode</label>
-        <input type="password" id="ao-passcode-${esc(sid)}" autocomplete="current-password"
+        <input ${window.MaskedInput.attrs()} id="ao-passcode-${esc(sid)}"
           style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)"
           onkeydown="if(event.key==='Enter')submitAttendOncePasscode('${modalId}','${esc(sid)}')">
