@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — Desk engagement reads check separate account consent (MC-1062/06b)
+
+- Engagement polling checks the original workspace account's explicit Read consent separately before mentions and each post-metrics batch. A denied operation makes no token-refresh, platform, pane or digest-model call and costs nothing; another independently permitted read can still run. Unset/inline legacy accounts retain their reader behavior and existing read budgets.
+- Per-platform polling moved to `mc/desk_engagement_poll.py`, leaving a narrow delegate in `desk_engagement`. The shared 06a permission seam and other consumers are unchanged. Current unsupported API/generic Allow scopes remain unsupported; this slice adds no executor or provider coverage. Contract, support limits and tests: `docs/desk_v1/connect_flow_tickets/06b-engagement-read-enforcement.md`.
+
 ## [2026-10-06] — Desk consent enforcement preserves legacy publishing (MC-1062/06a)
 
 - Corrected the consent helper to leave callers without `account_id` on the existing legacy path and accounts without explicit policy unchanged. It no longer infers a singleton owner or performs a vault/token-readiness check; missing or denied credentials retain the publisher's original error messages.
