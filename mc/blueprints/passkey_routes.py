@@ -228,7 +228,7 @@ def register_options():
             kind='registration', rp_id=host_check.RP_ID,
             origin=host_check.expected_origin(_PORT), owner_handle=handle,
             epoch=state['policy_epoch'], session_nonce=nonce,
-            label=store.clean_label(raw_label))
+            label=store.clean_label(raw_label), client=request.remote_addr or '')
     except TooManyCeremonies:
         return _err(429, 'too_many_ceremonies', 'Finish or wait out the pending enrollment first.')
     try:
@@ -354,7 +354,8 @@ def assert_options():
         c = CEREMONIES.issue(
             kind='assertion', rp_id=host_check.RP_ID, origin=host_check.expected_origin(_PORT),
             owner_handle=state['owner_handle'], epoch=state['policy_epoch'],
-            session_nonce=nonce, label='', purpose=purpose, target=target)
+            session_nonce=nonce, label='', purpose=purpose, target=target,
+            client=request.remote_addr or '')
     except TooManyCeremonies:
         return _err(429, 'too_many_ceremonies', 'Finish or wait out the pending passkey prompt first.')
     options = assertion.assertion_options(c, [

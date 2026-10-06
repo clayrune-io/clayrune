@@ -333,9 +333,11 @@ def _write_lock():
                 except OSError:
                     seen, stale = None, True
                 if stale:
-                    if seen is not None:
-                        _unlink_if_same(lock, seen)
-                    continue
+                    if seen is None or _unlink_if_same(lock, seen):
+                        continue
+                    # Could not remove it (Windows: a live holder still has it
+                    # open, or another waiter won the break): back off and honour
+                    # the deadline instead of spinning on the same stale lock.
                 if time.monotonic() > deadline:
                     raise StoreError('passkey registry is busy')
                 time.sleep(0.005)

@@ -340,7 +340,7 @@ def test_finish_requires_a_ceremony_id_and_credential_object(app, authn):
 
 def test_pending_ceremonies_are_bounded(app, authn):
     c = browser(app)
-    for _ in range(challenges.MAX_PENDING):
+    for _ in range(challenges.MAX_PENDING_PER_CLIENT['registration']):
         assert start(c).status_code == 200
     r = start(c)
     assert r.status_code == 429 and r.get_json()['error'] == 'too_many_ceremonies'

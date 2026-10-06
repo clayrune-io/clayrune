@@ -28,7 +28,9 @@
       action: { act: 'vault-set', label: 'Set a vault passphrase' },
     },
     passkey_store_unsigned: {
-      text: 'Your passkeys were saved before signing existed. Reset the registry and enrol again.',
+      text: 'The passkey registry has no signature, so it is being refused. It may have been saved before '
+        + 'signing existed, or put there from outside Clayrune; Clayrune cannot tell which. '
+        + 'Reset it and enrol again.',
       resettable: true,
     },
     passkey_store_tampered: {

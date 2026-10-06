@@ -64,20 +64,26 @@ def write(path, obj):
 
 
 class FakeVault:
-    """Swaps in the three `secrets_store` calls `integrity.mac_key` makes."""
+    """Swaps in the `secrets_store` calls `integrity.mac_key` makes. `load_master_key`
+    is a tripwire: it counts as a vault use, so `mac_key` must never call it."""
 
     def __init__(self, monkeypatch, state='unlocked', backend='passphrase', master=b'm' * 32):
         self.state, self.backend, self.master, self.reads = state, backend, master, 0
         monkeypatch.setattr(integrity, 'mac_key', _real_mac_key)
         monkeypatch.setattr(secrets_store, 'check_idle_lock', lambda: False)
         monkeypatch.setattr(secrets_store, 'lock_state', lambda: self.state)
-        monkeypatch.setattr(secrets_store, 'load_master_key', self._load)
+        monkeypatch.setattr(secrets_store, 'peek_passphrase_key', self._peek)
+        monkeypatch.setattr(secrets_store, 'wrapped_key_path',
+                            lambda: Path(__file__) if backend == 'passphrase' else Path('no-such-wrapped-key'))
+        monkeypatch.setattr(secrets_store, 'load_master_key', self._tripwire)
 
-    def _load(self):
+    def _peek(self):
         self.reads += 1
-        if self.state != 'unlocked':
-            raise secrets_store.SecretsError('locked')
-        return self.master, self.backend
+        return self.master if self.state == 'unlocked' and self.backend == 'passphrase' else None
+
+    @staticmethod
+    def _tripwire():
+        raise AssertionError('mac_key called load_master_key: that restarts the vault idle clock')
 
 
 _real_mac_key = integrity.mac_key
@@ -216,11 +222,32 @@ def test_mac_key_never_mints_a_vault_key_on_an_unconfigured_box(monkeypatch):
     assert ei.value.reason == 'vault_not_configured' and vault.reads == 0
 
 
+def test_mac_key_does_not_restart_the_vault_idle_clock(monkeypatch):
+    """Audit finding 1: GET /api/passkeys derives the key on every poll. Through
+    `load_master_key` that counted as a vault use, so a loopback poller held the
+    vault unlocked past `vault_idle_lock_minutes`. Real secrets_store, fake clock."""
+    monkeypatch.setattr(integrity, 'mac_key', _real_mac_key)
+    now = [1000.0]
+    monkeypatch.setattr(secrets_store, '_monotonic', lambda: now[0])
+    monkeypatch.setattr(secrets_store, '_idle_lock_minutes', lambda: 10.0)
+    monkeypatch.setattr(secrets_store, '_unlocked_key', b'K' * 32)
+    monkeypatch.setattr(secrets_store, '_last_key_use', now[0])
+    monkeypatch.setattr(secrets_store, 'lock_state', lambda: 'unlocked')
+    monkeypatch.setattr(secrets_store, 'wrapped_key_path', lambda: Path(__file__))   # passphrase mode
+    assert len(integrity.mac_key()) == 32
+    for _ in range(4):                                       # a poller, 2 minutes apart (8 of the 10)
+        now[0] += 120
+        integrity.mac_key()
+    assert secrets_store._last_key_use == 1000.0             # never refreshed
+    now[0] = 1000.0 + 10 * 60
+    with pytest.raises(integrity.IntegrityUnavailable) as ei:
+        integrity.mac_key()                                  # idle window ran out despite the polling
+    assert ei.value.reason == 'vault_locked' and secrets_store._unlocked_key is None
+
+
 def test_mac_key_reports_a_relock_between_the_check_and_the_read(monkeypatch):
     FakeVault(monkeypatch)
-    def relocked():
-        raise secrets_store.SecretsError('relocked')
-    monkeypatch.setattr(secrets_store, 'load_master_key', relocked)
+    monkeypatch.setattr(secrets_store, 'peek_passphrase_key', lambda: None)
     with pytest.raises(integrity.IntegrityUnavailable) as ei:
         integrity.mac_key()
     assert ei.value.reason == 'vault_locked'
@@ -339,6 +366,37 @@ def test_the_new_credential_cannot_authorize_its_own_enrollment(app, authn):
     r = call(c, 'post', OPTIONS, {'proof': forged, 'label': 'Mine'})
     assert r.status_code == 403 and r.get_json()['error'] == 'invalid_assertion'
     assert len(passkey_ids()) == 1
+
+
+def test_an_assertion_flood_is_capped_per_client(app, authn):
+    """Audit finding 2: assert/options answers any loopback caller before it
+    proves anything. One client address may hold only a few pending ceremonies."""
+    c = browser(app)
+    enroll(c, authn())
+    codes = [call(c, 'post', ASSERT, {'purpose': 'add'}).status_code for _ in range(40)]
+    assert codes.count(200) == challenges.MAX_PENDING_PER_CLIENT['assertion']
+    assert set(codes) == {200, 429}
+
+
+def test_a_full_assertion_bucket_does_not_block_enrollment(app, authn):
+    """... and the assertion and registration ceremonies no longer share slots:
+    with every assertion slot taken, the owner can still start an enrollment."""
+    c = browser(app)
+    for i in range(challenges.MAX_PENDING_BY_KIND['assertion']):
+        challenges.STORE.issue(kind='assertion', rp_id='localhost', origin=ORIGIN, owner_handle=HANDLE,
+                               epoch=0, session_nonce='n', label='', purpose='add', client=f'c{i}')
+    r = start(c)                                                  # passcode path: nothing enrolled yet
+    assert r.status_code == 200, r.get_data(as_text=True)
+
+
+def test_a_full_registration_bucket_does_not_block_assertions(app, authn):
+    c = browser(app)
+    a = authn()
+    enroll(c, a)
+    for i in range(challenges.MAX_PENDING_BY_KIND['registration']):
+        challenges.STORE.issue(kind='registration', rp_id='localhost', origin=ORIGIN, owner_handle=HANDLE,
+                               epoch=0, session_nonce='n', label='', client=f'c{i}')
+    assert call(c, 'post', ASSERT, {'purpose': 'add'}).status_code == 200
 
 
 def test_an_assertion_is_single_use_and_bound_to_one_operation(app, authn):

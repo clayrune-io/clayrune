@@ -21,7 +21,13 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 CHALLENGE_TTL_S = 120          # spec: "Proposed challenge lifetime: two minutes"
-MAX_PENDING = 16               # bounds memory; an enrollment is a rare, human act
+# Bounds memory. Registration and assertion ceremonies have separate buckets: the
+# assertion endpoint is reachable by any loopback caller before it proves
+# anything, and sharing one pool let that caller fill it and 429 the owner's own
+# add / revoke / enroll. `PER_CLIENT` caps one client address inside a bucket.
+MAX_PENDING_BY_KIND = {'registration': 8, 'assertion': 12}
+MAX_PENDING_PER_CLIENT = {'registration': 6, 'assertion': 6}
+_DEFAULT_CAP = 4
 
 _clock = time.monotonic        # replaced in tests
 
@@ -65,6 +71,7 @@ class Ceremony:
     expires_at: float
     purpose: str = ''           # assertion ceremonies: the one operation they approve
     target: str = ''            # ... and what it acts on (a credential id), or ''
+    client: str = ''            # address that asked, for the per-client cap
 
 
 def session_digest(nonce: str) -> str:
@@ -86,18 +93,21 @@ class ChallengeStore:
 
     def issue(self, *, kind: str, rp_id: str, origin: str, owner_handle: str,
               epoch: int, session_nonce: str, label: str,
-              purpose: str = '', target: str = '') -> Ceremony:
+              purpose: str = '', target: str = '', client: str = '') -> Ceremony:
         now = _clock()
         with self._lock:
             self._prune(now)
-            if len(self._items) >= MAX_PENDING:
+            same_kind = [v for v in self._items.values() if v.kind == kind]
+            if len(same_kind) >= MAX_PENDING_BY_KIND.get(kind, _DEFAULT_CAP):
                 raise TooManyCeremonies('too many ceremonies pending')
+            if sum(1 for v in same_kind if v.client == client) >= MAX_PENDING_PER_CLIENT.get(kind, _DEFAULT_CAP):
+                raise TooManyCeremonies('too many ceremonies pending for this client')
             c = Ceremony(
                 id=secrets.token_urlsafe(18), kind=kind,
                 challenge=secrets.token_bytes(32), rp_id=rp_id, origin=origin,
                 owner_handle=owner_handle, epoch=epoch,
                 session_digest=session_digest(session_nonce), label=label,
-                expires_at=now + CHALLENGE_TTL_S, purpose=purpose, target=target)
+                expires_at=now + CHALLENGE_TTL_S, purpose=purpose, target=target, client=client)
             self._items[c.id] = c
             return c
 

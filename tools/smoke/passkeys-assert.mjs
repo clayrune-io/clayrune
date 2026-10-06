@@ -303,7 +303,7 @@ try {
   const states = [
     ['passkey_vault_locked', 'Unlock your vault to use passkeys.', 'vault-open', null],
     ['passkey_vault_not_configured', 'Passkeys need a vault passphrase.', 'vault-set', null],
-    ['passkey_store_unsigned', 'Your passkeys were saved before signing existed. Reset the registry and enrol again.', null, 'reset'],
+    ['passkey_store_unsigned', 'It may have been saved before signing existed, or put there from outside Clayrune; Clayrune cannot tell which. Reset it and enrol again.', null, 'reset'],
     ['passkey_store_tampered', 'The passkey registry failed its integrity check', null, 'reset'],
     ['passkey_store_unreadable', 'The passkey registry could not be read', null, 'reset'],
   ];

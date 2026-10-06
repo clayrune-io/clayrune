@@ -41,7 +41,8 @@ class IntegrityUnavailable(Exception):
 def mac_key() -> bytes:
     """32-byte subkey derived from the unlocked vault's master key, or
     IntegrityUnavailable. Never mints a vault key: the lock state is checked
-    first because `load_master_key` creates one on a fresh, unconfigured box."""
+    first, and the key is read with `peek_passphrase_key`, which neither mints
+    nor counts as a vault use (only real secret use refreshes the idle clock)."""
     from mc import secrets_store as vault
     vault.check_idle_lock()                 # relock quietly rather than via a "job blocked" push
     state = vault.lock_state()
@@ -49,12 +50,10 @@ def mac_key() -> bytes:
         raise IntegrityUnavailable('vault_locked')
     if state != 'unlocked':
         raise IntegrityUnavailable('vault_not_configured')
-    try:
-        master, backend = vault.load_master_key()
-    except vault.SecretsError:              # relocked between the check and the read
-        raise IntegrityUnavailable('vault_locked') from None
-    if backend != 'passphrase':
-        raise IntegrityUnavailable('vault_not_configured')
+    master = vault.peek_passphrase_key()    # not load_master_key: reading must not restart the idle clock
+    if master is None:                      # relocked between the check and the read
+        raise IntegrityUnavailable(
+            'vault_locked' if vault.wrapped_key_path().is_file() else 'vault_not_configured')
     return hmac.new(master, _KEY_INFO, hashlib.sha256).digest()
 
 
