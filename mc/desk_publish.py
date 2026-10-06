@@ -431,7 +431,7 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
         # Check the original workspace id before OAuth's legacy-name mapping.
         from mc.desk_connect import permission_check as _permissions
         try:
-            _permissions.require_publish(item, unattended=unattended)
+            _permissions.require_publish(item)
         except _permissions.PermissionDenied as e:
             raise PublishError(str(e)) from e
         x_account = _refs.oauth_arg_for(item.get('account_id')) if platform == 'x' else None

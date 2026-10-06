@@ -118,57 +118,29 @@ def test_legacy_account_and_pre_account_caller_keep_reply_behavior(publisher, ai
 
 
 @pytest.mark.parametrize('mode', ['deny', 'read', 'allow'])
-def test_omitting_account_id_cannot_bypass_singleton_owners_consent(publisher, mode):
+@pytest.mark.parametrize('omit', [True, False])
+def test_no_account_id_retains_legacy_behavior_regardless_of_singleton_policy(publisher, mode, omit):
     consent('first', mode)
-    if mode == 'allow':
-        desk_publish.publish(item(account_id=None))
-        publisher.post.assert_called_once()
-    else:
-        with pytest.raises(desk_publish.PublishError, match='permission denied'):
-            desk_publish.publish(item(account_id=None))
-        no_outbound(publisher)
-
-
-def test_pre_account_caller_with_no_workspace_owner_still_uses_legacy_token(publisher):
-    desk._write_store({})
-    desk_publish.publish(item(account_id=None, in_reply_to='parent-1'))
+    row = item(account_id=None, in_reply_to='parent-1')
+    if omit:
+        del row['account_id']
+    desk_publish.publish(row)
     publisher.post.assert_called_once_with('valid-token', 'A plain post', 'parent-1')
 
 
-def test_singleton_tombstone_never_borrows_another_accounts_permission(publisher):
+@pytest.mark.parametrize('ownership', ['no_owner', 'deleted', 'ambiguous'])
+def test_pre_account_caller_does_not_resolve_workspace_ownership(publisher, ownership):
     with desk._store_lock:
         store = desk._read_store()
-        del store['accounts']['first']  # do not free its legacy-token ownership marker
-        desk._write_store(store)
-    with pytest.raises(desk_publish.PublishError, match='not found'):
-        desk_publish.publish(item(account_id=None))
-    no_outbound(publisher)
-
-
-def test_singleton_reference_enforces_consent_even_without_the_ownership_marker(publisher):
-    consent('first', 'deny')
-    with desk._store_lock:
-        store = desk._read_store()
-        store.pop('oauth_legacy_bound')
-        desk._write_store(store)
-    with pytest.raises(desk_publish.PublishError, match='permission denied'):
-        desk_publish.publish(item(account_id=None))
-    no_outbound(publisher)
-
-
-@pytest.mark.parametrize('damage', ['ambiguous', 'bad_record_id'])
-def test_missing_marker_with_invalid_singleton_ownership_fails_closed(publisher, damage):
-    with desk._store_lock:
-        store = desk._read_store()
-        store.pop('oauth_legacy_bound')
-        if damage == 'ambiguous':
-            store['accounts']['second']['credentials']['oauth_vault'] = 'oauth.x'
+        if ownership == 'no_owner':
+            store = {}
+        elif ownership == 'deleted':
+            del store['accounts']['first']
         else:
-            store['accounts']['first']['id'] = None
+            store['accounts']['second']['credentials']['oauth_vault'] = 'oauth.x'
         desk._write_store(store)
-    with pytest.raises(desk_publish.PublishError, match='account|ambiguous'):
-        desk_publish.publish(item(account_id=None))
-    no_outbound(publisher)
+    desk_publish.publish(item(account_id=None, in_reply_to='parent-1'))
+    publisher.post.assert_called_once_with('valid-token', 'A plain post', 'parent-1')
 
 
 @pytest.mark.parametrize('aid', ['', 'missing', 'page', [], 17])
@@ -230,34 +202,100 @@ def test_shared_read_seam_is_exact_and_invalid_operations_never_use_legacy(publi
     no_outbound(publisher)
 
 
-@pytest.mark.parametrize('patch', [{'preview': True}, {'capability': 'manual'}])
-def test_allow_cannot_turn_preview_or_manual_account_into_api_publisher(publisher, patch):
-    consent('first')
+@pytest.mark.parametrize('mode', ['legacy', 'allow'])
+def test_consent_check_does_not_probe_vault_or_provider_readiness(publisher, monkeypatch, mode):
+    consent('first', mode)
+    forbidden = Mock(side_effect=AssertionError('consent must not probe credential readiness'))
+    monkeypatch.setattr(desk_accounts, 'publish_state', forbidden)
+    monkeypatch.setattr(desk_oauth, 'status', forbidden)
+    monkeypatch.setattr(secrets_store, 'list_secrets', forbidden)
+    monkeypatch.setattr(secrets_store, 'is_readable', forbidden)
+    desk_publish.publish(item())
+    forbidden.assert_not_called()
+    publisher.post.assert_called_once()
+
+
+def test_no_account_id_does_not_read_the_account_store(publisher, monkeypatch):
+    forbidden = Mock(side_effect=AssertionError('legacy caller must not resolve an account'))
+    monkeypatch.setattr(desk, '_read_store', forbidden)
+    assert check.require_publish(item(account_id=None)) is None
+    forbidden.assert_not_called()
+    no_outbound(publisher)
+
+
+def test_unset_policy_does_not_add_account_kind_restrictions(publisher):
     with desk._store_lock:
         store = desk._read_store()
-        store['accounts']['first'].update(patch)
+        store['accounts']['first']['account_kind'] = 'older-kind'
         desk._write_store(store)
-    with pytest.raises(desk_publish.PublishError, match='publish|preview'):
-        desk_publish.publish(item())
-    no_outbound(publisher)
+    desk_publish.publish(item())
+    publisher.post.assert_called_once()
 
 
-def test_post_allow_still_needs_ready_provider(publisher, monkeypatch):
-    consent('second')
-    with pytest.raises(desk_publish.PublishError, match='not signed in'):
-        desk_publish.publish(item(account_id='second'))
-    no_outbound(publisher)
+@pytest.mark.parametrize('mode', ['legacy', 'allow'])
+@pytest.mark.parametrize('gate', ['missing', 'attended_only'])
+def test_real_token_resolver_keeps_vault_errors_with_and_without_consent(world, monkeypatch, mode, gate):
+    consent('ch-x', mode)
+    monkeypatch.setattr(desk_oauth, 'status', lambda *a, **k: {'state': 'not_connected'})
+    if gate == 'missing':
+        world.vault.entries.clear()
+        expected = 'credential unavailable: no secret x.oauth-token'
+    else:
+        world.vault.entries['x.oauth-token']['allow_unattended'] = False
+        expected = 'credential unavailable: x.oauth-token is attended-only'
+    with pytest.raises(desk_publish.PublishError) as caught:
+        desk_publish.publish(item(account_id='ch-x'), unattended=True)
+    assert str(caught.value) == expected
+    assert world.vault.reads == [('x.oauth-token', 'desk_publish', True)]
+    assert world.wire.posts == []
+    assert desk_publish.get_receipt('version-1') is None
 
 
-def test_allow_cannot_open_linkedin_gate_even_with_an_executor(publisher, monkeypatch):
+@pytest.mark.parametrize('mode', ['legacy', 'allow'])
+@pytest.mark.parametrize('failure', ['missing', 'denied', 'oauth'])
+def test_publisher_keeps_credential_resolution_errors(publisher, mode, failure):
+    consent('first', mode)
+    error = (secrets_store.SecretNotFound('no such secret') if failure == 'missing'
+             else secrets_store.SecretDenied('attended-only credential') if failure == 'denied'
+             else desk_oauth.OAuthError('not_connected', 'X is not signed in yet'))
+    publisher.token.side_effect = error
+    with pytest.raises(desk_publish.PublishError) as caught:
+        desk_publish.publish(item(), unattended=True)
+    assert str(caught.value) == f'credential unavailable: {error}'
+    assert publisher.token.call_args.kwargs['unattended'] is True
+    publisher.post.assert_not_called()
+    publisher.username.assert_not_called()
+    assert desk_publish.get_receipt('version-1') is None
+
+
+@pytest.mark.parametrize('patch', [{'preview': True}, {'capability': 'manual'}])
+def test_allow_retains_manual_and_preview_gates_at_approval(world, patch):
+    campaign(world)
+    piece, vid = version(world)
+    consent('ch-x')
+    edit_store(lambda s: s['accounts']['ch-x'].update(patch))
+    if patch.get('preview'):
+        with pytest.raises(desk_tick._pieces.PieceError, match='preview'):
+            desk_tick.approve_and_send(piece, vid, now=NOW)
+    else:
+        desk_tick.approve_and_send(piece, vid, now=NOW)
+        assert stored(piece, vid)['state'] == 'approved'
+        assert stored(piece, vid)['manual']['account_id'] == 'ch-x'
+    assert world.wire.posts == [] and world.vault.reads == []
+
+
+def test_allow_cannot_open_linkedin_gate_even_with_an_executor(world, monkeypatch):
     # Simulate only the future executor registration; retain the real closed provider gate.
     monkeypatch.setitem(route_readiness.EXECUTORS, ('linkedin', 'linkedin-oauth', 'publish'), 'api')
-    consent('page', service='linkedin', kind='organization',
+    edit_store(lambda s: s['accounts']['ch-li'].update(organization_id='777'))
+    consent('ch-li', service='linkedin', kind='organization',
             scopes=[{'purpose': 'publish', 'capability': 'post', 'route_id': 'linkedin-oauth'}])
     assert desk_accounts.LINKEDIN_ORG_POSTING_APPROVED is False
-    with pytest.raises(desk_publish.PublishError, match='LinkedIn'):
-        desk_publish.publish(item(platform='linkedin', account_id='page', organization_id='777'))
-    no_outbound(publisher)
+    campaign(world, accounts=('ch-li',))
+    piece, vid = version(world, account='ch-li')
+    with pytest.raises(desk_tick._pieces.PieceError, match='LinkedIn'):
+        desk_tick.approve_and_send(piece, vid, now=NOW)
+    assert world.wire.posts == [] and world.vault.reads == []
 
 
 def test_idempotent_receipt_is_a_fact_after_post_revocation(publisher):
