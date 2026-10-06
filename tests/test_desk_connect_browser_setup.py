@@ -47,7 +47,7 @@ def env(tmp_path, monkeypatch):
     from mc import secrets_store
     from mc.blueprints import desk_connect_browser_setup_routes as routes
     from mc.blueprints import local_auth
-    from mc.desk_connect import browser_setup, signin_fill, signin_login_store
+    from mc.desk_connect import browser_setup, permission_policy, signin_fill, signin_login_store
     from mc.state import agent_sessions
     monkeypatch.setattr(local_auth, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
     local_auth._LOCAL_AUTH_FAILS.clear()
@@ -58,6 +58,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(_desk, 'STORE_PATH', tmp_path / 'desk.json')
     agent_sessions.clear()
     browser_setup._forget_all_for_tests()
+    permission_policy._forget_all_for_tests()
     local_auth._local_auth_set_passcode(PASSCODE)
     logs: list = []
     monkeypatch.setattr(browser_setup, '_log', lambda msg, *a, **k: logs.append(str(msg)))
@@ -82,6 +83,7 @@ def env(tmp_path, monkeypatch):
     yield app.test_client(), calls, logs, tmp_path
     agent_sessions.clear()
     browser_setup._forget_all_for_tests()
+    permission_policy._forget_all_for_tests()
 
 
 # -- helpers ----------------------------------------------------------------------
@@ -174,7 +176,57 @@ def test_a_setup_grants_nothing_and_leaves_the_read_route_alone(env):
     assert desk.account_read_via(rec) == 'pane'                                                       # the default, untouched
     assert after['presences'] == before['presences'] and after['campaigns'] == before['campaigns']   # on no board, in no campaign
     assert after['engagement'] == before['engagement']
-    assert set(rec) - {'id', 'platform', 'identity', 'label', 'capability', 'voice', 'created_at', 'credentials', 'browser_setup'} == set()
+    assert set(rec) - {'id', 'platform', 'identity', 'label', 'capability', 'voice', 'created_at', 'credentials',
+                       'browser_setup', 'permission_policy', 'permission_policy_version'} == set()
+
+
+@pytest.mark.parametrize('service,kind,identity,extra', [
+    ('x', 'account', 'ron', {}),
+    ('linkedin', 'member', 'Ron Levy', {}),
+    ('linkedin', 'organization', 'Clayrune', {}),
+    ('linkedin', 'organization', 'Clayrune', {'organization_id': '42'}),
+])
+def test_new_browser_accounts_persist_explicit_default_deny(env, service, kind, identity, extra):
+    from mc.desk_connect import permission_policy
+    client, _, _, _ = env
+    r = _save(client, _draft(service, _new(identity, **extra), kind))
+    assert r.status_code == 201, r.get_json()
+    aid = r.get_json()['account_id']
+    state = permission_policy.read_policy(_rec(aid), account_id=aid, account_kind=kind)
+    assert state['state'] == 'explicit' and state['account_kind'] == kind
+    assert state['read'] is False and state['post'] is False and state['scopes'] == []
+
+
+@pytest.mark.parametrize('explicit', [False, True])
+def test_browser_setup_preserves_reused_account_policy(env, explicit):
+    from mc.desk_connect import permission_policy
+    client, _, _, _ = env
+    acc = _mk('x', 'ron')
+    if explicit:
+        draft = {'account_id': acc['id'], 'service': 'x', 'account_kind': 'account',
+                 'read': True, 'post': False,
+                 'scopes': [{'purpose': 'read_own', 'capability': 'mentions', 'route_id': 'x-browser'}]}
+        permission_policy.commit('req-policy-0001', draft)
+    before = permission_policy.read_policy(_rec(acc['id']))
+    r = _save(client, _draft('x', {'id': acc['id']}))
+    assert r.status_code == 201, r.get_json()
+    assert permission_policy.read_policy(_rec(acc['id'])) == before
+    r = _save(client, _draft('x', {'id': acc['id']}), rid='req-browser-0002')
+    assert r.status_code == 200 and r.get_json()['unchanged'] is True
+    assert permission_policy.read_policy(_rec(acc['id'])) == before
+
+
+def test_default_deny_initialization_failure_rolls_back_new_account_and_login(env, monkeypatch):
+    from mc.desk_connect import permission_policy
+    client, _, _, _ = env
+
+    def fail(*_a, **_k):
+        raise RuntimeError('policy initialization failed')
+
+    monkeypatch.setattr(permission_policy, 'initialize_new_account', fail)
+    r = _save(client, _draft('x', _new('ron'), new_login=_typed()))
+    assert r.status_code == 500 and r.get_json()['code'] == 'record_failed'
+    assert _store()['accounts'] == {} and 'x.ron' not in _vault_names()
 
 
 def test_an_existing_account_is_reused_not_duplicated(env):
