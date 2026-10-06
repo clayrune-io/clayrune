@@ -534,9 +534,7 @@
               `<option value="${esc(a.ref)}"${a.ref === ctx.fam.agent ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}
           </select>` : '';
     return `<div class="desk-v1-sb-agent-head" data-sb-agent-head>${avatar}<strong>${esc(agentName)}</strong></div>${picker}
-          <p class="desk-v1-sb-agent-text">Scenes are pulled from real product captures. Pick a scene and tell me what to change.</p>
-          <textarea class="desk-v1-sb-agent-input desk-v1-sb-agent-ask" data-sb-ask data-autogrow="0.4" rows="2"${_isLive() ? '' : ' disabled title="Needs the live Desk: the sample storyboard has no agent behind it"'} placeholder="Ask ${esc(agentName)} to change a scene…" aria-label="Ask ${esc(agentName)} to change a scene"></textarea>
-          <div class="desk-v1-story-ask-status" data-sb-ask-status role="status"></div>`;
+          ${window.DeskV1StoryChat.html(agentName, _isLive())}`;
   }
 
   // A standalone item carries its REAL scenes (the examples are not part of
@@ -783,7 +781,7 @@
       n.classList.toggle('desk-v1-sb-selected', on);
       if (n.classList.contains('desk-v1-sb-scene')) { if (on) n.setAttribute('aria-current', 'true'); else n.removeAttribute('aria-current'); }
     });
-    window.DeskV1Story.onSelect();
+    window.DeskV1StoryChat.onSelect();
   }
   function _selectScene(sceneId, keep) {
     if (!_sb) return;
@@ -867,8 +865,7 @@
   function _wireAgentBox(box, ctx) {
     const pick = box.querySelector('[data-sb-agent-pick]');
     if (pick) pick.onchange = () => _pickAgent(pick.value);
-    const ask = box.querySelector('[data-sb-ask]');
-    if (_isLive()) window.DeskV1Story.wireAsk(ask, _storyBridge());
+    if (_isLive()) window.DeskV1StoryChat.wire(box, _storyBridge());
   }
 
   // What desk-v1-story.js is handed: the page's scene list and commands, never the

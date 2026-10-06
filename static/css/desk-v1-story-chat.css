@@ -1,0 +1,21 @@
+/* The conversation beside the storyboard (static/js/desk-v1-story-chat.js).
+   The agent column is wider than the old ask box: a thread needs the room. */
+.desk-v1-sb-layout { grid-template-columns: minmax(0, 1fr) 320px; }
+@media (max-width: 960px) { .desk-v1-sb-layout { grid-template-columns: 1fr; } }
+
+.desk-v1-chat { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.desk-v1-chat-thread {
+  display: flex; flex-direction: column; gap: 8px; min-height: 96px; max-height: min(52vh, 440px);
+  overflow-y: auto; padding: 2px 4px 2px 0; overscroll-behavior: contain;
+}
+.desk-v1-chat-thread:empty { display: none; }
+.desk-v1-chat-empty { margin: 0; font-size: 12.5px; color: var(--text-dim); line-height: 1.45; }
+.desk-v1-chat-turn { border-radius: 10px; padding: 7px 10px; font-size: 12.5px; line-height: 1.45; min-width: 0; }
+.desk-v1-chat-user { background: var(--surface3); border: 1px solid var(--border2); border-right: 3px solid var(--accent); align-self: flex-end; max-width: 92%; }
+.desk-v1-chat-agent { background: var(--surface2); border: 1px solid var(--border2); align-self: stretch; }
+.desk-v1-chat-meta { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); margin-bottom: 2px; }
+.desk-v1-chat-text { color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.desk-v1-chat-thinking .desk-v1-chat-text { color: var(--text-faint); font-style: italic; }
+.desk-v1-chat-chip { margin-top: 6px; font-size: 11.5px; border-radius: 6px; padding: 3px 7px; border: 1px solid var(--border2); color: var(--text-dim); overflow-wrap: anywhere; }
+.desk-v1-chat-chip[data-kind="ok"] { color: var(--green-text); }
+.desk-v1-chat-chip[data-kind="error"] { color: var(--amber-text, var(--amber)); }

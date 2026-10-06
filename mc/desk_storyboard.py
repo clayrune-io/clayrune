@@ -322,6 +322,8 @@ def put_storyboard(owner_kind: str, owner_id: str, body) -> dict:
                              [f'current_rev={current}'])
         new = {'rev': current + 1, 'scenes': scenes, 'pending_edits': pending, 'updated_at': now_iso(),
                'story': story if isinstance(story, str) else (board.get('story') or '')}
+        if board.get('thread'):
+            new['thread'] = board['thread']   # the agent chat rides with the board (mc/desk_story_chat.py)
         if owner_kind == 'studio':
             new['title'] = (title.strip() if isinstance(title, str) else board.get('title')) or ''
         boards[key] = new
