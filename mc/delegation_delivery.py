@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from mc import empty_turn
 from mc.core import _log
 
 
@@ -685,13 +686,18 @@ def callback_payload(child: dict[str, Any], summary: str, event_id: str) -> dict
         who = character.get('agent_name') or character.get('display_name') or character.get('name') or 'agent'
     else:
         who = character or child.get('provider') or 'agent'
+    # A turn that ended with no reply text and no tool calls (mc/empty_turn.py)
+    # reads as a failure to the spawner, with the reason where the reply
+    # would have been -- not "status=completed" over an empty message.
+    summary, status = empty_turn.callback_view(
+        child, summary, child.get('status', 'unknown'))
     result = {'event_id': event_id, 'child_session_id': child.get('session_id', ''),
-            'who': who, 'status': child.get('status', 'unknown'),
+            'who': who, 'status': status,
             'task': child.get('task', ''), 'summary': summary or '',
             'provider': child.get('provider', 'claude'),
             'model': child.get('agent_model') or child.get('model') or '',
             'message': (f"[dispatched agent finished] {who} (session {child.get('session_id', '')[:12]}) "
-                        f"ended with status={child.get('status', 'unknown')}.\n\nTask: {child.get('task', '')}\n\n"
+                        f"ended with status={status}.\n\nTask: {child.get('task', '')}\n\n"
                         f"Its final message:\n{summary or ''}\n\nThis is the callback you asked for at dispatch. Continue "
                         "the work it was part of -- do not re-dispatch it.")}
     if '_delivery_generation' in child:

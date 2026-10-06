@@ -50,6 +50,7 @@ _get_mem_write_lock or writes MEMORY.md.
 
 import concurrent.futures
 import contextlib
+from mc import empty_turn as _empty_turn
 from mc import engine_selection
 from mc import launch_marker as _launch_marker  # per-launch unattended marker (fence fail-open, MC-1040)
 from mc import proc_kill as _proc_kill
@@ -5531,16 +5532,37 @@ def _apply_mc_tool_blocks_for_turn(session):
     """
     try:
         buf = session.pop('_mc_turn_buf', None)
-        if not buf:
-            return
-        res = _agent_runtime.apply_mc_tool_blocks(session, '\n'.join(buf))
-        if res.get('paused'):
-            # A question was raised. If nobody is watching this run, hand it to
-            # the user's configured channel so it can be answered offline
-            # instead of hanging until the guardian notices.
-            _question_channel_notify(session)
+        res = {'blocks_found': False, 'paused': False}
+        if buf:
+            res = _agent_runtime.apply_mc_tool_blocks(session, '\n'.join(buf))
+            if res.get('paused'):
+                # A question was raised. If nobody is watching this run, hand it to
+                # the user's configured channel so it can be answered offline
+                # instead of hanging until the guardian notices.
+                _question_channel_notify(session)
+        _flag_empty_turn(session, buf, res)
     except Exception as e:
         _log(f"[mc-tool] turn scan failed: {e}", flush=True)
+
+
+def _flag_empty_turn(session, buf, res):
+    """Turn-boundary verdict (backlog d37d0183): no visible reply text and no
+    tool call is an empty result, not a success. Runs for EVERY result event,
+    including one with no assistant text at all (`buf` is None) -- the worst
+    case. Does not touch status: the Mode A reader's `finally` flips a
+    'completed' session to 'error' on the flag; a Mode B turn boundary stays
+    'idle' (the process is alive and resumable) and carries the flag, the chat
+    line and the callback wording instead. See mc/empty_turn.py."""
+    if (session.get('status') == 'stopped' or session.get('_interrupted')
+            or session.get('waiting_for_question')
+            or session.get('waiting_for_plan_approval')):
+        _empty_turn.mark(session, None, set_error=False)
+        return
+    _empty_turn.mark(session, _empty_turn.empty_reason(
+        visible_text=_agent_runtime.strip_mc_tool_blocks('\n'.join(buf or [])),
+        tool_calls=int(session.get(_empty_turn.TOOL_COUNT_KEY) or 0),
+        paused=bool(res.get('paused')),
+        had_control_blocks=bool(res.get('blocks_found'))), set_error=False)
 
 
 def _question_channel_notify(session):
@@ -5877,6 +5899,7 @@ def _read_agent_stream(proc, session):
                             activity = _format_tool_activity(tool_name, tool_input)
                             session['log_lines'].append(activity)
                             session['last_output_time'] = _time.time()
+                            _empty_turn.note_tool_call(session)
                             _observe_negation_interrupt(session, tool_name, tool_input)
                             _observe_memory_push_input(session, tool_name, tool_input)
                             _note_tool_use_id(session, tool_name, block.get('id'))
@@ -6030,6 +6053,8 @@ def _read_agent_stream(proc, session):
                         session['last_status_change_time'] = _time.time()
                     else:
                         session['status'] = 'completed' if rc == 0 else 'error'
+                        if session['status'] == 'completed' and session.get(_empty_turn.EMPTY_KEY):
+                            session['status'] = 'error'  # empty turn: see mc/empty_turn.py
                         session['last_status_change_time'] = _time.time()
                         if rc != 0:
                             session['log_lines'].append(f"[exited with code {rc}]")
@@ -6164,6 +6189,7 @@ def _read_agent_stream_b(proc, session):
                             activity = _format_tool_activity(tool_name, tool_input)
                             session['log_lines'].append(activity)
                             session['last_output_time'] = _time.time()
+                            _empty_turn.note_tool_call(session)
                             _observe_negation_interrupt(session, tool_name, tool_input)
                             _observe_memory_push_input(session, tool_name, tool_input)
                             _note_tool_use_id(session, tool_name, block.get('id'))
@@ -8716,6 +8742,7 @@ def _advance_delegation_turn(session, owner: "str | None" = _OWNER_HUMAN):
     """
     if owner:
         session[_TURN_OWNER_KEY] = owner
+    _empty_turn.begin_turn(session)
     _allocate_delegation_turn(session)
     # Turn identity must be durable before provider execution begins; a cold
     # revive can then reconstruct the same child/session turn without collision.
@@ -9305,7 +9332,9 @@ def _log_agent_completion_body(session):
         # error text instead of being skipped as a marker).
         tail = '\n'.join(lines)
         real_error = _agent_runtime._last_real_error_line(tail)
-        if real_error:
+        if session.get(_empty_turn.EMPTY_KEY):
+            summary = _empty_turn.line_for(session[_empty_turn.EMPTY_KEY])
+        elif real_error:
             summary = f'[no assistant output — {real_error}]'
         elif session.get('status') == 'error':
             summary = '[no assistant output — run failed with no captured error text]'
@@ -9597,7 +9626,8 @@ def _runtime_log_completion(ev, session):
               # codec can't encode character '→'", raised by this _log.
               try:
                 tail = '\n'.join(session.get('log_lines') or [])
-                detail = (_agent_runtime._last_real_error_line(tail)
+                detail = (session.get(_empty_turn.EMPTY_KEY)
+                          or _agent_runtime._last_real_error_line(tail)
                           or 'no error text captured on the session tail')
                 # model= and ts= (MC-934): added so _recent_quota_failures()
                 # can tell WHICH model choked and WHEN, without a second
