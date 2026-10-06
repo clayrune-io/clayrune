@@ -509,6 +509,13 @@ async function _renderSettings() {
         <div><div class="settings-label">Permissions</div><div class="settings-hint">Agent tool-permission mode.</div></div>
         <select class="settings-select" onchange="saveSetting('agent_permission_mode',this.value)">${permSel}</select>
       </div>
+      <div class="settings-row" id="codex-sandbox-row">
+        <div>
+          <div class="settings-label">Sandbox unattended Codex runs</div>
+          <div class="settings-hint">Scheduled, workflow, dispatched and hivemind Codex runs are confined to their working folder (workspace-write, no network). Off lets those runs bypass the sandbox entirely. Chats you start yourself are never sandboxed. Changing it needs your dashboard passcode; an agent cannot change it.</div>
+        </div>
+        ${toggle('codex_unattended_sandbox', cfg.codex_unattended_sandbox !== false)}
+      </div>
       <div class="settings-row">
         <div>
           <div class="settings-label">Brief replies</div>
@@ -580,13 +587,6 @@ async function _renderSettings() {
       <div class="settings-section-title">Advanced</div>
       <div class="settings-label" style="margin-bottom:6px">Engine fallback</div>
       ${engineFallbackHTML}
-      <div class="settings-row" id="codex-sandbox-row">
-        <div>
-          <div class="settings-label">Sandbox unattended Codex runs</div>
-          <div class="settings-hint">Scheduled, workflow, dispatched and hivemind Codex runs are confined to their working folder (workspace-write, no network). Off lets those runs bypass the sandbox entirely. Chats you start yourself are never sandboxed. Changing it needs your dashboard passcode; an agent cannot change it.</div>
-        </div>
-        ${toggle('codex_unattended_sandbox', cfg.codex_unattended_sandbox !== false)}
-      </div>
     </div>
       </div>
 

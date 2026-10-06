@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
  * MC-975 Part A -- the Settings toggle for codex_unattended_sandbox
- * (Settings > Agent > Advanced). The human-only gate is server-side
+ * (Settings > Agent > Behavior). The human-only gate is server-side
  * (tests/test_codex_sandbox_setting.py); this pins the UI half:
- *   1. the row renders in Advanced, reflecting the server value
+ *   1. the row renders in Behavior (beside Permissions), reflecting the server value
  *      (absent key = the server default ON, so it reads ON, not OFF),
  *   2. clicking it goes through the passcode modal (humanProofFetch) and
  *      PUTs exactly {codex_unattended_sandbox: <bool>} -- nothing else,
@@ -84,14 +84,14 @@ const humanProof = async (action) => {   // 'submit' | 'cancel'
   }, action);
 };
 
-const openAdvanced = async () => {
+const openBehavior = async () => {
   await page.evaluate(() => { window.closeModalById && window.closeModalById('__settings'); });
   await page.evaluate(() => window.openSettings());
   await page.waitForSelector('#codex-sandbox-row', { state: 'attached', timeout: 10000 });
   await page.evaluate(() => window.drillSettings('agent'));
   await page.evaluate(() => {
     const idx = [...document.querySelectorAll('[data-cat="agent"] .settings-section-title')]
-      .findIndex(t => t.textContent.trim() === 'Advanced');
+      .findIndex(t => t.textContent.trim() === 'Behavior');
     window.drillSettingsSub(idx);
   });
   await page.waitForFunction(() => {
@@ -106,7 +106,7 @@ try {
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => typeof window.openSettings === 'function', { timeout: 20000 });
 
-  await openAdvanced();
+  await openBehavior();
   check(await toggleOn() === true, 'absent key renders ON (the server default)', 'absent key rendered OFF');
   const hint = await page.evaluate(() => document.querySelector('#codex-sandbox-row .settings-hint').textContent);
   check(/passcode/i.test(hint) && /agent cannot/i.test(hint),
@@ -127,7 +127,7 @@ try {
   await page.evaluate(() => document.querySelector('#codex-sandbox-row .settings-toggle').click());
   await humanProof('cancel');
   await page.waitForTimeout(500);
-  await openAdvanced();
+  await openBehavior();
   check(puts.length === 0 && config.codex_unattended_sandbox === false && await toggleOn() === false,
     'cancelling the passcode prompt sends no PUT and the switch re-renders from the saved value',
     `puts=${JSON.stringify(puts)} saved=${config.codex_unattended_sandbox} on=${await toggleOn()}`);
