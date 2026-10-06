@@ -14902,6 +14902,13 @@ def get_agent_log(project_id):
                 if item.get('session_id') not in seen:
                     log.append(item)
                     seen.add(item.get('session_id'))
+    # `?session_id=` narrows to one row (full id or a prefix). A dispatch
+    # callback carries only a one-line task title and names this GET as the way
+    # to read the full brief (mc/callback_shape.py, MC-1057) -- without the
+    # filter that lookup would be the whole 500-row log.
+    _want_sid = (request.args.get('session_id') or '').strip()
+    if _want_sid:
+        log = [e for e in log if str(e.get('session_id') or '').startswith(_want_sid)]
     # The chat rail merges these rows in as conversations (conversation.js
     # `_userInitiatedConvos`). Two things only the transcripts know:
     #  • `rolled_into` — this csid is an older link of a rollover chain; the

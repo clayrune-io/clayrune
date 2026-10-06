@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from mc import empty_turn
+from mc.callback_shape import task_line
 from mc.core import _log
 
 
@@ -697,7 +698,7 @@ def callback_payload(child: dict[str, Any], summary: str, event_id: str) -> dict
             'provider': child.get('provider', 'claude'),
             'model': child.get('agent_model') or child.get('model') or '',
             'message': (f"[dispatched agent finished] {who} (session {child.get('session_id', '')[:12]}) "
-                        f"ended with status={status}.\n\nTask: {child.get('task', '')}\n\n"
+                        f"ended with status={status}.\n\n{task_line(child)}\n\n"
                         f"Its final message:\n{summary or ''}\n\nThis is the callback you asked for at dispatch. Continue "
                         "the work it was part of -- do not re-dispatch it.")}
     if '_delivery_generation' in child:

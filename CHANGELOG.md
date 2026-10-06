@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — Dispatch callbacks carry a task title instead of the whole brief (MC-1057)
+
+- A "[dispatched agent finished]" (and "asked a question") callback echoed the full Task the spawner had written; the spawner already holds it and re-reads the echo on every later turn. It now carries a one-line title (first line, clipped to 100 chars) and the exact GET for the full brief: `GET /api/project/<pid>/agent/log?session_id=<id>`. The first line, the child's final message and the question text are unchanged. Measured on 40 recent transcripts: callback median 3,175 -> 1,363 chars (~794 -> ~341 tokens). Code: `mc/callback_shape.py`.
+- `GET /agent/log` accepts `?session_id=` (full id or prefix) and returns just that row.
+- A standing position the dispatch-time system prompt already rendered in full is now a one-line reference on the first live turn that matches it (`mc/preamble_seen.py`, seeded from `memory_turn.seed_delivered`). Byte effect on the replay is ~0: the per-turn budget (3,200 B) backfills freed space with the next-ranked notes, so the preamble stays near its cap. Lowering `memory_turn_budget_bytes` is the lever that shrinks it.
+
 ## [2026-10-06] — Passcode and passphrase prompts no longer trigger the browser's "Save password?"
 
 - Typing the dashboard passcode made Chrome offer to save it, and pair it with whatever text field sat nearest as the username. Browsers decide a field is a credential from `type="password"`, and `autocomplete="current-password"` / `"new-password"` invited the manager on purpose.

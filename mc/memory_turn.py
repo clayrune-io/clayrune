@@ -70,6 +70,7 @@ import os as _os
 
 from mc.core import _log
 from mc import memory as _mem
+from mc import preamble_seen as _seen
 
 # Fallback if `memory_turn_budget_bytes` is absent from CONFIG (should not
 # happen once server.py's defaults dict carries it — see Condition 9's
@@ -93,11 +94,11 @@ _DELIVERED_KEY = '_mem_turn_delivered'
 # bytes doesn't" logic memory_turn already applies to notes via suppression.
 # {file: {'hash': str, 'full_turn': int}}, scoped to the live session dict
 # exactly like _DELIVERED_KEY.
-_POS_STATE_KEY = '_mem_turn_pos_state'
+_POS_STATE_KEY = _seen.POS_STATE_KEY  # defined in mc/preamble_seen.py (MC-1057)
 # One live-turn refresh = one increment; used to force a full re-render every
 # N turns regardless of hash, so a long-lived compact reminder doesn't drift
 # out of the model's effective attention window forever.
-_TURN_IDX_KEY = '_mem_turn_turn_index'
+_TURN_IDX_KEY = _seen.TURN_IDX_KEY
 DEFAULT_POSITION_FULL_EVERY = 15
 _COMPACT_LINE_MAX_BYTES = 160
 
@@ -281,6 +282,13 @@ def seed_delivered(project, session, task, *, topk=None, expand=None) -> None:
         hits = _mem._memory_search(project, task, _topk, expand=_expand, record=None)
         delivered = session.setdefault(_DELIVERED_KEY, set())
         added = 0
+        # MC-1057: the dispatch-time system prompt carried these positions in
+        # full, so the first live turn that matches one should compact it.
+        # Positions stay out of the delivered-set (they re-surface every turn
+        # they match); this only seeds the full/compact ledger.
+        if position_compact_enabled():
+            _seen.seed(session, [h for h in hits if _is_position_hit(h)],
+                       lambda h: _position_file_hash(project, h))
         for h in hits:
             if _is_position_hit(h):
                 continue

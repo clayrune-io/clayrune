@@ -400,3 +400,75 @@ def test_disabling_the_feature_is_a_full_bypass(tmp_data_dir):
                        'positions': [], 'cold_used': False, 'bytes': 0}
     mt.seed_delivered(p, session, "compare okf agent memory to our memory layer")
     assert not session.get('_mem_turn_delivered')
+
+
+# ── MC-1057: dispatch-rendered positions seed the full/compact ledger ───────
+
+def test_a_position_the_dispatch_prompt_rendered_in_full_is_compact_on_the_first_live_turn(tmp_data_dir):
+    """The dispatch-time system prompt already carried this position in full.
+    Before: the first live turn that matched it rendered it in full again (the
+    ledger started empty). After: seed_delivered records it, so turn 1 is a
+    one-line reference. A position the dispatch task did NOT match stays full."""
+    m = _mem(tmp_data_dir)
+    mt = _turn(m)
+    p = {"id": "posseedproj"}
+    _seed(m, p, {})
+    fname = _seed_position(m, p)
+    session = {}
+
+    mt.seed_delivered(p, session, "should we use obsidian for this")
+    live = mt.refresh_for_turn(p, session, "should we use obsidian for this")
+    assert fname in live["positions"]
+    assert "DECLINED" in live["block"]
+    assert "already evaluated and rejected" not in live["block"]
+
+    cold_session = {}   # never seeded: respawn / restart / unmatched at dispatch
+    full = mt.refresh_for_turn(p, cold_session, "should we use obsidian for this")
+    assert "already evaluated and rejected" in full["block"]
+    assert live["bytes"] < full["bytes"]
+
+
+def test_a_seeded_position_that_changed_since_dispatch_renders_full(tmp_data_dir):
+    m = _mem(tmp_data_dir)
+    mt = _turn(m)
+    p = {"id": "posseedchangedproj"}
+    _seed(m, p, {})
+    fname = _seed_position(m, p)
+    session = {}
+    mt.seed_delivered(p, session, "should we use obsidian for this")
+    m.write_position(
+        p, subject="Adopt Obsidian as the memory substrate", verdict="adopted",
+        reason="reversed after the export tool shipped",
+        expires_when="never", triggers="obsidian")
+    live = mt.refresh_for_turn(p, session, "should we use obsidian for this")
+    assert fname in live["positions"]
+    assert "reversed after the export tool shipped" in live["block"]
+
+
+def test_seed_with_the_compact_lever_off_records_nothing(tmp_data_dir):
+    from mc import state
+    m = _mem(tmp_data_dir)
+    mt = _turn(m)
+    p = {"id": "posseedoffproj"}
+    _seed(m, p, {})
+    _seed_position(m, p)
+    state.CONFIG['memory_turn_position_compact_enabled'] = False
+    try:
+        session = {}
+        mt.seed_delivered(p, session, "should we use obsidian for this")
+        assert not session.get('_mem_turn_pos_state')
+    finally:
+        state.CONFIG.pop('memory_turn_position_compact_enabled', None)
+
+
+def test_preamble_seen_ledger_fails_toward_full():
+    from mc import preamble_seen as ps
+    s = {}
+    assert not ps.is_seen(s, 'a.md', 'h1')
+    assert ps.seed(s, [{'file': 'a.md'}, {'file': 'b.md'}],
+                   lambda h: '' if h['file'] == 'b.md' else 'h1') == 1   # unreadable file skipped
+    assert ps.is_seen(s, 'a.md', 'h1') and not ps.is_seen(s, 'a.md', 'h2')
+    assert not ps.is_seen(s, 'b.md', '') and not ps.is_seen(s, 'a.md', '')
+    ps.forget(s)
+    assert not ps.is_seen(s, 'a.md', 'h1')
+    assert ps.seed(None, [{'file': 'a.md'}], lambda h: 'x') == 0
