@@ -117,7 +117,8 @@ def run(op: dict, headers: dict, *, resolver=None, timeout: float = 30.0) -> dic
     deadline = time.monotonic() + DEADLINE_S
     rpc = _Rpc(deadline)
     session = _t.open_session(op['protocol'], op['url'], headers, rpc.on_message,
-                              allow_private=op['exposure']['local_or_private'], timeout=timeout, resolver=resolver)
+                              allow_private=op['exposure']['local_or_private'], timeout=timeout, resolver=resolver,
+                              deadline=deadline)
     rpc.session = session
     try:
         init = rpc.call('initialize', {'protocolVersion': PROTOCOL_VERSION, 'capabilities': {},

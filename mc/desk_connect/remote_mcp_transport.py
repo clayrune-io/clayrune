@@ -182,14 +182,18 @@ def _read_limited(resp, limit: int = MAX_MESSAGE) -> bytes:
     return data
 
 
-def iter_sse(fp):
-    """`(event, data)` for each complete server-sent event on a binary stream, bounded."""
+def iter_sse(fp, deadline: float | None = None):
+    """`(event, data)` for each complete server-sent event on a binary stream, bounded. With a
+    `deadline` (a `time.monotonic()` value) the stream is abandoned once it passes, checked after every
+    line, so a server that keeps a stream alive with comments cannot hold the reader past it."""
     event, data, size = 'message', [], 0
     while True:
         try:
             line = fp.readline(MAX_LINE + 1)
         except (OSError, http.client.HTTPException, ValueError) as e:
             raise TransportError('stream_failed', f'The event stream broke ({type(e).__name__}).') from e
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TransportError('timeout', 'The server did not finish answering in time.')
         if not line:
             if data:
                 yield event, '\n'.join(data)
@@ -230,9 +234,10 @@ class StreamableSession:
 
     protocol = 'streamable_http'
 
-    def __init__(self, target: Target, headers: dict, on_message, *, timeout: float = IDLE_TIMEOUT_S, resolver=None):
+    def __init__(self, target: Target, headers: dict, on_message, *, timeout: float = IDLE_TIMEOUT_S, resolver=None,
+                 deadline: float | None = None):
         self.target, self._headers, self._on_message = target, dict(headers), on_message
-        self._timeout, self._resolver = timeout, resolver
+        self._timeout, self._resolver, self._deadline = timeout, resolver, deadline
         self.session_id: str | None = None
         self.protocol_version: str | None = None
 
@@ -274,7 +279,7 @@ class StreamableSession:
             elif ctype == 'application/json':
                 _dispatch(_read_limited(resp), self._seen)
             elif ctype == 'text/event-stream':
-                for event, data in iter_sse(resp):
+                for event, data in iter_sse(resp, self._deadline):
                     if event in ('message', ''):
                         _dispatch(data, self._seen)
             else:
@@ -389,8 +394,10 @@ class SseSession:
 
 
 def open_session(protocol: str, url: str, headers: dict, on_message, *, allow_private: bool = False,
-                 timeout: float = IDLE_TIMEOUT_S, resolver=None, on_close=None):
-    """A ready session for `protocol`. Raises TransportError (or ValueError for a bad header)."""
+                 timeout: float = IDLE_TIMEOUT_S, resolver=None, on_close=None, deadline: float | None = None):
+    """A ready session for `protocol`. Raises TransportError (or ValueError for a bad header). A `deadline`
+    (`time.monotonic()`) bounds how long a Streamable HTTP answer may stream; an SSE session's reader is
+    a long-lived thread that the caller's own deadline (`remote_mcp_check`) already stops waiting on."""
     if protocol not in PROTOCOLS:
         raise TransportError('bad_protocol', 'The protocol must be streamable_http or sse.')
     check_headers(headers)
@@ -398,7 +405,7 @@ def open_session(protocol: str, url: str, headers: dict, on_message, *, allow_pr
     if protocol == 'sse':
         s = SseSession(target, headers, on_message, timeout=timeout, resolver=resolver, on_close=on_close)
     else:
-        s = StreamableSession(target, headers, on_message, timeout=timeout, resolver=resolver)
+        s = StreamableSession(target, headers, on_message, timeout=timeout, resolver=resolver, deadline=deadline)
     s.open()
     return s
 

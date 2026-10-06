@@ -59,8 +59,30 @@ class Bridge:
             text = text.replace(s, '[redacted]')
         return text
 
+    def _scrub_tree(self, node):
+        """`node` with every string in it (keys too) scrubbed, in place. Scrubbing the text after
+        `json.dumps` misses a token holding a quote, a backslash or a non-ASCII character, because
+        serialising escapes it; so the strings are scrubbed as the server sent them. Iterative: a
+        deeply nested message must not hit the recursion limit."""
+        if isinstance(node, str):
+            return self._scrub(node)
+        stack = [node]
+        while stack:
+            cur = stack.pop()
+            is_dict = isinstance(cur, dict)
+            for k, v in (list(cur.items()) if is_dict else enumerate(cur)):
+                if isinstance(v, str):
+                    v = self._scrub(v)
+                elif isinstance(v, (dict, list)):
+                    stack.append(v)
+                nk = self._scrub(k) if is_dict and isinstance(k, str) else k
+                if nk != k:
+                    cur.pop(k)
+                cur[nk] = v
+        return node
+
     def _emit(self, message: dict) -> None:
-        line = self._scrub(json.dumps(message, separators=(',', ':'), ensure_ascii=True))
+        line = json.dumps(self._scrub_tree(message), separators=(',', ':'), ensure_ascii=True)
         with self._lock:
             self._out.write(line + '\n')
             self._out.flush()

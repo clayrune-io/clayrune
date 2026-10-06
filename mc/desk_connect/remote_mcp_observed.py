@@ -98,6 +98,12 @@ def get(scope: str, project_id: str | None, server_name: str, fingerprint: str |
     return rec
 
 
+def _repeated(tools: list) -> set:
+    """The tool names a list offers more than once."""
+    seen: set = set()
+    return {t['name'] for t in tools if t['name'] in seen or seen.add(t['name'])}
+
+
 def diff(baseline: dict, now: dict) -> list[dict]:
     """What differs between two observations, as `{what, detail}` for a person to read."""
     out: list[dict] = []
@@ -107,14 +113,25 @@ def diff(baseline: dict, now: dict) -> list[dict]:
         out.append({'what': 'protocol version', 'detail': f'{baseline.get("protocol_version")} to {now.get("protocol_version")}'})
     if baseline.get('capabilities') != now.get('capabilities'):
         out.append({'what': 'capabilities', 'detail': 'the kinds of thing the server offers changed'})
-    old = {t['name']: t['hash'] for t in baseline.get('tools') or []}
-    new = {t['name']: t['hash'] for t in now.get('tools') or []}
+    old_tools, new_tools = baseline.get('tools') or [], now.get('tools') or []
+    old = {t['name']: t['hash'] for t in old_tools}
+    new = {t['name']: t['hash'] for t in new_tools}
+    named = len(out)
     for n in sorted(new.keys() - old.keys()):
         out.append({'what': 'new tool', 'detail': n})
     for n in sorted(old.keys() - new.keys()):
         out.append({'what': 'tool removed', 'detail': n})
-    for n in sorted(n for n in new.keys() & old.keys() if new[n] != old[n]):
+    shared = _repeated(old_tools) | _repeated(new_tools)
+    for n in sorted(n for n in new.keys() & old.keys() if new[n] != old[n] and n not in shared):
         out.append({'what': 'tool changed', 'detail': f'{n}: its description or inputs are different'})
+    # Keyed by name, tools that share a name (or whose name is not shown) overwrite each other above, so which
+    # of them changed cannot be read from the dicts. The sorted (name, hash) lists still tell whether any did.
+    if len(out) == named and sorted((t['name'], t['hash']) for t in old_tools) != sorted((t['name'], t['hash']) for t in new_tools):
+        out.append({'what': 'tool changed', 'detail': 'the tools offered are different, and some share a name or have a name '
+                                                      'that is not shown, so which one cannot be told'})
+    if _repeated(old_tools) != _repeated(new_tools):
+        out.append({'what': 'duplicate tool names', 'detail': 'the server now offers more than one tool under the same name, '
+                                                              'or no longer does'})
     if bool(baseline.get('truncated')) != bool(now.get('truncated')):
         out.append({'what': 'tool list size', 'detail': 'the list became too long to read in full, or stopped being so'})
     return out
