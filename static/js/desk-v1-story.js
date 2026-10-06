@@ -8,8 +8,7 @@
 //
 //   window.DeskV1Story.html(ready)            the panel's markup (a mount point)
 //   window.DeskV1Story.mount(host, bridge)    wire the panel
-//   window.DeskV1Story.wireAsk(input, bridge) the "Ask your agent" box, for real
-//   window.DeskV1Story.onSelect()             the selected scene changed
+//   window.DeskV1Story.ask                    what the agent conversation uses (desk-v1-story-chat.js)
 //   window.DeskV1Story.lineEditorHTML(...)    a scene's instruction textarea + count
 //   window.DeskV1Story.lineOver(li, focus)    true (and says so) when it is over the limit
 //   window.DeskV1Story.grow(root)             size every auto-growing textarea
@@ -269,8 +268,10 @@
   }
 
   // ── The ask box ────────────────────────────────────────────────────────────
-  // With a scene selected it changes that scene; with none, the whole board.
-  let _askBridge = null;
+  // The conversation beside the storyboard lives in desk-v1-story-chat.js. What it
+  // needs from here is the target the box talks to, the two ways a proposed change
+  // is applied (each ONE undoable command), and the busy flag shared with "Make
+  // storyboard from story" so the two never run at once.
   function _target(bridge) {
     const ctx = bridge.ctx();
     if (!ctx) return null;
@@ -279,71 +280,8 @@
     const s = id ? real.find((x) => x.id === id) : null;
     return { ctx, real, scene: s || null, n: s ? real.indexOf(s) + 1 : 0 };
   }
-  function _askHint(bridge) {
-    const t = _target(bridge);
-    if (!t) return '';
-    return t.scene ? `Changes scene ${t.n}. Enter sends, Shift+Enter adds a line.` : 'Changes the whole storyboard (select a scene to change just that one). Enter sends, Shift+Enter adds a line.';
-  }
-  function onSelect() {
-    const bridge = _askBridge;
-    if (!bridge || !bridge.token()) return;
-    const ask = document.querySelector('[data-sb-ask]');
-    if (!ask || !ask.isConnected) return;
-    const t = _target(bridge);
-    ask.placeholder = `Tell ${bridge.agentName()} what to change in ${t && t.scene ? 'scene ' + t.n : 'the whole storyboard'}…`;
-    // A new selection retires the last result line (it was about another scene); a
-    // repaint with the same selection leaves it be.
-    const sel = bridge.selected() || '';
-    const hint = document.querySelector('[data-sb-ask-status]');
-    if (hint && (sel !== _lastSel || !hint.textContent)) { hint.textContent = _askHint(bridge); hint.dataset.kind = ''; }
-    _lastSel = sel;
-  }
-  let _lastSel = '';
 
-  function wireAsk(ask, bridge) {
-    _askBridge = bridge;
-    const status = ask.parentElement.querySelector('[data-sb-ask-status]');
-    const mine = bridge.token();
-    const say = (text, kind) => { if (status && status.isConnected) { status.textContent = text; status.dataset.kind = kind || ''; } };
-    onSelect();
-    ask.addEventListener('keydown', async (e) => {
-      if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
-      const text = ask.value.trim();
-      if (!text) return;
-      e.preventDefault();
-      if (_busy) return;
-      const t = _target(bridge);
-      if (!t) return;
-      if (!t.scene && !t.real.length) { say('There are no scenes yet. Write the story and make a storyboard first, then ask for changes.', 'error'); return; }
-      _busy = true;
-      ask.disabled = true;
-      const sentScenes = t.real.slice();
-      const toWire = (s) => ({ label: s.label, line: s.line, duration_sec: s.durationSec });
-      say(`Asking ${bridge.agentName()}…`, 'info');
-      try {
-        const res = t.scene
-          ? await _generate(bridge, { mode: 'scene', instruction: text, scene: toWire(t.scene) })
-          : await _generate(bridge, { mode: 'board', instruction: text, scenes: sentScenes.map(toWire) });
-        if (bridge.token() !== mine) return;
-        if (t.scene) {
-          if (!bridge.ctx().detail.scenes.includes(t.scene)) throw new Error('that scene was removed while the agent was working');
-          _done(await _applyScene(bridge, t.scene, res.scene, t.n));
-          say(`${_who(res)} changed scene ${t.n}. Undo is the arrow beside the bin.`, 'ok');
-        } else {
-          _done(await _applyRevision(bridge, sentScenes, res.scenes));
-          say(`${_who(res)} changed the storyboard (${_plural(res.scenes.length, 'scene', 'scenes')}). Undo is the arrow beside the bin.`, 'ok');
-        }
-        ask.value = '';
-        _fit(ask);
-      } catch (err) {
-        say(`Nothing was changed: ${err && err.message ? err.message : err}. Your request is still in the box.`, 'error');
-      } finally {
-        _busy = false;
-        ask.disabled = false;
-        if (ask.isConnected) ask.focus({ preventScroll: true });
-      }
-    });
-  }
-
-  window.DeskV1Story = { html, mount, wireAsk, onSelect, lineEditorHTML, lineOver, grow, MAX_LINE };
+  window.DeskV1Story = { html, mount, lineEditorHTML, lineOver, grow, MAX_LINE,
+    ask: { target: _target, applyScene: _applyScene, applyRevision: _applyRevision, done: _done, fit: _fit, who: _who,
+      isBusy: () => _busy, setBusy: (v) => { _busy = !!v; } } };
 })();

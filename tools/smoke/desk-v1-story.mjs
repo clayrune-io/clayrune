@@ -13,9 +13,7 @@
  *   3. Choice   -> a board with scenes asks replace / append INLINE (no window.confirm);
  *                  Append keeps the scenes and their pictures; Cancel sends nothing.
  *   4. Failure  -> a refused generation changes nothing and says so.
- *   5. Ask      -> with a scene selected, Enter POSTs {mode:'scene', scene, instruction} and
- *                  only that scene changes (undoable); with none, the whole board is sent.
- *                  The old "Sent to X" toast never appears.
+ *   5. Ask      -> now a conversation: pinned by desk-v1-story-chat.mjs.
  *   6. Scene    -> the selected scene's instructions are a multi-line textarea (1800 chars
  *                  fit and save; 2100 is refused in the editor, text kept).
  *   7. Shots    -> screens at 1440 and 390 into docs/desk_v1/screens/.
@@ -250,57 +248,6 @@ async function main(browser) {
   (JSON.stringify(await labels(page)) === before && puts(srv, /storyboard$/).length === 0)
     ? ok('the scenes and the saved board are untouched: ' + JSON.stringify(await page.textContent('[data-story-status]'))) : fail('a failed call changed the board');
   (await page.inputValue('[data-sb-story]')) === STORY ? ok('the typed story is still in the box') : fail('story lost');
-
-  // 5. The ask box.
-  console.log('The ask box');
-  const ask = page.locator('[data-sb-ask]');
-  (await ask.evaluate((el) => el.tagName)) === 'TEXTAREA' ? ok('the ask box is a multi-line textarea') : fail('ask is not a textarea');
-  (await page.textContent('[data-sb-ask-status]')).includes('whole storyboard') ? ok('with no scene selected it says it changes the whole storyboard') : fail('hint: ' + (await page.textContent('[data-sb-ask-status]')));
-  await page.click('.desk-v1-sb-scene[data-scene-label="The click"] [data-scene-title]');
-  await settle(page, () => /Changes scene 2/.test((document.querySelector('[data-sb-ask-status]') || {}).textContent || ''));
-  ok('selecting scene 2 changes the hint to "Changes scene 2"');
-  srv.gen = (body, J) => J({ agent: { ref: 'global:dave', name: 'Dave' }, provider: 'claude', model: 'sonnet', mode: 'scene', scene: { label: 'The click, slower', line: 'Slow push-in on the button for two seconds, then the click.', duration_sec: 6 } });
-  srv.log.length = 0;
-  await ask.fill('make this slower and more dramatic');
-  await ask.press('Enter');
-  await settle(page, () => !!document.querySelector('.desk-v1-sb-scene[data-scene-label="The click, slower"]'));
-  await page.waitForTimeout(400);
-  const sg = gens(srv);
-  (sg.length === 1 && sg[0].body.mode === 'scene' && sg[0].body.instruction === 'make this slower and more dramatic' && sg[0].body.scene.label === 'The click' && sg[0].body.story === STORY)
-    ? ok('Enter POSTs {mode:"scene", story, scene, instruction}') : fail('scene body: ' + JSON.stringify(sg.map((r) => r.body)));
-  JSON.stringify(await labels(page)) === JSON.stringify(['Cold open', 'The click, slower', 'Done']) ? ok('only scene 2 changed') : fail('rows: ' + JSON.stringify(await labels(page)));
-  srv.boards[key()].scenes[1].duration_sec === 6 ? ok('the change is saved (PUT) with the new duration') : fail('not saved');
-  (await ask.inputValue()) === '' ? ok('the box is cleared only after it worked') : fail('ask not cleared');
-  /Dave changed scene 2/.test(await page.textContent('[data-sb-ask-status]')) ? ok('the status names who answered: ' + JSON.stringify(await page.textContent('[data-sb-ask-status]'))) : fail('ask status: ' + (await page.textContent('[data-sb-ask-status]')));
-  const all = (await toasts(page)).join(' | ');
-  !/Sent to/.test(all) ? ok('no "Sent to…" toast') : fail('the fake toast is back: ' + all);
-  await page.click('[data-sb-undo]');
-  await settle(page, () => !!document.querySelector('.desk-v1-sb-scene[data-scene-label="The click"]'));
-  await page.waitForTimeout(300);
-  srv.boards[key()].scenes[1].label === 'The click' ? ok('Undo puts scene 2 back, and saves it') : fail('undo did not restore');
-  // A refused ask keeps the typed request.
-  srv.gen = (body, J) => J({ error: 'the model call failed, so nothing was changed: boom' }, 502);
-  await ask.fill('another change');
-  await ask.press('Enter');
-  await settle(page, () => /Nothing was changed/.test((document.querySelector('[data-sb-ask-status]') || {}).textContent || ''));
-  (await ask.inputValue()) === 'another change' ? ok('a failed ask keeps the request in the box and says nothing was changed') : fail('request lost');
-  // Whole board: deselect (a second click on the row), then ask.
-  await page.click('.desk-v1-sb-scene[data-scene-label="The click"] [data-scene-title]');
-  await settle(page, () => /whole storyboard/.test((document.querySelector('[data-sb-ask-status]') || {}).textContent || ''));
-  srv.gen = (body, J) => J({ agent: null, provider: 'claude', model: 'sonnet', mode: 'board', scenes: [
-    { label: 'Cold open', line: 'New cold open.', duration_sec: 2, from: 1 }, { label: 'Extra', line: 'A new scene.', duration_sec: 2, from: null }, { label: 'Done', line: 'Same end.', duration_sec: 5, from: 3 }] });
-  srv.log.length = 0;
-  await ask.fill('tighten the whole thing');
-  await ask.press('Enter');
-  await settle(page, () => !!document.querySelector('.desk-v1-sb-scene[data-scene-label="Extra"]'));
-  await page.waitForTimeout(400);
-  const bg = gens(srv)[0].body;
-  (bg.mode === 'board' && bg.instruction === 'tighten the whole thing' && bg.scenes.length === 3 && bg.scenes[1].label === 'The click')
-    ? ok('with none selected the whole board goes with the instruction') : fail('board ask body: ' + JSON.stringify(bg));
-  JSON.stringify(await labels(page)) === JSON.stringify(['Cold open', 'Extra', 'Done']) ? ok('the whole board is replaced by the revision') : fail('rows: ' + JSON.stringify(await labels(page)));
-  await page.click('[data-sb-undo]');
-  await settle(page, () => document.querySelectorAll('[data-storyboard] .desk-v1-sb-scene').length === 3 && !!document.querySelector('.desk-v1-sb-scene[data-scene-label="The click"]'));
-  ok('Undo of the whole-board change restores the three scenes');
 
   // 6. A scene's instructions are a textarea.
   console.log('Per-scene instructions');

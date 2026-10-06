@@ -514,7 +514,7 @@ async function runStoryboard(browser, tone) {
   const firstLine = await text(page, '.desk-v1-sb-scene:first-child .desk-v1-sb-line');
   check(firstLine.length > 0, `${tag} scene 1 has a line ("${firstLine}")`, `${tag} scene 1 line empty`);
   const agent = await page.getAttribute('[data-sb-ask]', 'placeholder');
-  check(/Ask Claydo to change a scene/.test(agent || ''), `${tag} agent panel placeholder "${agent}"`, `${tag} agent placeholder wrong: ${JSON.stringify(agent)}`);
+  check(/Ask Claydo about the storyboard/.test(agent || ''), `${tag} agent panel placeholder "${agent}"`, `${tag} agent placeholder wrong: ${JSON.stringify(agent)}`);
 
   // scene 3 above 2: by drag
   const before = await sceneLabels(page);
