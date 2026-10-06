@@ -227,7 +227,11 @@ async function runAtViewport(browser, width, height, label) {
 
     // 0 hits
     await input.fill('zzzznomatch');
-    await page.waitForFunction(() => document.querySelector('.modal-tab-content.active .doc-search-note'), null, { timeout: 5000 });
+    // Wait past the transient "Searching..." note, or this reads it on a slow run.
+    await page.waitForFunction(() => {
+      const n = document.querySelector('.modal-tab-content.active .doc-search-note');
+      return n && n.innerText.trim() !== 'Searching...';
+    }, null, { timeout: 5000 }).catch(() => {});
     const note0 = await page.locator('.modal-tab-content.active .doc-search-note').innerText();
     check(note0.trim() === 'No matches', '0-hit response renders "No matches"', `0-hit text: ${JSON.stringify(note0)}`);
     await page.screenshot({ path: resolve(SHOTS, `nomatch-${width}.png`) });
