@@ -95,6 +95,8 @@
     f.host = null;
   }
 
+  function clearFill(key) { delete fills[key]; }
+
   function reset() { Object.keys(forms).forEach((k) => { clear(k); delete forms[k]; }); Object.keys(fills).forEach((k) => { delete fills[k]; }); }
 
   // ── sign in with it ─────────────────────────────────────────────────────
@@ -103,13 +105,13 @@
   function fillHTML(key, spec) {
     const st = fills[key] || {};
     const can = !!spec.login && !!spec.profile;
-    const why = !spec.login ? 'Choose a stored login (or store a new one) and save first.' : !spec.profile ? 'Open the sign-in page in the browser pane first.' : '';
+    const why = !spec.login ? (spec.why || 'Choose a stored login (or store a new one) and save first.') : !spec.profile ? 'Open the sign-in page in the browser pane first.' : '';
     return `<div class="desk-v1-cs-fill" data-cs-fill="${esc(key)}">
         <div class="desk-v1-cs-fill-row">
           ${spec.url ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cs-open="${esc(key)}">Open the sign-in page</button>` : ''}
           <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cs-fillbtn="${esc(key)}" ${can && !st.busy ? '' : 'disabled'} ${why ? `title="${esc(why)}"` : ''}>${st.busy ? 'Signing in…' : 'Sign in with the saved login'}</button>
         </div>
-        <div class="desk-v1-rules-hint">Clayrune types the saved login into the sign-in page open in the browser pane, only on this route's own sign-in address. If the page asks for a code or a CAPTCHA, it stops and the pane is yours. The password is never shown to you or to an agent.</div>
+        ${spec.hint === '' ? '' : '<div class="desk-v1-rules-hint">Clayrune types the saved login into the sign-in page open in the browser pane, only on this route\'s own sign-in address. If the page asks for a code or a CAPTCHA, it stops and the pane is yours. The password is never shown to you or to an agent.</div>'}
         ${st.text ? `<div class="desk-v1-cf-msg" data-cs-fillmsg="${esc(st.kind || 'ok')}" data-cf-msg="${st.kind === 'error' ? 'error' : 'ok'}" role="${st.kind === 'error' ? 'alert' : 'status'}">${esc(st.text)}</div>` : ''}
       </div>`;
   }
@@ -349,6 +351,6 @@
 
   function resultReset() { R = null; D = null; reset(); }
 
-  window.DeskV1ConnectSignin = { newLoginHTML, mount, read, meta, clear, reset, fillHTML, bindFill, resultStart, resultHTML, resultBind, resultReset,
+  window.DeskV1ConnectSignin = { newLoginHTML, mount, read, meta, clear, reset, clearFill, fillHTML, bindFill, resultStart, resultHTML, resultBind, resultReset,
     detailsStart, detailsHTML, detailsBind, detailsReviewHTML, detailsReviewBind, detailsDraft, detailsSaved };
 })();
