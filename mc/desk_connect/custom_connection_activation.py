@@ -6,12 +6,17 @@ vault notice it reuses.
 Runs only after the human Save is accepted (the route holds the passcode check). Three steps:
 
     1. the package    `custom_npm_artifact.install`: the approved archive is downloaded again,
-                      held to the approved digest and unpacked into its own digest directory.
+                      held to the approved digest and unpacked into its own digest directory. A package
+                      with an approved dependency closure and approved install scripts goes through
+                      `custom_npm_install.install` instead (slice U2b): every archive is held to its
+                      approved digest and the closure is built in a staging folder.
     2. the launch     built from the OPERATION alone, never from a request:
                       python tools/with-secret.py --raw --unset NODE_OPTIONS --unset NODE_PATH
                       [--project <id>] [--env VAR=<vault name> ...] -- <node> <dir>/package/<entry> [args]
                       so the config carries vault NAMES, never a value (the same line, and the
-                      same reasons, as the catalogue's: `mcp_activation`).
+                      same reasons, as the catalogue's: `mcp_activation`). A package with a closure
+                      starts through the closure gate first (`custom_npm_gate`): the line then begins
+                      python tools/custom-mcp-gate.py --scope S --project P --name N -- python <wrapper line>.
     3. registration   into the global `~/.claude.json` or the project's `.mcp.json`, checked and
                       written under the SAME lock `mc/mcp.py` uses for every config write, so a
                       server that appeared in between is never overwritten.
@@ -38,11 +43,13 @@ from mc import secrets_store as _vault
 from mc.core import _log
 from mc.desk_connect import custom_connection_store as _store
 from mc.desk_connect import custom_npm_artifact as _artifact
+from mc.desk_connect import custom_npm_gate as _gate
+from mc.desk_connect import custom_npm_install as _install
 from mc.desk_connect import custom_package_manifest as _manifest
 from mc.desk_connect import mcp_activation as _base
 from mc.desk_connect.mcp_errors import ActivationError
 
-_PENDING_CODES = ('wrapper_missing', 'node_missing')
+_PENDING_CODES = ('wrapper_missing', 'node_missing', 'gate_missing')
 
 
 def wrapper_flags(op: dict) -> list[str]:
@@ -57,11 +64,24 @@ def wrapper_flags(op: dict) -> list[str]:
     return flags
 
 
+def gated(op: dict) -> bool:
+    """True for a package with a dependency closure or approved install steps (slice U2b): its launch line
+    starts with the closure gate (`custom_npm_gate`), which checks the approved tree before any secret is read."""
+    return _install.needs_closure(op)
+
+
+def _head(op: dict) -> list[str]:
+    """What stands in front of the credential wrapper: nothing for a self-contained package, else the
+    gate script, its flags (`--`) and the interpreter that runs the wrapper."""
+    return [str(_gate.gate_path()), *_gate.gate_flags(op), sys.executable] if gated(op) else []
+
+
 def launch_config(op: dict) -> dict:
-    """The config written for `op`. May raise ActivationError `wrapper_missing` / `node_missing`."""
+    """The config written for `op`. May raise ActivationError `wrapper_missing` / `node_missing` / `gate_missing`."""
     node = _base._node()
+    wrapper = str(_base.wrapper_path())
     return {'command': sys.executable,
-            'args': [str(_base.wrapper_path()), *wrapper_flags(op), node, str(_artifact.entry_path(op)), *op['args']]}
+            'args': [*_head(op), wrapper, *wrapper_flags(op), node, str(_artifact.entry_path(op)), *op['args']]}
 
 
 def describe_argv(op: dict) -> dict:
@@ -73,8 +93,9 @@ def describe_argv(op: dict) -> dict:
         return {'command': cfg['command'], 'args': cfg['args'], 'runnable': True}
     except ActivationError as e:
         entry = str(_artifact.entry_path(op))
+        head = ['<tools/custom-mcp-gate.py>', *_gate.gate_flags(op), sys.executable] if gated(op) else []
         return {'command': sys.executable,
-                'args': ['<tools/with-secret.py>', *wrapper_flags(op), 'node', entry, *op['args']],
+                'args': [*head, '<tools/with-secret.py>', *wrapper_flags(op), 'node', entry, *op['args']],
                 'runnable': False, 'why': str(e), 'code': e.code}
 
 
@@ -118,10 +139,27 @@ def matches(cfg, op: dict, strict: bool = True) -> bool:
             or not set(cfg) <= {'command', 'args', 'type'} or cfg.get('type') not in (None, 'stdio'):
         return False
     cmd, args = cfg.get('command'), cfg.get('args')
+    if not isinstance(cmd, str) or not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        return False
+    if gated(op):                                       # the closure gate and its interpreter come first (slice U2b)
+        gflags = _gate.gate_flags(op)
+        if len(args) < 2 + len(gflags) or args[1:1 + len(gflags)] != gflags:
+            return False
+        gate, inner_cmd = args[0], args[1 + len(gflags)]
+        if strict:
+            try:
+                if cmd != sys.executable or inner_cmd != sys.executable or not _same_path(gate, _gate.gate_path()):
+                    return False
+            except ActivationError:
+                return False
+        elif not (_norm(gate).endswith('tools/custom-mcp-gate.py')
+                  and bool(_base._PYTHON_RE.match(_norm(cmd).rsplit('/', 1)[-1]))
+                  and bool(_base._PYTHON_RE.match(_norm(inner_cmd).rsplit('/', 1)[-1]))):
+            return False
+        cmd, args = inner_cmd, args[2 + len(gflags):]
     flags = wrapper_flags(op)
     want = 1 + len(flags) + 2 + len(op['args'])
-    if not isinstance(cmd, str) or not isinstance(args, list) or len(args) != want \
-            or not all(isinstance(a, str) for a in args):
+    if len(args) != want:
         return False
     if args[1:1 + len(flags)] != flags or args[3 + len(flags):] != op['args']:
         return False
@@ -132,7 +170,7 @@ def matches(cfg, op: dict, strict: bool = True) -> bool:
                 and _same_path(node, _base._node()) and _same_path(entry, _artifact.entry_path(op))
         except ActivationError:                         # no wrapper / no Node here: nothing on disk can be the line
             return False
-    tail = f'/mcp_custom_packages/{_artifact.digest_id(op["integrity"])}/package/{op["entry"]}'
+    tail = f'/mcp_custom_packages/{_artifact.dir_id(op)}/package/{op["entry"]}'
     return (cmd == sys.executable or bool(_base._PYTHON_RE.match(_norm(cmd).rsplit('/', 1)[-1]))) \
         and _norm(args[0]).endswith('tools/with-secret.py') \
         and bool(_base._NODE_RE.match(_norm(node).rsplit('/', 1)[-1])) \
@@ -209,7 +247,7 @@ def provision(op: dict, project_path: str | None) -> dict:
     """After the durable approval: verified package, then registration. Never raises. The result
     is `{'state': 'registered'|'pending_runtime'|'setup_failed', 'code', 'message', 'server'?}`."""
     try:
-        _artifact.install(op)
+        _install.install(op)
     except ActivationError as e:
         _log(f'[desk_connect] custom MCP {op["server_name"]} package step failed: {e.code}', flush=True)
         return {'state': 'setup_failed', 'code': e.code, 'message': str(e)}
@@ -256,8 +294,14 @@ def derive_state(rec: dict, project_path: str | None) -> dict:
     if not matches(cur, op):
         return {'state': 'changed', 'message': 'The MCP configuration no longer matches what was approved. Connect it '
                                                'again and approve the change.'}
-    if not _artifact.is_installed(op):
+    if not _install.is_installed(op):
         return {'state': 'package_missing', 'message': 'The approved package is not on disk. Save again to restore it.'}
+    if gated(op):
+        found = _gate.problem(op)
+        if found is not None:
+            return {'state': 'package_missing' if found['code'] == 'dependency_missing' else 'changed', 'code': found['code'],
+                    'message': f'{found["message"]} It will not start until it is reviewed again: connect it again and '
+                               f'approve it.'}
     files = _manifest.check(rec)
     if files['status'] == 'changed':
         return {'state': 'changed', 'code': 'package_files_changed', 'package_files': files,

@@ -9,6 +9,9 @@
 //   POST /api/desk/connect/custom/connections   every approved server with its state now; the card lists the
 //                                          npm ones and, when a package file moved since the approval, which
 //                                          paths (detect only: nothing is blocked; MC-1054).
+//                                          Slice U2b: a package's dependencies and install scripts are listed on
+//                                          the card by static/js/desk-v1-connect-custom-deps.js; ticking a script
+//                                          reviews again with `approve_scripts`, so the approval is of that card.
 //   POST /api/desk/connect/custom/commit   the one Save, passcode-gated (humanProofFetch). Carries only
 //                                          {request_id, fingerprint}: the command that runs is the one the
 //                                          Review stored, never one typed here.
@@ -26,7 +29,7 @@
 
   function _fresh() {
     return { open: false, pkg: '', name: '', entry: '', args: '', creds: [], scope: 'project', projectId: '',
-      busy: false, conns: null, card: null, approved: false, error: '', status: '', saving: false, result: null };
+      busy: false, scripts: [], conns: null, card: null, approved: false, error: '', status: '', saving: false, result: null };
   }
   let U = _fresh();
 
@@ -48,6 +51,7 @@
     const creds = U.creds.filter((c) => c.env.trim() || c.vault.trim()).map((c) => ({ env: c.env.trim(), vault: c.vault.trim() }));
     if (creds.length) body.credentials = creds;
     if (U.scope === 'project') body.project_id = U.projectId;
+    if (U.scripts.length) body.approve_scripts = U.scripts.slice();   // ids the card showed and the person ticked
     return body;
   }
 
@@ -163,6 +167,7 @@
             <div><dt>Working folder</dt><dd>${esc(c.working_directory)}</dd></div>
             <div><dt>First start</dt><dd>${esc(c.first_start)}</dd></div>
           </dl>
+          ${window.DeskV1ConnectCustomDeps ? window.DeskV1ConnectCustomDeps.html(c) : ''}
           <ul class="desk-v1-cf-perms" data-cu-risks>${c.risks.map((r) => `<li data-cu-risk="${esc(r.code)}">${esc(r.label)}</li>`).join('')}</ul>
           <div class="desk-v1-rules-hint" data-cu-install-note>${esc(c.install_note)}</div>
           ${limits}
@@ -206,8 +211,9 @@
   }
 
   // ── actions ─────────────────────────────────────────────────────────────
-  async function _review(ctx) {
+  async function _review(ctx, keepScripts) {
     if (U.busy) return;
+    if (!keepScripts) U.scripts = [];                  // a fresh Review of the form starts with every script off
     _touch(); U.busy = true; U.status = ''; ctx.repaint();
     let card = null, error = '';
     try {
@@ -272,6 +278,7 @@
     if (proj) proj.addEventListener('change', () => { U.projectId = proj.value; _touch(); ctx.repaint(); });
     const review = el.querySelector('[data-cu-review]');
     if (review) review.addEventListener('click', () => _review(ctx));
+    if (window.DeskV1ConnectCustomDeps) window.DeskV1ConnectCustomDeps.bind(el, (ids) => { U.scripts = ids; _review(ctx, true); });
     const approve = el.querySelector('[data-cu-approve]');
     const save = el.querySelector('[data-cu-save]');
     if (approve) approve.addEventListener('change', () => { U.approved = approve.checked; if (save) save.disabled = U.saving || !U.approved; });

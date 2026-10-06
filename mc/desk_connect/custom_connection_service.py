@@ -35,6 +35,8 @@ from mc.desk_connect import custom_connection_activation as _activation
 from mc.desk_connect import custom_connection_operation as _op
 from mc.desk_connect import custom_connection_store as _store
 from mc.desk_connect import custom_npm_artifact as _artifact
+from mc.desk_connect import custom_npm_closure as _closure
+from mc.desk_connect import custom_npm_card as _npm_card
 from mc.desk_connect import parameter_parsers as _pp
 from mc.desk_connect import remote_mcp_activation as _remote_activation
 from mc.desk_connect import remote_mcp_check as _remote_check
@@ -116,7 +118,8 @@ def _risks(op: dict) -> list[dict]:
     return out
 
 
-def _card(request_id: str, fp: str, op: dict, artifact: dict, project: dict | None, previous: dict | None) -> dict:
+def _card(request_id: str, fp: str, op: dict, artifact: dict, project: dict | None, previous: dict | None,
+          closure: dict | None = None) -> dict:
     scope = op['scope']['kind']
     reach = ({'scope': 'project', 'project': {'id': project['id'], 'name': project['name']},
               'who': f'Agents working in the project "{project["name"]}" only.'} if project else
@@ -127,9 +130,7 @@ def _card(request_id: str, fp: str, op: dict, artifact: dict, project: dict | No
         'origin': {'code': 'user_supplied', 'label': 'User supplied; not reviewed by Clayrune'},
         'title': f'{op["package"]}@{op["version"]}', 'server_name': op['server_name'], 'protocol': 'stdio',
         'command': _activation.describe_argv(op),
-        'install_steps': [],
-        'install_note': 'Clayrune downloads this one archive itself, checks its sha512 and unpacks it. No npm, npx or '
-                        'install script runs, and nothing it contains runs until an agent session starts the server.',
+        **_npm_card.install_section(op, artifact, closure),
         'working_directory': 'The folder of the agent session that starts it.',
         'first_start': 'Deferred: nothing is started now.',
         'package': {'ecosystem': 'npm', 'registry': 'registry.npmjs.org', 'source': op['tarball'], 'version': op['version'],
@@ -139,7 +140,7 @@ def _card(request_id: str, fp: str, op: dict, artifact: dict, project: dict | No
                     'publisher': {'name': artifact['publisher_claimed'],
                                   'status': 'claimed' if artifact['publisher_claimed'] else 'unknown'},
                     'registry_stated_digest': artifact['registry_stated_integrity'],
-                    'install_scripts_not_run': artifact['install_scripts']},
+                    'install_scripts_not_run': _npm_card.scripts_not_run(op, artifact, closure)},
         'credentials': [{'env': c['env'], 'vault': c['vault'],
                          'placement': 'environment variable of the server process', 'recipient': 'the server process'}
                         for c in op['credentials']],
@@ -147,7 +148,7 @@ def _card(request_id: str, fp: str, op: dict, artifact: dict, project: dict | No
         'reach': {**reach, 'local_code': 'Runs with this account\'s file and network permissions; no sandbox.',
                   'secrets_to': 'the server process' if op['credentials'] else 'none'},
         'scope_default': 'project', 'scope_options': ['project', 'global'], 'scope_chosen': scope,
-        'risks': _risks(op), 'limitations': _activation.limitations(),
+        'risks': _risks(op) + _npm_card.risks(op, closure), 'limitations': _activation.limitations(),
         'changes': changes, 'reask': bool(previous and previous['fingerprint'] != fp),
         'replaces': previous['fingerprint'] if previous and previous['fingerprint'] != fp else None,
         'approved': False,
@@ -178,9 +179,10 @@ def prepare(body, resolve_project) -> dict:
         raise ActivationError('Another package is being read. Wait for it to finish.', 'busy', 429)
     try:
         artifact = _artifact.resolve(body['package'], entry=fields['entry'])
+        closure = _closure.resolve(artifact)
     finally:
         _prepare_busy.release()
-    op = _op.build(artifact, fields)
+    op = _op.build(artifact, fields, closure)
     fp = _op.fingerprint(op)
     path = project['path'] if project else None
     clash = _activation.conflict(op, path)
@@ -192,7 +194,7 @@ def prepare(body, resolve_project) -> dict:
         previous = None
     request_id = secrets.token_urlsafe(24)
     _remember(request_id, {'op': op, 'fingerprint': fp, 'project': project, 'expires': time.monotonic() + PREPARED_TTL_S})
-    return _card(request_id, fp, op, artifact, project, previous)
+    return _card(request_id, fp, op, artifact, project, previous, closure)
 
 
 # ── Save ─────────────────────────────────────────────────────────────────────

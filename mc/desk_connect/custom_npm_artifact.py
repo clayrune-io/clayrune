@@ -15,11 +15,12 @@ the pin taken from the bytes Clayrune itself read instead of from a catalogue.
               never overwritten: an approved version is immutable, so no later Save can change
               bytes a running server uses.
 
-Self-contained means the archive needs nothing else to run: `dependencies` is empty, or every
-entry is bundled in the archive itself. Anything else needs dependency installation, which is
-slice U2b, and is refused here with that reason: it is never "approved" and then launched with
-whatever `npm` would fetch. No npm, npx, `.npmrc` or install script is anywhere in this path;
-lifecycle scripts the package declares are listed on the card and are NOT run.
+A package whose `dependencies` the archive does not carry is resolved to an exact, verified closure
+by `custom_npm_closure` (slice U2b) and installed by `custom_npm_install`; this module reads the
+root archive and says what it asks for (`edges`), and nothing here runs npm, npx, `.npmrc` or a
+lifecycle script. The directory a package lands in is addressed by what was approved: the archive's
+digest when it needs nothing else, the digest of the whole approved closure (and approved install
+steps) when it does, so no later approval can change bytes a running server uses.
 
 Limits are enforced before any byte is written: download size and total time, decompressed
 size (a gzip bomb), declared unpacked size, member count and depth; a link, device, absolute
@@ -31,6 +32,7 @@ from __future__ import annotations
 
 import base64
 import gzip
+import hashlib
 import hmac
 import io
 import json
@@ -45,6 +47,7 @@ from pathlib import PurePosixPath
 
 from mc import secrets_store as _vault
 from mc.core import _log
+from mc.desk_connect import custom_npm_edges as _edges
 from mc.desk_connect import mcp_package_store as _store
 from mc.desk_connect import parameter_parsers as _pp
 from mc.desk_connect import parameter_schema as _ps
@@ -57,6 +60,8 @@ MAX_UNPACKED = 128 * 1024 * 1024
 MAX_MEMBERS = 4000
 MAX_DEPTH = 16
 MAX_MANIFEST = 1024 * 1024
+MAX_TREE_MEMBERS = 20000                     # all packages of one approved closure, files and folders together
+MAX_TREE_UNPACKED = 256 * 1024 * 1024
 MAX_DECOMPRESSED = MAX_UNPACKED + MAX_MEMBERS * 1024 + (1 << 20)     # data + tar headers + slack
 DOWNLOAD_S = 60
 VERIFIED_MARKER = '.clayrune-verified.json'
@@ -86,8 +91,21 @@ def packages_root():
     return _vault.clayrune_home() / 'mcp_custom_packages'
 
 
+def dir_id(op: dict) -> str:
+    """The directory name of an approved operation: the root archive's digest when the package needs
+    nothing else (what U2a approvals already use), otherwise the digest of everything the approval
+    covers: the root digest, each dependency (name, version, integrity, place) and each approved
+    install step."""
+    if not op.get('dependencies') and not op.get('install_steps'):
+        return digest_id(op['integrity'])
+    body = json.dumps({'integrity': op['integrity'], 'dependencies': op.get('dependencies') or [],
+                       'install_steps': op.get('install_steps') or []}, sort_keys=True, separators=(',', ':'),
+                      ensure_ascii=True)
+    return hashlib.sha256(body.encode('ascii')).hexdigest()[:40]
+
+
 def package_dir(op: dict):
-    return packages_root() / digest_id(op['integrity'])
+    return packages_root() / dir_id(op)
 
 
 def entry_path(op: dict):
@@ -208,20 +226,6 @@ def _entry_candidates(manifest: dict, files: dict) -> list[str]:
     return out
 
 
-def _dependency_gap(manifest: dict, files: dict) -> list[str]:
-    deps = manifest.get('dependencies')
-    if not isinstance(deps, dict) or not deps:
-        return []
-    bundled = manifest.get('bundledDependencies', manifest.get('bundleDependencies'))
-    if bundled is True:
-        names = set(deps)
-    elif isinstance(bundled, list):
-        names = {b for b in bundled if isinstance(b, str)}
-    else:
-        names = set()
-    return sorted(d[:80] for d in deps if d not in names or f'package/node_modules/{d}/package.json' not in files)
-
-
 def _claimed(doc: dict) -> str | None:
     """Who the registry says published this version. A claim, never verification."""
     npm_user = doc.get('_npmUser')
@@ -240,7 +244,7 @@ def _licence(manifest: dict) -> str | None:
 
 def resolve(spec_text: str, entry: str | None = None) -> dict:
     """The facts and the pin for the package a person typed, read without running anything.
-    Raises ActivationError (with `code` `needs_dependencies`, `entry_choice_needed`, ...)."""
+    Raises ActivationError (with `code` `entry_choice_needed`, `dependencies_unreadable`, ...)."""
     try:
         spec = _pp.parse_package_spec('npm', spec_text)
     except _pp.InputError as e:
@@ -272,12 +276,10 @@ def resolve(spec_text: str, entry: str | None = None) -> dict:
     if manifest.get('name') != name or manifest.get('version') != version:
         raise _bad('the package.json inside the archive names a different package or version than the registry, '
                    'so nothing was saved')
-    gap = _dependency_gap(manifest, seen['files'])
-    if gap:
-        raise ActivationError(f'{label} needs other packages installed ({", ".join(gap[:5])}'
-                              f'{" and more" if len(gap) > 5 else ""}). Clayrune can run only a package that is one '
-                              f'self-contained archive for now; installing dependencies is not available yet.',
-                              'needs_dependencies', 422)
+    try:
+        edges = _edges.edges_of(manifest, seen['files'])
+    except _edges.EdgeError as e:
+        raise ActivationError(f'{label}: {e}, so nothing was saved', 'dependencies_unreadable', 422) from e
     candidates = _entry_candidates(manifest, seen['files'])
     if entry is not None:
         chosen = _norm_entry(entry)
@@ -294,7 +296,8 @@ def resolve(spec_text: str, entry: str | None = None) -> dict:
             'entry_candidates': candidates, 'size_bytes': len(data), 'unpacked_bytes': seen['unpacked_bytes'],
             'members': seen['members'], 'licence': _licence(manifest), 'publisher_claimed': _claimed(doc),
             'registry_stated_integrity': stated is not None,
-            'install_scripts': [s for s in INSTALL_SCRIPTS if s in scripts]}
+            'install_scripts': [s for s in INSTALL_SCRIPTS if s in scripts],
+            'edges': edges, 'occupied': sorted(_edges.occupied_names(seen['files']))}
 
 
 # ── save time ────────────────────────────────────────────────────────────────
@@ -306,7 +309,10 @@ def _lock_for(key: str) -> threading.Lock:
 
 def is_installed(op: dict) -> bool:
     """True when the digest's directory exists, carries our verified marker for exactly this
-    digest, and holds the entry file."""
+    digest, and holds the entry file. A package with a closure or install steps is never "installed" by
+    this self-contained check (`custom_npm_install.is_installed`)."""
+    if op.get('dependencies') or op.get('install_steps'):
+        return False
     try:
         marker = json.loads((package_dir(op) / VERIFIED_MARKER).read_text(encoding='utf-8'))
     except (OSError, ValueError):
@@ -318,6 +324,9 @@ def install(op: dict) -> str:
     """Download `op`'s archive again, hold it to the approved digest and unpack it into its own
     digest directory (kept as it is when already there). Returns the entry file's path."""
     spec = f'{op["package"]}@{op["version"]}'
+    if op.get('dependencies') or op.get('install_steps'):
+        raise _bad('this package needs its dependencies installed, which is a different step, so nothing was saved',
+                   'package_invalid', 400)
     if op['tarball'] != tarball_url(op['package'], op['version']) or not _INTEGRITY_RE.match(op['integrity']):
         raise _bad('the approved package details are not valid, so nothing was saved', 'package_invalid', 400)
     final = package_dir(op)

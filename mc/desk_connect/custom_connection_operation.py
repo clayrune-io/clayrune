@@ -9,7 +9,12 @@ server name or scope is a different fingerprint, so it is a different approval:
 
     {schema, protocol: 'stdio', ecosystem: 'npm', package, version, tarball, integrity,
      entry, args, credentials: [{env, vault}], server_name, scope: {kind, project_id},
-     strip_env, install_steps: []}
+     strip_env, install_steps: [], dependencies?: [{name, version, integrity, path}]}
+
+`dependencies` (slice U2b) is present only when the package needs others: the exact closure
+`custom_npm_closure` resolved, each with the sha512 of its archive and the place it is installed.
+`install_steps` is the install scripts a person ticked on the card, each with its exact body; with none
+ticked no script ever runs. Both are part of the fingerprint.
 
 Nothing secret is in it: a credential is an environment variable NAME and a vault entry NAME.
 The launch line that is written to the MCP config is derived from it (`custom_connection_
@@ -33,7 +38,8 @@ from mc.desk_connect.mcp_errors import ActivationError
 
 SCHEMA = 'desk-custom-connection/1'
 STRIP_ENV = ('NODE_OPTIONS', 'NODE_PATH')
-FIELD_KEYS = {'package', 'entry', 'server_name', 'args', 'credentials', 'scope', 'project_id'}
+FIELD_KEYS = {'package', 'entry', 'server_name', 'args', 'credentials', 'scope', 'project_id', 'approve_scripts'}
+MAX_APPROVE_SCRIPTS = 800
 MAX_ARGS = 16
 MAX_ARG = 300
 MAX_CREDENTIALS = 8
@@ -105,6 +111,10 @@ def clean_fields(raw, vault_names, *, default_name: str) -> dict:
             raise _refuse(f'there is no Secrets entry named "{vault}". Store it in Secrets first.', 'unknown_vault_entry')
         seen.add(env)
         clean_creds.append({'env': env, 'vault': vault})
+    approve = raw.get('approve_scripts', [])
+    if not isinstance(approve, list) or len(approve) > MAX_APPROVE_SCRIPTS \
+            or not all(isinstance(a, str) and 0 < len(a) <= 300 and not _ps.has_hidden_chars(a) for a in approve):
+        raise _refuse('approve_scripts is a list of the install scripts shown on the card', 'bad_script_approval')
     scope = raw.get('scope', 'project')
     if scope not in ('project', 'global'):
         raise _refuse('scope must be "project" or "global"', 'bad_scope')
@@ -114,18 +124,40 @@ def clean_fields(raw, vault_names, *, default_name: str) -> dict:
     if scope == 'global':
         project_id = None
     return {'entry': entry.strip() if isinstance(entry, str) else None, 'server_name': name, 'args': clean_args,
-            'credentials': sorted(clean_creds, key=lambda c: c['env']), 'scope': scope, 'project_id': project_id}
+            'credentials': sorted(clean_creds, key=lambda c: c['env']), 'scope': scope, 'project_id': project_id,
+            'approve_scripts': sorted(set(approve))}
 
 
-def build(artifact: dict, fields: dict) -> dict:
-    """The operation for a resolved artifact and validated fields."""
-    return {'schema': SCHEMA, 'protocol': 'stdio', 'ecosystem': 'npm',
-            'package': artifact['package'], 'version': artifact['version'],
-            'integrity': artifact['integrity'], 'tarball': artifact['tarball'], 'entry': artifact['entry'],
-            'args': list(fields['args']), 'credentials': [dict(c) for c in fields['credentials']],
-            'server_name': fields['server_name'],
-            'scope': {'kind': fields['scope'], 'project_id': fields['project_id']},
-            'strip_env': list(STRIP_ENV), 'install_steps': []}
+def install_steps(closure: dict | None, approved) -> list[dict]:
+    """The install scripts a person ticked, as steps in install order, each with its exact body. Raises
+    ActivationError for an id the card did not show or a script that cannot be shown exactly."""
+    scripts = (closure or {}).get('scripts') or []
+    by_id = {s['id']: s for s in scripts}
+    for a in approved:
+        s = by_id.get(a)
+        if s is None:
+            raise _refuse('an install script you approved is not one this package has', 'bad_script_approval', 422)
+        if not s['approvable']:
+            raise _refuse(f'the install script of {s["package"]} cannot be shown exactly, so it cannot be approved',
+                          'script_not_approvable', 422)
+    ticked = set(approved)
+    return [{'path': s['path'], 'package': s['package'], 'version': s['version'], 'script': s['script'], 'body': s['body']}
+            for s in scripts if s['id'] in ticked]
+
+
+def build(artifact: dict, fields: dict, closure: dict | None = None) -> dict:
+    """The operation for a resolved artifact, validated fields and, for a package with dependencies, the
+    resolved closure."""
+    op = {'schema': SCHEMA, 'protocol': 'stdio', 'ecosystem': 'npm',
+          'package': artifact['package'], 'version': artifact['version'],
+          'integrity': artifact['integrity'], 'tarball': artifact['tarball'], 'entry': artifact['entry'],
+          'args': list(fields['args']), 'credentials': [dict(c) for c in fields['credentials']],
+          'server_name': fields['server_name'],
+          'scope': {'kind': fields['scope'], 'project_id': fields['project_id']},
+          'strip_env': list(STRIP_ENV), 'install_steps': install_steps(closure, fields.get('approve_scripts') or [])}
+    if closure and closure['dependencies']:
+        op['dependencies'] = [dict(d) for d in closure['dependencies']]
+    return op
 
 
 def fingerprint(op: dict) -> str:
@@ -134,7 +166,17 @@ def fingerprint(op: dict) -> str:
 
 
 _LABELS = (('package', 'package'), ('version', 'version'), ('integrity', 'package digest'), ('entry', 'start file'),
-           ('args', 'arguments'), ('credentials', 'credentials'), ('server_name', 'server name'), ('scope', 'reach'))
+           ('args', 'arguments'), ('credentials', 'credentials'), ('server_name', 'server name'), ('scope', 'reach'),
+           ('dependencies', 'dependencies'), ('install_steps', 'approved install scripts'))
+
+
+def _plain(key: str, value):
+    """A closure or the approved scripts as one line of names (the full detail is in the fingerprint)."""
+    if key == 'dependencies':
+        return ', '.join(f'{d["name"]}@{d["version"]}:{d["integrity"][7:19]}' for d in value or []) or 'none'
+    if key == 'install_steps':
+        return ', '.join(f'{s["package"]}@{s["version"]} {s["script"]}' for s in value or []) or 'none'
+    return value
 
 
 def changes(old: dict | None, new: dict) -> list[dict]:
@@ -147,5 +189,5 @@ def changes(old: dict | None, new: dict) -> list[dict]:
         if isinstance(v, (list, dict)):
             return json.dumps(v, sort_keys=True, ensure_ascii=True)[:300]
         return str(v)[:300]
-    return [{'field': label, 'from': show(old.get(key)), 'to': show(new.get(key))}
-            for key, label in _LABELS if old.get(key) != new.get(key)]
+    return [{'field': label, 'from': show(_plain(key, old.get(key))), 'to': show(_plain(key, new.get(key)))}
+            for key, label in _LABELS if (old.get(key) or None) != (new.get(key) or None)]

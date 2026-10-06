@@ -50,8 +50,8 @@ from mc.desk_connect import custom_connection_store as _store
 from mc.desk_connect import custom_npm_artifact as _artifact
 
 DIR_NAME = 'desk_custom_package_manifests'
-MAX_FILES = _artifact.MAX_MEMBERS + 64
-MAX_BYTES = _artifact.MAX_UNPACKED + (1 << 20)
+MAX_FILES = _artifact.MAX_TREE_MEMBERS + 64          # a package with its approved dependency tree (slice U2b)
+MAX_BYTES = _artifact.MAX_TREE_UNPACKED + (1 << 20)
 LIST_MAX = 10
 _PATH_SHOWN = 120
 _HASH_CHUNK = 1 << 20

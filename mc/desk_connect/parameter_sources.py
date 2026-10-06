@@ -70,9 +70,10 @@ class _PinnedHTTPS(http.client.HTTPSConnection):
 
 
 def http_get(url: str, timeout: float, max_bytes: int = MAX_BODY, *, resolve=None,
-             connect=None, now=time.monotonic) -> bytes:
+             connect=None, now=time.monotonic, accept: str = 'application/json') -> bytes:
     """One GET to `url` (https, port 443): redirect refused, response capped, a total
-    deadline of `timeout` seconds. `resolve` / `connect` / `now` are test seams."""
+    deadline of `timeout` seconds. `resolve` / `connect` / `now` are test seams; `accept` is
+    the Accept header (npm's abbreviated-metadata type, for a package's version list)."""
     parts = urlsplit(url)
     host = (parts.hostname or '').lower()
     if parts.scheme != 'https' or not host or parts.port not in (None, 443):
@@ -87,7 +88,7 @@ def http_get(url: str, timeout: float, max_bytes: int = MAX_BODY, *, resolve=Non
     conn = (connect or _PinnedHTTPS)(host, addrs[0], max(1.0, timeout))
     try:
         path = (parts.path or '/') + (f'?{parts.query}' if parts.query else '')
-        conn.request('GET', path, headers={'Accept': 'application/json', 'Accept-Encoding': 'identity',
+        conn.request('GET', path, headers={'Accept': accept, 'Accept-Encoding': 'identity',
                                            'User-Agent': 'Clayrune-desk-connect'})
         resp = conn.getresponse()
         if 300 <= resp.status < 400:

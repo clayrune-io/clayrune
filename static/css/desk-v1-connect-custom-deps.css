@@ -1,0 +1,12 @@
+/* Desk v1 — the dependency list and install scripts on the "Add your own MCP server" card
+   (static/js/desk-v1-connect-custom-deps.js; slice U2b). Reuses .desk-v1-cu-* and .desk-v1-cf-*. */
+.desk-v1-cu-dependencies { display: flex; flex-direction: column; gap: 10px; min-width: 0; margin: 8px 0; }
+.desk-v1-cu-deps summary { cursor: pointer; font-size: 13px; font-weight: 600; min-height: 24px; }
+.desk-v1-cu-dep-list, .desk-v1-cu-script-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.desk-v1-cu-dep-list { max-height: 260px; overflow-y: auto; overscroll-behavior: contain; }
+.desk-v1-cu-dep-list li, .desk-v1-cu-script-list li { border: 1px solid var(--border, rgba(127, 127, 127, .3)); border-radius: 8px; padding: 6px 8px; min-width: 0; font-size: 12px; }
+.desk-v1-cu-dep-line { color: var(--text-dim); overflow-wrap: anywhere; word-break: break-all; }
+.desk-v1-cu-dep-line code, .desk-v1-cu-dependencies code { overflow-wrap: anywhere; word-break: break-all; }
+.desk-v1-cu-dep-flag { font-size: 11px; padding: 0 6px; border-radius: 6px; border: 1px solid currentColor; }
+.desk-v1-cu-script-body { margin: 6px 0 0; padding: 6px 8px; border-radius: 6px; background: rgba(127, 127, 127, .12); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; max-height: 160px; overflow-y: auto; }
+@media (max-width: 960px) { .desk-v1-cu-dep-list { max-height: 220px; } }
