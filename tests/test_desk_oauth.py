@@ -214,6 +214,26 @@ def test_start_builds_a_pkce_request_and_opens_a_loopback_listener(provider, vau
     assert oauth.flow_status(out['flow_id'])['status'] == 'pending'
 
 
+@pytest.mark.parametrize('service', ['higgsfield', 'x'])
+def test_a_locked_vault_refuses_start_before_anything_is_opened(provider, vault, monkeypatch, service):
+    """The token is written to the vault after the human finishes at the vendor. A locked vault is
+    reported at start (Ron 2026-10-05: signed in at Higgsfield, then 'vault is locked'), before
+    discovery, a listener or the sign-in page."""
+    monkeypatch.setattr(secrets_store, 'is_locked', lambda: True)
+    with pytest.raises(oauth.OAuthError) as e:
+        oauth.start(service)
+    assert e.value.code == 'vault_locked' and e.value.status == 409
+    assert 'Unlock the vault' in str(e.value)
+    assert provider.calls == [] and oauth._flows == {}
+
+
+def test_the_start_route_answers_409_vault_locked_when_locked(client, provider, vault, monkeypatch):
+    monkeypatch.setattr(secrets_store, 'is_locked', lambda: True)
+    r = client.post('/api/desk/connect/higgsfield/start', json={'passcode': PASSCODE})
+    assert r.status_code == 409 and r.get_json()['code'] == 'vault_locked'
+    assert provider.calls == []
+
+
 def test_a_failed_discovery_opens_nothing(provider, vault):
     provider.on('GET', PRM, (503, {}))
     with pytest.raises(oauth.OAuthError) as e:

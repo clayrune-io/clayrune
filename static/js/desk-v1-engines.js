@@ -140,6 +140,8 @@
       const note = row.querySelector('[data-engine-limit-note]');
       const status = row.querySelector('[data-guide-status]');
       const reload = () => list(null, { force: true }).then(() => repaint()).catch(() => repaint());
+      const gateAt = row.querySelector('.desk-v1-conn-main');
+      if (gateAt && window.DeskV1VaultGate && (e.auth && e.auth.kind === 'oauth' || (G && G.keyGuideFor(e.id)))) window.DeskV1VaultGate.attach(gateAt);   // a sign-in or a pasted key ends in a vault write
       const signin = row.querySelector('[data-engine-signin]');
       if (signin) signin.onclick = async () => {
         signin.disabled = true;
@@ -147,6 +149,7 @@
         if (!row.isConnected) return;
         if (out.ok) { _toast('Higgsfield is connected'); reload(); return; }
         status.textContent = out.message || ''; status.dataset.state = 'bad';
+        if (out.code === 'vault_locked' && gateAt && window.DeskV1VaultGate) window.DeskV1VaultGate.attach(gateAt);
         signin.disabled = false;
       };
       const off = row.querySelector('[data-engine-disconnect]');

@@ -30,7 +30,9 @@ def apply(clean: dict) -> tuple[Applied, dict]:
     if prov is None:
         raise ProviderError('that service has no connector yet', 400, 'method_not_available')
     method = clean['method']
-    if _vault.is_locked() and _writes_secrets(prov, method, clean['fields']):
+    # A sign-in method stores nothing here, but its sign-in ends by writing the token to the vault: refuse
+    # now, not after the person has finished signing in at the vendor.
+    if _vault.is_locked() and (method in prov.signs_in or _writes_secrets(prov, method, clean['fields'])):
         raise ProviderError('the vault is locked: unlock it in Secrets, then save again', 409, 'vault_locked')
     undo = UndoStack()
     try:

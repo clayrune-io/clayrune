@@ -1,0 +1,10 @@
+/* Desk v1 — the inline vault unlock (desk-v1-vault-gate.js). Load order is in static/index.html. */
+.desk-v1-vg { display: flex; flex-direction: column; gap: 8px; min-width: 0; margin-bottom: 12px; padding: 10px; border: 1px solid var(--border2); border-left: 3px solid var(--warn, #c9852a); border-radius: 8px; background: var(--surface); box-sizing: border-box; }
+.desk-v1-vg[hidden] { display: none; }
+.desk-v1-vg-title { font-weight: 700; color: var(--text); }
+.desk-v1-vg-fields { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.desk-v1-vg input { max-width: 100%; box-sizing: border-box; width: 100%; }
+
+@media (max-width: 640px) {
+  .desk-v1-vg .desk-v1-conn-btn { min-height: 44px; }
+}

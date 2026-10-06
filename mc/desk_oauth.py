@@ -459,6 +459,9 @@ def start(service: str, account_id: str | None = None) -> dict[str, Any]:
     sign-in is for (its own vault entry and profile); None is the legacy one."""
     d = _def(service)
     account_id = _account(service, account_id)
+    if secrets_store.is_locked():        # the token is written to the vault only after the human finishes at the
+        # vendor: a locked vault is reported now, before discovery, a port or the sign-in page, never after.
+        raise OAuthError('vault_locked', 'Unlock the vault first, then sign in', 409)
     if service == 'x' and not _vault_plain(d['client_id_secret']):     # fail before a port is opened
         raise OAuthError('app_missing', 'Save your X Client ID first (step 2), then sign in', 409)
     if service == 'higgsfield':
