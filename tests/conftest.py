@@ -334,6 +334,21 @@ def _isolated_codex_models_cache(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_doc_write_cache_file(tmp_path):
+    """list_written_markdown() warms from, and debounce-saves to,
+    ~/.clayrune/doc_write_cache.json. A test must never read the operator's
+    real cache (stale entries would answer for synthetic transcripts) nor
+    write into it. Every test gets a private file and a not-yet-loaded store."""
+    _st = sys.modules.get('mc.doc_write_cache_store')
+    if _st is None:
+        yield
+        return
+    _st.reset_for_tests(tmp_path / 'doc_write_cache.json')
+    yield
+    _st.reset_for_tests(tmp_path / 'doc_write_cache.json')
+
+
+@pytest.fixture(autouse=True)
 def _isolated_allowance_state():
     """Importing server.py wires mc.allowance_state to the REAL
     data/allowance_state.json, so a vendor that is genuinely out of quota on
