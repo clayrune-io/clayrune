@@ -127,6 +127,10 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
     monkeypatch.setenv('CLAYRUNE_SECRETS_KEY_BACKEND', 'file')
     monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
+    from mc.desk_connect import custom_npm_gate
+    monkeypatch.setattr(custom_npm_gate, '_STOP_AFTER', tmp_path)       # a stray node_modules on this machine must not decide a test
+    from mc.desk_connect import custom_npm_node_paths
+    monkeypatch.setattr(custom_npm_node_paths, 'run_probe', lambda node, env: [])   # no Node is started; a clean box
     from mc import mcp, secrets_store
     from mc.blueprints import desk_connect_custom_routes as routes
     from mc.blueprints import local_auth, mcp_routes, project_routes, skills_routes
@@ -484,11 +488,11 @@ def test_a_registry_that_states_another_checksum_or_address_is_refused(env):
     nothing_written(env)
 
 
-def test_a_package_that_needs_other_packages_installed_is_refused_not_launched(env):
+def test_a_package_whose_dependency_the_registry_does_not_have_is_refused_not_launched(env):
     env.reg.publish('1.2.3', members=_good(dependencies={'left-pad': '^1.0.0'}))
     r = review(env)
-    assert r.status_code == 422 and r.get_json()['code'] == 'needs_dependencies'
-    assert 'left-pad' in r.get_json()['error'] and 'not available yet' in r.get_json()['error']
+    assert r.status_code == 404 and r.get_json()['code'] == 'dependency_not_found'   # dependencies are slice U2b
+    assert 'left-pad' in r.get_json()['error']
     nothing_written(env)
     bundled = _good(dependencies={'left-pad': '^1.0.0'}, bundledDependencies=['left-pad']) + \
         [('package/node_modules/left-pad/package.json', 'file', b'{}')]

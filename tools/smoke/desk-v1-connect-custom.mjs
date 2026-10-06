@@ -13,9 +13,13 @@
  *   pending   a server saved but not runnable here says so and never says Registered or Connected.
  *   drift     an approved server whose package files moved since the approval reads Changed, lists the paths
  *             (changed, added, removed, and how many more) and offers no way around the approval (MC-1054).
+ *   deps      slice U2b: a package with dependencies lists every one with its exact version and sha512 before
+ *             Save; its install scripts are listed with their exact bodies and are OFF; ticking one reviews
+ *             again with `approve_scripts`, gives a new card (new fingerprint, approval cleared); a script
+ *             whose body cannot be shown exactly has no checkbox.
  *   + phone   no horizontal scroll, the Save button reachable at 390px.
  *
- * Screenshots: docs/desk_v1/screens/connect_custom_{card,global,pending,drift}_{1440,390}.png
+ * Screenshots: docs/desk_v1/screens/connect_custom_{card,global,pending,drift,deps}_{1440,390}.png
  *
  * RUN   cd tools/smoke && node desk-v1-connect-custom.mjs
  */
@@ -42,19 +46,41 @@ const check = (cond, good, badMsg) => (cond ? ok(good) : fail(badMsg || good));
 const PASSCODE = 'right-passcode';
 const DIGEST = 'sha512-' + 'A'.repeat(86) + '==';
 
-function makeServer({ commitState = 'registered', previous = null, connections = [] } = {}) {
+function makeServer({ commitState = 'registered', previous = null, connections = [], deps = false } = {}) {
   const fx = loadFixtures();
   const srv = { log: [], fx, n: 0, cards: new Map(), commitState, connections };
   srv.accounts = fx.channels.filter((c) => c.platform === 'x' || c.platform === 'linkedin')
     .map((c) => ({ ...JSON.parse(JSON.stringify(c)), publish: { ready: true, reason: null, secret: null, unattended_ok: null } }));
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects: fx.projects.map((p) => ({ id: p.id, name: p.name, state: 'active', roster: [], presence: { replies: 'drafts', desk_agent: null, state: 'active' } })), accounts: srv.accounts, pieces: [] });
+  const sha = (c) => 'sha512-' + c.repeat(86) + '==';
+  srv.depsCard = (b) => {
+    const ticked = new Set(b.approve_scripts || []);
+    const scripts = [
+      { id: 'node_modules/native-helper#postinstall', path: 'node_modules/native-helper', package: 'native-helper', version: '2.0.1', script: 'postinstall', body: 'node scripts/fetch-binary.js --from https://cdn.example.com/helper.bin', body_escaped: null, approvable: true, reason: null },
+      { id: 'node_modules/sneaky#install', path: 'node_modules/sneaky', package: 'sneaky', version: '0.3.0', script: 'install', body: null, body_escaped: 'node setup.js\u202e', approvable: false, reason: 'contains control or hidden characters, so it cannot be shown exactly' },
+    ].map((x) => ({ ...x, approved: ticked.has(x.id) }));
+    return {
+      install_steps: scripts.filter((x) => x.approved).map((x) => ({ path: x.path, package: x.package, version: x.version, script: x.script, body: x.body })),
+      install_note: 'Clayrune resolved every dependency itself, to an exact version, from the package registry, and lists each with the sha512 of its archive on this card.',
+      dependencies: [
+        { name: 'native-helper', version: '2.0.1', integrity: sha('B'), path: 'node_modules/native-helper', size_bytes: 48000, unpacked_bytes: 190000, licence: 'MIT', deprecated: false, registry_stated_digest: sha('B') },
+        { name: 'sneaky', version: '0.3.0', integrity: sha('C'), path: 'node_modules/sneaky', size_bytes: 3000, unpacked_bytes: 9000, licence: 'ISC', deprecated: true, registry_stated_digest: sha('C') },
+        { name: '@scope/deep-dependency-with-a-long-name', version: '10.20.30', integrity: sha('D'), path: 'node_modules/native-helper/node_modules/@scope/deep-dependency-with-a-long-name', size_bytes: 1000, unpacked_bytes: 4000, licence: null, deprecated: false, registry_stated_digest: sha('D') },
+      ],
+      dependency_totals: { count: 3, download_bytes: 52000, unpacked_bytes: 203000, members: 40 },
+      scripts, scripts_note: "An install script runs the system shell with that package's folder as the working directory, a fixed environment with no Clayrune secrets, and the file and network access of this account. It is not a sandbox. A script you do not tick is not run.",
+      optional_not_installed: [{ package: 'native-helper@2.0.1', optional: ['fsevents'] }], native_build_not_run: [],
+    };
+  };
   srv.card = (b) => {
     const name = b.server_name || 'harmless-mcp';
+    const ticked = (b.approve_scripts || []).length;
     const project = b.scope === 'project' ? fx.projects.find((p) => p.id === b.project_id) : null;
-    const op = { scope: b.scope, name, args: b.args || [], creds: b.credentials || [] };
+    const op = { scope: b.scope, name, args: b.args || [], creds: b.credentials || [], ticked: b.approve_scripts || [] };
     const fingerprint = 'sha256:' + createHash('sha256').update(JSON.stringify(op)).digest('hex');
     const changes = previous && previous.scope !== b.scope ? [{ field: 'reach', from: previous.scope, to: b.scope }] : [];
     const local = "Runs with this account's file and network permissions; no sandbox.";
+    const extra = deps ? srv.depsCard(b) : {};
     return {
       schema: 'desk-custom-card/1', request_id: 'req-' + (++srv.n) + '-abcdefghijklmnop', fingerprint,
       origin: { code: 'user_supplied', label: 'User supplied; not reviewed by Clayrune' },
@@ -68,11 +94,14 @@ function makeServer({ commitState = 'registered', previous = null, connections =
       reach: project ? { scope: 'project', project: { id: project.id, name: project.name }, who: `Agents working in the project "${project.name}" only.`, local_code: local, secrets_to: 'none' }
         : { scope: 'global', project: null, who: 'Agents in every project.', local_code: local, secrets_to: 'none' },
       scope_default: 'project', scope_options: ['project', 'global'], scope_chosen: b.scope,
-      risks: [{ code: 'user_supplied', label: 'User supplied; not reviewed by Clayrune' }, { code: 'runs_local_code', label: "Runs code on this computer. It has your account's file and network access: Clayrune does not sandbox it." }]
+      risks: (deps ? [{ code: 'dependencies_installed', label: '3 dependency packages are installed with it, each pinned to the digest shown. They are not reviewed by Clayrune and run with the same access.' }] : [])
+        .concat(deps && ticked ? [{ code: 'install_scripts_approved', label: `${ticked} install script(s) you approved run now, at Save, with this account's file and network access. Clayrune does not sandbox them.` }] : [])
+        .concat([{ code: 'user_supplied', label: 'User supplied; not reviewed by Clayrune' }, { code: 'runs_local_code', label: "Runs code on this computer. It has your account's file and network access: Clayrune does not sandbox it." }])
         .concat(b.scope === 'global' ? [{ code: 'global_reach', label: "Global: agents in EVERY project can use this server's tools." }] : [])
         .concat([{ code: 'digest_not_safety', label: 'The digest proves the files are the ones you approve here. It does not prove they are safe.' }]),
       limitations: commitState === 'pending_runtime' ? [{ code: 'wrapper_missing', message: 'This install has no secret wrapper. You can still save: the approval is kept as pending.' }] : [],
       changes, reask: changes.length > 0, replaces: changes.length ? 'sha256:' + '1'.repeat(64) : null, approved: false,
+      ...extra,
     };
   };
   return srv;
@@ -330,6 +359,62 @@ async function driftScenario(browser, width, height) {
   await ctx.close();
 }
 
+async function depsScenario(browser, width, height) {
+  console.log(`Dependencies at ${width}px: the closure and the install scripts are on the card, scripts off`);
+  const srv = makeServer({ deps: true });
+  const { ctx, page, pageErrors } = await newPage(browser, { srv, width, height });
+  await openCustom(page);
+  await page.fill('[data-cu-package]', 'harmless-mcp');
+  await page.click('[data-cu-review]');
+  await page.waitForSelector('[data-cu-dependencies]', { timeout: 4000 });
+  const deps = await page.$$eval('[data-cu-dep]', (e) => e.map((x) => [x.dataset.cuDep, x.querySelector('strong').textContent, x.querySelector('code').textContent, x.querySelector('[data-cu-dep-digest]').textContent]));
+  check(deps.length === 3 && deps[0][1] === 'native-helper' && deps[0][2] === '2.0.1' && /^sha512-B{86}==$/.test(deps[0][3]), 'every dependency is listed with its exact name, version and sha512, before Save', 'deps: ' + JSON.stringify(deps));
+  check(deps.some((d) => d[0].includes('@scope/deep-dependency-with-a-long-name')), 'a nested package shows the place it is installed', 'nested path missing');
+  check((await page.textContent('[data-cu-deps] summary')).includes('3 dependency packages'), 'the card says how many dependency packages come with it', 'no count');
+  check((await page.$$('[data-cu-dep-deprecated]')).length === 1, 'a deprecated dependency is flagged', 'deprecated flag missing');
+  check((await page.$$('[data-cu-risk="dependencies_installed"]')).length === 1, 'the dependency risk label is shown', 'no dependency risk');
+  check((await page.$$('[data-cu-not-installed] [data-cu-optional-skipped]')).length === 1, 'optional packages that are not installed are listed', 'optional list missing');
+  const ticks = await page.$$eval('[data-cu-script-tick]', (e) => e.map((x) => [x.dataset.cuScriptTick, x.checked]));
+  check(ticks.length === 1 && ticks[0][1] === false, 'an install script has a checkbox and it is OFF', 'ticks: ' + JSON.stringify(ticks));
+  const bodies = await page.$$eval('[data-cu-script-body]', (e) => e.map((x) => x.textContent));
+  check(bodies[0] === 'node scripts/fetch-binary.js --from https://cdn.example.com/helper.bin', 'the exact script body is shown', 'body: ' + bodies[0]);
+  check((await page.$$('[data-cu-script-approvable="false"] [data-cu-script-tick]')).length === 0 && /cannot be approved/.test(await page.textContent('[data-cu-script-approvable="false"]')), 'a script whose body cannot be shown exactly has no checkbox and says why', 'non-approvable script is tickable');
+  check(reviews(srv).length === 1 && !('approve_scripts' in reviews(srv)[0].body), 'the first Review approves no script', 'first review: ' + JSON.stringify(reviews(srv)[0].body));
+  await page.check('[data-cu-approve]');
+  const first = await page.getAttribute('[data-cu-card]', 'data-cu-card');
+  await page.$eval('[data-cu-dependencies]', (e) => e.scrollIntoView({ block: 'start' }));
+  await shot(page, 'deps', width);
+  await fits(page, 'dependency card');
+
+  await page.check('[data-cu-script-tick]');
+  await page.waitForFunction(() => document.querySelector('[data-cu-script-tick]') && document.querySelector('[data-cu-script-tick]').checked && document.querySelector('[data-cu-risk="install_scripts_approved"]'), null, { timeout: 4000 });
+  check(reviews(srv).length === 2 && reviews(srv)[1].body.approve_scripts.join() === 'node_modules/native-helper#postinstall', 'ticking a script reviews again with that script id', 'second review: ' + JSON.stringify(reviews(srv)[1] && reviews(srv)[1].body));
+  check((await page.getAttribute('[data-cu-card]', 'data-cu-card')) !== first && !(await page.isChecked('[data-cu-approve]')) && await page.$eval('[data-cu-save]', (b) => b.disabled), 'it is a new card: a new fingerprint, the approval cleared, Save off', 'approval carried over');
+  check(/Runs once at Save/.test(await page.textContent('[data-cu-script="node_modules/native-helper#postinstall"]')), 'the card says the ticked script runs once at Save', 'ticked wording missing');
+  check(commits(srv).length === 0 && writes(srv).length === 0, 'nothing is saved or written by ticking', 'writes: ' + JSON.stringify(writes(srv).map((r) => r.path)));
+  await page.check('[data-cu-approve]');
+  await page.click('[data-cu-save]');
+  await passcodePrompt(page, PASSCODE);
+  await page.waitForSelector('[data-cu-result="registered"]', { timeout: 6000 });
+  check(Object.keys(commits(srv)[0].body).sort().join() === 'fingerprint,passcode,request_id', 'the Save still carries only the request id, the fingerprint and the passcode: no script, no dependency', 'commit body: ' + Object.keys(commits(srv)[0].body));
+
+  const again = await newPage(browser, { srv: makeServer({ deps: true }), width, height });
+  await openCustom(again.page);
+  await again.page.fill('[data-cu-package]', 'harmless-mcp');
+  await again.page.click('[data-cu-review]');
+  await again.page.waitForSelector('[data-cu-script-tick]');
+  await again.page.check('[data-cu-script-tick]');
+  await again.page.waitForSelector('[data-cu-script-tick]:checked');
+  await again.page.fill('[data-cu-args]', '--other');
+  check((await again.page.$$('[data-cu-card]')).length === 0, 'editing the form drops the card and its ticked scripts', 'card survived an edit');
+  await again.page.click('[data-cu-review]');
+  await again.page.waitForSelector('[data-cu-script-tick]');
+  check(!(await again.page.isChecked('[data-cu-script-tick]')), 'a fresh Review starts with every script off again', 'a tick survived a new Review');
+  await again.ctx.close();
+  check(realErrors(pageErrors).length === 0, 'no page errors', 'page errors: ' + realErrors(pageErrors).join(' | '));
+  await ctx.close();
+}
+
 const browser = await chromium.launch();
 try {
   for (const [w, h] of [[1440, 900], [390, 844]]) {
@@ -338,6 +423,7 @@ try {
     await globalScenario(browser, w, h);
     await pendingScenario(browser, w, h);
     await driftScenario(browser, w, h);
+    await depsScenario(browser, w, h);
   }
 } catch (e) {
   fail('harness error: ' + (e && e.stack ? e.stack : e));
