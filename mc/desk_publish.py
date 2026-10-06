@@ -403,10 +403,6 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
                 'the LinkedIn account has no organization id (digits only, from the '
                 'Company Page admin URL): set it on the account before publishing')
 
-    # The Desk account this post is for picks WHICH X sign-in posts it (resolved
-    # before `_lock`: it reads the Desk store). No account = the legacy singleton.
-    x_account = _refs.oauth_arg_for(item.get('account_id')) if platform == 'x' else None
-
     with _lock:
         existing = _read_store(strict=True)['receipts'].get(item_id)
         if existing is not None:
@@ -431,6 +427,14 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
             raise PublishError(
                 'desk_publish.RECEIPTS_PATH is not wired -- refusing to post '
                 'without durable idempotency in place')
+
+        # Check the original workspace id before OAuth's legacy-name mapping.
+        from mc.desk_connect import permission_check as _permissions
+        try:
+            _permissions.require_publish(item, unattended=unattended)
+        except _permissions.PermissionDenied as e:
+            raise PublishError(str(e)) from e
+        x_account = _refs.oauth_arg_for(item.get('account_id')) if platform == 'x' else None
 
         try:
             if platform == 'x':

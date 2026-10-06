@@ -1,12 +1,14 @@
 # MC-1062 / 06: Enforce Desk permission before read or publish
 
-Status: dispatched; stopped at the consumer-inventory boundary (2026-10-06).
+Status: split approved by Dave; 06a publisher seam implemented, with an unresolved
+Chromium suite failure and budget-scope decision (2026-10-06).
 [Parent design](../CONNECT_FLOW_SIMPLIFY.md).
 
 The separately committed browser-account default-deny pre-step is complete.
-Execution enforcement is **not implemented**. See the
+See [06a's publisher contract](06a-publisher-enforcement.md) and the
 [consumer inventory and proposed owner split](06-consumer-inventory.md) for
 the independent read paths that bypass engagement polling and publishing.
+06b-d remain separate work; the complete Read/Post enforcement is not shipped.
 
 ## Depends on
 

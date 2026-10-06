@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — Desk API publishing checks the account's explicit Post consent (MC-1062/06a)
+
+- The shared publisher now checks the original workspace account before resolving its token. Explicit Deny, malformed consent or a mismatched account stops the send before token refresh or platform calls; a reply cannot borrow Post permission. Existing legacy/unset accounts retain their behavior, and a persisted receipt remains the fact of an earlier post after revocation.
+- Explicit Allow still requires the exact API post scope and current provider readiness, alongside the existing campaign approval, budget-bound and human gates. This slice covers publishing only; engagement reads, connection checks and post-readback permission enforcement follow in 06b-d. No wizard UI is enabled. Contract and consumer coverage: `docs/desk_v1/connect_flow_tickets/06a-publisher-enforcement.md`.
+
 ## [2026-10-06] — The port is bound before startup, so a losing second server touches nothing (MC-1060)
 
 - `server.py` used to run `boot()` and only then bind, so the loser of a boot race had already reconciled the agent log, adopted or marked stale the winner's runs, delivered callbacks and rewritten guardrail hooks by the time its exclusive bind failed. `__main__` now reserves the listening socket(s) first (`_reserve_listeners`), then runs `boot(check_port=False)`, then serves on the already-bound sockets (`_serve_reserved`). A refused bind logs "held by another process; exiting before any startup phase has run", prints the usual banner and exits 2 with zero boot phases run.
