@@ -274,6 +274,12 @@ def _verify(piece, ver, camp, acc, *, attended: bool, now: datetime) -> str:
         ok = _publish.verify_post(acc.get('platform'), receipt.get('post_id'), consumer='desk_tick',
                                   project_id=camp.get('project_id'), unattended=not attended,
                                   account_id=acc.get('id'))
+    except _publish.ReadConsentDenied as e:
+        # Refused before any token or GET: not an attempt, never `unconfirmed`,
+        # so granting Read later verifies on the next pass.
+        receipt['verify_error'] = str(e)[:300]
+        _write_receipt(piece['id'], ver['id'], receipt)
+        return 'submitted'
     except _publish.PublishError as e:
         receipt['verify_attempts'] = int(receipt.get('verify_attempts') or 0) + 1
         receipt['verify_error'] = str(e)[:300]

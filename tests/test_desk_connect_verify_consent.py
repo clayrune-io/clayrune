@@ -74,7 +74,7 @@ def test_denied_readback_makes_zero_token_and_zero_get_calls(readback, monkeypat
     consent('first', **kw)
     mapped = Mock(return_value=None)
     monkeypatch.setattr(desk_publish._refs, 'oauth_arg_for', mapped)
-    with pytest.raises(desk_publish.PublishError, match='permission denied'):
+    with pytest.raises(desk_publish.ReadConsentDenied, match='permission denied'):
         desk_publish.verify_post('x', 'p1', account_id='first')
     mapped.assert_not_called()
     untouched(readback)
@@ -124,7 +124,7 @@ def test_revoking_read_takes_effect_on_the_next_call(readback):
     consent('first', read=True, scopes=[OWN_POSTS], tag='on')
     assert desk_publish.verify_post('x', 'p1', account_id='first') is True
     consent('first', tag='off')
-    with pytest.raises(desk_publish.PublishError, match='permission denied'):
+    with pytest.raises(desk_publish.ReadConsentDenied, match='permission denied'):
         desk_publish.verify_post('x', 'p1', account_id='first')
     assert readback.get.call_count == 1 and readback.token.call_count == 1
 
@@ -141,22 +141,53 @@ def test_immediate_verify_denied_leaves_the_post_submitted_and_unverified(world,
     assert v['state'] == 'submitted'                                            # the post is live and says so
     assert len(world.wire.posts) == 1 and world.wire.verifies == 0
     assert token.call_count == 1                                                # the post's token only
-    assert v['receipt']['verify_attempts'] == 1 and 'permission denied' in v['receipt']['verify_error']
+    assert not v['receipt'].get('verify_attempts') and 'permission denied' in v['receipt']['verify_error']
     assert 'verified_at' not in v['receipt'] and v['receipt']['post_id'] == 'x1'
 
 
-def test_denied_readback_is_retried_without_a_read_then_given_up_as_unconfirmed(world):
+def test_denied_readback_never_counts_an_attempt_or_gives_up(world):
     campaign(world)
     piece, vid = version(world)
     consent('ch-x', post=True, scopes=[POST])
     go(world, piece, vid)
     reads = len(world.vault.reads)
+    for _ in range(_tick.VERIFY_MAX_ATTEMPTS + 3):
+        _tick.run_once(NOW + timedelta(minutes=2))
+    v = stored(piece, vid)
+    assert v['state'] == 'submitted' and 'verify' not in v['receipt']
+    assert not v['receipt'].get('verify_attempts') and 'permission denied' in v['receipt']['verify_error']
+    assert world.wire.verifies == 0 and len(world.wire.posts) == 1
+    assert len(world.vault.reads) == reads                                      # no token ever fetched for a read
+
+
+def test_read_granted_after_many_denied_ticks_verifies_on_the_next_tick(world):
+    campaign(world)
+    piece, vid = version(world)
+    consent('ch-x', post=True, scopes=[POST], tag='post')
+    go(world, piece, vid)
+    for _ in range(_tick.VERIFY_MAX_ATTEMPTS + 3):
+        _tick.run_once(NOW + timedelta(minutes=2))
+    assert world.wire.verifies == 0
+    consent('ch-x', read=True, post=True, scopes=[POST, OWN_POSTS], tag='both')
+    assert _tick.run_once(NOW + timedelta(minutes=3))['verified'] == [vid]
+    v = stored(piece, vid)
+    assert v['state'] == 'verified_published' and world.wire.verifies == 1 and v['receipt']['verified_at']
+
+
+def test_a_generic_publish_error_still_counts_and_gives_up(world, monkeypatch):
+    campaign(world)
+    piece, vid = version(world)
+    monkeypatch.setattr(desk_publish, '_get_tweet', Mock(side_effect=OSError('down')))
+    v = go(world, piece, vid)
+    assert v['state'] == 'submitted' and v['receipt']['verify_attempts'] == 1
     for _ in range(_tick.VERIFY_MAX_ATTEMPTS):
         _tick.run_once(NOW + timedelta(minutes=2))
     v = stored(piece, vid)
-    assert v['state'] == 'submitted' and v['receipt']['verify'] == 'unconfirmed'
-    assert world.wire.verifies == 0 and len(world.wire.posts) == 1
-    assert len(world.vault.reads) == reads                                      # no token ever fetched for a read
+    assert v['receipt']['verify'] == 'unconfirmed' and v['receipt']['verify_attempts'] == _tick.VERIFY_MAX_ATTEMPTS
+
+
+def test_the_denial_is_a_publish_error_subclass_so_other_callers_still_catch_it():
+    assert issubclass(desk_publish.ReadConsentDenied, desk_publish.PublishError)
 
 
 def test_later_verification_loop_zero_get_while_denied_then_verifies_once_read_is_granted(world):
@@ -166,7 +197,7 @@ def test_later_verification_loop_zero_get_while_denied_then_verifies_once_read_i
     go(world, piece, vid)
     out = _tick.run_once(NOW + timedelta(minutes=1))
     assert out['verified'] == [] and world.wire.verifies == 0
-    assert stored(piece, vid)['receipt']['verify_attempts'] == 2
+    assert not stored(piece, vid)['receipt'].get('verify_attempts')
     consent('ch-x', read=True, post=True, scopes=[POST, OWN_POSTS], tag='both')
     out = _tick.run_once(NOW + timedelta(minutes=2))
     assert out['verified'] == [vid] and world.wire.verifies == 1
