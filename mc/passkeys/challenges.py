@@ -42,6 +42,11 @@ class SessionMismatch(CeremonyError):
     code = 'session_mismatch'
 
 
+class OperationMismatch(CeremonyError):
+    """An assertion ceremony issued for one operation presented for another."""
+    code = 'operation_mismatch'
+
+
 class TooManyCeremonies(CeremonyError):
     code = 'too_many_ceremonies'
 
@@ -58,6 +63,8 @@ class Ceremony:
     session_digest: str
     label: str
     expires_at: float
+    purpose: str = ''           # assertion ceremonies: the one operation they approve
+    target: str = ''            # ... and what it acts on (a credential id), or ''
 
 
 def session_digest(nonce: str) -> str:
@@ -78,7 +85,8 @@ class ChallengeStore:
             del self._items[cid]
 
     def issue(self, *, kind: str, rp_id: str, origin: str, owner_handle: str,
-              epoch: int, session_nonce: str, label: str) -> Ceremony:
+              epoch: int, session_nonce: str, label: str,
+              purpose: str = '', target: str = '') -> Ceremony:
         now = _clock()
         with self._lock:
             self._prune(now)
@@ -89,11 +97,12 @@ class ChallengeStore:
                 challenge=secrets.token_bytes(32), rp_id=rp_id, origin=origin,
                 owner_handle=owner_handle, epoch=epoch,
                 session_digest=session_digest(session_nonce), label=label,
-                expires_at=now + CHALLENGE_TTL_S)
+                expires_at=now + CHALLENGE_TTL_S, purpose=purpose, target=target)
             self._items[c.id] = c
             return c
 
-    def consume(self, ceremony_id: str, *, kind: str, session_nonce: str) -> Ceremony:
+    def consume(self, ceremony_id: str, *, kind: str, session_nonce: str,
+                purpose: Optional[str] = None, target: Optional[str] = None) -> Ceremony:
         with self._lock:
             c: Optional[Ceremony] = self._items.pop(ceremony_id, None) if isinstance(ceremony_id, str) else None
         if c is None:
@@ -102,6 +111,8 @@ class ChallengeStore:
             raise ExpiredCeremony(c.id)
         if c.kind != kind:
             raise UnknownCeremony(c.id)
+        if (purpose is not None and c.purpose != purpose) or (target is not None and c.target != target):
+            raise OperationMismatch(c.id)
         if not hmac.compare_digest(c.session_digest, session_digest(session_nonce)):
             raise SessionMismatch(c.id)
         return c
@@ -119,5 +130,5 @@ class ChallengeStore:
             return len(self._items)
 
 
-# The one process-wide store. Slice 2's assertion ceremonies will share it.
+# The one process-wide store, shared by registration and assertion ceremonies.
 STORE = ChallengeStore()

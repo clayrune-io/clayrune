@@ -1,6 +1,6 @@
-// ── Settings > Connectivity > Passkeys (docs/PASSKEYS_SPEC.md, slice 1) ──────
+// ── Settings > Connectivity > Passkeys (docs/PASSKEYS_SPEC.md, slices 1 and 2a) ─
 // Enrol, list and revoke a passkey. DISABLED FOR ACTIONS: an enrolled passkey
-// is a stored public key and nothing more. No gate reads it yet, so every
+// manages the registry and nothing else. No gate reads it yet, so every
 // human-only action still asks for the dashboard passcode exactly as before.
 //
 // Enrollment and revocation work only from the host's own browser at
@@ -8,6 +8,13 @@
 // callers (mc/passkeys/host_check.py) and this panel just reports what the
 // server said. The retyped passcode goes through humanProofFetch, like every
 // other human-only click; this file never sees or stores it.
+//
+// Once one passkey is active (`needs_passkey_to_change`), adding or revoking one
+// takes a passkey assertion instead of the passcode (passkeys-webauthn.js), and a
+// refused assertion is shown as refused: the passcode is never offered as a way
+// round it. The passcode keeps two jobs, lost-all recovery and resetting a
+// refused registry, which live in passkeys-recovery.js with the copy for every
+// state in which passkeys are unavailable.
 
 let _pkState = null;      // last GET /api/passkeys
 let _pkMsg = '';          // one status line under the heading
@@ -27,6 +34,7 @@ function _pkStyle() {
     .pk-revoked .pk-name { text-decoration: line-through; color: var(--text-dim); }
     .pk-err { font-size: 12px; color: var(--red, #c0392b); }
     .pk-foot { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+    .pk-secondary { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); }
     .pk-foot input[type=text] { padding: 6px 8px; font-size: 12px; background: var(--surface2);
       border: 1px solid var(--border); border-radius: 4px; color: var(--text); min-width: 180px; }
   `;
@@ -45,46 +53,6 @@ function passkeysSettingsHTML() {
     </div>`;
 }
 
-function _pkB64urlToBuf(s) {
-  const b = atob(String(s).replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((String(s).length + 3) % 4));
-  const out = new Uint8Array(b.length);
-  for (let i = 0; i < b.length; i++) out[i] = b.charCodeAt(i);
-  return out.buffer;
-}
-
-function _pkBufToB64url(buf) {
-  const bytes = new Uint8Array(buf);
-  let s = '';
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-// Server options (base64url strings) -> what navigator.credentials.create wants.
-function _pkCreationOptions(o) {
-  const pk = Object.assign({}, o);
-  pk.challenge = _pkB64urlToBuf(o.challenge);
-  pk.user = Object.assign({}, o.user, { id: _pkB64urlToBuf(o.user.id) });
-  pk.excludeCredentials = (o.excludeCredentials || []).map((c) => Object.assign({}, c, { id: _pkB64urlToBuf(c.id) }));
-  return pk;
-}
-
-// A PublicKeyCredential -> the JSON shape the server's finish route takes.
-function _pkCredentialJSON(cred) {
-  const r = cred.response;
-  return {
-    id: cred.id,
-    rawId: _pkBufToB64url(cred.rawId),
-    type: cred.type,
-    authenticatorAttachment: cred.authenticatorAttachment || undefined,
-    clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {},
-    response: {
-      clientDataJSON: _pkBufToB64url(r.clientDataJSON),
-      attestationObject: _pkBufToB64url(r.attestationObject),
-      transports: typeof r.getTransports === 'function' ? r.getTransports() : [],
-    },
-  };
-}
-
 async function _pkJson(method, url, body) {
   const res = await fetch(API_BASE + url, {
     method, headers: { 'Content-Type': 'application/json' },
@@ -95,12 +63,23 @@ async function _pkJson(method, url, body) {
 }
 
 function _pkWhy(r) {
-  const b = (r && r.body) || {};
-  return b.message || b.error || ('HTTP ' + (r ? r.status : '?'));
+  return window.PasskeysRecovery.why(r);
 }
 
 function _pkFmt(ts) {
   return ts ? String(ts).slice(0, 10) : '';
+}
+
+// The card shown instead of a passkey list while the server refuses the registry
+// or the vault is not usable. `extra` is a state from PasskeysRecovery.describe.
+function _pkStateHTML(extra) {
+  const bits = [`<div class="pk-meta" id="passkeys-state" data-pk-state="${esc(extra.code)}">${esc(extra.text)}</div>`];
+  const btns = [];
+  if (extra.action) btns.push(`<button type="button" class="btn-add" data-pk-act="${esc(extra.action.act)}">${esc(extra.action.label)}</button>`);
+  if (extra.resettable) btns.push('<button type="button" data-pk-act="reset">Reset passkeys</button>');
+  if (btns.length) bits.push(`<div class="pk-foot">${btns.join('')}</div>`);
+  if (extra.resettable) bits.push('<div class="pk-meta">Resetting works from this computer\'s own browser, with your dashboard passcode.</div>');
+  return bits.join('');
 }
 
 function _pkRender() {
@@ -111,6 +90,12 @@ function _pkRender() {
   if (!st) { host.innerHTML = '<div class="settings-hint">Loading…</div>'; return; }
   const parts = [];
   if (_pkMsg) parts.push(`<div class="pk-meta" id="passkeys-msg">${esc(_pkMsg)}</div>`);
+  if (st.refused) {
+    parts.push(_pkStateHTML(st.refused));
+    host.innerHTML = parts.join('');
+    host.querySelectorAll('[data-pk-act]').forEach((b) => b.addEventListener('click', () => _pkAct(b)));
+    return;
+  }
   if (!st.available) {
     parts.push('<div class="pk-meta">The passkey library is not installed on this server, so passkeys cannot be registered.</div>');
   }
@@ -128,6 +113,7 @@ function _pkRender() {
     parts.push('<div class="pk-meta">No passkeys registered.</div>');
   }
   if (st.available) {
+    const vaultState = window.PasskeysRecovery.describe(st.enroll_blocked_reason);
     if (st.can_enroll_here) {
       const full = (st.active_count || 0) >= (st.max_active || 0);
       parts.push(`<div class="pk-foot">
@@ -135,6 +121,17 @@ function _pkRender() {
         <button type="button" class="btn-add" data-pk-act="enroll" ${(_pkBusy || full) ? 'disabled' : ''}>Add a passkey</button>
         ${full ? '<span class="pk-meta">The limit of ' + esc(st.max_active) + ' active passkeys is reached.</span>' : ''}
       </div>`);
+      if (st.needs_passkey_to_change) {
+        parts.push('<div class="pk-meta">Adding or revoking a passkey asks you to approve with one you already have.</div>');
+      }
+      if ((st.active_count || 0) > 0) {
+        parts.push(`<div class="pk-secondary">
+          <div class="pk-meta">Lost every passkey? Revoke them all with your dashboard passcode and start again.</div>
+          <div class="pk-foot"><button type="button" data-pk-act="recover">Revoke all passkeys</button></div>
+        </div>`);
+      }
+    } else if (vaultState) {
+      parts.push(_pkStateHTML(vaultState));
     } else {
       parts.push(`<div class="pk-meta" id="passkeys-blocked">${esc(st.enroll_blocked_message || 'Passkeys can only be added or revoked from the host computer.')}</div>`);
     }
@@ -144,20 +141,30 @@ function _pkRender() {
 }
 
 async function _pkEnroll() {
+  const W = window.PasskeysWebauthn;
   const labelEl = document.getElementById('passkeys-label');
   const label = labelEl ? labelEl.value.trim() : '';
   if (!(navigator.credentials && window.PublicKeyCredential)) {
     _pkMsg = 'This browser does not support passkeys.';
     return;
   }
-  const started = await window.humanProofFetch(API_BASE + '/api/passkeys/register/options',
-    { method: 'POST', body: JSON.stringify(label ? { label } : {}) },
-    { title: 'Add a passkey', description: 'Re-enter your dashboard passcode to add a passkey.' });
-  if (started === null) return;
+  let started;
+  if (_pkState && _pkState.needs_passkey_to_change) {
+    // A passkey exists: approve the add with one of them, not the passcode.
+    const a = await W.assertFor('add');
+    if (!a.proof) { _pkMsg = a.response ? _pkWhy(a.response) : a.error; return; }
+    started = await _pkJson('POST', '/api/passkeys/register/options',
+      Object.assign({ proof: a.proof }, label ? { label } : {}));
+  } else {
+    started = await window.humanProofFetch(API_BASE + '/api/passkeys/register/options',
+      { method: 'POST', body: JSON.stringify(label ? { label } : {}) },
+      { title: 'Add a passkey', description: 'Re-enter your dashboard passcode to add a passkey.' });
+    if (started === null) return;
+  }
   if (!started.ok) { _pkMsg = _pkWhy(started); return; }
   let cred;
   try {
-    cred = await navigator.credentials.create({ publicKey: _pkCreationOptions(started.body.options) });
+    cred = await navigator.credentials.create({ publicKey: W.creationOptions(started.body.options) });
   } catch (e) {
     _pkMsg = e && e.name === 'NotAllowedError'
       ? 'The passkey prompt was cancelled or timed out. Nothing was saved.'
@@ -165,26 +172,39 @@ async function _pkEnroll() {
     return;
   }
   const fin = await _pkJson('POST', '/api/passkeys/register/finish',
-    { ceremony_id: started.body.ceremony_id, credential: _pkCredentialJSON(cred) });
+    { ceremony_id: started.body.ceremony_id, credential: W.creationJSON(cred) });
   _pkMsg = fin.ok ? 'Passkey added.' : 'The server refused the passkey: ' + _pkWhy(fin);
 }
 
 async function _pkRevoke(id) {
-  if (!window.confirm('Revoke this passkey? It stops counting as registered right away.')) return;
-  const res = await window.humanProofFetch(API_BASE + '/api/passkeys/' + encodeURIComponent(id),
-    { method: 'DELETE', body: JSON.stringify({}) },
-    { title: 'Revoke passkey', description: 'Re-enter your dashboard passcode to revoke this passkey.' });
-  if (res === null) return;
+  const last = _pkState && (_pkState.active_count || 0) <= 1;
+  if (!window.confirm('Revoke this passkey? It stops counting as registered right away.'
+    + (last ? ' It is your last one, so the dashboard passcode applies again afterwards.' : ''))) return;
+  let res;
+  if (_pkState && _pkState.needs_passkey_to_change) {
+    const a = await window.PasskeysWebauthn.assertFor('revoke', id);
+    if (!a.proof) { _pkMsg = a.response ? _pkWhy(a.response) : a.error; return; }
+    res = await _pkJson('DELETE', '/api/passkeys/' + encodeURIComponent(id), { proof: a.proof });
+  } else {
+    res = await window.humanProofFetch(API_BASE + '/api/passkeys/' + encodeURIComponent(id),
+      { method: 'DELETE', body: JSON.stringify({}) },
+      { title: 'Revoke passkey', description: 'Re-enter your dashboard passcode to revoke this passkey.' });
+    if (res === null) return;
+  }
   _pkMsg = res.ok ? 'Passkey revoked.' : _pkWhy(res);
 }
 
 async function _pkAct(btn) {
   if (_pkBusy) return;
+  const act = btn.dataset.pkAct;
+  if (act === 'vault-open' || act === 'vault-set') { window.PasskeysRecovery.openVault(act); return; }
   _pkBusy = true;
   _pkMsg = '';
   try {
-    if (btn.dataset.pkAct === 'enroll') await _pkEnroll();
-    else if (btn.dataset.pkAct === 'revoke') await _pkRevoke(btn.dataset.pkId);
+    if (act === 'enroll') await _pkEnroll();
+    else if (act === 'revoke') await _pkRevoke(btn.dataset.pkId);
+    else if (act === 'recover') _pkMsg = (await window.PasskeysRecovery.recover()) || '';
+    else if (act === 'reset') _pkMsg = (await window.PasskeysRecovery.reset()) || '';
   } catch (e) {
     _pkMsg = (e && e.message) || 'Something went wrong.';
   } finally {
@@ -197,6 +217,12 @@ async function refreshPasskeysSection() {
   if (!document.getElementById('passkeys-host')) return;
   const r = await _pkJson('GET', '/api/passkeys').catch((e) => ({ ok: false, status: 0, body: { message: e.message } }));
   if (!r.ok) {
+    const refused = window.PasskeysRecovery.describe(r.body && r.body.error);
+    if (refused) {
+      _pkState = { refused, available: true };
+      _pkRender();
+      return;
+    }
     const host = document.getElementById('passkeys-host');
     if (host) host.innerHTML = `<div class="pk-err">Could not load passkeys: ${esc(_pkWhy(r))}</div>`;
     return;

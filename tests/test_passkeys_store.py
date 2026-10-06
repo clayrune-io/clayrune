@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from mc.passkeys import challenges, store
+from passkeys_vault import use_test_key
 
 HANDLE = 'aGFuZGxlLWhhbmRsZS1oYW5kbGUtaGFuZGxlLWhhbmRsZQ'
 
@@ -16,6 +20,7 @@ HANDLE = 'aGFuZGxlLWhhbmRsZS1oYW5kbGUtaGFuZGxlLWhhbmRsZQ'
 @pytest.fixture(autouse=True)
 def _home(tmp_path, monkeypatch):
     monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / 'home'))
+    use_test_key(monkeypatch)
     return tmp_path / 'home'
 
 
