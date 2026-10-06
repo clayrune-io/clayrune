@@ -36,6 +36,9 @@ from mc.desk_connect import custom_connection_operation as _op
 from mc.desk_connect import custom_connection_store as _store
 from mc.desk_connect import custom_npm_artifact as _artifact
 from mc.desk_connect import parameter_parsers as _pp
+from mc.desk_connect import remote_mcp_activation as _remote_activation
+from mc.desk_connect import remote_mcp_check as _remote_check
+from mc.desk_connect import remote_mcp_operation as _remote_op
 from mc.desk_connect.mcp_errors import ActivationError
 
 PREPARED_TTL_S = 30 * 60
@@ -57,6 +60,15 @@ def _forget_all_for_tests() -> None:
         _prepared.clear()
         _done.clear()
         _name_locks.clear()
+
+
+def kind_of(op: dict):
+    """The activation module for an operation: npm package (U2a) or remote server (U2d)."""
+    return _remote_activation if op.get('ecosystem') == 'remote' else _activation
+
+
+def label_of(op: dict) -> str:
+    return op['url'] if op.get('ecosystem') == 'remote' else f'{op["package"]}@{op["version"]}'
 
 
 def visible_vault_names(scope: str, project_id: str | None) -> set[str]:
@@ -209,7 +221,8 @@ def _remembered(request_id: str) -> tuple[str, dict] | None:
     result = done[1]
     try:
         rec = _store.get(result['scope'], result['project_id'], result['server_name'])
-        live = bool(rec) and rec['fingerprint'] == done[0]             and _activation.derive_state(rec, rec.get('project_path'))['state'] == 'registered'
+        live = bool(rec) and rec['fingerprint'] == done[0] \
+            and kind_of(rec['operation']).derive_state(rec, rec.get('project_path'))['state'] == 'registered'
     except Exception as e:                              # cannot tell: do not report a success it cannot vouch for
         _log(f'[desk_connect] custom save replay could not be checked: {type(e).__name__}', flush=True)
         live = False
@@ -239,6 +252,8 @@ def check_submission(request_id: str, fingerprint: str) -> dict:
     if rec['fingerprint'] != fingerprint or _op.fingerprint(rec['op']) != fingerprint:
         raise ActivationError('the configuration changed since you reviewed it. Review it again.',
                               'changed_since_review', 409)
+    if rec['op'].get('ecosystem') == 'remote':
+        _remote_op.require_ack(rec['op'])
     return rec
 
 
@@ -261,13 +276,13 @@ def commit(request_id: str, fingerprint: str) -> tuple[dict, bool]:
         done = _remembered(request_id)
         if done is not None:
             return done[1], True
-        clash = _activation.conflict(op, path)
+        clash = kind_of(op).conflict(op, path)
         if clash:
             raise clash
         _store.put(op, fingerprint, 'saved', project_path=path)
-        _log(f'[desk_connect] custom MCP approved: {op["package"]}@{op["version"]} as {op["server_name"]} '
+        _log(f'[desk_connect] custom MCP approved: {label_of(op)} as {op["server_name"]} '
              f'({op["scope"]["kind"]})', flush=True)
-        outcome = _activation.provision(op, path)
+        outcome = kind_of(op).provision(op, path)
         _store.set_state(op['scope']['kind'], op['scope']['project_id'], op['server_name'],
                          outcome['state'], outcome.get('code', ''))
         result = {'ok': True, 'approved': True, 'fingerprint': fingerprint, 'server_name': op['server_name'],
@@ -290,9 +305,12 @@ def connections(path_of) -> list[dict]:
     out = []
     for rec in _store.all_records():
         path = path_of(rec['project_id']) if rec['scope'] == 'project' else None
-        state = _activation.derive_state(rec, path)
         op = rec['operation']
+        state = kind_of(op).derive_state(rec, path)
         out.append({'server_name': rec['server_name'], 'scope': rec['scope'], 'project_id': rec['project_id'],
-                    'package': op['package'], 'version': op['version'], 'fingerprint': rec['fingerprint'],
+                    'ecosystem': op.get('ecosystem'), 'package': op.get('package') or op.get('url'),
+                    'version': op.get('version'), 'fingerprint': rec['fingerprint'],
                     'approved_at': rec['approved_at'], 'credentials': op['credentials'], **state})
+        if op.get('ecosystem') == 'remote':
+            out[-1].update(url=op['url'], protocol=op['protocol'], observation=_remote_check.observation_of(rec))
     return out

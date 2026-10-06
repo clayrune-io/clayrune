@@ -113,8 +113,8 @@ def matches(cfg, op: dict, strict: bool = True) -> bool:
     ends in the same file names (any `evil/tools/with-secret.py`, any program called `node`) is
     not the approved line. `strict=False` keeps that looser shape test for ONE use: recognising an
     earlier approval whose paths moved with the install, so a new passcode Save may replace it."""
-    if not isinstance(op, dict) or not isinstance(cfg, dict) or not set(cfg) <= {'command', 'args', 'type'} \
-            or cfg.get('type') not in (None, 'stdio'):
+    if not isinstance(op, dict) or op.get('ecosystem') != 'npm' or not isinstance(cfg, dict) \
+            or not set(cfg) <= {'command', 'args', 'type'} or cfg.get('type') not in (None, 'stdio'):
         return False
     cmd, args = cfg.get('command'), cfg.get('args')
     flags = wrapper_flags(op)
@@ -150,7 +150,8 @@ def _approved_ops(op: dict) -> list[dict]:
         rec = _store.get(op['scope']['kind'], op['scope']['project_id'], op['server_name'])
     except _store.StoreUnreadable:                      # nothing is known to be approved: an existing server is a clash
         return []
-    return [o for o in (rec.get('operation'), rec.get('replaces')) if isinstance(o, dict)] if rec else []
+    return [o for o in (rec.get('operation'), rec.get('replaces')) if isinstance(o, dict)
+            and o.get('ecosystem') == 'npm'] if rec else []
 
 
 def _was_approved(cur, op: dict) -> bool:

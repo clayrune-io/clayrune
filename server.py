@@ -2238,6 +2238,10 @@ app.register_blueprint(_bp_desk_connect_purpose.bp)
 from mc.blueprints import desk_connect_custom_routes as _bp_desk_connect_custom  # noqa: E402
 app.register_blueprint(_bp_desk_connect_custom.bp)
 
+# User-chosen REMOTE MCP server (slice U2d): Review card, human-started check, adopt. Its Save is the one above. Own module.
+from mc.blueprints import desk_connect_remote_routes as _bp_desk_connect_remote  # noqa: E402
+app.register_blueprint(_bp_desk_connect_remote.bp)
+
 # Sign in with a saved login (slice P2b): type a vault login into the pane's declared sign-in page. Own module.
 from mc.blueprints import desk_connect_signin_routes as _bp_desk_connect_signin  # noqa: E402
 app.register_blueprint(_bp_desk_connect_signin.bp)

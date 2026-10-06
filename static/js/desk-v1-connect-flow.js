@@ -61,6 +61,7 @@
     if (window.DeskV1ConnectInstall) window.DeskV1ConnectInstall.clear();
     if (window.DeskV1ConnectPurpose) window.DeskV1ConnectPurpose.reset();
     if (window.DeskV1ConnectCustom) window.DeskV1ConnectCustom.reset();
+    if (window.DeskV1ConnectRemote) window.DeskV1ConnectRemote.reset();
     if (window.DeskV1ConnectHeld) window.DeskV1ConnectHeld.cancel();      // a sign-in made on Details and not saved: dropped and revoked
     if (_formHost) { _formHost.querySelectorAll('input').forEach((i) => { if (i.type !== 'radio' && i.type !== 'checkbox') i.value = ''; }); _formHost = null; }
     _formState.type = 'api_key';
@@ -174,6 +175,7 @@
         <div class="desk-v1-cf-options" data-cf-options role="radiogroup" aria-label="Connection method">${info.options.map((o) => _optionHTML(o, ctx)).join('')}</div>
         <div class="desk-v1-rules-hint">Recognising a service is not support: a method marked “Information only” or “Restricted” cannot be set up from here.</div>
         ${window.DeskV1ConnectCustom ? window.DeskV1ConnectCustom.html(info) : ''}
+        ${window.DeskV1ConnectRemote ? window.DeskV1ConnectRemote.html(info) : ''}
         ${_actions(true, `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-cf-next ${S.method ? '' : 'disabled'}>Continue</button>`)}`;
   }
 
@@ -437,6 +439,7 @@
       if (window.DeskV1ConnectDiscover) window.DeskV1ConnectDiscover.bind(root, S.info, ctx);
       if (window.DeskV1ConnectPurpose) window.DeskV1ConnectPurpose.bind(root, S.info, ctx);
       if (window.DeskV1ConnectCustom) window.DeskV1ConnectCustom.bind(root, S.info, ctx);
+      if (window.DeskV1ConnectRemote) window.DeskV1ConnectRemote.bind(root, S.info, ctx);
       const next = root.querySelector('[data-cf-next]');
       if (next) next.addEventListener('click', () => { if (S.method) _go('details', ctx); });
     }
