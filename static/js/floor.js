@@ -300,6 +300,7 @@ function _floorFigure(pid, f) {
       <div class="fl-engine">${esc(engine)}</div>
       ${f.allowance_exhausted ? `<div class="fl-allowance">${esc(f.allowance_exhausted)}</div>` : ''}
       <div class="fl-act">${esc(_floorLine(f, helperActive))}</div>
+      ${f.report_waiting ? `<div class="fl-report">${esc(f.report_waiting)}</div>` : ''}
       <div class="fl-task">${esc(f.task || '')}</div>
       <div class="fl-cta">Open this chat &#8594;</div>
     </div>

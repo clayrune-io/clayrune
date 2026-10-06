@@ -28,6 +28,7 @@ from flask import Blueprint, jsonify, request
 
 from mc import allowance_state as _allowance_state
 from mc import background_tasks as _bg_tasks
+from mc import delegation_waiting as _delegation_waiting
 from mc import identity as _identity
 from mc import state
 from mc.characters import MAX_EMOJI_LEN, clean_avatar
@@ -321,7 +322,7 @@ def _figure_model(s, proj_default):
     return '', ''
 
 
-def _figure(s, proj_default='', labels=None, projects=None):
+def _figure(s, proj_default='', labels=None, projects=None, reports_waiting=None):
     _fig_model, _fig_model_from = _figure_model(s, proj_default)
     st, reason = _figure_state(s)
     ch = _character_of(s)
@@ -337,6 +338,10 @@ def _figure(s, proj_default='', labels=None, projects=None):
         # MC-946: between turns with the spawner callback held on a genuine
         # background task — "idle" alone reads as nothing running.
         'bg_wait': _bg_tasks.waiting_label(s) if st == 'idle' else '',
+        # MC-1063: a finished child's report queued for this session (parent
+        # mid-turn, or parked) -- invisible on the card until now.
+        'report_waiting': _delegation_waiting.figure_label(
+            (reports_waiting or {}).get(s.get('session_id', ''))),
         'task': _clip(s.get('task'), _TASK_CHARS),
         'character': ch,
         # Who this figure IS, always populated. `name_from` is 'user' | 'self' |
@@ -419,6 +424,7 @@ def _live_sessions(defaults=None, labels=None, projects=None):
     session carries no `hivemind_id` and stays hidden.
     """
     rooms: dict = {}
+    reports_waiting = _delegation_waiting.waiting_by_parent()  # one read per board
     # Snapshot: sessions are added/removed on other threads while this
     # walks. Iterating the live dict raised "dictionary changed size during
     # iteration" -> 500 on /api/floor (clayrune.log 2026-09-28 10:07, 3x).
@@ -433,7 +439,7 @@ def _live_sessions(defaults=None, labels=None, projects=None):
         if not pid:
             continue
         rooms.setdefault(pid, []).append(
-            _figure(s, (defaults or {}).get(pid, ''), labels, projects))
+            _figure(s, (defaults or {}).get(pid, ''), labels, projects, reports_waiting))
     order = {'asking': 0, 'working': 1, 'idle': 2}
     for figs in rooms.values():
         figs.sort(key=lambda f: (order.get(f['state'], 3),

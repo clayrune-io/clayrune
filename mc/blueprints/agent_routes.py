@@ -117,6 +117,7 @@ import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
 import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (Mode B)
+import mc.delegation_waiting as _delegation_waiting  # MC-1063: queued child reports shown on the parent
 import mc.desk_connect.custom_package_manifest as _custom_package_manifest  # MC-1054: detect-only file drift of approved npm MCPs
 import mc.agent_jobs as _agent_jobs  # MC-958 follow-up: engine-agnostic background command jobs
 import mc.caller_attribution as _caller_attribution  # backlog 40260b57: who is really calling dispatch
@@ -285,6 +286,7 @@ def _wire_unlocked(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
     # Sibling of data/projects: project JSON loading must never see delivery
     # state. SQLite WAL also survives sender/receiver process restarts.
     _delivery_path = Path(data_dir).parent / 'delegation_delivery.sqlite3'
+    _delegation_waiting.configure(_delivery_path)
     _delivery_store = None
     _delivery_started = False
     _delivery_thread = None
@@ -14680,6 +14682,8 @@ def agent_status(project_id):
         if (_ls.get('project_id') == project_id and _ls.get('claude_session_id')
                 and _session_proc_alive(_ls)):
             _live_by_csid.setdefault(_ls['claude_session_id'], []).append(_lsid)
+    # MC-1063: child reports queued for a session in this project, one read.
+    _reports_waiting = _delegation_waiting.waiting_by_parent(project_id)
     for sid, s in agent_sessions.items():
         if s['project_id'] == project_id:
             # Filter log_lines and its parallel per-line timestamp array
@@ -14817,6 +14821,9 @@ def agent_status(project_id):
                 # MC-946: set while a spawner callback is held on a genuine
                 # background task and the turn has ended.
                 'bg_wait': _bg_tasks.waiting_label(s),
+                # MC-1063: child reports queued for THIS session (held while it
+                # is mid-turn, or parked). [] when none.
+                'reports_waiting': _reports_waiting.get(sid, []),
             })
     # Sort: running first, then newest first (ISO timestamps sort lexically)
     sessions.sort(key=lambda s: (
