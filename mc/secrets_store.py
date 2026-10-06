@@ -961,6 +961,18 @@ def _mark_key_used() -> None:
     _last_key_use = _monotonic()
 
 
+def peek_passphrase_key() -> bytes | None:
+    """The passphrase-mode master key if the vault is unlocked, else ``None`` —
+    WITHOUT restarting the idle clock. ``load_master_key()`` counts as a use;
+    a caller that only needs the key to check a file's integrity (the passkey
+    registry MAC, polled by the dashboard) must not, or a loopback poller keeps
+    the vault unlocked past ``vault_idle_lock_minutes``. Never unlocks, never
+    mints, never notifies; honours a due idle relock first."""
+    with _lock:
+        _idle_relock_if_due()
+        return _unlocked_key
+
+
 def _do_relock(reason: str, *, caller_addr: str = '') -> None:
     """Clear the unlocked key (no-op if already locked) and reset the
     once-per-period lock notification so the NEXT blocked job fires exactly

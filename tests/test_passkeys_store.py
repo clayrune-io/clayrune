@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from mc.passkeys import challenges, store
+from passkeys_vault import use_test_key
 
 HANDLE = 'aGFuZGxlLWhhbmRsZS1oYW5kbGUtaGFuZGxlLWhhbmRsZQ'
 
@@ -16,6 +20,7 @@ HANDLE = 'aGFuZGxlLWhhbmRsZS1oYW5kbGUtaGFuZGxlLWhhbmRsZQ'
 @pytest.fixture(autouse=True)
 def _home(tmp_path, monkeypatch):
     monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / 'home'))
+    use_test_key(monkeypatch)
     return tmp_path / 'home'
 
 
@@ -284,6 +289,32 @@ def test_a_stale_cross_process_lock_is_broken(monkeypatch):
     os.utime(store._lock_path(), (old, old))
     add('BBBB')                               # would hang or raise if the lock were honoured
     assert sorted(store.active_credential_ids()) == ['AAAA', 'BBBB']
+
+
+def test_a_stale_lock_that_cannot_be_removed_backs_off_and_times_out(monkeypatch):
+    """Audit finding 3: on Windows the breaker's unlink fails while a live process
+    holds the lock open, and the waiter used to `continue` straight back into the
+    same stale lock with no sleep and no deadline check, pinning a core forever."""
+    import os
+    import time
+    add('AAAA')
+    store._lock_path().write_text('held', encoding='utf-8')
+    old = time.time() - 60
+    os.utime(store._lock_path(), (old, old))
+    monkeypatch.setattr(store, '_LOCK_TIMEOUT_S', 0.3)
+    calls = {'n': 0}
+
+    def cannot_unlink(lock, seen):
+        calls['n'] += 1
+        assert calls['n'] < 5000, 'spinning on an unremovable stale lock'
+        return False
+    monkeypatch.setattr(store, '_unlink_if_same', cannot_unlink)
+    started = time.monotonic()
+    with pytest.raises(store.StoreError, match='busy'):
+        add('BBBB')
+    assert time.monotonic() - started < 3
+    assert 1 < calls['n'] < 200                     # paced by the sleep, not a busy loop
+    assert store.active_credential_ids() == ['AAAA']
 
 
 def test_a_live_cross_process_lock_blocks_then_reports_busy(monkeypatch):

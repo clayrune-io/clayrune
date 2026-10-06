@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mc.blueprints import local_auth, passkey_routes
 from mc.passkeys import audit, ceremony, challenges, store
+from passkeys_vault import use_test_key
 
 ORIGIN = 'http://localhost:5199'
 HOST_URL = 'http://localhost:5199'
@@ -31,11 +32,13 @@ GOOD = {'Origin': ORIGIN}
 PASSCODE = 'unlock1234'
 OPTIONS = '/api/passkeys/register/options'
 FINISH = '/api/passkeys/register/finish'
+ASSERT = '/api/passkeys/assert/options'
 
 
 @pytest.fixture(autouse=True)
 def _env(tmp_path, monkeypatch):
     monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / 'home'))
+    use_test_key(monkeypatch)
     monkeypatch.setattr(local_auth, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
     local_auth._local_auth_set_passcode(PASSCODE)
     local_auth._LOCAL_AUTH_FAILS.clear()
@@ -76,15 +79,30 @@ def call(c, method, path, body=None, headers=GOOD, base_url=HOST_URL):
     return getattr(c, method)(path, json=body, headers=headers, base_url=base_url)
 
 
-def start(c, label=None, passcode=PASSCODE, **kw):
-    body = {'passcode': passcode}
+def prove(c, authenticator, purpose, target='', **get_kw):
+    """Run the assertion ceremony for ONE operation with an already-enrolled
+    authenticator; returns the `proof` body the operation route takes."""
+    body = {'purpose': purpose}
+    if target:
+        body['credential_id'] = target
+    r = call(c, 'post', ASSERT, body)
+    assert r.status_code == 200, r.get_data(as_text=True)
+    j = r.get_json()
+    return {'ceremony_id': j['ceremony_id'],
+            'assertion': authenticator.get(j['options'], get_kw.pop('origin', ORIGIN), **get_kw)}
+
+
+def start(c, label=None, passcode=PASSCODE, proof=None, **kw):
+    body = {'proof': proof} if proof is not None else {'passcode': passcode}
     if label is not None:
         body['label'] = label
     return call(c, 'post', OPTIONS, body, **kw)
 
 
-def enroll(c, authenticator, label='Laptop', **create_kw):
-    r = start(c, label)
+def enroll(c, authenticator, label='Laptop', by=None, **create_kw):
+    """Enroll `authenticator`. Once a passkey exists the add needs one's
+    assertion: pass `by=<an enrolled authenticator>`."""
+    r = start(c, label, proof=prove(c, by, 'add') if by is not None else None)
     assert r.status_code == 200, r.get_data(as_text=True)
     j = r.get_json()
     cred = authenticator.create(j['options'], create_kw.pop('origin', ORIGIN), **create_kw)
@@ -119,9 +137,10 @@ def test_enroll_list_and_options_profile(app, authn):
 
 def test_second_enrollment_excludes_the_first_and_shares_the_owner_handle(app, authn):
     c = browser(app)
-    j1, cred1, fin1 = enroll(c, authn(), 'one')
+    first = authn()
+    j1, cred1, fin1 = enroll(c, first, 'one')
     assert fin1.status_code == 200
-    j2, _cred2, fin2 = enroll(c, authn(), 'two')
+    j2, _cred2, fin2 = enroll(c, authn(), 'two', by=first)
     assert fin2.status_code == 200
     assert [d['id'] for d in j2['options']['excludeCredentials']] == [cred1['id']]
     assert j2['options']['user']['id'] == j1['options']['user']['id']
@@ -183,10 +202,11 @@ def test_options_refuses_non_host_callers_before_spending_a_passcode_guess(
 def test_finish_and_revoke_refuse_non_host_callers_without_touching_state(
         app, authn, name, kw, headers, base, reason):
     owner = browser(app)
-    j, cred, fin = enroll(owner, authn())
+    a = authn()
+    j, cred, fin = enroll(owner, a)
     assert fin.status_code == 200
     # a pending ceremony that a refused caller must not be able to consume
-    j2 = start(owner).get_json()
+    j2 = start(owner, proof=prove(owner, a, 'add')).get_json()
     intruder = browser(app, **kw)
     r = call(intruder, 'post', FINISH, {'ceremony_id': j2['ceremony_id'], 'credential': cred},
              headers=headers, base_url=base)
@@ -194,6 +214,8 @@ def test_finish_and_revoke_refuse_non_host_callers_without_touching_state(
     assert challenges.STORE.pending() == 1                       # untouched
     r = call(intruder, 'delete', f"/api/passkeys/{cred['id']}", {'passcode': PASSCODE},
              headers=headers, base_url=base)
+    assert r.status_code == 403 and r.get_json()['reason'] == reason
+    r = call(intruder, 'post', ASSERT, {'purpose': 'add'}, headers=headers, base_url=base)
     assert r.status_code == 403 and r.get_json()['reason'] == reason
     assert passkey_ids() == [cred['id']]                         # not revoked
     assert local_auth._LOCAL_AUTH_FAILS == {}
@@ -274,7 +296,7 @@ def test_registering_the_same_credential_again_is_a_duplicate(app, authn):
     c = browser(app)
     a = authn()
     assert enroll(c, a)[2].status_code == 200
-    _j, _cred, fin = enroll(c, a)                   # same key + credential id, fresh ceremony
+    _j, _cred, fin = enroll(c, a, by=a)             # same key + credential id, fresh ceremony
     assert fin.status_code == 409 and fin.get_json()['error'] == 'duplicate_credential'
     assert len(passkey_ids()) == 1 and challenges.STORE.pending() == 0
 
@@ -318,7 +340,7 @@ def test_finish_requires_a_ceremony_id_and_credential_object(app, authn):
 
 def test_pending_ceremonies_are_bounded(app, authn):
     c = browser(app)
-    for _ in range(challenges.MAX_PENDING):
+    for _ in range(challenges.MAX_PENDING_PER_CLIENT['registration']):
         assert start(c).status_code == 200
     r = start(c)
     assert r.status_code == 429 and r.get_json()['error'] == 'too_many_ceremonies'
@@ -351,10 +373,11 @@ def test_concurrent_finishes_of_one_ceremony_have_one_winner(app, authn):
 def test_concurrent_enrollments_from_one_browser_all_register(app, authn):
     # six independent authenticators finishing at once: registry writes serialize
     c = browser(app)
-    assert enroll(c, authn(), 'first')[2].status_code == 200   # fixes the owner handle
+    first = authn()
+    assert enroll(c, first, 'first')[2].status_code == 200     # fixes the owner handle
     ceremonies = []
     for i in range(5):
-        r = start(c, f'dev{i}')
+        r = start(c, f'dev{i}', proof=prove(c, first, 'add'))
         nonce = r.headers['Set-Cookie'].split(';')[0].split('=', 1)[1]
         a = authn()
         ceremonies.append((r.get_json(), a, nonce))
@@ -445,28 +468,34 @@ def test_malformed_credentials_are_rejected_not_crashed(app, authn, mangle):
 
 # ── revocation ───────────────────────────────────────────────────────────────
 
-def test_revoke_requires_the_passcode_and_tombstones(app, authn):
+def test_revoke_requires_a_passkey_assertion_and_tombstones(app, authn):
     c = browser(app)
-    _j, cred, fin = enroll(c, authn())
+    a = authn()
+    _j, cred, fin = enroll(c, a)
     assert fin.status_code == 200
     path = f"/api/passkeys/{cred['id']}"
-    assert call(c, 'delete', path, {}).status_code == 403
-    assert call(c, 'delete', path, {'passcode': 'wrong-wrong'}).get_json()['error'] == 'bad_passcode'
+    # With a passkey enrolled the passcode no longer revokes one, right or wrong.
+    for body in ({}, {'passcode': 'wrong-wrong'}, {'passcode': PASSCODE}):
+        r = call(c, 'delete', path, body)
+        assert r.status_code == 403 and r.get_json()['error'] == 'proof_required'
+    assert local_auth._LOCAL_AUTH_FAILS == {}                  # no passcode guess was spent
     assert passkey_ids() == [cred['id']]
-    r = call(c, 'delete', path, {'passcode': PASSCODE})
+    r = call(c, 'delete', path, {'proof': prove(c, a, 'revoke', cred['id'])})
     assert r.status_code == 200 and r.get_json()['credential']['revoked_at']
     row, = call(c, 'get', '/api/passkeys').get_json()['credentials']
     assert row['revoked_at'] and passkey_ids() == []
-    again = call(c, 'delete', path, {'passcode': PASSCODE})
+    again = call(c, 'delete', path, {})
     assert again.status_code == 404 and again.get_json()['error'] == 'unknown_credential'
 
 
 def test_revoking_invalidates_pending_ceremonies(app, authn):
     c = browser(app)
-    _j, cred, fin = enroll(c, authn())
-    pending = start(c).get_json()                   # started before the revocation
+    a = authn()
+    _j, cred, fin = enroll(c, a)
+    pending = start(c, proof=prove(c, a, 'add')).get_json()     # started before the revocation
     new_cred = authn().create(pending['options'], ORIGIN)
-    assert call(c, 'delete', f"/api/passkeys/{cred['id']}", {'passcode': PASSCODE}).status_code == 200
+    rev = call(c, 'delete', f"/api/passkeys/{cred['id']}", {'proof': prove(c, a, 'revoke', cred['id'])})
+    assert rev.status_code == 200
     r = call(c, 'post', FINISH, {'ceremony_id': pending['ceremony_id'], 'credential': new_cred})
     assert r.status_code == 400 and r.get_json()['error'] == 'unknown_or_used_ceremony'
     assert passkey_ids() == []
@@ -476,15 +505,16 @@ def test_a_revoked_credential_cannot_be_re_enrolled(app, authn):
     c = browser(app)
     a = authn()
     _j, cred, fin = enroll(c, a)
-    call(c, 'delete', f"/api/passkeys/{cred['id']}", {'passcode': PASSCODE})
+    call(c, 'delete', f"/api/passkeys/{cred['id']}", {'proof': prove(c, a, 'revoke', cred['id'])})
     _j2, _c2, again = enroll(c, a)                  # same credential id after revocation
     assert again.status_code == 409 and again.get_json()['error'] == 'duplicate_credential'
 
 
 def test_revoke_everything_then_enroll_again(app, authn):
     c = browser(app)
-    _j, cred, _f = enroll(c, authn())
-    call(c, 'delete', f"/api/passkeys/{cred['id']}", {'passcode': PASSCODE})
+    a = authn()
+    _j, cred, _f = enroll(c, a)
+    call(c, 'delete', f"/api/passkeys/{cred['id']}", {'proof': prove(c, a, 'revoke', cred['id'])})
     listing = call(c, 'get', '/api/passkeys').get_json()
     assert listing['enrolled'] is True and listing['active_count'] == 0     # not "fresh install"
     assert enroll(c, authn())[2].status_code == 200
@@ -494,8 +524,9 @@ def test_revoke_everything_then_enroll_again(app, authn):
 
 def test_a_corrupt_registry_fails_closed_on_every_route(app, authn):
     c = browser(app)
-    _j, cred, fin = enroll(c, authn())
-    pending = start(c).get_json()
+    a = authn()
+    _j, cred, fin = enroll(c, a)
+    pending = start(c, proof=prove(c, a, 'add')).get_json()
     store.registry_path().write_text('{"schema": 1, truncated', encoding='utf-8')
     listing = call(c, 'get', '/api/passkeys')
     assert listing.status_code == 503 and listing.get_json()['error'] == 'passkey_store_unreadable'
@@ -522,8 +553,9 @@ def test_a_deleted_registry_after_enrollment_is_not_a_fresh_install(app, authn):
 
 def test_restart_keeps_credentials_and_forgets_ceremonies(app, authn):
     c = browser(app)
-    _j, cred, _f = enroll(c, authn())
-    pending = start(c).get_json()
+    a = authn()
+    _j, cred, _f = enroll(c, a)
+    pending = start(c, proof=prove(c, a, 'add')).get_json()
     new_cred = authn().create(pending['options'], ORIGIN)
     # restart: new process = new app, empty ceremony table, registry re-read from disk
     challenges.STORE._items.clear()
@@ -582,11 +614,13 @@ def test_can_enroll_here_is_false_from_a_lan_peer_too_and_true_only_with_library
 
 def test_audit_records_outcomes_without_bodies_or_secrets(app, authn):
     c = browser(app)
-    _j, cred, _f = enroll(c, authn(), 'Laptop')
-    call(c, 'delete', f"/api/passkeys/{cred['id']}", {'passcode': PASSCODE})
+    a = authn()
+    _j, cred, _f = enroll(c, a, 'Laptop')
+    call(c, 'delete', f"/api/passkeys/{cred['id']}", {'proof': prove(c, a, 'revoke', cred['id'])})
     text = audit.audit_path().read_text(encoding='utf-8')
     lines = [json.loads(line) for line in text.splitlines()]
-    assert [(e['operation'], e['outcome']) for e in lines] == [('register', 'ok'), ('revoke', 'ok')]
+    assert [(e['operation'], e['outcome']) for e in lines] == [
+        ('register', 'ok'), ('revoke', 'approved'), ('revoke', 'ok')]
     assert all(e['credential'] == cred['id'][:8] for e in lines)
     for needle in (PASSCODE, cred['id'], 'attestationObject', 'clientDataJSON', 'Laptop'):
         assert needle not in text
