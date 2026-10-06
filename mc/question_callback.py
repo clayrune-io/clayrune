@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from mc.callback_shape import task_line
 from mc.core import _log
 from mc.delegation_delivery import callback_payload, event_id_for_turn
 
@@ -90,7 +91,7 @@ def question_payload(child: dict, pending: dict, event_id: str) -> dict:
     payload['message'] = (
         f"[dispatched agent asked a question] {payload['who']} (session {sid[:12]}) "
         f"is PAUSED waiting for an answer. It has NOT finished.\n\n"
-        f"Task: {child.get('task', '')}\n\n"
+        f"{task_line(child)}\n\n"
         f"Its question, verbatim:\n{payload['summary']}\n\n"
         f"To answer: POST /api/project/{pid}/agent/send with "
         f'{{"session_id": "{sid}", "message": "<your answer>"}}. That resumes the '
