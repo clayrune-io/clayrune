@@ -126,6 +126,7 @@ from mc.delegation_delivery import (DeliveryStore, callback_payload,
                                     DeliveryBlocked, DeliveryDeferred,
                                     DeliveryNotHandedOff, DeliveryUncertain,
                                     drain_once, event_id_for_turn)
+import mc.question_callback as _question_callback  # a paused child's question -> its spawner
 
 # Cross-blueprint imports (the 1.4/1.5/1.11 precedent — defs, not wire
 # placeholders; called at request/stream time only, long after server.py has
@@ -8406,6 +8407,10 @@ def _maybe_notify_spawner(session, summary):
     if session.get('incognito'):
         return
     if session.get('waiting_for_question'):
+        # A pause is not a finish, but the spawner still has to hear the
+        # question (it decides, the child waits). Distinct callback, own
+        # dedupe, never touches `_notify_session_sent` -- see mc/question_callback.py.
+        _question_callback.notify_spawner_of_question(session, _delivery_store)
         return
     notify_sid = (session.get('_notify_session') or '').strip()
     has_spawner = bool(notify_sid) and notify_sid != session.get('session_id')
