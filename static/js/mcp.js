@@ -833,13 +833,11 @@ async function _mcpUrlInstall(modalId) {
     alert('Pick a project');
     return;
   }
-  st.stage = 'installing';
-  st.log = '';
-  _mcpUrlRender(modalId);
-
   try {
-    const res = await fetch(API_BASE + '/api/mcp/url/install', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    // The install runs the package manager and writes a command an agent will run: the
+    // dashboard passcode first, before anything starts (a wrong one re-prompts in the modal).
+    const out = await window.humanProofFetch(API_BASE + '/api/mcp/url/install', {
+      method: 'POST',
       body: JSON.stringify({
         install_dir: st.preview.install_dir,
         name: st.name.trim(),
@@ -848,14 +846,23 @@ async function _mcpUrlInstall(modalId) {
         config: st.config,
         secrets: st.secretValues || {},
       }),
+    }, {
+      title: 'Install MCP server',
+      description: `Re-enter your dashboard passcode to install the MCP server “${st.name.trim()}”. It becomes a command your agents can run.`,
+      stream: true,
     });
-    if (!res.ok || !res.body) {
-      const err = await res.text();
-      st.log = `[install request failed: ${res.status} ${err}]`;
+    if (out === null) return;                       // cancelled at the passcode: nothing was sent
+    const res = out.response;
+    if (!out.ok || !res || !res.body) {
+      const b = out.body || {};
+      st.log = `[install request failed: ${out.status} ${b.error || b.message || ''}]`;
       st.stage = 'preview';
       _mcpUrlRender(modalId);
       return;
     }
+    st.stage = 'installing';
+    st.log = '';
+    _mcpUrlRender(modalId);
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
@@ -964,26 +971,31 @@ async function saveMCPServer(modalId, isNew) {
   _mcpEditorStatus(modalId, 'Saving...');
 
   try {
-    let res;
+    // Saving registers a command an agent will run: the dashboard passcode, retyped every time
+    // (a wrong one re-prompts in the passcode modal and writes nothing).
+    const proof = {
+      title: isNew ? 'Add MCP server' : 'Save MCP server',
+      description: `Re-enter your dashboard passcode to ${isNew ? 'add' : 'save'} the MCP server “${name}”. It becomes a command your agents can run.`,
+    };
+    let out;
     if (isNew) {
-      res = await fetch(API_BASE + '/api/mcp', {
+      out = await window.humanProofFetch(API_BASE + '/api/mcp', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, scope, project_id: projectId, transport, config })
-      });
+      }, proof);
     } else {
       const params = new URLSearchParams();
       if (projectId) params.set('project_id', projectId);
       const url = API_BASE + `/api/mcp/${encodeURIComponent(scope)}/${encodeURIComponent(name)}` + (params.toString() ? '?' + params.toString() : '');
-      res = await fetch(url, {
+      out = await window.humanProofFetch(url, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ transport, config, project_id: projectId })
-      });
+      }, proof);
     }
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
-      _mcpEditorStatus(modalId, errBody.error || `Save failed (HTTP ${res.status})`, 'var(--red)');
+    if (out === null) { _mcpEditorStatus(modalId, ''); return; }   // cancelled at the passcode: nothing was sent
+    if (!out.ok) {
+      const errBody = out.body || {};
+      _mcpEditorStatus(modalId, errBody.error || `Save failed (HTTP ${out.status})`, 'var(--red)');
       return;
     }
     closeModalById(modalId);

@@ -731,7 +731,7 @@ def test_the_state_is_derived_each_time_not_remembered(env):
 def test_the_mcp_panel_cannot_overwrite_replace_or_recreate_an_approved_server(env):
     approved(env)
     before = servers(env.proj_cfg)
-    evil = {'transport': 'stdio', 'config': {'command': 'curl', 'args': ['evil.example']}, 'project_id': PID}
+    evil = {'transport': 'stdio', 'config': {'command': 'curl', 'args': ['evil.example']}, 'project_id': PID, 'passcode': PASSCODE}
     for method, url, body in (('put', f'/api/mcp/project/{PKG}', evil), ('post', '/api/mcp', {**evil, 'name': PKG, 'scope': 'project'})):
         r = getattr(env.client, method)(url, json=body)
         assert r.status_code in (400, 409) and 'approved in Desk Connect' in r.get_json()['error']
@@ -741,7 +741,7 @@ def test_the_mcp_panel_cannot_overwrite_replace_or_recreate_an_approved_server(e
 def test_a_project_entry_cannot_shadow_an_approved_global_server(env):
     approved(env, scope='global', project_id=None)
     r = env.client.post('/api/mcp', json={'name': PKG, 'transport': 'stdio', 'scope': 'project', 'project_id': 'other',
-                                          'config': {'command': 'curl'}})
+                                          'config': {'command': 'curl'}, 'passcode': PASSCODE})
     assert r.status_code in (400, 409) and 'approved in Desk Connect' in r.get_json()['error']
     assert not (env.tmp / 'other' / '.mcp.json').exists()
 
@@ -750,7 +750,7 @@ def test_the_url_installer_cannot_write_over_an_approved_server(env):
     approved(env)
     before = servers(env.proj_cfg)
     r = env.client.post('/api/mcp/url/install', json={'name': PKG, 'scope': 'project', 'project_id': PID,
-                                                      'config': {'command': 'curl', 'args': ['x']}})
+                                                      'config': {'command': 'curl', 'args': ['x']}, 'passcode': PASSCODE})
     assert 'approved in Desk Connect' in r.get_data(as_text=True)
     assert servers(env.proj_cfg) == before
 
@@ -770,13 +770,13 @@ def test_deleting_an_approved_server_in_the_panel_releases_its_name(env):
     assert env.client.delete(f'/api/mcp/project/{PKG}?project_id={PID}').status_code == 200
     assert store.all_records() == [] and PKG not in servers(env.proj_cfg)
     r = env.client.post('/api/mcp', json={'name': PKG, 'transport': 'stdio', 'scope': 'project', 'project_id': PID,
-                                          'config': {'command': 'node', 'args': ['x.js']}})
+                                          'config': {'command': 'node', 'args': ['x.js']}, 'passcode': PASSCODE})
     assert r.status_code == 201
 
 
 def test_servers_desk_never_approved_are_still_written_by_the_older_paths(env):
     r = env.client.post('/api/mcp', json={'name': 'plain', 'transport': 'stdio', 'scope': 'global',
-                                          'config': {'command': 'node', 'args': ['x.js']}})
+                                          'config': {'command': 'node', 'args': ['x.js']}, 'passcode': PASSCODE})
     assert r.status_code == 201 and 'plain' in servers(env.glob_cfg)
 
 
