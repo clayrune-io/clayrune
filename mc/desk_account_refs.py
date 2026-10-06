@@ -105,3 +105,27 @@ def oauth_arg_for(account_id: str | None) -> str | None:
     with _desk._store_lock:
         acc = (_desk._read_store().get('accounts') or {}).get(account_id)
     return oauth_arg(acc)
+
+
+def planned_oauth_arg(account_id: str) -> str | None:
+    """`oauth_arg` for an X account that does NOT exist yet and will be created with
+    `account_id` (a sign-in held until the Save): None when the legacy names are still
+    free, so it will be the one to get them, the id otherwise. The Save re-derives it from
+    the account it really makes; this only picks the browser profile the sign-in is made in."""
+    from mc import desk as _desk   # lazy: desk imports this module
+    with _desk._store_lock:
+        data = _desk._read_store()
+        holder = _legacy_holder(data, data.get('accounts') or {})
+    return None if holder is None else account_id
+
+
+def release_legacy(account_id: str) -> None:
+    """Hand the legacy sign-in names back when the account that was given them was just
+    created and is being undone (a Save that failed part-way): nobody ever signed in under
+    them, so they must not stay with a stranger who no longer exists."""
+    from mc import desk as _desk   # lazy: desk imports this module
+    with _desk._store_lock:
+        data = _desk._read_store()
+        if data.get(LEGACY_FLAG) == account_id and account_id not in (data.get('accounts') or {}):
+            del data[LEGACY_FLAG]
+            _desk._write_store(data)

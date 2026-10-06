@@ -100,14 +100,30 @@ def _clean_provider_draft(draft: dict, checked: dict, vault_names) -> dict:
     if svc is None or prov is None or not isinstance(method, str) or not _methods.is_connectable(svc, method):
         raise CommitError('that method cannot be set up from here: it is information only for this service',
                           400, 'method_not_available')
-    unknown = sorted(set(draft) - {'url', 'method', 'fields'})
+    unknown = sorted(set(draft) - {'url', 'method', 'fields', 'held'})
     if unknown:
         raise CommitError(f'unknown draft field(s) for this method: {", ".join(unknown)}')
     try:
         fields = prov.clean(method, draft.get('fields'), vault_names)
     except ProviderError as e:
         raise CommitError(str(e), e.status, e.code) from e
-    return {'url': checked['url'], 'method': method, 'service': svc['id'], 'label': svc['label'], 'fields': fields}
+    out = {'url': checked['url'], 'method': method, 'service': svc['id'], 'label': svc['label'], 'fields': fields}
+    if draft.get('held') is not None:
+        out['held'] = _clean_held(draft['held'], prov, method)
+    return out
+
+
+def _clean_held(raw, prov, method: str) -> dict:
+    """{flow_id, claim} of a sign-in the Details step made and the server holds in memory.
+    Only a method that signs in has one; the two values are opaque text the server checks."""
+    if method not in prov.signs_in:
+        raise CommitError('that method has no sign-in to claim', 400, 'method_not_available')
+    if not isinstance(raw, dict) or set(raw) != {'flow_id', 'claim'}:
+        raise CommitError('held must be {flow_id, claim}')
+    for key in ('flow_id', 'claim'):
+        if not isinstance(raw[key], str) or not 1 <= len(raw[key]) <= 200:
+            raise CommitError(f'held.{key} must be text')
+    return {'flow_id': raw['flow_id'], 'claim': raw['claim']}
 
 
 def clean_draft(draft, own_hosts=(), vault_names=None) -> dict:
@@ -117,7 +133,7 @@ def clean_draft(draft, own_hosts=(), vault_names=None) -> dict:
     the passcode is asked; None skips that, `commit` checks again."""
     if not isinstance(draft, dict):
         raise CommitError('draft must be an object')
-    unknown = sorted(set(draft) - {'url', 'method', 'name', 'credential', 'fields'})
+    unknown = sorted(set(draft) - {'url', 'method', 'name', 'credential', 'fields', 'held'})
     if unknown:
         raise CommitError(f'unknown draft field(s): {", ".join(unknown)}')
     try:

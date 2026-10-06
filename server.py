@@ -2231,6 +2231,10 @@ app.register_blueprint(_bp_desk_connect_purpose.bp)
 from mc.blueprints import desk_connect_signin_routes as _bp_desk_connect_signin  # noqa: E402
 app.register_blueprint(_bp_desk_connect_signin.bp)
 
+# Sign in BEFORE the Save, held in server memory until it (Connect flow, Details step). Own module.
+from mc.blueprints import desk_held_signin_routes as _bp_desk_held_signin  # noqa: E402
+app.register_blueprint(_bp_desk_held_signin.bp)
+
 # Passkeys (docs/PASSKEYS_SPEC.md slice 1): host-only enrollment, list, revoke. Own
 # module; authorizes nothing yet. wire() hands it the configured port, from which it
 # derives the one Host/Origin it will accept.

@@ -153,20 +153,23 @@
   let R = null;      // { res, ctx, route, logins, locked, pick, busy, msg, kind }
 
   // ── the Details step of a provider sign-in, before Save ────────────────────────────────────────────
-  // The same two controls, drawn where the human fills in the method's details. Only a pick (a name) and
-  // the typed form's DOM node are kept; nothing is stored here. The Result step takes both over, so a
-  // login typed on Details is stored with its own passcode-gated "Save this login" once the sign-in opens.
-  let D = null;      // { service, method, ctx, route, logins, locked, pick, failed }
+  // EVERY way to sign in is drawn here, side by side (Ron 2026-10-05: "if step 3 is the login details, all
+  // options should be covered there"): the browser sign-in itself (desk-v1-connect-held.js: held for the Save),
+  // a saved login picked by name, and a new login typed and stored with its own passcode ("Save this login").
+  // The saved/new login is what Clayrune types into the sign-in page once the browser option has opened it.
+  // Only a pick (a name) and the typed form's DOM node are kept; no password is held here.
+  let D = null;      // { service, method, label, ctx, route, logins, locked, pick, failed, busy, msg, kind }
 
-  function detailsStart(service, method, ctx) {
+  function detailsStart(service, method, ctx, label) {
+    if (window.DeskV1ConnectHeld) window.DeskV1ConnectHeld.begin(service, method, label || service, ctx);
     if (D && D.service === service && D.method === method) { D.ctx = ctx; return; }
     if (D) reset();                       // another service or method: a login typed for the old one is not carried over
-    const mine = { service, method, ctx, route: null, logins: [], locked: false, pick: '', failed: false };
+    const mine = { service, method, label: label || service, ctx, route: null, logins: [], locked: false, pick: '', failed: false, busy: false, msg: '', kind: 'ok', loaded: false };
     D = mine;
     ctx.api('POST', '/api/desk/connect/signin/options', { service }).then((o) => {
       if (D !== mine) return;
       mine.route = (o.routes || []).find((r) => r.connect_method === method) || null;
-      mine.logins = o.logins || []; mine.locked = !!o.vault_locked;
+      mine.logins = o.logins || []; mine.locked = !!o.vault_locked; mine.loaded = true;
       mine.ctx.repaint();
     }).catch(() => { if (D === mine) { mine.failed = true; mine.ctx.repaint(); } });
   }
@@ -175,49 +178,107 @@
     return ['<option value="">Choose a saved login…</option>'].concat(logins.map((l) => `<option value="${esc(l.name)}"${pick === l.name ? ' selected' : ''}>${esc(l.name)}</option>`)).join('');
   }
 
+  // Type a new login and press "Save this login": stored with its own passcode, then selected. Used by
+  // the Details step and by the Result step's fallback; `st` is that step's state.
+  async function _storeTyped(st, serviceId, label, again) {
+    const typed = read(KEY);
+    if (!typed || typed.error) { st.kind = 'error'; st.msg = (typed && typed.error) || 'Type the login first.'; again(); return; }
+    st.busy = true; st.msg = ''; again();
+    let out;
+    try {
+      out = await window.humanProofFetch('/api/desk/connect/signin/store-login', {
+        method: 'POST', body: JSON.stringify({ service: serviceId, route_id: st.route.route_id, new_login: typed.new_login }),
+      }, { title: 'Store login', description: `Re-enter your dashboard passcode to store the ${label} login.` });
+    } catch (e) { out = { ok: false, status: 0, body: { error: e && e.message ? e.message : 'could not reach the server' } }; }
+    st.busy = false;
+    if (out === null) { again(); return; }                       // cancelled at the passcode: nothing was sent
+    if (!out.ok) { st.kind = 'error'; st.msg = (out.body && out.body.error) || `The save failed (HTTP ${out.status}).`; again(); return; }
+    const name = out.body && out.body.login && out.body.login.name;
+    clear(KEY); forms[KEY].open = false;                          // the password leaves the page the moment it is stored
+    if (name && !st.logins.some((l) => l.name === name)) st.logins.unshift({ name, matches: true });
+    st.pick = name || st.pick; st.kind = 'ok'; st.msg = name ? `Stored ${name}. It is selected.` : 'Stored.';
+    again();
+  }
+
+  function _saveBtn(st) {
+    const typing = forms[KEY] && forms[KEY].open;
+    return typing ? `<div class="desk-v1-cf-actions"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-cs-savelogin ${st.busy ? 'disabled' : ''}>Save this login</button></div>` : '';
+  }
+
+  function _msgHTML(st) {
+    return st.msg ? `<div class="desk-v1-cf-msg" data-cs-msg="${esc(st.kind)}" data-cf-msg="${st.kind === 'error' ? 'error' : 'ok'}" role="${st.kind === 'error' ? 'alert' : 'status'}">${esc(st.msg)}</div>` : '';
+  }
+
+  function _opt(id, title, body) {
+    return `<div class="desk-v1-cs-option" data-cs-opt="${id}"><div class="desk-v1-cs-opt-title">${esc(title)}</div>${body}</div>`;
+  }
+
   function detailsHTML() {
     if (!D) return '';
-    if (D.failed) return '<div class="desk-v1-rules-hint" data-cs-details-failed>The saved logins could not be loaded. You can still save, then sign in in the browser pane.</div>';
-    if (!D.route) return '<div class="desk-v1-rules-hint" data-cs-details-loading>Loading your saved logins…</div>';
-    return `<section class="desk-v1-cs-pick" data-cs-details aria-label="Sign in with a saved login">
-        <div class="desk-v1-rules-group-title">Sign in with a saved login</div>
-        <div class="desk-v1-rules-hint">Optional. Clayrune can type a username and password you have stored into the sign-in page once it opens, instead of you typing them in the browser pane.${D.locked ? ' The vault is locked: unlock it in Settings, then try again.' : ''}</div>
+    const Hd = window.DeskV1ConnectHeld;
+    let saved, fresh;
+    if (D.failed) {
+      saved = fresh = '<div class="desk-v1-rules-hint" data-cs-details-failed>The saved logins could not be loaded. You can still sign in in the browser.</div>';
+    } else if (!D.route) {
+      saved = fresh = '<div class="desk-v1-rules-hint" data-cs-details-loading>Loading your saved logins…</div>';
+    } else {
+      saved = `<div class="desk-v1-rules-hint">A login already in Secrets. Clayrune types it into the sign-in page once it is open; you never see the password.</div>
         ${D.logins.length ? `<label class="desk-v1-conn-add-field">Use a saved login
-          <select class="desk-v1-rules-textinput" data-cs-pick>${_loginOptions(D.logins, D.pick)}</select></label>` : '<div class="desk-v1-rules-hint" data-cs-nologins>There is no saved login for this service yet.</div>'}
-        ${newLoginHTML(KEY)}
+          <select class="desk-v1-rules-textinput" data-cs-pick>${_loginOptions(D.logins, D.pick)}</select></label>` : '<div class="desk-v1-rules-hint" data-cs-nologins>There is no saved login for this service yet.</div>'}`;
+      fresh = `<div class="desk-v1-rules-hint">Type a username and password and store it in Secrets (it asks your passcode). It is then selected.</div>
+        ${newLoginHTML(KEY)}${_saveBtn(D)}`;
+    }
+    return `<section class="desk-v1-cs-pick" data-cs-details aria-label="Ways to sign in">
+        <div class="desk-v1-rules-group-title">Ways to sign in</div>
+        <div class="desk-v1-rules-hint">Everything you can do to sign in to ${esc(D.label)} is here. Step 4 only reviews and saves what you chose or did.${D.locked ? ' The vault is locked: unlock it above, then try again.' : ''}</div>
+        <div class="desk-v1-cs-options" data-cs-options>
+          ${_opt('browser', 'In the browser', Hd ? Hd.html() : '')}
+          ${D.loaded && !D.route ? '' : _opt('saved', 'A saved login', saved)}
+          ${D.loaded && !D.route ? '' : _opt('new', 'A new login', fresh)}
+        </div>
+        ${_msgHTML(D)}
+        ${D.route ? fillHTML(KEY, { url: null, login: D.pick, profile: Hd ? Hd.profile() : '' }) : ''}
       </section>`;
   }
 
   function detailsBind(root) {
-    if (!D || !D.route) return;
+    if (!D) return;
     const mine = D;
     const box = root.querySelector('[data-cs-details]');
     if (!box) return;
+    if (window.DeskV1ConnectHeld) window.DeskV1ConnectHeld.bind(root);
+    if (!mine.route) return;
+    const again = () => mine.ctx.repaint();
     const pick = box.querySelector('[data-cs-pick]');
-    if (pick) pick.addEventListener('change', () => { mine.pick = pick.value; });
-    mount(box, KEY, `${mine.service}.login`, () => mine.ctx.repaint());
+    if (pick) pick.addEventListener('change', () => { mine.pick = pick.value; mine.msg = ''; again(); });
+    mount(box, KEY, `${mine.service}.login`, again);
+    const save = box.querySelector('[data-cs-savelogin]');
+    if (save) save.addEventListener('click', () => _storeTyped(mine, mine.service, mine.label, again));
+    const profile = () => (window.DeskV1ConnectHeld ? window.DeskV1ConnectHeld.profile() : '');
+    bindFill(box, KEY, { url: null, profile: profile() }, mine.ctx,
+      () => ({ service: mine.service, route_id: mine.route.route_id, login: mine.pick, profile: profile() }));
   }
 
-  // Review's row for the choice, with no password in it. The typed form's node is kept in a hidden slot
-  // here so it survives the step (and so its facts can be read back); the row is filled in by the bind.
+  // Review's rows for the sign-in and the login choice, with no password in them. The typed form's node is kept
+  // in a hidden slot here so it survives the step (and so its facts can be read back); the rows are filled in by the bind.
   function detailsReviewHTML() {
-    if (!D || !D.route) return '';
-    return `<div data-cs-review></div><div data-cs-slot="${KEY}" hidden></div>`;
+    if (!D) return '';
+    return `<div data-cs-review></div>${D.route ? `<div data-cs-slot="${KEY}" hidden></div>` : ''}`;
   }
 
   function detailsReviewBind(root) {
-    if (!D || !D.route) return;
-    const slot = root.querySelector(`[data-cs-slot="${KEY}"]`);
+    if (!D) return;
     const box = root.querySelector('[data-cs-review]');
-    if (!slot || !box) return;
+    if (!box) return;
+    const slot = root.querySelector(`[data-cs-slot="${KEY}"]`);
     const f = forms[KEY];
-    if (f && f.host) slot.appendChild(f.host);
-    const typed = meta(KEY);
-    let row = '';
+    if (slot && f && f.host) slot.appendChild(f.host);
+    const typed = slot ? meta(KEY) : null;
+    let row = window.DeskV1ConnectHeld ? window.DeskV1ConnectHeld.reviewRowHTML() : '';
     if (typed) {
-      row = `<div><dt>Sign-in login</dt><dd data-cs-r-login>New: <code>${esc(typed.name)}</code>${typed.username ? `, username ${esc(typed.username)}` : ''}; password ${typed.hasValue ? 'entered, hidden: shown nowhere' : 'not entered'}. It is stored on the next step, with the passcode.</dd></div>`;
+      row += `<div><dt>Sign-in login</dt><dd data-cs-r-login>New: <code>${esc(typed.name)}</code>${typed.username ? `, username ${esc(typed.username)}` : ''}; password ${typed.hasValue ? 'entered, hidden: shown nowhere' : 'not entered'}. Not stored yet: press “Save this login” on step 3 to keep it.</dd></div>`;
     } else if (D.pick) {
-      row = `<div><dt>Sign-in login</dt><dd data-cs-r-login><code>${esc(D.pick)}</code>, typed into the sign-in page when you ask</dd></div>`;
+      row += `<div><dt>Sign-in login</dt><dd data-cs-r-login><code>${esc(D.pick)}</code>, typed into the sign-in page when you ask</dd></div>`;
     }
     box.innerHTML = row ? `<dl class="desk-v1-cf-facts">${row}</dl>` : '';
   }
@@ -261,25 +322,7 @@
     if (pick) pick.addEventListener('change', () => { mine.pick = pick.value; mine.msg = ''; again(); });
     mount(box, KEY, `${mine.res.service.id}.login`, again);
     const save = box.querySelector('[data-cs-savelogin]');
-    if (save) save.addEventListener('click', async () => {
-      const typed = read(KEY);
-      if (!typed || typed.error) { mine.kind = 'error'; mine.msg = (typed && typed.error) || 'Type the login first.'; again(); return; }
-      mine.busy = true; mine.msg = ''; again();
-      let out;
-      try {
-        out = await window.humanProofFetch('/api/desk/connect/signin/store-login', {
-          method: 'POST', body: JSON.stringify({ service: mine.res.service.id, route_id: mine.route.route_id, new_login: typed.new_login }),
-        }, { title: 'Store login', description: `Re-enter your dashboard passcode to store the ${mine.res.service.label} login.` });
-      } catch (e) { out = { ok: false, status: 0, body: { error: e && e.message ? e.message : 'could not reach the server' } }; }
-      mine.busy = false;
-      if (out === null) { again(); return; }                       // cancelled at the passcode: nothing was sent
-      if (!out.ok) { mine.kind = 'error'; mine.msg = (out.body && out.body.error) || `The save failed (HTTP ${out.status}).`; again(); return; }
-      const name = out.body && out.body.login && out.body.login.name;
-      clear(KEY); forms[KEY].open = false;                          // the password leaves the page the moment it is stored
-      if (name && !mine.logins.some((l) => l.name === name)) mine.logins.unshift({ name, matches: true });
-      mine.pick = name || mine.pick; mine.kind = 'ok'; mine.msg = name ? `Stored ${name}. It is selected below.` : 'Stored.';
-      again();
-    });
+    if (save) save.addEventListener('click', () => _storeTyped(mine, mine.res.service.id, mine.res.service.label, again));
     bindFill(box, KEY, { url: null, profile: mine.res.signin.profile }, mine.ctx,
       () => ({ service: mine.res.service.id, route_id: mine.route.route_id, login: mine.pick, profile: mine.res.signin.profile }));
   }
