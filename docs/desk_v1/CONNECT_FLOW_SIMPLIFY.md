@@ -235,3 +235,8 @@ This deliverable is a Markdown design and ticket set, not a runnable prototype. 
 Documentation verification: all 18 relative links resolve; 46 tabulated screen-copy entries contain at most 14 words each; all 15 ticket files include dependencies, ownership, work, acceptance and scope. Source assertions confirmed the X route/projection and new-account restrictions; path/line references were checked. This is evidence for the proposal's traceability, not a runtime test result.
 
 Related source specifications: [connect by URL](../DESK_CONNECT_BY_URL_SPEC.md), [Desk IA revision 2, section 11.8](../THE_DESK_V1_IA_REVISION_2.md), [service profiles and U1/U2 state](../DESK_SERVICE_PROFILES_SPEC.md). Older as-built passages in these documents are history; this proposal does not silently amend their shipped status. After implementation, ticket 14 updates those passages and the User Guide.
+
+## 10. Decided (Dave, 2026-10-06, without Ron; Ron may overrule)
+
+- **Q1 = A.** Unavailable methods are hidden from the primary picker; their explanation and setup-only paths live under Details. Why: Ron's complaint was too many choices, and a disabled row is a choice that leads nowhere. Reversing it is a display change in ticket 01/02.
+- **Q2 = A.** Custom MCP servers get truthful whole-server approval with project or global reach; Read/Post controls appear only on routes that actually enforce them. Why: granular enforcement on arbitrary MCP code is a separate security project, and a checkbox that restricts nothing is worse than none. Reversing it means the execution-control design described in section 7 before ticket 08 changes.
