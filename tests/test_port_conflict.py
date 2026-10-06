@@ -376,7 +376,7 @@ class _FakeServer:
 
 @pytest.fixture
 def bound(srv, monkeypatch):
-    """Record what _serve_dual_stack binds instead of serving. Port 0, so the
+    """Record what _reserve_listeners + _serve_reserved bind instead of serving. Port 0, so the
     real sockets it opens are ephemeral and never touch 5199."""
     import werkzeug.serving
     seen = {'make_server': [], 'run': []}
@@ -391,7 +391,7 @@ def bound(srv, monkeypatch):
 def test_default_bind_is_unchanged_all_interfaces(srv, bound, monkeypatch):
     monkeypatch.delenv('MC_BIND_LOOPBACK', raising=False)
     assert srv._bind_host_v4() == '0.0.0.0'
-    srv._serve_dual_stack(0)
+    srv._serve_reserved(srv._reserve_listeners(0))
     assert bound['make_server'] == ['::'] and bound['run'] == []
 
 
@@ -404,7 +404,7 @@ def test_bind_loopback_falsy_values_keep_default(srv, monkeypatch, val):
 def test_bind_loopback_serves_both_loopbacks_and_never_wildcard(srv, bound, monkeypatch):
     monkeypatch.setenv('MC_BIND_LOOPBACK', '1')
     assert srv._bind_host_v4() == '127.0.0.1'
-    srv._serve_dual_stack(0)
+    srv._serve_reserved(srv._reserve_listeners(0))
     assert bound['run'] == []
     assert bound['make_server'] in (['::1', '127.0.0.1'], ['127.0.0.1']), \
         'v6 side may only be ::1 (or absent when IPv6 is off)'

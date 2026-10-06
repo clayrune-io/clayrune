@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — The port is bound before startup, so a losing second server touches nothing (MC-1060)
+
+- `server.py` used to run `boot()` and only then bind, so the loser of a boot race had already reconciled the agent log, adopted or marked stale the winner's runs, delivered callbacks and rewritten guardrail hooks by the time its exclusive bind failed. `__main__` now reserves the listening socket(s) first (`_reserve_listeners`), then runs `boot(check_port=False)`, then serves on the already-bound sockets (`_serve_reserved`). A refused bind logs "held by another process; exiting before any startup phase has run", prints the usual banner and exits 2 with zero boot phases run.
+- The dual-stack, loopback-only (`MC_BIND_LOOPBACK`), IPv4-fallback and shared (`MC_ALLOW_PORT_CONFLICT`) modes moved unchanged into `mc.listen_socket.reserve()`. A restart (`MC_RESTART_FROM_PID`) now waits the same 15s inside the bind loop, riding out a parent that still answers; the marker is consumed there. Clients that connect during boot queue in the backlog until serving starts instead of being refused.
+- Not changed: `app.py` (desktop launcher) still binds through `app.run` and runs `boot(check_port=False)` with no single-instance guard of its own. Tests: `tests/test_bind_before_boot.py`.
+
 ## [2026-10-06] — A second Clayrune can no longer share the port (Windows)
 
 - After a reboot the logon task and the boot task each started a server and both ended up LISTENING on 5199. Every guard in front of the bind (autostart probe, `start.bat`, `_check_port_conflict`) is check-then-bind, so two starts a few seconds apart both pass; the listening socket then set `SO_REUSEADDR`, which on Windows lets a second socket bind the same port and share it. Measured on one free port: reuse + reuse binds twice; exclusive refuses a second bind (10048) and a legacy reuse bind (10013).
