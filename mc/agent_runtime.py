@@ -53,6 +53,7 @@ import tempfile
 from datetime import timedelta
 from mc import allowance_state as _allowance_state
 from mc import empty_turn as _empty_turn
+from mc import transform_sandbox as _transform_sandbox
 from mc.execution_policy import (
     Blocker, Capability, CapabilityClaim, Certification, ExecutionIdentity,
     Profile, Readiness, RequestedEngine, Support, authorize_execution,
@@ -3135,6 +3136,11 @@ class ClaudeRuntime(AgentRuntime):
         Do not "restore" these flags to make some future caller work; if a
         caller needs tools, it is not a oneshot and belongs on the agent path.
 
+        `cwd` is accepted for interface parity and IGNORED: with no tools the
+        process has nothing to read there, and a project cwd only made the CLI
+        load that project's CLAUDE.md + auto-memory (~7.4k tokens per call,
+        measured 2026-10-06). It runs in transform_sandbox.neutral_cwd().
+
         Returns None on any failure. `last_error` carries rc + a stderr/stdout
         tail for the caller to log — the old code sent stderr to DEVNULL and
         collapsed timeout / spawn-failure / non-zero-exit into an indistinguish-
@@ -3168,11 +3174,12 @@ class ClaudeRuntime(AgentRuntime):
                 input=stdin_payload,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                cwd=cwd or str(Path.home()),
+                cwd=_transform_sandbox.neutral_cwd(),
                 text=True,
                 encoding='utf-8',
                 errors='replace',
                 timeout=max(1, int(timeout)),
+                env=_transform_sandbox.transform_env(),
                 creationflags=_POPEN_FLAGS,
                 startupinfo=_STARTUPINFO,
             )
@@ -3219,8 +3226,9 @@ class ClaudeRuntime(AgentRuntime):
         try:
             r = subprocess.run(
                 cmd, input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                cwd=str(Path.home()), text=True, encoding='utf-8', errors='replace',
-                timeout=max(1, int(timeout)),
+                cwd=_transform_sandbox.neutral_cwd(), text=True, encoding='utf-8',
+                errors='replace', timeout=max(1, int(timeout)),
+                env=_transform_sandbox.transform_env(),
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
         except subprocess.TimeoutExpired:
             self.last_error = f'timeout after {timeout}s'
@@ -3274,8 +3282,9 @@ class ClaudeRuntime(AgentRuntime):
             try:
                 proc = subprocess.Popen(
                     cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, cwd=cwd or str(Path.home()),
+                    stderr=subprocess.PIPE, cwd=_transform_sandbox.neutral_cwd(),
                     text=True, encoding='utf-8', errors='replace',
+                    env=_transform_sandbox.transform_env(),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
                 )
             except FileNotFoundError as e:
