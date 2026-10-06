@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — Higgsfield sign-in checks retain schema diagnostics
+
+- The existing OAuth verification follows tool-list pagination (50-page bound) and atomically saves selected generation, polling and media-related definitions under gitignored `data/desk/higgsfield_mcp_tools.json`. Snapshots mark vendor text untrusted, omit transport credentials/headers, and cap descriptions at 2000 characters; a write failure is logged without failing a successful probe. Incomplete or cyclic listings preserve the previous snapshot.
+- This diagnostic adds no uploads or generation calls and does not enable picture inputs. Live capture waits for merge/restart and a human-started connection check. Contract and limits: `docs/desk_v1/HIGGSFIELD_MCP_SPIKE.md` section 10.
+
 ## [2026-10-06] — X API setup attaches to a saved account (MC-1062/03b)
 
 - X held sign-in and provider Save accept an existing account id validated through the browser-account attachment contract. They use that account's own OAuth references, never create a duplicate account, and leave its browser setup, read settings, connections and permissions unchanged. Calls without an id keep the original create path.

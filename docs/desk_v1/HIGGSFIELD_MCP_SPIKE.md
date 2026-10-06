@@ -300,3 +300,198 @@ and item 5 remain untested.
 Lesson recorded: run 3 wrongly concluded "no pre-submit price" from the model list
 alone; the tool descriptions documented `get_cost`. Read every tool description
 before declaring a capability absent.
+
+## 9. Picture inputs, 2026-10-06 (Sol_Tobin): DOCS-DERIVED, NOT LIVE-VERIFIED
+
+**The local refusal is confirmed; the repair is blocked on a missing remote-MCP
+upload contract.** `_higgs_mcp_model` declares `first_frame: false`,
+`reference_images_max: 0`, and `reference_kinds: []` for all six models.
+`HiggsfieldMcpAdapter._params` sends no media. `_render_plan` therefore refuses
+picture scenes before calling the provider. This proves a Clayrune capability
+gap, not that Higgsfield's video models cannot take pictures.
+
+Research used public web documents only. No credential, authenticated MCP call,
+upload, or generation was attempted. The task explicitly requires stopping
+where schemas cannot be determined rather than inventing them. Accordingly,
+this checkpoint changes documentation only. The picture fix is **not built**.
+
+### Published capabilities by catalogued model
+
+The [official media-input reference][hf-media-inputs] says it mirrors MCP
+media-handling logic, but describes CLI flags, roles, and UUID/path inputs,
+not a complete `tools/call` JSON schema. The
+[official CLI model tables][hf-cli-models] are generated from CLI model discovery.
+Their counts establish documented CLI capabilities; they do not prove identical
+remote-MCP fields, nesting, limits, or model aliases.
+
+| Clayrune model ID | Public evidence | Count / unresolved detail | Current Desk inputs |
+|---|---|---|---|
+| `kling3_0` | CLI model table: optional `start_image` and `end_image`, each single | One first and one last frame; no generic image-reference slot listed | Conservative: false / 0 / [] until MCP upload and media shape are established |
+| `seedance_2_5` | Official skill: `start_image`, `end_image`, `image_references`, `video_references`, `audio_references`; `omni_reference` accepts media, `t2v` accepts none | No numeric image-reference maximum found in these sources; absent from the inspected CLI `MODELS.md` despite appearing in CLI README/skills | Conservative: false / 0 / [] |
+| `gpt_image_2_5` | CLI model table: repeated `image_references` | At most 16 references in CLI; remote object representation unproven | Conservative: false / 0 / [] |
+| `nano_banana` | CLI model table: `image_references` | 0..8 in CLI; not interchangeable with `nano_banana_2` or `nano_banana_flash` | Conservative: false / 0 / [] |
+| `soul_2` | Exact ID has no media schema in the inspected official tables | `text2image_soul_v2` lists one reference, but equivalence to MCP `soul_2` is not established | Conservative: false / 0 / [] |
+| `z_image` | Official media reference identifies it as prompt-only; CLI table lists prompt and ratio only | No picture input | false / 0 / [] is appropriate |
+
+`false / 0 / []` above means `first_frame / reference_images_max /
+reference_kinds`, not a statement about the provider's intrinsic capability.
+There is no trustworthy basis here for adding character-ID reference support
+to Desk's asset-reference contract. Keep unknown models conservative. In
+particular, do not enable first frames solely to bypass the local refusal while
+the adapter would still omit the picture.
+
+The [official generation skill][hf-generate-skill] explicitly selects
+`mode: omni_reference` for Seedance 2.5 picture inputs; its default prompt-only
+`t2v` mode cannot be retained on that path. This requirement belongs in both
+estimate and submit when the adapter is implemented. The
+[official model-catalog reference][hf-model-catalog] independently lists those
+Seedance modes and Kling frame roles. Neither provides a headless upload schema.
+
+### Upload and generation wire contracts: established versus missing
+
+The [official MCP connection guide][hf-connect] describes a human upload widget,
+confirmation, importing a web-image URL, and reusing prior generations or saved
+characters. It does not give programmatic upload arguments, response fields,
+confirmation arguments, base64 handling, or a signed-PUT contract for a headless
+MCP client.
+
+The [official API upload guide][hf-api-uploads] documents a different service:
+`POST https://api.higgsfield.ai/files/generate-upload-url` with API-key-pair
+authentication and `content_type`, then a raw PUT with all returned
+`upload_headers`, and use of `public_url` in an API model's URL parameter.
+Higgsfield credentials must never accompany the storage PUT. The
+[official JavaScript SDK source][hf-js-client] implements that REST URL flow.
+Neither source says an MCP OAuth token is accepted there or that this public URL
+is a valid MCP media input. Do not borrow this contract for the sign-in adapter
+or silently fall back to the API-key engine.
+
+[CLI issue #93][schema-issue] is a firsthand report of opaque generation tool
+schemas and a required nested `params` object, not a provider-authored schema.
+The reporter says both flat and nested attempts failed. Clayrune's section 8
+already proves the nested text-only image call and `params.get_cost`; the issue
+adds no usable picture/upload fields. Search results from independent MCP
+wrappers were not used as implementation authority.
+
+The following remain unknown and block upload wiring:
+
+1. Exact current remote tool names and full input/output schemas for allocating
+   and confirming a programmatic upload; whether the supported path is a
+   headless signed PUT, base64, a user widget only, or something else.
+2. Required filename, MIME, size, and header fields; upload completion/readiness
+   semantics; the returned ID field and how it becomes a generation reference.
+3. Whether media belongs beside `params`, inside `params`, in `medias`, or in
+   model-specific reference fields, and the exact object keys/value types.
+4. How `kling3_0` and `seedance_2_5` represent a first frame in remote
+   `generate_video`; Seedance's numeric reference limits and whether its MCP
+   selector uses the documented CLI `omni_reference` mode unchanged.
+5. Exact remote picture schemas/counts for `gpt_image_2_5`, `nano_banana`, and
+   `soul_2`, including the Soul CLI/MCP alias relationship.
+6. Whether `get_cost: true` validates the uploaded media and mode exactly as
+   submit does; image-upload expiry/reuse and provider readiness checks.
+
+### Required next evidence and acceptance checks
+
+The running server, whose vault is already unlocked, must supply sanitized
+`tools/list` definitions/descriptions for the upload/confirmation and
+`generate_image`/`generate_video` tools plus per-model media schemas. If its
+catalog is still opaque, obtain the missing contract from Higgsfield. An agent
+process must not extract `oauth.higgsfield`, bypass the vault restriction, or
+introduce a general credential-bearing tool-call proxy to make this possible.
+
+Once that contract exists, put substantial upload handling in its own `mc/`
+module. Read every asset through the existing `_read_asset` guard, which restricts
+files to `data/uploads`, supported image extensions, and 20 MB. Send exactly the
+same media/mode arguments on cost and submission; only `get_cost` differs.
+Keep `use_unlim: false`, and never print or log tokens or signed URLs.
+
+Before production code changes, fake `_mcp_post` and the upload transport to
+demonstrate failing picture tests for both video models. After implementation,
+prove upload/confirmation, identical cost/submit media, Seedance mode selection,
+asset confinement, and error redaction. Preserve the existing `takes no picture`
+test for the genuinely text-only API model; also exercise prompt-only `z_image`.
+No guessed upload tests were written at this checkpoint.
+
+After merge/restart of the **eventual implementation**, use the existing Desk
+estimate route only, through the server. Write two JSON request files with this
+body, substituting each model ID and a real absolute path under the server's
+`data/uploads` (include `project_id` only if its grant is project-scoped):
+
+```json
+{
+  "engine_id": "higgsfield_mcp",
+  "model_id": "kling3_0",
+  "kind": "video",
+  "prompt": "A slow camera push toward the subject in the supplied picture.",
+  "aspect_ratio": "16:9",
+  "duration_sec": 5,
+  "count": 1,
+  "first_frame": {"path": "<absolute path under data/uploads>"}
+}
+```
+
+For the second file use `"model_id": "seedance_2_5"`; the adapter must supply
+the verified picture mode, not a new unrecognized Desk request field.
+
+```bash
+curl -sS --fail-with-body -X POST http://localhost:5199/api/desk/engines/estimate -H "Content-Type: application/json" --data-binary @kling-picture-estimate.json
+curl -sS --fail-with-body -X POST http://localhost:5199/api/desk/engines/estimate -H "Content-Type: application/json" --data-binary @seedance-picture-estimate.json
+```
+
+Those curls are a future proof recipe, **not executed evidence**. On the present
+code they refuse the first frame; merging this documentation cannot change that.
+Acceptance requires a usable credit quote, no generated job IDs, and preserved
+picture/mode arguments for each model. Paid generation remains separately gated
+and is never authorized by this research task.
+
+Validation at this documentation checkpoint:
+`python -m pytest tests/test_desk_engines.py -o addopts=''`:
+**89 passed in 6.37s**. This verifies the unchanged engine regression suite,
+including its no-picture refusal; it does not verify an MCP picture fix or any
+live upload. No frontend, USER_GUIDE, README, release changelog, or rules change
+is needed because no product behavior was changed.
+
+[hf-media-inputs]: https://github.com/higgsfield-ai/skills/blob/main/higgsfield-generate/references/media-inputs.md
+[hf-cli-models]: https://github.com/higgsfield-ai/cli/blob/main/MODELS.md
+[hf-generate-skill]: https://github.com/higgsfield-ai/skills/blob/main/higgsfield-generate/SKILL.md
+[hf-model-catalog]: https://github.com/higgsfield-ai/skills/blob/main/higgsfield-generate/references/model-catalog.md
+[hf-api-uploads]: https://docs.higgsfield.ai/docs/concepts/file-uploads
+[hf-js-client]: https://github.com/higgsfield-ai/higgsfield-js/blob/main/src/client.ts
+
+## 10. Server-side schema capture, 2026-10-06 (Sol_Tobin; Dave's decision)
+
+The existing human-started `POST /api/desk/connect/verify` for
+`{"service":"higgsfield","method":"oauth"}` now retains the `tools/list`
+response it already obtains. The server follows `nextCursor` pages with distinct
+request IDs; malformed pages/cursors, repeated cursors, a provider failure, or
+more than 50 pages fail the probe without replacing an older complete snapshot.
+No generation, upload, credential endpoint, or new network destination is added.
+
+`mc/desk_connect/higgsfield_mcp_snapshot.py` owns the atomic runtime write to
+`data/desk/higgsfield_mcp_tools.json`, derived from the server-wired Desk data
+directory. `.gitignore` excludes `data/desk/`; it is outside `data/projects/`
+and must never be committed or bundled as product source. The record contains
+`captured_at`, `untrusted_vendor_text: true`, an explicit warning, and `tools`:
+
+- Always include `generate_video`, `generate_image`, and `job_status` if present.
+- Also include any name/description mentioning upload, media, image, file, or
+  reference, case-insensitively (filter before description truncation).
+- Retain only name, full `inputSchema`, and description capped at 2000 characters.
+  Transport credentials, headers, and unrelated response fields are not supplied
+  to the writer. It has no network or vault access.
+
+A snapshot write failure logs its exception type, never arbitrary exception
+text, and does not invalidate an otherwise successful sign-in probe. This is
+diagnostic evidence, not an executable registry or authorization to adopt tools.
+The picture adapter/catalogue remain unchanged and still refuse pictures.
+
+Tests fake `_mcp_post` and the access token; they cover pagination, every filter
+keyword, truncation, credential/header omission, empty-list replacement,
+incomplete-list preservation, the page bound, and a logged write failure that
+leaves the probe successful. The main snapshot test failed before implementation
+with `FileNotFoundError` (the old probe discarded the list).
+
+After merge and Ron's restart, Dave runs the existing free verify operation and
+hands the snapshot back for schema-driven implementation. No live verification
+or capture has been run by this worker, and no provider schema is yet claimed
+live-verified. A successful schema capture does not authorize uploads or paid
+generation.

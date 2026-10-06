@@ -92,6 +92,8 @@ data/desk_receipts.json
 data/desk_engine_jobs.json
 data/desk_purpose_verification.json
 data/desk_purpose_verification.json.corrupt
+# Vendor schema diagnostics: runtime state, never product source.
+data/desk/
 data/agent_labels.json
 data/remote_enrollment_liveness.json
 data/coordination/
