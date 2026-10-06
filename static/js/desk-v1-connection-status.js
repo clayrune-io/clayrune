@@ -69,9 +69,8 @@
     const need = list.find((f) => f.key === 'reauth');
     if (need) return { key: 'reauth', word: need.word, action: null };
     if (ch.capability === 'none') return { key: 'ok', word: 'Read only', action: null };       // a read-only site: the browser is its only route
-    if (api && api.key === 'ok') return { key: 'ok', word: 'Connected', action: null };
+    if (ch.publish && ch.publish.ready) return { key: 'ok', word: 'Connected', action: null };        // an API sign-in, or a site published by hand
     if (browser) return { key: browser.key, word: browser.word, action: null };
-    if (ch.capability === 'manual' && ch.publish && ch.publish.ready) return { key: 'ok', word: 'Connected', action: null };      // a blog is published by hand
     return { key: 'off', word: 'Not connected', action: null };
   }
 
