@@ -389,3 +389,7 @@ Sign in with a saved login (Ron 2026-10-05: every sign-in route offers a usernam
 - **Re-sign-in.** Uses the same stored login via the same click; a human starts it every time.
 - **Field location.** Visible, enabled inputs only: `type=password` for the password; for the username `autocomplete=username`, then `type=email`, then a name/id of user, username, login, email, identifier, session_key or text, then the first text input before the password field. A two-page sign-in is handled as username page, then password page. Heuristic by nature: see the journal for the options.
 - **Tests.** `tests/test_desk_signin_fill.py` (collection fails against 19d07fe1: no `signin_fill`); smokes `desk-v1-connect-{discover,flow,mcp,purpose,slice2}.mjs` and `desk-v1-connections.mjs` pass.
+
+## P2b follow-up: the login choice on the Details step (2026-10-05)
+
+Ron, phone: Higgsfield "Sign in with Higgsfield" showed an empty box on Details. The panel was only on the Result step. `desk-v1-connect-signin.js` now draws the same picker and "Store a new login" on the Details step of any sign-in method (`details*`), keeps the pick and the typed form across Back and Review, shows a "Sign-in login" row on Review (password never shown), and hands both to the Result step. A login typed on Details is stored on the Result step with its own passcode (a second prompt); one prompt would need `new_login` in the provider commit draft (not done). Smoke: `tools/smoke/desk-v1-connect-signin-details.mjs` (1440 and 390).
