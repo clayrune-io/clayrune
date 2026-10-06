@@ -1,12 +1,15 @@
 # MC-1062 / 06: Enforce Desk permission before read or publish
 
-Status: dispatched; stopped at the consumer-inventory boundary (2026-10-06).
+Status: split approved by Dave; 06a consent-only compatibility correction
+verified on its branch, awaiting Dave integration (2026-10-06). Remaining-spend guard is a separate
+ticket by Dave's decision; 06b-d remain separate.
 [Parent design](../CONNECT_FLOW_SIMPLIFY.md).
 
 The separately committed browser-account default-deny pre-step is complete.
-Execution enforcement is **not implemented**. See the
+See [06a's publisher contract](06a-publisher-enforcement.md) and the
 [consumer inventory and proposed owner split](06-consumer-inventory.md) for
 the independent read paths that bypass engagement polling and publishing.
+06b-d remain separate work; the complete Read/Post enforcement is not shipped.
 
 ## Depends on
 
