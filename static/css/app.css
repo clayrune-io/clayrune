@@ -1310,7 +1310,13 @@
      (Change Status, Appearance, Advanced, the Sync pair) render as INLINE
      `.modal-menu-sub` blocks inside this same box rather than as flyouts — a
      flyout would have been clipped, since CSS cannot combine visible-x with
-     auto-y. If a submenu is ever changed to a flyout, this cap has to move. */
+     auto-y. If a submenu is ever changed to a flyout, this cap has to move.
+
+     The 100vh cap is only the FALLBACK. A windowed modal shorter than the
+     viewport clips the menu at its own `overflow: hidden` edge long before
+     100vh, so toggleModalMenu sets an inline max-height from the window's
+     real bottom (`_fitModalMenu`, modal-manager.js; smoke
+     tools/smoke/modal-menu-scroll.mjs). Ron 2026-10-06. */
   .modal-menu-dropdown {
     display: none; position: absolute; top: 36px; right: 0;
     background: var(--surface); border: 1px solid var(--border);
