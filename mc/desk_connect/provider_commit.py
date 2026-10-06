@@ -50,6 +50,8 @@ def apply(clean: dict) -> tuple[Applied, dict]:
         raise ProviderError('the vault is locked: unlock it in Secrets, then save again', 409, 'vault_locked')
     held = clean.get('held')
     fields = clean['fields']
+    if clean.get('account_id'):
+        fields = {**fields, '_attach_account_id': clean['account_id']}
     if held:
         if method not in prov.signs_in:
             raise ProviderError('that method has no sign-in to claim', 400, 'method_not_available')
@@ -58,7 +60,9 @@ def apply(clean: dict) -> tuple[Applied, dict]:
             account = _oauth.held_account(clean['service'], held['flow_id'], held['claim'], client_id=save_app)
         except _oauth.OAuthError as e:
             raise ProviderError(str(e), e.status, e.code) from e
-        if account:                 # the Desk account the sign-in was started for: the Save creates it under that id
+        if clean.get('account_id') and account != clean['account_id']:
+            raise ProviderError('the sign-in was started for a different account; sign in again', 409, 'account_mismatch')
+        if account:                 # the Desk account the sign-in was started for (new or explicitly attached)
             fields = {**fields, '_account_id': account}
     undo = UndoStack()
     try:
@@ -66,8 +70,9 @@ def apply(clean: dict) -> tuple[Applied, dict]:
         if new_login:
             _logins.write_with_undo(new_login, undo)
         if held:
+            arg = applied.extra['oauth_arg'] if 'oauth_arg' in applied.extra else _refs.oauth_arg_for(applied.account_id)
             _oauth.commit_held(clean['service'], held['flow_id'], held['claim'],
-                               _refs.oauth_arg_for(applied.account_id), undo, client_id=save_app)
+                               arg, undo, client_id=save_app)
     except ProviderError as e:
         left = undo.unwind()
         raise ProviderError(_with_left(str(e), left), e.status, e.code) from e

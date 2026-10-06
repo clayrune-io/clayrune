@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — X API setup attaches to a saved account (MC-1062/03b)
+
+- X held sign-in and provider Save accept an existing account id validated through the browser-account attachment contract. They use that account's own OAuth references, never create a duplicate account, and leave its browser setup, read settings, connections and permissions unchanged. Calls without an id keep the original create path.
+- The disabled Connect wizard's API screen now carries the saved X id through both independent passcode prompts. Changed apps and accounts discard held authorization; mismatched claims fail before writes. Contract and validation: `docs/desk_v1/connect_flow_tickets/03b-x-api-account-attach.md`. Wizard activation remains ticket 14.
+
 ## [2026-10-06] — Desk engagement reads check separate account consent (MC-1062/06b)
 
 - Engagement polling checks the original workspace account's explicit Read consent separately before mentions and each post-metrics batch. A denied operation makes no token-refresh, platform, pane or digest-model call and costs nothing; another independently permitted read can still run. Unset/inline legacy accounts retain their reader behavior and existing read budgets.

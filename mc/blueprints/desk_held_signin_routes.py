@@ -2,12 +2,13 @@
 (`mc/desk_oauth_hold.py`; Dave 2026-10-05, option B, after Ron: "if step 3 is the login
 details, all options should be covered there").
 
-    POST /api/desk/connect/<service>/start-held   {passcode, hold?: {client_id?, client_secret?}}
+    POST /api/desk/connect/<service>/start-held   {passcode, account_id?, hold?: {client_id?, client_secret?}}
          Opens the sign-in like `/start`, but the callback holds the token instead of
          storing it. Answers `{flow_id, auth_url, profile, claim, hold_ttl_s, account_id?}`.
          `claim` is the secret the Save and the cancel must present: the flow id alone,
          which the poll shows, claims nothing. X's `account_id` is the Desk account the
-         Save will create; the browser never chooses it.
+         Save will create when no id was supplied. An explicit existing X id is validated
+         through account_attach and uses only that saved account's own OAuth profile.
     POST /api/desk/connect/flows/<flow_id>/cancel {claim}
          The person backed out: drop the held token and revoke it. No passcode (it only
          ever removes something), but it needs the claim.
@@ -25,6 +26,7 @@ from mc import desk_account_refs as _refs
 from mc import desk_oauth as _oauth
 from mc.blueprints.secrets_routes import _require_human_passcode
 from mc.desk_connect.providers.key_paste import MAX_VALUE
+from mc.desk_connect import account_attach, x_account_attach
 from mc.unattended import is_unattended_caller
 
 bp = Blueprint('desk_held_signin_routes', __name__)
@@ -62,7 +64,13 @@ def start_held(service):
     except ValueError as e:
         return jsonify({'error': str(e), 'code': 'invalid'}), 400
     account_id, arg = None, None
-    if service in _oauth.PER_ACCOUNT:
+    if 'account_id' in d:
+        try:
+            rec = x_account_attach.target(service, d['account_id'])
+        except (account_attach.AttachError, LookupError) as e:
+            return jsonify({'error': str(e), 'code': getattr(e, 'code', 'account_refused')}), getattr(e, 'status', 400)
+        account_id, arg = rec['account_id'], x_account_attach.oauth_arg(rec)
+    elif service in _oauth.PER_ACCOUNT:
         account_id = _desk._new_id('acct')
         arg = _refs.planned_oauth_arg(account_id)
     try:
@@ -83,4 +91,7 @@ def cancel_held(flow_id):
     d = d if isinstance(d, dict) else {}
     if is_unattended_caller():
         return jsonify({'error': 'this action needs a human'}), 403
-    return jsonify(_oauth.cancel_flow(flow_id, d.get('claim')))
+    claim = d.get('claim')
+    if not isinstance(claim, str):
+        return jsonify({'ok': False})
+    return jsonify(_oauth.cancel_flow(flow_id, claim))

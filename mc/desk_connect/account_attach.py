@@ -17,9 +17,9 @@ The contract, one stable account id:
 caller holds the handle the person typed, against that identity) and returns the references an
 attachment may use, names only. It writes nothing.
 
-NOT built here: the provider side. `providers/x.py` `apply` still creates its account, and
-`start-held` still mints a new account id; making them take an existing one is the slice that follows
-this contract (03b), because it changes passcode-gated OAuth flows that this ticket must not touch.
+The provider side is built in MC-1062/03b (`x_account_attach`): `start-held` and the provider
+Save accept an explicit existing account id and validate through this contract. Calls without
+an account id retain the original create path. Both human passcode boundaries stay in place.
 """
 from __future__ import annotations
 

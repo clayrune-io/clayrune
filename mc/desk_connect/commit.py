@@ -50,6 +50,7 @@ from mc.core import _log
 from mc.desk_connect import methods as _methods
 from mc.desk_connect import provider_commit, providers, registry, url_check
 from mc.desk_connect import signin_login_store as _logins
+from mc.desk_connect import account_attach, x_account_attach
 from mc.desk_connect.providers.base import ProviderError
 from mc.desk_connect.url_check import UrlError
 
@@ -101,14 +102,29 @@ def _clean_provider_draft(draft: dict, checked: dict, vault_names) -> dict:
     if svc is None or prov is None or not isinstance(method, str) or not _methods.is_connectable(svc, method):
         raise CommitError('that method cannot be set up from here: it is information only for this service',
                           400, 'method_not_available')
-    unknown = sorted(set(draft) - {'url', 'method', 'fields', 'held', 'new_login'})
+    unknown = sorted(set(draft) - {'url', 'method', 'fields', 'held', 'new_login', 'account_id'})
     if unknown:
         raise CommitError(f'unknown draft field(s) for this method: {", ".join(unknown)}')
+    raw_fields = draft.get('fields')
+    attached = None
+    if 'account_id' in draft:
+        try:
+            identity = raw_fields.get('identity') if isinstance(raw_fields, dict) else None
+            if identity is not None and not isinstance(identity, str):
+                raise CommitError('X handle must be text')
+            attached = x_account_attach.target(svc['id'], draft['account_id'], identity=identity)
+        except (account_attach.AttachError, LookupError) as e:
+            raise CommitError(str(e), getattr(e, 'status', 400), getattr(e, 'code', 'account_refused')) from e
+        if not isinstance(raw_fields, dict):
+            raise CommitError('fields must be an object')
+        raw_fields = {**raw_fields, 'identity': attached['identity']}
     try:
-        fields = prov.clean(method, draft.get('fields'), vault_names)
+        fields = prov.clean(method, raw_fields, vault_names)
     except ProviderError as e:
         raise CommitError(str(e), e.status, e.code) from e
     out = {'url': checked['url'], 'method': method, 'service': svc['id'], 'label': svc['label'], 'fields': fields}
+    if attached:
+        out['account_id'] = attached['account_id']
     if draft.get('held') is not None:
         out['held'] = _clean_held(draft['held'], prov, method)
     if draft.get('new_login') is not None:
@@ -142,12 +158,12 @@ def _clean_held(raw, prov, method: str) -> dict:
 
 def clean_draft(draft, own_hosts=(), vault_names=None) -> dict:
     """Validate a draft into the exact shape that is saved. Raises CommitError.
-    Pure: touches neither the vault nor the Desk store. `vault_names` (names only,
+    Writes nothing; an explicit X attachment reads the saved-account contract. `vault_names` (names only,
     from the route) lets a known-host method refuse an already-stored entry before
     the passcode is asked; None skips that, `commit` checks again."""
     if not isinstance(draft, dict):
         raise CommitError('draft must be an object')
-    unknown = sorted(set(draft) - {'url', 'method', 'name', 'credential', 'fields', 'held', 'new_login'})
+    unknown = sorted(set(draft) - {'url', 'method', 'name', 'credential', 'fields', 'held', 'new_login', 'account_id'})
     if unknown:
         raise CommitError(f'unknown draft field(s): {", ".join(unknown)}')
     try:
@@ -156,6 +172,8 @@ def clean_draft(draft, own_hosts=(), vault_names=None) -> dict:
         raise CommitError(f'{e} {e.hint}'.strip(), 400, 'bad_url') from e
     if draft.get('method') != 'save_for_agents':
         return _clean_provider_draft(draft, checked, vault_names)
+    if 'account_id' in draft:
+        raise CommitError('"Save for agents" does not attach an account')
     if 'fields' in draft:
         raise CommitError('"Save for agents" takes a credential, not fields')
     if 'new_login' in draft:
