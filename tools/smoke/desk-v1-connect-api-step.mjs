@@ -20,8 +20,8 @@
  *   5. The Save     `commit()` is its own passcode prompt: cancel sends nothing and keeps everything typed; a
  *                   refusal keeps it and the request id; success empties it. The draft carries the held claim,
  *                   the app, the handle from the account choice, and no secret anywhere else.
- *   6. Existing     an account already saved is refused with a reason and no way on (account_attach: the provider
- *      account      side does not exist); nothing is loaded or sent.
+ *   6. Existing     X app fields omit handle/name; start-held and Save name the selected saved account.
+ *      account      Each asks for its own passcode; changing the account cancels the old sign-in.
  *   7. Leaving      Close empties every typed value and cancels the held sign-in.
  *   8. No probe     no verify, no purpose/verify, no post or read request in any of it.
  *   9. Fit          no horizontal scroll and the primary action reachable at 1440, 390 and 200% text.
@@ -384,17 +384,63 @@ async function run(browser, width, height) {
     await ctx.close();
   }
 
-  // ── 6: an account already saved is refused ─────────────────────────────
+  // ── 6: attach to a saved X account ─────────────────────────────────────
   {
     const { ctx, page, srv } = await newPage(browser, { srv: makeServer(), width, height });
     await toSetup(page, 'x.com', X_EXISTING, 'api', true);
-    await page.waitForSelector('[data-api-blocked]');
-    check(/not available yet/.test(await page.textContent('[data-api-blocked]')) && /second account/.test(await page.textContent('[data-api-blocked]')), 'an existing account is refused and the reason is a second account would be created', 'no refusal');
-    check(await page.$eval('[data-cfw-primary]', (b) => b.disabled), 'and there is no way on', 'Continue is on for an existing account');
-    await page.waitForTimeout(150);
-    check(logOf(srv, /inspect|start-held|commit/).length === 0, 'nothing is loaded or sent for it', 'requests: ' + srv.log.map((r) => r.path));
-    const c = await page.evaluate(async () => window.DeskV1ConnectApiStep.commit());
-    check(c.ok === false && c.code === 'incomplete', 'commit() refuses too', 'commit result ' + JSON.stringify(c));
+    await page.waitForSelector('[data-cfa-host]');
+    check((await page.$$('[data-api-blocked], [data-cfa-field="identity"], [data-cfa-field="label"]')).length === 0,
+      'saved X account uses the app fields without asking its identity again');
+    await page.fill('[data-cfa-field="client_id"]', CLIENT_ID);
+    await page.click('[data-cfw-primary]'); await page.waitForSelector('[data-cfh-start]');
+    await page.click('[data-cfh-start]'); await page.waitForSelector('input[id^="hp-passcode-"]');
+    check(logOf(srv, /start-held/).length === 0, 'attach start waits for its own passcode');
+    await prompt(page, PASSCODE);
+    await page.waitForSelector('[data-cfh-state="held"]', { timeout: 4000 });
+    check(logOf(srv, /start-held/)[0].body.account_id === 'acct-saved', 'held start names the saved account');
+    // Changing app details must keep the attach target when it discards the held claim.
+    await page.click('[data-api-back-fields]'); await page.waitForSelector('[data-cfa-field="client_id"]');
+    const cancelledApp = page.waitForResponse((r) => /\/cancel$/.test(new URL(r.url()).pathname));
+    await page.fill('[data-cfa-field="client_id"]', 'changed-app');
+    await cancelledApp;
+    check(logOf(srv, /\/cancel$/).length === 1, 'changed app cancels the saved account held sign-in');
+    await page.click('[data-cfw-primary]'); await page.waitForSelector('[data-cfh-start]');
+    await page.click('[data-cfh-start]'); await prompt(page, PASSCODE);
+    await page.waitForSelector('[data-cfh-state="held"]', { timeout: 4000 });
+    check(logOf(srv, /start-held/)[1].body.account_id === 'acct-saved', 'new app start retains the selected account');
+    await toReview(page);
+    await page.click('[data-cfw-primary]'); await page.waitForSelector('input[id^="hp-passcode-"]');
+    check(logOf(srv, /connect\/commit/).length === 0, 'attach Save requires a second passcode');
+    await prompt(page, PASSCODE);
+    await page.waitForFunction(() => window.__fx.saves.length === 1, null, { timeout: 3000 });
+    const d = logOf(srv, /connect\/commit/)[0].body.draft;
+    check(d.account_id === 'acct-saved' && d.fields.client_id === 'changed-app' && !d.fields.identity && !d.fields.label
+      && d.held.claim === 'claim-2', 'attach draft carries the saved id, app and held claim without new-account fields');
+    check(await page.evaluate(() => window.__fx.saves[0].ok), 'saved-account attach reaches success');
+    check(logOf(srv, /verify|purpose|post|publish/).length === 0, 'attach performs no read or publishing probe');
+    await ctx.close();
+  }
+
+  // Switching an attachment target drops the old held sign-in and typed app.
+  {
+    const { ctx, page, srv } = await newPage(browser, { srv: makeServer(), width, height });
+    await toSetup(page, 'x.com', X_EXISTING, 'api', true);
+    await page.waitForSelector('[data-cfa-field="client_id"]');
+    await page.fill('[data-cfa-field="client_id"]', CLIENT_ID);
+    await page.click('[data-cfw-primary]'); await page.waitForSelector('[data-cfh-start]');
+    await page.click('[data-cfh-start]'); await prompt(page, PASSCODE);
+    await page.waitForSelector('[data-cfh-state="held"]', { timeout: 4000 });
+    const cancelledAccount = page.waitForResponse((r) => /\/cancel$/.test(new URL(r.url()).pathname));
+    await page.evaluate(() => window.DeskV1ConnectApiStep.setTarget({ kind: 'account', account: { id: 'acct-other' } }));
+    await cancelledAccount;
+    await repaint(page); await page.waitForSelector('[data-cfa-field="client_id"]');
+    check(await page.inputValue('[data-cfa-field="client_id"]') === '' && !await page.$('[data-cfh-state="held"]'),
+      'changing accounts discards the old app and held authorization');
+    await page.fill('[data-cfa-field="client_id"]', CLIENT_ID);
+    await page.click('[data-cfw-primary]'); await page.waitForSelector('[data-cfh-start]');
+    await page.click('[data-cfh-start]'); await prompt(page, PASSCODE);
+    await page.waitForSelector('[data-cfh-state="held"]', { timeout: 4000 });
+    check(logOf(srv, /start-held/)[1].body.account_id === 'acct-other', 'next sign-in names only the new saved account');
     await ctx.close();
   }
 

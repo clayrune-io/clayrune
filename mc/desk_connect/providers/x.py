@@ -2,7 +2,8 @@
 
 The one Save writes, in this order: the app's Client ID (and Client Secret, when the
 app is confidential) into the vault under the names `desk_oauth` already reads
-(`x.client-id`, `x.client-secret`), then the Desk account. Only after that is
+(`x.client-id`, `x.client-secret`), then a new Desk account, or reuses an explicit
+saved account through `x_account_attach` without rewriting it. Only after that is
 durable does the sign-in start (`after_commit`), in the account's own named
 browser profile; its token reaches the vault through the existing callback.
 
@@ -24,6 +25,7 @@ from mc import desk_oauth as _oauth
 from mc import secrets_store as _vault
 from mc.desk_connect.providers import base
 from mc.desk_connect.providers.key_paste import MAX_VALUE
+from mc.desk_connect import account_attach, x_account_attach
 
 _HANDLE = re.compile(r'^[A-Za-z0-9_]{1,15}$')
 _CLIENT_ID = 'x.client-id'
@@ -77,6 +79,12 @@ class XProvider(base.Provider):
         return out
 
     def apply(self, method, clean, undo):
+        attached = None
+        if clean.get('_attach_account_id'):
+            try:
+                attached = x_account_attach.target('x', clean['_attach_account_id'], identity=clean['identity'])
+            except (account_attach.AttachError, LookupError) as e:
+                raise base.ProviderError(str(e), getattr(e, 'status', 400), getattr(e, 'code', 'account_refused')) from e
         names = {s['name'] for s in _vault.list_secrets()}
         for key, vault in (('client_id', _CLIENT_ID), ('client_secret', _CLIENT_SECRET)):
             if clean[key] and vault in names:
@@ -94,20 +102,25 @@ class XProvider(base.Provider):
             except _vault.SecretsError as e:
                 raise base.ProviderError(f'the credential could not be stored: {e}', 400, 'vault_refused') from e
             undo.push(f'vault entry {vault}', lambda v=vault: _vault.delete_secret(v))
-        try:
-            acc = _accounts.create_account('x', clean['identity'], label=clean['label'] or None,
-                                           account_id=clean.get('_account_id'))
-        except _accounts.AccountError as e:
-            raise base.ProviderError(str(e), e.status, 'account_refused') from e
-        undo.push(f'Desk account {acc["id"]}', lambda: _undo_account(acc['id']))
+        if attached:
+            acc = {'id': attached['account_id'], 'identity': attached['identity'], 'label': attached['label']}
+        else:
+            try:
+                acc = _accounts.create_account('x', clean['identity'], label=clean['label'] or None,
+                                               account_id=clean.get('_account_id'))
+            except _accounts.AccountError as e:
+                raise base.ProviderError(str(e), e.status, 'account_refused') from e
+            undo.push(f'Desk account {acc["id"]}', lambda: _undo_account(acc['id']))
         stored = [v for k, v in (('client_id', _CLIENT_ID), ('client_secret', _CLIENT_SECRET)) if clean[k]]
         return base.Applied(extra={'stored': stored,
-                                   'account': {'id': acc['id'], 'label': acc['label'], 'identity': acc['identity']}},
+                                   'account': {'id': acc['id'], 'label': acc['label'], 'identity': acc['identity']},
+                                   **({'oauth_arg': x_account_attach.oauth_arg(attached)} if attached else {})},
                             account_id=acc['id'])
 
     def after_commit(self, method, clean, applied):
         try:
-            return {'signin': _oauth.start('x', _refs.oauth_arg_for(applied.account_id))}
+            arg = applied.extra['oauth_arg'] if 'oauth_arg' in applied.extra else _refs.oauth_arg_for(applied.account_id)
+            return {'signin': _oauth.start('x', arg)}
         except _oauth.OAuthError as e:
             return {'setup': {'state': 'failed', 'message': str(e)}}
 

@@ -32,10 +32,8 @@
 //   * { new }   the handle and name come from the account choice, so the provider's own identity and name
 //               fields are not asked again;
 //   * none      the provider's own fields are shown, as the old flow showed them;
-//   * { id }    REFUSED, and said so. `account_attach.py` states the contract (a later connection attaches to the
-//               saved account's id) but the provider side is not built (its docstring, "NOT built here"): `XProvider.apply`
-//               still calls create_account and start-held still mints a new account id. Saving would create a
-//               second account, so this screen offers no way on rather than claim an attach that does not exist.
+//   * { id }    X attaches to the saved id (MC-1062/03b): start-held and Save both name it, and the server
+//               validates its own OAuth references. Other providers keep their existing refusal.
 (function () {
   const W = window.DeskV1ConnectWizard;
   if (!W) return;
@@ -76,7 +74,7 @@
   // The provider's fields as the person must still answer them: identity and name drop out once the account is chosen.
   function _displayConnector() {
     const c = A.connector;
-    if (!c || _targetMode() !== 'new') return c;
+    if (!c || _targetMode() === 'none') return c;
     return Object.assign({}, c, { fields: (c.fields || []).filter((f) => IDENTITY_KEYS.indexOf(f.key) < 0) });
   }
   function _hasFields() { const c = _displayConnector(); return !!(c && c.fields && c.fields.length); }
@@ -137,7 +135,7 @@
 
   // ── drawing ─────────────────────────────────────────────────────────────
   function _blocked(info) {
-    if (_targetMode() === 'existing') {
+    if (_targetMode() === 'existing' && _service(info) !== 'x') {
       return `Connecting an API to a saved ${esc(_label(info))} account is not available yet: it would create a second account. Go back and add a new account, or use its sign-in.`;
     }
     return '';
@@ -185,7 +183,9 @@
     const Ad = window.DeskV1ConnectAdapter;
     if (_stage() === 'fields') {
       const guide = Ad ? Ad.guideHTML(A.connector) : '';
-      const note = A.connector.summary ? `<div class="desk-v1-cfw-fact-text" data-api-summary>${esc(A.connector.summary)}</div>` : '';
+      const summary = _targetMode() === 'existing' && _service(api.info) === 'x'
+        ? 'App details go to Secrets; sign-in belongs to this saved X account. Nothing is saved until you press Save.' : A.connector.summary;
+      const note = summary ? `<div class="desk-v1-cfw-fact-text" data-api-summary>${esc(summary)}</div>` : '';
       return `${note}${guide}`;
     }
     return _loginHelp(api);
@@ -234,7 +234,7 @@
       root.querySelectorAll('[data-api-retry]').forEach((b) => b.addEventListener('click', () => { A.loaded = ''; A.failed = false; api.repaint(); }));
       if (!A.connector) return;
       const label = _label(api.info), method = _provider(api.sel, api.info).setup.method;
-      if (_signs() && Hd) Hd.begin(_service(api.info), method, label, api.ctx);       // the same service and method keeps its sign-in
+      if (_signs() && Hd) Hd.begin(_service(api.info), method, label, api.ctx, _targetMode() === 'existing' ? _target.account.id : null);
       if (Ad) {
         const slot = root.querySelector('[data-cfa-slot]');
         if (slot) {
@@ -292,6 +292,7 @@
       fields.install = consent;
     }
     const draft = { url: A.url, method: A.method, fields };
+    if (_targetMode() === 'existing') draft.account_id = _target.account.id;
     const held = A.connector.signs_in && Hd ? Hd.draft() : null;
     if (held) draft.held = held;                                      // the sign-in made on the authorize view: Save claims it
     const typed = A.connector.signs_in && Sg ? Sg.read(LOGIN_KEY) : null;

@@ -25,10 +25,10 @@
   function _pollMs() { return window.__deskGuidePollMs || 1500; }
 
   // Called each time the Details step is drawn: the same service+method keeps its sign-in, anything else drops it.
-  function begin(service, method, label, ctx) {
-    if (H && H.service === service && H.method === method) { H.ctx = ctx; H.label = label; return; }
+  function begin(service, method, label, ctx, accountId = null) {
+    if (H && H.service === service && H.method === method && H.accountId === accountId) { H.ctx = ctx; H.label = label; return; }
     cancel();
-    H = { service, method, label, ctx, phase: 'idle', message: '', flowId: '', claim: '', profile: '', authUrl: '', ttl: 0 };
+    H = { service, method, label, ctx, accountId, phase: 'idle', message: '', flowId: '', claim: '', profile: '', authUrl: '', ttl: 0 };
   }
 
   // Drop what is held: tell the server (it revokes at the vendor), forget the claim. Safe to call any time.
@@ -104,7 +104,7 @@
     try {
       // Opening a sign-in needs the dashboard passcode: the one proof an agent cannot forge.
       res = await window.humanProofFetch(`/api/desk/connect/${encodeURIComponent(mine.service)}/start-held`,
-        { method: 'POST', body: JSON.stringify({ hold: app.hold }) },
+        { method: 'POST', body: JSON.stringify({ hold: app.hold, ...(mine.accountId ? { account_id: mine.accountId } : {}) }) },
         { title: 'Sign in', description: `Re-enter your dashboard passcode to sign in to ${mine.label}.` });
     } catch (e) {
       res = { ok: false, status: 0, body: { error: e && e.message ? e.message : 'could not reach the server' } };
@@ -176,9 +176,9 @@
     const gone = root.querySelector('[data-cfh-cancel]');
     if (gone) gone.addEventListener('click', () => {
       const ctx = mine.ctx;
-      const keep = { service: mine.service, method: mine.method, label: mine.label };
+      const keep = { service: mine.service, method: mine.method, label: mine.label, accountId: mine.accountId };
       cancel();
-      begin(keep.service, keep.method, keep.label, ctx);
+      begin(keep.service, keep.method, keep.label, ctx, keep.accountId);
       ctx.repaint();
     });
     // The sign-in was made with the X app typed above: change that app and the held token is no longer the one
@@ -189,9 +189,9 @@
       host.addEventListener('input', (e) => {
         const key = e.target && e.target.dataset ? e.target.dataset.cfaField : '';
         if (!H || APP_KEYS.indexOf(key) < 0 || (H.phase !== 'waiting' && H.phase !== 'held')) return;
-        const ctx = H.ctx, keep = { service: H.service, method: H.method, label: H.label };
+        const ctx = H.ctx, keep = { service: H.service, method: H.method, label: H.label, accountId: H.accountId };
         cancel();
-        begin(keep.service, keep.method, keep.label, ctx);
+        begin(keep.service, keep.method, keep.label, ctx, keep.accountId);
         H.phase = 'failed'; H.message = 'You changed the app details, so the sign-in was discarded. Sign in again.';
         ctx.repaint();
       });
