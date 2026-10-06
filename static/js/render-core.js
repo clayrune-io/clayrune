@@ -1029,6 +1029,7 @@ function modalContentHTML(p) {
               >${modalSearchQuery[p.id] ? `<span class="search-clear" onclick="clearTabSearch('${esc(p.id)}')">&#x2715;</span>` : ''}
             </div>
           </div>
+          ${typeof window.docSearchBoxHTML === 'function' ? window.docSearchBoxHTML(p.id) : ''}
           <div id="documents-toolbar-${esc(p.id)}" style="display:none"></div>
           <div id="documents-list-${esc(p.id)}"><div style="color:var(--text-faint);font-style:italic">Loading...</div></div>
         </div>`}

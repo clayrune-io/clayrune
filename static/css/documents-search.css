@@ -1,0 +1,29 @@
+/* Documents tab content search (static/js/documents-search.js, MC-950). */
+.doc-search { margin: 0 0 10px; }
+.doc-search-input {
+  width: 100%; box-sizing: border-box; padding: 8px 10px; font-size: 13px;
+  color: var(--text); background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; outline: none; font-family: inherit;
+}
+.doc-search-input:focus { border-color: var(--accent); }
+.doc-search-count { font-size: 11px; color: var(--text-faint); margin-bottom: 6px; }
+.doc-search-note { color: var(--text-faint); font-style: italic; padding: 6px 0; }
+.doc-search-error { color: var(--red-text, #e55); font-style: normal; }
+.doc-search-hit {
+  padding: 10px 12px; border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: 6px; margin-bottom: 8px; cursor: pointer; transition: border-color 0.15s;
+  min-width: 0;
+}
+.doc-search-hit:hover, .doc-search-hit:focus-visible { border-color: var(--accent); outline: none; }
+.doc-search-file { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 2px; min-width: 0; }
+.doc-search-path { overflow-wrap: anywhere; }
+.doc-search-line { color: var(--text-faint); font-weight: 400; }
+.doc-search-tier { color: var(--text-muted); }
+.doc-search-heading { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; overflow-wrap: anywhere; }
+.doc-search-snippet { font-size: 12px; color: var(--text-faint); line-height: 1.45; overflow-wrap: anywhere; }
+.doc-search-snippet mark {
+  background: color-mix(in srgb, var(--accent) 28%, transparent); color: var(--text);
+  border-radius: 2px; padding: 0 1px;
+}
+/* The line a search hit opened at, briefly flagged in the viewer. */
+.doc-search-target { background: color-mix(in srgb, var(--accent) 22%, transparent); border-radius: 3px; }
