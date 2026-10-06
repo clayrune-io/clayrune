@@ -31,6 +31,7 @@ from mc import desk as _desk
 from mc import desk_engagement as _engagement
 from mc import secrets_store as _vault
 from mc.core import _log, now_iso
+from mc.desk_connect import permission_check as _consent
 from mc.desk_connect import purpose_bindings as _bindings
 from mc.desk_connect import purpose_verification_store as _store
 from mc.desk_connect import route_readiness as _ready
@@ -83,6 +84,10 @@ def _restart_for_tests() -> None:
 # (`desk_engagement.ReadError` or anything else) when the check fails.
 
 def _pane_mentions(rec: dict, group: dict) -> dict:
+    # Current persisted Read consent for exactly this probe, before a reader (browser) exists.
+    # Denial raises PermissionDenied, which `check` reports as a failed check, never a record.
+    _consent.require_permission(rec['id'], 'x', 'read', purpose='read_own', capability='mentions',
+                                route_id='x-browser', account_kind='account')
     profile = (group.get('refs') or {}).get('browser_profile') or ''
     reader = _engagement.PaneXReader(rec.get('project_id') or 'mission_control', profile)
     try:
