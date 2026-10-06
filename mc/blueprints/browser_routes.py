@@ -7,7 +7,9 @@ websocket:
 
   - a reader thread receives `Page.screencastFrame` events into the session's
     latest-frame buffer (base64 JPEG) and acks them;
-  - `/api/browser/stream` re-streams those frames to the pane over SSE;
+  - `/api/browser/frames` re-streams those frames to the pane as raw-JPEG binary
+    messages, `/api/browser/stream` as SSE (the fallback) -- both built in
+    mc/browser_stream.py;
   - `/api/browser/input` queues mouse/key/scroll/navigate commands, which the
     same CDP thread dispatches (single sender → no cross-thread ws races).
 
@@ -81,7 +83,8 @@ from typing import Any, Callable
 
 from flask import Blueprint, Response, jsonify, request
 
-from mc import state
+from mc import state, browser_stream as _bstream
+from mc.browser_stream import bump as _bump
 from mc.state import browser_sessions, browser_lock
 
 bp = Blueprint('browser_routes', __name__)
@@ -423,7 +426,7 @@ def _on_download_will_begin(session, params):
         entry['error'] = ('Downloads are off in temp sessions. '
                           'Open a signed-in profile to download.')
     session.setdefault('downloads', {})[guid] = entry
-    session['downloads_seq'] = session.get('downloads_seq', 0) + 1
+    _bump(session, 'downloads_seq')
 
 
 def _on_download_progress(session, params, send):
@@ -454,7 +457,7 @@ def _on_download_progress(session, params, send):
         _finalize_download(session, d)
     elif d['state'] == 'canceled':
         _delete_partial_download(session, guid)
-    session['downloads_seq'] = session.get('downloads_seq', 0) + 1
+    _bump(session, 'downloads_seq')
 
 
 # Same shape as a secret name (mc/secrets_store.py): lowercase, dot-namespaced.
@@ -891,7 +894,7 @@ def _switch_active_tab(session, send, new_target_id, old_session_id=None):
                  session.get('screencast_params', _SCREENCAST_PARAMS), session_id=new_sid)
     except Exception as e:
         session['error'] = f'tab switch failed: {e}'
-    session['tabs_seq'] = session.get('tabs_seq', 0) + 1
+    _bump(session, 'tabs_seq')
 
 
 def _activate_tab_cmd(session, target_id, send):
@@ -1574,10 +1577,10 @@ def _handle_target_closed(session, send, target_id):
     if not target_id or target_id not in tabs:
         return
     closed = tabs.pop(target_id)
-    session['tabs_seq'] = session.get('tabs_seq', 0) + 1
+    _bump(session, 'tabs_seq')
     if session.get('dialog', {}) and (session.get('dialog') or {}).get('target_id') == target_id:
         session['dialog'] = None
-        session['dialogs_seq'] = session.get('dialogs_seq', 0) + 1
+        _bump(session, 'dialogs_seq')
     if session.get('active_target_id') != target_id:
         return
     opener_id = closed.get('opener_id')
@@ -1855,7 +1858,7 @@ def _run_cdp(session):
                                   'promptText': params.get('text') or ''},
                                  session_id=dlg_sid)
                             session['dialog'] = None
-                            session['dialogs_seq'] = session.get('dialogs_seq', 0) + 1
+                            _bump(session, 'dialogs_seq')
                         elif method == '_file_chooser_response':
                             tabs = session.get('tabs') or {}
                             fc_sid = (tabs.get(params.get('target_id')) or {}).get('session_id')
@@ -1866,7 +1869,7 @@ def _run_cdp(session):
                                       'backendNodeId': params.get('backend_node_id')},
                                      session_id=fc_sid)
                             session['file_chooser'] = None
-                            session['file_chooser_seq'] = session.get('file_chooser_seq', 0) + 1
+                            _bump(session, 'file_chooser_seq')
                         else:
                             send(method, params, session_id=_active_session_id(session))
                     except Exception as e:
@@ -1937,7 +1940,7 @@ def _run_cdp(session):
                         session['page_scale'] = md['pageScaleFactor']
                         for cmd in _zoom_settle(session, md):
                             session['cmd_queue'].put(cmd)
-                    session['frame_seq'] = session.get('frame_seq', 0) + 1
+                    _bump(session, 'frame_seq')
                 try:
                     ack = {'id': _next_id(), 'method': 'Page.screencastFrameAck',
                            'params': {'sessionId': p['sessionId']}}
@@ -1960,7 +1963,7 @@ def _run_cdp(session):
                     tabs = session.get('tabs') or {}
                     if tid in tabs:
                         tabs[tid]['url'] = fr['url']
-                        session['tabs_seq'] = session.get('tabs_seq', 0) + 1
+                        _bump(session, 'tabs_seq')
                     if tid == session.get('active_target_id'):
                         session['live_url'] = fr['url']
             elif method == 'Page.frameStoppedLoading':
@@ -2022,7 +2025,7 @@ def _run_cdp(session):
                     tabs[tid] = {'session_id': sid, 'url': ti.get('url', ''),
                                 'title': ti.get('title', ''), 'opener_id': ti.get('openerId'),
                                 'can_access_opener': bool(ti.get('canAccessOpener'))}
-                    session['tabs_seq'] = session.get('tabs_seq', 0) + 1
+                    _bump(session, 'tabs_seq')
                     try:
                         send('Page.enable', {}, session_id=sid)
                         if session.get('init_script'):
@@ -2082,7 +2085,7 @@ def _run_cdp(session):
                 if tid in tabs:
                     tabs[tid]['url'] = ti.get('url', tabs[tid].get('url', ''))
                     tabs[tid]['title'] = ti.get('title', tabs[tid].get('title', ''))
-                    session['tabs_seq'] = session.get('tabs_seq', 0) + 1
+                    _bump(session, 'tabs_seq')
             elif method == 'Target.targetDestroyed':
                 _handle_target_closed(session, send, (msg.get('params') or {}).get('targetId'))
             elif method == 'Target.detachedFromTarget':
@@ -2096,7 +2099,7 @@ def _run_cdp(session):
                     'type': p.get('type'), 'message': p.get('message'),
                     'default_prompt': p.get('defaultPrompt'),
                 }
-                session['dialogs_seq'] = session.get('dialogs_seq', 0) + 1
+                _bump(session, 'dialogs_seq')
             elif method == 'Page.javascriptDialogClosed':
                 # Cleared by our own _dialog_response already in the normal
                 # case; this covers a dialog dismissed some other way (e.g.
@@ -2105,7 +2108,7 @@ def _run_cdp(session):
                 # that is already gone.
                 if session.get('dialog'):
                     session['dialog'] = None
-                    session['dialogs_seq'] = session.get('dialogs_seq', 0) + 1
+                    _bump(session, 'dialogs_seq')
             elif method == 'Page.fileChooserOpened':
                 p = msg.get('params') or {}
                 session['file_chooser'] = {
@@ -2113,7 +2116,7 @@ def _run_cdp(session):
                     'mode': p.get('mode'),  # 'selectSingle' | 'selectMultiple'
                     'backend_node_id': p.get('backendNodeId'),
                 }
-                session['file_chooser_seq'] = session.get('file_chooser_seq', 0) + 1
+                _bump(session, 'file_chooser_seq')
             elif method == 'Browser.downloadWillBegin':
                 _on_download_will_begin(session, msg.get('params') or {})
             elif method == 'Browser.downloadProgress':
@@ -2288,6 +2291,7 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
         'mobile': bool(mobile), 'device_mode': None if mobile else 'desktop',
         'device_mode_view': None,
     }
+    _bstream.new_wake_state(session)
     with browser_lock:
         browser_sessions[sid] = session
     if _register_process:
@@ -2669,80 +2673,9 @@ def _view_from(v):
     return _clamp_view(v.get('w'), v.get('h'))
 
 
-def _stream_gen(session):
-    """The SSE body for one /api/browser/stream connection. Module-level (not
-    a closure inside the route) so it can be driven directly in tests without
-    going through Flask's test client and its own buffering of a streaming
-    response — a real risk here since this generator only ever returns once
-    session['status'] stops being 'running'.
-
-    Two independent triggers, `frame_seq` and `downloads_seq`, share one
-    channel deliberately: a download never bumps frame_seq (Chromium doesn't
-    repaint for one — see Browser.downloadWillBegin in _run_cdp for the full
-    story, and it's why the pane used to just freeze), so downloads_seq is
-    the ONLY way progress or completion ever reaches the pane. `tabs_seq` and
-    `dialogs_seq` are the same pattern extended to the tab strip and JS
-    dialogs — neither one repaints the frame either.
-    """
-    last = -1
-    last_dl = -1
-    last_tabs = -1
-    last_dialog = -1
-    last_file_chooser = -1
-    idle = 0
-    while session['status'] == 'running':
-        seq = session.get('frame_seq', 0)
-        dl_seq = session.get('downloads_seq', 0)
-        tabs_seq = session.get('tabs_seq', 0)
-        dialog_seq = session.get('dialogs_seq', 0)
-        file_chooser_seq = session.get('file_chooser_seq', 0)
-        sent = False
-        if seq != last and session.get('frame'):
-            last = seq
-            idle = 0
-            payload = json.dumps({'seq': seq, 'img': session['frame'],
-                                  'url': session.get('live_url') or session.get('url'),
-                                  'w': session.get('frame_w'),
-                                  'h': session.get('frame_h'),
-                                  's': session.get('page_scale')})
-            yield f'data: {payload}\n\n'
-            sent = True
-        if dl_seq != last_dl:
-            last_dl = dl_seq
-            idle = 0
-            yield f'data: {json.dumps({"downloads": list(session.get("downloads", {}).values())})}\n\n'
-            sent = True
-        # Guarded on key presence (not just the `or {}`/`or 0` defaults above)
-        # so a hand-built session dict without tab/dialog state (every
-        # pre-existing test in this file, and any future one testing only
-        # frames/downloads) never sees these payloads at all — only sessions
-        # `_run_cdp` actually initialized (which always sets both) do.
-        if 'tabs' in session and tabs_seq != last_tabs:
-            last_tabs = tabs_seq
-            idle = 0
-            tabs = [{'target_id': tid, 'url': t.get('url', ''), 'title': t.get('title', ''),
-                    'opener_id': t.get('opener_id')}
-                   for tid, t in (session.get('tabs') or {}).items()]
-            yield f'data: {json.dumps({"tabs": tabs, "active_target_id": session.get("active_target_id")})}\n\n'
-            sent = True
-        if 'dialog' in session and dialog_seq != last_dialog:
-            last_dialog = dialog_seq
-            idle = 0
-            yield f'data: {json.dumps({"dialog": session.get("dialog")})}\n\n'
-            sent = True
-        if 'file_chooser' in session and file_chooser_seq != last_file_chooser:
-            last_file_chooser = file_chooser_seq
-            idle = 0
-            fc = session.get('file_chooser')
-            yield f'data: {json.dumps({"file_chooser": {"mode": fc.get("mode")} if fc else None})}\n\n'
-            sent = True
-        if not sent:
-            idle += 1
-            if idle % 60 == 0:  # ~2s heartbeat keeps the SSE open
-                yield ': ping\n\n'
-            _time.sleep(0.033)  # ~30fps delivery cap (was 20fps at 0.05s)
-    # final status frame
-    yield f'data: {json.dumps({"status": session["status"], "error": session.get("error")})}\n\n'
+# The SSE body and the binary body are built in mc/browser_stream.py (one event source,
+# two encoders). `_stream_gen` stays here under its old name: tests drive it directly.
+_stream_gen = _bstream.sse_gen
 
 
 def _resume_screencast_for_new_viewer(session):
@@ -2775,6 +2708,19 @@ def browser_stream():
     _resume_screencast_for_new_viewer(session)
     return Response(_stream_gen(session), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@bp.route('/api/browser/frames')
+def browser_frames():
+    """The same events as /api/browser/stream, JPEG as raw bytes (see mc/browser_stream.py).
+    `no-transform` so no proxy gzips (and so buffers) an already-compressed body."""
+    sid = request.args.get('session_id')
+    session = browser_sessions.get(sid)
+    if not session:
+        return jsonify({'error': 'unknown session'}), 404
+    _resume_screencast_for_new_viewer(session)
+    return Response(_bstream.bin_gen(session), mimetype=_bstream.FRAMES_MIMETYPE,
+                    headers={'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no'})
 
 
 # CDP modifier bitfield (Input.dispatchKeyEvent / dispatchMouseEvent).

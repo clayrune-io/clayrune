@@ -6,6 +6,8 @@
 // fixed VIEW_W×VIEW_H render viewport). ES module → everything shared via
 // window.* (see discovery_es_module_cross_boundary_globals).
 
+import { openStream, makeBlobPainter } from './browser-pane-stream.js';
+
 // Human-opened panes default to this persistent profile instead of a
 // throwaway one — before this, every login typed into a hand-opened pane was
 // gone on the next open (Ron, 2026-09-24). Agent launches never go through
@@ -1056,7 +1058,9 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   img.addEventListener('touchcancel', () => { clearTimeout(lpTimer); touch = null; pinch = null; });
 
   // ── frame stream ──
-  _bpES = new EventSource((window.API_BASE || '') + '/api/browser/stream?session_id=' + _bpSession);
+  // Binary frames first, SSE as the fallback (browser-pane-stream.js); either way
+  // `onStream` gets the same event object, a frame carrying `img` (base64) or `blob`.
+  const paintBlob = makeBlobPainter(img);
   // Fallback for the frame's true size when the server is older than this
   // file and sends no w/h: the decoded JPEG IS the viewport. CDP only scales a
   // frame down when the viewport exceeds maxWidth/maxHeight, and the window is
@@ -1071,8 +1075,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       img.style.aspectRatio = w + '/' + h;
     }
   });
-  _bpES.onmessage = ev => {
-    let d; try { d = JSON.parse(ev.data); } catch { return; }
+  const onStream = d => {
     if (d.w && d.h) _bpServerDims = true;
     if (d.w && d.h && (d.w !== _bpViewW || d.h !== _bpViewH)) {
       // Adopt the frame's real viewport for BOTH hit-testing and layout. Setting
@@ -1082,7 +1085,8 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       img.style.aspectRatio = d.w + '/' + d.h;
     }
     if (d.s) pageScale = d.s;
-    if (d.img) { img.src = 'data:image/jpeg;base64,' + d.img; spin.style.color = '#4caf50'; }
+    if (d.blob) { paintBlob(d.blob); spin.style.color = '#4caf50'; }
+    else if (d.img) { img.src = 'data:image/jpeg;base64,' + d.img; spin.style.color = '#4caf50'; }
     if (d.url && document.activeElement !== urlInput) urlInput.value = _bpDisplayUrl(d.url);
     if (d.status && d.status !== 'running') {
       spin.textContent = '×'; spin.style.color = '#e57373';
@@ -1106,7 +1110,9 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     if ('dialog' in d) _bpRenderDialog(win, d.dialog);
     if ('file_chooser' in d) _bpRenderFileChooser(win, d.file_chooser);
   };
+  _bpES = openStream(_bpSession, onStream);
   _bpES.onerror = () => { if (spin) spin.style.color = '#e57373'; };
+  _bpES.onclose = () => paintBlob.release();
 
   // ── the page is the pane's size ──
   // ResizeObserver fires once on observe() and again on every change (corner

@@ -44,6 +44,8 @@ async function run(sendWH) {
     const url = route.request().url();
     if (url.endsWith('/browser-pane.js'))
       return route.fulfill({ contentType: 'application/javascript', body: JS });
+    if (url.endsWith('/browser-pane-stream.js'))   // browser-pane.js imports it; this stub serves files by hand
+      return route.fulfill({ contentType: 'application/javascript', body: readFileSync(new URL('../../static/js/browser-pane-stream.js', import.meta.url), 'utf8') });
     if (url.includes('/api/browser/launch'))
       return route.fulfill({ status: 201, contentType: 'application/json',
         body: JSON.stringify({ session_id: 'sid', url: 'about:blank', view: { w: 1280, h: 800 } }) });
@@ -114,6 +116,8 @@ async function runMismatchedPaneRatio() {
     const url = route.request().url();
     if (url.endsWith('/browser-pane.js'))
       return route.fulfill({ contentType: 'application/javascript', body: JS });
+    if (url.endsWith('/browser-pane-stream.js'))   // browser-pane.js imports it; this stub serves files by hand
+      return route.fulfill({ contentType: 'application/javascript', body: readFileSync(new URL('../../static/js/browser-pane-stream.js', import.meta.url), 'utf8') });
     if (url.includes('/api/browser/launch'))
       return route.fulfill({ status: 201, contentType: 'application/json',
         body: JSON.stringify({ session_id: 'sid', url: 'about:blank', view: { w: 1280, h: 800 } }) });

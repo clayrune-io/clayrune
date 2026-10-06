@@ -6,6 +6,13 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — Browser pane: frames travel as raw JPEG, and a frame goes out the moment it exists
+
+- The pane now takes its frames from `GET /api/browser/frames`: length-prefixed binary messages over an ordinary chunked HTTP response, the JPEG as raw bytes instead of base64 inside JSON. Measured on one dense, constantly-scrolling page: 92 KB per frame on the wire vs 123 KB (-25%). Through a link throttled to 1 MB/s (the rate the 2026-08-26 live measurement saw) that is 10.6 delivered fps vs 8.0.
+- The server no longer polls the session every 33 ms: stream generators park on a Condition that the CDP reader signals (`mc/browser_stream.py` `bump()`). Delivery is capped by a token bucket at `browser_stream_max_fps` (config.json, default 30, the old ceiling; 60 delivers 60 on localhost) rather than by timer granularity.
+- The old SSE route is unchanged and is the fallback: the pane uses it when `fetch` streaming is missing, `/frames` errors, answers the wrong content type or magic, or sends no bytes for 6 s (a proxy holding the body); a binary stream that drops after working is reopened. `localStorage.mc_bp_transport = 'sse'` forces the old path. No new dependency: werkzeug has no WebSocket server, and an HTTP stream crosses the tunnel and the APK WebView the way SSE does.
+- Not changed: JPEG quality, the screencast re-arm on `frameStoppedLoading`, graceful profile close. Bench: `node tools/smoke/bench-browser-pane-fps.mjs [sse|bin|both] [secs]`; smoke: `tools/smoke/browser-pane-binary-stream.mjs`.
+
 ## [2026-10-06] — First run: bring in the projects you already have in Claude Code
 
 - A new install no longer starts with an empty grid when you already use Claude Code. Setup has a new step after "Protect your work", "Bring in your Claude Code projects", and Create Project has a "Bring in your existing projects" link, so it is not first-run-only. It lists the folders you have used, newest first, with session count and last activity; the 5 most recent are ticked, nothing else is. One button adds the ticked ones through the same endpoint as Create Project (folder-in-use and install-folder checks apply); a project that is refused is named with the reason and stays in the list.
