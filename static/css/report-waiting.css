@@ -1,0 +1,10 @@
+/* MC-1063: queued child report, shown on the parent (chat notice + Floor line).
+   Amber like the dispatched-by notice: it is information, not an alarm. */
+.report-waiting-notice {
+  flex-shrink: 0; margin: 0 0 8px; padding: 8px 12px; border-radius: 8px;
+  border: 1px solid rgba(217,119,6,.4); background: rgba(217,119,6,.10);
+  color: inherit; font-size: 13px; line-height: 1.45;
+}
+.report-waiting-row[data-stage="held"], .report-waiting-row[data-stage="review"] { color: #b45309; }
+.report-waiting-detail { opacity: .8; }
+.fl-report { font-size: 11px; color: #d97706; margin-top: 3px; font-weight: 600; }
