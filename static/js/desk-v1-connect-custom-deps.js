@@ -13,19 +13,26 @@
 
   function _size(bytes) { return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round((bytes || 0) / 1024))} KB`; }
 
-  function _depsHTML(c) {
-    const t = c.dependency_totals || {};
-    const rows = c.dependencies.map((d) => `
+  function _depRowHTML(d) {
+    return `
             <li data-cu-dep="${esc(d.path)}">
               <div><strong>${esc(d.name)}</strong> <code>${esc(d.version)}</code>${d.deprecated ? ' <span class="desk-v1-cu-dep-flag" data-cu-dep-deprecated>deprecated</span>' : ''}</div>
               <div class="desk-v1-cu-dep-line">Digest <code data-cu-dep-digest>${esc(d.integrity)}</code></div>
               <div class="desk-v1-cu-dep-line">Placed at <code>${esc(d.path)}</code>; ${esc(d.licence || 'licence not stated')}; ${esc(_size(d.size_bytes))} download, ${esc(_size(d.unpacked_bytes))} unpacked</div>
-            </li>`).join('');
+            </li>`;
+  }
+
+  function _depSummary(c) {
+    const t = c.dependency_totals || {};
+    return `${t.count} dependency package${t.count === 1 ? '' : 's'} installed with it, ${_size(t.download_bytes)} download, ${_size(t.unpacked_bytes)} unpacked`;
+  }
+
+  function _depsHTML(c) {
     return `
           <details class="desk-v1-cu-deps" data-cu-deps open>
-            <summary>${esc(t.count)} dependency package${t.count === 1 ? '' : 's'} installed with it, ${esc(_size(t.download_bytes))} download, ${esc(_size(t.unpacked_bytes))} unpacked</summary>
+            <summary>${esc(_depSummary(c))}</summary>
             <div class="desk-v1-rules-hint">Each is installed at exactly this version and only if its archive has exactly this digest. A newer version, another registry or another file with the same version is never used.</div>
-            <ul class="desk-v1-cu-dep-list">${rows}</ul>
+            <ul class="desk-v1-cu-dep-list">${c.dependencies.map(_depRowHTML).join('')}</ul>
           </details>`;
   }
 
@@ -83,5 +90,7 @@
     }));
   }
 
-  window.DeskV1ConnectCustomDeps = { html, bind };
+  // `parts`: the same rows without the <details> around them, for the Connect wizard's package step
+  // (static/js/desk-v1-connect-package-step.js), which paginates them inside its own one Details.
+  window.DeskV1ConnectCustomDeps = { html, bind, parts: { dep: _depRowHTML, depSummary: _depSummary, script: _scriptHTML, notRun: _notRunHTML } };
 })();

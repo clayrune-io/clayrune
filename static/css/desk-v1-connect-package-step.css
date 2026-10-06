@@ -1,0 +1,11 @@
+/* Desk v1 — Connections: the Connect wizard's PACKAGE MCP screens (desk-v1-connect-package-step.js; MC-1062 ticket 10). rem sizes so 200% text scales every control; nothing has a fixed height. The frame's own look is desk-v1-connect-wizard.css; the dependency and script rows keep desk-v1-connect-custom-deps.css. */
+.desk-v1-cfk-pkgline { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.5rem; min-width: 0; margin-bottom: 0.5rem; overflow-wrap: anywhere; }
+.desk-v1-cfk-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+.desk-v1-cfk-cred { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; min-width: 0; }
+.desk-v1-cfk-cred input { flex: 1 1 10rem; min-width: 0; box-sizing: border-box; }
+.desk-v1-cfk-origin { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; min-width: 0; overflow-wrap: anywhere; margin-bottom: 0.5rem; }
+.desk-v1-cfk-list { margin: 0.5rem 0 0; padding-left: 1.25rem; display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; overflow-wrap: anywhere; }
+.desk-v1-cfk-list:empty { display: none; }
+.desk-v1-cfk-script { min-width: 0; margin-bottom: 0.5rem; }
+.desk-v1-cfk-deplist { margin: 0 0 0.25rem; max-height: none; }
+.desk-v1-cfk-approve { margin-top: 0.75rem; min-height: 2.75rem; }
