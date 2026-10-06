@@ -363,8 +363,8 @@ async function run(browser) {
 
   await selectTile(page, 'ch-li-page');
   const li = await page.$eval('[data-readvia-row="ch-li-page"] [data-readvia="api"]', (b) => b.textContent.trim());
-  check(li === 'LinkedIn API (paid)' && !(await page.$('[data-readvia-row="ch-li-page"] [data-readvia-profile]')),
-        'LinkedIn: API option reads "LinkedIn API (paid)", no profile input (no pane reader yet)',
+  check(li === 'LinkedIn API (paid)' && !!(await page.$('[data-readvia-row="ch-li-page"] [data-readvia-profile]')),
+        'LinkedIn: API option reads "LinkedIn API (paid)", and the pane choice takes a profile (the pane reader exists now)',
         `LinkedIn row wrong: ${li}`);
 
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));

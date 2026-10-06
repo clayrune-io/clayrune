@@ -42,8 +42,11 @@
   const _xOpen = new Set();   // account ids whose X steps are open; survives a repaint
   let _connOv = null;          // GET /api/desk/connect/status, dropped when a sign-in changes
 
-  // Only X and LinkedIn have a read route; every other platform shows no control.
-  const READ_VIA_PLATFORMS = ['x', 'linkedin'];
+  // X and LinkedIn also have a paid API read route, so they offer the choice. Every other site
+  // is read through the browser pane only. A blog is published by hand: nothing to read.
+  const API_READ_PLATFORMS = ['x', 'linkedin'];
+  const NO_READ_PLATFORMS = ['blog'];
+  function _canRead(ch) { return !!ch.platform && NO_READ_PLATFORMS.indexOf(ch.platform) < 0; }
 
   function _homeProjectId(ch) {
     const camp = _campaigns().find((c) => c.projectId && (c.plan && c.plan.accounts || []).includes(ch.id));
@@ -75,11 +78,17 @@
   }
 
   function _readViaHTML(ch) {
-    if (READ_VIA_PLATFORMS.indexOf(ch.platform) < 0) return '';
-    const via = ch.read_via === 'api' ? 'api' : 'pane';
+    if (!_canRead(ch)) return '';
+    const hasApi = API_READ_PLATFORMS.indexOf(ch.platform) >= 0;
+    const via = hasApi && ch.read_via === 'api' ? 'api' : 'pane';
     const apiLabel = ch.platform === 'x' ? 'X API (paid, ~$0.005 per read)' : 'LinkedIn API (paid)';
     const btn = (v, label) => `<button type="button" data-readvia="${v}" aria-pressed="${via === v}">${esc(label)}</button>`;
-    const profile = via === 'pane' && ch.platform === 'x'
+    const choice = hasApi
+      ? `<div class="desk-v1-conn-readvia-seg" role="group" aria-label="How the Desk reads this account">
+            ${btn('pane', 'Browser pane (no charge)')}${btn('api', apiLabel)}
+          </div>`
+      : '<span data-readvia-fixed>Browser pane (no charge)</span>';
+    const profile = via === 'pane'
       ? `<label class="desk-v1-conn-readvia-profile">Signed-in browser profile
            <input type="text" class="desk-v1-rules-textinput" data-readvia-profile maxlength="64"
              placeholder="name of the saved profile" value="${esc(ch.browser_profile || '')}"></label>`
@@ -87,11 +96,10 @@
     return `
         <div class="desk-v1-conn-readvia" data-readvia-row="${esc(ch.id)}" data-platform="${esc(ch.platform)}">
           <span class="desk-v1-how-field-label">Read via</span>
-          <div class="desk-v1-conn-readvia-seg" role="group" aria-label="How the Desk reads this account">
-            ${btn('pane', 'Browser pane (no charge)')}${btn('api', apiLabel)}
-          </div>
+          ${choice}
           ${profile}
           ${via === 'pane' && window.DeskV1ConnectAgentRead ? window.DeskV1ConnectAgentRead.html(ch) : ''}
+          ${via === 'pane' && window.DeskV1ReadPages ? window.DeskV1ReadPages.html(ch) : ''}
           <div class="desk-v1-rules-hint" data-readvia-status></div>
         </div>`;
   }
@@ -124,7 +132,7 @@
   function _accountHTML(ch) {
     const st = _status(ch);
     const live = _isLiveRow(ch);
-    const readable = live ? READ_VIA_PLATFORMS.indexOf(ch.platform) >= 0 && !ch.preview : (st.key === 'ok' || st.key === 'reauth');
+    const readable = live ? _canRead(ch) && !ch.preview : (st.key === 'ok' || st.key === 'reauth');
     return `
       <div class="desk-v1-conn-row" data-conn-account="${esc(ch.id)}" data-platform="${esc(ch.platform)}" data-conn-state="${st.key}">
         <div class="desk-v1-conn-head">
@@ -161,7 +169,7 @@
 
   // The coverage line the server computes (never silenced: "Not connected (…)"
   // when the chosen route can't read). Empty when the route is reading fine.
-  function _showCoverage(row, ch) {
+  function _showCoverage(row, ch, patch) {
     const out = row.querySelector('[data-readvia-status]');
     const pid = _homeProjectId(ch);
     if (!out || !pid) return;
@@ -169,6 +177,8 @@
       const c = ((d || {}).coverage || []).find((x) => x.platform === ch.platform);
       out.textContent = c ? (c.message || '') : '';
       out.dataset.state = c ? c.state : '';
+      // Live only: the page addresses are saved through the account route, which the demo has not got.
+      if (_isLiveRow(ch) && window.DeskV1ReadPages) window.DeskV1ReadPages.show(row, ch, c ? c.pages : null, patch);
     }).catch(() => { out.textContent = ''; });
   }
 
@@ -203,10 +213,10 @@
       patch({ browser_profile: prof.value.trim() }).then((acc) => {
         if (!acc) return;
         ch.browser_profile = acc.browser_profile || '';
-        _showCoverage(row, ch);
+        _showCoverage(row, ch, patch);
       });
     });
-    _showCoverage(row, ch);
+    _showCoverage(row, ch, patch);
     if (window.DeskV1ConnectAgentRead) window.DeskV1ConnectAgentRead.bind(row, ch);
   }
 
@@ -243,6 +253,7 @@
     const read = {};
     if (ch.read_via) read.read_via = ch.read_via;
     if (ch.browser_profile) read.browser_profile = ch.browser_profile;
+    if (ch.read_pages && ch.read_pages.length) read.read_pages = ch.read_pages;
     return { snap, read };
   }
 
