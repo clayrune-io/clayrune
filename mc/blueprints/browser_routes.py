@@ -756,10 +756,25 @@ def _cdp_targets(session, timeout=2):
     truthy ``webSocketDebuggerUrl`` marker (`_cdp_page_conn` takes the dict)."""
     t = _cdp_transport(session)
     if t is not None:
-        return t.targets()
-    import urllib.request
-    return json.load(urllib.request.urlopen(
-        f"http://127.0.0.1:{session.get('port')}/json/list", timeout=timeout))
+        targets = t.targets()
+    else:
+        import urllib.request
+        targets = json.load(urllib.request.urlopen(
+            f"http://127.0.0.1:{session.get('port')}/json/list", timeout=timeout))
+    return _without_hidden_reads(session, targets)
+
+
+def _without_hidden_reads(session, targets):
+    """Drop the background tabs an agent read opened (mc/browser_hidden_read.py). Every
+    caller of `_cdp_targets` means "the user's tabs": once a hidden tab has navigated to a
+    real page, `_pick_page_target` would prefer it over the pane's own, and a read, a click
+    or a pick would land in it."""
+    hidden_urls = session.get('hidden_read_urls') or ()
+    hidden_ids = {t for t, d in (session.get('page_disposition') or {}).items() if d == 'hidden'}
+    if not hidden_urls and not hidden_ids:
+        return targets
+    return [t for t in targets
+            if t.get('id') not in hidden_ids and (t.get('url') or '') not in hidden_urls]
 
 
 def _cdp_version(session, timeout=2):

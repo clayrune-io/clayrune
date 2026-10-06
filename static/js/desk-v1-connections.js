@@ -91,6 +91,7 @@
             ${btn('pane', 'Browser pane (no charge)')}${btn('api', apiLabel)}
           </div>
           ${profile}
+          ${via === 'pane' && window.DeskV1ConnectAgentRead ? window.DeskV1ConnectAgentRead.html(ch) : ''}
           <div class="desk-v1-rules-hint" data-readvia-status></div>
         </div>`;
   }
@@ -206,6 +207,7 @@
       });
     });
     _showCoverage(row, ch);
+    if (window.DeskV1ConnectAgentRead) window.DeskV1ConnectAgentRead.bind(row, ch);
   }
 
   // Fixture-only Connect / Reconnect: flips the account's state, authenticates

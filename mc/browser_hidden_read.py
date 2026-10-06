@@ -85,6 +85,15 @@ class HiddenTabReader(br.ProfilePageReader):
                           f"profile '{self.profile}' is open in a live browser pane and a "
                           f"background tab could not be opened in it ({why})")
 
+    def _page_entry(self, pane):
+        """The `/json/list`-shaped entry `_cdp_page_conn` takes for the new tab: a pipe session
+        needs only the id, a port session the page's own websocket address."""
+        tid = self._target_id
+        if br._cdp_transport(pane) is not None:
+            return {'id': tid, 'webSocketDebuggerUrl': 'pipe:' + tid}
+        return {'id': tid, 'webSocketDebuggerUrl':
+                f"ws://127.0.0.1:{pane.get('port')}/devtools/page/{tid}"}
+
     def _open(self, url):
         if not br.named_profile_exists(self.profile):
             return self._fail('no_profile', f"no saved browser profile '{self.profile}'")
@@ -102,9 +111,7 @@ class HiddenTabReader(br.ProfilePageReader):
             self._browser = _Conn(br._cdp_browser_conn(pane, br._cdp_version(pane), timeout=5))
             self._target_id = self._browser.call(
                 'Target.createTarget', {'url': marker, 'background': True})['targetId']
-            self._page = _Conn(br._cdp_page_conn(
-                pane, {'id': self._target_id, 'webSocketDebuggerUrl': 'pipe:' + self._target_id},
-                timeout=5))
+            self._page = _Conn(br._cdp_page_conn(pane, self._page_entry(pane), timeout=5))
             self._page.call('Emulation.setFocusEmulationEnabled', {'enabled': True})
             self._page.call('Page.navigate', {'url': url})
         except Exception as e:

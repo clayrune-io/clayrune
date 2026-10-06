@@ -454,6 +454,8 @@ function agentLineCls(text) {
   // fallback is for renderers that don't (agent-console.js, project-forms.js)
   // so the raw marker never shows up as a visible line there either.
   if (isStopHookRedoLine(t)) return 'agent-line agent-line-hidden';
+  // MC-1059: the agent-read request card's marker; renderers without the card never show it raw.
+  if (t.startsWith('[agent-read-request:')) return 'agent-line agent-line-hidden';
   if (t.startsWith('[tool:')) return 'agent-line agent-line-tool';
   if (t.startsWith('[') && t.endsWith(']')) return 'agent-line agent-line-status';
   if (t.startsWith('[exited') || t.startsWith('[stream error')) return 'agent-line agent-line-error';

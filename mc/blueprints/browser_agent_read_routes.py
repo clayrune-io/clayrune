@@ -26,9 +26,12 @@ import threading
 from flask import Blueprint, jsonify, request
 
 from mc import browser_agent_read as policy
+from mc import browser_agent_read_ask as ask
+from mc import browser_agent_read_requests as requests_store
 from mc import browser_digest
 from mc.blueprints import browser_routes as br
 from mc.blueprints.mcp_write_gate import refuse_unattended, require_passcode
+from mc.browser_hidden_read import HiddenTabReader
 from mc.core import _log
 
 bp = Blueprint('browser_agent_read_routes', __name__)
@@ -43,14 +46,18 @@ _STATUS = {'bad_request': 400, 'agent_read_off': 403, 'domain_not_allowed': 403,
            'cdp_timeout': 504}
 
 
-def _refuse(kind, detail, status=None):
-    body = {'ok': False, 'error': kind, 'detail': detail,
-            'guidance': browser_digest.NO_FALLBACK_GUIDANCE}
+def _refuse(kind, detail, status=None, asked=None):
+    """`asked` is the sentence `browser_agent_read_ask.ask` returns when the refusal also put
+    a card in the agent's chat; it joins the guidance so the agent stops and waits."""
+    guidance = browser_digest.NO_FALLBACK_GUIDANCE
+    if asked:
+        guidance = f'{guidance} {asked}'
+    body = {'ok': False, 'error': kind, 'detail': detail, 'guidance': guidance}
     return jsonify(body), status or _STATUS.get(kind, 502)
 
 
-class _AllowListedReader(br.ProfilePageReader):
-    """A `ProfilePageReader` that refuses to read a page whose address is off the list.
+class _AllowList(br.ProfilePageReader):
+    """A `ProfilePageReader` (mixed in ahead of `HiddenTabReader` too) that refuses to read a page whose address is off the list.
 
     The list is checked against where the page ENDED UP, not the URL that was asked for:
     `_refuse_href` runs after navigation settles and before any text is read, so a redirect
@@ -82,6 +89,14 @@ class _AllowListedReader(br.ProfilePageReader):
         if href != body.get('final_url'):
             return self._fail('redirect_off_list', 'the page moved while it was being read')
         return body
+
+
+class _AllowListedReader(_AllowList):
+    """Starts the profile's own Chromium to read (the profile is not open anywhere)."""
+
+
+class _AllowListedHiddenReader(_AllowList, HiddenTabReader):
+    """Reads in a hidden background tab of the pane's Chromium (the profile is already open)."""
 
 
 def href_host(href):
@@ -126,21 +141,31 @@ def browser_read_digest():
     profile = profile.strip().lower()
     project_id = data.get('project_id') if isinstance(data.get('project_id'), str) else _DEFAULT_PROJECT
 
+    session_id = ask.caller_session_id(data.get('session_id'))
     rec = policy.get_policy(profile)
+    refusal = None
     if not rec['enabled']:
-        return _refuse('agent_read_off',
-                       f"profile '{profile}' is not switched on for agent reads; "
-                       f"only a human can switch it on")
-    if not policy.url_allowed(url, rec['domains']):
-        return _refuse('domain_not_allowed',
-                       f"{href_host(url)} is not on profile '{profile}''s allowed list "
-                       f"(https addresses only)")
+        refusal = ('agent_read_off', f"profile '{profile}' is not switched on for agent reads; "
+                                     f"only a human can switch it on")
+    elif not policy.url_allowed(url, rec['domains']):
+        refusal = ('domain_not_allowed', f"{href_host(url)} is not on profile '{profile}''s "
+                                         f"allowed list (https addresses only)")
+    once, domains = None, rec['domains']
+    if refusal:
+        # A pass the user granted from the request card (Allow once) covers exactly this
+        # profile + site + session, and nothing the profile's policy says.
+        once = requests_store.find_once(profile, url, session_id)
+        if once is None:
+            return _refuse(*refusal, asked=ask.ask(profile, url, session_id))
+        domains = [once['domain']]
 
     with _busy_lock:
         if profile in _busy:
             return _refuse('profile_busy', f"profile '{profile}' is already being read")
         _busy.add(profile)
-    reader = _AllowListedReader(project_id, profile, rec['domains'])
+    reader_cls = (_AllowListedHiddenReader if br._session_using_profile(profile)
+                  else _AllowListedReader)
+    reader = reader_cls(project_id, profile, domains)
     try:
         body = reader.read(url)
     except Exception as e:
@@ -166,4 +191,7 @@ def browser_read_digest():
          flush=True)
     if not out.get('ok'):
         return jsonify(out), 502
+    # Spent by the first read that returned an answer; a read that failed leaves it for a retry.
+    if once is not None and not requests_store.consume_once(once['id']):
+        return _refuse('domain_not_allowed', 'that one-time permission was already used')
     return jsonify(out), 200
