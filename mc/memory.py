@@ -4254,7 +4254,9 @@ def _should_condense(project, include_claude_md=False):
         # The index budget is BYTES, not lines: a file can pass the line
         # budget and still cost more per prompt than we agreed to spend.
         # Byte pressure is an equally valid trigger (2026-07-15 revisit).
-        over_bytes = len(text.encode('utf-8')) > _index_byte_cap()
+        # Keyed on the byte TRIGGER, which sits below the mechanical floor —
+        # keyed on the cap it could never fire: the floor evicts first.
+        over_bytes = len(text.encode('utf-8')) > _index_byte_trigger()
         if not (over_lines or over_bytes):
             return False
         # Structured condense only ever acts on managed entries — with zero
@@ -4279,7 +4281,8 @@ def _should_condense(project, include_claude_md=False):
                 _curated_cap_warned.add(project.get('id', ''))
                 _log(f"[condense] {project.get('id', '')}: MEMORY.md is "
                      f"{len(text.encode('utf-8')) // 1024}KB, over the "
-                     f"{_index_byte_cap() // 1024}KB index budget, with NO "
+                     f"{_index_byte_trigger() // 1024}KB condense trigger "
+                     f"({_index_byte_cap() // 1024}KB index budget), with NO "
                      f"managed entries to demote — every prompt of every "
                      f"session pays for it. Curated region needs human "
                      f"curation (overflow to MEMORY_ARCHIVE.md); structured "
@@ -4340,6 +4343,14 @@ def _index_byte_cap():
 
 def _index_byte_floor():
     return max(1024, _index_byte_cap() - 1024)
+
+
+def _index_byte_trigger():
+    """Byte level at which the condense TRIGGER fires: one step below the
+    mechanical floor, so the model-curated trim runs before verbatim eviction.
+    (Lines already order correctly: index_line_budget 160 < hard floor 185.)
+    Floor is >= 1024, so trigger < floor always holds."""
+    return max(512, _index_byte_floor() - 1024)
 
 
 class MemoryCapExceeded(Exception):

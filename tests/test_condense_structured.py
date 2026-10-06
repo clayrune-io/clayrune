@@ -306,3 +306,45 @@ def test_ring_evicts_by_entry_count_on_commit(tmp_data_dir):
     assert "**e0**" in arch
     # MEMORY.md itself never carries any of this after the split.
     assert mp.read_text(encoding="utf-8").strip() == "# Index"
+
+
+# ── condense deadband (dae8d6e7 item 3): trigger < floor < cap ───────────────
+
+def test_byte_trigger_orders_below_floor_below_cap(tmp_data_dir):
+    """The byte condense trigger must sit BELOW the mechanical floor, or the
+    floor evicts verbatim first and the model-curated trim never runs.
+    Lines already order correctly (budget 160 < hard floor 185)."""
+    s = _server(tmp_data_dir)
+    for budget in (None, 2048, 4096, 24 * 1024, 200 * 1024):
+        if budget is None:
+            _config().pop("index_byte_budget", None)
+        else:
+            _config()["index_byte_budget"] = budget
+        trig, floor, cap = (s._index_byte_trigger(), s._index_byte_floor(),
+                            s._index_byte_cap())
+        assert trig < floor < cap, (budget, trig, floor, cap)
+        assert trig >= 512, (budget, trig)
+    assert (_config().get("index_line_budget", 160)
+            < _config().get("index_line_hard_floor", 185))
+
+
+def test_structured_trigger_fires_between_trigger_and_floor(tmp_data_dir):
+    """A MEMORY.md above the byte trigger but below the byte floor (and under
+    the line budget) must make the structured trigger True while the
+    mechanical floor is still False — the deadband this closes."""
+    s = _server(tmp_data_dir)
+    _config()["condense_mode"] = "structured"
+    _config().pop("index_byte_budget", None)
+    _config()["index_line_budget"] = 500
+    trig, floor = s._index_byte_trigger(), s._index_byte_floor()
+    target = (trig + floor) // 2
+    entries = [f"- [2026-07-01] **e{i}** — " + "x" * 700 for i in range(10)]
+    pad = "# Index\n" + "- curated pad\n"
+    p, mp = _seed(s, pad, entries)
+    size = len(mp.read_text(encoding="utf-8").encode("utf-8"))
+    pad += "y" * (target - size)
+    p, mp = _seed(s, pad, entries)
+    text = mp.read_text(encoding="utf-8")
+    assert trig < len(text.encode("utf-8")) <= floor
+    assert s._over_floor(text, 185) is False
+    assert s._should_condense(p, include_claude_md=True) is True
