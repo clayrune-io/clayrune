@@ -6,6 +6,10 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-05] — Desk: the saved-login choice is on the Details step of a sign-in
+
+- Add service > Higgsfield > Sign in with Higgsfield used to show one empty box on the Details step. It now says what the method does and offers "Use a saved login" (your stored logins by name) and "Store a new login", at phone and desktop width. Review shows which login will be used (the password is never shown) and the Result step carries the choice on to "Sign in with the saved login". A login typed here is stored on the Result step, with the passcode.
+
 ## [2026-10-05] — Desk: a service's routes by purpose, one account bound per purpose (slice P2)
 
 - Connecting a known service (LinkedIn, X) now lists every route grouped by what it is for (publish, read your own posts and replies), with what it needs, what it costs, the evidence behind it and whether Clayrune can run it. One account can use a different route per purpose, for example the API to publish and the browser pane to read its own posts. Nothing is ticked for you, and nothing is written until you press Save and give your passcode.

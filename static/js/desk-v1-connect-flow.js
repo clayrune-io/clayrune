@@ -177,10 +177,14 @@
   // ── 3. Details ──────────────────────────────────────────────────────────
   function _providerDetailsHTML() {
     const c = _connector();
+    const SI = window.DeskV1ConnectSignin;
+    const hasFields = !!(c.fields && c.fields.length);                  // a sign-in with nothing to type has no box to draw
     return `
         <form class="desk-v1-cf-form" data-cf-details-form data-cf-provider="${esc(S.info.service ? S.info.service.id : '')}" autocomplete="off" novalidate>
+          <div class="desk-v1-cf-note" data-cf-d-summary>${esc(c.summary)}</div>
           ${window.DeskV1ConnectAdapter.guideHTML(c)}
-          <div class="desk-v1-cf-cred" data-cfa-slot></div>
+          <div class="desk-v1-cf-cred" data-cfa-slot ${hasFields ? '' : 'hidden'}></div>
+          ${c.signs_in && SI ? SI.detailsHTML() : ''}
           ${S.error ? _msg('error', S.error) : ''}
           ${_actions(true, '<button type="submit" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-cf-next>Review</button>')}
         </form>`;
@@ -229,6 +233,7 @@
         </dl>
         <div class="desk-v1-rules-hint" data-cf-r-does>${esc(c.summary)}</div>
         <div data-cf-r-credbox>${window.DeskV1ConnectAdapter.summaryHTML()}</div>
+        ${c.signs_in && window.DeskV1ConnectSignin ? window.DeskV1ConnectSignin.detailsReviewHTML() : ''}
         ${c.install ? window.DeskV1ConnectInstall.html(c.install) : ''}
         <div class="desk-v1-rules-hint" data-cf-r-honest>Saving asks for your dashboard passcode once; nothing has been written yet. Saving does not verify anything: you can check it afterwards.</div>
         <div data-cfa-slot hidden></div>
@@ -425,6 +430,10 @@
     const dform = root.querySelector('[data-cf-details-form]');
     if (dform && _isProvider()) {
       window.DeskV1ConnectAdapter.mount(dform.querySelector('[data-cfa-slot]'), _connector(), _adapterKey());
+      if (_connector().signs_in && window.DeskV1ConnectSignin) {
+        window.DeskV1ConnectSignin.detailsStart(S.info.service.id, S.method, ctx);
+        window.DeskV1ConnectSignin.detailsBind(root);
+      }
       dform.addEventListener('submit', (e) => {
         e.preventDefault();
         const r = window.DeskV1ConnectAdapter.read();
@@ -457,6 +466,7 @@
       if (_isProvider()) {
         const hidden = root.querySelector('[data-cfa-slot]');
         if (hidden) window.DeskV1ConnectAdapter.mount(hidden, _connector(), _adapterKey());   // keep the typed node alive
+        if (_connector().signs_in && window.DeskV1ConnectSignin) window.DeskV1ConnectSignin.detailsReviewBind(root);
       } else if (S.useCred) _mountForm(root);
       const box = root.querySelector('[data-cf-r-credbox]');
       if (box && !_isProvider()) box.innerHTML = _credSummaryHTML();

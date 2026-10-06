@@ -152,10 +152,80 @@
   const KEY = 'result';
   let R = null;      // { res, ctx, route, logins, locked, pick, busy, msg, kind }
 
+  // ── the Details step of a provider sign-in, before Save ────────────────────────────────────────────
+  // The same two controls, drawn where the human fills in the method's details. Only a pick (a name) and
+  // the typed form's DOM node are kept; nothing is stored here. The Result step takes both over, so a
+  // login typed on Details is stored with its own passcode-gated "Save this login" once the sign-in opens.
+  let D = null;      // { service, method, ctx, route, logins, locked, pick, failed }
+
+  function detailsStart(service, method, ctx) {
+    if (D && D.service === service && D.method === method) { D.ctx = ctx; return; }
+    if (D) reset();                       // another service or method: a login typed for the old one is not carried over
+    const mine = { service, method, ctx, route: null, logins: [], locked: false, pick: '', failed: false };
+    D = mine;
+    ctx.api('POST', '/api/desk/connect/signin/options', { service }).then((o) => {
+      if (D !== mine) return;
+      mine.route = (o.routes || []).find((r) => r.connect_method === method) || null;
+      mine.logins = o.logins || []; mine.locked = !!o.vault_locked;
+      mine.ctx.repaint();
+    }).catch(() => { if (D === mine) { mine.failed = true; mine.ctx.repaint(); } });
+  }
+
+  function _loginOptions(logins, pick) {
+    return ['<option value="">Choose a saved login…</option>'].concat(logins.map((l) => `<option value="${esc(l.name)}"${pick === l.name ? ' selected' : ''}>${esc(l.name)}</option>`)).join('');
+  }
+
+  function detailsHTML() {
+    if (!D) return '';
+    if (D.failed) return '<div class="desk-v1-rules-hint" data-cs-details-failed>The saved logins could not be loaded. You can still save, then sign in in the browser pane.</div>';
+    if (!D.route) return '<div class="desk-v1-rules-hint" data-cs-details-loading>Loading your saved logins…</div>';
+    return `<section class="desk-v1-cs-pick" data-cs-details aria-label="Sign in with a saved login">
+        <div class="desk-v1-rules-group-title">Sign in with a saved login</div>
+        <div class="desk-v1-rules-hint">Optional. Clayrune can type a username and password you have stored into the sign-in page once it opens, instead of you typing them in the browser pane.${D.locked ? ' The vault is locked: unlock it in Settings, then try again.' : ''}</div>
+        ${D.logins.length ? `<label class="desk-v1-conn-add-field">Use a saved login
+          <select class="desk-v1-rules-textinput" data-cs-pick>${_loginOptions(D.logins, D.pick)}</select></label>` : '<div class="desk-v1-rules-hint" data-cs-nologins>There is no saved login for this service yet.</div>'}
+        ${newLoginHTML(KEY)}
+      </section>`;
+  }
+
+  function detailsBind(root) {
+    if (!D || !D.route) return;
+    const mine = D;
+    const box = root.querySelector('[data-cs-details]');
+    if (!box) return;
+    const pick = box.querySelector('[data-cs-pick]');
+    if (pick) pick.addEventListener('change', () => { mine.pick = pick.value; });
+    mount(box, KEY, `${mine.service}.login`, () => mine.ctx.repaint());
+  }
+
+  // Review's row for the choice, with no password in it. The typed form's node is kept in a hidden slot
+  // here so it survives the step (and so its facts can be read back); the row is filled in by the bind.
+  function detailsReviewHTML() {
+    if (!D || !D.route) return '';
+    return `<div data-cs-review></div><div data-cs-slot="${KEY}" hidden></div>`;
+  }
+
+  function detailsReviewBind(root) {
+    if (!D || !D.route) return;
+    const slot = root.querySelector(`[data-cs-slot="${KEY}"]`);
+    const box = root.querySelector('[data-cs-review]');
+    if (!slot || !box) return;
+    const f = forms[KEY];
+    if (f && f.host) slot.appendChild(f.host);
+    const typed = meta(KEY);
+    let row = '';
+    if (typed) {
+      row = `<div><dt>Sign-in login</dt><dd data-cs-r-login>New: <code>${esc(typed.name)}</code>${typed.username ? `, username ${esc(typed.username)}` : ''}; password ${typed.hasValue ? 'entered, hidden: shown nowhere' : 'not entered'}. It is stored on the next step, with the passcode.</dd></div>`;
+    } else if (D.pick) {
+      row = `<div><dt>Sign-in login</dt><dd data-cs-r-login><code>${esc(D.pick)}</code>, typed into the sign-in page when you ask</dd></div>`;
+    }
+    box.innerHTML = row ? `<dl class="desk-v1-cf-facts">${row}</dl>` : '';
+  }
+
   function resultStart(res, ctx) {
     R = null;
     if (!res || !res.signin || !res.service || !ctx) return;
-    const mine = { res, ctx, route: null, logins: [], locked: false, pick: '', busy: false, msg: '', kind: 'ok' };
+    const mine = { res, ctx, route: null, logins: [], locked: false, pick: (D && D.service === res.service.id && D.method === res.method) ? D.pick : '', busy: false, msg: '', kind: 'ok' };
     R = mine;
     ctx.api('POST', '/api/desk/connect/signin/options', { service: res.service.id }).then((o) => {
       if (R !== mine) return;
@@ -214,7 +284,8 @@
       () => ({ service: mine.res.service.id, route_id: mine.route.route_id, login: mine.pick, profile: mine.res.signin.profile }));
   }
 
-  function resultReset() { R = null; reset(); }
+  function resultReset() { R = null; D = null; reset(); }
 
-  window.DeskV1ConnectSignin = { newLoginHTML, mount, read, meta, clear, reset, fillHTML, bindFill, resultStart, resultHTML, resultBind, resultReset };
+  window.DeskV1ConnectSignin = { newLoginHTML, mount, read, meta, clear, reset, fillHTML, bindFill, resultStart, resultHTML, resultBind, resultReset,
+    detailsStart, detailsHTML, detailsBind, detailsReviewHTML, detailsReviewBind };
 })();
