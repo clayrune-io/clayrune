@@ -1,0 +1,4 @@
+/* Desk v1 — Connections: "Add a remote MCP server" (desk-v1-connect-remote.js). The card, form and result reuse
+   desk-v1-connect-custom.css (.desk-v1-cu-*) and desk-v1-connect-flow.css (.desk-v1-cf-*); only the closed entry row is its own. */
+.desk-v1-cr-closed { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+.desk-v1-cr-closed .desk-v1-rules-hint { flex: 1 1 220px; min-width: 0; }
