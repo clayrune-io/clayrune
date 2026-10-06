@@ -419,6 +419,9 @@ function renderDocumentsTab(projectId) {
   if (!docSelections[projectId]) docSelections[projectId] = new Set();
   const sel = docSelections[projectId];
 
+  // documents-search.js: an active content-search query replaces the list.
+  if (window.docSearchRender && window.docSearchRender(projectId, container, toolbar)) return;
+
   if (!docs.length) {
     if (toolbar) toolbar.style.display = 'none';
     // A plan is any markdown file an agent writes into ~/.claude/plans/; a doc
@@ -550,7 +553,7 @@ async function exportSelectedDocs(projectId) {
 
 async function openDocFromHistory(docPath, title, projectId) {
   const modalId = '__planhistory_' + docPath.replace(/[^a-zA-Z0-9]/g, '_').slice(-30);
-  if (openModals.has(modalId)) { focusModal(modalId); return; }
+  if (openModals.has(modalId)) { focusModal(modalId); return openModals.get(modalId).element; }
 
   let content;
   try {
@@ -566,24 +569,26 @@ async function openDocFromHistory(docPath, title, projectId) {
   // Render with rich formatting (same as openPlanFileViewer)
   const lines = content.split('\n');
   let bodyHTML = '';
-  let tableLines = [];
+  let tableLines = [], tableAt = 0;
   function flushTable() {
     if (tableLines.length === 0) return;
     if (isPipeTable(tableLines)) {
-      bodyHTML += `<div class="hl-table">${buildPipeTable(tableLines)}</div>`;
+      bodyHTML += `<div class="hl-table" data-line="${tableAt}">${buildPipeTable(tableLines)}</div>`;
     } else {
-      bodyHTML += `<div class="hl-table-pre">${tableLines.map(l => formatTableLine(esc(l))).join('\n')}</div>`;
+      bodyHTML += `<div class="hl-table-pre" data-line="${tableAt}">${tableLines.map(l => formatTableLine(esc(l))).join('\n')}</div>`;
     }
     tableLines = [];
   }
-  for (const line of lines) {
+  // data-line (1-based source line) lets documents-search.js scroll to a hit.
+  for (const [i, line] of lines.entries()) {
     if (isTableLine(line)) {
+      if (!tableLines.length) tableAt = i + 1;
       tableLines.push(line);
     } else if (tableLines.length > 0 && line.trim() === '') {
       tableLines.push(line);
     } else {
       flushTable();
-      bodyHTML += `<div class="agent-line">${formatAgentText(line)}</div>`;
+      bodyHTML += `<div class="agent-line" data-line="${i + 1}">${formatAgentText(line)}</div>`;
     }
   }
   flushTable();
@@ -610,6 +615,7 @@ async function openDocFromHistory(docPath, title, projectId) {
   openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
   centerModalElement(win);
   focusModal(modalId);
+  return win;
 }
 
 // ── Agent Log continue ───────────────────────────────────────────────────────
