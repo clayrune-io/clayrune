@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — Browser pane: no debugging port by default; the Desk sign-in fill works on it
+
+- The pane's Chromium now talks to Clayrune over a pipe instead of a local TCP debugging port, so no other process on the machine can attach to it and read a login being typed into a page. `browser_cdp_pipe` (config.json, default `true`) turns it off, which returns every launch to the port. The Desk's discovery pane still uses a port (it is a throwaway profile with no login).
+- The Desk "sign in with a saved login" fill (`signin_fill_cdp.connect`) reaches the page through the same transport-neutral helpers as the rest of the pane, so it types on a pipe session. This is what had kept the pipe off by default.
+
 ## [2026-10-05] — Desk: a locked vault is reported before you sign in, with an unlock right there
 
 - Add service > Higgsfield > Sign in used to let you finish the whole sign-in at the vendor and then say "Signed in, but the sign-in could not be saved: vault is locked". The server now refuses at the start (409 `vault_locked`, "Unlock the vault first, then sign in") before it contacts the vendor or opens a port, and Save refuses a sign-in method the same way before it writes anything.

@@ -733,14 +733,14 @@ def _cdp_transport_wanted(extra_args, narrow_remote_origins):
 
     Backlog 6b313cb6 (Wren's P2b re-audit R1): the open debugging port lets any
     local process attach and read a filled sign-in credential. The pipe removes
-    the port (see mc/browser_cdp_pipe.py). Gated on `browser_cdp_pipe` because
-    the Desk's sign-in fill (`signin_fill_cdp.connect`) still dials the port
-    itself; a pipe session has none. Launches that hand Chromium a port-aware
-    proxy bypass (`extra_args` callable, `narrow_remote_origins`) stay on the
-    port: that is the Desk's discovery pane, a throwaway profile with no login."""
+    the port (see mc/browser_cdp_pipe.py). ON by default; `browser_cdp_pipe:
+    false` in config.json returns every launch to the port. Launches that hand
+    Chromium a port-aware proxy bypass (`extra_args` callable,
+    `narrow_remote_origins`) stay on the port: that is the Desk's discovery
+    pane, a throwaway profile with no login."""
     if extra_args is not None or narrow_remote_origins:
         return False
-    return bool(state.CONFIG.get('browser_cdp_pipe', False))
+    return bool(state.CONFIG.get('browser_cdp_pipe', True))
 
 
 def _cdp_transport(session):
