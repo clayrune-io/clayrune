@@ -14,7 +14,7 @@
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
   // One short mark per platform: a glyph, never a logo asset (nothing to load).
-  const MARKS = { x: 'X', linkedin: 'in', youtube: '▶', discord: 'D', reddit: 'r', blog: 'B' };
+  const MARKS = { x: 'X', linkedin: 'in', youtube: '▶', instagram: 'IG', tiktok: 'TT', discord: 'D', reddit: 'r', blog: 'B' };
   function mark(platform) { return MARKS[platform] || String(platform || '?').charAt(0).toUpperCase(); }
 
   // An account's label can carry its platform glyph ("𝕏 · @ron", "in · Clayrune page",

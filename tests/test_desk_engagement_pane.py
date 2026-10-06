@@ -115,10 +115,15 @@ def test_readers_follow_each_accounts_choice(store):
     assert isinstance(rd['x'], eng.PaneXReader) and rd['x'].via == 'pane'
     assert rd['linkedin'].via == 'pane'
     _desk.set_account_read_settings(PID, 'ch-x-ron', read_via='api')
-    _desk.set_account_read_settings(PID, 'ch-li', read_via='api')
+    with pytest.raises(ValueError):                  # LinkedIn has no API read: refused, not stored
+        _desk.set_account_read_settings(PID, 'ch-li', read_via='api')
     rd = eng.readers_for_project(PID)
     assert isinstance(rd['x'], eng.XReader) and rd['x'].via == 'api'
-    assert rd['linkedin'].via == 'api'
+    assert rd['linkedin'].via == 'pane'
+    # A LinkedIn account saved as `api` before the option was removed keeps its gap-only reader
+    # (the account asks the user for a choice; nothing moves it to the pane quietly).
+    _project(accounts=[_acc(), {'channel_id': 'ch-li', 'platform': 'linkedin', 'read_via': 'api'}])
+    assert eng.readers_for_project(PID)['linkedin'].via == 'api'
 
 
 def test_set_account_read_settings_creates_updates_and_validates(store):

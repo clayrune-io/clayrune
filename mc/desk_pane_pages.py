@@ -51,3 +51,8 @@ PLATFORM_PAGES: dict[str, dict] = {
         'post': ['https://www.tiktok.com/@'],
     },
 }
+
+# Sites the Desk has no publisher or API reader for: it only READS them, through the pane.
+# X and LinkedIn have their own readers and (X) an API route, so they are not in this set.
+# Derived from the table, so a new entry here is a new read-only account type with no other edit.
+PANE_ONLY_PLATFORMS: tuple[str, ...] = tuple(p for p in PLATFORM_PAGES if p not in ('x', 'linkedin'))

@@ -61,6 +61,7 @@ import uuid
 
 from mc.core import _atomic_write_text, _log, now_iso
 from mc import distiller as _distiller
+from mc.desk_pane_pages import PANE_ONLY_PLATFORMS
 
 # -- wired by server.py -------------------------------------------------------
 # Path constants are server.py-owned; this module holds wired placeholders, the
@@ -251,7 +252,8 @@ def _lift_presence_accounts(data: dict) -> None:
             rec = {
                 'id': cid, 'platform': plat, 'identity': ident,
                 'label': acc.get('label') or ident,
-                'capability': acc.get('capability') if acc.get('capability') in ('direct', 'manual') else 'manual',
+                'capability': (acc.get('capability') if acc.get('capability') in ('direct', 'manual')
+                               else 'none' if plat in PANE_ONLY_PLATFORMS else 'manual'),
                 'voice': acc.get('voice') or '',
                 'created_at': acc.get('created_at') or pres.get('updated_at'),
             }
@@ -383,7 +385,9 @@ def upsert_presence(project_id: str, patch: dict) -> dict:
 
 
 READ_VIA = ('pane', 'api')
-_ACCOUNT_PLATFORMS = ('x', 'linkedin')
+# The only site with a paid API read route (LinkedIn has none: Ron/Dave 2026-10-06).
+API_READ_PLATFORMS = ('x',)
+_ACCOUNT_PLATFORMS = ('x', 'linkedin') + PANE_ONLY_PLATFORMS
 
 
 def account_read_via(acc) -> str:
@@ -392,6 +396,15 @@ def account_read_via(acc) -> str:
     raises: a hand-edited store must not break a read."""
     v = acc.get('read_via') if isinstance(acc, dict) else None
     return v if v in READ_VIA else 'pane'
+
+
+def _stored_platform(project_id: str, channel_id: str) -> str | None:
+    with _store_lock:
+        rec = _read_store()['presences'].get(project_id) or {}
+    for a in rec.get('accounts') or []:
+        if isinstance(a, dict) and a.get('channel_id') == channel_id:
+            return a.get('platform')
+    return None
 
 
 def set_account_read_settings(project_id: str, channel_id: str, *, platform: str | None = None,
@@ -409,6 +422,8 @@ def set_account_read_settings(project_id: str, channel_id: str, *, platform: str
         raise ValueError(f'read_via must be one of {READ_VIA}')
     if platform is not None and platform not in _ACCOUNT_PLATFORMS:
         raise ValueError(f'platform must be one of {_ACCOUNT_PLATFORMS}')
+    if read_via == 'api' and (platform or _stored_platform(project_id, channel_id)) not in API_READ_PLATFORMS:
+        raise ValueError('only X accounts can be read through an API; this one is read through the browser pane')
     if not channel_id or not isinstance(channel_id, str):
         raise ValueError('channel_id is required')
     with _store_lock:
@@ -439,9 +454,11 @@ def set_account_read_settings(project_id: str, channel_id: str, *, platform: str
         # account created by this very call has none yet.
         ws = store['accounts'].get(channel_id)
         if ws is None:
+            plat = acc.get('platform') or platform
             ws = store['accounts'][channel_id] = {
-                'id': channel_id, 'platform': acc.get('platform') or platform,
-                'identity': channel_id, 'label': channel_id, 'capability': 'manual',
+                'id': channel_id, 'platform': plat,
+                'identity': channel_id, 'label': channel_id,
+                'capability': 'none' if plat in PANE_ONLY_PLATFORMS else 'manual',
                 'voice': '', 'created_at': rec['updated_at']}
         apply_read_settings(ws, read_via, browser_profile)
         _write_store(store)

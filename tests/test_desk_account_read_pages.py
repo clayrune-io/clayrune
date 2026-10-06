@@ -5,7 +5,7 @@ Pinned:
   * a YouTube / Instagram / unknown-site account takes a browser profile and
     `read_pages` through the same PATCH X and LinkedIn use; both land on the workspace
     record AND the presence copy `PaneDigestReader` reads, and the reader parses them;
-  * `read_via: 'api'` stays X and LinkedIn only: any other site is read through the pane;
+  * `read_via: 'api'` is X only: any other site is read through the pane;
   * a blog has nothing to read, so a read setting on it is still refused;
   * `read_pages` is saved strictly (https only, known roles, at most MAX_USER_PAGES):
     a bad entry is a 400 that changes nothing, `[]` clears;
@@ -102,7 +102,7 @@ def test_an_unrelated_edit_leaves_the_pages_alone(env):
     assert _by_id(client)['ch-yt']['read_pages'] == [{'role': 'activity', 'url': YT}]
 
 
-def test_api_read_stays_x_and_linkedin_only(env):
+def test_api_read_is_x_only(env):
     client, _ = env
     for cid in ('ch-yt', 'ch-ig', 'ch-forum'):
         r = _patch(client, cid, read_via='api')

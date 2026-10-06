@@ -12,8 +12,8 @@ Pinned:
     (manual) is ready; a preview account is not;
   * no route takes or returns a credential: an account names a vault entry, and
     only the vault's metadata is ever read;
-  * create/delete refuse an unattended caller (403), only X / LinkedIn / blog can
-    be created, a duplicate identity is 409, delete is 409 while a live campaign
+  * create/delete refuse an unattended caller (403), only X / LinkedIn / blog and the
+    read-only pane sites (tests/test_desk_readonly_accounts.py) can be created, a duplicate identity is 409, delete is 409 while a live campaign
     or a live piece version is on the account and then drops the presence copies
     so nothing is lifted straight back in;
   * a read setting (M4 or the legacy presence route) lands on the workspace record
@@ -191,7 +191,7 @@ def test_blog_is_manual_and_ready_preview_is_not(env):
 
 def test_create_refuses_other_platforms_and_bad_input(env):
     client, _, _ = env
-    for plat in ('youtube', 'discord', 'reddit', 'drive', 'dropbox', None):
+    for plat in ('discord', 'reddit', 'drive', 'dropbox', None):
         r = _create(client, platform=plat, identity='x')
         assert r.status_code == 400, plat
     assert _create(client, platform='x', identity='  ').status_code == 400
