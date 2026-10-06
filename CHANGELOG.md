@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — A second Clayrune can no longer share the port (Windows)
+
+- After a reboot the logon task and the boot task each started a server and both ended up LISTENING on 5199. Every guard in front of the bind (autostart probe, `start.bat`, `_check_port_conflict`) is check-then-bind, so two starts a few seconds apart both pass; the listening socket then set `SO_REUSEADDR`, which on Windows lets a second socket bind the same port and share it. Measured on one free port: reuse + reuse binds twice; exclusive refuses a second bind (10048) and a legacy reuse bind (10013).
+- The main listener (`_serve_dual_stack`, `_serve_loopback`, the IPv4 fallback) now comes from `mc/listen_socket.py`: `SO_EXCLUSIVEADDRUSE` on Windows, `SO_REUSEADDR` kept on POSIX. A refused bind exits 2 through the existing "already in use" banner. A bind that is refused while nothing answers on the port (the old process of a restart still closing) is retried for up to 15s; a port that answers fails at once. `MC_ALLOW_PORT_CONFLICT=1` restores the shared bind (both instances need it). Tests: `tests/test_listen_socket.py`. `app.py` (desktop launcher) still binds through `app.run`.
+
 ## [2026-10-06] — Dispatch callbacks carry a task title instead of the whole brief (MC-1057)
 
 - A "[dispatched agent finished]" (and "asked a question") callback echoed the full Task the spawner had written; the spawner already holds it and re-reads the echo on every later turn. It now carries a one-line title (first line, clipped to 100 chars) and the exact GET for the full brief: `GET /api/project/<pid>/agent/log?session_id=<id>`. The first line, the child's final message and the question text are unchanged. Measured on 40 recent transcripts: callback median 3,175 -> 1,363 chars (~794 -> ~341 tokens). Code: `mc/callback_shape.py`.
