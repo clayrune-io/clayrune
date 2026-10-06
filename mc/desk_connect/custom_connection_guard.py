@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from mc.core import _log
 from mc.desk_connect import custom_connection_store as _store
+from mc.desk_connect import remote_mcp_observed as _observed
 
 
 class ManagedServerError(ValueError):
@@ -59,5 +60,6 @@ def released(scope: str, name: str, project_id: str | None = None, project_path:
         owner = _store.find(scope, name, project_id=project_id, project_path=project_path)
         if owner is not None:
             _store.remove(owner['scope'], owner.get('project_id'), owner['server_name'])
+            _observed.forget(owner['scope'], owner.get('project_id'), owner['server_name'])
     except Exception as e:
         _log(f'[desk_connect] custom connection record could not be released: {type(e).__name__}', flush=True)
