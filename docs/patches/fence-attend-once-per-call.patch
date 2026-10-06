@@ -1,0 +1,66 @@
+diff --git a/steward/fence.py b/steward/fence.py
+index 0db50153..c7271ba3 100644
+--- a/steward/fence.py
++++ b/steward/fence.py
+@@ -19,6 +19,7 @@ Self-contained (stdlib only) so it runs as a standalone hook script from any cwd
+     python "<repo>/steward/fence.py"      # reads PreToolUse JSON on stdin
+ """
+ import base64
++import hashlib
+ import json
+ import os
+ import re
+@@ -3146,14 +3147,43 @@ def _pass_can_cover(calls, cwd: Optional[str] = None,
+     return len(leaves) == 1 and leaves[0].overridable
+ 
+ 
++# MC-1055: a Clayrune-launched session registers this hook twice (project
++# settings AND the per-launch --settings file) whenever the two commands are
++# not byte-identical, so ONE tool call reaches this script twice. Each run
++# used to spend a pass on its own: the first spent it and allowed, the second
++# found none and blocked, and Claude Code blocks on any exit 2. The call's
++# identity goes to the consume route so a repeat of the SAME call is answered
++# without spending a second pass; a different call, or the same id with
++# different content, still finds no pass. main() sets this before judging.
++_current_call_identity = None
++
++
++def _tool_call_identity(payload, tool_name, tool_input):
++    """(tool_use_id, sha256 of what the call does), or None when the payload
++    carries no id (older CLI, Codex): the server then spends one pass per
++    request exactly as before."""
++    tool_use_id = payload.get('tool_use_id') or payload.get('toolUseId')
++    if not isinstance(tool_use_id, str) or not tool_use_id.strip():
++        return None
++    try:
++        blob = json.dumps([tool_name, tool_input], sort_keys=True,
++                          separators=(',', ':'), default=str)
++    except Exception:
++        return None
++    return tool_use_id.strip(), hashlib.sha256(blob.encode('utf-8')).hexdigest()
++
++
+ def _consume_attend_once_pass() -> bool:
+     sid = _session_id_from_env()
+     if not sid:
+         return False
++    body = {'claude_session_id': sid}
++    if _current_call_identity:
++        body['tool_use_id'], body['action_digest'] = _current_call_identity
+     try:
+         req = urllib.request.Request(
+             f'{_MC_API_BASE}/api/session/attend-once/consume',
+-            data=json.dumps({'claude_session_id': sid}).encode('utf-8'),
++            data=json.dumps(body).encode('utf-8'),
+             headers={'Content-Type': 'application/json'}, method='POST')
+         with urllib.request.urlopen(req, timeout=2) as resp:
+             data = json.loads(resp.read().decode('utf-8'))
+@@ -3220,6 +3250,8 @@ def main(argv=None) -> int:
+ 
+     tool_name = payload.get('tool_name') or payload.get('toolName') or ''
+     tool_input = payload.get('tool_input') or payload.get('toolInput') or {}
++    global _current_call_identity
++    _current_call_identity = _tool_call_identity(payload, tool_name, tool_input)
+     # Only a call that names something under `.claude` can use the memory-dir
+     # exception, so only that call pays for the server lookup.
+     project_root = _launcher_project_root() if '.claude' in raw.lower() else None

@@ -98,8 +98,14 @@ VENDOR_CONFIGS: Dict[str, Dict[str, str]] = {
 # a project-level fence.py entry when one exists (e.g. this repo's own
 # <project>/.claude/settings.json, installed by install_fence_to_project): both
 # copies read the same stdin JSON and reach the same verdict — either both
-# ALLOW, or the first BLOCK Claude Code sees ends the tool call; there is no
-# per-tool-call state to double-mutate.
+# ALLOW, or the first BLOCK Claude Code sees ends the tool call. Claude Code
+# collapses only byte-identical commands, and the two strings embed the
+# interpreter that wrote each, so on a machine where those differ BOTH run.
+# That is NOT free of per-tool-call state: the "Allow once" pass is spent by
+# the first run, so the second blocked a call the human had just allowed
+# (MC-1055). The consume route is now idempotent per tool call instead of
+# this file deduping the registration — see mc/attend_once_replay.py; this
+# group must stay, since a worktree has no project settings file at all.
 #
 # Claude only — Gemini and Qwen have no fence-hook injection path at all
 # today (steward.core.install_fence_to_project only ever targeted Claude's

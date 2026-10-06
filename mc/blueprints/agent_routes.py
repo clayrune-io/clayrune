@@ -102,6 +102,7 @@ from mc.state import (
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 import mc.context_profile as _context_profile  # backlog 4a11b6a5: per-model context slim
 from mc import allowance_state as _allowance_state
+from mc import attend_once_replay as _attend_once_replay  # MC-1055: one tool call, one spend
 from mc import cli_update as _cli_update
 from mc import engine_fallback as _engine_fallback  # MC-961 opt-in vendor swap
 from mc import vision_bridge as _vision_bridge  # describe images for models that cannot see
@@ -7003,6 +7004,15 @@ def consume_attend_once_pass():
         if not live_matches:
             return jsonify({'consumed': False, 'error': 'session not found'}), 404
         sid, live = live_matches[0]
+        # MC-1055: a session carries two fence registrations, so the hook asks
+        # twice about ONE tool call. The second ask repeats the first's
+        # (tool_use_id, action_digest) and gets the same answer without
+        # spending anything (mc/attend_once_replay.py). Checked before the
+        # open-pass test so a second pass granted in between cannot be eaten
+        # by the repeat.
+        identity = _attend_once_replay.identity_from_request(data)
+        if _attend_once_replay.is_replay(live, identity):
+            return jsonify({'consumed': True, 'session_id': sid, 'replay': True})
         _evict_expired_attend_once_pass(live)
         if not _attend_once_pass_view(live):
             return jsonify({'consumed': False, 'error': 'no open pass'})
@@ -7014,6 +7024,7 @@ def consume_attend_once_pass():
         if (live.get('_attend_once_pass') or {}).get('mc_session_id') != sid:
             return jsonify({'consumed': False, 'error': 'pass is bound to a different session'}), 409
         live.pop('_attend_once_pass', None)
+        _attend_once_replay.remember_spent(live, identity, _ATTEND_ONCE_TTL_SECONDS)
     _log(f"[attend-once] session={sid} project={project_id} pass consumed at {now_iso()}")
     return jsonify({'consumed': True, 'session_id': sid})
 
