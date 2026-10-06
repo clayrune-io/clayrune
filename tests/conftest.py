@@ -339,10 +339,9 @@ def _isolated_doc_write_cache_file(tmp_path):
     ~/.clayrune/doc_write_cache.json. A test must never read the operator's
     real cache (stale entries would answer for synthetic transcripts) nor
     write into it. Every test gets a private file and a not-yet-loaded store."""
-    _st = sys.modules.get('mc.doc_write_cache_store')
-    if _st is None:
-        yield
-        return
+    # Import, never sys.modules.get: a test that imports the store later would
+    # otherwise run against the real file.
+    import mc.doc_write_cache_store as _st
     _st.reset_for_tests(tmp_path / 'doc_write_cache.json')
     yield
     _st.reset_for_tests(tmp_path / 'doc_write_cache.json')
