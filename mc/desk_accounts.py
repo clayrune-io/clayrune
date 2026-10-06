@@ -47,6 +47,7 @@ from mc import desk_read_pages as _read_pages
 from mc import desk_vault_lock as _vault_lock
 from mc import secrets_store
 from mc.core import _log, now_iso
+from mc.desk_connect import browser_setup_record as _setup_record
 from mc.desk_pane_pages import PANE_ONLY_PLATFORMS, PLATFORM_PAGES
 from mc.desk_publish import LINKEDIN_TOKEN_SECRET, X_OAUTH_TOKEN_SECRET
 
@@ -171,6 +172,9 @@ def v1_account(acc: dict, vault: dict | None = None) -> dict:
             out[k] = acc[k]
     if acc.get('credentials'):          # names of the account's own sign-in, never a value
         out['credentials'] = dict(acc['credentials'])
+    setup = _setup_record.of(acc)       # a saved browser sign-in (MC-1062/03): profile and login NAMES, so Connections can show it
+    if setup is not None:
+        out['browser_setup'] = {k: setup[k] for k in ('service', 'route_id', 'account_kind', 'refs', 'saved_at') if k in setup}
     if acc.get('preview'):
         out['preview'] = True
     return out
