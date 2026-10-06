@@ -38,6 +38,7 @@ from mc import secrets_store as _vault
 from mc.core import _log
 from mc.desk_connect import custom_connection_store as _store
 from mc.desk_connect import custom_npm_artifact as _artifact
+from mc.desk_connect import custom_package_manifest as _manifest
 from mc.desk_connect import mcp_activation as _base
 from mc.desk_connect.mcp_errors import ActivationError
 
@@ -216,6 +217,10 @@ def provision(op: dict, project_path: str | None) -> dict:
         _log(f'[desk_connect] custom MCP {op["server_name"]} package step raised {type(e).__name__}', flush=True)
         return {'state': 'setup_failed', 'code': 'setup_failed', 'message': 'setup could not finish; see the server log'}
     try:
+        _manifest.record(op)                            # what the human approved, file by file (detect-only drift check)
+    except Exception as e:                              # never blocks the approval: the card then reads `not_recorded`
+        _log(f'[desk_connect] custom MCP {op["server_name"]} package manifest not recorded: {type(e).__name__}', flush=True)
+    try:
         done = register(op, project_path)
     except ActivationError as e:
         if e.code in _PENDING_CODES:
@@ -253,6 +258,11 @@ def derive_state(rec: dict, project_path: str | None) -> dict:
                                                'again and approve the change.'}
     if not _artifact.is_installed(op):
         return {'state': 'package_missing', 'message': 'The approved package is not on disk. Save again to restore it.'}
+    files = _manifest.check(rec)
+    if files['status'] == 'changed':
+        return {'state': 'changed', 'code': 'package_files_changed', 'package_files': files,
+                'message': 'The package files on disk no longer match what was approved. Connect it again and approve '
+                           'the change; saving records the files as they are now.'}
     try:
         have = {s['name'] for s in _vault.list_secrets()}
     except Exception as e:
@@ -261,7 +271,8 @@ def derive_state(rec: dict, project_path: str | None) -> dict:
     gone = [c['vault'] for c in op['credentials'] if c['vault'] not in have]
     if gone:
         return {'state': 'credential_missing', 'message': f'Secrets has no entry named {", ".join(gone)}.', 'missing': gone}
-    out = {'state': 'registered', 'message': 'Registered. It starts the first time an agent session uses it.'}
+    out = {'state': 'registered', 'message': 'Registered. It starts the first time an agent session uses it.',
+           'package_files': files}
     if _base.passphrase_backed():
         out['notice'] = _base.PASSPHRASE_NOTICE
     return out

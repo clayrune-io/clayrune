@@ -6,6 +6,9 @@
 //
 //   POST /api/desk/connect/custom/review   read the npm package without running it; returns the card.
 //                                          Writes nothing.
+//   POST /api/desk/connect/custom/connections   every approved server with its state now; the card lists the
+//                                          npm ones and, when a package file moved since the approval, which
+//                                          paths (detect only: nothing is blocked; MC-1054).
 //   POST /api/desk/connect/custom/commit   the one Save, passcode-gated (humanProofFetch). Carries only
 //                                          {request_id, fingerprint}: the command that runs is the one the
 //                                          Review stored, never one typed here.
@@ -23,7 +26,7 @@
 
   function _fresh() {
     return { open: false, pkg: '', name: '', entry: '', args: '', creds: [], scope: 'project', projectId: '',
-      busy: false, card: null, approved: false, error: '', status: '', saving: false, result: null };
+      busy: false, conns: null, card: null, approved: false, error: '', status: '', saving: false, result: null };
   }
   let U = _fresh();
 
@@ -93,6 +96,45 @@
         </div>`;
   }
 
+  // ── approved servers: state now, and package files that moved since the approval ──
+  function _driftHTML(f) {
+    const rows = []
+      .concat((f.changed || []).map((p) => ['changed', p]), (f.added || []).map((p) => ['added', p]), (f.removed || []).map((p) => ['removed', p]));
+    const why = f.reason && f.reason !== 'files_differ' ? `<div data-cu-drift-reason="${esc(f.reason)}">The file record could not be used (${esc(f.reason.replace(/_/g, ' '))}).</div>` : '';
+    return `${why}<ul class="desk-v1-cu-changes" data-cu-drift>${rows.map(([k, p]) => `<li data-cu-drift-path="${esc(k)}">${esc(k)}: <code>${esc(p)}</code></li>`).join('')}</ul>
+            ${f.more ? `<div class="desk-v1-rules-hint" data-cu-drift-more>and ${esc(f.more)} more</div>` : ''}`;
+  }
+
+  function _approvedHTML() {
+    const list = (U.conns || []).filter((c) => c.ecosystem === 'npm');
+    if (!list.length) return '';
+    return `<div class="desk-v1-cu-approved" data-cu-approved>
+        <div class="desk-v1-rules-group-title">Approved npm servers</div>
+        ${list.map((c) => {
+    const f = c.package_files || {};
+    const drift = c.code === 'package_files_changed';
+    const note = f.status === 'not_recorded' ? '<div class="desk-v1-rules-hint" data-cu-files-note="not_recorded">The package files were not recorded when this was approved, so they are not checked. Approving it again records them.</div>' : '';
+    return `<div class="desk-v1-cf-msg" data-cf-msg="${c.state === 'registered' ? 'ok' : 'warn'}" data-cu-approved-row="${esc(c.server_name)}" data-cu-approved-state="${esc(c.state)}" role="status"><strong>${esc(c.server_name)}</strong>: ${esc(STATE_WORD[c.state] || (c.state === 'changed' ? 'Changed' : c.state))}. ${esc(c.message || '')}
+            ${drift ? _driftHTML(f) : ''}${note}</div>`;
+  }).join('')}
+      </div>`;
+  }
+
+  // Fills the list in place: a repaint here would replace the form under someone already typing in it.
+  async function _loadConns(ctx) {
+    try {
+      const out = await ctx.api('POST', '/api/desk/connect/custom/connections', {});
+      U.conns = (out && out.connections) || [];
+    } catch (_) { U.conns = []; }
+    const el = document.querySelector('[data-cu="open"]');  // the live node: the repaint after the click replaced the one bound
+    if (!el) return;                                    // closed meanwhile
+    const old = el.querySelector('[data-cu-approved]');
+    if (old) old.remove();
+    const block = _approvedHTML();
+    const title = el.querySelector('.desk-v1-rules-group-title');
+    if (block && title) title.insertAdjacentHTML('afterend', block);
+  }
+
   // ── the approval card ───────────────────────────────────────────────────
   function _cardHTML(c) {
     const argv = [c.command.command].concat(c.command.args || []);
@@ -155,6 +197,7 @@
     }
     return `<div class="desk-v1-cu" data-cu="open">
         <div class="desk-v1-rules-group-title">Add your own MCP server</div>
+        ${_approvedHTML()}
         ${U.result ? _resultHTML(U.result) : ''}
         ${U.result && U.result.state === 'registered' ? '' : _formHTML()}
         ${U.card && !(U.result && U.result.state === 'registered') ? _cardHTML(U.card) : ''}
@@ -207,7 +250,7 @@
     const el = root.querySelector('[data-cu]');
     if (!info || !el) return;
     const open = el.querySelector('[data-cu-open]');
-    if (open) open.addEventListener('click', () => { U.open = true; if (!U.projectId) { const p = _projects()[0]; U.projectId = p ? p.id : ''; } ctx.repaint(); });
+    if (open) open.addEventListener('click', () => { U.open = true; if (!U.projectId) { const p = _projects()[0]; U.projectId = p ? p.id : ''; } ctx.repaint(); _loadConns(ctx); });
     el.querySelectorAll('[data-cu-close], [data-cu-done]').forEach((b) => b.addEventListener('click', () => { reset(); ctx.repaint(); }));
     const sync = () => {
       const r = el.querySelector('[data-cu-review]');

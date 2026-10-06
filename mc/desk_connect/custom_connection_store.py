@@ -169,6 +169,19 @@ def set_state(scope: str, project_id: str | None, server_name: str, state: str, 
             _write(conns)
 
 
+def set_package_manifest(scope: str, project_id: str | None, server_name: str, summary: dict) -> None:
+    """Mark that a file manifest of the approved package was recorded (`custom_package_manifest`):
+    `{recorded_at, files, bytes}`. The manifest itself lives in its own file; this marker is what makes
+    a deleted manifest read as a problem and not as "never recorded"."""
+    k = key(scope, project_id, server_name)
+    with _lock:
+        conns = _read()
+        rec = conns.get(k)
+        if isinstance(rec, dict):
+            rec['package_manifest'] = summary
+            _write(conns)
+
+
 def remove(scope: str, project_id: str | None, server_name: str) -> bool:
     k = key(scope, project_id, server_name)
     with _lock:

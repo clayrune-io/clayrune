@@ -11,9 +11,11 @@
  *   edits     changing a field drops the card and its approval: a new Review is a new card.
  *   global    choosing Global is explicit and the card names every project; a re-approval shows what changed.
  *   pending   a server saved but not runnable here says so and never says Registered or Connected.
+ *   drift     an approved server whose package files moved since the approval reads Changed, lists the paths
+ *             (changed, added, removed, and how many more) and offers no way around the approval (MC-1054).
  *   + phone   no horizontal scroll, the Save button reachable at 390px.
  *
- * Screenshots: docs/desk_v1/screens/connect_custom_{card,global,pending}_{1440,390}.png
+ * Screenshots: docs/desk_v1/screens/connect_custom_{card,global,pending,drift}_{1440,390}.png
  *
  * RUN   cd tools/smoke && node desk-v1-connect-custom.mjs
  */
@@ -40,9 +42,9 @@ const check = (cond, good, badMsg) => (cond ? ok(good) : fail(badMsg || good));
 const PASSCODE = 'right-passcode';
 const DIGEST = 'sha512-' + 'A'.repeat(86) + '==';
 
-function makeServer({ commitState = 'registered', previous = null } = {}) {
+function makeServer({ commitState = 'registered', previous = null, connections = [] } = {}) {
   const fx = loadFixtures();
-  const srv = { log: [], fx, n: 0, cards: new Map(), commitState };
+  const srv = { log: [], fx, n: 0, cards: new Map(), commitState, connections };
   srv.accounts = fx.channels.filter((c) => c.platform === 'x' || c.platform === 'linkedin')
     .map((c) => ({ ...JSON.parse(JSON.stringify(c)), publish: { ready: true, reason: null, secret: null, unattended_ok: null } }));
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects: fx.projects.map((p) => ({ id: p.id, name: p.name, state: 'active', roster: [], presence: { replies: 'drafts', desk_agent: null, state: 'active' } })), accounts: srv.accounts, pieces: [] });
@@ -120,6 +122,7 @@ async function newPage(browser, { srv, width, height }) {
       srv.cards.set(card.request_id, card);
       return J(card);
     }
+    if (path === '/api/desk/connect/custom/connections' && method === 'POST') return J({ connections: srv.connections });
     if (path === '/api/desk/connect/custom/commit' && method === 'POST') {
       if (body.passcode !== PASSCODE) return J({ error: 'bad_passcode' }, 403);
       const card = srv.cards.get(body.request_id);
@@ -142,7 +145,7 @@ async function newPage(browser, { srv, width, height }) {
 const realErrors = (e) => e.filter((m) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(m));
 const commits = (srv) => srv.log.filter((r) => r.method === 'POST' && r.path === '/api/desk/connect/custom/commit');
 const reviews = (srv) => srv.log.filter((r) => r.method === 'POST' && r.path === '/api/desk/connect/custom/review');
-const writes = (srv) => srv.log.filter((r) => r.method !== 'GET' && !/connect\/(inspect|custom\/review)$/.test(r.path));
+const writes = (srv) => srv.log.filter((r) => r.method !== 'GET' && !/connect\/(inspect|custom\/(review|connections))$/.test(r.path));
 const shot = (page, name, w) => page.screenshot({ path: resolve(SHOT_DIR, `connect_custom_${name}_${w}.png`) });
 
 async function fits(page, label) {
@@ -296,6 +299,37 @@ async function pendingScenario(browser, width, height) {
   await ctx.close();
 }
 
+const DRIFT = { status: 'changed', reason: 'files_differ', counts: { changed: 1, added: 11, removed: 1 }, changed: ['package/dist/index.js'],
+  added: Array.from({ length: 10 }, (_, i) => `package/dist/planted${i}.js`), removed: ['package/package.json'], more: 1, checked: 40 };
+const NPM = { ecosystem: 'npm', scope: 'project', project_id: 'p1', package: 'harmless-mcp', version: '1.2.3', credentials: [] };
+
+async function driftScenario(browser, width, height) {
+  console.log(`Drift at ${width}px: package files that moved since the approval`);
+  const srv = makeServer({ connections: [
+    { ...NPM, server_name: 'harmless-mcp', state: 'changed', code: 'package_files_changed', package_files: DRIFT,
+      message: 'The package files on disk no longer match what was approved. Connect it again and approve the change; saving records the files as they are now.' },
+    { ...NPM, server_name: 'steady-mcp', state: 'registered', message: 'Registered. It starts the first time an agent session uses it.', package_files: { status: 'unchanged', counts: { changed: 0, added: 0, removed: 0 }, changed: [], added: [], removed: [], more: 0 } },
+    { ...NPM, server_name: 'older-mcp', state: 'registered', message: 'Registered. It starts the first time an agent session uses it.', package_files: { status: 'not_recorded', counts: { changed: 0, added: 0, removed: 0 }, changed: [], added: [], removed: [], more: 0 } },
+    { ecosystem: 'remote', server_name: 'remote-mcp', state: 'registered', message: 'Registered.', credentials: [] },
+  ] });
+  const { ctx, page, pageErrors } = await newPage(browser, { srv, width, height });
+  await openCustom(page);
+  await page.waitForSelector('[data-cu-approved]', { timeout: 4000 });
+  const rows = await page.$$eval('[data-cu-approved-row]', (e) => e.map((x) => [x.dataset.cuApprovedRow, x.dataset.cuApprovedState]));
+  check(rows.length === 3 && !rows.some((r) => r[0] === 'remote-mcp'), 'the list shows the three npm servers and not the remote one', 'rows: ' + JSON.stringify(rows));
+  const bad1 = await page.$eval('[data-cu-approved-row="harmless-mcp"]', (e) => ({ text: e.textContent, kind: e.dataset.cfMsg }));
+  check(bad1.kind === 'warn' && /Changed/.test(bad1.text) && /no longer match what was approved/.test(bad1.text), 'the changed server reads Changed, in the same wording as a changed launch line', 'changed row: ' + bad1.text);
+  const paths = await page.$$eval('[data-cu-approved-row="harmless-mcp"] [data-cu-drift-path]', (e) => e.map((x) => x.dataset.cuDriftPath + ':' + x.querySelector('code').textContent));
+  check(paths.length === 12 && paths[0] === 'changed:package/dist/index.js' && paths.includes('removed:package/package.json') && paths.filter((p) => p.startsWith('added:')).length === 10, 'it lists the changed, added and removed paths', 'paths: ' + JSON.stringify(paths));
+  check(/and 1 more/.test(await page.textContent('[data-cu-approved-row="harmless-mcp"] [data-cu-drift-more]')), 'it says how many paths are not listed', 'no "more" line');
+  check((await page.$$('[data-cu-approved-row="steady-mcp"] [data-cu-drift]')).length === 0 && /Registered/.test(await page.textContent('[data-cu-approved-row="steady-mcp"]')), 'an unchanged server shows no file list', 'steady row has drift');
+  check((await page.$$('[data-cu-approved-row="older-mcp"] [data-cu-files-note="not_recorded"]')).length === 1, 'an approval from before the check says its files are not checked', 'no not_recorded note');
+  check(writes(srv).length === 0 && commits(srv).length === 0, 'looking writes nothing and saves nothing', 'writes: ' + JSON.stringify(writes(srv).map((r) => r.path)));
+  await shot(page, 'drift', width);
+  check(realErrors(pageErrors).length === 0, 'no page errors', 'page errors: ' + realErrors(pageErrors).join(' | '));
+  await ctx.close();
+}
+
 const browser = await chromium.launch();
 try {
   for (const [w, h] of [[1440, 900], [390, 844]]) {
@@ -303,6 +337,7 @@ try {
     await editScenario(browser, w, h);
     await globalScenario(browser, w, h);
     await pendingScenario(browser, w, h);
+    await driftScenario(browser, w, h);
   }
 } catch (e) {
   fail('harness error: ' + (e && e.stack ? e.stack : e));
