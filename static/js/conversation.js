@@ -1547,7 +1547,8 @@ function agentPanelHTML(p) {
         // Stop-hook block/resend boundary (see agent_runtime.stop_hook_marker):
         // collapse the draft accumulated since the last tool/prompt line into
         // a native <details> toggle ONLY when the follow-up (the narration up
-        // to the next tool/prompt/boundary line) actually replaces it —
+        // to the next prompt/boundary line, counting only text after the last
+        // tool line) actually replaces it —
         // rich-text.js stopHookDraftReplaced, the same rule the live path
         // applies as the follow-up streams in. Otherwise the draft stays in
         // planBlock and the follow-up appends below it. The marker itself
@@ -1560,7 +1561,8 @@ function agentPanelHTML(p) {
             for (let _k = _i + 1; _k < buf.length; _k++) {
               if (stopHookRedoKind(buf[_k]) !== null) break;
               const _kc = agentLineCls(buf[_k]);
-              if (_kc.includes('agent-line-tool') || _kc.includes('agent-line-prompt')) break;
+              if (_kc.includes('agent-line-prompt')) break;
+              if (_kc.includes('agent-line-tool')) { _follow = ''; continue; } // MC-1061: a fold may span tool calls
               if (_kc === 'agent-line' && buf[_k].trim()) _follow += '\n' + buf[_k];
             }
             if (stopHookDraftReplaced(_redoKind, planRawLines.join('\n'), _follow)) {
