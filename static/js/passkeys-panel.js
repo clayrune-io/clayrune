@@ -46,8 +46,9 @@ function passkeysSettingsHTML() {
     <div class="settings-section" id="passkeys-section">
       <div class="settings-section-title">Passkeys</div>
       <div class="settings-hint" style="margin-bottom:10px;line-height:1.45">
-        Register a passkey from this computer's own browser. Passkeys are stored but not
-        used yet: every human-only action still asks for your dashboard passcode.
+        Register a passkey from this computer's own browser. Once you have one, adding or
+        revoking a passkey asks for a passkey; every other human-only action still asks
+        for your dashboard passcode.
       </div>
       <div id="passkeys-host"><div class="settings-hint">Loading…</div></div>
     </div>`;
