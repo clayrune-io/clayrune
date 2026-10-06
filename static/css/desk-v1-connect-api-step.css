@@ -1,0 +1,10 @@
+/* Desk v1 — Connections: the Connect wizard's API / provider Setup screen (desk-v1-connect-api-step.js; MC-1062 ticket 09). rem sizes so 200% text scales every control; nothing has a fixed height. The frame's own look is desk-v1-connect-wizard.css; the field rows are desk-v1-connect-adapter.css and the sign-in buttons desk-v1-connect-held.css. */
+.desk-v1-cfw-body [data-api-fields], .desk-v1-cfw-body [data-api-authorize] { min-width: 0; }
+.desk-v1-cfw-body .desk-v1-cf-adapter, .desk-v1-cfw-body .desk-v1-cs-opt-body { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.desk-v1-cfw-body [data-api-fields] input.desk-v1-rules-textinput, .desk-v1-cfw-details-body select.desk-v1-rules-textinput { max-width: 100%; box-sizing: border-box; min-height: 2.25rem; }
+.desk-v1-cfw-body [data-cfh] .desk-v1-conn-btn, .desk-v1-cfw-details-body .desk-v1-conn-btn-inline { max-width: 100%; white-space: normal; min-height: 2.25rem; }
+.desk-v1-cfw-body [data-cfh] .desk-v1-cf-msg, .desk-v1-cfw-details-body .desk-v1-cf-msg { font-size: 0.8rem; line-height: 1.45; overflow-wrap: anywhere; }
+.desk-v1-cfw-body .desk-v1-cf-link { background: none; border: 0; padding: 0; font: inherit; text-decoration: underline; cursor: pointer; color: inherit; }
+@media (max-width: 640px) {
+  .desk-v1-cfw-body [data-cfh] .desk-v1-conn-btn, .desk-v1-cfw-details-body .desk-v1-conn-btn-inline { min-height: 2.75rem; }
+}
