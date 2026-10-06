@@ -46,8 +46,9 @@ def apply(clean: dict) -> tuple[Applied, dict]:
     if held:
         if method not in prov.signs_in:
             raise ProviderError('that method has no sign-in to claim', 400, 'method_not_available')
+        save_app = _oauth.save_client_id(clean['service'], clean['fields'])     # the app this Save stores; checked twice
         try:
-            account = _oauth.held_account(clean['service'], held['flow_id'], held['claim'])
+            account = _oauth.held_account(clean['service'], held['flow_id'], held['claim'], client_id=save_app)
         except _oauth.OAuthError as e:
             raise ProviderError(str(e), e.status, e.code) from e
         if account:                 # the Desk account the sign-in was started for: the Save creates it under that id
@@ -57,7 +58,7 @@ def apply(clean: dict) -> tuple[Applied, dict]:
         applied = prov.apply(method, fields, undo)
         if held:
             _oauth.commit_held(clean['service'], held['flow_id'], held['claim'],
-                               _refs.oauth_arg_for(applied.account_id), undo)
+                               _refs.oauth_arg_for(applied.account_id), undo, client_id=save_app)
     except ProviderError as e:
         left = undo.unwind()
         raise ProviderError(_with_left(str(e), left), e.status, e.code) from e

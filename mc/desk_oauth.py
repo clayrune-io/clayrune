@@ -72,6 +72,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from mc import desk_oauth_hold as _hold
+from mc import desk_oauth_profile as _profile
 from mc import secrets_store
 from mc.core import _log
 
@@ -455,6 +456,39 @@ def _expire(state: str) -> None:
         flow.pop('verifier', None)
         srv = flow.pop('listener', None)
     _close_listener(srv)
+    _forget_profile(flow)
+
+
+def _forget_profile(flow: dict) -> None:
+    """Remove the pane profile THIS flow created (never one that was already there), once.
+    Called when a held-mode flow ends without its sign-in being saved. The pop makes it
+    once-only and lets `consume_held` (the Save landed: the profile is the saved login) disarm it."""
+    with _lock:
+        created = flow.pop('profile_created', False)
+    if created:
+        _profile.forget(flow.get('profile'))
+
+
+def _retire(flows: list[dict]) -> None:
+    """End flows already removed from `_flows` (evicted, superseded, cancelled): close the
+    listener, drop and revoke what a held-mode one holds, remove the profile it created.
+    Runs with no lock held: the revoke is a network call and the profile close can wait on Chromium."""
+    for f in flows:
+        with _lock:
+            f['cancelled'] = True
+            srv = f.pop('listener', None)
+        _close_listener(srv)
+        if f.get('hold'):
+            _hold.discard(f['flow_id'])     # revokes; its on_drop removes the profile if one was held
+            _forget_profile(f)              # and when nothing was held yet (the sign-in was still in the browser)
+
+
+def _flow_by_id(flow_id: str) -> dict | None:
+    """Caller holds `_lock`."""
+    for f in _flows.values():
+        if f['flow_id'] == flow_id:
+            return f
+    return None
 
 
 def start(service: str, account_id: str | None = None, *, hold: dict | None = None) -> dict[str, Any]:
@@ -481,9 +515,12 @@ def start(service: str, account_id: str | None = None, *, hold: dict | None = No
     if service == 'higgsfield':
         disc = _discover_higgsfield()        # network first: a failure here opens nothing
     _drop_pending(service, supersede_held=app is not None)
+    # Read AFTER the drop above (which removes a profile an earlier held flow created) and BEFORE the pane
+    # opens: a profile that is already there is never this flow's to delete (`desk_oauth_profile`).
+    created = app is not None and not _profile.existed(profile_name(service, account_id))
     srv = _open_listener(X_CALLBACK_PORT if service == 'x' else 0)
     try:
-        return _start_flow(service, d, srv, disc if service == 'higgsfield' else None, account_id, app)
+        return _start_flow(service, d, srv, disc if service == 'higgsfield' else None, account_id, app, created)
     except BaseException:
         _close_listener(srv)
         raise
@@ -495,23 +532,22 @@ def _drop_pending(service: str, *, supersede_held: bool = False) -> None:
     not the flow's age; a new held sign-in of the same service replaces it."""
     with _lock:
         now = time.time()
-        gone, dropped_held = [], []
+        gone = []
         for k, f in _flows.items():
+            if f.get('saving'):         # a Save is writing it right now
+                continue
             if f['status'] == 'held':
                 if not _hold.alive(f['flow_id']) or (supersede_held and f['service'] == service):
                     gone.append(k)
-                    dropped_held.append(f['flow_id'])
             elif now - f['created'] > FLOW_TTL_S or (f['service'] == service and f['status'] == 'pending'):
                 gone.append(k)
-        servers = [_flows.pop(k).get('listener') for k in gone]
-    for fid in dropped_held:
-        _hold.discard(fid)          # revokes at the vendor, best effort; a no-op for one that already expired
-    for s in servers:
-        _close_listener(s)
+        dropped = [_flows.pop(k) for k in gone]
+    _retire(dropped)
 
 
 def _start_flow(service: str, d: dict, srv: _CallbackServer, disc: dict | None,
-                account_id: str | None = None, hold: dict | None = None) -> dict[str, Any]:
+                account_id: str | None = None, hold: dict | None = None,
+                profile_created: bool = False) -> dict[str, Any]:
     redirect = redirect_uri(srv.server_address[1])
     verifier, challenge = _pkce()
     state = pysecrets.token_urlsafe(24)
@@ -521,6 +557,8 @@ def _start_flow(service: str, d: dict, srv: _CallbackServer, disc: dict | None,
     if hold is not None:
         flow['hold'] = {'claim': pysecrets.token_urlsafe(24), 'account_id': hold.get('account_id'),
                         'app': {k: hold[k] for k in ('client_id', 'client_secret') if hold.get(k)}}
+        flow['profile'] = profile_name(service, account_id)
+        flow['profile_created'] = bool(profile_created)
     if service == 'higgsfield':
         assert disc is not None
         meta, scopes = disc['meta'], disc['scopes']
@@ -553,11 +591,15 @@ def _start_flow(service: str, d: dict, srv: _CallbackServer, disc: dict | None,
                   'scope': scope, 'state': state, 'code_challenge': challenge,
                   'code_challenge_method': 'S256'}
         base = d['authorize']
+    evicted = []
     with _lock:
         while len(_flows) >= MAX_FLOWS:
-            old = _flows.pop(min(_flows, key=lambda k: _flows[k]['created']), None)
-            _close_listener((old or {}).get('listener'))
+            oldest = [k for k in _flows if not _flows[k].get('saving')] or list(_flows)
+            old = _flows.pop(min(oldest, key=lambda k: _flows[k]['created']), None)
+            if old is not None:
+                evicted.append(old)
         _flows[state] = flow
+    _retire(evicted)        # the evicted one's held token and created profile go with it, now
     timer = threading.Timer(FLOW_TTL_S, _expire, args=(state,))
     timer.daemon = True
     timer.start()
@@ -589,62 +631,103 @@ def flow_status(flow_id: str) -> dict[str, Any]:
 
 def cancel_flow(flow_id: str, claim: str) -> dict[str, Any]:
     """The person backed out of a held sign-in (or left the flow): close its listener if the
-    vendor page is still open, drop and revoke what was held. Needs the `claim` the start
-    answered with, so a flow id read off the poll cannot end someone else's sign-in. A wrong
-    claim changes nothing and answers the same as a flow that is not there."""
-    drop_state = None
+    vendor page is still open, drop and revoke what was held, and remove the pane profile this
+    flow created. Needs the `claim` the start answered with, so a flow id read off the poll
+    cannot end someone else's sign-in. A wrong claim changes nothing and answers the same as a
+    flow that is not there. Works mid-exchange too: the callback sees `cancelled` and holds
+    nothing (`_complete`). A Save that is writing it right now is not interrupted."""
     with _lock:
-        for k, f in _flows.items():
-            h = f.get('hold')
-            if f['flow_id'] == flow_id and h and isinstance(claim, str) and hmac.compare_digest(
+        f = None
+        for cand in _flows.values():
+            h = cand.get('hold')
+            if cand['flow_id'] == flow_id and h and isinstance(claim, str) and hmac.compare_digest(
                     h['claim'].encode(), claim.encode()):
-                drop_state = k
+                f = cand
                 break
-        if drop_state is None:
+        if f is None:
             return {'ok': False}
-        f = _flows.pop(drop_state)
-        srv = f.pop('listener', None)
-    _close_listener(srv)
-    _hold.discard(flow_id, claim)
+        if f.get('saving'):
+            return {'ok': False, 'busy': True}
+        _flows.pop(next(k for k, v in _flows.items() if v is f))
+    _retire([f])
     _log(f"[desk_oauth] held sign-in for {f['service']} cancelled", flush=True)
     return {'ok': True}
 
 
-def commit_held(service: str, flow_id: str, claim: str, account_id: str | None, undo) -> dict[str, Any]:
+def save_client_id(service: str, fields: dict) -> str | None:
+    """The app Client ID a Save of this service would store or use: the one typed in the form,
+    else the one already in the vault. None for a service whose app is registered per sign-in
+    (Higgsfield), where there is nothing to compare."""
+    if service != 'x':
+        return None
+    return (fields or {}).get('client_id') or _vault_plain(SERVICES['x']['client_id_secret'])
+
+
+def _same_app(held_client_id: Any, save_client_id_: str | None) -> bool:
+    if save_client_id_ is None:
+        return True
+    return isinstance(held_client_id, str) and hmac.compare_digest(held_client_id.encode(), save_client_id_.encode())
+
+
+def commit_held(service: str, flow_id: str, claim: str, account_id: str | None, undo,
+                *, client_id: str | None = None) -> dict[str, Any]:
     """The Save claims a held sign-in: write it to the vault under the account's own entry and
     push the undo that removes it. `account_id` is the `account_id` ARGUMENT of this module
-    (None = the legacy singleton). Raises OAuthError; never returns a token."""
+    (None = the legacy singleton). `client_id` is the app the Save stores or uses
+    (`save_client_id`): the held sign-in was minted for one app and is refused for another.
+    The hold is TAKEN in one step (`desk_oauth_hold.take`), so an expiry cannot revoke it
+    mid-write, and is given back when the write fails so the person can press Save again.
+    Raises OAuthError; never returns a token."""
     try:
-        e = _hold.peek(flow_id, claim, service)
+        e = _hold.take(flow_id, claim, service)
     except _hold.HoldError as ex:
         raise OAuthError(ex.code, str(ex), ex.status) from ex
-    rec = e['rec']
+    with _lock:
+        f = _flow_by_id(flow_id)
+        if f is not None:
+            f['saving'] = True
     name = vault_name(service, account_id)
-    if _meta(service, account_id) is not None:
-        raise OAuthError('already_signed_in', f"{SERVICES[service]['label']} is already signed in under that name. "
-                                              'Disconnect it in Connections first to sign in again.', 409)
     try:
-        with _refresh_lock(name):
-            _store_record(service, rec, account_id)
-    except secrets_store.SecretsError as ex:
-        raise OAuthError('vault_refused', f'the sign-in could not be saved: {_safe(ex)}', 400) from ex
+        if not _same_app(e['rec'].get('client_id'), client_id):
+            raise OAuthError('app_mismatch', _hold.APP_MISMATCH, 409)
+        if _meta(service, account_id) is not None:
+            raise OAuthError('already_signed_in', f"{SERVICES[service]['label']} is already signed in under that name. "
+                                                  'Disconnect it in Connections first to sign in again.', 409)
+        try:
+            with _refresh_lock(name):
+                _store_record(service, e['rec'], account_id)
+        except secrets_store.SecretsError as ex:
+            raise OAuthError('vault_refused', f'the sign-in could not be saved: {_safe(ex)}', 400) from ex
+    except BaseException:
+        with _lock:
+            f = _flow_by_id(flow_id)
+            if f is not None:
+                f['saving'] = False
+        _hold.give_back(flow_id, e)
+        raise
     undo.push(f'vault entry {name}', lambda: secrets_store.delete_secret(name))
+    e['rec'] = None
+    e['app'] = {}
+    e['on_drop'] = None
     return {'vault': name}
 
 
 def consume_held(flow_id: str) -> None:
-    """The Save is durable: the held sign-in is now the saved one. Forget it, no revoke."""
+    """The Save is durable: the held sign-in is now the saved one. Forget it, no revoke, and
+    keep the pane profile (it is now the saved login's browser)."""
     _hold.consume(flow_id)
     with _lock:
         for k, f in list(_flows.items()):
             if f['flow_id'] == flow_id:
+                f.pop('profile_created', None)
                 _flows.pop(k, None)
 
 
-def held_account(service: str, flow_id: str, claim: str) -> str | None:
-    """The Desk account id the held sign-in was started for (None for a service with no account)."""
+def held_account(service: str, flow_id: str, claim: str, client_id: str | None = None) -> str | None:
+    """The Desk account id the held sign-in was started for (None for a service with no account).
+    Refuses early, before the Save writes anything, a sign-in minted for a different app."""
     try:
-        return _hold.peek(flow_id, claim, service)['account_id']
+        return _hold.account_of(flow_id, claim, service, client_id=client_id)
     except _hold.HoldError as ex:
         raise OAuthError(ex.code, str(ex), ex.status) from ex
 
@@ -737,6 +820,7 @@ def _complete(params: dict[str, str]) -> tuple[bool, str, bool]:
             (flow.get('hold') or {}).pop('app', None)
             srv = flow.pop('listener', None)
         _close_listener(srv)
+        _forget_profile(flow)
         _log(f'[desk_oauth] sign-in for {service} failed', flush=True)
         return False, msg, False
 
@@ -769,8 +853,16 @@ def _complete(params: dict[str, str]) -> tuple[bool, str, bool]:
         if rec['refresh_token']:
             secrets_store.register_dispensed(vault, rec['refresh_token'])
         if hold:        # the Connect flow's Details step: the Save writes it (commit_held), a back-out never does
-            _hold.put(flow['flow_id'], hold['claim'], service, hold.get('account_id'), rec,
-                      hold.get('app'), HOLD_TTL_S)
+            with _lock:     # cancelled while the code was being exchanged: hold nothing, undo what the vendor minted
+                cancelled = bool(flow.get('cancelled'))
+                if not cancelled:
+                    _hold.put(flow['flow_id'], hold['claim'], service, hold.get('account_id'), rec,
+                              hold.get('app'), HOLD_TTL_S, on_drop=lambda: _forget_profile(flow))
+            if cancelled:
+                revoke_record(service, rec, app=hold.get('app'))
+                rec = None
+                _forget_profile(flow)
+                return False, 'This sign-in was cancelled. Nothing was kept.', False
         else:
             with _refresh_lock(vault):      # a refresh in flight must not land after (or over) this sign-in
                 _store_record(service, rec, account_id)

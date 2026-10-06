@@ -44,8 +44,31 @@ HF_URL = 'https://higgsfield.ai'
 X_URL = 'https://x.com'
 
 
+class Profiles:
+    """A stand-in for the pane's saved-profile directory, so no test reads or deletes the operator's
+    real ~/.clayrune/browser_profiles_named. `have` is what is on disk; `forgotten` what a flow removed."""
+
+    def __init__(self):
+        self.have: set[str] = set()
+        self.forgotten: list[str] = []
+
+
 @pytest.fixture()
-def api(env, monkeypatch):
+def profiles(monkeypatch):
+    from mc import desk_oauth_profile
+    ps = Profiles()
+    monkeypatch.setattr(desk_oauth_profile, 'existed', lambda name: name in ps.have)
+
+    def forget(name):
+        ps.forgotten.append(name)
+        ps.have.discard(name)
+        return True
+    monkeypatch.setattr(desk_oauth_profile, 'forget', forget)
+    return ps
+
+
+@pytest.fixture()
+def api(env, monkeypatch, profiles):
     """The Connect + held-sign-in routes over the real (temp) vault and Desk store, with a
     scripted vendor."""
     from mc.blueprints import desk_connect_routes, desk_held_signin_routes, desk_routes
