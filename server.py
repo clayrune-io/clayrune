@@ -2238,6 +2238,9 @@ app.register_blueprint(_bp_desk_connect_purpose.bp)
 from mc.blueprints import desk_connect_type_routes as _bp_desk_connect_type  # noqa: E402
 app.register_blueprint(_bp_desk_connect_type.bp)
 
+from mc.blueprints import desk_connect_permission_routes as _bp_desk_connect_permission  # noqa: E402
+app.register_blueprint(_bp_desk_connect_permission.bp)
+
 # User-chosen MCP server (slice U2a): Review card + the one passcode Save for a self-contained npm package. Own module.
 from mc.blueprints import desk_connect_custom_routes as _bp_desk_connect_custom  # noqa: E402
 app.register_blueprint(_bp_desk_connect_custom.bp)
