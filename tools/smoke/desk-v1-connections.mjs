@@ -239,7 +239,8 @@ async function run(browser) {
   await page.waitForSelector('[data-conn-detail="add"] [data-add-service] [data-add-list]', { timeout: 4000 });
   const pickList = await page.$$eval('[data-add-pick]', (els) => els.map((e) => e.dataset.addPick));
   check(pickList.includes('account:x') && pickList.includes('account:linkedin') && pickList.includes('account:blog') && pickList[pickList.length - 1] === 'other'
-        && !pickList.some((k) => /dropbox|gdrive|reddit|youtube/i.test(k)),
+        && pickList.includes('account:youtube') && pickList.includes('account:instagram') && pickList.includes('account:tiktok')
+        && !pickList.some((k) => /dropbox|gdrive|reddit/i.test(k)),
         `Add service lists what Clayrune can connect, then "Something else" last (${pickList.join(', ')})`, `pick list wrong: ${JSON.stringify(pickList)}`);
   await page.fill('[data-add-search]', 'link');
   const shown = await page.$$eval('[data-add-pick]', (els) => els.filter((e) => !e.parentElement.hidden).map((e) => e.dataset.addPick));
@@ -362,10 +363,10 @@ async function run(browser) {
   check(await pressed(page, 'ch-x-ron') === 'api', 'the Read via choice persists across leaving and re-opening the screen', `choice lost: ${await pressed(page, 'ch-x-ron')}`);
 
   await selectTile(page, 'ch-li-page');
-  const li = await page.$eval('[data-readvia-row="ch-li-page"] [data-readvia="api"]', (b) => b.textContent.trim());
-  check(li === 'LinkedIn API (paid)' && !!(await page.$('[data-readvia-row="ch-li-page"] [data-readvia-profile]')),
-        'LinkedIn: API option reads "LinkedIn API (paid)", and the pane choice takes a profile (the pane reader exists now)',
-        `LinkedIn row wrong: ${li}`);
+  check(!(await page.$('[data-readvia-row="ch-li-page"] [data-readvia]')) && !!(await page.$('[data-readvia-row="ch-li-page"] [data-readvia-fixed]'))
+        && !!(await page.$('[data-readvia-row="ch-li-page"] [data-readvia-profile]')),
+        'LinkedIn: no API option (it has no API read), the browser pane alone, and it takes a profile',
+        'LinkedIn row wrong');
 
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   uncaught.forEach((e) => fail(`uncaught page error: ${e}`));

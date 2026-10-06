@@ -7,7 +7,10 @@
  * tests/test_desk_account_read_pages.py):
  *   1. A YouTube / Instagram account carries Read via with the browser pane as its ONLY
  *      route (no API button), and takes a signed-in profile (PATCH browser_profile).
- *   2. X and LinkedIn keep their pane / API choice; a blog carries no Read via at all.
+ *   2. X keeps its pane / API choice; LinkedIn is the pane alone (no API option); a LinkedIn
+ *      account stored as `api` is NOT moved: it asks for a choice and one click sends `pane`.
+ *      A blog carries no Read via at all. A read-only account (capability none) reads
+ *      "Read only" and says the Desk does not publish there.
  *   3. The activity-page address is never asked first: no block while discovery is fine.
  *      When the coverage says `pages_needed` the block appears with the reason, takes one
  *      https address (PATCH read_pages [{role:'activity', url}]), lists it, and Remove
@@ -35,7 +38,7 @@ const ok = (m) => console.log('  ✓ ' + m);
 const fail = (m) => { console.error('  ✗ ' + m); bad++; };
 const check = (cond, good, badMsg) => (cond ? ok(good) : fail(badMsg || good));
 
-const NOT_READY = { ready: false, reason: 'no publisher for this site', secret: null, unattended_ok: null };
+const NOT_READY = { ready: false, reason: 'read-only account: the Desk reads it and does not publish there', secret: null, unattended_ok: null };
 const ADDR = 'https://studio.youtube.com/channel/UC123/comments';
 
 function makeServer() {
@@ -45,8 +48,9 @@ function makeServer() {
   srv.accounts = fx.channels.filter((c) => ['x', 'linkedin', 'blog'].includes(c.platform))
     .map((c) => ({ ...JSON.parse(JSON.stringify(c)), publish: { ready: true, reason: null, secret: null, unattended_ok: null } }));
   srv.accounts.push(
-    { id: 'ch-yt', platform: 'youtube', identity: 'UC123', label: 'YouTube · UC123', capability: 'manual', voice: '', connected: false, publish: NOT_READY },
-    { id: 'ch-ig', platform: 'instagram', identity: 'clayrune', label: 'Instagram · clayrune', capability: 'manual', voice: '', connected: false, publish: NOT_READY });
+    { id: 'ch-yt', platform: 'youtube', identity: 'UC123', label: 'YouTube · UC123', capability: 'none', voice: '', connected: false, publish: NOT_READY },
+    { id: 'ch-ig', platform: 'instagram', identity: 'clayrune', label: 'Instagram · clayrune', capability: 'none', voice: '', connected: false, publish: NOT_READY });
+  srv.accounts.find((a) => a.platform === 'linkedin').read_via = 'api';      // saved before the option was removed
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects, accounts: srv.accounts, pieces: [] });
   return srv;
 }
@@ -128,10 +132,26 @@ async function run(browser, viewport, label) {
   await selectTile(page, 'ch-ig');
   check(!!(await page.$('[data-conn-account="ch-ig"] [data-readvia-fixed]')) && !(await page.$('[data-conn-account="ch-ig"] [data-readvia]')),
         'Instagram: the browser pane alone', 'Instagram Read via row wrong');
+  const yst = await page.textContent('[data-conn-tile="ch-yt"]');
+  check(/Read only/.test(yst) && !/Not connected/.test(yst), 'a read-only tile reads "Read only", not "Not connected"', `YouTube tile: ${yst}`);
+  await selectTile(page, 'ch-yt');
+  check(/does not publish/.test(await page.textContent(`${R} [data-conn-publish-text]`)) && !(await page.$(`${R} [data-conn-x-guide]`)),
+        'a read-only account says the Desk does not publish there, with no Connect button', 'publishing line wrong');
   await selectTile(page, 'ch-x-ron');
   const xl = await page.$$eval('[data-conn-account="ch-x-ron"] [data-readvia]', (bs) => bs.map((b) => b.textContent.trim()));
   check(xl.length === 2 && xl[0] === 'Browser pane (no charge)' && /^X API/.test(xl[1]),
         'X keeps its pane / API choice', `X buttons: ${JSON.stringify(xl)}`);
+  const LI = '[data-conn-account="ch-li-page"]';
+  await selectTile(page, 'ch-li-page');
+  check(!(await page.$(`${LI} [data-readvia="api"]`)) && !(await page.$(`${LI} [data-readvia-profile]`)) && !!(await page.$(`${LI} [data-readvia-needs-choice]`))
+        && (await page.$$(`${LI} [aria-pressed="true"]`)).length === 0,
+        'LinkedIn stored as api: no API button, nothing pressed, no profile yet, asks for a choice', 'LinkedIn stale row wrong');
+  check(patches(srv, 'ch-li-page').length === 0, 'the stored api setting was not rewritten by opening the screen', 'a PATCH was sent on open');
+  await page.click(`${LI} [data-readvia="pane"]`);
+  await page.waitForSelector(`${LI} [data-readvia-fixed]`, { timeout: 6000 });
+  const lp = patches(srv, 'ch-li-page');
+  check(lp.length === 1 && lp[0].body.read_via === 'pane' && !!(await page.$(`${LI} [data-readvia-profile]`)),
+        'one click on the browser pane sends read_via pane and brings the profile field back', `LinkedIn choice: ${JSON.stringify(lp.map((p) => p.body))}`);
   await selectTile(page, 'ch-blog');
   check(!(await page.$('[data-conn-account="ch-blog"] [data-readvia-row]')), 'a blog carries no Read via', 'blog shows Read via');
 

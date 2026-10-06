@@ -7,9 +7,10 @@
 //   Social accounts  a grid of one tile per account (status pill; the tile grid and
 //                    its single selection are static/js/desk-v1-connections-tiles.js).
 //                    Selecting a tile opens that account's detail below the grid:
-//                    status, Connect / Reconnect, and for X + LinkedIn how the Desk
-//                    READS it (Browser pane, free, or the platform API, paid) + the
-//                    signed-in browser profile.
+//                    status, Connect / Reconnect, and how the Desk READS it: the
+//                    browser pane (free) + the signed-in browser profile for any site,
+//                    or, for X only, the platform API (paid). YouTube / Instagram /
+//                    TikTok accounts are read-only: read, never published to.
 //                    Voice is NOT here: a campaign sets it on its Where board.
 //   Content sources  the cloud drives Studio's online sources read from.
 //   Generation engines  live: each engine, connected or not by vault name, and the per-job USD
@@ -29,7 +30,7 @@
 // Connect button is gone: it would claim a connection nothing made.
 // Read via goes to M4 (`PATCH /api/desk/accounts/<id>`), still filed under the
 // project that uses the account so engagement has something to poll. Add and
-// Remove are M3/M5. YouTube / Discord / Reddit and the cloud drives stay
+// Remove are M3/M5. Discord / Reddit and the cloud drives stay
 // placeholder tiles.
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -42,9 +43,10 @@
   const _xOpen = new Set();   // account ids whose X steps are open; survives a repaint
   let _connOv = null;          // GET /api/desk/connect/status, dropped when a sign-in changes
 
-  // X and LinkedIn also have a paid API read route, so they offer the choice. Every other site
-  // is read through the browser pane only. A blog is published by hand: nothing to read.
-  const API_READ_PLATFORMS = ['x', 'linkedin'];
+  // Only X has a paid API read route, so only X offers the choice. Every other site (LinkedIn
+  // included: it has no API read) is read through the browser pane only. A blog is published by
+  // hand: nothing to read.
+  const API_READ_PLATFORMS = ['x'];
   const NO_READ_PLATFORMS = ['blog'];
   function _canRead(ch) { return !!ch.platform && NO_READ_PLATFORMS.indexOf(ch.platform) < 0; }
 
@@ -68,6 +70,8 @@
   function _status(ch) {
     if (_isLiveRow(ch)) {
       if (ch.preview) return { key: 'preview', word: 'Preview · not connected', action: null };
+      // A read-only site (YouTube, Instagram, TikTok) has no publishing to connect: it is read.
+      if (ch.capability === 'none') return { key: 'ok', word: 'Read only', action: null };
       return ch.publish.ready ? { key: 'ok', word: 'Connected', action: null }
                               : { key: 'off', word: 'Not connected', action: null };
     }
@@ -80,14 +84,20 @@
   function _readViaHTML(ch) {
     if (!_canRead(ch)) return '';
     const hasApi = API_READ_PLATFORMS.indexOf(ch.platform) >= 0;
-    const via = hasApi && ch.read_via === 'api' ? 'api' : 'pane';
-    const apiLabel = ch.platform === 'x' ? 'X API (paid, ~$0.005 per read)' : 'LinkedIn API (paid)';
+    // An account stored as read through an API its site does not have (a LinkedIn one saved
+    // before that option was removed) is not quietly moved to the pane: it asks for a choice.
+    const needsChoice = !hasApi && ch.read_via === 'api';
+    const via = needsChoice ? null : hasApi && ch.read_via === 'api' ? 'api' : 'pane';
+    const apiLabel = 'X API (paid, ~$0.005 per read)';
     const btn = (v, label) => `<button type="button" data-readvia="${v}" aria-pressed="${via === v}">${esc(label)}</button>`;
     const choice = hasApi
       ? `<div class="desk-v1-conn-readvia-seg" role="group" aria-label="How the Desk reads this account">
             ${btn('pane', 'Browser pane (no charge)')}${btn('api', apiLabel)}
           </div>`
-      : '<span data-readvia-fixed>Browser pane (no charge)</span>';
+      : needsChoice
+        ? `<span data-readvia-needs-choice>This account was set to read through an API, which ${esc(ch.platform === 'linkedin' ? 'LinkedIn' : 'this site')} does not offer.
+            ${btn('pane', 'Read through the browser pane (no charge)')}</span>`
+        : '<span data-readvia-fixed>Browser pane (no charge)</span>';
     const profile = via === 'pane'
       ? `<label class="desk-v1-conn-readvia-profile">Signed-in browser profile
            <input type="text" class="desk-v1-rules-textinput" data-readvia-profile maxlength="64"
@@ -114,6 +124,13 @@
     const open = isX && _xOpen.has(ch.id);
     // A reason that names the vault is for the server log; the page says it in plain words.
     const reason = pub.reason && !/vault/i.test(pub.reason) ? pub.reason : '';
+    if (ch.capability === 'none') {
+      return `
+        <div class="desk-v1-conn-publish" data-conn-publish data-ready="false" data-readonly>
+          <span class="desk-v1-how-field-label">Publishing</span>
+          <span data-conn-publish-text>not available: the Desk reads this account and does not publish there</span>
+        </div>`;
+    }
     const locked = !!pub.vault_locked;      // the sign-in is saved; the vault needs unlocking, not a new sign-in
     const fix = isX
       ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-conn-x-guide="${esc(ch.id)}" aria-expanded="${open}">${open ? 'Hide steps' : (pub.ready ? 'Manage' : (locked ? 'Unlock the vault' : 'Connect X'))}</button>`
@@ -204,7 +221,7 @@
       patch({ read_via: next }).then((acc) => {
         if (!acc) return;
         ch.read_via = acc.read_via;
-        DeskV1Kit.toast(`${ch.label} is now read via ${next === 'api' ? 'the ' + (ch.platform === 'x' ? 'X' : 'LinkedIn') + ' API (paid per read)' : 'the browser pane (no charge)'}.`);
+        DeskV1Kit.toast(`${ch.label} is now read via ${next === 'api' ? 'the X API (paid per read)' : 'the browser pane (no charge)'}.`);
         repaint();
       });
     }));

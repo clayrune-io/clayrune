@@ -30,6 +30,10 @@ a connection that is not there:
              account's `organization_id` (not a secret: it is in the Company
              Page admin URL).
   manual     ready: the human publishes it (a blog); nothing to connect.
+  none       NOT ready, always: a read-only account (YouTube, Instagram, TikTok)
+             the Desk reads through the browser pane and never publishes to.
+             Approval and the tick both go through `publish_state`, so every
+             publish path refuses it with this reason.
 """
 
 from __future__ import annotations
@@ -43,15 +47,18 @@ from mc import desk_read_pages as _read_pages
 from mc import desk_vault_lock as _vault_lock
 from mc import secrets_store
 from mc.core import _log, now_iso
+from mc.desk_pane_pages import PANE_ONLY_PLATFORMS, PLATFORM_PAGES
 from mc.desk_publish import LINKEDIN_TOKEN_SECRET, X_OAUTH_TOKEN_SECRET
 
 # Where the Desk can place anything in v1: X and the LinkedIn Company Page, plus
-# a blog the human publishes. YouTube / Discord / Reddit / Drive / Dropbox are
-# placeholder tiles in the UI and cannot be created here.
-ACCOUNT_PLATFORMS = ('x', 'linkedin', 'blog')
-API_READ_PLATFORMS = ('x', 'linkedin')      # the ones with a paid API read route; every other site reads through the pane
+# a blog the human publishes. YouTube / Instagram / TikTok (`desk_pane_pages.PANE_ONLY_PLATFORMS`)
+# can be created as READ-ONLY accounts (capability `none`: read through the pane,
+# never published to). Discord / Reddit / Drive / Dropbox are placeholder tiles in
+# the UI and cannot be created here.
+ACCOUNT_PLATFORMS = ('x', 'linkedin', 'blog') + PANE_ONLY_PLATFORMS
+API_READ_PLATFORMS = _desk.API_READ_PLATFORMS   # X only has a paid API read route; every other site reads through the pane
 NO_READ_PLATFORMS = ('blog',)               # a blog is published by hand: no signed-in inbox of its own to read
-CAPABILITIES = ('direct', 'manual')
+CAPABILITIES = ('direct', 'manual', 'none')     # `none`: read-only, the Desk publishes nothing there
 
 LINKEDIN_ORG_POSTING_APPROVED = False
 LINKEDIN_PENDING_REASON = 'LinkedIn app review pending (w_organization_social)'
@@ -61,6 +68,7 @@ _TOKEN_SECRET = {'x': X_OAUTH_TOKEN_SECRET, 'linkedin': LINKEDIN_TOKEN_SECRET}
 MAX_TEXT = 80
 _CLIENT_ID = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
 _LABEL_PREFIX = {'x': '\U0001d54f · ', 'linkedin': 'in · '}
+_LABEL_PREFIX.update({p: PLATFORM_PAGES[p]['label'] + ' · ' for p in PANE_ONLY_PLATFORMS})
 
 
 class AccountError(ValueError):
@@ -90,6 +98,9 @@ def publish_state(acc: dict, vault: dict | None = None) -> dict:
     plat = acc.get('platform')
     if acc.get('preview'):
         return {'ready': False, 'reason': 'preview only: nothing publishes here yet',
+                'secret': None, 'unattended_ok': None}
+    if acc.get('capability') == 'none':
+        return {'ready': False, 'reason': 'read-only account: the Desk reads it and does not publish there',
                 'secret': None, 'unattended_ok': None}
     if acc.get('capability') == 'manual':
         return {'ready': True, 'reason': None, 'secret': None, 'unattended_ok': None}
@@ -208,9 +219,13 @@ def create_account(platform, identity, *, label=None, capability=None, voice=Non
                            'other channels are not available yet')
     identity = _clean_text(identity, 'identity', required=True)
     if capability is None:
-        capability = 'manual' if platform == 'blog' else 'direct'
+        capability = 'manual' if platform == 'blog' else 'none' if platform in PANE_ONLY_PLATFORMS else 'direct'
     if capability not in CAPABILITIES:
         raise AccountError(f'capability must be one of {", ".join(CAPABILITIES)}')
+    if platform in PANE_ONLY_PLATFORMS and capability != 'none':
+        raise AccountError(f'a {platform} account is read-only (capability none): the Desk has no way to publish there')
+    if capability == 'none' and platform not in PANE_ONLY_PLATFORMS:
+        raise AccountError('capability none is for read-only sites only')
     if platform == 'blog' and capability != 'manual':
         raise AccountError('a blog has no publishing API: its capability is manual')
     label = _clean_text(label, 'label') or f'{_LABEL_PREFIX.get(platform, "")}{identity}'
@@ -326,7 +341,7 @@ def update_account(account_id: str, patch: dict) -> dict:
         if reading and (rec.get('platform') or '') in ('', *NO_READ_PLATFORMS):
             raise AccountError('a blog has nothing to read through the browser pane')
         if read_via == 'api' and rec.get('platform') not in API_READ_PLATFORMS:
-            raise AccountError('only X and LinkedIn accounts can be read through an API; '
+            raise AccountError('only X accounts can be read through an API; '
                                'this one is read through the browser pane')
         rec.update(clean)
         if reading:

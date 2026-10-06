@@ -23,7 +23,12 @@
     { platform: 'x', label: 'X account', hint: 'Post and read as an X account', placeholder: '@handle' },
     { platform: 'linkedin', label: 'LinkedIn Company Page', hint: 'The Clayrune page', placeholder: 'the page name' },
     { platform: 'blog', label: 'Blog', hint: 'You publish it yourself', placeholder: 'the blog name' },
+    { platform: 'youtube', label: 'YouTube channel', hint: 'Read only: the Desk reads it, never posts', placeholder: 'the channel name' },
+    { platform: 'instagram', label: 'Instagram account', hint: 'Read only: the Desk reads it, never posts', placeholder: '@handle' },
+    { platform: 'tiktok', label: 'TikTok account', hint: 'Read only: the Desk reads it, never posts', placeholder: '@handle' },
   ];
+
+  const READ_ONLY = ['youtube', 'instagram', 'tiktok'];   // mc/desk_pane_pages.py PANE_ONLY_PLATFORMS: read through the pane, never published to
 
   let _pick = null;          // null = the list; 'account:<platform>' | 'engine:<id>' | 'other'
   let _query = '';
@@ -122,7 +127,7 @@
   // user (so it shows while unconnected), with nothing sent anywhere.
   function _newAccount(live, platform, identity, label) {
     const id = 'acct-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const body = { id, platform, identity, capability: platform === 'blog' ? 'manual' : 'direct' };
+    const body = { id, platform, identity, capability: platform === 'blog' ? 'manual' : READ_ONLY.indexOf(platform) >= 0 ? 'none' : 'direct' };
     if (label) body.label = label;
     const base = Object.assign({ label: label || identity, voice: '' }, body);
     const acc = live
