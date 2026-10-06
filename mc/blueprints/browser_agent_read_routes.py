@@ -75,8 +75,7 @@ class _AllowListedReader(br.ProfilePageReader):
         body = super().read(url)
         if not isinstance(body, dict) or not body.get('ok'):
             return body
-        ok, val = br._cdp_evaluate(self._session, '({href: location.href})',
-                                   timeout=5, recv_rounds=15)
+        ok, val = self._evaluate('({href: location.href})', 5, 15)
         href = val.get('href') if ok and isinstance(val, dict) else None
         if not isinstance(href, str) or not policy.url_allowed(href, self._domains):
             return self._off_list(href or '')
