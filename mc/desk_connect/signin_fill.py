@@ -47,6 +47,7 @@ from urllib.parse import urlsplit
 from mc import desk as _desk
 from mc import secrets_store as _vault
 from mc.core import _log
+from mc.desk_connect import browser_setup_record as _setup_record
 from mc.desk_connect import registry as _registry
 from mc.desk_connect import signin_fill_cdp as _cdp
 from mc.desk_connect import signin_fill_js as _js
@@ -126,6 +127,8 @@ def bound_refs(account_id: Any, service: str, route_id: str) -> dict:
         for c in (caps or {}).values():
             if isinstance(c, dict) and c.get('route_id') == route_id and isinstance(c.get('refs'), dict):
                 refs.update({k: v for k, v in c['refs'].items() if isinstance(v, str)})
+    for k, v in _setup_record.saved_refs(rec, route_id).items():     # a browser setup (MC-1062/03); a purpose binding, when there is one, wins
+        refs.setdefault(k, v)
     if not refs.get('login'):
         raise FillError('that account has no saved login for this route: choose one and Save first', 409, 'login_not_bound')
     return refs

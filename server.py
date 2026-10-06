@@ -2238,6 +2238,10 @@ app.register_blueprint(_bp_desk_connect_purpose.bp)
 from mc.blueprints import desk_connect_type_routes as _bp_desk_connect_type  # noqa: E402
 app.register_blueprint(_bp_desk_connect_type.bp)
 
+# Connect by URL, browser connection setup with no developer app (MC-1062 ticket 03): account + named profile + login name. Own module.
+from mc.blueprints import desk_connect_browser_setup_routes as _bp_desk_connect_browser_setup  # noqa: E402
+app.register_blueprint(_bp_desk_connect_browser_setup.bp)
+
 # User-chosen MCP server (slice U2a): Review card + the one passcode Save for a self-contained npm package. Own module.
 from mc.blueprints import desk_connect_custom_routes as _bp_desk_connect_custom  # noqa: E402
 app.register_blueprint(_bp_desk_connect_custom.bp)
