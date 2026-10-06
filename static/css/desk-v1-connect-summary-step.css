@@ -1,0 +1,14 @@
+/* Desk v1 — Connections: the Connect wizard's Review and Result screens (desk-v1-connect-summary-step.js; MC-1062 ticket 13a). rem sizes so 200% text scales every control; nothing has a fixed height. The frame's own look is desk-v1-connect-wizard.css; the fact rows are .desk-v1-cf-facts in desk-v1-connect-flow.css. */
+.desk-v1-cfw-body [data-sum-facts] { margin: 0 0 0.5rem; min-width: 0; }
+.desk-v1-cfw-body [data-sum-facts] dd { overflow-wrap: anywhere; min-width: 0; }
+.desk-v1-cfsum-risks, .desk-v1-cfsum-steps { margin: 0.5rem 0; padding-left: 1.25rem; font-size: 0.85rem; line-height: 1.5; }
+.desk-v1-cfsum-risks li, .desk-v1-cfsum-steps li { margin: 0.15rem 0; overflow-wrap: anywhere; }
+.desk-v1-cfsum-banner { margin-bottom: 0.5rem; }
+.desk-v1-cfsum-banner > div { overflow-wrap: anywhere; }
+.desk-v1-cfsum-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.5rem 0; }
+.desk-v1-cfsum-actions .desk-v1-conn-btn, .desk-v1-cfsum-fill .desk-v1-conn-btn { max-width: 100%; white-space: normal; min-height: 2.25rem; }
+.desk-v1-cfsum-fill, .desk-v1-cfsum-api { margin: 0.5rem 0; min-width: 0; }
+.desk-v1-cfw-body [data-sum-perm-line] { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .desk-v1-cfsum-actions .desk-v1-conn-btn, .desk-v1-cfsum-fill .desk-v1-conn-btn { min-height: 2.75rem; }
+}

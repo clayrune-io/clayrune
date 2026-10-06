@@ -1,6 +1,6 @@
 # MC-1062 / 13a: Present review and partial success
 
-Status: proposed, not dispatched. [Parent design](../CONNECT_FLOW_SIMPLIFY.md).
+Status: built on branch `clayrune/agent/8f0ac8727cdd` (not merged). Remote step (11) registers through `DeskV1ConnectSummaryStep.registerBranch`; the package step keeps its own Review/Result. [Parent design](../CONNECT_FLOW_SIMPLIFY.md).
 
 ## Depends on
 
