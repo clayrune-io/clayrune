@@ -43,7 +43,7 @@ def put_studio_article(article_id):
 @bp.route('/api/desk/studio/articles/<article_id>/attach', methods=['POST'])
 def attach_studio_article(article_id):
     d = request.get_json(silent=True) or {}
-    return _call(_arts.attach, article_id, d.get('campaign_id'), status=201)
+    return _call(_arts.attach, article_id, d.get('campaign_id'), d.get('piece_id'), status=201)
 
 
 @bp.route('/api/desk/studio/articles/<article_id>', methods=['DELETE'])

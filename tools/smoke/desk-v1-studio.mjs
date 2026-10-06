@@ -168,13 +168,11 @@ async function runStudioHome(browser, tone) {
   const back = await text(page, '.desk-v1-back');
   check(/^‹\s*Desk$/.test(back), `${tag} Back reads "${back}"`, `${tag} Back wrong: ${JSON.stringify(back)}`);
 
-  // The article tile still asks which campaign (the writer reads that campaign's
-  // How), then lands on its What with the create-card open.
+  // The article tile opens the standalone article page (Topic, Project, Campaign)
+  // like New video: no campaign menu. desk-v1-studio-article.mjs covers the page.
   await page.click('[data-studio-new="article"]');
-  await page.waitForSelector('.desk-v1-add-menu, [role="menu"]', { timeout: 4000 });
-  await page.click('[role="menu"] [role="menuitem"]:first-child, .desk-v1-add-menu button:first-child');
-  await page.waitForSelector('[data-what-create][data-kind="article"]', { timeout: 6000 });
-  check(true, `${tag} New article tile → pick a campaign → that What with an article create-card open`, '');
+  await page.waitForSelector('[data-studio-create][data-kind="article"] [data-sa-topic]', { timeout: 6000 });
+  check((await page.$$('.desk-v1-add-menu, [role="menu"]')).length === 0, `${tag} New article tile opens its page with no campaign menu`, `${tag} a menu opened for the article tile`);
   reportUncaught(pageErrors, tag);
   await ctx.close();
 }

@@ -4,10 +4,11 @@
 // (who may be deleted, the bin button, the local + server removal, the Undo) lives
 // here so the Studio file does not grow.
 //
-// A row is one of five things (`row.src`):
+// A row is one of six things (`row.src`):
 //   item     what Studio made this session (a draft, or a saved image/video)
 //   board    a draft the server holds a storyboard for (live)
 //   file     a library file (live)
+//   article  a standalone article draft (desk-v1-studio-article.js)
 //   family   a campaign piece that is rendering (never deletable: attached)
 //   fixture  a demo row
 // Delete is IMMEDIATE (no confirm) and goes through `DeskV1Store.write`, so it is a
@@ -72,6 +73,7 @@
       push(_take(lib.boards, (b) => b.id === row.id));
       push(_take(ctx.fixtureRecent(), (r) => r.id === row.id));
     }
+    if (row.src === 'article') push(_take(ctx.articles(), (a) => a.id === row.id));
     if (row.path) {
       push(_take(lib.recent, (r) => r.path === row.path));
       push(_take(ctx.items(), (it) => it.path === row.path));
@@ -83,6 +85,12 @@
   // Which server call a live row needs: a draft (storyboard) or a library file.
   function _serverDelete(row) {
     const store = window.DeskV1Store;
+    if (row.src === 'article') {
+      // A draft the page never saved has nothing on the server: gone is gone.
+      return store.api('DELETE', `/api/desk/studio/articles/${encodeURIComponent(row.id)}`)
+        .then((out) => Object.assign({}, out, { article: true }))
+        .catch((e) => { if (e && e.status === 404) return { token: null }; throw e; });
+    }
     const isDraft = row.src === 'board' || (row.src === 'item' && row.kind === 'video' && row.state === 'draft');
     const call = isDraft
       ? store.api('DELETE', `/api/desk/studio/${encodeURIComponent(row.id)}`)
@@ -117,7 +125,8 @@
       },
       undoRequest: async (out) => {
         if (!live || !out || !out.token) return;
-        await window.DeskV1Store.api('POST', `/api/desk/studio/trash/${out.token}/restore`);
+        const base = out.article ? '/api/desk/studio/articles/trash' : '/api/desk/studio/trash';
+        await window.DeskV1Store.api('POST', `${base}/${out.token}/restore`);
         await ctx.reload();
       },
     }).then((res) => { ctx.repaint(); _focusAfter(ctx, index); return res; });

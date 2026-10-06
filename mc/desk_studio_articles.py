@@ -194,9 +194,10 @@ def put_article(article_id: str, body, load_project=None) -> dict:
         return _out(store, new)
 
 
-def attach(article_id: str, campaign_id) -> dict:
-    """Make a campaign piece from the draft. -> `{article, piece}`. 409 when it is
-    already attached to a piece that still exists."""
+def attach(article_id: str, campaign_id, piece_id: str | None = None) -> dict:
+    """Make a campaign piece from the draft. -> `{article, piece}`. `piece_id` is the id
+    the page already minted for the piece (so its local copy and the stored one agree).
+    409 when the draft is already attached to a piece that still exists."""
     _check_id(article_id)
     with _desk._store_lock:
         store = _desk._read_store()
@@ -209,7 +210,7 @@ def attach(article_id: str, campaign_id) -> dict:
         text = next((t['body'] for t in art.get('tabs') or [] if t.get('body', '').strip()), '')
         topic = art.get('topic') or ''
     # create_piece takes the store lock itself, so it runs outside the block above.
-    piece = _pieces.create_piece(campaign_id, 'article', topic, body=text,
+    piece = _pieces.create_piece(campaign_id, 'article', topic, piece_id=piece_id or None, body=text,
                                  word_count=len(text.split()) or None)
     try:
         with _desk._store_lock:
