@@ -19,6 +19,7 @@ Self-contained (stdlib only) so it runs as a standalone hook script from any cwd
     python "<repo>/steward/fence.py"      # reads PreToolUse JSON on stdin
 """
 import base64
+import hashlib
 import json
 import os
 import re
@@ -1248,6 +1249,19 @@ def _join_line_continuations(cmd: str) -> str:
     return ''.join(out)
 
 
+# MC-1056: ONE browser route is open to unattended callers, the digest route (read-digest,
+# under the browser API prefix). It reads a page only for a profile a human switched on,
+# on a domain the human listed, and answers through a toolless model call; the caller never
+# receives page text (mc/blueprints/browser_agent_read_routes.py). Everything else the
+# check below names (launch, read, input, navigate) stays blocked, and `read` still
+# matches the plain read route itself. The exemption is EXACT: after `read-digest` the next
+# character must end the path (end of segment, quote, space, `?`, `#`), so
+# `read-digest/../launch` (curl squashes dot segments before it sends), `read-digestX`
+# and `read-digest.json` are all still blocked.
+_BROWSER_API_RE = re.compile(
+    r'/api/browser/(?:launch|input|navigate|read(?!-digest(?:$|[\s?#"\'`)])))', re.I)
+
+
 def _touches_nonlocal_network(cmd: str) -> FenceDecision:
     """Block external network SENDS (mutating HTTP verbs / uploads to a non-local
     host). Reads (plain GET) and anything targeting localhost are allowed.
@@ -1268,7 +1282,7 @@ def _touches_nonlocal_network(cmd: str) -> FenceDecision:
     for seg in _net_segments(_join_line_continuations(cmd)):
         if not _NET_TOOL_RE.search(seg):
             continue
-        if re.search(r'/api/browser/(launch|read|input|navigate)', seg, re.I):
+        if _BROWSER_API_RE.search(seg):
             return FenceDecision(True, "autonomous web browsing is out of steward scope - "
                                        "the browser HTTP API is the same capability as the "
                                        "browser MCP tools, which are blocked")
@@ -3146,14 +3160,43 @@ def _pass_can_cover(calls, cwd: Optional[str] = None,
     return len(leaves) == 1 and leaves[0].overridable
 
 
+# MC-1055: a Clayrune-launched session registers this hook twice (project
+# settings AND the per-launch --settings file) whenever the two commands are
+# not byte-identical, so ONE tool call reaches this script twice. Each run
+# used to spend a pass on its own: the first spent it and allowed, the second
+# found none and blocked, and Claude Code blocks on any exit 2. The call's
+# identity goes to the consume route so a repeat of the SAME call is answered
+# without spending a second pass; a different call, or the same id with
+# different content, still finds no pass. main() sets this before judging.
+_current_call_identity = None
+
+
+def _tool_call_identity(payload, tool_name, tool_input):
+    """(tool_use_id, sha256 of what the call does), or None when the payload
+    carries no id (older CLI, Codex): the server then spends one pass per
+    request exactly as before."""
+    tool_use_id = payload.get('tool_use_id') or payload.get('toolUseId')
+    if not isinstance(tool_use_id, str) or not tool_use_id.strip():
+        return None
+    try:
+        blob = json.dumps([tool_name, tool_input], sort_keys=True,
+                          separators=(',', ':'), default=str)
+    except Exception:
+        return None
+    return tool_use_id.strip(), hashlib.sha256(blob.encode('utf-8')).hexdigest()
+
+
 def _consume_attend_once_pass() -> bool:
     sid = _session_id_from_env()
     if not sid:
         return False
+    body = {'claude_session_id': sid}
+    if _current_call_identity:
+        body['tool_use_id'], body['action_digest'] = _current_call_identity
     try:
         req = urllib.request.Request(
             f'{_MC_API_BASE}/api/session/attend-once/consume',
-            data=json.dumps({'claude_session_id': sid}).encode('utf-8'),
+            data=json.dumps(body).encode('utf-8'),
             headers={'Content-Type': 'application/json'}, method='POST')
         with urllib.request.urlopen(req, timeout=2) as resp:
             data = json.loads(resp.read().decode('utf-8'))
@@ -3220,6 +3263,8 @@ def main(argv=None) -> int:
 
     tool_name = payload.get('tool_name') or payload.get('toolName') or ''
     tool_input = payload.get('tool_input') or payload.get('toolInput') or {}
+    global _current_call_identity
+    _current_call_identity = _tool_call_identity(payload, tool_name, tool_input)
     # Only a call that names something under `.claude` can use the memory-dir
     # exception, so only that call pays for the server lookup.
     project_root = _launcher_project_root() if '.claude' in raw.lower() else None
