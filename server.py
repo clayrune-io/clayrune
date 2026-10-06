@@ -2271,6 +2271,10 @@ app.register_blueprint(_bp_passkeys.bp)
 from mc.blueprints import desk_studio_items_routes as _bp_desk_studio_items  # noqa: E402
 app.register_blueprint(_bp_desk_studio_items.bp)
 
+# Standalone Studio articles (no campaign behind them), same Desk store. Own module.
+from mc.blueprints import desk_studio_articles_routes as _bp_desk_studio_articles  # noqa: E402
+app.register_blueprint(_bp_desk_studio_articles.bp)
+
 # mc.desk_publish (simplification plan §5 step 2) is a plain module, not a
 # blueprint: callers are the human-gated reply route and mc.desk_tick (R1-W
 # S7, behind the passcode approve route), so this only gives it a durable
