@@ -173,12 +173,13 @@ async function claudeImportAdd() {
     // taken since the scan (or by an earlier pick) must never be reused.
     while (used.has(id)) id = `${c.id}_${n++}`;
     try {
-      const res = await fetch(API_BASE + `/api/project/${encodeURIComponent(id)}`, {
+      const res = await humanProofFetch(API_BASE + `/api/project/${encodeURIComponent(id)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: c.name, domain: 'general', status: 'active', project_path: c.path }),
-      });
-      const data = await res.json().catch(() => ({}));
+      }, { title: 'Import project', description: `Re-enter your dashboard passcode to add ${c.name} with its existing workspace folder.` });
+      if (res === null) break; // keep remaining candidates selected for a later retry
+      const data = res.body;
       if (res.ok && data.ok) { used.add(id); added.add(c.path); results.push({ ok: true, name: c.name, id }); }
       else results.push({ ok: false, name: c.name, error: data.error || `HTTP ${res.status}` });
     } catch (e) {

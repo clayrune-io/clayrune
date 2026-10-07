@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Project routing changes require a human (MC-1080)
+
+- Project updates refuse agent writes of `id` or `project_path` with HTTP 403 before any record, workspace, log or lifecycle side effect. Caller attribution also refuses managed agents carrying a forged browser Origin, even with valid human proof.
+- Human Create, Claude project Import, typed workspace edits and folder selection use the existing dashboard passcode prompt. Cancel keeps drafts/selections; workspace refusals are visible. Request passcodes are never saved in project records.
+- Contract and validation: `docs/PROJECT_ROUTING_GUARD.md`. Branch build only; no merge, push, restart or live settings changes.
+
 ## [2026-10-07] - Saved-connection model discovery (MC-1067, slice 1)
 
 - Studio lists discovered image/video models through independent read-only vendor adapters, with a scoped 24-hour cache outside project records and an explicitly labelled curated fallback.

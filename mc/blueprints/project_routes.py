@@ -54,6 +54,7 @@ from mc import state
 from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
 from mc.project_safety_settings import refuse_agent_safety_write
+from mc.project_routing_guard import require_human_routing_write
 from mc.core import _log, file_type, now_iso, path_is_within, record_backlog_status_change, time_ago
 from mc.state import (
     _backlog_sync_lock,
@@ -708,6 +709,11 @@ def update_project(project_id):
     if refusal is not None:
         return refusal
 
+    refusal = require_human_routing_write(data)
+    if refusal is not None:
+        return refusal
+    data.pop('passcode', None)  # request proof must never become project data
+
     filepath = DATA_DIR / f'{project_id}.json'
     is_new = not filepath.exists()
     existing = json.loads(filepath.read_text(encoding='utf-8')) if not is_new else {'id': project_id}
@@ -741,7 +747,8 @@ def update_project(project_id):
     if candidate_path:
         try:
             resolved = str(Path(candidate_path).resolve()).lower() if os.name == 'nt' else str(Path(candidate_path).resolve())
-        except Exception:
+        except Exception as e:
+            _log(f"[project] resolving workspace path failed: {e}")
             resolved = candidate_path
         for pf in DATA_DIR.glob('*.json'):
             if pf.stem == project_id or pf.stem.endswith('_agent_log'):
@@ -756,7 +763,8 @@ def update_project(project_id):
                 if other_resolved == resolved:
                     name = other.get('name') or pf.stem
                     return jsonify({'error': f'Path already used by project "{name}". Each project needs its own folder.'}), 409
-            except Exception:
+            except Exception as e:
+                _log(f"[project] checking workspace record {pf.name} failed: {e}")
                 continue
 
     # ── A hand-set backlog key must stay unique and well-formed.

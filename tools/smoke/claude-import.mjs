@@ -74,6 +74,7 @@ async function scenario(name, { width, scan, refuse = {}, setupDone = false }, r
   console.log(`\n[${n}] ${name} @${width}`);
   const ctx = await browser.newContext({ viewport: { width, height: width < 600 ? 800 : 900 }, isMobile: width < 600, hasTouch: width < 600 });
   const page = await ctx.newPage();
+  page.setDefaultTimeout(6000);
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   const created = [];
@@ -89,6 +90,7 @@ async function scenario(name, { width, scan, refuse = {}, setupDone = false }, r
     if (path === '/api/projects') return json(route, [CLAYRUNE_PROJECT]);
     if (path === '/api/config') return json(route, req.method() === 'PUT' ? {} : config);
     if (path === '/api/setup/complete') return json(route, { ok: true, setup_completed: true });
+    if (path === '/api/local-auth/status') return json(route, { configured: true });
     if (path === '/api/claude-import/scan') {
       if (scan === 'fail') return json(route, { ok: false, error: 'disk on fire' }, 500);
       return json(route, scan);
@@ -97,12 +99,12 @@ async function scenario(name, { width, scan, refuse = {}, setupDone = false }, r
     if (m && req.method() === 'POST') {
       const body = JSON.parse(req.postData() || '{}');
       created.push({ id: decodeURIComponent(m[1]), body });
+      if (body.passcode !== 'import-smoke-proof') return json(route, { error: 'bad_passcode' }, 403);
       if (refuse[body.project_path]) return json(route, { error: refuse[body.project_path] }, 409);
       return json(route, { ok: true, id: decodeURIComponent(m[1]) });
     }
     if (path === '/api/characters') return json(route, []);
     if (path === '/api/agent/providers') return json(route, ONE_PROVIDER_OK);
-    if (path === '/api/local-auth/status') return json(route, { configured: false });
     if (path === '/api/system/update/status') return json(route, { is_git_repo: true, behind: 0, ahead: 0, has_local_changes: false, update_available: false, projects_in_install_dir: [] });
     return route.abort();
   });
@@ -141,6 +143,17 @@ const modalRows = (page) => page.evaluate(() => Array.from(document.querySelecto
 const addLabel = (page) => page.evaluate(() => (document.querySelector('#claude-import-root .ci-actions button') || {}).textContent || null);
 const overflowX = (page, sel) => page.evaluate((s) => { const e = document.querySelector(s); return e ? e.scrollWidth - e.clientWidth : -1; }, sel);
 
+async function approveImports(page, count) {
+  for (let i = 0; i < count; i++) {
+    await page.waitForSelector('[data-modal-id^="__human-proof-"]');
+    const id = await page.locator('[data-modal-id^="__human-proof-"]').getAttribute('data-modal-id');
+    const prompt = page.locator(`[data-modal-id="${id}"]`);
+    await prompt.locator('[id^="hp-passcode-"]').fill('import-smoke-proof');
+    await prompt.locator('.btn-add').click();
+    await prompt.waitFor({ state: 'detached' });
+  }
+}
+
 try {
   browser = await chromium.launch();
 
@@ -171,6 +184,7 @@ try {
       if (width < 600) check(await overflowX(page, '#setup-overlay .wt-card') <= 1, 'card does not scroll sideways at 390', `card overflowX=${await overflowX(page, '#setup-overlay .wt-card')}`);
 
       await page.click('#claude-import-root .ci-actions button');
+      await approveImports(page, 5);
       await page.waitForSelector('#claude-import-root .ci-results');
       check(created.length === 5, 'one POST per ticked project', `POSTs: ${created.map(c => c.id)}`);
       const want = ['mission_control', 'dotfiles', 'resume_site', 'trading_bot', 'my_notes'];
@@ -214,6 +228,7 @@ try {
       if (width < 600) check(await overflowX(page, '[data-modal-id="__claude_import"] .modal-content') <= 1, 'modal does not scroll sideways at 390', 'modal overflows sideways');
       await shot(page, `claude-import-modal-${tag}-${width}.png`);
       await page.click('[data-modal-id="__claude_import"] .ci-actions button');
+      await approveImports(page, 5);
       await page.waitForSelector('[data-modal-id="__claude_import"] .ci-results');
       check(created.length === 5, 'modal Add creates the 5 ticked projects through the same endpoint', `POSTs: ${created.length}`);
     });
