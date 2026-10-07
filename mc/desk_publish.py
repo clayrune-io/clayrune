@@ -113,6 +113,7 @@ from mc.core import _atomic_write_text, _log, now_iso
 from mc import desk as _desk
 from mc import desk_account_refs as _refs
 from mc import desk_oauth as _oauth
+from mc import desk_spend_guard as _spend
 from mc import secrets_store
 
 # -- wired by server.py -------------------------------------------------------
@@ -158,6 +159,12 @@ class ReadConsentDenied(PublishError):
     """`verify_post` was refused by the account's Read consent before any token
     or network use. Not a platform answer about the post, so the caller must not
     count it as a failed attempt: a later Read grant makes the same call work."""
+
+
+class ReadSpendRefused(ReadConsentDenied):
+    """`verify_post` was refused because the campaign's remaining budget cannot
+    pay for the read (`mc/desk_spend_guard.py`). Same contract as its parent: no
+    token, no network, not an attempt, and a later budget makes the call work."""
 
 
 # -- receipt store --------------------------------------------------------------
@@ -258,8 +265,26 @@ def _post_linkedin(token: str, organization_id: str, body: str) -> dict[str, Any
         return {'id': r.headers.get('x-restli-id') or ''}
 
 
-def _send_x(token: str, body: str, in_reply_to) -> tuple[str, str]:
-    """(post id, permalink) for one X post; PublishError on any failure."""
+# Handle per X sign-in, so the handle lookup (the one call the spend guard does
+# not count, see `mc/desk_spend_guard.py`) runs once per account, not after every
+# post. Only a non-empty handle is kept, so a failed lookup is retried. Process
+# lifetime: a handle changed on X shows in new permalinks after a restart.
+_username_cache: dict[str, str] = {}
+
+
+def _cached_username(token: str, account_key: str) -> str:
+    hit = _username_cache.get(account_key)
+    if hit:
+        return hit
+    name = _get_username(token)
+    if name:
+        _username_cache[account_key] = name
+    return name
+
+
+def _send_x(token: str, body: str, in_reply_to, account_key: str = '') -> tuple[str, str]:
+    """(post id, permalink) for one X post; PublishError on any failure.
+    `account_key` names the X sign-in for the handle cache."""
     try:
         payload = (_post_tweet(token, body, str(in_reply_to)) if in_reply_to
                    else _post_tweet(token, body))
@@ -281,7 +306,7 @@ def _send_x(token: str, body: str, in_reply_to) -> tuple[str, str]:
         raise PublishError(f'X API returned no post id: {json.dumps(payload)[:500]}')
 
     try:
-        username = _get_username(token)
+        username = _cached_username(token, account_key)
     except Exception as e:
         # The post is already live on X -- a lookup failure here must
         # never be reported as a failed publish (see module docstring).
@@ -330,7 +355,7 @@ def _get_tweet(token: str, post_id: str) -> dict[str, Any]:
 
 def verify_post(platform: str, post_id: str, *, consumer: str = 'desk_publish',
                 project_id: str | None = None, unattended: bool = False,
-                account_id: str | None = None) -> bool | None:
+                account_id: str | None = None, campaign_id: str | None = None) -> bool | None:
     """Does the platform itself say this post exists? True = it does. False =
     the platform answered and the post is not there. None = this module has no
     way to ask (LinkedIn: reading a post back needs `r_organization_social`,
@@ -342,7 +367,12 @@ def verify_post(platform: str, post_id: str, *, consumer: str = 'desk_publish',
     X: `GET /2/tweets/:id` with the same token that posted it. That is an X read
     and costs what a read costs (`mc.desk_engagement.X_READ_UNIT_COST`); fetching
     the permalink instead would prove nothing, since x.com answers 200 for any
-    status URL."""
+    status URL.
+
+    With a `campaign_id` that read is charged to the campaign's budget
+    (`mc/desk_spend_guard.py`): refused with `ReadSpendRefused` before any token
+    or network use when it does not fit, recorded in the read ledger once the
+    platform answers, released when it does not."""
     if platform != 'x':
         return None
     # Read consent, on the original workspace id before OAuth's legacy-name
@@ -356,24 +386,36 @@ def verify_post(platform: str, post_id: str, *, consumer: str = 'desk_publish',
     except _permissions.PermissionDenied as e:
         raise ReadConsentDenied(str(e)) from e
     try:
-        token = _oauth.x_token(consumer=consumer, project_id=project_id, unattended=unattended,
-                               account_id=_refs.oauth_arg_for(account_id))
-    except (secrets_store.SecretsError, _oauth.OAuthError) as e:
-        raise PublishError(f'credential unavailable: {e}') from e
+        held = _spend.reserve(campaign_id, _spend.read_cost('x', 1), what='checking that the post is live')
+    except _spend.SpendRefused as e:
+        raise ReadSpendRefused(str(e)) from e
     try:
-        payload = _get_tweet(token, str(post_id))
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return False
-        detail = e.read().decode('utf-8', errors='replace')[:300]
-        raise PublishError(f'X API HTTP {e.code} while verifying: {detail}') from e
-    except Exception as e:
-        raise PublishError(f'could not reach X to verify: {e}') from e
-    data = (payload or {}).get('data') or {}
-    if str(data.get('id') or '') == str(post_id):
-        return True
-    # A 200 with errors[] and no data is X's "not found" for a deleted/never-seen id.
-    return False
+        try:
+            token = _oauth.x_token(consumer=consumer, project_id=project_id, unattended=unattended,
+                                   account_id=_refs.oauth_arg_for(account_id))
+        except (secrets_store.SecretsError, _oauth.OAuthError) as e:
+            raise PublishError(f'credential unavailable: {e}') from e
+        try:
+            payload = _get_tweet(token, str(post_id))
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return False
+            detail = e.read().decode('utf-8', errors='replace')[:300]
+            raise PublishError(f'X API HTTP {e.code} while verifying: {detail}') from e
+        except Exception as e:
+            raise PublishError(f'could not reach X to verify: {e}') from e
+        data = (payload or {}).get('data') or {}
+        found = str(data.get('id') or '') == str(post_id)
+        if held is not None:
+            # X answered 200: bill what it returned (one post, nothing for errors[]).
+            _spend.settle_read(held, platform='x', project_id=project_id, kind='verify',
+                               resources=1 if found else 0,
+                               cost=_spend.read_cost('x', 1 if found else 0))
+            held = None
+        # A 200 with errors[] and no data is X's "not found" for a deleted/never-seen id.
+        return found
+    finally:
+        _spend.release(held)
 
 
 # -- publish --------------------------------------------------------------------
@@ -452,23 +494,34 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
             raise PublishError(str(e)) from e
         x_account = _refs.oauth_arg_for(item.get('account_id')) if platform == 'x' else None
 
+        # A paid post must fit what is left of its campaign's budget (an item
+        # with no campaign has nothing to charge; LinkedIn is free). The hold
+        # covers the send; `desk_tick` writes the ledger row, with the same
+        # cost, before it lets another send start.
         try:
-            if platform == 'x':
-                # A sign-in from Connections (refreshed here, never a ~2 hour static
-                # token), else the hand-pasted `x.oauth-token`.
-                token = _oauth.x_token(consumer=consumer, project_id=project_id, unattended=unattended,
-                                       account_id=x_account)
-            else:
-                token = secrets_store.get_secret_value(
-                    LINKEDIN_TOKEN_SECRET, consumer=consumer, project_id=project_id, unattended=unattended)
-        except (secrets_store.SecretsError, _oauth.OAuthError) as e:
-            raise PublishError(f'credential unavailable: {e}') from e
+            held = _spend.reserve(campaign_id, _spend.post_cost(platform, body), what=f'posting to {platform}')
+        except _spend.SpendRefused as e:
+            raise PublishError(str(e)) from e
+        try:
+            try:
+                if platform == 'x':
+                    # A sign-in from Connections (refreshed here, never a ~2 hour static
+                    # token), else the hand-pasted `x.oauth-token`.
+                    token = _oauth.x_token(consumer=consumer, project_id=project_id, unattended=unattended,
+                                           account_id=x_account)
+                else:
+                    token = secrets_store.get_secret_value(
+                        LINKEDIN_TOKEN_SECRET, consumer=consumer, project_id=project_id, unattended=unattended)
+            except (secrets_store.SecretsError, _oauth.OAuthError) as e:
+                raise PublishError(f'credential unavailable: {e}') from e
 
-        if platform == 'linkedin':
-            post_id = _send_linkedin(token, organization_id, body)
-            permalink = f'https://www.linkedin.com/feed/update/{post_id}/'
-        else:
-            post_id, permalink = _send_x(token, body, item.get('in_reply_to'))
+            if platform == 'linkedin':
+                post_id = _send_linkedin(token, organization_id, body)
+                permalink = f'https://www.linkedin.com/feed/update/{post_id}/'
+            else:
+                post_id, permalink = _send_x(token, body, item.get('in_reply_to'), x_account or '')
+        finally:
+            _spend.release(held)
 
         receipt = {
             'item_id': item_id,

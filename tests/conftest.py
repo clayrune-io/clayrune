@@ -536,3 +536,17 @@ def gs(fake_gh, project_store, monkeypatch):
     github_sync._activity_log = activity_log   # test introspection
     github_sync._set_now = lambda s: _now.__setitem__(0, s)
     return github_sync
+
+
+@pytest.fixture(autouse=True)
+def _desk_publish_username_cache_empty():
+    """`desk_publish` keeps the X handle per account for the life of the process
+    (one `/2/users/me` per account, not per post). Tests fake the handle with
+    different names under the same account key, so each starts with no cache."""
+    try:
+        from mc import desk_publish
+    except Exception:
+        yield
+        return
+    desk_publish._username_cache.clear()
+    yield

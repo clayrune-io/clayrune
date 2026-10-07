@@ -221,7 +221,7 @@ def test_publish_and_verify_use_the_accounts_own_sign_in(store, tmp_path, monkey
         seen.append(account_id)
         return 'tok'
     monkeypatch.setattr(desk_publish._oauth, 'x_token', fake_token)
-    monkeypatch.setattr(desk_publish, '_send_x', lambda token, body, reply: ('1', 'https://x.com/a/status/1'))
+    monkeypatch.setattr(desk_publish, '_send_x', lambda token, body, reply, account_key='': ('1', 'https://x.com/a/status/1'))
     monkeypatch.setattr(desk_publish, '_get_tweet', lambda token, pid: {'data': {'id': pid}})
     desk_publish.publish({'id': 'v1', 'platform': 'x', 'body': 'hi', 'account_id': second['id']})
     desk_publish.publish({'id': 'v2', 'platform': 'x', 'body': 'hi', 'account_id': first['id']})

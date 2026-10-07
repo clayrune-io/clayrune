@@ -4,6 +4,12 @@ Reader selection and existing budgets remain in desk_engagement. Consent uses
 its original presence channel_id, never the OAuth singleton argument, and is
 checked separately before mentions and each metrics batch. Legacy/unset keeps
 the previous poll/error/budget behavior. No new provider or spend authority.
+
+Spend (bb65f3bb): a PAID API metrics batch is charged to the campaign that owns
+its posts (`desk_spend_guard`), so batches are split per owning campaign. A post
+whose campaign no longer exists, and every mentions read (no campaign), stay on
+the project cap in `desk_engagement._afford`. Pane reads cost 0 and never reach
+the guard.
 """
 from __future__ import annotations
 
@@ -11,6 +17,7 @@ from datetime import datetime, timedelta
 
 from mc import desk as _desk
 from mc import desk_engagement as _eng
+from mc import desk_spend_guard as _spend
 from mc.desk_connect import permission_check as _permissions
 from mc.desk_connect import permission_policy as _policy
 from mc.desk_connect import registry as _registry
@@ -66,8 +73,9 @@ def poll_platform(project_id: str, platform: str, reader: _eng.Reader,
             msg = 'read budget spent: replies not read this period'
             entry['budget_blocked'] = True
             _desk.set_read_coverage(project_id, platform, ok=False, error=msg, via=reader.via)
-            return
-        got = reader.fetch_mentions(since_id=cursor, known_posts=known)
+            got = None    # no mentions this period; metrics below may be a campaign's to pay
+        else:
+            got = reader.fetch_mentions(since_id=cursor, known_posts=known)
     except _permissions.PermissionDenied as e:
         _denied(project_id, platform, reader, entry, 'mentions', e)
         got = None
@@ -110,20 +118,35 @@ def poll_platform(project_id: str, platform: str, reader: _eng.Reader,
         if any(o.get('source') == 'feed' and (o.get('at') or '')[:10] == today
                for o in r.get('outcomes') or []):
             continue          # already measured today; do not pay twice
-        todo.append((r['id'], ext))
+        todo.append((r['id'], ext, r.get('campaign_id')))
     todo = todo[:_eng.METRICS_MAX_POSTS]
-    for i in range(0, len(todo), _eng.METRICS_BATCH):
-        batch = todo[i:i + _eng.METRICS_BATCH]
+    paid_api = reader.via == 'api' and reader.unit_cost > 0
+    for cid, batch in _metric_batches(todo, paid_api):
+        held = None
         try:
             _require_read(account_id, platform, reader, 'post_metrics')
-            if not _eng._afford(project_id, reader, len(batch), now_dt):
+            if cid:
+                # A paid API read of a campaign's own posts: that campaign's
+                # budget pays, and its refusal is a reason, not a silent skip.
+                held = _spend.reserve(cid, len(batch) * reader.unit_cost,
+                                      what=f'reading the numbers for {len(batch)} post(s) on {platform}')
+            elif not _eng._afford(project_id, reader, len(batch), now_dt):
                 entry['budget_blocked'] = True
                 break
             res = reader.fetch_metrics([ext for _lid, ext in batch])
         except _permissions.PermissionDenied as e:
             _denied(project_id, platform, reader, entry, 'post_metrics', e)
             break
+        except _spend.SpendRefused as e:
+            reason = str(e)
+            entry['budget_blocked'] = True
+            entry['error'] = reason
+            _desk.record_read(platform=platform, project_id=project_id, kind='metrics',
+                              resources=0, cost=0.0, ok=False, error=reason, campaign_id=cid)
+            _desk.set_read_coverage(project_id, platform, ok=False, error=reason, via=reader.via)
+            continue          # another campaign's posts may still fit its own budget
         except _eng.ReadError as e:
+            _spend.release(held)
             _desk.record_read(platform=platform, project_id=project_id, kind='metrics',
                               resources=0, cost=0.0, ok=False, error=str(e))
             entry['error'] = str(e)
@@ -131,9 +154,12 @@ def poll_platform(project_id: str, platform: str, reader: _eng.Reader,
                 _desk.set_read_coverage(project_id, platform, ok=False, error=str(e),
                                         via=reader.via, error_kind=e.kind)
             break
+        except BaseException:
+            _spend.release(held)
+            raise
         cost = res['resources'] * reader.unit_cost
-        _desk.record_read(platform=platform, project_id=project_id, kind='metrics',
-                          resources=res['resources'], cost=cost, ok=True)
+        _spend.settle_read(held, platform=platform, project_id=project_id, kind='metrics',
+                           resources=res['resources'], cost=cost)
         entry['spent'] += cost
         entry['metrics_unavailable'] += len(res.get('unavailable') or {})
         for lid, ext in batch:
@@ -141,3 +167,17 @@ def poll_platform(project_id: str, platform: str, reader: _eng.Reader,
                 if _desk.record_feed_outcome(lid, metric, value, at=_eng._iso(now_dt)):
                     entry['metrics_written'] += 1
     entry['spent'] = round(entry['spent'], 4)
+
+
+def _metric_batches(todo: list, paid_api: bool):
+    """`(campaign_id | None, [(ledger_id, external_id)])` in batches of
+    `METRICS_BATCH`. A paid API read is split per owning campaign (one that
+    still exists) so each batch has one budget to be charged to; anything else
+    keeps today's single run of batches in ledger order."""
+    groups: dict = {}
+    for lid, ext, cid in todo:
+        key = _spend.owning_campaign(cid) if paid_api else None
+        groups.setdefault(key, []).append((lid, ext))
+    for key, items in groups.items():
+        for i in range(0, len(items), _eng.METRICS_BATCH):
+            yield key, items[i:i + _eng.METRICS_BATCH]

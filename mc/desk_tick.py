@@ -65,6 +65,7 @@ from mc import desk as _desk
 from mc import desk_accounts as _accounts
 from mc import desk_pieces as _pieces
 from mc import desk_publish as _publish
+from mc import desk_spend_guard as _spend
 from mc.core import _log, now_iso
 
 TICK_SECONDS = 60
@@ -72,9 +73,8 @@ TICK_SECONDS = 60
 # What a post costs to send, recorded on its ledger row (`cost`) so the retro and
 # the budget see it. X: $0.015 a post, $0.20 when the post carries a link
 # (docs/SOCIAL_WORKSPACE_FIELD_SCAN.md, Feb 2026 pricing). LinkedIn's API is free.
-X_POST_COST = 0.015
-X_LINK_POST_COST = 0.20
-_URL = re.compile(r'https?://', re.I)
+X_POST_COST = _spend.X_POST_COST
+X_LINK_POST_COST = _spend.X_LINK_POST_COST
 
 # How many ticks may try to verify one submitted post before giving up (each X
 # attempt is a paid read), and how long after posting a verification is still tried.
@@ -110,9 +110,7 @@ def _parse(s) -> datetime | None:
 
 
 def _post_cost(platform: str, body: str) -> float:
-    if platform != 'x':
-        return 0.0
-    return X_LINK_POST_COST if _URL.search(body or '') else X_POST_COST
+    return _spend.post_cost(platform, body)
 
 
 def _failure(reason: str, now: datetime | None = None) -> dict:
@@ -273,7 +271,7 @@ def _verify(piece, ver, camp, acc, *, attended: bool, now: datetime) -> str:
     try:
         ok = _publish.verify_post(acc.get('platform'), receipt.get('post_id'), consumer='desk_tick',
                                   project_id=camp.get('project_id'), unattended=not attended,
-                                  account_id=acc.get('id'))
+                                  account_id=acc.get('id'), campaign_id=camp.get('id'))
     except _publish.ReadConsentDenied as e:
         # Refused before any token or GET: not an attempt, never `unconfirmed`,
         # so granting Read later verifies on the next pass.
