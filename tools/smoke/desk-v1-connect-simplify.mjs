@@ -156,6 +156,16 @@ async function inspect(p, service, width, screen) {
   check(!/\b(route|transport|OAuth|MCP|vault|U1|U2|held)\b|oauth\.higgsfield/i.test(data.text),`${service} ${width} ${screen}: no internal terms in visible copy`);
   check(data.forms===1&&data.nested===0&&data.alternatives<=4&&data.overflow<=0,`${service} ${width} ${screen}: one form, four options, fits`);
   check(data.primary.top>=0&&data.primary.bottom<=data.primary.height,`${service} ${width} ${screen}: primary action reachable`);
+  if(screen==='connection') {
+    // Ron 2026-10-07: X showed two rows that both read "Sign in" with nothing under them.
+    const opts=await p.$$eval('[data-cfw-body] > [role="radiogroup"] [data-cfw-option]',els=>els.map(e=>({
+      label:e.querySelector('.desk-v1-cfw-option-label')?.textContent.trim()||'',
+      sentence:e.querySelector('[data-cfw-option-sentence]')?.textContent.trim()||''})));
+    check(opts.length>=2&&opts.every(o=>o.label&&o.sentence.length>10),`${service} ${width} connection: every option row has a label and a sentence`,`${service} ${width}: row without a sentence: ${JSON.stringify(opts)}`);
+    check(new Set(opts.map(o=>o.label+'|'+o.sentence)).size===opts.length,`${service} ${width} connection: no two rows share label+sentence`,`${service} ${width}: duplicate rows ${JSON.stringify(opts)}`);
+    check(new Set(opts.map(o=>o.label)).size===opts.length,`${service} ${width} connection: no two rows share a label`,`${service} ${width}: repeated label ${JSON.stringify(opts.map(o=>o.label))}`);
+    if(service==='x') check(opts.some(o=>/website in Clayrune's browser/.test(o.sentence))&&opts.some(o=>/with your X account/.test(o.sentence)),'x connection: browser sign-in and account sign-in read differently and name X');
+  }
   await p.screenshot({path:resolve(SHOT_DIR,`${service}_${screen}_${width}.png`)});
   if(screen==='review') {
     await p.evaluate(()=>document.documentElement.style.fontSize='200%');
