@@ -555,6 +555,52 @@ def test_merging_an_unreviewed_ancestor_of_an_agent_branch_is_gated(project, rep
 
 
 @needs_sh
+def test_a_branch_forked_from_a_reviewed_agent_tip_does_not_block_it(project, repo, tmp_path):
+    """Round 3: B forked from A's reviewed tip contains it too, and could never
+    record a review for it (not B's tip). The review under A is enough."""
+    _hooked_repo(repo, tmp_path, merge_requires_review=True)
+    _, a = _agent(project, 'hk8')
+    _review(project, 'hk8', a)
+    _, bpath = w.create(project, 'hk9', base_ref=w.branch_name('hk8'))
+    _review(project, 'hk9', _commit(bpath, 'B = 1\n', name='b.py'))
+    _commit(repo, 'X = 10\n', name='other.py')
+    m = _run(repo, 'merge', '--no-edit', w.branch_name('hk8'))
+    assert m.returncode == 0, (m.stdout, m.stderr)
+    assert _git(repo, 'rev-parse', 'HEAD^2') == a
+
+
+@needs_sh
+def test_a_feature_branch_an_agent_forked_from_still_merges(project, repo, tmp_path):
+    """Round 3: an agent branch forked from an ordinary branch used to make that
+    branch's own commits need an agent review."""
+    _hooked_repo(repo, tmp_path, merge_requires_review=True)
+    _git(repo, 'checkout', '-q', '-b', 'feature')
+    _commit(repo, 'Y = 2\n', name='feature.py')
+    _git(repo, 'checkout', '-q', '-')
+    _, bpath = w.create(project, 'hk10', base_ref='feature')
+    _commit(bpath, 'B = 2\n', name='b.py')
+    _commit(repo, 'X = 11\n', name='other.py')
+    m = _run(repo, 'merge', '--no-edit', 'feature')
+    assert m.returncode == 0, (m.stdout, m.stderr)
+
+
+@needs_sh
+def test_recreating_an_agent_branch_at_a_rejected_commit_does_not_launder_it(project, repo, tmp_path):
+    """The fork-point rule must not let a branch disown its own rejected work by
+    being deleted and recreated there: with no other branch holding the
+    commit, every containing agent branch owns it."""
+    _hooked_repo(repo, tmp_path, merge_requires_review=True)
+    _, a = _agent(project, 'hk11')
+    _review(project, 'hk11', a, verdict='changes_requested')
+    ref = 'refs/heads/' + w.branch_name('hk11')
+    _git(repo, 'update-ref', '-d', ref)
+    _git(repo, 'update-ref', ref, a)
+    _commit(repo, 'X = 12\n', name='other.py')
+    m = _run(repo, 'merge', '--no-edit', a)
+    assert m.returncode != 0 and 'BLOCKED' in m.stderr, (m.stdout, m.stderr)
+
+
+@needs_sh
 def test_merging_an_ordinary_branch_is_not_gated(project, repo, tmp_path):
     """Base commits are contained in every agent branch; only work not yet on
     the base may trigger the gate."""

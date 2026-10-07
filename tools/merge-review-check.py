@@ -68,8 +68,9 @@ def find_project(data_root: Path, repo: Path, project_id: str = '') -> dict | No
     return None
 
 
-def _merge_head_branches(repo: Path) -> list[tuple[str, str]]:
-    """(clayrune/agent/* branch, commit) pairs being merged into `repo` right now.
+def _merge_head_commits(repo: Path) -> list[tuple[str, list[str]]]:
+    """(commit, [clayrune/agent/* branches containing it]) for every commit
+    being merged into `repo` right now that some agent branch owns.
 
     Git has NOT written MERGE_HEAD yet when `pre-merge-commit` runs for a fresh
     auto-merge (measured on git 2.51: the file is absent, and so is MERGE_MSG);
@@ -79,11 +80,19 @@ def _merge_head_branches(repo: Path) -> list[tuple[str, str]]:
     GIT_REFLOG_ACTION -- "merge <args>", or "pull <args>" when the merge was
     started by `git pull` -- resolving each word to a commit.
 
-    A commit is gated when any agent branch CONTAINS it and the current HEAD
-    does not, and the check is of that exact commit, not the branch's tip.
-    Matching only branch tips let a rejected merge be finished by advancing
-    the agent branch first (the pending MERGE_HEAD then pointed at no tip),
-    and let a merge of `<agent branch>~1` or a copy-named branch through."""
+    The check is of that exact commit, not of any branch's tip. Matching only
+    branch tips let a rejected merge be finished by advancing the agent branch
+    first (the pending MERGE_HEAD then pointed at no tip), and let a merge of
+    `<agent branch>~1` or a copy-named branch through.
+
+    Owners are the agent branches that contain the commit and were not
+    created at or after it (`_created_at`): a commit a branch was merely forked
+    FROM is not its work, and it could never record a review for it (the
+    review route accepts tip SHAs only). A commit no agent branch produced is
+    ungated only when a non-agent branch other than HEAD also holds it (an
+    ordinary feature branch an agent forked from); otherwise every containing
+    agent branch owns it, so deleting and recreating a branch at a rejected
+    commit does not launder it."""
     shas: list[str] = []
     ok, mh = _git(repo, 'rev-parse', '--git-path', 'MERGE_HEAD')
     if ok and mh:
@@ -101,16 +110,53 @@ def _merge_head_branches(repo: Path) -> list[tuple[str, str]]:
             ok, sha = _git(repo, 'rev-parse', '-q', '--verify', word + '^{commit}')
             if ok and sha:
                 shas.append(sha)
-    found: list[tuple[str, str]] = []
-    for sha in shas:
+    _, head_ref = _git(repo, 'symbolic-ref', '-q', '--short', 'HEAD')
+    found: list[tuple[str, list[str]]] = []
+    for sha in dict.fromkeys(s.lower() for s in shas):
         if _git(repo, 'merge-base', '--is-ancestor', sha, 'HEAD')[0]:
             continue                   # already on the base: lands nothing new
         ok, out = _git(repo, 'for-each-ref', '--contains', sha,
-                       '--format=%(refname:short)', f'refs/heads/{gate.BRANCH_PREFIX}')
-        for b in (out.splitlines() if ok else []):
-            if b.startswith(gate.BRANCH_PREFIX) and (b, sha) not in found:
-                found.append((b, sha))
+                       '--format=%(refname:short)', 'refs/heads/')
+        names = out.splitlines() if ok else []
+        agents = [b for b in names if b.startswith(gate.BRANCH_PREFIX)]
+        if not agents:
+            continue
+        owners = [b for b in agents if not _forked_from(repo, b, sha)]
+        if not owners:
+            if any(b != head_ref and not b.startswith(gate.BRANCH_PREFIX) for b in names):
+                continue
+            owners = agents            # nobody else holds it: fail closed
+        found.append((sha, owners))
     return found
+
+
+def _created_at(repo: Path, branch: str) -> str:
+    """Commit `branch` was created at: its oldest reflog entry, '' when the
+    reflog is gone."""
+    ok, out = _git(repo, 'reflog', 'show', '--format=%H', f'refs/heads/{branch}', '--')
+    lines = out.split() if ok else []
+    return lines[-1] if lines else ''
+
+
+def _forked_from(repo: Path, branch: str, sha: str) -> bool:
+    """True when `branch` already contained `sha` the moment it was created.
+    No reflog = False, so the branch is treated as owning it (fails closed)."""
+    start = _created_at(repo, branch)
+    return bool(start) and _git(repo, 'merge-base', '--is-ancestor', sha, start)[0]
+
+
+def commit_hold_reason(project_id: str, sha: str, owners: list[str]) -> str:
+    """'' when some owning agent branch has a pass for exactly `sha` and none
+    requested changes on it. A commit an agent branch was forked FROM (another
+    agent's reviewed tip) is owned by both branches; the review under the
+    branch that produced it is enough."""
+    verdicts = {b: gate.verdict_for(project_id, b, sha) for b in owners}
+    rejected = [b for b, v in verdicts.items() if v == gate.CHANGES_REQUESTED]
+    if rejected:
+        return gate.hold_reason(project_id, rejected[0], sha)
+    if any(v == gate.PASS for v in verdicts.values()):
+        return ''
+    return gate.hold_reason(project_id, owners[0], sha)
 
 
 def _main_checkout(repo: Path) -> Path:
@@ -146,10 +192,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f'merge-review-check: {a.repo} is not a git checkout', file=sys.stderr)
         return 2
     repo = Path(top)
-    # (branch, commit to check); '' = the branch's current tip (CLI mode)
-    branches = _merge_head_branches(repo) if a.merge_head else [(a.branch, '')]
-    if not branches:
-        return 0                       # not a merge of an agent branch: nothing to gate
+    if a.merge_head:
+        commits = _merge_head_commits(repo)
+        if not commits:
+            return 0                   # not a merge of an agent branch: nothing to gate
+    else:
+        commits = []
 
     data_root = Path(a.data_root)
     project = (find_project(data_root, repo, a.project)
@@ -161,20 +209,22 @@ def main(argv: list[str] | None = None) -> int:
     if a.respect_setting and not gate.enabled(project):
         return 0
     gate.STORE_DIR = data_root / 'data' / gate.STORE_DIRNAME
+    project = dict(project, project_path=str(repo))
+    if not a.merge_head:               # CLI mode: the branch's current tip
+        commits = [(gate.branch_tip(project, a.branch), [a.branch])]
 
     status = 0
-    for branch, merging in branches:
-        project = dict(project, project_path=str(repo))
-        tip = merging or gate.branch_tip(project, branch)
-        held = gate.hold_reason(project['id'], branch, tip)
+    for sha, owners in commits:
+        held = (commit_hold_reason(project['id'], sha, owners) if sha
+                else gate.hold_reason(project['id'], owners[0], sha))
         if held:
             print(f'BLOCKED: {held}. Record a pass for this exact commit '
                   f'(POST /api/project/{project["id"]}/agent/'
-                  f'{branch[len(gate.BRANCH_PREFIX):]}/review) before merging.',
+                  f'{owners[0][len(gate.BRANCH_PREFIX):]}/review) before merging.',
                   file=sys.stderr)
             status = 1
         else:
-            print(f'ok: {branch} at {tip[:8]} has a pass review on record')
+            print(f'ok: {sha[:8]} ({", ".join(owners)}) has a pass review on record')
     return status
 
 

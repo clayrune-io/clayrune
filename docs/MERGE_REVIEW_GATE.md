@@ -102,6 +102,18 @@ branch's current tip. Matching only tips (round 2) let a rejected merge be
 finished by advancing the agent branch first, and let `<branch>~1` or a
 copy-named branch through.
 
+Which agent branches **own** the commit (round 3): those that contain it and
+were not created at or after it, read from each branch's oldest reflog entry.
+The commit passes when any owner has a pass for it and none has
+`changes_requested`. So agent B forked from agent A's reviewed tip does not
+block merging A, and an agent forked from an ordinary feature branch does not
+make that branch's commits need an agent review (round 3 required reviews
+under every containing branch, which the tip-only review route can never
+record). When no agent branch produced the commit, it is ungated only if a
+non-agent branch other than `HEAD` also holds it; otherwise every containing
+agent branch owns it, so deleting and recreating a branch at its own rejected
+commit does not launder it. A missing reflog counts as owning (fails closed).
+
 **Client-side hooks are advisory.** `git merge --no-verify` and
 `git commit --no-verify` skip them, and anyone can delete or never install them.
 The real controls are the server-side `merge_back` hold, and Dave running
