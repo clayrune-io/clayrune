@@ -175,6 +175,8 @@ whenever a task means visiting a web page.
 | POST | `/api/browser/read` | `{"session_id":…,"selector":"..."?}` → visible page text (whole page, or one CSS-selected region), wrapped in an untrusted-content envelope. See below — read it before using this on an unfamiliar page. |
 | GET | `/api/project/<project_id>/browser/status` | Live sessions for this project. |
 | POST | `/api/browser/stop` | End a session. |
+| POST | `/api/browser/auth-trace` | Opt-in redacted auth diagnostics for one running pane: `{"session_id":"...","on":true\|false}`. Default off; 500 in-memory events. No headers, request bodies, URL queries or successful auth bodies. |
+| GET | `/api/browser/auth-trace?session_id=...` | Read that pane's sanitized diagnostic snapshot. Keep it open until capture is read. Contract: `docs/BROWSER_AUTH_DIAGNOSTICS.md`. |
 | GET | `/api/browser/profiles` | Saved signed-in profiles (names/sizes only, never cookies). |
 | DELETE | `/api/browser/profiles/<name>` | Forget a profile — **this is the sign-out. Destructive; ask first.** |
 
