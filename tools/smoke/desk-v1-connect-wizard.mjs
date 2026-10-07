@@ -413,7 +413,7 @@ async function run(browser, width, height) {
   // Unknown address: only MCP in the picker.
   await page.click('[data-cfw-back]'); await waitStep(page, 'service');
   await page.fill('[data-cfw-input]', 'plausible.io'); await page.press('[data-cfw-input]', 'Enter'); await waitStep(page, 'connection');
-  check((await page.$$eval('[data-cfw-option]', (e) => e.map((x) => x.dataset.cfwOption))).join() === 'mcp' && (await page.textContent('[data-cfw-title]')).trim() === 'Connect plausible.io', 'an unknown address offers MCP only and is titled by its host', 'unknown address rows/title wrong');
+  check((await page.$$eval('[data-cfw-option]', (e) => e.map((x) => x.dataset.cfwOption))).join() === 'signin,mcp' && (await page.textContent('[data-cfw-title]')).trim() === 'Connect plausible.io', 'an unknown address offers browser sign-in and MCP and is titled by its host', 'unknown address rows/title wrong');
   // Reference fallback: leads to Setup and stays honest.
   await page.click('[data-cfw-details] > summary');
   await page.click('[data-cfw-reference]');

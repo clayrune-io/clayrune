@@ -312,11 +312,16 @@ def _profile_state(name: str) -> str:
 
 
 def _result(account_id: str, created: bool, clean: dict, shared: list, unchanged: bool, login_created: bool) -> dict:
+    from mc.desk_connect.browser_check import status_for
+    profile = _registry.profile(clean['service'])
+    assert profile is not None
+    url = profile['home_url']
     refs = clean['refs']
     return {'account_id': account_id, 'account_created': created, 'unchanged': unchanged, 'service': clean['service'],
             'route_id': clean['route_id'], 'account_kind': clean['account_kind'], 'browser_profile': refs['browser_profile'],
             'profile_state': _profile_state(refs['browser_profile']), 'login': refs.get('login'),
-            'login_created': login_created, 'shared_with': shared}
+            'login_created': login_created, 'shared_with': shared, 'url': url,
+            'status': status_for(url, refs['browser_profile'])}
 
 
 def _apply(store: dict, account_id: str, clean: dict, org_id: str) -> tuple[list, bool]:
@@ -390,7 +395,8 @@ def replayed(request_id: str, raw_draft) -> dict | None:
     if seen is None:
         return None
     if fp is not None and seen[0] == fp:
-        return seen[1]
+        from mc.desk_connect.browser_check import refresh_result
+        return refresh_result(seen[1])
     raise SetupError('that request_id was already used for a different draft', 409, 'request_id_reused')
 
 
@@ -402,7 +408,8 @@ def commit(request_id: str, raw_draft, clean: dict) -> tuple[dict, bool]:
         seen = _done.get(request_id)
         if seen is not None:
             if fp is not None and seen[0] == fp:
-                return seen[1], True
+                from mc.desk_connect.browser_check import refresh_result
+                return refresh_result(seen[1]), True
             raise SetupError('that request_id was already used for a different draft', 409, 'request_id_reused')
         typed = clean.get('new_login')
         if typed is not None:

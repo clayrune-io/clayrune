@@ -202,7 +202,8 @@
     const mine = L.pick && L.pick.toLowerCase().split('.')[0] === _service(info);
     const spec = { url: route.url, login: mine && !_locked() ? L.pick : '', profile: _profileName(info), hint: '', why: 'Choose a saved login named for this service.' };
     const why = L.pick && !mine ? `<div class="desk-v1-cfw-fact-text" data-lg-notmine>${esc(L.pick)} is not named for ${esc(_label(info))} (${esc(_service(info))}.…), so it cannot be typed from here. You can still save it and sign in after.</div>` : '';
-    return `${window.DeskV1ConnectSignin ? window.DeskV1ConnectSignin.fillHTML(FILL_KEY, spec) : ''}${why}`;
+    const checking = window.DeskV1ConnectCopy.isEnabled() && window.DeskV1ConnectBrowserCheck;
+    return `${checking ? _openHTML(route) : ''}${window.DeskV1ConnectSignin ? window.DeskV1ConnectSignin.fillHTML(FILL_KEY, checking ? {...spec,url:null} : spec) : ''}${why}`;
   }
 
   function _typedHTML() {
@@ -210,6 +211,7 @@
   }
 
   function _openHTML(route) {
+    if (window.DeskV1ConnectCopy.isEnabled() && window.DeskV1ConnectBrowserCheck) return window.DeskV1ConnectBrowserCheck.html(FILL_KEY);
     return `<div class="desk-v1-cs-fill-row"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-lg-open="${esc(route.url)}">Open sign-in</button></div>`;
   }
 
@@ -219,7 +221,7 @@
     const head = _optionsHTML();
     if (!_target) return `${head}<div class="desk-v1-cfw-msg" data-lg-notarget role="alert">Choose which ${esc(_label(info))} account this is first.</div>`;
     if (L.mode === 'saved') return `${head}${_lockedHTML()}${_loginPickHTML(info)}${_profileHTML(info)}${route ? _fillHTML(info, route) : ''}`;
-    if (L.mode === 'new') return `${head}${_lockedHTML()}${_typedHTML()}`;
+    if (L.mode === 'new') return `${head}${_lockedHTML()}${_typedHTML()}${window.DeskV1ConnectCopy.isEnabled() && route ? _openHTML(route) : ''}`;
     if (L.mode === 'manual') return `${head}${_profileHTML(info)}${route ? _openHTML(route) : ''}`;
     return head;
   }
@@ -272,6 +274,7 @@
       const route = _route(api.sel, api.info);
       if (!L.loaded && _target) _load(api);
       const primary = root.querySelector('[data-cfw-primary]');
+      window.DeskV1ConnectBrowserCheck?.bind(root, FILL_KEY, () => ({url:api.info.url, browser_profile:_profileName(api.info)}), api.ctx, {own:api.own});
       const sync = () => { if (primary) primary.disabled = !!_problem(api.info); };
       const again = () => api.repaint();
 

@@ -57,11 +57,13 @@ def _fingerprint(clean: dict) -> str:
 
 
 def view(rec: dict) -> dict:
+    from mc.desk_connect.browser_check import status_for
     setup = rec['browser_connection']
     return {'connection_id': rec['id'], 'name': rec['name'], 'url': rec['link'],
             'service': setup['service'], 'browser_profile': setup['browser_profile'],
             'profile_state': _profile_state(setup['browser_profile']),
-            'read': False, 'post': False, 'executes': False}
+            'read': False, 'post': False, 'executes': False,
+            'status': status_for(rec['link'], setup['browser_profile'])}
 
 
 def commit(request_id: str, clean: dict) -> tuple[dict, bool]:
@@ -72,7 +74,8 @@ def commit(request_id: str, clean: dict) -> tuple[dict, bool]:
             old_fp, result = _done[request_id]
             if old_fp != fp:
                 raise SetupError('this request was already used for different details', 409, 'request_changed')
-            return dict(result), True
+            from mc.desk_connect.browser_check import refresh_result
+            return refresh_result(result), True
         with desk._store_lock:
             store = desk._read_store()
             services = store.setdefault('services', {})

@@ -36,6 +36,19 @@ def test_no_replace_or_confused_replay(store):
     assert desk_services.list_services()[0]['browser_connection']['browser_profile'] == 'main'
 
 
+def test_replayed_save_refreshes_verdict_without_rewriting(store,monkeypatch):
+    from mc.desk_connect import browser_check
+    state=['verified']
+    monkeypatch.setattr(browser_check,'status_for',lambda *args:{'state':state[0]})
+    clean=c.clean_draft({'name':'Example','url':'https://example.com','browser_profile':'main'})
+    result,_=c.commit('request-1234',clean)
+    before=desk.STORE_PATH.read_bytes()
+    state[0]='sign_in_required'
+    replay,duplicate=c.commit('request-1234',clean)
+    assert duplicate and replay['status']['state']=='sign_in_required'
+    assert result['status']['state']=='verified' and desk.STORE_PATH.read_bytes()==before
+
+
 @pytest.mark.parametrize('over', [{'url':'http://example.com'}, {'url':'https://localhost'}, {'browser_profile':'../../main'}, {'read':True}, {'signin_check':{'url':'https://evil.com'}}, {'url':'https://x.com'}])
 def test_bad_draft_grants_nothing(store,over):
     with pytest.raises(SetupError): c.clean_draft({'name':'Example','url':'https://example.com','browser_profile':'main',**over})

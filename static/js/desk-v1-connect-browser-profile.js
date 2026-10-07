@@ -3,7 +3,7 @@ import { ConnectCopy as C } from './desk-v1-connect-copy.js';
 const W = window.DeskV1ConnectWizard;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let S;
-function clear() { S = {name:'', profile:'', profiles:null, info:null, request:null, result:null}; }
+function clear() { S = {name:'', profile:'', profileEdited:false, profiles:null, info:null, request:null, result:null}; }
 clear();
 const matches = (sel, info) => sel.type === 'signin' && !['x','linkedin'].includes(info?.service?.id);
 const profileName = () => S.profile.trim();
@@ -30,19 +30,25 @@ async function commit() {
 }
 W?.registerScreen({id:'browser-profile-setup',step:'setup',match:matches,
   title:()=>C.screens.setup[0],copy:()=>C.screens.setup[1],
-  body:api=>{init(api);return controls()+`<p>${C.words.manualHelp}</p><button type="button" class="desk-v1-conn-btn" data-bp-open>${C.words.open}</button>`;},
+  body:api=>{init(api);return controls()+`<p>${C.words.manualHelp}</p>`+(window.DeskV1ConnectBrowserCheck?.html('generic-setup') || '');},
   primary:()=>({label:C.words.continue,disabled:!!problem()}),
   bind:(root,api)=>{
     const current=S;
-    if (S.profiles===null) { S.profiles=[]; api.ctx.api('GET','/api/browser/profiles').then(r=>{if(current===S){S.profiles=(r.profiles || []).map(p=>p.name);api.repaint();}}).catch(e=>console.warn('[browser-profile] profiles failed: '+e.message)); }
-    for(const [field,key] of [['name','name'],['profile','profile']]) root.querySelector(`[data-bp-${field}]`)?.addEventListener('input',e=>{S[key]=e.target.value;root.querySelector('[data-cfw-primary]').disabled=!!problem();});
-    root.querySelector('[data-bp-open]')?.addEventListener('click',()=>window.openBrowserPane(S.info.url,null,null,profileName()));
+    if (S.profiles===null) { S.profiles=[]; api.ctx.api('GET','/api/browser/profiles').then(r=>{if(current===S){
+      S.profiles=(r.profiles || []).map(p=>p.name);
+      if(!S.profileEdited){const base=S.profile;let n=2;while(S.profiles.includes(S.profile)){const suffix='-'+n++;S.profile=base.slice(0,41-suffix.length)+suffix;}}
+      api.repaint();
+    }}).catch(e=>console.warn('[browser-profile] profiles failed: '+e.message)); }
+    root.querySelector('[data-cfw-primary]').disabled=!!problem();
+    for(const [field,key] of [['name','name'],['profile','profile']]) root.querySelector(`[data-bp-${field}]`)?.addEventListener('input',e=>{S[key]=e.target.value;if(key==='profile')S.profileEdited=true;S.request=null;root.querySelector('[data-cfw-primary]').disabled=!!problem();});
+    window.DeskV1ConnectBrowserCheck?.bind(root,'generic-setup',()=>({url:S.info.url,browser_profile:profileName()}),api.ctx,{own:api.own});
   },discard:clear,
 });
 window.DeskV1ConnectSummaryStep?.registerBranch({id:'browser-profile',word:C.words.signin,match:matches,
   problem,save:commit,accountId:()=>'',risks:()=>[C.words.browserNoExecution],
   factsHTML:()=>`<dl class="desk-v1-cf-facts"><div><dt>${C.words.name}</dt><dd>${esc(S.name)}</dd></div><div><dt>${C.words.browserProfile}</dt><dd>${esc(profileName())}</dd></div></dl>`,
-  result:{rows:res=>[['Connection',C.words.saved,'connection'],['Browser profile',esc(res.browser_profile),'profile'],['Status',C.words.notChecked,'status']],
-    extra:()=>'',actions:()=>[],bind:()=>{}},
+  result:{rows:(res,st)=>[['Connection',C.words.saved,'connection'],['Browser profile',esc(res.browser_profile),'profile'],['Status',esc(st ? C.status(st.state) : C.words.notChecked),'status']],
+    extra:()=>window.DeskV1ConnectBrowserCheck?.html('generic-result') || '',actions:()=>[],
+    bind:(root,res,api)=>window.DeskV1ConnectBrowserCheck?.bind(root,'generic-result',()=>({url:res.url,browser_profile:res.browser_profile}),api.ctx,{own:api.own,status:res.status,onStatus:out=>{window.DeskV1ConnectSummaryStep.setStatus(out);api.repaint();}})},
 });
 window.DeskV1ConnectBrowserProfile={matches,controls,profileName};

@@ -1,7 +1,11 @@
 {
   "schema_version": 1,
   "service_id": "linkedin",
-  "revision": 2,
+  "revision": 3,
+  "signin_check": {
+    "url": "https://www.linkedin.com/feed/",
+    "selectors": [".global-nav__me", "a[href*='/messaging/']"]
+  },
   "label": "LinkedIn",
   "aliases": [
     "LinkedIn",
@@ -683,6 +687,6 @@
       "result": "unverified"
     }
   ],
-  "change_summary": "P1: the version 1 Company Page row kept as is; member, restricted-read, browser, manual and MCP-candidate routes added from the primary pages read on 2026-10-05. Revision 2 (slice P2b): sign-in routes declare the one page a stored login may be typed on (`signin`); nothing else in the profile changed.",
-  "supersedes": 1
+  "change_summary": "P1: the version 1 Company Page row kept as is; member, restricted-read, browser, manual and MCP-candidate routes added from the primary pages read on 2026-10-05. Revision 2 (slice P2b): sign-in routes declare the one page a stored login may be typed on (`signin`). Revision 3 (MC-1074): fixed read-only browser sign-in evidence added; Chromium fixtures checked, live vendor account check pending.",
+  "supersedes": 2
 }

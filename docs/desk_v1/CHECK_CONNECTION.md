@@ -12,8 +12,52 @@ Setup, Permissions, Review, Save and Result remain the shared flow. Unknown disc
 
 ## Recovery checkpoint
 
-The unattended fence refused writing the global `~/.claude/plans` plan (out of project scope). This document carries the scoped implementation and recovery state. Engram MCP tools are absent; no MCP configuration was changed.
+The unattended fence refused writing the global `~/.claude/plans` plan (out of project scope). This document carries the scoped implementation and recovery state. Engram MCP tools are absent; no MCP configuration was changed. After compaction the host also withheld agent-attributed memory writes because runtime registration was unconfirmed. Recovery entries remain in the item's gitignored journal.
+
+## Check connection
+
+`POST /api/desk/connect/browser-profile/check` accepts `{url, browser_profile, check?, confirmed?}`. It is human-only. A read-only check does not use or fill a saved password, grant execution, or change permissions. Credential fill, Save and permission updates keep their existing human/passcode gates. `check:false` reads local status only; it opens no tab and makes no network call.
+
+`browser_check.py` adapts browser probes into the existing `verification.py` record/state system. Checks come only from shipped service profiles; caller fields and discovery output cannot provide scripts, selectors or check URLs. `browser_check_schema.py` validates inert HTTPS URL/selector data on declared hosts. X, LinkedIn and YouTube have fixed checks. Each requires visible signed-in controls on the expected HTTPS host and path; hidden, transparent, off-screen and signed-out fixtures cannot pass. No page text or cookie value becomes an instruction or sign-in verdict.
+
+An open named profile uses `HiddenTabReader` in its own background tab; the user's visible tab does not navigate. A closed profile uses the existing owned `ProfilePageReader`, closed gracefully afterward. Errors retain the reader's refusal semantics: no raw-HTTP fallback. The reader inherits the open pane's project when available; global connections do not assume a particular project exists on someone else's installation.
+
+Verification is bound to the service, named profile, reviewed check revision, and profile/cookie-file metadata, never cookie contents. Known aliases and entered paths refer to the same service/profile; unknown addresses retain their exact address. Profile deletion/replacement, cookie-file changes, revised checks or restart invalidate the record. Idempotent Save replays preserve the saved facts but derive the verdict again from current metadata, so they cannot replay stale green status. The owned reader can flush its cookies while closing, so its successful evidence is stamped after that close; vault providers retain their existing before-probe stamp. This proves browser sign-in only, not account ownership, reading capability or publishing permission.
+
+One `desk-v1-connect-browser-check.js` controller serves Setup, Result and saved account/service details through thin modules. A human starts the first probe. A pass turns green without opening a pane. Missing profile or signed-out evidence opens the named pane once and schedules non-overlapping checks every two seconds after each response, for up to ten minutes. Closing/changing the wizard or removing its node ends polling. Transport failures stop and display failure instead of opening a pane based on a guess.
+
+A service without a reviewed check opens its entered address and asks one inline question: "Clayrune could not check automatically. Are you signed in now?" Human confirmation requires an existing named profile and records **Signed in, not verified**. It never produces verified/green status. The same outstanding question stays available if the pane has not finished creating its profile. **Not yet** dismisses its text but leaves the confirmation action for later; repeated checks after successful confirmation do not ask again. Result and saved details start from the returned metadata status, without a new probe on render.
+
+## Files and scope
+
+Generic storage and checks each have their own modules and blueprints. Wizard screens and summary branches use the existing registries. Existing account projections and connection-status rendering only delegate. There is no new executor, profile deletion, credential management path or automatic fill. The work remains on `clayrune/agent/55b8b8ae5f9e`, with no merge, push or server restart. Commit 1 is `fc30287d`; commit 2 adds checking and honest status.
 
 ## Validation
 
-Prerequisite: 153 touched backend checks passed (`test_desk_browser_connections`, `test_desk_connect_browser_setup`, `test_desk_services`, `test_desk_connect_types`); pyright on the two new modules reported zero errors. `desk-v1-connect-browser-profile.mjs` passed four UI cases (YouTube/unknown, 1440/390). Boot smoke passed all scenarios. The final connect regression matrix and Ron UI test script are added after the checker slice.
+Prerequisite: 153 touched backend checks passed; its two new modules passed pyright. Final slice: 301 backend checks passed, including the real Chromium hidden-reader tests; five new modules passed pyright with zero errors. All 24 `desk-v1-connect*.mjs` scripts passed. There is no separately named add-service script; wizard, flow, simplify and connections scripts exercise Add service. The npm suite (eight scripts, including full SPA boot) passed. The final output matrix is `_scratch/check_connection/matrix.json`, all return codes zero. Later checker/status refinements were covered by the targeted browser-check smoke and backend reruns.
+
+The browser-check smoke covers 20 wizard cases (X, LinkedIn, YouTube: already signed in, pane/recheck, transport failure; unknown: manual confirmation), at 1440 and 390. Three additional real-DOM cases exercise the exact profile selectors against visible, hidden, transparent, off-screen and signed-out controls. Generic save covers four more cases through Permissions, Review, Save and Result. Repeated check clicks, selected-profile propagation and no polling after close are asserted. Screenshots use real branch wizard modules/CSS with mocked outcomes; full SPA regressions also use mocked APIs. They are not evidence that a live vendor account passed.
+
+Initial regression failures were corrected: unknown-service picker assertions had expected only MCP, an empty delegated row hid the no-route account message, and a `status` function name confused the inline-handler audit. Early harness exit failures came from printing Unicode to cp1252; the final foreground harness uses UTF-8. Generated tracked screenshots were restored; task screenshots remain in `_scratch/`. The dependency junction to the main checkout is removed before committing.
+
+Reproduce backend and type checks:
+
+```powershell
+python -m pytest -q tests/test_desk_browser_check.py tests/test_desk_browser_connections.py tests/test_desk_connect_browser_setup.py tests/test_desk_connect_types.py tests/test_desk_service_profiles.py tests/test_desk_connect_providers.py tests/test_desk_connect_verify_consent.py tests/test_desk_accounts.py tests/test_desk_services.py tests/test_browser_agent_read_hidden.py
+pyright mc/desk_connect/browser_check.py mc/desk_connect/browser_check_schema.py mc/blueprints/desk_connect_browser_check_routes.py mc/desk_connect/browser_connections.py mc/blueprints/desk_connect_browser_profile_routes.py
+```
+
+Use the main checkout's smoke dependencies in a worktree; do not install them. Run each script matching `tools/smoke/desk-v1-connect*.mjs`, plus any `*add-service*.mjs`, then `npm --prefix tools/smoke test`. Long checks are foreground-owned and their child PIDs registered in Process Manager.
+
+Screenshots: `_scratch/check_connection/{x.com,linkedin.com,youtube.com}-{already,signin,failed}-{1440,390}.png`, `example.com-manual-{1440,390}.png`, `unknown-prompt-{1440,390}.png`, and `generic-{youtube.com,example.com}-{1440,390}.png`. Desktop green, mobile green and mobile unknown prompt were visually reviewed.
+
+## Ron UI walkthrough (after Dave integrates)
+
+1. At 1440 and 390, open Desk > Connections > Add service. Enter X, LinkedIn, YouTube, then an unknown public HTTPS address in separate runs. All use the same six screens and connection words. Select browser sign-in; unknown discovery failure must still leave that choice.
+2. For a known service, explicitly choose an already signed-in named profile and press **Check connection**. Expect green **Verified**, no pane navigation/open, and no grant of Read or Post. Check that Result and the saved tile/detail preserve the same status. Repeat the click once.
+3. Use a signed-out profile for each known service. Expect the named pane, sign in there, and wait for green without another click. The user's existing visible pane tab must stay on its original page during probing. A failed/blocked network check must say failed and remain unverified; it must not silently try another reader.
+4. For the unknown service, use a new profile. Expect its exact entered address and the single confirmation question. Answer **Yes, I'm signed in** after sign-in; expect **Signed in, not verified**, including after Save and on its tile. Read/Post remain off; no generic execution is available. **Not yet** never verifies.
+5. Continue through Permissions and Review. Nothing saves before the human passcode; cancel the prompt and confirm nothing was saved. Then save with the passcode. Generic drafts contain only name, address and profile. X/LinkedIn account, credential-fill and permission gates behave as before.
+6. While a known-service recheck is pending, close or change the wizard/profile. Confirm polling stops and old evidence does not apply to the replacement. Sign out or replace the named profile and recheck: old verification must disappear. A server restart also requires another check.
+
+Live X/LinkedIn/YouTube account selectors, real sign-in transitions and the integrated HTTP check/pane lifecycle remain unverified in this branch run. Dave owns integration and Ron's live walkthrough; no production-state or vendor-account success is claimed here. No open design decision remains.

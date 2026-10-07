@@ -43,6 +43,8 @@
     const profile = String(refs.browser_profile || ch.browser_profile || '');
     if (!profile) return null;
     const f = { id: 'browser', profile, login: String(refs.login || ''), route: setup ? String(setup.route_id || '') : '', via: ch.read_via === 'api' ? 'api' : 'pane' };
+    const checked = window.DeskV1BrowserAccount?.facet(ch, f);
+    if (checked) return checked;
     const c = cov && cov.via === 'pane' && f.via === 'pane' ? cov : null;      // the coverage row describes the route that reads the account
     if (c && c.state === 'not_connected') return Object.assign(f, { key: 'reauth', word: 'Needs sign-in', detail: c.reason || c.message || 'The last read hit the sign-in page.' });
     if (c && c.state === 'ok') return Object.assign(f, { key: 'ok', word: 'Reading by browser', detail: c.last_ok_at ? `Last read ${String(c.last_ok_at).replace('T', ' ').slice(0, 16)} UTC.` : '' });
@@ -86,7 +88,7 @@
   // The routes block for one live account. Browser and API are separate rows so an account holding both shows both.
   function accountHTML(ch, cov) {
     const { browser, api } = facets(ch, cov);
-    const rows = [];
+    const rows = [window.DeskV1BrowserAccount?.html(ch)].filter(Boolean);
     if (browser) rows.push(_routeRow(browser, 'Browser', [
       `Profile <code>${esc(browser.profile)}</code>${browser.login ? `, login <code>${esc(browser.login)}</code>` : ''}`,
       browser.route ? `Route <code>${esc(browser.route)}</code>` : '']));
@@ -259,6 +261,7 @@
   }
 
   function bindAccount(row, ch, repaint) {
+    window.DeskV1BrowserAccount?.bind(row,ch,repaint);
     const b = row.querySelector('[data-cs-reopen]');
     if (b) b.addEventListener('click', () => _openEditor({ kind: 'account', id: ch.id, record: ch }, repaint));
   }

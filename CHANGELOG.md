@@ -25,6 +25,12 @@
 - Owner clicks reuse active renders; campaign reservations transfer atomically to child jobs. Interrupted or uncertain submissions retain child costs and stop without a paid retry. Human and passcode gates are unchanged.
 - Submission holds keep polling linked clips for free, saving accepted outputs and settling their costs. A human can acknowledge checking the engine dashboard to allow a new render; children stay visible, unattended acknowledgement is refused, and the next Render still requires its passcode.
 - Contract, checks and Ron's UI script: `docs/desk_v1/ASYNC_RENDER_SUBMISSION.md`. Branch only; no merge, push, restart or real spend.
+## [2026-10-07] - Check connection verifies browser sign-in before opening the pane (MC-1074)
+
+- Browser setup, Result and saved connection details share **Check connection**. A passing check turns green without opening the pane; signed-out evidence opens the named profile and rechecks automatically. Transport failures stay failed.
+- X, LinkedIn and YouTube use fixed, read-only checks from reviewed profile data. Services without a check ask once; human confirmation means **Signed in, not verified**. Browser verification grants no Read/Post permission. Human-only save, credential-fill and permission gates remain intact.
+- Contract, validation matrix and Ron walkthrough: `docs/desk_v1/CHECK_CONNECTION.md`. Branch only; live vendor-account checks remain for Dave's handoff. No merge, push or restart.
+
 ## [2026-10-07] - Browser sign-in can be saved for every service (MC-1074 prerequisite)
 
 - Known services, YouTube and unknown addresses offer browser sign-in in the shared Add service flow. Generic connections save only the service name, address and named profile; Read/Post stay off and no executor is created.
