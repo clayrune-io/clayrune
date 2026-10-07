@@ -1,0 +1,31 @@
+/* The strip above a chat thread: text size and the large view
+   (static/js/desk-v1-chat-chrome.js). Nothing here knows what the chat is about. */
+.desk-v1-chat-chrome { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.desk-v1-chat-tool {
+  min-width: 32px; height: 32px; padding: 0 8px; box-sizing: border-box; cursor: pointer;
+  font-family: inherit; font-size: 12px; font-weight: 600; line-height: 1; color: var(--text-dim);
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px;
+}
+.desk-v1-chat-tool-big { font-size: 15px; }
+.desk-v1-chat-tool:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.desk-v1-chat-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.desk-v1-chat-tool:disabled { opacity: 0.4; cursor: default; }
+.desk-v1-chat-tool-pop { font-size: 16px; margin-left: 6px; }
+.desk-v1-chat-tool-read { min-width: 38px; text-align: center; font-size: 11px; color: var(--text-faint); }
+
+/* The large view: the SAME chat element, lifted into the top layer and sized for reading. */
+.desk-v1-chat.is-popped {
+  position: fixed; inset: max(8px, 4vh) max(8px, calc((100vw - 920px) / 2));
+  width: auto; height: auto; max-width: none; max-height: none; margin: 0; box-sizing: border-box;
+  padding: 14px 16px; gap: 10px; overflow: hidden; z-index: 3000;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border2); border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  --desk-chat-grow: 1.2;
+}
+/* no Popover API: dim the page with a shadow instead */
+.desk-v1-chat.is-popped:not([popover]) { box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.55); }
+.desk-v1-chat.is-popped::backdrop { background: rgba(0, 0, 0, 0.55); }
+.desk-v1-chat.is-popped .desk-v1-chat-thread { flex: 1 1 auto; min-height: 0; max-height: none; }
+.desk-v1-chat.is-popped .desk-v1-chat-thread:empty { display: block; }
+.desk-v1-chat.is-popped .desk-v1-sb-agent-ask { flex: 0 0 auto; }
+@media (max-width: 960px) { .desk-v1-chat.is-popped { inset: 8px; padding: 12px; } }

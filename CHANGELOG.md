@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] - Desk Studio agent chat: send, text size, large view
+
+- The ask box now empties the moment Enter sends (the pending "You" turn shows the message); it stays disabled until the reply is in, and a failed send puts the typed text back with the error.
+- New shared `desk-v1-chat-chrome.js` (+ CSS): A-/A+ text size (85-175%, remembered in localStorage) and a pop-out that lifts the SAME chat element into a large top-layer view (Esc, backdrop or the x closes it and returns focus). Wired to the Studio chat only; the campaign chat can adopt it with `barHTML()` + `attach()`.
+- `tools/smoke/desk-v1-story-chat.mjs` gained the send, text-size and pop-out checks at 1440 and 390.
+
 ## [2026-10-06] — Studio captures real product pages
 
 - **Capture from the product** now takes a real server-side Chromium screenshot and saves it as a picture in the material library's Studio folder. Clayrune offers its actual Projects, Floor, Desk, Studio and Connections pages; other projects remember a user-entered app address and accept page paths. The same capture body works in Studio and campaign What, with progress, refusal and retry states, and no second copy uploaded after capture.

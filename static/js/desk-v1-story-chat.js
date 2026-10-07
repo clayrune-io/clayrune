@@ -15,8 +15,10 @@
 // appliers the story panel uses, via DeskV1Story.ask). A question changes nothing.
 // The thread is saved with the board on the server, so a reload shows it; it is
 // also kept here per storyboard so a repaint of the box does not lose it. Every
-// line that says something happened is written from the server's answer, and a
-// failed send keeps the typed message where it was.
+// line that says something happened is written from the server's answer. The box
+// empties the moment a message is sent (the thread shows it as a pending turn) and a
+// failed send puts the typed message back. Text size and the large view come from
+// desk-v1-chat-chrome.js.
 (function () {
   const threads = {};   // 'kind:id' -> { turns: [], loaded: false }
   let _active = null;   // the wired { box, bridge } (for onSelect)
@@ -33,6 +35,7 @@
   function html(agentName, live) {
     const name = esc(agentName);
     return `<div class="desk-v1-chat" data-chat>
+      ${window.DeskV1ChatChrome ? window.DeskV1ChatChrome.barHTML() : ''}
       <div class="desk-v1-chat-thread" data-chat-thread role="log" aria-live="polite" tabindex="0" aria-label="Conversation with ${name}"></div>
       <textarea class="desk-v1-sb-agent-input desk-v1-sb-agent-ask" data-sb-ask data-autogrow="0.4" rows="2"${live ? '' : ' disabled title="Needs the live Desk: the sample storyboard has no agent behind it"'} placeholder="Ask ${name} about the storyboard, or tell them what to change…" aria-label="Message ${name}"></textarea>
       <div class="desk-v1-story-ask-status" data-sb-ask-status role="status"></div>
@@ -103,6 +106,7 @@
     const status = box.querySelector('[data-sb-ask-status]');
     const say = (text, kind) => { if (status && status.isConnected) { status.textContent = text; status.dataset.kind = kind || ''; } };
     _active = { box, bridge };
+    if (window.DeskV1ChatChrome) window.DeskV1ChatChrome.attach(box.querySelector('[data-chat]'));
     _paint(box, bridge);
     onSelect();
     const A = Story().ask;
@@ -143,6 +147,10 @@
       const pid = bridge.projectId();
       if (pid) body.project_id = pid;
       st.pending = { text, scene };
+      // The pending 'You' turn now shows the message, so the box empties at once; a failed
+      // send puts it back (below). The box stays disabled until the turn is over.
+      ask.value = '';
+      A.fit(ask);
       _paint(box, bridge);
       say(`Asking ${bridge.agentName()}…`, 'info');
       try {
@@ -161,8 +169,6 @@
         st.loaded = true;
         const turn = res.turns[res.turns.length - 1];
         if (bridge.token() !== mine) return;
-        ask.value = '';
-        A.fit(ask);
         let line = `${res.agent && res.agent.name ? res.agent.name : 'The default engine'} answered.`;
         if (res.change) {
           try {
@@ -187,7 +193,12 @@
         }
       } catch (err) {
         st.pending = null;
-        say(`Nothing was changed: ${err && err.message ? err.message : err}. Your message is still in the box.`, 'error');
+        // the box may have been repainted (a new element) while the agent was answering
+        const cur = (_active && _active.box.isConnected && _active.box.querySelector('[data-sb-ask]')) || ask;
+        cur.value = cur.value ? `${text}
+${cur.value}` : text;
+        A.fit(cur);
+        say(`Nothing was changed: ${err && err.message ? err.message : err}. Your message is back in the box.`, 'error');
       } finally {
         A.setBusy(false);
         ask.disabled = false;
