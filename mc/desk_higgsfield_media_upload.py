@@ -60,6 +60,8 @@ def checked_call(doc: dict, call, name: str, args: dict, *, submitted: bool = Fa
     try:
         data = eng._mcp_data(call(name, args))
     except eng.EngineError as e:
+        if args.get('params', {}).get('get_cost') is True:
+            raise
         if not submitted:
             raise eng.EngineError(e.kind, 'Higgsfield could not prepare the picture; no generation was submitted') from e
         raise
@@ -70,6 +72,9 @@ def checked_call(doc: dict, call, name: str, args: dict, *, submitted: bool = Fa
                    if submitted else 'Higgsfield returned an unexpected picture response; no generation was submitted')
         raise eng.EngineError('engine', message, definitive=not submitted) from None
     if data.get('error'):
+        if args.get('params', {}).get('get_cost') is True and not submitted:
+            from mc.desk_higgsfield_quote_response import report
+            raise eng.EngineError('engine', report(data))
         raise eng.EngineError('engine', 'Higgsfield refused the picture request', definitive=not submitted)
     return data
 

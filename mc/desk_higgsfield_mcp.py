@@ -27,6 +27,9 @@ class HiggsfieldMcpAdapter:
                                        'params': {'name': tool, 'arguments': arguments}}, expect_id=2)
         res = res or {}
         if res.get('isError'):
+            if arguments.get('params', {}).get('get_cost') is True:
+                from mc.desk_higgsfield_quote_response import report
+                raise eng.EngineError('engine', report(eng._mcp_data(res)))
             raise eng._classify_http(400, eng._mcp_text(res).encode('utf-8'))
         return res
 
@@ -62,10 +65,11 @@ class HiggsfieldMcpAdapter:
     def _quote(out, note=None) -> eng.Estimate:
         from mc import desk_engines as eng
         from mc.desk_mcp_schema_validation import finite_number
+        from mc.desk_higgsfield_quote_response import report
         cost = out.get('cost')
         val = (cost.get('credits_exact', cost.get('credits')) if isinstance(cost, dict) else None)
-        if not isinstance(val, (int, float)) or not finite_number(val) or val < 0:
-            raise eng.EngineError('engine', 'Higgsfield returned no usable credit quote, so nothing was sent')
+        if isinstance(val, bool) or not isinstance(val, (int, float)) or not finite_number(val) or val < 0:
+            raise eng.EngineError('engine', report(out))
         adj = out.get('adjustments') if isinstance(out.get('adjustments'), dict) and out.get('adjustments') else None
         return eng.Estimate(usd=0.0, credits=float(val), basis='engine', read=eng.now_iso(), adjustments=adj,
                             note=note, picture_pending=bool(note))
