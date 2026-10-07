@@ -813,8 +813,9 @@ def _sc(sid, secs=5, **kw):
 
 
 def _render_body(**kw):
+    # General submission fixtures approve 20 units; price-guard tests use exact quotes.
     d = {'owner': {'kind': 'studio', 'id': STUDIO_ID}, 'engine_id': 'higgsfield', 'model_id': HIGGS_T2V,
-         'aspect_ratio': '16:9', 'idempotency_key': f'r{next(_n)}'}
+         'aspect_ratio': '16:9', 'idempotency_key': f'r{next(_n)}', 'shown_total': 20}
     d.update(kw)
     return d
 

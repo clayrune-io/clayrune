@@ -1,5 +1,5 @@
 // Desk v1 (MC-1019 = R1-W S9b) — generation engines on the page. Window-bridged
-// module, no `import` (same ground rule as the rest of desk-v1-*.js).
+// module; the render price-confirmation helpers are imported separately.
 //
 // Three surfaces share this file because they share one server (mc/desk_engines.py)
 // and one rule: nothing here ever holds a credential. The page only learns, per
@@ -23,6 +23,8 @@
 //
 // Output is downloaded server-side into the Material library on `ready`; what the
 // page paints is the library path the server answers with, never a vendor URL.
+import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.js';
+
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
   function _api(method, url, body) { return window.DeskV1Store.api(method, url, body); }
@@ -325,6 +327,7 @@
     let _timer = null;
     const estimate = (engines) => {
       clearTimeout(_timer);
+      st.priceConfirmation = null;
       st.estimating = true; st.estimateError = null; st.error = null;
       _timer = setTimeout(async () => {
         const seq = (st.seq = (st.seq || 0) + 1);
@@ -359,30 +362,38 @@
 
     const submit = async (engines) => {
       const p = _pick(engines, 'video', st);
-      let usd = st.estimate && st.estimate.estimate ? _amount(p.engine, st.estimate.estimate) : null;
+      const usd = st.estimate && st.estimate.estimate ? _amount(p.engine, st.estimate.estimate) : null;
+      let fresh = null;
       st.submitting = true; st.error = null; paint(engines);
       try {
         // The scenes may have changed since the price on screen was worked out:
         // price them again, and if the number moved, show it and stop. The user
         // approves a price they have seen.
-        const fresh = await _api('POST', '/api/desk/engines/render/estimate', body());
-        const now = fresh.estimate ? _amount(p.engine, fresh.estimate) : null;
-        st.estimate = fresh;
+        fresh = await _api('POST', '/api/desk/engines/render/estimate', body());
+        const confirmed = confirmationMatches(st.priceConfirmation, body(), fresh);
+        const quote = confirmed ? st.priceConfirmation.quote : fresh;
+        if (!confirmed) st.priceConfirmation = null;
+        const now = quote.estimate ? _amount(p.engine, quote.estimate) : null;
+        st.estimate = quote;
+        if (fresh.refusal) throw new Error(fresh.refusal.message);
         if (now !== usd) {
           st.submitting = false;
           st.error = `The price changed to ${_fmt(p.engine, now)} because the storyboard changed. Check it, then press Render again.`;
           paint(engines);
           return;
         }
-        const out = await _humanPost('POST', '/api/desk/engines/renders', body({ idempotency_key: _uid() }), {
+        const out = await _humanPost('POST', '/api/desk/engines/renders', body({ idempotency_key: _uid(), shown_total: usd }), {
           title: 'Render this video',
-          description: fresh.estimate && fresh.estimate.picture_pending
-            ? `Re-enter your dashboard passcode to render this storyboard with ${p.engine.label} (${p.model.label}). The text-only estimate is ${_fmt(p.engine, usd)}. Your pictures are uploaded and priced after you approve Render; generation starts only if the full price fits your configured limit. The clips are saved to your Material library.`
+          description: quote.estimate && quote.estimate.picture_pending
+            ? `Re-enter your dashboard passcode to render this storyboard with ${p.engine.label} (${p.model.label}). The text-only estimate is ${_fmt(p.engine, usd)}. Your pictures are uploaded and priced after you approve Render; a higher full price is shown for you to accept with another Render click before generation. Your configured limit still applies. The clips are saved to your Material library.`
             : `Re-enter your dashboard passcode to render this storyboard with ${p.engine.label} (${p.model.label}). It spends about ${_fmt(p.engine, usd)} of ${_isCredits(p.engine) ? 'the credits in your plan' : 'your account'} with them, and the clips are saved to your Material library.`,
         });
         st.render = out.render;
+        st.priceConfirmation = null;
         _toast('Render started');
       } catch (e) {
+        const confirmation = priceConfirmation(e, body(), fresh);
+        if (confirmation) { st.priceConfirmation = confirmation; st.estimate = confirmation.quote; }
         st.error = e && e.message ? e.message : String(e);
       }
       st.submitting = false;

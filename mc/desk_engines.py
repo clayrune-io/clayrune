@@ -2034,9 +2034,11 @@ def render(d: dict, *, unattended: bool = False) -> tuple[dict, bool]:
         return _render_view(existing), True  # type: ignore[return-value]
 
     from mc.desk_generation_preflight import prepare_plan
+    from mc.desk_render_price_confirmation import shown_total, check as check_shown_price
     campaign_id = plan['campaign_id']
     with _lock:
         check_caps(plan['total_amount'], plan['engine_id'], campaign_id, _read_store(), estimate=_plan_estimate(plan))
+    displayed = shown_total(d)
     try:
         prepare_plan(plan, unattended=unattended)
     except EngineError as e:
@@ -2047,6 +2049,7 @@ def render(d: dict, *, unattended: bool = False) -> tuple[dict, bool]:
             return _public_render(store['renders'][store['render_idem'][ridem]], store['jobs']), True
         check_caps(plan['total_amount'], plan['engine_id'], campaign_id, store,
                    estimate=_plan_estimate(plan))
+        check_shown_price(displayed, plan, estimate=_plan_estimate(plan), public_plan=_plan_public(plan))
         now = now_iso()
         rec = {
             'render_id': f'rnd-{uuid.uuid4().hex[:10]}', 'status': 'queued', 'hold': None, 'failure': None,

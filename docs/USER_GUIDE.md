@@ -784,8 +784,17 @@ Price checks never upload your pictures. When the engine's quote requires an
 uploaded media identifier, the estimate says **Text-only price; picture priced
 at render**. The passcode prompt explains that difference. After you approve
 Render, Clayrune uploads and confirms the pictures, quotes their actual price,
-and checks the full storyboard total against your per-job credit limit before
-submitting any clip. An unsafe upload URL or unexpected upload/confirmation
+and checks the full storyboard total against your per-job credit limit and the
+price you saw before submitting any clip. If the full price is higher, Studio
+shows **Price with your pictures is N credits (was M). Press Render again to
+accept.** Nothing is generated on that attempt. The Render button shows the
+new total; clicking it again asks for your passcode at that price. Another price
+increase stops again. Editing the storyboard, changing the engine/model/shape,
+or choosing **Price again** clears that picture-inclusive price and starts a
+new price check. Retrying currently uploads the pictures again; an upload from
+a refused attempt can remain in your Higgsfield library. The per-job limit and
+campaign budget still apply after you accept the new price.
+An unsafe upload URL or unexpected upload/confirmation
 response stops the render before generation. A later refused render can leave
 an uploaded picture in your Higgsfield library; it spends no generation credits.
 If the generation response itself is unclear, check Higgsfield's dashboard

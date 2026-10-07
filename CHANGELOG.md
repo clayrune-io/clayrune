@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Studio confirms higher picture-inclusive render prices
+
+- Storyboard Render carries the displayed total. After preparing all scenes, a higher total returns HTTP 409 with the actual total and per-scene prices before any generation or render reservation. Missing or invalid displayed totals refuse the request.
+- Studio shows the higher picture-inclusive price and requires another Render click and passcode entry to accept it. A fresh text-only quote does not overwrite this price; edits, picker changes and Price again clear it. Existing spending caps and human-only gates remain in place.
+- Upload identifiers remain in-memory: a refused attempt can leave pictures in the vendor library, and retry uploads them again. Contract, validation and live boundary: `docs/desk_v1/RENDER_PRICE_CONFIRMATION.md`. Local branch only; no push, merge or restart.
+
 ## [2026-10-07] - Higgsfield preset suggestions preserve literal storyboard text
 
 - Free price checks retry a preset recommendation once with only its validated, agreeing decline identifier. The tool must explicitly declare the parameter; prompt text, media and other caller settings are preserved. A second notice or unusable price refuses the request, without applying suggested preset arguments or exposing vendor prose.
