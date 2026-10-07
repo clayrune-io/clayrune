@@ -243,8 +243,9 @@
       <div class="desk-v1-sa-chips" data-sa-meta>${chips.map((c) => `<span class="desk-v1-what-chip">${esc(c)}</span>`).join('')}</div>
       ${_studio().writerHTML(a, null, tab, {
         provenance: _provenance(a), saveLabel: 'Save draft', backLabel: 'Back to Studio',
-        extraHTML: `<button type="button" class="btn-secondary" data-sa-use>${esc(_useLabel(a))}</button><span class="desk-v1-sa-status" role="status" aria-live="polite" data-sa-status></span>`,
+        extraHTML: `${window.DeskV1LibraryPicker ? window.DeskV1LibraryPicker.buttonHTML('data-sa-library', 'btn-secondary') : ''}<button type="button" class="btn-secondary" data-sa-use>${esc(_useLabel(a))}</button><span class="desk-v1-sa-status" role="status" aria-live="polite" data-sa-status></span>`,
       })}
+      <div class="desk-v1-sa-pictures" data-sa-pictures></div>
     </div>`;
     const root = el.querySelector('[data-writer]');
     _studio().wireWriter(root, a, null, tab, {
@@ -252,7 +253,15 @@
       onSave: () => { _flush().then(() => _save(a)).then((ok) => { if (ok) window.DeskV1Kit.toast(_isLive() ? 'Draft saved.' : 'Draft kept in Studio for this session.'); }); },
       onBack: () => { _flush().then(() => { if (typeof window.deskV1Back === 'function') window.deskV1Back(); else window.deskV1Nav('studio', {}); }); },
     });
-    root.querySelector('[data-writer-body]').addEventListener('input', _later);
+    const bodyEl = root.querySelector('[data-writer-body]');
+    bodyEl.addEventListener('input', _later);
+    // Pick from library puts a picture line in the body; the strip under the writer shows what the text names.
+    if (window.DeskV1ArticlePictures) {
+      const strip = window.DeskV1ArticlePictures.mount(el.querySelector('[data-sa-pictures]'), () => a.draft.tabs[tab].body);
+      bodyEl.addEventListener('input', () => strip.refresh());
+      const lib = el.querySelector('[data-sa-library]');
+      if (lib) lib.onclick = () => window.DeskV1ArticlePictures.pick(bodyEl, lib);
+    }
     el.querySelector('[data-sa-use]').onclick = (ev) => _use(a, ev.currentTarget);
   }
 

@@ -226,6 +226,24 @@
     </div>`;
   }
 
+  // The picture strip on New image: library pictures to start from or refer to. A
+  // model that takes none says so, and keeps whatever was picked (switching back
+  // brings it back); the server refuses a request that has more than a model takes.
+  function _refsOpts(p, st, onChange) {
+    const max = ((p.model && p.model.inputs) || {}).reference_images_max || 0;
+    st.refsMax = max;
+    return {
+      head: 'Start or reference pictures (optional)',
+      hint: max ? `The engine starts from these or uses them as reference. This model takes up to ${max}.` : '',
+      max,
+      blocked: max ? '' : `${p.model.label} takes no start or reference picture. Choose another model to use one.`,
+      attr: 'data-eng-refs', onChange,
+    };
+  }
+  function _refsHTML(p, st) {
+    return window.DeskV1LibraryRefs ? window.DeskV1LibraryRefs.html(st.refs, _refsOpts(p, st)) : '';
+  }
+
   function _estimateHTML(st, eng) {
     if (st.estimating) return '<div class="desk-v1-engine-est" data-eng-estimate data-state="pricing">Pricing this render…</div>';
     if (st.estimateError) return `<div class="desk-v1-engine-est" data-eng-estimate data-state="refused"><span data-eng-reason>${esc(st.estimateError)}</span></div>`;
@@ -396,6 +414,7 @@
     const key = `i:${opts.key || 'studio'}`;
     const st = _panels.get(key) || { ratio: '1:1', prompt: '', job: null, estimate: null };
     _panels.set(key, st);
+    if (!st.refs) st.refs = []; // library pictures to start from / refer to (Pick from library)
     const mine = Symbol('mount');
     st.mount = mine;
     const alive = () => st.mount === mine && host.isConnected;
@@ -414,6 +433,7 @@
         <div class="desk-v1-engine-head">Generate with an engine</div>
         <label class="desk-v1-sc-label" for="eng-prompt">Describe the picture</label>
         <textarea class="desk-v1-sb-edit-input" id="eng-prompt" rows="3" data-eng-prompt placeholder="What should the picture show?">${esc(st.prompt)}</textarea>
+        ${_refsHTML(p, st)}
         ${_pickersHTML(p, st, 'image')}
         ${conn.ready ? '' : `<div class="desk-v1-engine-refusal" data-eng-not-connected>${esc(p.engine.label)} is not connected yet. Open Connections in the Desk header to set it up.</div>`}
         ${st.prompt.trim() ? _estimateHTML(st, p.engine) : '<div class="desk-v1-engine-est" data-eng-estimate data-state="none">Type a description to see the price.</div>'}
@@ -434,11 +454,16 @@
       host.querySelector('[data-eng-model]').onchange = (ev) => { st.modelId = ev.target.value; st.estimate = null; paint(engines); estimate(engines); };
       host.querySelector('[data-eng-ratio]').onchange = (ev) => { st.ratio = ev.target.value; st.estimate = null; paint(engines); estimate(engines); };
       host.querySelector('[data-eng-render-btn]').onclick = () => submit(engines);
+      if (window.DeskV1LibraryRefs) window.DeskV1LibraryRefs.wire(host, st.refs, _refsOpts(p, st, (refs, what, it) => {
+        if (what === 'add') window.DeskV1Kit.toast(`Using “${it.title}” from the library. The engine reads that file; nothing was copied.`);
+        st.estimate = null; paint(engines); estimate(engines);
+      }));
     };
 
     const body = (extra) => Object.assign({
       engine_id: st.engineId, model_id: st.modelId, kind: 'image', prompt: st.prompt.trim(), aspect_ratio: st.ratio,
       project_id: opts.projectId || undefined,
+      reference_images: st.refs.length && st.refsMax ? st.refs.map((r) => ({ path: r.path })) : undefined,
     }, extra || {});
 
     let _timer = null;

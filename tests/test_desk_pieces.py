@@ -520,6 +520,9 @@ def test_materials_lists_folders_files_articles_and_no_invented_online(env):
     assert shots['thumb'].startswith('/api/serve-image?path=')
     vid = out['library']['video'][0]
     assert vid['files'] == 1 and vid['thumb'] is None and vid['items'][0]['src'] is None
+    # a video is played from /api/serve-file (inline); a picture's src is its picture and has no `play`
+    assert vid['items'][0]['play'].startswith('/api/serve-file?inline=1&path=') and 'c.mp4' in vid['items'][0]['play']
+    assert all('play' not in i for i in shots['items'])
     assert out['articles'] == [{'id': art['id'], 'title': 'Old article', 'words': 300, 'projectId': 'alpha'}]
     # the campaign's own article is not offered back to itself
     assert client.get(f'/api/desk/materials?campaign_id={CID}').get_json()['articles'] == []

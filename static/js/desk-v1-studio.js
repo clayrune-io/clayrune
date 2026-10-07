@@ -149,7 +149,7 @@
   // the fixture folder's `items`, and the `Studio` folder is what Studio saved.
   let _libOpen = null; // the folder open on Studio home, or null for the shelf
   function _folderFiles(f) {
-    return (f.items || []).map((it) => ({ id: it.id, title: it.title, src: it.src || null, kind: it.kind }));
+    return (f.items || []).map((it) => ({ id: it.id, title: it.title, src: it.src || null, kind: it.kind, play: it.play || null, path: it.path || null }));
   }
 
   function _libHTML() {
@@ -233,6 +233,8 @@
 
   // A folder opens in place on the shelf, with a way back to the folders.
   function _wireLib(el) {
+    const shown = _libOpen && _libFolders().find((m) => m.id === _libOpen);
+    if (shown && window.DeskV1LibraryViewer) window.DeskV1LibraryViewer.wireShelf(el, _folderFiles(shown));
     el.querySelectorAll('[data-studio-folder]').forEach((b) => {
       b.onclick = () => {
         _libOpen = b.dataset.studioFolder;
@@ -443,6 +445,7 @@
         <span class="desk-v1-sb-dur">${esc(_mmss(s.durationSec || 0))}</span>
         <button type="button" class="desk-v1-sb-editbtn" data-scene-edit>${editing ? 'Done' : 'Edit'}</button>
         ${_isLive() ? `<button type="button" class="desk-v1-sb-editbtn" data-scene-picture aria-label="${s.picture ? 'Replace' : 'Add'} the picture for ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}">${s.picture ? 'Replace picture' : 'Add picture'}</button>` : ''}
+        ${_isLive() && window.DeskV1LibraryPicker ? window.DeskV1LibraryPicker.buttonHTML('data-scene-library', 'desk-v1-sb-editbtn', `Pick from library: the picture for ${ph ? 'example scene' : 'scene ' + n}: ${s.label}`) : ''}
         ${_isLive() ? `<button type="button" class="desk-v1-sb-editbtn" data-scene-paste aria-label="Paste a picture from the clipboard into ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}" title="Paste a picture from the clipboard">Paste</button>` : ''}
         ${del}
       </div>
@@ -676,6 +679,15 @@
       DeskV1Kit.toast(`The picture was not added: ${e && e.message ? e.message : e}`);
       return;
     }
+    _applyScenePicture(sceneId, ref);
+  }
+
+  // The scene change itself: `ref` is a library picture ({path, kind, title, src}),
+  // freshly uploaded by Add picture or already there (Pick from library).
+  function _applyScenePicture(sceneId, ref) {
+    const ctx = _sbCtx();
+    const s = ctx && ctx.detail.scenes.find((x) => x.id === sceneId);
+    if (!s || !ref) return;
     const prev = { picture: s.picture || null, thumb: s.thumb || '' };
     _registerItem(ctx.fam);
     _sceneCmd(ctx, {
@@ -683,6 +695,16 @@
       do: () => { s.picture = ref; s.thumb = ref.src || ''; _paintScenes(); },
       undo: () => { s.picture = prev.picture; s.thumb = prev.thumb; _paintScenes(); },
     });
+  }
+
+  // Live only: Pick from library. The scene points at the file already in the
+  // library (the storyboard keeps a library path, never a copy), so nothing is uploaded.
+  function _pickScenePicture(sceneId, btn) {
+    if (!window.DeskV1LibraryPicker) return;
+    window.DeskV1LibraryPicker.open({ kinds: ['image'], returnFocus: btn, onPick: (it) => {
+      _applyScenePicture(sceneId, { path: it.path, kind: 'image', title: it.title, src: it.src });
+      DeskV1Kit.toast(`Used “${it.title}” from the library. The scene points at that file; nothing was copied.`);
+    } });
   }
 
   // ── Pasted pictures (Ron 2026-10-02) ─────────────────────────────────────────
@@ -958,6 +980,8 @@
         input.onchange = () => { if (input.files && input.files[0]) _setScenePicture(id, input.files[0]); };
         input.click();
       };
+      const fromLib = li.querySelector('[data-scene-library]');
+      if (fromLib) fromLib.onclick = () => _pickScenePicture(id, fromLib);
       const paste = li.querySelector('[data-scene-paste]');
       if (paste) paste.onclick = () => { _selectScene(id, true); _pasteFromClipboard(id); };
       li.addEventListener('click', (e) => {
