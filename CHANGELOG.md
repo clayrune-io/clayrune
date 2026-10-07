@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Storyboard chat keeps scene instructions whole when they fit (MC-1069)
+
+- Removed the fixed 600-character limit for unselected scene instructions. Boards within the 60,000-character scene-text budget are sent whole, so ordinary boards can be edited through chat.
+- Over-budget boards shorten only the longest unselected instructions, account for the complete focused scene, and retain the minimum line length. The `line_cut` prompt rule and sparse-edit refusal remain unchanged.
+- Regression coverage and handoff: `docs/desk_v1/STORY_CHAT_CONTEXT.md`. Local branch only; no merge, push or restart.
+
 ## [2026-10-07] - Unlock the vault directly from a locked-credential message
 
 - **Unlock vault** opens a shared popup with the existing passphrase and dashboard-passcode form. `/#unlock-vault` works on a fresh dashboard load, on hash changes, and from agent chat links on desktop or phone, including remote HTTPS dashboards.

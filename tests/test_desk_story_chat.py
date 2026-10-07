@@ -152,7 +152,7 @@ def test_board_change_builds_the_whole_list_with_from_and_numbers(env):
 
 def test_untouched_scenes_come_back_word_for_word_even_when_shortened_for_the_agent(env, monkeypatch):
     client, calls, answer = env
-    monkeypatch.setattr(desk_story_chat, 'CONTEXT_LINE_MAX', 130)
+    monkeypatch.setattr(desk_story_chat, 'CONTEXT_SCENE_BUDGET', 135)
     long = 'W' * 400
     scenes = [{'label': 'A', 'line': long, 'duration_sec': 4}, {'label': 'B', 'line': 'short', 'duration_sec': 4}]
     answer['text'] = _reply('ok', {'edit': [{'scene': 2, 'line': 'shorter'}]})
@@ -224,6 +224,68 @@ def test_a_picked_agents_persona_is_the_system_prompt_and_names_the_turn(env, mo
 
 
 # -- context bound -----------------------------------------------------------------------
+
+@pytest.mark.parametrize('focus', [None, 4])
+def test_seven_long_scene_lines_fit_whole_and_allow_board_edits(env, focus):
+    client, calls, answer = env
+    scenes = [{'label': f'Scene {i}', 'line': str(i) * 1900, 'duration_sec': 4} for i in range(1, 8)]
+    change = {'edit': [{'scene': 2, 'line': 'Revised.'}]} if focus is None else None
+    answer['text'] = _reply('ok', change)
+    r = _say(client, 'edit scene 2' if focus is None else 'thoughts?', scenes=scenes, scene=focus)
+    assert r.status_code == 200, r.get_json()
+    sent = json.loads(calls[-1]['stdin_text'])
+    assert [s['line'] for s in sent['scenes']] == [s['line'] for s in scenes]
+    assert all('line_cut' not in s for s in sent['scenes'])
+    if focus is None:
+        assert r.get_json()['change']['scenes'][1]['line'] == 'Revised.'
+
+
+@pytest.mark.parametrize('focus', [None, 2])
+def test_over_budget_board_cuts_lines_but_keeps_focus_whole(env, focus):
+    client, calls, answer = env
+    scenes = [{'label': f'Scene {i}', 'line': 'W' * 1900, 'duration_sec': 4} for i in range(40)]
+    answer['text'] = _reply('ok')
+    r = _say(client, scenes=scenes, scene=focus)
+    assert r.status_code == 200, r.get_json()
+    sent = json.loads(calls[-1]['stdin_text'])['scenes']
+    assert sum(len(s['line']) for s in sent) <= desk_story_chat.CONTEXT_SCENE_BUDGET
+    assert any(s.get('line_cut') for s in sent)
+    for i, (original, row) in enumerate(zip(scenes, sent), 1):
+        if i == focus:
+            assert row['line'] == original['line'] and 'line_cut' not in row
+        else:
+            assert row['line_cut'] is True
+            assert desk_story_chat.CONTEXT_LINE_MIN <= len(row['line']) < len(original['line'])
+            assert original['line'].startswith(row['line'])
+
+
+def test_over_budget_trims_longest_lines_without_wasting_short_lines_budget(monkeypatch):
+    monkeypatch.setattr(desk_story_chat, 'CONTEXT_SCENE_BUDGET', 4000)
+    scenes = [{'label': 'Shot', 'line': 'W' * length, 'duration_sec': 4}
+              for length in (100, 200, 1500, 1600, 1900)]
+    sent, cut = desk_story_chat._context('', scenes, 5, [], '')
+    assert [len(s['line']) for s in sent['scenes']] == [100, 200, 900, 900, 1900]
+    assert cut == {3, 4}
+    assert [s['number'] for s in sent['scenes'] if s.get('line_cut')] == [3, 4]
+    assert [len(s['line']) for s in scenes] == [100, 200, 1500, 1600, 1900]
+
+
+def test_board_exactly_at_budget_is_whole():
+    scenes = [{'label': 'Shot', 'line': 'W' * desk_story_chat.MAX_LINE, 'duration_sec': 4}
+              for _ in range(30)]
+    sent, cut = desk_story_chat._context('', scenes, None, [], '')
+    assert sum(len(s['line']) for s in sent['scenes']) == desk_story_chat.CONTEXT_SCENE_BUDGET
+    assert cut == set() and all('line_cut' not in s for s in sent['scenes'])
+
+
+def test_focus_and_line_floor_take_priority_when_budget_cannot_fit_them(monkeypatch):
+    monkeypatch.setattr(desk_story_chat, 'CONTEXT_SCENE_BUDGET', 2000)
+    scenes = [{'label': 'Shot', 'line': 'W' * length, 'duration_sec': 4}
+              for length in (100, 200, 1500, 1900)]
+    sent, cut = desk_story_chat._context('', scenes, 4, [], '')
+    assert [len(s['line']) for s in sent['scenes']] == [100, 120, 120, 1900]
+    assert cut == {2, 3} and 'line_cut' not in sent['scenes'][3]
+
 
 def test_only_the_recent_turns_are_sent_each_cut(env, monkeypatch):
     client, calls, answer = env
