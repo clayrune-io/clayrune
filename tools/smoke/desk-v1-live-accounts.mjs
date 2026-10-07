@@ -19,6 +19,10 @@
  *   4b. Something else -> Add service -> a name, link and vault credential NAME POST /api/desk/services; the
  *                     tile reads "Saved for agents", never Connected; a refusal is rolled back; Remove DELETEs.
  *   5. Flag OFF    -> the same gestures make 0 /api/desk/* requests.
+ *   Since MC-1062/14 (one Add service wizard) items 1 to 4b read as the file now checks them: an account detail carries
+ *   "Change how this is connected" (no `Connect X`, no Add form, no Read via buttons), Add service is a name-or-address box,
+ *   M3 is sent by the Undo of a Remove, Read via is a summary, and a saved service is checked as a tile (its save is the
+ *   wizard's, covered by desk-v1-connect-unknown-step.mjs).
  *
  * RUN   cd tools/smoke && node desk-v1-live-accounts.mjs
  */
@@ -198,7 +202,7 @@ async function connectionsRead(browser) {
     rows.push(await page.$eval(`[data-conn-account="${id}"]`, (e) => ({
       id: e.dataset.connAccount, state: e.dataset.connState,
       publish: (e.querySelector('[data-conn-publish-text]') || {}).textContent || '',
-      secrets: !!e.querySelector('[data-conn-x-guide]'), action: !!e.querySelector('[data-conn-action]'),
+      reopen: !!e.querySelector('[data-cs-reopen]'), xsteps: !!e.querySelector('[data-conn-x-guide]'), action: !!e.querySelector('[data-conn-action]'),
     })));
   }
   const x = rows.find((r) => r.id === 'ch-x-ron');
@@ -206,25 +210,26 @@ async function connectionsRead(browser) {
   check(rows.length === srv.accounts.length, `the rows are the server's accounts (${rows.length})`, 'rows: ' + JSON.stringify(rows.map((r) => r.id)));
   check(x && x.state === 'off' && /^not connected$/.test(x.publish.trim()), `X: Publishing reads "not connected" (a vault-naming reason is left to the steps) ("${x && x.publish}")`, 'X row: ' + JSON.stringify(x));
   check(li && li.state === 'off' && /w_organization_social/.test(li.publish), 'the LinkedIn page shows NOT connected with the app-review reason, never faked', 'LinkedIn row: ' + JSON.stringify(li));
-  check(x.secrets && !li.secrets, '`Connect X` appears on the X account and not on the LinkedIn page', 'secrets buttons: ' + JSON.stringify(rows.map((r) => [r.id, r.secrets])));
+  // Weaker than before (MC-1062/14): "Connect X" on the X account alone is gone. One wizard connects every service, so every live
+  // account carries the same "Change how this is connected" and none carries a per-account X steps button.
+  check(rows.every((r) => r.reopen && !r.xsteps), 'every live account offers Change how this is connected and none a per-account X steps button', 'connect buttons: ' + JSON.stringify(rows.map((r) => [r.id, r.reopen, r.xsteps])));
   check(rows.every((r) => !r.action), 'no fixture Connect / Reconnect button on any live row', 'a Connect button survived live');
   const typed = await page.$$('[data-connections] input[type="password"], [data-connections] input[name*="token" i], [data-connections] input[name*="secret" i]');
   check(typed.length === 0, 'no credential field exists on the screen until a guide is opened', 'a credential input is on Connections');
   await selectTile(page, 'ch-x-ron');
-  await page.click('[data-conn-account="ch-x-ron"] [data-conn-x-guide]');
-  await page.waitForSelector('[data-conn-account="ch-x-ron"] [data-conn-x-wizard]', { timeout: 4000 });
-  check(!(await page.evaluate(() => window.__vaultOpened)), '`Connect X` opens its own steps, not the Vault panel', 'the Vault panel was opened');
+  await page.click('[data-conn-account="ch-x-ron"] [data-cs-reopen]');
+  await page.waitForSelector('[data-conn-detail="add"] [data-add-service] [data-cfw-input]', { timeout: 4000 });
+  check(!(await page.evaluate(() => window.__vaultOpened)), 'Change how this is connected opens the Add service wizard, not the Vault panel', 'the Vault panel was opened');
 
   const ph = await page.$$eval('[data-conn-placeholder], [data-conn-tile][data-conn-state="preview"]', (els) => els.length);
   const srcs = await page.$$eval('[data-conn-source], [data-conn-tile^="source:"]', (els) => els.length);
   check(ph === 0 && srcs === 0, 'no unconnected placeholder is rendered: no YouTube / Discord / Reddit, no Google Drive / Dropbox', `placeholders: ${ph}, sources: ${srcs}`);
   const lastTile = await page.$$eval('[data-conn-tiles] > *', (els) => els.map((e) => e.hasAttribute('data-conn-add-tile')));
   check(lastTile[lastTile.length - 1] && lastTile.filter(Boolean).length === 1, 'the Add service tile is present and is the last tile', 'Add service tile: ' + JSON.stringify(lastTile));
-  await page.click('[data-conn-add-tile]');
-  await page.waitForSelector('[data-add-list]', { timeout: 4000 });
-  const picks = await page.$$eval('[data-add-pick]', (els) => els.map((e) => e.dataset.addPick));
-  check(picks.includes('engine:eng-off') && !picks.includes('engine:eng-ok') && picks[picks.length - 1] === 'other',
-    `Add service offers the engine that is not connected (not the connected one), Something else last (${picks.join(', ')})`, 'add picks: ' + JSON.stringify(picks));
+  // Weaker than before: Add service no longer lists the engines that are not connected (nor "Something else"). Its first screen is
+  // one box for a name or an address; that the unconnected engine is not a tile is the check above.
+  check(!!(await page.$('[data-conn-detail="add"] [data-cfw-input]')) && !(await page.$('[data-add-list], [data-add-pick]')),
+    'Add service is the one wizard: a name-or-address box, no list of services to pick', 'the Add service panel still lists services to pick');
   await page.click('[data-conn-add-tile]');   // close it again
 
   // Check again re-reads M2 and repaints with the new derived state.
@@ -239,91 +244,74 @@ async function connectionsRead(browser) {
   await ctx.close();
 }
 
-// ── 2: add / remove / read via ─────────────────────────────────────────────
+const txt = (page, sel) => page.textContent(sel).then((t) => (t || '').replace(/\s+/g, ' ').trim()).catch(() => '');
+// ── 2: remove / undo / read via ────────────────────────────────────────────
+// Weaker than before (MC-1062/14): there is no Add form on Connections to type an @handle into, and no Read via control to
+// click. An account is created by the Add service wizard's own sign-in step on the server, so M3 is no longer sent by this screen
+// except by the Undo of a Remove, which is what is exercised here. Read via is a summary of what the server holds.
 async function addRemove(browser) {
   const srv = makeServer();
   const { ctx, page, pageErrors } = await newPage(browser, { live: true, srv });
   await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
   await openConnections(page);
   const before = srv.accounts.length;
-
-  srv.log.length = 0;
-  await page.click('[data-conn-add-tile]');
-  await page.click('[data-add-pick="account:x"]');
-  await page.fill('[data-conn-add-identity]', '@newhandle');
-  await page.click('[data-conn-add-submit]');
-  await settle(page, () => [...document.querySelectorAll('[data-conn-tile]')].some((e) => /newhandle/.test(e.textContent)));
-  const post = calls(srv, 'POST', /^\/api\/desk\/accounts$/);
-  await selectTile(page, post[0].body.id);
-  await settle(page, () => [...document.querySelectorAll('[data-conn-account]')].some((e) => /newhandle/.test(e.textContent) && !/checking/.test(e.textContent)));
-  check(post.length === 1 && post[0].body.platform === 'x' && post[0].body.identity === '@newhandle' && /^acct-/.test(post[0].body.id),
-    'Add posts M3 with the client id, platform and identity', 'add POST: ' + JSON.stringify(post.map((r) => r.body)));
-  check(Object.keys(post[0].body).every((k) => ['id', 'platform', 'identity', 'label', 'capability', 'voice'].includes(k)),
-    'the add body carries no credential field', 'add body keys: ' + Object.keys(post[0].body));
-  const newId = post[0].body.id;
-  const painted = await page.$eval(`[data-conn-account="${newId}"] [data-conn-publish-text]`, (e) => e.textContent).catch(() => null);
-  check(/^not connected$/.test((painted || '').trim()), `the new row takes the server's derived state ("${painted}")`, 'new row publish: ' + painted);
-  check(srv.accounts.length === before + 1, 'the server holds the account', 'server accounts: ' + srv.accounts.length);
+  const id = 'ch-x-clayrune';
+  const snap = JSON.parse(JSON.stringify(srv.accounts.find((a) => a.id === id)));
+  await selectTile(page, id);
 
   // Remove: M5; a refusal rolls the row back with the server's reason.
-  srv.next[`DELETE /api/desk/accounts/${newId}`] = 'a campaign still places this account';
-  await page.click(`[data-conn-remove="${newId}"]`);
+  srv.next[`DELETE /api/desk/accounts/${id}`] = 'a campaign still places this account';
+  await page.click(`[data-conn-remove="${id}"]`);
   await page.waitForFunction(() => /was not saved: a campaign still places this account/.test(document.body.innerText), null, { timeout: 8000 });
-  check(!!(await page.$(`[data-conn-account="${newId}"]`)), 'a refused remove puts the row back and shows the server reason', 'refused remove not rolled back');
+  check(!!(await page.$(`[data-conn-account="${id}"]`)), 'a refused remove puts the row back and shows the server reason', 'refused remove not rolled back');
   srv.log.length = 0;
-  await page.click(`[data-conn-remove="${newId}"]`);
-  await settle(page, (id) => !document.querySelector(`[data-conn-account="${id}"]`), newId);
-  check(calls(srv, 'DELETE', new RegExp(`^/api/desk/accounts/${newId}$`)).length === 1 && !srv.accounts.some((a) => a.id === newId),
-    '✕ DELETEs M5 and the server no longer has the account', 'remove calls: ' + JSON.stringify(srv.log));
+  await page.click(`[data-conn-remove="${id}"]`);
+  await settle(page, (a) => !document.querySelector(`[data-conn-account="${a}"]`), id);
+  check(calls(srv, 'DELETE', new RegExp(`^/api/desk/accounts/${id}$`)).length === 1 && !srv.accounts.some((a) => a.id === id),
+    'Remove DELETEs M5 and the server no longer has the account', 'remove calls: ' + JSON.stringify(srv.log));
 
-  // Read via: M4, filed under the project that uses the account.
+  // Undo re-creates it through M3: client id, platform and identity, and no credential field.
+  srv.log.length = 0;
+  await page.click('#desk-v1-undo');
+  await settle(page, (a) => !!document.querySelector(`[data-conn-tile="${a}"]`), id);
+  const post = calls(srv, 'POST', /^\/api\/desk\/accounts$/);
+  check(post.length === 1 && post[0].body.id === id && post[0].body.platform === snap.platform && post[0].body.identity === snap.identity,
+    'Undo POSTs M3 with the account\'s id, platform and identity', 'undo POST: ' + JSON.stringify(post.map((r) => r.body)));
+  check(Object.keys(post[0].body).every((k) => ['id', 'platform', 'identity', 'label', 'capability', 'voice'].includes(k)),
+    'the M3 body carries no credential field', 'M3 body keys: ' + Object.keys(post[0].body));
+  check(srv.accounts.length === before, 'the server holds the account again', 'server accounts: ' + srv.accounts.length);
+
+  // Read via: shown as the server holds it, edited in the wizard; opening the account sends nothing.
   srv.log.length = 0;
   await selectTile(page, 'ch-x-ron');
-  await page.click('[data-conn-account="ch-x-ron"] [data-readvia="api"]');
-  await settle(page, () => /ch-x-ron/.test('ch-x-ron') && document.querySelector('[data-conn-account="ch-x-ron"] [data-readvia="api"]').getAttribute('aria-pressed') === 'true');
-  const rv = calls(srv, 'PATCH', /^\/api\/desk\/accounts\/ch-x-ron$/);
-  check(rv.length === 1 && rv[0].body.read_via === 'api' && typeof rv[0].body.project_id === 'string',
-    'Read via PATCHes M4 with read_via and the project that uses the account', 'read via: ' + JSON.stringify(rv.map((r) => r.body)));
-  check(calls(srv, 'PATCH', /^\/api\/desk\/presence\//).length === 0, 'it does not call the retired presence route live', 'presence route called');
+  const via = await txt(page, '[data-conn-account="ch-x-ron"] [data-cs-readvia]');
+  check(/Browser pane \(no charge\)$/.test(via) && !(await page.$('[data-conn-account="ch-x-ron"] [data-readvia]')),
+    `Read via is a summary of the server's setting ("${via}"), with no pane / API buttons on the account`, 'read via summary: ' + via);
+  check(calls(srv, 'PATCH', /^\/api\/desk\/accounts\//).length === 0 && calls(srv, 'PATCH', /^\/api\/desk\/presence\//).length === 0,
+    'opening an account sends no PATCH and does not call the retired presence route live', 'a PATCH was sent: ' + JSON.stringify(srv.log));
   realErrors(pageErrors).length ? realErrors(pageErrors).forEach((e) => fail('page error: ' + e)) : ok('no uncaught page errors');
   await ctx.close();
 }
 
 // ── 2b: Something else, live ───────────────────────────────────────────────
+// Weaker than before: the saved-service form (name, link, credential name -> POST /api/desk/services) is gone from Add service; a
+// reference is saved by the wizard's own Review step (tools/smoke/desk-v1-connect-unknown-step.mjs owns that save and its refusals).
+// What is left here is the saved service as a tile: its wording, its detail, and Remove.
 async function somethingElse(browser) {
   const srv = makeServer();
+  srv.services.push({ id: 'svc-plausible', name: 'Plausible analytics', link: 'https://plausible.io', kind: 'saved_for_agents', publish: false,
+    credential: { name: 'plausible.key', in_vault: false } });
   const { ctx, page, pageErrors } = await newPage(browser, { live: true, srv });
   await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
   await openConnections(page);
-  await page.click('[data-conn-add-tile]');
-  await page.click('[data-add-pick="other"]');
-  await page.waitForSelector('[data-svc-add]', { timeout: 4000 });
-  srv.log.length = 0;
-  await page.fill('[data-svc-add-name]', 'Plausible analytics');
-  await page.fill('[data-svc-add-link]', 'https://plausible.io');
-  await page.fill('[data-svc-add-cred]', 'plausible.key');
-  await page.click('[data-svc-add-submit]');
   await page.waitForSelector('[data-conn-tile^="service:"]', { timeout: 4000 });
-  const post = calls(srv, 'POST', /^\/api\/desk\/services$/);
-  check(post.length === 1 && post[0].body.name === 'Plausible analytics' && post[0].body.link === 'https://plausible.io' && post[0].body.credential === 'plausible.key'
-    && Object.keys(post[0].body).every((k) => ['id', 'name', 'link', 'credential'].includes(k)),
-    'Something else POSTs /api/desk/services with a name, a link and a credential NAME only', 'service POST: ' + JSON.stringify(post.map((r) => r.body)));
   const svc = await page.$eval('[data-conn-tile^="service:"]', (e) => ({ pill: e.querySelector('[data-conn-tile-status]').textContent.trim(), state: e.dataset.connState }));
   check(svc.pill === 'Saved for agents' && svc.state === 'saved', `the tile says "${svc.pill}", not Connected`, 'service tile: ' + JSON.stringify(svc));
+  await page.click('[data-conn-tile^="service:"]');
   await page.waitForSelector('[data-conn-detail^="service:"] [data-svc-cred-state]', { timeout: 4000 });
   const cred = await page.$eval('[data-svc-cred-state]', (e) => e.dataset.svcCredState);
   check(cred === 'missing' && !(await page.$('[data-conn-detail] [data-conn-publish], [data-conn-detail] [data-conn-action]')),
     'the detail says the named vault entry is missing (Vault) and offers no Connect or Publishing', 'service detail: ' + cred);
-  // A refused save is rolled back with the server's reason.
-  await page.click('[data-conn-add-tile]');
-  await page.click('[data-add-pick="other"]');
-  srv.next['POST /api/desk/services'] = 'a service with that name is already saved';
-  await page.fill('[data-svc-add-name]', 'Plausible analytics');
-  await page.click('[data-svc-add-submit]');
-  await page.waitForFunction(() => /a service with that name is already saved/.test(document.body.innerText), null, { timeout: 8000 });
-  check((await page.$$('[data-conn-tile^="service:"]')).length === 1, 'a refused save leaves no second tile and shows the server reason', 'refused save left a tile');
-  const svcId = srv.services[0].id;
-  await page.click(`[data-conn-tile="service:${svcId}"]`);
   await page.waitForSelector('[data-svc-remove]', { timeout: 4000 });
   srv.log.length = 0;
   await page.click('[data-svc-remove]');

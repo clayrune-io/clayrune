@@ -8,6 +8,8 @@
  *                            ID is refused in the page; the save is ONE POST through the passcode prompt.
  *   2. Gemini Connect     -> no username field at all, "Gemini API key", billing hint; saves username "".
  *   3. Edit               -> a connected engine's Edit opens the form as an edit (PATCH), same labels.
+ *      (Since MC-1062/14 the Connections screen has no per-engine Connect or Replace key button: the form is opened here
+ *       by vault name with the engine's `credential` spec, and Connections is checked only for its Add service / Change connection.)
  *   4. Plain Add          -> stock form (2. Username - optional / Value) until a known vault name is typed
  *                            (openai-api -> OpenAI labels), and back to stock for any other name.
  *
@@ -118,14 +120,12 @@ async function openConnections(page, engineId) {
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
   await page.evaluate(() => window.deskV1Nav('connections', {}));
-  // One grid (2026-10-03): an engine is a tile once connected, an Add service entry until then.
-  // Open the Add service panel (it lists the engines once they load), then the one asked for.
-  await page.waitForSelector('[data-conn-add-tile]', { timeout: 8000 });
-  await page.click('[data-conn-add-tile]');
-  await page.waitForSelector('[data-add-pick^="engine:"], [data-conn-tile^="engine:"]', { timeout: 8000 });
+  // One grid, one wizard (MC-1062/14): a connected engine is a tile, and clicking it opens its card; an engine that is
+  // not connected has no tile or card, it is added through the one Add service wizard. The OpenAI fixture is always
+  // connected, so its tile is the signal that the engine specs the preset lookup reads have loaded.
+  await page.waitForSelector('[data-conn-tile="engine:openai"]', { timeout: 8000 });
   if (!engineId) return;
-  const tile = `[data-conn-tile="engine:${engineId}"]`;
-  await page.click((await page.$(tile)) ? tile : `[data-add-pick="engine:${engineId}"]`);
+  await page.click(`[data-conn-tile="engine:${engineId}"]`);
   await page.waitForSelector(`[data-conn-engine="${engineId}"]`, { timeout: 8000 });
 }
 // The engine rows no longer open the Secrets form: Connect is a guided flow with its
@@ -137,9 +137,14 @@ const settle = (page, pred, arg) => page.waitForFunction(pred, arg, { timeout: 8
 async function higgsfield(browser) {
   const srv = { secrets: [], writes: [], googleReady: false };
   const { ctx, page, pageErrors } = await newPage(browser, srv, { width: 1440, height: 900 });
-  await openConnections(page, 'higgsfield');
-  const hs = await txt(page, '[data-conn-engine="higgsfield"] [data-engine-status]');
-  check((await page.$('[data-conn-engine="higgsfield"] [data-engine-guide]')) !== null, 'a not-connected engine row has a Connect button (the guided flow)', 'no Connect on higgsfield');
+  await openConnections(page);
+  // Weaker than before: there is no per-engine Connect button on a row any more. An engine that is not connected has no
+  // tile, and the guided flow is the one Add service wizard, whose first screen is a name-or-address box.
+  check(!(await page.$('[data-conn-tile="engine:higgsfield"]')) && !(await page.$('[data-conn-engine="higgsfield"]')),
+    'a not-connected engine has no tile or card (it is added through Add service)', 'higgsfield is on the Connections grid');
+  await page.click('[data-conn-add-tile]');
+  await page.waitForSelector('[data-add-service] [data-cfw-input]', { timeout: 8000 });
+  check(!(await page.$('[data-add-pick]')), 'Add service is the one wizard, not a list of engines to pick', 'Add service still offers [data-add-pick]');
   await openEngineEditor(page, 'higgsfield', true);
   await page.waitForSelector(form, { timeout: 8000 });
   await settle(page, () => document.getElementById('sec-user-name') && document.getElementById('sec-user-name').textContent === 'API key ID');
@@ -203,8 +208,8 @@ async function edit(browser) {
   const srv = { secrets: [{ name: 'gemini-api', username: '', scope: 'global', allow_unattended: true, description: '' }], writes: [], googleReady: true };
   const { ctx, page, pageErrors } = await newPage(browser, srv, { width: 1440, height: 900 });
   await openConnections(page, 'google');
-  check((await page.$eval('[data-conn-engine="google"] [data-engine-guide]', (b) => b.textContent.trim())) === 'Replace key',
-    'a connected engine offers Replace key, not Connect', 'google buttons');
+  check((await txt(page, '[data-conn-detail="engine:google"] [data-saved-change]')) === 'Change connection' && !(await page.$('[data-conn-engine="google"] [data-engine-guide]')),
+    'a connected engine offers Change connection (the wizard), not Connect or Replace key on the card', 'google buttons');
   await openEngineEditor(page, 'google', false);
   await page.waitForSelector(form, { timeout: 8000 });
   await settle(page, () => document.getElementById('sec-value-name').textContent === 'Gemini API key');
