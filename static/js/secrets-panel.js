@@ -43,7 +43,7 @@ async function openSecretsVault() {
   _clampModalSize(content, 820);
   content.innerHTML = `
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
-      <span style="font-size:16px;font-weight:700;color:var(--text)">&#x1F510; Secrets</span>
+      <span style="font-size:16px;font-weight:700;color:var(--text)">&#x1F510; Vault</span>
       <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
         <button class="modal-minimize" onclick="minimizeModal('${modalId}')" title="Minimize">&#x2015;</button>
         <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>

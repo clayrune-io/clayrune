@@ -35,7 +35,7 @@ def _risks(op: dict) -> list[dict]:
            {'code': 'remote_server_can_change', 'label': 'Remote server can change without a version pin. Its tools and '
                                                          'behavior are whatever it serves when it is contacted.'}]
     if op['credentials']:
-        out.append({'code': 'secrets_to_remote', 'label': f'The Secrets entries listed are sent as HTTP headers to '
+        out.append({'code': 'secrets_to_remote', 'label': f'The Vault entries listed are sent as HTTP headers to '
                                                           f'{op["origin"]} and to no other address.'})
     for flag in _op.required_ack(op):
         out.append(_EXPOSURE[flag])

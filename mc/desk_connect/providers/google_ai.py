@@ -14,7 +14,7 @@ from mc.desk_connect.providers.key_paste import KeyPaste
 
 class GoogleAiProvider(base.Provider):
     service_id = 'google_ai'
-    summaries = {'api_key': 'Stores your Gemini API key in Secrets as "gemini-api" and checks it with one free read '
+    summaries = {'api_key': 'Stores your Gemini API key in the Vault as "gemini-api" and checks it with one free read '
                             'call. Clayrune does not generate anything yet.'}
 
     def __init__(self) -> None:

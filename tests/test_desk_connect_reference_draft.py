@@ -130,7 +130,7 @@ def test_existing_reference_disappears_after_validation(env):
     secrets_store.set_secret('existing.key', SECRET)
     clean = commit.clean_draft(draft(credential={'name': 'existing.key', 'existing': True}))
     secrets_store.delete_secret('existing.key')
-    with pytest.raises(commit.CommitError, match='not in Secrets'):
+    with pytest.raises(commit.CommitError, match='not in the Vault'):
         commit.commit('reference-race-1', clean)
     assert not _services()
 

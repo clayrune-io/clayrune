@@ -52,8 +52,8 @@ _NODE_RE = re.compile(r'^node(\.exe)?$', re.I)
 # Inherited variables Node reads that can load code from outside the reviewed bundle.
 _NODE_ENV_STRIPPED = ('NODE_OPTIONS', 'NODE_PATH')
 
-PASSPHRASE_NOTICE = ('Secrets is using a passphrase lock. This server reads its token through Clayrune, so it starts '
-                     'only while Clayrune is unlocked: after a restart, unlock Secrets before an agent session uses it.')
+PASSPHRASE_NOTICE = ('The Vault is using a passphrase lock. This server reads its token through Clayrune, so it starts '
+                     'only while Clayrune is unlocked: after a restart, unlock the Vault before an agent session uses it.')
 
 
 def _which(name: str) -> str | None:
@@ -193,5 +193,5 @@ def provision(entry: dict) -> dict:
         return {'setup': {'state': 'failed', 'message': 'setup could not finish; see the server log',
                           'code': 'setup_failed'}}
     msg = (f'Registered as the MCP server "{done["server"]}". It starts the first time an agent session uses it, '
-           f'and reads its token from Secrets then.')
+           f'and reads its token from the Vault then.')
     return {'setup': {'state': 'done', 'message': msg, 'server': done['server'], 'code': ''}}

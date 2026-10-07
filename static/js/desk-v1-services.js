@@ -44,8 +44,8 @@
     const c = s.credential || {};
     if (!c.name) return '<span data-svc-cred-state="none">No credential named: agents see this service but have nothing to sign in with.</span>';
     return c.in_vault
-      ? `<span data-svc-cred-state="found"><code>${esc(c.name)}</code>: found in Secrets.</span>`
-      : `<span data-svc-cred-state="missing"><code>${esc(c.name)}</code>: nothing in Secrets has that name yet. Add it there.</span>`;
+      ? `<span data-svc-cred-state="found"><code>${esc(c.name)}</code>: found in the Vault.</span>`
+      : `<span data-svc-cred-state="missing"><code>${esc(c.name)}</code>: nothing in the Vault has that name yet. Add it there.</span>`;
   }
 
   // The detail panel body for one saved service.
@@ -66,8 +66,8 @@
         <form class="desk-v1-svc-edit" data-svc-edit autocomplete="off">
           <label class="desk-v1-conn-add-field">Link
             <input type="text" class="desk-v1-rules-textinput" data-svc-edit-link maxlength="300" value="${esc(s.link || '')}" placeholder="https://"></label>
-          <label class="desk-v1-conn-add-field">Credential name in Secrets
-            <input type="text" class="desk-v1-rules-textinput" data-svc-edit-cred maxlength="64" value="${esc((s.credential || {}).name || '')}" placeholder="the name of an entry in Secrets"></label>
+          <label class="desk-v1-conn-add-field">Credential name in the Vault
+            <input type="text" class="desk-v1-rules-textinput" data-svc-edit-cred maxlength="64" value="${esc((s.credential || {}).name || '')}" placeholder="the name of an entry in the Vault"></label>
           <div class="desk-v1-conn-add-actions">
             <button type="submit" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-svc-edit-save>Save changes</button>
             <span class="desk-v1-rules-hint" data-svc-edit-status role="status"></span>

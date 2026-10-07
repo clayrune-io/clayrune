@@ -264,7 +264,7 @@ is looked up against the `trigger_type` MC recorded at dispatch time via
 id, server unreachable, or session unknown all mean unattended. `--unattended`
 remains a valid explicit opt-in (steward code still passes it) but can no
 longer be defeated by omission. Detection is NOT wired into
-`get_secret_value()` itself, deliberately: the human-facing Secrets panel
+`get_secret_value()` itself, deliberately: the human-facing Vault panel
 (`PATCH /api/secrets/<name>`, the TOTP-verify probe) calls it directly from
 inside the Flask server process, where there is no `CLAUDE_CODE_SESSION_ID` —
 auto-detecting there would refuse a real human editing a secret in the
@@ -351,7 +351,7 @@ Two ways the key now leaves memory before a restart:
   `server.py`'s `boot()`, server-process only) that ticks every 60s so the
   key is cleared even if nothing reads it in the meantime.
 - **Manual lock.** `POST /api/secrets/vault-lock/lock` clears the key right
-  now — the "Lock now" button next to the lock state in the Secrets window,
+  now — the "Lock now" button next to the lock state in the Vault window,
   shown only while unlocked. Human-only, same passcode gate as
   unlock/set/change. A no-op (still `200`) if the vault is already locked or
   was never configured.

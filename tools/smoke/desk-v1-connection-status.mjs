@@ -50,7 +50,7 @@ const CONNECTIONS = () => [
   { ...NPM, server_name: 'drifted-mcp', state: 'changed', code: 'package_files_changed', package_files: DRIFT, message: 'The package files on disk no longer match what was approved.' },
   { ...NPM, server_name: 'pending-mcp', state: 'pending_runtime', message: 'Saved. This install has no secret wrapper, so nothing is registered yet.' },
   { ...NPM, server_name: 'failed-mcp', state: 'setup_failed', message: 'Saved, but registering it failed.' },
-  { ...NPM, server_name: 'nokey-mcp', state: 'credential_missing', missing: ['harmless.token'], credentials: [{ vault: 'harmless.token', env: 'HARMLESS_TOKEN' }], message: 'A credential it needs is not in Secrets.' },
+  { ...NPM, server_name: 'nokey-mcp', state: 'credential_missing', missing: ['harmless.token'], credentials: [{ vault: 'harmless.token', env: 'HARMLESS_TOKEN' }], message: 'A credential it needs is not in the Vault.' },
   { ...NPM, server_name: 'gone-mcp', state: 'package_missing', message: 'The package is not on disk.' },
   { ...REMOTE, server_name: 'steady-remote', state: 'registered', message: 'Registered.', observation: { status: 'unchanged', review_needed: false, checked_at: '2026-10-05T09:00:00Z', tool_count: 2, diff: [] } },
   { ...REMOTE, server_name: 'moved-remote', state: 'registered', message: 'Registered.', observation: { status: 'changed', review_needed: true, observed: OBSERVED, checked_at: '2026-10-05T09:00:00Z', tool_count: 3, diff: [{ what: 'new tool', detail: 'delete_everything' }] } },
@@ -268,7 +268,7 @@ async function mcpScenario(browser, width, height) {
 
   await page.click('[data-conn-tile="mcp:project:p1:nokey-mcp"]');
   await page.waitForSelector('[data-cs-missing]');
-  check(/harmless\.token/.test(await page.textContent('[data-cs-missing]')) && /HARMLESS_TOKEN/.test(await page.textContent('[data-cs-credential]')), 'Credential missing names the Secrets entry and where it goes, never a value', 'missing line wrong');
+  check(/harmless\.token/.test(await page.textContent('[data-cs-missing]')) && /HARMLESS_TOKEN/.test(await page.textContent('[data-cs-credential]')), 'Credential missing names the Vault entry and where it goes, never a value', 'missing line wrong');
   await page.click('[data-conn-tile="mcp:project:p1:failed-mcp"]');
   await page.waitForSelector('[data-conn-mcp]');
   check((await page.$$('[data-cs-reopen]')).length === 1, 'setup failed offers Review again', 'no recovery on setup_failed');
@@ -281,7 +281,7 @@ async function mcpScenario(browser, width, height) {
   await page.click('[data-conn-tile="mcp:global::moved-remote"]');
   await page.waitForSelector('[data-cs-observed="changed"]');
   check(/delete_everything/.test(await page.textContent('[data-cs-diff]')) && /not been told to trust/.test(await page.textContent('[data-cs-observed]')), 'an observed remote change stays visible with its diff, untrusted until accepted', 'observed block wrong');
-  check(/Authorization/.test(await page.textContent('[data-cs-credential]')) && /example\.token/.test(await page.textContent('[data-cs-credential]')), 'its credential shows as a Secrets entry and header, no value', 'credential line wrong');
+  check(/Authorization/.test(await page.textContent('[data-cs-credential]')) && /example\.token/.test(await page.textContent('[data-cs-credential]')), 'its credential shows as a Vault entry and header, no value', 'credential line wrong');
   await shot(page, 'mcp_remote', width);
   await fits(page, 'remote detail');
   check(srv.log.slice(before).every((r) => r.method === 'GET' || r.path.endsWith('connect/custom/connections')), 'opening the detail made no network call to the server', 'calls: ' + JSON.stringify(srv.log.slice(before)));

@@ -66,7 +66,7 @@ function makeServer() {
 const ENGINES = ({ limits, higgsReady }) => [
   { id: 'higgsfield', label: 'Higgsfield', auth: { kind: 'key_id_secret', vault_entry: 'higgsfield' }, job_limit_usd: limits.higgsfield,
     connected: higgsReady ? { ready: true, vault_entry: 'higgsfield', reason: null }
-      : { ready: false, vault_entry: 'higgsfield', reason: "no vault entry named 'higgsfield' (add it in Secrets)" },
+      : { ready: false, vault_entry: 'higgsfield', reason: "no vault entry named 'higgsfield' (add it in the Vault)" },
     models: [{ model_id: 'kling-2.5', kind: 'video', label: 'Kling 2.5 Turbo', status: 'stable', aspect_ratios: ['16:9', '9:16'] }] },
   { id: 'google', label: 'Google', auth: { kind: 'api_key', vault_entry: 'gemini-api' }, job_limit_usd: limits.google,
     connected: { ready: true, vault_entry: 'gemini-api', reason: null },

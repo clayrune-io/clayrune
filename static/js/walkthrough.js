@@ -11,7 +11,7 @@ const WT_STEPS = [
   {
     id: 'sidebar',
     title: 'Sidebar Navigation',
-    body: 'Top of the sidebar: <strong>Dashboard</strong>, <strong>Inbox</strong> (anything waiting on you), <strong>Floor</strong> (every agent, working or idle, across every project — more on that shortly) and <strong>Incognito</strong> (a scratch chat with no memory or rules). Then a workspace group — <strong>Backlog</strong>, <strong>Desk</strong> (the marketing/social surface), <strong>Automation</strong>, <strong>Calendar</strong> and <strong>History</strong>. Less-frequent surfaces (🐝 Hivemind, Skills, Secrets, Backup &amp; Restore, Personas, Media, Shared Rules, Processes) sit under <strong>Advanced</strong> — click it to expand. Hover to expand the sidebar itself.',
+    body: 'Top of the sidebar: <strong>Dashboard</strong>, <strong>Inbox</strong> (anything waiting on you), <strong>Floor</strong> (every agent, working or idle, across every project — more on that shortly) and <strong>Incognito</strong> (a scratch chat with no memory or rules). Then a workspace group — <strong>Backlog</strong>, <strong>Desk</strong> (the marketing/social surface), <strong>Automation</strong>, <strong>Calendar</strong> and <strong>History</strong>. Less-frequent surfaces (🐝 Hivemind, Skills, Vault, Backup &amp; Restore, Personas, Media, Shared Rules, Processes) sit under <strong>Advanced</strong> — click it to expand. Hover to expand the sidebar itself.',
     target: '#sidebar', pos: 'right',
     skip: () => window.innerWidth <= 960, // hidden on mobile
   },

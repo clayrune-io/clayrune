@@ -179,7 +179,7 @@ def login_entry(name: Any, project_id: str | None) -> dict:
     if rec.get('kind') == _vault.KIND_TOTP or rec.get('entry_type') != _vault.ENTRY_LOGIN:
         raise FillError(f'{name} is not a login (it has no username and password on one entry)', 400, 'not_a_login')
     if not rec.get('username'):
-        raise FillError(f'{name} has no username stored: add one in Secrets, or store a new login', 409, 'no_username')
+        raise FillError(f'{name} has no username stored: add one in the Vault, or store a new login', 409, 'no_username')
     return rec
 
 

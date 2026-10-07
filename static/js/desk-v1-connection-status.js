@@ -166,7 +166,7 @@
   function _creds(r) {
     const list = Array.isArray(r.credentials) ? r.credentials : [];
     if (!list.length) return 'None';
-    return list.map((c) => `<div data-cs-credential>Secrets entry <code>${esc(c.vault)}</code>${c.env ? ` as <code>${esc(c.env)}</code>` : ''}${c.header ? ` in the <code>${esc(c.header)}</code> header` : ''}</div>`).join('');
+    return list.map((c) => `<div data-cs-credential>Vault entry <code>${esc(c.vault)}</code>${c.env ? ` as <code>${esc(c.env)}</code>` : ''}${c.header ? ` in the <code>${esc(c.header)}</code> header` : ''}</div>`).join('');
   }
 
   function _observedHTML(r, key) {
@@ -191,7 +191,7 @@
     const drift = r.code === 'package_files_changed' ? _drift(files) : '';
     const note = files.status === 'not_recorded' ? '<div class="desk-v1-rules-hint" data-cs-files-note="not_recorded">The package files were not recorded when this was approved, so they are not checked. Approving it again records them.</div>' : '';
     const recover = ['changed', 'package_missing', 'setup_failed', 'missing'].indexOf(r.state) >= 0;
-    const missing = r.state === 'credential_missing' && Array.isArray(r.missing) && r.missing.length ? `<div data-cs-missing>Missing from Secrets: ${r.missing.map((n) => `<code>${esc(n)}</code>`).join(', ')}.</div>` : '';
+    const missing = r.state === 'credential_missing' && Array.isArray(r.missing) && r.missing.length ? `<div data-cs-missing>Missing from the Vault: ${r.missing.map((n) => `<code>${esc(n)}</code>`).join(', ')}.</div>` : '';
     const facts = [
       ['Kind', remote ? `Remote server, ${esc(r.protocol || '')}` : 'Package that runs on this computer'],
       [remote ? 'Address' : 'Package', `<code class="desk-v1-cf-wrap">${esc(r.package || '')}</code>${r.version ? ` ${esc(r.version)}` : ''}`],

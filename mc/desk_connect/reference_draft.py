@@ -95,5 +95,5 @@ def credential_reference(raw, vault_names=None) -> dict:
     if not isinstance(name, str) or not vault.valid_name(name) or vault.is_server_internal(name):
         raise ReferenceError('invalid existing vault entry name')
     if vault_names is not None and name not in vault_names:
-        raise ReferenceError('that credential is not in Secrets')
+        raise ReferenceError('that credential is not in the Vault')
     return {'name': name, 'existing': True}

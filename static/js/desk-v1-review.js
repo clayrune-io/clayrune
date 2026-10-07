@@ -1014,7 +1014,7 @@
         head = `✓ Approved. It goes out ${esc(_fmtWhen(version.publishAt) || 'at the time you set')}.`;
         const pub = channel && channel.publish;
         body = pub && pub.unattended_ok === false
-          ? `<div data-review-unattended>Heads up: the vault entry <code>${esc(pub.secret)}</code> does not allow unattended use, so this post will be HELD at that time. Allow it in Secrets, or approve this one now instead.</div>`
+          ? `<div data-review-unattended>Heads up: the vault entry <code>${esc(pub.secret)}</code> does not allow unattended use, so this post will be HELD at that time. Allow it in the Vault, or approve this one now instead.</div>`
           : 'It posts from the scheduler at that time, and is held with the reason if any check fails then.';
         break;
       }

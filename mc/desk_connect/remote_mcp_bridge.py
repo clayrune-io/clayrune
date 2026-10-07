@@ -198,7 +198,7 @@ def headers_from_env(credentials: list[str], environ=None) -> tuple[dict, list[s
             raise ValueError('a --credential must be {header, env, prefix}')
         value = env.pop(c['env'], None)
         if not value:
-            raise ValueError(f'the credential variable {c["env"]} is not set (is the Secrets entry present and unlocked?)')
+            raise ValueError(f'the credential variable {c["env"]} is not set (is the Vault entry present and unlocked?)')
         secrets.append(value)
         headers[c['header']] = c['prefix'] + value
     return headers, secrets

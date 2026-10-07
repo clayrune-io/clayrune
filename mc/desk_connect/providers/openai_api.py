@@ -14,7 +14,7 @@ from mc.desk_connect.providers.key_paste import KeyPaste
 
 class OpenAiProvider(base.Provider):
     service_id = 'openai'
-    summaries = {'api_key': 'Stores your OpenAI API key in Secrets as "openai-api" and checks it with one free read '
+    summaries = {'api_key': 'Stores your OpenAI API key in the Vault as "openai-api" and checks it with one free read '
                             'call. A ChatGPT or Codex plan does not include API use.'}
 
     def __init__(self) -> None:

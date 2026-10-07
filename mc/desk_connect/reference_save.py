@@ -18,10 +18,10 @@ def save(clean: dict) -> dict:
         raise CommitError(f'the vault could not be read: {e}', 503, 'vault_unavailable') from e
     if cred and cred.get('existing'):
         if cred['name'] not in existing:
-            raise CommitError('that credential is not in Secrets', 409, 'secret_missing')
+            raise CommitError('that credential is not in the Vault', 409, 'secret_missing')
     if cred and not cred.get('existing'):
         if _vault.is_locked():
-            raise CommitError('the vault is locked: unlock it in Secrets, then save again', 409, 'vault_locked')
+            raise CommitError('the Vault is locked: unlock it, then save again', 409, 'vault_locked')
         if cred['name'] in existing:
             raise CommitError(f'a secret named "{cred["name"]}" already exists; pick another name '
                               f'(Clayrune does not replace a stored credential from here)', 409, 'secret_exists')
@@ -56,7 +56,7 @@ def save(clean: dict) -> dict:
         else:
             msg, status, code = 'the service record could not be written', 500, 'record_failed'
         if orphan:
-            msg += f'; the credential "{cred["name"]}" was stored and could not be removed: delete it in Secrets'
+            msg += f'; the credential "{cred["name"]}" was stored and could not be removed: delete it in the Vault'
         raise CommitError(msg, status, code) from e
 
     public_credential = None

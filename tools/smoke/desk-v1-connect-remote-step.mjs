@@ -94,7 +94,7 @@ function makeServer({ commitState = 'registered', checkOutcome = 'baseline_recor
       contact: { before_save: 'none', text: 'Nothing has been sent to this server: no connection, no consent request, no initialize. The protocol above is a proposal from the address alone.' },
       verification: { purpose_verified: false, text: 'Saving does not check that the server works. A check you start after saving can confirm it answers and records the tools it offers; it never counts as verifying a purpose.' },
       risks: [{ code: 'user_supplied', label: 'User supplied; not reviewed by Clayrune' }, { code: 'remote_server_can_change', label: 'Remote server can change without a version pin. Its tools and behavior are whatever it serves when it is contacted.' }]
-        .concat(creds.length ? [{ code: 'secrets_to_remote', label: `The Secrets entries listed are sent as HTTP headers to ${recipient} and to no other address.` }] : [])
+        .concat(creds.length ? [{ code: 'secrets_to_remote', label: `The Vault entries listed are sent as HTTP headers to ${recipient} and to no other address.` }] : [])
         .concat(required.map((f) => ({ code: f, label: f })))
         .concat(b.scope === 'global' ? [{ code: 'global_reach', label: "Global: agents in EVERY project can use this server's tools." }] : [])
         .concat([{ code: 'not_purpose_verified', label: 'Reaching the server shows that it answers. It does not show that it does what you want it for.' }]),
@@ -325,7 +325,7 @@ async function mainScenario(browser, width, height) {
   // 2: sign-in: three choices, OAuth marked Save only
   await waitTitle(page, 'Server sign-in');
   const opts = await page.$$eval('[data-cfw-option]', (e) => e.map((x) => x.dataset.cfwOption));
-  check(opts.join() === 'none,header,oauth' && (await text(page, '[data-cfw-option="oauth"]')).includes('Save only'), 'sign-in offers None, a token from Secrets and OAuth marked "Save only"', 'options: ' + opts);
+  check(opts.join() === 'none,header,oauth' && (await text(page, '[data-cfw-option="oauth"]')).includes('Save only'), 'sign-in offers None, a token from the Vault and OAuth marked "Save only"', 'options: ' + opts);
   check(await page.$eval('[data-cfw-option="none"] input', (i) => i.checked), 'No sign-in is the starting choice', 'default choice wrong');
   await rules(page, 'Sign-in');
   await shot(page, 'auth', width);
@@ -337,9 +337,9 @@ async function mainScenario(browser, width, height) {
   // 3: token: header, prefix and a Secrets NAME
   await waitTitle(page, 'Server credentials');
   check((await page.$eval('[data-rs-cred-header="0"]', (i) => i.value)) === 'Authorization' && (await page.$eval('[data-rs-cred-prefix="0"]', (i) => i.value)) === 'Bearer ', 'the token row starts as Authorization with a Bearer prefix', 'default row wrong');
-  check(await disabled(page, '[data-cfw-primary]'), 'Continue is off until the Secrets entry is named', 'Continue on with no Secrets entry');
+  check(await disabled(page, '[data-cfw-primary]'), 'Continue is off until the Vault entry is named', 'Continue on with no Vault entry');
   await page.fill('[data-rs-cred-vault="0"]', 'tools.token');
-  check(!(await disabled(page, '[data-cfw-primary]')), 'naming the Secrets entry turns Continue on', 'Continue still off');
+  check(!(await disabled(page, '[data-cfw-primary]')), 'naming the Vault entry turns Continue on', 'Continue still off');
   check(/never typed here/.test(await text(page, '[data-rs-creds]')), 'the page says the token itself is never typed here', await text(page, '[data-rs-creds]'));
   await rules(page, 'Credentials');
   await shot(page, 'creds', width);
@@ -361,7 +361,7 @@ async function mainScenario(browser, width, height) {
   check(reviews(srv).length === 1 && sent.url === 'https://tools.example.com/mcp' && sent.scope === 'project' && sent.project_id === projectId && sent.auth === 'header'
     && sent.credentials.length === 1 && sent.credentials[0].header === 'Authorization' && sent.credentials[0].vault === 'tools.token' && sent.credentials[0].prefix === 'Bearer '
     && !('protocol' in sent) && !('acknowledge' in sent) && !('issuer' in sent),
-    'Review sends the address, the project, the header NAME and the Secrets NAME, and no protocol, issuer or acknowledgement', 'review body: ' + JSON.stringify(sent));
+    'Review sends the address, the project, the header NAME and the Vault NAME, and no protocol, issuer or acknowledgement', 'review body: ' + JSON.stringify(sent));
   check(!('passcode' in sent) && !JSON.stringify(sent).includes('"value"'), 'the Review carries no passcode and no credential value', 'review body: ' + JSON.stringify(sent));
   check(checks(srv).length === 0 && commits(srv).length === 0 && writes(srv).length === 0, 'the Review reached no server: no check, no Save, no write', 'requests: ' + JSON.stringify(srv.log.map((r) => r.path)));
   check((await text(page, '[data-cfw-title]')) === 'Review server' && (await text(page, '[data-cfw-stepof]')) === 'Review · 1 of 2', 'the first Review page is "Review server", 1 of 2', await text(page, '[data-cfw-stepof]'));
@@ -369,7 +369,7 @@ async function mainScenario(browser, width, height) {
   const proto = await text(page, '[data-rs-protocol-line]');
   check(/Streamable HTTP/.test(proto) && /chosen from the address: the address does not end in \/sse/.test(proto), 'the proposed protocol and why it was proposed are shown', proto);
   const cred = await text(page, '[data-rs-credentials]');
-  check(cred.includes('tools.token') && cred.includes('Authorization') && cred.includes('https://tools.example.com') && /only/.test(cred), 'the credential shows as a Secrets entry name, its header and its one recipient', cred);
+  check(cred.includes('tools.token') && cred.includes('Authorization') && cred.includes('https://tools.example.com') && /only/.test(cred), 'the credential shows as a Vault entry name, its header and its one recipient', cred);
   const reach = await page.$eval('[data-rs-reach]', (e) => [e.dataset.rsReach, e.textContent]);
   check(reach[0] === 'project' && /only/.test(reach[1]), 'the reach is on the first page: one project', 'reach: ' + reach);
   check((await text(page, '[data-rs-contact]')).includes('Nothing has been sent to this server'), 'the page says nothing has been sent to the server', await text(page, '[data-rs-contact]'));

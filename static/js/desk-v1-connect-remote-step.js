@@ -73,8 +73,8 @@
     if (P.auth === 'oauth') return P.issuer.trim() ? '' : 'Enter the address of the issuer that signs you in.';
     if (P.auth !== 'header') return '';
     const half = _halfCredential();
-    if (half) return `Name both the header and the Secrets entry${half.header ? ` for ${half.header}` : ''}, or remove the row.`;
-    return _creds().some((c) => c.header && c.vault) ? '' : 'Name the header and the Secrets entry that holds the token.';
+    if (half) return `Name both the header and the Vault entry${half.header ? ` for ${half.header}` : ''}, or remove the row.`;
+    return _creds().some((c) => c.header && c.vault) ? '' : 'Name the header and the Vault entry that holds the token.';
   }
   function _views() { return ['address', 'auth'].concat(P.auth === 'none' ? [] : ['creds']); }
   function _viewIndex() { return Math.max(0, _views().indexOf(P.view)); }
@@ -102,7 +102,7 @@
     return `${_prevHTML('address', 'the address')}
       <div class="desk-v1-cfw-options" role="radiogroup" aria-label="How this server signs you in">
         ${opt('none', 'No sign-in')}
-        ${opt('header', 'A token from Secrets')}
+        ${opt('header', 'A token from the Vault')}
         ${opt('oauth', 'OAuth', 'Save only')}
       </div>`;
   }
@@ -112,7 +112,7 @@
         <div class="desk-v1-cfr-cred" data-rs-cred="${i}">
           <input type="text" class="desk-v1-rules-textinput" data-rs-cred-header="${i}" value="${esc(c.header)}" placeholder="Header, e.g. Authorization" maxlength="64" autocapitalize="off" spellcheck="false" aria-label="HTTP header the token goes in">
           <input type="text" class="desk-v1-rules-textinput" data-rs-cred-prefix="${i}" value="${esc(c.prefix)}" placeholder="Before the token, e.g. Bearer " maxlength="40" autocapitalize="off" spellcheck="false" aria-label="Text before the token">
-          <input type="text" class="desk-v1-rules-textinput" data-rs-cred-vault="${i}" value="${esc(c.vault)}" placeholder="Secrets entry name" maxlength="120" autocapitalize="off" spellcheck="false" aria-label="Secrets entry that holds the token">
+          <input type="text" class="desk-v1-rules-textinput" data-rs-cred-vault="${i}" value="${esc(c.vault)}" placeholder="Vault entry name" maxlength="120" autocapitalize="off" spellcheck="false" aria-label="Vault entry that holds the token">
           <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-rs-cred-remove="${i}">Remove</button>
         </div>`).join('');
   }
@@ -127,9 +127,9 @@
           <input type="text" class="desk-v1-rules-textinput" data-rs-scopes value="${esc(P.scopes)}" maxlength="400" autocapitalize="off" spellcheck="false"></label>`;
     }
     return `${back}
-      <div class="desk-v1-conn-add-field" data-rs-creds>Token header, by Secrets name only
+      <div class="desk-v1-conn-add-field" data-rs-creds>Token header, by Vault name only
         ${_credRowsHTML()}
-        <div class="desk-v1-cfw-fact-text">The token is read from Secrets when the server is used and sent only to the address you entered. It is never typed here and never written into the MCP configuration.</div>
+        <div class="desk-v1-cfw-fact-text">The token is read from the Vault when the server is used and sent only to the address you entered. It is never typed here and never written into the MCP configuration.</div>
         <div class="desk-v1-cfr-actions"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-rs-cred-add ${P.creds.length >= MAX_CREDS ? 'disabled' : ''}>Add a token header</button></div>
       </div>`;
   }
@@ -213,7 +213,7 @@
 
   function _authText(a) {
     if (a.type === 'oauth') return `OAuth. Save only: the sign-in is not started by this version.`;
-    if (a.type === 'header') return 'A token in an HTTP header, from Secrets (below).';
+    if (a.type === 'header') return 'A token in an HTTP header, from the Vault (below).';
     return 'None: the server is reached without a sign-in.';
   }
 
@@ -224,7 +224,7 @@
           <ul class="desk-v1-cfr-list">${c.changes.map((x) => `<li data-rs-change="${esc(x.field)}">${esc(x.field)}: <code>${esc(x.from)}</code> to <code>${esc(x.to)}</code></li>`).join('')}</ul></div>` : '';
     const limits = (c.limitations || []).map((l) => `<div class="desk-v1-cfw-msg" data-rs-limit="${esc(l.code)}" role="status">${esc(l.message)}</div>`).join('');
     const creds = (c.credentials || []).length
-      ? c.credentials.map((x) => `<div data-rs-credential>Secrets entry <code>${esc(x.vault)}</code> is sent in the <code>${esc(x.header)}</code> header${x.prefix ? ` after <code>${esc(x.prefix)}</code>` : ''}, to <code>${esc(x.recipient)}</code> only.</div>`).join('')
+      ? c.credentials.map((x) => `<div data-rs-credential>Vault entry <code>${esc(x.vault)}</code> is sent in the <code>${esc(x.header)}</code> header${x.prefix ? ` after <code>${esc(x.prefix)}</code>` : ''}, to <code>${esc(x.recipient)}</code> only.</div>`).join('')
       : 'None';
     const proposed = c.protocol_proposed && !P.protocol ? ` (chosen from the address: ${esc(c.protocol_proposed.basis)}; change it in Setup, under Details, if it is wrong)` : '';
     return `${changes}${limits}
@@ -269,7 +269,7 @@
     const ack = ((c.exposure && c.exposure.acknowledged) || []).length;
     const lines = [`<li data-rs-sum="recipient">Requests go to <code>${esc(c.recipient)}</code> and nothing else.</li>`,
       `<li data-rs-sum="auth">${esc(_authText(c.auth))}</li>`,
-      (c.credentials || []).length ? `<li data-rs-sum="credentials">${c.credentials.length} Secrets entr${c.credentials.length === 1 ? 'y is' : 'ies are'} sent to <code>${esc(c.recipient)}</code> only.</li>` : '',
+      (c.credentials || []).length ? `<li data-rs-sum="credentials">${c.credentials.length} Vault entr${c.credentials.length === 1 ? 'y is' : 'ies are'} sent to <code>${esc(c.recipient)}</code> only.</li>` : '',
       `<li data-rs-sum="reach">${esc(c.reach.who)}</li>`,
       risk ? `<li data-rs-sum="can-change">${esc(risk.label)}</li>` : '',
       ack ? `<li data-rs-sum="exposures">${ack} exposure${ack === 1 ? '' : 's'} you accepted on the previous page.</li>` : ''].filter(Boolean);
@@ -498,7 +498,7 @@
     if (!P.url.trim()) return null;
     const c = P.rv.card;
     return { kind: 'mcp-remote', address: P.url.trim(), saved: !!P.result, state: P.result ? P.result.state : null,
-      lines: [`Remote server ${P.url.trim()}`, P.auth === 'oauth' ? 'OAuth (save only)' : P.auth === 'header' ? 'A token from Secrets' : 'No sign-in'].concat(c ? [c.reach && c.reach.who] : []).filter(Boolean) };
+      lines: [`Remote server ${P.url.trim()}`, P.auth === 'oauth' ? 'OAuth (save only)' : P.auth === 'header' ? 'A token from the Vault' : 'No sign-in'].concat(c ? [c.reach && c.reach.who] : []).filter(Boolean) };
   }
   window.DeskV1ConnectRemoteStep = { summary, VARIANT };
 })();

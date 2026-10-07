@@ -88,8 +88,8 @@ def clean_fields(raw, vault_names, *, default_name: str) -> dict:
         if not isinstance(a, str) or not a or len(a) > MAX_ARG or _ps.has_hidden_chars(a):
             raise _refuse('each argument must be plain text (1 to 300 characters, no hidden characters)', 'bad_args')
         if _ps.credential_like(a):
-            raise _refuse('an argument looks like a secret value. Secrets are never typed into a command: store it in '
-                          'Secrets and attach it as a credential instead.', 'secret_in_args')
+            raise _refuse('an argument looks like a secret value. Secret values are never typed into a command: store it in '
+                          'the Vault and attach it as a credential instead.', 'secret_in_args')
         clean_args.append(a)
     creds = raw.get('credentials', [])
     if not isinstance(creds, list) or len(creds) > MAX_CREDENTIALS:
@@ -99,16 +99,16 @@ def clean_fields(raw, vault_names, *, default_name: str) -> dict:
     for c in creds:
         if not isinstance(c, dict) or set(c) != {'env', 'vault'} or not isinstance(c['env'], str) \
                 or not isinstance(c['vault'], str):
-            raise _refuse('each credential is {env, vault}: the variable the server reads and the Secrets entry that '
+            raise _refuse('each credential is {env, vault}: the variable the server reads and the Vault entry that '
                           'holds it', 'bad_credentials')
         env, vault = c['env'], c['vault']
         if not _ENV_RE.match(env) or env in _RESERVED_ENV or env.startswith(('DYLD_', 'LD_')) or env in seen:
             raise _refuse(f'"{env[:64]}" cannot be used as a credential variable here (it must be CAPITALS_AND_DIGITS, '
                           f'once, and not a name that changes how programs are found or loaded)', 'bad_credential_env')
         if not _VAULT_RE.match(vault):
-            raise _refuse('that is not a Secrets entry name', 'bad_credential_vault')
+            raise _refuse('that is not a Vault entry name', 'bad_credential_vault')
         if vault not in vault_names:
-            raise _refuse(f'there is no Secrets entry named "{vault}". Store it in Secrets first.', 'unknown_vault_entry')
+            raise _refuse(f'there is no Vault entry named "{vault}". Store it in the Vault first.', 'unknown_vault_entry')
         seen.add(env)
         clean_creds.append({'env': env, 'vault': vault})
     approve = raw.get('approve_scripts', [])

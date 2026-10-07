@@ -112,7 +112,7 @@ def _risks(op: dict) -> list[dict]:
            {'code': 'runs_local_code', 'label': 'Runs code on this computer. It has your account\'s file and network '
                                                 'access: Clayrune does not sandbox it.'}]
     if op['credentials']:
-        out.append({'code': 'secrets_to_process', 'label': 'The Secrets entries listed are given to that program as '
+        out.append({'code': 'secrets_to_process', 'label': 'The Vault entries listed are given to that program as '
                                                           'environment variables when it starts.'})
     if op['scope']['kind'] == 'global':
         out.append({'code': 'global_reach', 'label': 'Global: agents in EVERY project can use this server\'s tools.'})

@@ -74,7 +74,7 @@ def public(login: dict) -> dict:
 def check_free(login: dict) -> None:
     """Refuse a name that is taken, and a locked vault, before anything is written."""
     if _vault.is_locked():
-        raise LoginError('the vault is locked: unlock it in Secrets, then save again', 409, 'vault_locked')
+        raise LoginError('the Vault is locked: unlock it, then save again', 409, 'vault_locked')
     try:
         taken = {s['name'] for s in _vault.list_secrets()}
     except _vault.SecretsError as e:

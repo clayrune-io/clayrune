@@ -17,6 +17,10 @@
 - Kling 3.0 and Seedance 2.5 storyboard pictures now use captured catalogue roles and the upload/confirm contract. The MCP adapter, model-role mapping, response validation and presigned PUT are separate modules; model IDs do not select picture roles in code.
 - Price checks never upload. Identifier-required picture quotes show "Text-only price; picture priced at render" in Studio and explain the difference in the passcode prompt. Approved Render uploads/confirms all pictures, quotes the real media inputs and rechecks the full credit cap before any generation.
 - Presigned PUT uses HTTPS, public DNS addresses pinned through TLS, a 20 MB cap and the file's MIME type, with no redirects or account token. Unexpected responses stop before generation; ambiguous generation responses retain the reservation and retry key. Implementation and verification: `docs/desk_v1/HIGGSFIELD_PICTURE_RENDER.md`. Branch only; integration/restart and a human paid render remain unverified.
+## [2026-10-07] - The Secrets menu is now called Vault
+
+- Sidebar, mobile drawer, panel title, walkthrough and every Desk connect message that points at the menu by name now say "Vault" (the product already said "vault" in the lock, backup and Desk copy). Names only: routes, API fields, CSS classes, file names and the generic noun "secret(s)" are unchanged.
+- Server messages that reach the UI (`mc/desk_connect/*`, `desk_engines`) match, e.g. "that credential is not in the Vault". Smokes and tests that asserted the old strings follow.
 
 ## [2026-10-06] - GitHub connection setup accepts dependency and build output (MC-1062/14)
 
