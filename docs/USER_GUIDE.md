@@ -426,6 +426,29 @@ project's workspace folder.
 
 ---
 
+## Studio: capture a product page
+
+Open **The Desk → Studio → New image → Capture from the product**. Pick a
+product (a Clayrune project), choose its page, and press **Capture this screen**.
+The server takes a real 1440 × 900 screenshot and saves the picture in
+**Material library → Studio**. It also appears in Recent and can be used in a
+campaign or selected as picture material wherever the library picker is offered.
+
+For Clayrune, choose **Projects**, **Floor**, **Desk**, **Studio**, or
+**Connections**; its address is supplied automatically. For another product,
+enter its **App address** once, for example `http://localhost:3000`, and press
+**Save app address**. Then enter a **Page** path, such as `/` or `/pricing`.
+The saved address belongs to that product and can be changed here later.
+
+The product must be running on an address this server can reach. Capture opens
+a fresh, signed-out browser: a page that requires sign-in may show its sign-in
+screen. Only HTTP and HTTPS addresses are accepted. Other local or private
+addresses must be entered by you; a page cannot redirect or fetch pictures
+from another private address. Errors keep the form open so you can correct
+the address and retry. **Record this screen** has not gained video recording.
+
+---
+
 ## Skills
 
 Skills are Anthropic-format reusable instructions (a `SKILL.md` plus

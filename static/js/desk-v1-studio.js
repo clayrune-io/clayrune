@@ -10,9 +10,9 @@
 //                 and the article writer (which renders inside the campaign
 //                 frame, in place of the What list).
 //
-// Fixtures only: no capture backend, no connector and no renderer exists
-// behind any of this. Capture / Record attach the fixture screen's own
-// thumbnail; Online sources list fixture accounts and their Connect is
+// Live capture is owned by desk-v1-studio-capture.js; the fixture Screen
+// body below is used by demo capture and the unchanged Record source.
+// Online sources list fixture accounts and their Connect is
 // disabled (§11.6 Q1: they render and behave, nothing authenticates or reads);
 // Render sets `family.render` to a fixture `rendering 40%` and nothing ticks.
 // Every mutation is a `DeskV1Kit.commandBus` command with an inverse (§10).
@@ -1010,6 +1010,7 @@
 
   // ── Source bodies What opens (frames 15b, 16, 16c) ───────────────────────
   function captureAvailable(projectId) {
+    if (_isLive()) return !!projectId;
     return !!((_studio().captureScreens || {})[projectId] || []).length;
   }
   function _screens(camp) { return (_studio().captureScreens || {})[camp && camp.projectId] || []; }
@@ -1029,7 +1030,7 @@
       <div class="desk-v1-cap-preview" data-cap-preview><img src="${esc(cur.thumb)}" alt="Preview of ${esc(cur.label)}"></div>
       <div class="desk-v1-cap-actions">
         <button type="button" class="btn-add" data-cap-take>${esc(verb)}</button>
-        <span class="desk-v1-cap-note">Preview only: no capture backend yet, so this attaches the fixture screen.</span>
+        <span class="desk-v1-cap-note">Demo screen.</span>
       </div>
     </div>`;
   }
@@ -1083,7 +1084,7 @@
   // What's source body for a source this module owns, or null for the rest.
   function sourceBodyHTML(source, ctx) {
     const { card, fam, camp } = ctx;
-    if (source === 'capture') return _screenBodyHTML(card, camp, 'Capture this screen');
+    if (source === 'capture') return _isLive() ? window.DeskV1StudioCapture.bodyHTML(ctx) : _screenBodyHTML(card, camp, 'Capture this screen');
     if (source === 'record') return _screenBodyHTML(card, camp, 'Record this screen');
     if (source === 'online') return _onlineBodyHTML(card, fam.kind);
     if (source === 'generate') return _generateBodyHTML();
@@ -1109,6 +1110,7 @@
 
   // api: { attach(asset), repaint(), openStoryboard() }
   function wireSourceBody(cardEl, ctx, api) {
+    if (cardEl.querySelector('[data-product-capture]')) { window.DeskV1StudioCapture.wire(cardEl, ctx, api); return; }
     const { card, fam, camp } = ctx;
     const ui = _ui(card);
     const kind = fam.kind === 'video' ? 'video' : 'image';
@@ -1552,6 +1554,7 @@
       },
       repaint: () => _paintCreate(),
       request: async () => {
+        if (asset.path) return asset; // Capture already saved the real file in Studio.
         const blob = await _srcBlob(asset.src);
         const name = (String(item.title).replace(/[^A-Za-z0-9 _-]+/g, '').trim().slice(0, 60) || 'studio') + _IMG_EXT[blob.type];
         const fd = new FormData();
