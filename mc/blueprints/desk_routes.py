@@ -49,6 +49,7 @@ from mc import desk_publish as _publish
 from mc import desk_retro as _retro
 from mc import desk_story as _story
 from mc import desk_story_chat as _story_chat
+from mc import desk_campaign_chat as _campaign_chat
 from mc import desk_storyboard as _storyboard
 from mc import desk_tick as _tick
 from mc import desk_voice_seed as _seed
@@ -916,6 +917,7 @@ def upload_studio_storyboard_picture(item_id):
 # Make a storyboard (or one scene) from the story: its own module, its own route.
 _story.register(bp, lambda pid: load_project(pid) if load_project else None)
 _story_chat.register(bp, lambda pid: load_project(pid) if load_project else None)
+_campaign_chat.register(bp, lambda pid: load_project(pid) if load_project else None)
 
 
 # ── Workspace accounts (R1-W S5; plan M2-M5, §2.C) ────────────────────────────

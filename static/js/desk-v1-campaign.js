@@ -1319,6 +1319,13 @@
         setTimeout(focusCard, 60);
       }
     };
+    // Live: the box is a conversation with the campaign's agent (desk-v1-campaign-chat.js
+    // takes the box over; the Suggest button's fixed line goes to it as a message).
+    if (window.DeskV1CampaignChat && window.DeskV1CampaignChat.mount(el.querySelector('.desk-v1-posy-box'), {
+      campaign: camp, agentRef, agentName: DeskV1Kit.deskAgentName({ project, campaign: camp }),
+      selection: st.selection, onScopeClick: () => _setSelection('campaign', null, null),
+      onSuggested: () => { if (_st && _st.campaignId === camp.id && _st.el && document.body.contains(_st.el) && _st.el.dataset.panel === 'what') _renderTabBody(); },
+    })) return;
     // §3.4 INS-01/02/03/04 (before → after, widening confirm, durable rule
     // chips) is T2b's Posy-instruction handler — backward-compatible seam,
     // same shape as the two hooks above: falls back to the plain toast T2a
