@@ -49,7 +49,7 @@
 
   function _fresh() {
     return { mode: null, pick: '', profile: NEW_PROFILE, newProfile: null, vaultName: null, label: '',
-      loaded: null, loading: false, options: null, optionsFailed: false, profiles: [], profilesFailed: false,
+      loaded: null, loading: false, options: null, optionsFailed: false, vaultNames: [], profiles: [], profilesFailed: false,
       node: null, info: null, sel: null, requestId: null, committing: false, refocus: null };
   }
   let L = _fresh();
@@ -71,15 +71,34 @@
   function _service(info) { return info && info.service ? info.service.id : ''; }
 
   function _slug(text) { return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); }
+  function _username() {
+    if (L.mode === 'new' && L.node) return L.node.querySelector('[data-lg-user]').value.trim();
+    return (L.options?.logins || []).find((x) => x.name === L.pick)?.username || '';
+  }
+  function _identity() {
+    if (!_target) return '';
+    const identity = _target.account.new?.identity || _target.identity;
+    return _target.account.new && identity === 'Account' && _target.kind !== 'organization' ? _username() || identity : identity;
+  }
+  function _unusedName(base, occupied, max) {
+    const used = new Set(occupied.map((s) => s.toLowerCase()));
+    let name = base;
+    for (let n = 2; used.has(name); n++) {
+      const suffix = `-${n}`;
+      name = base.slice(0, max - suffix.length).replace(/[-._]+$/, '') + suffix;
+    }
+    return name;
+  }
   function _suggestProfile(info) {
-    const s = _service(info), id = _target && _target.identity ? _slug(_target.identity) : '';
+    const s = _service(info), id = _slug(_identity());
     const name = `${s}-${id || 'account'}`.slice(0, 41).replace(/[-_]+$/, '');
-    return PROFILE_RE.test(name) ? name : `${s}-account`;
+    return _unusedName(PROFILE_RE.test(name) ? name : `${s}-account`, L.profiles, 41);
   }
   function _suggestVault(info) {
-    const s = _service(info), id = _target && _target.kind !== 'organization' && _target.identity ? _slug(_target.identity) : '';
+    const s = _service(info), identity = _identity();
+    const id = _target && _target.kind !== 'organization' && identity !== 'Account' ? _slug(identity) : '';
     const name = `${s}.${id || 'login'}`.slice(0, 64).replace(/[-._]+$/, '');
-    return NAME_RE.test(name) ? name : `${s}.login`;
+    return _unusedName(NAME_RE.test(name) ? name : `${s}.login`, L.vaultNames, 64);
   }
 
   // The profile name the person has chosen (an existing one, or the new name), or '' when none is usable.
@@ -127,6 +146,7 @@
       if (n !== _seq) return;                            // discarded or reloaded meanwhile
       L.loading = false; L.loaded = svc;
       L.options = o;
+      L.vaultNames = (metadata?.secrets || []).map((x) => x.name);
       if(metadata && L.options) L.options.logins=window.DeskV1ConnectVaultPicker.metadata(metadata,window.DeskV1ConnectCopy.isEnabled()?svc:'');
       else L.optionsFailed=true;
       L.profiles = ((p && p.profiles) || []).map((x) => x.name).filter((x) => typeof x === 'string');
@@ -272,7 +292,12 @@
         L.node = api.host(slot, 'typed', (node) => {
           node.innerHTML = window.DeskV1ConnectVaultPicker.fields('data-lg-user','data-lg-pass');
         });
-        L.node.querySelectorAll('input').forEach((i) => { if (!i._lgBound) { i._lgBound = true; i.addEventListener('input', () => { const p = document.querySelector('[data-cfw-primary]'); if (p) p.disabled = !!_problem(L.info); }); } });
+        L.node.querySelectorAll('input').forEach((i) => { if (!i._lgBound) { i._lgBound = true; i.addEventListener('input', () => {
+          const p = document.querySelector('[data-cfw-primary]'); if (p) p.disabled = !!_problem(L.info);
+          const profile = document.querySelector('[data-lg-newprofile]'), vault = document.querySelector('[data-lg-vaultname]');
+          if (profile && L.newProfile == null) profile.value = _suggestProfile(L.info);
+          if (vault && L.vaultName == null) vault.value = _suggestVault(L.info);
+        }); } });
       }
 
       // "Sign in" on the saved-login branch: the existing passcode-gated fill, one click, one request, no retry of its own.
@@ -309,7 +334,7 @@
     const why = _problem(info);
     if (why) return { error: why };
     const account = JSON.parse(JSON.stringify(_target.account));
-    if(account.new && account.new.identity==='Account' && _target.kind!=='organization') account.new.identity=L.mode==='new'?L.node.querySelector('[data-lg-user]').value.trim():(L.options.logins||[]).find(x=>x.name===L.pick)?.username || account.new.identity;
+    if (account.new) account.new.identity = _identity();
     if (account.new && L.label.trim()) account.new.label = L.label.trim();
     const draft = { service: _service(info), revision: info.service.revision, route_id: route.route_id, account, account_kind: _target.kind, browser_profile: _profileName(info) };
     if (L.mode === 'saved') draft.login = L.pick;
@@ -347,7 +372,7 @@
   function summary() {
     if (!L.mode || !L.info) return null;
     return { mode: L.mode, login: L.mode === 'saved' ? L.pick : (L.mode === 'new' ? _vaultName(L.info) : ''),
-      newLogin: L.mode === 'new', username: L.mode === 'new' && L.node ? L.node.querySelector('[data-lg-user]').value.trim() : '',
+      accountIdentity: _identity(), newLogin: L.mode === 'new', username: _username(),
       hasPassword: L.mode === 'new' && !!(L.node && L.node.querySelector('[data-lg-pass]').value),
       profile: _profileName(L.info), newProfile: L.profiles.indexOf(_profileName(L.info)) < 0 };
   }

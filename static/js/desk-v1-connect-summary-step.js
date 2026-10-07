@@ -79,7 +79,8 @@
     if (!_target) return '';
     const kind = _target.kind === 'account' ? '' : `${KIND_WORD[_target.kind] || 'Account'}: `;     // the row is already called Account
     const a = _target.account;
-    return a.id ? `${kind}saved account ${esc(_target.identity || a.id)}` : `${kind}${esc(a.new.identity)} (new)`;
+    const signin = R.sel?.type === 'signin' ? window.DeskV1ConnectLoginStep?.summary() : null;
+    return a.id ? `${kind}saved account ${esc(_target.identity || a.id)}` : `${kind}${esc(signin?.accountIdentity || a.new.identity)} (new)`;
   }
 
   function _rows(rows) {

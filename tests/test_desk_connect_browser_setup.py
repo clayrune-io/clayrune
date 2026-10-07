@@ -7,7 +7,7 @@ Pinned:
     optionally, a login NAME; nothing else is granted (no binding, no read setting, no legacy profile,
     no presence, no pane, no vault value read) and no OAuth token is minted;
   * two X identities stay separate (own account, own profile, own login); a LinkedIn member and a
-    Company Page are separate accounts and never stand in for each other, and two members never share;
+    Company Page are separate accounts; LinkedIn permits profile/login sharing regardless of kind;
   * a replayed save answers once, another draft under the same id is 409, an identical re-save of an
     account is `unchanged`, a different one is `already_set_up`, an account bound through purposes is
     `already_bound`, a taken handle is `account_exists`;
@@ -395,14 +395,80 @@ def test_a_linkedin_member_and_a_page_are_separate_accounts(env):
     assert _rec(p['account_id'])['browser_setup']['account_kind'] == 'organization'
 
 
-def test_two_linkedin_members_never_share_a_profile_or_login(env):
+def test_two_linkedin_members_may_share_a_profile_or_login(env):
     client, _, _, _ = env
     _login('linkedin.ron')
-    assert _save(client, _draft('linkedin', _new('Ron Levy'), login='linkedin.ron'), rid='req-a-000001').status_code == 201
+    first = _save(client, _draft('linkedin', _new('Ron Levy'), login='linkedin.ron'), rid='req-a-000001').get_json()
     r = _save(client, _draft('linkedin', _new('Someone Else'), login='linkedin.ron'), rid='req-b-000001')
-    assert r.status_code == 409 and r.get_json()['code'] == 'login_in_use'
-    r = _save(client, _draft('linkedin', _new('Someone Else'), browser_profile='linkedin-ron-levy'), rid='req-c-000001')
-    assert r.status_code == 409 and r.get_json()['code'] == 'profile_in_use'
+    assert r.status_code == 201 and r.get_json()['shared_with'] == [first['account_id']]
+    r = _save(client, _draft('linkedin', _new('Third Member'), browser_profile='linkedin-ron-levy'), rid='req-c-000001')
+    assert r.status_code == 201 and r.get_json()['shared_with'] == [first['account_id']]
+
+
+@pytest.mark.parametrize('kind', ['member', 'organization', None])
+@pytest.mark.parametrize('other_kind', ['member', 'organization', None])
+@pytest.mark.parametrize('refs', [
+    {'browser_profile': 'own', 'login': 'linkedin.shared'},
+    {'browser_profile': 'shared'},
+    {'browser_profile': 'shared', 'login': 'linkedin.shared'},
+])
+def test_linkedin_sharing_never_depends_on_kind(kind, other_kind, refs):
+    from mc.desk_connect import browser_setup
+    account = {'platform': 'linkedin', 'identity': 'Existing', 'browser_setup': {
+        'route_id': 'linkedin-browser', 'account_kind': other_kind,
+        'refs': {'browser_profile': 'shared', 'login': 'linkedin.shared'}}}
+    before = copy.deepcopy(account)
+    assert browser_setup._check_conflicts({'acct-existing': account}, None, 'linkedin', kind, refs) == ['acct-existing']
+    assert account == before
+
+
+def test_linkedin_legacy_kind_shares_login_without_backfilling(env):
+    from mc import desk
+    client, _, _, _ = env
+    page = _mk('linkedin', 'Clayrune')
+    _login('linkedin')
+    with desk._store_lock:
+        store = desk._read_store()
+        store['accounts'][page['id']]['connections'] = {'read_own': {'mentions': {
+            'route_id': 'linkedin-browser', 'refs': {'browser_profile': 'linked-company', 'login': 'linkedin'}}}}
+        desk._write_store(store)
+    before = _rec(page['id'])
+    r = _save(client, _draft('linkedin', _new(USER), login='linkedin', browser_profile='linkedin-personal'))
+    assert r.status_code == 201, r.get_json()
+    assert r.get_json()['shared_with'] == [page['id']]
+    assert _rec(page['id']) == before                  # no kind inferred, no legacy data changed
+
+
+def test_unknown_linkedin_kind_allows_profile_sharing(env):
+    from mc import desk
+    client, _, _, _ = env
+    page = _mk('linkedin', 'Clayrune')
+    legacy_profile = 'linked-company'
+    with desk._store_lock:
+        store = desk._read_store()
+        store['accounts'][page['id']]['browser_profile'] = legacy_profile
+        desk._write_store(store)
+    before = _rec(page['id'])
+    r = _save(client, _draft('linkedin', _new(USER), browser_profile=legacy_profile))
+    assert r.status_code == 201 and r.get_json()['shared_with'] == [page['id']]
+    assert _rec(page['id']) == before
+
+
+@pytest.mark.parametrize('reference,code,what', [('login', 'login_in_use', 'login'),
+                                              ('browser_profile', 'profile_in_use', 'browser profile')])
+def test_conflict_names_service_identity_and_setup(env, reference, code, what):
+    service, identity = 'x', 'ron'
+    client, _, _, _ = env
+    _login(service + '.shared')
+    a = _save(client, _draft(service, _new(identity), login=service + '.shared')).get_json()
+    value = service + '.shared' if reference == 'login' else a['browser_profile']
+    r = _save(client, _draft(service, _new('SomeoneElse'), **{reference: value}), rid='req-conflict-0001')
+    assert r.status_code == 409 and r.get_json()['code'] == code
+    message = r.get_json()['error']
+    assert f'already belongs to {identity}.' in message
+    assert f'Each X account needs its own {what}.' in message
+    assert 'Back to Setup' in message
+    assert _rec(a['account_id'])['label'] not in message
 
 
 def test_a_member_cannot_be_saved_on_an_account_with_a_page_id(env):

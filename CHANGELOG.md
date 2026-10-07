@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - LinkedIn account setup permits shared sign-ins (MC-1062/14)
+
+- LinkedIn accounts may share a saved login or browser profile regardless of personal/Page/legacy kind. No account kind is inferred or backfilled. X still refuses sharing between distinct accounts.
+- Review shows the selected or typed username before Save. New browser-profile and login names derive from the identity and skip occupied names; explicit choices stay as entered.
+- Sharing refusals name the service and account identity and direct users Back to Setup. Validation and integration status: `docs/desk_v1/connect_flow_tickets/14-linkedin-sharing.md`.
+
 ## [2026-10-06] - GitHub connection setup accepts dependency and build output (MC-1062/14)
 
 - Reviewed source stays pinned during setup and before every launch. Generated files have a separate bounded record at Save, so large `node_modules` and build trees do not hit the source inventory limits or get hashed on every start. Review states that generated output is not rechecked at launch; existing approvals keep their original checks.
