@@ -30,8 +30,9 @@ rules hold:
     the material library, `data/uploads/desk/library/<kind>/Generated/` (scan
     rule 2; Veo deletes after 48 h) and, when the job names a piece
     (`desk.piece_id`), attached to it. `GET job` is what advances a job; nothing here runs on a timer.
-  * **Vendor HTTP is one function**, `_http_request`. Tests replace it; no test
-    in the repo reaches a vendor.
+  * **Vendor RPC HTTP uses `_http_request`.** Presigned MCP picture uploads
+    use the separate pinned-public-HTTPS PUT in `desk_higgsfield_media_upload`.
+    Tests replace both boundaries; no test reaches a vendor.
 
 Two Higgsfield routes (Ron 2026-10-02): `higgsfield_mcp` (default, "Sign in with
 Higgsfield": MCP at mcp.higgsfield.ai, the user's plan CREDITS, token kept fresh by
@@ -676,14 +677,15 @@ def validate_request(model: ModelDescriptor, req: GenerationRequest) -> list[str
     if req.audio and not model.audio:
         p.append(f'{model.model_id} cannot generate audio')
     inp = model.inputs
-    if (req.first_frame or req.last_frame or req.reference_images) and inp.get('schema_state'):
+    unknown_pictures = inp.get('schema_state') in ('missing', 'unknown', 'stale')
+    if (req.first_frame or req.last_frame or req.reference_images) and inp.get('schema_state') and not inp.get('picture_ready'):
         # Evidence describes the vendor contract; the media adapter is a separate step.
         p.append(inp['picture_refusal'])
-    if req.first_frame and not inp.get('first_frame'):
+    if req.first_frame and not inp.get('first_frame') and not unknown_pictures:
         p.append(f'{model.model_id} takes no first frame')
-    if req.last_frame:
+    if req.last_frame and not inp.get('last_frame') and not unknown_pictures:
         p.append(f'{model.model_id} takes no last frame')
-    if len(req.reference_images) > inp.get('reference_images_max', 0):
+    if len(req.reference_images) > inp.get('reference_images_max', 0) and not unknown_pictures:
         p.append(f'{model.model_id} takes at most {inp.get("reference_images_max", 0)} reference images')
     if model.vendor.get('adapter') == 'higgsfield' and model.kind == 'video' \
             and 'image-to-video' in model.model_id and not req.first_frame:
@@ -705,12 +707,15 @@ class Estimate:
     note: str | None = None
     credits: float | None = None        # a credits engine: the quote; `usd` is then 0.0
     adjustments: dict | None = None     # what the engine changed in the request (shown, never hidden)
+    picture_pending: bool = False       # no-upload quote: actual media is priced during approved render
 
     def public(self) -> dict:
         d = asdict(self)
         for k in ('credits', 'adjustments'):     # keep the USD engines' shape exactly as it was
             if d.get(k) is None:
                 d.pop(k, None)
+        if not d['picture_pending']:
+            d.pop('picture_pending')
         return d
 
 
@@ -939,89 +944,7 @@ def _mcp_data(res: dict) -> dict:
     return j if isinstance(j, dict) else {}
 
 
-class HiggsfieldMcpAdapter:
-    """Higgsfield over MCP, on the user's own plan credits. Same four methods as
-    every adapter. Proven against the live server 2026-10-02 (spike section 8):
-    `get_cost: true` quotes credits and submits nothing, `use_unlim` is pinned
-    false so only credits are ever spent, a job is polled with
-    `job_status {jobId, sync: true}`, and the result URL is signed for ~4 hours."""
-
-    _TOOLS = {'image': 'generate_image', 'video': 'generate_video'}
-
-    def _call(self, creds: _Creds, tool: str, arguments: dict) -> dict:
-        _mcp_post(creds.secret, {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
-            'protocolVersion': _MCP_PROTOCOL, 'capabilities': {},
-            'clientInfo': {'name': 'Clayrune', 'version': '1'}}}, expect_id=1)
-        _mcp_post(creds.secret, {'jsonrpc': '2.0', 'method': 'notifications/initialized'}, expect_id=None)
-        res = _mcp_post(creds.secret, {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
-                                       'params': {'name': tool, 'arguments': arguments}}, expect_id=2)
-        res = res or {}
-        if res.get('isError'):
-            raise _classify_http(400, _mcp_text(res).encode('utf-8'))
-        return res
-
-    @staticmethod
-    def _params(model: ModelDescriptor, req: GenerationRequest, **extra) -> dict:
-        if req.first_frame or req.last_frame or req.reference_images:
-            from mc.desk_mcp_picture_schema import PENDING
-            raise EngineError('invalid_input', model.inputs.get('picture_refusal', PENDING))
-        p: dict = {'model': model.model_id, 'prompt': req.prompt, 'count': req.count,
-                   'aspect_ratio': req.aspect_ratio, 'use_unlim': False}     # credits only, never the free allowance
-        if req.kind == 'video' and req.duration_sec:
-            p['duration'] = req.duration_sec
-        p.update(extra)
-        return {'params': p}
-
-    def estimate(self, model, req, creds) -> Estimate:
-        out = _mcp_data(self._call(creds, self._TOOLS[model.kind], self._params(model, req, get_cost=True)))
-        cost = out.get('cost')
-        val = (cost.get('credits_exact', cost.get('credits')) if isinstance(cost, dict) else None)
-        if isinstance(val, bool) or not isinstance(val, (int, float)) or val != val or val < 0:
-            raise EngineError('engine', 'Higgsfield returned no usable credit quote, so nothing was sent')
-        adj = out.get('adjustments') if isinstance(out.get('adjustments'), dict) and out.get('adjustments') else None
-        return Estimate(usd=0.0, credits=float(val), basis='engine', read=now_iso(), adjustments=adj)
-
-    def submit(self, model, req, creds) -> dict:
-        out = _mcp_data(self._call(creds, self._TOOLS[model.kind], self._params(model, req)))
-        ids = [r.get('id') for r in (out.get('results') or []) if isinstance(r, dict)]
-        if not ids or not all(isinstance(i, str) and _REF_OK.match(i) for i in ids):
-            raise EngineError('engine', 'Higgsfield accepted the job but returned no job id', definitive=False)
-        adj = out.get('adjustments') if isinstance(out.get('adjustments'), dict) and out.get('adjustments') else None
-        return {'ref': {'job_ids': ids}, 'adjustments': adj}
-
-    def poll(self, model, ref, creds) -> dict:
-        ids = ref.get('job_ids') or []
-        if not ids or not all(isinstance(i, str) and _REF_OK.match(i) for i in ids):
-            raise EngineError('engine', 'stored job id is malformed')
-        urls, state = [], 'ready'
-        for jid in ids:
-            gen = _mcp_data(self._call(creds, 'job_status', {'jobId': jid, 'sync': True})).get('generation')
-            gen = gen if isinstance(gen, dict) else {}
-            st = str(gen.get('status') or '').lower()
-            if st in ('failed', 'error'):
-                return {'state': 'failed', 'kind': 'engine', 'free': False,
-                        'message': _safe(gen.get('error') or 'Higgsfield reported a failure')}
-            if st == 'nsfw':
-                return {'state': 'failed', 'kind': 'moderation', 'free': True,
-                        'message': 'the engine moderation filter rejected the content'}
-            if st in ('canceled', 'cancelled'):
-                return {'state': 'failed', 'kind': 'canceled', 'message': 'the job was canceled', 'free': True}
-            if st in ('completed', 'complete', 'succeeded'):
-                url = (gen.get('results') or {}).get('rawUrl') if isinstance(gen.get('results'), dict) else None
-                if not isinstance(url, str) or not url:
-                    return {'state': 'failed', 'kind': 'engine', 'free': False,
-                            'message': 'completed with no output URL'}
-                urls.append(url)
-            elif st in ('queued', 'pending'):
-                state = 'queued' if state == 'ready' else state
-            else:
-                state = 'rendering'
-        if state == 'ready':
-            return {'state': 'ready', 'urls': urls}
-        return {'state': state}
-
-    def fetch(self, model, item, creds) -> list:
-        return [_download(u) for u in item['urls']]     # signed CDN links: no Higgsfield token is sent
+from mc.desk_higgsfield_mcp import HiggsfieldMcpAdapter
 
 
 class VeoAdapter:
@@ -1583,7 +1506,7 @@ def _render_scope(d: dict) -> tuple[str | None, dict | None, str | None]:
     return campaign_id, camp, camp.get('project_id')
 
 
-def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False) -> tuple[dict, bool]:
+def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False, _prepared=None) -> tuple[dict, bool]:
     """Submit one render job -> (job, replay). SPENDS MONEY: the route gates
     on a human + the passcode before calling this. Raises `Refused`,
     `NotConnected` (nothing sent) or returns the job (queued/rendering/ready).
@@ -1606,9 +1529,21 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False) -> t
     creds = schema_creds or _creds(req.engine_id, project_id, unattended)
     adapter = _adapter(model)
     try:
-        est = adapter.estimate(model, req, creds)
+        est = _prepared.estimate if _prepared else adapter.estimate(model, req, creds)
     except EngineError as e:
         raise Refused('estimate_failed', f'could not get a price, so nothing was sent: {e}', 502, failure=e.kind)
+
+    if _prepared is None:
+        from mc.desk_generation_preflight import prepare
+        with _lock:
+            check_caps(_amount(est, req.engine_id), req.engine_id, campaign_id, _read_store(),
+                       estimate=est.public(), enforce_limit=not _skip_limit)
+        try:
+            _prepared = prepare(adapter, model, req, creds)
+        except EngineError as e:
+            raise Refused('engine_refused', str(e), 502, failure=e.kind) from e
+        if _prepared:
+            est = _prepared.estimate
 
     with _lock:
         store = _read_store()
@@ -1639,7 +1574,7 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False) -> t
             return dict(j)
 
     try:
-        res = adapter.submit(model, req, creds)
+        res = adapter.submit(model, req, creds, prepared=_prepared) if _prepared else adapter.submit(model, req, creds)
     except EngineError as e:
         if e.definitive:
             release()
@@ -1964,13 +1899,17 @@ def _plan_render(d: dict, *, unattended: bool) -> dict:
         first_frame, refs = None, []
         if pic:
             ref = {'path': str(root / pic['path'])} if root is not None else None
-            if model.inputs.get('first_frame'):
+            if model.inputs.get('picture_mode') == 'omni_reference' and model.inputs.get('reference_images_max', 0) >= 1:
+                refs = [ref]
+            elif model.inputs.get('first_frame'):
                 first_frame = ref
             elif model.inputs.get('reference_images_max', 0) >= 1:
                 refs = [ref]
             else:
                 reason = model.inputs.get('picture_refusal') or 'choose an image-to-video model, or remove the picture'
-                problems.append(f'{where} has a picture, but {model_id} takes no picture: {reason}')
+                unknown = model.inputs.get('schema_state') in ('missing', 'unknown', 'stale')
+                problems.append(f'{where} cannot use this picture: {reason}' if unknown else
+                                f'{where} has a picture, but {model_id} takes no picture: {reason}')
                 continue
         secs = _snap_duration(model, sc.get('duration_sec'))
         req = GenerationRequest(
@@ -2002,7 +1941,12 @@ def _plan_render(d: dict, *, unattended: bool) -> dict:
 
 
 def _plan_estimate(plan: dict) -> dict:
+    from mc.desk_generation_preflight import notes
     est = {'usd': plan['total_usd'], 'approximate': plan['approximate']}
+    if notes(plan):
+        est['note'] = notes(plan)
+    if any(r['est'].picture_pending for r in plan['rows']):
+        est['picture_pending'] = True
     if plan['currency'] == 'credits':
         est['credits'] = plan['total_amount']
     return est
@@ -2089,7 +2033,14 @@ def render(d: dict, *, unattended: bool = False) -> tuple[dict, bool]:
     if existing:
         return _render_view(existing), True  # type: ignore[return-value]
 
+    from mc.desk_generation_preflight import prepare_plan
     campaign_id = plan['campaign_id']
+    with _lock:
+        check_caps(plan['total_amount'], plan['engine_id'], campaign_id, _read_store(), estimate=_plan_estimate(plan))
+    try:
+        prepare_plan(plan, unattended=unattended)
+    except EngineError as e:
+        raise Refused('engine_refused', str(e), 502, failure=e.kind) from e
     with _lock:
         store = _read_store()
         if ridem in store['render_idem']:
@@ -2135,7 +2086,7 @@ def render(d: dict, *, unattended: bool = False) -> tuple[dict, bool]:
         elif plan['project_id']:
             body['project_id'] = plan['project_id']
         try:
-            job, _replay = submit(body, unattended=unattended, _skip_limit=True)
+            job, _replay = submit(body, unattended=unattended, _skip_limit=True, _prepared=row.get('prepared'))
         except (Refused, NotConnected) as e:
             if n == 0:                       # nothing was sent: leave no trace
                 unwind()

@@ -707,3 +707,16 @@ storyboard path tests proving one selected-model read followed by cache reuse,
 with free `get_cost: true` / `use_unlim: false` calls only. New/changed capture
 and registry modules pass basic Pyright; including `desk_engines.py` still
 reports the pre-existing optional campaign-ID error in the ffmpeg hold path.
+
+
+## 14. Picture wiring from the revision-2 contract (2026-10-07)
+
+The revision-2 capture now includes Kling 3.0 and Seedance 2.5 catalogue media
+roles and upload/confirm output schemas. The contract implementation and exact
+quote/render boundaries are in [HIGGSFIELD_PICTURE_RENDER.md](HIGGSFIELD_PICTURE_RENDER.md).
+The media item requires an identifier; the Genjutsu-specific `input_check` is
+not evidence for a role-only picture quote. Free quotes are labeled text-only;
+approved renders upload/confirm and quote actual IDs, then recheck the full cap
+before generation. Branch tests exercise real captured shapes with fake vendor
+responses. A real paid render has not been run. This supersedes the pending
+wiring checkpoint above only after the new branch is integrated and restarted.

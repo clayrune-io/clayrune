@@ -1,8 +1,8 @@
 """Conservative picture evidence from structured MCP input schemas.
 
-No descriptions, executable references, model-name guesses or upload parameters
-are used. Unsupported JSON-Schema compositions stay unknown; evidence never
-enables picture submission until the engine's media adapter is implemented.
+No executable references or model-name guesses are used. Catalogue-based media
+roles join the captured wire contract in desk_higgsfield_picture_contract.
+Legacy schema-only evidence stays pending; unsupported compositions stay unknown.
 """
 from __future__ import annotations
 
@@ -43,6 +43,10 @@ def _models(node: dict) -> list:
 
 
 def derive(snapshot: dict | None, kind: str, model_id: str) -> dict:
+    from mc.desk_higgsfield_picture_contract import inputs
+    catalogue = inputs(snapshot, kind, model_id)
+    if catalogue is not None:
+        return catalogue
     out = {'text': True, 'first_frame': False, 'last_frame': False,
            'reference_images_max': 0, 'reference_kinds': [], 'schema_state': 'missing',
            'picture_inputs': [], 'picture_refusal': MISSING}

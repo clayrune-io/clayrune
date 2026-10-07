@@ -761,7 +761,7 @@ Click the **?** button in the header (top-right), or use Settings → Tour.
 
 ## Troubleshooting
 
-### Higgsfield refuses a storyboard picture
+### Higgsfield storyboard pictures and pricing
 
 Clayrune reads Higgsfield's model/tool definitions automatically after saving a
 sign-in and on the next price check or Render when those definitions are missing
@@ -774,10 +774,26 @@ uploading a picture or submitting a generation. Those entries are cached for
 24 hours; Render reuses a fresh entry. Saving or checking a connection does not
 browse the whole model catalogue. Failed catalogue reads do not guess picture roles.
 
-Picture generation through **Higgsfield (sign in)** remains unavailable while its
-upload integration is being implemented. A model whose captured definition accepts
-pictures reports that upload wiring is pending, rather than silently dropping the
-picture. **Check it now** remains a separate, human-only connection verification.
+**Higgsfield (sign in)** can render storyboard pictures with Kling 3.0 and
+Seedance 2.5 when its captured catalogue and upload contracts are available.
+Kling uses a scene's picture as the start frame. Seedance uses its declared
+picture role with `omni_reference` mode. Other models use their own catalogue
+roles; a model that declares no picture input says so.
+
+Price checks never upload your pictures. When the engine's quote requires an
+uploaded media identifier, the estimate says **Text-only price; picture priced
+at render**. The passcode prompt explains that difference. After you approve
+Render, Clayrune uploads and confirms the pictures, quotes their actual price,
+and checks the full storyboard total against your per-job credit limit before
+submitting any clip. An unsafe upload URL or unexpected upload/confirmation
+response stops the render before generation. A later refused render can leave
+an uploaded picture in your Higgsfield library; it spends no generation credits.
+If the generation response itself is unclear, check Higgsfield's dashboard
+before retrying: that paid call may have been accepted.
+
+Missing or unusable contracts explain what is unavailable; Clayrune does not
+drop a picture or invent an identifier. **Check it now** remains a separate,
+human-only connection verification.
 
 ### "Session not found"
 Old session was purged after 24h of inactivity. Just send a new message —
