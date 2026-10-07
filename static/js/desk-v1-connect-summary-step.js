@@ -166,7 +166,7 @@
     const items = [
       ['Separate passcode checks', 'Saving the connection, allowing reading or posting, and a browser-site grant each ask for the passcode on their own. None is reused for another.'],
       ['Nothing is signed in or checked', 'Saving does not sign you in, send anything to the service or verify the connection. Those are separate, later actions.'],
-      ['Passwords', 'A password you typed goes to Secrets with the save. It is shown nowhere, not even here.'],
+      ['Passwords', 'A password you typed goes to the Vault with the save. It is shown nowhere, not even here.'],
     ];
     return `<div class="desk-v1-cfw-dgroup" data-sum-details>${api.paged('details', items,
       (it) => `<div class="desk-v1-cfw-fact"><div class="desk-v1-cfw-fact-head">${esc(it[0])}</div><div class="desk-v1-cfw-fact-text">${esc(it[1])}</div></div>`)}</div>`;
@@ -357,7 +357,7 @@
     factsHTML: () => {
       const s = _L() && _L().summary();
       if (!s) return '';
-      const login = s.mode === 'saved' ? `Saved login <code>${esc(s.login)}</code>. Its password stays in Secrets.`
+      const login = s.mode === 'saved' ? `Saved login <code>${esc(s.login)}</code>. Its password stays in the Vault.`
         : s.mode === 'new' ? `New login <code>${esc(s.login)}</code>${s.username ? `, username ${esc(s.username)}` : ''}. Password ${s.hasPassword ? 'entered, hidden' : 'not entered'}. Stored when you save.`
           : 'None stored. You sign in yourself in the browser.';
       return _rows([['Login', login, 'login'], ['Browser profile', `<code>${esc(s.profile)}</code> (${s.newProfile ? 'new' : 'existing: it keeps the sign-in it already has'})`, 'profile']]);
@@ -371,7 +371,7 @@
           : `<span data-sum-signin="not_checked">Not checked.</span> Clayrune cannot tell whether <code>${esc(res.browser_profile)}</code> is signed in.`;
         return [
           ['Connection', res.unchanged ? 'Already saved. Nothing changed.' : (res.account_created ? 'Saved. A new account was created.' : 'Saved to the existing account.'), 'connection'],
-          ['Login', res.login ? `<span data-sum-login="stored">${res.login_created ? 'Stored in Secrets now' : 'Saved login in use'}:</span> <code>${esc(res.login)}</code>` : '<span data-sum-login="none">None stored.</span> You sign in yourself in the browser.', 'login'],
+          ['Login', res.login ? `<span data-sum-login="stored">${res.login_created ? 'Stored in the Vault now' : 'Saved login in use'}:</span> <code>${esc(res.login)}</code>` : '<span data-sum-login="none">None stored.</span> You sign in yourself in the browser.', 'login'],
           ['Browser profile', `${prof}${shared}`, 'profile'],
           ['Signed in', signed, 'signin'],
         ];
@@ -414,13 +414,13 @@
         const state = res.signin && !signed ? { state: 'sign_in_required', label: 'Sign-in required' } : null;
         const failed = res.setup && res.setup.state === 'failed' && !(st && (st.state === 'signed_in' || st.state === 'verified'));
         const word = state || (failed ? { state: 'setup_failed', label: 'Saved; setup failed' } : { state: (st && st.state) || 'not_connected', label: (st && st.label) || 'Not connected' });
-        const stored = (res.stored || []).length ? res.stored.map((n) => `<code>${esc(n)}</code>`).join(', ') : 'Nothing new. What was already in Secrets is used as it is.';
+        const stored = (res.stored || []).length ? res.stored.map((n) => `<code>${esc(n)}</code>`).join(', ') : 'Nothing new. What was already in the Vault is used as it is.';
         const acct = res.account ? esc(res.account.label || res.account.identity || '') : '';
         const note = failed && res.setup.message ? `<div class="desk-v1-cfw-fact-text" data-sum-setup>${esc(res.setup.message)}</div>` : '';
         return [
           ['Connection', res.duplicate ? 'Already saved. Nothing changed.' : 'Saved.', 'connection'],
           acct ? ['Account', acct, 'account'] : null,
-          ['Stored in Secrets', stored, 'stored'],
+          ['Stored in the Vault', stored, 'stored'],
           ['Status', `<span data-sum-status="${esc(word.state)}">${esc(word.label)}</span>${note}`, 'status'],
         ];
       },

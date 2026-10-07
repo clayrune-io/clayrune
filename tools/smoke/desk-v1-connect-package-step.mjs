@@ -313,7 +313,7 @@ async function mainScenario(browser, width, height) {
   const args = await page.$eval('[data-pk-args]', (t) => t.value);
   check(args === '--mode\nread-only', 'arguments are suggested only from the package\'s own start command, never the README\'s npx arguments', 'args: ' + JSON.stringify(args));
   check((await page.$eval('[data-pk-cred-env="0"]', (i) => i.value)) === 'HARMLESS_TOKEN' && (await page.$$('[data-pk-cred]')).length === 1 && (await page.$eval('[data-pk-cred-vault="0"]', (i) => i.value)) === '',
-    'one credential NAME is suggested (the environment variable, not the header), with no Secrets entry chosen for the person', 'credential rows wrong');
+    'one credential NAME is suggested (the environment variable, not the header), with no Vault entry chosen for the person', 'credential rows wrong');
   check(await has(page, '[data-cfw-details] [data-pk-name]') && !(await has(page, '[data-cfw-body] [data-pk-name]')), 'the optional server name sits under Details, not in the body', 'server name placement');
   await openDetails(page);
   const prov = await text(page, '[data-pk-provenance]');
@@ -351,7 +351,7 @@ async function mainScenario(browser, width, height) {
   check(reach[0] === 'project' && /only/.test(reach[1]) && /no sandbox/.test(reach[1]), 'the reach is on the first page: one project, local code, no sandbox', 'reach: ' + reach);
   check((await text(page, '[data-pk-origin]')).includes('User supplied; not reviewed by Clayrune'), 'the unreviewed-code notice is on the first page', 'origin label missing');
   const cred = await text(page, '[data-pk-credentials]');
-  check(cred.includes('harmless.token') && cred.includes('HARMLESS_TOKEN'), 'the credential shows as a Secrets entry name and a variable name', cred);
+  check(cred.includes('harmless.token') && cred.includes('HARMLESS_TOKEN'), 'the credential shows as a Vault entry name and a variable name', cred);
   const risks = await page.$$eval('[data-pk-risk]', (e) => e.map((x) => x.dataset.pkRisk));
   check(['dependencies_installed', 'user_supplied', 'runs_local_code', 'digest_not_safety'].every((c) => risks.includes(c)) && !risks.includes('global_reach'), `every material risk label is shown (${risks.join()})`, 'risks: ' + risks);
   check(!(await has(page, '[data-cfw-body] [data-pk-publisher], [data-cfw-body] [data-cu-dep]')), 'publisher and the dependency list are not in the body', 'inventory leaked into the body');

@@ -413,7 +413,7 @@ def commit(request_id: str, raw_draft, clean: dict) -> tuple[dict, bool]:
         except Exception as e:
             if typed is not None and not _logins.remove(typed['name']):
                 if isinstance(e, SetupError):
-                    raise SetupError(f'{e}; the login "{typed["name"]}" was stored and could not be removed: delete it in Secrets',
+                    raise SetupError(f'{e}; the login "{typed["name"]}" was stored and could not be removed: delete it in the Vault',
                                      e.status, e.code) from e
             raise
         _done[request_id] = (fp or '', result)

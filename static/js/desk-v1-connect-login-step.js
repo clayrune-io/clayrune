@@ -224,7 +224,7 @@
   };
   const _COPY = {
     none: 'Use a saved login, enter a new one, or sign in yourself.',
-    saved: 'Your password stays in Secrets. Finish any security check in the browser.',
+    saved: 'Your password stays in the Vault. Finish any security check in the browser.',
     new: 'Stored when you save. You can finish signing in afterwards.',
     manual: 'Sign in in the browser pane. Clayrune keeps the browser session.',
   };

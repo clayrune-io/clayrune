@@ -74,7 +74,7 @@
           <div class="desk-v1-cu-cred" data-cr-cred="${i}">
             <input type="text" class="desk-v1-rules-textinput" data-cr-cred-header="${i}" value="${esc(c.header)}" placeholder="Header, e.g. Authorization" maxlength="64" autocapitalize="off" spellcheck="false" aria-label="HTTP header the token goes in">
             <input type="text" class="desk-v1-rules-textinput" data-cr-cred-prefix="${i}" value="${esc(c.prefix)}" placeholder="Before the token, e.g. Bearer " maxlength="40" autocapitalize="off" spellcheck="false" aria-label="Text before the token">
-            <input type="text" class="desk-v1-rules-textinput" data-cr-cred-vault="${i}" value="${esc(c.vault)}" placeholder="Secrets entry name" maxlength="120" autocapitalize="off" spellcheck="false" aria-label="Secrets entry that holds the token">
+            <input type="text" class="desk-v1-rules-textinput" data-cr-cred-vault="${i}" value="${esc(c.vault)}" placeholder="Vault entry name" maxlength="120" autocapitalize="off" spellcheck="false" aria-label="Vault entry that holds the token">
             <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cr-cred-remove="${i}">Remove</button>
           </div>`).join('');
     const authOpt = (v, label) => `<label class="desk-v1-cf-check"><input type="radio" name="cr-auth" value="${v}" data-cr-auth-opt ${R.auth === v ? 'checked' : ''}><span>${label}</span></label>`;
@@ -93,12 +93,12 @@
           <fieldset class="desk-v1-cu-scope" data-cr-auth>
             <legend>How it signs you in</legend>
             ${authOpt('none', 'It needs no sign-in')}
-            ${authOpt('header', 'A token in an HTTP header, from Secrets')}
+            ${authOpt('header', 'A token in an HTTP header, from the Vault')}
             ${authOpt('oauth', 'OAuth (recorded only: this version cannot start the sign-in)')}
           </fieldset>
-          ${R.auth === 'header' ? `<div class="desk-v1-conn-add-field">Token header, by Secrets name only
+          ${R.auth === 'header' ? `<div class="desk-v1-conn-add-field">Token header, by Vault name only
             ${creds}
-            <div class="desk-v1-rules-hint">The token is read from Secrets when the server is used and sent only to the address above. It is never typed here and never written into the MCP configuration.</div>
+            <div class="desk-v1-rules-hint">The token is read from the Vault when the server is used and sent only to the address above. It is never typed here and never written into the MCP configuration.</div>
             <div><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cr-cred-add>Add a token header</button></div>
           </div>` : ''}
           ${R.auth === 'oauth' ? `
@@ -125,7 +125,7 @@
   // ── the approval card ───────────────────────────────────────────────────
   function _authText(a) {
     if (a.type === 'oauth') return `OAuth. Issuer <code>${esc(a.issuer)}</code>; scopes ${a.scopes && a.scopes.length ? a.scopes.map((s) => `<code>${esc(s)}</code>`).join(' ') : 'none stated'}. Recorded only: the sign-in is not started by this version.`;
-    if (a.type === 'header') return 'A token in an HTTP header, from Secrets (below).';
+    if (a.type === 'header') return 'A token in an HTTP header, from the Vault (below).';
     return 'None: the server is reached without a sign-in.';
   }
 
@@ -136,7 +136,7 @@
             <ul class="desk-v1-cu-changes">${c.changes.map((x) => `<li data-cr-change="${esc(x.field)}">${esc(x.field)}: <code>${esc(x.from)}</code> to <code>${esc(x.to)}</code></li>`).join('')}</ul></div>` : '';
     const limits = (c.limitations || []).map((l) => `<div class="desk-v1-cf-msg" data-cf-msg="warn" data-cr-limit="${esc(l.code)}" role="status">${esc(l.message)}</div>`).join('');
     const creds = (c.credentials || []).length
-      ? c.credentials.map((x) => `<div data-cr-credential>Secrets entry <code>${esc(x.vault)}</code> is sent in the <code>${esc(x.header)}</code> header${x.prefix ? ` after <code>${esc(x.prefix)}</code>` : ''}, to <code>${esc(x.recipient)}</code> only.</div>`).join('')
+      ? c.credentials.map((x) => `<div data-cr-credential>Vault entry <code>${esc(x.vault)}</code> is sent in the <code>${esc(x.header)}</code> header${x.prefix ? ` after <code>${esc(x.prefix)}</code>` : ''}, to <code>${esc(x.recipient)}</code> only.</div>`).join('')
       : 'None';
     const required = (c.exposure && c.exposure.required) || [];
     const exposure = required.map((f) => `

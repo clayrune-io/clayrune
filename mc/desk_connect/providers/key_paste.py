@@ -52,7 +52,7 @@ class KeyPaste:
 
     def exists(self) -> base.ProviderError:
         return base.ProviderError(f'a secret named "{self.vault}" already exists: it is already connected. '
-                                  'Clayrune does not replace a stored credential from here; remove it in Secrets first.',
+                                  'Clayrune does not replace a stored credential from here; remove it in the Vault first.',
                                   409, 'secret_exists')
 
     def apply(self, clean: dict, undo, names) -> None:

@@ -144,7 +144,7 @@ async function newPage(browser, { srv, width, height }) {
     if (/\/api\/desk\/connect\/flows\/[^/]+$/.test(path) && method === 'GET') return J({ status: 'held', held_ttl_s: 600 });
     if (path === '/api/desk/connect/commit') {
       if (!body || body.passcode !== PASSCODE) return J({ error: 'bad_passcode' }, 403);
-      if (srv.commitMode === 'refuse') return J({ error: 'x.client-id is already stored in Secrets.', code: 'secret_exists' }, 409);
+      if (srv.commitMode === 'refuse') return J({ error: 'x.client-id is already stored in the Vault.', code: 'secret_exists' }, 409);
       return J({ ok: true, duplicate: false, service: { id: body.draft.url.includes('x.com') ? 'x' : 'svc', label: 'Service' }, method: body.draft.method, account_id: 'acct-1', stored: [], status: { state: 'saved' } }, 201);
     }
     return route.abort();
@@ -344,7 +344,7 @@ async function run(browser, width, height) {
     const { ctx, page } = await newPage(browser, { srv, width, height });
     await toSetup(page, 'x.com', X_NEW);
     await page.waitForSelector('[data-cfa-host]');
-    check((await page.$$('[data-cfa-field="client_id"]')).length === 0 && /already stored in Secrets as/.test(await page.textContent('[data-cfa-present="client_id"]')), 'an app already in Secrets is named and not asked again', 'present client id still asked');
+    check((await page.$$('[data-cfa-field="client_id"]')).length === 0 && /already stored in the Vault as/.test(await page.textContent('[data-cfa-present="client_id"]')), 'an app already in the Vault is named and not asked again', 'present client id still asked');
     await ctx.close();
   }
 

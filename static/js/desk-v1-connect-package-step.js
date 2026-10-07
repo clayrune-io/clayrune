@@ -119,7 +119,7 @@
     return P.creds.map((c, i) => `
         <div class="desk-v1-cfk-cred" data-pk-cred="${i}">
           <input type="text" class="desk-v1-rules-textinput" data-pk-cred-env="${i}" value="${esc(c.env)}" placeholder="VARIABLE_NAME" maxlength="64" autocapitalize="characters" spellcheck="false" aria-label="Environment variable the server reads">
-          <input type="text" class="desk-v1-rules-textinput" data-pk-cred-vault="${i}" value="${esc(c.vault)}" placeholder="Secrets entry name" maxlength="120" autocapitalize="off" spellcheck="false" aria-label="Secrets entry that holds it">
+          <input type="text" class="desk-v1-rules-textinput" data-pk-cred-vault="${i}" value="${esc(c.vault)}" placeholder="Vault entry name" maxlength="120" autocapitalize="off" spellcheck="false" aria-label="Vault entry that holds it">
           <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-cred-remove="${i}">Remove</button>
         </div>`).join('');
   }
@@ -143,7 +143,7 @@
         <textarea class="desk-v1-rules-textinput" data-pk-args rows="2" spellcheck="false">${esc(P.args)}</textarea></label>
       <div class="desk-v1-conn-add-field" data-pk-creds>Credentials, by name only (optional)
         ${_credRowsHTML()}
-        <div class="desk-v1-cfw-fact-text">Each is an environment variable the server reads and the Secrets entry that holds its value. The value is never typed here.</div>
+        <div class="desk-v1-cfw-fact-text">Each is an environment variable the server reads and the Vault entry that holds its value. The value is never typed here.</div>
         <div class="desk-v1-cfk-actions"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-cred-add>Add a credential</button></div>
       </div>`;
   }
@@ -233,7 +233,7 @@
           <ul class="desk-v1-cfk-list">${c.changes.map((x) => `<li data-pk-change-field="${esc(x.field)}">${esc(x.field)}: <code>${esc(x.from)}</code> to <code>${esc(x.to)}</code></li>`).join('')}</ul></div>` : '';
     const limits = (c.limitations || []).map((l) => `<div class="desk-v1-cfw-msg" data-pk-limit="${esc(l.code)}" role="status">${esc(l.message)}</div>`).join('');
     const creds = (c.credentials || []).length
-      ? c.credentials.map((x) => `<div data-pk-credential>Secrets entry <code>${esc(x.vault)}</code> is given to the server as <code>${esc(x.env)}</code> when it starts.</div>`).join('') : 'None';
+      ? c.credentials.map((x) => `<div data-pk-credential>Vault entry <code>${esc(x.vault)}</code> is given to the server as <code>${esc(x.env)}</code> when it starts.</div>`).join('') : 'None';
     const p = c.package || {};
     const fact = (head, html, attr) => `<div class="desk-v1-cfw-fact"${attr ? ` ${attr}` : ''}><div class="desk-v1-cfw-fact-head">${esc(head)}</div><div class="desk-v1-cfw-fact-text">${html}</div></div>`;
     return `${changes}${limits}
@@ -328,7 +328,7 @@
     id: 'package-setup', step: 'setup', match: _isMine,
     substep: () => [P.view === 'identify' ? 1 : 2, 2],
     title: () => (P.view === 'identify' ? 'MCP package' : 'Package details'),
-    copy: () => (P.view === 'identify' ? 'Enter the package you want to use.' : 'Review the detected settings and name any credentials in Secrets.'),
+    copy: () => (P.view === 'identify' ? 'Enter the package you want to use.' : 'Review the detected settings and name any credentials in the Vault.'),
     body: () => (P.view === 'identify' ? _identifyHTML() : _detailsViewHTML()),
     details: (api) => (P.view === 'identify' ? '' : `<label class="desk-v1-conn-add-field">Server name (optional)
         <input type="text" class="desk-v1-rules-textinput" data-pk-name value="${esc(P.name)}" maxlength="64" autocapitalize="off" spellcheck="false"></label>
@@ -340,7 +340,7 @@
           if(window.DeskV1ConnectGithub.matches(P.pkg)) { const generation=_gen;P.staging=true;api.repaint();try {const result=await window.DeskV1ConnectGithub.stage(api,P.pkg);if(generation!==_gen)return false;P.git=result;P.command=result.command || '';P.args=(result.args||[]).join('\n');P.creds=(result.credentials||[]).map(c=>({env:c.env,vault:''}));} catch(e) {if(generation===_gen)api.error(e.message);return false;} finally {if(generation===_gen){P.staging=false;api.repaint();}} }
           P.view = 'details'; P.refocus = true; api.repaint(); return false; }
         const half = _halfCredential();
-        if (half) { api.error(`Name both the variable and the Secrets entry${half.env ? ` for ${half.env}` : ''}, or remove the row.`); return false; }
+        if (half) { api.error(`Name both the variable and the Vault entry${half.env ? ` for ${half.env}` : ''}, or remove the row.`); return false; }
         return true;                                                         // Continue writes nothing: the Review step reads the package
       },
     }),

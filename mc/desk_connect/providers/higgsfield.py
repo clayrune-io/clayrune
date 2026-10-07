@@ -30,8 +30,8 @@ class HiggsfieldProvider(base.Provider):
     service_id = 'higgsfield'
     summaries = {
         'oauth': 'Sign in to Higgsfield in the browser pane on the next step. Nothing is saved until you press Save on the '
-                 'Review step, which keeps the sign-in in Secrets as "oauth.higgsfield".',
-        'api_key': 'Stores your Higgsfield key ID and secret in Secrets as "higgsfield" and checks them with one '
+                 'Review step, which keeps the sign-in in the Vault as "oauth.higgsfield".',
+        'api_key': 'Stores your Higgsfield key ID and secret in the Vault as "higgsfield" and checks them with one '
                    'free price-quote call. Billed in dollars.',
     }
     signs_in = frozenset({'oauth'})

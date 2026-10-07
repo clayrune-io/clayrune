@@ -213,7 +213,7 @@ async function connectionsRead(browser) {
   await selectTile(page, 'ch-x-ron');
   await page.click('[data-conn-account="ch-x-ron"] [data-conn-x-guide]');
   await page.waitForSelector('[data-conn-account="ch-x-ron"] [data-conn-x-wizard]', { timeout: 4000 });
-  check(!(await page.evaluate(() => window.__vaultOpened)), '`Connect X` opens its own steps, not the Secrets panel', 'the Secrets panel was opened');
+  check(!(await page.evaluate(() => window.__vaultOpened)), '`Connect X` opens its own steps, not the Vault panel', 'the Vault panel was opened');
 
   const ph = await page.$$eval('[data-conn-placeholder], [data-conn-tile][data-conn-state="preview"]', (els) => els.length);
   const srcs = await page.$$eval('[data-conn-source], [data-conn-tile^="source:"]', (els) => els.length);
@@ -313,7 +313,7 @@ async function somethingElse(browser) {
   await page.waitForSelector('[data-conn-detail^="service:"] [data-svc-cred-state]', { timeout: 4000 });
   const cred = await page.$eval('[data-svc-cred-state]', (e) => e.dataset.svcCredState);
   check(cred === 'missing' && !(await page.$('[data-conn-detail] [data-conn-publish], [data-conn-detail] [data-conn-action]')),
-    'the detail says the named vault entry is missing (Secrets) and offers no Connect or Publishing', 'service detail: ' + cred);
+    'the detail says the named vault entry is missing (Vault) and offers no Connect or Publishing', 'service detail: ' + cred);
   // A refused save is rolled back with the server's reason.
   await page.click('[data-conn-add-tile]');
   await page.click('[data-add-pick="other"]');

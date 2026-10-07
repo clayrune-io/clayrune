@@ -182,7 +182,7 @@
     if (_stage() === 'fields') {
       const guide = Ad ? Ad.guideHTML(A.connector) : '';
       const summary = _targetMode() === 'existing' && _service(api.info) === 'x'
-        ? 'App details go to Secrets; sign-in belongs to this saved X account. Nothing is saved until you press Save.' : A.connector.summary;
+        ? 'App details go to the Vault; sign-in belongs to this saved X account. Nothing is saved until you press Save.' : A.connector.summary;
       const note = summary ? `<div class="desk-v1-cfw-fact-text" data-api-summary>${esc(summary)}</div>` : '';
       return `${note}${guide}`;
     }

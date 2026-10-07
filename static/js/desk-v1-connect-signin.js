@@ -227,10 +227,10 @@
     } else if (!D.route) {
       saved = fresh = '<div class="desk-v1-rules-hint" data-cs-details-loading>Loading your saved logins…</div>';
     } else {
-      saved = `<div class="desk-v1-rules-hint">A login already in Secrets. Clayrune types it into the sign-in page once it is open; you never see the password.</div>
+      saved = `<div class="desk-v1-rules-hint">A login already in the Vault. Clayrune types it into the sign-in page once it is open; you never see the password.</div>
         ${D.logins.length ? `<label class="desk-v1-conn-add-field">Use a saved login
           <select class="desk-v1-rules-textinput" data-cs-pick>${_loginOptions(D.logins, D.pick)}</select></label>` : '<div class="desk-v1-rules-hint" data-cs-nologins>There is no saved login for this service yet.</div>'}`;
-      fresh = `<div class="desk-v1-rules-hint">Type a username and password to keep in Secrets. It is stored when you press Save on step 4, together with the connection: one passcode. Nothing is written before that.</div>
+      fresh = `<div class="desk-v1-rules-hint">Type a username and password to keep in the Vault. It is stored when you press Save on step 4, together with the connection: one passcode. Nothing is written before that.</div>
         ${newLoginHTML(KEY)}`;
     }
     return `<section class="desk-v1-cs-pick" data-cs-details aria-label="Ways to sign in">

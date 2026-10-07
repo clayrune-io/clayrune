@@ -455,8 +455,8 @@ async function run(browser, width, height) {
     await page.waitForSelector('[data-cfp-vault]');
     await page.waitForFunction(() => /Unattended agents/.test((document.querySelector('[data-cfp-vault]') || {}).textContent || ''), null, { timeout: 4000 });
     const t = await text(page, '[data-cfp-vault]');
-    check(expect.test(t) && /Change this in Secrets/.test(t) && /Filling the password always starts with you/.test(t) && /Saved login \(Secrets\)/.test(t), `saved login "${login}": the vault's unattended-use setting is stated (${t.slice(0, 60)}…)`, 'vault: ' + t);
-    check((await page.$$('[data-cfp-vault] input, [data-cfp-vault] button')).length === 0, 'the vault fact has no control: it is changed in Secrets', 'a control was drawn for the vault');
+    check(expect.test(t) && /Change this in the Vault/.test(t) && /Filling the password always starts with you/.test(t) && /Saved login \(Vault\)/.test(t), `saved login "${login}": the vault's unattended-use setting is stated (${t.slice(0, 60)}…)`, 'vault: ' + t);
+    check((await page.$$('[data-cfp-vault] input, [data-cfp-vault] button')).length === 0, 'the vault fact has no control: it is changed in the Vault', 'a control was drawn for the vault');
     check(srv.log.every((r) => !(/\/api\/secrets/.test(r.path) && r.method !== 'GET')), 'only the metadata list was read, no value', 'a vault write or value read went out');
     await ctx.close();
   }

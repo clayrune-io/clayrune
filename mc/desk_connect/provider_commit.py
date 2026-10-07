@@ -47,7 +47,7 @@ def apply(clean: dict) -> tuple[Applied, dict]:
     # now, not after the person has finished signing in at the vendor.
     new_login = clean.get('new_login')
     if _vault.is_locked() and (method in prov.signs_in or new_login or _writes_secrets(prov, method, clean['fields'])):
-        raise ProviderError('the vault is locked: unlock it in Secrets, then save again', 409, 'vault_locked')
+        raise ProviderError('the Vault is locked: unlock it, then save again', 409, 'vault_locked')
     held = clean.get('held')
     fields = clean['fields']
     if clean.get('account_id'):
@@ -126,5 +126,5 @@ def _writes_secrets(prov, method: str, fields: dict) -> bool:
 
 def _with_left(msg: str, left: list) -> str:
     if left:
-        msg += f'; this could not be removed and needs removing by hand in Secrets or Desk: {", ".join(left)}'
+        msg += f'; this could not be removed and needs removing by hand in the Vault or Desk: {", ".join(left)}'
     return msg

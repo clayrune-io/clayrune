@@ -337,7 +337,7 @@ async function run(browser, width, height) {
     await toSetup(page, 'x.com', { kind: 'account', identity: 'ron', account: { id: 'acct-1' } });
     await mode(page, 'saved');
     await page.waitForSelector('[data-lg-pick]');
-    check((await page.textContent('[data-cfw-title]')).trim() === 'Saved X login' && /Your password stays in Secrets/.test(await page.textContent('[data-cfw-copy]')), 'Saved login: "Saved X login", "Your password stays in Secrets…"', 'saved title/copy wrong');
+    check((await page.textContent('[data-cfw-title]')).trim() === 'Saved X login' && /Your password stays in the Vault/.test(await page.textContent('[data-cfw-copy]')), 'Saved login: "Saved X login", "Your password stays in the Vault…"', 'saved title/copy wrong');
     const names = await page.$$eval('[data-lg-pick] option', (os) => os.map((o) => o.value));
     check(names.join('|') === '|x.ron|other.login', `the picker lists login NAMES only (${names.join(' | ')})`, 'picker: ' + names.join('|'));
     check(await page.$eval('[data-lg-profile]', (s) => s.value) === '__new__' && (await page.$$eval('[data-lg-profile] option', (os) => os.map((o) => o.value))).join('|') === '__new__|x-main|x-other', 'profiles are listed by name and the default is a NEW profile, never an existing one', 'profile default wrong');

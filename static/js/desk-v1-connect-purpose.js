@@ -179,7 +179,7 @@
         rows.push(window.DeskV1ConnectSignin.newLoginHTML(r.id));
       }
     });
-    if (roles.length && !P.view.vault.length && !r.signin) rows.push('<div class="desk-v1-rules-hint">The vault has no entries yet. Create one in Secrets, then pick it here.</div>');
+    if (roles.length && !P.view.vault.length && !r.signin) rows.push('<div class="desk-v1-rules-hint">The vault has no entries yet. Create one in the Vault, then pick it here.</div>');
     return rows.length ? `<div class="desk-v1-cp-pickers" data-cp-pickers="${esc(r.id)}">${rows.join('')}</div>` : '';
   }
 
@@ -252,7 +252,7 @@
         ${_accountHTML()}
         ${P.accountId && P.kind ? _purposesFor(P.kind).map(_purposeHTML).join('') : ''}
         ${lines.length ? `<div class="desk-v1-cp-summary" data-cp-summary><div class="desk-v1-cp-summary-title">Save will record</div><ul class="desk-v1-cp-list">${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>
-          <div class="desk-v1-rules-hint">${lines.some((l) => l.indexOf("New stored login") >= 0) ? "It stores the new login in Secrets (username and password on one entry), and creates no sign-in or browser profile." : "It creates no sign-in, browser profile or vault entry, and changes none."} Saving asks for your dashboard passcode once.</div></div>` : ''}
+          <div class="desk-v1-rules-hint">${lines.some((l) => l.indexOf("New stored login") >= 0) ? "It stores the new login in the Vault (username and password on one entry), and creates no sign-in or browser profile." : "It creates no sign-in, browser profile or vault entry, and changes none."} Saving asks for your dashboard passcode once.</div></div>` : ''}
         ${P.status ? `<div class="desk-v1-cf-msg" data-cp-status data-cf-msg="${P.statusKind}" role="${P.statusKind === 'ok' ? 'status' : 'alert'}">${esc(P.status)}</div>` : ''}
         <div class="desk-v1-cp-actions" data-cp-actions>
           <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-cp-save ${problem || P.saving ? 'disabled' : ''} ${problem ? `title="${esc(problem)}"` : ''}>${P.saving ? 'Saving…' : 'Save routes'}</button>

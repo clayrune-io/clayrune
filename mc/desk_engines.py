@@ -558,7 +558,7 @@ def connection(engine_id: str, project_id: str | None = None) -> dict:
         rec = visible.get(name)
         if rec is None:
             return {'ready': False, 'vault_entry': name, 'exists': False,
-                    'reason': f"no vault entry named '{name}' (add it in Secrets)"}
+                    'reason': f"no vault entry named '{name}' (add it in the Vault)"}
         exists = True
         opened = _vault_lock.probe(name)
         if opened == _vault_lock.LOCKED:

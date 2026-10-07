@@ -209,7 +209,7 @@ def _clean_binding(b, i: int, profile: dict, kind: str, seen: set, names_cache: 
             _need(not _vault.is_server_internal(name), f'{where}: {name} is kept by Clayrune for its own sign-ins')
             if not names_cache:
                 names_cache.append(_vault_names())
-            _need(name in names_cache[0], f'{where}: there is no vault entry named {name}. Create it in Secrets, or pick one that exists',
+            _need(name in names_cache[0], f'{where}: there is no vault entry named {name}. Create it in the Vault, or pick one that exists',
                   400, 'vault_entry_missing')
             out['credentials'][role] = name
     if b.get('new_login') is not None:
@@ -410,7 +410,7 @@ def commit(request_id: str, clean: dict) -> tuple[dict, bool]:
         except Exception as e:
             left = _unwrite(wrote)
             if left and isinstance(e, BindError):
-                raise BindError(f'{e}; the login "{left[0]}" was stored and could not be removed: delete it in Secrets',
+                raise BindError(f'{e}; the login "{left[0]}" was stored and could not be removed: delete it in the Vault',
                                 e.status, e.code) from e
             raise
         _done[request_id] = (fp, result)

@@ -66,7 +66,7 @@
     const creds = U.creds.map((c, i) => `
           <div class="desk-v1-cu-cred" data-cu-cred="${i}">
             <input type="text" class="desk-v1-rules-textinput" data-cu-cred-env="${i}" value="${esc(c.env)}" placeholder="VARIABLE_NAME" maxlength="64" autocapitalize="characters" spellcheck="false" aria-label="Environment variable the server reads">
-            <input type="text" class="desk-v1-rules-textinput" data-cu-cred-vault="${i}" value="${esc(c.vault)}" placeholder="Secrets entry name" maxlength="120" autocapitalize="off" spellcheck="false" aria-label="Secrets entry that holds it">
+            <input type="text" class="desk-v1-rules-textinput" data-cu-cred-vault="${i}" value="${esc(c.vault)}" placeholder="Vault entry name" maxlength="120" autocapitalize="off" spellcheck="false" aria-label="Vault entry that holds it">
             <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cu-cred-remove="${i}">Remove</button>
           </div>`).join('');
     return `
@@ -81,7 +81,7 @@
             <textarea class="desk-v1-rules-textinput" data-cu-args rows="2" spellcheck="false">${esc(U.args)}</textarea></label>
           <div class="desk-v1-conn-add-field">Credentials, by name only (optional)
             ${creds}
-            <div class="desk-v1-rules-hint">Each one is an environment variable the server reads and the Secrets entry that holds its value. The value is never typed here and is never written into the MCP configuration.</div>
+            <div class="desk-v1-rules-hint">Each one is an environment variable the server reads and the Vault entry that holds its value. The value is never typed here and is never written into the MCP configuration.</div>
             <div><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cu-cred-add>Add a credential</button></div>
           </div>
           <fieldset class="desk-v1-cu-scope" data-cu-scope>
@@ -147,7 +147,7 @@
             <ul class="desk-v1-cu-changes">${c.changes.map((x) => `<li data-cu-change="${esc(x.field)}">${esc(x.field)}: <code>${esc(x.from)}</code> to <code>${esc(x.to)}</code></li>`).join('')}</ul></div>` : '';
     const limits = (c.limitations || []).map((l) => `<div class="desk-v1-cf-msg" data-cf-msg="warn" data-cu-limit="${esc(l.code)}" role="status">${esc(l.message)}</div>`).join('');
     const creds = (c.credentials || []).length
-      ? c.credentials.map((x) => `<div data-cu-credential>Secrets entry <code>${esc(x.vault)}</code> is given to the server as <code>${esc(x.env)}</code> when it starts.</div>`).join('')
+      ? c.credentials.map((x) => `<div data-cu-credential>Vault entry <code>${esc(x.vault)}</code> is given to the server as <code>${esc(x.env)}</code> when it starts.</div>`).join('')
       : 'None';
     const p = c.package;
     return `

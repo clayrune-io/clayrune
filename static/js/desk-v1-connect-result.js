@@ -88,7 +88,7 @@
     const r = _ui.res;
     const word = _statusWord();
     const st = _ui.status || {};
-    const stored = (r.stored || []).length ? r.stored.map((n) => `<code>${esc(n)}</code>`).join(', ') : 'nothing new (what was already in Secrets is used as it is)';
+    const stored = (r.stored || []).length ? r.stored.map((n) => `<code>${esc(n)}</code>`).join(', ') : 'nothing new (what was already in the Vault is used as it is)';
     const acct = r.account ? `<div><dt>Account</dt><dd data-cf-result-account>${esc(r.account.label || r.account.identity)}</dd></div>` : '';
     const proof = st.state === 'verified'
       ? `<div><dt>Verified by</dt><dd data-cf-result-proof>${esc(st.capability || '')}${st.identity ? ` as <code>${esc(st.identity)}</code>` : ''}${st.at ? `, ${esc(String(st.at).replace('T', ' ').slice(0, 16))} UTC` : ''}</dd></div>` : '';
@@ -107,7 +107,7 @@
         <dl class="desk-v1-cf-facts" data-cf-result>
           <div><dt>Status</dt><dd data-cf-result-status="${esc(word.state)}">${esc(word.label)}</dd></div>
           ${acct}
-          <div><dt>Stored in Secrets</dt><dd data-cf-result-stored>${stored}</dd></div>
+          <div><dt>Stored in the Vault</dt><dd data-cf-result-stored>${stored}</dd></div>
           ${proof}
         </dl>
         ${signin}${setup}${msg}${window.DeskV1ConnectSignin ? window.DeskV1ConnectSignin.resultHTML() : ''}

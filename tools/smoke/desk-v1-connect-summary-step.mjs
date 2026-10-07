@@ -252,7 +252,7 @@ async function run(browser, width, height) {
     check(JSON.stringify(await calls(page)) === JSON.stringify(['login.commit', 'perms.apply:acct-1']), 'Save: the connection commit first, then permissions apply with the account id it returned, one each', 'calls: ' + JSON.stringify(await calls(page)));
     check((await text(page, '[data-cfw-title]')) === 'X saved' && !(await has(page, '[data-sum-banner]')), 'Result: "X saved", no partial banner', 'result title: ' + await text(page, '[data-cfw-title]'));
     check(/Saved\. A new account was created/.test(await text(page, '[data-sum-row="connection"] dd')), 'Connection row: saved, a new account created', 'connection row wrong');
-    check(await has(page, '[data-sum-login="stored"]') && /Stored in Secrets now/.test(await text(page, '[data-sum-row="login"] dd')), 'Login row: stored in Secrets now', 'login row wrong');
+    check(await has(page, '[data-sum-login="stored"]') && /Stored in the Vault now/.test(await text(page, '[data-sum-row="login"] dd')), 'Login row: stored in the Vault now', 'login row wrong');
     check(/not signed in yet/.test(await text(page, '[data-sum-row="profile"] dd')) && await has(page, '[data-sum-signin="not_yet"]'), 'a stored login on a NEW profile is "Signed in: Not yet", not signed in', 'sign-in row wrong');
     check(await has(page, '[data-sum-perm-state="saved"]'), 'Permissions row: Saved', 'permissions row wrong');
     check(await has(page, '[data-sum-verified="no"]') && !(await has(page, '[data-sum-verified="yes"]')), 'Verified row: "Not verified." (saved is not verified)', 'verified row wrong');
@@ -367,7 +367,7 @@ async function run(browser, width, height) {
     await waitStep(page, 'result');
     check(JSON.stringify(await calls(page)) === '["api.commit","perms.apply:acct-2"]', 'API Save: api.commit then permissions apply with account acct-2', 'calls: ' + JSON.stringify(await calls(page)));
     check(/Key stored/.test(await text(page, '[data-sum-status]')) && !(await has(page, '[data-sum-verified="yes"]')), 'Status is the server word ("Key stored"); not verified', 'status wrong');
-    check(/x\.client-id/.test(await text(page, '[data-sum-row="stored"] dd')), 'Stored in Secrets names the secret, not a value', 'stored row wrong');
+    check(/x\.client-id/.test(await text(page, '[data-sum-row="stored"] dd')), 'Stored in the Vault names the secret, not a value', 'stored row wrong');
     const acts = await page.$$eval('[data-sum-act]', (b) => b.map((x) => x.dataset.sumAct));
     check(JSON.stringify(acts) === '["refresh","check"]', 'actions: Refresh status and Check it now only (the existing read-only calls)', 'actions: ' + acts.join(','));
     check(logOf(srv, /verify/).length === 0, 'nothing was verified by saving', 'verify sent on save');

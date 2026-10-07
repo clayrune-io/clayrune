@@ -380,7 +380,7 @@ def test_failed_compensation_says_which_entry_to_remove(env, monkeypatch):
     r = _commit_req(client)
     body = r.get_json()
     assert r.status_code == 500
-    assert 'plausible.api-key' in body['error'] and 'Secrets' in body['error']
+    assert 'plausible.api-key' in body['error'] and 'Vault' in body['error']
     assert SECRET not in r.get_data(as_text=True)
 
 

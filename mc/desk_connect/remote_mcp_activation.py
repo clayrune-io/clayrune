@@ -265,7 +265,7 @@ def derive_state(rec: dict, project_path: str | None) -> dict:
         have = set()
     gone = [c['vault'] for c in op['credentials'] if c['vault'] not in have]
     if gone:
-        return {'state': 'credential_missing', 'message': f'Secrets has no entry named {", ".join(gone)}.', 'missing': gone}
+        return {'state': 'credential_missing', 'message': f'The Vault has no entry named {", ".join(gone)}.', 'missing': gone}
     out = {'state': 'registered', 'message': 'Registered. It is contacted the first time an agent session uses it.'}
     if op['credentials'] and _base.passphrase_backed():
         out['notice'] = _base.PASSPHRASE_NOTICE

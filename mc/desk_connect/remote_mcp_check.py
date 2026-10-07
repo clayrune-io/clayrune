@@ -39,9 +39,9 @@ MAX_TOOLS = 500
 _NAME_OK = re.compile(r'^[A-Za-z0-9_.:/-]{1,128}$')
 _TOOL_KEYS = ('name', 'title', 'description', 'inputSchema', 'outputSchema', 'annotations')
 _VAULT_ERRORS = {
-    _vault.VaultLocked: ('vault_locked', 'Secrets is locked. Unlock it, then run the check again.'),
-    _vault.SecretNotFound: ('credential_missing', 'A Secrets entry this server needs no longer exists.'),
-    _vault.SecretDenied: ('credential_denied', 'Secrets would not hand out a credential this server needs.'),
+    _vault.VaultLocked: ('vault_locked', 'The Vault is locked. Unlock it, then run the check again.'),
+    _vault.SecretNotFound: ('credential_missing', 'A Vault entry this server needs no longer exists.'),
+    _vault.SecretDenied: ('credential_denied', 'The Vault would not hand out a credential this server needs.'),
 }
 
 
@@ -62,7 +62,7 @@ def resolve_headers(op: dict, project_id: str | None, get_value=None) -> dict:
             value = get_value(c['vault'], consumer='desk-remote-check', project_id=project_id, unattended=False)
         except _vault.SecretsError as e:
             code, msg = next((v for k, v in _VAULT_ERRORS.items() if isinstance(e, k)),
-                             ('credential_unavailable', 'A Secrets entry this server needs could not be read.'))
+                             ('credential_unavailable', 'A Vault entry this server needs could not be read.'))
             raise ActivationError(msg, code, 409) from None
         headers[c['header']] = c['prefix'] + value
     return headers

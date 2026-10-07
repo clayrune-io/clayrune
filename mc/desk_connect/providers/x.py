@@ -35,7 +35,7 @@ _CLIENT_SECRET = 'x.client-secret'
 class XProvider(base.Provider):
     service_id = 'x'
     summaries = {'oauth': 'Sign in to X in its own browser profile on the next step, with your X app\'s Client ID. Nothing is '
-                          'saved until you press Save on the Review step, which stores the Client ID in Secrets (if it is '
+                          'saved until you press Save on the Review step, which stores the Client ID in the Vault (if it is '
                           'not there already), adds the X account and keeps the sign-in.'}
     signs_in = frozenset({'oauth'})
 

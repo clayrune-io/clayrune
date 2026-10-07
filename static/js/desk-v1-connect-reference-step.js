@@ -76,7 +76,7 @@ export function registerReferenceStep(W) {
     if (P.vault !== null || P.vaultBusy) return;
     P.vaultBusy = true; P.vaultError = ''; api.repaint();
     try { const r = await api.ctx.api('GET', '/api/secrets'); if (n !== vaultGen) return; P.vault = (r.secrets || []).map(s=>({name:s.name,username:s.username,scope:s.scope,allow_unattended:s.allow_unattended})); }
-    catch (e) { if (n !== vaultGen) return; P.vaultError = e.message || 'Secrets could not be listed.'; }
+    catch (e) { if (n !== vaultGen) return; P.vaultError = e.message || 'The Vault could not be listed.'; }
     if (n !== vaultGen) return;
     P.vaultBusy = false; api.repaint();
   }
@@ -84,15 +84,15 @@ export function registerReferenceStep(W) {
   function problem(api) {
     if (!P.name.trim()) return 'Enter a name for this service.';
     if (api.sel.variant !== 'reference' && !(P.kind === 'pypi' ? P.source.trim() : P.address.trim())) return 'Enter the reference address or package.';
-    if (P.mode !== 'none' && !P.vaultName.trim()) return 'Name the credential in Secrets.';
-    if (P.mode === 'existing' && !existing()) return 'Choose an existing credential; Secrets must finish loading.';
+    if (P.mode !== 'none' && !P.vaultName.trim()) return 'Name the credential in the Vault.';
+    if (P.mode === 'existing' && !existing()) return 'Choose an existing credential; the Vault must finish loading.';
     if (P.mode === 'new' && (!secretNode || !secretNode.querySelector('[data-ref-secret]').value)) return 'Enter the credential value.';
     if (P.mode === 'new' && ['api_key_pair','login'].includes(P.entry) && !secretNode.querySelector('[data-ref-user]').value.trim()) return 'Enter the Key ID.';
     return '';
   }
   function credentialForm() {
-    return (P.mode==='existing'?'':select('mode', 'Credential (optional)', [['none', 'No credential'], ['existing', 'Existing entry in Secrets'], ['new', 'New credential']]))
-      + (P.mode === 'new' ? input('vaultName', 'Secrets entry name', 120) : P.mode==='existing' ? window.DeskV1ConnectVaultPicker.html(P.vault || [],P.vaultName,'data-ref-pick') + `<div class="desk-v1-cfk-actions">${button('data-ref-add-new',window.DeskV1ConnectCopy.words.addNew)}${button('data-ref-remove-credential',window.DeskV1ConnectCopy.words.remove)}</div>` : '')
+    return (P.mode==='existing'?'':select('mode', 'Credential (optional)', [['none', 'No credential'], ['existing', 'Existing entry in the Vault'], ['new', 'New credential']]))
+      + (P.mode === 'new' ? input('vaultName', 'Vault entry name', 120) : P.mode==='existing' ? window.DeskV1ConnectVaultPicker.html(P.vault || [],P.vaultName,'data-ref-pick') + `<div class="desk-v1-cfk-actions">${button('data-ref-add-new',window.DeskV1ConnectCopy.words.addNew)}${button('data-ref-remove-credential',window.DeskV1ConnectCopy.words.remove)}</div>` : '')
       + (P.mode === 'existing' ? `<div data-ref-vault role="status">${esc(P.vaultBusy ? window.DeskV1ConnectCopy.words.loading : P.vaultError || (existing() ? window.DeskV1ConnectCopy.words.selected : window.DeskV1ConnectCopy.words.choose))}</div>${P.vaultError ? button('data-ref-retry-vault', 'Retry') : ''}` : '')
       + (P.mode === 'new' ? select('entry', 'Credential kind', [['api_key', 'API key'], ['token', 'Token'], ['login', 'Username/password'], ['api_key_pair', 'Key ID/secret']]) + '<div data-ref-secret-slot></div>' : '');
   }
@@ -202,7 +202,7 @@ export function registerReferenceStep(W) {
   W.registerScreen({ id: 'reference-result', step: 'result', match: matches, title: () => 'Service saved',
     copy: () => 'Your saved service and its status are shown below.',
     body: () => fact('Saved', P.result?.duplicate ? 'Already saved' : 'Reference saved') + fact('Connection', 'Reference only; not connected') + fact('Permissions', 'No connection permissions granted') + fact('Verified', 'Not checked')
-      + fact('Credential', P.result?.credential ? P.result.credential.referenced ? 'Existing vault entry referenced' : 'Stored in Secrets' : 'None'),
+      + fact('Credential', P.result?.credential ? P.result.credential.referenced ? 'Existing vault entry referenced' : 'Stored in the Vault' : 'None'),
     primary: (api) => ({ label: 'Done', run: async () => { api.finish(P.result?.service); return false; } }), discard: drop });
   window.DeskV1ConnectReferenceStep = { matches, begin };
 }

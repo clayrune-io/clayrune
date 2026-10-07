@@ -74,7 +74,7 @@ def clean_url(raw) -> str:
     if p.scheme not in ('http', 'https') or not p.hostname:
         raise _refuse('the address must start with https:// (or http://, which needs its own acknowledgement)', 'bad_url')
     if p.username is not None or p.password is not None or '@' in p.netloc:
-        raise _refuse('the address cannot carry a user name or password. Put a credential in Secrets and attach it as a '
+        raise _refuse('the address cannot carry a user name or password. Put a credential in the Vault and attach it as a '
                       'header instead.', 'secret_in_url')
     if p.fragment:
         raise _refuse('the address cannot have a #fragment', 'bad_url')
@@ -82,8 +82,8 @@ def clean_url(raw) -> str:
         raise _refuse('that port is not valid', 'bad_url')
     for k, v in parse_qsl(p.query, keep_blank_values=True):
         if _SECRET_QUERY_KEYS.search(k) or _ps.credential_like(v):
-            raise _refuse('the address carries something that looks like a secret in its query. Secrets are never put in '
-                          'an address: store it in Secrets and attach it as a header instead.', 'secret_in_url')
+            raise _refuse('the address carries something that looks like a secret in its query. Secret values are never put in '
+                          'an address: store it in the Vault and attach it as a header instead.', 'secret_in_url')
     if _ps.credential_like(text):
         raise _refuse('the address looks like it holds a secret value', 'secret_in_url')
     return text
@@ -182,7 +182,7 @@ def clean_fields(raw, vault_names, *, default_name: str | None = None) -> dict:
     if auth not in AUTH_TYPES:
         raise _refuse('auth must be "none", "header" or "oauth"', 'bad_auth')
     if auth == 'header' and not creds_raw:
-        raise _refuse('choose the Secrets entry that holds the token, and the header it goes in', 'credential_required')
+        raise _refuse('choose the Vault entry that holds the token, and the header it goes in', 'credential_required')
     if auth != 'header' and creds_raw:
         raise _refuse('credentials are only used with auth "header"', 'bad_credentials')
     issuer = raw.get('issuer')
@@ -197,7 +197,7 @@ def clean_fields(raw, vault_names, *, default_name: str | None = None) -> dict:
     for c in creds_raw:
         if not isinstance(c, dict) or not set(c) <= {'header', 'vault', 'prefix'} or not {'header', 'vault'} <= set(c) \
                 or not isinstance(c['header'], str) or not isinstance(c['vault'], str):
-            raise _refuse('each credential is {header, vault, prefix?}: the HTTP header it goes in, the Secrets entry that '
+            raise _refuse('each credential is {header, vault, prefix?}: the HTTP header it goes in, the Vault entry that '
                           'holds it and the text before it (such as "Bearer ")', 'bad_credentials')
         header, vault = c['header'].strip(), c['vault']
         try:
@@ -213,9 +213,9 @@ def clean_fields(raw, vault_names, *, default_name: str | None = None) -> dict:
         if not isinstance(prefix, str) or not _PREFIX_RE.match(prefix) or _placeholder(prefix):
             raise _refuse('the text before the token is at most 40 plain characters, for example "Bearer "', 'bad_prefix')
         if not _VAULT_RE.match(vault):
-            raise _refuse('that is not a Secrets entry name', 'bad_credential_vault')
+            raise _refuse('that is not a Vault entry name', 'bad_credential_vault')
         if vault not in vault_names:
-            raise _refuse(f'there is no Secrets entry named "{vault}". Store it in Secrets first.', 'unknown_vault_entry')
+            raise _refuse(f'there is no Vault entry named "{vault}". Store it in the Vault first.', 'unknown_vault_entry')
         seen.add(header.lower())
         creds.append({'header': header, 'vault': vault, 'prefix': prefix})
     scopes = _clean_scopes(raw.get('scopes'))

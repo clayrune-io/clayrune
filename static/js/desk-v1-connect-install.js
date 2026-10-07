@@ -28,7 +28,7 @@
             <div><dt>Size</dt><dd data-cf-i-size>${esc(_size(card.unpacked_bytes))} unpacked</dd></div>
             <div><dt>Purpose</dt><dd data-cf-i-purpose>${esc(card.purpose)}</dd></div>
             <div><dt>Registered as</dt><dd data-cf-i-server>MCP server <code>${esc(card.server_name)}</code>, for every project</dd></div>
-            <div><dt>Credential</dt><dd data-cf-i-cred>${esc(card.credential.label)}, kept in Secrets as <code>${esc(card.credential.vault)}</code> and passed to the server as <code>${esc(card.credential.env)}</code> when it starts. It is never written into the MCP configuration.</dd></div>
+            <div><dt>Credential</dt><dd data-cf-i-cred>${esc(card.credential.label)}, kept in the Vault as <code>${esc(card.credential.vault)}</code> and passed to the server as <code>${esc(card.credential.env)}</code> when it starts. It is never written into the MCP configuration.</dd></div>
           </dl>
           <ul class="desk-v1-cf-perms" data-cf-i-perms>${card.permissions.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>
           <div class="desk-v1-rules-hint">When you save, Clayrune itself downloads this one file from the public npm registry (registry.npmjs.org), checks it against the checksum above and unpacks it into its own folder. npm is not used, and nothing from the package runs until an agent session starts the server.</div>

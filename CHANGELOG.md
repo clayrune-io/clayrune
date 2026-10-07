@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - The Secrets menu is now called Vault
+
+- Sidebar, mobile drawer, panel title, walkthrough and every Desk connect message that points at the menu by name now say "Vault" (the product already said "vault" in the lock, backup and Desk copy). Names only: routes, API fields, CSS classes, file names and the generic noun "secret(s)" are unchanged.
+- Server messages that reach the UI (`mc/desk_connect/*`, `desk_engines`) match, e.g. "that credential is not in the Vault". Smokes and tests that asserted the old strings follow.
+
 ## [2026-10-06] - GitHub connection setup accepts dependency and build output (MC-1062/14)
 
 - Reviewed source stays pinned during setup and before every launch. Generated files have a separate bounded record at Save, so large `node_modules` and build trees do not hit the source inventory limits or get hashed on every start. Review states that generated output is not rechecked at launch; existing approvals keep their original checks.

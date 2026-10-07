@@ -48,11 +48,11 @@ const CRED = {
 };
 const engines = (srv) => [
   { id: 'higgsfield', label: 'Higgsfield', auth: { kind: 'key_id_secret', vault_entry: 'higgsfield' }, job_limit_usd: null, credential: CRED.higgsfield,
-    connected: { ready: false, exists: false, vault_entry: 'higgsfield', reason: "no vault entry named 'higgsfield' (add it in Secrets)" },
+    connected: { ready: false, exists: false, vault_entry: 'higgsfield', reason: "no vault entry named 'higgsfield' (add it in the Vault)" },
     models: [{ model_id: 'kling', kind: 'video', label: 'Kling', status: 'stable', aspect_ratios: ['16:9'] }] },
   { id: 'google', label: 'Google', auth: { kind: 'api_key', vault_entry: 'gemini-api' }, job_limit_usd: 2, credential: CRED.google,
     connected: srv.googleReady ? { ready: true, exists: true, vault_entry: 'gemini-api', reason: null }
-      : { ready: false, exists: false, vault_entry: 'gemini-api', reason: "no vault entry named 'gemini-api' (add it in Secrets)" },
+      : { ready: false, exists: false, vault_entry: 'gemini-api', reason: "no vault entry named 'gemini-api' (add it in the Vault)" },
     models: [{ model_id: 'veo', kind: 'video', label: 'Veo', status: 'preview', aspect_ratios: ['16:9'] }] },
   { id: 'openai', label: 'OpenAI', auth: { kind: 'api_key', vault_entry: 'openai-api' }, job_limit_usd: 5, credential: CRED.openai,
     connected: { ready: true, exists: true, vault_entry: 'openai-api', reason: null },
@@ -214,7 +214,7 @@ async function edit(browser) {
   // The same preset applies when the editor is opened from the Secrets list by name.
   await page.evaluate(() => window.openSecretEditor('gemini-api'));
   await page.waitForSelector(form, { timeout: 8000 });
-  check((await txt(page, '#sec-value-name')) === 'Gemini API key' && await hidden(page, '#sec-user-block'), 'editing the vault entry from the Secrets list uses the engine labels too', 'list edit labels');
+  check((await txt(page, '#sec-value-name')) === 'Gemini API key' && await hidden(page, '#sec-user-block'), 'editing the vault entry from the Vault list uses the engine labels too', 'list edit labels');
   pageErrors.forEach((e) => fail('page error: ' + e));
   await ctx.close();
 }

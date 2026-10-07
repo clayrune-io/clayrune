@@ -24,7 +24,7 @@
           <span>${esc(f.label)}${f.hint ? `<span class="desk-v1-rules-hint">${esc(f.hint)}</span>` : ''}</span></label>`;
     }
     if (f.kind === 'secret' && f.present) {
-      return `<div class="desk-v1-cf-present" data-cfa-present="${esc(f.key)}"><strong>${esc(f.label)}</strong>: already stored in Secrets as <code>${esc(f.vault)}</code>; it is used as it is, so it is not asked again.</div>`;
+      return `<div class="desk-v1-cf-present" data-cfa-present="${esc(f.key)}"><strong>${esc(f.label)}</strong>: already stored in the Vault as <code>${esc(f.vault)}</code>; it is used as it is, so it is not asked again.</div>`;
     }
     const secret = f.kind === 'secret';
     return `<label class="desk-v1-conn-add-field" for="${_id(f)}">${esc(f.label)}${f.required ? '' : ' (optional)'}

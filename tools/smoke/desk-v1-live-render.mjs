@@ -64,7 +64,7 @@ function makeServer() {
 
 const ENGINES = (limits) => [
   { id: 'higgsfield', label: 'Higgsfield', auth: { kind: 'key_id_secret', vault_entry: 'higgsfield' }, job_limit_usd: limits.higgsfield,
-    connected: { ready: false, vault_entry: 'higgsfield', reason: "no vault entry named 'higgsfield' (add it in Secrets)" },
+    connected: { ready: false, vault_entry: 'higgsfield', reason: "no vault entry named 'higgsfield' (add it in the Vault)" },
     models: [{ model_id: 'kling-2.5', kind: 'video', label: 'Kling 2.5 Turbo', status: 'stable', aspect_ratios: ['16:9', '9:16'] }] },
   { id: 'google', label: 'Google', auth: { kind: 'api_key', vault_entry: 'gemini-api' }, job_limit_usd: limits.google,
     connected: { ready: true, vault_entry: 'gemini-api', reason: null },
@@ -241,7 +241,7 @@ async function connections(browser) {
   const rows = await page.$$eval('[data-conn-engine]', (els) => els.map((e) => e.dataset.connEngine));
   JSON.stringify(rows) === '["higgsfield"]' ? ok('the opened engine is the one card on screen') : fail('engines: ' + JSON.stringify(rows));
   const hs = await txt(page, '[data-conn-engine="higgsfield"] [data-engine-status]');
-  (/^Not connected$/.test(hs)) ? ok('an unconnected engine says so in plain words (no vault or Secrets jargon): "' + hs + '"') : fail('higgsfield status: ' + hs);
+  (/^Not connected$/.test(hs)) ? ok('an unconnected engine says so in plain words (no vault or Vault jargon): "' + hs + '"') : fail('higgsfield status: ' + hs);
   await openEngine('google');
   const gs = await txt(page, '[data-conn-engine="google"] [data-engine-status]');
   (/^Connected$/.test(gs)) ? ok('a connected engine says Connected: "' + gs + '"') : fail('google status: ' + gs);
